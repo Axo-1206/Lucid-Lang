@@ -1,0 +1,189 @@
+/**
+ * @file Tokens.hpp
+ * @project LUC Compiler
+ * @responsibility Data structures for the Lexer's output and the Parser's input.
+ *
+ * @fundamental This file is used by every stage of the compiler.
+ * Changes here usually require updates to the Lexer AND the Parser.
+ */
+
+#pragma once
+#include <string>
+
+enum class TokenType {
+
+    // ─── Modifiers ────────────────────────────────────────────────────────────
+    PUB,    // pub       - public visibility
+    EXTERN, // extern    - C/Vulkan FFI declaration
+    EXPORT, // export    - package manifest: export math { use math.vec2 }
+
+    // ─── Top Level ────────────────────────────────────────────────────────────
+    PACKAGE, // package
+    USE,     // use       - import a module: use std.io
+    AS,      // as        - import alias: use math as m
+    IMPL,    // impl      - bind methods to a struct (pub impl = public, impl = private)
+    TYPE,    // type      - type alias: type ID = int  |  type Callback = (e Event) bool
+    STRUCT,  // struct    - data structure: struct Vec2 { x float  y float }
+    ENUM,    // enum      - named constant set: enum Direction { North, South, East, West }
+    TRAIT,   // trait     - method contract / generic constraint: trait Drawable { draw () }
+    FROM,    // from      - type conversion entry point: from (c Celsius) Fahrenheit = { ... }
+
+    // ─── Declarations ─────────────────────────────────────────────────────────
+    LET, // let       - reassignable, mutable in place, nil allowed
+    IMT, // imt       - immutable: not reassignable, not mutable in place, nil allowed
+    VAL, // val       - fully immutable, nil forbidden in entire type tree
+
+    // ─── Concurrency ──────────────────────────────────────────────────────────
+    ASYNC,    // async     - async function modifier
+    AWAIT,    // await     - await async result
+    PARALLEL, // parallel  - parallel block for DOD data processing
+
+    // ─── Primary Types (C# style) ─────────────────────────────────────────────
+    // Boolean
+    TYPE_BOOL, // bool
+
+    // Signed integers
+    TYPE_BYTE,  // byte      (int8,  -128..127)
+    TYPE_SHORT, // short     (int16, -32768..32767)
+    TYPE_INT,   // int       (int32)
+    TYPE_LONG,  // long      (int64)
+
+    // Unsigned integers
+    TYPE_UBYTE,  // ubyte     (uint8,  0..255)
+    TYPE_USHORT, // ushort    (uint16, 0..65535)
+    TYPE_UINT,   // uint      (uint32)
+    TYPE_ULONG,  // ulong     (uint64)
+
+    // Fixed-width aliases (critical for Vulkan struct layouts)
+    TYPE_INT8,   // int8
+    TYPE_INT16,  // int16
+    TYPE_INT32,  // int32
+    TYPE_INT64,  // int64
+    TYPE_UINT8,  // uint8
+    TYPE_UINT16, // uint16
+    TYPE_UINT32, // uint32
+    TYPE_UINT64, // uint64
+
+    // Floating point
+    TYPE_FLOAT,   // float     (32-bit)
+    TYPE_DOUBLE,  // double    (64-bit)
+    TYPE_DECIMAL, // decimal   (128-bit, high precision)
+
+    // Text
+    TYPE_STRING, // string
+    TYPE_CHAR,   // char
+
+    // Special
+    TYPE_ANY, // any       - dynamic type
+    NIL,      // nil       - null value
+
+    // ─── Control Flow ─────────────────────────────────────────────────────────
+    IF,       // if
+    ELSE,     // else
+    MATCH,    // match     - expression-oriented pattern matching + struct destructuring
+    SWITCH,   // switch    - statement-oriented value dispatch (multiple values/ranges per case)
+    CASE,     // case
+    DEFAULT,  // default
+    IS,       // is        - type check with narrowing: x is int  |  v is Circle
+    WHILE,    // while
+    FOR,      // for
+    IN,       // in        - for..in iteration
+    DO,       // do
+    RETURN,   // return
+    BREAK,    // break
+    CONTINUE, // continue
+
+    // ─── Logical ──────────────────────────────────────────────────────────────
+    AND,   // and
+    OR,    // or
+    NOT,   // not
+    TRUE,  // true
+    FALSE, // false
+
+    // ─── Operators ────────────────────────────────────────────────────────────
+    ASSIGN,  // =
+    ARROW,   // ->        - runtime pipeline: fn1(args) -> fn2 -> fn3
+    COMPOSE, // +>        - compile-time function composition: f +> g +> h
+
+    // Nullable operators
+    QUESTION,          // ?      - nullable type suffix: int?
+    DOT_QUESTION,      // .?     - nullable field chain, propagates nil: player.?weapon.?damage
+    QUESTION_QUESTION, // ??     - nil fallback, terminates a .? chain: .?field ?? default
+
+    // Reference & FFI
+    AMPERSAND, // &         - reference type: &T  (safe, managed)
+    AT,        // @         - raw pointer sigil (extern/FFI only): @T
+
+    // Type operators
+    PIPE,     // |         - union type: int | string
+    VARIADIC, // ...       - variadic params: args ...int
+    RANGE,    // ..        - range literal: 0..10
+
+    // ─── Access ───────────────────────────────────────────────────────────────
+    DOT,   // .         - field access: mesh.vertices | module path: std.io
+    COLON, // :         - generic constraint: T : Drawable | switch case: case 1: | match field pattern: Vec2 { x: 0 }
+
+    // ─── Math ─────────────────────────────────────────────────────────────────
+    PLUS,         // +
+    MINUS,        // -
+    MUL,          // *
+    DIV,          // /
+    POW,          // ^
+    MOD,          // %
+    PLUS_ASSIGN,  // +=
+    MINUS_ASSIGN, // -=
+    MUL_ASSIGN,   // *=
+    DIV_ASSIGN,   // /=
+    POW_ASSIGN,   // ^=
+    MOD_ASSIGN,   // %=
+
+    // ─── Comparison ───────────────────────────────────────────────────────────
+    LESS,          // <         - also used as generic open: Buffer<T>
+    GREATER,       // >         - also used as generic close: Buffer<T>
+    LESS_EQUAL,    // <=
+    GREATER_EQUAL, // >=
+    EQUAL_EQUAL,   // ==
+    NOT_EQUAL,     // !=
+    BANG,          // !    - pipeline argument pack: scale(2.0)! means upstream injected as first arg
+
+    // ─── Bitwise ──────────────────────────────────────────────────────────────
+    // NOTE: & and | are reused from AMPERSAND and PIPE above.
+    // The parser disambiguates by context (type position vs expression position).
+    BIT_XOR, // ~^
+    BIT_NOT, // ~
+    SHL,     // <<
+    SHR,     // >>
+
+    // ─── Delimiters ───────────────────────────────────────────────────────────
+    COMMA,     // ,
+    SEMICOLON, // ;
+    LPAREN,    // (
+    RPAREN,    // )
+    LBRACE,    // {
+    RBRACE,    // }
+    LBRACKET,  // [
+    RBRACKET,  // ]
+
+    // ─── Literals ─────────────────────────────────────────────────────────────
+    IDENTIFIER,
+    WILDCARD,           // _    - match pattern wildcard: matches anything, discards value
+    INT_LITERAL,        // 42
+    FLOAT_LITERAL,      // 3.14
+    STRING_LITERAL,     // "hello"
+    RAW_STRING_LITERAL, // r"raw\nno escaping"  - backslashes are literal
+    CHAR_LITERAL,       // 'a'
+    HEX_LITERAL,        // 0xFF   (important for Vulkan flags/bitmasks)
+    BINARY_LITERAL,     // 0b1010
+
+    // ─── Meta ─────────────────────────────────────────────────────────────────
+    DOC_COMMENT, // /-- ... --/  - documentation comment, attached to next declaration
+    UNKNOWN,     // any unrecognised character — surfaces as an error in the parser
+    EOF_TOKEN
+};
+
+struct Token {
+    TokenType type;
+    std::string value; // holds the raw lexeme
+    int line;
+    int column;
+};

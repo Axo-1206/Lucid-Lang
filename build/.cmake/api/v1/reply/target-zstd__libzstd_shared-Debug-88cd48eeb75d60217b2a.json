@@ -1,0 +1,109 @@
+{
+	"abstract" : true,
+	"artifacts" : 
+	[
+		{
+			"path" : "C:/Users/TaiAx/vcpkg/installed/x64-windows/debug/bin/zstd.dll"
+		},
+		{
+			"path" : "C:/Users/TaiAx/vcpkg/installed/x64-windows/debug/lib/zstd.lib"
+		}
+	],
+	"backtrace" : 10,
+	"backtraceGraph" : 
+	{
+		"commands" : 
+		[
+			"_add_library",
+			"add_library",
+			"include",
+			"_find_package",
+			"find_package"
+		],
+		"files" : 
+		[
+			"C:/Users/TaiAx/vcpkg/scripts/buildsystems/vcpkg.cmake",
+			"C:/Users/TaiAx/vcpkg/installed/x64-windows/share/zstd/zstdTargets.cmake",
+			"C:/Users/TaiAx/vcpkg/installed/x64-windows/share/zstd/zstdConfig.cmake",
+			"C:/Users/TaiAx/vcpkg/installed/x64-windows/share/llvm/LLVMConfig.cmake",
+			"CMakeLists.txt"
+		],
+		"nodes" : 
+		[
+			{
+				"file" : 4
+			},
+			{
+				"command" : 4,
+				"file" : 4,
+				"line" : 27,
+				"parent" : 0
+			},
+			{
+				"command" : 3,
+				"file" : 0,
+				"line" : 908,
+				"parent" : 1
+			},
+			{
+				"file" : 3,
+				"parent" : 2
+			},
+			{
+				"command" : 4,
+				"file" : 3,
+				"line" : 183,
+				"parent" : 3
+			},
+			{
+				"command" : 3,
+				"file" : 0,
+				"line" : 908,
+				"parent" : 4
+			},
+			{
+				"file" : 2,
+				"parent" : 5
+			},
+			{
+				"command" : 2,
+				"file" : 2,
+				"line" : 32,
+				"parent" : 6
+			},
+			{
+				"file" : 1,
+				"parent" : 7
+			},
+			{
+				"command" : 1,
+				"file" : 1,
+				"line" : 58,
+				"parent" : 8
+			},
+			{
+				"command" : 0,
+				"file" : 0,
+				"line" : 653,
+				"parent" : 9
+			}
+		]
+	},
+	"codemodelVersion" : 
+	{
+		"major" : 2,
+		"minor" : 10
+	},
+	"id" : "zstd::libzstd_shared::@6890427a1f51a3e7e1df",
+	"imported" : true,
+	"local" : true,
+	"name" : "zstd::libzstd_shared",
+	"nameOnDisk" : "zstd.dll",
+	"paths" : 
+	{
+		"build" : ".",
+		"source" : "."
+	},
+	"sources" : [],
+	"type" : "SHARED_LIBRARY"
+}

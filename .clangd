@@ -1,0 +1,14 @@
+CompileFlags:
+  CompilationDatabase: build
+  Add:
+    - "--driver-mode=cl"
+    - "/std:c++17"
+    - "-fms-compatibility"
+    - "-fms-extensions"
+    - "-fdelayed-template-parsing"
+
+Index:
+	Background: Build
+
+Diagnostics:
+  UnusedIncludes: None

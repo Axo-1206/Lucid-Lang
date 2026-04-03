@@ -1,0 +1,458 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <PreferredToolArchitecture>x64</PreferredToolArchitecture>
+  </PropertyGroup>
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="MinSizeRel|x64">
+      <Configuration>MinSizeRel</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="RelWithDebInfo|x64">
+      <Configuration>RelWithDebInfo</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{78530210-5E25-34A1-BF48-180CE9EDFC3C}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <VcpkgEnabled>false</VcpkgEnabled>
+    <WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion>
+    <Platform>x64</Platform>
+    <ProjectName>luc-comp</ProjectName>
+    <VCProjectUpgraderObjectName>NoUpgrade</VCProjectUpgraderObjectName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <CharacterSet>Unicode</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <CharacterSet>Unicode</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <CharacterSet>Unicode</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <CharacterSet>Unicode</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets">
+    <Import Project="do_not_import_user.props" Condition="exists('do_not_import_user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <_ProjectFileVersion>10.0.20506.1</_ProjectFileVersion>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">C:\Users\TaiAx\Desktop\luc\build\Debug\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">luc-comp.dir\Debug\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">luc-comp</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">.exe</TargetExt>
+    <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</LinkIncremental>
+    <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</GenerateManifest>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">C:\Users\TaiAx\Desktop\luc\build\Release\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">luc-comp.dir\Release\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">luc-comp</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='Release|x64'">.exe</TargetExt>
+    <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</LinkIncremental>
+    <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</GenerateManifest>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">C:\Users\TaiAx\Desktop\luc\build\MinSizeRel\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">luc-comp.dir\MinSizeRel\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">luc-comp</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">.exe</TargetExt>
+    <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">false</LinkIncremental>
+    <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">true</GenerateManifest>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">C:\Users\TaiAx\Desktop\luc\build\RelWithDebInfo\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">luc-comp.dir\RelWithDebInfo\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">luc-comp</TargetName>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">.exe</TargetExt>
+    <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">true</LinkIncremental>
+    <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">true</GenerateManifest>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>C:\Users\TaiAx\Desktop\luc\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /external:I "C:/Users/TaiAx/vcpkg/installed/x64-windows/include"</AdditionalOptions>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
+      <BufferSecurityCheck></BufferSecurityCheck>
+      <CallingConvention></CallingConvention>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
+      <FloatingPointModel></FloatingPointModel>
+      <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
+      <InlineFunctionExpansion>Disabled</InlineFunctionExpansion>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <MinimalRebuild></MinimalRebuild>
+      <Optimization>Disabled</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <RuntimeTypeInfo>true</RuntimeTypeInfo>
+      <SupportJustMyCode></SupportJustMyCode>
+      <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
+      <UseFullPaths>false</UseFullPaths>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;_CRT_SECURE_NO_DEPRECATE;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;_CRT_NONSTDC_NO_WARNINGS;_SCL_SECURE_NO_DEPRECATE;_SCL_SECURE_NO_WARNINGS;UNICODE;_UNICODE;__STDC_CONSTANT_MACROS;__STDC_FORMAT_MACROS;__STDC_LIMIT_MACROS;CMAKE_INTDIR="Debug"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_DEBUG;_WINDOWS;_CRT_SECURE_NO_DEPRECATE;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;_CRT_NONSTDC_NO_WARNINGS;_SCL_SECURE_NO_DEPRECATE;_SCL_SECURE_NO_WARNINGS;UNICODE;_UNICODE;__STDC_CONSTANT_MACROS;__STDC_FORMAT_MACROS;__STDC_LIMIT_MACROS;CMAKE_INTDIR=\"Debug\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>C:\Users\TaiAx\Desktop\luc\src;C:\Users\TaiAx\vcpkg\installed\x64-windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>C:\Users\TaiAx\Desktop\luc\src;C:\Users\TaiAx\vcpkg\installed\x64-windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <PostBuildEvent>
+      <Message></Message>
+      <Command>setlocal
+C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -noprofile -executionpolicy Bypass -file C:/Users/TaiAx/vcpkg/scripts/buildsystems/msbuild/applocal.ps1 -targetBinary C:/Users/TaiAx/Desktop/luc/build/Debug/luc-comp.exe -installedDir C:/Users/TaiAx/vcpkg/installed/x64-windows/debug/bin -OutVariable out
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+    </PostBuildEvent>
+    <Link>
+      <AdditionalDependencies>C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMCore.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMSupport.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMExecutionEngine.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMMCJIT.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMX86CodeGen.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMX86AsmParser.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMX86Desc.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMX86Disassembler.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMX86Info.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\zlibd.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMExecutionEngine.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMOrcTargetProcess.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMOrcShared.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMRuntimeDyld.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMAsmPrinter.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMCFGuard.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMGlobalISel.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMIRPrinter.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMInstrumentation.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMSelectionDAG.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMCodeGen.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMTarget.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMScalarOpts.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMAggressiveInstCombine.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMInstCombine.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMBitWriter.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMObjCARCOpts.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMTransformUtils.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMAnalysis.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMProfileData.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMSymbolize.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMDebugInfoDWARF.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMDebugInfoPDB.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMObject.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMIRReader.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMBitReader.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMAsmParser.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMCore.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMRemarks.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMBitstreamReader.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMTextAPI.lib;C:\Program Files\Microsoft Visual Studio\2022\Community\DIA SDK\lib\amd64\diaguids.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMDebugInfoMSF.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMDebugInfoBTF.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMCodeGenTypes.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMMCParser.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMMCDisassembler.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMMC.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMBinaryFormat.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMTargetParser.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMDebugInfoCodeView.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMSupport.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\zlibd.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\LLVMDemangle.lib;psapi.lib;shell32.lib;ole32.lib;uuid.lib;advapi32.lib;ws2_32.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\debug\lib\zstd.lib;delayimp.lib;-delayload:shell32.dll;-delayload:ole32.dll;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64 /ignore:4199</AdditionalOptions>
+      <DataExecutionPrevention></DataExecutionPrevention>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+      <ImageHasSafeExceptionHandlers></ImageHasSafeExceptionHandlers>
+      <ImportLibrary>C:/Users/TaiAx/Desktop/luc/build/Debug/luc-comp.lib</ImportLibrary>
+      <LinkErrorReporting></LinkErrorReporting>
+      <ProgramDataBaseFile>C:/Users/TaiAx/Desktop/luc/build/Debug/luc-comp.pdb</ProgramDataBaseFile>
+      <RandomizedBaseAddress></RandomizedBaseAddress>
+      <SubSystem>Console</SubSystem>
+    </Link>
+    <ProjectReference>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>C:\Users\TaiAx\Desktop\luc\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /external:I "C:/Users/TaiAx/vcpkg/installed/x64-windows/include"</AdditionalOptions>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <BasicRuntimeChecks>Default</BasicRuntimeChecks>
+      <BufferSecurityCheck></BufferSecurityCheck>
+      <CallingConvention></CallingConvention>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
+      <FloatingPointModel></FloatingPointModel>
+      <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
+      <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <MinimalRebuild></MinimalRebuild>
+      <Optimization>MaxSpeed</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <RuntimeTypeInfo>true</RuntimeTypeInfo>
+      <SupportJustMyCode></SupportJustMyCode>
+      <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
+      <UseFullPaths>false</UseFullPaths>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;_CRT_SECURE_NO_DEPRECATE;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;_CRT_NONSTDC_NO_WARNINGS;_SCL_SECURE_NO_DEPRECATE;_SCL_SECURE_NO_WARNINGS;UNICODE;_UNICODE;__STDC_CONSTANT_MACROS;__STDC_FORMAT_MACROS;__STDC_LIMIT_MACROS;CMAKE_INTDIR="Release"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <DebugInformationFormat>
+      </DebugInformationFormat>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;_CRT_SECURE_NO_DEPRECATE;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;_CRT_NONSTDC_NO_WARNINGS;_SCL_SECURE_NO_DEPRECATE;_SCL_SECURE_NO_WARNINGS;UNICODE;_UNICODE;__STDC_CONSTANT_MACROS;__STDC_FORMAT_MACROS;__STDC_LIMIT_MACROS;CMAKE_INTDIR=\"Release\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>C:\Users\TaiAx\Desktop\luc\src;C:\Users\TaiAx\vcpkg\installed\x64-windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>C:\Users\TaiAx\Desktop\luc\src;C:\Users\TaiAx\vcpkg\installed\x64-windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <PostBuildEvent>
+      <Message></Message>
+      <Command>setlocal
+C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -noprofile -executionpolicy Bypass -file C:/Users/TaiAx/vcpkg/scripts/buildsystems/msbuild/applocal.ps1 -targetBinary C:/Users/TaiAx/Desktop/luc/build/Release/luc-comp.exe -installedDir C:/Users/TaiAx/vcpkg/installed/x64-windows/bin -OutVariable out
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+    </PostBuildEvent>
+    <Link>
+      <AdditionalDependencies>C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMCore.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMSupport.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMExecutionEngine.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMMCJIT.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMX86CodeGen.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMX86AsmParser.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMX86Desc.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMX86Disassembler.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMX86Info.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\zlib.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMExecutionEngine.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMOrcTargetProcess.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMOrcShared.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMRuntimeDyld.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMAsmPrinter.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMCFGuard.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMGlobalISel.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMIRPrinter.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMInstrumentation.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMSelectionDAG.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMCodeGen.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMTarget.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMScalarOpts.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMAggressiveInstCombine.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMInstCombine.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMBitWriter.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMObjCARCOpts.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMTransformUtils.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMAnalysis.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMProfileData.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMSymbolize.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMDebugInfoDWARF.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMDebugInfoPDB.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMObject.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMIRReader.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMBitReader.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMAsmParser.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMCore.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMRemarks.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMBitstreamReader.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMTextAPI.lib;C:\Program Files\Microsoft Visual Studio\2022\Community\DIA SDK\lib\amd64\diaguids.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMDebugInfoMSF.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMDebugInfoBTF.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMCodeGenTypes.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMMCParser.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMMCDisassembler.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMMC.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMBinaryFormat.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMTargetParser.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMDebugInfoCodeView.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMSupport.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\zlib.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMDemangle.lib;psapi.lib;shell32.lib;ole32.lib;uuid.lib;advapi32.lib;ws2_32.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\zstd.lib;delayimp.lib;-delayload:shell32.dll;-delayload:ole32.dll;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64 /ignore:4199</AdditionalOptions>
+      <DataExecutionPrevention></DataExecutionPrevention>
+      <GenerateDebugInformation>false</GenerateDebugInformation>
+      <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+      <ImageHasSafeExceptionHandlers></ImageHasSafeExceptionHandlers>
+      <ImportLibrary>C:/Users/TaiAx/Desktop/luc/build/Release/luc-comp.lib</ImportLibrary>
+      <LinkErrorReporting></LinkErrorReporting>
+      <ProgramDataBaseFile>C:/Users/TaiAx/Desktop/luc/build/Release/luc-comp.pdb</ProgramDataBaseFile>
+      <RandomizedBaseAddress></RandomizedBaseAddress>
+      <SubSystem>Console</SubSystem>
+    </Link>
+    <ProjectReference>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>C:\Users\TaiAx\Desktop\luc\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /external:I "C:/Users/TaiAx/vcpkg/installed/x64-windows/include"</AdditionalOptions>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <BasicRuntimeChecks>Default</BasicRuntimeChecks>
+      <BufferSecurityCheck></BufferSecurityCheck>
+      <CallingConvention></CallingConvention>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
+      <FloatingPointModel></FloatingPointModel>
+      <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
+      <InlineFunctionExpansion>OnlyExplicitInline</InlineFunctionExpansion>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <MinimalRebuild></MinimalRebuild>
+      <Optimization>MinSpace</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <RuntimeTypeInfo>true</RuntimeTypeInfo>
+      <SupportJustMyCode></SupportJustMyCode>
+      <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
+      <UseFullPaths>false</UseFullPaths>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;_CRT_SECURE_NO_DEPRECATE;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;_CRT_NONSTDC_NO_WARNINGS;_SCL_SECURE_NO_DEPRECATE;_SCL_SECURE_NO_WARNINGS;UNICODE;_UNICODE;__STDC_CONSTANT_MACROS;__STDC_FORMAT_MACROS;__STDC_LIMIT_MACROS;CMAKE_INTDIR="MinSizeRel"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <DebugInformationFormat>
+      </DebugInformationFormat>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;_CRT_SECURE_NO_DEPRECATE;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;_CRT_NONSTDC_NO_WARNINGS;_SCL_SECURE_NO_DEPRECATE;_SCL_SECURE_NO_WARNINGS;UNICODE;_UNICODE;__STDC_CONSTANT_MACROS;__STDC_FORMAT_MACROS;__STDC_LIMIT_MACROS;CMAKE_INTDIR=\"MinSizeRel\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>C:\Users\TaiAx\Desktop\luc\src;C:\Users\TaiAx\vcpkg\installed\x64-windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>C:\Users\TaiAx\Desktop\luc\src;C:\Users\TaiAx\vcpkg\installed\x64-windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <PostBuildEvent>
+      <Message></Message>
+      <Command>setlocal
+C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -noprofile -executionpolicy Bypass -file C:/Users/TaiAx/vcpkg/scripts/buildsystems/msbuild/applocal.ps1 -targetBinary C:/Users/TaiAx/Desktop/luc/build/MinSizeRel/luc-comp.exe -installedDir C:/Users/TaiAx/vcpkg/installed/x64-windows/bin -OutVariable out
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+    </PostBuildEvent>
+    <Link>
+      <AdditionalDependencies>C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMCore.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMSupport.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMExecutionEngine.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMMCJIT.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMX86CodeGen.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMX86AsmParser.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMX86Desc.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMX86Disassembler.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMX86Info.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\zlib.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMExecutionEngine.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMOrcTargetProcess.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMOrcShared.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMRuntimeDyld.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMAsmPrinter.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMCFGuard.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMGlobalISel.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMIRPrinter.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMInstrumentation.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMSelectionDAG.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMCodeGen.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMTarget.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMScalarOpts.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMAggressiveInstCombine.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMInstCombine.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMBitWriter.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMObjCARCOpts.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMTransformUtils.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMAnalysis.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMProfileData.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMSymbolize.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMDebugInfoDWARF.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMDebugInfoPDB.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMObject.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMIRReader.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMBitReader.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMAsmParser.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMCore.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMRemarks.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMBitstreamReader.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMTextAPI.lib;C:\Program Files\Microsoft Visual Studio\2022\Community\DIA SDK\lib\amd64\diaguids.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMDebugInfoMSF.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMDebugInfoBTF.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMCodeGenTypes.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMMCParser.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMMCDisassembler.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMMC.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMBinaryFormat.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMTargetParser.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMDebugInfoCodeView.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMSupport.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\zlib.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMDemangle.lib;psapi.lib;shell32.lib;ole32.lib;uuid.lib;advapi32.lib;ws2_32.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\zstd.lib;delayimp.lib;-delayload:shell32.dll;-delayload:ole32.dll;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64 /ignore:4199</AdditionalOptions>
+      <DataExecutionPrevention></DataExecutionPrevention>
+      <GenerateDebugInformation>false</GenerateDebugInformation>
+      <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+      <ImageHasSafeExceptionHandlers></ImageHasSafeExceptionHandlers>
+      <ImportLibrary>C:/Users/TaiAx/Desktop/luc/build/MinSizeRel/luc-comp.lib</ImportLibrary>
+      <LinkErrorReporting></LinkErrorReporting>
+      <ProgramDataBaseFile>C:/Users/TaiAx/Desktop/luc/build/MinSizeRel/luc-comp.pdb</ProgramDataBaseFile>
+      <RandomizedBaseAddress></RandomizedBaseAddress>
+      <SubSystem>Console</SubSystem>
+    </Link>
+    <ProjectReference>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>C:\Users\TaiAx\Desktop\luc\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /external:I "C:/Users/TaiAx/vcpkg/installed/x64-windows/include"</AdditionalOptions>
+      <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
+      <BasicRuntimeChecks>Default</BasicRuntimeChecks>
+      <BufferSecurityCheck></BufferSecurityCheck>
+      <CallingConvention></CallingConvention>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
+      <FloatingPointModel></FloatingPointModel>
+      <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
+      <InlineFunctionExpansion>OnlyExplicitInline</InlineFunctionExpansion>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <MinimalRebuild></MinimalRebuild>
+      <Optimization>MaxSpeed</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <RemoveUnreferencedCodeData></RemoveUnreferencedCodeData>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <RuntimeTypeInfo>true</RuntimeTypeInfo>
+      <SupportJustMyCode></SupportJustMyCode>
+      <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
+      <UseFullPaths>false</UseFullPaths>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;_CRT_SECURE_NO_DEPRECATE;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;_CRT_NONSTDC_NO_WARNINGS;_SCL_SECURE_NO_DEPRECATE;_SCL_SECURE_NO_WARNINGS;UNICODE;_UNICODE;__STDC_CONSTANT_MACROS;__STDC_FORMAT_MACROS;__STDC_LIMIT_MACROS;CMAKE_INTDIR="RelWithDebInfo"</PreprocessorDefinitions>
+      <ObjectFileName>$(IntDir)</ObjectFileName>
+      <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;_CRT_SECURE_NO_DEPRECATE;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;_CRT_NONSTDC_NO_WARNINGS;_SCL_SECURE_NO_DEPRECATE;_SCL_SECURE_NO_WARNINGS;UNICODE;_UNICODE;__STDC_CONSTANT_MACROS;__STDC_FORMAT_MACROS;__STDC_LIMIT_MACROS;CMAKE_INTDIR=\"RelWithDebInfo\"</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>C:\Users\TaiAx\Desktop\luc\src;C:\Users\TaiAx\vcpkg\installed\x64-windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Midl>
+      <AdditionalIncludeDirectories>C:\Users\TaiAx\Desktop\luc\src;C:\Users\TaiAx\vcpkg\installed\x64-windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+    <PostBuildEvent>
+      <Message></Message>
+      <Command>setlocal
+C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -noprofile -executionpolicy Bypass -file C:/Users/TaiAx/vcpkg/scripts/buildsystems/msbuild/applocal.ps1 -targetBinary C:/Users/TaiAx/Desktop/luc/build/RelWithDebInfo/luc-comp.exe -installedDir C:/Users/TaiAx/vcpkg/installed/x64-windows/bin -OutVariable out
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+    </PostBuildEvent>
+    <Link>
+      <AdditionalDependencies>C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMCore.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMSupport.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMExecutionEngine.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMMCJIT.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMX86CodeGen.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMX86AsmParser.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMX86Desc.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMX86Disassembler.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMX86Info.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\zlib.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMExecutionEngine.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMOrcTargetProcess.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMOrcShared.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMRuntimeDyld.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMAsmPrinter.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMCFGuard.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMGlobalISel.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMIRPrinter.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMInstrumentation.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMSelectionDAG.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMCodeGen.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMTarget.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMScalarOpts.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMAggressiveInstCombine.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMInstCombine.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMBitWriter.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMObjCARCOpts.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMTransformUtils.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMAnalysis.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMProfileData.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMSymbolize.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMDebugInfoDWARF.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMDebugInfoPDB.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMObject.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMIRReader.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMBitReader.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMAsmParser.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMCore.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMRemarks.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMBitstreamReader.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMTextAPI.lib;C:\Program Files\Microsoft Visual Studio\2022\Community\DIA SDK\lib\amd64\diaguids.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMDebugInfoMSF.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMDebugInfoBTF.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMCodeGenTypes.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMMCParser.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMMCDisassembler.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMMC.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMBinaryFormat.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMTargetParser.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMDebugInfoCodeView.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMSupport.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\zlib.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\LLVMDemangle.lib;psapi.lib;shell32.lib;ole32.lib;uuid.lib;advapi32.lib;ws2_32.lib;C:\Users\TaiAx\vcpkg\installed\x64-windows\lib\zstd.lib;delayimp.lib;-delayload:shell32.dll;-delayload:ole32.dll;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /machine:x64 /ignore:4199</AdditionalOptions>
+      <DataExecutionPrevention></DataExecutionPrevention>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+      <ImageHasSafeExceptionHandlers></ImageHasSafeExceptionHandlers>
+      <ImportLibrary>C:/Users/TaiAx/Desktop/luc/build/RelWithDebInfo/luc-comp.lib</ImportLibrary>
+      <LinkErrorReporting></LinkErrorReporting>
+      <ProgramDataBaseFile>C:/Users/TaiAx/Desktop/luc/build/RelWithDebInfo/luc-comp.pdb</ProgramDataBaseFile>
+      <RandomizedBaseAddress></RandomizedBaseAddress>
+      <SubSystem>Console</SubSystem>
+    </Link>
+    <ProjectReference>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\TaiAx\Desktop\luc\CMakeLists.txt">
+      <UseUtf8Encoding>Always</UseUtf8Encoding>
+      <Message Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Building Custom Rule C:/Users/TaiAx/Desktop/luc/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/Users/TaiAx/Desktop/luc -BC:/Users/TaiAx/Desktop/luc/build --check-stamp-file C:/Users/TaiAx/Desktop/luc/build/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeCXXInformation.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeCommonLanguageInclude.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeDependentOption.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeFindDependencyMacro.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeGenericSystem.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeInitializeConfigs.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeLanguageInformation.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeRCInformation.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeSystemSpecificInformation.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeSystemSpecificInitialize.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Compiler\CMakeCommonCompilerMacros.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Compiler\MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Compiler\MSVC.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\FindPackageHandleStandardArgs.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\FindPackageMessage.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\FindZLIB.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Internal\CMakeCXXLinkerInformation.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Internal\CMakeCommonLinkerInformation.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Linker\MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Linker\MSVC.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Platform\Linker\Windows-MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Platform\Linker\Windows-MSVC.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Platform\Windows-Initialize.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Platform\Windows-MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Platform\Windows-MSVC.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Platform\Windows.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Platform\WindowsPaths.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\SelectLibraryConfigurations.cmake;C:\Users\TaiAx\Desktop\luc\build\CMakeFiles\4.3.1\CMakeCXXCompiler.cmake;C:\Users\TaiAx\Desktop\luc\build\CMakeFiles\4.3.1\CMakeRCCompiler.cmake;C:\Users\TaiAx\Desktop\luc\build\CMakeFiles\4.3.1\CMakeSystem.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\llvm\LLVM-Config.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\llvm\LLVMConfig.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\llvm\LLVMConfigVersion.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\llvm\LLVMExports-debug.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\llvm\LLVMExports-release.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\llvm\LLVMExports.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\zlib\vcpkg-cmake-wrapper.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\zstd\zstdConfig.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\zstd\zstdConfigVersion.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\zstd\zstdTargets-debug.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\zstd\zstdTargets-release.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\zstd\zstdTargets.cmake;C:\Users\TaiAx\vcpkg\scripts\buildsystems\vcpkg.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">C:\Users\TaiAx\Desktop\luc\build\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Building Custom Rule C:/Users/TaiAx/Desktop/luc/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/Users/TaiAx/Desktop/luc -BC:/Users/TaiAx/Desktop/luc/build --check-stamp-file C:/Users/TaiAx/Desktop/luc/build/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeCXXInformation.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeCommonLanguageInclude.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeDependentOption.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeFindDependencyMacro.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeGenericSystem.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeInitializeConfigs.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeLanguageInformation.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeRCInformation.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeSystemSpecificInformation.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeSystemSpecificInitialize.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Compiler\CMakeCommonCompilerMacros.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Compiler\MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Compiler\MSVC.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\FindPackageHandleStandardArgs.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\FindPackageMessage.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\FindZLIB.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Internal\CMakeCXXLinkerInformation.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Internal\CMakeCommonLinkerInformation.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Linker\MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Linker\MSVC.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Platform\Linker\Windows-MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Platform\Linker\Windows-MSVC.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Platform\Windows-Initialize.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Platform\Windows-MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Platform\Windows-MSVC.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Platform\Windows.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Platform\WindowsPaths.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\SelectLibraryConfigurations.cmake;C:\Users\TaiAx\Desktop\luc\build\CMakeFiles\4.3.1\CMakeCXXCompiler.cmake;C:\Users\TaiAx\Desktop\luc\build\CMakeFiles\4.3.1\CMakeRCCompiler.cmake;C:\Users\TaiAx\Desktop\luc\build\CMakeFiles\4.3.1\CMakeSystem.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\llvm\LLVM-Config.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\llvm\LLVMConfig.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\llvm\LLVMConfigVersion.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\llvm\LLVMExports-debug.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\llvm\LLVMExports-release.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\llvm\LLVMExports.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\zlib\vcpkg-cmake-wrapper.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\zstd\zstdConfig.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\zstd\zstdConfigVersion.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\zstd\zstdTargets-debug.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\zstd\zstdTargets-release.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\zstd\zstdTargets.cmake;C:\Users\TaiAx\vcpkg\scripts\buildsystems\vcpkg.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">C:\Users\TaiAx\Desktop\luc\build\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">Building Custom Rule C:/Users/TaiAx/Desktop/luc/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/Users/TaiAx/Desktop/luc -BC:/Users/TaiAx/Desktop/luc/build --check-stamp-file C:/Users/TaiAx/Desktop/luc/build/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeCXXInformation.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeCommonLanguageInclude.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeDependentOption.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeFindDependencyMacro.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeGenericSystem.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeInitializeConfigs.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeLanguageInformation.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeRCInformation.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeSystemSpecificInformation.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeSystemSpecificInitialize.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Compiler\CMakeCommonCompilerMacros.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Compiler\MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Compiler\MSVC.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\FindPackageHandleStandardArgs.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\FindPackageMessage.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\FindZLIB.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Internal\CMakeCXXLinkerInformation.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Internal\CMakeCommonLinkerInformation.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Linker\MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Linker\MSVC.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Platform\Linker\Windows-MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Platform\Linker\Windows-MSVC.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Platform\Windows-Initialize.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Platform\Windows-MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Platform\Windows-MSVC.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Platform\Windows.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Platform\WindowsPaths.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\SelectLibraryConfigurations.cmake;C:\Users\TaiAx\Desktop\luc\build\CMakeFiles\4.3.1\CMakeCXXCompiler.cmake;C:\Users\TaiAx\Desktop\luc\build\CMakeFiles\4.3.1\CMakeRCCompiler.cmake;C:\Users\TaiAx\Desktop\luc\build\CMakeFiles\4.3.1\CMakeSystem.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\llvm\LLVM-Config.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\llvm\LLVMConfig.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\llvm\LLVMConfigVersion.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\llvm\LLVMExports-debug.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\llvm\LLVMExports-release.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\llvm\LLVMExports.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\zlib\vcpkg-cmake-wrapper.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\zstd\zstdConfig.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\zstd\zstdConfigVersion.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\zstd\zstdTargets-debug.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\zstd\zstdTargets-release.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\zstd\zstdTargets.cmake;C:\Users\TaiAx\vcpkg\scripts\buildsystems\vcpkg.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">C:\Users\TaiAx\Desktop\luc\build\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">Building Custom Rule C:/Users/TaiAx/Desktop/luc/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/Users/TaiAx/Desktop/luc -BC:/Users/TaiAx/Desktop/luc/build --check-stamp-file C:/Users/TaiAx/Desktop/luc/build/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeCXXInformation.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeCommonLanguageInclude.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeDependentOption.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeFindDependencyMacro.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeGenericSystem.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeInitializeConfigs.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeLanguageInformation.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeRCInformation.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeSystemSpecificInformation.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\CMakeSystemSpecificInitialize.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Compiler\CMakeCommonCompilerMacros.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Compiler\MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Compiler\MSVC.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\FindPackageHandleStandardArgs.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\FindPackageMessage.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\FindZLIB.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Internal\CMakeCXXLinkerInformation.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Internal\CMakeCommonLinkerInformation.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Linker\MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Linker\MSVC.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Platform\Linker\Windows-MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Platform\Linker\Windows-MSVC.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Platform\Windows-Initialize.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Platform\Windows-MSVC-CXX.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Platform\Windows-MSVC.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Platform\Windows.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\Platform\WindowsPaths.cmake;C:\Program Files\CMake\share\cmake-4.3\Modules\SelectLibraryConfigurations.cmake;C:\Users\TaiAx\Desktop\luc\build\CMakeFiles\4.3.1\CMakeCXXCompiler.cmake;C:\Users\TaiAx\Desktop\luc\build\CMakeFiles\4.3.1\CMakeRCCompiler.cmake;C:\Users\TaiAx\Desktop\luc\build\CMakeFiles\4.3.1\CMakeSystem.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\llvm\LLVM-Config.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\llvm\LLVMConfig.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\llvm\LLVMConfigVersion.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\llvm\LLVMExports-debug.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\llvm\LLVMExports-release.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\llvm\LLVMExports.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\zlib\vcpkg-cmake-wrapper.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\zstd\zstdConfig.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\zstd\zstdConfigVersion.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\zstd\zstdTargets-debug.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\zstd\zstdTargets-release.cmake;C:\Users\TaiAx\vcpkg\installed\x64-windows\share\zstd\zstdTargets.cmake;C:\Users\TaiAx\vcpkg\scripts\buildsystems\vcpkg.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">C:\Users\TaiAx\Desktop\luc\build\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">false</LinkObjects>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="C:\Users\TaiAx\Desktop\luc\src\main.cpp" />
+    <ClCompile Include="C:\Users\TaiAx\Desktop\luc\src\lexer\Lexer.cpp" />
+    <ClCompile Include="C:\Users\TaiAx\Desktop\luc\src\diagnostics\DiagnosticEngine.cpp" />
+    <ClCompile Include="C:\Users\TaiAx\Desktop\luc\src\parser\Parser.cpp" />
+    <ClCompile Include="C:\Users\TaiAx\Desktop\luc\src\parser\ParserExpr.cpp" />
+    <ClCompile Include="C:\Users\TaiAx\Desktop\luc\src\parser\ParserDecl.cpp" />
+    <ClCompile Include="C:\Users\TaiAx\Desktop\luc\src\parser\ParserType.cpp" />
+    <ClCompile Include="C:\Users\TaiAx\Desktop\luc\src\parser\ParserStmt.cpp" />
+    <ClCompile Include="C:\Users\TaiAx\Desktop\luc\src\semantic\SymbolTable.cpp" />
+    <ClCompile Include="C:\Users\TaiAx\Desktop\luc\src\semantic\SemanticAnalyzer.cpp" />
+    <ClCompile Include="C:\Users\TaiAx\Desktop\luc\src\semantic\TypeResolver.cpp" />
+    <ClCompile Include="C:\Users\TaiAx\Desktop\luc\src\semantic\SemanticCollector.cpp" />
+    <ClCompile Include="C:\Users\TaiAx\Desktop\luc\src\semantic\SemanticDecl.cpp" />
+    <ClCompile Include="C:\Users\TaiAx\Desktop\luc\src\semantic\SemanticExpr.cpp" />
+    <ClCompile Include="C:\Users\TaiAx\Desktop\luc\src\semantic\SemanticStmt.cpp" />
+    <ClCompile Include="C:\Users\TaiAx\Desktop\luc\src\semantic\TypeChecker.cpp" />
+    <ClCompile Include="C:\Users\TaiAx\Desktop\luc\src\semantic\Annotator.cpp" />
+  </ItemGroup>
+  <ItemGroup />
+  <ItemGroup>
+    <ProjectReference Include="C:\Users\TaiAx\Desktop\luc\build\ZERO_CHECK.vcxproj">
+      <Project>{AE8A07C5-96ED-3729-9E3D-BBC49152E886}</Project>
+      <Name>ZERO_CHECK</Name>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </ProjectReference>
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>

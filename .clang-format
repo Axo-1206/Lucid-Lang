@@ -1,0 +1,54 @@
+DisableFormat: true
+
+# disable for now, reason: i don't know how to set format that allow to write
+# function body in 1 line, along with multiple function
+#
+# what i want:
+# virtual f1      {} // comment
+# virtual fabca   {} // comment
+#
+# what the format does:
+# virtual f1 {
+# } // comment
+# virtual fabca {
+# } // comment
+# 
+# i dislike the format, it's ruin the cleaness and the comments
+
+# BasedOnStyle: LLVM
+# IndentWidth: 4
+# ColumnLimit: 0
+# AllowShortFunctionsOnASingleLine: None
+# SortIncludes: true
+# AlignTrailingComments:
+#   Kind: Always
+#   OverEmptyLines: 3
+# AlignConsecutiveTableGenDefinitionColons:
+#   Enabled: true
+#   AcrossEmptyLines: true
+#   AcrossComments: false
+
+# AllowShortCaseLabelsOnASingleLine: true
+# AllowShortLoopsOnASingleLine: true
+# AllowShortCaseExpressionOnASingleLine: true
+# AllowShortIfStatementsOnASingleLine: AllIfsAndElse 
+# AllowShortLambdasOnASingleLine: All
+
+# AlignAfterOpenBracket: Align
+
+# AllowShortFunctionsOnASingleLine: Inline
+# AllowShortBlocksOnASingleLine: Always
+# MaxEmptyLinesToKeep: 1
+
+# BreakBeforeBraces: Custom
+# BraceWrapping:
+#   AfterControlStatement: false
+#   BeforeElse: false
+#   SplitEmptyFunction: false
+
+# IndentCaseLabels: true
+# AlignConsecutiveShortCaseStatements:
+#   Enabled: true
+#   AcrossEmptyLines: true
+#   AcrossComments: true
+#   AlignCaseColons: false

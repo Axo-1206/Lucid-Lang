@@ -1,0 +1,62 @@
+[
+{
+  "directory": "C:/Users/TaiAx/Desktop/luc/build",
+  "command": "C:\\msys64\\mingw64\\bin\\c++.exe -IC:/Users/TaiAx/Desktop/luc/src -isystem C:/Users/TaiAx/vcpkg/installed/x64-windows/include -std=gnu++17   -D_CRT_SECURE_NO_DEPRECATE -D_CRT_SECURE_NO_WARNINGS -D_CRT_NONSTDC_NO_DEPRECATE -D_CRT_NONSTDC_NO_WARNINGS -D_SCL_SECURE_NO_DEPRECATE -D_SCL_SECURE_NO_WARNINGS -DUNICODE -D_UNICODE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -o CMakeFiles\\luc-comp.dir\\src\\main.cpp.obj -c C:\\Users\\TaiAx\\Desktop\\luc\\src\\main.cpp",
+  "file": "C:/Users/TaiAx/Desktop/luc/src/main.cpp",
+  "output": "C:/Users/TaiAx/Desktop/luc/build/CMakeFiles/luc-comp.dir/src/main.cpp.obj"
+},
+{
+  "directory": "C:/Users/TaiAx/Desktop/luc/build",
+  "command": "C:\\msys64\\mingw64\\bin\\c++.exe -IC:/Users/TaiAx/Desktop/luc/src -isystem C:/Users/TaiAx/vcpkg/installed/x64-windows/include -std=gnu++17   -D_CRT_SECURE_NO_DEPRECATE -D_CRT_SECURE_NO_WARNINGS -D_CRT_NONSTDC_NO_DEPRECATE -D_CRT_NONSTDC_NO_WARNINGS -D_SCL_SECURE_NO_DEPRECATE -D_SCL_SECURE_NO_WARNINGS -DUNICODE -D_UNICODE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -o CMakeFiles\\luc-comp.dir\\src\\lexer\\Lexer.cpp.obj -c C:\\Users\\TaiAx\\Desktop\\luc\\src\\lexer\\Lexer.cpp",
+  "file": "C:/Users/TaiAx/Desktop/luc/src/lexer/Lexer.cpp",
+  "output": "C:/Users/TaiAx/Desktop/luc/build/CMakeFiles/luc-comp.dir/src/lexer/Lexer.cpp.obj"
+},
+{
+  "directory": "C:/Users/TaiAx/Desktop/luc/build",
+  "command": "C:\\msys64\\mingw64\\bin\\c++.exe -IC:/Users/TaiAx/Desktop/luc/src -isystem C:/Users/TaiAx/vcpkg/installed/x64-windows/include -std=gnu++17   -D_CRT_SECURE_NO_DEPRECATE -D_CRT_SECURE_NO_WARNINGS -D_CRT_NONSTDC_NO_DEPRECATE -D_CRT_NONSTDC_NO_WARNINGS -D_SCL_SECURE_NO_DEPRECATE -D_SCL_SECURE_NO_WARNINGS -DUNICODE -D_UNICODE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -o CMakeFiles\\luc-comp.dir\\src\\diagnostics\\DiagnosticEngine.cpp.obj -c C:\\Users\\TaiAx\\Desktop\\luc\\src\\diagnostics\\DiagnosticEngine.cpp",
+  "file": "C:/Users/TaiAx/Desktop/luc/src/diagnostics/DiagnosticEngine.cpp",
+  "output": "C:/Users/TaiAx/Desktop/luc/build/CMakeFiles/luc-comp.dir/src/diagnostics/DiagnosticEngine.cpp.obj"
+},
+{
+  "directory": "C:/Users/TaiAx/Desktop/luc/build",
+  "command": "C:\\msys64\\mingw64\\bin\\c++.exe -IC:/Users/TaiAx/Desktop/luc/src -isystem C:/Users/TaiAx/vcpkg/installed/x64-windows/include -std=gnu++17   -D_CRT_SECURE_NO_DEPRECATE -D_CRT_SECURE_NO_WARNINGS -D_CRT_NONSTDC_NO_DEPRECATE -D_CRT_NONSTDC_NO_WARNINGS -D_SCL_SECURE_NO_DEPRECATE -D_SCL_SECURE_NO_WARNINGS -DUNICODE -D_UNICODE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -o CMakeFiles\\luc-comp.dir\\src\\parser\\Parser.cpp.obj -c C:\\Users\\TaiAx\\Desktop\\luc\\src\\parser\\Parser.cpp",
+  "file": "C:/Users/TaiAx/Desktop/luc/src/parser/Parser.cpp",
+  "output": "C:/Users/TaiAx/Desktop/luc/build/CMakeFiles/luc-comp.dir/src/parser/Parser.cpp.obj"
+},
+{
+  "directory": "C:/Users/TaiAx/Desktop/luc/build",
+  "command": "C:\\msys64\\mingw64\\bin\\c++.exe -IC:/Users/TaiAx/Desktop/luc/src -isystem C:/Users/TaiAx/vcpkg/installed/x64-windows/include -std=gnu++17   -D_CRT_SECURE_NO_DEPRECATE -D_CRT_SECURE_NO_WARNINGS -D_CRT_NONSTDC_NO_DEPRECATE -D_CRT_NONSTDC_NO_WARNINGS -D_SCL_SECURE_NO_DEPRECATE -D_SCL_SECURE_NO_WARNINGS -DUNICODE -D_UNICODE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -o CMakeFiles\\luc-comp.dir\\src\\parser\\ParserExpr.cpp.obj -c C:\\Users\\TaiAx\\Desktop\\luc\\src\\parser\\ParserExpr.cpp",
+  "file": "C:/Users/TaiAx/Desktop/luc/src/parser/ParserExpr.cpp",
+  "output": "C:/Users/TaiAx/Desktop/luc/build/CMakeFiles/luc-comp.dir/src/parser/ParserExpr.cpp.obj"
+},
+{
+  "directory": "C:/Users/TaiAx/Desktop/luc/build",
+  "command": "C:\\msys64\\mingw64\\bin\\c++.exe -IC:/Users/TaiAx/Desktop/luc/src -isystem C:/Users/TaiAx/vcpkg/installed/x64-windows/include -std=gnu++17   -D_CRT_SECURE_NO_DEPRECATE -D_CRT_SECURE_NO_WARNINGS -D_CRT_NONSTDC_NO_DEPRECATE -D_CRT_NONSTDC_NO_WARNINGS -D_SCL_SECURE_NO_DEPRECATE -D_SCL_SECURE_NO_WARNINGS -DUNICODE -D_UNICODE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -o CMakeFiles\\luc-comp.dir\\src\\parser\\ParserDecl.cpp.obj -c C:\\Users\\TaiAx\\Desktop\\luc\\src\\parser\\ParserDecl.cpp",
+  "file": "C:/Users/TaiAx/Desktop/luc/src/parser/ParserDecl.cpp",
+  "output": "C:/Users/TaiAx/Desktop/luc/build/CMakeFiles/luc-comp.dir/src/parser/ParserDecl.cpp.obj"
+},
+{
+  "directory": "C:/Users/TaiAx/Desktop/luc/build",
+  "command": "C:\\msys64\\mingw64\\bin\\c++.exe -IC:/Users/TaiAx/Desktop/luc/src -isystem C:/Users/TaiAx/vcpkg/installed/x64-windows/include -std=gnu++17   -D_CRT_SECURE_NO_DEPRECATE -D_CRT_SECURE_NO_WARNINGS -D_CRT_NONSTDC_NO_DEPRECATE -D_CRT_NONSTDC_NO_WARNINGS -D_SCL_SECURE_NO_DEPRECATE -D_SCL_SECURE_NO_WARNINGS -DUNICODE -D_UNICODE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -o CMakeFiles\\luc-comp.dir\\src\\parser\\ParserType.cpp.obj -c C:\\Users\\TaiAx\\Desktop\\luc\\src\\parser\\ParserType.cpp",
+  "file": "C:/Users/TaiAx/Desktop/luc/src/parser/ParserType.cpp",
+  "output": "C:/Users/TaiAx/Desktop/luc/build/CMakeFiles/luc-comp.dir/src/parser/ParserType.cpp.obj"
+},
+{
+  "directory": "C:/Users/TaiAx/Desktop/luc/build",
+  "command": "C:\\msys64\\mingw64\\bin\\c++.exe -IC:/Users/TaiAx/Desktop/luc/src -isystem C:/Users/TaiAx/vcpkg/installed/x64-windows/include -std=gnu++17   -D_CRT_SECURE_NO_DEPRECATE -D_CRT_SECURE_NO_WARNINGS -D_CRT_NONSTDC_NO_DEPRECATE -D_CRT_NONSTDC_NO_WARNINGS -D_SCL_SECURE_NO_DEPRECATE -D_SCL_SECURE_NO_WARNINGS -DUNICODE -D_UNICODE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -o CMakeFiles\\luc-comp.dir\\src\\parser\\ParserStmt.cpp.obj -c C:\\Users\\TaiAx\\Desktop\\luc\\src\\parser\\ParserStmt.cpp",
+  "file": "C:/Users/TaiAx/Desktop/luc/src/parser/ParserStmt.cpp",
+  "output": "C:/Users/TaiAx/Desktop/luc/build/CMakeFiles/luc-comp.dir/src/parser/ParserStmt.cpp.obj"
+},
+{
+  "directory": "C:/Users/TaiAx/Desktop/luc/build",
+  "command": "C:\\msys64\\mingw64\\bin\\c++.exe -IC:/Users/TaiAx/Desktop/luc/src -isystem C:/Users/TaiAx/vcpkg/installed/x64-windows/include -std=gnu++17   -D_CRT_SECURE_NO_DEPRECATE -D_CRT_SECURE_NO_WARNINGS -D_CRT_NONSTDC_NO_DEPRECATE -D_CRT_NONSTDC_NO_WARNINGS -D_SCL_SECURE_NO_DEPRECATE -D_SCL_SECURE_NO_WARNINGS -DUNICODE -D_UNICODE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -o CMakeFiles\\luc-comp.dir\\src\\semantic\\SymbolTable.cpp.obj -c C:\\Users\\TaiAx\\Desktop\\luc\\src\\semantic\\SymbolTable.cpp",
+  "file": "C:/Users/TaiAx/Desktop/luc/src/semantic/SymbolTable.cpp",
+  "output": "C:/Users/TaiAx/Desktop/luc/build/CMakeFiles/luc-comp.dir/src/semantic/SymbolTable.cpp.obj"
+},
+{
+  "directory": "C:/Users/TaiAx/Desktop/luc/build",
+  "command": "C:\\msys64\\mingw64\\bin\\c++.exe -IC:/Users/TaiAx/Desktop/luc/src -isystem C:/Users/TaiAx/vcpkg/installed/x64-windows/include -std=gnu++17   -D_CRT_SECURE_NO_DEPRECATE -D_CRT_SECURE_NO_WARNINGS -D_CRT_NONSTDC_NO_DEPRECATE -D_CRT_NONSTDC_NO_WARNINGS -D_SCL_SECURE_NO_DEPRECATE -D_SCL_SECURE_NO_WARNINGS -DUNICODE -D_UNICODE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -o CMakeFiles\\luc-comp.dir\\src\\semantic\\SemanticAnalyzer.cpp.obj -c C:\\Users\\TaiAx\\Desktop\\luc\\src\\semantic\\SemanticAnalyzer.cpp",
+  "file": "C:/Users/TaiAx/Desktop/luc/src/semantic/SemanticAnalyzer.cpp",
+  "output": "C:/Users/TaiAx/Desktop/luc/build/CMakeFiles/luc-comp.dir/src/semantic/SemanticAnalyzer.cpp.obj"
+}
+]

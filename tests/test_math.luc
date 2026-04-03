@@ -1,0 +1,24 @@
+-- Luc Basic Math & Logic Test
+package test_math
+
+pub var a = 10         -- Should be TYPE_INT
+pub var b float = 5.5        -- Should be TYPE_FLOAT
+pub var c = a + b      
+
+pub var is_valid = true 
+pub var logic_test bool = false
+pub var logic_test bool = is_valid and (a > 5) 
+
+pub fn main() {
+    -- 1. Valid Math
+    var result = a * 2 + b / 1.5
+    
+    -- 2. Bitwise/Logic Test (Using your custom operators)
+    var bit_test = (a == 10) ^^ (b != 5.5) 
+    
+    -- 3. This should trigger a Semantic Error (uncomment to test)
+    var error_test = a + "hello" 
+    
+    -- 4. This should trigger an "Undefined" error (uncomment to test)
+    var unknown = d + 1
+}

@@ -1,0 +1,138 @@
+package test_logic
+
+/-
+pub fn test() {
+
+}
+
+const table = {
+
+
+}
+
+pub mtable mA {
+
+}
+
+-- The core data structure
+pub type Player & mA {
+    id    i32
+    hp    i32
+    name  string
+    getName = getName
+}
+-/
+
+fn main() {
+    var health = 50.0
+    var energy = 10
+    var is_poisoned = true
+
+    player.id = 6
+    player.:call().id[0] = 6
+    
+    /-Valid Tests
+
+    -- 1. Testing If-Else and Else-If (Recursive nesting)
+    if health > 80.0 {
+        print("Healthy")
+    } else if health > 20.0 {
+        print"Injured"
+    } else {
+        print("Danger")
+    }
+
+    -- 2. Testing Logic Operators (and, or, not)
+    if is_poisoned and health > 0.0 {
+        health = health - 5.0
+    }
+
+    if health <= 0.0 or energy == 0 {
+        print("Game Over")
+    }
+
+    
+    -- 3. Testing While Loop
+    while energy > 0 {
+        energy = energy - 1
+        if (energy == 5) {
+            continue -- Skip rest of body when energy is 5
+        }
+        print("Working...")
+    }
+
+     -- 4. Testing Do-While Loop
+    var count = 0
+    do {
+        count = count + 1
+    } while count < 5   
+
+    -- 5. Testing Traditional For Loop
+    var sum = 0
+
+    for i = 0; i < 10; 1 {
+        sum = sum + i
+        if sum > 20 {
+            break -- Exit loop early
+        }
+
+    }
+
+    -- 6. Testing For-Each Loop
+    var inventory [string] = ["sword", "shield", "potion"]
+    for item in inventory {
+        print(item)
+    }
+
+    -- Test: Do-While Loop
+    var count = 0
+    do {
+        count = count + 1
+        print("Loop iteration: ")
+        print(count)
+    } while count < 5
+
+    -- Syntax: for key, value in collection { ... }
+    for i, item in inventory {
+        print("Slot: ")
+        print(i)
+        print(" Item: ")
+        print(item)
+    }
+
+    switch 10 {
+        case 1 {}
+        case 2, 3 {}
+        default {}
+    }
+    -/
+
+    -- 1. Testing Bitwise AND (&&), OR (||), and XOR (^^)
+    var a = 0b1010  -- 10 in decimal
+    var b = 0b1100  -- 12 in decimal
+
+    var and_res = a && b   -- Expect 1000 (8)
+    var or_res  = a || b   -- Expect 1110 (14)
+    var xor_res = a ^^ b   -- Expect 0110 (6)
+
+    -- 2. Testing Shift Operators (<<, >>)
+    var base = 1
+    var shift_left = base << 3  -- 1 * 2^3 = 8
+    var shift_right = 16 >> 2   -- 16 / 2^2 = 4
+
+    -- 3. Testing Exponential (^) - Right Associative
+    -- Math: 2 ^ 3 ^ 2 should be 2 ^ (3 ^ 2) = 2 ^ 9 = 512
+    -- If it were Left Associative, it would be (2 ^ 3) ^ 2 = 8 ^ 2 = 64
+    var power_res = 2 ^ 3 ^ 2
+
+    -- 4. Testing Combined Precedence
+    -- Bitwise should be lower than addition: 1 << 2 + 1 
+    -- Expects: 1 << (2 + 1) = 8
+    -- If bitwise was higher: (1 << 2) + 1 = 5
+    var precedence_test = 1 << 2 + 1
+
+    -- 5. Testing Unary vs Power
+    -- Expects: -(2^2) = -4
+    var unary_power = -2 ^ 2
+}
+

@@ -1,0 +1,12 @@
+{
+    "clangd.arguments": [
+        "--compile-commands-dir=build",
+        "--query-driver=C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/**/bin/Hostx64/x64/cl.exe",
+    ],
+    "editor.tabSize": 4,
+    "editor.insertSpaces": true,
+    "editor.detectIndentation": false,
+    "[cpp]": {
+        "editor.autoIndent": "full"
+    }
+}

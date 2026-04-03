@@ -1,0 +1,7 @@
+# .geminiignore
+build/
+.github/
+.vscode/
+tests/
+language_support/
+.git/

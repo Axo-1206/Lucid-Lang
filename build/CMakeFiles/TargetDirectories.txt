@@ -1,0 +1,7 @@
+C:/Users/TaiAx/Desktop/luc/build/CMakeFiles/intrinsics_gen.dir
+C:/Users/TaiAx/Desktop/luc/build/CMakeFiles/omp_gen.dir
+C:/Users/TaiAx/Desktop/luc/build/CMakeFiles/acc_gen.dir
+C:/Users/TaiAx/Desktop/luc/build/CMakeFiles/RISCVTargetParserTableGen.dir
+C:/Users/TaiAx/Desktop/luc/build/CMakeFiles/luc-comp.dir
+C:/Users/TaiAx/Desktop/luc/build/CMakeFiles/ALL_BUILD.dir
+C:/Users/TaiAx/Desktop/luc/build/CMakeFiles/ZERO_CHECK.dir
