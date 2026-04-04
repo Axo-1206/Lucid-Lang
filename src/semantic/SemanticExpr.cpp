@@ -505,7 +505,7 @@ static TypeAST* checkMatchExpr(MatchExprAST& node, SymbolTable& symbols,
 
     // Default arm.
     if (node.defaultBody) {
-        checkStmt(node.defaultBody.get(), symbols, resolver, dc, expectedReturn,
+        checkStmt(node.defaultBody->body.get(), symbols, resolver, dc, expectedReturn,
                   asyncDepth, loopDepth, parallelDepth, insideExtern);
     } else {
         dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,

@@ -1,0 +1,8 @@
+# Cache directory
+.cache/
+
+# Cache directory
+.github/
+
+# Cache directory
+.agents/

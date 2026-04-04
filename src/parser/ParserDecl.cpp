@@ -7,7 +7,6 @@
  */
 
 #include "Parser.hpp"
-#include "ast/BaseAST.hpp"
 #include "diagnostics/DiagnosticCodes.hpp"
 
 #include <cassert>
@@ -850,8 +849,8 @@ FromDeclPtr Parser::parseFromDecl() {
     SourceLocation loc = currentLoc();
     consume(TokenType::FROM, "expected 'from'");
 
-    auto fd = std::make_unique<FromDeclAST>();
-    fd->loc = loc;
+    auto fd  = std::make_unique<FromDeclAST>();
+    fd->loc  = loc;
 
     consume(TokenType::LPAREN, "expected '(' after 'from'");
 
@@ -994,7 +993,7 @@ std::unique_ptr<ExternDeclAST> Parser::parseExternDecl() {
 // Callers:  parseFuncDecl, parseMethodDecl (the body is identical in both).
 // ─────────────────────────────────────────────────────────────────────────────
 
-ExprBlockPtr Parser::parseFuncBody(FuncBodyKind &outBodyKind, bool &outIsAsync) {
+StmtPtr Parser::parseFuncBody(FuncBodyKind &outBodyKind, bool &outIsAsync) {
     consume(TokenType::ASSIGN, "expected '='");
 
     outIsAsync = false;

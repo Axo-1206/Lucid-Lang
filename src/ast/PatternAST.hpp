@@ -66,25 +66,6 @@
 //   DefaultArmAST         — default -> body
 // ─────────────────────────────────────────────────────────────────────────────
 
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ArmBody — the right-hand side of a match arm or default arm.
-//
-// The grammar allows either a single expression or a block:
-//   200      -> "ok"             — expr form
-//   200      -> { return "ok" }  — block form
-//
-// Both are represented as a StmtPtr. When the parser sees an expression arm
-// body it wraps the expression in an ExprStmtAST inside a BlockStmtAST,
-// keeping the arm body type uniform. The semantic pass then reads through
-// the block to find the expression, or evaluates the full block.
-//
-// This is the same strategy used for IfExprAST branches — one type, no union.
-// ─────────────────────────────────────────────────────────────────────────────
-
-using ArmBody = StmtPtr;   // always BlockStmtAST — parser wraps expr arms
-
-
 // ═════════════════════════════════════════════════════════════════════════════
 // PATTERN NODES
 // ═════════════════════════════════════════════════════════════════════════════
@@ -307,74 +288,3 @@ struct StructPatternAST : PatternAST {
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
 
-
-// ═════════════════════════════════════════════════════════════════════════════
-// ARM NODES
-// ═════════════════════════════════════════════════════════════════════════════
-
-// ─────────────────────────────────────────────────────────────────────────────
-// MatchArmAST
-//
-// One non-default arm in a match expression.
-//   200           -> "ok"
-//   200, 201, 202 -> "success"
-//   n if n < 0    -> "invalid: " + string(n)
-//   s is Circle   -> s.radius * s.radius * 3.14159
-//   Vec2 { x, y } -> "at " + string(x) + ", " + string(y)
-//
-// patterns — one or more patterns, comma-separated in source.
-//   All patterns in the list are tried — the arm fires if any matches.
-//   Multiple patterns share the same guard and body.
-//   Constraint: all patterns in a list must bind the same set of names
-//   so the body can reference them unambiguously — enforced by the semantic pass.
-//
-// guard — optional filter expression, only valid after a bind or wildcard pattern.
-//   nullptr means no guard — the arm fires on pattern match alone.
-//   The guard expression may reference names introduced by bind patterns.
-//
-// body — the arm body: always a BlockStmtAST (parser wraps expr bodies).
-//   The body may reference names introduced by bind patterns in this arm.
-//
-// Semantic pass ordering rules:
-//   - Arms are tested top to bottom — order matters
-//   - An unconditional bind (no guard) matches everything;
-//     any arm after it is unreachable — semantic error
-//   - Wildcard without guard is also unreachable if not last before default
-// ─────────────────────────────────────────────────────────────────────────────
-
-struct MatchArmAST : BaseAST {
-    static constexpr ASTKind staticKind = ASTKind::MatchArm;
-
-    std::vector<std::unique_ptr<PatternAST>>  patterns;   // at least one
-    ExprPtr                                   guard;       // nullptr if no guard
-    ArmBody                                   body;        // BlockStmtAST
-
-    MatchArmAST() : BaseAST(ASTKind::MatchArm) {}
-
-    void accept(ASTVisitor& v) override { v.visit(*this); }
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// DefaultArmAST
-//
-// The required final fallback arm — always present on every match expression.
-//   default -> "unknown"
-//   default -> { io.printl("unhandled")  return 0 }
-//
-// The 'default' arm has no pattern and no guard — it always matches.
-// It must be the last arm in the match. The semantic pass reports an error
-// if any arm follows default (unreachable arm) or if default is absent
-// (non-exhaustive match).
-//
-// body — the default arm body: always a BlockStmtAST.
-// ─────────────────────────────────────────────────────────────────────────────
-
-struct DefaultArmAST : BaseAST {
-    static constexpr ASTKind staticKind = ASTKind::DefaultArm;
-
-    ArmBody body;   // BlockStmtAST
-
-    DefaultArmAST() : BaseAST(ASTKind::DefaultArm) {}
-
-    void accept(ASTVisitor& v) override { v.visit(*this); }
-};

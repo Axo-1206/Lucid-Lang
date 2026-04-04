@@ -87,7 +87,6 @@ enum class ASTKind : uint16_t {
     ExternDecl,
 
     // ── Expression nodes ──────────────────────────────────────────────────────
-    BlockExpr,          // ExprBlockAST — value-producing block { stmts }
     LiteralExpr,
     ArrayLiteralExpr,
     StructLiteralExpr,
@@ -107,9 +106,8 @@ enum class ASTKind : uint16_t {
     AwaitExpr,
     MatchExpr,
     IfExpr,             // IfInlineExprAST — ?? sugar form
-    IfBlockExpr,        // IfBlockExprAST  — expr_block branch form
     RangeExpr,
-    TypeConvExpr,       // TargetType(value)
+    TypeConvExpr,
 
     // ── Statement nodes ───────────────────────────────────────────────────────
     BlockStmt,
@@ -191,9 +189,7 @@ struct ComposeExprAST;
 struct AnonFuncExprAST;
 struct AwaitExprAST;
 struct MatchExprAST;
-struct IfInlineExprAST;     // IfInlineExprAST — ?? sugar form
-struct IfBlockExprAST;      // IfBlockExprAST  — expr_block branch form
-struct ExprBlockAST;        // value-producing block (ASTKind::BlockExpr)
+struct IfExprAST;         // IfInlineExprAST — ?? sugar form
 struct RangeExprAST;
 struct TypeConvExprAST;
 
@@ -353,9 +349,7 @@ struct ASTVisitor {
     virtual void visit(AnonFuncExprAST&)        {}
     virtual void visit(AwaitExprAST&)           {}
     virtual void visit(MatchExprAST&)           {}
-    virtual void visit(IfInlineExprAST&)              {}   // IfInlineExprAST — ?? sugar
-    virtual void visit(IfBlockExprAST&)         {}   // IfBlockExprAST  — block form
-    virtual void visit(ExprBlockAST&)           {}   // value-producing block
+    virtual void visit(IfExprAST&)              {}   // IfInlineExprAST — ?? sugar
     virtual void visit(RangeExprAST&)           {}
     virtual void visit(TypeConvExprAST&)        {}
 
@@ -529,42 +523,3 @@ struct ProgramAST : BaseAST {
 
     void accept(ASTVisitor& visitor) override { visitor.visit(*this); }
 };
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ExprBlockAST  (ASTKind::BlockExpr)
-//
-// A value-producing block — syntactically identical to BlockStmtAST (braces +
-// statements) but lives in an expression context and always yields a value.
-//
-// How value production works:
-//   - explicit 'return expr' → the block's value is expr
-//   - explicit 'return e1, e2' → the block yields multiple values
-//   - no 'return' reached → implicit nil (block type becomes nullable)
-//
-// Used by:
-//   - Function bodies (FuncDeclAST, MethodDeclAST, FromDeclAST, AnonFuncExprAST)
-//   - match arm bodies when the arm needs statements before its value
-//   - match default arm body
-//   - if_block expression branches (IfBlockExprAST)
-//
-// NOT used by:
-//   - for / while / do-while / switch / parallel bodies  →  BlockStmtAST
-//   - if_stmt branches                                   →  BlockStmtAST
-//   - if_inline (?? sugar) branches                     →  bare ExprPtr, no block at all
-//
-// The semantic pass unifies the types of all reachable return paths to infer
-// the block's result type. If any path returns nil (implicitly or explicitly),
-// the inferred type gains '?' automatically.
-// ─────────────────────────────────────────────────────────────────────────────
-
-struct ExprBlockAST : ExprAST {
-    static constexpr ASTKind staticKind = ASTKind::BlockExpr;
-
-    std::vector<StmtPtr> stmts;   // statements inside the block
-
-    ExprBlockAST() : ExprAST(ASTKind::BlockExpr) {}
-
-    void accept(ASTVisitor& v) override { v.visit(*this); }
-};
-
-using ExprBlockPtr = std::unique_ptr<ExprBlockAST>;

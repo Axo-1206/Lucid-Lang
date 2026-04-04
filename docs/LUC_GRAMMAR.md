@@ -375,14 +375,14 @@ param_group     := '(' [ param_list ] ')'
                    -- single group = normal function
                    -- multiple groups = curried function (see Currying section)
 
-func_body       := expr_block             -- value-producing body: return required for non-nil
+func_body       := block             -- value-producing body: return required for non-nil
                  | anon_func               -- explicit: anonymous function assigned
 ```
 
 ### Anonymous Function
 
 ```
-anon_func       := [ async_mod ] '(' [ param_list ] ')' [ return_type ] expr_block
+anon_func       := [ async_mod ] '(' [ param_list ] ')' [ return_type ] block
 
 async_mod       := 'async'
 ```
@@ -400,8 +400,8 @@ variadic_param  := IDENTIFIER '...' type   -- e.g.  args ...int
 ### Examples in Grammar Terms
 
 ```
--- Shorthand (expr_block body — preferred).
--- Function bodies are expr_blocks: 'return' produces the value.
+-- Shorthand (block body — preferred).
+-- Function bodies are blocks: 'return' produces the value.
 -- No 'return' reached → function implicitly returns nil.
 -- let: reassignable and mutable — a function variable whose body can be replaced
 let f (num int) int = { return num + 1 }
@@ -1543,7 +1543,7 @@ primary_expr    := literal
                  | '(' expr ')'
                  | anon_func
                  | match_expr                             -- match is expression-oriented
-                 | if_expr                                -- if_inline (?? sugar) or if_block (expr_block)
+                 | if_expr                                -- if_inline (?? sugar) or if_block (block)
                  | array_literal
                  | 'nil'
                  | 'true' | 'false'
@@ -1780,10 +1780,10 @@ block           := '{' { stmt } '}'
 -- If no 'return' is reached, the block implicitly returns nil.
 -- Used by: function bodies, match arms, if-expr branches, anon functions.
 -- Multiple return values are allowed: return x, y
-expr_block      := '{' { stmt } '}'
+block      := '{' { stmt } '}'
                    -- syntactically identical to block — the distinction is semantic:
-                   -- expr_block is valid wherever a value-producing context is required
-                   -- 'return' inside expr_block yields the block's value(s)
+                   -- block is valid wherever a value-producing context is required
+                   -- 'return' inside block yields the block's value(s)
                    -- no 'return' reached → implicit nil
 
 expr_stmt       := expr
@@ -1950,7 +1950,7 @@ if_stmt         := 'if' expr block [ 'else' ( if_stmt | block ) ]
 
 ```
 if_expr         := if_inline               -- sugar: single expression per branch
-                 | if_block                -- full:  expr_block per branch, explicit return
+                 | if_block                -- full:  block per branch, explicit return
 
 -- Sugar form — '??' separates condition from value, no braces, no return keyword.
 -- Each branch is a single expression. Can nest.
@@ -1960,7 +1960,7 @@ if_inline       := 'if' expr '??' expr 'else' ( expr | if_inline )
 
 -- Block form — braces, mixed statements allowed, explicit return required.
 -- No return reached in a branch → that branch implicitly returns nil.
-if_block        := 'if' expr expr_block 'else' ( if_block | expr_block )
+if_block        := 'if' expr block 'else' ( if_block | block )
                    -- e.g.  if cond { io.printl("y")  return 1 } else { return 2 }
 ```
 
@@ -1969,7 +1969,7 @@ if_block        := 'if' expr expr_block 'else' ( if_block | expr_block )
 | Need | Use |
 |---|---|
 | Single expression result, no statements | `if_inline` (`??` sugar) |
-| Statements before the result | `if_block` (expr_block) |
+| Statements before the result | `if_block` (block) |
 | Side effects only, no value | `if_stmt` (block) |
 
 ```luc
@@ -2006,7 +2006,7 @@ Two arm body forms exist:
 
 - `->` **inline expression** — the arm produces the value of a single expression directly.
   No braces, no `return`. Clean and concise for simple arms.
-- `->` **`expr_block`** — the arm body is a brace-delimited block. Must use explicit
+- `->` **`block`** — the arm body is a brace-delimited block. Must use explicit
   `return` to produce a value. No `return` reached → arm produces `nil`.
   Use this when the arm needs statements before producing a value.
 
@@ -2024,11 +2024,11 @@ match_arm       := pattern_list [ guard ] '->' arm_body
 default_arm     := 'default' '->' arm_body
 
 arm_body        := expr                -- inline: single expression, value is the result
-                 | expr_block          -- block:  braces + stmts, explicit return required
+                 | block          -- block:  braces + stmts, explicit return required
 
 -- Multiple patterns per arm separated by comma
 -- NOTE: multiple patterns (200, 201) are only valid with inline expr arms.
--- An expr_block arm must have exactly one pattern.
+-- An block arm must have exactly one pattern.
 pattern_list    := pattern { ',' pattern }
 
 -- Guard: bind pattern gives the name, if-expr filters it
@@ -2118,16 +2118,16 @@ let label string = match value {
 -- Struct destructuring
 let desc string = match point {
     Vec2 { x: 0.0, y: 0.0 } -> "origin"
-    Vec2 { x, y }            -> "at " + string(x) + ", " + string(y)
-    default                  -> "unknown"
+    Vec2 { x, y }           -> "at " + string(x) + ", " + string(y)
+    default                 -> "unknown"
 }
 
 -- Nested struct destructuring
 let desc string = match player {
-    Player { health: 0 }                               -> "dead"
-    Player { pos: Vec2 { x: 0.0, y: 0.0 }, health }   -> "at origin, hp: " + string(health)
-    Player { pos, health }                             -> "alive, hp: "     + string(health)
-    default                                            -> "unknown"
+    Player { health: 0 }                             -> "dead"
+    Player { pos: Vec2 { x: 0.0, y: 0.0 }, health }  -> "at origin, hp: " + string(health)
+    Player { pos, health }                           -> "alive, hp: "     + string(health)
+    default                                          -> "unknown"
 }
 
 -- Combining multiple patterns and guard
@@ -2137,7 +2137,7 @@ let label string = match code {
     default      -> "other"
 }
 
--- expr_block arm — statements before the return value
+-- block arm — statements before the return value
 let label string = match code {
     200 -> {
         io.printl("success")
@@ -2146,7 +2146,7 @@ let label string = match code {
     default -> "error"
 }
 
--- Multiple return values from a match expr_block arm
+-- Multiple return values from a match block arm
 let q, r = match op {
     "divmod" -> {
         return a / b, a % b    -- two values: quotient and remainder
@@ -2228,7 +2228,7 @@ do_while_stmt   := 'do' block 'while' expr
 return_stmt     := 'return' [ expr { ',' expr } ]
                    -- 'return'           → returns nil (void or implicit nil)
                    -- 'return expr'      → returns one value
-                   -- 'return e1, e2'    → returns multiple values (only valid in expr_block)
+                   -- 'return e1, e2'    → returns multiple values (only valid in block)
 
 break_stmt      := 'break'
 

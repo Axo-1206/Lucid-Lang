@@ -29,14 +29,12 @@
 // declarations (var_decl, func_decl inside a block).
 //
 // Forward note on bodies:
-//   FuncDeclAST, MethodDeclAST, and FromDeclAST all hold a body.
-//   The body type is ExprBlockPtr (an ExprBlockAST — a value-producing block).
-//   ExprBlockAST is defined in ExprAST.hpp. Because StmtAST.hpp includes
-//   DeclAST.hpp we cannot include StmtAST.hpp here. ExprAST.hpp does NOT
-//   include DeclAST.hpp (it only uses forward-declared ParamPtr), so including
-//   ExprAST.hpp here is safe and breaks no cycle.
-//   The parser fills body in after parsing the expr_block. The semantic pass
-//   and codegen both have ExprAST.hpp in scope and read it without issues.
+//   FuncDeclAST, MethodDeclAST, and FromDeclAST all hold a body. The body
+//   type is StmtPtr (a BlockStmtAST in practice). Because StmtAST.hpp
+//   includes DeclAST.hpp, we cannot include StmtAST.hpp here — that would
+//   be circular. Instead the body is stored as a forward-declared StmtPtr.
+//   The parser fills it in after parsing the block. The semantic pass and
+//   codegen both have StmtAST.hpp in scope and read it without issues.
 //
 // Node inventory:
 //   PackageDeclAST      — package foo
@@ -67,9 +65,11 @@
 //   Export  — visible to external consumers (export)
 // ─────────────────────────────────────────────────────────────────────────────
 
-enum class Visibility { Private,
-                        Package,
-                        Export };
+enum class Visibility { 
+    Private,
+    Package,
+    Export 
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DeclKeyword — the three variable / function declaration keywords.
@@ -90,9 +90,12 @@ enum class DeclKeyword {
 //   Block    — let f (x int) int = { return x + 1 }
 //   AnonFunc — let f (x int) int = (x int) int { return x + 1 }   (verbose form)
 //
-// All bodies are stored as ExprBlockAST regardless of FuncBodyKind.
-// FuncBodyKind is a hint for the LSP / pretty-printer only.
-// async bodies are indicated by the isAsync flag on FuncDeclAST / MethodDeclAST.
+// Note: match-as-body and if-as-body are sugar — the parser desugars them
+// into a BlockStmtAST containing a single MatchExprAST / IfExprAST statement
+// before storing, so the AST always holds a block. FuncBodyKind::Block covers
+// all three of those forms from the parser's perspective.
+// async bodies are indicated by the isAsync flag on FuncDeclAST /
+// MethodDeclAST.
 // ─────────────────────────────────────────────────────────────────────────────
 
 enum class FuncBodyKind {
@@ -247,9 +250,8 @@ using GenericParamPtr = std::unique_ptr<GenericParamAST>;
 // isAsync — true when the body was written as  = async { ... }
 //   or  = async (params) ret { ... }
 //
-// body — always an ExprBlockAST (value-producing block).
-//   No 'return' reached → body implicitly returns nil.
-//   Multiple return values: return e1, e2
+// body — always a BlockStmtAST. match/if direct bodies are desugared by the
+//   parser into a single-statement block before storing here.
 //
 // bodyKind — records which syntactic form was written (for LSP / pretty print).
 //
@@ -267,7 +269,7 @@ struct FuncDeclAST : DeclAST {
     std::vector<GenericParamPtr> genericParams;     // empty if non-generic
     std::vector<std::vector<ParamPtr>> paramGroups; // outer = curry groups
     TypePtr returnType;                             // nullptr = void
-    ExprBlockPtr body;                              // ExprBlockAST — value-producing block
+	StmtPtr body;                                   // BlockStmtAST
     FuncBodyKind bodyKind = FuncBodyKind::Block;
     bool isAsync = false;
     Visibility visibility = Visibility::Private;
@@ -468,7 +470,6 @@ using TraitRefPtr = std::unique_ptr<TraitRefAST>;
 // (pub impl = public methods, bare impl = package-private methods).
 // returnType is nullptr for void methods.
 // isAsync is true when the body was written as async { ... }.
-// body is an ExprBlockAST — no 'return' reached → implicitly returns nil.
 // ─────────────────────────────────────────────────────────────────────────────
 
 struct MethodDeclAST : BaseAST {
@@ -476,8 +477,8 @@ struct MethodDeclAST : BaseAST {
 
     std::string name;
     std::vector<ParamPtr> params;
-    TypePtr returnType;     // nullptr = void
-    ExprBlockPtr body;      // ExprBlockAST — value-producing block
+    TypePtr returnType; // nullptr = void
+    StmtPtr body;       // BlockStmtAST
     FuncBodyKind bodyKind = FuncBodyKind::Block;
     bool isAsync = false;
 
@@ -511,8 +512,9 @@ struct FromDeclAST : BaseAST {
 
     std::string srcParamName;   // "c"
     TypePtr srcParamType;       // Celsius
-    std::string returnTypeName; // "Fahrenheit" — semantic pass verifies matches impl target
-    ExprBlockPtr body;          // ExprBlockAST — value-producing block
+    std::string returnTypeName; // "Fahrenheit" — semantic pass verifies matches
+                                // impl target
+    StmtPtr body;               // BlockStmtAST
 
     FromDeclAST() : BaseAST(ASTKind::FromDecl) {}
 

@@ -12,6 +12,7 @@
  */
 
 #include "Parser.hpp"
+#include "ast/BaseAST.hpp"
 #include "diagnostics/DiagnosticCodes.hpp"
 
 #include <cassert>
@@ -48,19 +49,19 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 namespace {
-// Precedence levels — private to this TU.
-constexpr int PREC_NONE = 0;
-constexpr int PREC_ASSIGN = 1;
-constexpr int PREC_COMPOSE = 2;
-constexpr int PREC_PIPE = 3;
-constexpr int PREC_NULLCOAL = 4;
-constexpr int PREC_OR = 5;
-constexpr int PREC_AND = 6;
-constexpr int PREC_CMP = 7;
-constexpr int PREC_BITWISE = 8;
-constexpr int PREC_ADD = 10;
-constexpr int PREC_MUL = 11;
-constexpr int PREC_POW = 12;
+    // Precedence levels — private to this TU.
+    constexpr int PREC_NONE = 0;
+    constexpr int PREC_ASSIGN = 1;
+    constexpr int PREC_COMPOSE = 2;
+    constexpr int PREC_PIPE = 3;
+    constexpr int PREC_NULLCOAL = 4;
+    constexpr int PREC_OR = 5;
+    constexpr int PREC_AND = 6;
+    constexpr int PREC_CMP = 7;
+    constexpr int PREC_BITWISE = 8;
+    constexpr int PREC_ADD = 10;
+    constexpr int PREC_MUL = 11;
+    constexpr int PREC_POW = 12;
 } // namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -69,106 +70,84 @@ constexpr int PREC_POW = 12;
 
 int Parser::infixPrec(TokenType t) const {
     switch (t) {
-    // Assignment — lowest, right-associative, handled separately.
-    case TokenType::ASSIGN:
-    case TokenType::PLUS_ASSIGN:
-    case TokenType::MINUS_ASSIGN:
-    case TokenType::MUL_ASSIGN:
-    case TokenType::DIV_ASSIGN:
-    case TokenType::POW_ASSIGN:
-    case TokenType::MOD_ASSIGN:
-        return PREC_ASSIGN;
+        // Assignment — lowest, right-associative, handled separately.
+        case TokenType::ASSIGN:
+        case TokenType::PLUS_ASSIGN:
+        case TokenType::MINUS_ASSIGN:
+        case TokenType::MUL_ASSIGN:
+        case TokenType::DIV_ASSIGN:
+        case TokenType::POW_ASSIGN:
+        case TokenType::MOD_ASSIGN:
+            return PREC_ASSIGN;
 
-    case TokenType::COMPOSE:
-        return PREC_COMPOSE;
-    case TokenType::ARROW:
-        return PREC_PIPE;
-    case TokenType::QUESTION_QUESTION:
-        return PREC_NULLCOAL;
-    case TokenType::OR:
-        return PREC_OR;
-    case TokenType::AND:
-        return PREC_AND;
+        case TokenType::COMPOSE:            return PREC_COMPOSE;
+        case TokenType::ARROW:              return PREC_PIPE;
+        case TokenType::QUESTION_QUESTION:  return PREC_NULLCOAL;
+        case TokenType::OR:                 return PREC_OR;
+        case TokenType::AND:                return PREC_AND;
 
-    case TokenType::EQUAL_EQUAL:
-    case TokenType::NOT_EQUAL:
-    case TokenType::LESS:
-    case TokenType::GREATER:
-    case TokenType::LESS_EQUAL:
-    case TokenType::GREATER_EQUAL:
-    case TokenType::IS:
-        return PREC_CMP;
+        case TokenType::EQUAL_EQUAL:
+        case TokenType::NOT_EQUAL:
+        case TokenType::LESS:
+        case TokenType::GREATER:
+        case TokenType::LESS_EQUAL:
+        case TokenType::GREATER_EQUAL:
+        case TokenType::IS:
+            return PREC_CMP;
 
-    case TokenType::AMPERSAND: // bitwise AND (expression context)
-    case TokenType::PIPE:      // bitwise OR  (expression context)
-    case TokenType::BIT_XOR:
-    case TokenType::BIT_NOT:
-    case TokenType::SHL:
-    case TokenType::SHR:
-        return PREC_BITWISE;
+        case TokenType::AMPERSAND: // bitwise AND (expression context)
+        case TokenType::PIPE:      // bitwise OR  (expression context)
+        case TokenType::BIT_XOR:
+        case TokenType::BIT_NOT:
+        case TokenType::SHL:
+        case TokenType::SHR:
+            return PREC_BITWISE;
 
-    case TokenType::PLUS:
-    case TokenType::MINUS:
-        return PREC_ADD;
-    case TokenType::MUL:
-    case TokenType::DIV:
-    case TokenType::MOD:
-        return PREC_MUL;
-    case TokenType::POW:
-        return PREC_POW;
+        case TokenType::PLUS:
+        case TokenType::MINUS:
+            return PREC_ADD;
 
-    // RANGE '..' — handled inside parsePostfixExpr, not as an infix op.
-    // Returning PREC_NONE here prevents the Pratt loop from consuming it,
-    // which is correct: ranges only appear as standalone expressions in
-    // for/match/index contexts, not as general infix operators.
-    default:
-        return PREC_NONE;
+        case TokenType::MUL:
+        case TokenType::DIV:
+        case TokenType::MOD:
+            return PREC_MUL;
+
+        case TokenType::POW:
+            return PREC_POW;
+
+        // RANGE '..' — handled inside parsePostfixExpr, not as an infix op.
+        // Returning PREC_NONE here prevents the Pratt loop from consuming it,
+        // which is correct: ranges only appear as standalone expressions in
+        // for/match/index contexts, not as general infix operators.
+        default:
+            return PREC_NONE;
     }
 }
 
 BinaryOp Parser::tokenToBinaryOp(TokenType t) const {
     switch (t) {
-    case TokenType::PLUS:
-        return BinaryOp::Add;
-    case TokenType::MINUS:
-        return BinaryOp::Sub;
-    case TokenType::MUL:
-        return BinaryOp::Mul;
-    case TokenType::DIV:
-        return BinaryOp::Div;
-    case TokenType::POW:
-        return BinaryOp::Pow;
-    case TokenType::MOD:
-        return BinaryOp::Mod;
-    case TokenType::EQUAL_EQUAL:
-        return BinaryOp::Eq;
-    case TokenType::NOT_EQUAL:
-        return BinaryOp::Ne;
-    case TokenType::LESS:
-        return BinaryOp::Lt;
-    case TokenType::GREATER:
-        return BinaryOp::Gt;
-    case TokenType::LESS_EQUAL:
-        return BinaryOp::Le;
-    case TokenType::GREATER_EQUAL:
-        return BinaryOp::Ge;
-    case TokenType::AND:
-        return BinaryOp::And;
-    case TokenType::OR:
-        return BinaryOp::Or;
-    case TokenType::AMPERSAND:
-        return BinaryOp::BitAnd;
-    case TokenType::PIPE:
-        return BinaryOp::BitOr;
-    case TokenType::BIT_XOR:
-        return BinaryOp::BitXor;
-    case TokenType::SHL:
-        return BinaryOp::Shl;
-    case TokenType::SHR:
-        return BinaryOp::Shr;
-    default:
-        // BIT_NOT is unary only — should never reach here.
-        return BinaryOp::Add; // unreachable, satisfy compiler
+        case TokenType::PLUS:           return BinaryOp::Add;
+        case TokenType::MINUS:          return BinaryOp::Sub;
+        case TokenType::MUL:            return BinaryOp::Mul;
+        case TokenType::DIV:            return BinaryOp::Div;
+        case TokenType::POW:            return BinaryOp::Pow;
+        case TokenType::MOD:            return BinaryOp::Mod;
+        case TokenType::EQUAL_EQUAL:    return BinaryOp::Eq;
+        case TokenType::NOT_EQUAL:      return BinaryOp::Ne;
+        case TokenType::LESS:           return BinaryOp::Lt;
+        case TokenType::GREATER:        return BinaryOp::Gt;
+        case TokenType::LESS_EQUAL:     return BinaryOp::Le;
+        case TokenType::GREATER_EQUAL:  return BinaryOp::Ge;
+        case TokenType::AND:            return BinaryOp::And;
+        case TokenType::OR:             return BinaryOp::Or;
+        case TokenType::AMPERSAND:      return BinaryOp::BitAnd;
+        case TokenType::PIPE:           return BinaryOp::BitOr;
+        case TokenType::BIT_XOR:        return BinaryOp::BitXor;
+        case TokenType::SHL:            return BinaryOp::Shl;
+        case TokenType::SHR:            return BinaryOp::Shr;
+        default:
+            // BIT_NOT is unary only — should never reach here.
+            return BinaryOp::Add; // unreachable, satisfy compiler
     }
 }
 
@@ -878,8 +857,7 @@ ExprPtr Parser::parseArrayLiteralExpr() {
 // Called after the type name (and optional generic args) have already been read.
 // ─────────────────────────────────────────────────────────────────────────────
 
-ExprPtr Parser::parseStructLiteralExpr(std::string typeName,
-                                       std::vector<TypePtr> genericArgs) {
+ExprPtr Parser::parseStructLiteralExpr(std::string typeName, std::vector<TypePtr> genericArgs) {
     SourceLocation loc = currentLoc();
     consume(TokenType::LBRACE, "expected '{' to open struct literal");
 
@@ -1016,7 +994,7 @@ ExprPtr Parser::parseMatchExpr() {
                 errorAt(DiagCode::E2007, "duplicate 'default' arm in match expression");
             }
             auto defArm = parseDefaultArm();
-            node->defaultBody = std::make_unique<LiteralExprAST>(LiteralKind::Nil, "nil");
+            //node->defaultBody = std::make_unique<LiteralExprAST>(LiteralKind::Nil, "nil");
             // Store default arm body as a wrapped block in defaultBody.
             // MatchExprAST.defaultBody is ExprPtr — we store a sentinel here and
             // attach the real block via a side-channel on the node, OR we rely on
@@ -1046,8 +1024,8 @@ ExprPtr Parser::parseMatchExpr() {
                 // MatchExprAST::defaultBody to StmtPtr. For now, to avoid
                 // undefined behavior, we store the block in the sentinel node
                 // by keeping defArm alive via a move into a local cache.
-                node->defaultBody = std::make_unique<LiteralExprAST>(
-                    LiteralKind::Nil, "__default_arm_body__");
+                //node->defaultBody = std::make_unique<LiteralExprAST>(
+                    //LiteralKind::Nil, "__default_arm_body__");
                 // A full solution requires the MatchExprAST node to hold a
                 // unique_ptr<DefaultArmAST> directly. We set defaultBody to nil
                 // here; the semantic pass can ignore it if defaultArm_ is present.
@@ -1502,6 +1480,33 @@ ExprPtr Parser::parseNullCoalesceExpr(ExprPtr lhs) {
 //   match_arm := pattern { ',' pattern } [ 'if' guard_expr ] '->' arm_body
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+// parseArmBody
+//
+// Grammar:  expr | block
+// Always returned as a StmtPtr (BlockStmtAST).
+// Expression bodies are wrapped in ExprStmtAST inside a BlockStmtAST.
+// ─────────────────────────────────────────────────────────────────────────────
+
+ArmBody Parser::parseArmBody() {
+    if (check(TokenType::LBRACE)) {
+        return parseBlock();
+    }
+
+    // Expression body — wrap in a block.
+    SourceLocation loc = currentLoc();
+    ExprPtr expr = parseExpr();
+
+    auto block = std::make_unique<BlockStmtAST>();
+    block->loc = loc;
+    if (expr) {
+        auto es = std::make_unique<ExprStmtAST>(std::move(expr));
+        es->loc = loc;
+        block->stmts.push_back(std::move(es));
+    }
+    return block;
+}
+
 MatchArmPtr Parser::parseMatchArm() {
     SourceLocation loc = currentLoc();
 
@@ -1840,31 +1845,4 @@ FieldPatternPtr Parser::parseFieldPattern() {
     // else: shorthand — subPattern is nullptr, bind by field name
 
     return fp;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// parseArmBody
-//
-// Grammar:  expr | block
-// Always returned as a StmtPtr (BlockStmtAST).
-// Expression bodies are wrapped in ExprStmtAST inside a BlockStmtAST.
-// ─────────────────────────────────────────────────────────────────────────────
-
-ArmBody Parser::parseArmBody() {
-    if (check(TokenType::LBRACE)) {
-        return parseBlock();
-    }
-
-    // Expression body — wrap in a block.
-    SourceLocation loc = currentLoc();
-    ExprPtr expr = parseExpr();
-
-    auto block = std::make_unique<BlockStmtAST>();
-    block->loc = loc;
-    if (expr) {
-        auto es = std::make_unique<ExprStmtAST>(std::move(expr));
-        es->loc = loc;
-        block->stmts.push_back(std::move(es));
-    }
-    return block;
 }
