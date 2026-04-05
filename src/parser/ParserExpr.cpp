@@ -1021,7 +1021,7 @@ ExprPtr Parser::parseMatchExpr() {
 // parseIfExpr
 //
 // Grammar:
-//   if_expr := 'if' expr block 'else' ( if_expr | block )
+//   if_expr := 'if' expr '??' expr 'else' expr
 //
 // Expression form requires 'else'. Both branches must return the same type
 // (enforced by the semantic pass).
@@ -1037,31 +1037,25 @@ ExprPtr Parser::parseIfExpr() {
         return nullptr;
     }
 
-    if (!check(TokenType::LBRACE)) {
-        errorAt(DiagCode::E2001, "expected '{' after if condition");
+    // Inline if expression: if cond ?? thenExpr else elseExpr
+    if (!match(TokenType::QUESTION_QUESTION)) {
+        errorAt(DiagCode::E2001, "expected '\?\?' after if condition in expression form");
         return nullptr;
     }
-    StmtPtr thenBranch = parseBlock();
 
-    if (!check(TokenType::ELSE)) {
+    ExprPtr thenBranch = parseExpr();
+    if (!thenBranch) {
+        errorAt(DiagCode::E2008, "expected expression after '\?\?' in 'if' expression");
+    }
+
+    if (!match(TokenType::ELSE)) {
         errorAt(DiagCode::E2006, "expression-form 'if' requires an 'else' branch");
         return nullptr;
     }
-    consume(TokenType::ELSE, "expected 'else'");
 
-    StmtPtr elseBranch;
-    if (check(TokenType::IF)) {
-        // else if — wrap in a block
-        auto elseBlock = std::make_unique<BlockStmtAST>();
-        elseBlock->loc = currentLoc();
-        auto elseIf = parseIfExpr();
-        if (elseIf) {
-            auto es = std::make_unique<ExprStmtAST>(std::move(elseIf));
-            elseBlock->stmts.push_back(std::move(es));
-        }
-        elseBranch = std::move(elseBlock);
-    } else {
-        elseBranch = parseBlock();
+    ExprPtr elseBranch = parseExpr();
+    if (!elseBranch) {
+        errorAt(DiagCode::E2008, "expected expression after 'else' in 'if' expression");
     }
 
     auto node = std::make_unique<IfExprAST>();
@@ -1111,6 +1105,8 @@ ExprPtr Parser::parseRangeExpr(ExprPtr lo) {
     SourceLocation loc = lo->loc;
     consume(TokenType::RANGE, "expected '..'");
 
+    bool isExclusive = match(TokenType::LESS);
+
     ExprPtr hi = parsePrattExpr(PREC_ADD); // stop before low-prec operators
     if (!hi) {
         errorAt(DiagCode::E2008, "expected upper bound after '..'");
@@ -1121,6 +1117,7 @@ ExprPtr Parser::parseRangeExpr(ExprPtr lo) {
     node->loc = loc;
     node->lo = std::move(lo);
     node->hi = std::move(hi);
+    node->isExclusive = isExclusive;
     return node;
 }
 
@@ -1158,6 +1155,7 @@ ExprPtr Parser::parseCallExpr(ExprPtr callee, std::vector<TypePtr> genericArgs) 
 // Grammar:
 //   '[' expr ']'          — element index
 //   '[' expr '..' expr ']' — inclusive slice
+//   '[' expr '..<' expr ']' — exclusive slice
 // ─────────────────────────────────────────────────────────────────────────────
 
 ExprPtr Parser::parseIndexExpr(ExprPtr target) {
@@ -1175,8 +1173,10 @@ ExprPtr Parser::parseIndexExpr(ExprPtr target) {
     node->target = std::move(target);
 
     if (check(TokenType::RANGE)) {
-        // Slice: start '..' end
+        // Slice: start '..' end or start '..<' end
         advance(); // consume '..'
+        bool isExclusive = match(TokenType::LESS);
+        
         ExprPtr endExpr = parseExpr();
         if (!endExpr) {
             errorAt(DiagCode::E2008, "expected end of slice range after '..'");
@@ -1185,9 +1185,11 @@ ExprPtr Parser::parseIndexExpr(ExprPtr target) {
         node->index = std::move(startExpr);
         node->sliceEnd = std::move(endExpr);
         node->kind = IndexKind::Slice;
+        node->isExclusive = isExclusive;
     } else {
         node->index = std::move(startExpr);
         node->kind = IndexKind::Element;
+        node->isExclusive = false;
     }
 
     consume(TokenType::RBRACKET, "expected ']' to close index expression");
@@ -1431,33 +1433,6 @@ ExprPtr Parser::parseNullCoalesceExpr(ExprPtr lhs) {
 //   match_arm := pattern { ',' pattern } [ 'if' guard_expr ] '->' arm_body
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ─────────────────────────────────────────────────────────────────────────────
-// parseArmBody
-//
-// Grammar:  expr | block
-// Always returned as a StmtPtr (BlockStmtAST).
-// Expression bodies are wrapped in ExprStmtAST inside a BlockStmtAST.
-// ─────────────────────────────────────────────────────────────────────────────
-
-ArmBody Parser::parseArmBody() {
-    if (check(TokenType::LBRACE)) {
-        return parseBlock();
-    }
-
-    // Expression body — wrap in a block.
-    SourceLocation loc = currentLoc();
-    ExprPtr expr = parseExpr();
-
-    auto block = std::make_unique<BlockStmtAST>();
-    block->loc = loc;
-    if (expr) {
-        auto es = std::make_unique<ExprStmtAST>(std::move(expr));
-        es->loc = loc;
-        block->stmts.push_back(std::move(es));
-    }
-    return block;
-}
-
 MatchArmPtr Parser::parseMatchArm() {
     SourceLocation loc = currentLoc();
 
@@ -1466,18 +1441,15 @@ MatchArmPtr Parser::parseMatchArm() {
 
     // Parse comma-separated pattern list
     do {
-        match(TokenType::COMMA);
-        if (check(TokenType::ARROW))
-            break; // empty after comma — shouldn't happen
-
         auto pat = parsePattern();
         if (!pat) {
-            errorAt(DiagCode::E2007, "expected pattern in match arm");
+            // Error already recorded by parsePattern() if it returned nullptr,
+            // but we ensure we don't proceed with an empty or broken arm.
             break;
         }
         arm->patterns.push_back(std::move(pat));
 
-    } while (check(TokenType::COMMA));
+    } while (match(TokenType::COMMA));
 
     // Optional guard: 'if' expr
     if (check(TokenType::IF)) {
@@ -1490,7 +1462,13 @@ MatchArmPtr Parser::parseMatchArm() {
 
     consume(TokenType::ARROW, "expected '->' after match pattern");
 
-    arm->body = parseArmBody();
+    // Parse one or more result expressions
+    do {
+        ExprPtr exp = parseExpr();
+        if (!exp) break;
+        arm->exprs.push_back(std::move(exp));
+    } while (match(TokenType::COMMA));
+    
     return arm;
 }
 
@@ -1507,7 +1485,14 @@ DefaultArmPtr Parser::parseDefaultArm() {
 
     auto arm = std::make_unique<DefaultArmAST>();
     arm->loc = loc;
-    arm->body = parseArmBody();
+
+    // Parse one or more result expressions
+    do {
+        ExprPtr exp = parseExpr();
+        if (!exp) break;
+        arm->exprs.push_back(std::move(exp));
+    } while (match(TokenType::COMMA));
+
     return arm;
 }
 
@@ -1522,7 +1507,7 @@ DefaultArmPtr Parser::parseDefaultArm() {
 //   IDENTIFIER               → BindPatternAST (or RangePatternAST if '..' follows)
 // ─────────────────────────────────────────────────────────────────────────────
 
-std::unique_ptr<PatternAST> Parser::parsePattern() {
+std::unique_ptr<BaseAST> Parser::parsePattern() {
     // Wildcard
     if (check(TokenType::WILDCARD)) {
         return parseWildcardPattern();
@@ -1590,16 +1575,16 @@ std::unique_ptr<PatternAST> Parser::parsePattern() {
 // checks if '..' follows to build a RangePatternAST.
 // ─────────────────────────────────────────────────────────────────────────────
 
-std::unique_ptr<PatternAST> Parser::parseLiteralOrRangePattern() {
+std::unique_ptr<BaseAST> Parser::parseLiteralOrRangePattern() {
     SourceLocation loc = currentLoc();
-
+ 
     // Handle unary minus for negative literals
     bool negative = false;
     if (check(TokenType::MINUS)) {
         negative = true;
         advance();
     }
-
+ 
     Token tok = advance();
     LiteralKind kind;
     switch (tok.type) {
@@ -1637,19 +1622,20 @@ std::unique_ptr<PatternAST> Parser::parseLiteralOrRangePattern() {
         errorAt(DiagCode::E2009, "expected literal value in pattern");
         return nullptr;
     }
-
+ 
     std::string rawValue = negative ? ("-" + tok.value) : tok.value;
-
-    // Check for range: lo '..' hi
+ 
+    // Check for range: lo '..' [ '<' ] hi
     if (check(TokenType::RANGE)) {
         advance(); // consume '..'
-
+        bool isExclusive = match(TokenType::LESS);
+ 
         bool negHi = false;
         if (check(TokenType::MINUS)) {
             negHi = true;
             advance();
         }
-
+ 
         if (!checkAny({TokenType::INT_LITERAL, TokenType::HEX_LITERAL,
                        TokenType::FLOAT_LITERAL})) {
             errorAt(DiagCode::E2009, "expected literal after '..' in range pattern");
@@ -1657,7 +1643,7 @@ std::unique_ptr<PatternAST> Parser::parseLiteralOrRangePattern() {
         }
         Token hiTok = advance();
         std::string hiRaw = negHi ? ("-" + hiTok.value) : hiTok.value;
-
+ 
         LiteralKind hiKind;
         switch (hiTok.type) {
         case TokenType::INT_LITERAL:
@@ -1670,20 +1656,21 @@ std::unique_ptr<PatternAST> Parser::parseLiteralOrRangePattern() {
             hiKind = LiteralKind::Float;
             break;
         }
-
+ 
         auto loExpr = std::make_unique<LiteralExprAST>(kind, std::move(rawValue));
         loExpr->loc = loc;
         auto hiExpr = std::make_unique<LiteralExprAST>(hiKind, std::move(hiRaw));
         hiExpr->loc = locOf(hiTok);
-
-        auto pat = std::make_unique<RangePatternAST>();
-        pat->loc = loc;
-        pat->lo = std::move(loExpr);
-        pat->hi = std::move(hiExpr);
-        return pat;
+ 
+        auto range = std::make_unique<RangeExprAST>();
+        range->loc = loc;
+        range->lo = std::move(loExpr);
+        range->hi = std::move(hiExpr);
+        range->isExclusive = isExclusive;
+        return range;
     }
-
-    auto pat = std::make_unique<LiteralPatternAST>(kind, std::move(rawValue));
+ 
+    auto pat = std::make_unique<LiteralExprAST>(kind, std::move(rawValue));
     pat->loc = loc;
     return pat;
 }

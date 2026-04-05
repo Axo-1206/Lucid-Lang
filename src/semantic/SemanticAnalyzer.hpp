@@ -5,7 +5,17 @@
  *
  * @responsibility Entry point orchestrating the four passes to enforce semantic rules.
  *
- * @related SemanticAnalyzer.cpp, SemanticCollector.hpp, TypeResolver.hpp
+ * @architecture Phase 3 (checkDecls) is implemented using a "Global Function" pattern.
+ *   The recursive calls between Declarations, Statements, and Expressions are distributed
+ *   across SemanticDecl.cpp, SemanticStmt.cpp, and SemanticExpr.cpp.
+ *
+ * @note Why no headers for Phase 3? To avoid complex circular dependencies (e.g. Expr 
+ *   needs Stmt, Stmt needs Expr), we use manual "Forward Declarations" at the top of 
+ *   each .cpp file. The Linker connects these calls across files at build-time.
+ *
+ * @related 
+ *   - SemanticAnalyzer.cpp, SemanticCollector.hpp, TypeResolver.hpp
+ *   - SemanticDecl.cpp, SemanticStmt.cpp, SemanticExpr.cpp
  */
 #pragma once
 

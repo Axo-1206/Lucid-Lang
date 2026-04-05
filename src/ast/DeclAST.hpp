@@ -522,8 +522,6 @@ struct FromDeclAST : DeclAST {
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
 
-using FromDeclPtr = std::unique_ptr<FromDeclAST>;
-
 // ─────────────────────────────────────────────────────────────────────────────
 // ImplDeclAST
 //

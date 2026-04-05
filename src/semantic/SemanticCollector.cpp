@@ -229,24 +229,31 @@ void SemanticCollector::visit(ImplDeclAST& node) {
             method->loc
         });
     }
-
-    for (const auto& fromDecl : node.fromDecls) {
-        // Name can be structName.from.srcParamType (if we had the name of the type stringified).
-        // Since from blocks are also duplicates if same srcParamType, we need a way to track them.
-        // We'll record them under StructName.from for now overloads might need distinct names based on types
-        // in a more advanced pass.
-        std::string mangledName = node.structName + ".from." + fromDecl->srcParamName;
-        declareSymbol({
-            mangledName,
-            SymbolKind::Method,
-            DeclKeyword::Let,
-            node.visibility,
-            nullptr, // we don't know the exact type AST easily yet
-            fromDecl.get(),
-            false,
-            fromDecl->loc
-        });
-    }
+}
+ 
+// ─────────────────────────────────────────────────────────────────────────────
+// visit(FromDeclAST)  — Registers custom type conversions for Type(source) calls
+//
+// Like methods, conversions are indexed on the target type's namespace:
+//   e.g., Fahrenheit.from.Celsius
+// Each conversion creates a symbol with kind Conversion to be looked up
+// when a type conversion call is encountered in the parser.
+// ─────────────────────────────────────────────────────────────────────────────
+void SemanticCollector::visit(FromDeclAST& node) {
+    // Collect conversions into the target type's namespace.
+    // Use mangled name: TargetTypeName.from.ParamName
+    std::string mangledName = node.returnTypeName + ".from." + node.srcParamName;
+ 
+    declareSymbol({
+        mangledName,
+        SymbolKind::Conversion,
+        DeclKeyword::Let,
+        node.visibility,
+        nullptr, // type will be resolved in Phase 2
+        &node,
+        false,
+        node.loc
+    });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

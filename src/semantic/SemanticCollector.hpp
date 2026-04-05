@@ -47,6 +47,7 @@ public:
     void visit(EnumDeclAST& node) override;
     void visit(TraitDeclAST& node) override;
     void visit(ImplDeclAST& node) override;
+    void visit(FromDeclAST& node) override;
     void visit(TypeAliasDeclAST& node) override;
     void visit(ExternDeclAST& node) override;
 

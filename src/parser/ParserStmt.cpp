@@ -378,18 +378,7 @@ SwitchCasePtr Parser::parseSwitchCase()
 
         // If '..' follows, this is a range value.
         if (check(TokenType::RANGE)) {
-            advance();   // consume '..'
-            ExprPtr hi = parsePrattExpr(0);
-            if (!hi) {
-                errorAt(DiagCode::E2008, "expected upper bound after '..' in case range");
-                sc->values.push_back(std::move(val));
-                break;
-            }
-            auto range   = std::make_unique<RangeExprAST>();
-            range->loc   = val->loc;
-            range->lo    = std::move(val);
-            range->hi    = std::move(hi);
-            sc->values.push_back(std::move(range));
+            sc->values.push_back(parseRangeExpr(std::move(val)));
         } else {
             sc->values.push_back(std::move(val));
         }
@@ -450,13 +439,18 @@ std::unique_ptr<ForStmtAST> Parser::parseForStmt()
         return nullptr;
     }
 
-    // Optional: Parse the range step if the iterable is followed by another '..'.
+    // Optional: if '..' follows, build RangeExprAST from boundaries and step.
     ExprPtr step = nullptr;
-    if (match(TokenType::RANGE)) {
-        step = parseExpr();
-        if (!step) {
-            errorAt(DiagCode::E2008, "expected step expression after '..'");
-            return nullptr;
+    if (check(TokenType::RANGE)) {
+        iterable = parseRangeExpr(std::move(iterable));
+        
+        // After start..end, an optional second '..' can signal a step.
+        if (match(TokenType::RANGE)) {
+            step = parseExpr();
+            if (!step) {
+                errorAt(DiagCode::E2008, "expected step expression after '..'");
+                return nullptr;
+            }
         }
     }
 
@@ -685,13 +679,18 @@ std::unique_ptr<ParallelForStmtAST> Parser::parseParallelForStmt()
         return nullptr;
     }
 
-    // Optional: Parse the range step if the iterable is followed by another '..'.
+    // Optional: if '..' follows, build RangeExprAST from boundaries and step.
     ExprPtr step = nullptr;
-    if (match(TokenType::RANGE)) {
-        step = parseExpr();
-        if (!step) {
-            errorAt(DiagCode::E2008, "expected step expression after '..'");
-            return nullptr;
+    if (check(TokenType::RANGE)) {
+        iterable = parseRangeExpr(std::move(iterable));
+        
+        // After start..end, an optional second '..' can signal a step.
+        if (match(TokenType::RANGE)) {
+            step = parseExpr();
+            if (!step) {
+                errorAt(DiagCode::E2008, "expected step expression after '..'");
+                return nullptr;
+            }
         }
     }
 

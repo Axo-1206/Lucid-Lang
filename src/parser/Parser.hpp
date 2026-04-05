@@ -20,7 +20,6 @@
 #include "ast/BaseAST.hpp"
 #include "ast/DeclAST.hpp"
 #include "ast/ExprAST.hpp"
-#include "ast/PatternAST.hpp"
 #include "ast/StmtAST.hpp"
 #include "ast/TypeAST.hpp"
 
@@ -292,8 +291,8 @@ class Parser {
     // IDENTIFIER '(' params ')' [ return_type ] '=' body — inside impl
     MethodDeclPtr parseMethodDecl();
 
-    // from '(' IDENTIFIER type ')' IDENTIFIER '=' body — inside pub impl
-    FromDeclPtr parseFromDecl();
+    // [vis] from '(' IDENTIFIER type ')' IDENTIFIER '=' body
+    std::unique_ptr<FromDeclAST> parseFromDecl(Visibility vis);
 
     // [vis] type IDENTIFIER [<generics>] '=' type
     std::unique_ptr<TypeAliasDeclAST> parseTypeAliasDecl(Visibility vis);
@@ -437,10 +436,10 @@ class Parser {
     std::unique_ptr<DefaultArmAST> parseDefaultArm();
 
     // Dispatch to the correct pattern sub-parser based on current token.
-    std::unique_ptr<PatternAST> parsePattern();
+    std::unique_ptr<BaseAST> parsePattern();
 
-    // Literal or range pattern: literal [ '..' literal ]
-    std::unique_ptr<PatternAST> parseLiteralOrRangePattern();
+    // Literal or range pattern: literal [ '..' [ '<' ] literal ]
+    std::unique_ptr<BaseAST> parseLiteralOrRangePattern();
 
     // Bind pattern: IDENTIFIER  (not followed by 'is' or '{')
     std::unique_ptr<BindPatternAST> parseBindPattern(std::string name);
@@ -456,9 +455,6 @@ class Parser {
 
     // One field entry inside a struct pattern: IDENTIFIER [ ':' pattern ]
     FieldPatternPtr parseFieldPattern();
-
-    // Arm body: expr or block, always wrapped in a BlockStmtAST.
-    ArmBody parseArmBody();
 
     // ─────────────────────────────────────────────────────────────────────────
     // ParserStmt.cpp — statement parsing

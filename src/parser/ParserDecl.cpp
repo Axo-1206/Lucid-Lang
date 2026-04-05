@@ -21,15 +21,15 @@
 // enum, trait, impl (with from/method bodies), type alias, and extern.
 //
 // Entry points (called from Parser.cpp::parseTopLevelDecl):
-//   parseUseDecl()
-//   parseModuleDecl()
-//   parseVarDecl(isPub)
-//   parseFuncDecl(kw, isPub)
-//   parseStructDecl(isPub)
-//   parseEnumDecl(isPub)
-//   parseTraitDecl(isPub)
-//   parseImplDecl(isPub)
-//   parseTypeAliasDecl(isPub)
+//   parseUseDecl(vis)
+//   parseVarDecl(vis)
+//   parseFuncDecl(kw, vis)
+//   parseStructDecl(vis)
+//   parseEnumDecl(vis)
+//   parseTraitDecl(vis)
+//   parseImplDecl(vis)
+//   parseFromDecl(vis)
+//   parseTypeAliasDecl(vis)
 //   parseExternDecl()
 //
 // Internal helpers used across multiple parsers:
@@ -730,23 +730,6 @@ std::unique_ptr<ImplDeclAST> Parser::parseImplDecl(Visibility vis) {
 
         std::optional<DocComment> mdoc = harvestDocComment();
 
-        // 'from' conversion method
-        if (check(TokenType::FROM)) {
-            if (vis == Visibility::Private) {
-                // semantic pass ensures 'from' operates only in export/pub impls,
-                // but parser records error directly here
-                errorAt(DiagCode::E2007, "'from' is only valid in pub or export impl blocks");
-            }
-            FromDeclPtr fd = parseFromDecl();
-            if (fd) {
-                attachDoc(*fd, std::move(mdoc));
-                node->fromDecls.push_back(std::move(fd));
-            } else {
-                synchronize();
-            }
-            continue;
-        }
-
         // method_decl — regular method body
         if (check(TokenType::IDENTIFIER)) {
             MethodDeclPtr md = parseMethodDecl();
@@ -845,12 +828,13 @@ MethodDeclPtr Parser::parseMethodDecl() {
 //   from (c Celsius) Fahrenheit = { return Fahrenheit { value = c.value * 9/5 + 32 } }
 // ─────────────────────────────────────────────────────────────────────────────
 
-FromDeclPtr Parser::parseFromDecl() {
+std::unique_ptr<FromDeclAST> Parser::parseFromDecl(Visibility vis) {
     SourceLocation loc = currentLoc();
     consume(TokenType::FROM, "expected 'from'");
 
     auto fd  = std::make_unique<FromDeclAST>();
     fd->loc  = loc;
+    fd->visibility = vis;
 
     consume(TokenType::LPAREN, "expected '(' after 'from'");
 

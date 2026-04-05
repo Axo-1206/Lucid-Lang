@@ -2111,19 +2111,19 @@ struct_pattern  := IDENTIFIER '{' { field_pattern } '}'
 field_pattern   := IDENTIFIER [ ':' pattern ]          -- field: name  or  name: sub-pattern
 ```
 
-### Secondary value rules
+### Secondary or more value rules
 
-The secondary value is **optional per arm**. The semantic pass enforces the
+The secondary ore more value is **optional per arm**. The semantic pass enforces the
 following rules based on whether arms supply it:
 
 | Situation | Rule |
 |---|---|
-| No arm supplies a secondary value | The match produces one value. Assigning to two variables is a semantic error. |
-| Every arm supplies a secondary value | The match produces two values. The second variable's type is non-nullable. |
-| Only some arms supply a secondary value | The match produces two values. The second variable **must** be typed as nullable (`T?`). Arms that omit the secondary value implicitly yield `nil` for it. |
+| No arm supplies a secondary or more value | The match produces one value. Assigning to two or more variables is a semantic error. |
+| Every arm supplies a secondary or more value | The match produces two or more values. The second or more variable's type is non-nullable. unless the return value can be nil |
+| Only some arms supply a secondary or more value | The match produces two or more values. The second or more variable **must** be typed as nullable (`T?`). Arms that omit the secondary or more value implicitly yield `nil` for it. |
 
-The secondary value is silently discarded when the caller assigns only one
-variable. Assigning to two variables when no arm produces a secondary value
+The secondary or more values is silently discarded when the caller assigns only one
+variable. Assigning to two or more variables when no arm produces a secondary or more value
 is a semantic error.
 
 ### Pattern rules

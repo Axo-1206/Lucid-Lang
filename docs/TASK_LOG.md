@@ -46,3 +46,5 @@
 | 2026-03-31 | Semantic: adjust header comments and write TypeResolver.hpp and TypeResolver.cpp |
 | 2026-03-31 | Semantic: write TypeChecker.hpp and TypeChecker.cpp |
 | 2026-03-31 | AST Node: use node kind to void dynamic_cast |
+| 2026-04-04 | General: adjust syntax and grammar |
+| 2026-04-05 | Parser: continue previous task |

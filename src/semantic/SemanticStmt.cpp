@@ -21,7 +21,7 @@
  *   checkParallelForStmt— parallelDepth++, check iterable + body
  *   checkParallelBlock  — parallelDepth++, check sub-blocks
  *
- * @related SemanticAnalyzer.cpp, SemanticExpr.cpp
+ * @related SemanticAnalyzer.cpp, SemanticDecl.cpp, SemanticExpr.cpp
  */
 
 #include "SemanticSymbol.hpp"
@@ -36,7 +36,10 @@
 #include "ast/TypeAST.hpp"
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Forward declarations of Phase 3a / 3b functions
+// Forward declarations 
+// NOTE: These are required because Declarations, Statements, and Expressions
+// cross-call each other recursively. We use manual forward declarations here
+// instead of a header to avoid complex circular dependency loops.
 // ─────────────────────────────────────────────────────────────────────────────
 TypeAST* checkExpr(ExprAST* node, SymbolTable& symbols, TypeResolver& resolver,
                    DiagnosticEngine& dc, int& asyncDepth, int& loopDepth,

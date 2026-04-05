@@ -32,7 +32,8 @@ enum class SymbolKind {
     Param,
     Field,
     Method,
-    EnumVariant
+    EnumVariant,
+    Conversion  
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -13,9 +13,10 @@
  *   checkEnumDecl  — validates variant values are unique, assigns auto-increments
  *   checkTraitDecl — resolves method param + return types
  *   checkImplDecl  — checks method bodies, verifies trait conformance if traitRef present
+ *   checkFromDecl  — validates source/target types for custom conversions
  *   checkExternDecl— resolves param + return types under insideExtern_ = true
  *
- * @related SemanticAnalyzer.cpp
+ * @related SemanticAnalyzer.cpp, SemanticStmt.cpp, SemanticExpr.cpp
  */
 
 #include "SemanticAnalyzer.hpp"
@@ -34,7 +35,10 @@
 #include <string>
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Forward declarations of Phase 3b/3c entry points (defined in SemanticExpr/Stmt)
+// Forward declarations 
+// NOTE: These are required because Declarations, Statements, and Expressions
+// cross-call each other recursively. We use manual forward declarations here
+// instead of a header to avoid complex circular dependency loops.
 // ─────────────────────────────────────────────────────────────────────────────
 TypeAST* checkExpr(ExprAST* node, SymbolTable& symbols, TypeResolver& resolver,
                    DiagnosticEngine& dc, int& asyncDepth, int& loopDepth,
@@ -250,12 +254,11 @@ void checkTraitDecl(TraitDeclAST& node, TypeResolver& resolver, DiagnosticEngine
 //   - Each method body is checked as a function body.
 //   - If traitRef is present, every trait method must be implemented with a
 //     matching signature.
-//   - fromDecl is only valid on pub impl; return type must match the struct name.
 // ─────────────────────────────────────────────────────────────────────────────
 void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolver,
                    DiagnosticEngine& dc, int& asyncDepth, int& loopDepth,
                    int& parallelDepth, bool insideExtern) {
-
+ 
     // Verify the target struct exists.
     Symbol* structSym = symbols.lookup(node.structName);
     if (!structSym || structSym->kind != SymbolKind::Struct) {
@@ -263,16 +266,9 @@ void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
                  "impl target '" + node.structName + "' is not a declared struct");
         return;
     }
-
-    // fromDecl only valid on pub impl.
-    if (!node.fromDecls.empty() && node.visibility != Visibility::Package &&
-        node.visibility != Visibility::Export) {
-        dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                 "'from' declarations are only valid inside pub impl blocks");
-    }
-
+ 
     std::unordered_set<std::string> seen;
-
+ 
     for (auto& method : node.methods) {
         if (!seen.insert(method->name).second) {
             dc.error(DiagnosticCategory::Semantic, method->loc, DiagCode::E3005,
@@ -280,15 +276,15 @@ void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
                      node.structName + "'");
             continue;
         }
-
+ 
         TypeAST* returnType = nullptr;
         if (method->returnType) {
             returnType = resolver.resolveType(method->returnType.get());
         }
-
+ 
         if (method->isAsync) asyncDepth++;
         symbols.pushScope();
-
+ 
         for (auto& param : method->params) {
             TypeAST* pt = resolver.resolveType(param->type.get());
             if (!pt) continue;
@@ -301,42 +297,16 @@ void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
                          "duplicate parameter '" + param->name + "'");
             }
         }
-
+ 
         if (method->body) {
             checkStmt(method->body.get(), symbols, resolver, dc, returnType,
                       asyncDepth, loopDepth, parallelDepth, insideExtern);
         }
-
+ 
         symbols.popScope();
         if (method->isAsync) asyncDepth--;
     }
-
-    // Check from declarations.
-    for (auto& fd : node.fromDecls) {
-        if (fd->returnTypeName != node.structName) {
-            dc.error(DiagnosticCategory::Semantic, fd->loc, DiagCode::E3002,
-                     "from() return type '" + fd->returnTypeName +
-                     "' must match impl target '" + node.structName + "'");
-        }
-
-        symbols.pushScope();
-        if (fd->srcParamType) {
-            TypeAST* pt = resolver.resolveType(fd->srcParamType.get());
-            if (pt) {
-                Symbol ps;
-                ps.name = fd->srcParamName; ps.kind = SymbolKind::Param;
-                ps.declKw = DeclKeyword::Let; ps.visibility = Visibility::Private;
-                ps.type = pt; ps.decl = fd.get(); ps.isAsync = false; ps.loc = fd->loc;
-                symbols.declare(ps);
-            }
-        }
-        if (fd->body) {
-            checkStmt(fd->body.get(), symbols, resolver, dc, nullptr,
-                      asyncDepth, loopDepth, parallelDepth, insideExtern);
-        }
-        symbols.popScope();
-    }
-
+ 
     // Trait conformance check.
     if (node.traitRef) {
         Symbol* traitSym = symbols.lookup(node.traitRef->name);
@@ -359,6 +329,57 @@ void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
             }
         }
     }
+}
+ 
+// ─────────────────────────────────────────────────────────────────────────────
+// checkFromDecl
+//
+// Rules enforced:
+//   - Target type (returnTypeName) must resolve.
+//   - Source parameter type must resolve.
+//   - Source parameter is declared into a new scope for the body.
+//   - Body is checked to return the target type (implicitly or explicitly).
+// ─────────────────────────────────────────────────────────────────────────────
+void checkFromDecl(FromDeclAST& node, SymbolTable& symbols, TypeResolver& resolver,
+                   DiagnosticEngine& dc, int& asyncDepth, int& loopDepth,
+                   int& parallelDepth, bool insideExtern) {
+ 
+    // 1. Resolve target type.
+    Symbol* targetSym = symbols.lookup(node.returnTypeName);
+    if (!targetSym || (targetSym->kind != SymbolKind::Struct && targetSym->kind != SymbolKind::Enum)) {
+        dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
+                 "from conversion: target '" + node.returnTypeName + "' is not a nominal type");
+        return;
+    }
+    TypeAST* targetType = targetSym->type;
+ 
+    // 2. Resolve source parameter.
+    TypeAST* srcType = resolver.resolveType(node.srcParamType.get());
+    if (!srcType) return;
+ 
+    // 3. New scope for the conversion body.
+    symbols.pushScope();
+ 
+    Symbol ps;
+    ps.name       = node.srcParamName;
+    ps.kind       = SymbolKind::Param;
+    ps.declKw     = DeclKeyword::Let;
+    ps.visibility = Visibility::Private;
+    ps.type       = srcType;
+    ps.decl       = &node;
+    ps.isAsync    = false;
+    ps.loc        = node.loc;
+    symbols.declare(ps);
+ 
+    // 4. Check the body. Expected return is the target type.
+    if (node.body) {
+        // from conversions implicitly return the target type at the end of their logic.
+        // The last expression in the block is typically assigned to the struct fields.
+        checkStmt(node.body.get(), symbols, resolver, dc, targetType,
+                  asyncDepth, loopDepth, parallelDepth, insideExtern);
+    }
+ 
+    symbols.popScope();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -410,6 +431,10 @@ void checkTopLevelDecl(DeclAST* decl, SymbolTable& symbols, TypeResolver& resolv
 
     else if (decl->isa<ExternDeclAST>())
         checkExternDecl(*decl->as<ExternDeclAST>(), resolver, dc);
+ 
+    else if (decl->isa<FromDeclAST>())
+        checkFromDecl(*decl->as<FromDeclAST>(), symbols, resolver, dc,
+                      asyncDepth, loopDepth, parallelDepth, insideExtern);
 
     // PackageDecl, UseDecl, TypeAliasDecl, ModuleDecl — nothing to check at phase 3.
 }

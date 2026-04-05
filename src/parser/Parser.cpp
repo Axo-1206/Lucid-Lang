@@ -143,6 +143,7 @@ void Parser::synchronize() {
         case TokenType::TRAIT:
         case TokenType::IMPL:
         case TokenType::TYPE:
+        case TokenType::FROM:
         // Statement / control-flow starters.
         case TokenType::LET:
         case TokenType::IMT:
@@ -430,6 +431,7 @@ bool Parser::looksLikeDeclStart() const {
         case TokenType::TRAIT:
         case TokenType::IMPL:
         case TokenType::TYPE:
+        case TokenType::FROM:
         case TokenType::LET:
         case TokenType::IMT:
         case TokenType::VAL:
@@ -533,6 +535,11 @@ DeclPtr Parser::parseTopLevelDecl() {
     // ── 'impl' ────────────────────────────────────────────────────────────────
     if (check(TokenType::IMPL)) {
         return parseImplDecl(vis);
+    }
+
+    // ── 'from' ────────────────────────────────────────────────────────────────
+    if (check(TokenType::FROM)) {
+        return parseFromDecl(vis);
     }
 
     // ── 'type' ────────────────────────────────────────────────────────────────
