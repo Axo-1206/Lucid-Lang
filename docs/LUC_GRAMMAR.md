@@ -36,8 +36,19 @@ top_level_decl  := module_decl     -- optional re-export manifest (one per packa
                  | trait_decl       -- trait keyword:  method contract / constraint
                  | type_decl        -- type keyword:   alias (primitive, named, union, array, func)
                  | impl_decl        -- top-level only: same file and scope as struct
+                 | from_decl        -- top-level only: type conversion entry point for a named struct
                  | var_decl
                  | func_decl        -- shorthand: top-level let/imt/val with func type
+```
+
+### Entry Point (main)
+
+The language uses a standard `main` function as the execution entry point. The parsing and AST do not treat `main` differently than other functions, but the semantic pass expects it to follow a specific signature. A typical systems-level `main` looks like this:
+
+```luc
+export imt main () int { ... }
+-- or with command-line arguments:
+export imt main (args []string) int { ... }
 ```
 
 ## Module System
@@ -54,13 +65,15 @@ flat; nesting is not supported.
 | `pub` | **Package** | Visible to all files sharing the same `package` IDENTIFIER. |
 | `export` | **World** | Visible to external consumers of the package. |
 
-`pub` on a top-level declaration (`struct`, `trait`, `type`, `let`, `imt`, `val`, `enum`) makes it
+`pub` on a top-level declaration (`struct`, `trait`, `type`, `let`, `imt`, `val`, `enum`, `from`) makes it
 accessible to other files in the same package. Without `pub`, a declaration is
 private to its file.
 
 `export` makes a top-level declaration accessible to external consumers importing this package.
 
 `pub impl` vs `export impl` vs `impl` controls method accessibility: `export impl` methods are callable externally; `pub impl` methods are callable by anyone holding the value within the package; bare `impl` methods are callable only within the file.
+
+`pub from` vs `export from` vs `from` controls converter accessibility: `export from` converters are callable externally via `TypeName(expr)`; `pub from` converters are callable within the package; bare `from` converters are callable only within the file.
 
 ### API Manifests (Re-Exports)
 
@@ -359,9 +372,8 @@ func_type       := '(' [ param_list ] ')' [ return_type ]
                    -- second form: entire function type is nullable
                    -- e.g.  ((num int) int)?
 
-return_type     := type                            -- single return value
-                 | '(' type { ',' type } ')'       -- multiple return values: (int, string)
-                 | '(' type ')' '?'                -- nullable return grouped explicitly
+return_type     := type
+                 | '(' type ')' '?'        -- nullable return grouped explicitly
 ```
 
 ### Function Declaration (shorthand — preferred)
@@ -375,8 +387,8 @@ param_group     := '(' [ param_list ] ')'
                    -- single group = normal function
                    -- multiple groups = curried function (see Currying section)
 
-func_body       := block             -- value-producing body: return required for non-nil
-                 | anon_func               -- explicit: anonymous function assigned
+func_body       := block                   -- body block: = { stmts }
+                 | anon_func               -- explicit anonymous function: = (params) ret { stmts }
 ```
 
 ### Anonymous Function
@@ -400,9 +412,7 @@ variadic_param  := IDENTIFIER '...' type   -- e.g.  args ...int
 ### Examples in Grammar Terms
 
 ```
--- Shorthand (block body — preferred).
--- Function bodies are blocks: 'return' produces the value.
--- No 'return' reached → function implicitly returns nil.
+-- Shorthand (body block — preferred), '=' assigns the block as the function body
 -- let: reassignable and mutable — a function variable whose body can be replaced
 let f (num int) int = { return num + 1 }
 
@@ -423,10 +433,6 @@ let handler ((req Request) Response)? = nil
 
 -- Async function
 let fetch (url string) string = async (url string) string { ... }
-
--- Multiple return values — return type is a tuple of types
-let divide (a int) (b int) (int, int) = { return a / b, a % b }
-let q, r = divide(10)(3)    -- q = 3, r = 1
 ```
 
 ## Struct Declaration
@@ -523,7 +529,7 @@ let p Vec2<int> = Vec2<int> { x = 1  y = 2 }
 let pos float = origin.x          -- read field: plain '.'
 origin.x = 5.0                    -- write field: only valid if origin is 'let'
 
--- Note: struct patterns in 'match' use ':' — that is pattern syntax, not assignment
+-- Note struct patterns in 'match' use ':' — that is pattern syntax, not assignment
 -- match point { Vec2 { x: 0.0, y: 0.0 } -> ... }  ← ':' here is a pattern separator
 -- struct literals use '=' everywhere else
 ```
@@ -880,25 +886,20 @@ these rules:
   this is a semantic error — see Trait section for resolution
 
 ```
-impl_decl       := [ 'pub' ] 'impl' [ generic_params ] IDENTIFIER [ ':' trait_ref ]
-                   '{' { impl_member } '}'
+impl_decl       := [ visibility_mod ] 'impl' [ generic_params ] IDENTIFIER [ ':' trait_ref ]
+                   '{' { method_decl } '}'
+
+visibility_mod  := 'pub' | 'export'
 
 trait_ref       := IDENTIFIER [ generic_args ]     -- e.g.  : Drawable
                                                    --        : Comparable<int>
 
-impl_member     := method_decl
-                 | from_decl                       -- type conversion (pub impl only)
-
 method_decl     := IDENTIFIER '(' [ param_list ] ')' [ return_type ] '=' func_body
-                   -- no per-method visibility prefix
-                   -- pub impl  -> methods callable by anyone holding the value
-                   -- impl      -> methods callable only within the package
+                   -- no per-method visibility prefix — visibility is set at the impl block level
+                   -- export impl -> methods callable externally
+                   -- pub impl    -> methods callable by anyone holding the value within the package
+                   -- impl        -> methods callable only within the file
                    -- multiple blocks of each kind are allowed and merge at semantic time
-
-from_decl       := 'from' '(' IDENTIFIER type ')' IDENTIFIER '=' func_body
-                   -- only valid inside pub impl blocks
-                   -- multiple from declarations allowed — each must accept a different source type
-                   -- enables TypeName(expr) call syntax at use sites
 ```
 
 ### Examples
@@ -943,6 +944,78 @@ pub impl<T : Drawable> Scene<T> {
     }
 }
 ```
+
+## From Declaration
+
+`from` declares a type conversion entry point for a named struct. It is a
+**top-level declaration** — the same level as `impl`, `struct`, and `trait`.
+Visibility follows the same three-tier model as every other top-level declaration.
+
+```
+from_block      := [ visibility_mod ] 'from' IDENTIFIER '{' from_entry* '}'
+
+from_entry      := IDENTIFIER '(' IDENTIFIER type ')' IDENTIFIER '=' func_body
+                   -- ^^^^^^^^^^     ^^^^^^^^^^      ^^^^^^^^^^
+                   -- name (label)   source param    return type (must match target)
+
+visibility_mod  := 'pub' | 'export'
+```
+
+### Rules
+
+- `from` must be at **top-level scope** — never inside blocks, functions, or impl bodies
+- `from` must appear in the **same file** as the target struct declaration
+- The return type name must match the target struct name — enforced by the semantic pass
+- Multiple `from` declarations for the same target type are valid as long as each
+  accepts a **different source parameter type** — duplicate source types are a semantic error
+- Visibility is independent of the target struct's visibility — a `pub struct` may have
+  file-private converters, and a private struct may have `pub from` if needed within the package
+- `TypeName(expr)` call syntax at use sites dispatches to the matching `from` declaration
+  based on the type of `expr` — this is not a constructor, it is a named conversion
+
+### Examples
+
+```luc
+-- temperature.luc
+package math
+
+pub struct Celsius    { value float }
+pub struct Fahrenheit { value float }
+pub struct Kelvin     { value float }
+
+-- Grouped conversions for Fahrenheit
+export from Fahrenheit {
+    -- Conversion from Celsius
+    celsius (c Celsius) Fahrenheit = {
+        return Fahrenheit { value = c.value * 9.0 / 5.0 + 32.0 }
+    }
+
+    -- Conversion from Kelvin
+    kelvin (k Kelvin) Fahrenheit = {
+        return Fahrenheit { value = (k.value - 273.15) * 9.0 / 5.0 + 32.0 }
+    }
+}
+
+-- Package-private conversions for Kelvin
+pub from Kelvin {
+    celsius (c Celsius) Kelvin = {
+        return Kelvin { value = c.value + 273.15 }
+    }
+}
+```
+
+```luc
+-- call site: TypeName(expr) dispatches to the matching from declaration
+let boiling Celsius    = Celsius    { value = 100.0 }
+let hot     Fahrenheit = Fahrenheit(boiling)         -- calls export from Fahrenheit (c Celsius)
+
+let abs  Kelvin     = Kelvin     { value = 373.15 }
+let absF Fahrenheit = Fahrenheit(abs)                -- calls export from Fahrenheit (k Kelvin)
+
+-- works as a pipeline step
+boiling -> Fahrenheit -> io.printl
+```
+
 
 ## Pipeline Operator `->`
 
@@ -1112,7 +1185,7 @@ needs to consume data from the previous one.
 When the `error` library is used, the pipeline short-circuits on `Error`. If
 any step returns an `Error` and the next step's parameter type does not accept
 `Error`, the step is skipped and the `Error` is passed forward automatically
-to the end of the chain — where `??` or `catch` can handle it.
+to the end of the chain — where `??` or `.catch` can handle it.
 
 ```luc
 -- if readFile returns Error, parseConfig and validateConfig are skipped
@@ -1120,20 +1193,8 @@ to the end of the chain — where `??` or `catch` can handle it.
 let cfg Config = readFile("app.cfg")
     -> parseConfig
     -> validateConfig
-    ?? Config {} -- use default configuration to resolve the error
-
--- use catch at middle of the chain
-
-let cfg Config = readFile("app.cfg")
-    -> parseConfig
-    -> catch -- can be use at the end of the chain
-    -> validateConfig
-    ?? Config {} -- use default configuration to resolve the error
-
+    ?? Config {}
 ```
-
-> **NOTE**
-> the `??` is use at the end, NOT in the middle of the chain because `??` is not a function, in fact the chain is end at validateConfig, if the final value is an error or a nil value then the `??` is triggered as a fallback, in this case the error value is the final value
 
 See `LUC_ERROR.md` for full error handling documentation.
 
@@ -1155,42 +1216,21 @@ bits -> @float             -- reinterpret uint32 bits as float32, no computation
 
 ### User-defined type conversion
 
-User types define conversions using the `from` keyword inside a `impl` block.
-`from` is a reserved keyword with special compiler meaning — when the compiler
-sees `TargetType(expr)`, it looks for a `from` method in `impl TargetType`
-whose parameter type matches the type of `expr`. Multiple `from` blocks are
-allowed on the same type, each accepting a different source type.
+User types define conversions using top-level `from` declarations — see the
+**From Declaration** section for the full grammar and rules.
 
-```
-from_decl       := 'from' '(' IDENTIFIER type ')' IDENTIFIER '=' func_body
-                   -- inside pub impl only
-                   -- IDENTIFIER type  = source parameter
-                   -- IDENTIFIER       = return type (must match the impl target)
-```
+`from` is a reserved keyword with special compiler meaning. When the compiler
+sees `TargetType(expr)`, it looks for a top-level `from` declaration whose
+target type and source parameter type match. Multiple `from` declarations are
+allowed for the same target, each accepting a different source type.
 
 ```luc
-struct Celsius    { value float }
-struct Fahrenheit { value float }
-struct Kelvin     { value float }
-
-pub impl Fahrenheit {
-    -- convert from Celsius
-    from (c Celsius) Fahrenheit = {
-        return Fahrenheit { value = c.value * 9.0 / 5.0 + 32.0 }
-    }
-
-    -- convert from Kelvin — multiple from blocks allowed
-    from (k Kelvin) Fahrenheit = {
-        return Fahrenheit { value = (k.value - 273.15) * 9.0 / 5.0 + 32.0 }
-    }
-}
-
--- call site: TypeName(expr) invokes the matching from block
+-- call site: TypeName(expr) dispatches to the matching from declaration
 let boiling Celsius    = Celsius    { value = 100.0 }
-let hot     Fahrenheit = Fahrenheit(boiling)       -- calls from(Celsius)
+let hot     Fahrenheit = Fahrenheit(boiling)       -- dispatches to from Fahrenheit (c Celsius)
 
 let abs     Kelvin     = Kelvin     { value = 373.15 }
-let absF    Fahrenheit = Fahrenheit(abs)            -- calls from(Kelvin)
+let absF    Fahrenheit = Fahrenheit(abs)            -- dispatches to from Fahrenheit (k Kelvin)
 
 -- works as a pipeline step
 boiling -> Fahrenheit -> io.printl
@@ -1249,8 +1289,7 @@ result. It is a step — not a seed.
 ```luc
 f1(args)
 -> (result int) string {
-    if result > 0 { return result -> string }
-    else          { return "empty" }
+    return if result > 0 ?? result -> string else "empty"
 }
 -> io.printl
 ```
@@ -1532,7 +1571,8 @@ postfix_op      := '.' IDENTIFIER                     -- data field access: v.x
                  | '.?' IDENTIFIER                    -- nullable chain
                  | '??' expr                          -- nil fallback (terminates .? chain)
                  | '[' expr ']'                       -- index access: nums[2]
-                 | '[' expr '..' expr ']'             -- slice (inclusive): nums[1..3] = elements 1,2,3
+                 | '[' expr '..' expr ']'             -- slice inclusive end: nums[1..3]  = elements 1,2,3
+                 | '[' expr '..<' expr ']'            -- slice exclusive end: nums[1..<3] = elements 1,2
                  | '(' [ arg_list ] ')'               -- call
                  | '(' [ arg_list ] ')' '!'           -- argument pack (pipeline only)
                  | generic_args '(' [ arg_list ] ')'  -- generic call
@@ -1542,8 +1582,8 @@ primary_expr    := literal
                  | struct_literal                         -- Vec2 { x = 1.0  y = 2.0 }
                  | '(' expr ')'
                  | anon_func
-                 | match_expr                             -- match is expression-oriented
-                 | if_expr                                -- if_inline (?? sugar) or if_block (block)
+                 | match_expr                             -- match is expression-oriented; produces a value
+                 | if_expr                                -- inline if expression: if cond ?? thenExpr else elseExpr
                  | array_literal
                  | 'nil'
                  | 'true' | 'false'
@@ -1552,11 +1592,15 @@ primary_expr    := literal
 
 await_expr      := 'await' expr
 
-range_expr      := expr '..' expr [ '..' expr ]
-                   -- start .. end [ .. step ] (inclusive both ends)
-                   -- used in for loops and match patterns: for i in 0 .. 10 .. 1
-                   -- inclusive on both ends when used as a slice: nums[1..3]
+range_expr      := expr range_op expr [ '..' expr ]
+                   -- start range_op end [ .. step ]
+                   -- range_op controls whether the end is included or excluded
+                   -- step is always optional; when present it must follow '..' regardless of range_op
+                   -- used in for loops, match patterns, switch cases, and slice indexing
                    -- see Arrays section for slice range rules and constraints
+
+range_op        := '..'                -- inclusive end:  start ..  end  → [start, end]
+                 | '..<'               -- exclusive end:  start ..< end  → [start, end)
 ```
 
 ### Argument List
@@ -1588,7 +1632,7 @@ set of built-in operations.
 | Slice | `[]T` | view (pointer + length + cap), no ownership | ❌ | function params, iteration, pipeline |
 | Dynamic | `[*]T` | heap-owned, runtime size | ✅ | growing collections, general purpose |
 
-> **NOTE:** 
+> **NOTE** 
 > Array elements are not nullable by default, if you tried to assign a nil value to an array element, it would result in a compile-time error. To allow nullable index use `?`, ex: let nums [*]int? = [1, nil, 3]
 
 ```luc
@@ -1605,7 +1649,7 @@ let items [*]string = ["hello", "world"]
 items.push("luc")
 ```
 
-> **NOTE:** 
+> **NOTE** 
 > Out of bounds access on fixed or sliced array will result in a runtime panic. for dynamic array it will return a nil value.
 
 ### Slice Semantics
@@ -1615,40 +1659,50 @@ existing array (fixed or dynamic) and sees a contiguous subrange of its elements
 Slices do not own memory and cannot grow.
 
 ```
-slice_expr      := expr '[' expr '..' expr ']'
-                   -- start and end are both inclusive
+slice_expr      := expr '[' expr '..'  expr ']'    -- inclusive end: elements start..end
+                 | expr '[' expr '..<' expr ']'    -- exclusive end: elements start..(end-1)
                    -- start must be >= 0
-                   -- end must be >= start
-                   -- both must be < array.len()
+                   -- end must be >= start  (for '..')  or  > start  (for '..<')
+                   -- both must be within array bounds
                    -- negative indices are not allowed
 ```
 
 #### Slice range rules
 
+Two range operators are available for slicing. The end bound interpretation
+differs between them:
+
+| Operator | End bound | `nums[1..3]` / `nums[1..<3]` on a 5-element array |
+|---|---|---|
+| `..` | **inclusive** — end element is included | `nums[1..3]` → elements 1, 2, 3 (3 elements) |
+| `..<` | **exclusive** — end element is excluded | `nums[1..<3]` → elements 1, 2 (2 elements) |
+
+General validity rules (apply to both operators):
+
 | Expression | Valid? | Meaning |
 |---|---|---|
-| `nums[1..3]` | ✅ | elements at index 1, 2, 3 — three elements |
+| `nums[1..3]` | ✅ | elements at index 1, 2, 3 — inclusive end |
+| `nums[1..<3]` | ✅ | elements at index 1, 2 — exclusive end |
 | `nums[0..0]` | ✅ | single element at index 0 |
-| `nums[2..2]` | ✅ | single element at index 2 |
+| `nums[0..<1]` | ✅ | single element at index 0 |
+| `nums[0..<0]` | ❌ | semantic error: exclusive end must be > start |
 | `nums[5..1]` | ❌ | semantic error: start > end |
 | `nums[-1..2]` | ❌ | semantic error: negative index |
-| `nums[0..-1]` | ❌ | semantic error: negative index |
 | `nums[0..99]` on len-5 array | ❌ | runtime panic: out of bounds |
 
-The range is **inclusive on both ends** — `nums[1..3]` contains elements at
-indices 1, 2, and 3. Length of the resulting slice = `end - start + 1`.
+The inclusive form `..` — length = `end - start + 1`.
+The exclusive form `..<` — length = `end - start`.
 
 ```luc
 let nums [*]int = [10, 20, 30, 40, 50]   -- indices 0..4
 
-let s []int = nums[1..3]    -- [20, 30, 40]  (3 elements)
-s.len()                     -- 3
-s[0]                        -- 20
-s[2]                        -- 40
-s[3]                        -- runtime panic: out of bounds
+let s  []int = nums[1..3]    -- [20, 30, 40]  (3 elements — inclusive)
+let se []int = nums[1..<3]   -- [20, 30]       (2 elements — exclusive)
+s.len()                      -- 3
+se.len()                     -- 2
 
 -- Slices share memory with the original
-s[0] = 99                   -- nums[1] is now 99
+s[0] = 99                    -- nums[1] is now 99
 ```
 
 ### Index Access
@@ -1770,21 +1824,9 @@ stmt            := var_decl
                  | break_stmt
                  | continue_stmt
                  | parallel_stmt        -- parallel for (data) or parallel block (task)
-                 | expr_stmt            -- match_expr is used here as an expression
+                 | expr_stmt            -- any expression used as a statement; match_expr and if_expr are valid here
 
--- Statement block — side-effects only, produces no value.
--- Used by: for, while, do-while, switch, parallel, if-stmt branches.
 block           := '{' { stmt } '}'
-
--- Expression block — may contain statements AND must produce a value via 'return'.
--- If no 'return' is reached, the block implicitly returns nil.
--- Used by: function bodies, match arms, if-expr branches, anon functions.
--- Multiple return values are allowed: return x, y
-block      := '{' { stmt } '}'
-                   -- syntactically identical to block — the distinction is semantic:
-                   -- block is valid wherever a value-producing context is required
-                   -- 'return' inside block yields the block's value(s)
-                   -- no 'return' reached → implicit nil
 
 expr_stmt       := expr
 assign_stmt     := expr assign_op expr
@@ -1861,7 +1903,8 @@ type inside the branch and gives full access to its methods and fields.
 ```
 is_expr         := expr 'is' type
                    -- produces bool
-                   -- narrows the type of expr inside the enclosing if block
+                   -- narrows the type of expr inside the enclosing if_stmt block (statement form only)
+                   -- the inline if_expr form does not introduce a narrowed scope
                    -- valid for: primitives, structs, union types, any, enum variants
 ```
 
@@ -1925,7 +1968,7 @@ let label (dir Direction) string = match dir {
 
 ### Type narrowing rules
 
-After `if x is SomeType { ... }`, inside the block:
+After `if x is SomeType { ... }` (statement form), inside the block:
 - `x` is treated as `SomeType` by the compiler
 - All methods and fields of `SomeType` are accessible directly on `x`
 - Outside the block, `x` reverts to its original declared type
@@ -1934,81 +1977,98 @@ In a `match` arm with `v is SomeType`:
 - `v` is bound as `SomeType` for the duration of that arm's body
 - The original matched expression is unchanged
 
-### If / Else
+> **Note** 
+> Type narrowing applies to the statement form `if x is T { }` only. The inline expression form `if x is T ?? expr else expr` does not introduce a narrowed scope — use `match` with a type pattern for narrowed dispatch in expression context.
 
-Two forms of `if` exist depending on context.
+### If / Else — Statement Form
 
-**Statement form** — runs for side effects, produces no value. `else` is optional.
-Branches use `block` (statement-only).
+`if_stmt` is **statement-oriented** — it runs blocks for side effects and produces no value.
+`else` is optional. The `else` branch can be another `if_stmt` for chaining.
 
 ```
 if_stmt         := 'if' expr block [ 'else' ( if_stmt | block ) ]
 ```
 
-**Expression form** — produces a value, used in assignment or return position.
-`else` is **required**. Two sub-forms:
+```luc
+-- no else
+if score >= 90 {
+    io.printl("A")
+}
+
+-- with else
+if score >= 90 {
+    io.printl("A")
+} else {
+    io.printl("F")
+}
+
+-- chained else if
+if score >= 90 {
+    io.printl("A")
+} else if score >= 80 {
+    io.printl("B")
+} else {
+    io.printl("F")
+}
+```
+
+### If Expression — Inline Form
+
+`if_expr` is **expression-oriented** — it produces a value and can be used anywhere
+an expression is expected: variable assignment, function return, pipeline seed,
+match arm body, or any other expression position.
+
+The syntax uses `??` as the separator between the condition and the then-branch.
+`else` is **required** — an inline if with no else branch is a syntax error.
 
 ```
-if_expr         := if_inline               -- sugar: single expression per branch
-                 | if_block                -- full:  block per branch, explicit return
-
--- Sugar form — '??' separates condition from value, no braces, no return keyword.
--- Each branch is a single expression. Can nest.
-if_inline       := 'if' expr '??' expr 'else' ( expr | if_inline )
-                   -- e.g.  if x > 0 ?? "pos" else "neg"
-                   -- e.g.  if a ?? if b ?? 1 else 2 else 3  (nested)
-
--- Block form — braces, mixed statements allowed, explicit return required.
--- No return reached in a branch → that branch implicitly returns nil.
-if_block        := 'if' expr block 'else' ( if_block | block )
-                   -- e.g.  if cond { io.printl("y")  return 1 } else { return 2 }
+if_expr         := 'if' expr '??' expr 'else' expr
+                   -- condition ?? thenExpr else elseExpr
+                   -- all three branches must produce compatible types
+                   -- 'else' is required — no dangling if expression
+                   -- right-associative: else binds to the nearest preceding if
+                   -- elseExpr may itself be an if_expr for chaining
 ```
 
-**Choosing between forms:**
-
-| Need | Use |
-|---|---|
-| Single expression result, no statements | `if_inline` (`??` sugar) |
-| Statements before the result | `if_block` (block) |
-| Side effects only, no value | `if_stmt` (block) |
+Chaining works naturally because `elseExpr` is any `expr`, and `if_expr` is an `expr`:
 
 ```luc
--- if_stmt — side effects, no value
-if score >= 90 { io.printl("A") }
-if score >= 90 { io.printl("A") } else { io.printl("F") }
-
--- if_inline — clean single-expression sugar
+-- assignment
 let grade string = if score >= 60 ?? "pass" else "fail"
-let n int = if a ?? if b ?? 1 else 2 else 3    -- nested inline
 
--- if_block — statements + explicit return
-let result int = if score >= 60 {
-    io.printl("passing")
-    return score * 2
-} else {
-    return 0
+-- chained (right-associative — else binds to nearest if)
+let label string = if n < 0 ?? "negative" else if n == 0 ?? "zero" else "positive"
+
+-- as function return
+let sign (n int) string = {
+    return if n >= 0 ?? "positive" else "negative"
 }
 
--- if_block with implicit nil on one branch
-let msg string? = if found {
-    return "found it"
-}  else {
-    -- no return → implicitly nil
-}
+-- as pipeline seed
+(if useHigh ?? highValue else lowValue) -> process -> io.printl
+
+-- in variable declaration — match and if are both valid expression initialisers
+let a int = match n { 0 -> 1  default -> n * 2 }
+let b int = if n > 0 ?? n else 0
 ```
+
+> **Disambiguation from `??` (null fallback):** `??` after `if expr` is the
+> inline-if separator. `??` after any other expression is the null-coalescing
+> operator. The parser knows it is inside `if_expr` the moment it sees the `if`
+> keyword, so the two uses are unambiguous.
+
+> **Statement vs expression:** `if cond { block }` (block after condition) is
+> always the statement form. `if cond ?? expr else expr` (`??` after condition)
+> is always the expression form. The parser dispatches on the token immediately
+> following the condition expression.
 
 ### Match (Pattern Matching — expression oriented)
 
-`match` is an **expression** — it produces a value and can be assigned or
-returned directly. Each arm maps a pattern to a result.
-
-Two arm body forms exist:
-
-- `->` **inline expression** — the arm produces the value of a single expression directly.
-  No braces, no `return`. Clean and concise for simple arms.
-- `->` **`block`** — the arm body is a brace-delimited block. Must use explicit
-  `return` to produce a value. No `return` reached → arm produces `nil`.
-  Use this when the arm needs statements before producing a value.
+`match` is an **expression** — it produces one or two values and can be
+assigned or returned directly. Each arm maps a pattern to a comma-separated
+list of one or two expressions (no blocks, no `return`). The first expression
+is the **primary value**; the optional second expression is the **secondary
+value**.
 
 The `default` arm is **required** — match must be exhaustive and `default`
 must be the last arm. The `_` wildcard pattern and `default` are distinct:
@@ -2023,19 +2083,25 @@ match_arm       := pattern_list [ guard ] '->' arm_body
 
 default_arm     := 'default' '->' arm_body
 
-arm_body        := expr                -- inline: single expression, value is the result
-                 | block          -- block:  braces + stmts, explicit return required
+-- An arm body is one or two comma-separated expressions — no blocks allowed.
+-- The first expression is the primary value (always present).
+-- The second expression is the secondary value (optional).
+arm_body        := expr [ ',' expr ]
 
--- Multiple patterns per arm separated by comma
--- NOTE: multiple patterns (200, 201) are only valid with inline expr arms.
--- An block arm must have exactly one pattern.
+-- Multiple patterns per arm separated by comma.
+-- The parser disambiguates pattern commas from the arm_body comma by position:
+-- commas before '->' are pattern separators; the comma after '->' (if any)
+-- separates primary from secondary value.
 pattern_list    := pattern { ',' pattern }
 
 -- Guard: bind pattern gives the name, if-expr filters it
-guard           := 'if' expr
+-- The guard condition is a logical_expr — not a full expr — to prevent
+-- ambiguity with the inline if_expr syntax (if cond ?? thenExpr else elseExpr).
+-- A guard condition is always a plain boolean expression.
+guard           := 'if' logical_expr
 
 pattern         := literal                             -- value:    42, "ok", true
-                 | range_expr                          -- range:    1..10
+                 | range_expr                          -- range:    1..10 (inclusive), 1..<10 (exclusive)
                  | IDENTIFIER                          -- bind:     n  (captures matched value)
                  | IDENTIFIER 'is' type                -- type pattern: v is Circle  (bind + narrow)
                  | WILDCARD                            -- discard:  _
@@ -2045,6 +2111,21 @@ struct_pattern  := IDENTIFIER '{' { field_pattern } '}'
 field_pattern   := IDENTIFIER [ ':' pattern ]          -- field: name  or  name: sub-pattern
 ```
 
+### Secondary value rules
+
+The secondary value is **optional per arm**. The semantic pass enforces the
+following rules based on whether arms supply it:
+
+| Situation | Rule |
+|---|---|
+| No arm supplies a secondary value | The match produces one value. Assigning to two variables is a semantic error. |
+| Every arm supplies a secondary value | The match produces two values. The second variable's type is non-nullable. |
+| Only some arms supply a secondary value | The match produces two values. The second variable **must** be typed as nullable (`T?`). Arms that omit the secondary value implicitly yield `nil` for it. |
+
+The secondary value is silently discarded when the caller assigns only one
+variable. Assigning to two variables when no arm produces a secondary value
+is a semantic error.
+
 ### Pattern rules
 
 A **bind pattern** is any bare `IDENTIFIER` in pattern position. It matches
@@ -2052,9 +2133,16 @@ any value and binds it to that name for use in the guard and arm body. The
 name `n` in `n if n > 0` comes entirely from the pattern — `n` is declared
 there, not from an outer scope.
 
-A **guard** `if expr` may only appear after a bind or wildcard pattern. It
+A **guard** `if logical_expr` may only appear after a bind or wildcard pattern. It
 gives a condition that must also be true for the arm to match. If the guard
-is false the arm is skipped and matching continues to the next arm.
+is false the arm is skipped and matching continues to the next arm. The guard
+condition is restricted to `logical_expr` (not a full `expr`) — inline `if_expr`
+and pipeline expressions are not valid in guard position. This prevents ambiguity
+between the guard `if` keyword and the `if cond ?? thenExpr else elseExpr` syntax.
+
+**Arm bodies are expressions only** — no blocks, no `return`. Each arm body
+is one or two comma-separated expressions. Multi-statement logic must be
+extracted into a helper function called from the arm expression.
 
 **Arm ordering matters** — arms are tested top to bottom. A bind pattern
 without a guard matches everything and must come after more specific patterns.
@@ -2075,7 +2163,7 @@ match items {
 ### Examples
 
 ```luc
--- Value pattern
+-- Value pattern — single primary value
 let label string = match status {
     200      -> "ok"
     404      -> "not found"
@@ -2083,7 +2171,7 @@ let label string = match status {
     default  -> "unknown"
 }
 
--- Multiple values per arm (comma-separated)
+-- Multiple values per arm (comma-separated patterns)
 let category string = match code {
     200, 201, 202 -> "success"
     400, 401, 403 -> "client error"
@@ -2091,11 +2179,11 @@ let category string = match code {
     default       -> "other"
 }
 
--- Range pattern
+-- Range pattern — inclusive (..) and exclusive (..<)
 let severity string = match damage {
-    0      -> "none"
-    1..10  -> "light"
-    11..50 -> "moderate"
+    0       -> "none"
+    1..10   -> "light"       -- matches 1, 2, ..., 10 (inclusive)
+    11..<50 -> "moderate"    -- matches 11, 12, ..., 49 (exclusive end)
     default -> "critical"
 }
 
@@ -2118,16 +2206,16 @@ let label string = match value {
 -- Struct destructuring
 let desc string = match point {
     Vec2 { x: 0.0, y: 0.0 } -> "origin"
-    Vec2 { x, y }           -> "at " + string(x) + ", " + string(y)
-    default                 -> "unknown"
+    Vec2 { x, y }            -> "at " + string(x) + ", " + string(y)
+    default                  -> "unknown"
 }
 
 -- Nested struct destructuring
 let desc string = match player {
-    Player { health: 0 }                             -> "dead"
-    Player { pos: Vec2 { x: 0.0, y: 0.0 }, health }  -> "at origin, hp: " + string(health)
-    Player { pos, health }                           -> "alive, hp: "     + string(health)
-    default                                          -> "unknown"
+    Player { health: 0 }                               -> "dead"
+    Player { pos: Vec2 { x: 0.0, y: 0.0 }, health }   -> "at origin, hp: " + string(health)
+    Player { pos, health }                             -> "alive, hp: "     + string(health)
+    default                                            -> "unknown"
 }
 
 -- Combining multiple patterns and guard
@@ -2137,21 +2225,29 @@ let label string = match code {
     default      -> "other"
 }
 
--- block arm — statements before the return value
-let label string = match code {
-    200 -> {
-        io.printl("success")
-        return "ok"
-    }
-    default -> "error"
+-- Secondary value — every arm supplies one (second variable is non-nullable)
+let label string
+let detail string
+label, detail = match status {
+    200     -> "ok",        "request succeeded"
+    404     -> "not found", "resource missing"
+    default -> "unknown",   "no detail available"
 }
 
--- Multiple return values from a match block arm
-let q, r = match op {
-    "divmod" -> {
-        return a / b, a % b    -- two values: quotient and remainder
-    }
-    default -> { return 0, 0 }
+-- Secondary value — only some arms supply one (second variable must be nullable)
+let label string
+let detail string?
+label, detail = match status {
+    200     -> "ok",        "request succeeded"
+    404     -> "not found"          -- detail is implicitly nil here
+    default -> "unknown"            -- detail is implicitly nil here
+}
+
+-- Secondary value discarded — caller only captures the primary value
+let label string = match status {
+    200     -> "ok",        "request succeeded"   -- second value silently dropped
+    404     -> "not found", "resource missing"
+    default -> "unknown",   "no detail available"
 }
 ```
 
@@ -2167,7 +2263,7 @@ switch_stmt     := 'switch' expr '{' { case_clause } [ default_clause ] '}'
 case_clause     := 'case' case_value { ',' case_value } ':' { stmt }
 
 case_value      := expr                                -- single value:  case 1:
-                 | range_expr                          -- range:         case 0..10:
+                 | range_expr                          -- range:    case 0..10: (inclusive), case 0..<10: (exclusive)
 
 default_clause  := 'default' ':' { stmt }
 ```
@@ -2182,12 +2278,12 @@ switch code {
     default:            { io.printl("unknown") }
 }
 
--- Range per case
+-- Range per case — inclusive (..) and exclusive (..<)
 switch damage {
-    case 0:       { io.printl("no damage") }
-    case 1..10:   { io.printl("light") }
-    case 11..50:  { io.printl("moderate") }
-    default:      { io.printl("critical") }
+    case 0:         { io.printl("no damage") }
+    case 1..10:     { io.printl("light") }      -- matches 1..10 inclusive
+    case 11..<50:   { io.printl("moderate") }   -- matches 11..49 exclusive end
+    default:        { io.printl("critical") }
 }
 
 -- Mixed values and ranges
@@ -2203,8 +2299,9 @@ switch key {
 ```
 for_stmt        := 'for' IDENTIFIER [ type ] 'in' ( range_iter | expression ) block
 
-range_iter      := expression '..' expression [ '..' expression ]
-                   -- start .. end [ .. step ] (inclusive both ends)
+range_iter      := expression range_op expression [ '..' expression ]
+                   -- start range_op end [ .. step ]
+                   -- range_op: '..' = inclusive end, '..<' = exclusive end
                    -- default step is 1 if omitted
                    -- NOTE: If type is omitted, it defaults to 'int' or 'float'
                    -- depending on whether boundaries are integer or float literals.
@@ -2225,10 +2322,7 @@ do_while_stmt   := 'do' block 'while' expr
 ### Return / Break / Continue
 
 ```
-return_stmt     := 'return' [ expr { ',' expr } ]
-                   -- 'return'           → returns nil (void or implicit nil)
-                   -- 'return expr'      → returns one value
-                   -- 'return e1, e2'    → returns multiple values (only valid in block)
+return_stmt     := 'return' [ expr ]
 
 break_stmt      := 'break'
 
@@ -2450,7 +2544,11 @@ To ensure safety, any function returning `Expect<T>` **cannot be discarded**. If
 | 11 | `??` | right |
 | 12 | `->` (pipeline — runtime) | left |
 | 13 | `+>` (composition — compile time) | left |
-| 14 (lowest) | `=` `+=` `-=` `*=` `/=` `^=` `%=` | right |
+| 14 | `=` `+=` `-=` `*=` `/=` `^=` `%=` | right |
+| 15 (lowest) | `if ?? else` (inline if expression) | right |
+
+> **NOTE** 
+> On `if_expr` precedence:** `if cond ?? thenExpr else elseExpr` is a `primary_expr` — it begins with the `if` keyword so no infix precedence applies to its opening. However, the `else` clause is right-associative and binds with the lowest precedence of all, which means in a chain like `if a ?? b else if c ?? d else e` the second `if` is parsed as the `elseExpr` of the first — correct and expected. The `??` inside `if_expr` is not an infix operator; it is a fixed syntactic separator consumed by the `if_expr` production rule directly. Guard `??` (null-coalesce postfix op at level 11) is only parsed in that role when `??` appears **outside** an `if_expr` condition position.
 
 ## Literals
 

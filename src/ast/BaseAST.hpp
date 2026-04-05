@@ -8,7 +8,7 @@
  *   NEVER include a family header (like ExprAST.hpp) here; this keeps the dependency graph acyclic.
  *
  * @related_files 
- *   - src/ast/ExprAST.hpp, StmtAST.hpp, DeclAST.hpp, TypeAST.hpp, PatternAST.hpp (Concrete implementations)
+ *   - src/ast/ExprAST.hpp, StmtAST.hpp, DeclAST.hpp, TypeAST.hpp, (Concrete implementations)
  */
 
 #pragma once
@@ -30,7 +30,6 @@
 //   DeclAST.hpp     — FuncDeclAST, StructDeclAST, ImplDeclAST, ...
 //   ExprAST.hpp     — LiteralExprAST, CallExprAST, PipelineExprAST, ...
 //   StmtAST.hpp     — BlockStmtAST, ForStmtAST, ParallelForStmtAST, ...
-//   PatternAST.hpp  — BindPatternAST, StructPatternAST, MatchArmAST, ...
 //
 // BaseAST.hpp includes none of them — this keeps the include graph acyclic.
 // Each family header does:  #include "BaseAST.hpp"
@@ -90,7 +89,7 @@ enum class ASTKind : uint16_t {
     LiteralExpr,
     ArrayLiteralExpr,
     StructLiteralExpr,
-    IdentExpr,
+    IdentifierExpr,
     FieldAccessExpr,
     BehaviorAccessExpr,
     CallExpr,
@@ -125,8 +124,8 @@ enum class ASTKind : uint16_t {
     ParallelBlockStmt,
 
     // ── Pattern nodes ─────────────────────────────────────────────────────────
-    LiteralPattern,
-    RangePattern,
+    // Note: literal and range patterns are not listed here — they reuse
+    // LiteralExpr and RangeExpr directly in pattern position.
     BindPattern,
     WildcardPattern,
     TypePattern,
@@ -172,7 +171,7 @@ struct ExternDeclAST;
 
 // ExprAST.hpp
 struct LiteralExprAST;
-struct IdentExprAST;
+struct IdentifierExprAST;
 struct ArrayLiteralExprAST;
 struct StructLiteralExprAST;
 struct BinaryExprAST;
@@ -189,9 +188,19 @@ struct ComposeExprAST;
 struct AnonFuncExprAST;
 struct AwaitExprAST;
 struct MatchExprAST;
-struct IfExprAST;         // IfInlineExprAST — ?? sugar form
+struct IfExprAST;
 struct RangeExprAST;
 struct TypeConvExprAST;
+
+// Pattern nodes (defined in ExprAST.hpp alongside MatchArmAST / DefaultArmAST)
+// LiteralPatternAST and RangePatternAST are removed — LiteralExprAST and
+// RangeExprAST are used directly in pattern position inside MatchArmAST::patterns.
+struct BindPatternAST;
+struct WildcardPatternAST;
+struct TypePatternAST;
+struct StructPatternAST;
+struct MatchArmAST;
+struct DefaultArmAST;
 
 // StmtAST.hpp
 struct BlockStmtAST;
@@ -207,16 +216,6 @@ struct BreakStmtAST;
 struct ContinueStmtAST;
 struct ParallelForStmtAST;
 struct ParallelBlockStmtAST;
-
-// PatternAST.hpp
-struct LiteralPatternAST;
-struct RangePatternAST;
-struct BindPatternAST;
-struct WildcardPatternAST;
-struct TypePatternAST;
-struct StructPatternAST;
-struct MatchArmAST;
-struct DefaultArmAST;
 
 // Root
 struct ProgramAST;
@@ -332,7 +331,7 @@ struct ASTVisitor {
 
     // ── Expression nodes ──────────────────────────────────────────────────────
     virtual void visit(LiteralExprAST&)         {}
-    virtual void visit(IdentExprAST&)           {}
+    virtual void visit(IdentifierExprAST&)      {}
     virtual void visit(ArrayLiteralExprAST&)    {}
     virtual void visit(StructLiteralExprAST&)   {}
     virtual void visit(BinaryExprAST&)          {}
@@ -349,9 +348,19 @@ struct ASTVisitor {
     virtual void visit(AnonFuncExprAST&)        {}
     virtual void visit(AwaitExprAST&)           {}
     virtual void visit(MatchExprAST&)           {}
-    virtual void visit(IfExprAST&)              {}   // IfInlineExprAST — ?? sugar
+    virtual void visit(IfExprAST&)              {} 
     virtual void visit(RangeExprAST&)           {}
     virtual void visit(TypeConvExprAST&)        {}
+
+    // ── Pattern nodes ─────────────────────────────────────────────────────────
+    // No visit() for LiteralExprAST or RangeExprAST in pattern position —
+    // those are dispatched through the existing expression visit() overrides above.
+    virtual void visit(BindPatternAST&)         {}
+    virtual void visit(WildcardPatternAST&)     {}
+    virtual void visit(TypePatternAST&)         {}
+    virtual void visit(StructPatternAST&)       {}
+    virtual void visit(MatchArmAST&)            {}
+    virtual void visit(DefaultArmAST&)          {}
 
     // ── Statement nodes ───────────────────────────────────────────────────────
     virtual void visit(BlockStmtAST&)           {}
@@ -367,16 +376,6 @@ struct ASTVisitor {
     virtual void visit(ContinueStmtAST&)        {}
     virtual void visit(ParallelForStmtAST&)     {}
     virtual void visit(ParallelBlockStmtAST&)   {}
-
-    // ── Pattern nodes ─────────────────────────────────────────────────────────
-    virtual void visit(LiteralPatternAST&)      {}
-    virtual void visit(RangePatternAST&)        {}
-    virtual void visit(BindPatternAST&)         {}
-    virtual void visit(WildcardPatternAST&)     {}
-    virtual void visit(TypePatternAST&)         {}
-    virtual void visit(StructPatternAST&)       {}
-    virtual void visit(MatchArmAST&)            {}
-    virtual void visit(DefaultArmAST&)          {}
 
     // ── Root ──────────────────────────────────────────────────────────────────
     virtual void visit(ProgramAST&)             {}

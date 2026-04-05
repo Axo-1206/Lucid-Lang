@@ -5,10 +5,16 @@
  *
  * @hierarchy BaseAST -> ExprAST -> [Concrete Nodes]
  *
- * @related_files 
- *
+ * @related_files
  *   - src/parser/ParserExpr.cpp (The primary producer)
  *   - src/ast/StmtAST.hpp (Statements often contain expressions)
+ *
+ * @note
+ *   - PatternAST is removed then merge into ExprAST(to reduce cyclic dependency).
+ *   - LiteralPatternAST and RangePatternAST are removed.
+ *   - LiteralExprAST and RangeExprAST are used directly in pattern position.
+ *   - MatchArmAST::patterns now holds BaseAST* instead of PatternAST*.
+ *   - StructPatternAST::subPattern now holds BaseAST* instead of PatternAST*.
  */
 
 #pragma once
@@ -23,10 +29,16 @@
 #include <optional>
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ExprAST.hpp — all expression nodes
+// ExprAST.hpp — all expression nodes, match arm nodes, and pattern nodes
 //
-// Every node here inherits from ExprAST (defined in BaseAST.hpp).
+// Every expression node here inherits from ExprAST (defined in BaseAST.hpp).
 // StmtAST.hpp includes this header — statements contain expressions.
+//
+// Pattern nodes (BindPatternAST, WildcardPatternAST, TypePatternAST,
+// StructPatternAST) also live here instead of a separate PatternAST.hpp.
+// This avoids a circular include: PatternAST.hpp would need ExprAST.hpp for
+// guard expressions and arm bodies, and ExprAST.hpp would need PatternAST.hpp
+// for MatchExprAST — a cycle. Keeping everything in one file breaks it cleanly.
 //
 // Node inventory:
 //
@@ -36,7 +48,7 @@
 //     StructLiteralExprAST    — Vec2 { x = 1.0  y = 2.0 }
 //
 //   Names & access
-//     IdentExprAST            — bare name: x, foo, Direction
+//     IdentifierExprAST       — bare name: x, foo, Direction
 //     FieldAccessExprAST      — v.x  (data member, . operator)
 //     BehaviorAccessExprAST   — Vec2:normalize  (impl method, : operator)
 //
@@ -65,11 +77,27 @@
 //
 //   Control flow expressions
 //     MatchExprAST            — match expr { arm* default }
-//     IfExprAST               — if cond { } else { }  (expression form — else required)
+//                               each arm body is one or two comma-separated exprs
+//     IfExprAST               — if cond ?? thenExpr else elseExpr  (inline form)
 //
 //   Other
-//     RangeExprAST            — 0..10  (used in for loops, match patterns, slice indexing)
+//     RangeExprAST            — 0..10 / 0..<10  (for loops, match patterns, slice indexing)
 //     TypeConvExprAST         — float(x)  safe conversion  |  @float(x)  unsafe bit reinterpret
+//
+//   Match infrastructure  (not ExprAST — BaseAST directly)
+//     MatchArmAST             — pattern_list [guard] -> expr [, expr]
+//     DefaultArmAST           — default -> expr [, expr]
+//
+//   Pattern nodes  (PatternAST — matched against the subject, never evaluated)
+//     BindPatternAST          — n  (captures matched value into name)
+//     WildcardPatternAST      — _  (matches anything, discards value)
+//     TypePatternAST          — v is Circle  (bind + narrow to concrete type)
+//     StructPatternAST        — Vec2 { x: 0.0, y }  (struct field destructuring)
+//
+//   Retired pattern nodes (removed — reuse existing ExprAST nodes directly):
+//     LiteralPatternAST       — replaced by LiteralExprAST in pattern position
+//     RangePatternAST         — replaced by RangeExprAST in pattern position
+//
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -277,7 +305,7 @@ struct StructLiteralExprAST : ExprAST {
 // ═════════════════════════════════════════════════════════════════════════════
 
 // ─────────────────────────────────────────────────────────────────────────────
-// IdentExprAST
+// IdentifierExprAST
 //
 // A bare identifier used as an expression.
 //   x        — local variable or parameter
@@ -286,17 +314,17 @@ struct StructLiteralExprAST : ExprAST {
 //
 // The semantic pass resolves the name against the symbol table and sets
 // resolvedType. If the name resolves to an enum type followed by '.', the
-// parser actually produces a FieldAccessExprAST — an IdentExprAST always
+// parser actually produces a FieldAccessExprAST — an IdentifierExprAST always
 // refers to a single symbol, never a qualified name.
 // ─────────────────────────────────────────────────────────────────────────────
 
-struct IdentExprAST : ExprAST {
-    static constexpr ASTKind staticKind = ASTKind::IdentExpr;
+struct IdentifierExprAST : ExprAST {
+    static constexpr ASTKind staticKind = ASTKind::IdentifierExpr;
 
     std::string name;
 
-    explicit IdentExprAST(std::string n)
-        : ExprAST(ASTKind::IdentExpr), name(std::move(n)) {}
+    explicit IdentifierExprAST(std::string n)
+        : ExprAST(ASTKind::IdentifierExpr), name(std::move(n)) {}
 
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
@@ -305,9 +333,9 @@ struct IdentExprAST : ExprAST {
 // FieldAccessExprAST
 //
 // Access a data member (struct field) via the '.' operator.
-//   v.x            →  object=IdentExpr("v"),  field="x"
-//   player.health  →  object=IdentExpr("player"),  field="health"
-//   Direction.North → object=IdentExpr("Direction"), field="North"
+//   v.x            →  object=IdentifierExprAST("v"),  field="x"
+//   player.health  →  object=IdentifierExprAST("player"),  field="health"
+//   Direction.North → object=IdentifierExprAST("Direction"), field="North"
 //                     (enum variant access — field is a variant name)
 //
 // The '.' operator always means data — a field declared inside a struct body,
@@ -365,8 +393,8 @@ struct BehaviorAccessExprAST : ExprAST {
 // CallExprAST
 //
 // A function call — regular or generic.
-//   f(args)           →  callee=IdentExpr("f"),  genericArgs={},  args=[...]
-//   Vec2(boiling)     →  callee=IdentExpr("Vec2"),  — from() dispatch at semantic
+//   f(args)           →  callee=IdentifierExprAST("f"),  genericArgs={},  args=[...]
+//   Vec2(boiling)     →  callee=IdentifierExprAST("Vec2"),  — from() dispatch at semantic
 //   Buffer<int>(cap)  →  genericArgs=[Int],  args=[cap]
 //   obj.method(args)  →  callee=FieldAccessExpr(obj,"method"),  args=[...]
 //
@@ -418,6 +446,7 @@ struct IndexExprAST : ExprAST {
     ExprPtr   index;      // element index (Element) or slice start (Slice)
     ExprPtr   sliceEnd;   // slice end — nullptr for Element kind
     IndexKind kind;
+    bool      isExclusive = false; // true if ..< syntax used
 
     IndexExprAST() : ExprAST(ASTKind::IndexExpr) {}
 
@@ -770,144 +799,11 @@ struct AwaitExprAST : ExprAST {
 // ═════════════════════════════════════════════════════════════════════════════
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ArmBody — the right-hand side of a match arm or default arm.
-//
-// The grammar allows either a single expression or a block:
-//   200      -> "ok"             — expr form
-//   200      -> { return "ok" }  — block form
-//
-// Both are represented as a StmtPtr. When the parser sees an expression arm
-// body it wraps the expression in an ExprStmtAST inside a BlockStmtAST,
-// keeping the arm body type uniform. The semantic pass then reads through
-// the block to find the expression, or evaluates the full block.
-//
-// This is the same strategy used for IfExprAST branches — one type, no union.
-// ─────────────────────────────────────────────────────────────────────────────
-
-using ArmBody = StmtPtr;   // always BlockStmtAST — parser wraps expr arms
-
-
-// ═════════════════════════════════════════════════════════════════════════════
-// ARM NODES
-// ═════════════════════════════════════════════════════════════════════════════
-
-// ─────────────────────────────────────────────────────────────────────────────
-// MatchArmAST
-//
-// One non-default arm in a match expression.
-//   200           -> "ok"
-//   200, 201, 202 -> "success"
-//   n if n < 0    -> "invalid: " + string(n)
-//   s is Circle   -> s.radius * s.radius * 3.14159
-//   Vec2 { x, y } -> "at " + string(x) + ", " + string(y)
-//
-// patterns — one or more patterns, comma-separated in source.
-//   All patterns in the list are tried — the arm fires if any matches.
-//   Multiple patterns share the same guard and body.
-//   Constraint: all patterns in a list must bind the same set of names
-//   so the body can reference them unambiguously — enforced by the semantic pass.
-//
-// guard — optional filter expression, only valid after a bind or wildcard pattern.
-//   nullptr means no guard — the arm fires on pattern match alone.
-//   The guard expression may reference names introduced by bind patterns.
-//
-// body — the arm body: always a BlockStmtAST (parser wraps expr bodies).
-//   The body may reference names introduced by bind patterns in this arm.
-//
-// Semantic pass ordering rules:
-//   - Arms are tested top to bottom — order matters
-//   - An unconditional bind (no guard) matches everything;
-//     any arm after it is unreachable — semantic error
-//   - Wildcard without guard is also unreachable if not last before default
-// ─────────────────────────────────────────────────────────────────────────────
-
-struct MatchArmAST : BaseAST {
-    static constexpr ASTKind staticKind = ASTKind::MatchArm;
-
-    std::vector<std::unique_ptr<PatternAST>>  patterns;   // at least one
-    ExprPtr                                   guard;       // nullptr if no guard
-    ArmBody                                   body;        // BlockStmtAST
-
-    MatchArmAST() : BaseAST(ASTKind::MatchArm) {}
-
-    void accept(ASTVisitor& v) override { v.visit(*this); }
-};
-
-using  MatchArmPtr = std::unique_ptr<MatchArmAST>;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// DefaultArmAST
-//
-// The required final fallback arm — always present on every match expression.
-//   default -> "unknown"
-//   default -> { io.printl("unhandled")  return 0 }
-//
-// The 'default' arm has no pattern and no guard — it always matches.
-// It must be the last arm in the match. The semantic pass reports an error
-// if any arm follows default (unreachable arm) or if default is absent
-// (non-exhaustive match).
-//
-// body — the default arm body: always a BlockStmtAST.
-// ─────────────────────────────────────────────────────────────────────────────
-
-struct DefaultArmAST : BaseAST {
-    static constexpr ASTKind staticKind = ASTKind::DefaultArm;
-
-    ArmBody body;   // BlockStmtAST
-
-    DefaultArmAST() : BaseAST(ASTKind::DefaultArm) {}
-
-    void accept(ASTVisitor& v) override { v.visit(*this); }
-};
-
-using  DefaultArmPtr = std::unique_ptr<DefaultArmAST>;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// MatchExprAST
-//
-// Pattern matching expression — always produces a value.
-//   match status {
-//       200      -> "ok"
-//       404      -> "not found"
-//       default  -> "unknown"
-//   }
-//
-// subject — the expression being matched.
-// arms — the non-default match arms in source order.
-// defaultBody — the required default arm body (expr or block).
-//   defaultLoc — source location of the 'default' keyword.
-//
-// Grammar rules enforced by the semantic pass:
-//   - default arm is required and must be last
-//   - all arms must produce the same type
-//   - wildcards and unconditional binds must appear before default
-//   - enum exhaustiveness may be checked when subject is an enum type
-//
-// MatchArmAST and pattern nodes are defined in PatternAST.hpp.
-// defaultBody is stored as ExprPtr to avoid a circular dependency with
-// PatternAST.hpp — the parser sets it to either an expression or a
-// single-expression block.
-// ─────────────────────────────────────────────────────────────────────────────
-
-struct MatchExprAST : ExprAST {
-    static constexpr ASTKind staticKind = ASTKind::MatchExpr;
-
-    ExprPtr                  subject;
-    std::vector<MatchArmPtr> arms;
-    DefaultArmPtr            defaultBody;   // required — body of the default arm
-    SourceLocation           defaultLoc;    // location of the 'default' keyword
-
-    MatchExprAST() : ExprAST(ASTKind::MatchExpr) {}
-
-    void accept(ASTVisitor& v) override { v.visit(*this); }
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
 // IfExprAST
 //
 // The expression form of if — both branches required, both produce the same type.
-//   if n >= 0 { "positive" } else { "negative" }
-//   if score >= 60 { "pass" } else { "fail" }
+//   if n >= 0 ?? "positive" else "negative"
+//   if score >= 60 ?? "pass" else "fail"
 //
 // This is distinct from IfStmtAST (in StmtAST.hpp) where else is optional and
 // no value is produced. The parser selects the correct node based on context:
@@ -924,8 +820,8 @@ struct IfExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::IfExpr;
 
     ExprPtr  condition;
-    StmtPtr  thenBranch;    // BlockStmtAST — required
-    StmtPtr  elseBranch;    // BlockStmtAST — required for expression form
+    ExprPtr  thenBranch;    // expression
+    ExprPtr  elseBranch;    // expression
 
     IfExprAST() : ExprAST(ASTKind::IfExpr) {}
 
@@ -957,7 +853,8 @@ struct RangeExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::RangeExpr;
 
     ExprPtr lo;   // start (inclusive)
-    ExprPtr hi;   // end   (inclusive)
+    ExprPtr hi;   // end   (inclusive/exclusive depends on flag)
+    bool isExclusive = false; // true for ..<
 
     RangeExprAST() : ExprAST(ASTKind::RangeExpr) {}
 
@@ -997,6 +894,322 @@ struct TypeConvExprAST : ExprAST {
     TypeConvExprAST(TypePtr t, ExprPtr e, bool unsafe = false)
         : ExprAST(ASTKind::TypeConvExpr),
           targetType(std::move(t)), expr(std::move(e)), isUnsafe(unsafe) {}
+
+    void accept(ASTVisitor& v) override { v.visit(*this); }
+};
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ARM NODES
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MatchArmAST
+//
+// One non-default arm in a match expression.
+//   200           -> "ok"
+//   200, 201, 202 -> "success"
+//   1..10         -> "light"
+//   n if n < 0    -> "invalid: " + string(n)
+//   s is Circle   -> s.radius * s.radius * 3.14159
+//   Vec2 { x, y } -> "at " + string(x) + ", " + string(y)
+//
+// patterns — one or more patterns, comma-separated in source. Stored as
+//   vector<unique_ptr<BaseAST>> rather than vector<unique_ptr<PatternAST>>
+//   because literal and range arms now place LiteralExprAST and RangeExprAST
+//   nodes here directly — those inherit from ExprAST, not PatternAST, so there
+//   is no common subtype tighter than BaseAST. The semantic pass uses isa<> /
+//   as<> on ASTKind to discriminate each node; no compile-time narrower type
+//   is available or necessary.
+//   Valid ASTKind values in this vector:
+//     LiteralExpr     — literal value pattern: 42, "ok", true
+//     RangeExpr       — range pattern: 1..10, 1..<10
+//     BindPattern     — bind pattern: n
+//     WildcardPattern — discard pattern: _
+//     TypePattern     — type + bind pattern: v is Circle
+//     StructPattern   — destructure pattern: Vec2 { x, y }
+//   All patterns in the list are tried — the arm fires if any matches.
+//   Multiple patterns share the same guard and body.
+//   Constraint: all patterns in a list must bind the same set of names
+//   so the body can reference them unambiguously — enforced by the semantic pass.
+//
+// guard — optional filter expression, only valid after a bind or wildcard pattern.
+//   nullptr means no guard — the arm fires on pattern match alone.
+//   The guard expression may reference names introduced by bind patterns.
+//
+// exprs — one or two comma-separated result expressions (primary, optional secondary).
+//   The expressions may reference names introduced by bind patterns in this arm.
+//   See secondary value rules in the grammar for nullable semantics when only
+//   some arms supply a secondary value.
+//
+// Semantic pass ordering rules:
+//   - Arms are tested top to bottom — order matters
+//   - An unconditional bind (no guard) matches everything;
+//     any arm after it is unreachable — semantic error
+//   - Wildcard without guard is also unreachable if not last before default
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct MatchArmAST : BaseAST {
+    static constexpr ASTKind staticKind = ASTKind::MatchArm;
+
+    std::vector<std::unique_ptr<BaseAST>> patterns;   // at least one — see comment above
+    ExprPtr                               guard;       // nullptr if no guard
+    std::vector<ExprPtr>                  exprs;       // 1 or 2 result expressions
+
+    MatchArmAST() : BaseAST(ASTKind::MatchArm) {}
+
+    void accept(ASTVisitor& v) override { v.visit(*this); }
+};
+
+using  MatchArmPtr = std::unique_ptr<MatchArmAST>;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DefaultArmAST
+//
+// The required final fallback arm — always present on every match expression.
+//   default -> "unknown"
+//   default -> "unknown", "no detail available"
+//
+// The 'default' arm has no pattern and no guard — it always matches.
+// It must be the last arm in the match. The semantic pass reports an error
+// if any arm follows default (unreachable arm) or if default is absent
+// (non-exhaustive match).
+//
+// exprs — one or two comma-separated result expressions (primary, optional
+//   secondary). Must be consistent with the secondary value presence across
+//   all other arms — enforced by the semantic pass.
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct DefaultArmAST : BaseAST {
+    static constexpr ASTKind staticKind = ASTKind::DefaultArm;
+
+    std::vector<ExprPtr> exprs;
+
+    DefaultArmAST() : BaseAST(ASTKind::DefaultArm) {}
+
+    void accept(ASTVisitor& v) override { v.visit(*this); }
+};
+
+using  DefaultArmPtr = std::unique_ptr<DefaultArmAST>;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MatchExprAST
+//
+// Pattern matching expression — always produces a value.
+//   match status {
+//       200      -> "ok"
+//       404      -> "not found"
+//       default  -> "unknown"
+//   }
+//
+// subject — the expression being matched.
+// arms — the non-default match arms in source order.
+// defaultBody — the required default arm body (expr or block).
+//   defaultLoc — source location of the 'default' keyword.
+//
+// Grammar rules enforced by the semantic pass:
+//   - default arm is required and must be last
+//   - all arms must produce the same type
+//   - wildcards and unconditional binds must appear before default
+//   - enum exhaustiveness may be checked when subject is an enum type
+//
+// defaultBody is stored as a DefaultArmPtr (DefaultArmAST) which contains
+// the executable body (exprs) of the fallback case.
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct MatchExprAST : ExprAST {
+    static constexpr ASTKind staticKind = ASTKind::MatchExpr;
+
+    ExprPtr                  subject;
+    std::vector<MatchArmPtr> arms;
+    DefaultArmPtr            defaultBody;   // required — body of the default arm
+    SourceLocation           defaultLoc;    // location of the 'default' keyword
+
+    MatchExprAST() : ExprAST(ASTKind::MatchExpr) {}
+
+    void accept(ASTVisitor& v) override { v.visit(*this); }
+};// PATTERN NODES
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LiteralPatternAST — REMOVED
+//
+// Previously matched a literal value in pattern position (42, "ok", true, nil).
+// Replaced by LiteralExprAST placed directly into MatchArmAST::patterns.
+// The semantic pass recognises ASTKind::LiteralExpr in pattern position and
+// applies match semantics (equality test against the subject) rather than
+// evaluation semantics.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RangePatternAST — REMOVED
+//
+// Previously matched a range in pattern position (1..10, 11..<50).
+// Replaced by RangeExprAST placed directly into MatchArmAST::patterns.
+// The semantic pass recognises ASTKind::RangeExpr in pattern position and
+// applies match semantics (inclusive/exclusive bounds test against the subject).
+// RangeExprAST::isExclusive covers the ..<  form.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BindPatternAST
+//
+// Matches any value and binds it to a name for use in the guard and arm body.
+//   n            — bind without guard: captures matched value as 'n'
+//   n if n < 50  — bind with guard: only matches when n < 50
+//   arr          — bind array: arr.len() usable in guard and body
+//
+// The bound name is declared by the pattern itself — it is not looked up
+// in an outer scope. The semantic pass introduces 'n' (or whatever the name
+// is) as a new variable in the arm's scope with the type of the match subject.
+//
+// A BindPatternAST without a guard on its arm matches everything. The
+// semantic pass enforces that an unconditional bind must come after all
+// more-specific patterns (literal, range, type, struct) — otherwise
+// subsequent arms would be unreachable.
+//
+// Note: the guard lives on MatchArmAST, not on the pattern. A single arm
+// with a bind pattern has at most one guard. The pattern itself is just
+// the name binding.
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct BindPatternAST : PatternAST {
+    static constexpr ASTKind staticKind = ASTKind::BindPattern;
+
+    std::string name;   // "n", "arr", "s", "v"
+
+    explicit BindPatternAST(std::string n)
+        : PatternAST(ASTKind::BindPattern), name(std::move(n)) {}
+
+    void accept(ASTVisitor& v) override { v.visit(*this); }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WildcardPatternAST
+//
+// Matches any value and discards it — the '_' token.
+//   _       -> "non-zero"
+//
+// Semantically identical to BindPatternAST except no name is introduced
+// into scope. A wildcard pattern may appear with a guard, but since the
+// value is discarded the guard cannot reference the matched value by name.
+//
+// '_' and 'default' are distinct:
+//   _       — a pattern that matches anything and discards the value.
+//             May appear in a normal arm (with or without a guard).
+//   default — the required final fallback arm keyword. Not a pattern.
+//
+// The semantic pass enforces that _ does not appear as the last pattern
+// before 'default' in a way that makes 'default' unreachable.
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct WildcardPatternAST : PatternAST {
+    static constexpr ASTKind staticKind = ASTKind::WildcardPattern;
+
+    WildcardPatternAST() : PatternAST(ASTKind::WildcardPattern) {}
+
+    void accept(ASTVisitor& v) override { v.visit(*this); }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TypePatternAST
+//
+// Matches when the subject is of a specific type, and binds the narrowed
+// value to a name. Combines a bind and a runtime type check in one pattern.
+//   s is Circle    — matches if subject is Circle, binds as 's' typed Circle
+//   v is Rect      — matches if subject is Rect,   binds as 'v' typed Rect
+//   e is Error     — matches if subject is Error,  binds as 'e' typed Error
+//
+// Grammar: IDENTIFIER 'is' type
+//   bindName  — the name introduced into the arm's scope
+//   checkType — the type being tested against
+//
+// After a successful match the semantic pass narrows bindName's type to
+// checkType for the duration of the arm body. Outside the arm the original
+// subject type is unchanged.
+//
+// Used for union type dispatch and 'any' type dispatch:
+//   type Shape = Circle | Rect | Triangle
+//   match shape {
+//       s is Circle   -> s.radius * s.radius * 3.14159
+//       s is Rect     -> s.width * s.height
+//       default       -> 0.0
+//   }
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct TypePatternAST : PatternAST {
+    static constexpr ASTKind staticKind = ASTKind::TypePattern;
+
+    std::string  bindName;    // "s", "v", "e" — introduced into arm scope
+    TypePtr      checkType;   // Circle, Rect, Error, ...
+
+    TypePatternAST() : PatternAST(ASTKind::TypePattern) {}
+
+    void accept(ASTVisitor& v) override { v.visit(*this); }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FieldPatternAST
+//
+// One field entry inside a struct pattern — a plain struct, not a PatternAST.
+// Never appears independently — always owned by StructPatternAST.
+//
+// Two syntactic forms:
+//   x        — shorthand: matches field 'x' and binds it to name 'x'
+//              field="x",  subPattern=nullptr  (bind name = field name)
+//   x: 0.0   — full form: matches field 'x' against sub-pattern 0.0
+//              field="x",  subPattern=LiteralExprAST(0.0)
+//   x: Vec2 { ... } — nested: field 'x' matched against a nested struct pattern
+//              field="x",  subPattern=StructPatternAST(...)
+//
+// When subPattern is nullptr the field is bound by name (shorthand form).
+// When subPattern is present the field value must match the sub-pattern.
+// subPattern is BaseAST* for the same reason as MatchArmAST::patterns —
+// literal sub-patterns are LiteralExprAST (ExprAST), while structural
+// sub-patterns are PatternAST; no common subtype tighter than BaseAST exists.
+//
+// Note: struct patterns use ':' as the field separator — this is pattern
+// syntax only. Struct literals always use '=' (never ':').
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct FieldPatternAST {
+    std::string                  field;        // field name from the struct
+    std::unique_ptr<BaseAST>     subPattern;   // nullptr → shorthand bind by name
+    SourceLocation               loc;
+};
+
+using FieldPatternPtr = std::unique_ptr<FieldPatternAST>;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// StructPatternAST
+//
+// Matches when the subject is a struct of the named type and its fields
+// satisfy the given field patterns.
+//
+//   Vec2 { x: 0.0, y: 0.0 }   — exact match on both fields
+//   Vec2 { x, y }              — shorthand: binds x and y from subject
+//   Player { health: 0 }       — matches only when health == 0, other fields ignored
+//   Player { pos: Vec2 { x: 0.0, y: 0.0 }, health }  — nested pattern
+//
+// typeName   — the struct type name ("Vec2", "Player")
+// fields     — the field patterns in source order
+//
+// Fields not listed in the pattern are ignored — the match succeeds as long
+// as the listed fields satisfy their patterns. This is intentional: you don't
+// have to list every field.
+//
+// The semantic pass verifies:
+//   - typeName resolves to a struct in the symbol table
+//   - every listed field name exists on that struct
+//   - sub-pattern types are compatible with the field types
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct StructPatternAST : PatternAST {
+    static constexpr ASTKind staticKind = ASTKind::StructPattern;
+
+    std::string                   typeName;  // "Vec2", "Player"
+    std::vector<FieldPatternPtr>  fields;    // field patterns in source order
+
+    StructPatternAST() : PatternAST(ASTKind::StructPattern) {}
 
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };

@@ -44,24 +44,24 @@
 //   ParamAST            — name type  or  name ...type  (parameter of a function)
 //   GenericParamAST     — T  or  T : Trait  or  T : A + B 
 //   FuncDeclAST         — let/imt/val  name  [<generics>]  (group)+ [returnType]  = body
-//   StructDeclAST       — [pub] struct Name [<generics>] { fields }
+//   StructDeclAST       — [Visibility] struct Name [<generics>] { fields }
 //   FieldDeclAST        — name type [= defaultExpr]
-//   EnumDeclAST         — [pub] enum Name { variants }
+//   EnumDeclAST         — [Visibility] enum Name { variants }
 //   EnumVariantAST      — VariantName [= INT_LITERAL]
-//   TraitDeclAST        — [pub] trait Name [<generics>] { method signatures }
+//   TraitDeclAST        — [Visibility] trait Name [<generics>] { method signatures }
 //   TraitMethodAST      — name (params) [returnType]   (signature only, no body)
-//   ImplDeclAST         — [pub] impl [<generics>] Name [: TraitRef] { members }
+//   ImplDeclAST         — [Visibility] impl [<generics>] Name [: TraitRef] { members }
 //   TraitRefAST         — TraitName [<genericArgs>]    (the ": Drawable" part)
 //   MethodDeclAST       — name (params) [returnType] = body
 //   FromDeclAST         — from (paramName paramType) returnType = body
-//   TypeAliasDeclAST    — [pub] type Name [<generics>] = TypeAST
+//   TypeAliasDeclAST    — [Visibility] type Name [<generics>] = TypeAST
 //   ExternDeclAST       — extern let name (params) [returnType]
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Visibility — the three visibility tiers for declarations.
 //   Private — visible only within the file (default)
-//   Package — visible to the entire package (pub)
+//   Package — visible to the entire package (Visibility)
 //   Export  — visible to external consumers (export)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -309,7 +309,7 @@ using FieldDeclPtr = std::unique_ptr<FieldDeclAST>;
 // StructDeclAST
 //
 // A struct type declaration.
-//   pub struct Vec2 { x float  y float }
+//   Visibility struct Vec2 { x float  y float }
 //   struct Scene<T : Drawable> { objects []T }
 //   struct Cache<K : Hashable + Comparable, V> { keys []K  values []V }
 //
@@ -363,8 +363,8 @@ using EnumVariantPtr = std::unique_ptr<EnumVariantAST>;
 // EnumDeclAST
 //
 // A named, closed set of integer-backed constants.
-//   pub enum Direction { North  South  East  West }
-//   pub enum ShaderStage { Vertex = 0x01  Fragment = 0x02  Compute = 0x04 }
+//   Visibility enum Direction { North  South  East  West }
+//   Visibility enum ShaderStage { Vertex = 0x01  Fragment = 0x02  Compute = 0x04 }
 //
 // The semantic pass chooses the backing integer type:
 //   - byte  (int8)  for ≤ 255 variants
@@ -415,8 +415,8 @@ using TraitMethodPtr = std::unique_ptr<TraitMethodAST>;
 // TraitDeclAST
 //
 // A named method contract — signatures only, no bodies, no fields.
-//   pub trait Drawable { draw ()  bounds () Rect }
-//   pub trait Comparable<T> { compareTo (other T) int }
+//   Visibility trait Drawable { draw ()  bounds () Rect }
+//   Visibility trait Comparable<T> { compareTo (other T) int }
 //
 // Used by the semantic pass to verify impl conformance and as a constraint
 // in generic param declarations (T : Drawable).
@@ -467,7 +467,7 @@ using TraitRefPtr = std::unique_ptr<TraitRefAST>;
 //   drawAll () = { for obj in objects { obj.draw() } }
 //
 // No per-method visibility prefix — visibility is set at the ImplDeclAST level
-// (pub impl = public methods, bare impl = package-private methods).
+// (Visibility impl = Visibilitylic methods, bare impl = package-private methods).
 // returnType is nullptr for void methods.
 // isAsync is true when the body was written as async { ... }.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -492,31 +492,32 @@ using MethodDeclPtr = std::unique_ptr<MethodDeclAST>;
 // ─────────────────────────────────────────────────────────────────────────────
 // FromDeclAST
 //
-// A type conversion declaration inside a pub impl block.
+// A top-level type conversion declaration.
 //   from (c Celsius) Fahrenheit = { return Fahrenheit { value = c.value * 9/5 + 32 } }
+//   pub from (c Celsius) Fahrenheit = { ... }
+//   export from (c Celsius) Fahrenheit = { ... }
 //
-// Only valid inside pub impl — bare impl cannot declare `from`.
 // Enables TypeName(expr) call syntax at use sites:
 //   let f Fahrenheit = Fahrenheit(boiling)   ← calls this from declaration
 //
-// Multiple from declarations are allowed on the same type, each with a
-// different source parameter type. The semantic pass checks for duplicates.
+// Multiple from declarations are allowed, each with a different source parameter type.
+// The semantic pass checks for duplicates.
 //
 // srcParamName — the name of the source parameter ("c" in the example)
 // srcParamType — the source type ("Celsius")
-// returnTypeName — must match the enclosing impl's struct name
+// returnTypeName — the target type ("Fahrenheit")
 // ─────────────────────────────────────────────────────────────────────────────
 
-struct FromDeclAST : BaseAST {
+struct FromDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::FromDecl;
 
+    Visibility visibility = Visibility::Private;
     std::string srcParamName;   // "c"
     TypePtr srcParamType;       // Celsius
-    std::string returnTypeName; // "Fahrenheit" — semantic pass verifies matches
-                                // impl target
+    std::string returnTypeName; // "Fahrenheit"
     StmtPtr body;               // BlockStmtAST
 
-    FromDeclAST() : BaseAST(ASTKind::FromDecl) {}
+    FromDeclAST() : DeclAST(ASTKind::FromDecl) {}
 
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
@@ -527,12 +528,12 @@ using FromDeclPtr = std::unique_ptr<FromDeclAST>;
 // ImplDeclAST
 //
 // Binds methods (and from conversions) to a struct type.
-//   pub impl Vec2 { ... }
-//   pub impl Circle : Drawable { ... }
-//   pub impl<T : Drawable> Scene<T> { ... }
+//   Visibility impl Vec2 { ... }
+//   Visibility impl Circle : Drawable { ... }
+//   Visibility impl<T : Drawable> Scene<T> { ... }
 //   impl Vec2 { ... }   -- package-private methods
 //
-// isPub — true = methods callable by anyone holding the value
+// isVisibility — true = methods callable by anyone holding the value
 //         false = methods callable only within the package
 //
 // genericParams — type params on the impl itself, e.g. <T : Drawable>
@@ -547,7 +548,6 @@ using FromDeclPtr = std::unique_ptr<FromDeclAST>;
 //   The semantic pass uses this to verify full trait conformance.
 //
 // methods — regular method bodies
-// fromDecls — type conversion declarations (pub impl only)
 //
 // Multiple impl blocks for the same struct merge at semantic time.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -561,7 +561,6 @@ struct ImplDeclAST : DeclAST {
     std::vector<TypePtr> structGenericArgs;     // <T> in Scene<T>
     TraitRefPtr traitRef;                       // nullptr if no conformance
     std::vector<MethodDeclPtr> methods;
-    std::vector<FromDeclPtr> fromDecls;         // only valid when isPub
 
     ImplDeclAST() : DeclAST(ASTKind::ImplDecl) {}
 

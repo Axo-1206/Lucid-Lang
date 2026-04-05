@@ -611,7 +611,7 @@ ExprPtr Parser::parsePrimaryExpr() {
 
         // Plain identifier
         advance();
-        auto node = std::make_unique<IdentExprAST>(std::move(name));
+        auto node = std::make_unique<IdentifierExprAST>(std::move(name));
         node->loc = loc;
         return node;
     }
@@ -676,12 +676,12 @@ ExprPtr Parser::parsePostfixExpr(ExprPtr lhs) {
         // ── Generic call: lhs '<' types '>' '(' args ')' ─────────────────────
         // This is ambiguous with less-than comparisons. We use a simple
         // heuristic: only treat '<' as a generic open when the lhs is an
-        // IdentExprAST or BehaviorAccessExprAST (i.e. a name), and when the
+        // IdentifierExprAST or BehaviorAccessExprAST (i.e. a name), and when the
         // content between '<' and '>' looks like a type list.
         // Full disambiguation would require unbounded lookahead; we handle the
         // common cases and let the semantic pass catch the rest.
         if (check(TokenType::LESS) &&
-            (lhs->isa<IdentExprAST>() || lhs->isa<BehaviorAccessExprAST>())) {
+            (lhs->isa<IdentifierExprAST>() || lhs->isa<BehaviorAccessExprAST>())) {
             // Save position so we can roll back if this is actually '<' comparison.
             std::size_t savedPos = pos_;
             std::vector<TypePtr> genericArgs;
@@ -993,61 +993,12 @@ ExprPtr Parser::parseMatchExpr() {
             if (hasDefault) {
                 errorAt(DiagCode::E2007, "duplicate 'default' arm in match expression");
             }
-            auto defArm = parseDefaultArm();
-            //node->defaultBody = std::make_unique<LiteralExprAST>(LiteralKind::Nil, "nil");
-            // Store default arm body as a wrapped block in defaultBody.
-            // MatchExprAST.defaultBody is ExprPtr — we store a sentinel here and
-            // attach the real block via a side-channel on the node, OR we rely on
-            // the fact that defaultBody is StmtPtr in spirit.
-            // Per ExprAST.hpp: defaultBody is ExprPtr. We store the parsed body
-            // by wrapping the block's first expression, or as-is if it's a block.
-            // Since ArmBody is StmtPtr, we instead store a reference via the
-            // DefaultArmAST on the side. For now we keep the default body in a
-            // parallel field — this is a known design tension between ExprAST.hpp
-            // (declares ExprPtr) and PatternAST.hpp (uses StmtPtr for arm bodies).
-            // Resolution: store the DefaultArmAST in a local and retrieve its body.
-            if (defArm) {
-                node->defaultLoc = defArm->loc;
-                // Transfer the body. The body is a StmtPtr (BlockStmtAST).
-                // defaultBody in MatchExprAST is ExprPtr — we need a wrapper.
-                // We create a sentinel "block expression" by placing the body
-                // into a temporary. The semantic pass unpacks it.
-                // For now, store the DefaultArmAST's block as a standalone
-                // ExprStmtAST wrapper is not cleanly possible without StmtAST here.
-                // Pragmatic approach: store the block directly in node->defaultBody
-                // by re-casting StmtPtr to ExprPtr-compatible — NOT safe.
-                // Instead: MatchExprAST.defaultBody should be StmtPtr per
-                // LUC_GRAMMAR.md intent, but ExprAST.hpp declares it ExprPtr.
-                // We will use a nil literal placeholder and attach the real body
-                // in a new field we store on the heap alongside.
-                // This is tracked as a design task — the clean fix is to change
-                // MatchExprAST::defaultBody to StmtPtr. For now, to avoid
-                // undefined behavior, we store the block in the sentinel node
-                // by keeping defArm alive via a move into a local cache.
-                //node->defaultBody = std::make_unique<LiteralExprAST>(
-                    //LiteralKind::Nil, "__default_arm_body__");
-                // A full solution requires the MatchExprAST node to hold a
-                // unique_ptr<DefaultArmAST> directly. We set defaultBody to nil
-                // here; the semantic pass can ignore it if defaultArm_ is present.
-                // For a production compiler the cleanest fix is:
-                //   Change ExprAST.hpp: ExprPtr defaultBody → StmtPtr defaultBody
-                // That one-line change unblocks everything. Until then, we store
-                // the StmtPtr body here using a static_cast through void*.
-                // That is UB-free only if the semantic pass never uses defaultBody
-                // as ExprPtr. We accept this as a known limitation of the current
-                // AST design and document it.
-                //
-                // PREFERRED PRODUCTION FIX (1 line in ExprAST.hpp):
-                //   StmtPtr defaultBody;  // was: ExprPtr defaultBody
-                //
-                // For this implementation, store the DefaultArmAST as the
-                // out-of-band defaultArm_ member.
-                //
-                // We store the block body in a simple way: reinterpret the StmtPtr
-                // as a void* and place it in a field on a companion node.
-                // Since we own the whole allocation, we can do this safely.
-                (void)defArm; // body is in defArm->body — see note above
+
+            node->defaultBody = parseDefaultArm();
+            if (node->defaultBody) {
+                node->defaultLoc = node->defaultBody->loc;
             }
+            
             hasDefault = true;
             continue;
         }
@@ -1549,7 +1500,7 @@ MatchArmPtr Parser::parseMatchArm() {
 // Grammar:  'default' '->' arm_body
 // ─────────────────────────────────────────────────────────────────────────────
 
-std::unique_ptr<DefaultArmAST> Parser::parseDefaultArm() {
+DefaultArmPtr Parser::parseDefaultArm() {
     SourceLocation loc = currentLoc();
     consume(TokenType::DEFAULT, "expected 'default'");
     consume(TokenType::ARROW, "expected '->' after 'default'");

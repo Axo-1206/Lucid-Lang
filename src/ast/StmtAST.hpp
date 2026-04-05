@@ -124,15 +124,15 @@ struct ExprStmtAST : StmtAST {
 // LocalDecl — the two declaration kinds that are valid inside a block.
 //
 // Only VarDeclAST and FuncDeclAST may appear inside a block body.
-// This variant enforces that structurally — neither pub nor extern can
+// This variant enforces that structurally — neither pub/export nor extern can
 // sneak in because:
 //
 //   - DeclPtr (the base DeclAST*) is NOT used here. Using the base pointer
 //     would allow any declaration kind including StructDeclAST, ImplDeclAST,
 //     ExternDeclAST, etc. — none of which are valid inside a block.
 //
-//   - pub is a file-to-package visibility modifier. Inside a block every
-//     name is scoped to that block and gone when the block exits. 'pub'
+//   - pub/export is a file-to-package visibility modifier. Inside a block every
+//     name is scoped to that block and gone when the block exits. 'pub'/'export'
 //     is structurally meaningless and the parser must set isPub = false
 //     on any VarDeclAST or FuncDeclAST it constructs for a block context.
 //

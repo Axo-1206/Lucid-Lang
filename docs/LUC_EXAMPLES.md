@@ -3,6 +3,12 @@
 > **Scope of this file:** Practical, annotated examples for every major language construct.
 > Grammar rules are in `LUC_GRAMMAR.md`. Project identity is in `LUC_PROJECT_OVERVIEW.md`.
 
+# DEPRECATED DO NOT REFERENCE THIS FILE
+# DEPRECATED DO NOT REFERENCE THIS FILE
+# DEPRECATED DO NOT REFERENCE THIS FILE
+# DEPRECATED DO NOT REFERENCE THIS FILE
+# DEPRECATED DO NOT REFERENCE THIS FILE
+
 ## Table of Contents
 
 1. [Package & Module System](#1-package--module-system)

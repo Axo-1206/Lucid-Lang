@@ -99,7 +99,7 @@ static TypeAST* checkLiteralExpr(LiteralExprAST& node) {
 // Looks the name up in the symbol table. Reports E3001 if missing.
 // Returns the symbol's declared type.
 // ─────────────────────────────────────────────────────────────────────────────
-static TypeAST* checkIdentExpr(IdentExprAST& node, SymbolTable& symbols,
+static TypeAST* checkIdentExpr(IdentifierExprAST& node, SymbolTable& symbols,
                                 DiagnosticEngine& dc) {
     Symbol* sym = symbols.lookup(node.name);
     if (!sym) {
@@ -311,8 +311,8 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
                                     asyncDepth, loopDepth, parallelDepth, insideExtern);
 
     // If callee is a named type (struct constructor / from() dispatch), return that type.
-    if (node.callee->isa<IdentExprAST>()) {
-        auto* ident = node.callee->as<IdentExprAST>();
+    if (node.callee->isa<IdentifierExprAST>()) {
+        auto* ident = node.callee->as<IdentifierExprAST>();
         Symbol* sym = symbols.lookup(ident->name);
         if (sym && sym->kind == SymbolKind::Struct) {
             // Struct literal call — return a NamedTypeAST for this struct.
@@ -374,8 +374,8 @@ static TypeAST* checkAssignExpr(AssignExprAST& node, SymbolTable& symbols,
                                  asyncDepth, loopDepth, parallelDepth, insideExtern);
 
     // Check the LHS is a let-declared symbol.
-    if (node.lhs->isa<IdentExprAST>()) {
-        auto* ident = node.lhs->as<IdentExprAST>();
+    if (node.lhs->isa<IdentifierExprAST>()) {
+        auto* ident = node.lhs->as<IdentifierExprAST>();
         Symbol* sym = symbols.lookup(ident->name);
         if (sym && sym->declKw != DeclKeyword::Let) {
             dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3004,
@@ -876,8 +876,8 @@ TypeAST* checkExpr(ExprAST* node, SymbolTable& symbols, TypeResolver& resolver,
         case ASTKind::LiteralExpr:
             return checkLiteralExpr(*node->as<LiteralExprAST>());
 
-        case ASTKind::IdentExpr:
-            return checkIdentExpr(*node->as<IdentExprAST>(), symbols, dc);
+        case ASTKind::IdentifierExpr:
+            return checkIdentExpr(*node->as<IdentifierExprAST>(), symbols, dc);
 
         case ASTKind::FieldAccessExpr:
             return checkFieldAccessExpr(*node->as<FieldAccessExprAST>(), symbols,
