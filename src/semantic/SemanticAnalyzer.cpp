@@ -63,8 +63,22 @@ bool SemanticAnalyzer::analyze(std::vector<ProgramAST*>& files) {
     // more semantic errors during the checking pass.
 
     checkDecls(files);
-    annotate(files);
+    if (dc_.hasErrors()) return false;
 
+    // Phase 3.5: Entry point detection
+    // Validate that a 'main' function exists and has a valid signature.
+    Symbol* mainSym = symbols_->lookup("main");
+    if (!mainSym) {
+        // Points to the start of the first file for a missing entry point error.
+        SourceLocation loc = files.empty() ? SourceLocation() : files[0]->loc;
+        dc_.error(DiagnosticCategory::Semantic, loc, DiagCode::E3006, 
+                  "program is missing a 'main' entry point");
+    } else if (mainSym->kind != SymbolKind::Func) {
+        dc_.error(DiagnosticCategory::Semantic, mainSym->loc, DiagCode::E3007, 
+                  "'main' must be a function");
+    }
+
+    annotate(files);
     return !dc_.hasErrors();
 }
 

@@ -48,5 +48,7 @@ enum class DiagCode : uint32_t {
     E3002 = 3002, ///< Type mismatch between expected and actual expression.
     E3003 = 3003, ///< Mismatch between function parameters and call arguments.
     E3004 = 3004, ///< Attempted to assign to an immutable value.
-    E3005 = 3005  ///< Symbol already declared in this scope.
+    E3005 = 3005, ///< Symbol already declared in this scope.
+    E3006 = 3006, ///< Missing 'main' entry point.
+    E3007 = 3007  ///< Invalid signature for the 'main' function.
 };

@@ -47,7 +47,6 @@ luc/
 │   ├── ast/
 │   │   ├── BaseAST.hpp
 │   │   ├── TypeAST.hpp
-│   │   ├── PatternAST.hpp
 │   │   ├── DeclAST.hpp
 │   │   ├── ExprAST.hpp
 │   │   └── StmtAST.hpp
