@@ -396,18 +396,26 @@ bool Parser::looksLikeType() const {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// We have just consumed the declaration keyword (let/imt/val) and the
-// function name IDENTIFIER.  Current position is AFTER the name.
+// We have just consumed the declaration keyword (let/imt/val). The name 
+// identifier (e.g. 'add' or 'x') has been peeked but NOT yet consumed.
+//
+// Current position: pos_ sits ON the name IDENTIFIER.
 //
 // A function starts with optional generic params '<...>' then '('.
 // A variable starts with a type annotation — which may also start with
 // an IDENTIFIER (named type) or '[' etc.
 //
-// Strategy: skip over a potential '<...>' generic param block, then check
-// whether the resulting token is '('.
+// Strategy: Skip the name identifier itself, then skip over a potential 
+// '<...>' generic param block, and finally check if the next token is '('.
 // ─────────────────────────────────────────────────────────────────────────────
 bool Parser::looksLikeFuncDecl() const {
     std::size_t i = pos_;
+
+    // Skip the name IDENTIFIER. Strategy: we must move past the name 
+    // to find the signature start (generics or parentheses).
+    if (i < tokens_.size() && tokens_[i].type == TokenType::IDENTIFIER) {
+        ++i;
+    }
 
     // Skip generic params if present: < ... >
     // We match angle brackets by depth so nested generics don't confuse us.
