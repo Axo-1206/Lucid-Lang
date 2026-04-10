@@ -151,8 +151,9 @@ private:
     }
 
     void visit(MethodDeclAST& node) override {
-        for (auto& param : node.params)
-            walk(param.get());
+        for (auto& group : node.paramGroups)
+            for (auto& param : group)
+                walk(param.get());
         walk(node.body.get());
         // Methods are never compile-time constants; they dispatch at runtime.
         node.isConst = false;
@@ -166,6 +167,9 @@ private:
     }
 
     void visit(FromEntryAST& node) override {
+        for (auto& group : node.paramGroups)
+            for (auto& param : group)
+                walk(param.get());
         walk(node.body.get());
         // Individual conversion entries are not constants.
         node.isConst = false;

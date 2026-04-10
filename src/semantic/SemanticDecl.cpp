@@ -236,8 +236,10 @@ void checkTraitDecl(TraitDeclAST& node, TypeResolver& resolver, DiagnosticEngine
                      "duplicate method '" + method->name + "' in trait '" + node.name + "'");
             continue;
         }
-        for (auto& param : method->params) {
-            resolver.resolveType(param->type.get());
+        for (auto& group : method->paramGroups) {
+            for (auto& param : group) {
+                resolver.resolveType(param->type.get());
+            }
         }
         if (method->returnType) {
             resolver.resolveType(method->returnType.get());
@@ -285,16 +287,18 @@ void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
         if (method->isAsync) asyncDepth++;
         symbols.pushScope();
  
-        for (auto& param : method->params) {
-            TypeAST* pt = resolver.resolveType(param->type.get());
-            if (!pt) continue;
-            Symbol ps;
-            ps.name = param->name; ps.kind = SymbolKind::Param;
-            ps.declKw = DeclKeyword::Let; ps.visibility = Visibility::Private;
-            ps.type = pt; ps.decl = param.get(); ps.isAsync = false; ps.loc = param->loc;
-            if (!symbols.declare(ps)) {
-                dc.error(DiagnosticCategory::Semantic, param->loc, DiagCode::E3005,
-                         "duplicate parameter '" + param->name + "'");
+        for (auto& group : method->paramGroups) {
+            for (auto& param : group) {
+                TypeAST* pt = resolver.resolveType(param->type.get());
+                if (!pt) continue;
+                Symbol ps;
+                ps.name = param->name; ps.kind = SymbolKind::Param;
+                ps.declKw = DeclKeyword::Let; ps.visibility = Visibility::Private;
+                ps.type = pt; ps.decl = param.get(); ps.isAsync = false; ps.loc = param->loc;
+                if (!symbols.declare(ps)) {
+                    dc.error(DiagnosticCategory::Semantic, param->loc, DiagCode::E3005,
+                             "duplicate parameter '" + param->name + "'");
+                }
             }
         }
  
@@ -336,8 +340,8 @@ void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
 //
 // Rules enforced:
 //   - Target type (returnTypeName) must resolve.
-//   - Source parameter type must resolve.
-//   - Source parameter is declared into a new scope for the body.
+//   - Every parameter type in every group must resolve.
+//   - Parameters are declared into a new scope for the body.
 //   - Body is checked to return the target type (implicitly or explicitly).
 // ─────────────────────────────────────────────────────────────────────────────
 void checkFromDecl(FromDeclAST& node, SymbolTable& symbols, TypeResolver& resolver,
@@ -357,11 +361,7 @@ void checkFromDecl(FromDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
     for (auto& entry : node.entries) {
         if (!entry) continue;
 
-        // Resolve source parameter type.
-        TypeAST* srcType = resolver.resolveType(entry->srcParamType.get());
-        if (!srcType) continue;
-
-        // Verify the explicit return type identifier in the entry matches targetName.
+        // Verify the explicit return type identifier matches the block target.
         if (entry->returnTypeName != node.targetTypeName) {
             dc.error(DiagnosticCategory::Semantic, entry->loc, DiagCode::E3002,
                      "from conversion: return type '" + entry->returnTypeName +
@@ -371,16 +371,26 @@ void checkFromDecl(FromDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
         // New scope for the conversion body.
         symbols.pushScope();
 
-        Symbol ps;
-        ps.name       = entry->srcParamName;
-        ps.kind       = SymbolKind::Param;
-        ps.declKw     = DeclKeyword::Let;
-        ps.visibility = Visibility::Private;
-        ps.type       = srcType;
-        ps.decl       = entry.get();
-        ps.isAsync    = false;
-        ps.loc        = entry->loc;
-        symbols.declare(ps);
+        // Declare all parameters from all curry groups into the body scope.
+        for (auto& group : entry->paramGroups) {
+            for (auto& param : group) {
+                TypeAST* pt = resolver.resolveType(param->type.get());
+                if (!pt) continue;
+                Symbol ps;
+                ps.name       = param->name;
+                ps.kind       = SymbolKind::Param;
+                ps.declKw     = DeclKeyword::Let;
+                ps.visibility = Visibility::Private;
+                ps.type       = pt;
+                ps.decl       = param.get();
+                ps.isAsync    = false;
+                ps.loc        = param->loc;
+                if (!symbols.declare(ps)) {
+                    dc.error(DiagnosticCategory::Semantic, param->loc, DiagCode::E3005,
+                             "duplicate parameter name '" + param->name + "' in from conversion");
+                }
+            }
+        }
 
         // Check the body. Expected return is the target type.
         if (entry->body) {

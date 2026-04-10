@@ -391,7 +391,10 @@ struct EnumDeclAST : DeclAST {
 //   draw   ()
 //   bounds () Rect
 //   compareTo (other T) int
+//   clamp (min int) (max int) int    -- curried trait method signature
 //
+// paramGroups mirrors FuncDeclAST: outer = curry groups, inner = params.
+// Single group = normal method; multiple groups = curried method signature.
 // This is not a MethodDeclAST because it has no body. The semantic pass uses
 // this node when checking that ImplDeclAST provides every required method.
 // returnType is nullptr for void methods.
@@ -401,7 +404,7 @@ struct TraitMethodAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::TraitMethod;
 
     std::string name;
-    std::vector<ParamPtr> params;
+    std::vector<std::vector<ParamPtr>> paramGroups; // outer = curry groups
     TypePtr returnType; // nullptr = void
 
     TraitMethodAST() : BaseAST(ASTKind::TraitMethod) {}
@@ -465,9 +468,11 @@ using TraitRefPtr = std::unique_ptr<TraitRefAST>;
 //   length () float = { return (x*x + y*y) -> sqrt }
 //   dot (other Vec2) float = { return x*other.x + y*other.y }
 //   drawAll () = { for obj in objects { obj.draw() } }
+//   clamp (min int) (max int) (value int) int = { ... }   -- curried method
 //
-// No per-method visibility prefix — visibility is set at the ImplDeclAST level
-// (Visibility impl = Visibilitylic methods, bare impl = package-private methods).
+// paramGroups mirrors FuncDeclAST: outer = curry groups, inner = params.
+// Single group = normal method; multiple groups = curried method.
+// No per-method visibility prefix — visibility is set at the ImplDeclAST level.
 // returnType is nullptr for void methods.
 // isAsync is true when the body was written as async { ... }.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -476,7 +481,7 @@ struct MethodDeclAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::MethodDecl;
 
     std::string name;
-    std::vector<ParamPtr> params;
+    std::vector<std::vector<ParamPtr>> paramGroups; // outer = curry groups
     TypePtr returnType; // nullptr = void
     StmtPtr body;       // BlockStmtAST
     FuncBodyKind bodyKind = FuncBodyKind::Block;
@@ -494,15 +499,18 @@ using MethodDeclPtr = std::unique_ptr<MethodDeclAST>;
 //
 // A single conversion entry inside a from block.
 //   celsius (c Celsius) Fahrenheit = { ... }
+//   celsius (c Celsius) (scale float) Fahrenheit = { ... }   -- curried
 //
-// Grammar: IDENTIFIER '(' IDENTIFIER type ')' IDENTIFIER '=' func_body
+// paramGroups mirrors FuncDeclAST: outer = curry groups, inner = params.
+// Single group = normal conversion; multiple groups = curried conversion.
+// returnTypeName must match the enclosing FromDeclAST's targetTypeName —
+// enforced by the semantic pass.
 // ─────────────────────────────────────────────────────────────────────────────
 struct FromEntryAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::FromEntry;
 
     std::string name;           // "celsius"
-    std::string srcParamName;   // "c"
-    TypePtr     srcParamType;   // Celsius
+    std::vector<std::vector<ParamPtr>> paramGroups; // outer = curry groups
     std::string returnTypeName; // "Fahrenheit"
     StmtPtr     body;           // BlockStmtAST
     FuncBodyKind bodyKind = FuncBodyKind::Block;
@@ -617,7 +625,7 @@ struct TypeAliasDeclAST : DeclAST {
 // The `extern` modifier signals to codegen that no body will be generated —
 // the linker resolves the symbol from a C/Vulkan library.
 //
-// Raw pointer types (@T) are only valid inside extern declarations.
+// Raw pointer types (*T) are only valid inside extern declarations.
 // The semantic pass enforces this by checking that PtrTypeAST nodes appear
 // only as children of ExternDeclAST subtrees.
 //

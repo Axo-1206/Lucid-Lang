@@ -644,10 +644,12 @@ std::unique_ptr<TraitDeclAST> Parser::parseTraitDecl(Visibility vis) {
 // parseTraitMethod
 //
 // Grammar:
-//   trait_method := IDENTIFIER '(' [ param_list ] ')' [ return_type ]
+//   trait_method := IDENTIFIER param_group { param_group } [ return_type ]
 //
-// Signature only — no '=' and no body. This distinguishes trait methods from
-// impl methods even though they have the same leading shape.
+// Signature only — no '=' and no body. Supports curried signatures:
+//   draw   ()
+//   compareTo (other T) int
+//   clamp (min int) (max int) int
 // ─────────────────────────────────────────────────────────────────────────────
 
 TraitMethodPtr Parser::parseTraitMethod() {
@@ -662,7 +664,15 @@ TraitMethodPtr Parser::parseTraitMethod() {
     auto method = std::make_unique<TraitMethodAST>();
     method->loc = loc;
     method->name = std::move(name);
-    method->params = parseParamGroup();
+
+    // Parse one or more parameter groups (curried signature support).
+    if (!check(TokenType::LPAREN)) {
+        errorAt(DiagCode::E2001, "expected '(' to start parameter list for trait method '" + method->name + "'");
+        return nullptr;
+    }
+    while (check(TokenType::LPAREN)) {
+        method->paramGroups.push_back(parseParamGroup());
+    }
 
     // Optional return type — present if current token looks like a type
     // and is not '=' (which would indicate an impl method body, not a trait sig)
@@ -785,7 +795,12 @@ TraitRefPtr Parser::parseTraitRef() {
 // parseMethodDecl
 //
 // Grammar:
-//   method_decl := IDENTIFIER '(' [ param_list ] ')' [ return_type ] '=' func_body
+//   method_decl := IDENTIFIER param_group { param_group } [ return_type ] '=' func_body
+//
+// Supports curried methods:
+//   length () float = { ... }
+//   dot (other Vec2) float = { ... }
+//   clamp (min int) (max int) (value int) int = { ... }
 //
 // No visibility prefix per method — visibility comes from the enclosing impl block.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -802,7 +817,15 @@ MethodDeclPtr Parser::parseMethodDecl() {
     auto method = std::make_unique<MethodDeclAST>();
     method->loc = loc;
     method->name = std::move(name);
-    method->params = parseParamGroup();
+
+    // Parse one or more parameter groups (curried method support).
+    if (!check(TokenType::LPAREN)) {
+        errorAt(DiagCode::E2001, "expected '(' to start parameter list for method '" + method->name + "'");
+        return nullptr;
+    }
+    while (check(TokenType::LPAREN)) {
+        method->paramGroups.push_back(parseParamGroup());
+    }
 
     // Optional return type
     if (looksLikeType() && !check(TokenType::ASSIGN)) {
@@ -822,16 +845,14 @@ MethodDeclPtr Parser::parseMethodDecl() {
 // parseFromDecl
 //
 // Grammar:
-//   from_block      := [ visibility_mod ] 'from' IDENTIFIER '{' from_entry* '}'
+//   from_block  := [ visibility_mod ] 'from' IDENTIFIER '{' from_entry* '}'
 //
-//   from_entry      := IDENTIFIER '(' IDENTIFIER type ')' IDENTIFIER '=' func_body
-//                      -- name (label)   source param    return type (must match target)
+//   from_entry  := IDENTIFIER param_group { param_group } IDENTIFIER '=' func_body
+//                  -- name (label)   one or more param groups   return type
 //
-// Examples:
-//   export from Fahrenheit {
-//       celsius (c Celsius) Fahrenheit = { ... }
-//       kelvin  (k Kelvin)  Fahrenheit = { ... }
-//   }
+// Supports curried conversions:
+//   celsius (c Celsius) Fahrenheit = { ... }
+//   celsius (c Celsius) (scale float) Fahrenheit = { ... }
 // ─────────────────────────────────────────────────────────────────────────────
 
 std::unique_ptr<FromDeclAST> Parser::parseFromDecl(Visibility vis) {
@@ -869,26 +890,22 @@ std::unique_ptr<FromDeclAST> Parser::parseFromDecl(Visibility vis) {
         entry->loc  = entryLoc;
         entry->name = advance().value;
 
-        consume(TokenType::LPAREN, "expected '(' starting conversion parameter list");
-
-        if (!check(TokenType::IDENTIFIER)) {
-            errorAt(DiagCode::E2003, "expected source parameter name");
-        } else {
-            entry->srcParamName = advance().value;
+        // Parse one or more parameter groups (curried conversion support).
+        if (!check(TokenType::LPAREN)) {
+            errorAt(DiagCode::E2001,
+                    "expected '(' to start parameter list for conversion '" + entry->name + "'");
+            synchronize();
+            continue;
+        }
+        while (check(TokenType::LPAREN)) {
+            entry->paramGroups.push_back(parseParamGroup());
         }
 
-        entry->srcParamType = parseType();
-        if (!entry->srcParamType) {
-            errorAt(DiagCode::E2005, "expected source parameter type");
-        }
-
-        consume(TokenType::RPAREN, "expected ')' to close parameter list");
-
+        // Return type name — must match the block target type (semantic pass enforces this).
         if (!check(TokenType::IDENTIFIER)) {
-            errorAt(DiagCode::E2003, "expected target type name after ')'");
+            errorAt(DiagCode::E2003, "expected target type name after parameter list");
         } else {
             entry->returnTypeName = advance().value;
-            // The return type should match the block targetName — semantic pass will verify this.
         }
 
         if (!check(TokenType::ASSIGN)) {
