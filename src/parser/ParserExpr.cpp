@@ -153,37 +153,37 @@ BinaryOp Parser::tokenToBinaryOp(TokenType t) const {
 
 AssignOp Parser::tokenToAssignOp(TokenType t) const {
     switch (t) {
-    case TokenType::ASSIGN:
-        return AssignOp::Assign;
-    case TokenType::PLUS_ASSIGN:
-        return AssignOp::AddAssign;
-    case TokenType::MINUS_ASSIGN:
-        return AssignOp::SubAssign;
-    case TokenType::MUL_ASSIGN:
-        return AssignOp::MulAssign;
-    case TokenType::DIV_ASSIGN:
-        return AssignOp::DivAssign;
-    case TokenType::POW_ASSIGN:
-        return AssignOp::PowAssign;
-    case TokenType::MOD_ASSIGN:
-        return AssignOp::ModAssign;
-    default:
-        return AssignOp::Assign;
+        case TokenType::ASSIGN:
+            return AssignOp::Assign;
+        case TokenType::PLUS_ASSIGN:
+            return AssignOp::AddAssign;
+        case TokenType::MINUS_ASSIGN:
+            return AssignOp::SubAssign;
+        case TokenType::MUL_ASSIGN:
+            return AssignOp::MulAssign;
+        case TokenType::DIV_ASSIGN:
+            return AssignOp::DivAssign;
+        case TokenType::POW_ASSIGN:
+            return AssignOp::PowAssign;
+        case TokenType::MOD_ASSIGN:
+            return AssignOp::ModAssign;
+        default:
+            return AssignOp::Assign;
     }
 }
 
 bool Parser::isAssignOp(TokenType t) const {
     switch (t) {
-    case TokenType::ASSIGN:
-    case TokenType::PLUS_ASSIGN:
-    case TokenType::MINUS_ASSIGN:
-    case TokenType::MUL_ASSIGN:
-    case TokenType::DIV_ASSIGN:
-    case TokenType::POW_ASSIGN:
-    case TokenType::MOD_ASSIGN:
-        return true;
-    default:
-        return false;
+        case TokenType::ASSIGN:
+        case TokenType::PLUS_ASSIGN:
+        case TokenType::MINUS_ASSIGN:
+        case TokenType::MUL_ASSIGN:
+        case TokenType::DIV_ASSIGN:
+        case TokenType::POW_ASSIGN:
+        case TokenType::MOD_ASSIGN:
+            return true;
+        default:
+            return false;
     }
 }
 
@@ -352,62 +352,62 @@ ExprPtr Parser::parsePrefixExpr() {
     SourceLocation loc = currentLoc();
 
     switch (peek().type) {
-    case TokenType::MINUS: {
-        advance();
-        ExprPtr operand = parsePrefixExpr();
-        if (!operand) {
-            errorAt(DiagCode::E2008, "expected expression after '-'");
-            return nullptr;
+        case TokenType::MINUS: {
+            advance();
+            ExprPtr operand = parsePrefixExpr();
+            if (!operand) {
+                errorAt(DiagCode::E2008, "expected expression after '-'");
+                return nullptr;
+            }
+            auto node = std::make_unique<UnaryExprAST>();
+            node->loc = loc;
+            node->op = UnaryOp::Neg;
+            node->operand = std::move(operand);
+            return node;
         }
-        auto node = std::make_unique<UnaryExprAST>();
-        node->loc = loc;
-        node->op = UnaryOp::Neg;
-        node->operand = std::move(operand);
-        return node;
-    }
-    case TokenType::NOT: {
-        advance();
-        ExprPtr operand = parsePrefixExpr();
-        if (!operand) {
-            errorAt(DiagCode::E2008, "expected expression after 'not'");
-            return nullptr;
+        case TokenType::NOT: {
+            advance();
+            ExprPtr operand = parsePrefixExpr();
+            if (!operand) {
+                errorAt(DiagCode::E2008, "expected expression after 'not'");
+                return nullptr;
+            }
+            auto node = std::make_unique<UnaryExprAST>();
+            node->loc = loc;
+            node->op = UnaryOp::Not;
+            node->operand = std::move(operand);
+            return node;
         }
-        auto node = std::make_unique<UnaryExprAST>();
-        node->loc = loc;
-        node->op = UnaryOp::Not;
-        node->operand = std::move(operand);
-        return node;
-    }
-    case TokenType::BIT_NOT: {
-        advance();
-        ExprPtr operand = parsePrefixExpr();
-        if (!operand) {
-            errorAt(DiagCode::E2008, "expected expression after '~'");
-            return nullptr;
+        case TokenType::BIT_NOT: {
+            advance();
+            ExprPtr operand = parsePrefixExpr();
+            if (!operand) {
+                errorAt(DiagCode::E2008, "expected expression after '~'");
+                return nullptr;
+            }
+            auto node = std::make_unique<UnaryExprAST>();
+            node->loc = loc;
+            node->op = UnaryOp::BitNot;
+            node->operand = std::move(operand);
+            return node;
         }
-        auto node = std::make_unique<UnaryExprAST>();
-        node->loc = loc;
-        node->op = UnaryOp::BitNot;
-        node->operand = std::move(operand);
-        return node;
-    }
-    case TokenType::AMPERSAND: {
-        // '&' in expression position is a reference operator (unary).
-        // '&' as a binary op (bitwise AND) is handled in the infix loop.
-        advance();
-        ExprPtr operand = parsePrefixExpr();
-        if (!operand) {
-            errorAt(DiagCode::E2008, "expected expression after '&'");
-            return nullptr;
+        case TokenType::AMPERSAND: {
+            // '&' in expression position is a reference operator (unary).
+            // '&' as a binary op (bitwise AND) is handled in the infix loop.
+            advance();
+            ExprPtr operand = parsePrefixExpr();
+            if (!operand) {
+                errorAt(DiagCode::E2008, "expected expression after '&'");
+                return nullptr;
+            }
+            auto node = std::make_unique<UnaryExprAST>();
+            node->loc = loc;
+            node->op = UnaryOp::Ref;
+            node->operand = std::move(operand);
+            return node;
         }
-        auto node = std::make_unique<UnaryExprAST>();
-        node->loc = loc;
-        node->op = UnaryOp::Ref;
-        node->operand = std::move(operand);
-        return node;
-    }
-    default:
-        return parsePrimaryExpr();
+        default:
+            return parsePrimaryExpr();
     }
 }
 
@@ -518,37 +518,37 @@ ExprPtr Parser::parsePrimaryExpr() {
             // We check if offset 2 is looksLikeType by inspecting tokens directly.
             auto isTypeStart = [&](TokenType tt) {
                 switch (tt) {
-                case TokenType::TYPE_BOOL:
-                case TokenType::TYPE_BYTE:
-                case TokenType::TYPE_SHORT:
-                case TokenType::TYPE_INT:
-                case TokenType::TYPE_LONG:
-                case TokenType::TYPE_UBYTE:
-                case TokenType::TYPE_USHORT:
-                case TokenType::TYPE_UINT:
-                case TokenType::TYPE_ULONG:
-                case TokenType::TYPE_INT8:
-                case TokenType::TYPE_INT16:
-                case TokenType::TYPE_INT32:
-                case TokenType::TYPE_INT64:
-                case TokenType::TYPE_UINT8:
-                case TokenType::TYPE_UINT16:
-                case TokenType::TYPE_UINT32:
-                case TokenType::TYPE_UINT64:
-                case TokenType::TYPE_FLOAT:
-                case TokenType::TYPE_DOUBLE:
-                case TokenType::TYPE_DECIMAL:
-                case TokenType::TYPE_STRING:
-                case TokenType::TYPE_CHAR:
-                case TokenType::TYPE_ANY:
-                case TokenType::IDENTIFIER:
-                case TokenType::LBRACKET:
-                case TokenType::AMPERSAND:
-                case TokenType::MUL:
-                case TokenType::LPAREN:
-                    return true;
-                default:
-                    return false;
+                    case TokenType::TYPE_BOOL:
+                    case TokenType::TYPE_BYTE:
+                    case TokenType::TYPE_SHORT:
+                    case TokenType::TYPE_INT:
+                    case TokenType::TYPE_LONG:
+                    case TokenType::TYPE_UBYTE:
+                    case TokenType::TYPE_USHORT:
+                    case TokenType::TYPE_UINT:
+                    case TokenType::TYPE_ULONG:
+                    case TokenType::TYPE_INT8:
+                    case TokenType::TYPE_INT16:
+                    case TokenType::TYPE_INT32:
+                    case TokenType::TYPE_INT64:
+                    case TokenType::TYPE_UINT8:
+                    case TokenType::TYPE_UINT16:
+                    case TokenType::TYPE_UINT32:
+                    case TokenType::TYPE_UINT64:
+                    case TokenType::TYPE_FLOAT:
+                    case TokenType::TYPE_DOUBLE:
+                    case TokenType::TYPE_DECIMAL:
+                    case TokenType::TYPE_STRING:
+                    case TokenType::TYPE_CHAR:
+                    case TokenType::TYPE_ANY:
+                    case TokenType::IDENTIFIER:
+                    case TokenType::LBRACKET:
+                    case TokenType::AMPERSAND:
+                    case TokenType::MUL:
+                    case TokenType::LPAREN:
+                        return true;
+                    default:
+                        return false;
                 }
             };
             if (n2 == TokenType::LBRACE || isTypeStart(n2)) {
@@ -561,37 +561,37 @@ ExprPtr Parser::parsePrimaryExpr() {
             TokenType n2 = peekAt(2).type;
             auto isTypeStart = [&](TokenType tt) {
                 switch (tt) {
-                case TokenType::TYPE_BOOL:
-                case TokenType::TYPE_BYTE:
-                case TokenType::TYPE_SHORT:
-                case TokenType::TYPE_INT:
-                case TokenType::TYPE_LONG:
-                case TokenType::TYPE_UBYTE:
-                case TokenType::TYPE_USHORT:
-                case TokenType::TYPE_UINT:
-                case TokenType::TYPE_ULONG:
-                case TokenType::TYPE_INT8:
-                case TokenType::TYPE_INT16:
-                case TokenType::TYPE_INT32:
-                case TokenType::TYPE_INT64:
-                case TokenType::TYPE_UINT8:
-                case TokenType::TYPE_UINT16:
-                case TokenType::TYPE_UINT32:
-                case TokenType::TYPE_UINT64:
-                case TokenType::TYPE_FLOAT:
-                case TokenType::TYPE_DOUBLE:
-                case TokenType::TYPE_DECIMAL:
-                case TokenType::TYPE_STRING:
-                case TokenType::TYPE_CHAR:
-                case TokenType::TYPE_ANY:
-                case TokenType::IDENTIFIER:
-                case TokenType::LBRACKET:
-                case TokenType::AMPERSAND:
-                case TokenType::MUL:
-                case TokenType::VARIADIC:
-                    return true;
-                default:
-                    return false;
+                    case TokenType::TYPE_BOOL:
+                    case TokenType::TYPE_BYTE:
+                    case TokenType::TYPE_SHORT:
+                    case TokenType::TYPE_INT:
+                    case TokenType::TYPE_LONG:
+                    case TokenType::TYPE_UBYTE:
+                    case TokenType::TYPE_USHORT:
+                    case TokenType::TYPE_UINT:
+                    case TokenType::TYPE_ULONG:
+                    case TokenType::TYPE_INT8:
+                    case TokenType::TYPE_INT16:
+                    case TokenType::TYPE_INT32:
+                    case TokenType::TYPE_INT64:
+                    case TokenType::TYPE_UINT8:
+                    case TokenType::TYPE_UINT16:
+                    case TokenType::TYPE_UINT32:
+                    case TokenType::TYPE_UINT64:
+                    case TokenType::TYPE_FLOAT:
+                    case TokenType::TYPE_DOUBLE:
+                    case TokenType::TYPE_DECIMAL:
+                    case TokenType::TYPE_STRING:
+                    case TokenType::TYPE_CHAR:
+                    case TokenType::TYPE_ANY:
+                    case TokenType::IDENTIFIER:
+                    case TokenType::LBRACKET:
+                    case TokenType::AMPERSAND:
+                    case TokenType::MUL:
+                    case TokenType::VARIADIC:
+                        return true;
+                    default:
+                        return false;
                 }
             };
             if (isTypeStart(n2)) {
@@ -685,19 +685,19 @@ ExprPtr Parser::parsePrimaryExpr() {
 
     // ── Scalar literals ───────────────────────────────────────────────────────
     switch (peek().type) {
-    case TokenType::INT_LITERAL:
-    case TokenType::FLOAT_LITERAL:
-    case TokenType::STRING_LITERAL:
-    case TokenType::RAW_STRING_LITERAL:
-    case TokenType::CHAR_LITERAL:
-    case TokenType::HEX_LITERAL:
-    case TokenType::BINARY_LITERAL:
-    case TokenType::TRUE:
-    case TokenType::FALSE:
-    case TokenType::NIL:
-        return parseLiteralExpr();
-    default:
-        break;
+        case TokenType::INT_LITERAL:
+        case TokenType::FLOAT_LITERAL:
+        case TokenType::STRING_LITERAL:
+        case TokenType::RAW_STRING_LITERAL:
+        case TokenType::CHAR_LITERAL:
+        case TokenType::HEX_LITERAL:
+        case TokenType::BINARY_LITERAL:
+        case TokenType::TRUE:
+        case TokenType::FALSE:
+        case TokenType::NIL:
+            return parseLiteralExpr();
+        default:
+            break;
     }
 
     // ── Nothing matched ───────────────────────────────────────────────────────
@@ -834,39 +834,39 @@ ExprPtr Parser::parseLiteralExpr() {
 
     LiteralKind kind;
     switch (tok.type) {
-    case TokenType::INT_LITERAL:
-        kind = LiteralKind::Int;
-        break;
-    case TokenType::FLOAT_LITERAL:
-        kind = LiteralKind::Float;
-        break;
-    case TokenType::STRING_LITERAL:
-        kind = LiteralKind::String;
-        break;
-    case TokenType::RAW_STRING_LITERAL:
-        kind = LiteralKind::RawString;
-        break;
-    case TokenType::CHAR_LITERAL:
-        kind = LiteralKind::Char;
-        break;
-    case TokenType::HEX_LITERAL:
-        kind = LiteralKind::Hex;
-        break;
-    case TokenType::BINARY_LITERAL:
-        kind = LiteralKind::Binary;
-        break;
-    case TokenType::TRUE:
-        kind = LiteralKind::True;
-        break;
-    case TokenType::FALSE:
-        kind = LiteralKind::False;
-        break;
-    case TokenType::NIL:
-        kind = LiteralKind::Nil;
-        break;
-    default:
-        errorAt(DiagCode::E2002, "internal error: parseLiteralExpr on non-literal token");
-        return nullptr;
+        case TokenType::INT_LITERAL:
+            kind = LiteralKind::Int;
+            break;
+        case TokenType::FLOAT_LITERAL:
+            kind = LiteralKind::Float;
+            break;
+        case TokenType::STRING_LITERAL:
+            kind = LiteralKind::String;
+            break;
+        case TokenType::RAW_STRING_LITERAL:
+            kind = LiteralKind::RawString;
+            break;
+        case TokenType::CHAR_LITERAL:
+            kind = LiteralKind::Char;
+            break;
+        case TokenType::HEX_LITERAL:
+            kind = LiteralKind::Hex;
+            break;
+        case TokenType::BINARY_LITERAL:
+            kind = LiteralKind::Binary;
+            break;
+        case TokenType::TRUE:
+            kind = LiteralKind::True;
+            break;
+        case TokenType::FALSE:
+            kind = LiteralKind::False;
+            break;
+        case TokenType::NIL:
+            kind = LiteralKind::Nil;
+            break;
+        default:
+            errorAt(DiagCode::E2002, "internal error: parseLiteralExpr on non-literal token");
+            return nullptr;
     }
 
     auto node = std::make_unique<LiteralExprAST>(kind, tok.value);
@@ -1581,20 +1581,20 @@ std::unique_ptr<BaseAST> Parser::parsePattern() {
 
     // Literal patterns (and possibly ranges starting with a literal)
     switch (peek().type) {
-    case TokenType::INT_LITERAL:
-    case TokenType::FLOAT_LITERAL:
-    case TokenType::STRING_LITERAL:
-    case TokenType::RAW_STRING_LITERAL:
-    case TokenType::CHAR_LITERAL:
-    case TokenType::HEX_LITERAL:
-    case TokenType::BINARY_LITERAL:
-    case TokenType::TRUE:
-    case TokenType::FALSE:
-    case TokenType::NIL:
-    case TokenType::MINUS: // negative numeric literals: -42
-        return parseLiteralOrRangePattern();
-    default:
-        break;
+        case TokenType::INT_LITERAL:
+        case TokenType::FLOAT_LITERAL:
+        case TokenType::STRING_LITERAL:
+        case TokenType::RAW_STRING_LITERAL:
+        case TokenType::CHAR_LITERAL:
+        case TokenType::HEX_LITERAL:
+        case TokenType::BINARY_LITERAL:
+        case TokenType::TRUE:
+        case TokenType::FALSE:
+        case TokenType::NIL:
+        case TokenType::MINUS: // negative numeric literals: -42
+            return parseLiteralOrRangePattern();
+        default:
+            break;
     }
 
     // IDENTIFIER-based patterns
@@ -1654,39 +1654,39 @@ std::unique_ptr<BaseAST> Parser::parseLiteralOrRangePattern() {
     Token tok = advance();
     LiteralKind kind;
     switch (tok.type) {
-    case TokenType::INT_LITERAL:
-        kind = LiteralKind::Int;
-        break;
-    case TokenType::FLOAT_LITERAL:
-        kind = LiteralKind::Float;
-        break;
-    case TokenType::STRING_LITERAL:
-        kind = LiteralKind::String;
-        break;
-    case TokenType::RAW_STRING_LITERAL:
-        kind = LiteralKind::RawString;
-        break;
-    case TokenType::CHAR_LITERAL:
-        kind = LiteralKind::Char;
-        break;
-    case TokenType::HEX_LITERAL:
-        kind = LiteralKind::Hex;
-        break;
-    case TokenType::BINARY_LITERAL:
-        kind = LiteralKind::Binary;
-        break;
-    case TokenType::TRUE:
-        kind = LiteralKind::True;
-        break;
-    case TokenType::FALSE:
-        kind = LiteralKind::False;
-        break;
-    case TokenType::NIL:
-        kind = LiteralKind::Nil;
-        break;
-    default:
-        errorAt(DiagCode::E2009, "expected literal value in pattern");
-        return nullptr;
+        case TokenType::INT_LITERAL:
+            kind = LiteralKind::Int;
+            break;
+        case TokenType::FLOAT_LITERAL:
+            kind = LiteralKind::Float;
+            break;
+        case TokenType::STRING_LITERAL:
+            kind = LiteralKind::String;
+            break;
+        case TokenType::RAW_STRING_LITERAL:
+            kind = LiteralKind::RawString;
+            break;
+        case TokenType::CHAR_LITERAL:
+            kind = LiteralKind::Char;
+            break;
+        case TokenType::HEX_LITERAL:
+            kind = LiteralKind::Hex;
+            break;
+        case TokenType::BINARY_LITERAL:
+            kind = LiteralKind::Binary;
+            break;
+        case TokenType::TRUE:
+            kind = LiteralKind::True;
+            break;
+        case TokenType::FALSE:
+            kind = LiteralKind::False;
+            break;
+        case TokenType::NIL:
+            kind = LiteralKind::Nil;
+            break;
+        default:
+            errorAt(DiagCode::E2009, "expected literal value in pattern");
+            return nullptr;
     }
  
     std::string rawValue = negative ? ("-" + tok.value) : tok.value;
@@ -1712,15 +1712,15 @@ std::unique_ptr<BaseAST> Parser::parseLiteralOrRangePattern() {
  
         LiteralKind hiKind;
         switch (hiTok.type) {
-        case TokenType::INT_LITERAL:
-            hiKind = LiteralKind::Int;
-            break;
-        case TokenType::HEX_LITERAL:
-            hiKind = LiteralKind::Hex;
-            break;
-        default:
-            hiKind = LiteralKind::Float;
-            break;
+            case TokenType::INT_LITERAL:
+                hiKind = LiteralKind::Int;
+                break;
+            case TokenType::HEX_LITERAL:
+                hiKind = LiteralKind::Hex;
+                break;
+            default:
+                hiKind = LiteralKind::Float;
+                break;
         }
  
         auto loExpr = std::make_unique<LiteralExprAST>(kind, std::move(rawValue));

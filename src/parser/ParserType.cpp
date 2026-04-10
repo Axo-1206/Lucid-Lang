@@ -106,57 +106,57 @@ TypePtr Parser::parseType() {
 TypePtr Parser::parseBaseType() {
     switch (peek().type) {
 
-    // ── Primitive keywords ────────────────────────────────────────────────
-    case TokenType::TYPE_BOOL:
-    case TokenType::TYPE_BYTE:
-    case TokenType::TYPE_SHORT:
-    case TokenType::TYPE_INT:
-    case TokenType::TYPE_LONG:
-    case TokenType::TYPE_UBYTE:
-    case TokenType::TYPE_USHORT:
-    case TokenType::TYPE_UINT:
-    case TokenType::TYPE_ULONG:
-    case TokenType::TYPE_INT8:
-    case TokenType::TYPE_INT16:
-    case TokenType::TYPE_INT32:
-    case TokenType::TYPE_INT64:
-    case TokenType::TYPE_UINT8:
-    case TokenType::TYPE_UINT16:
-    case TokenType::TYPE_UINT32:
-    case TokenType::TYPE_UINT64:
-    case TokenType::TYPE_FLOAT:
-    case TokenType::TYPE_DOUBLE:
-    case TokenType::TYPE_DECIMAL:
-    case TokenType::TYPE_STRING:
-    case TokenType::TYPE_CHAR:
-    case TokenType::TYPE_ANY:
-        return parsePrimitiveType();
+        // ── Primitive keywords ────────────────────────────────────────────────
+        case TokenType::TYPE_BOOL:
+        case TokenType::TYPE_BYTE:
+        case TokenType::TYPE_SHORT:
+        case TokenType::TYPE_INT:
+        case TokenType::TYPE_LONG:
+        case TokenType::TYPE_UBYTE:
+        case TokenType::TYPE_USHORT:
+        case TokenType::TYPE_UINT:
+        case TokenType::TYPE_ULONG:
+        case TokenType::TYPE_INT8:
+        case TokenType::TYPE_INT16:
+        case TokenType::TYPE_INT32:
+        case TokenType::TYPE_INT64:
+        case TokenType::TYPE_UINT8:
+        case TokenType::TYPE_UINT16:
+        case TokenType::TYPE_UINT32:
+        case TokenType::TYPE_UINT64:
+        case TokenType::TYPE_FLOAT:
+        case TokenType::TYPE_DOUBLE:
+        case TokenType::TYPE_DECIMAL:
+        case TokenType::TYPE_STRING:
+        case TokenType::TYPE_CHAR:
+        case TokenType::TYPE_ANY:
+            return parsePrimitiveType();
 
-    // ── Named (user-defined) type ─────────────────────────────────────────
-    case TokenType::IDENTIFIER:
-        return parseNamedType();
+        // ── Named (user-defined) type ─────────────────────────────────────────
+        case TokenType::IDENTIFIER:
+            return parseNamedType();
 
-    // ── Array types  [N]T  /  []T  /  [*]T ───────────────────────────────
-    case TokenType::LBRACKET:
-        return parseArrayType();
+        // ── Array types  [N]T  /  []T  /  [*]T ───────────────────────────────
+        case TokenType::LBRACKET:
+            return parseArrayType();
 
-    // ── Reference  &T ─────────────────────────────────────────────────────
-    case TokenType::AMPERSAND:
-        return parseRefType();
+        // ── Reference  &T ─────────────────────────────────────────────────────
+        case TokenType::AMPERSAND:
+            return parseRefType();
 
-    // ── Raw pointer  *T  (extern/FFI only) ────────────────────────────────
-    case TokenType::MUL:
-        return parsePtrType();
+        // ── Raw pointer  *T  (extern/FFI only) ────────────────────────────────
+        case TokenType::MUL:
+            return parsePtrType();
 
-    // ── Function type  '(' params ')' [ ret ] ─────────────────────────────
-    // A '(' in type position always starts a function type.  A grouped
-    // expression would only appear in expression context, never here.
-    case TokenType::LPAREN:
-        return parseFuncType();
+        // ── Function type  '(' params ')' [ ret ] ─────────────────────────────
+        // A '(' in type position always starts a function type.  A grouped
+        // expression would only appear in expression context, never here.
+        case TokenType::LPAREN:
+            return parseFuncType();
 
-    default:
-        // Not a recognisable type start — caller decides if that is an error.
-        return nullptr;
+        default:
+            // Not a recognisable type start — caller decides if that is an error.
+            return nullptr;
     }
 }
 
@@ -180,81 +180,81 @@ TypePtr Parser::parsePrimitiveType() {
 
     PrimitiveKind kind;
     switch (tok.type) {
-    case TokenType::TYPE_BOOL:
-        kind = PrimitiveKind::Bool;
-        break;
-    case TokenType::TYPE_BYTE:
-        kind = PrimitiveKind::Byte;
-        break;
-    case TokenType::TYPE_SHORT:
-        kind = PrimitiveKind::Short;
-        break;
-    case TokenType::TYPE_INT:
-        kind = PrimitiveKind::Int;
-        break;
-    case TokenType::TYPE_LONG:
-        kind = PrimitiveKind::Long;
-        break;
-    case TokenType::TYPE_UBYTE:
-        kind = PrimitiveKind::Ubyte;
-        break;
-    case TokenType::TYPE_USHORT:
-        kind = PrimitiveKind::Ushort;
-        break;
-    case TokenType::TYPE_UINT:
-        kind = PrimitiveKind::Uint;
-        break;
-    case TokenType::TYPE_ULONG:
-        kind = PrimitiveKind::Ulong;
-        break;
-    case TokenType::TYPE_INT8:
-        kind = PrimitiveKind::Int8;
-        break;
-    case TokenType::TYPE_INT16:
-        kind = PrimitiveKind::Int16;
-        break;
-    case TokenType::TYPE_INT32:
-        kind = PrimitiveKind::Int32;
-        break;
-    case TokenType::TYPE_INT64:
-        kind = PrimitiveKind::Int64;
-        break;
-    case TokenType::TYPE_UINT8:
-        kind = PrimitiveKind::Uint8;
-        break;
-    case TokenType::TYPE_UINT16:
-        kind = PrimitiveKind::Uint16;
-        break;
-    case TokenType::TYPE_UINT32:
-        kind = PrimitiveKind::Uint32;
-        break;
-    case TokenType::TYPE_UINT64:
-        kind = PrimitiveKind::Uint64;
-        break;
-    case TokenType::TYPE_FLOAT:
-        kind = PrimitiveKind::Float;
-        break;
-    case TokenType::TYPE_DOUBLE:
-        kind = PrimitiveKind::Double;
-        break;
-    case TokenType::TYPE_DECIMAL:
-        kind = PrimitiveKind::Decimal;
-        break;
-    case TokenType::TYPE_STRING:
-        kind = PrimitiveKind::String;
-        break;
-    case TokenType::TYPE_CHAR:
-        kind = PrimitiveKind::Char;
-        break;
-    case TokenType::TYPE_ANY:
-        kind = PrimitiveKind::Any;
-        break;
+        case TokenType::TYPE_BOOL:
+            kind = PrimitiveKind::Bool;
+            break;
+        case TokenType::TYPE_BYTE:
+            kind = PrimitiveKind::Byte;
+            break;
+        case TokenType::TYPE_SHORT:
+            kind = PrimitiveKind::Short;
+            break;
+        case TokenType::TYPE_INT:
+            kind = PrimitiveKind::Int;
+            break;
+        case TokenType::TYPE_LONG:
+            kind = PrimitiveKind::Long;
+            break;
+        case TokenType::TYPE_UBYTE:
+            kind = PrimitiveKind::Ubyte;
+            break;
+        case TokenType::TYPE_USHORT:
+            kind = PrimitiveKind::Ushort;
+            break;
+        case TokenType::TYPE_UINT:
+            kind = PrimitiveKind::Uint;
+            break;
+        case TokenType::TYPE_ULONG:
+            kind = PrimitiveKind::Ulong;
+            break;
+        case TokenType::TYPE_INT8:
+            kind = PrimitiveKind::Int8;
+            break;
+        case TokenType::TYPE_INT16:
+            kind = PrimitiveKind::Int16;
+            break;
+        case TokenType::TYPE_INT32:
+            kind = PrimitiveKind::Int32;
+            break;
+        case TokenType::TYPE_INT64:
+            kind = PrimitiveKind::Int64;
+            break;
+        case TokenType::TYPE_UINT8:
+            kind = PrimitiveKind::Uint8;
+            break;
+        case TokenType::TYPE_UINT16:
+            kind = PrimitiveKind::Uint16;
+            break;
+        case TokenType::TYPE_UINT32:
+            kind = PrimitiveKind::Uint32;
+            break;
+        case TokenType::TYPE_UINT64:
+            kind = PrimitiveKind::Uint64;
+            break;
+        case TokenType::TYPE_FLOAT:
+            kind = PrimitiveKind::Float;
+            break;
+        case TokenType::TYPE_DOUBLE:
+            kind = PrimitiveKind::Double;
+            break;
+        case TokenType::TYPE_DECIMAL:
+            kind = PrimitiveKind::Decimal;
+            break;
+        case TokenType::TYPE_STRING:
+            kind = PrimitiveKind::String;
+            break;
+        case TokenType::TYPE_CHAR:
+            kind = PrimitiveKind::Char;
+            break;
+        case TokenType::TYPE_ANY:
+            kind = PrimitiveKind::Any;
+            break;
 
-    default:
-        // Should never reach here — parseBaseType only calls us on known
-        // primitive tokens.
-        errorAt(DiagCode::E2002, "internal error: parsePrimitiveType called on non-primitive token");
-        return nullptr;
+        default:
+            // Should never reach here — parseBaseType only calls us on known
+            // primitive tokens.
+            errorAt(DiagCode::E2002, "internal error: parsePrimitiveType called on non-primitive token");
+            return nullptr;
     }
 
     auto node = std::make_unique<PrimitiveTypeAST>(kind);

@@ -345,53 +345,53 @@ std::optional<DocComment> Parser::harvestDocComment() {
 
 bool Parser::looksLikeType() const {
     switch (peek().type) {
-    // Primitive type keywords
-    case TokenType::TYPE_BOOL:
-    case TokenType::TYPE_BYTE:
-    case TokenType::TYPE_SHORT:
-    case TokenType::TYPE_INT:
-    case TokenType::TYPE_LONG:
-    case TokenType::TYPE_UBYTE:
-    case TokenType::TYPE_USHORT:
-    case TokenType::TYPE_UINT:
-    case TokenType::TYPE_ULONG:
-    case TokenType::TYPE_INT8:
-    case TokenType::TYPE_INT16:
-    case TokenType::TYPE_INT32:
-    case TokenType::TYPE_INT64:
-    case TokenType::TYPE_UINT8:
-    case TokenType::TYPE_UINT16:
-    case TokenType::TYPE_UINT32:
-    case TokenType::TYPE_UINT64:
-    case TokenType::TYPE_FLOAT:
-    case TokenType::TYPE_DOUBLE:
-    case TokenType::TYPE_DECIMAL:
-    case TokenType::TYPE_STRING:
-    case TokenType::TYPE_CHAR:
-    case TokenType::TYPE_ANY:
-    // Composite type starters
-    case TokenType::LBRACKET:  // array types: [], [N], [*]
-    case TokenType::AMPERSAND: // reference &T
-    case TokenType::MUL:       // raw pointer *T
-        return true;
+        // Primitive type keywords
+        case TokenType::TYPE_BOOL:
+        case TokenType::TYPE_BYTE:
+        case TokenType::TYPE_SHORT:
+        case TokenType::TYPE_INT:
+        case TokenType::TYPE_LONG:
+        case TokenType::TYPE_UBYTE:
+        case TokenType::TYPE_USHORT:
+        case TokenType::TYPE_UINT:
+        case TokenType::TYPE_ULONG:
+        case TokenType::TYPE_INT8:
+        case TokenType::TYPE_INT16:
+        case TokenType::TYPE_INT32:
+        case TokenType::TYPE_INT64:
+        case TokenType::TYPE_UINT8:
+        case TokenType::TYPE_UINT16:
+        case TokenType::TYPE_UINT32:
+        case TokenType::TYPE_UINT64:
+        case TokenType::TYPE_FLOAT:
+        case TokenType::TYPE_DOUBLE:
+        case TokenType::TYPE_DECIMAL:
+        case TokenType::TYPE_STRING:
+        case TokenType::TYPE_CHAR:
+        case TokenType::TYPE_ANY:
+        // Composite type starters
+        case TokenType::LBRACKET:  // array types: [], [N], [*]
+        case TokenType::AMPERSAND: // reference &T
+        case TokenType::MUL:       // raw pointer *T
+            return true;
 
-    // Named type: bare IDENTIFIER used as a type name.
-    // We must be careful not to claim every IDENTIFIER is a type — this
-    // helper is used in param parsing where IDENTIFIER IDENTIFIER means
-    // "name type", so the second IDENTIFIER is looksLikeType() = true.
-    case TokenType::IDENTIFIER:
-        return true;
+        // Named type: bare IDENTIFIER used as a type name.
+        // We must be careful not to claim every IDENTIFIER is a type — this
+        // helper is used in param parsing where IDENTIFIER IDENTIFIER means
+        // "name type", so the second IDENTIFIER is looksLikeType() = true.
+        case TokenType::IDENTIFIER:
+            return true;
 
-    // Function type starts with '(' — must distinguish from a grouped
-    // expression.  A function type '(' has at least a ')' somewhere and
-    // then optionally a return type.  We accept '(' conservatively here;
-    // the caller is responsible for resolving the ambiguity with more
-    // context.
-    case TokenType::LPAREN:
-        return true;
+        // Function type starts with '(' — must distinguish from a grouped
+        // expression.  A function type '(' has at least a ')' somewhere and
+        // then optionally a return type.  We accept '(' conservatively here;
+        // the caller is responsible for resolving the ambiguity with more
+        // context.
+        case TokenType::LPAREN:
+            return true;
 
-    default:
-        return false;
+        default:
+            return false;
     }
 }
 
@@ -504,23 +504,23 @@ bool Parser::looksLikeStmtStart() const {
         case TokenType::PARALLEL:
         case TokenType::MATCH:
         case TokenType::SWITCH:
-        return true;
-    default:
-        // Any expression-starter is also a valid statement start.
-        return looksLikeType() // covers type-conv calls like float(x)
-               || check(TokenType::IDENTIFIER) || check(TokenType::INT_LITERAL) ||
-               check(TokenType::FLOAT_LITERAL) ||
-               check(TokenType::STRING_LITERAL) ||
-               check(TokenType::RAW_STRING_LITERAL) ||
-               check(TokenType::CHAR_LITERAL) || check(TokenType::HEX_LITERAL) ||
-               check(TokenType::BINARY_LITERAL) || check(TokenType::TRUE) ||
-               check(TokenType::FALSE) || check(TokenType::NIL) ||
-               check(TokenType::MINUS)        // unary -
-               || check(TokenType::NOT)       // unary not
-               || check(TokenType::BIT_NOT)   // unary ~
-               || check(TokenType::AMPERSAND) // reference &x
-               || check(TokenType::AWAIT) ||
-               check(TokenType::LPAREN);      // grouped expr or anon func
+            return true;
+        default:
+            // Any expression-starter is also a valid statement start.
+            return looksLikeType() // covers type-conv calls like float(x)
+                || check(TokenType::IDENTIFIER) || check(TokenType::INT_LITERAL) ||
+                check(TokenType::FLOAT_LITERAL) ||
+                check(TokenType::STRING_LITERAL) ||
+                check(TokenType::RAW_STRING_LITERAL) ||
+                check(TokenType::CHAR_LITERAL) || check(TokenType::HEX_LITERAL) ||
+                check(TokenType::BINARY_LITERAL) || check(TokenType::TRUE) ||
+                check(TokenType::FALSE) || check(TokenType::NIL) ||
+                check(TokenType::MINUS)        // unary -
+                || check(TokenType::NOT)       // unary not
+                || check(TokenType::BIT_NOT)   // unary ~
+                || check(TokenType::AMPERSAND) // reference &x
+                || check(TokenType::AWAIT) ||
+                check(TokenType::LPAREN);      // grouped expr or anon func
     }
 }
 
@@ -540,9 +540,9 @@ bool Parser::looksLikeDeclStart() const {
         case TokenType::LET:
         case TokenType::IMT:
         case TokenType::VAL:
-        return true;
-    default:
-        return false;
+            return true;
+        default:
+            return false;
     }
 }
 
@@ -660,15 +660,15 @@ DeclPtr Parser::parseTopLevelDecl() {
         Token kwTok = advance();
         DeclKeyword kw;
         switch (kwTok.type) {
-        case TokenType::LET:
-            kw = DeclKeyword::Let;
-            break;
-        case TokenType::IMT:
-            kw = DeclKeyword::Imt;
-            break;
-        default:
-            kw = DeclKeyword::Val;
-            break;
+            case TokenType::LET:
+                kw = DeclKeyword::Let;
+                break;
+            case TokenType::IMT:
+                kw = DeclKeyword::Imt;
+                break;
+            default:
+                kw = DeclKeyword::Val;
+                break;
         }
 
         // After the keyword we expect the name.

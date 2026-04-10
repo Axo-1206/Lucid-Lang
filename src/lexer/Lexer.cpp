@@ -7,6 +7,7 @@
 
 Lexer::Lexer(const std::string &source)
     : src(source), pos(0), line(1), column(1) {
+
 	// ── Modifiers ──────────────────────────────────────────────────────────────
 	keywords["pub"] = TokenType::PUB;
 	keywords["extern"] = TokenType::EXTERN;
@@ -180,158 +181,158 @@ void Lexer::skipWhitespace() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 Token Lexer::readNumber(char first) {
-  std::string num(1, first);
+    std::string num(1, first);
 
-  // Hex: 0xFF
-  if (first == '0' && (peek() == 'x' || peek() == 'X')) {
-    num += advance(); // consume 'x'
-    while (isxdigit(peek()) || peek() == '_')
-      num += advance();
-    return makeToken(TokenType::HEX_LITERAL, num);
-  }
+    // Hex: 0xFF
+    if (first == '0' && (peek() == 'x' || peek() == 'X')) {
+        num += advance(); // consume 'x'
+        while (isxdigit(peek()) || peek() == '_')
+            num += advance();
+        return makeToken(TokenType::HEX_LITERAL, num);
+    }
 
-  // Binary: 0b1010
-  if (first == '0' && (peek() == 'b' || peek() == 'B')) {
-    num += advance(); // consume 'b'
-    while (peek() == '0' || peek() == '1' || peek() == '_')
-      num += advance();
-    return makeToken(TokenType::BINARY_LITERAL, num);
-  }
+    // Binary: 0b1010
+    if (first == '0' && (peek() == 'b' || peek() == 'B')) {
+        num += advance(); // consume 'b'
+        while (peek() == '0' || peek() == '1' || peek() == '_')
+            num += advance();
+        return makeToken(TokenType::BINARY_LITERAL, num);
+    }
 
-  // Integer or float
-  bool isFloat = false;
-  while (isdigit(peek()) || peek() == '_')
-    num += advance();
-
-  if (peek() == '.' && peekNext() != '.') // avoid consuming '..' range
-  {
-    isFloat = true;
-    num += advance(); // consume '.'
+    // Integer or float
+    bool isFloat = false;
     while (isdigit(peek()) || peek() == '_')
-      num += advance();
-  }
+        num += advance();
 
-  // Exponent: 1e10, 1.5e-3
-  if (peek() == 'e' || peek() == 'E') {
-    isFloat = true;
-    num += advance();
-    if (peek() == '+' || peek() == '-')
-      num += advance();
-    while (isdigit(peek()))
-      num += advance();
-  }
+    if (peek() == '.' && peekNext() != '.') // avoid consuming '..' range
+    {
+        isFloat = true;
+        num += advance(); // consume '.'
+        while (isdigit(peek()) || peek() == '_')
+            num += advance();
+    }
 
-  return makeToken(isFloat ? TokenType::FLOAT_LITERAL : TokenType::INT_LITERAL,
-                   num);
+    // Exponent: 1e10, 1.5e-3
+    if (peek() == 'e' || peek() == 'E') {
+        isFloat = true;
+        num += advance();
+        if (peek() == '+' || peek() == '-')
+            num += advance();
+        while (isdigit(peek()))
+            num += advance();
+    }
+
+    return makeToken(isFloat ? TokenType::FLOAT_LITERAL : TokenType::INT_LITERAL,
+                    num);
 }
 
 Token Lexer::readString() {
-  std::string str;
-  while (!isAtEnd() && peek() != '"') {
-    if (peek() == '\n') {
-      line++;
-      column = 1;
-    }
-    if (peek() == '\\') {
-      advance(); // consume '\'
-      char esc = advance();
-      switch (esc) {
-      case 'n':
-        str += '\n';
-        break;
-      case 't':
-        str += '\t';
-        break;
-      case 'r':
-        str += '\r';
-        break;
-      case '"':
-        str += '"';
-        break;
-      case '\\':
-        str += '\\';
-        break;
-      case '\'':
-        str += '\'';
-        break;
-      case '0':
-        str += '\0';
-        break;
-      case 'x': {
-        // \xHH — two hex digits
-        std::string hex;
-        for (int i = 0; i < 2 && isxdigit(peek()); i++)
-          hex += advance();
-        str += (char)std::stoi(hex, nullptr, 16);
-        break;
-      }
-      case 'u': {
-        // \uXXXX — four hex digits (Unicode BMP codepoint, UTF-8 encoded)
-        std::string hex;
-        for (int i = 0; i < 4 && isxdigit(peek()); i++)
-          hex += advance();
-        unsigned long cp = std::stoul(hex, nullptr, 16);
-        // encode as UTF-8
-        if (cp < 0x80) {
-          str += (char)cp;
-        } else if (cp < 0x800) {
-          str += (char)(0xC0 | (cp >> 6));
-          str += (char)(0x80 | (cp & 0x3F));
-        } else {
-          str += (char)(0xE0 | (cp >> 12));
-          str += (char)(0x80 | ((cp >> 6) & 0x3F));
-          str += (char)(0x80 | (cp & 0x3F));
+    std::string str;
+    while (!isAtEnd() && peek() != '"') {
+        if (peek() == '\n') {
+            line++;
+            column = 1;
         }
-        break;
-      }
-      case 'U': {
-        // \UXXXXXXXX — eight hex digits (full Unicode codepoint, UTF-8 encoded)
-        std::string hex;
-        for (int i = 0; i < 8 && isxdigit(peek()); i++)
-          hex += advance();
-        unsigned long cp = std::stoul(hex, nullptr, 16);
-        // encode as UTF-8
-        if (cp < 0x80) {
-          str += (char)cp;
-        } else if (cp < 0x800) {
-          str += (char)(0xC0 | (cp >> 6));
-          str += (char)(0x80 | (cp & 0x3F));
-        } else if (cp < 0x10000) {
-          str += (char)(0xE0 | (cp >> 12));
-          str += (char)(0x80 | ((cp >> 6) & 0x3F));
-          str += (char)(0x80 | (cp & 0x3F));
+        if (peek() == '\\') {
+            advance(); // consume '\'
+            char esc = advance();
+            switch (esc) {
+                case 'n':
+                    str += '\n';
+                    break;
+                case 't':
+                    str += '\t';
+                    break;
+                case 'r':
+                    str += '\r';
+                    break;
+                case '"':
+                    str += '"';
+                    break;
+                case '\\':
+                    str += '\\';
+                    break;
+                case '\'':
+                    str += '\'';
+                    break;
+                case '0':
+                    str += '\0';
+                    break;
+                case 'x': {
+                    // \xHH — two hex digits
+                    std::string hex;
+                    for (int i = 0; i < 2 && isxdigit(peek()); i++)
+                        hex += advance();
+                    str += (char)std::stoi(hex, nullptr, 16);
+                    break;
+                }
+                case 'u': {
+                    // \uXXXX — four hex digits (Unicode BMP codepoint, UTF-8 encoded)
+                    std::string hex;
+                    for (int i = 0; i < 4 && isxdigit(peek()); i++)
+                        hex += advance();
+                    unsigned long cp = std::stoul(hex, nullptr, 16);
+                    // encode as UTF-8
+                    if (cp < 0x80) {
+                        str += (char)cp;
+                    } else if (cp < 0x800) {
+                        str += (char)(0xC0 | (cp >> 6));
+                        str += (char)(0x80 | (cp & 0x3F));
+                    } else {
+                        str += (char)(0xE0 | (cp >> 12));
+                        str += (char)(0x80 | ((cp >> 6) & 0x3F));
+                        str += (char)(0x80 | (cp & 0x3F));
+                    }
+                    break;
+                }
+                case 'U': {
+                    // \UXXXXXXXX — eight hex digits (full Unicode codepoint, UTF-8 encoded)
+                    std::string hex;
+                    for (int i = 0; i < 8 && isxdigit(peek()); i++)
+                        hex += advance();
+                    unsigned long cp = std::stoul(hex, nullptr, 16);
+                    // encode as UTF-8
+                    if (cp < 0x80) {
+                        str += (char)cp;
+                    } else if (cp < 0x800) {
+                        str += (char)(0xC0 | (cp >> 6));
+                        str += (char)(0x80 | (cp & 0x3F));
+                    } else if (cp < 0x10000) {
+                        str += (char)(0xE0 | (cp >> 12));
+                        str += (char)(0x80 | ((cp >> 6) & 0x3F));
+                        str += (char)(0x80 | (cp & 0x3F));
+                    } else {
+                        str += (char)(0xF0 | (cp >> 18));
+                        str += (char)(0x80 | ((cp >> 12) & 0x3F));
+                        str += (char)(0x80 | ((cp >> 6) & 0x3F));
+                        str += (char)(0x80 | (cp & 0x3F));
+                    }
+                    break;
+                }
+                default:
+                    str += '\\';
+                    str += esc;
+                    break;
+            }
         } else {
-          str += (char)(0xF0 | (cp >> 18));
-          str += (char)(0x80 | ((cp >> 12) & 0x3F));
-          str += (char)(0x80 | ((cp >> 6) & 0x3F));
-          str += (char)(0x80 | (cp & 0x3F));
+            str += advance();
         }
-        break;
-      }
-      default:
-        str += '\\';
-        str += esc;
-        break;
-      }
-    } else {
-      str += advance();
     }
-  }
-  if (!isAtEnd())
-    advance(); // consume closing '"'
-  return makeToken(TokenType::STRING_LITERAL, str);
+    if (!isAtEnd())
+        advance(); // consume closing '"'
+    return makeToken(TokenType::STRING_LITERAL, str);
 }
 
 Token Lexer::readChar() {
 	std::string ch;
 	if (!isAtEnd() && peek() != '\'') {
 		if (peek() == '\\') {
-		advance();
-		ch += '\\';
-		if (!isAtEnd())
-			ch += advance();
+            advance();
+            ch += '\\';
+		    if (!isAtEnd())
+			    ch += advance();
 		} else {
-		ch += advance();
+		    ch += advance();
 		}
 	}
 	if (!isAtEnd() && peek() == '\'')
@@ -383,14 +384,14 @@ Token Lexer::readDocComment() {
 		// Closing sequence is --/
 		if (peek() == '-' && pos + 1 < src.size() && src[pos + 1] == '-' &&
 			pos + 2 < src.size() && src[pos + 2] == '/') {
-		advance();
-		advance();
-		advance(); // consume --/
-		break;
+		    advance();
+		    advance();
+		    advance(); // consume --/
+		    break;
 		}
 		if (peek() == '\n') {
-		line++;
-		column = 1;
+            line++;
+            column = 1;
 		}
 		doc += advance();
 	}
@@ -567,7 +568,7 @@ Token Lexer::getNextToken() {
 		    return makeToken(TokenType::BIT_XOR, "~^");
 		return makeToken(TokenType::BIT_NOT, "~");
 
-	// ── FFI ────────────────────────────────────────────────────────────────────
+	// ── Reserved ─────────────────────────────────────────────────────────────
 	case '@':
 		return makeToken(TokenType::AT, "@"); // reserved for future feature
 

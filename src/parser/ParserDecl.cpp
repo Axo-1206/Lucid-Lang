@@ -128,7 +128,7 @@ std::unique_ptr<UseDeclAST> Parser::parseUseDecl(Visibility vis) {
 // Called from Parser.cpp after the keyword token has ALREADY been consumed.
 // pos_ sits on the IDENTIFIER (the variable name).
 //
-// isPub is passed in from the outer loop (was 'pub' seen before the keyword?).
+// isVisibility is passed in from the outer loop (was 'Visibility' seen before the keyword?).
 // ─────────────────────────────────────────────────────────────────────────────
 
 std::unique_ptr<VarDeclAST> Parser::parseVarDecl(Visibility vis) {
@@ -139,15 +139,15 @@ std::unique_ptr<VarDeclAST> Parser::parseVarDecl(Visibility vis) {
     const Token &kwTok = tokens_[pos_ - 1];
     DeclKeyword kw;
     switch (kwTok.type) {
-    case TokenType::LET:
-        kw = DeclKeyword::Let;
-        break;
-    case TokenType::IMT:
-        kw = DeclKeyword::Imt;
-        break;
-    default:
-        kw = DeclKeyword::Val;
-        break;
+        case TokenType::LET:
+            kw = DeclKeyword::Let;
+            break;
+        case TokenType::IMT:
+            kw = DeclKeyword::Imt;
+            break;
+        default:
+            kw = DeclKeyword::Val;
+            break;
     }
 
     SourceLocation loc = currentLoc();
@@ -406,7 +406,7 @@ GenericParamPtr Parser::parseGenericParam() {
 // parseStructDecl
 //
 // Grammar:
-//   struct_decl := [ 'pub' ] 'struct' IDENTIFIER [ generic_params ]
+//   struct_decl := [ 'Visibility' ] 'struct' IDENTIFIER [ generic_params ]
 //                  '{' { field_decl } '}'
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -497,7 +497,7 @@ FieldDeclPtr Parser::parseFieldDecl() {
 // parseEnumDecl
 //
 // Grammar:
-//   enum_decl := [ 'pub' ] 'enum' IDENTIFIER '{' enum_variant { [','] enum_variant } '}'
+//   enum_decl := [ 'Visibility' ] 'enum' IDENTIFIER '{' enum_variant { [','] enum_variant } '}'
 // ─────────────────────────────────────────────────────────────────────────────
 
 std::unique_ptr<EnumDeclAST> Parser::parseEnumDecl(Visibility vis) {
@@ -593,7 +593,7 @@ EnumVariantPtr Parser::parseEnumVariant() {
 // parseTraitDecl
 //
 // Grammar:
-//   trait_decl := [ 'pub' ] 'trait' IDENTIFIER [ generic_params ]
+//   trait_decl := [ 'Visibility' ] 'trait' IDENTIFIER [ generic_params ]
 //                 '{' { trait_method } '}'
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -687,7 +687,7 @@ TraitMethodPtr Parser::parseTraitMethod() {
 // parseImplDecl
 //
 // Grammar:
-//   impl_decl := [ 'pub' ] 'impl' [ generic_params ] IDENTIFIER [ generic_args ]
+//   impl_decl := [ 'Visibility' ] 'impl' [ generic_params ] IDENTIFIER [ generic_args ]
 //                [ ':' trait_ref ] '{' { impl_member } '}'
 //
 //   impl_member := method_decl | from_decl
@@ -696,7 +696,7 @@ TraitMethodPtr Parser::parseTraitMethod() {
 //   - generic_params on the impl itself: <T : Drawable> in  impl<T> Scene<T>
 //   - generic_args on the struct name:   <T>            in  impl<T : Drawable> Scene<T>
 //   - trait conformance:                 : Drawable      in  impl Circle : Drawable
-//   - from_decl is only valid inside pub impl — recorded as error otherwise
+//   - from_decl is only valid inside Visibility impl — recorded as error otherwise
 // ─────────────────────────────────────────────────────────────────────────────
 
 std::unique_ptr<ImplDeclAST> Parser::parseImplDecl(Visibility vis) {
@@ -932,7 +932,7 @@ std::unique_ptr<FromDeclAST> Parser::parseFromDecl(Visibility vis) {
 // parseTypeAliasDecl
 //
 // Grammar:
-//   type_decl := [ 'pub' ] 'type' IDENTIFIER [ generic_params ] '=' type
+//   type_decl := [ 'Visibility' ] 'type' IDENTIFIER [ generic_params ] '=' type
 // ─────────────────────────────────────────────────────────────────────────────
 
 std::unique_ptr<TypeAliasDeclAST> Parser::parseTypeAliasDecl(Visibility vis) {
