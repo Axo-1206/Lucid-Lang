@@ -1,4 +1,0 @@
-package tiny 
-export imt main () int = {
-    let x int = 1
-}

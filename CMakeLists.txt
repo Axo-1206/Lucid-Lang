@@ -49,6 +49,11 @@ add_executable(luc-comp
     src/semantic/SemanticStmt.cpp
     src/semantic/TypeChecker.cpp
     src/semantic/Annotator.cpp
+    src/codegen/CodeGen.cpp
+    src/codegen/CodeGenExpr.cpp
+    src/codegen/CodeGenDecl.cpp
+    src/codegen/CodeGenStmt.cpp
+    src/codegen/luc_runtime.c
 )
 
 target_include_directories(luc-comp PRIVATE 
