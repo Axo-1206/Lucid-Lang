@@ -1,0 +1,24 @@
+package test
+
+-- Test function assignment detection
+
+-- Basic existing function
+const baseFunc (x int) int = {
+    return x + 1
+}
+
+-- Function with return type assignment (should be detected)
+const assignFunc (x int) int = baseFunc
+
+-- Function call assignment (should be detected)
+const callAssignFunc (x int) int = baseFunc
+
+-- Curried function assignment
+const curryFunc (a int) (b int) int = baseFunc
+
+export const main () int = {
+    -- Test the assignments
+    let res1 int = assignFunc(5)
+    let res2 int = callAssignFunc(10)
+    return res1 + res2
+}

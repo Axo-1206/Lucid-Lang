@@ -88,11 +88,13 @@ enum class DeclKeyword {
 //
 //   Block    — let f (x int) int = { return x + 1 }
 //   AnonFunc — let f (x int) int = (x int) int { return x + 1 }   (verbose form)
+//   ExprBody — let f (x int) = existingFunc   (function/expression assignment)
 //
 // Note: match-as-body and if-as-body are sugar — the parser desugars them
 // into a BlockStmtAST containing a single MatchExprAST / IfExprAST statement
 // before storing, so the AST always holds a block. FuncBodyKind::Block covers
 // all three of those forms from the parser's perspective.
+// ExprBody is also desugared into a BlockStmtAST containing a ReturnStmtAST.
 // async bodies are indicated by the isAsync flag on FuncDeclAST /
 // MethodDeclAST.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -100,6 +102,7 @@ enum class DeclKeyword {
 enum class FuncBodyKind {
     Block,    // standard expr_block body: = { ... }
     AnonFunc, // explicit anonymous function: = (params) ret { ... }
+    ExprBody, // function/expression assignment: = expression
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

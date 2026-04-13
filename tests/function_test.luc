@@ -33,14 +33,14 @@ struct Minutes { val int }
 
 from Minutes {
     -- Allows conversion: Minutes(seconds)
-    sec (s Seconds) Minutes = {
+    (s Seconds) Minutes = {
         return Minutes { val = s.val / 60 }
     }
 }
 
 -- 4. Global functions with currying
 -- Proper curry syntax uses separate parameter groups
-val core_add (a int) (b int) int = {
+const core_add (a int) (b int) int = {
     return a + b
 }
 
@@ -53,7 +53,7 @@ let computeAsync (x int) int = async {
 }
 
 -- 6. Main Entry Point demonstrating all features
-export imt main () int = {
+export const main () int = {
     -- Function Assignment
     -- Assigning a curried function reference
     let myAdd (a int) (b int) int = core_add
@@ -65,7 +65,7 @@ export imt main () int = {
     let res2 int = addFive(10) -- results in 15
 
     -- Function value from struct
-    let ops = MathOps {
+    let ops MathOps = MathOps {
         add = (a int, b int) int { return a + b }, -- anonymous function
         transform = addFive
     }
@@ -73,7 +73,7 @@ export imt main () int = {
     let res4 int = ops.transform(10)
 
     -- Method Assignment and Currying via ':' operator
-    let p = Point { x = 1.0, y = 2.0 }
+    let p Point = Point { x = 1.0, y = 2.0 }
     
     -- ':' as a postfix operator (as per grammar) references the method.
     -- For an instance method, it curries 'self'.
@@ -86,18 +86,33 @@ export imt main () int = {
     let p2 Point = moveRight(5.0) 
 
     -- Type Conversion via 'from' block usage
-    let s = Seconds { val = 120 }
+    let s Seconds = Seconds { val = 120 }
     let m Minutes = Minutes(s) -- dispatch to Minutes.from.sec
     let minutesVal int = m.val
 
     -- Anonymous Function (Async and Curried)
-    let anonAsync = async (n int) (m int) int {
+    let anonAsync (n int) (m int) int = async (n int) (m int) int {
         return await n + m
     }
     
     -- Calling async function
-    let asyncRes int = await computeAsync(10)
-    let anonRes int = await anonAsync(20)(30)
+    let asyncRes int = computeAsync(10)
+    let anonRes int = anonAsync(20)(30)
+
+    -- Pipeline with curried functions
+    -- f1 takes an int and returns a function
+    let f1 (x int) (y int) int = {
+        return x + y
+    }
+
+    -- f2 takes a function as input and calls it
+    let f2 (fn (a int) int) int = {
+        return fn(10)
+    }
+
+    -- Pipeline: 5 -> f1 produces (y int) int { return 5 + y }
+    -- Then that function is piped into f2, which calls it with 10. Result: 15
+    let pipeRes int = 5 -> f1 -> f2
 
     return 0
 }

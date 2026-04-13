@@ -1000,7 +1000,7 @@ std::unique_ptr<ExternDeclAST> Parser::parseExternDecl() {
 // parseFuncBody
 //
 // Consumes the '=' that precedes the body, then parses the body in one of
-// three forms:
+// four forms:
 //
 //   Block form:     '=' '{' stmts '}'
 //     → bodyKind = Block,   isAsync = false
@@ -1014,10 +1014,17 @@ std::unique_ptr<ExternDeclAST> Parser::parseExternDecl() {
 //   Async anon:     '=' 'async' '(' params ')' [ ret ] '{' stmts '}'
 //     → bodyKind = AnonFunc, isAsync = true
 //
+//   Expression form: '=' expr
+//     → bodyKind = ExprBody, isAsync = false/true
+//   (Used for function assignments like: let f = existingFunc)
+//
+// The expression form is desugared into a BlockStmtAST containing a
+// ReturnStmtAST with the expression as the return value.
+//
 // Returns a StmtPtr (always a BlockStmtAST).
 // Sets outBodyKind and outIsAsync on the caller's fields.
 //
-// Callers:  parseFuncDecl, parseMethodDecl (the body is identical in both).
+// Callers:  parseFuncDecl, parseMethodDecl, parseFromDecl
 // ─────────────────────────────────────────────────────────────────────────────
 
 StmtPtr Parser::parseFuncBody(FuncBodyKind &outBodyKind, bool &outIsAsync) {
@@ -1061,7 +1068,30 @@ StmtPtr Parser::parseFuncBody(FuncBodyKind &outBodyKind, bool &outIsAsync) {
             body = parseBlock();
         }
     } else {
-        errorAt(DiagCode::E2001, "expected '{' or '(' to start function body");
+        // Expression form: identifier or function call
+        // Parse the expression and wrap it in a BlockStmtAST containing a ReturnStmtAST
+        outBodyKind = FuncBodyKind::ExprBody;
+        
+        ExprPtr expr = parseExpr();
+        if (!expr) {
+            errorAt(DiagCode::E2001, "expected expression for function body");
+            if (outIsAsync) {
+                --asyncDepth_;
+            }
+            return nullptr;
+        }
+
+        // Create a ReturnStmtAST wrapping the expression
+        auto returnStmt = std::make_unique<ReturnStmtAST>();
+        returnStmt->loc = expr->loc;
+        returnStmt->value = std::move(expr);
+
+        // Create a BlockStmtAST containing the return statement
+        auto block = std::make_unique<BlockStmtAST>();
+        block->loc = returnStmt->loc;
+        block->stmts.push_back(std::move(returnStmt));
+        
+        body = std::move(block);
     }
 
     if (outIsAsync) {

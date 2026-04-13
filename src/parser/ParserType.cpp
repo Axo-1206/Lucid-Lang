@@ -522,7 +522,7 @@ TypePtr Parser::parseFuncType() {
             //   type Callback = (event Event) bool
             // If IDENTIFIER is followed by something that looks like a type start,
             // consume the name and then parse the type.
-            if (check(TokenType::IDENTIFIER) && looksLikeType() == false) {
+            if (check(TokenType::IDENTIFIER)) {
                 // peek() is IDENTIFIER — check if peekNext looks like a type start.
                 // We do this by temporarily advancing and checking.
                 TokenType nextTT = peekNext().type;
