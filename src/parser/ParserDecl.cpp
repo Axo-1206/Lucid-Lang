@@ -844,12 +844,12 @@ MethodDeclPtr Parser::parseMethodDecl() {
 // Grammar:
 //   from_block  := [ visibility_mod ] 'from' IDENTIFIER '{' from_entry* '}'
 //
-//   from_entry  := IDENTIFIER param_group { param_group } IDENTIFIER '=' func_body
-//                  -- name (label)   one or more param groups   return type
+//   from_entry  := param_group { param_group } IDENTIFIER '=' func_body
+//                  -- one or more param groups   return type
 //
 // Supports curried conversions:
-//   celsius (c Celsius) Fahrenheit = { ... }
-//   celsius (c Celsius) (scale float) Fahrenheit = { ... }
+//   (c Celsius) Fahrenheit = { ... }
+//   (c Celsius) (scale float) Fahrenheit = { ... }
 // ─────────────────────────────────────────────────────────────────────────────
 
 std::unique_ptr<FromDeclAST> Parser::parseFromDecl(Visibility vis) {
@@ -877,20 +877,13 @@ std::unique_ptr<FromDeclAST> Parser::parseFromDecl(Visibility vis) {
 
         SourceLocation entryLoc = currentLoc();
 
-        if (!check(TokenType::IDENTIFIER)) {
-            errorAt(DiagCode::E2003, "expected conversion name (label)");
-            synchronize();
-            continue;
-        }
-
         auto entry = std::make_unique<FromEntryAST>();
         entry->loc  = entryLoc;
-        entry->name = advance().value;
 
         // Parse one or more parameter groups (curried conversion support).
         if (!check(TokenType::LPAREN)) {
             errorAt(DiagCode::E2001,
-                    "expected '(' to start parameter list for conversion '" + entry->name + "'");
+                    "expected '(' to start parameter list for conversion entry");
             synchronize();
             continue;
         }
@@ -906,7 +899,7 @@ std::unique_ptr<FromDeclAST> Parser::parseFromDecl(Visibility vis) {
         }
 
         if (!check(TokenType::ASSIGN)) {
-            errorAt(DiagCode::E2001, "expected '=' before body for conversion '" + entry->name + "'");
+            errorAt(DiagCode::E2001, "expected '=' before body for conversion entry");
             synchronize();
             continue;
         }

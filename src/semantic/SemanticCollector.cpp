@@ -234,18 +234,20 @@ void SemanticCollector::visit(ImplDeclAST& node) {
 // ─────────────────────────────────────────────────────────────────────────────
 // visit(FromDeclAST)  — Registers custom type conversions for Type(source) calls
 //
-// Like methods, conversions are indexed on the target type's namespace:
-//   e.g., Fahrenheit.from.Celsius
-// Each conversion creates a symbol with kind Conversion to be looked up
-// when a type conversion call is encountered in the parser.
+// Like methods, conversions are indexed on the target type's namespace.
+// Because the language supports curried conversion overloads, and Phase 1 runs
+// before type resolution, we assign them a unique address-based mangled name here.
+// True duplicate signature checking is deferred to Phase 3 (SemanticDecl).
 // ─────────────────────────────────────────────────────────────────────────────
 void SemanticCollector::visit(FromDeclAST& node) {
     // Collect each conversion entry from the block.
-    // Mangled name: TargetType.from.LabelName
+    // Mangled name: TargetType.from.[unique_id]
     for (auto& entry : node.entries) {
         if (!entry) continue;
 
-        std::string mangledName = node.targetTypeName + ".from." + entry->name;
+        // Use pointer address as a phase 1 unique identifier to avert false clashes.
+        std::string mangledName = node.targetTypeName + ".from." + 
+            std::to_string(reinterpret_cast<std::uintptr_t>(entry.get()));
 
         declareSymbol({
             mangledName,

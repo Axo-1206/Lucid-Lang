@@ -18,6 +18,7 @@
 
 class TypeChecker {
 public:
+    static bool isEqual(TypeAST* a, TypeAST* b);
     static bool isAssignable(TypeAST* from, TypeAST* to);
     static bool isCallable(TypeAST* type);
     static bool isBooleanCompatible(TypeAST* type);

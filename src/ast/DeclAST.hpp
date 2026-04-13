@@ -508,7 +508,6 @@ using MethodDeclPtr = std::unique_ptr<MethodDeclAST>;
 struct FromEntryAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::FromEntry;
 
-    std::string name;           // "celsius"
     std::vector<std::vector<ParamPtr>> paramGroups; // outer = curry groups
     std::string returnTypeName; // "Fahrenheit"
     StmtPtr     body;           // BlockStmtAST

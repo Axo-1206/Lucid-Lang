@@ -407,6 +407,8 @@ void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
 // Rules enforced:
 //   - Target type (returnTypeName) must resolve.
 //   - Every parameter type in every group must resolve.
+//   - Each entry's full curried signature must be unique among all other
+//     entries for the same target in the block.
 //   - Parameters are declared into a new scope for the body.
 //   - Body is checked to return the target type (implicitly or explicitly).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -421,7 +423,13 @@ void checkFromDecl(FromDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
                  "from block: target '" + node.targetTypeName + "' is not a nominal type");
         return;
     }
-    TypeAST* targetType = targetSym->type;
+    
+    // Synthesize a NamedTypeAST on the stack to represent the expected return type.
+    NamedTypeAST targetTypeAST(node.targetTypeName);
+    TypeAST* targetType = resolver.resolveType(&targetTypeAST);
+
+    // We accumulate validated entries here to cross-check full signatures and prevent duplicates.
+    std::vector<FromEntryAST*> verifiedEntries;
 
     // 2. Iterate and check each conversion entry.
     for (auto& entry : node.entries) {
@@ -465,6 +473,43 @@ void checkFromDecl(FromDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
         }
 
         symbols.popScope();
+
+        // 3. Full Signature Duplicate Check
+        // Now that the parameter types are resolved natively, verify if this
+        // specific generic/curried signature has already been declared.
+        bool isDuplicate = false;
+        for (auto* seen : verifiedEntries) {
+            if (entry->paramGroups.size() != seen->paramGroups.size()) continue;
+
+            bool allGroupsMatch = true;
+            for (size_t i = 0; i < entry->paramGroups.size(); ++i) {
+                auto& g1 = entry->paramGroups[i];
+                auto& g2 = seen->paramGroups[i];
+                if (g1.size() != g2.size()) {
+                    allGroupsMatch = false;
+                    break;
+                }
+                for (size_t j = 0; j < g1.size(); ++j) {
+                    if (!TypeChecker::isEqual(g1[j]->type.get(), g2[j]->type.get())) {
+                        allGroupsMatch = false;
+                        break;
+                    }
+                }
+                if (!allGroupsMatch) break;
+            }
+
+            if (allGroupsMatch) {
+                isDuplicate = true;
+                break;
+            }
+        }
+
+        if (isDuplicate) {
+            dc.error(DiagnosticCategory::Semantic, entry->loc, DiagCode::E3005,
+                     "duplicate conversion signature in from block for '" + node.targetTypeName + "'");
+        } else {
+            verifiedEntries.push_back(entry.get());
+        }
     }
 }
 

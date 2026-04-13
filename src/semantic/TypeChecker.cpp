@@ -15,6 +15,68 @@
 #include "TypeChecker.hpp"
 
 // ─────────────────────────────────────────────────────────────────────────────
+// isEqual  — Verifies structural equality precisely, ignoring widening rules
+// ─────────────────────────────────────────────────────────────────────────────
+bool TypeChecker::isEqual(TypeAST* a, TypeAST* b) {
+    if (a == b) return true;
+    if (!a || !b) return false;
+    if (a->kind != b->kind) return false;
+
+    if (a->isa<PrimitiveTypeAST>()) {
+        return a->as<PrimitiveTypeAST>()->primitiveKind == b->as<PrimitiveTypeAST>()->primitiveKind;
+    }
+    if (a->isa<NamedTypeAST>()) {
+        auto* na = a->as<NamedTypeAST>();
+        auto* nb = b->as<NamedTypeAST>();
+        if (na->name != nb->name) return false;
+        if (na->genericArgs.size() != nb->genericArgs.size()) return false;
+        for (size_t i = 0; i < na->genericArgs.size(); ++i) {
+            if (!isEqual(na->genericArgs[i].get(), nb->genericArgs[i].get())) return false;
+        }
+        return true;
+    }
+    if (a->isa<NullableTypeAST>()) {
+        return isEqual(a->as<NullableTypeAST>()->inner.get(), b->as<NullableTypeAST>()->inner.get());
+    }
+    if (a->isa<FixedArrayTypeAST>()) {
+        if (a->as<FixedArrayTypeAST>()->size != b->as<FixedArrayTypeAST>()->size) return false;
+        return isEqual(a->as<FixedArrayTypeAST>()->element.get(), b->as<FixedArrayTypeAST>()->element.get());
+    }
+    if (a->isa<SliceTypeAST>()) {
+        return isEqual(a->as<SliceTypeAST>()->element.get(), b->as<SliceTypeAST>()->element.get());
+    }
+    if (a->isa<DynamicArrayTypeAST>()) {
+        return isEqual(a->as<DynamicArrayTypeAST>()->element.get(), b->as<DynamicArrayTypeAST>()->element.get());
+    }
+    if (a->isa<RefTypeAST>()) {
+        return isEqual(a->as<RefTypeAST>()->inner.get(), b->as<RefTypeAST>()->inner.get());
+    }
+    if (a->isa<PtrTypeAST>()) {
+        return isEqual(a->as<PtrTypeAST>()->inner.get(), b->as<PtrTypeAST>()->inner.get());
+    }
+    if (a->isa<FuncTypeAST>()) {
+        auto* fa = a->as<FuncTypeAST>();
+        auto* fb = b->as<FuncTypeAST>();
+        if (fa->isNullable != fb->isNullable) return false;
+        if (fa->params.size() != fb->params.size()) return false;
+        for (size_t i = 0; i < fa->params.size(); ++i) {
+            if (!isEqual(fa->params[i].get(), fb->params[i].get())) return false;
+        }
+        return isEqual(fa->returnType.get(), fb->returnType.get());
+    }
+    if (a->isa<UnionTypeAST>()) {
+        auto* ua = a->as<UnionTypeAST>();
+        auto* ub = b->as<UnionTypeAST>();
+        if (ua->members.size() != ub->members.size()) return false;
+        for (size_t i = 0; i < ua->members.size(); ++i) {
+            if (!isEqual(ua->members[i].get(), ub->members[i].get())) return false;
+        }
+        return true;
+    }
+    return false;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // isAssignable  — Validates if one type can securely pipe into another configuration
 //
 // Checks constraints confirming `from` can safely transfer its active memory sizing
