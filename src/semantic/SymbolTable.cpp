@@ -13,6 +13,7 @@
  */
 
 #include "SymbolTable.hpp"
+#include <iostream>
 
 // ─────────────────────────────────────────────────────────────────────────────
 // pushScope  — Pushes a newly created local scope
@@ -65,10 +66,11 @@ bool SymbolTable::declare(const Symbol& sym) {
 // scope without finding a symbol.
 // ─────────────────────────────────────────────────────────────────────────────
 Symbol* SymbolTable::lookup(const std::string& name) {
-    for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
-        auto found = it->find(name);
-        if (found != it->end()) {
-            return &found->second;
+    for (int i = (int)scopes_.size() - 1; i >= 0; --i) {
+        const auto& scope = scopes_[i];
+        auto found = scope.find(name);
+        if (found != scope.end()) {
+            return const_cast<Symbol*>(&found->second);
         }
     }
     return nullptr;

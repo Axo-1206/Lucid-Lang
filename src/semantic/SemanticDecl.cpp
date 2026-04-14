@@ -243,6 +243,7 @@ void checkStructDecl(StructDeclAST& node, SymbolTable& symbols, TypeResolver& re
                      int& parallelDepth, bool insideExtern) {
 
     std::unordered_set<std::string> seen;
+    std::cout << "\n--- checkStructDecl: " << node.name << " ---" << std::endl;
     for (auto& field : node.fields) {
         if (!seen.insert(field->name).second) {
             dc.error(DiagnosticCategory::Semantic, field->loc, DiagCode::E3005,
@@ -327,9 +328,9 @@ void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
                    DiagnosticEngine& dc, int& asyncDepth, int& loopDepth,
                    int& parallelDepth, bool insideExtern) {
  
-    // Verify the target struct exists.
-    Symbol* structSym = symbols.lookup(node.structName);
-    if (!structSym || structSym->kind != SymbolKind::Struct) {
+    // Verify the target struct exists once at the start to catch basic errors.
+    Symbol* initialLookup = symbols.lookup(node.structName);
+    if (!initialLookup || initialLookup->kind != SymbolKind::Struct) {
         dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
                  "impl target '" + node.structName + "' is not a declared struct");
         return;
@@ -348,23 +349,28 @@ void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
         TypeAST* returnType = nullptr;
         if (method->returnType) {
             returnType = resolver.resolveType(method->returnType.get());
+            if (!returnType) continue;
         }
  
         if (method->isAsync) asyncDepth++;
         symbols.pushScope();
- 
-        // Inside an impl method body, struct fields are accessible as bare names.
-        // Point {
-        //     x float 
-        //     x float 
-        // }
-        // impl {
-        //     magSquared () float = {
-        //         return x * x + y * y
-        //     }
-        // }
-        // e.g. in `impl Point`, `x` and `y` resolve to the Point's fields.
-        // This is the implicit receiver model — no `self` keyword needed.
+
+        // RE-LOOKUP struct symbol inside the loop.
+        // Memory Safety Warning: The previous symbols.pushScope() call may trigger a 
+        // reallocation of the SymbolTable's underlying scope storage (std::vector). 
+        // Since Symbol* pointers from symbols.lookup() point directly into these 
+        // scope maps, any pointer retrieved BEFORE pushScope() can become dangling 
+        // and cause a segmentation fault if accessed here. We must re-sync the 
+        // pointer to ensure it points to the new, valid memory location.
+        Symbol* structSym = symbols.lookup(node.structName);
+        if (!structSym || !structSym->decl || !structSym->decl->isa<StructDeclAST>()) {
+            symbols.popScope();
+            if (method->isAsync) asyncDepth--;
+            dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
+                     "impl target '" + node.structName + "' has a corrupt or missing declaration");
+            return;
+        }
+
         auto* structDecl = structSym->decl->as<StructDeclAST>();
         for (auto& field : structDecl->fields) {
             TypeAST* ft = resolver.resolveType(field->type.get());
@@ -380,7 +386,7 @@ void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
             fs.loc        = field->loc;
             symbols.declare(fs);
         }
-        
+
         for (auto& group : method->paramGroups) {
             for (auto& param : group) {
                 TypeAST* pt = resolver.resolveType(param->type.get());
@@ -400,10 +406,13 @@ void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
             checkStmt(method->body.get(), symbols, resolver, dc, returnType,
                       asyncDepth, loopDepth, parallelDepth, insideExtern);
         }
+
  
         symbols.popScope();
         if (method->isAsync) asyncDepth--;
+
     }
+    //std::cout << "\n--- TESETING2" << node.structName << " ---" << std::endl;
  
     // Trait conformance check.
     if (node.traitRef) {

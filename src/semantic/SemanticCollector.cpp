@@ -72,12 +72,50 @@ void SemanticCollector::visit(VarDeclAST& node) {
 // share the same name locally, then instantly discards the parameter bindings.
 // ─────────────────────────────────────────────────────────────────────────────
 void SemanticCollector::visit(FuncDeclAST& node) {
+    // Build signature
+    TypePtr sig = nullptr;
+    // Iterate groups in REVERSE to build the curry chain
+    for (int i = (int)node.paramGroups.size() - 1; i >= 0; --i) {
+        auto ft = std::make_unique<FuncTypeAST>();
+        ft->loc = node.loc;
+        for (auto& p : node.paramGroups[i]) {
+            // Proxy type: just enough for the type checker. 
+            // We use the same name/kind for now. 
+            // In a better design, TypeAST would have a clone().
+            if (p->type->kind == ASTKind::PrimitiveType) {
+                ft->params.push_back(std::make_unique<PrimitiveTypeAST>(
+                    static_cast<PrimitiveTypeAST*>(p->type.get())->primitiveKind));
+            } else if (p->type->kind == ASTKind::NamedType) {
+                ft->params.push_back(std::make_unique<NamedTypeAST>(
+                    static_cast<NamedTypeAST*>(p->type.get())->name));
+            } else {
+                // Fallback: just use a dummy any for complex types during Phase 1
+                ft->params.push_back(std::make_unique<PrimitiveTypeAST>(PrimitiveKind::Any));
+            }
+        }
+        if (sig) {
+            ft->returnType = std::move(sig);
+        } else if (node.returnType) {
+            if (node.returnType->kind == ASTKind::PrimitiveType) {
+                ft->returnType = std::make_unique<PrimitiveTypeAST>(
+                    static_cast<PrimitiveTypeAST*>(node.returnType.get())->primitiveKind);
+            } else if (node.returnType->kind == ASTKind::NamedType) {
+                ft->returnType = std::make_unique<NamedTypeAST>(
+                    static_cast<NamedTypeAST*>(node.returnType.get())->name);
+            } else {
+                ft->returnType = std::make_unique<PrimitiveTypeAST>(PrimitiveKind::Any);
+            }
+        }
+        sig = std::move(ft);
+    }
+    node.signature = std::move(sig);
+
     declareSymbol({
         node.name,
         SymbolKind::Func,
         node.keyword,
         node.visibility,
-        node.returnType.get(),
+        node.signature.get(),
         &node,
         node.isAsync,
         node.loc
@@ -217,13 +255,63 @@ void SemanticCollector::visit(ImplDeclAST& node) {
     // Merge methods onto the struct's namespace by mangling their names.
     // E.g., StructName.methodName in the global scope.
     for (const auto& method : node.methods) {
+        // Build signature for method
+        TypePtr sig = nullptr;
+        
+        // 1. Create the implicit 'self' group for methods (allows p:offset or Point:offset(p))
+        auto selfGroup = std::make_unique<FuncTypeAST>();
+        selfGroup->loc = method->loc;
+        selfGroup->params.push_back(std::make_unique<NamedTypeAST>(node.structName));
+        
+        // 2. Build the rest of the signature from paramGroups
+        for (int i = (int)method->paramGroups.size() - 1; i >= 0; --i) {
+            auto ft = std::make_unique<FuncTypeAST>();
+            ft->loc = method->loc;
+            for (auto& p : method->paramGroups[i]) {
+                if (p->type->kind == ASTKind::PrimitiveType) {
+                    ft->params.push_back(std::make_unique<PrimitiveTypeAST>(static_cast<PrimitiveTypeAST*>(p->type.get())->primitiveKind));
+                } else if (p->type->kind == ASTKind::NamedType) {
+                    ft->params.push_back(std::make_unique<NamedTypeAST>(static_cast<NamedTypeAST*>(p->type.get())->name));
+                } else {
+                    ft->params.push_back(std::make_unique<PrimitiveTypeAST>(PrimitiveKind::Any));
+                }
+            }
+            if (sig) {
+                ft->returnType = std::move(sig);
+            } else if (method->returnType) {
+                if (method->returnType->kind == ASTKind::PrimitiveType) {
+                    ft->returnType = std::make_unique<PrimitiveTypeAST>(static_cast<PrimitiveTypeAST*>(method->returnType.get())->primitiveKind);
+                } else if (method->returnType->kind == ASTKind::NamedType) {
+                    ft->returnType = std::make_unique<NamedTypeAST>(static_cast<NamedTypeAST*>(method->returnType.get())->name);
+                } else {
+                    ft->returnType = std::make_unique<PrimitiveTypeAST>(PrimitiveKind::Any);
+                }
+            }
+            sig = std::move(ft);
+        }
+        
+        // Connect the 'self' group to the front
+        if (sig) {
+            selfGroup->returnType = std::move(sig);
+        } else if (method->returnType) {
+            // Case for magSquared() where There are no param groups, only self.
+             if (method->returnType->kind == ASTKind::PrimitiveType) {
+                selfGroup->returnType = std::make_unique<PrimitiveTypeAST>(static_cast<PrimitiveTypeAST*>(method->returnType.get())->primitiveKind);
+            } else if (method->returnType->kind == ASTKind::NamedType) {
+                selfGroup->returnType = std::make_unique<NamedTypeAST>(static_cast<NamedTypeAST*>(method->returnType.get())->name);
+            } else {
+                selfGroup->returnType = std::make_unique<PrimitiveTypeAST>(PrimitiveKind::Any);
+            }
+        }
+        method->signature = std::move(selfGroup);
+
         std::string mangledName = node.structName + "." + method->name;
         declareSymbol({
             mangledName,
             SymbolKind::Method,
             DeclKeyword::Let,
             node.visibility, // Inherit impl visibility conceptually
-            method->returnType.get(),
+            method->signature.get(),
             method.get(),
             method->isAsync,
             method->loc

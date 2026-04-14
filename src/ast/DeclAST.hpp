@@ -274,6 +274,7 @@ struct FuncDeclAST : DeclAST {
 	StmtPtr body;                                   // BlockStmtAST
     FuncBodyKind bodyKind = FuncBodyKind::Block;
     bool isAsync = false;
+    TypePtr signature;                              // Synthesized Function Type (signature)
     Visibility visibility = Visibility::Private;
 
     FuncDeclAST() : DeclAST(ASTKind::FuncDecl) {}
@@ -488,6 +489,7 @@ struct MethodDeclAST : BaseAST {
     StmtPtr body;       // BlockStmtAST
     FuncBodyKind bodyKind = FuncBodyKind::Block;
     bool isAsync = false;
+    TypePtr signature;                              // Synthesized Function Type (signature)
 
     MethodDeclAST() : BaseAST(ASTKind::MethodDecl) {}
 

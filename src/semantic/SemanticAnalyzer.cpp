@@ -58,22 +58,29 @@ SemanticAnalyzer::~SemanticAnalyzer() = default;
 // ─────────────────────────────────────────────────────────────────────────────
 bool SemanticAnalyzer::analyze(std::vector<ProgramAST*>& files) {
     // Phase 0: Resolve Imports.
+    std::cout << "\n--- Phase 0: Resolve Imports ---" << std::endl;
     resolveImports(files);
     if (dc_.hasErrors()) return false;
 
     // Phase 1: Collect Symbols.
+    std::cout << "\n--- Phase 1: Collect Symbols ---" << std::endl;
     collectSymbols(files);
     if (dc_.hasErrors()) return false;
 
+    dumpSymbols();
+
     // Phase 2: Resolve Types.
+    std::cout << "\n--- Phase 2: Resolve Types ---" << std::endl;
     resolveTypes(files);
     // Don't early-exit on type resolution errors — we can still discover
     // more semantic errors during the checking pass.
 
     // Phase 3: Check Decls.
+    std::cout << "\n--- Phase 3: Check Decls ---" << std::endl;
     checkDecls(files);
     if (dc_.hasErrors()) return false;
 
+    std::cout << "\n--- Phase 3.5: Entry point detection ---" << std::endl;
     // Phase 3.5: Entry point detection
     // Validate that a 'main' function exists and has a valid signature.
     // Required format: export const main () int = { ... }

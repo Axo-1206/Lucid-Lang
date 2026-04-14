@@ -1,0 +1,34 @@
+package test
+
+-- 1. Structs with function-typed fields
+struct MathOps {
+    -- Parameter names are required in function types
+    add (a int, b int) int
+    transform (n int) int
+}
+
+struct Point {
+    x float = 0 -- set default value
+    y float
+}
+
+-- 2. Implementation with methods (curried and normal)
+impl Point {
+    -- Normal method
+    magSquared () float = {
+        return x * x + y * y
+    }
+
+    -- Curried method
+    -- The instance is implicitly the first parameter of the first group.
+    -- To partial apply the instance: p:offset
+    offset (dx float) (dy float) Point = {
+        return Point { x = x + dx, y = y + dy }
+    }
+}
+
+export const main () int = {
+    let p Point = Point { x = 1.0, y = 2.0 }
+    let p2 Point = p:offset(1.0)(2.0)
+    return 0
+}

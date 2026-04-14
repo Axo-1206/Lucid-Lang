@@ -1,0 +1,11 @@
+package test
+
+const core_add (a int) (b int) int = {
+    return a + b
+}
+
+export const main () int = {
+    let myAdd (a int) (b int) int = core_add
+    let res1 int = myAdd(10)(20)() 
+    return 0
+}

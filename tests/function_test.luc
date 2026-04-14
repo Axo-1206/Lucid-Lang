@@ -13,7 +13,7 @@ struct Point {
 }
 
 let test_point2 Point = Point { y = 5 }
--- let test_point3 Point = Point { a = 1 } -- error y must be assign an initial value because y is not nullable and doesn't have a default value
+let test_point3 Point = Point { a = 1 } -- error y must be assign an initial value because y is not nullable and doesn't have a default value
 
 -- 2. Implementation with methods (curried and normal)
 impl Point {
