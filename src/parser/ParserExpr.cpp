@@ -1271,11 +1271,7 @@ ExprPtr Parser::parseIndexExpr(ExprPtr target) {
 std::vector<ExprPtr> Parser::parseArgList() {
     std::vector<ExprPtr> args;
 
-    do {
-        match(TokenType::COMMA); // optional separator
-        if (check(TokenType::RPAREN))
-            break;               // trailing comma
-
+    while (!check(TokenType::RPAREN) && !isAtEnd()) {
         ExprPtr arg = parseExpr();
         if (!arg) {
             errorAt(DiagCode::E2008, "expected argument expression");
@@ -1283,7 +1279,18 @@ std::vector<ExprPtr> Parser::parseArgList() {
         }
         args.push_back(std::move(arg));
 
-    } while (!check(TokenType::RPAREN) && !isAtEnd());
+        if (check(TokenType::RPAREN)) break;
+
+        if (!match(TokenType::COMMA)) {
+            errorAt(DiagCode::E2001, "expected ',' after argument");
+            break;
+        }
+
+        if (check(TokenType::RPAREN)) {
+            errorAt(DiagCode::E2001, "unexpected trailing ',' in argument list");
+            break;
+        }
+    }
 
     return args;
 }

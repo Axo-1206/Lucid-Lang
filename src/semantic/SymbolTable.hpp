@@ -35,6 +35,7 @@ public:
     Symbol* lookupLocal(const std::string& name);// current scope only
 
     int currentDepth() const;
+    void dump() const;
 private:
     std::vector<std::unordered_map<std::string, Symbol>> scopes_;
 };

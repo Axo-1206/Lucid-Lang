@@ -47,7 +47,7 @@ int main(int argc, char* argv[]) {
             dc.error(DiagnosticCategory::Lexical, {tok.line, tok.column, filePath},
                     DiagCode::E1001, "Unexpected character: '" + tok.value + "'");
             errorCount++;
-            if (errorCount > 1) break; // Stop after 50 errors to prevent "hanging"
+            if (errorCount > 50) break; // Stop after 50 errors to prevent "hanging"
         }
     }
 
@@ -77,7 +77,6 @@ int main(int argc, char* argv[]) {
     std::vector<ProgramAST*> files = { program.get() };
     SemanticAnalyzer analyzer(dc);
     
-    std::cout << ">>> Starting Semantic Analysis for: " << filePath << std::endl;
     bool success = analyzer.analyze(files);
     
     if (!success || dc.hasErrors()) {

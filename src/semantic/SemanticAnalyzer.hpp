@@ -36,6 +36,7 @@ public:
     // Run the full semantic pass over all files in a package.
     // Returns false if any errors were emitted.
     bool analyze(std::vector<ProgramAST*>& files);
+    void dumpSymbols() const;
 
 private:
     void resolveImports(std::vector<ProgramAST*>& files);  // Phase 0: cycle detection

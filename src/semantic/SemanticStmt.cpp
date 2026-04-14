@@ -140,7 +140,7 @@ static void checkDeclStmt(DeclStmtAST& node, SymbolTable& symbols, TypeResolver&
                      asyncDepth, loopDepth, parallelDepth, insideExtern);
 
         // Declare the variable in the current (block) scope.
-        TypeAST* resolvedTy = resolver.resolveType(vd->type.get());
+        TypeAST* resolvedTy = vd->resolvedType ? (TypeAST*)vd->resolvedType : resolver.resolveType(vd->type.get());
         Symbol sym;
         sym.name       = vd->name;
         sym.kind       = SymbolKind::Var;

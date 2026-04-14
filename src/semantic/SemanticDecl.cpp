@@ -353,6 +353,34 @@ void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
         if (method->isAsync) asyncDepth++;
         symbols.pushScope();
  
+        // Inside an impl method body, struct fields are accessible as bare names.
+        // Point {
+        //     x float 
+        //     x float 
+        // }
+        // impl {
+        //     magSquared () float = {
+        //         return x * x + y * y
+        //     }
+        // }
+        // e.g. in `impl Point`, `x` and `y` resolve to the Point's fields.
+        // This is the implicit receiver model — no `self` keyword needed.
+        auto* structDecl = structSym->decl->as<StructDeclAST>();
+        for (auto& field : structDecl->fields) {
+            TypeAST* ft = resolver.resolveType(field->type.get());
+            if (!ft) continue;
+            Symbol fs;
+            fs.name       = field->name;
+            fs.kind       = SymbolKind::Field;
+            fs.declKw     = DeclKeyword::Let;
+            fs.visibility = Visibility::Private;
+            fs.type       = ft;
+            fs.decl       = field.get();
+            fs.isAsync    = false;
+            fs.loc        = field->loc;
+            symbols.declare(fs);
+        }
+        
         for (auto& group : method->paramGroups) {
             for (auto& param : group) {
                 TypeAST* pt = resolver.resolveType(param->type.get());

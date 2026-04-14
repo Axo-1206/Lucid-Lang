@@ -8,9 +8,12 @@ struct MathOps {
 }
 
 struct Point {
-    x float
+    x float = 0 -- set default value
     y float
 }
+
+let test_point2 Point = Point { y = 5 }
+-- let test_point3 Point = Point { a = 1 } -- error y must be assign an initial value because y is not nullable and doesn't have a default value
 
 -- 2. Implementation with methods (curried and normal)
 impl Point {
@@ -57,7 +60,7 @@ export const main () int = {
     -- Function Assignment
     -- Assigning a curried function reference
     let myAdd (a int) (b int) int = core_add
-    let res1 int = myAdd(10)(20)
+    let res1 int = myAdd(10)(20)() -- should this throw an error at compile-time or runtime? since the function myAdd doesn't support a third call
 
     -- Function Currying (Partial Application)
     -- Calling first group returns a function for the second group
@@ -71,6 +74,7 @@ export const main () int = {
     }
     let res3 int = ops.add(1, 2)
     let res4 int = ops.transform(10)
+    let res6 int = ops.add(1) -- should throw a semantic error, missing argument
 
     -- Method Assignment and Currying via ':' operator
     let p Point = Point { x = 1.0, y = 2.0 }

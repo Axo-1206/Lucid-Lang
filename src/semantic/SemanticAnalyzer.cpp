@@ -57,16 +57,20 @@ SemanticAnalyzer::~SemanticAnalyzer() = default;
 // analyze  — top-level entry point
 // ─────────────────────────────────────────────────────────────────────────────
 bool SemanticAnalyzer::analyze(std::vector<ProgramAST*>& files) {
+    // Phase 0: Resolve Imports.
     resolveImports(files);
     if (dc_.hasErrors()) return false;
 
+    // Phase 1: Collect Symbols.
     collectSymbols(files);
     if (dc_.hasErrors()) return false;
 
+    // Phase 2: Resolve Types.
     resolveTypes(files);
     // Don't early-exit on type resolution errors — we can still discover
     // more semantic errors during the checking pass.
 
+    // Phase 3: Check Decls.
     checkDecls(files);
     if (dc_.hasErrors()) return false;
 
@@ -130,7 +134,9 @@ bool SemanticAnalyzer::analyze(std::vector<ProgramAST*>& files) {
         }
     }
 
+    // Phase 4: Annotate & Optimize.
     annotate(files);
+    std::cout << "  - Semantic Analysis Finished." << std::endl;
     return !dc_.hasErrors();
 }
 
@@ -222,4 +228,8 @@ void SemanticAnalyzer::checkDecls(std::vector<ProgramAST*>& files) {
 // ─────────────────────────────────────────────────────────────────────────────
 void SemanticAnalyzer::annotate(std::vector<ProgramAST*>& files) {
     annotateAll(files, *symbols_);
+}
+
+void SemanticAnalyzer::dumpSymbols() const {
+    symbols_->dump();
 }

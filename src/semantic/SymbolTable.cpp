@@ -101,3 +101,50 @@ Symbol* SymbolTable::lookupLocal(const std::string& name) {
 int SymbolTable::currentDepth() const {
     return static_cast<int>(scopes_.size());
 }
+
+#include <iostream>
+#include <iomanip>
+
+static std::string kindToString(SymbolKind kind) {
+    switch (kind) {
+        case SymbolKind::Var:         return "Var";
+        case SymbolKind::Func:        return "Func";
+        case SymbolKind::Struct:      return "Struct";
+        case SymbolKind::Enum:        return "Enum";
+        case SymbolKind::Trait:       return "Trait";
+        case SymbolKind::TypeAlias:   return "TypeAlias";
+        case SymbolKind::Param:       return "Param";
+        case SymbolKind::Field:       return "Field";
+        case SymbolKind::Method:      return "Method";
+        case SymbolKind::EnumVariant: return "EnumVariant";
+        case SymbolKind::Conversion:  return "Conversion";
+        default:                      return "Unknown";
+    }
+}
+
+void SymbolTable::dump() const {
+    std::cout << "\n--- SYMBOL TABLE DUMP ---" << std::endl;
+    if (scopes_.empty()) {
+        std::cout << " (empty)" << std::endl;
+        return;
+    }
+
+    for (int i = 0; i < scopes_.size(); ++i) {
+        std::cout << "Scope Depth " << i << ":" << std::endl;
+        const auto& scope = scopes_[i];
+        if (scope.empty()) {
+            std::cout << "  (empty)" << std::endl;
+            continue;
+        }
+
+        for (const auto& [name, sym] : scope) {
+            std::cout << "  - " << std::left << std::setw(15) << name 
+                      << " [" << kindToString(sym.kind) << "]";
+            if (sym.loc.isKnown()) {
+                std::cout << " at " << sym.loc.file << ":" << sym.loc.line;
+            }
+            std::cout << std::endl;
+        }
+    }
+    std::cout << "-------------------------\n" << std::endl;
+}

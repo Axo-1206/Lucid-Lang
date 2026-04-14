@@ -1153,21 +1153,35 @@ static TypeAST* checkStructLiteralExpr(StructLiteralExprAST& node, SymbolTable& 
         }
     }
 
-    // Check that all required fields (no default) are provided.
+    // Check that all required fields (no default and not nullable) are provided.
     for (auto& f : structDecl->fields) {
-        if (f->defaultVal) continue;
+        // Map search: was this field provided in the literal?
         bool found = false;
         for (auto& init : node.inits) {
-            if (init.name == f->name) { found = true; break; }
+            if (init.name == f->name) {
+                found = true;
+                break;
+            }
         }
+
         if (!found) {
+            // If the field is missing, it's only valid if it has a default value 
+            // OR if its type is nullable (which defaults to nil).
+            if (f->defaultVal) continue;
+            
+            TypeAST* ft = resolver.resolveType(f->type.get());
+            if (ft && TypeChecker::isNullable(ft)) continue;
+
+            // Otherwise, it's a semantic error.
             dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                      "missing required field '" + f->name + "' in struct literal '" +
                      node.typeName + "'");
         }
     }
 
-    // Return a NamedTypeAST representing this struct type.
+    // Return the struct type symbol. 
+    // If sym->type is null (e.g. during early collection), we should still
+    // return something valid if possible, but sym->type is the source of truth.
     node.resolvedType = sym->type;
     return sym->type;
 }
