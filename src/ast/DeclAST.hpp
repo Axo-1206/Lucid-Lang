@@ -318,6 +318,34 @@ using FieldDeclPtr = std::unique_ptr<FieldDeclAST>;
 //
 // Impl blocks are separate top-level declarations (ImplDeclAST) — the struct
 // itself only holds its fields and generic params.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// !!! read this, this bug is very hard to fix !!!
+// selfType field (Semantic Phase):
+//   During Phase 1 (SemanticCollector), each struct declaration needs a type
+//   representation in the symbol table so that:
+//   (1) Struct literal expressions can return a type: `Point { x = 1 y = 2 }`
+//   (2) Variable assignments can match the struct type: `let p Point = ...`
+//   (3) Type checkers can compare struct types for compatibility
+//
+//   The selfType is a NamedTypeAST synthesized on-demand that represents
+//   the struct itself as a type (e.g., struct name "Point" becomes a type).
+//
+// Why 'mutable' and 'unique_ptr':
+//   - mutable: Allows lazy initialization from within const contexts
+//     (e.g., during visitor traversal where the AST is const).
+//     The field is logically part of semantic-phase bookkeeping, not the
+//     declaration itself, so mutability is appropriate.
+//
+//   - unique_ptr: Provides stable ownership of the synthesized NamedTypeAST.
+//     The Symbol table stores a raw pointer to selfType.get(), which remains
+//     valid for the lifetime of this StructDeclAST. Using unique_ptr ensures
+//     the allocation is cleaned up when the struct declaration is destroyed.
+//
+// Initialization:
+//   - Created lazily in SemanticCollector::visit(StructDeclAST&)
+//   - Once created, remains constant for the semantic pass
+//   - Stored in Symbol::type when declaring the struct symbol
 // ─────────────────────────────────────────────────────────────────────────────
 
 struct StructDeclAST : DeclAST {
@@ -327,6 +355,19 @@ struct StructDeclAST : DeclAST {
     std::vector<GenericParamPtr> genericParams; // empty if non-generic
     std::vector<FieldDeclPtr> fields;
     Visibility visibility = Visibility::Private;
+    
+    // SEMANTIC PHASE (Phase 1+): A synthesized NamedTypeAST representing
+    // the struct as a type. Initialized by SemanticCollector, then stored
+    // as the symbol's type in the symbol table. Enables:
+    //   - struct literal type resolution (checkStructLiteralExpr returns this)
+    //   - variable-to-struct type assignments (checkVarDecl type matching)
+    //   - struct type identity in the type system
+    //
+    // Why NOT initialized in constructor:
+    //   - Would require TypeAST allocation on every struct, even in early parse phases
+    //   - The name is a string, not known until after parsing
+    //   - Lazy initialization (first access by SemanticCollector) is efficient
+    mutable std::unique_ptr<NamedTypeAST> selfType;
 
     StructDeclAST() : DeclAST(ASTKind::StructDecl) {}
 

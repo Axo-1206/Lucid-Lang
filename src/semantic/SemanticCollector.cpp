@@ -147,20 +147,75 @@ void SemanticCollector::visit(FuncDeclAST& node) {
 // Like functions, maps the struct globally. Pushes a mock localized scope to
 // iterate through the struct's definition, asserting no duplicate field aliases
 // are used before popping the ephemeral scope.
+//
+// Semantic Phase (Phase 1): Self-Type Synthesis
+// ─────────────────────────────────────────────────────────────────────────────
+// CRITICAL FIX: StructDeclAST previously set sym->type = nullptr, which caused
+// false "type mismatch" errors when struct literals were assigned to variables.
+//
+// WHY selfType IS NEEDED:
+// ────────────────────────
+// When a user writes `let ops MathOps = MathOps { add = ..., transform = ... }`,
+// the compiler needs to:
+//   1. Determine the type of the struct literal (checkStructLiteralExpr)
+//   2. Compare it against the declared type MathOps (checkVarDecl)
+//   3. Call TypeChecker::isAssignable(literalType, declaredType)
+//
+// If the struct symbol's type is nullptr, isAssignable(nullptr, MathOps) fails.
+//
+// THE FIX: Create a NamedTypeAST("MathOps") and store it as sym->type.
+// Now checkStructLiteralExpr can return this type, and type checking passes.
+//
+// WHY LAZY INITIALIZATION (mutable + unique_ptr):
+// ───────────────────────────────────────────────
+// - Mutable: Allows creation during const visitor traversal (SemanticCollector
+//   receives const references in some paths, yet needs to initialize selfType)
+// - Unique_ptr: Owns the allocated NamedTypeAST for the lifetime of the struct
+// - Lazy: Only created when SemanticCollector visits this struct (efficient)
+//
+// MEMORY SAFETY:
+// ──────────────
+// - selfType.get() is stored in Symbol::type (a raw pointer)
+// - The raw pointer remains valid because:
+//   1. selfType is owned by StructDeclAST (unique_ptr keeps it alive)
+//   2. StructDeclAST lives for the entire semantic pass (until cleanup)
+//   3. Symbol table lookups retrieve these pointers, always before StructDeclAST destruction
+//
+// INITIALIZATION SEQUENCE:
+// ────────────────────────
+// 1. Parser creates StructDeclAST with selfType = nullptr
+// 2. SemanticCollector::visit(StructDeclAST) checks if selfType is null
+// 3. If null, creates: selfType = make_unique<NamedTypeAST>(node.name)
+// 4. Sets Symbol::type = selfType.get()
+// 5. Later, checkStructLiteralExpr retrieves sym->type and uses it
+// 6. checkVarDecl compares the struct literal type against declared type
 // ─────────────────────────────────────────────────────────────────────────────
 void SemanticCollector::visit(StructDeclAST& node) {
+    // Lazy-initialize the struct's self-type representation.
+    // This is mutable to allow initialization from const contexts.
+    if (!node.selfType) {
+        node.selfType = std::make_unique<NamedTypeAST>(node.name);
+        node.selfType->loc = node.loc;
+    }
+
+    // Declare the struct symbol with its type (now non-null).
+    // This allows:
+    //   - checkStructLiteralExpr to return the struct's type
+    //   - checkVarDecl to match struct literal assignments
+    //   - Type checker to reason about struct identity
     declareSymbol({
         node.name,
         SymbolKind::Struct,
         DeclKeyword::Let, // N/A
         node.visibility,
-        nullptr,
+        node.selfType.get(),  // ← NOW NON-NULL (was nullptr before fix)
         &node,
         false,
         node.loc
     });
 
-    // Register fields to check for duplicates
+    // Register fields to check for duplicates.
+    // This scope is ephemeral — popped before returning.
     symbols_.pushScope();
     for (const auto& field : node.fields) {
         declareSymbol({

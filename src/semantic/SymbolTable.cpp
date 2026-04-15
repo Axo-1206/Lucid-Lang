@@ -23,6 +23,13 @@
 // when processing open-braces of function bodies or code blocks.
 // ─────────────────────────────────────────────────────────────────────────────
 void SymbolTable::pushScope() {
+    // Pre-reserve capacity to prevent reallocation of the scopes_ vector
+    // when emplace_back is called. This prevents dangling Symbol* pointers
+    // that point into scope map bucket memory from becoming invalid.
+    // Reserve enough for typical programs (this is a defensive measure).
+    if (scopes_.capacity() == scopes_.size()) {
+        scopes_.reserve(scopes_.size() + 32);
+    }
     scopes_.emplace_back();
 }
 

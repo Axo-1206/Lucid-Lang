@@ -1194,8 +1194,37 @@ static TypeAST* checkIndexExpr(IndexExprAST& node, SymbolTable& symbols,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// checkStructLiteralExpr
-// Verifies every required field is provided and each value's type matches.
+// checkStructLiteralExpr — Validates struct literal and returns struct type
+//
+// Rules enforced:
+//   - Target struct must exist in symbol table
+//   - All provided field names must match declared fields
+//   - All provided field values must match their declared types
+//   - All required fields (no default, not nullable) must be provided
+//   - Returns the struct type (or nullptr on error)
+//
+// TYPE SYSTEM INTEGRATION (THE FIX):
+// ──────────────────────────────────
+// This function returns sym->type, which is now non-null thanks to the selfType
+// fix in StructDeclAST and SemanticCollector::visit(StructDeclAST).
+//
+// BEFORE FIX:
+//   sym->type = nullptr  →  function returns nullptr  →  type checker fails
+//   Example: let ops MathOps = MathOps { ... }
+//   - checkStructLiteralExpr returns nullptr
+//   - checkVarDecl sees: isAssignable(nullptr, MathOps) → ERROR
+//   - False positive: "type mismatch in declaration 'ops'"
+//
+// AFTER FIX:
+//   sym->type = NamedTypeAST("MathOps")  →  returns that type
+//   - Type comparison succeeds: NamedTypeAST("MathOps") ≈ NamedTypeAST("MathOps")
+//   - Struct literals now work correctly in assignments
+//
+// FALLBACK LOGIC:
+// ───────────────
+// If sym->type is somehow still null (defensive programming), we try to
+// retrieve selfType directly from the StructDeclAST. This provides a safety
+// net without breaking code that relied on the old (broken) behavior.
 // ─────────────────────────────────────────────────────────────────────────────
 static TypeAST* checkStructLiteralExpr(StructLiteralExprAST& node, SymbolTable& symbols,
                                         TypeResolver& resolver, DiagnosticEngine& dc,
@@ -1256,11 +1285,37 @@ static TypeAST* checkStructLiteralExpr(StructLiteralExprAST& node, SymbolTable& 
         }
     }
 
-    // Return the struct type symbol. 
-    // If sym->type is null (e.g. during early collection), we should still
-    // return something valid if possible, but sym->type is the source of truth.
-    node.resolvedType = sym->type;
-    return sym->type;
+    // Return the struct type symbol.
+    //
+    // PRIMARY PATH: Use sym->type (the struct's self-type).
+    // ────────────────────────────────────────────────────
+    // sym->type is now non-null thanks to the selfType fix:
+    // SemanticCollector::visit(StructDeclAST) creates a NamedTypeAST and stores it here.
+    // This allows type checkers to compare struct literal types with declared types.
+    //
+    // IMPACT: Before this fix, sym->type was nullptr, causing checkVarDecl to fail
+    // with false "type mismatch" errors for assignments like:
+    //   let ops MathOps = MathOps { add = ..., transform = ... }
+    // Now it correctly compares NamedTypeAST("MathOps") with NamedTypeAST("MathOps").
+    if (sym->type) {
+        node.resolvedType = sym->type;
+        return sym->type;
+    }
+    
+    // FALLBACK PATH: Retrieve selfType directly from the struct declaration.
+    // ───────────────────────────────────────────────────────────────────────
+    // If sym->type is somehow still null (shouldn't happen post-fix, but defensive),
+    // try to use selfType. This ensures robustness even if the symbol table
+    // pointer wasn't properly initialized.
+    if (sym->decl && sym->decl->isa<StructDeclAST>()) {
+        auto* structDecl = sym->decl->as<StructDeclAST>();
+        if (structDecl->selfType) {
+            node.resolvedType = structDecl->selfType.get();
+            return structDecl->selfType.get();
+        }
+    }
+    
+    return nullptr;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

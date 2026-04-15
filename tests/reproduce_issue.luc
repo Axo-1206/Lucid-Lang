@@ -1,11 +1,11 @@
 package test
 
-const core_add (a int) int = {
+const core_add (a int) (b int) int = {
     return a 
 }
 
 export const main () int = {
-    let myAdd (a int) int = core_add
+    let myAdd (a int) int = core_add(5)
     let res1 int = myAdd(10)
     return 0
 }

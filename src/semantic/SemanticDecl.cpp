@@ -256,10 +256,7 @@ void checkStructDecl(StructDeclAST& node, SymbolTable& symbols, TypeResolver& re
                      int& parallelDepth, bool insideExtern) {
 
     std::unordered_set<std::string> seen;
-    std::cout << "\n--- checkStructDecl: " << node.name << " ---" << std::endl;
-
-    std::cout << "\n--- Test1: " << node.name << " ---" << std::endl;
-
+    
     for (auto& field : node.fields) {
         if (!seen.insert(field->name).second) {
             dc.error(DiagnosticCategory::Semantic, field->loc, DiagCode::E3005,
@@ -267,12 +264,8 @@ void checkStructDecl(StructDeclAST& node, SymbolTable& symbols, TypeResolver& re
             continue;
         }
 
-        std::cout << "\n--- For Test1: " << node.name << " ---" << std::endl;
-
         TypeAST* ft = resolver.resolveType(field->type.get());
         if (!ft) continue;
-
-        std::cout << "\n--- For Test2: " << node.name << " ---" << std::endl;
 
         if (field->defaultVal) {
             TypeAST* dvt = checkExpr(field->defaultVal.get(), symbols, resolver, dc,
@@ -283,9 +276,6 @@ void checkStructDecl(StructDeclAST& node, SymbolTable& symbols, TypeResolver& re
             }
         }
     }
-
-    std::cout << "\n--- Test2: " << node.name << " ---" << std::endl;
-
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -339,7 +329,7 @@ void checkTraitDecl(TraitDeclAST& node, TypeResolver& resolver, DiagnosticEngine
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// checkImplDecl
+// checkImplDecl — Validates impl blocks and injects struct fields into method scopes
 //
 // Rules enforced:
 //   - The impl target struct must exist in the symbol table.
@@ -347,6 +337,80 @@ void checkTraitDecl(TraitDeclAST& node, TypeResolver& resolver, DiagnosticEngine
 //   - Each method body is checked as a function body.
 //   - If traitRef is present, every trait method must be implemented with a
 //     matching signature.
+//
+// CRITICAL MEMORY SAFETY ISSUE:
+// ─────────────────────────────
+// This function handles a dangerous pointer validity issue that caused crashes
+// in earlier versions. The bug: each iteration calls symbols.pushScope(), which
+// may reallocate the internal vector<scope_map>, invalidating all Symbol* pointers
+// from earlier lookups. The fix: re-lookup the struct symbol AFTER each pushScope().
+//
+// WHY DOES pushScope() CAUSE REALLOCATION?
+// ─────────────────────────────────────────
+// SymbolTable uses: std::vector<std::unordered_map<std::string, Symbol>> scopes_
+//
+// How std::vector works:
+//   - Stores elements in contiguous heap memory
+//   - Tracks: size (elements in use) and capacity (total allocated space)
+//   - Example: after pushing 8 scopes with capacity 8, scopes_ is full
+//
+// When pushScope() calls emplace_back():
+//   1. Checks: if (size == capacity) ← NO MORE SPACE
+//   2. If true: ALLOCATES NEW LARGER BUFFER (typically 1.5x or 2x size)
+//   3. COPIES all existing elements to new buffer
+//   4. FREES the old buffer
+//   5. Updates internal pointers
+//
+// CONSEQUENCE FOR SYMBOL POINTERS:
+// ────────────────────────────────
+// Symbol* structSym = symbols.lookup("MathOps");  // Points into old buffer
+// symbols.pushScope();                             // ← REALLOCATION happens here!
+// // structSym now points to FREED/INVALID memory  ← DANGLING POINTER!
+//
+// VISUAL EXAMPLE: std::vector growth
+// ──────────────────────────────────
+// Initial state (capacity 4, size 3):
+//   Memory:  [Scope0][Scope1][Scope2][empty]
+//   Address: 0x1000 0x2000  0x3000  0x4000
+//   Pointer to Scope0: 0x1000 ✓ VALID
+//
+// pushScope() #1 (size becomes 4):
+//   Memory:  [Scope0][Scope1][Scope2][Scope3]  ← fits in capacity 4
+//   Address: 0x1000 0x2000  0x3000  0x4000
+//   Pointer to Scope0: 0x1000 ✓ VALID
+//
+// pushScope() #2 (size would be 5, capacity overflow!):
+//   REALLOCATION TRIGGERED (capacity 4 → 8)
+//   
+//   Old memory (FREED):
+//   [Scope0][Scope1][Scope2][Scope3]
+//   0x1000 0x2000  0x3000  0x4000
+//
+//   New memory (ALLOCATED):
+//   [Scope0][Scope1][Scope2][Scope3][Scope4][empty][empty][empty]
+//   0x8000 0x8100  0x8200  0x8300  0x8400  0x8500 0x8600 0x8700
+//   (completely different addresses!)
+//
+//   Old pointer to Scope0 (0x1000) ← NOW DANGLING! Points to freed memory!
+//   Should be:           (0x8000) ← New location after reallocation
+//
+// THIS IS WHY WE MUST RE-LOOKUP:
+// ──────────────────────────────
+// After pushScope(), we don't know if reallocation happened:
+//   - If size < capacity: no reallocation, old pointers still valid
+//   - If size == capacity: reallocation WILL happen on next push!
+//
+// SOLUTION: Always re-lookup after pushScope() to be safe.
+// ─────────────────────────────────────────────────────────
+//
+// EXAMPLE SCENARIO:
+//   impl MathOps {
+//     method1() { ... }      ← 1st iteration: pushScope, then lookup → valid pointer A
+//     method2() { ... }      ← 2nd iteration: pushScope (may reallocate!), pointer A DANGLING
+//     method3() { ... }      ← 3rd iteration: using old pointer A → CRASH
+//   }
+//
+// See line 372-391 for the detailed visual example of the memory layout issue.
 // ─────────────────────────────────────────────────────────────────────────────
 void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolver,
                    DiagnosticEngine& dc, int& asyncDepth, int& loopDepth,
@@ -379,13 +443,37 @@ void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
         if (method->isAsync) asyncDepth++;
         symbols.pushScope();
 
-        // RE-LOOKUP struct symbol inside the loop.
-        // Memory Safety Warning: The previous symbols.pushScope() call may trigger a 
-        // reallocation of the SymbolTable's underlying scope storage (std::vector). 
-        // Since Symbol* pointers from symbols.lookup() point directly into these 
-        // scope maps, any pointer retrieved BEFORE pushScope() can become dangling 
-        // and cause a segmentation fault if accessed here. We must re-sync the 
-        // pointer to ensure it points to the new, valid memory location.
+        // RE-LOOKUP struct symbol inside the loop AFTER pushScope.
+        // The pushScope() call may trigger a reallocation of the std::vector<scope_map>,
+        // which invalidates any Symbol* pointers from earlier lookups.
+        // We must re-lookup AFTER the reallocation to get valid pointers.
+        //
+        // VISUAL EXAMPLE OF THE BUG (WITHOUT THIS FIX):
+        // ─────────────────────────────────────────────
+        // 
+        // BEFORE pushScope():
+        //   scopes_ vector allocation:     [Scope0]  [Scope1]  [Scope2]  ...
+        //   addresses:                     0x1000    0x2000    0x3000
+        //   structSym from lookup:         points to Symbol in Scope0 (0x1500)
+        //
+        // AFTER pushScope() - vector reallocates when capacity is exceeded:
+        //   Old allocation: FREED         [Scope0]  [Scope1]  [Scope2]  ...  [freed]
+        //                                 0x1000    0x2000    0x3000
+        //
+        //   New allocation: REALLOCATED   [Scope0]  [Scope1]  [Scope2]  ...  [Scope3]
+        //                                 0x8000    0x9000    0xA000         0xB000
+        //                                 (different addresses!)
+        //
+        // structSym still holds 0x1500 (points into old freed allocation) ← DANGLING POINTER!
+        // Any access to structSym→type or structSym→decl = SEGMENTATION FAULT
+        //
+        // THE FIX:
+        // ──────
+        // Re-lookup AFTER pushScope() to get a pointer into the new allocation:
+        //   structSym = symbols.lookup(node.structName);  // ← points into 0x8500 now
+        //
+        // Now structSym is valid and points to the reallocated memory.
+        // ─────────────────────────────────────────────────────────────────────
         Symbol* structSym = symbols.lookup(node.structName);
         if (!structSym || !structSym->decl || !structSym->decl->isa<StructDeclAST>()) {
             symbols.popScope();
@@ -396,6 +484,8 @@ void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
         }
 
         auto* structDecl = structSym->decl->as<StructDeclAST>();
+        
+        // Inject struct fields. Re-resolve each field type fresh (don't cache across iterations).
         for (auto& field : structDecl->fields) {
             TypeAST* ft = resolver.resolveType(field->type.get());
             if (!ft) continue;
@@ -411,14 +501,20 @@ void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
             symbols.declare(fs);
         }
 
+        // Inject parameters. Re-resolve each param type fresh.
         for (auto& group : method->paramGroups) {
             for (auto& param : group) {
                 TypeAST* pt = resolver.resolveType(param->type.get());
                 if (!pt) continue;
                 Symbol ps;
-                ps.name = param->name; ps.kind = SymbolKind::Param;
-                ps.declKw = DeclKeyword::Let; ps.visibility = Visibility::Private;
-                ps.type = pt; ps.decl = param.get(); ps.isAsync = false; ps.loc = param->loc;
+                ps.name = param->name;
+                ps.kind = SymbolKind::Param;
+                ps.declKw = DeclKeyword::Let;
+                ps.visibility = Visibility::Private;
+                ps.type = pt;
+                ps.decl = param.get();
+                ps.isAsync = false;
+                ps.loc = param->loc;
                 if (!symbols.declare(ps)) {
                     dc.error(DiagnosticCategory::Semantic, param->loc, DiagCode::E3005,
                              "duplicate parameter '" + param->name + "'");
@@ -436,9 +532,8 @@ void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
         if (method->isAsync) asyncDepth--;
 
     }
-    //std::cout << "\n--- TESETING2" << node.structName << " ---" << std::endl;
  
-    // Trait conformance check.
+    // Trait conformance check. Re-lookup after all scope mutations are complete.
     if (node.traitRef) {
         Symbol* traitSym = symbols.lookup(node.traitRef->name);
         if (!traitSym || traitSym->kind != SymbolKind::Trait) {
