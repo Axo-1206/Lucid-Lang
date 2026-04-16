@@ -14,6 +14,7 @@
 #pragma once
 
 #include "ast/TypeAST.hpp"
+#include "ast/DeclAST.hpp"
 #include "semantic/SymbolTable.hpp"
 
 class DiagnosticEngine;
@@ -39,9 +40,19 @@ public:
     // Call this before resolving types in an extern block so *T is permitted.
     void setInsideExtern(bool val) { insideExtern_ = val; }
 
+    // Set generic parameters context. Called when resolving types within generic declarations
+    // (trait<T>, struct<T>, impl<T>, type<T>). Allows NamedTypeAST("T") to resolve as a
+    // valid generic type parameter instead of erroring "type 'T' is not declared".
+    // genericParams — list of GenericParamAST* from the containing declaration
+    // Should be called before resolving types in a generic context, cleared after.
+    void setGenericParams(const std::vector<GenericParamPtr>* params) { 
+        genericParams_ = params; 
+    }
+
 private:
     SymbolTable& symbols_;
     DiagnosticEngine& dc_;
     TypeAST* resolved_ = nullptr;
     bool insideExtern_ = false;
+    const std::vector<GenericParamPtr>* genericParams_ = nullptr;
 };

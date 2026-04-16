@@ -187,6 +187,7 @@ void SemanticAnalyzer::collectSymbols(std::vector<ProgramAST*>& files) {
 // ─────────────────────────────────────────────────────────────────────────────
 // resolveTypes  — Phase 2
 // Walks every type annotation in every declaration and validates it.
+// Generic parameters in type aliases and extern declarations are resolved in context.
 // ─────────────────────────────────────────────────────────────────────────────
 void SemanticAnalyzer::resolveTypes(std::vector<ProgramAST*>& files) {
     for (auto* prog : files) {
@@ -196,7 +197,10 @@ void SemanticAnalyzer::resolveTypes(std::vector<ProgramAST*>& files) {
             // declarations so their types are available during the check phase.
             if (decl->isa<TypeAliasDeclAST>()) {
                 auto* ta = decl->as<TypeAliasDeclAST>();
+                // Set generic parameters context for generic type aliases like type Transform<T> = (value T) T
+                typeResolver_->setGenericParams(&ta->genericParams);
                 typeResolver_->resolveType(ta->aliasedType.get());
+                typeResolver_->setGenericParams(nullptr);
             } else if (decl->isa<ExternDeclAST>()) {
                 auto* ext = decl->as<ExternDeclAST>();
                 typeResolver_->setInsideExtern(true);

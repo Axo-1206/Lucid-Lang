@@ -59,6 +59,22 @@ void TypeResolver::visit(PrimitiveTypeAST& node) {
 // and recurses correctly into verifying any generic inner arguments included.
 // ─────────────────────────────────────────────────────────────────────────────
 void TypeResolver::visit(NamedTypeAST& node) {
+    // CHECK 1: Is this name a generic type parameter (e.g., T in Container<T>)?
+    // Generic parameters are only valid within their containing declaration's scope.
+    // They take precedence over global type lookups to allow `T` to resolve without
+    // requiring a global symbol entry.
+    if (genericParams_) {
+        for (auto& gp : *genericParams_) {
+            if (gp && gp->name == node.name) {
+                // This is a valid generic type parameter. Resolve it as a NamedTypeAST.
+                // The node itself represents the generic param — no further resolution needed.
+                resolved_ = &node;
+                return;
+            }
+        }
+    }
+
+    // CHECK 2: Lookup the identifier in the global symbol table.
     // Lookup the identifier natively defined by the programmer in the symbol table.
     Symbol* sym = symbols_.lookup(node.name);
     if (!sym) {
