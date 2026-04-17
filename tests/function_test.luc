@@ -30,12 +30,12 @@ impl Point {
     }
 }
 
--- 3. Type Conversion using 'from' block
+-- 3. Type Casting using 'from' block
 struct Seconds { val int }
 struct Minutes { val int }
 
 from Minutes {
-    -- Allows conversion: Minutes(seconds)
+    -- Allows Casting: Minutes(seconds)
     (s Seconds) Minutes = {
         return Minutes { val = s.val / 60 }
     }
@@ -89,9 +89,9 @@ export const main () int = {
     let moveRight (dy float) Point = movePoint(10.0)
     let p2 Point = moveRight(5.0) 
 
-    -- Type Conversion via 'from' block usage
+    -- Type Casting via 'from' block usage
     let s Seconds = Seconds { val = 120 }
-    let m Minutes = Minutes(s) -- dispatch to Minutes.from.sec
+    let m Minutes = s -- dispatch to Minutes.from.sec
     let minutesVal int = m.val
 
     -- Anonymous Function (Async and Curried)

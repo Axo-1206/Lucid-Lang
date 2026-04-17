@@ -45,3 +45,4 @@ This registry tracks every error code reported by the LUC compiler.
 | **E3005** | Error | Semantic | Symbol '{0}' already declared in this scope |
 | **E3006** | Error | Semantic | Program is missing a 'main' entry point |
 | **E3007** | Error | Semantic | 'main' must be a function |
+| **E3008** | Error | Semantic | Cannot implicitly convert from '{0}' to '{1}'. Use an explicit type cast |

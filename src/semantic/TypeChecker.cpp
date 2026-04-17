@@ -7,7 +7,7 @@
  *
  * @responsibility Implementation of Phase 2b semantic pass (type compatibility).
  *
- * @logic Includes checks for isAssignable, isCallable, unification patterns, primitive widening, and 'from' convertible type properties.
+ * @logic Includes checks for isAssignable, isCallable, unification patterns, primitive widening, and 'from' castable type properties.
  *
  * @related TypeChecker.hpp
  */
@@ -179,26 +179,225 @@ TypeAST* TypeChecker::unify(TypeAST* a, TypeAST* b) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// primitiveWidening  — Verifies standard safe math primitive widening logic
+// primitiveWidening  — Verifies standard safe primitive implicit conversion
 //
-// Ascertains whether passing one native memory shape over another (e.g., int8 to int32)
-// strictly transfers safely inherently without risking binary data truncation.
+// Determines whether an explicit type cast from one primitive to another is safe
+// (widening, not narrowing). Widening conversions maintain or increase precision
+// without loss of information. Examples:
+//   int → float      (int fits in float's exponent range, though precision may vary)
+//   int → double     (int fits completely in double)
+//   float → double   (all single-precision values are valid doubles)
+//   int8 → int16     (smaller signed fits in larger signed)
+//   uint8 → uint16   (smaller unsigned fits in larger unsigned)
+//   int8 → int32     (chain of widening: byte → short → int → long)
+//
+// Non-widening (blocked):
+//   int → int8       (narrowing — data loss)
+//   double → float   (narrowing — precision loss)
+//   unsigned → signed (unsigned range may not fit)
+//
 // ─────────────────────────────────────────────────────────────────────────────
 bool TypeChecker::primitiveWidening(PrimitiveKind from, PrimitiveKind to) {
-    // Basic structural mathematical widening rules.
-    if (from == PrimitiveKind::Int   && to == PrimitiveKind::Float)  return true;
-    if (from == PrimitiveKind::Float && to == PrimitiveKind::Double) return true;
+    // Quick check: identical types are always acceptable.
+    if (from == to) return true;
+
+    // ── Signed integer widening ───────────────────────────────────────────────
+    // Widening within signed integers: smaller signed → larger signed
+    if (from == PrimitiveKind::Byte || from == PrimitiveKind::Int8) {
+        switch (to) {
+            case PrimitiveKind::Short:
+            case PrimitiveKind::Int16:
+            case PrimitiveKind::Int:
+            case PrimitiveKind::Int32:
+            case PrimitiveKind::Long:
+            case PrimitiveKind::Int64:
+                return true;
+            default:
+                break;
+        }
+    }
+
+    if (from == PrimitiveKind::Short || from == PrimitiveKind::Int16) {
+        switch (to) {
+            case PrimitiveKind::Int:
+            case PrimitiveKind::Int32:
+            case PrimitiveKind::Long:
+            case PrimitiveKind::Int64:
+                return true;
+            default:
+                break;
+        }
+    }
+
+    if (from == PrimitiveKind::Int || from == PrimitiveKind::Int32) {
+        switch (to) {
+            case PrimitiveKind::Long:
+            case PrimitiveKind::Int64:
+            case PrimitiveKind::Float:
+            case PrimitiveKind::Double:
+            case PrimitiveKind::Decimal:
+                return true;
+            default:
+                break;
+        }
+    }
+
+    if (from == PrimitiveKind::Long || from == PrimitiveKind::Int64) {
+        switch (to) {
+            case PrimitiveKind::Float:
+            case PrimitiveKind::Double:
+            case PrimitiveKind::Decimal:
+                return true;
+            default:
+                break;
+        }
+    }
+
+    // ── Unsigned integer widening ───────────────────────────────────────────
+    // Widening within unsigned integers: smaller unsigned → larger unsigned
+    if (from == PrimitiveKind::Ubyte || from == PrimitiveKind::Uint8) {
+        switch (to) {
+            case PrimitiveKind::Ushort:
+            case PrimitiveKind::Uint16:
+            case PrimitiveKind::Uint:
+            case PrimitiveKind::Uint32:
+            case PrimitiveKind::Ulong:
+            case PrimitiveKind::Uint64:
+                return true;
+            default:
+                break;
+        }
+    }
+
+    if (from == PrimitiveKind::Ushort || from == PrimitiveKind::Uint16) {
+        switch (to) {
+            case PrimitiveKind::Uint:
+            case PrimitiveKind::Uint32:
+            case PrimitiveKind::Ulong:
+            case PrimitiveKind::Uint64:
+                return true;
+            default:
+                break;
+        }
+    }
+
+    if (from == PrimitiveKind::Uint || from == PrimitiveKind::Uint32) {
+        switch (to) {
+            case PrimitiveKind::Ulong:
+            case PrimitiveKind::Uint64:
+                return true;
+            default:
+                break;
+        }
+    }
+
+    // ── Floating-point widening ───────────────────────────────────────────────
+    // Float (32-bit) can widen to Double (64-bit) or Decimal (128-bit)
+    if (from == PrimitiveKind::Float) {
+        switch (to) {
+            case PrimitiveKind::Double:
+            case PrimitiveKind::Decimal:
+                return true;
+            default:
+                break;
+        }
+    }
+
+    // Double (64-bit) can widen to Decimal (128-bit)
+    if (from == PrimitiveKind::Double) {
+        if (to == PrimitiveKind::Decimal) return true;
+    }
+
+    // ── Signed integer to floating-point ───────────────────────────────────────
+    // Any signed integer can cast to floating-point (though precision may be lost)
+    if (from == PrimitiveKind::Byte || from == PrimitiveKind::Int8 ||
+        from == PrimitiveKind::Short || from == PrimitiveKind::Int16 ||
+        from == PrimitiveKind::Int || from == PrimitiveKind::Int32 ||
+        from == PrimitiveKind::Long || from == PrimitiveKind::Int64) {
+        switch (to) {
+            case PrimitiveKind::Float:
+            case PrimitiveKind::Double:
+            case PrimitiveKind::Decimal:
+                return true;
+            default:
+                break;
+        }
+    }
+
+    // ── Unsigned integer to floating-point ────────────────────────────────────
+    // Any unsigned integer can cast to floating-point
+    if (from == PrimitiveKind::Ubyte || from == PrimitiveKind::Uint8 ||
+        from == PrimitiveKind::Ushort || from == PrimitiveKind::Uint16 ||
+        from == PrimitiveKind::Uint || from == PrimitiveKind::Uint32 ||
+        from == PrimitiveKind::Ulong || from == PrimitiveKind::Uint64) {
+        switch (to) {
+            case PrimitiveKind::Float:
+            case PrimitiveKind::Double:
+            case PrimitiveKind::Decimal:
+                return true;
+            default:
+                break;
+        }
+    }
+
+    // No other widening paths exist (e.g., char/string/bool do not widen).
     return false;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// isFromConvertible  — Evaluates custom 'from' integration bounds logically
+// isFromCastable  — Checks if a custom casting (from block) is available
 //
-// Inquires across standard object mapping rules whether an explicit `from(src)`
-// logic has logically been deployed enabling type safety across complex transfers.
+// Searches the symbol table for a `from` entry that converts src -> target.
+//
+// How from-entries are registered (SemanticCollector::visit(FromDeclAST)):
+//   Each FromEntryAST gets a mangled symbol name:
+//     "TargetType.from.<pointer_address>"
+//   So for  from Minutes { (s Seconds) Minutes = { ... } }
+//   the symbol "Minutes.from.0x1234abcd" is registered with:
+//     sym->kind = SymbolKind::Casting
+//     sym->decl = FromEntryAST*
+//
+// Algorithm:
+//   1. Extract target type name (only NamedTypeAST can have from blocks).
+//   2. Build the prefix  "TargetType.from."
+//   3. Find all symbols with that prefix via findSymbolsByPrefix.
+//   4. For each, downcast decl to FromEntryAST and inspect its first param
+//      group's first parameter type.
+//   5. Return true if any entry's first param type is assignable from src.
+//
+// When integrated with codegen, a conversion like:
+//   let m Minutes = s              (s is Seconds, Minutes ≠ Seconds)
+// is desugared by the semantic pass into:
+//   let m Minutes = Minutes(s)     (TypeConvExprAST wrapping s)
 // ─────────────────────────────────────────────────────────────────────────────
-bool TypeChecker::isFromConvertible(TypeAST* src, TypeAST* target) {
-    // Evaluates conversion logic mappings bound to `impl [target] { from(src) }`
-    // Stubs out safely default-false until ImplDecl logic is integrated.
+bool TypeChecker::isFromCastable(TypeAST* src, TypeAST* target, SymbolTable* symbols) {
+    if (!src || !target) return false;
+    if (!target->isa<NamedTypeAST>()) return false;
+    if (!symbols) return false;
+
+    const std::string targetName = target->as<NamedTypeAST>()->name;
+    const std::string prefix = targetName + ".from.";
+
+    // Find all registered from-entry symbols for this target type.
+    std::vector<Symbol*> candidates = symbols->findSymbolsByPrefix(prefix);
+
+    for (Symbol* sym : candidates) {
+        if (!sym || sym->kind != SymbolKind::Casting) continue;
+        if (!sym->decl || !sym->decl->isa<FromEntryAST>()) continue;
+
+        auto* entry = sym->decl->as<FromEntryAST>();
+
+        // A from entry must have at least one parameter group with at least one param.
+        if (entry->paramGroups.empty()) continue;
+        if (entry->paramGroups[0].empty()) continue;
+
+        // The first parameter's type is the source type this entry accepts.
+        TypeAST* firstParamType = entry->paramGroups[0][0]->type.get();
+        if (!firstParamType) continue;
+
+        // Check if the source type is assignable to this entry's parameter type.
+        if (isAssignable(src, firstParamType)) return true;
+    }
+
     return false;
 }

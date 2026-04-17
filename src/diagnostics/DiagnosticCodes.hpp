@@ -50,5 +50,6 @@ enum class DiagCode : uint32_t {
     E3004 = 3004, ///< Attempted to assign to an immutable value.
     E3005 = 3005, ///< Symbol already declared in this scope.
     E3006 = 3006, ///< Missing 'main' entry point.
-    E3007 = 3007  ///< Invalid signature for the 'main' function.
+    E3007 = 3007, ///< Invalid signature for the 'main' function.
+    E3008 = 3008  ///< Implicit type conversion not allowed; suggest explicit casting.
 };

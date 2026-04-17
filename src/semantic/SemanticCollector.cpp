@@ -376,15 +376,15 @@ void SemanticCollector::visit(ImplDeclAST& node) {
 }
  
 // ─────────────────────────────────────────────────────────────────────────────
-// visit(FromDeclAST)  — Registers custom type conversions for Type(source) calls
+// visit(FromDeclAST)  — Registers custom type casting for Type(source) calls
 //
-// Like methods, conversions are indexed on the target type's namespace.
-// Because the language supports curried conversion overloads, and Phase 1 runs
+// Like methods, castings are indexed on the target type's namespace.
+// Because the language supports curried casting overloads, and Phase 1 runs
 // before type resolution, we assign them a unique address-based mangled name here.
 // True duplicate signature checking is deferred to Phase 3 (SemanticDecl).
 // ─────────────────────────────────────────────────────────────────────────────
 void SemanticCollector::visit(FromDeclAST& node) {
-    // Collect each conversion entry from the block.
+    // Collect each casting entry from the block.
     // Mangled name: TargetType.from.[unique_id]
     for (auto& entry : node.entries) {
         if (!entry) continue;
@@ -395,7 +395,7 @@ void SemanticCollector::visit(FromDeclAST& node) {
 
         declareSymbol({
             mangledName,
-            SymbolKind::Conversion,
+            SymbolKind::Casting,
             DeclKeyword::Let,
             node.visibility,
             nullptr, // resolved in Phase 2

@@ -13,7 +13,7 @@
  *   checkEnumDecl  — validates variant values are unique, assigns auto-increments
  *   checkTraitDecl — resolves method param + return types
  *   checkImplDecl  — checks method bodies, verifies trait conformance if traitRef present
- *   checkFromDecl  — validates source/target types for custom conversions
+ *   checkFromDecl  — validates source/target types for custom castings
  *   checkExternDecl— resolves param + return types under insideExtern_ = true
  *
  * @related SemanticAnalyzer.cpp, SemanticStmt.cpp, SemanticExpr.cpp
@@ -76,7 +76,7 @@ void checkStmt(StmtAST* node, SymbolTable& symbols, TypeResolver& resolver,
 //   - Enum variant access  (Direction.North — field access on an enum type)
 //   - Arithmetic over const operands  (PI * 2.0, MAX_VERTS - 1)
 //   - Unary negation of a const  (-PI)
-//   - Safe type conversion of a const  (float(42), int(MY_CONST))
+//   - Safe explicit cast of a const  (float(42), int(MY_CONST))
 // ─────────────────────────────────────────────────────────────────────────────
 static bool isConstExpr(ExprAST* expr, SymbolTable& symbols) {
     if (!expr) return false;
@@ -115,7 +115,7 @@ static bool isConstExpr(ExprAST* expr, SymbolTable& symbols) {
         return isConstExpr(expr->as<UnaryExprAST>()->operand.get(), symbols);
     }
 
-    // Safe type conversion of a const is const: float(42), int(MY_CONST).
+    // Safe explicit cast of a const is const: float(42), int(MY_CONST).
     // Unsafe (*T) reinterprets are never const — raw memory is not known at
     // compile time.
     if (expr->isa<TypeConvExprAST>()) {
@@ -177,8 +177,43 @@ void checkVarDecl(VarDeclAST& node, SymbolTable& symbols, TypeResolver& resolver
     }
 
     if (!TypeChecker::isAssignable(initType, declaredType)) {
-        dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                 "type mismatch in declaration '" + node.name + "'");
+        // Check if a custom from-casting block is available for this conversion.
+        // If so, desugar:  let m Minutes = s  →  let m Minutes = Minutes(s)
+        // by wrapping node.init in a TypeConvExprAST targeting the declared type.
+        // This lets codegen dispatch to the from() entry without any AST restructuring.
+        if (TypeChecker::isFromCastable(initType, declaredType, &symbols)) {
+            // Build a NamedTypeAST for the target to embed in the cast node.
+            // We need a fresh owned node; we cannot share the declared type pointer
+            // because TypeConvExprAST takes ownership via unique_ptr.
+            auto targetTypeNode = std::make_unique<NamedTypeAST>(
+                declaredType->as<NamedTypeAST>()->name);
+            targetTypeNode->loc = node.loc;
+
+            // Wrap the original initialiser expression in a TypeConvExprAST.
+            // This is the semantic-level desugaring: the cast node now owns
+            // the original init expression as its inner operand.
+            SourceLocation initLoc = node.init->loc;
+            auto convExpr = std::make_unique<TypeConvExprAST>(
+                std::move(targetTypeNode),
+                std::move(node.init),
+                /*isUnsafe=*/false);
+            convExpr->loc = initLoc;
+
+            // Replace node.init with the desugared cast expression.
+            node.init = std::move(convExpr);
+
+            // Re-check the desugared expression so resolvedType is set correctly.
+            // checkTypeConvExpr returns the target type, which is exactly declaredType,
+            // so the implicit assignment check that follows this block will pass.
+            checkExpr(node.init.get(), symbols, resolver, dc,
+                      asyncDepth, loopDepth, parallelDepth, insideExtern);
+        } else {
+            // No casting available — report the type mismatch error.
+            dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3008,
+                     "cannot implicitly convert initializer to type for '" + node.name +
+                     "'; use an explicit type cast like '" +
+                     "[target_type](value)' or define a 'from' casting block");
+        }
     }
 }
 
@@ -632,18 +667,18 @@ void checkFromDecl(FromDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
     // We accumulate validated entries here to cross-check full signatures and prevent duplicates.
     std::vector<FromEntryAST*> verifiedEntries;
 
-    // 2. Iterate and check each conversion entry.
+    // 2. Iterate and check each casting entry.
     for (auto& entry : node.entries) {
         if (!entry) continue;
 
         // Verify the explicit return type identifier matches the block target.
         if (entry->returnTypeName != node.targetTypeName) {
             dc.error(DiagnosticCategory::Semantic, entry->loc, DiagCode::E3002,
-                     "from conversion: return type '" + entry->returnTypeName +
+                     "from casting: return type '" + entry->returnTypeName +
                      "' must match block target type '" + node.targetTypeName + "'");
         }
 
-        // New scope for the conversion body.
+        // New scope for the casting body.
         symbols.pushScope();
 
         // Declare all parameters from all curry groups into the body scope.
@@ -662,7 +697,7 @@ void checkFromDecl(FromDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
                 ps.loc        = param->loc;
                 if (!symbols.declare(ps)) {
                     dc.error(DiagnosticCategory::Semantic, param->loc, DiagCode::E3005,
-                             "duplicate parameter name '" + param->name + "' in from conversion");
+                             "duplicate parameter name '" + param->name + "' in from casting");
                 }
             }
         }
@@ -707,7 +742,7 @@ void checkFromDecl(FromDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
 
         if (isDuplicate) {
             dc.error(DiagnosticCategory::Semantic, entry->loc, DiagCode::E3005,
-                     "duplicate conversion signature in from block for '" + node.targetTypeName + "'");
+                     "duplicate casting signature in from block for '" + node.targetTypeName + "'");
         } else {
             verifiedEntries.push_back(entry.get());
         }

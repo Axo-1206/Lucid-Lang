@@ -149,25 +149,25 @@ void Lexer::skipWhitespace() {
 		// consuming anything. If it is /-- we must NOT eat it here — break out
 		// so getNextToken can capture and return it as a DOC_COMMENT token.
 		else if (c == '/' && peekNext() == '-') {
-		// pos points at '-' (not yet consumed). Check the char after that.
-		bool isDoc = (pos + 1 < src.size() && src[pos + 1] == '-');
-		if (isDoc)
-			break; // leave /-- for getNextToken
+            // pos points at '-' (not yet consumed). Check the char after that.
+            bool isDoc = (pos + 1 < src.size() && src[pos + 1] == '-');
+            if (isDoc)
+                break; // leave /-- for getNextToken
 
-		// Plain block comment /- ... -/
-		advance(); // consume '/'
-		advance(); // consume '-'
-		while (!isAtEnd() && !(peek() == '-' && peekNext() == '/')) {
-			if (peek() == '\n') {
-			line++;
-			column = 1;
-			}
-			advance();
-		}
-		if (!isAtEnd()) {
-			advance();
-			advance();
-		} // consume '-/'
+            // Plain block comment /- ... -/
+            advance(); // consume '/'
+            advance(); // consume '-'
+            while (!isAtEnd() && !(peek() == '-' && peekNext() == '/')) {
+                if (peek() == '\n') {
+                line++;
+                column = 1;
+                }
+                advance();
+            }
+            if (!isAtEnd()) {
+                advance();
+                advance();
+            } // consume '-/'
 		} else {
 			break;
 		}

@@ -33,6 +33,7 @@ public:
     bool declare(const Symbol& sym);             // false = already declared in this scope
     Symbol* lookup(const std::string& name);     // walks scope stack outward
     Symbol* lookupLocal(const std::string& name);// current scope only
+    std::vector<Symbol*> findSymbolsByPrefix(const std::string& prefix);
 
     int currentDepth() const;
     void dump() const;

@@ -340,7 +340,7 @@ static TypeAST* checkUnaryExpr(UnaryExprAST& node, SymbolTable& symbols,
 // checkCallExpr
 // Validates that the callee is callable, argument count matches, and each
 // argument type is assignable to the corresponding parameter type.
-// Also handles struct constructor (from() dispatch) and primitive type conversion.
+// Also handles struct constructor (from() dispatch) and explicit type casting.
 // ─────────────────────────────────────────────────────────────────────────────
 static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
                                TypeResolver& resolver, DiagnosticEngine& dc,
@@ -822,8 +822,34 @@ static TypeAST* checkAssignExpr(AssignExprAST& node, SymbolTable& symbols,
     // Type compatibility for plain assignment.
     if (node.op == AssignOp::Assign && lhsType && rhsType) {
         if (!TypeChecker::isAssignable(rhsType, lhsType)) {
-            dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                     "type mismatch in assignment");
+            // Check if a from-casting block can handle this conversion.
+            // If so, desugar:  x = s  →  x = TargetType(s)
+            // by wrapping node.rhs in a TypeConvExprAST.
+            if (lhsType->isa<NamedTypeAST>() &&
+                TypeChecker::isFromCastable(rhsType, lhsType, &symbols)) {
+                // Build the target type node for the cast.
+                auto targetTypeNode = std::make_unique<NamedTypeAST>(
+                    lhsType->as<NamedTypeAST>()->name);
+                targetTypeNode->loc = node.rhs->loc;
+
+                // Wrap the RHS in a TypeConvExprAST.
+                SourceLocation rhsLoc = node.rhs->loc;
+                auto convExpr = std::make_unique<TypeConvExprAST>(
+                    std::move(targetTypeNode),
+                    std::move(node.rhs),
+                    /*isUnsafe=*/false);
+                convExpr->loc = rhsLoc;
+
+                // Replace node.rhs with the desugared cast expression.
+                node.rhs = std::move(convExpr);
+
+                // Re-check so resolvedType is stamped correctly on the new node.
+                checkExpr(node.rhs.get(), symbols, resolver, dc,
+                          asyncDepth, loopDepth, parallelDepth, insideExtern);
+            } else {
+                dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
+                         "type mismatch in assignment");
+            }
         }
     }
 
@@ -1339,7 +1365,7 @@ static TypeAST* checkArrayLiteralExpr(ArrayLiteralExprAST& node, SymbolTable& sy
 
 // ─────────────────────────────────────────────────────────────────────────────
 // checkTypeConvExpr
-// float(x) — safe conversion; *float(x) — unsafe bit reinterpret (extern only).
+// float(x) — safe explicit cast; *float(x) — unsafe bit reinterpret (extern only).
 // ─────────────────────────────────────────────────────────────────────────────
 static TypeAST* checkTypeConvExpr(TypeConvExprAST& node, SymbolTable& symbols,
                                    TypeResolver& resolver, DiagnosticEngine& dc,

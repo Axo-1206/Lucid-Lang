@@ -161,7 +161,7 @@ private:
     void visit(FromDeclAST& node) override {
         for (auto& entry : node.entries)
             walk(entry.get());
-        // Conversion blocks themselves are not constants.
+        // Casting blocks themselves are not constants.
         node.isConst = false;
     }
 
@@ -170,7 +170,7 @@ private:
             for (auto& param : group)
                 walk(param.get());
         walk(node.body.get());
-        // Individual conversion entries are not constants.
+        // Individual casting entries are not constants.
         node.isConst = false;
     }
 
@@ -348,7 +348,7 @@ private:
 
     void visit(TypeConvExprAST& node) override {
         walk(node.expr.get());
-        // A safe type conversion of a const expression is itself const.
+        // A safe type casting of a const expression is itself const.
         // Unsafe (*T) conversions reference raw memory — not const.
         node.isConst = !node.isUnsafe && node.expr && node.expr->isConst;
     }

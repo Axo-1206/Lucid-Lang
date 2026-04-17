@@ -26,7 +26,7 @@ enum class TokenType {
     STRUCT,  // struct    - data structure: struct Vec2 { x float  y float }
     ENUM,    // enum      - named constant set: enum Direction { North, South, East, West }
     TRAIT,   // trait     - method contract / generic constraint: trait Drawable { draw () }
-    FROM,    // from      - type conversion entry point: from (c Celsius) Fahrenheit = { ... }
+    FROM,    // from      - type casting entry point: from (c Celsius) Fahrenheit = { ... }
 
     // ─── Declarations ─────────────────────────────────────────────────────────
     LET,     // let       - reassignable, mutable in place, nil allowed

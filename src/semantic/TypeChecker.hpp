@@ -13,6 +13,7 @@
  */
 #pragma once
 
+#include "SymbolTable.hpp"
 #include "ast/TypeAST.hpp"
 #include <cassert>
 
@@ -25,5 +26,5 @@ public:
     static bool isNullable(TypeAST* type);
     static TypeAST* unify(TypeAST* a, TypeAST* b);
     static bool primitiveWidening(PrimitiveKind from, PrimitiveKind to);
-    static bool isFromConvertible(TypeAST* src, TypeAST* target);
+    static bool isFromCastable(TypeAST* src, TypeAST* target, SymbolTable* symbols = nullptr);
 };

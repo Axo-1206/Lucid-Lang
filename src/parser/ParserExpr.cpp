@@ -606,33 +606,33 @@ ExprPtr Parser::parsePrimaryExpr() {
         return inner;
     }
 
-    // ── '*' unsafe type conversion  *T(expr) ──────────────────────────────────
+    // ── '*' unsafe explicit cast  *T(expr) ────────────────────────────────────
     if (check(TokenType::MUL)) {
         advance(); // consume '*'
         TypePtr targetType = parseBaseType();
         if (!targetType) {
-            errorAt(DiagCode::E2005, "expected type after '*' in unsafe conversion");
+            errorAt(DiagCode::E2005, "expected type after '*' in unsafe cast");
             return nullptr;
         }
         if (!check(TokenType::LPAREN)) {
-            errorAt(DiagCode::E2001, "expected '(' after type in unsafe conversion '*T(expr)'");
+            errorAt(DiagCode::E2001, "expected '(' after type in unsafe cast '*T(expr)'");
             return nullptr;
         }
         return parseTypeConvExpr(/*isUnsafe=*/true, std::move(targetType));
     }
 
-    // ── Identifier — struct literal, type conversion, behavior access, or name ─
+    // ── Identifier — struct literal, explicit type cast, behavior access, or name ─
     if (check(TokenType::IDENTIFIER)) {
         std::string name = peek().value;
 
-        // Safe type conversion: primitive name or named type immediately followed by '('
+        // Safe explicit cast: primitive name or named type immediately followed by '('
         // e.g.  float(x)  string(n)  Fahrenheit(boiling)
         // The key: IDENTIFIER '(' where the IDENTIFIER is used as a type name.
         // We distinguish this from a regular call f(args) by checking whether
         // the name is a type keyword (primitives) or if this looks like a struct
         // constructor (from() dispatch) — both are handled as TypeConvExprAST.
         // For simplicity, all IDENTIFIER '(' cases go through parseCallExpr
-        // first; the semantic pass recognises type conversions by resolving the
+        // first; the semantic pass recognises explicit type casts by resolving the
         // callee name to a type rather than a function.
         // Exception: primitives with type-keyword tokens are handled separately
         // below.
@@ -671,7 +671,7 @@ ExprPtr Parser::parsePrimaryExpr() {
         return node;
     }
 
-    // ── Primitive type keywords used as conversion functions: float(x) ─────────
+    // ── Primitive type keywords used as casting functions: float(x) ────────────
     if (looksLikeType() && peekNext().type == TokenType::LPAREN) {
         // e.g. float(x), int(x), string(n)
         TypePtr targetType = parsePrimitiveType();
@@ -1144,15 +1144,15 @@ ExprPtr Parser::parseIfExpr() {
 
 ExprPtr Parser::parseTypeConvExpr(bool isUnsafe, TypePtr targetType) {
     SourceLocation loc = currentLoc();
-    consume(TokenType::LPAREN, "expected '(' for type conversion");
+    consume(TokenType::LPAREN, "expected '(' for explicit type cast");
 
     ExprPtr expr = parseExpr();
     if (!expr) {
-        errorAt(DiagCode::E2008, "expected expression inside type conversion");
+        errorAt(DiagCode::E2008, "expected expression inside explicit type cast");
         return nullptr;
     }
 
-    consume(TokenType::RPAREN, "expected ')' to close type conversion");
+    consume(TokenType::RPAREN, "expected ')' to close explicit type cast");
 
     auto node = std::make_unique<TypeConvExprAST>(
         std::move(targetType), std::move(expr), isUnsafe);

@@ -82,7 +82,7 @@
 //
 //   Other
 //     RangeExprAST            — 0..10 / 0..<10  (for loops, match patterns, slice indexing)
-//     TypeConvExprAST         — float(x)  safe conversion  |  *float(x)  unsafe bit reinterpret
+//     TypeConvExprAST         — float(x)  safe explicit cast  |  *float(x)  unsafe bit reinterpret
 //
 //   Match infrastructure  (not ExprAST — BaseAST directly)
 //     MatchArmAST             — pattern_list [guard] -> expr [, expr]
@@ -881,10 +881,10 @@ struct RangeExprAST : ExprAST {
 // ─────────────────────────────────────────────────────────────────────────────
 // TypeConvExprAST
 //
-// A type conversion expression — safe primitive conversion or unsafe bit
+// An explicit type cast expression — safe primitive cast or unsafe bit
 // reinterpret (FFI / Vulkan only).
 //
-// Safe conversion (isUnsafe = false):
+// Safe cast (isUnsafe = false):
 //   float(x)       — int → float via standard widening
 //   string(n)      — int → string via formatting
 //   int(direction) — enum → underlying integer
@@ -893,11 +893,11 @@ struct RangeExprAST : ExprAST {
 //   *float(bits)   — reinterpret uint32 bits as float32, no arithmetic
 //   *GpuVertex(raw)— reinterpret raw memory as GpuVertex struct
 //
-// targetType — the type being converted to (TypeAST node).
-// expr — the expression whose value is being converted.
+// targetType — the type being cast to (TypeAST node).
+// expr — the expression whose value is being cast.
 //
 // The semantic pass enforces:
-//   - safe: only valid conversion paths are allowed (primitive widening, enum→int)
+//   - safe: only valid cast paths are allowed (primitive widening, enum→int)
 //   - unsafe (*): only valid inside extern declaration subtrees
 // ─────────────────────────────────────────────────────────────────────────────
 

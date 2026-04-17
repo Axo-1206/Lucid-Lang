@@ -389,7 +389,7 @@ class Parser {
     // if expr block else block  — expression form (else required)
     ExprPtr parseIfExpr();
 
-    // Type conversion: IDENTIFIER '(' expr ')'  where IDENTIFIER is a type name
+    // Explicit type cast: IDENTIFIER '(' expr ')'  where IDENTIFIER is a type name
     // or '*' IDENTIFIER '(' expr ')' for unsafe bit reinterpret.
     ExprPtr parseTypeConvExpr(bool isUnsafe, TypePtr targetType);
 

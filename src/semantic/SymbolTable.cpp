@@ -101,6 +101,30 @@ Symbol* SymbolTable::lookupLocal(const std::string& name) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// findSymbolsByPrefix  — Retrieves all symbols whose name starts with a prefix
+//
+// Scans every scope from outermost to innermost, collecting every symbol whose
+// name begins with the given prefix string. Used by the from-casting lookup to
+// find all registered "TargetType.from.*" entries without knowing the exact
+// mangled name generated from the pointer address in SemanticCollector.
+//
+// Returns raw pointers into the scope maps — callers must not push/pop scopes
+// while holding these pointers.
+// ─────────────────────────────────────────────────────────────────────────────
+std::vector<Symbol*> SymbolTable::findSymbolsByPrefix(const std::string& prefix) {
+    std::vector<Symbol*> results;
+    for (auto& scope : scopes_) {
+        for (auto& [name, sym] : scope) {
+            if (name.size() >= prefix.size() &&
+                name.compare(0, prefix.size(), prefix) == 0) {
+                results.push_back(&sym);
+            }
+        }
+    }
+    return results;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // currentDepth  — Retrieves the current nesting distance
 //
 // Returns the raw number of scopes currently residing on the stack. Highly 
@@ -126,7 +150,7 @@ static std::string kindToString(SymbolKind kind) {
         case SymbolKind::Field:       return "Field";
         case SymbolKind::Method:      return "Method";
         case SymbolKind::EnumVariant: return "EnumVariant";
-        case SymbolKind::Conversion:  return "Conversion";
+        case SymbolKind::Casting:     return "Casting";
         default:                      return "Unknown";
     }
 }
@@ -147,11 +171,16 @@ void SymbolTable::dump() const {
         }
 
         for (const auto& [name, sym] : scope) {
-            std::cout << "  - " << std::left << std::setw(15) << name 
-                      << " [" << kindToString(sym.kind) << "]";
+            std::string kindStr = "[" + kindToString(sym.kind) + "]";
+            
+            std::cout << "  - " 
+                    << std::left << std::setw(35) << name      // Column 1: Name
+                    << std::left << std::setw(10) << kindStr;  // Column 2: [Kind]
+
             if (sym.loc.isKnown()) {
-                std::cout << " at " << sym.loc.file << ":" << sym.loc.line;
+                std::cout << " : " << sym.loc.file << ":" << sym.loc.line;
             }
+            
             std::cout << std::endl;
         }
     }

@@ -165,7 +165,7 @@ struct EnumDeclAST;         // enum definition
 struct TraitMethodAST;
 struct TraitDeclAST;
 struct MethodDeclAST;
-struct FromDeclAST;         // from [method definition] - use for type convertion
+struct FromDeclAST;         // from [method definition] - use for type casting
 struct FromEntryAST;        // entry inside the from block
 struct ImplDeclAST;
 struct TypeAliasDeclAST;
