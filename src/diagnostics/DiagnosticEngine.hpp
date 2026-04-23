@@ -42,12 +42,22 @@ public:
     void error(DiagnosticCategory category, SourceLocation loc, DiagCode code, const std::string& msg);
 
     // ─────────────────────────────────────────────────────────────────────────────
-    // hasErrors  — Check if any 'Error' or 'Fatal' diagnostics have been recorded
+    // warning  — Convenience shorthand for reporting a Warning
     //
-    // Returns true if the compiler should consider this build failed based on 
-    // the severity of the tracked issues.
+    // Warnings do not block compilation. They are emitted to inform the developer
+    // of suspicious but technically legal (or recoverable) situations.
+    // ─────────────────────────────────────────────────────────────────────────────
+    void warning(DiagnosticCategory category, SourceLocation loc, DiagCode code, const std::string& msg);
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // hasErrors  — Check if any 'Error' or 'Fatal' diagnostics have been recorded
     // ─────────────────────────────────────────────────────────────────────────────
     bool hasErrors() const { return errorCount_ > 0; }
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // hasWarnings  — Check if any Warning diagnostics have been recorded
+    // ─────────────────────────────────────────────────────────────────────────────
+    bool hasWarnings() const { return warningCount_ > 0; }
 
     // ─────────────────────────────────────────────────────────────────────────────
     // getDiagnostics  — Access the full list of collected diagnostics
@@ -67,5 +77,6 @@ public:
 
 private:
     std::vector<Diagnostic> diagnostics_; ///< Internal storage for all reports.
-    int                     errorCount_ = 0; ///< Number of issues with severity >= Error.
+    int                     errorCount_   = 0; ///< Number of issues with severity >= Error.
+    int                     warningCount_ = 0; ///< Number of Warning-severity issues.
 };

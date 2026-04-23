@@ -71,6 +71,8 @@ enum class IntrinsicReturnKind {
     Float64,       // 64-bit float       (sqrt when arg is double)
     SameAsArg0,    // result = type of first value argument  (abs, min, max)
     SameAsArg1,    // result = type of second argument
+    RefOfTypeArg0, // result = &T where T is the first type argument
+    Int64,         // 64-bit integer
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -340,6 +342,44 @@ inline const IntrinsicEntry IntrinsicRegistry::kEntries[] = {
         false,
         1, 1,
         "@bitcast(T, x) — reinterpret the bits of x as type T; sizes must match"
+    },
+
+    // ── Pointer operations (Sealed Conduit model) ─────────────────────────────
+    {
+        "ptrToRef",
+        "llvm.none",          // handled in codegen via bitcast/addrspacecast
+        { IntrinsicArgKind::TypeArg, IntrinsicArgKind::PtrValue },
+        IntrinsicReturnKind::RefOfTypeArg0,
+        false,
+        1, 1,
+        "@ptrToRef(T, ptr) — cross the safety boundary: convert raw pointer *T to safe reference &T"
+    },
+    {
+        "refToPtr",
+        "llvm.none",
+        { IntrinsicArgKind::PtrValue },
+        IntrinsicReturnKind::SameAsArg0, // In Luc, &T and *T are both PtrValue at low level, but Semantic will fix it
+        false,
+        1, 1,
+        "@refToPtr(ref) — convert a safe reference &T to a raw pointer *T"
+    },
+    {
+        "ptrOffset",
+        "llvm.none",
+        { IntrinsicArgKind::PtrValue, IntrinsicArgKind::IntValue },
+        IntrinsicReturnKind::SameAsArg0,
+        false,
+        2, 2,
+        "@ptrOffset(ptr, n) — pointer arithmetic: returns ptr + n as a raw pointer"
+    },
+    {
+        "ptrDiff",
+        "llvm.none",
+        { IntrinsicArgKind::PtrValue, IntrinsicArgKind::PtrValue },
+        IntrinsicReturnKind::Int64,
+        false,
+        2, 2,
+        "@ptrDiff(p1, p2) — returns the distance between two pointers in elements"
     },
 };
 

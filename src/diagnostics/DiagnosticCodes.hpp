@@ -55,5 +55,11 @@ enum class DiagCode : uint32_t {
     E3007 = 3007, ///< Invalid signature for the 'main' function.
     E3008 = 3008, ///< Implicit type conversion not allowed; suggest explicit casting.
     E3009 = 3009, ///< Unknown '@' intrinsic name.
-    E3010 = 3010  ///< Wrong argument count or type for '@' intrinsic.
+    E3010 = 3010, ///< Wrong argument count or type for '@' intrinsic.
+
+    // ── W3000-W3999: Semantic Warnings ──────────────────────────────────────
+    // Warning codes occupy the 5000+ range to avoid collision with error codes.
+    // Displayed as W3001, W3002, etc. in diagnostic output.
+    W3001 = 5001, ///< '@extern' function declared with 'let' — should be 'const'.
+    W3002 = 5002, ///< '@extern' function has an empty body '= {}' that will be ignored.
 };

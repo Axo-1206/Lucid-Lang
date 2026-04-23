@@ -305,14 +305,36 @@ struct RefTypeAST : TypeAST {
 // ─────────────────────────────────────────────────────────────────────────────
 // PtrTypeAST
 //
-// A raw, unmanaged pointer. Only valid inside extern declarations — using *T
-// outside of an extern context is a semantic error.
+// A raw, unmanaged pointer.
 //
-//   *uint8    →  PtrTypeAST { inner = PrimitiveTypeAST(Uint8) }
-//   *VkInstance → PtrTypeAST { inner = NamedTypeAST("VkInstance") }
+// THE SEALED CONDUIT MODEL:
+// Raw pointers (*T) are treated as "sealed conduits". You can carry them,
+// pass them to @extern functions, and check if they are nil.
+// To work with the memory they point to, you must explicitly "unseal" them
+// by crossing the safety boundary using the @ptrToRef intrinsic.
 //
-// The semantic pass enforces the extern-only restriction by checking that
-// every PtrTypeAST appears only inside an ExternDeclAST subtree.
+// Allowed Operations (Zero unsafe surface):
+//   1. Store the pointer in a variable (const buf *uint8 = malloc(1024))
+//   2. Pass to @extern functions (free(buf))
+//   3. Nil check (if buf == nil { ... })
+//   4. Print the pointer (for debugging/experimenting with memory addresses)
+//
+// Forbidden Operations (Compiler Error):
+//   - Dereference (*ptr)     — Syntax not supported for pointers
+//   - Field access (ptr.f)   — Must cross to reference first
+//   - Indexing (ptr[i])      — Must cross to slice or reference
+//   - Arithmetic (ptr + 4)   — Use @ptrOffset intrinsic instead
+//   - Assignment (*ptr = x)  — Must cross to reference first
+//
+// Boundary Crossing:
+//   @ptrToRef(T, ptr) -> &T   (Explicit assertion of validity)
+//   @refToPtr(ref)    -> *T   (Convert safe reference back to raw pointer)
+//   @ptrOffset(ptr, n)-> *T   (Pointer arithmetic)
+//
+// PtrTypeAST is only valid in:
+//   - @extern-decorated declarations
+//   - Input/output types of pointer-related intrinsics (@ptrToRef, etc.)
+//   - Variables/parameters holding values returned by @extern / intrinsics
 // ─────────────────────────────────────────────────────────────────────────────
 
 struct PtrTypeAST : TypeAST {

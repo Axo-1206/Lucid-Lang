@@ -61,9 +61,11 @@ enum class AttributeContext { Func, Var, Struct };
 //
 //   @extern("symbol")          — valid on Func/Var; exactly 1 string arg (symbol name).
 //                                Optional 2nd string arg = calling convention (default "C").
-//                                When present: function must have NO body (FuncBodyKind check
-//                                is the caller's responsibility; we flag body presence here
-//                                via outIsExtern).
+//                                REQUIRES 'const' keyword — @extern bindings are permanently
+//                                fixed by the linker; 'let' would allow reassignment which
+//                                makes no semantic sense for a linked symbol.
+//                                Emits W3001 when 'let' is used (warning, not error, so
+//                                compilation continues and body checks still run).
 //
 //   @extern("symbol", "conv")  — same as above with explicit calling convention.
 //
@@ -72,18 +74,18 @@ enum class AttributeContext { Func, Var, Struct };
 //   @packed                    — valid on Struct only; no args.
 //   @deprecated("message")     — valid on Func/Var/Struct; optional 1 string arg.
 //
-// FUTURE EXPANSION (LLVM/FFI):
-//   - To add new attributes (e.g. @section, @visibility), update the loop below.
-//   - Metadata should be stored in the Symbol or passed to Codegen for LLVM attribute injection.
-//   - See docs/FFI_DESIGN.md for the full architecture roadmap.
+// Parameters:
+//   declKw        — the declaration keyword (Let or Const) for the owning declaration.
+//                   Used to enforce that @extern requires 'const'.
 //
 // Returns:
-//   outIsExtern  — set true when @extern was found; the function has no body.
-//   outExternSym — the C symbol name from @extern("name"), empty if not @extern.
+//   outIsExtern    — set true when @extern was found.
+//   outExternSym   — the C symbol name from @extern("name"), empty if not @extern.
 //   outCallingConv — the calling convention string, defaults to "C".
 // ─────────────────────────────────────────────────────────────────────────────
 static void checkAttributes(const std::vector<AttributePtr>& attributes,
                              AttributeContext ctx,
+                             DeclKeyword declKw,
                              DiagnosticEngine& dc,
                              bool& outIsExtern,
                              std::string& outExternSym,
@@ -136,6 +138,18 @@ static void checkAttributes(const std::vector<AttributePtr>& attributes,
             if (attr->args.size() > 2) {
                 dc.error(DiagnosticCategory::Semantic, attr->loc, DiagCode::E2011,
                          "'@extern' takes at most 2 arguments: (symbol_name, calling_convention)");
+            }
+
+            // ── Enforce 'const' for @extern ───────────────────────────────────
+            // @extern bindings are resolved by the linker — they are fixed at
+            // link time and cannot be reassigned. Using 'let' allows body
+            // reassignment (f = { ... }) which is meaningless for an extern symbol.
+            // Emit W3001 so the developer knows, but continue compilation.
+            if (declKw == DeclKeyword::Let) {
+                dc.warning(DiagnosticCategory::Semantic, attr->loc, DiagCode::W3001,
+                           "'@extern(\"" + outExternSym + "\")' should use 'const', not 'let' — "
+                           "extern bindings are permanently resolved by the linker and cannot "
+                           "be reassigned; change 'let' to 'const'");
             }
             continue;
         }
@@ -300,10 +314,10 @@ void checkVarDecl(VarDeclAST& node, SymbolTable& symbols, TypeResolver& resolver
                   DiagnosticEngine& dc, int& asyncDepth, int& loopDepth,
                   int& parallelDepth, bool insideExtern) {
 
-    // Validate '@' attributes on this variable declaration.
+    // 0. Validate '@' attributes on this variable declaration.
     bool attrIsExtern = false;
     std::string attrExternSym, attrCallingConv;
-    checkAttributes(node.attributes, AttributeContext::Var, dc,
+    checkAttributes(node.attributes, AttributeContext::Var, node.keyword, dc,
                     attrIsExtern, attrExternSym, attrCallingConv);
     // @extern on a variable: it must have no initialiser (linker provides the value).
     if (attrIsExtern && node.init) {
@@ -409,34 +423,59 @@ void checkFuncDecl(FuncDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
                    DiagnosticEngine& dc, int& asyncDepth, int& loopDepth,
                    int& parallelDepth, bool insideExtern) {
 
-    // Validate '@' attributes on this function.
+    // 0. Validate '@' attributes on this function.
     bool attrIsExtern = false;
     std::string attrExternSym, attrCallingConv;
-    checkAttributes(node.attributes, AttributeContext::Func, dc,
+    checkAttributes(node.attributes, AttributeContext::Func, node.keyword, dc,
                     attrIsExtern, attrExternSym, attrCallingConv);
 
     // @extern("sym") on a function means the body is resolved by the linker.
-    // We still resolve param/return types so they are available to codegen, but
-    // we skip the body check entirely.
+    // We still resolve param/return types so they are available to codegen.
     if (attrIsExtern) {
-        if (node.body) {
-            dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                     "'@extern' function '" + node.name + 
-                     "' must not have a body — the symbol is resolved by the linker");
-        }
-
-        resolver.setInsideExtern(true);
         resolver.setGenericParams(&node.genericParams);
-        // Resolve param types.
+        resolver.setInsideExtern(true);
+
+        // Resolve param types — *T is valid here.
         for (auto& group : node.paramGroups) {
             for (auto& param : group)
                 resolver.resolveType(param->type.get());
         }
         if (node.returnType)
             resolver.resolveType(node.returnType.get());
-        
-        resolver.setGenericParams(nullptr);
+
         resolver.setInsideExtern(false);
+        resolver.setGenericParams(nullptr);
+
+        // ── Body classification ───────────────────────────────────────────────
+        // The parser always produces a body node.  Determine whether the
+        // programmer actually wrote one, and how serious it is.
+        //
+        //   No body (nullptr)                 — ideal; nothing to report.
+        //   Body is a BlockStmt with 0 stmts  — empty: = {}  → W3002 (warning)
+        //   Body is a BlockStmt with statements — non-empty        → E3002 (error)
+        //
+        if (node.body) {
+            bool bodyEmpty = false;
+            if (node.body->isa<BlockStmtAST>()) {
+                bodyEmpty = node.body->as<BlockStmtAST>()->stmts.empty();
+            }
+
+            if (bodyEmpty) {
+                // Empty body `= {}` — warn: the body is silently ignored.
+                dc.warning(DiagnosticCategory::Semantic, node.body->loc,
+                           DiagCode::W3002,
+                           "'@extern(\"" + attrExternSym + "\")' function '" + node.name +
+                           "' has an empty body '= {}' — the body is ignored and the "
+                           "linker symbol is used; remove the body to suppress this warning");
+            } else {
+                // Non-empty body — hard error: code exists that will never run.
+                dc.error(DiagnosticCategory::Semantic, node.body->loc,
+                         DiagCode::E3002,
+                         "'@extern(\"" + attrExternSym + "\")' function '" + node.name +
+                         "' has a body with statements — this code will never execute "
+                         "because the linker resolves the symbol; remove the body");
+            }
+        }
         return;
     }
 
@@ -509,10 +548,12 @@ void checkStructDecl(StructDeclAST& node, SymbolTable& symbols, TypeResolver& re
                      DiagnosticEngine& dc, int& asyncDepth, int& loopDepth,
                      int& parallelDepth, bool insideExtern) {
 
-    // Validate '@' attributes on this struct (@packed, @deprecated).
+    // 0. Validate '@' attributes on this struct (@packed, @deprecated).
     bool attrIsExtern = false;
     std::string attrExternSym, attrCallingConv;
-    checkAttributes(node.attributes, AttributeContext::Struct, dc,
+    // Structs use Let as a neutral keyword — @extern is not valid here and
+    // checkAttributes will report an error for it regardless of the keyword.
+    checkAttributes(node.attributes, AttributeContext::Struct, DeclKeyword::Let, dc,
                     attrIsExtern, attrExternSym, attrCallingConv);
     // @extern is not valid on structs — checkAttributes already reported the error.
     // We continue with normal struct checking regardless.

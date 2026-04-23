@@ -162,7 +162,8 @@ union_type      := type '|' type { '|' type }
 -- Reference   (&T)
 ref_type        := '&' type
 
--- Raw pointer (*T) — only valid on declarations carrying @extern
+-- Raw pointer (*T) — only valid on declarations carrying @extern or via intrinsics.
+-- See "The Sealed Conduit Model" below for rules.
 ptr_type        := '*' type
 
 -- Array types — three distinct kinds:
@@ -329,6 +330,50 @@ its type tag alongside the value. Ownership is preserved through the box:
 Boxing behaviour (stack-allocated small box vs heap pointer) is a compiler
 implementation detail — the programmer observes only the ownership contract
 above.
+
+## The Sealed Conduit Model (Raw Pointers)
+
+Raw pointers (`*T`) in Luc are treated as **sealed conduits**. They provide zero unsafe surface by default. You can carry them, pass them to external functions, and check them for `nil`, but you cannot work with the data they point to without an explicit crossing operation.
+
+### Allowed Operations (Safe)
+
+1. **Storage**: Store a pointer value in a variable or struct field.
+2. **Passing**: Pass a pointer to an `@extern` function.
+3. **Nil Check**: Compare a pointer to `nil` (`== nil`, `!= nil`).
+4. **Intrinsics**: Pass to pointer management intrinsics (see below).
+5. **Printing**: Print the pointer value (memory address) for debugging.
+
+### Forbidden Operations (Compiler Error)
+
+- **Dereferencing**: `*ptr` is not supported for raw pointers.
+- **Field Access**: `ptr.field` must cross to a safe reference first.
+- **Indexing**: `ptr[i]` must cross to a slice or reference first.
+- **Arithmetic Operators**: `ptr + 4` or `ptr - 4` are prohibited.
+- **Assignment**: `*ptr = value` is prohibited.
+
+### Boundary Crossing (Intrinsics)
+
+To work with memory, you must use explicit intrinsics that mark the "unsafe" crossing point in your code:
+
+- `@ptrToRef(T, ptr)`: Asserts that `ptr` is valid and returns a Luc reference (`&T`) to the memory. This is the primary way to "unseal" a pointer.
+- `@refToPtr(ref)`: Converts a safe Luc reference (`&T`) back into a raw pointer (`*T`).
+- `@ptrOffset(ptr, n)`: Perfroms pointer arithmetic; returns a new raw pointer offset by `n` elements.
+- `@ptrDiff(p1, p2)`: Returns the signed distance (in elements) between two pointers as an `int64`.
+
+```luc
+-- Example: Working with a C-allocated buffer
+const buf *uint8? = malloc(1024)
+if buf == nil { panic("allocation failed") }
+
+-- Explicitly cross the boundary to work with it as a reference
+const ref &uint8 = @ptrToRef(&uint8, buf)
+
+-- Now use normal Luc semantics
+ref = 0xFF
+
+-- Pointer arithmetic for the next element
+const next *uint8? = @ptrOffset(buf, 1)
+```
 
 ## Variable Declaration
 
@@ -2585,40 +2630,74 @@ argument.
 
 **Rules:**
 
+- `@extern` requires **`const`**, not `let`. An `@extern` binding is resolved
+  permanently by the linker — using `let` would allow the binding to be
+  replaced at runtime (e.g. `malloc = { return nil }`), which is meaningless
+  for a linked symbol. The semantic pass emits **W3001** when `let` is used;
+  compilation continues but you are warned to change it to `const`.
+
 - `@extern` on a **function** — the declaration must have no body. The
   compiler emits an external function declaration in the LLVM IR; the linker
   resolves it.
+  - **No body** (preferred) — no diagnostic.
+  - **Empty body `= {}`** — **W3002** warning: the body is silently ignored;
+    remove it to suppress the warning.
+  - **Non-empty body** — **E3002** error: the body contains statements that
+    will never execute; this is always a mistake.
+
 - `@extern` on a **variable** — the declaration must have no initialiser. The
   linker provides the symbol's address.
+
 - Raw pointer type `*T` is only valid in declarations carrying `@extern`.
+  The semantic pass enables `*T` resolution when `@extern` is detected.
+
 - `@extern` functions are fully callable from Luc code; the semantic pass
   validates argument count and types against the declared signature.
 
 ```luc
 -- C stdlib bindings
 @extern("malloc")
-let malloc (size uint64) *uint8
+const malloc (size uint64) *uint8?
 
 @extern("free")
-let free (ptr *uint8)
+const free (ptr *uint8)
 
 @extern("printf", "C")
-let printf (fmt *uint8, args ...any) int
+const printf (fmt *uint8, args ...any) int
 
 -- Vulkan bindings
 @extern("vkCreateInstance")
-let vkCreateInstance (pInfo *VkInstanceCreateInfo
-                      pAllocator *VkAllocationCallbacks
-                      pInstance **VkInstance) uint32
+const vkCreateInstance (pInfo      *VkInstanceCreateInfo
+                        pAllocator *VkAllocationCallbacks
+                        pInstance  **VkInstance) uint32
 
 -- Linker-provided constant (e.g. from a linker script)
 @extern("__stack_top")
-let stackTop *uint8
+const stackTop *uint8
 ```
 
-> **Note — no body:** A function decorated with `@extern` must not have a
-> body. Writing one is a semantic error. The `@extern` attribute is the *sole*
-> replacement for the deprecated `extern let` block syntax.
+> **W3001 — using `let` instead of `const`:**
+> ```luc
+> @extern("malloc")
+> let malloc (size uint64) *uint8?   -- W3001: should be 'const'
+> ```
+> Change `let` to `const`. The warning does not block compilation.
+
+> **W3002 — empty body alongside `@extern`:**
+> ```luc
+> @extern("free")
+> const free (ptr *uint8) = {}   -- W3002: empty body is ignored
+> ```
+> Remove `= {}`. The extern binding takes effect regardless.
+
+> **E3002 — non-empty body alongside `@extern`:**
+> ```luc
+> @extern("malloc")
+> const malloc (size uint64) *uint8? = {
+>     return nil   -- E3002: this code will never run
+> }
+> ```
+> Remove the body entirely.
 
 #### `@packed` — Struct Layout
 

@@ -140,7 +140,14 @@ static TypeAST* checkFieldAccessExpr(FieldAccessExprAST& node, SymbolTable& symb
 
     // Resolve named types to their struct symbol.
     std::string typeName;
-    if (objType->isa<NamedTypeAST>()) typeName = objType->as<NamedTypeAST>()->name;
+    if (objType->isa<NamedTypeAST>()) {
+        typeName = objType->as<NamedTypeAST>()->name;
+    } else if (objType->isa<PtrTypeAST>()) {
+        dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
+                 "cannot access field '" + node.field + "' on raw pointer type '*T'; "
+                 "use '@ptrToRef(T, ptr)' to cross the safety boundary first");
+        return nullptr;
+    }
 
     // Enum variant access: Direction.North
     if (!typeName.empty()) {
@@ -270,6 +277,12 @@ static TypeAST* checkBinaryExpr(BinaryExprAST& node, SymbolTable& symbols,
 
         // Arithmetic — result follows left type; check operands are numeric/string.
         case BinaryOp::Add:
+            if (lt && lt->isa<PtrTypeAST>()) {
+                dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
+                         "operator '+' is not supported for raw pointer types; "
+                         "use '@ptrOffset(ptr, n)' instead");
+                return nullptr;
+            }
             // string + string is valid.
             if (lt && lt->isa<PrimitiveTypeAST>() &&
                 lt->as<PrimitiveTypeAST>()->primitiveKind == PrimitiveKind::String) {
@@ -283,9 +296,25 @@ static TypeAST* checkBinaryExpr(BinaryExprAST& node, SymbolTable& symbols,
             }
             break;
 
-        case BinaryOp::Sub: case BinaryOp::Mul:
+        case BinaryOp::Sub:
+            if (lt && lt->isa<PtrTypeAST>()) {
+                dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
+                         "operator '-' is not supported for raw pointer types; "
+                         "use '@ptrDiff(p1, p2)' or '@ptrOffset(ptr, -n)' instead");
+                return nullptr;
+            }
+            result = TypeChecker::unify(lt, rt);
+            if (!result && lt) result = lt;
+            break;
+
+        case BinaryOp::Mul:
         case BinaryOp::Div: case BinaryOp::Pow:
         case BinaryOp::Mod:
+            if ((lt && lt->isa<PtrTypeAST>()) || (rt && rt->isa<PtrTypeAST>())) {
+                dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
+                         "arithmetic operators are not supported for raw pointer types");
+                return nullptr;
+            }
             result = TypeChecker::unify(lt, rt);
             if (!result && lt) result = lt;
             break;
@@ -1246,6 +1275,12 @@ static TypeAST* checkIndexExpr(IndexExprAST& node, SymbolTable& symbols,
             elemType = targetType->as<SliceTypeAST>()->element.get();
         else if (targetType->isa<DynamicArrayTypeAST>())
             elemType = targetType->as<DynamicArrayTypeAST>()->element.get();
+        else if (targetType->isa<PtrTypeAST>()) {
+            dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
+                     "cannot index into raw pointer type '*T'; "
+                     "use '@ptrOffset(ptr, i)' for pointer arithmetic or '@ptrToRef' to cross to a safe type");
+            return nullptr;
+        }
     }
 
     node.resolvedType = elemType;
@@ -1520,6 +1555,35 @@ static TypeAST* checkIntrinsicCallExpr(IntrinsicCallExprAST& node,
         return ret;
     }
 
+    // ── 3b. @ptrToRef(T, ptr) — TypeArg + PtrValue ───────────────────────────
+    if (name == "ptrToRef") {
+        if (!node.typeArg) {
+            dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3010,
+                     "'@ptrToRef' requires a target type argument: '@ptrToRef(T, ptr)'");
+        }
+        if (node.args.size() != 1) {
+            dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3010,
+                     "'@ptrToRef' requires exactly 1 value argument: '@ptrToRef(T, ptr)'");
+        } else {
+            TypeAST* pt = checkExpr(node.args[0].get(), symbols, resolver, dc,
+                                    asyncDepth, loopDepth, parallelDepth, insideExtern);
+            if (pt && !pt->isa<PtrTypeAST>()) {
+                dc.error(DiagnosticCategory::Semantic, node.args[0]->loc, DiagCode::E3010,
+                         "'@ptrToRef' argument 1 must be a raw pointer type '*T'");
+            }
+        }
+        TypeAST* ret = nullptr;
+        if (node.typeArg) {
+            // Returns the provided type. If the user wants a reference, they should pass &T.
+            // e.g. @ptrToRef(&Player, buf)
+            ret = resolver.resolveType(node.typeArg.get());
+        } else {
+            ret = primType(PrimitiveKind::Any);
+        }
+        node.resolvedType = ret;
+        return ret;
+    }
+
     // ── 4. Value-argument intrinsics ─────────────────────────────────────────
     // Verify typeArg was NOT supplied for these (they take only values).
     if (node.typeArg) {
@@ -1625,6 +1689,15 @@ static TypeAST* checkIntrinsicCallExpr(IntrinsicCallExprAST& node,
         }
     }
 
+    // ── 4b. Special case pointer intrinsics ──────────────────────────────────
+    if (name == "refToPtr") {
+        if (!argTypes.empty() && argTypes[0]) {
+            // Logic handled in codegen, but semantic return type is always a pointer.
+            // We'll return a pointer to the same inner type if it's a reference.
+            // For now, return any pointer-like type or just the raw arg if it's already a ptr.
+        }
+    }
+
     // ── 5. Resolve return type from registry entry ────────────────────────────
     TypeAST* ret = nullptr;
     switch (entry->returnKind) {
@@ -1645,6 +1718,13 @@ static TypeAST* checkIntrinsicCallExpr(IntrinsicCallExprAST& node,
             break;
         case IntrinsicReturnKind::SameAsArg1:
             ret = argTypes.size() >= 2 ? argTypes[1] : primType(PrimitiveKind::Any);
+            break;
+        case IntrinsicReturnKind::RefOfTypeArg0:
+            // This is handled above in the @ptrToRef special case.
+            ret = node.typeArg ? resolver.resolveType(node.typeArg.get()) : primType(PrimitiveKind::Any);
+            break;
+        case IntrinsicReturnKind::Int64:
+            ret = primType(PrimitiveKind::Int64);
             break;
     }
 
