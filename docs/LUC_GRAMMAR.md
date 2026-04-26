@@ -1049,9 +1049,9 @@ Visibility follows the same three-tier model as every other top-level declaratio
 ```
 from_block      := [ visibility_mod ] 'from' IDENTIFIER '{' from_entry* '}'
 
-from_entry      := IDENTIFIER '(' IDENTIFIER type ')' IDENTIFIER '=' func_body
-                   -- ^^^^^^^^^^     ^^^^^^^^^^      ^^^^^^^^^^
-                   -- name (label)   source param    return type (must match target)
+from_entry      := param_group { param_group } IDENTIFIER '=' func_body
+                   -- ^^^^^^^^^^^^^^^^^^^^^^^^^^^ ^^^^^^^^^^
+                   -- source param(s)              return type (must match target)
 
 visibility_mod  := 'pub' | 'export'
 ```
@@ -1081,19 +1081,19 @@ pub struct Kelvin     { value float }
 -- Grouped conversions for Fahrenheit
 export from Fahrenheit {
     -- Conversion from Celsius
-    celsius (c Celsius) Fahrenheit = {
+    (c Celsius) Fahrenheit = {
         return Fahrenheit { value = c.value * 9.0 / 5.0 + 32.0 }
     }
 
     -- Conversion from Kelvin
-    kelvin (k Kelvin) Fahrenheit = {
+    (k Kelvin) Fahrenheit = {
         return Fahrenheit { value = (k.value - 273.15) * 9.0 / 5.0 + 32.0 }
     }
 }
 
 -- Package-private conversions for Kelvin
 pub from Kelvin {
-    celsius (c Celsius) Kelvin = {
+    (c Celsius) Kelvin = {
         return Kelvin { value = c.value + 273.15 }
     }
 }
