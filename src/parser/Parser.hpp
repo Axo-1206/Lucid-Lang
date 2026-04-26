@@ -321,18 +321,22 @@ class Parser {
 
     // Root expression entry point. Handles assignment operators (lowest
     // precedence).
-    ExprPtr parseExpr();
+    //
+    // allowStructLiteral: When false, prevents an IDENTIFIER followed by '{'
+    // from being parsed as a StructLiteralExprAST. This is used in control-flow
+    // headers (if, for, while) to avoid greedily consuming the following block.
+    ExprPtr parseExpr(bool allowStructLiteral = true);
 
     // Pratt parser core. minPrec controls which operators are consumed at this
     // level — call with 0 to parse a full expression.
-    ExprPtr parsePrattExpr(int minPrec);
+    ExprPtr parsePrattExpr(int minPrec, bool allowStructLiteral = true);
 
     // Parse a prefix (unary) or primary expression.
-    ExprPtr parsePrefixExpr();
+    ExprPtr parsePrefixExpr(bool allowStructLiteral = true);
 
     // Parse a primary expression: literal, identifier, struct literal, array
     // literal, parenthesised expr, anon func, match expr, if expr.
-    ExprPtr parsePrimaryExpr();
+    ExprPtr parsePrimaryExpr(bool allowStructLiteral = true);
 
     // Parse all postfix operations on an already-parsed lhs:
     // '.' field, ':' method, '.?' chain, '??' fallback,

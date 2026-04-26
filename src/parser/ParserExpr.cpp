@@ -205,8 +205,8 @@ bool Parser::isAssignOp(TokenType t) const {
 // binds.
 // ─────────────────────────────────────────────────────────────────────────────
 
-ExprPtr Parser::parseExpr() {
-    return parsePrattExpr(PREC_NONE);
+ExprPtr Parser::parseExpr(bool allowStructLiteral) {
+    return parsePrattExpr(PREC_NONE, allowStructLiteral);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -226,8 +226,8 @@ ExprPtr Parser::parseExpr() {
 //   4. Return lhs.
 // ─────────────────────────────────────────────────────────────────────────────
 
-ExprPtr Parser::parsePrattExpr(int minPrec) {
-    ExprPtr lhs = parsePrefixExpr();
+ExprPtr Parser::parsePrattExpr(int minPrec, bool allowStructLiteral) {
+    ExprPtr lhs = parsePrefixExpr(allowStructLiteral);
     if (!lhs)
         return nullptr;
 
@@ -246,7 +246,7 @@ ExprPtr Parser::parsePrattExpr(int minPrec) {
             AssignOp op = tokenToAssignOp(opTok);
             advance();
             // Right-associative: recurse at the same precedence level.
-            ExprPtr rhs = parsePrattExpr(PREC_ASSIGN - 1);
+            ExprPtr rhs = parsePrattExpr(PREC_ASSIGN - 1, allowStructLiteral);
             if (!rhs) {
                 errorAt(DiagCode::E2008, "expected expression after assignment operator");
                 break;
@@ -299,7 +299,7 @@ ExprPtr Parser::parsePrattExpr(int minPrec) {
         if (opTok == TokenType::QUESTION_QUESTION) {
             advance(); // consume '??'
             // Right-associative.
-            ExprPtr fallback = parsePrattExpr(PREC_NULLCOAL - 1);
+            ExprPtr fallback = parsePrattExpr(PREC_NULLCOAL - 1, allowStructLiteral);
             if (!fallback) {
                 errorAt(DiagCode::E2008, "expected expression after '\?\?'");
                 break;
@@ -333,7 +333,7 @@ ExprPtr Parser::parsePrattExpr(int minPrec) {
         // Right-associative: POW (^)
         int nextPrec = (opTok == TokenType::POW) ? prec - 1 : prec;
 
-        ExprPtr rhs = parsePrattExpr(nextPrec);
+        ExprPtr rhs = parsePrattExpr(nextPrec, allowStructLiteral);
         if (!rhs) {
             errorAt(DiagCode::E2008, "expected right-hand side of binary expression");
             break;
@@ -397,13 +397,13 @@ ExprPtr Parser::parsePrattExpr(int minPrec) {
 // parsePrefixExpr  — unary prefix operators and primary expressions
 // ─────────────────────────────────────────────────────────────────────────────
 
-ExprPtr Parser::parsePrefixExpr() {
+ExprPtr Parser::parsePrefixExpr(bool allowStructLiteral) {
     SourceLocation loc = currentLoc();
 
     switch (peek().type) {
         case TokenType::MINUS: {
             advance();
-            ExprPtr operand = parsePrefixExpr();
+            ExprPtr operand = parsePrefixExpr(allowStructLiteral);
             if (!operand) {
                 errorAt(DiagCode::E2008, "expected expression after '-'");
                 return nullptr;
@@ -416,7 +416,7 @@ ExprPtr Parser::parsePrefixExpr() {
         }
         case TokenType::NOT: {
             advance();
-            ExprPtr operand = parsePrefixExpr();
+            ExprPtr operand = parsePrefixExpr(allowStructLiteral);
             if (!operand) {
                 errorAt(DiagCode::E2008, "expected expression after 'not'");
                 return nullptr;
@@ -429,7 +429,7 @@ ExprPtr Parser::parsePrefixExpr() {
         }
         case TokenType::BIT_NOT: {
             advance();
-            ExprPtr operand = parsePrefixExpr();
+            ExprPtr operand = parsePrefixExpr(allowStructLiteral);
             if (!operand) {
                 errorAt(DiagCode::E2008, "expected expression after '~'");
                 return nullptr;
@@ -444,7 +444,7 @@ ExprPtr Parser::parsePrefixExpr() {
             // '&' in expression position is always the unary reference operator (&x).
             // Bitwise AND uses '&&' (BIT_AND token) to avoid ambiguity with &T.
             advance();
-            ExprPtr operand = parsePrefixExpr();
+            ExprPtr operand = parsePrefixExpr(allowStructLiteral);
             if (!operand) {
                 errorAt(DiagCode::E2008, "expected expression after '&'");
                 return nullptr;
@@ -456,7 +456,7 @@ ExprPtr Parser::parsePrefixExpr() {
             return node;
         }
         default:
-            return parsePrimaryExpr();
+            return parsePrimaryExpr(allowStructLiteral);
     }
 }
 
@@ -464,7 +464,7 @@ ExprPtr Parser::parsePrefixExpr() {
 // parsePrimaryExpr  — atoms: literals, identifiers, grouped, special forms
 // ─────────────────────────────────────────────────────────────────────────────
 
-ExprPtr Parser::parsePrimaryExpr() {
+ExprPtr Parser::parsePrimaryExpr(bool allowStructLiteral) {
     SourceLocation loc = currentLoc();
 
     // ── match expression ──────────────────────────────────────────────────────
@@ -693,7 +693,7 @@ ExprPtr Parser::parsePrimaryExpr() {
         // below.
 
         // Struct literal: IDENTIFIER [ '<' ... '>' ] '{'
-        if (looksLikeStructLiteral()) {
+        if (allowStructLiteral && looksLikeStructLiteral()) {
             advance(); // consume IDENTIFIER
             std::vector<TypePtr> genericArgs;
             if (check(TokenType::LESS)) {

@@ -1,0 +1,84 @@
+package tests
+
+-- Mock data structures for testing
+struct Item {
+    id    int
+    value float
+}
+
+struct RawData {
+    raw string
+}
+
+-- Mock functions
+let httpGet(url string) string = {
+    return "response data"
+}
+
+let transform(data string) RawData = {
+    return RawData { raw = data }
+}
+
+-- 1. Async / Await tests
+let fetch (url string) string = async (url string) string {
+    let data string = await httpGet(url)
+    return data
+}
+
+-- Async anonymous function with explicit variable type
+let anonAsync (x int) int = async (x int) int {
+    return await x * 2
+}
+
+-- 2. Parallel tests
+let processItems(items []Item) = {
+    parallel for item Item in items {
+        -- Each iteration is independent
+        let newValue float = item.value * 1.1
+    }
+    
+    parallel for i int in 0..10 {
+        let x int = i * i
+    }
+}
+
+let runTasks() = {
+    parallel {
+        {
+            let res int = 1 + 1
+        }
+        {
+            let data string = "task 2"
+        }
+    }
+}
+
+-- 3. Combining Async and Parallel
+let complexWorkflow(urls []string) []RawData = async (urls []string) []RawData {
+    -- Sequential async phase
+    let results []RawData = []
+    for url string in urls {
+        let data string = await fetch(url)
+        results = results + [transform(data)]
+    }
+
+    -- Parallel CPU phase
+    parallel for item RawData in results {
+        -- CPU bound processing
+        -- let l int = item.raw.len()
+    }
+
+    return results
+}
+
+export const main () int = {
+    -- Call async function
+    let f string = fetch("http://example.com")
+    
+    let items []Item = [Item{id=1, value=10.0}, Item{id=2, value=20.0}]
+    processItems(items)
+    
+    runTasks()
+    
+    return 0
+}

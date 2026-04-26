@@ -498,22 +498,19 @@ bool Parser::looksLikeFuncDecl() const {
 // We need to confirm that the '{' is a struct literal initialiser, not a
 // block body.
 //
-// In Luc, a struct literal can appear:
-//   - on the RHS of '=': let x Vec2 = Vec2 { ... }
-//   - as a function argument
-//   - in any expression position
+// Ambiguity Resolution:
+// In many contexts (like 'if', 'for', 'while' headers), an IDENTIFIER followed
+// by '{' is ambiguous.
+//   if my_bool { ... }        -- 'my_bool' is the condition, '{' starts the block.
+//   if MyStruct { ... } { }   -- 'MyStruct { ... }' is the condition, '{' starts the block.
 //
-// A bare IDENTIFIER '{' at the START of a statement is ambiguous — it
-// could theoretically be a struct literal used as an expression statement.
-// However, idiomatic Luc never writes a struct-literal as a standalone
-// statement (there's nothing useful to do with the value), so we treat
-// IDENTIFIER '{' at a pure statement-start position as a block only when
-// the identifier is a keyword-like name.  For safety we simply return true
-// here and let the caller (parsePrimaryExpr) decide based on its context.
+// The parser resolves this by passing 'allowStructLiteral=false' to parseExpr()
+// when parsing control-flow headers. In all other expression positions (assignments,
+// function arguments, etc.), struct literals are allowed.
 //
-// The caller already knows it's in expression position, so returning true
-// is safe — if the struct literal parse fails the error will be reported
-// there.
+// If allowStructLiteral is false, parsePrimaryExpr will skip this check even if
+// it looks like a struct literal, allowing the '{' to be consumed as the start
+// of the following block statement instead.
 // ─────────────────────────────────────────────────────────────────────────────
 bool Parser::looksLikeStructLiteral() const {
 

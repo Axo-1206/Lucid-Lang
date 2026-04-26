@@ -240,8 +240,9 @@ std::unique_ptr<IfStmtAST> Parser::parseIfStmt()
     SourceLocation loc = currentLoc();
     consume(TokenType::IF, "expected 'if'");
 
-    // Condition — parsed as a full expression.
-    ExprPtr condition = parseExpr();
+    // Condition — parsed as a full expression, but disallow top-level struct literals
+    // to avoid ambiguity with the following block.
+    ExprPtr condition = parseExpr(false);
     if (!condition) {
         errorAt(DiagCode::E2008, "expected condition after 'if'");
         return nullptr;
@@ -294,7 +295,7 @@ std::unique_ptr<SwitchStmtAST> Parser::parseSwitchStmt()
     SourceLocation loc = currentLoc();
     consume(TokenType::SWITCH, "expected 'switch'");
 
-    ExprPtr subject = parseExpr();
+    ExprPtr subject = parseExpr(false);
     if (!subject) {
         errorAt(DiagCode::E2008, "expected expression after 'switch'");
         return nullptr;
@@ -433,7 +434,7 @@ std::unique_ptr<ForStmtAST> Parser::parseForStmt()
     consume(TokenType::IN, "expected 'in' after iteration variable");
 
     // Parse the iterable expression (collection or RangeExprAST).
-    ExprPtr iterable = parseExpr();
+    ExprPtr iterable = parseExpr(false);
     if (!iterable) {
         errorAt(DiagCode::E2008, "expected iterable expression after 'in'");
         return nullptr;
@@ -485,7 +486,7 @@ std::unique_ptr<WhileStmtAST> Parser::parseWhileStmt()
     SourceLocation loc = currentLoc();
     consume(TokenType::WHILE, "expected 'while'");
 
-    ExprPtr condition = parseExpr();
+    ExprPtr condition = parseExpr(false);
     if (!condition) {
         errorAt(DiagCode::E2008, "expected condition after 'while'");
         return nullptr;
@@ -532,7 +533,7 @@ std::unique_ptr<DoWhileStmtAST> Parser::parseDoWhileStmt()
 
     consume(TokenType::WHILE, "expected 'while' after do body");
 
-    ExprPtr condition = parseExpr();
+    ExprPtr condition = parseExpr(false);
     if (!condition) {
         errorAt(DiagCode::E2008, "expected condition after 'while' in do-while loop");
         return nullptr;
@@ -673,7 +674,7 @@ std::unique_ptr<ParallelForStmtAST> Parser::parseParallelForStmt()
     consume(TokenType::IN, "expected 'in' after iteration variable");
 
     // Parse the iterable expression (collection or RangeExprAST).
-    ExprPtr iterable = parseExpr();
+    ExprPtr iterable = parseExpr(false);
     if (!iterable) {
         errorAt(DiagCode::E2008, "expected iterable expression after 'in'");
         return nullptr;
