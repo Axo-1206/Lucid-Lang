@@ -396,6 +396,16 @@ std::vector<ParamPtr> Parser::parseParamGroup() {
         if (p) {
             seenVariadic = p->isVariadic;
             params.push_back(std::move(p));
+        } else {
+            // Panic recovery: advance at least one token or skip to the next separator/terminator
+            // to ensure we don't get stuck in an infinite loop if parseParam fails without
+            // consuming anything.
+            if (!check(TokenType::COMMA) && !check(TokenType::RPAREN)) {
+                advance();
+            }
+            while (!check(TokenType::COMMA) && !check(TokenType::RPAREN) && !isAtEnd()) {
+                advance();
+            }
         }
 
     } while (!check(TokenType::RPAREN) && !isAtEnd());
@@ -426,7 +436,15 @@ ParamPtr Parser::parseParam() {
 
     bool isVariadic = match(TokenType::VARIADIC);
 
-    TypePtr type = parseType();
+    TypePtr type;
+    // Check if we are at a keyword that is NOT a valid type start.
+    // In Tokens.hpp, keywords are grouped between PUB and FALSE.
+    if (!looksLikeType() && peek().type >= TokenType::PUB && peek().type <= TokenType::FALSE) {
+        errorAt(DiagCode::E2012, "unexpected keyword '" + peek().value + "' used as a parameter type");
+        return nullptr;
+    }
+    
+    type = parseType();
     if (!type) {
         errorAt(DiagCode::E2005, "expected type for parameter '" + name + "'");
         return nullptr;

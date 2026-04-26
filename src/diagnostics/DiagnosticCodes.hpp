@@ -43,6 +43,7 @@ enum class DiagCode : uint32_t {
     E2009 = 2009, ///< Literal value is malformed (e.g., invalid hex sequence).
     E2010 = 2010, ///< Unknown or unsupported '@' attribute name.
     E2011 = 2011, ///< Wrong number of arguments for '@' attribute.
+    E2012 = 2012, ///< Unexpected keyword found in a position where an identifier or type was expected.
     E2999 = 2999, ///< Generic fallback for syntax errors.
 
     // ── 3000-3999: Semantic ──────────────────────────────────────────────────
