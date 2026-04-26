@@ -147,24 +147,27 @@ enum class BinaryOp {
     Pow,  // ^
     Mod,  // %
 
-    // Comparison
-    Eq,   // ==
-    Ne,   // !=
-    Lt,   // <
-    Gt,   // >
-    Le,   // <=
-    Ge,   // >=
+    // Comparison — value equality
+    Eq,     // ==    value equality (primitives, enums, nullable types)
+    Ne,     // !=    value inequality
+    Lt,     // <
+    Gt,     // >
+    Le,     // <=
+    Ge,     // >=
+    RefEq,  // ===   reference equality: same memory address (&T, structs)
 
-    // Logical
-    And,  // and
-    Or,   // or
+    // Logical (short circuit)
+    And,  // and   short circuit: right not evaluated if left is false
+    Or,   // or    short circuit: right not evaluated if left is true
 
-    // Bitwise
-    BitAnd,  // &
-    BitOr,   // |
-    BitXor,  // ~^
-    Shl,     // <<
-    Shr,     // >>
+    // Bitwise (integer types only)
+    // Note: && and || are used instead of & and | to avoid ambiguity with
+    // the reference operator &T and the union type separator |
+    BitAnd,  // &&   bitwise AND
+    BitOr,   // ||   bitwise OR
+    BitXor,  // ~^   bitwise XOR
+    Shl,     // <<   left shift
+    Shr,     // >>   right shift
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -462,14 +465,17 @@ struct IndexExprAST : ExprAST {
 // BinaryExprAST
 //
 // Any infix binary operation — arithmetic, comparison, logical, bitwise.
-//   a + b    →  op=Add,  left=a,  right=b
-//   x == y   →  op=Eq,   left=x,  right=y
-//   p and q  →  op=And,  left=p,  right=q
-//   a | b    →  op=BitOr (in expression position — not a union type)
+//   a + b    →  op=Add,   left=a,  right=b
+//   x == y   →  op=Eq,    left=x,  right=y
+//   x === y  →  op=RefEq, left=x,  right=y
+//   p and q  →  op=And,   left=p,  right=q
+//   a && b   →  op=BitAnd (bitwise AND, integer types only)
+//   a || b   →  op=BitOr  (bitwise OR,  integer types only)
 //
-// Note: '|' is both the union type operator (TypeAST) and bitwise OR (ExprAST).
-// The parser disambiguates by context — in a type position it produces a
-// UnionTypeAST; in an expression position it produces BinaryExprAST(BitOr).
+// Note: '&' is the unary reference operator (&x, &T) — never a binary op.
+// Note: '|' is the union type separator (int | string) in type position only.
+// Bitwise AND uses '&&' (BIT_AND token) and bitwise OR uses '||' (BIT_OR token)
+// to eliminate any ambiguity with the reference operator and union type separator.
 // ─────────────────────────────────────────────────────────────────────────────
 
 struct BinaryExprAST : ExprAST {

@@ -143,6 +143,44 @@ bool SemanticAnalyzer::analyze(std::vector<ProgramAST*>& files) {
             dc_.error(DiagnosticCategory::Semantic, func->loc, DiagCode::E3007,
                       "'main' function cannot be async");
         }
+
+        // 6. @aot and @jit validation on main
+        // Both are optional. If present, they must not both appear together.
+        // The mutual exclusion check already runs in checkAttributes during
+        // Phase 3. Here we just record which mode was requested.
+        bool hasAot = false;
+        bool hasJit = false;
+        for (const auto& attr : func->attributes) {
+            if (attr->name == "aot") hasAot = true;
+            if (attr->name == "jit") hasJit = true;
+        }
+        // hasAot and hasJit together is already caught by checkAttributes (E3015).
+        // Record the compilation mode for the driver/codegen to use.
+        // (compilationMode_ is set on SemanticAnalyzer for downstream use.)
+        if (hasAot)      compilationMode_ = CompilationMode::AOT;
+        else if (hasJit) compilationMode_ = CompilationMode::JIT;
+        else             compilationMode_ = CompilationMode::AOT; // fallback if no attributes
+    }
+
+    // ── Validate that @aot / @jit do not appear on non-main functions ──────────
+    // checkAttributes catches invalid contexts (struct) but cannot check the
+    // function name because it does not have access to the FuncDeclAST name
+    // at that point. We do a targeted sweep here over all top-level functions.
+    for (auto* prog : files) {
+        for (auto& decl : prog->decls) {
+            if (!decl->isa<FuncDeclAST>()) continue;
+            auto* func = decl->as<FuncDeclAST>();
+            if (func->name == "main") continue; // already validated above
+
+            for (const auto& attr : func->attributes) {
+                if (attr->name == "aot" || attr->name == "jit") {
+                    dc_.error(DiagnosticCategory::Semantic, attr->loc,
+                              DiagCode::E3016,
+                              "'@" + attr->name + "' is only valid on the 'main' "
+                              "entry point; remove it from '" + func->name + "'");
+                }
+            }
+        }
     }
 
     // Phase 4: Annotate & Optimize.

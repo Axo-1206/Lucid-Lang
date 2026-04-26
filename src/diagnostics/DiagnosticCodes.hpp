@@ -56,6 +56,12 @@ enum class DiagCode : uint32_t {
     E3008 = 3008, ///< Implicit type conversion not allowed; suggest explicit casting.
     E3009 = 3009, ///< Unknown '@' intrinsic name.
     E3010 = 3010, ///< Wrong argument count or type for '@' intrinsic.
+    E3011 = 3011, ///< Cannot use '==' on struct type; implement Equatable<T> and use :equals() instead.
+    E3012 = 3012, ///< Cannot use '==' on function type; function bodies are incomparable.
+    E3013 = 3013, ///< Cannot use '==' on array type; use collection library comparison function.
+    E3014 = 3014, ///< Chained comparison not allowed; use 'and' explicitly: 0 < x and x < 10.
+    E3015 = 3015, ///< '@aot' and '@jit' are mutually exclusive on the same declaration.
+    E3016 = 3016, ///< '@aot' / '@jit' are only valid on the 'main' entry point.
 
     // ── W3000-W3999: Semantic Warnings ──────────────────────────────────────
     // Warning codes occupy the 5000+ range to avoid collision with error codes.

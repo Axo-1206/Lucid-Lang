@@ -28,6 +28,21 @@
 #include <memory>
 #include <vector>
 
+// ─────────────────────────────────────────────────────────────────────────────
+// CompilationMode — records which execution model the @aot / @jit directive
+// on the main entry point requested.
+//
+//   AOT     — @aot present on main (or no directive); produce a native binary at build time
+//   JIT     — @jit present on main; compile and execute via LLVM JIT at runtime
+//
+// Written by SemanticAnalyzer during Phase 3.5 entry point validation.
+// Read by the compiler driver and the codegen phase.
+// ─────────────────────────────────────────────────────────────────────────────
+enum class CompilationMode {
+    AOT,      // @aot on main or no directive — ahead-of-time, produce native binary
+    JIT,      // @jit on main — just-in-time via LLVM JIT
+};
+
 class SemanticAnalyzer {
 public:
     explicit SemanticAnalyzer(DiagnosticEngine& dc);
@@ -37,6 +52,10 @@ public:
     // Returns false if any errors were emitted.
     bool analyze(std::vector<ProgramAST*>& files);
     void dumpSymbols() const;
+
+    // Returns the compilation mode determined from the @aot / @jit directive
+    // on the main entry point. Only meaningful after analyze() returns true.
+    CompilationMode getCompilationMode() const { return compilationMode_; }
 
 private:
     void resolveImports(std::vector<ProgramAST*>& files);  // Phase 0: cycle detection
@@ -51,6 +70,10 @@ private:
     std::unique_ptr<TypeChecker>   typeChecker_;
 
     DiagnosticEngine& dc_;
+
+    // Compilation mode determined from @aot / @jit on main.
+    // Set during Phase 3.5 entry point validation.
+    CompilationMode compilationMode_ = CompilationMode::AOT;
 
     // Context flags shared across Phase 3 sub-passes.
     bool insideExtern_  = false;

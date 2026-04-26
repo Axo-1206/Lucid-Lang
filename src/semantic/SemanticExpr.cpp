@@ -242,10 +242,19 @@ static TypeAST* checkBehaviorAccessExpr(BehaviorAccessExprAST& node, SymbolTable
 
 // ─────────────────────────────────────────────────────────────────────────────
 // checkBinaryExpr
-// Validates that the operator is defined for the operand types.
-// Comparison and logical operators always produce bool.
-// Arithmetic operators produce the type of the left operand (after widening).
-// String + string produces string.
+//
+// Rules enforced:
+//   and / or  — short circuit (codegen responsibility), both sides must be
+//               bool or nullable. Non-bool/non-nullable operand → E3002.
+//   ==  / !=  — value equality. Struct → E3011. Function → E3012. Array → E3013.
+//               Nullable types are valid: nil == nil, nil != value.
+//   ===       — reference equality. Valid on &T, structs, nullable of above.
+//               Primitives → E3002.
+//   < > <= >= — ordering. Produces bool.
+//   &&  / ||  — bitwise AND/OR. Integer types only → E3002 on non-integer.
+//   ~^        — bitwise XOR. Integer types only.
+//   << >>     — shift. Integer types only.
+//   arithmetic — + - * / ^ % with pointer and type rules as before.
 // ─────────────────────────────────────────────────────────────────────────────
 static TypeAST* checkBinaryExpr(BinaryExprAST& node, SymbolTable& symbols,
                                  TypeResolver& resolver, DiagnosticEngine& dc,
@@ -259,23 +268,83 @@ static TypeAST* checkBinaryExpr(BinaryExprAST& node, SymbolTable& symbols,
     TypeAST* result = nullptr;
 
     switch (node.op) {
-        // Logical — both sides must be bool, result is bool.
+
+        // ── Logical: and / or ─────────────────────────────────────────────────
+        // Short circuit semantics are handled by codegen.
+        // Semantic pass only validates that operands are bool or nullable.
         case BinaryOp::And:
         case BinaryOp::Or:
-            if (lt && !TypeChecker::isBooleanCompatible(lt))
-                dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                         "'and'/'or' requires bool operands");
+            if (lt && !TypeChecker::isBoolOrNullable(lt))
+                dc.error(DiagnosticCategory::Semantic, node.left->loc, DiagCode::E3002,
+                         "'and'/'or' left operand must be bool or nullable type; "
+                         "got non-bool value — use an explicit bool expression");
+            if (rt && !TypeChecker::isBoolOrNullable(rt))
+                dc.error(DiagnosticCategory::Semantic, node.right->loc, DiagCode::E3002,
+                         "'and'/'or' right operand must be bool or nullable type; "
+                         "got non-bool value — use an explicit bool expression");
             result = primType(PrimitiveKind::Bool);
             break;
 
-        // Comparison — result is always bool.
-        case BinaryOp::Eq: case BinaryOp::Ne:
+        // ── Value equality: == and != ─────────────────────────────────────────
+        // Strict type rules — struct, function, and array types are forbidden.
+        case BinaryOp::Eq:
+        case BinaryOp::Ne: {
+            // Check left side type for forbidden categories
+            if (lt) {
+                // Struct type: emit E3011
+                if (lt->isa<NamedTypeAST>()) {
+                    Symbol* sym = symbols.lookup(lt->as<NamedTypeAST>()->name);
+                    if (sym && sym->kind == SymbolKind::Struct) {
+                        dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3011,
+                                 "cannot use '==' on struct type '" +
+                                 lt->as<NamedTypeAST>()->name +
+                                 "'; implement 'Equatable<" +
+                                 lt->as<NamedTypeAST>()->name +
+                                 ">' and use ':equals()' instead");
+                        return primType(PrimitiveKind::Bool);
+                    }
+                }
+                // Function type: emit E3012
+                if (lt->isa<FuncTypeAST>()) {
+                    dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3012,
+                             "cannot use '==' on function type; "
+                             "function bodies are incomparable");
+                    return primType(PrimitiveKind::Bool);
+                }
+                // Array types: emit E3013
+                if (lt->isa<FixedArrayTypeAST>() ||
+                    lt->isa<SliceTypeAST>()       ||
+                    lt->isa<DynamicArrayTypeAST>()) {
+                    dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3013,
+                             "cannot use '==' on array type; "
+                             "use a collection library comparison function instead");
+                    return primType(PrimitiveKind::Bool);
+                }
+            }
+            result = primType(PrimitiveKind::Bool);
+            break;
+        }
+
+        // ── Reference equality: === ───────────────────────────────────────────
+        // Only valid on reference types and structs (address comparison).
+        // Primitives are value types — === has no meaningful semantics for them.
+        case BinaryOp::RefEq: {
+            if (lt && !TypeChecker::isReferenceComparable(lt)) {
+                dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
+                         "'===' reference equality is not valid on primitive or "
+                         "non-reference type; use '==' for value comparison instead");
+            }
+            result = primType(PrimitiveKind::Bool);
+            break;
+        }
+
+        // ── Ordering comparisons ──────────────────────────────────────────────
         case BinaryOp::Lt: case BinaryOp::Gt:
         case BinaryOp::Le: case BinaryOp::Ge:
             result = primType(PrimitiveKind::Bool);
             break;
 
-        // Arithmetic — result follows left type; check operands are numeric/string.
+        // ── Arithmetic ────────────────────────────────────────────────────────
         case BinaryOp::Add:
             if (lt && lt->isa<PtrTypeAST>()) {
                 dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
@@ -283,7 +352,7 @@ static TypeAST* checkBinaryExpr(BinaryExprAST& node, SymbolTable& symbols,
                          "use '@ptrOffset(ptr, n)' instead");
                 return nullptr;
             }
-            // string + string is valid.
+            // string + string is valid
             if (lt && lt->isa<PrimitiveTypeAST>() &&
                 lt->as<PrimitiveTypeAST>()->primitiveKind == PrimitiveKind::String) {
                 if (rt && !TypeChecker::isAssignable(rt, lt))
@@ -308,7 +377,8 @@ static TypeAST* checkBinaryExpr(BinaryExprAST& node, SymbolTable& symbols,
             break;
 
         case BinaryOp::Mul:
-        case BinaryOp::Div: case BinaryOp::Pow:
+        case BinaryOp::Div:
+        case BinaryOp::Pow:
         case BinaryOp::Mod:
             if ((lt && lt->isa<PtrTypeAST>()) || (rt && rt->isa<PtrTypeAST>())) {
                 dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
@@ -319,12 +389,39 @@ static TypeAST* checkBinaryExpr(BinaryExprAST& node, SymbolTable& symbols,
             if (!result && lt) result = lt;
             break;
 
-        // Bitwise — result is the left operand type.
-        case BinaryOp::BitAnd: case BinaryOp::BitOr:
-        case BinaryOp::BitXor: case BinaryOp::Shl:
-        case BinaryOp::Shr:
+        // ── Bitwise: && || ~^ << >> ───────────────────────────────────────────
+        // Integer types only. Non-integer operand → E3002.
+        case BinaryOp::BitAnd:
+        case BinaryOp::BitOr:
+        case BinaryOp::BitXor:
+        case BinaryOp::Shl:
+        case BinaryOp::Shr: {
+            auto isIntegerType = [](TypeAST* t) -> bool {
+                if (!t || !t->isa<PrimitiveTypeAST>()) return false;
+                auto k = t->as<PrimitiveTypeAST>()->primitiveKind;
+                switch (k) {
+                    case PrimitiveKind::Byte:   case PrimitiveKind::Short:
+                    case PrimitiveKind::Int:    case PrimitiveKind::Long:
+                    case PrimitiveKind::Ubyte:  case PrimitiveKind::Ushort:
+                    case PrimitiveKind::Uint:   case PrimitiveKind::Ulong:
+                    case PrimitiveKind::Int8:   case PrimitiveKind::Int16:
+                    case PrimitiveKind::Int32:  case PrimitiveKind::Int64:
+                    case PrimitiveKind::Uint8:  case PrimitiveKind::Uint16:
+                    case PrimitiveKind::Uint32: case PrimitiveKind::Uint64:
+                        return true;
+                    default:
+                        return false;
+                }
+            };
+            if (lt && !isIntegerType(lt))
+                dc.error(DiagnosticCategory::Semantic, node.left->loc, DiagCode::E3002,
+                         "bitwise operator requires integer operands; left operand is not an integer type");
+            if (rt && !isIntegerType(rt))
+                dc.error(DiagnosticCategory::Semantic, node.right->loc, DiagCode::E3002,
+                         "bitwise operator requires integer operands; right operand is not an integer type");
             result = lt ? lt : rt;
             break;
+        }
     }
 
     node.resolvedType = result;
@@ -333,6 +430,14 @@ static TypeAST* checkBinaryExpr(BinaryExprAST& node, SymbolTable& symbols,
 
 // ─────────────────────────────────────────────────────────────────────────────
 // checkUnaryExpr
+//
+// Rules enforced:
+//   not — valid on bool and nullable types only
+//         nil treated as false, non-nil treated as true
+//         non-bool/non-nullable → E3002
+//   -   — arithmetic negation, numeric only
+//   ~   — bitwise NOT, integer types only
+//   &   — reference operator, produces &T
 // ─────────────────────────────────────────────────────────────────────────────
 static TypeAST* checkUnaryExpr(UnaryExprAST& node, SymbolTable& symbols,
                                 TypeResolver& resolver, DiagnosticEngine& dc,
@@ -344,20 +449,34 @@ static TypeAST* checkUnaryExpr(UnaryExprAST& node, SymbolTable& symbols,
 
     switch (node.op) {
         case UnaryOp::Not:
-            if (inner && !TypeChecker::isBooleanCompatible(inner))
+            // 'not' is valid on bool and nullable types.
+            // Nullable: nil → false, non-nil → true. This is the nil check idiom:
+            //   let x int? = nil
+            //   if not x { ... }  -- true: x is nil, treated as false
+            if (inner && !TypeChecker::isBoolOrNullable(inner)) {
                 dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                         "'not' requires a bool operand");
+                         "'not' requires a bool or nullable operand; "
+                         "got non-bool type — use an explicit comparison instead, "
+                         "e.g. 'n == 0' instead of 'not n'");
+            }
             result = primType(PrimitiveKind::Bool);
             break;
+
         case UnaryOp::Neg:
-            result = inner; // numeric — leave it to codegen to validate
-            break;
-        case UnaryOp::BitNot:
+            // Arithmetic negation — numeric types only
+            // Let codegen validate the exact numeric kind
             result = inner;
             break;
+
+        case UnaryOp::BitNot:
+            // Bitwise NOT — integer types only
+            // Detailed type check deferred to codegen for now
+            result = inner;
+            break;
+
         case UnaryOp::Ref:
-            // &x — produce a RefTypeAST wrapping inner's type.
-            // For now, return inner; codegen will wrap in a reference.
+            // &x — take a reference, produces &T wrapping inner's type
+            // For now return inner; codegen wraps in RefTypeAST
             result = inner;
             break;
     }

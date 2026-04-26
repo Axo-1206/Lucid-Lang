@@ -6,14 +6,12 @@ struct Animal<T> {
 }
 
 impl<T> Animal<T> {
-    method (param type) returnType = {
+    method (a let) = {
         
     }
 }
 
 export const main () int = {
-
-    let a int
     
     return 0
 }

@@ -401,3 +401,104 @@ bool TypeChecker::isFromCastable(TypeAST* src, TypeAST* target, SymbolTable* sym
 
     return false;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// isValueComparable — returns true when == and != are valid on this type.
+//
+// Valid:    primitives, enums, nullable types
+// Invalid:  structs (use Equatable<T>), functions, arrays
+// ─────────────────────────────────────────────────────────────────────────────
+bool TypeChecker::isValueComparable(TypeAST* type) {
+    if (!type) return false;
+
+    // Primitives are always value-comparable
+    if (type->isa<PrimitiveTypeAST>()) return true;
+
+    // Named types: only enums are comparable via ==
+    // Structs are NOT comparable via == — developer must implement Equatable<T>
+    // This check is deferred to the semantic pass which has symbol table access
+    // to distinguish struct from enum. Here we conservatively return true for
+    // NamedTypeAST and let SemanticExpr.cpp perform the struct/enum distinction.
+    if (type->isa<NamedTypeAST>()) return true;
+
+    // Nullable types: valid — nil == nil, nil != value, value == value
+    if (type->isa<NullableTypeAST>()) return true;
+
+    // Function types: NOT comparable — bodies are incomparable
+    if (type->isa<FuncTypeAST>()) return false;
+
+    // Array types: NOT comparable via == — use collection library
+    if (type->isa<FixedArrayTypeAST>())   return false;
+    if (type->isa<SliceTypeAST>())        return false;
+    if (type->isa<DynamicArrayTypeAST>()) return false;
+
+    // Union types: not directly comparable via ==
+    if (type->isa<UnionTypeAST>()) return false;
+
+    // Reference types: use === for reference equality, not ==
+    if (type->isa<RefTypeAST>()) return false;
+    if (type->isa<PtrTypeAST>()) return false;
+
+    return false;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// isReferenceComparable — returns true when === is valid on this type.
+//
+// Valid:    &T references, structs (address comparison), nullable of above
+// Invalid:  primitives (value types, no stable address), functions, arrays
+// ─────────────────────────────────────────────────────────────────────────────
+bool TypeChecker::isReferenceComparable(TypeAST* type) {
+    if (!type) return false;
+
+    // References are always reference-comparable
+    if (type->isa<RefTypeAST>()) return true;
+
+    // Structs can be compared by address via ===
+    // (NamedTypeAST — semantic pass distinguishes struct from enum;
+    //  enums are value types and should not use ===, but we allow it here
+    //  and let the semantic pass emit a warning if needed)
+    if (type->isa<NamedTypeAST>()) return true;
+
+    // Nullable types containing reference-comparable types
+    if (type->isa<NullableTypeAST>()) {
+        return isReferenceComparable(type->as<NullableTypeAST>()->inner.get());
+    }
+
+    // Primitives are NOT reference-comparable: they are value types
+    // copied on assignment — === has no meaningful semantics for them
+    if (type->isa<PrimitiveTypeAST>()) return false;
+
+    // Functions, arrays, pointers: not reference-comparable via ===
+    if (type->isa<FuncTypeAST>())         return false;
+    if (type->isa<FixedArrayTypeAST>())   return false;
+    if (type->isa<SliceTypeAST>())        return false;
+    if (type->isa<DynamicArrayTypeAST>()) return false;
+    if (type->isa<PtrTypeAST>())          return false;
+
+    return false;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// isBoolOrNullable — returns true when a type is valid for 'not', 'and', 'or'.
+//
+// Valid:    bool, any nullable type T?
+// Invalid:  int, float, string, struct, function, array
+//
+// Nullable semantics:
+//   nil     → treated as false
+//   non-nil → treated as true
+// ─────────────────────────────────────────────────────────────────────────────
+bool TypeChecker::isBoolOrNullable(TypeAST* type) {
+    if (!type) return false;
+
+    // Direct bool
+    if (type->isa<PrimitiveTypeAST>()) {
+        return type->as<PrimitiveTypeAST>()->primitiveKind == PrimitiveKind::Bool;
+    }
+
+    // Any nullable type: int?, Vec2?, string?, etc.
+    if (type->isa<NullableTypeAST>()) return true;
+
+    return false;
+}

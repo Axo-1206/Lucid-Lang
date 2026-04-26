@@ -212,10 +212,53 @@ static void checkAttributes(const std::vector<AttributePtr>& attributes,
             continue;
         }
 
+        // ── @aot ─────────────────────────────────────────────────────────────
+        // Ahead-of-time compilation directive. Only valid on the main entry point.
+        // The actual entry point name check is done in SemanticAnalyzer (Phase 3.5)
+        // where we have access to the function name. Here we validate the
+        // attribute itself: no args, not on struct context.
+        if (n == "aot") {
+            if (ctx == AttributeContext::Struct) {
+                dc.error(DiagnosticCategory::Semantic, attr->loc, DiagCode::E3016,
+                         "'@aot' is only valid on the 'main' entry point function");
+            }
+            if (!attr->args.empty()) {
+                dc.error(DiagnosticCategory::Semantic, attr->loc, DiagCode::E2011,
+                         "'@aot' takes no arguments");
+            }
+            // Mutually exclusive with @jit
+            if (seen.count("jit")) {
+                dc.error(DiagnosticCategory::Semantic, attr->loc, DiagCode::E3015,
+                         "'@aot' and '@jit' are mutually exclusive on the same declaration; "
+                         "choose one compilation mode");
+            }
+            continue;
+        }
+
+        // ── @jit ─────────────────────────────────────────────────────────────
+        // Just-in-time compilation directive. Only valid on the main entry point.
+        if (n == "jit") {
+            if (ctx == AttributeContext::Struct) {
+                dc.error(DiagnosticCategory::Semantic, attr->loc, DiagCode::E3016,
+                         "'@jit' is only valid on the 'main' entry point function");
+            }
+            if (!attr->args.empty()) {
+                dc.error(DiagnosticCategory::Semantic, attr->loc, DiagCode::E2011,
+                         "'@jit' takes no arguments");
+            }
+            // Mutually exclusive with @aot
+            if (seen.count("aot")) {
+                dc.error(DiagnosticCategory::Semantic, attr->loc, DiagCode::E3015,
+                         "'@aot' and '@jit' are mutually exclusive on the same declaration; "
+                         "choose one compilation mode");
+            }
+            continue;
+        }
+
         // ── Unknown attribute ─────────────────────────────────────────────────
         dc.error(DiagnosticCategory::Semantic, attr->loc, DiagCode::E2010,
                  "unknown attribute '@" + n + "'; "
-                 "known attributes: extern, inline, noinline, packed, deprecated");
+                 "known attributes: extern, inline, noinline, packed, deprecated, aot, jit");
     }
 }
 

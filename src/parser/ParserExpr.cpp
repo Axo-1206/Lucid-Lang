@@ -86,8 +86,10 @@ int Parser::infixPrec(TokenType t) const {
         case TokenType::OR:                 return PREC_OR;
         case TokenType::AND:                return PREC_AND;
 
-        case TokenType::EQUAL_EQUAL:
-        case TokenType::NOT_EQUAL:
+        // Comparison operators — value equality, reference equality, ordering, type check
+        case TokenType::EQUAL_EQUAL:        // ==   value equality
+        case TokenType::EQUAL_EQUAL_EQUAL:  // ===  reference equality
+        case TokenType::NOT_EQUAL:          // !=
         case TokenType::LESS:
         case TokenType::GREATER:
         case TokenType::LESS_EQUAL:
@@ -95,13 +97,18 @@ int Parser::infixPrec(TokenType t) const {
         case TokenType::IS:
             return PREC_CMP;
 
-        case TokenType::AMPERSAND: // bitwise AND (expression context)
-        case TokenType::PIPE:      // bitwise OR  (expression context)
-        case TokenType::BIT_XOR:
-        case TokenType::BIT_NOT:
-        case TokenType::SHL:
-        case TokenType::SHR:
+        // Bitwise operators — && and || instead of & and | to avoid ambiguity
+        // with the reference operator &T and union type separator |
+        case TokenType::BIT_AND:   // &&
+        case TokenType::BIT_OR:    // ||
+        case TokenType::BIT_XOR:   // ~^
+        case TokenType::SHL:       // <<
+        case TokenType::SHR:       // >>
             return PREC_BITWISE;
+
+        // BIT_NOT (~) is unary only — not an infix operator, no precedence here.
+        // AMPERSAND (&) is the reference operator in expression context — not bitwise.
+        // PIPE (|) is the union type separator in type context — not bitwise.
 
         case TokenType::PLUS:
         case TokenType::MINUS:
@@ -126,27 +133,30 @@ int Parser::infixPrec(TokenType t) const {
 
 BinaryOp Parser::tokenToBinaryOp(TokenType t) const {
     switch (t) {
-        case TokenType::PLUS:           return BinaryOp::Add;
-        case TokenType::MINUS:          return BinaryOp::Sub;
-        case TokenType::MUL:            return BinaryOp::Mul;
-        case TokenType::DIV:            return BinaryOp::Div;
-        case TokenType::POW:            return BinaryOp::Pow;
-        case TokenType::MOD:            return BinaryOp::Mod;
-        case TokenType::EQUAL_EQUAL:    return BinaryOp::Eq;
-        case TokenType::NOT_EQUAL:      return BinaryOp::Ne;
-        case TokenType::LESS:           return BinaryOp::Lt;
-        case TokenType::GREATER:        return BinaryOp::Gt;
-        case TokenType::LESS_EQUAL:     return BinaryOp::Le;
-        case TokenType::GREATER_EQUAL:  return BinaryOp::Ge;
-        case TokenType::AND:            return BinaryOp::And;
-        case TokenType::OR:             return BinaryOp::Or;
-        case TokenType::AMPERSAND:      return BinaryOp::BitAnd;
-        case TokenType::PIPE:           return BinaryOp::BitOr;
-        case TokenType::BIT_XOR:        return BinaryOp::BitXor;
-        case TokenType::SHL:            return BinaryOp::Shl;
-        case TokenType::SHR:            return BinaryOp::Shr;
+        case TokenType::PLUS:                return BinaryOp::Add;
+        case TokenType::MINUS:               return BinaryOp::Sub;
+        case TokenType::MUL:                 return BinaryOp::Mul;
+        case TokenType::DIV:                 return BinaryOp::Div;
+        case TokenType::POW:                 return BinaryOp::Pow;
+        case TokenType::MOD:                 return BinaryOp::Mod;
+        case TokenType::EQUAL_EQUAL:         return BinaryOp::Eq;
+        case TokenType::EQUAL_EQUAL_EQUAL:   return BinaryOp::RefEq;
+        case TokenType::NOT_EQUAL:           return BinaryOp::Ne;
+        case TokenType::LESS:                return BinaryOp::Lt;
+        case TokenType::GREATER:             return BinaryOp::Gt;
+        case TokenType::LESS_EQUAL:          return BinaryOp::Le;
+        case TokenType::GREATER_EQUAL:       return BinaryOp::Ge;
+        case TokenType::AND:                 return BinaryOp::And;
+        case TokenType::OR:                  return BinaryOp::Or;
+        case TokenType::BIT_AND:             return BinaryOp::BitAnd;  // &&
+        case TokenType::BIT_OR:              return BinaryOp::BitOr;   // ||
+        case TokenType::BIT_XOR:             return BinaryOp::BitXor;  // ~^
+        case TokenType::SHL:                 return BinaryOp::Shl;
+        case TokenType::SHR:                 return BinaryOp::Shr;
         default:
             // BIT_NOT is unary only — should never reach here.
+            // AMPERSAND is reference operator in expression context — not bitwise.
+            // PIPE is union type separator in type context — not bitwise.
             return BinaryOp::Add; // unreachable, satisfy compiler
     }
 }
@@ -329,6 +339,45 @@ ExprPtr Parser::parsePrattExpr(int minPrec) {
             break;
         }
 
+        // ── Chained comparison detection ──────────────────────────────────────
+        // After building  lhs op rhs, if the next token is ALSO a comparison
+        // operator, this is a chained comparison: 0 < x < 10.
+        // In Luc this is always an error — the developer must use 'and':
+        //   if 0 < x and x < 10 { ... }
+        //
+        // We detect it here (parse time) so the error message is specific.
+        // The semantic pass would also catch it via bool-on-left-of-comparison,
+        // but a parser-level message is clearer.
+        //
+        // Comparison tokens: == === != < > <= >= is
+        auto isComparisonOp = [](TokenType tt) {
+            switch (tt) {
+                case TokenType::EQUAL_EQUAL:
+                case TokenType::EQUAL_EQUAL_EQUAL:
+                case TokenType::NOT_EQUAL:
+                case TokenType::LESS:
+                case TokenType::GREATER:
+                case TokenType::LESS_EQUAL:
+                case TokenType::GREATER_EQUAL:
+                case TokenType::IS:
+                    return true;
+                default:
+                    return false;
+            }
+        };
+
+        bool currentIsComparison = isComparisonOp(opTok);
+        bool nextIsComparison    = isComparisonOp(peek().type);
+
+        if (currentIsComparison && nextIsComparison) {
+            errorAt(DiagCode::E3014,
+                    "chained comparisons are not allowed; "
+                    "use 'and' explicitly, e.g. '0 < x and x < 10'");
+            // Continue parsing to surface any further errors, but the AST
+            // produced here is semantically invalid. The semantic pass will
+            // also catch this via type checking (bool on left of comparison).
+        }
+
         SourceLocation loc = lhs->loc;
         auto node = std::make_unique<BinaryExprAST>();
         node->loc = loc;
@@ -392,8 +441,8 @@ ExprPtr Parser::parsePrefixExpr() {
             return node;
         }
         case TokenType::AMPERSAND: {
-            // '&' in expression position is a reference operator (unary).
-            // '&' as a binary op (bitwise AND) is handled in the infix loop.
+            // '&' in expression position is always the unary reference operator (&x).
+            // Bitwise AND uses '&&' (BIT_AND token) to avoid ambiguity with &T.
             advance();
             ExprPtr operand = parsePrefixExpr();
             if (!operand) {

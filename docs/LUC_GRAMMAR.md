@@ -55,6 +55,39 @@ export const main () int { ... }
 export const main (args []string) int { ... }
 ```
 
+### Compilation Mode Directives (`@aot` / `@jit`)
+
+The `@aot` and `@jit` attributes on the `main` function tell the compiler which
+execution model to use. They are mutually exclusive — using both on the same
+declaration is a semantic error.
+
+```
+@aot   -- ahead-of-time compilation: produces a native binary at build time
+@jit   -- just-in-time compilation:  compiles and executes at runtime via LLVM JIT
+```
+
+**Rules:**
+
+- Only valid on the `main` entry point — using `@aot` or `@jit` on any other
+  declaration is a semantic error.
+- Mutually exclusive — `@aot` and `@jit` cannot both appear on the same declaration.
+- When neither is present, the compiler uses its default mode (determined by
+  build configuration).
+
+```luc
+-- AOT: compile to a native binary
+@aot
+export const main () int = {
+    return 0
+}
+
+-- JIT: compile and run via LLVM JIT
+@jit
+export const main () int = {
+    return 0
+}
+```
+
 ## Module System
 
 Every `.luc` file is a module. The module's identity is its file path relative
@@ -1613,12 +1646,33 @@ pipeline_step   := IDENTIFIER                              -- function by name
                  | anon_func
 
 logical_expr    := compare_expr { ( 'and' | 'or' ) compare_expr }
+                   -- 'and' and 'or' are SHORT CIRCUIT operators:
+                   --   and: if left is false, right is NOT evaluated, result is false
+                   --   or:  if left is true,  right is NOT evaluated, result is true
+                   -- both operands must be bool or nullable type
+                   -- using a non-bool, non-nullable operand is a semantic error
 
-compare_expr    := bitwise_expr [ ( '==' | '!=' | '<' | '>' | '<=' | '>=' ) bitwise_expr ]
+compare_expr    := bitwise_expr [ compare_op bitwise_expr ]
                  | bitwise_expr 'is' type          -- type check: x is int, x is Circle
                                                    -- produces bool, narrows type in enclosing block
 
-bitwise_expr    := shift_expr   { ( '&' | '|' | '~^' | '~' ) shift_expr }
+compare_op      := '=='    -- value equality   (see Comparison Rules section)
+                 | '!='    -- value inequality
+                 | '<'
+                 | '>'
+                 | '<='
+                 | '>='
+                 | '==='   -- reference equality: checks same memory address
+                           -- valid on &T, structs, and nullable types only
+
+bitwise_expr    := shift_expr   { ( '&&' | '||' | '~^' | '~' ) shift_expr }
+                   -- '&&'  bitwise AND  (integer types only)
+                   -- '||'  bitwise OR   (integer types only)
+                   -- '~^'  bitwise XOR  (integer types only)
+                   -- '~'   bitwise NOT  (unary, integer types only)
+                   -- NOTE: '&' in expression position is the unary reference operator
+                   --       '|' in type position is the union type separator
+                   --       '&&' and '||' are used here to avoid ambiguity
 
 shift_expr      := add_expr     { ( '<<' | '>>' ) add_expr }
 
@@ -1958,6 +2012,224 @@ obj.name   += " Jr"         -- valid if name is a let-mutable string field
 - The operator must be defined for the LHS type — `-=` on a `string` is a
   semantic error because `-` is not defined on strings
 
+## Comparison Rules
+
+Luc has two equality operators and strict rules about which types they apply to.
+
+### `==` — Value Equality
+
+`==` compares **values**. It never compares types — that is the job of `is`.
+
+```
+== and != are defined for:
+  primitives     int, float, double, bool, char, string
+  enum variants  Direction.North == Direction.South
+  nullable types int? == int?  |  int? == nil  |  int? == 5
+```
+
+```
+== and != are NOT defined for (semantic error):
+  struct types   Vec2 == Vec2       ERROR: implement Equatable<T> instead
+  function types (x int) int == ... ERROR: function bodies are incomparable
+  array types    [*]int == [*]int   ERROR: use collection library comparison
+```
+
+**Nullable comparisons with `==`:**
+
+```luc
+let x int? = 5
+let y int? = nil
+
+x == 5    -- valid: compares unwrapped value, true
+x == nil  -- valid: nil check, false
+x != nil  -- valid: nil check, true
+y == nil  -- valid: nil check, true
+x == y    -- valid: 5 != nil, false
+
+-- is checks the TYPE, not the value
+x is int  -- false: int? is NOT the same type as int
+          -- nullable and non-nullable are distinct types
+```
+
+**Struct equality requires explicit trait implementation:**
+
+```luc
+-- this is a semantic error
+let a Vec2 = Vec2 { x = 1.0  y = 1.0 }
+let b Vec2 = Vec2 { x = 1.0  y = 1.0 }
+if a == b { ... }   -- ERROR: struct type Vec2 does not support ==
+                    -- implement Equatable<Vec2> to enable equality
+
+-- correct approach: implement the trait
+pub impl Vec2 : Equatable<Vec2> {
+    equals (other Vec2) bool = {
+        return x == other.x and y == other.y
+    }
+}
+
+-- then call equals explicitly — == is still not defined
+-- the Equatable trait provides equals(), not ==
+if a:equals(b) { ... }   -- valid
+```
+
+### `===` — Reference Equality
+
+`===` checks whether two expressions refer to the **same memory location**. It
+does not compare values — it compares addresses.
+
+```
+=== is defined for:
+  &T reference types        two references pointing to the same object
+  struct types              checks if two struct values occupy the same address
+  nullable reference types  &T? === &T?
+```
+
+```luc
+let a Vec2 = Vec2 { x = 1.0  y = 1.0 }
+let b Vec2 = a           -- b is a copy
+
+if a === b { ... }   -- false: a and b are different memory locations
+                     -- b is a copy, not the same object
+
+let ref1 &Vec2 = a
+let ref2 &Vec2 = a
+
+if ref1 === ref2 { ... }   -- true: both reference the same a
+```
+
+### `is` — Type Identity
+
+`is` checks the **type** of a value, not its content. It never compares values.
+`is` also **narrows the type** inside the enclosing block (statement form only).
+
+```
+== checks VALUE   — are these the same value?
+is checks TYPE    — is this value of this type?
+
+-- These are completely different questions:
+x == true     -- is x's value equal to true?   (x must already be bool)
+x is bool     -- is x's type bool?             (x could be any)
+
+-- Nullable types and their base types are distinct:
+let x int? = 5
+x is int    -- false: int? is NOT int, nullable ≠ non-nullable
+x is int?   -- true:  x is declared as int?
+x == 5      -- true:  value comparison, unwraps nullable automatically
+```
+
+### Chained Comparisons — Not Allowed
+
+Chaining comparison operators directly is a semantic error. Use `and` explicitly:
+
+```luc
+-- WRONG: chained comparison
+if 0 < x < 10 { ... }     -- ERROR: parsed as (0 < x) < 10
+                            -- (0 < x) produces bool, bool < int is a type error
+
+-- CORRECT: use and
+if 0 < x and x < 10 { ... }   -- valid
+```
+
+---
+
+## Logical Operators
+
+### `and` / `or` — Short Circuit Boolean Logic
+
+`and` and `or` operate on `bool` and nullable types. They **short circuit** —
+the right operand is only evaluated if necessary.
+
+```
+and: if left is false  → result is false,  right is NOT evaluated
+or:  if left is true   → result is true,   right is NOT evaluated
+```
+
+```luc
+-- short circuit: validate() only called if getUser() != nil
+if getUser() != nil and validate(getUser()) {
+    ...
+}
+
+-- short circuit: expensiveLoad() only called if cache:has(key) is false
+if cache:has(key) or expensiveLoad(key) {
+    ...
+}
+
+-- both operands must be bool or nullable
+-- using a non-bool, non-nullable type is a semantic error
+if 1 and true { ... }   -- ERROR: left operand is int, not bool
+```
+
+### `not` — Logical Negation
+
+`not` operates on `bool` and nullable types.
+
+```luc
+-- on bool: standard logical negation
+if not isValid { ... }
+
+-- on nullable: nil is treated as false, any non-nil value is treated as true
+let x int? = nil
+if not x { ... }   -- true: x is nil, treated as false, not flips to true
+
+let y int? = 5
+if not y { ... }   -- false: y is non-nil, treated as true, not flips to false
+
+-- not on any other type is a semantic error
+let n int = 5
+if not n { ... }   -- ERROR: n is int, not bool or nullable
+                   -- write: if n == 0 { ... }  instead
+```
+
+---
+
+## Bitwise Operators
+
+Bitwise operators work on **integer types only**. Using them on non-integer types
+is a semantic error.
+
+| Operator | Name | Example | Notes |
+|---|---|---|---|
+| `&&` | bitwise AND | `a && b` | integer types only |
+| `\|\|` | bitwise OR  | `a \|\| b` | integer types only |
+| `~^` | bitwise XOR | `a ~^ b` | integer types only |
+| `~` | bitwise NOT | `~a` | unary, integer types only |
+| `<<` | left shift  | `a << n` | integer types only |
+| `>>` | right shift | `a >> n` | integer types only |
+
+**Why `&&` and `||` instead of `&` and `|`:**
+
+`&` is the reference operator (`&T`, `&x`) and `|` is the union type separator
+(`int | string`). Using them as bitwise operators would create ambiguity in both
+type position and expression position. `&&` and `||` are unambiguous in all
+contexts.
+
+```luc
+-- bitwise operations
+let flags  uint32 = 0xFF00
+let mask   uint32 = 0x0F0F
+let result uint32 = flags && mask    -- 0x0F00  bitwise AND
+let merged uint32 = flags || mask    -- 0xFF0F  bitwise OR
+let flipped uint32 = flags ~^ mask   -- 0xF00F  bitwise XOR
+let inverted uint32 = ~flags         -- bitwise NOT
+
+-- shift operations
+let shifted uint32 = 1 << 4    -- 16
+let halved  uint32 = 256 >> 2  -- 64
+
+-- common pattern: flag checking
+const VISIBLE uint32  = 0x01
+const ACTIVE  uint32  = 0x02
+const DIRTY   uint32  = 0x04
+
+let entityFlags uint32 = VISIBLE || ACTIVE
+
+if entityFlags && VISIBLE != 0 { ... }   -- check if VISIBLE flag is set
+if entityFlags && DIRTY   == 0 { ... }   -- check if DIRTY flag is NOT set
+```
+
+---
+
 ## Type Checking
 
 Luc provides two mechanisms for checking the type of a value at runtime:
@@ -1973,6 +2245,9 @@ is_expr         := expr 'is' type
                    -- narrows the type of expr inside the enclosing if_stmt block (statement form only)
                    -- the inline if_expr form does not introduce a narrowed scope
                    -- valid for: primitives, structs, union types, any, enum variants
+                   -- IMPORTANT: nullable and non-nullable are distinct types
+                   --   int? is int  → false  (int? is NOT int)
+                   --   int? is int? → true
 ```
 
 ```luc
@@ -1996,6 +2271,13 @@ if value is Vec2 {
 if stage is ShaderStage.Fragment {
     bindFragmentShader()
 }
+
+-- nullable vs non-nullable: is checks the declared type exactly
+let x int? = 5
+if x is int  { ... }   -- false: int? is NOT int, types are distinct
+if x is int? { ... }   -- true:  x is declared as int?
+if x == 5   { ... }    -- true:  == compares value, unwraps nullable automatically
+if x != nil { ... }    -- true:  nil check via ==, not via is
 ```
 
 ### Type patterns in `match`
@@ -2609,8 +2891,11 @@ and function calls are not valid inside attribute argument lists.
 | `@noinline` | `let`, `const` func | none | Prevent the backend from inlining this function |
 | `@packed` | `struct` | none | Remove padding — all fields are byte-adjacent |
 | `@deprecated("msg")` | func, var, struct | 0–1 string | Emit a warning at every use site |
+| `@aot` | `main` entry point only | none | Use ahead-of-time compilation |
+| `@jit` | `main` entry point only | none | Use just-in-time compilation via LLVM JIT |
 
 `@inline` and `@noinline` are mutually exclusive on the same declaration.
+`@aot` and `@jit` are mutually exclusive on the same declaration.
 
 #### `@extern` — FFI Binding
 
@@ -2915,8 +3200,8 @@ To ensure safety, any function returning `Expect<T>` **cannot be discarded**. If
 | 4 | `*` `/` `%` | left |
 | 5 | `+` `-` | left |
 | 6 | `<<` `>>` | left |
-| 7 | `&` (bitwise) `\|` `~^` `~` | left |
-| 8 | `==` `!=` `<` `>` `<=` `>=` | left |
+| 7 | `&&` (bitwise AND) `\|\|` (bitwise OR) `~^` (bitwise XOR) | left |
+| 8 | `==` `!=` `<` `>` `<=` `>=` `===` | left |
 | 9 | `and` | left |
 | 10 | `or` | left |
 | 11 | `??` | right |
@@ -2925,7 +3210,7 @@ To ensure safety, any function returning `Expect<T>` **cannot be discarded**. If
 | 14 | `=` `+=` `-=` `*=` `/=` `^=` `%=` | right |
 | 15 (lowest) | `if ?? else` (inline if expression) | right |
 
-> **NOTE** 
+> **NOTE**
 > On `if_expr` precedence:** `if cond ?? thenExpr else elseExpr` is a `primary_expr` — it begins with the `if` keyword so no infix precedence applies to its opening. However, the `else` clause is right-associative and binds with the lowest precedence of all, which means in a chain like `if a ?? b else if c ?? d else e` the second `if` is parsed as the `elseExpr` of the first — correct and expected. The `??` inside `if_expr` is not an infix operator; it is a fixed syntactic separator consumed by the `if_expr` production rule directly. Guard `??` (null-coalesce postfix op at level 11) is only parsed in that role when `??` appears **outside** an `if_expr` condition position.
 
 ## Literals

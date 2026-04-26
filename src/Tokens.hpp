@@ -136,17 +136,22 @@ enum class TokenType {
     MOD_ASSIGN,   // %=
 
     // ─── Comparison ───────────────────────────────────────────────────────────
-    LESS,          // <         - also used as generic open: Buffer<T>
-    GREATER,       // >         - also used as generic close: Buffer<T>
-    LESS_EQUAL,    // <=
-    GREATER_EQUAL, // >=
-    EQUAL_EQUAL,   // ==
-    NOT_EQUAL,     // !=
-    BANG,          // !    - pipeline argument pack: scale(2.0)! means upstream injected as first arg
+    LESS,                // <         - also used as generic open: Buffer<T>
+    GREATER,             // >         - also used as generic close: Buffer<T>
+    LESS_EQUAL,          // <=
+    GREATER_EQUAL,       // >=
+    EQUAL_EQUAL,         // ==        - value equality
+    EQUAL_EQUAL_EQUAL,   // ===       - reference equality: same memory address
+    NOT_EQUAL,           // !=
+    BANG,                // !    - pipeline argument pack: scale(2.0)! means upstream injected as first arg
 
     // ─── Bitwise ──────────────────────────────────────────────────────────────
     // NOTE: & and | are reused from AMPERSAND and PIPE above.
     // The parser disambiguates by context (type position vs expression position).
+    // && and || replace & and | for bitwise operations in expression position
+    // to avoid ambiguity with the reference operator &T and union type |.
+    BIT_AND,  // &&        - bitwise AND  (integer types only)
+    BIT_OR,   // ||        - bitwise OR   (integer types only)
     BIT_XOR, // ~^
     BIT_NOT, // ~
     SHL,     // <<
