@@ -112,17 +112,39 @@ bool SemanticAnalyzer::analyze(std::vector<ProgramAST*>& files) {
                       "'main' function must use 'const' keyword");
         }
         
-        // 3. MUST have zero parameters: ()
+        // 3. MUST have zero parameters: () or slice of strings: (args []string)
         bool hasParams = false;
-        for (const auto& group : func->paramGroups) {
+        bool isValidArgsParam = false;
+        
+        if (func->paramGroups.size() == 1) {
+            const auto& group = func->paramGroups[0];
             if (!group.empty()) {
                 hasParams = true;
-                break;
+                if (group.size() == 1) {
+                    auto* param0 = group[0].get();
+                    if (param0->type && param0->type->kind == ASTKind::SliceType) {
+                        auto* slice = static_cast<SliceTypeAST*>(param0->type.get());
+                        if (slice->element && slice->element->kind == ASTKind::PrimitiveType) {
+                            auto* pt = static_cast<PrimitiveTypeAST*>(slice->element.get());
+                            if (pt->primitiveKind == PrimitiveKind::String) {
+                                isValidArgsParam = true;
+                            }
+                        }
+                    }
+                }
+            }
+        } else if (func->paramGroups.size() > 1) {
+            for (const auto& group : func->paramGroups) {
+                if (!group.empty()) {
+                    hasParams = true;
+                    break;
+                }
             }
         }
-        if (hasParams) {
+
+        if (hasParams && !isValidArgsParam) {
             dc_.error(DiagnosticCategory::Semantic, func->loc, DiagCode::E3007,
-                      "'main' function must have no parameters");
+                      "'main' function must have no parameters or take a string slice: (args []string)");
         }
         
         // 4. MUST return int
