@@ -4,4 +4,4 @@
 .cursor/
 .env
 build/
-debug-00e876.log
+*.log

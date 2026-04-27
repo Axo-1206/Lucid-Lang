@@ -1,11 +1,13 @@
 package tests
 
-struct A = {
+struct A {
     a int = 5
 }
 
-from A = {
-    
+from A {
+    ( f (a int) int ) A = {
+        return A { }
+    }
 }
 
 export const main () int = {
@@ -15,6 +17,7 @@ export const main () int = {
 
     -- this should be an error? because the variable f is already assigned by the existingFunction, so the following function body is wrong
     let f (a int) int = existingFunction 
+    let a A = existingFunction
     
     return 0
 }

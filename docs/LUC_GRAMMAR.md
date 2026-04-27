@@ -1099,6 +1099,49 @@ pub from Kelvin {
 }
 ```
 
+### Desugaring and Implicit Casting
+
+When a `from` declaration exists for a target type `T` accepting a source type `S`, the compiler provides **automatic implicit casting** (desugaring) in several contexts.
+
+#### 1. Variable Declarations
+A `let` or `const` declaration with an explicit type `T` can be initialized with an expression of type `S`.
+
+```luc
+let rawSecs Seconds = Seconds { val = 3600 }
+let m Minutes = rawSecs  -- Desugars to: let m Minutes = Minutes(rawSecs)
+```
+
+#### 2. Function Arguments
+When a function parameter is declared as type `T`, and a value of type `S` is passed, the compiler desugars the argument at the call site.
+
+```luc
+const doubleKm (km Kilometers) float = { ... }
+let d Meters = Meters { val = 5000.0 }
+
+doubleKm(d)  -- Desugars to: doubleKm(Kilometers(d))
+```
+
+#### 3. Function Return Values
+A function returning type `S` can be used to initialize or assign to a variable of type `T`.
+
+```luc
+const freezingPoint () Celsius = { ... }
+let f Fahrenheit = freezingPoint()  -- Desugars to: let f Fahrenheit = Fahrenheit(freezingPoint())
+```
+
+#### 4. Assignment Statements
+Reassignment of an existing variable of type `T` with a value of type `S` triggers the same desugaring.
+
+```luc
+let currentTemp Fahrenheit = Fahrenheit { val = 70.0 }
+let newReading Celsius = Celsius { val = 37.0 }
+
+currentTemp = newReading  -- Desugars to: currentTemp = Fahrenheit(newReading)
+```
+
+**Rule**: The semantic pass only applies **one hop** of implicit casting. Multi-hop conversions (e.g., `Seconds` → `Minutes` → `Hours`) must be written explicitly by the programmer.
+```
+
 ```luc
 -- call site: TypeName(expr) dispatches to the matching from declaration
 let boiling Celsius    = Celsius    { value = 100.0 }
