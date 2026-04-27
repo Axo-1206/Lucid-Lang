@@ -19,30 +19,45 @@ This registry tracks every error code reported by the LUC compiler.
 | Code | Severity | Category | Template Message |
 |---|---|---|---|
 <!-- ── 0000-0999: System / Driver ─────────────────────────────────────────── -->
-| **E0001** | Fatal | System | File not found: '{0}' |
+| **E0001** | Fatal | System | File not found or inaccessible. |
 
 <!-- ── 1000-1999: Lexical ─────────────────────────────────────────────────── -->
-| **E1001** | Error | Lexical | Invalid character: '{0}' |
-| **E1002** | Error | Lexical | Unterminated string literal |
+| **E1001** | Error | Lexical | Invalid character encountered in source. |
+| **E1002** | Error | Lexical | String literal was not terminated before EOF. |
 
 <!-- ── 2000-2999: Syntax ──────────────────────────────────────────────────── -->
-| **E2001** | Error | Syntax | Expected '{0}' but found '{1}' |
-| **E2002** | Error | Syntax | Unexpected token: '{0}' |
-| **E2003** | Error | Syntax | Missing identifier after '{0}' |
-| **E2004** | Error | Syntax | Expected 'in' after variable in for-loop |
-| **E2005** | Error | Syntax | Expected type after '{0}' |
-| **E2006** | Error | Syntax | '{0}' is not valid in this context |
-| **E2007** | Error | Syntax | Duplicate '{0}' in '{1}' |
-| **E2008** | Error | Syntax | Expected expression after '{0}' |
-| **E2009** | Error | Syntax | Invalid '{0}' literal: '{1}' |
-| **E2999** | Error | Syntax | Generic syntax error: {0} |
+| **E2001** | Error | Syntax | Expected a specific token but found another. |
+| **E2002** | Error | Syntax | Token found in a context where it is not allowed. |
+| **E2003** | Error | Syntax | Expected an IDENTIFIER (e.g., name of a struct or enum). |
+| **E2004** | Error | Syntax | Expected the 'in' keyword in a for-loop. |
+| **E2005** | Error | Syntax | Expected a type annotation (e.g., int, bool, or custom). |
+| **E2006** | Error | Syntax | Invalid context for a statement or expression. |
+| **E2007** | Error | Syntax | Duplicate clause in switch or match. |
+| **E2008** | Error | Syntax | Expected an expression but found none. |
+| **E2009** | Error | Syntax | Literal value is malformed (e.g., invalid hex sequence). |
+| **E2010** | Error | Syntax | Unknown or unsupported '@' attribute name. |
+| **E2011** | Error | Syntax | Wrong number of arguments for '@' attribute. |
+| **E2012** | Error | Syntax | Unexpected keyword found in a position where an identifier or type was expected. |
+| **E2999** | Error | Syntax | Generic fallback for syntax errors. |
 
 <!-- ── 3000-3999: Semantic ────────────────────────────────────────────────── -->
-| **E3001** | Error | Semantic | Undeclared identifier: '{0}' |
-| **E3002** | Error | Semantic | Type mismatch: expected '{0}', got '{1}' |
-| **E3003** | Error | Semantic | Function '{0}' called with {1} arguments, expected {2} |
-| **E3004** | Error | Semantic | Cannot assign to immutable value '{0}' |
-| **E3005** | Error | Semantic | Symbol '{0}' already declared in this scope |
-| **E3006** | Error | Semantic | Program is missing a 'main' entry point |
-| **E3007** | Error | Semantic | 'main' must be a function |
-| **E3008** | Error | Semantic | Cannot implicitly convert from '{0}' to '{1}'. Use an explicit type cast |
+| **E3001** | Error | Semantic | Identifier used before it was declared. |
+| **E3002** | Error | Semantic | Type mismatch between expected and actual expression. |
+| **E3003** | Error | Semantic | Mismatch between function parameters and call arguments. |
+| **E3004** | Error | Semantic | Attempted to assign to an immutable value. |
+| **E3005** | Error | Semantic | Symbol already declared in this scope. |
+| **E3006** | Error | Semantic | Missing 'main' entry point. |
+| **E3007** | Error | Semantic | Invalid signature for the 'main' function. |
+| **E3008** | Error | Semantic | Implicit type conversion not allowed; suggest explicit casting. |
+| **E3009** | Error | Semantic | Unknown '@' intrinsic name. |
+| **E3010** | Error | Semantic | Wrong argument count or type for '@' intrinsic. |
+| **E3011** | Error | Semantic | Cannot use '==' on struct type; implement Equatable<T> and use :equals() instead. |
+| **E3012** | Error | Semantic | Cannot use '==' on function type; function bodies are incomparable. |
+| **E3013** | Error | Semantic | Cannot use '==' on array type; use collection library comparison function. |
+| **E3014** | Error | Semantic | Chained comparison not allowed; use 'and' explicitly: 0 < x and x < 10. |
+| **E3015** | Error | Semantic | '@aot' and '@jit' are mutually exclusive on the same declaration. |
+| **E3016** | Error | Semantic | '@aot' / '@jit' are only valid on the 'main' entry point. |
+
+<!-- ── W3000-W3999: Semantic Warnings ────────────────────────────────────── -->
+| **W3001** | Warning | Semantic | '@extern' function declared with 'let' — should be 'const'. |
+| **W3002** | Warning | Warning | '@extern' function has an empty body '= {}' that will be ignored. |

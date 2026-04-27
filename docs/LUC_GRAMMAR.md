@@ -3557,7 +3557,3 @@ if else match switch case default is
 while for in do return break continue
 and or not true false
 ```
-
-> **Note — `extern` removed:** `extern` is no longer a reserved keyword.
-> External symbol binding is expressed through the `@extern` compiler
-> directive attribute. See the `@` Compiler Directives section.
