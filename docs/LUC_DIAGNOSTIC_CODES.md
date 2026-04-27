@@ -15,17 +15,17 @@ This registry tracks every error code reported by the LUC compiler.
 - `E4000-E4999`: Backend / Codegen
 
 ---
+<!-- ── 0000-0999: System / Driver ─────────────────────────────────────────── -->
+<!-- ── 1000-1999: Lexical ─────────────────────────────────────────────────── -->
+<!-- ── 2000-2999: Syntax ──────────────────────────────────────────────────── -->
+<!-- ── 3000-3999: Semantic ────────────────────────────────────────────────── -->
+<!-- ── W3000-W3999: Semantic Warnings ────────────────────────────────────── -->
 
 | Code | Severity | Category | Template Message |
 |---|---|---|---|
-<!-- ── 0000-0999: System / Driver ─────────────────────────────────────────── -->
 | **E0001** | Fatal | System | File not found or inaccessible. |
-
-<!-- ── 1000-1999: Lexical ─────────────────────────────────────────────────── -->
 | **E1001** | Error | Lexical | Invalid character encountered in source. |
 | **E1002** | Error | Lexical | String literal was not terminated before EOF. |
-
-<!-- ── 2000-2999: Syntax ──────────────────────────────────────────────────── -->
 | **E2001** | Error | Syntax | Expected a specific token but found another. |
 | **E2002** | Error | Syntax | Token found in a context where it is not allowed. |
 | **E2003** | Error | Syntax | Expected an IDENTIFIER (e.g., name of a struct or enum). |
@@ -39,8 +39,6 @@ This registry tracks every error code reported by the LUC compiler.
 | **E2011** | Error | Syntax | Wrong number of arguments for '@' attribute. |
 | **E2012** | Error | Syntax | Unexpected keyword found in a position where an identifier or type was expected. |
 | **E2999** | Error | Syntax | Generic fallback for syntax errors. |
-
-<!-- ── 3000-3999: Semantic ────────────────────────────────────────────────── -->
 | **E3001** | Error | Semantic | Identifier used before it was declared. |
 | **E3002** | Error | Semantic | Type mismatch between expected and actual expression. |
 | **E3003** | Error | Semantic | Mismatch between function parameters and call arguments. |
@@ -57,7 +55,5 @@ This registry tracks every error code reported by the LUC compiler.
 | **E3014** | Error | Semantic | Chained comparison not allowed; use 'and' explicitly: 0 < x and x < 10. |
 | **E3015** | Error | Semantic | '@aot' and '@jit' are mutually exclusive on the same declaration. |
 | **E3016** | Error | Semantic | '@aot' / '@jit' are only valid on the 'main' entry point. |
-
-<!-- ── W3000-W3999: Semantic Warnings ────────────────────────────────────── -->
 | **W3001** | Warning | Semantic | '@extern' function declared with 'let' — should be 'const'. |
 | **W3002** | Warning | Warning | '@extern' function has an empty body '= {}' that will be ignored. |
