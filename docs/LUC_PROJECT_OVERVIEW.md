@@ -12,7 +12,7 @@
 | Language name | `luc` |
 | Compiler written in | C++ |
 | Compiler backend | LLVM 18.1.6 |
-| Execution model | JIT (Just-In-Time), cross-platform |
+| Execution model | JIT (Just-In-Time), cross-platform and AOT |
 | Primary use case | Systems + graphics programming (Vulkan) |
 | Build system | CMake + vcpkg (`x64-windows`, 2024-04-23) |
 
