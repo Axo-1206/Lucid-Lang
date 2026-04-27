@@ -828,8 +828,8 @@ TraitMethodPtr Parser::parseTraitMethod() {
 //   impl_member := method_decl | from_decl
 //
 // Notes:
-//   - generic_params on the impl itself: <T : Drawable> in  impl<T> Scene<T>
-//   - generic_args on the struct name:   <T>            in  impl<T : Drawable> Scene<T>
+//   - generic_params on the impl itself: <T : Drawable> in  impl Scene<T : Drawable>
+//   - generic_args on the struct name:   <T>            in  impl Scene<T : Drawable>
 //   - trait conformance:                 : Drawable      in  impl Circle : Drawable
 //   - from_decl is only valid inside pub impl — recorded as error otherwise
 // ─────────────────────────────────────────────────────────────────────────────
@@ -842,24 +842,28 @@ std::unique_ptr<ImplDeclAST> Parser::parseImplDecl(Visibility vis) {
     node->loc = loc;
     node->visibility = vis;
 
-    // Optional impl-level generic params: impl<T : Drawable> ...
-    if (check(TokenType::LESS)) {
-        node->genericParams = parseGenericParams();
-    }
-
-    // Struct name
+    // 1. Struct name comes first in the new syntax
     if (!check(TokenType::IDENTIFIER)) {
         errorAt(DiagCode::E2003, "expected struct name after 'impl'");
         return nullptr;
     }
     node->structName = advance().value;
 
-    // Optional struct generic args: Scene<T>
+    // 2. Optional generic params (definition style): impl Scene<T : Drawable>
     if (check(TokenType::LESS)) {
-        node->structGenericArgs = parseGenericArgs();
+        node->genericParams = parseGenericParams();
+
+        // 3. Synthesis: Populate structGenericArgs with NamedTypeAST nodes.
+        // This maintains the existing AST structure where ImplDeclAST expects
+        // a list of type arguments to bind to the struct's parameters.
+        for (const auto& gp : node->genericParams) {
+            auto nt = std::make_unique<NamedTypeAST>(gp->name);
+            nt->loc = gp->loc;
+            node->structGenericArgs.push_back(std::move(nt));
+        }
     }
 
-    // Optional trait conformance: ':' trait_ref
+    // 4. Optional trait conformance: ':' trait_ref
     if (check(TokenType::COLON)) {
         node->traitRef = parseTraitRef();
     }

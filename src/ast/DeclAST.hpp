@@ -493,6 +493,8 @@ struct TraitMethodAST : BaseAST {
     std::string name;
     std::vector<std::vector<ParamPtr>> paramGroups; // outer = curry groups
     TypePtr returnType; // nullptr = void
+    bool isAsync = false;
+    TypePtr signature;                              // Synthesized Function Type (signature)
 
     TraitMethodAST() : BaseAST(ASTKind::TraitMethod) {}
 
@@ -638,7 +640,7 @@ struct FromDeclAST : DeclAST {
 // Binds methods (and from conversions) to a struct type.
 //   Visibility impl Vec2 { ... }
 //   Visibility impl Circle : Drawable { ... }
-//   Visibility impl<T : Drawable> Scene<T> { ... }
+//   Visibility impl Scene<T : Drawable> { ... }
 //   impl Vec2 { ... }   -- package-private methods
 //
 // isVisibility — true = methods callable by anyone holding the value
@@ -649,7 +651,7 @@ struct FromDeclAST : DeclAST {
 // structName — the name of the type being implemented ("Vec2", "Scene")
 //
 // structGenericArgs — the type args supplied to the struct name, e.g. the
-//   <T> in  impl<T : Drawable> Scene<T>. These bind the generic param T
+//   <T> in  impl Scene<T : Drawable>. These bind the generic param T
 //   declared above to the struct's type parameter.
 //
 // traitRef — present when ": TraitName" was written; nullptr otherwise.

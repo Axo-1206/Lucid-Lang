@@ -42,12 +42,15 @@ public:
     void setInsideExtern(bool val) { insideExtern_ = val; }
 
     // Set generic parameters context. Called when resolving types within generic declarations
-    // (trait<T>, struct<T>, impl<T>, type<T>). Allows NamedTypeAST("T") to resolve as a
+    // (trait<T>, struct<T>, impl Struct<T>, type<T>). Allows NamedTypeAST("T") to resolve as a
     // valid generic type parameter instead of erroring "type 'T' is not declared".
     // genericParams — list of GenericParamAST* from the containing declaration
     // Should be called before resolving types in a generic context, cleared after.
     void setGenericParams(const std::vector<GenericParamPtr>* params) { 
         genericParams_ = params; 
+    }
+    const std::vector<GenericParamPtr>* getGenericParams() const {
+        return genericParams_;
     }
 
 private:

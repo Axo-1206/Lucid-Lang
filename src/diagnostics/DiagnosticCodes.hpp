@@ -63,6 +63,7 @@ enum class DiagCode : uint32_t {
     E3014 = 3014, ///< Chained comparison not allowed; use 'and' explicitly: 0 < x and x < 10.
     E3015 = 3015, ///< '@aot' and '@jit' are mutually exclusive on the same declaration.
     E3016 = 3016, ///< '@aot' / '@jit' are only valid on the 'main' entry point.
+    E3017 = 3017, ///< Generic signature mismatch in 'impl' block.
 
     // ── W3000-W3999: Semantic Warnings ──────────────────────────────────────
     // Warning codes occupy the 5000+ range to avoid collision with error codes.

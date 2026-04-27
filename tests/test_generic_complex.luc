@@ -1,0 +1,54 @@
+package tests
+
+-- 1. Define a trait
+pub trait Drawable {
+    draw ()
+}
+
+-- 2. Define another trait for comparison
+pub trait Hashable {
+    hash () uint64
+}
+
+-- 3. Define a generic struct with a constraint
+struct Scene<T : Drawable> {
+    items []T
+}
+
+-- 4. Correct impl block: matches the struct signature exactly
+pub impl Scene<T : Drawable> {
+    renderAll () = {
+        for item in items {
+            item:draw()
+        }
+    }
+}
+
+-- 5. Multiple generics with constraints
+struct Pair<K : Hashable, V : Drawable> {
+    key   K
+    value V
+}
+
+pub impl Pair<K : Hashable, V : Drawable> {
+    process () uint64 = {
+        value:draw()
+        return key:hash()
+    }
+}
+
+-- 6. A concrete type that satisfies Drawable
+struct Sprite {
+    id int
+}
+
+pub impl Sprite : Drawable {
+    draw () = {
+        -- draw the sprite
+    }
+}
+
+-- 7. Entry point
+export const main () int = {
+    return 0
+}

@@ -778,7 +778,7 @@ void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
                    DiagnosticEngine& dc, int& asyncDepth, int& loopDepth,
                    int& parallelDepth, bool insideExtern) {
  
-    // Set generic parameters context so that T in impl<T> resolves as a valid generic param.
+    // Set generic parameters context so that T in impl Scene<T> resolves as a valid generic param.
     resolver.setGenericParams(&node.genericParams);
 
     // Verify the target struct exists once at the start to catch basic errors.
@@ -788,6 +788,46 @@ void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
                  "impl target '" + node.structName + "' is not a declared struct");
         resolver.setGenericParams(nullptr);
         return;
+    }
+    auto* structDecl = initialLookup->decl->as<StructDeclAST>();
+
+    // ── Signature Match Check ────────────────────────────────────────────────
+    // The impl block must have the exact same generic signature as the struct.
+    if (node.genericParams.size() != structDecl->genericParams.size()) {
+        dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3017,
+                 "generic signature mismatch: impl for '" + node.structName +
+                 "' has " + std::to_string(node.genericParams.size()) +
+                 " parameters, but struct was declared with " +
+                 std::to_string(structDecl->genericParams.size()));
+    } else {
+        for (size_t i = 0; i < node.genericParams.size(); ++i) {
+            auto& implParam = node.genericParams[i];
+            auto& structParam = structDecl->genericParams[i];
+
+            // 1. Name must match
+            if (implParam->name != structParam->name) {
+                 dc.error(DiagnosticCategory::Semantic, implParam->loc, DiagCode::E3017,
+                          "generic parameter name mismatch: expected '" + structParam->name +
+                          "', found '" + implParam->name + "'");
+            }
+
+            // 2. Constraints must match
+            if (implParam->constraints.size() != structParam->constraints.size()) {
+                dc.error(DiagnosticCategory::Semantic, implParam->loc, DiagCode::E3017,
+                         "generic constraint mismatch for '" + implParam->name +
+                         "': expected " + std::to_string(structParam->constraints.size()) +
+                         " traits, found " + std::to_string(implParam->constraints.size()));
+            } else {
+                for (size_t j = 0; j < implParam->constraints.size(); ++j) {
+                    if (implParam->constraints[j] != structParam->constraints[j]) {
+                        dc.error(DiagnosticCategory::Semantic, implParam->loc, DiagCode::E3017,
+                                 "generic constraint mismatch for '" + implParam->name +
+                                 "': expected trait '" + structParam->constraints[j] +
+                                 "', found '" + implParam->constraints[j] + "'");
+                    }
+                }
+            }
+        }
     }
  
     std::unordered_set<std::string> seen;

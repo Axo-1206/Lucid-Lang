@@ -979,9 +979,10 @@ these rules:
   single existing implementation satisfies both — no duplication required
 - If two `: TraitName` blocks share a method name with different signatures,
   this is a semantic error — see Trait section for resolution
+- For generic structs, the `impl` block must use the **exact same generic signature** as the struct declaration (e.g., `impl Scene<T : Drawable>`). Concrete types are not allowed in the `impl` generic parameters.
 
 ```
-impl_decl       := [ visibility_mod ] 'impl' [ generic_params ] IDENTIFIER [ ':' trait_ref ]
+impl_decl       := [ visibility_mod ] 'impl' IDENTIFIER [ generic_params ] [ ':' trait_ref ]
                    '{' { method_decl } '}'
 
 visibility_mod  := 'pub' | 'export'
@@ -1033,7 +1034,7 @@ pub impl Point : Hashable {
 }
 
 -- Generic impl with constraint
-pub impl<T : Drawable> Scene<T> {
+pub impl Scene<T : Drawable> {
     drawAll () = {
         for obj in objects { obj.draw() }
     }

@@ -190,7 +190,7 @@ static TypeAST* checkFieldAccessExpr(FieldAccessExprAST& node, SymbolTable& symb
 // subsequent CallExpr checks see the correct user-facing signature.
 // ─────────────────────────────────────────────────────────────────────────────
 static TypeAST* checkBehaviorAccessExpr(BehaviorAccessExprAST& node, SymbolTable& symbols,
-                                         DiagnosticEngine& dc) {
+                                         TypeResolver& resolver, DiagnosticEngine& dc) {
     Symbol* lhsSym = symbols.lookup(node.typeName);
     if (!lhsSym) {
         dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
@@ -198,8 +198,8 @@ static TypeAST* checkBehaviorAccessExpr(BehaviorAccessExprAST& node, SymbolTable
         return nullptr;
     }
 
-    // DISALLOW STATIC ACCESS: The ':' operator must be used on an instance (Var or Param).
-    if (lhsSym->kind != SymbolKind::Var && lhsSym->kind != SymbolKind::Param) {
+    // DISALLOW STATIC ACCESS: The ':' operator must be used on an instance (Var, Param, or Field).
+    if (lhsSym->kind != SymbolKind::Var && lhsSym->kind != SymbolKind::Param && lhsSym->kind != SymbolKind::Field) {
         dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                  "behavior access ':' is only valid on instances; '" + node.typeName + 
                  "' is a type name. Use an instance variable instead.");
@@ -214,6 +214,33 @@ static TypeAST* checkBehaviorAccessExpr(BehaviorAccessExprAST& node, SymbolTable
     }
 
     std::string actualTypeName = lhsSym->type->as<NamedTypeAST>()->name;
+
+    // ── GENERIC PARAMETER SUPPORT ───────────────────────────────────────────
+    // If the type name is a generic parameter, check its constraints for the method.
+    if (resolver.getGenericParams()) {
+        for (auto& gp : *resolver.getGenericParams()) {
+            if (gp && gp->name == actualTypeName) {
+                // Look for the method in EACH constraint trait.
+                for (auto& constraintName : gp->constraints) {
+                    std::string traitMangled = constraintName + "." + node.method;
+                    Symbol* traitMethodSym = symbols.lookup(traitMangled);
+                    if (traitMethodSym && traitMethodSym->kind == SymbolKind::Method) {
+                        // Strip the outermost self-group (Trait -> ...)
+                        TypeAST* exposedType = traitMethodSym->type;
+                        if (exposedType && exposedType->isa<FuncTypeAST>()) {
+                            TypeAST* inner = exposedType->as<FuncTypeAST>()->returnType.get();
+                            if (inner) exposedType = inner;
+                        }
+                        
+                        node.resolvedType = exposedType;
+                        node.isBehaviorMember = true;
+                        return exposedType;
+                    }
+                }
+            }
+        }
+    }
+
     std::string mangled = actualTypeName + "." + node.method;
 
     Symbol* sym = symbols.lookup(mangled);
@@ -1926,7 +1953,7 @@ TypeAST* checkExpr(ExprAST* node, SymbolTable& symbols, TypeResolver& resolver,
 
         case ASTKind::BehaviorAccessExpr:
             return checkBehaviorAccessExpr(*node->as<BehaviorAccessExprAST>(),
-                                           symbols, dc);
+                                           symbols, resolver, dc);
 
         case ASTKind::BinaryExpr:
             return checkBinaryExpr(*node->as<BinaryExprAST>(), symbols, resolver, dc,

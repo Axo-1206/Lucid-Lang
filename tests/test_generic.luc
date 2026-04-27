@@ -5,8 +5,8 @@ struct Animal<T> {
     age  int
 }
 
-impl<T> Animal<T> {
-    method (a let) = {
+impl Animal<T> {
+    method (a T) = {
         
     }
 }

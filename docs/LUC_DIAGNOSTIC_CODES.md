@@ -55,5 +55,6 @@ This registry tracks every error code reported by the LUC compiler.
 | **E3014** | Error | Semantic | Chained comparison not allowed; use 'and' explicitly: 0 < x and x < 10. |
 | **E3015** | Error | Semantic | '@aot' and '@jit' are mutually exclusive on the same declaration. |
 | **E3016** | Error | Semantic | '@aot' / '@jit' are only valid on the 'main' entry point. |
+| **E3017** | Error | Semantic | Generic signature mismatch: 'impl' must match struct declaration exactly. |
 | **W3001** | Warning | Semantic | '@extern' function declared with 'let' — should be 'const'. |
 | **W3002** | Warning | Warning | '@extern' function has an empty body '= {}' that will be ignored. |
