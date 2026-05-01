@@ -38,7 +38,7 @@ actual_decl     := module_decl     -- optional re-export manifest (one per packa
                  | enum_decl        -- enum keyword:   named constant set, integer-backed
                  | struct_decl      -- struct keyword: data definition
                  | trait_decl       -- trait keyword:  method contract / constraint
-                 | type_decl        -- type keyword:   alias (primitive, named, union, array, func)
+                 | type_decl        -- type keyword:   alias (primitive, named, array, func)
                  | impl_decl        -- top-level only: same file and scope as struct
                  | from_decl        -- top-level only: type conversion entry point for a named struct
                  | var_decl
@@ -168,7 +168,7 @@ use math as m        -- local alias: m.Vec2
 
 ```
 type            := base_type [ generic_args ] [ nullable_suffix ]
-                 | union_type
+
                  | ref_type
                  | ptr_type
                  | array_type
@@ -190,7 +190,7 @@ primitive_type  := 'bool'
 nullable_suffix := '?'
 
 -- Union type  (int | string)
-union_type      := type '|' type { '|' type }
+
 
 -- Reference   (&T)
 ref_type        := '&' type
@@ -454,7 +454,7 @@ for assigning a function body (or anonymous function) to a variable.
 
 **No overloading** — a function name within a scope always maps to exactly one
 signature. Declaring two functions with the same name but different parameters
-is a semantic error. Use different names, currying, union parameters, or
+is a semantic error. Use different names, currying, or
 nullable parameters to express the same intent.
 
 ### Function Type
@@ -778,7 +778,7 @@ if stage is ShaderStage.Fragment {
 
 `type` declares a named alias. `=` is always required as the separator between
 the name and the right-hand side. The right-hand side may be a primitive, a
-named type, a union, an array, a ref, a raw pointer, or a function type.
+named type, an array, a ref, a raw pointer, or a function type.
 Inline struct bodies are **not allowed** — use a named `struct` declaration
 instead, which also enables `impl` and trait conformance.
 
@@ -787,7 +787,7 @@ type_decl       := [ 'pub' ] 'type' IDENTIFIER [ generic_params ] '=' type_alias
 
 type_alias_rhs  := primitive_type                  -- type ID          = int
                  | IDENTIFIER                      -- type UserID      = ID
-                 | union_type                      -- type Number      = int | float
+
                  | array_type                      -- type Matrix   = [][*]float
                                                    -- type ByteBuf  = []byte
                                                    -- type VertBuf  = [*]Vertex
@@ -921,7 +921,7 @@ always maps to exactly one signature. This is intentional:
   function type per name
 - **Functional clarity** — one name, one type, one behaviour
 
-Use different names, currying, union type parameters, or nullable parameters
+Use different names, currying, or nullable parameters
 instead of overloading:
 
 ```luc
@@ -930,7 +930,7 @@ let draw        ()                 = { ... }   -- default position
 let drawAt      (x float, y float) = { ... }   -- explicit position
 let drawAtPoint (pos Vec2)         = { ... }   -- Vec2 position
 
--- or use a union/nullable parameter for optional args
+-- or use a nullable parameter for optional args
 let draw (pos Vec2?) = {
     if pos != nil { ... } else { ... }
 }
@@ -1715,7 +1715,7 @@ bitwise_expr    := shift_expr   { ( '&&' | '||' | '~^' | '~' ) shift_expr }
                    -- '~^'  bitwise XOR  (integer types only)
                    -- '~'   bitwise NOT  (unary, integer types only)
                    -- NOTE: '&' in expression position is the unary reference operator
-                   --       '|' in type position is the union type separator
+
                    --       '&&' and '||' are used here to avoid ambiguity
 
 shift_expr      := add_expr     { ( '<<' | '>>' ) add_expr }
@@ -2243,7 +2243,7 @@ is a semantic error.
 
 **Why `&&` and `||` instead of `&` and `|`:**
 
-`&` is the reference operator (`&T`, `&x`) and `|` is the union type separator
+`&` is the reference operator (`&T`, `&x`).
 (`int | string`). Using them as bitwise operators would create ambiguity in both
 type position and expression position. `&&` and `||` are unambiguous in all
 contexts.
@@ -2288,7 +2288,7 @@ is_expr         := expr 'is' type
                    -- produces bool
                    -- narrows the type of expr inside the enclosing if_stmt block (statement form only)
                    -- the inline if_expr form does not introduce a narrowed scope
-                   -- valid for: primitives, structs, union types, any, enum variants
+                   -- valid for: primitives, structs, any, enum variants
                    -- IMPORTANT: nullable and non-nullable are distinct types
                    --   int? is int  → false  (int? is NOT int)
                    --   int? is int? → true
@@ -2330,15 +2330,7 @@ A type pattern `v is Type` in a match arm binds the matched value to `v` with
 the narrowed type, and takes the arm only if the value is of that type.
 
 ```luc
--- union type dispatch
-type Shape = Circle | Rect | Triangle
 
-let area (shape Shape) float = match shape {
-    s is Circle   -> s.radius * s.radius * 3.14159
-    s is Rect     -> s.width * s.height
-    s is Triangle -> s.base * s.height / 2.0
-    default       -> 0.0
-}
 
 -- any type dispatch
 let describe (value any) string = match value {

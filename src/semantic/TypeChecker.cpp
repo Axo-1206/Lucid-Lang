@@ -64,15 +64,6 @@ bool TypeChecker::isEqual(TypeAST* a, TypeAST* b) {
         }
         return isEqual(fa->returnType.get(), fb->returnType.get());
     }
-    if (a->isa<UnionTypeAST>()) {
-        auto* ua = a->as<UnionTypeAST>();
-        auto* ub = b->as<UnionTypeAST>();
-        if (ua->members.size() != ub->members.size()) return false;
-        for (size_t i = 0; i < ua->members.size(); ++i) {
-            if (!isEqual(ua->members[i].get(), ub->members[i].get())) return false;
-        }
-        return true;
-    }
     return false;
 }
 
@@ -432,8 +423,7 @@ bool TypeChecker::isValueComparable(TypeAST* type) {
     if (type->isa<SliceTypeAST>())        return false;
     if (type->isa<DynamicArrayTypeAST>()) return false;
 
-    // Union types: not directly comparable via ==
-    if (type->isa<UnionTypeAST>()) return false;
+
 
     // Reference types: use === for reference equality, not ==
     if (type->isa<RefTypeAST>()) return false;

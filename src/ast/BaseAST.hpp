@@ -57,7 +57,6 @@ enum class ASTKind : uint16_t {
     PrimitiveType,
     NamedType,
     NullableType,
-    UnionType,
     FixedArrayType,
     SliceType,
     DynamicArrayType,
@@ -145,7 +144,6 @@ enum class ASTKind : uint16_t {
 struct PrimitiveTypeAST;
 struct NamedTypeAST;
 struct NullableTypeAST;
-struct UnionTypeAST;
 struct FixedArrayTypeAST;    // [N]T   — compile-time size, stack/inline
 struct SliceTypeAST;         // []T    — fat-pointer view, no ownership
 struct DynamicArrayTypeAST;  // [*]T   — heap-owned, growable
@@ -311,7 +309,6 @@ struct ASTVisitor {
     virtual void visit(PrimitiveTypeAST&)      {}
     virtual void visit(NamedTypeAST&)          {}
     virtual void visit(NullableTypeAST&)       {}
-    virtual void visit(UnionTypeAST&)          {}
     virtual void visit(FixedArrayTypeAST&)     {}   // [N]T
     virtual void visit(SliceTypeAST&)          {}   // []T
     virtual void visit(DynamicArrayTypeAST&)   {}   // [*]T

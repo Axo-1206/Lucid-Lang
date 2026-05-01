@@ -47,11 +47,11 @@ add_executable(luc-comp
     src/semantic/SemanticStmt.cpp
     src/semantic/TypeChecker.cpp
     src/semantic/Annotator.cpp
-    src/codegen/CodeGen.cpp
-    src/codegen/CodeGenExpr.cpp
-    src/codegen/CodeGenDecl.cpp
-    src/codegen/CodeGenStmt.cpp
-    src/codegen/luc_runtime.c
+    # src/codegen/CodeGen.cpp
+    # src/codegen/CodeGenExpr.cpp
+    # src/codegen/CodeGenDecl.cpp
+    # src/codegen/CodeGenStmt.cpp
+    # src/codegen/luc_runtime.c
 )
 
 target_compile_definitions(luc-comp PRIVATE ${LLVM_DEFINITIONS})
@@ -71,7 +71,7 @@ llvm_map_components_to_libnames(llvm_libs
     orcjit 
     executionengine 
     mcjit
-    all-targets
+    ${LLVM_TARGETS_TO_BUILD}
 )
 
 if(MSVC)

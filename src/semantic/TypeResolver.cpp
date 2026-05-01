@@ -134,19 +134,6 @@ void TypeResolver::visit(NullableTypeAST& node) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// visit(UnionTypeAST)  — Ensures all alternative members within a union are valid
-//
-// Iterates the defined branching options, asserting each string maps to a real 
-// definition internally without issue.
-// ─────────────────────────────────────────────────────────────────────────────
-void TypeResolver::visit(UnionTypeAST& node) {
-    for (auto& member : node.members) {
-        resolveType(member.get());
-    }
-    resolved_ = &node;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // visit(FixedArrayTypeAST)  — Validates standard sized array declarations
 //
 // Array definitions map structurally correctly as long as their inner element 

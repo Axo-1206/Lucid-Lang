@@ -37,7 +37,6 @@
 //   PrimitiveTypeAST      — bool, int, float, string, any, ...
 //   NamedTypeAST          — user-defined type by name, optional generic args
 //   NullableTypeAST       — wraps any type with ?
-//   UnionTypeAST          — int | string | bool
 //   FixedArrayTypeAST     — [N]T   compile-time size, stack allocated
 //   SliceTypeAST          — []T    fat-pointer view, no ownership
 //   DynamicArrayTypeAST   — [*]T   heap-owned, growable
@@ -182,32 +181,6 @@ struct NullableTypeAST : TypeAST {
 
     explicit NullableTypeAST(TypePtr t)
         : TypeAST(ASTKind::NullableType), inner(std::move(t)) {}
-
-    void accept(ASTVisitor& v) override { v.visit(*this); }
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// UnionTypeAST
-//
-// A type that can hold any one of its member types at runtime.
-//
-//   int | string          →  UnionTypeAST { members = [Int, String] }
-//   int | string | bool   →  UnionTypeAST { members = [Int, String, Bool] }
-//
-// The grammar allows chaining: type '|' type { '|' type }
-// The parser flattens nested unions into a single members list — the semantic
-// pass never sees nested UnionTypeASTs.
-//
-// members always has at least two entries — a single-member union is a
-// semantic error caught by the parser.
-// ─────────────────────────────────────────────────────────────────────────────
-
-struct UnionTypeAST : TypeAST {
-    static constexpr ASTKind staticKind = ASTKind::UnionType;
-
-    std::vector<TypePtr> members;  // at least two
-
-    UnionTypeAST() : TypeAST(ASTKind::UnionType) {}
 
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };

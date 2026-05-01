@@ -48,56 +48,14 @@
 //
 // Grammar:
 //   type := base_type [ '?' ]
-//         | type '|' type { '|' type }
-//
-// The union chain is left-associative but we flatten it into a single
-// UnionTypeAST rather than nesting, so  int | string | bool  becomes one node
-// with three members — exactly what UnionTypeAST.members is designed for.
-//
-// Note on '|' ambiguity:
-//   In a type position, PIPE is always the union separator.
-//   In an expression position, PIPE is bitwise-OR (BinaryExprAST).
-//   The parser knows which context it is in by how it arrived here — callers
-//   of parseType() are always in a type-annotation position (after a name in
-//   a declaration, after ':', as a generic arg, etc.).
 // ─────────────────────────────────────────────────────────────────────────────
 
 TypePtr Parser::parseType() {
-    TypePtr first = parseBaseType();
-    if (!first)
-        return nullptr;
-
-    // Check for union continuation: '|' type { '|' type }
-    if (!check(TokenType::PIPE)) {
-        return first;
-    }
-
-    // Build a UnionTypeAST and collect all members.
-    auto unionNode = std::make_unique<UnionTypeAST>();
-    unionNode->loc = first->loc;
-    unionNode->members.push_back(std::move(first));
-
-    while (match(TokenType::PIPE)) {
-        TypePtr next = parseBaseType();
-        if (!next) {
-            errorAt(DiagCode::E2005, "expected type after '|'");
-            break;
-        }
-        unionNode->members.push_back(std::move(next));
-    }
-
-    // A union with only one member should never happen (we stop collecting
-    // after the first parse fails), but guard defensively.
-    if (unionNode->members.size() == 1) {
-        // Unwrap — nothing to union with.
-        return std::move(unionNode->members[0]);
-    }
-
-    return unionNode;
+    return parseBaseType();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// parseBaseType  — single non-union type
+// parseBaseType  — single type
 //
 // Dispatches on the current token to the specific sub-parser.  Each sub-parser
 // is responsible for consuming the tokens that make up its form and calling

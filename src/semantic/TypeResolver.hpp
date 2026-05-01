@@ -29,7 +29,6 @@ public:
     void visit(PrimitiveTypeAST& node)      override;
     void visit(NamedTypeAST& node)          override;
     void visit(NullableTypeAST& node)       override;
-    void visit(UnionTypeAST& node)          override;
     void visit(FixedArrayTypeAST& node)     override;
     void visit(SliceTypeAST& node)          override;
     void visit(DynamicArrayTypeAST& node)   override;

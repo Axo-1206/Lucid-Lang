@@ -183,12 +183,11 @@ class Parser {
     // ParserType.cpp — type annotation parsing
     // ─────────────────────────────────────────────────────────────────────────
 
-    // Root type parser. Handles the union chain: type { '|' type }.
+    // Root type parser.
     // Called wherever a type annotation is expected.
     TypePtr parseType();
 
-    // Parse a single non-union type (primitive, named, array, ref, ptr, func).
-    // parseType() calls this then checks for '|' to build UnionTypeAST.
+    // Parse a single type (primitive, named, array, ref, ptr, func).
     TypePtr parseBaseType();
 
     // Primitive keyword → PrimitiveTypeAST. Returns nullptr if current token
