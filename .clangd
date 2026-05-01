@@ -3,6 +3,7 @@ CompileFlags:
   Add:
     - "--driver-mode=cl"
     - "/std:c++17"
+    - "/IC:/Users/TaiAx/vcpkg/installed/x64-windows/include"
     - "-fms-compatibility"
     - "-fms-extensions"
     - "-fdelayed-template-parsing"

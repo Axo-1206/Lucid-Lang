@@ -65,7 +65,16 @@ enum class DiagCode : uint32_t {
     E3016 = 3016, ///< '@aot' / '@jit' are only valid on the 'main' entry point.
     E3017 = 3017, ///< Generic signature mismatch in 'impl' block.
 
-    // ── W3000-W3999: Semantic Warnings ──────────────────────────────────────
+    // ── 4000-4999: Code Generation ───────────────────────────────────────────
+    E4001 = 4001, ///< Target machine initialisation failed (unknown target triple).
+    E4002 = 4002, ///< Failed to open output file for AOT object/assembly emission.
+    E4003 = 4003, ///< AOT object file emission failed (LLVM pass pipeline error).
+    E4004 = 4004, ///< Linker invocation failed (non-zero exit code).
+    E4005 = 4005, ///< JIT symbol lookup failed (symbol not found after compilation).
+    E4006 = 4006, ///< Module verification failed (malformed LLVM IR).
+    E4007 = 4007, ///< Generic instantiation error (type arg count mismatch vs declaration).
+
+    // ── W5000-W5999: Semantic Warnings ──────────────────────────────────────
     // Warning codes occupy the 5000+ range to avoid collision with error codes.
     // Displayed as W3001, W3002, etc. in diagnostic output.
     W3001 = 5001, ///< '@extern' function declared with 'let' — should be 'const'.

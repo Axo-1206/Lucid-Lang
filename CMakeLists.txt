@@ -6,12 +6,11 @@ set(CMAKE_TOOLCHAIN_FILE "C:/Users/TaiAx/vcpkg/scripts/buildsystems/vcpkg.cmake"
 project(LucCompiler LANGUAGES CXX)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Add the specific share folder to the prefix path so find_package can see LLVMConfig.cmake
-list(APPEND CMAKE_PREFIX_PATH "C:/Users/TaiAx/vcpkg/installed/x64-windows/share/llvm")
+# list(APPEND CMAKE_PREFIX_PATH "C:/Users/TaiAx/vcpkg/installed/x64-windows/share/llvm")
 
 # Add BOTH LLVM and ZLIB paths to the prefix path
 list(APPEND CMAKE_PREFIX_PATH 
@@ -19,15 +18,14 @@ list(APPEND CMAKE_PREFIX_PATH
     "C:/Users/TaiAx/vcpkg/installed/x64-windows"
 )
 
-# FIX: Find ZLIB explicitly before LLVM
 # This provides the ZLIB::ZLIB target that LLVMSupport needs
 find_package(ZLIB REQUIRED)
 
 # Find LLVM
 find_package(LLVM REQUIRED CONFIG)
+message(STATUS "LLVM include dirs: ${LLVM_INCLUDE_DIRS}")
 
 # Standard LLVM setup
-include_directories(${LLVM_INCLUDE_DIRS} ${ZLIB_INCLUDE_DIRS})
 add_definitions(${LLVM_DEFINITIONS})
 
 # Add source files
@@ -56,16 +54,29 @@ add_executable(luc-comp
     src/codegen/luc_runtime.c
 )
 
+target_compile_definitions(luc-comp PRIVATE ${LLVM_DEFINITIONS})
 target_include_directories(luc-comp PRIVATE 
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    ${LLVM_INCLUDE_DIRS}
 )
- 
+# target_link_libraries(luc-comp PRIVATE ZLIB::ZLIB)
+
+# Map LLVM components
+llvm_map_components_to_libnames(llvm_libs 
+    core 
+    support 
+    native 
+    mc 
+    target 
+    orcjit 
+    executionengine 
+    mcjit
+    all-targets
+)
+
 if(MSVC)
     set_property(TARGET luc-comp APPEND_STRING PROPERTY LINK_FLAGS " /ignore:4199")
 endif()
-
-# Map LLVM components
-llvm_map_components_to_libnames(llvm_libs core support native executionengine mcjit)
 
 # Link everything
 target_link_libraries(luc-comp PRIVATE ${llvm_libs} ZLIB::ZLIB)

@@ -6,6 +6,8 @@
 > `main` entry point variants, and the runtime contract.
 > This plan reflects the current AST and semantic pass after the heavy refactor.
 
+> **NOTE:** LLVM version: 18.1.6
+
 ---
 
 ## Overview
