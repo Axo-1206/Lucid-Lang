@@ -3243,7 +3243,7 @@ To ensure safety, any function returning `Expect<T>` **cannot be discarded**. If
 | 11 | `??` | right |
 | 12 | `->` (pipeline — runtime) | left |
 | 13 | `+>` (composition — compile time) | left |
-| 14 | `=` `+=` `-=` `*=` `/=` `^=` `%=` | right |
+| 14 | `=` `+=` `-=` `*=` `/=` `^=` `%=` `&&=` `\|\|=` `~^=` `<<=` `>>=` | right |
 | 15 (lowest) | `if ?? else` (inline if expression) | right |
 
 > **NOTE**

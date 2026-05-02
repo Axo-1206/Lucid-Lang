@@ -500,15 +500,21 @@ Token Lexer::getNextToken() {
 		return makeToken(TokenType::BANG, "!"); // pipeline argument pack annotation
 
 	case '<':
-		if (match('<'))
+		if (match('<')) {
+		    if (match('='))
+		        return makeToken(TokenType::SHL_ASSIGN, "<<=");
 		    return makeToken(TokenType::SHL, "<<");
+		}
 		if (match('='))
 		    return makeToken(TokenType::LESS_EQUAL, "<=");
         return makeToken(TokenType::LESS, "<");
 
 	case '>':
-		if (match('>'))
+		if (match('>')) {
+		    if (match('='))
+		        return makeToken(TokenType::SHR_ASSIGN, ">>=");
 		    return makeToken(TokenType::SHR, ">>");
+		}
 		if (match('='))
 		    return makeToken(TokenType::GREATER_EQUAL, ">=");
         return makeToken(TokenType::GREATER, ">");
@@ -559,20 +565,29 @@ Token Lexer::getNextToken() {
 	// '&' in expression position is always the unary reference operator (&T, &x).
 	// Bitwise AND uses '&&' to avoid ambiguity with the reference operator.
 	case '&':
-		if (match('&'))
+		if (match('&')) {
+		    if (match('='))
+		        return makeToken(TokenType::BIT_AND_ASSIGN, "&&=");
 		    return makeToken(TokenType::BIT_AND, "&&"); // bitwise AND
+		}
 		return makeToken(TokenType::AMPERSAND, "&");    // reference type &T
 
 	// '|' in type position is the union type separator (int | string).
 	// Bitwise OR uses '||' to avoid ambiguity with the union type operator.
 	case '|':
-		if (match('|'))
+		if (match('|')) {
+		    if (match('='))
+		        return makeToken(TokenType::BIT_OR_ASSIGN, "||=");
 		    return makeToken(TokenType::BIT_OR, "||"); // bitwise OR
+		}
 		return makeToken(TokenType::PIPE, "|");        // union type
 
 	case '~':
-		if (match('^'))
+		if (match('^')) {
+		    if (match('='))
+		        return makeToken(TokenType::BIT_XOR_ASSIGN, "~^=");
 		    return makeToken(TokenType::BIT_XOR, "~^");
+		}
 		return makeToken(TokenType::BIT_NOT, "~");
 
 	// ── FFI ────────────────────────────────────────────────────────────────────

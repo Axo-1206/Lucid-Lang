@@ -128,12 +128,17 @@ enum class TokenType {
     DIV,          // /
     POW,          // ^
     MOD,          // %
-    PLUS_ASSIGN,  // +=
-    MINUS_ASSIGN, // -=
-    MUL_ASSIGN,   // *=
-    DIV_ASSIGN,   // /=
-    POW_ASSIGN,   // ^=
-    MOD_ASSIGN,   // %=
+    PLUS_ASSIGN,        // +=
+    MINUS_ASSIGN,       // -=
+    MUL_ASSIGN,         // *=
+    DIV_ASSIGN,         // /=
+    POW_ASSIGN,         // ^=
+    MOD_ASSIGN,         // %=
+    BIT_AND_ASSIGN,     // &&=
+    BIT_OR_ASSIGN,      // ||=
+    BIT_XOR_ASSIGN,     // ~^=
+    SHL_ASSIGN,         // <<=
+    SHR_ASSIGN,         // >>=
 
     // ─── Comparison ───────────────────────────────────────────────────────────
     LESS,                // <         - also used as generic open: Buffer<T>

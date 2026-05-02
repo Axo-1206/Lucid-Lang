@@ -26,7 +26,7 @@
 // Precedence table (from LUC_GRAMMAR.md §Operator Precedence), encoded as
 // integer levels used by parsePrattExpr:
 //
-//   PREC_ASSIGN   = 1   =  +=  -=  *=  /=  ^=  %=          (right-assoc)
+//   PREC_ASSIGN   = 1   =  +=  -=  *=  /=  ^=  %=  &&=  ||=  ~^=  <<=  >>=  (right-assoc)
 //   PREC_COMPOSE  = 2   +>                                   (left-assoc)
 //   PREC_PIPE     = 3   ->                                   (left-assoc)
 //   PREC_NULLCOAL = 4   ??                                   (right-assoc)
@@ -78,6 +78,11 @@ int Parser::infixPrec(TokenType t) const {
         case TokenType::DIV_ASSIGN:
         case TokenType::POW_ASSIGN:
         case TokenType::MOD_ASSIGN:
+        case TokenType::BIT_AND_ASSIGN:
+        case TokenType::BIT_OR_ASSIGN:
+        case TokenType::BIT_XOR_ASSIGN:
+        case TokenType::SHL_ASSIGN:
+        case TokenType::SHR_ASSIGN:
             return PREC_ASSIGN;
 
         case TokenType::COMPOSE:            return PREC_COMPOSE;
@@ -177,6 +182,16 @@ AssignOp Parser::tokenToAssignOp(TokenType t) const {
             return AssignOp::PowAssign;
         case TokenType::MOD_ASSIGN:
             return AssignOp::ModAssign;
+        case TokenType::BIT_AND_ASSIGN:
+            return AssignOp::BitAndAssign;
+        case TokenType::BIT_OR_ASSIGN:
+            return AssignOp::BitOrAssign;
+        case TokenType::BIT_XOR_ASSIGN:
+            return AssignOp::BitXorAssign;
+        case TokenType::SHL_ASSIGN:
+            return AssignOp::ShlAssign;
+        case TokenType::SHR_ASSIGN:
+            return AssignOp::ShrAssign;
         default:
             return AssignOp::Assign;
     }
@@ -191,6 +206,11 @@ bool Parser::isAssignOp(TokenType t) const {
         case TokenType::DIV_ASSIGN:
         case TokenType::POW_ASSIGN:
         case TokenType::MOD_ASSIGN:
+        case TokenType::BIT_AND_ASSIGN:
+        case TokenType::BIT_OR_ASSIGN:
+        case TokenType::BIT_XOR_ASSIGN:
+        case TokenType::SHL_ASSIGN:
+        case TokenType::SHR_ASSIGN:
             return true;
         default:
             return false;

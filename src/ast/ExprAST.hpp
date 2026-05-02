@@ -124,13 +124,18 @@ enum class LiteralKind {
 // ─────────────────────────────────────────────────────────────────────────────
 
 enum class AssignOp {
-    Assign,    // =
-    AddAssign, // +=
-    SubAssign, // -=
-    MulAssign, // *=
-    DivAssign, // /=
-    PowAssign, // ^=
-    ModAssign, // %=
+    Assign,       // =
+    AddAssign,    // +=
+    SubAssign,    // -=
+    MulAssign,    // *=
+    DivAssign,    // /=
+    PowAssign,    // ^=
+    ModAssign,    // %=
+    BitAndAssign, // &&=
+    BitOrAssign,  // ||=
+    BitXorAssign, // ~^=
+    ShlAssign,    // <<=
+    ShrAssign,    // >>= 
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
