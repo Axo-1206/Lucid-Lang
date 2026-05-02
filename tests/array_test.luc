@@ -1,0 +1,138 @@
+package array_test
+
+-- ============================================================================
+-- ARRAY TESTS: Fixed, Slice, and Dynamic arrays with built-in methods
+-- ============================================================================
+
+-- 1. Fixed array ([N]T)
+struct FixedDemo {
+    values [3]int
+}
+
+-- 2. Slice ([]T) – a view into an existing array
+-- 3. Dynamic array ([*]T) – heap-owned, growable
+
+export const main () int = {
+
+    -- ========================================================================
+    -- SECTION 1: Fixed arrays ([N]T)
+    -- ========================================================================
+
+    -- 1.1 Declaration and literal
+    let rgba [4]float = [1.0, 0.5, 0.0, 1.0]
+
+    -- 1.2 .len() and .isEmpty()
+    let lenRGBA int = rgba.len()
+    let emptyRGBA bool = rgba.isEmpty()
+
+    -- 1.3 Index access (read)
+    let r float = rgba[0]
+    let g float = rgba[1]
+    let b float = rgba[2]
+    let a float = rgba[3]
+
+    -- 1.4 Index assignment (only when variable is 'let')
+    rgba[0] = 0.8   -- valid
+    rgba[1] = 0.2
+
+    -- 1.5 Out‑of‑bounds access (should panic / semantic error)
+    -- let bad float = rgba[4]   -- ERROR: index out of bounds (runtime panic or static error)
+
+    -- 1.6 Negative index (illegal)
+    -- let neg float = rgba[-1]  -- ERROR: negative index not allowed
+
+    -- 1.7 Fixed array in struct
+    let demo FixedDemo = FixedDemo { values = [10, 20, 30] }
+    let first int = demo.values[0]
+
+    -- 1.8 Multidimensional fixed array
+    let matrix [2][2]int = [[1, 2], [3, 4]]
+    let element int = matrix[0][1]   -- 2
+
+    -- ========================================================================
+    -- SECTION 2: Slice arrays ([]T)
+    -- ========================================================================
+
+    -- 2.1 Slice from a fixed array
+    let nums [5]int = [10, 20, 30, 40, 50]
+    let view []int = nums[1..3]       -- inclusive: indices 1,2,3 → [20,30,40]
+    let exclusive []int = nums[1..<3] -- exclusive: indices 1,2 → [20,30]
+
+    -- 2.2 Slice from a dynamic array
+    let dyn [*]int = [10, 20, 30, 40, 50]
+    let dynView []int = dyn[2..4]     -- indices 2,3,4 → [30,40,50]
+
+    -- 2.3 Slice .len(), .cap(), .isEmpty()
+    let vLen int = view.len()
+    let vCap int = view.cap()
+    let isEmpty bool = view.isEmpty()
+
+    -- 2.4 Slice indexing (read and write)
+    view[0] = 99    -- nums[1] becomes 99
+    let val int = view[1]  -- 30
+
+    -- 2.5 Slice assignment
+    let sliceCopy []int = view   -- shares same underlying buffer
+
+    -- 2.6 Out‑of‑bounds (runtime panic / static error)
+    -- let badSlice = nums[1..10]    -- ERROR: slice end > len
+    -- let badSlice2 = nums[5..2]    -- ERROR: start > end
+    -- let badSlice3 = nums[-1..2]   -- ERROR: negative index
+
+    -- 2.7 Empty slice
+    let empty []int = nums[0..<0]   -- empty slice (valid: start = end = 0)
+
+    -- ========================================================================
+    -- SECTION 3: Dynamic arrays ([*]T)
+    -- ========================================================================
+
+    -- 3.1 Declaration and literal
+    let items [*]string = ["hello", "world"]
+
+    -- 3.2 Built‑in methods
+    items.push("luc")
+    let last string = items.pop()       -- "luc"
+    let count int = items.len()         -- 2
+    let capacity int = items.cap()      -- >= 2
+
+    -- 3.3 Insert and remove
+    items.insert(1, "middle")           -- ["hello", "middle", "world"]
+    let removed string = items.remove(2) -- removes "world", returns "world"
+
+    -- 3.4 Clear and reserve
+    items.clear()                       -- removes all elements, capacity unchanged
+    items.reserve(100)                  -- pre‑allocate capacity
+
+    -- 3.5 Concatenation (+) produces a new dynamic array
+    let arr1 [*]int = [1, 2, 3]
+    let arr2 [*]int = [4, 5, 6]
+    let arr3 [*]int = arr1 + arr2                -- [1,2,3,4,5,6]
+
+    -- 3.6 Nullable elements
+    let nullableArr [*]int? = [1, nil, 3]
+
+    -- 3.7 Index assignment (valid when variable is 'let')
+    items[0] = "first"
+
+    -- 3.8 Out‑of‑bounds (dynamic array returns nil on read for out‑of‑bounds)
+    -- let outOfBounds int? = items[100]   -- returns nil (no panic)
+    -- items[100] = "error"               -- might be runtime panic or no effect; decide per design
+
+    -- ========================================================================
+    -- SECTION 4: Errors (commented out, expecting semantic errors)
+    -- ========================================================================
+
+    -- 4.1 Cannot use `==` on arrays (should be semantic error)
+    -- let arr1 [*]int = [1,2]
+    -- let arr2 [*]int = [1,2]
+    -- if arr1 == arr2 { }   -- ERROR: E3013 – use collection library comparison
+
+    -- 4.2 Cannot assign nil to non‑nullable array element
+    -- let nonNil [3]int = [1,2,3]
+    -- nonNil[0] = nil       -- ERROR: cannot assign nil to int
+
+    -- 4.3 Fixed array size mismatch
+    -- let wrong [3]int = [1,2]    -- ERROR: literal length does not match array size
+
+    return 0
+}

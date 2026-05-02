@@ -486,6 +486,10 @@ struct IndexExprAST : ExprAST {
     IndexKind kind;
     bool      isExclusive = false; // true if ..< syntax used
 
+    // Owned SliceTypeAST synthesized by the semantic pass when kind == Slice.
+    // Holds the result type ([]T) so resolvedType can point to it stably.
+    mutable std::unique_ptr<TypeAST> sliceType;
+
     IndexExprAST() : ExprAST(ASTKind::IndexExpr) {}
 
     void accept(ASTVisitor& v) override { v.visit(*this); }

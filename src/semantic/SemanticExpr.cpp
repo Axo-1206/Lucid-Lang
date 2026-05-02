@@ -678,6 +678,184 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
     TypeAST* calleeType = checkExpr(node.callee.get(), symbols, resolver, dc,
                                     asyncDepth, loopDepth, parallelDepth, insideExtern);
 
+    // ── Built-in array methods: arr.len(), arr.push(x), etc. ────────────────
+    // Detect field access on array types and handle known method names before
+    // falling through to the normal function lookup logic.
+    if (node.callee->isa<FieldAccessExprAST>()) {
+        auto* fieldAcc = node.callee->as<FieldAccessExprAST>();
+        TypeAST* objType = static_cast<TypeAST*>(fieldAcc->object->resolvedType);
+        if (!objType) {
+            objType = checkExpr(fieldAcc->object.get(), symbols, resolver, dc,
+                                asyncDepth, loopDepth, parallelDepth, insideExtern);
+        }
+        const std::string& methodName = fieldAcc->field;
+
+        bool isFixed   = objType && objType->isa<FixedArrayTypeAST>();
+        bool isSlice   = objType && objType->isa<SliceTypeAST>();
+        bool isDynamic = objType && objType->isa<DynamicArrayTypeAST>();
+        TypeAST* elemType = nullptr;
+        if (isFixed)   elemType = objType->as<FixedArrayTypeAST>()->element.get();
+        else if (isSlice)   elemType = objType->as<SliceTypeAST>()->element.get();
+        else if (isDynamic) elemType = objType->as<DynamicArrayTypeAST>()->element.get();
+
+        if (isFixed || isSlice || isDynamic) {
+            // .len()
+            if (methodName == "len") {
+                if (!node.args.empty()) {
+                    dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3003,
+                             "'.len()' takes no arguments");
+                    return nullptr;
+                }
+                node.resolvedType = primType(PrimitiveKind::Int);
+                return primType(PrimitiveKind::Int);
+            }
+            // .isEmpty()
+            if (methodName == "isEmpty") {
+                if (!node.args.empty()) {
+                    dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3003,
+                             "'.isEmpty()' takes no arguments");
+                    return nullptr;
+                }
+                node.resolvedType = primType(PrimitiveKind::Bool);
+                return primType(PrimitiveKind::Bool);
+            }
+            // .cap() — slice and dynamic only
+            if (methodName == "cap") {
+                if (!isSlice && !isDynamic) {
+                    dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
+                             "'.cap()' is only available on slices and dynamic arrays");
+                    return nullptr;
+                }
+                if (!node.args.empty()) {
+                    dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3003,
+                             "'.cap()' takes no arguments");
+                    return nullptr;
+                }
+                node.resolvedType = primType(PrimitiveKind::Int);
+                return primType(PrimitiveKind::Int);
+            }
+            // .first() / .last()
+            if (methodName == "first" || methodName == "last") {
+                if (!node.args.empty()) {
+                    dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3003,
+                             "'.first()' / '.last()' take no arguments");
+                    return nullptr;
+                }
+                node.resolvedType = elemType;
+                return elemType;
+            }
+            // .push(value) — dynamic only
+            if (methodName == "push") {
+                if (!isDynamic) {
+                    dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
+                             "'.push()' is only available on dynamic arrays [*]T");
+                    return nullptr;
+                }
+                if (node.args.size() != 1) {
+                    dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3003,
+                             "'.push()' expects exactly one argument");
+                    return nullptr;
+                }
+                TypeAST* argType = checkExpr(node.args[0].get(), symbols, resolver, dc,
+                                             asyncDepth, loopDepth, parallelDepth, insideExtern);
+                if (argType && elemType && !TypeChecker::isAssignable(argType, elemType)) {
+                    dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
+                             "argument type mismatch in '.push()'");
+                }
+                node.resolvedType = nullptr;
+                return nullptr;
+            }
+            // .pop() — dynamic only
+            if (methodName == "pop") {
+                if (!isDynamic) {
+                    dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
+                             "'.pop()' is only available on dynamic arrays [*]T");
+                    return nullptr;
+                }
+                if (!node.args.empty()) {
+                    dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3003,
+                             "'.pop()' takes no arguments");
+                    return nullptr;
+                }
+                node.resolvedType = elemType;
+                return elemType;
+            }
+            // .insert(index, value) — dynamic only
+            if (methodName == "insert") {
+                if (!isDynamic) {
+                    dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
+                             "'.insert()' is only available on dynamic arrays [*]T");
+                    return nullptr;
+                }
+                if (node.args.size() != 2) {
+                    dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3003,
+                             "'.insert()' expects two arguments: index and value");
+                    return nullptr;
+                }
+                checkExpr(node.args[0].get(), symbols, resolver, dc,
+                          asyncDepth, loopDepth, parallelDepth, insideExtern);
+                TypeAST* valType = checkExpr(node.args[1].get(), symbols, resolver, dc,
+                                             asyncDepth, loopDepth, parallelDepth, insideExtern);
+                if (valType && elemType && !TypeChecker::isAssignable(valType, elemType)) {
+                    dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
+                             "value type mismatch in '.insert()'");
+                }
+                node.resolvedType = nullptr;
+                return nullptr;
+            }
+            // .remove(index) — dynamic only
+            if (methodName == "remove") {
+                if (!isDynamic) {
+                    dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
+                             "'.remove()' is only available on dynamic arrays [*]T");
+                    return nullptr;
+                }
+                if (node.args.size() != 1) {
+                    dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3003,
+                             "'.remove()' expects one argument (index)");
+                    return nullptr;
+                }
+                checkExpr(node.args[0].get(), symbols, resolver, dc,
+                          asyncDepth, loopDepth, parallelDepth, insideExtern);
+                node.resolvedType = elemType;
+                return elemType;
+            }
+            // .clear() — dynamic only
+            if (methodName == "clear") {
+                if (!isDynamic) {
+                    dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
+                             "'.clear()' is only available on dynamic arrays [*]T");
+                    return nullptr;
+                }
+                if (!node.args.empty()) {
+                    dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3003,
+                             "'.clear()' takes no arguments");
+                    return nullptr;
+                }
+                node.resolvedType = nullptr;
+                return nullptr;
+            }
+            // .reserve(capacity) — dynamic only
+            if (methodName == "reserve") {
+                if (!isDynamic) {
+                    dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
+                             "'.reserve()' is only available on dynamic arrays [*]T");
+                    return nullptr;
+                }
+                if (node.args.size() != 1) {
+                    dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3003,
+                             "'.reserve()' expects one argument (capacity)");
+                    return nullptr;
+                }
+                checkExpr(node.args[0].get(), symbols, resolver, dc,
+                          asyncDepth, loopDepth, parallelDepth, insideExtern);
+                node.resolvedType = nullptr;
+                return nullptr;
+            }
+            // Unknown method — fall through to normal error path
+        }
+    }
+
     // If callee is a named type (struct constructor / from() dispatch), return that type.
     if (node.callee->isa<IdentifierExprAST>()) {
         auto* ident = node.callee->as<IdentifierExprAST>();
@@ -1573,6 +1751,13 @@ static TypeAST* checkIndexExpr(IndexExprAST& node, SymbolTable& symbols,
                      "use '@ptrOffset(ptr, i)' for pointer arithmetic or '@ptrToRef' to cross to a safe type");
             return nullptr;
         }
+    }
+
+    // For slice operations, wrap the element type in a SliceTypeAST.
+    if (node.kind == IndexKind::Slice) {
+        node.sliceType = std::make_unique<SliceTypeAST>(cloneType(elemType));
+        node.resolvedType = node.sliceType.get();
+        return node.sliceType.get();
     }
 
     node.resolvedType = elemType;
