@@ -1235,7 +1235,8 @@ ExprPtr Parser::parseIfExpr() {
     SourceLocation loc = currentLoc();
     consume(TokenType::IF, "expected 'if'");
 
-    ExprPtr condition = parseExpr();
+    // Parse condition, stop at '??' (precedence 4)
+    ExprPtr condition = parsePrattExpr(PREC_NULLCOAL); 
     if (!condition) {
         errorAt(DiagCode::E2008, "expected condition after 'if'");
         return nullptr;
