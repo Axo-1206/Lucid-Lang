@@ -1,0 +1,10 @@
+package test
+
+struct Point { x float; y float }
+
+export const main () int = {
+    let a Point? = nil
+    let b Point? = nil
+    a = b   -- This causes a nullable-to-nullable assignment
+    return 0
+}

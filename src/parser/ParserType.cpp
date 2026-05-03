@@ -51,7 +51,19 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 TypePtr Parser::parseType() {
-    return parseBaseType();
+    LUC_LOG_TYPE_VERBOSE("=== parseType START ===");
+    LUC_LOG_TYPE("parseType: starting at token '" << peek().value << "', type = " << LucDebug::tokenTypeToString(peek().type));
+
+    TypePtr result = parseBaseType();
+
+    if (result) {
+        LUC_LOG_TYPE("parseType: result kind = " << LucDebug::kindToString(result->kind));
+        LUC_LOG_TYPE_VERBOSE("=== parseType END (success) ===");
+    } else {
+        LUC_LOG_TYPE("parseType: FAILED to parse type");
+        LUC_LOG_TYPE_VERBOSE("=== parseType END (failure) ===");
+    }
+    return result;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -63,6 +75,9 @@ TypePtr Parser::parseType() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 TypePtr Parser::parseBaseType() {
+    LUC_LOG_TYPE_VERBOSE("parseBaseType: current token = '" << peek().value
+                         << "', type = " << LucDebug::tokenTypeToString(peek().type));
+
     switch (peek().type) {
 
         // ── Primitive keywords ────────────────────────────────────────────────
@@ -89,32 +104,39 @@ TypePtr Parser::parseBaseType() {
         case TokenType::TYPE_STRING:
         case TokenType::TYPE_CHAR:
         case TokenType::TYPE_ANY:
+            LUC_LOG_TYPE_VERBOSE("parseBaseType: dispatching to parsePrimitiveType");
             return parsePrimitiveType();
 
         // ── Named (user-defined) type ─────────────────────────────────────────
         case TokenType::IDENTIFIER:
+            LUC_LOG_TYPE_VERBOSE("parseBaseType: dispatching to parseNamedType");
             return parseNamedType();
 
         // ── Array types  [N]T  /  []T  /  [*]T ───────────────────────────────
         case TokenType::LBRACKET:
+            LUC_LOG_TYPE_VERBOSE("parseBaseType: dispatching to parseArrayType");
             return parseArrayType();
 
         // ── Reference  &T ─────────────────────────────────────────────────────
         case TokenType::AMPERSAND:
-            return parseRefType();
+            LUC_LOG_TYPE_VERBOSE("parseBaseType: dispatching to parseRefType (reference &T)");
+            return wrapNullable(parseRefType());
 
         // ── Raw pointer  *T  (extern/FFI only) ────────────────────────────────
         case TokenType::MUL:
-            return parsePtrType();
+            LUC_LOG_TYPE_VERBOSE("parseBaseType: dispatching to parsePtrType (raw pointer *T)");
+            return wrapNullable(parsePtrType());
 
         // ── Function type  '(' params ')' [ ret ] ─────────────────────────────
         // A '(' in type position always starts a function type.  A grouped
         // expression would only appear in expression context, never here.
         case TokenType::LPAREN:
+            LUC_LOG_TYPE_VERBOSE("parseBaseType: dispatching to parseFuncType");
             return parseFuncType();
 
         default:
             // Not a recognisable type start — caller decides if that is an error.
+            LUC_LOG_TYPE("parseBaseType: unrecognized type start: '" << peek().value << "'");
             return nullptr;
     }
 }
@@ -134,8 +156,10 @@ TypePtr Parser::parseBaseType() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 TypePtr Parser::parsePrimitiveType() {
+    LUC_LOG_TYPE_VERBOSE("=== parsePrimitiveType START ===");
     SourceLocation loc = currentLoc();
     Token tok = advance();
+    LUC_LOG_TYPE("parsePrimitiveType: consuming primitive token '" << tok.value << "'");
 
     PrimitiveKind kind;
     switch (tok.type) {
@@ -218,6 +242,7 @@ TypePtr Parser::parsePrimitiveType() {
 
     auto node = std::make_unique<PrimitiveTypeAST>(kind);
     node->loc = loc;
+    LUC_LOG_TYPE_VERBOSE("parsePrimitiveType: returning PrimitiveTypeAST for '" << tok.value << "'");
     return wrapNullable(std::move(node));
 }
 
@@ -231,17 +256,22 @@ TypePtr Parser::parsePrimitiveType() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 TypePtr Parser::parseNamedType() {
+    LUC_LOG_TYPE_VERBOSE("=== parseNamedType START ===");
     SourceLocation loc = currentLoc();
-    std::string name = advance().value; // consume IDENTIFIER
+    std::string name = advance().value;
+    LUC_LOG_TYPE("parseNamedType: name = '" << name << "'");
 
     auto node = std::make_unique<NamedTypeAST>(std::move(name));
     node->loc = loc;
 
     // Optional generic argument list: '<' type { ',' type } '>'
     if (check(TokenType::LESS)) {
+        LUC_LOG_TYPE("parseNamedType: parsing generic arguments for '" << node->name << "'");
         node->genericArgs = parseGenericArgs();
+        LUC_LOG_TYPE("parseNamedType: parsed " << node->genericArgs.size() << " generic argument(s) for '" << node->name << "'");
     }
 
+    LUC_LOG_TYPE_VERBOSE("parseNamedType: returning NamedTypeAST for '" << node->name << "'");
     return wrapNullable(std::move(node));
 }
 
@@ -266,17 +296,20 @@ TypePtr Parser::parseNamedType() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 TypePtr Parser::parseArrayType() {
+    LUC_LOG_TYPE_VERBOSE("=== parseArrayType START ===");
     SourceLocation loc = currentLoc();
     consume(TokenType::LBRACKET, "expected '['");
 
     // ── [*]T  —  dynamic array ────────────────────────────────────────────────
     if (check(TokenType::MUL)) {
+        LUC_LOG_TYPE("parseArrayType: dynamic array '[*]T'");
         advance(); // consume '*'
         consume(TokenType::RBRACKET, DiagCode::E2001, "expected ']' after '*' in dynamic array type");
 
         TypePtr elem = parseType();
         if (!elem) {
             errorAt(DiagCode::E2005, "expected element type after '[*]'");
+            LUC_LOG_TYPE_VERBOSE("=== parseArrayType END (error: no element type after [*]) ===");
             return nullptr;
         }
 
@@ -284,26 +317,31 @@ TypePtr Parser::parseArrayType() {
         node->loc = loc;
         // Dynamic array types are not nullable by themselves — wrapNullable
         // would produce [*]T? which is a nullable dynamic array, a valid form.
+        LUC_LOG_TYPE_VERBOSE("parseArrayType: returning DynamicArrayTypeAST");
         return wrapNullable(std::move(node));
     }
 
     // ── []T  — slice ──────────────────────────────────────────────────────────
     if (check(TokenType::RBRACKET)) {
+        LUC_LOG_TYPE("parseArrayType: slice '[]T'");
         advance(); // consume ']'
 
         TypePtr elem = parseType();
         if (!elem) {
             errorAt(DiagCode::E2005, "expected element type after '[]'");
+            LUC_LOG_TYPE_VERBOSE("=== parseArrayType END (error: no element type after []) ===");
             return nullptr;
         }
 
         auto node = std::make_unique<SliceTypeAST>(std::move(elem));
         node->loc = loc;
+        LUC_LOG_TYPE_VERBOSE("parseArrayType: returning SliceTypeAST");
         return wrapNullable(std::move(node));
     }
 
     // ── [N]T  — fixed array ───────────────────────────────────────────────────
     if (check(TokenType::INT_LITERAL)) {
+        LUC_LOG_TYPE("parseArrayType: fixed array '[N]T'");
         Token sizeTok = advance();
 
         // Parse the integer literal. The Lexer guarantees only decimal digits
@@ -325,15 +363,18 @@ TypePtr Parser::parseArrayType() {
         TypePtr elem = parseType();
         if (!elem) {
             errorAt(DiagCode::E2005, "expected element type after '[" + sizeTok.value + "]'");
+            LUC_LOG_TYPE_VERBOSE("=== parseArrayType END (error: no element type after [N]) ===");
             return nullptr;
         }
 
         auto node = std::make_unique<FixedArrayTypeAST>(size, std::move(elem));
         node->loc = loc;
+        LUC_LOG_TYPE_VERBOSE("parseArrayType: returning FixedArrayTypeAST (size=" << size << ")");
         return wrapNullable(std::move(node));
     }
 
     // ── Unrecognised content between '[' and the next token ───────────────────
+    LUC_LOG_TYPE("parseArrayType: ERROR - unrecognized array syntax, token = '" << peek().value << "'");
     errorAt(DiagCode::E2001, "expected ']', '*', or an integer literal inside array type brackets");
     // Best-effort recovery: skip to the matching ']' if possible.
     int depth = 1;
@@ -344,6 +385,7 @@ TypePtr Parser::parseArrayType() {
             --depth;
         advance();
     }
+    LUC_LOG_TYPE_VERBOSE("=== parseArrayType END (error) ===");
     return nullptr;
 }
 
@@ -360,22 +402,28 @@ TypePtr Parser::parseArrayType() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 TypePtr Parser::parseRefType() {
+    LUC_LOG_TYPE_VERBOSE("=== parseRefType START ===");
     SourceLocation loc = currentLoc();
+    LUC_LOG_TYPE("parseRefType: parsing reference type (&T) at line " << loc.line);
     consume(TokenType::AMPERSAND, DiagCode::E2001, "expected '&'");
 
+    LUC_LOG_TYPE("parseRefType: parsing inner type");
     TypePtr inner = parseBaseType(); // intentionally parseBaseType, not parseType,
                                      // so  &int | string  parses as  (&int) | string
                                      // rather than  &(int | string).
     if (!inner) {
+        LUC_LOG_TYPE("parseRefType: ERROR - no inner type after '&'");
         errorAt(DiagCode::E2005, "expected type after '&'");
         return nullptr;
     }
 
+    LUC_LOG_TYPE_VERBOSE("parseRefType: inner type parsed, kind = " << LucDebug::kindToString(inner->kind));
     auto node = std::make_unique<RefTypeAST>(std::move(inner));
     node->loc = loc;
     // RefTypeAST itself is not wrapped in wrapNullable — the '?' lives on the
     // inner type or on the enclosing declaration.  A nullable reference is
     // written as  &Vec2?  where '?' attaches to Vec2, not to the ref.
+    LUC_LOG_TYPE_VERBOSE("parseRefType: returning RefTypeAST");
     return node;
 }
 
@@ -389,17 +437,23 @@ TypePtr Parser::parseRefType() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 TypePtr Parser::parsePtrType() {
+    LUC_LOG_TYPE_VERBOSE("=== parsePtrType START ===");
     SourceLocation loc = currentLoc();
+    LUC_LOG_TYPE("parsePtrType: consuming '*' at line " << loc.line);
     consume(TokenType::MUL, DiagCode::E2001, "expected '*'");
 
+    LUC_LOG_TYPE("parsePtrType: parsing inner type");
     TypePtr inner = parseBaseType(); // same reasoning as parseRefType
     if (!inner) {
+        LUC_LOG_TYPE("parsePtrType: inner type parsing FAILED");
         errorAt(DiagCode::E2005, "expected type after '*'");
         return nullptr;
     }
 
+    LUC_LOG_TYPE("parsePtrType: inner type parsed, kind = " << LucDebug::kindToString(inner->kind));
     auto node = std::make_unique<PtrTypeAST>(std::move(inner));
     node->loc = loc;
+    LUC_LOG_TYPE_VERBOSE("parsePtrType: returning PtrTypeAST");
     return node;
 }
 
@@ -431,18 +485,21 @@ TypePtr Parser::parsePtrType() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 TypePtr Parser::parseFuncType() {
+    LUC_LOG_TYPE_VERBOSE("=== parseFuncType START ===");
     SourceLocation loc = currentLoc();
 
     // ── Nullable function form:  ((params) ret)? ──────────────────────────────
     // Outer '(' followed immediately by another '(' means the whole function
     // type is wrapped for nullability.
     if (check(TokenType::LPAREN) && peekNext().type == TokenType::LPAREN) {
+        LUC_LOG_TYPE("parseFuncType: nullable function form '((...) ...)?'");
         advance(); // consume outer '('
 
         // Parse the inner function type — it starts with '('.
         TypePtr innerFunc = parseFuncType();
         if (!innerFunc) {
             errorAt(DiagCode::E2005, "expected function type inside '(( ))'");
+            LUC_LOG_TYPE_VERBOSE("=== parseFuncType END (error: no inner func type) ===");
             return nullptr;
         }
 
@@ -453,16 +510,19 @@ TypePtr Parser::parseFuncType() {
         // Down-cast is safe: parseFuncType() always returns FuncTypeAST.
         auto *ft = static_cast<FuncTypeAST *>(innerFunc.get());
         ft->isNullable = true;
+        LUC_LOG_TYPE_VERBOSE("parseFuncType: returning nullable FuncTypeAST");
         return innerFunc;
     }
 
     // ── Normal function type:  (params) [ return_type ] ──────────────────────
+    LUC_LOG_TYPE("parseFuncType: normal function type '(params) [return]'");
     consume(TokenType::LPAREN, DiagCode::E2001, "expected '(' at start of function type");
 
     auto node = std::make_unique<FuncTypeAST>(/*nullable=*/false);
     node->loc = loc;
 
     // Parse parameter types — stop at ')'.
+    int paramCount = 0;
     if (!check(TokenType::RPAREN)) {
         do {
             // Skip optional comma separator.
@@ -515,29 +575,39 @@ TypePtr Parser::parseFuncType() {
                                    nextTT == TokenType::LPAREN ||
                                    nextTT == TokenType::VARIADIC);
                 if (nextIsType) {
+                    LUC_LOG_TYPE_VERBOSE("parseFuncType: consuming named parameter '" << peek().value << "'");
                     advance(); // consume the parameter name — we discard it
                 }
             }
 
+            LUC_LOG_TYPE_VERBOSE("parseFuncType: parsing parameter " << paramCount + 1);
             TypePtr paramType = parseType();
             if (!paramType) {
                 errorAt(DiagCode::E2005, "expected parameter type in function type");
                 break;
             }
             node->params.push_back(std::move(paramType));
+            paramCount++;
+            LUC_LOG_TYPE_VERBOSE("parseFuncType: parsed parameter " << paramCount);
 
         } while (!check(TokenType::RPAREN) && !isAtEnd());
     }
 
     consume(TokenType::RPAREN, DiagCode::E2001, "expected ')' to close function type parameter list");
+    LUC_LOG_TYPE("parseFuncType: parsed " << paramCount << " parameter(s)");
 
     // Optional return type — any type that is not '|' (which would belong to a
     // union wrapping this entire function type at a higher level).
     // Return type is present if the current token looks like the start of a type.
     if (looksLikeType() && !check(TokenType::PIPE)) {
+        LUC_LOG_TYPE("parseFuncType: parsing return type");
         node->returnType = parseType();
+        LUC_LOG_TYPE_VERBOSE("parseFuncType: return type parsed");
+    } else {
+        LUC_LOG_TYPE_VERBOSE("parseFuncType: no return type (void)");
     }
 
+    LUC_LOG_TYPE_VERBOSE("=== parseFuncType END ===");
     return node;
 }
 
@@ -557,12 +627,17 @@ TypePtr Parser::parseFuncType() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 TypePtr Parser::wrapNullable(TypePtr inner) {
-    if (!match(TokenType::QUESTION))
+    if (!match(TokenType::QUESTION)) {
+        LUC_LOG_TYPE_VERBOSE("wrapNullable: no '?' token, returning inner type unchanged");
         return inner;
+    }
 
+    LUC_LOG_TYPE("wrapNullable: consuming '?' token, wrapping "
+                 << LucDebug::kindToString(inner->kind) << " in NullableTypeAST");
     SourceLocation loc = inner->loc; // loc spans from the base type
     auto node = std::make_unique<NullableTypeAST>(std::move(inner));
     node->loc = loc;
+    LUC_LOG_TYPE_VERBOSE("wrapNullable: returning NullableTypeAST");
     return node;
 }
 
@@ -582,6 +657,7 @@ TypePtr Parser::wrapNullable(TypePtr inner) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 std::vector<TypePtr> Parser::parseGenericArgs() {
+    LUC_LOG_TYPE_VERBOSE("=== parseGenericArgs START ===");
     std::vector<TypePtr> args;
 
     consume(TokenType::LESS, DiagCode::E2001, "expected '<' to open generic arguments");
@@ -589,10 +665,13 @@ std::vector<TypePtr> Parser::parseGenericArgs() {
     if (check(TokenType::GREATER)) {
         // Empty generic arg list — semantically probably an error but we produce
         // the empty vector and let the semantic pass report it.
+        LUC_LOG_TYPE("parseGenericArgs: empty generic argument list");
         advance();
+        LUC_LOG_TYPE_VERBOSE("=== parseGenericArgs END (empty) ===");
         return args;
     }
 
+    int argCount = 0;
     do {
         // Optional comma between args.
         match(TokenType::COMMA);
@@ -601,16 +680,20 @@ std::vector<TypePtr> Parser::parseGenericArgs() {
         if (check(TokenType::GREATER))
             break;
 
+        LUC_LOG_TYPE_VERBOSE("parseGenericArgs: parsing argument " << argCount + 1);
         TypePtr arg = parseType();
         if (!arg) {
             errorAt(DiagCode::E2005, "expected type inside generic argument list");
             break;
         }
         args.push_back(std::move(arg));
+        argCount++;
+        LUC_LOG_TYPE_VERBOSE("parseGenericArgs: parsed argument " << argCount);
 
     } while (!check(TokenType::GREATER) && !isAtEnd());
 
     consume(TokenType::GREATER, DiagCode::E2001, "expected '>' to close generic argument list");
-
+    LUC_LOG_TYPE("parseGenericArgs: parsed " << argCount << " generic argument(s)");
+    LUC_LOG_TYPE_VERBOSE("=== parseGenericArgs END ===");
     return args;
 }

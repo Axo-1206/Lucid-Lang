@@ -196,14 +196,8 @@ void TypeResolver::visit(RefTypeAST& node) {
 // set by checkFuncDecl / checkVarDecl when they detect @extern on the decl.
 // ─────────────────────────────────────────────────────────────────────────────
 void TypeResolver::visit(PtrTypeAST& node) {
-    // *T is only valid in @extern-decorated declaration contexts.
-    if (!insideExtern_) {
-        dc_.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                  "raw pointers (*T) are only allowed on '@extern'-decorated declarations; "
-                  "use '@bitcast(T, x)' for bit reinterpretation in expression position");
-        resolved_ = nullptr;
-        return;
-    }
+    // Raw pointers are now allowed anywhere (just storage).
+    // Operation restrictions are enforced in checkBinaryExpr, checkIndexExpr, etc.
     if (node.inner) resolveType(node.inner.get());
     resolved_ = &node;
 }

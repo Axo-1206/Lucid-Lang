@@ -34,19 +34,6 @@
 
 #include <unordered_set>
 #include <string>
-#include <fstream>
-#include <chrono>
-
-static void agentDebugLogDecl(const char* hypothesisId, const char* location,
-                              const std::string& message, const std::string& data) {
-    std::ofstream out("debug-00e876.log", std::ios::app);
-    if (!out) return;
-    const auto ts = std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::system_clock::now().time_since_epoch()).count();
-    out << "{\"sessionId\":\"00e876\",\"runId\":\"pre-fix\",\"hypothesisId\":\""
-        << hypothesisId << "\",\"location\":\"" << location << "\",\"message\":\""
-        << message << "\",\"data\":" << data << ",\"timestamp\":" << ts << "}\n";
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AttributeContext — which kind of declaration owns the attribute list.
@@ -396,6 +383,14 @@ void checkVarDecl(VarDeclAST& node, SymbolTable& symbols, TypeResolver& resolver
     // 3. Check the initialiser type and verify assignability.
     TypeAST* initType = checkExpr(node.init.get(), symbols, resolver, dc,
                                   asyncDepth, loopDepth, parallelDepth, insideExtern);
+    
+    std::cout << "  VarDecl initType = " << initType << std::endl;
+    if (initType) {
+        std::cout << "    initType kind: " << static_cast<int>(initType->kind) << std::endl;
+    } else {
+        std::cout << "    initType is NULL" << std::endl;
+    }
+    
     if (!initType) return;
 
     // 4. nil literal is assignable only to nullable types.

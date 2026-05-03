@@ -37,20 +37,20 @@ int main(int argc, char* argv[]) {
     Lexer lexer(source);
     std::vector<Token> tokens = lexer.tokenize();
 
-    std::cout << "Token List (" << tokens.size() << " tokens found):" << "\n";
-    std::cout << "--------------------------------------------------\n";
-    std::cout << "Line:Col | Type (ID) | Value\n";
-    std::cout << "--------------------------------------------------\n";
+    // std::cout << "Token List (" << tokens.size() << " tokens found):" << "\n";
+    // std::cout << "--------------------------------------------------\n";
+    // std::cout << "Line:Col | Type (ID) | Value\n";
+    // std::cout << "--------------------------------------------------\n";
 
-    for (const auto& token : tokens) {
-        std::printf("%4d:%-3d | %-10d | %s\n", 
-            token.line, 
-            token.column, 
-            static_cast<int>(token.type), 
-            token.value.c_str()
-        );
-    }
-    std::cout << "------------------------------------------------" << "\n";
+    // for (const auto& token : tokens) {
+    //     std::printf("%4d:%-3d | %-10d | %s\n", 
+    //         token.line, 
+    //         token.column, 
+    //         static_cast<int>(token.type), 
+    //         token.value.c_str()
+    //     );
+    // }
+    // std::cout << "------------------------------------------------" << "\n";
     
     // Error reporting for Lexer (Lexer doesn't take DiagnosticEngine currently)
     int errorCount = 0;

@@ -65,6 +65,26 @@ static std::unique_ptr<TypeAST> cloneType(TypeAST* type) {
         auto* nl = type->as<NullableTypeAST>();
         return std::make_unique<NullableTypeAST>(cloneType(nl->inner.get()));
     }
+    if (type->isa<RefTypeAST>()) {
+        auto* r = type->as<RefTypeAST>();
+        return std::make_unique<RefTypeAST>(cloneType(r->inner.get()));
+    }
+    if (type->isa<PtrTypeAST>()) {
+        auto* p = type->as<PtrTypeAST>();
+        return std::make_unique<PtrTypeAST>(cloneType(p->inner.get()));
+    }
+    if (type->isa<FixedArrayTypeAST>()) {
+        auto* a = type->as<FixedArrayTypeAST>();
+        return std::make_unique<FixedArrayTypeAST>(a->size, cloneType(a->element.get()));
+    }
+    if (type->isa<SliceTypeAST>()) {
+        auto* s = type->as<SliceTypeAST>();
+        return std::make_unique<SliceTypeAST>(cloneType(s->element.get()));
+    }
+    if (type->isa<DynamicArrayTypeAST>()) {
+        auto* d = type->as<DynamicArrayTypeAST>();
+        return std::make_unique<DynamicArrayTypeAST>(cloneType(d->element.get()));
+    }
     if (type->isa<FuncTypeAST>()) {
         auto* f = type->as<FuncTypeAST>();
         auto clone = std::make_unique<FuncTypeAST>(f->isNullable);
@@ -74,7 +94,7 @@ static std::unique_ptr<TypeAST> cloneType(TypeAST* type) {
         }
         return clone;
     }
-    // Add other type kinds if needed (Arrays, Ptrs, etc).
+    // Fallback: should not be reached for well-formed AST.
     return nullptr;
 }
 
@@ -112,6 +132,12 @@ static PrimitiveTypeAST* primType(PrimitiveKind k) {
     return &singletons[static_cast<int>(k)];
 }
 
+static TypeAST* errorFallback(ExprAST* node) {
+    TypeAST* fallback = primType(PrimitiveKind::Any);
+    node->resolvedType = fallback;
+    return fallback;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // checkLiteralExpr
 // Maps token kind to a primitive TypeAST.
@@ -146,7 +172,7 @@ static TypeAST* checkIdentExpr(IdentifierExprAST& node, SymbolTable& symbols,
     if (!sym) {
         dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
                  "undeclared identifier '" + node.name + "'");
-        return nullptr;
+        return errorFallback(&node);
     }
     node.resolvedType = sym->type;
     node.isBehaviorMember = (sym->kind == SymbolKind::Method);
@@ -174,7 +200,7 @@ static TypeAST* checkFieldAccessExpr(FieldAccessExprAST& node, SymbolTable& symb
                                      int& parallelDepth, bool insideExtern) {
     TypeAST* objType = checkExpr(node.object.get(), symbols, resolver, dc,
                                  asyncDepth, loopDepth, parallelDepth, insideExtern);
-    if (!objType) return nullptr;
+    if (!objType) return errorFallback(&node);
 
     // Resolve named types to their struct symbol.
     std::string typeName;
@@ -184,7 +210,7 @@ static TypeAST* checkFieldAccessExpr(FieldAccessExprAST& node, SymbolTable& symb
         dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                  "cannot access field '" + node.field + "' on raw pointer type '*T'; "
                  "use '@ptrToRef(T, ptr)' to cross the safety boundary first");
-        return nullptr;
+        return errorFallback(&node);
     }
 
     // Enum variant access: Direction.North
@@ -207,7 +233,7 @@ static TypeAST* checkFieldAccessExpr(FieldAccessExprAST& node, SymbolTable& symb
             }
             dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
                      "struct '" + typeName + "' has no field '" + node.field + "'");
-            return nullptr;
+            return errorFallback(&node);
         }
     }
 
@@ -314,7 +340,7 @@ static TypeAST* checkBehaviorAccessExpr(BehaviorAccessExprAST& node, SymbolTable
     if (!lhsSym) {
         dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
                  "undeclared identifier '" + node.typeName + "'");
-        return nullptr;
+        return errorFallback(&node);
     }
 
     // DISALLOW STATIC ACCESS: The ':' operator must be used on an instance (Var or Param).
@@ -322,14 +348,14 @@ static TypeAST* checkBehaviorAccessExpr(BehaviorAccessExprAST& node, SymbolTable
         dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                  "behavior access ':' is only valid on instances; '" + node.typeName +
                  "' is a type name. Use an instance variable instead.");
-        return nullptr;
+        return errorFallback(&node);
     }
 
     // Extract the underlying struct/type name from the instance.
     if (!lhsSym->type || !lhsSym->type->isa<NamedTypeAST>()) {
         dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                  "identifier '" + node.typeName + "' does not resolve to a named struct type");
-        return nullptr;
+        return errorFallback(&node);
     }
 
     auto* receiverNamedType = lhsSym->type->as<NamedTypeAST>();
@@ -340,7 +366,7 @@ static TypeAST* checkBehaviorAccessExpr(BehaviorAccessExprAST& node, SymbolTable
     if (!sym) {
         dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
                  "no method '" + node.method + "' found on '" + actualTypeName + "'");
-        return nullptr;
+        return errorFallback(&node);
     }
     node.isBehaviorMember = true;
 
@@ -515,7 +541,9 @@ static TypeAST* checkBinaryExpr(BinaryExprAST& node, SymbolTable& symbols,
                 dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                          "operator '+' is not supported for raw pointer types; "
                          "use '@ptrOffset(ptr, n)' instead");
-                return nullptr;
+                TypeAST* fallback = primType(PrimitiveKind::Any);
+                node.resolvedType = fallback;
+                return fallback;
             }
             // string + string is valid
             if (lt && lt->isa<PrimitiveTypeAST>() &&
@@ -539,7 +567,9 @@ static TypeAST* checkBinaryExpr(BinaryExprAST& node, SymbolTable& symbols,
                 dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                          "operator '-' is not supported for raw pointer types; "
                          "use '@ptrDiff(p1, p2)' or '@ptrOffset(ptr, -n)' instead");
-                return nullptr;
+                TypeAST* fallback = primType(PrimitiveKind::Any);
+                node.resolvedType = fallback;
+                return fallback;
             }
             lt = checkAndUnwrapNullable(lt, node.left.get());
             rt = checkAndUnwrapNullable(rt, node.right.get());
@@ -554,7 +584,9 @@ static TypeAST* checkBinaryExpr(BinaryExprAST& node, SymbolTable& symbols,
             if ((lt && lt->isa<PtrTypeAST>()) || (rt && rt->isa<PtrTypeAST>())) {
                 dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                          "arithmetic operators are not supported for raw pointer types");
-                return nullptr;
+                TypeAST* fallback = primType(PrimitiveKind::Any);
+                node.resolvedType = fallback;
+                return fallback;
             }
             lt = checkAndUnwrapNullable(lt, node.left.get());
             rt = checkAndUnwrapNullable(rt, node.right.get());
@@ -704,7 +736,7 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
                 if (!node.args.empty()) {
                     dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3003,
                              "'.len()' takes no arguments");
-                    return nullptr;
+                    return errorFallback(&node);
                 }
                 node.resolvedType = primType(PrimitiveKind::Int);
                 return primType(PrimitiveKind::Int);
@@ -714,7 +746,7 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
                 if (!node.args.empty()) {
                     dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3003,
                              "'.isEmpty()' takes no arguments");
-                    return nullptr;
+                    return errorFallback(&node);
                 }
                 node.resolvedType = primType(PrimitiveKind::Bool);
                 return primType(PrimitiveKind::Bool);
@@ -724,12 +756,12 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
                 if (!isSlice && !isDynamic) {
                     dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                              "'.cap()' is only available on slices and dynamic arrays");
-                    return nullptr;
+                    return errorFallback(&node);
                 }
                 if (!node.args.empty()) {
                     dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3003,
                              "'.cap()' takes no arguments");
-                    return nullptr;
+                    return errorFallback(&node);
                 }
                 node.resolvedType = primType(PrimitiveKind::Int);
                 return primType(PrimitiveKind::Int);
@@ -739,7 +771,7 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
                 if (!node.args.empty()) {
                     dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3003,
                              "'.first()' / '.last()' take no arguments");
-                    return nullptr;
+                    return errorFallback(&node);
                 }
                 node.resolvedType = elemType;
                 return elemType;
@@ -749,12 +781,12 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
                 if (!isDynamic) {
                     dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                              "'.push()' is only available on dynamic arrays [*]T");
-                    return nullptr;
+                    return errorFallback(&node);
                 }
                 if (node.args.size() != 1) {
                     dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3003,
                              "'.push()' expects exactly one argument");
-                    return nullptr;
+                    return errorFallback(&node);
                 }
                 TypeAST* argType = checkExpr(node.args[0].get(), symbols, resolver, dc,
                                              asyncDepth, loopDepth, parallelDepth, insideExtern);
@@ -763,19 +795,19 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
                              "argument type mismatch in '.push()'");
                 }
                 node.resolvedType = nullptr;
-                return nullptr;
+                return errorFallback(&node);
             }
             // .pop() — dynamic only
             if (methodName == "pop") {
                 if (!isDynamic) {
                     dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                              "'.pop()' is only available on dynamic arrays [*]T");
-                    return nullptr;
+                    return errorFallback(&node);
                 }
                 if (!node.args.empty()) {
                     dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3003,
                              "'.pop()' takes no arguments");
-                    return nullptr;
+                    return errorFallback(&node);
                 }
                 node.resolvedType = elemType;
                 return elemType;
@@ -785,12 +817,12 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
                 if (!isDynamic) {
                     dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                              "'.insert()' is only available on dynamic arrays [*]T");
-                    return nullptr;
+                    return errorFallback(&node);
                 }
                 if (node.args.size() != 2) {
                     dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3003,
                              "'.insert()' expects two arguments: index and value");
-                    return nullptr;
+                    return errorFallback(&node);
                 }
                 checkExpr(node.args[0].get(), symbols, resolver, dc,
                           asyncDepth, loopDepth, parallelDepth, insideExtern);
@@ -808,12 +840,12 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
                 if (!isDynamic) {
                     dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                              "'.remove()' is only available on dynamic arrays [*]T");
-                    return nullptr;
+                    return errorFallback(&node);
                 }
                 if (node.args.size() != 1) {
                     dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3003,
                              "'.remove()' expects one argument (index)");
-                    return nullptr;
+                    return errorFallback(&node);
                 }
                 checkExpr(node.args[0].get(), symbols, resolver, dc,
                           asyncDepth, loopDepth, parallelDepth, insideExtern);
@@ -825,12 +857,12 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
                 if (!isDynamic) {
                     dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                              "'.clear()' is only available on dynamic arrays [*]T");
-                    return nullptr;
+                    return errorFallback(&node);
                 }
                 if (!node.args.empty()) {
                     dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3003,
                              "'.clear()' takes no arguments");
-                    return nullptr;
+                    return errorFallback(&node);
                 }
                 node.resolvedType = nullptr;
                 return nullptr;
@@ -840,12 +872,12 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
                 if (!isDynamic) {
                     dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                              "'.reserve()' is only available on dynamic arrays [*]T");
-                    return nullptr;
+                    return errorFallback(&node);
                 }
                 if (node.args.size() != 1) {
                     dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3003,
                              "'.reserve()' expects one argument (capacity)");
-                    return nullptr;
+                    return errorFallback(&node);
                 }
                 checkExpr(node.args[0].get(), symbols, resolver, dc,
                           asyncDepth, loopDepth, parallelDepth, insideExtern);
@@ -884,6 +916,15 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
     if (calleeSym && calleeSym->kind == SymbolKind::ExternFunc && calleeSym->decl) {
         auto* funcDecl = static_cast<FuncDeclAST*>(calleeSym->decl);
         // Flat extern functions (no curry): check args against flat first group.
+        
+
+        std::cout << "  ExternFunc: " << calleeSym->name << std::endl;
+        std::cout << "    funcDecl->returnType = " << funcDecl->returnType.get() << std::endl;
+        if (funcDecl->returnType.get()) {
+            std::cout << "    returnType kind = " << static_cast<int>(funcDecl->returnType.get()->kind) << std::endl;
+        }
+
+        
         if (!funcDecl->paramGroups.empty()) {
             auto& firstGroup = funcDecl->paramGroups[0];
             if (node.args.size() != firstGroup.size()) {
@@ -923,8 +964,7 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
                          "wrong number of arguments: expected " +
                          std::to_string(firstGroup.size()) + ", got " +
                          std::to_string(node.args.size()));
-                node.resolvedType = nullptr;
-                return nullptr;
+                return errorFallback(&node);
             }
             
             // Check argument types against first parameter group
@@ -980,8 +1020,7 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
                      "wrong number of arguments: expected " +
                      std::to_string(ft->params.size()) + ", got " +
                      std::to_string(node.args.size()));
-            node.resolvedType = nullptr;
-            return nullptr;
+            return errorFallback(&node);
         }
         
         // Check argument types.
@@ -1001,8 +1040,19 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
     else {
         dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                  "expression is not callable");
-        return nullptr;
+        return errorFallback(&node);
     }
+
+    
+
+    std::cout << "  checkCallExpr returning type: " << returnType << std::endl;
+    if (returnType) {
+        std::cout << "    returnType kind: " << static_cast<int>(returnType->kind) << std::endl;
+    } else {
+        std::cout << "    returnType is NULL" << std::endl;
+    }
+
+    
 
     node.resolvedType = returnType;
     return returnType;
@@ -1624,6 +1674,9 @@ static TypeAST* checkNullableChainExpr(NullableChainExprAST& node, SymbolTable& 
                                  asyncDepth, loopDepth, parallelDepth, insideExtern);
     }
 
+    if (!fallbackType) {
+        return errorFallback(&node);
+    }
     node.resolvedType = fallbackType;
     return fallbackType;
 }
@@ -1670,7 +1723,7 @@ static TypeAST* checkPipelineExpr(PipelineExprAST& node, SymbolTable& symbols,
                 if (!sym) {
                     dc.error(DiagnosticCategory::Semantic, step->loc, DiagCode::E3001,
                              "undeclared identifier '" + step->ident + "' in pipeline");
-                    current = nullptr;
+                    current = errorFallback(&node);
                 } else {
                     TypeAST* st = sym->type;
                     if (st && st->isa<FuncTypeAST>()) {
@@ -1749,7 +1802,9 @@ static TypeAST* checkIndexExpr(IndexExprAST& node, SymbolTable& symbols,
             dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                      "cannot index into raw pointer type '*T'; "
                      "use '@ptrOffset(ptr, i)' for pointer arithmetic or '@ptrToRef' to cross to a safe type");
-            return nullptr;
+            TypeAST* fallback = primType(PrimitiveKind::Any);
+            node.resolvedType = fallback;
+            return fallback;
         }
     }
 
@@ -1805,7 +1860,7 @@ static TypeAST* checkStructLiteralExpr(StructLiteralExprAST& node, SymbolTable& 
     if (!sym || sym->kind != SymbolKind::Struct) {
         dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
                  "'" + node.typeName + "' is not a declared struct");
-        return nullptr;
+        return errorFallback(&node);
     }
 
     auto* structDecl = sym->decl->as<StructDeclAST>();
@@ -1949,6 +2004,9 @@ static TypeAST* checkTypeConvExpr(TypeConvExprAST& node, SymbolTable& symbols,
     checkExpr(node.expr.get(), symbols, resolver, dc,
               asyncDepth, loopDepth, parallelDepth, insideExtern);
     TypeAST* targetType = resolver.resolveType(node.targetType.get());
+    if (!targetType) {
+        return errorFallback(&node);
+    }
     node.resolvedType = targetType;
     return targetType;
 }
@@ -2009,8 +2067,7 @@ static TypeAST* checkIntrinsicCallExpr(IntrinsicCallExprAST& node,
         for (auto& arg : node.args)
             checkExpr(arg.get(), symbols, resolver, dc,
                       asyncDepth, loopDepth, parallelDepth, insideExtern);
-        node.resolvedType = nullptr;
-        return nullptr;
+        return errorFallback(&node);
     }
 
     // ── 2. Type-only intrinsics: @sizeof(T) and @alignof(T) ──────────────────
@@ -2108,8 +2165,7 @@ static TypeAST* checkIntrinsicCallExpr(IntrinsicCallExprAST& node,
         for (auto& arg : node.args)
             checkExpr(arg.get(), symbols, resolver, dc,
                       asyncDepth, loopDepth, parallelDepth, insideExtern);
-        node.resolvedType = nullptr;
-        return nullptr;
+        return errorFallback(&node);
     }
 
     // Check each argument against its registry slot kind.
@@ -2295,6 +2351,14 @@ TypeAST* checkExpr(ExprAST* node, SymbolTable& symbols, TypeResolver& resolver,
                    int& parallelDepth, bool insideExtern) {
     if (!node) return nullptr;
 
+    std::cout << "phase3b" << std::endl;
+        // DEBUG: Print node kind and location before dispatching
+    std::cout << "  Node kind: " << static_cast<int>(node->kind) << std::endl;
+    std::cout << "  Location: line " << node->loc.line << ", col " << node->loc.column << std::endl;
+    
+    // Also print the node's address to see if it's the same as the garbage pointer
+    std::cout << "  Node address: " << node << std::endl;
+
     switch (node->kind) {
         case ASTKind::LiteralExpr:
             return checkLiteralExpr(*node->as<LiteralExprAST>());
@@ -2389,6 +2453,7 @@ TypeAST* checkExpr(ExprAST* node, SymbolTable& symbols, TypeResolver& resolver,
 
         default:
             // Unknown or unhandled expression kind — skip silently.
+            std::cout << "  UNKNOWN NODE KIND: " << static_cast<int>(node->kind) << std::endl;
             return nullptr;
     }
 }

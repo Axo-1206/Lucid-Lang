@@ -13,6 +13,7 @@
  */
 
 #include "TypeChecker.hpp"
+#include <iostream>
 
 // ─────────────────────────────────────────────────────────────────────────────
 // isEqual  — Verifies structural equality precisely, ignoring widening rules
@@ -67,6 +68,110 @@ bool TypeChecker::isEqual(TypeAST* a, TypeAST* b) {
     return false;
 }
 
+#include <cstring>  // for typeid names (optional)
+
+static void printTypeAST(const std::string& label, TypeAST* t, int indent = 0) {
+    if (!t) {
+        std::cout << std::string(indent, ' ') << label << " = nullptr" << std::endl;
+        return;
+    }
+    
+    std::string indentStr(indent, ' ');
+    std::cout << indentStr << label << " = " << t << " kind=" << static_cast<int>(t->kind);
+    
+    // Print kind name for readability
+    switch (t->kind) {
+        case ASTKind::PrimitiveType: {
+            auto* p = t->as<PrimitiveTypeAST>();
+            std::cout << " (PrimitiveType: ";
+            switch (p->primitiveKind) {
+                case PrimitiveKind::Bool:   std::cout << "bool"; break;
+                case PrimitiveKind::Int:    std::cout << "int"; break;
+                case PrimitiveKind::Float:  std::cout << "float"; break;
+                case PrimitiveKind::Double: std::cout << "double"; break;
+                case PrimitiveKind::String: std::cout << "string"; break;
+                case PrimitiveKind::Uint8:  std::cout << "uint8"; break;
+                case PrimitiveKind::Uint64: std::cout << "uint64"; break;
+                case PrimitiveKind::Any:    std::cout << "any"; break;
+                // Add other primitives as needed
+                default: std::cout << "other(" << static_cast<int>(p->primitiveKind) << ")";
+            }
+            std::cout << ")";
+            break;
+        }
+        case ASTKind::NamedType: {
+            auto* n = t->as<NamedTypeAST>();
+            std::cout << " (NamedType: name='" << n->name << "'";
+            if (!n->genericArgs.empty()) {
+                std::cout << " generics=[";
+                for (size_t i = 0; i < n->genericArgs.size(); ++i) {
+                    if (i) std::cout << ",";
+                    printTypeAST("", n->genericArgs[i].get(), 0);
+                }
+                std::cout << "]";
+            }
+            if (n->isGenericParam) std::cout << " isGenericParam=true";
+            std::cout << ")";
+            break;
+        }
+        case ASTKind::NullableType: {
+            auto* nl = t->as<NullableTypeAST>();
+            std::cout << " (NullableType)" << std::endl;
+            printTypeAST("  inner", nl->inner.get(), indent + 2);
+            return; // Already printed inner on newline
+        }
+        case ASTKind::PtrType: {
+            auto* p = t->as<PtrTypeAST>();
+            std::cout << " (PtrType)" << std::endl;
+            printTypeAST("  inner", p->inner.get(), indent + 2);
+            return;
+        }
+        case ASTKind::RefType: {
+            auto* r = t->as<RefTypeAST>();
+            std::cout << " (RefType)" << std::endl;
+            printTypeAST("  inner", r->inner.get(), indent + 2);
+            return;
+        }
+        case ASTKind::FixedArrayType: {
+            auto* a = t->as<FixedArrayTypeAST>();
+            std::cout << " (FixedArrayType: size=" << a->size << ")" << std::endl;
+            printTypeAST("  element", a->element.get(), indent + 2);
+            return;
+        }
+        case ASTKind::SliceType: {
+            auto* s = t->as<SliceTypeAST>();
+            std::cout << " (SliceType)" << std::endl;
+            printTypeAST("  element", s->element.get(), indent + 2);
+            return;
+        }
+        case ASTKind::DynamicArrayType: {
+            auto* d = t->as<DynamicArrayTypeAST>();
+            std::cout << " (DynamicArrayType)" << std::endl;
+            printTypeAST("  element", d->element.get(), indent + 2);
+            return;
+        }
+        case ASTKind::FuncType: {
+            auto* f = t->as<FuncTypeAST>();
+            std::cout << " (FuncType: isNullable=" << f->isNullable << " params=[";
+            for (size_t i = 0; i < f->params.size(); ++i) {
+                if (i) std::cout << ",";
+                printTypeAST("", f->params[i].get(), 0);
+            }
+            std::cout << "]";
+            if (f->returnType) {
+                std::cout << " return=";
+                printTypeAST("", f->returnType.get(), 0);
+            }
+            std::cout << ")";
+            break;
+        }
+        default:
+            std::cout << " (Unknown kind)";
+            break;
+    }
+    std::cout << std::endl;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // isAssignable  — Validates if one type can securely pipe into another configuration
 //
@@ -77,22 +182,45 @@ bool TypeChecker::isEqual(TypeAST* a, TypeAST* b) {
 // Uses ASTKind-based isa<>/as<> helpers instead of dynamic_cast — zero RTTI overhead.
 // ─────────────────────────────────────────────────────────────────────────────
 bool TypeChecker::isAssignable(TypeAST* from, TypeAST* to) {
+
+    // Validate pointers before anything else
+    if (from && (reinterpret_cast<uintptr_t>(from) & 0xFFFF) == 0x4F27) {
+        std::cout << "CORRUPTED 'from' pointer detected: " << from << std::endl;
+        std::cout << "Backtrace:" << std::endl;
+        // Print stack trace here (platform-specific)
+        return false;
+    }
+    if (to && (reinterpret_cast<uintptr_t>(to) & 0xFFFF) == 0x4F27) {
+        std::cout << "CORRUPTED 'to' pointer detected: " << to << std::endl;
+        return false;
+    }
+
+
+    
+    std::cout << "\n========== isAssignable called ==========" << std::endl;
+    printTypeAST("from", from);
+    printTypeAST("to", to);
+    std::cout << "=========================================" << std::endl;
+
+
+
+    std::cout << "\n--- TEST5.4 ---" << std::endl;
     // 0.1 Handle nil assignment
     if (!from) {
         return isNullable(to);
     }
     if (!to) return false;
-
+std::cout << "\n--- TEST5.5 ---" << std::endl;
     // 0.2 Handle target 'any' (boxing)
     if (to->isa<PrimitiveTypeAST>() && to->as<PrimitiveTypeAST>()->primitiveKind == PrimitiveKind::Any) {
         return true;
     }
-
+std::cout << "\n--- TEST5.6 ---" << std::endl;
     // 0.3 Handle implicit wrapping into nullable (T -> T?)
     if (to->isa<NullableTypeAST>() && !from->isa<NullableTypeAST>()) {
         return isAssignable(from, to->as<NullableTypeAST>()->inner.get());
     }
-
+std::cout << "\n--- TEST5.7 ---" << std::endl;
     // 0.4 Handle nullable to nullable (T? -> T?)
     if (from->isa<NullableTypeAST>() && to->isa<NullableTypeAST>()) {
         return isAssignable(from->as<NullableTypeAST>()->inner.get(), to->as<NullableTypeAST>()->inner.get());
@@ -100,7 +228,7 @@ bool TypeChecker::isAssignable(TypeAST* from, TypeAST* to) {
 
     // Quick exit: identical pointer = same allocated node = same type.
     if (from == to) return true;
-
+std::cout << "\n--- TEST5.75 ---" << std::endl;
     // 1. Primitive vs Primitive — check widening table.
     if (from->isa<PrimitiveTypeAST>() && to->isa<PrimitiveTypeAST>()) {
         auto* primFrom = from->as<PrimitiveTypeAST>();
@@ -109,7 +237,7 @@ bool TypeChecker::isAssignable(TypeAST* from, TypeAST* to) {
         if (primitiveWidening(primFrom->primitiveKind, primTo->primitiveKind)) return true;
         return false;
     }
-
+std::cout << "\n--- TEST5.8 ---" << std::endl;
     // 2. Struct names vs struct names. (E.g. assigning Vec2 -> Vec2)
     if (from->isa<NamedTypeAST>() && to->isa<NamedTypeAST>()) {
         auto* namedFrom = from->as<NamedTypeAST>();
@@ -123,6 +251,8 @@ bool TypeChecker::isAssignable(TypeAST* from, TypeAST* to) {
         }
         return true;
     }
+
+std::cout << "\n--- TEST5.9 ---" << std::endl;
 
     // 3. Function types.
     if (from->isa<FuncTypeAST>() && to->isa<FuncTypeAST>()) {

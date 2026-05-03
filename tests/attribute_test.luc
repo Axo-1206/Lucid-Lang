@@ -1,0 +1,145 @@
+-- tests/attribute_test.luc
+package test
+
+-- ----------------------------------------------------------------------------
+-- SECTION 1: @extern on functions and variables
+-- ----------------------------------------------------------------------------
+
+-- Correct extern function (no body, const, correct signature)
+@extern("malloc")
+const malloc (size uint64) *uint8?
+
+-- Correct extern variable (no initialiser)
+@extern("errno")
+const errno *int?
+
+-- Incorrect: @extern with let (should warn W3001, not error)
+-- Uncomment to see warning:
+-- @extern("free")
+-- let free (ptr *uint8)   -- W3001: should be 'const'
+
+-- Incorrect: @extern with body (should error E3002)
+-- Uncomment to see error:
+-- @extern("printf")
+-- const printf (fmt *uint8) int = { return 0 }   -- E3002: extern function must not have body
+
+-- Incorrect: @extern variable with initialiser (should error E3002)
+-- @extern("__stack_top")
+-- const stackTop *uint8 = nil    -- E3002: extern variable must not have initialiser
+
+-- Invalid: @extern on struct (should error E2010)
+-- @extern
+-- struct NotAllowed { x int }    -- ERROR: @extern not valid on struct
+
+-- ----------------------------------------------------------------------------
+-- SECTION 2: Raw pointer *T only allowed with @extern
+-- ----------------------------------------------------------------------------
+
+-- Valid: *T inside @extern declaration
+@extern("example")
+const rawPtr *uint8?
+
+-- Invalid: *T outside @extern (should error E3002)
+-- let badPtr *int = nil   -- ERROR: raw pointers only allowed on @extern
+
+-- However, pointer intrinsics return *T and can be stored in @extern variables
+@extern("someSymbol")
+const ptr *uint8?
+
+-- @ptrOffset returns *T, but we must store it in an @extern variable
+@extern("offsetPtr")
+const offset *uint8? = @ptrOffset(ptr, 1)   -- Valid: still inside @extern
+
+-- ----------------------------------------------------------------------------
+-- SECTION 3: Other attributes (@inline, @noinline, @packed, @deprecated)
+-- ----------------------------------------------------------------------------
+
+-- @inline on function (syntax only, no runtime effect)
+@inline
+const doubleValue (x int) int = {
+    return x * 2
+}
+
+-- @noinline on function
+@noinline
+const identity (x int) int = {
+    return x
+}
+
+-- @inline and @noinline together (should error E2010)
+-- @inline @noinline
+-- const confused () int = { return 0 }   -- ERROR: mutually exclusive
+
+-- @packed on struct
+@packed
+struct PackedVertex {
+    x float
+    y float
+    z float
+}
+
+-- @packed on non-struct (should error E2010)
+-- @packed
+-- let notStruct int = 5   -- ERROR: @packed only valid on structs
+
+-- @deprecated on function (warning when used)
+@deprecated("use doubleValue instead")
+const oldDouble (x int) int = {
+    return x * 2
+}
+
+-- @deprecated on variable
+@deprecated
+let legacyValue int = 42
+
+-- ----------------------------------------------------------------------------
+-- SECTION 4: Compilation mode directives (@aot, @jit) – only on main
+-- ----------------------------------------------------------------------------
+
+-- @jit is used on main below (valid)
+-- @aot could also be used, but not both
+
+-- Invalid: @aot on non-main function (should error E3016)
+-- @aot
+-- const helper () int = { return 0 }   -- ERROR: only valid on main
+
+-- Invalid: @jit on non-main function (should error E3016)
+-- @jit
+-- const another () int = { return 0 }  -- ERROR: only valid on main
+
+-- Invalid: @aot and @jit together (should error E3015)
+-- @aot @jit
+-- export const main () int = { return 0 }   -- ERROR: mutually exclusive
+
+-- ----------------------------------------------------------------------------
+-- SECTION 5: Correct usage in main
+-- ----------------------------------------------------------------------------
+@jit
+export const main () int = {
+    -- Use extern functions (they are callable)
+    let buf *uint8? = malloc(1024) -- this line cause the crash
+    if buf != nil {
+        -- Use pointer after crossing safety boundary (not shown)
+        let a *uint8? = buf
+    }
+
+    -- Use inline and noinline functions
+    let d int = doubleValue(5)
+    let id int = identity(10)
+
+    -- Use deprecated function (should trigger a warning)
+    let legacy int = oldDouble(3)
+
+    -- Use deprecated variable (should trigger a warning)
+    let legacyVar int = legacyValue
+
+    -- Use packed struct (no runtime check, just compiles)
+    let v PackedVertex = PackedVertex { x = 1.0, y = 2.0, z = 3.0 }
+    let b float = v.x
+
+    -- Use offset pointer
+    let off *uint8? = offset
+    let c *uint8? = off
+
+    return 0
+}

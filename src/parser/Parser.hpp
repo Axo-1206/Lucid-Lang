@@ -29,6 +29,7 @@
 #include <vector>
 
 #include "diagnostics/DiagnosticEngine.hpp"
+#include "debug/DebugMacros.hpp"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Parser
@@ -235,7 +236,7 @@ class Parser {
     std::unique_ptr<UseDeclAST> parseUseDecl(Visibility vis);
 
     // [vis] let / const IDENTIFIER type [ '=' expr ]
-    std::unique_ptr<VarDeclAST> parseVarDecl(Visibility vis);
+    std::unique_ptr<VarDeclAST> parseVarDecl(Visibility vis, std::vector<AttributePtr> attrs = {});
 
     // [vis] let / const IDENTIFIER [<generics>] param_group+ [return_type]
     // '=' body Distinguishes a function from a variable by lookahead after the

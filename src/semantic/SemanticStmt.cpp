@@ -34,19 +34,9 @@
 #include "ast/DeclAST.hpp"
 #include "ast/ExprAST.hpp"
 #include "ast/TypeAST.hpp"
-#include <fstream>
-#include <chrono>
+#include <iostream>
+#include <iterator>
 
-static void agentDebugLogStmt(const char* hypothesisId, const char* location,
-                              const std::string& message, const std::string& data) {
-    std::ofstream out("debug-00e876.log", std::ios::app);
-    if (!out) return;
-    const auto ts = std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::system_clock::now().time_since_epoch()).count();
-    out << "{\"sessionId\":\"00e876\",\"runId\":\"pre-fix\",\"hypothesisId\":\""
-        << hypothesisId << "\",\"location\":\"" << location << "\",\"message\":\""
-        << message << "\",\"data\":" << data << ",\"timestamp\":" << ts << "}\n";
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Forward declarations 
@@ -157,15 +147,6 @@ static void checkBlock(BlockStmtAST& node, SymbolTable& symbols, TypeResolver& r
     node.scopeDepth = symbols.currentDepth();
 
     for (auto& stmt : node.stmts) {
-        // #region agent log
-        agentDebugLogStmt(
-            "H12",
-            "src/semantic/SemanticStmt.cpp:172",
-            "checkBlock statement dispatch",
-            std::string("{\"stmtKind\":") +
-                (stmt ? std::to_string(static_cast<int>(stmt->kind)) : "-1") +
-                ",\"line\":" + (stmt ? std::to_string(stmt->loc.line) : "-1") + "}");
-        // #endregion
         checkStmt(stmt.get(), symbols, resolver, dc, expectedReturn,
                   asyncDepth, loopDepth, parallelDepth, insideExtern);
     }
@@ -233,18 +214,6 @@ static void checkDeclStmt(DeclStmtAST& node, SymbolTable& symbols, TypeResolver&
         sym.decl       = fd;
         sym.isAsync    = fd->isAsync;
         sym.loc        = fd->loc;
-        // #region agent log
-        agentDebugLogStmt(
-            "H9",
-            "src/semantic/SemanticStmt.cpp:183",
-            "local function symbol declared in statement scope",
-            std::string("{\"name\":\"") + fd->name + "\",\"line\":" +
-                std::to_string(fd->loc.line) +
-                ",\"symTypeKind\":" +
-                (sym.type ? std::to_string(static_cast<int>(sym.type->kind)) : "-1") +
-                ",\"signatureKind\":" +
-                (fd->signature ? std::to_string(static_cast<int>(fd->signature->kind)) : "-1") + "}");
-        // #endregion
         if (!symbols.declare(sym)) {
             dc.error(DiagnosticCategory::Semantic, fd->loc, DiagCode::E3005,
                      "symbol '" + fd->name + "' is already declared in this scope");
@@ -571,6 +540,8 @@ void checkStmt(StmtAST* node, SymbolTable& symbols, TypeResolver& resolver,
                int& asyncDepth, int& loopDepth, int& parallelDepth,
                bool insideExtern) {
     if (!node) return;
+
+    std::cout << "phase3c" << std::endl;
 
     switch (node->kind) {
         case ASTKind::BlockStmt:
