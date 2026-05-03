@@ -246,13 +246,14 @@ option(LUC_DEBUG_TYPE    "Enable type parsing debug logging" OFF)
 option(LUC_DEBUG_SEMANTIC "Enable semantic analysis debug logging" OFF)
 option(LUC_DEBUG_CODEGEN "Enable code generation debug logging" OFF)
 
-# Verbosity levels
-set(LUC_DEBUG_VERBOSITY "NORMAL" CACHE STRING "Debug verbosity: MINIMAL, NORMAL, VERBOSE, EXTREME")
-set_property(CACHE LUC_DEBUG_VERBOSITY PROPERTY STRINGS MINIMAL NORMAL VERBOSE EXTREME)
+# Verbosity levels (numeric: 0=MINIMAL, 1=NORMAL, 2=VERBOSE, 3=EXTREME)
+set(LUC_DEBUG_VERBOSITY 1 CACHE STRING "Debug verbosity: 0=MINIMAL, 1=NORMAL, 2=VERBOSE, 3=EXTREME")
+set_property(CACHE LUC_DEBUG_VERBOSITY PROPERTY STRINGS 0 1 2 3)
 
 # Option to output debug logs to file instead of stdout
 option(LUC_DEBUG_TO_FILE "Write debug logs to file instead of stdout" OFF)
 set(LUC_DEBUG_FILE_PATH "debug.log" CACHE STRING "Path to debug log file when LUC_DEBUG_TO_FILE is ON")
+
 
 # Print summary of debug configuration
 message(STATUS "========================================")
@@ -270,7 +271,10 @@ endif()
 message(STATUS "  Verbosity: ${LUC_DEBUG_VERBOSITY}")
 message(STATUS "  Log to file: ${LUC_DEBUG_TO_FILE}")
 if(LUC_DEBUG_TO_FILE)
-    message(STATUS "  Log file: ${LUC_DEBUG_FILE_PATH}")
+    message(STATUS "DEBUG LOGGING TO FILE ENABLED")
+    message(STATUS "Log file will be written to: ${LUC_DEBUG_FILE_PATH}")
+    message(STATUS "Note: Path is relative to where the executable runs")
+    message(STATUS "To get absolute path, use: -DLUC_DEBUG_FILE_PATH=\"C:/full/path/log.txt\"")
 endif()
 message(STATUS "========================================")
 
@@ -304,9 +308,8 @@ else()
     endif()
 endif()
 
-# Add verbosity level
-string(TOUPPER "${LUC_DEBUG_VERBOSITY}" LUC_DEBUG_VERBOSITY_UPPER)
-list(APPEND LUC_DEBUG_DEFINITIONS "LUC_DEBUG_VERBOSITY=${LUC_DEBUG_VERBOSITY_UPPER}")
+# Add verbosity level 
+list(APPEND LUC_DEBUG_DEFINITIONS "LUC_DEBUG_VERBOSITY=${LUC_DEBUG_VERBOSITY}")
 
 # Add file logging option
 if(LUC_DEBUG_TO_FILE)

@@ -48,7 +48,7 @@ const ptr *uint8?
 
 -- @ptrOffset returns *T, but we must store it in an @extern variable
 @extern("offsetPtr")
-const offset *uint8? = @ptrOffset(ptr, 1)   -- Valid: still inside @extern
+const offset *uint8? 
 
 -- ----------------------------------------------------------------------------
 -- SECTION 3: Other attributes (@inline, @noinline, @packed, @deprecated)

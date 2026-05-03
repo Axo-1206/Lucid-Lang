@@ -40,25 +40,49 @@ namespace LucDebug {
 
     inline int getVerbosity() {
         #ifdef LUC_DEBUG_VERBOSITY
-            #if LUC_DEBUG_VERBOSITY == 0
-                return 0; // MINIMAL
-            #elif LUC_DEBUG_VERBOSITY == 1
-                return 1; // NORMAL
-            #elif LUC_DEBUG_VERBOSITY == 2
-                return 2; // VERBOSE
-            #elif LUC_DEBUG_VERBOSITY == 3
-                return 3; // EXTREME
-            #else
-                return 1; // default NORMAL
-            #endif
+            // LUC_DEBUG_VERBOSITY is now a number (0,1,2,3)
+            return LUC_DEBUG_VERBOSITY;
         #else
             return 1; // default NORMAL
         #endif
     }
 
+    inline std::string getLogFilePath() {
+        #ifdef LUC_DEBUG_FILE_PATH
+            return LUC_DEBUG_FILE_PATH;
+        #else
+            return "debug.log";
+        #endif
+    }
+
+    // Flag to track if we've printed the log file message
+    inline bool& logFileMessagePrinted() {
+        static bool printed = false;
+        return printed;
+    }
+
     inline std::ostream& getDebugStream() {
         #ifdef LUC_DEBUG_TO_FILE
-            static std::ofstream file(LUC_DEBUG_FILE_PATH, std::ios::app);
+            static std::ofstream file(getLogFilePath(), std::ios::app);
+            
+            // Print message once when first accessed
+            if (!logFileMessagePrinted()) {
+                logFileMessagePrinted() = true;
+                
+                // Get absolute path for display
+                std::string logPath = getLogFilePath();
+                
+                // Try to get absolute path (Windows)
+                #ifdef _WIN32
+                    char absPath[_MAX_PATH];
+                    if (_fullpath(absPath, logPath.c_str(), _MAX_PATH)) {
+                        logPath = absPath;
+                    }
+                #endif
+                
+                std::cout << "[DEBUG] Log file enabled: " << logPath << std::endl;
+            }
+            
             return file;
         #else
             return std::cout;

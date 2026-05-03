@@ -235,9 +235,6 @@ std::unique_ptr<UseDeclAST> Parser::parseUseDecl(Visibility vis) {
 
 std::unique_ptr<VarDeclAST> Parser::parseVarDecl(Visibility vis, std::vector<AttributePtr> attrs) {
     // The keyword was consumed by parseTopLevelDecl before this call.
-    // Re-read the keyword from the token just before pos_ so we can reconstruct
-    // the DeclKeyword. We look at tokens_[pos_ - 1].
-    // Note: parseTopLevelDecl advanced past the keyword and left pos_ on the name.
     const Token &kwTok = tokens_[pos_ - 1];
     DeclKeyword kw;
     switch (kwTok.type) {
@@ -280,16 +277,6 @@ std::unique_ptr<VarDeclAST> Parser::parseVarDecl(Visibility vis, std::vector<Att
     if (!looksLikeType()) {
         errorAt(DiagCode::E2005, "expected type annotation for '" + name + "'");
         return nullptr;
-    }
-
-    // RAW POINTER VALIDATION: *T only allowed with @extern
-    // Check if the type starts with '*'
-    bool isRawPointer = check(TokenType::MUL);
-    if (isRawPointer && !hasExternAttr) {
-        errorAt(DiagCode::E3002, 
-                "raw pointer type '*T' is only allowed on '@extern' declarations. "
-                "Variable '" + name + "' uses '*T' but has no '@extern' attribute.");
-        // Continue parsing to recover - we'll still parse the type
     }
 
     TypePtr type = parseType();

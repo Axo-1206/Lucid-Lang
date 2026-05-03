@@ -195,8 +195,10 @@ nullable_suffix := '?'
 -- Reference   (&T)
 ref_type        := '&' type
 
--- Raw pointer (*T) — only valid on declarations carrying @extern or via intrinsics.
--- See "The Sealed Conduit Model" below for rules.
+-- Raw pointer (*T) — only valid on declarations carrying @extern.
+-- Allowed operations: storage (variables, struct fields), passing to @extern functions,
+-- nil checks, and pointer intrinsics. Forbidden: dereferencing, field access, indexing,
+-- arithmetic. See "The Sealed Conduit Model" below for complete rules.
 ptr_type        := '*' type
 
 -- Array types — three distinct kinds:
@@ -370,19 +372,65 @@ Raw pointers (`*T`) in Luc are treated as **sealed conduits**. They provide zero
 
 ### Allowed Operations (Safe)
 
-1. **Storage**: Store a pointer value in a variable or struct field.
-2. **Passing**: Pass a pointer to an `@extern` function.
+1. **Storage**: Store a pointer value in a variable, struct field, or parameter.
+2. **Passing**: Pass a pointer to an `@extern` function (C/OS/Vulkan APIs).
 3. **Nil Check**: Compare a pointer to `nil` (`== nil`, `!= nil`).
-4. **Intrinsics**: Pass to pointer management intrinsics (see below).
+4. **Intrinsics**: Pass to pointer management intrinsics (`@ptrToRef`, `@ptrOffset`, etc.).
 5. **Printing**: Print the pointer value (memory address) for debugging.
 
 ### Forbidden Operations (Compiler Error)
 
-- **Dereferencing**: `*ptr` is not supported for raw pointers.
+- **Dereferencing**: `*ptr` syntax is not supported for raw pointers.
 - **Field Access**: `ptr.field` must cross to a safe reference first.
 - **Indexing**: `ptr[i]` must cross to a slice or reference first.
-- **Arithmetic Operators**: `ptr + 4` or `ptr - 4` are prohibited.
+- **Arithmetic Operators**: `ptr + 4` or `ptr - 4` are prohibited. Use `@ptrOffset` instead.
 - **Assignment**: `*ptr = value` is prohibited.
+
+```luc
+-- tests/pointer_test.luc
+package test
+
+-- Valid: raw pointer in @extern function parameter
+@extern("memcpy")
+const memcpy (dest *uint8, src *uint8, len uint64)
+
+-- Valid: raw pointer in @extern variable
+@extern("__stack_top")
+const stackTop *uint8
+
+-- Valid: storing raw pointer from extern function
+@extern("malloc")
+const malloc (size uint64) *uint8?
+
+@jit
+export const main () int = {
+    -- Valid: storing raw pointer from @extern function
+    let buf *uint8? = malloc(1024)
+    
+    -- Valid: nil check
+    if buf == nil {
+        return 1
+    }
+    
+    -- Valid: passing to @extern function
+    let src *uint8? = malloc(100)
+    memcpy(buf, src, 100)  -- passes raw pointers to @extern
+    
+    -- Forbidden: dereferencing (should error)
+    -- let value uint8 = *buf   -- ERROR: cannot dereference raw pointer
+    
+    -- Forbidden: field access (should error)
+    -- let addr = buf.ptr       -- ERROR: no fields on raw pointer
+    
+    -- Forbidden: arithmetic (should error)
+    -- let next = buf + 1       -- ERROR: pointer arithmetic not allowed
+    
+    -- Valid: pointer arithmetic via intrinsic
+    let next *uint8? = @ptrOffset(buf, 1)
+    
+    return 0
+}
+```
 
 ### Boundary Crossing (Intrinsics)
 
@@ -418,6 +466,16 @@ decl_keyword    := 'let' | 'const'
 type_ann        := type                    -- bare type, no colon needed, always required
                    -- e.g.  let x int = 5
                    -- e.g.  let name string? = nil
+```
+
+```luc
+-- Variable Declaration with raw pointer (only valid inside @extern context):
+
+@extern("malloc")
+const buffer *uint8? = malloc(1024)     -- OK: *uint8? in @extern variable
+
+-- NOT allowed outside @extern:
+let bad *int = nil                       -- ERROR: raw pointer outside @extern
 ```
 
 ### Declaration Semantics

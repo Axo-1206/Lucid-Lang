@@ -1,4 +1,5 @@
 #include "Lexer.hpp"
+#include "debug/DebugMacros.hpp" 
 #include <cctype>
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -7,6 +8,8 @@
 
 Lexer::Lexer(const std::string &source)
     : src(source), pos(0), line(1), column(1) {
+    LUC_LOG_LEXER("Lexer constructed, source size: " << source.size() << " bytes");
+    
 	// ── Modifiers ──────────────────────────────────────────────────────────────
 	keywords["pub"] = TokenType::PUB;
 	keywords["export"] = TokenType::EXPORT;
@@ -98,26 +101,44 @@ Lexer::Lexer(const std::string &source)
 // ─────────────────────────────────────────────────────────────────────────────
 
 Token Lexer::makeToken(TokenType type, const std::string &value) {
-  	return {type, value, line, column};
+    LUC_LOG_LEXER_EXTREME("makeToken: type=" << static_cast<int>(type) << ", value='" << value << "', line=" << line << ", col=" << column);
+    return {type, value, line, column};
 }
 
-char Lexer::peek() { return isAtEnd() ? '\0' : src[pos]; }
+char Lexer::peek() { 
+    char c = isAtEnd() ? '\0' : src[pos];
+    LUC_LOG_LEXER_EXTREME("peek: '" << (c == '\n' ? '\\' : c) << "' at pos=" << pos);
+    return c;
+}
 
-char Lexer::peekNext() { return (pos + 1 >= src.size()) ? '\0' : src[pos + 1]; }
+char Lexer::peekNext() { 
+    char c = (pos + 1 >= src.size()) ? '\0' : src[pos + 1];
+    LUC_LOG_LEXER_EXTREME("peekNext: '" << (c == '\n' ? '\\' : c) << "'");
+    return c;
+}
 
 char Lexer::advance() {
-	column++;
-	return src[pos++];
+    char c = src[pos++];
+    column++;
+    LUC_LOG_LEXER_EXTREME("advance: consumed '" << (c == '\n' ? '\\' : c) << "', new pos=" << pos);
+    return c;
 }
 
-bool Lexer::isAtEnd() { return pos >= src.size(); }
+bool Lexer::isAtEnd() { 
+    bool end = pos >= src.size();
+    LUC_LOG_LEXER_EXTREME("isAtEnd: " << (end ? "true" : "false"));
+    return end;
+}
 
 bool Lexer::match(char expected) {
-	if (isAtEnd() || src[pos] != expected)
-		return false;
-	pos++;
-	column++;
-	return true;
+    if (isAtEnd() || src[pos] != expected) {
+        LUC_LOG_LEXER_EXTREME("match('" << expected << "'): false");
+        return false;
+    }
+    pos++;
+    column++;
+    LUC_LOG_LEXER_EXTREME("match('" << expected << "'): true");
+    return true;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -125,52 +146,54 @@ bool Lexer::match(char expected) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void Lexer::skipWhitespace() {
-	while (!isAtEnd()) {
-		char c = peek();
+    LUC_LOG_LEXER_VERBOSE("skipWhitespace: pos=" << pos << ", line=" << line);
+    
+    while (!isAtEnd()) {
+        char c = peek();
 
-		if (c == ' ' || c == '\r' || c == '\t') {
-		advance();
-		} else if (c == '\n') {
-		line++;
-		column = 1;
-		advance();
-		}
-		// Single-line comment: --
-		// Break out so getNextToken can emit a LINE_COMMENT token.
-		// This allows the Parser to harvest stacked and trailing doc comments.
-		else if (c == '-' && peekNext() == '-') {
-			break;
-		}
-		// Block comment: /- ... -/
-		// Doc comment:   /-- ... --/
-		//
-		// Both open with '/'. Disambiguate by peeking a third character BEFORE
-		// consuming anything. If it is /-- we must NOT eat it here — break out
-		// so getNextToken can capture and return it as a DOC_COMMENT token.
-		else if (c == '/' && peekNext() == '-') {
-            // pos points at '-' (not yet consumed). Check the char after that.
+        if (c == ' ' || c == '\r' || c == '\t') {
+            LUC_LOG_LEXER_EXTREME("skipWhitespace: skipping whitespace char '" << c << "'");
+            advance();
+        } else if (c == '\n') {
+            LUC_LOG_LEXER_VERBOSE("skipWhitespace: newline, line=" << line << "->" << line + 1);
+            line++;
+            column = 1;
+            advance();
+        }
+        // Single-line comment: --
+        else if (c == '-' && peekNext() == '-') {
+            LUC_LOG_LEXER_VERBOSE("skipWhitespace: found line comment start '--', breaking");
+            break;
+        }
+        // Block comment: /- ... -/
+        // Doc comment:   /-- ... --/
+        else if (c == '/' && peekNext() == '-') {
             bool isDoc = (pos + 1 < src.size() && src[pos + 1] == '-');
-            if (isDoc)
-                break; // leave /-- for getNextToken
+            if (isDoc) {
+                LUC_LOG_LEXER_VERBOSE("skipWhitespace: found doc comment '/--', breaking");
+                break;
+            }
 
             // Plain block comment /- ... -/
+            LUC_LOG_LEXER_VERBOSE("skipWhitespace: skipping block comment");
             advance(); // consume '/'
             advance(); // consume '-'
             while (!isAtEnd() && !(peek() == '-' && peekNext() == '/')) {
                 if (peek() == '\n') {
-                line++;
-                column = 1;
+                    line++;
+                    column = 1;
                 }
                 advance();
             }
             if (!isAtEnd()) {
                 advance();
                 advance();
-            } // consume '-/'
-		} else {
-			break;
-		}
-	}
+            }
+        } else {
+            break;
+        }
+    }
+    LUC_LOG_LEXER_VERBOSE("skipWhitespace: done, pos=" << pos);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -178,444 +201,508 @@ void Lexer::skipWhitespace() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 Token Lexer::readNumber(char first) {
-  std::string num(1, first);
+    LUC_LOG_LEXER_VERBOSE("readNumber: first char='" << first << "'");
+    std::string num(1, first);
 
-  // Hex: 0xFF
-  if (first == '0' && (peek() == 'x' || peek() == 'X')) {
-    num += advance(); // consume 'x'
-    while (isxdigit(peek()) || peek() == '_')
-      num += advance();
-    return makeToken(TokenType::HEX_LITERAL, num);
-  }
+    // Hex: 0xFF
+    if (first == '0' && (peek() == 'x' || peek() == 'X')) {
+        LUC_LOG_LEXER_VERBOSE("readNumber: hex literal");
+        num += advance(); // consume 'x'
+        while (isxdigit(peek()) || peek() == '_')
+            num += advance();
+        LUC_LOG_LEXER("readNumber: hex literal: " << num);
+        return makeToken(TokenType::HEX_LITERAL, num);
+    }
 
-  // Binary: 0b1010
-  if (first == '0' && (peek() == 'b' || peek() == 'B')) {
-    num += advance(); // consume 'b'
-    while (peek() == '0' || peek() == '1' || peek() == '_')
-      num += advance();
-    return makeToken(TokenType::BINARY_LITERAL, num);
-  }
+    // Binary: 0b1010
+    if (first == '0' && (peek() == 'b' || peek() == 'B')) {
+        LUC_LOG_LEXER_VERBOSE("readNumber: binary literal");
+        num += advance(); // consume 'b'
+        while (peek() == '0' || peek() == '1' || peek() == '_')
+            num += advance();
+        LUC_LOG_LEXER("readNumber: binary literal: " << num);
+        return makeToken(TokenType::BINARY_LITERAL, num);
+    }
 
-  // Integer or float
-  bool isFloat = false;
-  while (isdigit(peek()) || peek() == '_')
-    num += advance();
-
-  if (peek() == '.' && peekNext() != '.') // avoid consuming '..' range
-  {
-    isFloat = true;
-    num += advance(); // consume '.'
+    // Integer or float
+    bool isFloat = false;
     while (isdigit(peek()) || peek() == '_')
-      num += advance();
-  }
+        num += advance();
 
-  // Exponent: 1e10, 1.5e-3
-  if (peek() == 'e' || peek() == 'E') {
-    isFloat = true;
-    num += advance();
-    if (peek() == '+' || peek() == '-')
-      num += advance();
-    while (isdigit(peek()))
-      num += advance();
-  }
+    if (peek() == '.' && peekNext() != '.') {
+        isFloat = true;
+        LUC_LOG_LEXER_VERBOSE("readNumber: decimal point detected");
+        num += advance(); // consume '.'
+        while (isdigit(peek()) || peek() == '_')
+            num += advance();
+    }
 
-  return makeToken(isFloat ? TokenType::FLOAT_LITERAL : TokenType::INT_LITERAL,
-                   num);
+    // Exponent: 1e10, 1.5e-3
+    if (peek() == 'e' || peek() == 'E') {
+        isFloat = true;
+        LUC_LOG_LEXER_VERBOSE("readNumber: exponent detected");
+        num += advance();
+        if (peek() == '+' || peek() == '-')
+            num += advance();
+        while (isdigit(peek()))
+            num += advance();
+    }
+
+    LUC_LOG_LEXER("readNumber: " << (isFloat ? "float" : "int") << " literal: " << num);
+    return makeToken(isFloat ? TokenType::FLOAT_LITERAL : TokenType::INT_LITERAL, num);
 }
 
 Token Lexer::readString() {
-  std::string str;
-  while (!isAtEnd() && peek() != '"') {
-    if (peek() == '\n') {
-      line++;
-      column = 1;
-    }
-    if (peek() == '\\') {
-      advance(); // consume '\'
-      char esc = advance();
-      switch (esc) {
-      case 'n':
-        str += '\n';
-        break;
-      case 't':
-        str += '\t';
-        break;
-      case 'r':
-        str += '\r';
-        break;
-      case '"':
-        str += '"';
-        break;
-      case '\\':
-        str += '\\';
-        break;
-      case '\'':
-        str += '\'';
-        break;
-      case '0':
-        str += '\0';
-        break;
-      case 'x': {
-        // \xHH — two hex digits
-        std::string hex;
-        for (int i = 0; i < 2 && isxdigit(peek()); i++)
-          hex += advance();
-        str += (char)std::stoi(hex, nullptr, 16);
-        break;
-      }
-      case 'u': {
-        // \uXXXX — four hex digits (Unicode BMP codepoint, UTF-8 encoded)
-        std::string hex;
-        for (int i = 0; i < 4 && isxdigit(peek()); i++)
-          hex += advance();
-        unsigned long cp = std::stoul(hex, nullptr, 16);
-        // encode as UTF-8
-        if (cp < 0x80) {
-          str += (char)cp;
-        } else if (cp < 0x800) {
-          str += (char)(0xC0 | (cp >> 6));
-          str += (char)(0x80 | (cp & 0x3F));
-        } else {
-          str += (char)(0xE0 | (cp >> 12));
-          str += (char)(0x80 | ((cp >> 6) & 0x3F));
-          str += (char)(0x80 | (cp & 0x3F));
+    LUC_LOG_LEXER_VERBOSE("readString: starting");
+    std::string str;
+    while (!isAtEnd() && peek() != '"') {
+        if (peek() == '\n') {
+            line++;
+            column = 1;
         }
-        break;
-      }
-      case 'U': {
-        // \UXXXXXXXX — eight hex digits (full Unicode codepoint, UTF-8 encoded)
-        std::string hex;
-        for (int i = 0; i < 8 && isxdigit(peek()); i++)
-          hex += advance();
-        unsigned long cp = std::stoul(hex, nullptr, 16);
-        // encode as UTF-8
-        if (cp < 0x80) {
-          str += (char)cp;
-        } else if (cp < 0x800) {
-          str += (char)(0xC0 | (cp >> 6));
-          str += (char)(0x80 | (cp & 0x3F));
-        } else if (cp < 0x10000) {
-          str += (char)(0xE0 | (cp >> 12));
-          str += (char)(0x80 | ((cp >> 6) & 0x3F));
-          str += (char)(0x80 | (cp & 0x3F));
+        if (peek() == '\\') {
+            advance(); // consume '\'
+            char esc = advance();
+            LUC_LOG_LEXER_EXTREME("readString: escape sequence '\\" << esc << "'");
+            switch (esc) {
+            case 'n':
+                str += '\n';
+                break;
+            case 't':
+                str += '\t';
+                break;
+            case 'r':
+                str += '\r';
+                break;
+            case '"':
+                str += '"';
+                break;
+            case '\\':
+                str += '\\';
+                break;
+            case '\'':
+                str += '\'';
+                break;
+            case '0':
+                str += '\0';
+                break;
+            case 'x': {
+                std::string hex;
+                for (int i = 0; i < 2 && isxdigit(peek()); i++)
+                    hex += advance();
+                str += (char)std::stoi(hex, nullptr, 16);
+                break;
+            }
+            case 'u': {
+                std::string hex;
+                for (int i = 0; i < 4 && isxdigit(peek()); i++)
+                    hex += advance();
+                unsigned long cp = std::stoul(hex, nullptr, 16);
+                // UTF-8 encoding...
+                if (cp < 0x80) {
+                    str += (char)cp;
+                } else if (cp < 0x800) {
+                    str += (char)(0xC0 | (cp >> 6));
+                    str += (char)(0x80 | (cp & 0x3F));
+                } else {
+                    str += (char)(0xE0 | (cp >> 12));
+                    str += (char)(0x80 | ((cp >> 6) & 0x3F));
+                    str += (char)(0x80 | (cp & 0x3F));
+                }
+                break;
+            }
+            case 'U': {
+                std::string hex;
+                for (int i = 0; i < 8 && isxdigit(peek()); i++)
+                    hex += advance();
+                unsigned long cp = std::stoul(hex, nullptr, 16);
+                // UTF-8 encoding for up to 4 bytes...
+                if (cp < 0x80) {
+                    str += (char)cp;
+                } else if (cp < 0x800) {
+                    str += (char)(0xC0 | (cp >> 6));
+                    str += (char)(0x80 | (cp & 0x3F));
+                } else if (cp < 0x10000) {
+                    str += (char)(0xE0 | (cp >> 12));
+                    str += (char)(0x80 | ((cp >> 6) & 0x3F));
+                    str += (char)(0x80 | (cp & 0x3F));
+                } else {
+                    str += (char)(0xF0 | (cp >> 18));
+                    str += (char)(0x80 | ((cp >> 12) & 0x3F));
+                    str += (char)(0x80 | ((cp >> 6) & 0x3F));
+                    str += (char)(0x80 | (cp & 0x3F));
+                }
+                break;
+            }
+            default:
+                str += '\\';
+                str += esc;
+                break;
+            }
         } else {
-          str += (char)(0xF0 | (cp >> 18));
-          str += (char)(0x80 | ((cp >> 12) & 0x3F));
-          str += (char)(0x80 | ((cp >> 6) & 0x3F));
-          str += (char)(0x80 | (cp & 0x3F));
+            str += advance();
         }
-        break;
-      }
-      default:
-        str += '\\';
-        str += esc;
-        break;
-      }
-    } else {
-      str += advance();
     }
-  }
-  if (!isAtEnd())
-    advance(); // consume closing '"'
-  return makeToken(TokenType::STRING_LITERAL, str);
+    if (!isAtEnd())
+        advance(); // consume closing '"'
+    
+    LUC_LOG_LEXER_VERBOSE("readString: result length=" << str.size());
+    return makeToken(TokenType::STRING_LITERAL, str);
 }
 
 Token Lexer::readChar() {
-	std::string ch;
-	if (!isAtEnd() && peek() != '\'') {
-		if (peek() == '\\') {
-		advance();
-		ch += '\\';
-		if (!isAtEnd())
-			ch += advance();
-		} else {
-		ch += advance();
-		}
-	}
-	if (!isAtEnd() && peek() == '\'')
-		advance(); // consume closing '\''
-	return makeToken(TokenType::CHAR_LITERAL, ch);
+    LUC_LOG_LEXER_VERBOSE("readChar: starting");
+    std::string ch;
+    if (!isAtEnd() && peek() != '\'') {
+        if (peek() == '\\') {
+            advance();
+            ch += '\\';
+            if (!isAtEnd())
+                ch += advance();
+        } else {
+            ch += advance();
+        }
+    }
+    if (!isAtEnd() && peek() == '\'')
+        advance(); // consume closing '\''
+    
+    LUC_LOG_LEXER_VERBOSE("readChar: '" << ch << "'");
+    return makeToken(TokenType::CHAR_LITERAL, ch);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Raw string reader  r"..."
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// Called from getNextToken after 'r' has been identified as an identifier
-// followed immediately by '"'. No escape processing — every character is
-// stored literally, including backslashes.
-//
 Token Lexer::readRawString() {
-	// opening '"' already consumed by caller
-	std::string str;
-	while (!isAtEnd() && peek() != '"') {
-		if (peek() == '\n') {
-		line++;
-		column = 1;
-		}
-		str += advance();
-	}
-	if (!isAtEnd())
-		advance(); // consume closing '"'
-	return makeToken(TokenType::RAW_STRING_LITERAL, str);
+    LUC_LOG_LEXER_VERBOSE("readRawString: starting");
+    std::string str;
+    while (!isAtEnd() && peek() != '"') {
+        if (peek() == '\n') {
+            line++;
+            column = 1;
+        }
+        str += advance();
+    }
+    if (!isAtEnd())
+        advance(); // consume closing '"'
+    
+    LUC_LOG_LEXER_VERBOSE("readRawString: result length=" << str.size());
+    return makeToken(TokenType::RAW_STRING_LITERAL, str);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Doc comment reader  /-- ... --/
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// Called from getNextToken after '/' has already been consumed and we have
-// confirmed the next two chars are '--'.
-//
-// The raw text between the delimiters is stored in the token value exactly as
-// written — leading ' -' line prefixes are preserved for the parser / tooling
-// to interpret. The opening /-- and closing --/ are NOT included in the value.
-//
 Token Lexer::readDocComment() {
-	advance(); // consume first  '-'  (of opening --)
-	advance(); // consume second '-'
+    LUC_LOG_LEXER_VERBOSE("readDocComment: starting");
+    advance(); // consume first '-' (of opening --)
+    advance(); // consume second '-'
 
-	std::string doc;
+    std::string doc;
 
-	while (!isAtEnd()) {
-		// Closing sequence is --/
-		if (peek() == '-' && pos + 1 < src.size() && src[pos + 1] == '-' &&
-			pos + 2 < src.size() && src[pos + 2] == '/') {
-		advance();
-		advance();
-		advance(); // consume --/
-		break;
-		}
-		if (peek() == '\n') {
-		line++;
-		column = 1;
-		}
-		doc += advance();
-	}
+    while (!isAtEnd()) {
+        // Closing sequence is --/
+        if (peek() == '-' && pos + 1 < src.size() && src[pos + 1] == '-' &&
+            pos + 2 < src.size() && src[pos + 2] == '/') {
+            advance();
+            advance();
+            advance(); // consume --/
+            break;
+        }
+        if (peek() == '\n') {
+            line++;
+            column = 1;
+        }
+        doc += advance();
+    }
 
-	return makeToken(TokenType::DOC_COMMENT, doc);
+    LUC_LOG_LEXER_VERBOSE("readDocComment: length=" << doc.size());
+    return makeToken(TokenType::DOC_COMMENT, doc);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Line comment reader  -- text
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// Called from getNextToken after the first '-' of '--' has been consumed and
-// the next char is confirmed to be '-'. Consumes the second '-', strips the
-// optional leading space, and collects the rest of the line as the value.
-// Does NOT consume the trailing newline — skipWhitespace will do that on the
-// next call so the Lexer's line counter stays correct.
-//
 Token Lexer::readLineComment() {
-	advance(); // consume the second '-'
+    LUC_LOG_LEXER_VERBOSE("readLineComment: starting");
+    advance(); // consume the second '-'
 
-	// Strip a single optional leading space (the common "-- text" style).
-	if (peek() == ' ')
-		advance();
+    // Strip a single optional leading space (the common "-- text" style).
+    if (peek() == ' ')
+        advance();
 
-	std::string text;
-	while (!isAtEnd() && peek() != '\n')
-		text += advance();
+    std::string text;
+    while (!isAtEnd() && peek() != '\n')
+        text += advance();
 
-	return makeToken(TokenType::LINE_COMMENT, text);
+    LUC_LOG_LEXER_VERBOSE("readLineComment: '" << text << "'");
+    return makeToken(TokenType::LINE_COMMENT, text);
 }
-
-
 
 Token Lexer::getNextToken() {
-	skipWhitespace();
-	if (isAtEnd())
-		return makeToken(TokenType::EOF_TOKEN, "EOF");
+    LUC_LOG_LEXER_VERBOSE("getNextToken: pos=" << pos << ", line=" << line << ", col=" << column);
+    
+    skipWhitespace();
+    if (isAtEnd()) {
+        LUC_LOG_LEXER("getNextToken: EOF");
+        return makeToken(TokenType::EOF_TOKEN, "EOF");
+    }
 
-	char c = advance();
+    char c = advance();
+    LUC_LOG_LEXER_EXTREME("getNextToken: processing char '" << c << "'");
 
-	// ── Identifiers & Keywords ─────────────────────────────────────────────────
-	if (isalpha(c) || c == '_') {
-		std::string ident(1, c);
-		while (isalnum(peek()) || peek() == '_')
-		ident += advance();
+    // ── Identifiers & Keywords ─────────────────────────────────────────────────
+    if (isalpha(c) || c == '_') {
+        std::string ident(1, c);
+        while (isalnum(peek()) || peek() == '_')
+            ident += advance();
 
-			// r"..." raw string literal — 'r' immediately followed by '"'
-			if (ident == "r" && peek() == '"') {
-				advance(); // consume opening '"'
-				return readRawString();
-			}
+        // r"..." raw string literal — 'r' immediately followed by '"'
+        if (ident == "r" && peek() == '"') {
+            LUC_LOG_LEXER_VERBOSE("getNextToken: raw string literal");
+            advance(); // consume opening '"'
+            return readRawString();
+        }
 
-		// Standalone _ is a wildcard token — only valid in match pattern position
-		// The parser enforces that _ does not appear in expression context
-		if (ident == "_") return makeToken(TokenType::WILDCARD, "_");
+        // Standalone _ is a wildcard token
+        if (ident == "_") {
+            LUC_LOG_LEXER_EXTREME("getNextToken: wildcard '_'");
+            return makeToken(TokenType::WILDCARD, "_");
+        }
 
-		auto it = keywords.find(ident);
-		if (it != keywords.end())
-			return makeToken(it->second, ident);
-		return makeToken(TokenType::IDENTIFIER, ident);
-	}
+        auto it = keywords.find(ident);
+        if (it != keywords.end()) {
+            LUC_LOG_LEXER_VERBOSE("getNextToken: keyword '" << ident << "'");
+            return makeToken(it->second, ident);
+        }
+        LUC_LOG_LEXER_VERBOSE("getNextToken: identifier '" << ident << "'");
+        return makeToken(TokenType::IDENTIFIER, ident);
+    }
 
-	// ── Numbers ────────────────────────────────────────────────────────────────
-	if (isdigit(c))
-		return readNumber(c);
+    // ── Numbers ────────────────────────────────────────────────────────────────
+    if (isdigit(c)) {
+        return readNumber(c);
+    }
 
-	// ── String literals ────────────────────────────────────────────────────────
-	if (c == '"')
-		return readString();
+    // ── String literals ────────────────────────────────────────────────────────
+    if (c == '"') {
+        LUC_LOG_LEXER_VERBOSE("getNextToken: string literal");
+        return readString();
+    }
 
-	// ── Char literals ──────────────────────────────────────────────────────────
-	if (c == '\'')
-		return readChar();
+    // ── Char literals ──────────────────────────────────────────────────────────
+    if (c == '\'') {
+        LUC_LOG_LEXER_VERBOSE("getNextToken: char literal");
+        return readChar();
+    }
 
-	// ── Operators & Symbols ────────────────────────────────────────────────────
-	switch (c) {
-	// ── Access ─────────────────────────────────────────────────────────────────
-	case '.':
-		if (match('?'))
-		    return makeToken(TokenType::DOT_QUESTION, ".?"); // nullable chain
-		if (match('.')) {
-		    if (match('.'))
-		        return makeToken(TokenType::VARIADIC, "..."); // variadic
-		    return makeToken(TokenType::RANGE, "..");       // range
-		}
-		return makeToken(TokenType::DOT, ".");
+    // ── Operators & Symbols ────────────────────────────────────────────────────
+    switch (c) {
+    // ── Access ─────────────────────────────────────────────────────────────────
+    case '.':
+        if (match('?')) {
+            LUC_LOG_LEXER_EXTREME("getNextToken: '.?'");
+            return makeToken(TokenType::DOT_QUESTION, ".?");
+        }
+        if (match('.')) {
+            if (match('.')) {
+                LUC_LOG_LEXER_EXTREME("getNextToken: '...' (variadic)");
+                return makeToken(TokenType::VARIADIC, "...");
+            }
+            LUC_LOG_LEXER_EXTREME("getNextToken: '..' (range)");
+            return makeToken(TokenType::RANGE, "..");
+        }
+        LUC_LOG_LEXER_EXTREME("getNextToken: '.'");
+        return makeToken(TokenType::DOT, ".");
 
-	case ':':
-		return makeToken(TokenType::COLON, ":");
+    case ':':
+        LUC_LOG_LEXER_EXTREME("getNextToken: ':'");
+        return makeToken(TokenType::COLON, ":");
 
-	// ── Nullable ───────────────────────────────────────────────────────────────
-	case '?':
-		if (match('?'))
-		    return makeToken(TokenType::QUESTION_QUESTION, "??"); // null coalescing
-		return makeToken(TokenType::QUESTION, "?");             // nullable suffix
+    case '?':
+        if (match('?')) {
+            LUC_LOG_LEXER_EXTREME("getNextToken: '??'");
+            return makeToken(TokenType::QUESTION_QUESTION, "??");
+        }
+        LUC_LOG_LEXER_EXTREME("getNextToken: '?'");
+        return makeToken(TokenType::QUESTION, "?");
 
-	// ── Assignment & Comparison ────────────────────────────────────────────────
-	case '=':
-		if (match('=')) {
-			if (match('='))
-			    return makeToken(TokenType::EQUAL_EQUAL_EQUAL, "==="); // reference equality
-			return makeToken(TokenType::EQUAL_EQUAL, "==");            // value equality
-		}
+    case '=':
+        if (match('=')) {
+            if (match('=')) {
+                LUC_LOG_LEXER_EXTREME("getNextToken: '==='");
+                return makeToken(TokenType::EQUAL_EQUAL_EQUAL, "===");
+            }
+            LUC_LOG_LEXER_EXTREME("getNextToken: '=='");
+            return makeToken(TokenType::EQUAL_EQUAL, "==");
+        }
+        LUC_LOG_LEXER_EXTREME("getNextToken: '='");
         return makeToken(TokenType::ASSIGN, "=");
 
-	case '!':
-		if (match('='))
-		    return makeToken(TokenType::NOT_EQUAL, "!=");
-		return makeToken(TokenType::BANG, "!"); // pipeline argument pack annotation
+    case '!':
+        if (match('=')) {
+            LUC_LOG_LEXER_EXTREME("getNextToken: '!='");
+            return makeToken(TokenType::NOT_EQUAL, "!=");
+        }
+        LUC_LOG_LEXER_EXTREME("getNextToken: '!'");
+        return makeToken(TokenType::BANG, "!");
 
-	case '<':
-		if (match('<')) {
-		    if (match('='))
-		        return makeToken(TokenType::SHL_ASSIGN, "<<=");
-		    return makeToken(TokenType::SHL, "<<");
-		}
-		if (match('='))
-		    return makeToken(TokenType::LESS_EQUAL, "<=");
+    case '<':
+        if (match('<')) {
+            if (match('=')) {
+                LUC_LOG_LEXER_EXTREME("getNextToken: '<<='");
+                return makeToken(TokenType::SHL_ASSIGN, "<<=");
+            }
+            LUC_LOG_LEXER_EXTREME("getNextToken: '<<'");
+            return makeToken(TokenType::SHL, "<<");
+        }
+        if (match('=')) {
+            LUC_LOG_LEXER_EXTREME("getNextToken: '<='");
+            return makeToken(TokenType::LESS_EQUAL, "<=");
+        }
+        LUC_LOG_LEXER_EXTREME("getNextToken: '<'");
         return makeToken(TokenType::LESS, "<");
 
-	case '>':
-		if (match('>')) {
-		    if (match('='))
-		        return makeToken(TokenType::SHR_ASSIGN, ">>=");
-		    return makeToken(TokenType::SHR, ">>");
-		}
-		if (match('='))
-		    return makeToken(TokenType::GREATER_EQUAL, ">=");
+    case '>':
+        if (match('>')) {
+            if (match('=')) {
+                LUC_LOG_LEXER_EXTREME("getNextToken: '>>='");
+                return makeToken(TokenType::SHR_ASSIGN, ">>=");
+            }
+            LUC_LOG_LEXER_EXTREME("getNextToken: '>>'");
+            return makeToken(TokenType::SHR, ">>");
+        }
+        if (match('=')) {
+            LUC_LOG_LEXER_EXTREME("getNextToken: '>='");
+            return makeToken(TokenType::GREATER_EQUAL, ">=");
+        }
+        LUC_LOG_LEXER_EXTREME("getNextToken: '>'");
         return makeToken(TokenType::GREATER, ">");
 
-	// ── Math ───────────────────────────────────────────────────────────────────
-	case '+':
-		if (match('>'))
-		    return makeToken(TokenType::COMPOSE, "+>"); // function composition
-		if (match('='))
-		    return makeToken(TokenType::PLUS_ASSIGN, "+=");
+    case '+':
+        if (match('>')) {
+            LUC_LOG_LEXER_EXTREME("getNextToken: '+>'");
+            return makeToken(TokenType::COMPOSE, "+>");
+        }
+        if (match('=')) {
+            LUC_LOG_LEXER_EXTREME("getNextToken: '+='");
+            return makeToken(TokenType::PLUS_ASSIGN, "+=");
+        }
+        LUC_LOG_LEXER_EXTREME("getNextToken: '+'");
         return makeToken(TokenType::PLUS, "+");
 
-	case '-':
-		// Check for line comment BEFORE checking for -= and ->
-		if (peek() == '-')
-			return readLineComment(); // -- line comment
-		if (match('='))
-		    return makeToken(TokenType::MINUS_ASSIGN, "-=");
-		if (match('>'))
-		    return makeToken(TokenType::ARROW, "->"); // pipeline
-		return makeToken(TokenType::MINUS, "-");
+    case '-':
+        if (peek() == '-') {
+            LUC_LOG_LEXER_EXTREME("getNextToken: line comment '--'");
+            return readLineComment();
+        }
+        if (match('=')) {
+            LUC_LOG_LEXER_EXTREME("getNextToken: '-='");
+            return makeToken(TokenType::MINUS_ASSIGN, "-=");
+        }
+        if (match('>')) {
+            LUC_LOG_LEXER_EXTREME("getNextToken: '->'");
+            return makeToken(TokenType::ARROW, "->");
+        }
+        LUC_LOG_LEXER_EXTREME("getNextToken: '-'");
+        return makeToken(TokenType::MINUS, "-");
 
-	case '*':
-		if (match('='))
-		    return makeToken(TokenType::MUL_ASSIGN, "*=");
-		return makeToken(TokenType::MUL, "*");
+    case '*':
+        if (match('=')) {
+            LUC_LOG_LEXER_EXTREME("getNextToken: '*='");
+            return makeToken(TokenType::MUL_ASSIGN, "*=");
+        }
+        LUC_LOG_LEXER_EXTREME("getNextToken: '*'");
+        return makeToken(TokenType::MUL, "*");
 
-	case '/':
-		// /-- doc comment — must check before /= and bare DIV
-		// At this point '/' is already consumed; peek() is the next char.
-		if (peek() == '-' && pos + 1 < src.size() && src[pos + 1] == '-')
-		    return readDocComment();
-		if (match('='))
-		    return makeToken(TokenType::DIV_ASSIGN, "/=");
-		return makeToken(TokenType::DIV, "/");
+    case '/':
+        if (peek() == '-' && pos + 1 < src.size() && src[pos + 1] == '-') {
+            LUC_LOG_LEXER_EXTREME("getNextToken: doc comment '/--'");
+            return readDocComment();
+        }
+        if (match('=')) {
+            LUC_LOG_LEXER_EXTREME("getNextToken: '/='");
+            return makeToken(TokenType::DIV_ASSIGN, "/=");
+        }
+        LUC_LOG_LEXER_EXTREME("getNextToken: '/'");
+        return makeToken(TokenType::DIV, "/");
 
-	case '%':
-		if (match('='))
-		    return makeToken(TokenType::MOD_ASSIGN, "%=");
-		return makeToken(TokenType::MOD, "%");
+    case '%':
+        if (match('=')) {
+            LUC_LOG_LEXER_EXTREME("getNextToken: '%='");
+            return makeToken(TokenType::MOD_ASSIGN, "%=");
+        }
+        LUC_LOG_LEXER_EXTREME("getNextToken: '%'");
+        return makeToken(TokenType::MOD, "%");
 
-	case '^':
-		if (match('='))
-		    return makeToken(TokenType::POW_ASSIGN, "^=");
-		return makeToken(TokenType::POW, "^");
+    case '^':
+        if (match('=')) {
+            LUC_LOG_LEXER_EXTREME("getNextToken: '^='");
+            return makeToken(TokenType::POW_ASSIGN, "^=");
+        }
+        LUC_LOG_LEXER_EXTREME("getNextToken: '^'");
+        return makeToken(TokenType::POW, "^");
 
-	// ── Bitwise ────────────────────────────────────────────────────────────────
-	// '&' in expression position is always the unary reference operator (&T, &x).
-	// Bitwise AND uses '&&' to avoid ambiguity with the reference operator.
-	case '&':
-		if (match('&')) {
-		    if (match('='))
-		        return makeToken(TokenType::BIT_AND_ASSIGN, "&&=");
-		    return makeToken(TokenType::BIT_AND, "&&"); // bitwise AND
-		}
-		return makeToken(TokenType::AMPERSAND, "&");    // reference type &T
+    case '&':
+        if (match('&')) {
+            if (match('=')) {
+                LUC_LOG_LEXER_EXTREME("getNextToken: '&&='");
+                return makeToken(TokenType::BIT_AND_ASSIGN, "&&=");
+            }
+            LUC_LOG_LEXER_EXTREME("getNextToken: '&&'");
+            return makeToken(TokenType::BIT_AND, "&&");
+        }
+        LUC_LOG_LEXER_EXTREME("getNextToken: '&'");
+        return makeToken(TokenType::AMPERSAND, "&");
 
-	// '|' in type position is the union type separator (int | string).
-	// Bitwise OR uses '||' to avoid ambiguity with the union type operator.
-	case '|':
-		if (match('|')) {
-		    if (match('='))
-		        return makeToken(TokenType::BIT_OR_ASSIGN, "||=");
-		    return makeToken(TokenType::BIT_OR, "||"); // bitwise OR
-		}
-		return makeToken(TokenType::PIPE, "|");        // union type
+    case '|':
+        if (match('|')) {
+            if (match('=')) {
+                LUC_LOG_LEXER_EXTREME("getNextToken: '||='");
+                return makeToken(TokenType::BIT_OR_ASSIGN, "||=");
+            }
+            LUC_LOG_LEXER_EXTREME("getNextToken: '||'");
+            return makeToken(TokenType::BIT_OR, "||");
+        }
+        LUC_LOG_LEXER_EXTREME("getNextToken: '|'");
+        return makeToken(TokenType::PIPE, "|");
 
-	case '~':
-		if (match('^')) {
-		    if (match('='))
-		        return makeToken(TokenType::BIT_XOR_ASSIGN, "~^=");
-		    return makeToken(TokenType::BIT_XOR, "~^");
-		}
-		return makeToken(TokenType::BIT_NOT, "~");
+    case '~':
+        if (match('^')) {
+            if (match('=')) {
+                LUC_LOG_LEXER_EXTREME("getNextToken: '~^='");
+                return makeToken(TokenType::BIT_XOR_ASSIGN, "~^=");
+            }
+            LUC_LOG_LEXER_EXTREME("getNextToken: '~^'");
+            return makeToken(TokenType::BIT_XOR, "~^");
+        }
+        LUC_LOG_LEXER_EXTREME("getNextToken: '~'");
+        return makeToken(TokenType::BIT_NOT, "~");
 
-	// ── FFI ────────────────────────────────────────────────────────────────────
-	case '@':
-		return makeToken(TokenType::AT_SIGN, "@"); // compiler directive: @extern, @inline, @sizeof, etc.
+    case '@':
+        LUC_LOG_LEXER_EXTREME("getNextToken: '@'");
+        return makeToken(TokenType::AT_SIGN, "@");
 
-	// ── Delimiters ─────────────────────────────────────────────────────────────
-	case ',':
-		return makeToken(TokenType::COMMA, ",");
-	case ';':
-		return makeToken(TokenType::SEMICOLON, ";");
-	case '(':
-		return makeToken(TokenType::LPAREN, "(");
-	case ')':
-		return makeToken(TokenType::RPAREN, ")");
-	case '{':
-		return makeToken(TokenType::LBRACE, "{");
-	case '}':
-		return makeToken(TokenType::RBRACE, "}");
-	case '[':
-		return makeToken(TokenType::LBRACKET, "[");
-	case ']':
-		return makeToken(TokenType::RBRACKET, "]");
-	}
+    case ',':
+        LUC_LOG_LEXER_EXTREME("getNextToken: ','");
+        return makeToken(TokenType::COMMA, ",");
+    case ';':
+        LUC_LOG_LEXER_EXTREME("getNextToken: ';'");
+        return makeToken(TokenType::SEMICOLON, ";");
+    case '(':
+        LUC_LOG_LEXER_EXTREME("getNextToken: '('");
+        return makeToken(TokenType::LPAREN, "(");
+    case ')':
+        LUC_LOG_LEXER_EXTREME("getNextToken: ')'");
+        return makeToken(TokenType::RPAREN, ")");
+    case '{':
+        LUC_LOG_LEXER_EXTREME("getNextToken: '{'");
+        return makeToken(TokenType::LBRACE, "{");
+    case '}':
+        LUC_LOG_LEXER_EXTREME("getNextToken: '}'");
+        return makeToken(TokenType::RBRACE, "}");
+    case '[':
+        LUC_LOG_LEXER_EXTREME("getNextToken: '['");
+        return makeToken(TokenType::LBRACKET, "[");
+    case ']':
+        LUC_LOG_LEXER_EXTREME("getNextToken: ']'");
+        return makeToken(TokenType::RBRACKET, "]");
+    }
 
-	// Unknown character — emit as UNKNOWN for proper error reporting in the
-	// parser Using EOF here would cause silent corruption of the token stream
-	return makeToken(TokenType::UNKNOWN, std::string(1, c));
+    // Unknown character
+    LUC_LOG_LEXER("getNextToken: UNKNOWN character '" << c << "'");
+    return makeToken(TokenType::UNKNOWN, std::string(1, c));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -623,13 +710,18 @@ Token Lexer::getNextToken() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 std::vector<Token> Lexer::tokenize() {
-	std::vector<Token> tokens;
-	Token t = makeToken(TokenType::EOF_TOKEN, "");
+    LUC_LOG_LEXER("tokenize: starting");
+    std::vector<Token> tokens;
+    Token t = makeToken(TokenType::EOF_TOKEN, "");
+    int tokenCount = 0;
 
-	do {
-		t = getNextToken();
-		tokens.push_back(t);
-	} while (t.type != TokenType::EOF_TOKEN);
+    do {
+        t = getNextToken();
+        tokens.push_back(t);
+        tokenCount++;
+        LUC_LOG_LEXER_EXTREME("tokenize: token " << tokenCount << " - type=" << static_cast<int>(t.type) << ", value='" << t.value << "'");
+    } while (t.type != TokenType::EOF_TOKEN);
 
-	return tokens;
+    LUC_LOG_LEXER("tokenize: complete, " << tokenCount << " tokens produced");
+    return tokens;
 }
