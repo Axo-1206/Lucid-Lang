@@ -78,7 +78,7 @@ static void checkAttributes(const std::vector<AttributePtr>& attributes,
                              bool& outIsExtern,
                              std::string& outExternSym,
                              std::string& outCallingConv) {
-		LUC_LOG_SEMANTIC_VERBOSE("checkAttributes: count=" << attributes.size());
+    LUC_LOG_SEMANTIC_VERBOSE("checkAttributes: count=" << attributes.size());
     outIsExtern    = false;
     outExternSym   = "";
     outCallingConv = "C"; // default calling convention
@@ -90,7 +90,7 @@ static void checkAttributes(const std::vector<AttributePtr>& attributes,
         const std::string& n = attr->name;
 
         if (!seen.insert(n).second) {
-						LUC_LOG_SEMANTIC("\tERROR: duplicate attribute '@" << n << "'");
+            LUC_LOG_SEMANTIC("\tERROR: duplicate attribute '@" << n << "'");
             dc.error(DiagnosticCategory::Semantic, attr->loc, DiagCode::E3005,
                      "duplicate attribute '@" + n + "'");
             continue;
@@ -99,19 +99,19 @@ static void checkAttributes(const std::vector<AttributePtr>& attributes,
         // ── @extern ──────────────────────────────────────────────────────────
         if (n == "extern") {
             if (ctx != AttributeContext::Func && ctx != AttributeContext::Var) {
-								LUC_LOG_SEMANTIC("\tERROR: @extern on invalid context");
+                LUC_LOG_SEMANTIC("\tERROR: @extern on invalid context");
                 dc.error(DiagnosticCategory::Semantic, attr->loc, DiagCode::E2010,
                          "'@extern' is only valid on function or variable declarations");
                 continue;
             }
             if (attr->args.empty()) {
-								LUC_LOG_SEMANTIC("\tERROR: @extern missing symbol name");
+                LUC_LOG_SEMANTIC("\tERROR: @extern missing symbol name");
                 dc.error(DiagnosticCategory::Semantic, attr->loc, DiagCode::E2011,
                          "'@extern' requires at least one string argument: the C symbol name");
                 continue;
             }
             if (attr->args[0].argKind != AttributeArgAST::ArgKind::StringLit) {
-								LUC_LOG_SEMANTIC("\tERROR: @extern first arg must be string");
+                LUC_LOG_SEMANTIC("\tERROR: @extern first arg must be string");
                 dc.error(DiagnosticCategory::Semantic, attr->args[0].loc, DiagCode::E2011,
                          "'@extern' first argument must be a string literal (the C symbol name)");
                 continue;
@@ -122,7 +122,7 @@ static void checkAttributes(const std::vector<AttributePtr>& attributes,
             // Optional second argument: calling convention string.
             if (attr->args.size() >= 2) {
                 if (attr->args[1].argKind != AttributeArgAST::ArgKind::StringLit) {
-										LUC_LOG_SEMANTIC("\tERROR: @extern second arg must be string");
+                    LUC_LOG_SEMANTIC("\tERROR: @extern second arg must be string");
                     dc.error(DiagnosticCategory::Semantic, attr->args[1].loc, DiagCode::E2011,
                              "'@extern' second argument must be a string literal (calling convention)");
                 } else {
@@ -130,7 +130,7 @@ static void checkAttributes(const std::vector<AttributePtr>& attributes,
                 }
             }
             if (attr->args.size() > 2) {
-								LUC_LOG_SEMANTIC("\tERROR: @extern too many args");
+                LUC_LOG_SEMANTIC("\tERROR: @extern too many args");
                 dc.error(DiagnosticCategory::Semantic, attr->loc, DiagCode::E2011,
                          "'@extern' takes at most 2 arguments: (symbol_name, calling_convention)");
             }
@@ -141,7 +141,7 @@ static void checkAttributes(const std::vector<AttributePtr>& attributes,
             // reassignment (f = { ... }) which is meaningless for an extern symbol.
             // Emit W3001 so the developer knows, but continue compilation.
             if (declKw == DeclKeyword::Let) {
-								LUC_LOG_SEMANTIC("\tWARNING: @extern with 'let'");
+                LUC_LOG_SEMANTIC("\tWARNING: @extern with 'let'");
                 dc.warning(DiagnosticCategory::Semantic, attr->loc, DiagCode::W3001,
                            "'@extern(\"" + outExternSym + "\")' should use 'const', not 'let' — "
                            "extern bindings are permanently resolved by the linker and cannot "
@@ -153,12 +153,12 @@ static void checkAttributes(const std::vector<AttributePtr>& attributes,
         // ── @inline ──────────────────────────────────────────────────────────
         if (n == "inline") {
             if (ctx != AttributeContext::Func) {
-								LUC_LOG_SEMANTIC("\tERROR: @inline on non-function");
+                LUC_LOG_SEMANTIC("\tERROR: @inline on non-function");
                 dc.error(DiagnosticCategory::Semantic, attr->loc, DiagCode::E2010,
                          "'@inline' is only valid on function declarations");
             }
             if (!attr->args.empty()) {
-								LUC_LOG_SEMANTIC("\tERROR: @inline takes no args");
+                LUC_LOG_SEMANTIC("\tERROR: @inline takes no args");
                 dc.error(DiagnosticCategory::Semantic, attr->loc, DiagCode::E2011,
                          "'@inline' takes no arguments");
             }
@@ -168,18 +168,18 @@ static void checkAttributes(const std::vector<AttributePtr>& attributes,
         // ── @noinline ────────────────────────────────────────────────────────
         if (n == "noinline") {
             if (ctx != AttributeContext::Func) {
-								LUC_LOG_SEMANTIC("\tERROR: @noinline on non-function");
+                LUC_LOG_SEMANTIC("\tERROR: @noinline on non-function");
                 dc.error(DiagnosticCategory::Semantic, attr->loc, DiagCode::E2010,
                          "'@noinline' is only valid on function declarations");
             }
             if (!attr->args.empty()) {
-								LUC_LOG_SEMANTIC("\tERROR: @noinline takes no args");
+                LUC_LOG_SEMANTIC("\tERROR: @noinline takes no args");
                 dc.error(DiagnosticCategory::Semantic, attr->loc, DiagCode::E2011,
                          "'@noinline' takes no arguments");
             }
             // @inline and @noinline are mutually exclusive.
             if (seen.count("inline")) {
-								LUC_LOG_SEMANTIC("\tERROR: @inline and @noinline are mutually exclusive");
+                LUC_LOG_SEMANTIC("\tERROR: @inline and @noinline are mutually exclusive");
                 dc.error(DiagnosticCategory::Semantic, attr->loc, DiagCode::E2010,
                          "'@inline' and '@noinline' cannot both appear on the same declaration");
             }
@@ -189,12 +189,12 @@ static void checkAttributes(const std::vector<AttributePtr>& attributes,
         // ── @packed ──────────────────────────────────────────────────────────
         if (n == "packed") {
             if (ctx != AttributeContext::Struct) {
-								LUC_LOG_SEMANTIC("\tERROR: @packed on non-struct");
+                LUC_LOG_SEMANTIC("\tERROR: @packed on non-struct");
                 dc.error(DiagnosticCategory::Semantic, attr->loc, DiagCode::E2010,
                          "'@packed' is only valid on struct declarations");
             }
             if (!attr->args.empty()) {
-								LUC_LOG_SEMANTIC("\tERROR: @packed takes no args");
+                LUC_LOG_SEMANTIC("\tERROR: @packed takes no args");
                 dc.error(DiagnosticCategory::Semantic, attr->loc, DiagCode::E2011,
                          "'@packed' takes no arguments");
             }
@@ -204,13 +204,13 @@ static void checkAttributes(const std::vector<AttributePtr>& attributes,
         // ── @deprecated ──────────────────────────────────────────────────────
         if (n == "deprecated") {
             if (attr->args.size() > 1) {
-								LUC_LOG_SEMANTIC("\tERROR: @deprecated too many args");
+                LUC_LOG_SEMANTIC("\tERROR: @deprecated too many args");
                 dc.error(DiagnosticCategory::Semantic, attr->loc, DiagCode::E2011,
                          "'@deprecated' takes at most one string argument (the message)");
             }
             if (!attr->args.empty() &&
                 attr->args[0].argKind != AttributeArgAST::ArgKind::StringLit) {
-								LUC_LOG_SEMANTIC("\tERROR: @deprecated arg must be string");
+                LUC_LOG_SEMANTIC("\tERROR: @deprecated arg must be string");
                 dc.error(DiagnosticCategory::Semantic, attr->args[0].loc, DiagCode::E2011,
                          "'@deprecated' argument must be a string literal message");
             }
@@ -224,18 +224,18 @@ static void checkAttributes(const std::vector<AttributePtr>& attributes,
         // attribute itself: no args, not on struct context.
         if (n == "aot") {
             if (ctx == AttributeContext::Struct) {
-								LUC_LOG_SEMANTIC("\tERROR: @aot on struct");
+                LUC_LOG_SEMANTIC("\tERROR: @aot on struct");
                 dc.error(DiagnosticCategory::Semantic, attr->loc, DiagCode::E3016,
                          "'@aot' is only valid on the 'main' entry point function");
             }
             if (!attr->args.empty()) {
-								LUC_LOG_SEMANTIC("\tERROR: @aot takes no args");
+                LUC_LOG_SEMANTIC("\tERROR: @aot takes no args");
                 dc.error(DiagnosticCategory::Semantic, attr->loc, DiagCode::E2011,
                          "'@aot' takes no arguments");
             }
             // Mutually exclusive with @jit
             if (seen.count("jit")) {
-								LUC_LOG_SEMANTIC("\tERROR: @aot and @jit are mutually exclusive");
+                LUC_LOG_SEMANTIC("\tERROR: @aot and @jit are mutually exclusive");
                 dc.error(DiagnosticCategory::Semantic, attr->loc, DiagCode::E3015,
                          "'@aot' and '@jit' are mutually exclusive on the same declaration; "
                          "choose one compilation mode");
@@ -247,18 +247,18 @@ static void checkAttributes(const std::vector<AttributePtr>& attributes,
         // Just-in-time compilation directive. Only valid on the main entry point.
         if (n == "jit") {
             if (ctx == AttributeContext::Struct) {
-								LUC_LOG_SEMANTIC("\tERROR: @jit on struct");
+                LUC_LOG_SEMANTIC("\tERROR: @jit on struct");
                 dc.error(DiagnosticCategory::Semantic, attr->loc, DiagCode::E3016,
                          "'@jit' is only valid on the 'main' entry point function");
             }
             if (!attr->args.empty()) {
-								LUC_LOG_SEMANTIC("\tERROR: @jit takes no args");
+                LUC_LOG_SEMANTIC("\tERROR: @jit takes no args");
                 dc.error(DiagnosticCategory::Semantic, attr->loc, DiagCode::E2011,
                          "'@jit' takes no arguments");
             }
             // Mutually exclusive with @aot
             if (seen.count("aot")) {
-								LUC_LOG_SEMANTIC("\tERROR: @aot and @jit are mutually exclusive");
+                LUC_LOG_SEMANTIC("\tERROR: @aot and @jit are mutually exclusive");
                 dc.error(DiagnosticCategory::Semantic, attr->loc, DiagCode::E3015,
                          "'@aot' and '@jit' are mutually exclusive on the same declaration; "
                          "choose one compilation mode");
@@ -267,7 +267,7 @@ static void checkAttributes(const std::vector<AttributePtr>& attributes,
         }
 
         // ── Unknown attribute ─────────────────────────────────────────────────
-				LUC_LOG_SEMANTIC("\tERROR: unknown attribute '@" << n << "'");
+        LUC_LOG_SEMANTIC("\tERROR: unknown attribute '@" << n << "'");
         dc.error(DiagnosticCategory::Semantic, attr->loc, DiagCode::E2010,
                  "unknown attribute '@" + n + "'; "
                  "known attributes: extern, inline, noinline, packed, deprecated, aot, jit");
@@ -368,7 +368,7 @@ static bool isConstExpr(ExprAST* expr, SymbolTable& symbols) {
 void checkVarDecl(VarDeclAST& node, SymbolTable& symbols, TypeResolver& resolver,
                   DiagnosticEngine& dc, int& asyncDepth, int& loopDepth,
                   int& parallelDepth, bool insideExtern) {
-		LUC_LOG_SEMANTIC("checkVarDecl: name=" << node.name << " kw=" << static_cast<int>(node.keyword));
+    LUC_LOG_SEMANTIC("checkVarDecl: name=" << node.name << " kw=" << static_cast<int>(node.keyword));
 
     // 0. Validate '@' attributes on this variable declaration.
     bool attrIsExtern = false;
@@ -377,7 +377,7 @@ void checkVarDecl(VarDeclAST& node, SymbolTable& symbols, TypeResolver& resolver
                     attrIsExtern, attrExternSym, attrCallingConv);
     // @extern on a variable: it must have no initialiser (linker provides the value).
     if (attrIsExtern && node.init) {
-				LUC_LOG_SEMANTIC("\tERROR: @extern variable with initialiser");
+        LUC_LOG_SEMANTIC("\tERROR: @extern variable with initialiser");
         dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                  "'@extern' variable '" + node.name +
                  "' must not have an initialiser — the symbol is resolved by the linker");
@@ -398,11 +398,11 @@ void checkVarDecl(VarDeclAST& node, SymbolTable& symbols, TypeResolver& resolver
     // 2. const or non-nullable types require an initialiser.
     if (!node.init) {
         if (node.keyword == DeclKeyword::Const) {
-						LUC_LOG_SEMANTIC("\tERROR: const variable without initialiser");
+            LUC_LOG_SEMANTIC("\tERROR: const variable without initialiser");
             dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                      "const '" + node.name + "' must have an initialiser");
         } else if (!TypeChecker::isNullable(declaredType)) {
-						LUC_LOG_SEMANTIC("\tERROR: non-nullable variable without initialiser");
+            LUC_LOG_SEMANTIC("\tERROR: non-nullable variable without initialiser");
             dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                      "variable '" + node.name + "' must have an initial value because it is not nullable");
         }
@@ -413,11 +413,11 @@ void checkVarDecl(VarDeclAST& node, SymbolTable& symbols, TypeResolver& resolver
     TypeAST* initType = checkExpr(node.init.get(), symbols, resolver, dc,
                                   asyncDepth, loopDepth, parallelDepth, insideExtern);
     
-		LUC_LOG_SEMANTIC("\tVarDecl initType = " << initType);
+    LUC_LOG_SEMANTIC("\tVarDecl initType = " << initType);
     if (initType) {
-				LUC_LOG_SEMANTIC("\t\tinitType kind: " << LucDebug::kindToString(initType->kind));
+        LUC_LOG_SEMANTIC("\t\tinitType kind: " << LucDebug::kindToString(initType->kind));
     } else {
-				LUC_LOG_SEMANTIC("\t\tinitType is NULL");
+        LUC_LOG_SEMANTIC("\t\tinitType is NULL");
     }
     
     if (!initType) return;
@@ -426,7 +426,7 @@ void checkVarDecl(VarDeclAST& node, SymbolTable& symbols, TypeResolver& resolver
     if (node.init->isa<LiteralExprAST>()) {
         auto* lit = node.init->as<LiteralExprAST>();
         if (lit->kind == LiteralKind::Nil && !TypeChecker::isNullable(declaredType)) {
-						LUC_LOG_SEMANTIC("\tERROR: nil assigned to non-nullable type");
+            LUC_LOG_SEMANTIC("\tERROR: nil assigned to non-nullable type");
             dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                      "nil cannot be assigned to non-nullable type '" + node.name + "'");
             return;
@@ -435,7 +435,7 @@ void checkVarDecl(VarDeclAST& node, SymbolTable& symbols, TypeResolver& resolver
 
     // 5. const initialiser must be a compile-time constant expression.
     if (node.keyword == DeclKeyword::Const && !isConstExpr(node.init.get(), symbols)) {
-				LUC_LOG_SEMANTIC("\tERROR: const initialiser is not a constant expression");
+        LUC_LOG_SEMANTIC("\tERROR: const initialiser is not a constant expression");
         dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                  "const '" + node.name + "' initialiser must be a compile-time constant expression");
     }
@@ -473,7 +473,7 @@ void checkVarDecl(VarDeclAST& node, SymbolTable& symbols, TypeResolver& resolver
                       asyncDepth, loopDepth, parallelDepth, insideExtern);
         } else {
             // No casting available — report the type mismatch error.
-						LUC_LOG_SEMANTIC("\tERROR: type mismatch in variable initialisation");
+            LUC_LOG_SEMANTIC("\tERROR: type mismatch in variable initialisation");
             dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3008,
                      "cannot implicitly convert initializer to type for '" + node.name +
                      "'; use an explicit type cast like '" +
@@ -620,7 +620,7 @@ void checkFuncDecl(FuncDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
 void checkStructDecl(StructDeclAST& node, SymbolTable& symbols, TypeResolver& resolver,
                      DiagnosticEngine& dc, int& asyncDepth, int& loopDepth,
                      int& parallelDepth, bool insideExtern) {
-		LUC_LOG_SEMANTIC("checkStructDecl: name=" << node.name);
+    LUC_LOG_SEMANTIC("checkStructDecl: name=" << node.name);
 
     // 0. Validate '@' attributes on this struct (@packed, @deprecated).
     bool attrIsExtern = false;
@@ -639,7 +639,7 @@ void checkStructDecl(StructDeclAST& node, SymbolTable& symbols, TypeResolver& re
     
     for (auto& field : node.fields) {
         if (!seen.insert(field->name).second) {
-						LUC_LOG_SEMANTIC("\tERROR: duplicate field '" << field->name << "'");
+            LUC_LOG_SEMANTIC("\tERROR: duplicate field '" << field->name << "'");
             dc.error(DiagnosticCategory::Semantic, field->loc, DiagCode::E3005,
                      "duplicate field '" + field->name + "' in struct '" + node.name + "'");
             continue;
@@ -652,7 +652,7 @@ void checkStructDecl(StructDeclAST& node, SymbolTable& symbols, TypeResolver& re
             TypeAST* dvt = checkExpr(field->defaultVal.get(), symbols, resolver, dc,
                                      asyncDepth, loopDepth, parallelDepth, insideExtern);
             if (dvt && !TypeChecker::isAssignable(dvt, ft)) {
-								LUC_LOG_SEMANTIC("\tERROR: default value type mismatch for field '" << field->name << "'");
+                LUC_LOG_SEMANTIC("\tERROR: default value type mismatch for field '" << field->name << "'");
                 dc.error(DiagnosticCategory::Semantic, field->loc, DiagCode::E3002,
                          "default value type mismatch for field '" + field->name + "'");
             }
@@ -671,7 +671,7 @@ void checkStructDecl(StructDeclAST& node, SymbolTable& symbols, TypeResolver& re
 //   - Auto-assigned values are computed sequentially.
 // ─────────────────────────────────────────────────────────────────────────────
 void checkEnumDecl(EnumDeclAST& node, DiagnosticEngine& dc) {
-		LUC_LOG_SEMANTIC("checkEnumDecl: name=" << node.name);
+    LUC_LOG_SEMANTIC("checkEnumDecl: name=" << node.name);
     std::unordered_set<int> usedValues;
     int nextAuto = 0;
 
@@ -679,7 +679,7 @@ void checkEnumDecl(EnumDeclAST& node, DiagnosticEngine& dc) {
         int value = variant->explicitValue.has_value() ? *variant->explicitValue : nextAuto;
 
         if (!usedValues.insert(value).second) {
-						LUC_LOG_SEMANTIC("\tERROR: duplicate enum value " << value);
+            LUC_LOG_SEMANTIC("\tERROR: duplicate enum value " << value);
             dc.error(DiagnosticCategory::Semantic, variant->loc, DiagCode::E3005,
                      "duplicate enum value " + std::to_string(value) +
                      " for variant '" + variant->name + "' in enum '" + node.name + "'");
@@ -698,14 +698,14 @@ void checkEnumDecl(EnumDeclAST& node, DiagnosticEngine& dc) {
 //   - No duplicate method names within the trait.
 // ─────────────────────────────────────────────────────────────────────────────
 void checkTraitDecl(TraitDeclAST& node, TypeResolver& resolver, DiagnosticEngine& dc) {
-		LUC_LOG_SEMANTIC("checkTraitDecl: name=" << node.name);
+    LUC_LOG_SEMANTIC("checkTraitDecl: name=" << node.name);
     // Set generic parameters context so that T in Container<T> resolves as a valid generic param.
     resolver.setGenericParams(&node.genericParams);
     
     std::unordered_set<std::string> seen;
     for (auto& method : node.methods) {
         if (!seen.insert(method->name).second) {
-						LUC_LOG_SEMANTIC("\tERROR: duplicate method '" << method->name << "' in trait");
+            LUC_LOG_SEMANTIC("\tERROR: duplicate method '" << method->name << "' in trait");
             dc.error(DiagnosticCategory::Semantic, method->loc, DiagCode::E3005,
                      "duplicate method '" + method->name + "' in trait '" + node.name + "'");
             continue;
@@ -809,7 +809,7 @@ void checkTraitDecl(TraitDeclAST& node, TypeResolver& resolver, DiagnosticEngine
 void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolver,
                    DiagnosticEngine& dc, int& asyncDepth, int& loopDepth,
                    int& parallelDepth, bool insideExtern) {
-		LUC_LOG_SEMANTIC("checkImplDecl: structName=" << node.structName);
+    LUC_LOG_SEMANTIC("checkImplDecl: structName=" << node.structName);
  
     // Set generic parameters context so that T in impl Scene<T> resolves as a valid generic param.
     resolver.setGenericParams(&node.genericParams);
@@ -817,7 +817,7 @@ void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
     // Verify the target struct exists once at the start to catch basic errors.
     Symbol* initialLookup = symbols.lookup(node.structName);
     if (!initialLookup || initialLookup->kind != SymbolKind::Struct) {
-				LUC_LOG_SEMANTIC("\tERROR: impl target '" << node.structName << "' not a struct");
+        LUC_LOG_SEMANTIC("\tERROR: impl target '" << node.structName << "' not a struct");
         dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
                  "impl target '" + node.structName + "' is not a declared struct");
         resolver.setGenericParams(nullptr);
@@ -828,7 +828,7 @@ void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
     // ── Signature Match Check ────────────────────────────────────────────────
     // The impl block must have the exact same generic signature as the struct.
     if (node.genericParams.size() != structDecl->genericParams.size()) {
-				LUC_LOG_SEMANTIC("\tERROR: generic signature mismatch in impl");
+        LUC_LOG_SEMANTIC("\tERROR: generic signature mismatch in impl");
         dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3017,
                  "generic signature mismatch: impl for '" + node.structName +
                  "' has " + std::to_string(node.genericParams.size()) +
@@ -841,7 +841,7 @@ void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
 
             // 1. Name must match
             if (implParam->name != structParam->name) {
-								LUC_LOG_SEMANTIC("\tERROR: generic parameter name mismatch");
+                LUC_LOG_SEMANTIC("\tERROR: generic parameter name mismatch");
                  dc.error(DiagnosticCategory::Semantic, implParam->loc, DiagCode::E3017,
                           "generic parameter name mismatch: expected '" + structParam->name +
                           "', found '" + implParam->name + "'");
@@ -849,7 +849,7 @@ void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
 
             // 2. Constraints must match
             if (implParam->constraints.size() != structParam->constraints.size()) {
-								LUC_LOG_SEMANTIC("\tERROR: generic constraint count mismatch");
+                LUC_LOG_SEMANTIC("\tERROR: generic constraint count mismatch");
                 dc.error(DiagnosticCategory::Semantic, implParam->loc, DiagCode::E3017,
                          "generic constraint mismatch for '" + implParam->name +
                          "': expected " + std::to_string(structParam->constraints.size()) +
@@ -857,7 +857,7 @@ void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
             } else {
                 for (size_t j = 0; j < implParam->constraints.size(); ++j) {
                     if (implParam->constraints[j] != structParam->constraints[j]) {
-												LUC_LOG_SEMANTIC("\tERROR: generic constraint mismatch");
+                        LUC_LOG_SEMANTIC("\tERROR: generic constraint mismatch");
                         dc.error(DiagnosticCategory::Semantic, implParam->loc, DiagCode::E3017,
                                  "generic constraint mismatch for '" + implParam->name +
                                  "': expected trait '" + structParam->constraints[j] +
@@ -872,7 +872,7 @@ void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
  
     for (auto& method : node.methods) {
         if (!seen.insert(method->name).second) {
-						LUC_LOG_SEMANTIC("\tERROR: duplicate method '" << method->name << "' in impl");
+            LUC_LOG_SEMANTIC("\tERROR: duplicate method '" << method->name << "' in impl");
             dc.error(DiagnosticCategory::Semantic, method->loc, DiagCode::E3005,
                      "duplicate method '" + method->name + "' in impl for '" +
                      node.structName + "'");
@@ -923,7 +923,7 @@ void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
         if (!structSym || !structSym->decl || !structSym->decl->isa<StructDeclAST>()) {
             symbols.popScope();
             if (method->isAsync) asyncDepth--;
-						LUC_LOG_SEMANTIC("\tERROR: impl target corrupt/missing during scope mutation");
+            LUC_LOG_SEMANTIC("\tERROR: impl target corrupt/missing during scope mutation");
             dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
                      "impl target '" + node.structName + "' has a corrupt or missing declaration");
             return;
@@ -962,7 +962,7 @@ void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
                 ps.isAsync = false;
                 ps.loc = param->loc;
                 if (!symbols.declare(ps)) {
-										LUC_LOG_SEMANTIC("\tERROR: duplicate parameter '" << param->name << "' in impl method");
+                    LUC_LOG_SEMANTIC("\tERROR: duplicate parameter '" << param->name << "' in impl method");
                     dc.error(DiagnosticCategory::Semantic, param->loc, DiagCode::E3005,
                              "duplicate parameter '" + param->name + "'");
                 }
@@ -984,7 +984,7 @@ void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
     if (node.traitRef) {
         Symbol* traitSym = symbols.lookup(node.traitRef->name);
         if (!traitSym || traitSym->kind != SymbolKind::Trait) {
-						LUC_LOG_SEMANTIC("\tERROR: trait '" << node.traitRef->name << "' not found");
+            LUC_LOG_SEMANTIC("\tERROR: trait '" << node.traitRef->name << "' not found");
             dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
                     "trait '" + node.traitRef->name + "' is not declared");
         } else {
@@ -1010,7 +1010,7 @@ void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
                         if (m->name == requiredMethod->name) { found = true; break; }
                     }
                     if (!found) {
-												LUC_LOG_SEMANTIC("\tERROR: missing trait method '" << requiredMethod->name << "'");
+                        LUC_LOG_SEMANTIC("\tERROR: missing trait method '" << requiredMethod->name << "'");
                         dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                                 "impl of '" + node.structName + "' for trait '" +
                                 node.traitRef->name + "' is missing method '" +
@@ -1021,12 +1021,12 @@ void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
                 
                 // trait conformance check passed
                 if (allMethodsFound) {
-										LUC_LOG_SEMANTIC_VERBOSE("\ttrait conformance check passed for '" 
+                    LUC_LOG_SEMANTIC_VERBOSE("\ttrait conformance check passed for '" 
                                         << node.structName << " : " << node.traitRef->name << "'");
                 }
             } else {
                 // Empty impl block - assume methods provided elsewhere
-								LUC_LOG_SEMANTIC_EXTREME("\tempty impl block for trait '" << node.traitRef->name 
+                LUC_LOG_SEMANTIC_EXTREME("\tempty impl block for trait '" << node.traitRef->name 
                                     << "', assuming methods provided elsewhere");
             }
         }
@@ -1050,12 +1050,12 @@ void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
 void checkFromDecl(FromDeclAST& node, SymbolTable& symbols, TypeResolver& resolver,
                    DiagnosticEngine& dc, int& asyncDepth, int& loopDepth,
                    int& parallelDepth, bool insideExtern) {
-		LUC_LOG_SEMANTIC("checkFromDecl: target=" << node.targetTypeName);
+    LUC_LOG_SEMANTIC("checkFromDecl: target=" << node.targetTypeName);
 
     // 1. Resolve target type once for the whole block.
     Symbol* targetSym = symbols.lookup(node.targetTypeName);
     if (!targetSym || (targetSym->kind != SymbolKind::Struct && targetSym->kind != SymbolKind::Enum)) {
-				LUC_LOG_SEMANTIC("\tERROR: from block target '" << node.targetTypeName << "' not found/nominal");
+        LUC_LOG_SEMANTIC("\tERROR: from block target '" << node.targetTypeName << "' not found/nominal");
         dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
                  "from block: target '" + node.targetTypeName + "' is not a nominal type");
         return;
@@ -1074,7 +1074,7 @@ void checkFromDecl(FromDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
 
         // Verify the explicit return type identifier matches the block target.
         if (entry->returnTypeName != node.targetTypeName) {
-						LUC_LOG_SEMANTIC("\tERROR: from entry return type mismatch");
+            LUC_LOG_SEMANTIC("\tERROR: from entry return type mismatch");
             dc.error(DiagnosticCategory::Semantic, entry->loc, DiagCode::E3002,
                      "from casting: return type '" + entry->returnTypeName +
                      "' must match block target type '" + node.targetTypeName + "'");
@@ -1098,7 +1098,7 @@ void checkFromDecl(FromDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
                 ps.isAsync    = false;
                 ps.loc        = param->loc;
                 if (!symbols.declare(ps)) {
-										LUC_LOG_SEMANTIC("\tERROR: duplicate parameter '" << param->name << "' in from entry");
+                    LUC_LOG_SEMANTIC("\tERROR: duplicate parameter '" << param->name << "' in from entry");
                     dc.error(DiagnosticCategory::Semantic, param->loc, DiagCode::E3005,
                              "duplicate parameter name '" + param->name + "' in from casting");
                 }
@@ -1144,12 +1144,12 @@ void checkFromDecl(FromDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
         }
 
         if (isDuplicate) {
-						LUC_LOG_SEMANTIC("\tERROR: duplicate casting signature");
+            LUC_LOG_SEMANTIC("\tERROR: duplicate casting signature");
             dc.error(DiagnosticCategory::Semantic, entry->loc, DiagCode::E3005,
                      "duplicate casting signature in from block for '" + node.targetTypeName + "'");
         } else {
             verifiedEntries.push_back(entry.get());
-						LUC_LOG_SEMANTIC_EXTREME("\tentry verified, signature unique");
+            LUC_LOG_SEMANTIC_EXTREME("\tentry verified, signature unique");
         }
     }
 }
@@ -1161,7 +1161,7 @@ void checkTopLevelDecl(DeclAST* decl, SymbolTable& symbols, TypeResolver& resolv
                        DiagnosticEngine& dc, int& asyncDepth, int& loopDepth,
                        int& parallelDepth, bool insideExtern) {
     if (!decl) return;
-		LUC_LOG_SEMANTIC("checkTopLevelDecl: kind=" << LucDebug::kindToString(decl->kind));
+    LUC_LOG_SEMANTIC("checkTopLevelDecl: kind=" << LucDebug::kindToString(decl->kind));
 
     if (decl->isa<VarDeclAST>())
         checkVarDecl(*decl->as<VarDeclAST>(), symbols, resolver, dc,

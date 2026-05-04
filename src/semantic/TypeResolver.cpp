@@ -25,7 +25,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 TypeResolver::TypeResolver(SymbolTable& symbols, DiagnosticEngine& dc)
     : symbols_(symbols), dc_(dc) {
-		LUC_LOG_SEMANTIC("TypeResolver constructed");
+    LUC_LOG_SEMANTIC("TypeResolver constructed");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -36,11 +36,11 @@ TypeResolver::TypeResolver(SymbolTable& symbols, DiagnosticEngine& dc)
 // If resolution fails (e.g., undeclared identifier), it returns nullptr.
 // ─────────────────────────────────────────────────────────────────────────────
 TypeAST* TypeResolver::resolveType(TypeAST* typeNode) {
-		LUC_LOG_SEMANTIC_VERBOSE("resolveType: starting with kind=" 
-                           << (typeNode ? LucDebug::kindToString(typeNode->kind) : "null"));
+    LUC_LOG_SEMANTIC_VERBOSE("resolveType: starting with kind=" 
+                        << (typeNode ? LucDebug::kindToString(typeNode->kind) : "null"));
     
     if (!typeNode) {
-				LUC_LOG_SEMANTIC("resolveType: null type node -> nullptr");
+        LUC_LOG_SEMANTIC("resolveType: null type node -> nullptr");
         return nullptr;
     }
     
@@ -48,7 +48,7 @@ TypeAST* TypeResolver::resolveType(TypeAST* typeNode) {
     typeNode->accept(*this);
     
     bool success = (resolved_ != nullptr);
-		LUC_LOG_SEMANTIC_VERBOSE("resolveType: " << (success ? "success" : "failed"));
+    LUC_LOG_SEMANTIC_VERBOSE("resolveType: " << (success ? "success" : "failed"));
     
     return resolved_;
 }
@@ -61,8 +61,8 @@ TypeAST* TypeResolver::resolveType(TypeAST* typeNode) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void TypeResolver::visit(PrimitiveTypeAST& node) {
-		LUC_LOG_SEMANTIC_VERBOSE("visit(PrimitiveTypeAST): kind=" 
-                           << static_cast<int>(node.primitiveKind));
+    LUC_LOG_SEMANTIC_VERBOSE("visit(PrimitiveTypeAST): kind=" 
+                        << static_cast<int>(node.primitiveKind));
     resolved_ = &node;
 }
 
@@ -74,31 +74,30 @@ void TypeResolver::visit(PrimitiveTypeAST& node) {
 // and recurses correctly into verifying any generic inner arguments included.
 // ─────────────────────────────────────────────────────────────────────────────
 void TypeResolver::visit(NamedTypeAST& node) {
-		LUC_LOG_SEMANTIC("visit(NamedTypeAST): name='" << node.name << "'");
-		LUC_LOG_SEMANTIC_VERBOSE("\tgenericArgs count=" << node.genericArgs.size());
-		LUC_LOG_SEMANTIC_VERBOSE("\thas genericParams_=" << (genericParams_ ? "true" : "false"));
-		LUC_LOG_SEMANTIC_VERBOSE("\thas substitutionMap_=" << (substitutionMap_ ? "true" : "false"));
+    LUC_LOG_SEMANTIC("visit(NamedTypeAST): name='" << node.name << "'");
+    LUC_LOG_SEMANTIC_VERBOSE("\tgenericArgs count=" << node.genericArgs.size());
+    LUC_LOG_SEMANTIC_VERBOSE("\thas genericParams_=" << (genericParams_ ? "true" : "false"));
+    LUC_LOG_SEMANTIC_VERBOSE("\thas substitutionMap_=" << (substitutionMap_ ? "true" : "false"));
     
     // CHECK 1: Is this name a generic type parameter?
     if (genericParams_) {
         for (auto& gp : *genericParams_) {
             if (gp && gp->name == node.name) {
-								LUC_LOG_SEMANTIC_VERBOSE("\tfound as generic param: '" << node.name << "'");
+            LUC_LOG_SEMANTIC_VERBOSE("\tfound as generic param: '" << node.name << "'");
                 
                 // If we have a substitution map and this parameter is in it,
                 // resolve to the substituted concrete type.
                 if (substitutionMap_) {
                     auto it = substitutionMap_->find(node.name);
                     if (it != substitutionMap_->end()) {
-												LUC_LOG_SEMANTIC("\tsubstituting '" << node.name 
-                                        << "' with concrete type");
+                        LUC_LOG_SEMANTIC("\tsubstituting '" << node.name  << "' with concrete type");
                         resolved_ = it->second;
                         return;
                     }
                 }
 
                 node.isGenericParam = true;
-								LUC_LOG_SEMANTIC("\tresolved as generic parameter (isGenericParam=true)");
+                LUC_LOG_SEMANTIC("\tresolved as generic parameter (isGenericParam=true)");
                 resolved_ = &node;
                 return;
             }
@@ -110,25 +109,25 @@ void TypeResolver::visit(NamedTypeAST& node) {
     // re-resolved in a different generic context (e.g. multiple checkFuncDecl
     // calls that each set different genericParams_ on the resolver).
     node.isGenericParam = false;
-		LUC_LOG_SEMANTIC_VERBOSE("\tnot a generic param, looking up in symbol table");
+    LUC_LOG_SEMANTIC_VERBOSE("\tnot a generic param, looking up in symbol table");
 
     // CHECK 2: Lookup the identifier in the global symbol table.
     // Lookup the identifier natively defined by the programmer in the symbol table.
     Symbol* sym = symbols_.lookup(node.name);
     if (!sym) {
-				LUC_LOG_SEMANTIC("\tERROR: type '" << node.name << "' not declared");
+        LUC_LOG_SEMANTIC("\tERROR: type '" << node.name << "' not declared");
         dc_.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
                   "type '" + node.name + "' is not declared");
         resolved_ = nullptr;
         return;
     }
     
-		LUC_LOG_SEMANTIC_VERBOSE("\tfound symbol: kind=" << static_cast<int>(sym->kind));
+    LUC_LOG_SEMANTIC_VERBOSE("\tfound symbol: kind=" << static_cast<int>(sym->kind));
     
     // Strict typing: We can only resolve identifiers that actually represent a type.
     if (sym->kind != SymbolKind::Struct && sym->kind != SymbolKind::Enum &&
         sym->kind != SymbolKind::Trait && sym->kind != SymbolKind::TypeAlias) {
-				LUC_LOG_SEMANTIC("\tERROR: '" << node.name << "' is a value, not a type");
+        LUC_LOG_SEMANTIC("\tERROR: '" << node.name << "' is a value, not a type");
         dc_.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                   "'" + node.name + "' is a value, not a type");
         resolved_ = nullptr;
@@ -137,26 +136,26 @@ void TypeResolver::visit(NamedTypeAST& node) {
     
     // Transparently unwrap TypeAlias types.
     if (sym->kind == SymbolKind::TypeAlias) {
-				LUC_LOG_SEMANTIC("\tunwrapping type alias '" << node.name << "'");
+        LUC_LOG_SEMANTIC("\tunwrapping type alias '" << node.name << "'");
         TypeAST* resolvedAlias = resolveType(sym->type);
         if (resolvedAlias) {
-						LUC_LOG_SEMANTIC("\talias resolved to: " << LucDebug::kindToString(resolvedAlias->kind));
+            LUC_LOG_SEMANTIC("\talias resolved to: " << LucDebug::kindToString(resolvedAlias->kind));
             resolved_ = resolvedAlias;
         } else {
-						LUC_LOG_SEMANTIC("\tERROR: failed to resolve alias");
+            LUC_LOG_SEMANTIC("\tERROR: failed to resolve alias");
             resolved_ = nullptr;
         }
         return;
     }
 
     // Drill down recursively into generic sub-arguments.
-		LUC_LOG_SEMANTIC_VERBOSE("\tresolving " << node.genericArgs.size() << " generic arguments");
+    LUC_LOG_SEMANTIC_VERBOSE("\tresolving " << node.genericArgs.size() << " generic arguments");
     for (size_t i = 0; i < node.genericArgs.size(); ++i) {
-				LUC_LOG_SEMANTIC_EXTREME("\t\tresolving arg " << i);
+        LUC_LOG_SEMANTIC_EXTREME("\t\tresolving arg " << i);
         resolveType(node.genericArgs[i].get());
     }
     
-		LUC_LOG_SEMANTIC("\tresolved NamedTypeAST: '" << node.name << "'");
+    LUC_LOG_SEMANTIC("\tresolved NamedTypeAST: '" << node.name << "'");
     resolved_ = &node;
 }
 
@@ -167,9 +166,9 @@ void TypeResolver::visit(NamedTypeAST& node) {
 // nullable maps securely to a legitimate definition.
 // ─────────────────────────────────────────────────────────────────────────────
 void TypeResolver::visit(NullableTypeAST& node) {
-		LUC_LOG_SEMANTIC_VERBOSE("visit(NullableTypeAST)");
+    LUC_LOG_SEMANTIC_VERBOSE("visit(NullableTypeAST)");
     if (node.inner) {
-				LUC_LOG_SEMANTIC_EXTREME("\tresolving inner type");
+        LUC_LOG_SEMANTIC_EXTREME("\tresolving inner type");
         resolveType(node.inner.get());
     }
     resolved_ = &node;
@@ -183,15 +182,15 @@ void TypeResolver::visit(NullableTypeAST& node) {
 // capacity of strictly 0 items.
 // ─────────────────────────────────────────────────────────────────────────────
 void TypeResolver::visit(FixedArrayTypeAST& node) {
-		LUC_LOG_SEMANTIC_VERBOSE("visit(FixedArrayTypeAST): size=" << node.size);
+    LUC_LOG_SEMANTIC_VERBOSE("visit(FixedArrayTypeAST): size=" << node.size);
     
     if (node.size == 0) {
-				LUC_LOG_SEMANTIC("\tERROR: array size must be > 0");
+        LUC_LOG_SEMANTIC("\tERROR: array size must be > 0");
         dc_.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                   "fixed array size must be greater than zero");
     }
     if (node.element) {
-				LUC_LOG_SEMANTIC_EXTREME("\tresolving element type");
+        LUC_LOG_SEMANTIC_EXTREME("\tresolving element type");
         resolveType(node.element.get());
     }
     resolved_ = &node;
@@ -204,9 +203,9 @@ void TypeResolver::visit(FixedArrayTypeAST& node) {
 // realistically.
 // ─────────────────────────────────────────────────────────────────────────────
 void TypeResolver::visit(SliceTypeAST& node) {
-		LUC_LOG_SEMANTIC_VERBOSE("visit(SliceTypeAST)");
+    LUC_LOG_SEMANTIC_VERBOSE("visit(SliceTypeAST)");
     if (node.element) {
-				LUC_LOG_SEMANTIC_EXTREME("\tresolving element type");
+        LUC_LOG_SEMANTIC_EXTREME("\tresolving element type");
         resolveType(node.element.get());
     }
     resolved_ = &node;
@@ -218,9 +217,9 @@ void TypeResolver::visit(SliceTypeAST& node) {
 // Delegates resolution requirements straight down to its individual member element.
 // ─────────────────────────────────────────────────────────────────────────────
 void TypeResolver::visit(DynamicArrayTypeAST& node) {
-		LUC_LOG_SEMANTIC_VERBOSE("visit(DynamicArrayTypeAST)");
+    LUC_LOG_SEMANTIC_VERBOSE("visit(DynamicArrayTypeAST)");
     if (node.element) {
-				LUC_LOG_SEMANTIC_EXTREME("\tresolving element type");
+        LUC_LOG_SEMANTIC_EXTREME("\tresolving element type");
         resolveType(node.element.get());
     }
     resolved_ = &node;
@@ -232,9 +231,9 @@ void TypeResolver::visit(DynamicArrayTypeAST& node) {
 // Assures the internal struct/primitive resolving to this safe view accurately maps.
 // ─────────────────────────────────────────────────────────────────────────────
 void TypeResolver::visit(RefTypeAST& node) {
-		LUC_LOG_SEMANTIC_VERBOSE("visit(RefTypeAST)");
+    LUC_LOG_SEMANTIC_VERBOSE("visit(RefTypeAST)");
     if (node.inner) {
-				LUC_LOG_SEMANTIC_EXTREME("\tresolving inner type");
+        LUC_LOG_SEMANTIC_EXTREME("\tresolving inner type");
         resolveType(node.inner.get());
     }
     resolved_ = &node;
@@ -248,13 +247,13 @@ void TypeResolver::visit(RefTypeAST& node) {
 // set by checkFuncDecl / checkVarDecl when they detect @extern on the decl.
 // ─────────────────────────────────────────────────────────────────────────────
 void TypeResolver::visit(PtrTypeAST& node) {
-		LUC_LOG_SEMANTIC_VERBOSE("visit(PtrTypeAST)");
-		LUC_LOG_SEMANTIC_VERBOSE("\tinsideExtern_=" << (insideExtern_ ? "true" : "false"));
+    LUC_LOG_SEMANTIC_VERBOSE("visit(PtrTypeAST)");
+    LUC_LOG_SEMANTIC_VERBOSE("\tinsideExtern_=" << (insideExtern_ ? "true" : "false"));
     
     // Raw pointers are now allowed anywhere (just storage).
     // Operation restrictions are enforced in checkBinaryExpr, checkIndexExpr, etc.
     if (node.inner) {
-				LUC_LOG_SEMANTIC_EXTREME("\tresolving inner type");
+        LUC_LOG_SEMANTIC_EXTREME("\tresolving inner type");
         resolveType(node.inner.get());
     }
     resolved_ = &node;
@@ -267,15 +266,15 @@ void TypeResolver::visit(PtrTypeAST& node) {
 // before resolving any potential outgoing returned type mappings.
 // ─────────────────────────────────────────────────────────────────────────────
 void TypeResolver::visit(FuncTypeAST& node) {
-		LUC_LOG_SEMANTIC_VERBOSE("visit(FuncTypeAST): params=" << node.params.size() 
-                           << ", isNullable=" << node.isNullable);
+    LUC_LOG_SEMANTIC_VERBOSE("visit(FuncTypeAST): params=" << node.params.size() 
+                        << ", isNullable=" << node.isNullable);
     
     for (size_t i = 0; i < node.params.size(); ++i) {
-				LUC_LOG_SEMANTIC_EXTREME("\tresolving param " << i);
+        LUC_LOG_SEMANTIC_EXTREME("\tresolving param " << i);
         resolveType(node.params[i].get());
     }
     if (node.returnType) {
-				LUC_LOG_SEMANTIC_EXTREME("\tresolving return type");
+        LUC_LOG_SEMANTIC_EXTREME("\tresolving return type");
         resolveType(node.returnType.get());
     }
     resolved_ = &node;

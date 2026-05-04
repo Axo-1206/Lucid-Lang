@@ -197,10 +197,10 @@ namespace LucDebug {
 
 #ifdef LUC_DEBUG_MASTER
     #define LUC_LOG(x) LucDebug::getDebugStream() << "[DEBUG] " << x << std::endl
-		#define LUC_LOG_KIND(x) LUC_LOG_CORE("DEBUG", LUC_VERB_NORMAL, "kind: " << LucDebug::kindToString(x))
-		#define LUC_LOG_TOKEN(t) LUC_LOG_CORE("DEBUG", LUC_VERB_NORMAL, "token: " << LucDebug::tokenTypeToString(t))
+    #define LUC_LOG_KIND(x) LUC_LOG_CORE("DEBUG", LUC_VERB_NORMAL, "kind: " << LucDebug::kindToString(x))
+    #define LUC_LOG_TOKEN(t) LUC_LOG_CORE("DEBUG", LUC_VERB_NORMAL, "token: " << LucDebug::tokenTypeToString(t))
 #else
     #define LUC_LOG(x)
-		#define LUC_LOG_KIND(x)
-		#define LUC_LOG_TOKEN(t)
+    #define LUC_LOG_KIND(x)
+    #define LUC_LOG_TOKEN(t)
 #endif

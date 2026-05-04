@@ -94,14 +94,14 @@ static PrimitiveTypeAST* stmtPrimType(PrimitiveKind k) {
 // This mirrors SemanticCollector's curry-chain shape so local calls type-check
 // the same way as top-level functions.
 static TypePtr buildLocalFuncSignature(FuncDeclAST& node) {
-		LUC_LOG_SEMANTIC_VERBOSE("buildLocalFuncSignature: for function '" << node.name 
+    LUC_LOG_SEMANTIC_VERBOSE("buildLocalFuncSignature: for function '" << node.name 
                            << "', paramGroups=" << node.paramGroups.size());
     
     TypePtr sig = nullptr;
     for (int i = static_cast<int>(node.paramGroups.size()) - 1; i >= 0; --i) {
         auto ft = std::make_unique<FuncTypeAST>();
         ft->loc = node.loc;
-				LUC_LOG_SEMANTIC_EXTREME("\tbuilding param group " << i 
+        LUC_LOG_SEMANTIC_EXTREME("\tbuilding param group " << i 
                                << " with " << node.paramGroups[i].size() << " params");
         
         for (auto& p : node.paramGroups[i]) {
@@ -132,7 +132,7 @@ static TypePtr buildLocalFuncSignature(FuncDeclAST& node) {
         sig = std::move(ft);
     }
     
-		LUC_LOG_SEMANTIC_EXTREME("\tsignature built");
+    LUC_LOG_SEMANTIC_EXTREME("\tsignature built");
     return sig;
 }
 
@@ -153,22 +153,22 @@ static void checkBlock(BlockStmtAST& node, SymbolTable& symbols, TypeResolver& r
                        DiagnosticEngine& dc, TypeAST* expectedReturn,
                        int& asyncDepth, int& loopDepth, int& parallelDepth,
                        bool insideExtern) {
-		LUC_LOG_SEMANTIC_VERBOSE("checkBlock: entering block, depth=" << symbols.currentDepth());
+    LUC_LOG_SEMANTIC_VERBOSE("checkBlock: entering block, depth=" << symbols.currentDepth());
     
     symbols.pushScope();
     node.scopeDepth = symbols.currentDepth();
-		LUC_LOG_SEMANTIC_EXTREME("\tblock depth set to " << node.scopeDepth);
+    LUC_LOG_SEMANTIC_EXTREME("\tblock depth set to " << node.scopeDepth);
 
     int stmtCount = 0;
     for (auto& stmt : node.stmts) {
         stmtCount++;
-				LUC_LOG_SEMANTIC_EXTREME("\tchecking stmt #" << stmtCount);
+        LUC_LOG_SEMANTIC_EXTREME("\tchecking stmt #" << stmtCount);
         checkStmt(stmt.get(), symbols, resolver, dc, expectedReturn,
                   asyncDepth, loopDepth, parallelDepth, insideExtern);
     }
 
     symbols.popScope();
-		LUC_LOG_SEMANTIC_VERBOSE("checkBlock: exited block, checked " << stmtCount << " statements");
+    LUC_LOG_SEMANTIC_VERBOSE("checkBlock: exited block, checked " << stmtCount << " statements");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -181,11 +181,11 @@ static void checkBlock(BlockStmtAST& node, SymbolTable& symbols, TypeResolver& r
 static void checkExprStmt(ExprStmtAST& node, SymbolTable& symbols, TypeResolver& resolver,
                            DiagnosticEngine& dc, int& asyncDepth, int& loopDepth,
                            int& parallelDepth, bool insideExtern) {
-		LUC_LOG_SEMANTIC_EXTREME("checkExprStmt");
+    LUC_LOG_SEMANTIC_EXTREME("checkExprStmt");
     
     // Optional: Log the expression kind being checked
     if (node.expr) {
-				LUC_LOG_SEMANTIC_EXTREME("\tchecking expression kind: " << LucDebug::kindToString(node.expr->kind));
+        LUC_LOG_SEMANTIC_EXTREME("\tchecking expression kind: " << LucDebug::kindToString(node.expr->kind));
     }
     
     checkExpr(node.expr.get(), symbols, resolver, dc,
@@ -199,11 +199,11 @@ static void checkExprStmt(ExprStmtAST& node, SymbolTable& symbols, TypeResolver&
 static void checkDeclStmt(DeclStmtAST& node, SymbolTable& symbols, TypeResolver& resolver,
                            DiagnosticEngine& dc, int& asyncDepth, int& loopDepth,
                            int& parallelDepth, bool insideExtern) {
-		LUC_LOG_SEMANTIC_VERBOSE("checkDeclStmt: " << (node.isVar() ? "var" : "func"));
+    LUC_LOG_SEMANTIC_VERBOSE("checkDeclStmt: " << (node.isVar() ? "var" : "func"));
     
     if (node.isVar()) {
         VarDeclAST* vd = node.asVar();
-				LUC_LOG_SEMANTIC_EXTREME("\tchecking var: " << vd->name);
+        LUC_LOG_SEMANTIC_EXTREME("\tchecking var: " << vd->name);
         checkVarDecl(*vd, symbols, resolver, dc,
                      asyncDepth, loopDepth, parallelDepth, insideExtern);
 
@@ -220,15 +220,15 @@ static void checkDeclStmt(DeclStmtAST& node, SymbolTable& symbols, TypeResolver&
         sym.loc        = vd->loc;
         
         if (!symbols.declare(sym)) {
-						LUC_LOG_SEMANTIC("\tERROR: variable '" << vd->name << "' already declared in this scope");
+            LUC_LOG_SEMANTIC("\tERROR: variable '" << vd->name << "' already declared in this scope");
             dc.error(DiagnosticCategory::Semantic, vd->loc, DiagCode::E3005,
                      "symbol '" + vd->name + "' is already declared in this scope");
         } else {
-						LUC_LOG_SEMANTIC_EXTREME("\tvariable declared successfully");
+            LUC_LOG_SEMANTIC_EXTREME("\tvariable declared successfully");
         }
     } else if (node.isFunc()) {
         FuncDeclAST* fd = node.asFunc();
-				LUC_LOG_SEMANTIC_EXTREME("\tchecking func: " << fd->name);
+        LUC_LOG_SEMANTIC_EXTREME("\tchecking func: " << fd->name);
         checkFuncDecl(*fd, symbols, resolver, dc,
                       asyncDepth, loopDepth, parallelDepth, insideExtern);
 
@@ -248,11 +248,11 @@ static void checkDeclStmt(DeclStmtAST& node, SymbolTable& symbols, TypeResolver&
         sym.loc        = fd->loc;
         
         if (!symbols.declare(sym)) {
-						LUC_LOG_SEMANTIC("\tERROR: function '" << fd->name << "' already declared in this scope");
+            LUC_LOG_SEMANTIC("\tERROR: function '" << fd->name << "' already declared in this scope");
             dc.error(DiagnosticCategory::Semantic, fd->loc, DiagCode::E3005,
                      "symbol '" + fd->name + "' is already declared in this scope");
         } else {
-						LUC_LOG_SEMANTIC_EXTREME("\tfunction declared successfully");
+            LUC_LOG_SEMANTIC_EXTREME("\tfunction declared successfully");
         }
     }
 }
@@ -264,16 +264,16 @@ static void checkIfStmt(IfStmtAST& node, SymbolTable& symbols, TypeResolver& res
                          DiagnosticEngine& dc, TypeAST* expectedReturn,
                          int& asyncDepth, int& loopDepth, int& parallelDepth,
                          bool insideExtern) {
-		LUC_LOG_SEMANTIC_VERBOSE("checkIfStmt");
+    LUC_LOG_SEMANTIC_VERBOSE("checkIfStmt");
     
     TypeAST* condType = checkExpr(node.condition.get(), symbols, resolver, dc,
                                   asyncDepth, loopDepth, parallelDepth, insideExtern);
     if (condType && !TypeChecker::isBooleanCompatible(condType)) {
-				LUC_LOG_SEMANTIC("\tERROR: condition is not bool-compatible");
+        LUC_LOG_SEMANTIC("\tERROR: condition is not bool-compatible");
         dc.error(DiagnosticCategory::Semantic, node.condition->loc, DiagCode::E3002,
                  "if condition must be bool");
     } else {
-				LUC_LOG_SEMANTIC_EXTREME("\tcondition type is bool-compatible");
+        LUC_LOG_SEMANTIC_EXTREME("\tcondition type is bool-compatible");
     }
 
     if (node.thenBranch) {
@@ -285,7 +285,7 @@ static void checkIfStmt(IfStmtAST& node, SymbolTable& symbols, TypeResolver& res
                 auto* ident = static_cast<IdentifierExprAST*>(isExpr->expr.get());
                 Symbol* originalSym = symbols.lookup(ident->name);
                 if (originalSym) {
-										LUC_LOG_SEMANTIC_EXTREME("\ttype narrowing: " << ident->name);
+                    LUC_LOG_SEMANTIC_EXTREME("\ttype narrowing: " << ident->name);
                     symbols.pushScope();
                     narrowed = true;
                     Symbol narrowedSym = *originalSym;
@@ -295,23 +295,23 @@ static void checkIfStmt(IfStmtAST& node, SymbolTable& symbols, TypeResolver& res
             }
         }
 
-				LUC_LOG_SEMANTIC_EXTREME("\tchecking then branch");
+        LUC_LOG_SEMANTIC_EXTREME("\tchecking then branch");
         checkStmt(node.thenBranch.get(), symbols, resolver, dc, expectedReturn,
                   asyncDepth, loopDepth, parallelDepth, insideExtern);
 
         if (narrowed) {
             symbols.popScope();
-						LUC_LOG_SEMANTIC_EXTREME("\ttype narrow scope popped");
+            LUC_LOG_SEMANTIC_EXTREME("\ttype narrow scope popped");
         }
     }
     
     if (node.elseBranch) {
-				LUC_LOG_SEMANTIC_EXTREME("\tchecking else branch");
+        LUC_LOG_SEMANTIC_EXTREME("\tchecking else branch");
         checkStmt(node.elseBranch.get(), symbols, resolver, dc, expectedReturn,
                   asyncDepth, loopDepth, parallelDepth, insideExtern);
     }
     
-		LUC_LOG_SEMANTIC_VERBOSE("checkIfStmt: complete");
+    LUC_LOG_SEMANTIC_VERBOSE("checkIfStmt: complete");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -322,41 +322,41 @@ static void checkSwitchStmt(SwitchStmtAST& node, SymbolTable& symbols,
                               TypeResolver& resolver, DiagnosticEngine& dc,
                               TypeAST* expectedReturn, int& asyncDepth,
                               int& loopDepth, int& parallelDepth, bool insideExtern) {
-		LUC_LOG_SEMANTIC_VERBOSE("checkSwitchStmt: " << node.cases.size() << " cases");
+    LUC_LOG_SEMANTIC_VERBOSE("checkSwitchStmt: " << node.cases.size() << " cases");
     
     TypeAST* subjectType = checkExpr(node.subject.get(), symbols, resolver, dc,
                                      asyncDepth, loopDepth, parallelDepth, insideExtern);
-		LUC_LOG_SEMANTIC_EXTREME("\tsubject type checked");
+    LUC_LOG_SEMANTIC_EXTREME("\tsubject type checked");
 
     int caseCount = 0;
     for (auto& cas : node.cases) {
         caseCount++;
-				LUC_LOG_SEMANTIC_EXTREME("\tchecking case " << caseCount << " with " 
+        LUC_LOG_SEMANTIC_EXTREME("\tchecking case " << caseCount << " with " 
                                << cas->values.size() << " values");
         
         for (auto& val : cas->values) {
             TypeAST* vt = checkExpr(val.get(), symbols, resolver, dc,
                                     asyncDepth, loopDepth, parallelDepth, insideExtern);
             if (subjectType && vt && !TypeChecker::isAssignable(vt, subjectType)) {
-								LUC_LOG_SEMANTIC("\tERROR: case value type not assignable to subject");
+                LUC_LOG_SEMANTIC("\tERROR: case value type not assignable to subject");
                 dc.error(DiagnosticCategory::Semantic, val->loc, DiagCode::E3002,
                          "switch case value type does not match subject type");
             }
         }
         if (cas->body) {
-						LUC_LOG_SEMANTIC_EXTREME("\tchecking case body");
+            LUC_LOG_SEMANTIC_EXTREME("\tchecking case body");
             checkBlock(*cas->body, symbols, resolver, dc, expectedReturn,
                        asyncDepth, loopDepth, parallelDepth, insideExtern);
         }
     }
 
     if (node.defaultBody) {
-				LUC_LOG_SEMANTIC_EXTREME("\tchecking default body");
+        LUC_LOG_SEMANTIC_EXTREME("\tchecking default body");
         checkBlock(*node.defaultBody, symbols, resolver, dc, expectedReturn,
                    asyncDepth, loopDepth, parallelDepth, insideExtern);
     }
     
-		LUC_LOG_SEMANTIC_VERBOSE("checkSwitchStmt: complete");
+    LUC_LOG_SEMANTIC_VERBOSE("checkSwitchStmt: complete");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -368,29 +368,29 @@ static void checkForStmt(ForStmtAST& node, SymbolTable& symbols, TypeResolver& r
                           DiagnosticEngine& dc, TypeAST* expectedReturn,
                           int& asyncDepth, int& loopDepth, int& parallelDepth,
                           bool insideExtern) {
-		LUC_LOG_SEMANTIC_VERBOSE("checkForStmt: varName='" << node.varName 
+    LUC_LOG_SEMANTIC_VERBOSE("checkForStmt: varName='" << node.varName 
                            << "', loopDepth=" << loopDepth);
     
     TypeAST* iterType = checkExpr(node.iterable.get(), symbols, resolver, dc,
                                   asyncDepth, loopDepth, parallelDepth, insideExtern);
-		LUC_LOG_SEMANTIC_EXTREME("\titerable type checked");
+    LUC_LOG_SEMANTIC_EXTREME("\titerable type checked");
 
     // Infer element type from the iterable.
     TypeAST* elemType = stmtPrimType(PrimitiveKind::Int); // default for range
     if (iterType) {
         if (iterType->isa<FixedArrayTypeAST>()) {
             elemType = iterType->as<FixedArrayTypeAST>()->element.get();
-						LUC_LOG_SEMANTIC_EXTREME("\titerable is FixedArray, element type inferred");
+            LUC_LOG_SEMANTIC_EXTREME("\titerable is FixedArray, element type inferred");
         } else if (iterType->isa<SliceTypeAST>()) {
             elemType = iterType->as<SliceTypeAST>()->element.get();
-						LUC_LOG_SEMANTIC_EXTREME("\titerable is Slice, element type inferred");
+            LUC_LOG_SEMANTIC_EXTREME("\titerable is Slice, element type inferred");
         } else if (iterType->isa<DynamicArrayTypeAST>()) {
             elemType = iterType->as<DynamicArrayTypeAST>()->element.get();
-						LUC_LOG_SEMANTIC_EXTREME("\titerable is DynamicArray, element type inferred");
+            LUC_LOG_SEMANTIC_EXTREME("\titerable is DynamicArray, element type inferred");
         } else if (iterType->isa<RangeExprAST>()) {
-						LUC_LOG_SEMANTIC_EXTREME("\titerable is Range, element type = int");
+            LUC_LOG_SEMANTIC_EXTREME("\titerable is Range, element type = int");
         } else {
-						LUC_LOG_SEMANTIC_EXTREME("\titerable is other type, using default int");
+            LUC_LOG_SEMANTIC_EXTREME("\titerable is other type, using default int");
         }
     }
 
@@ -399,15 +399,15 @@ static void checkForStmt(ForStmtAST& node, SymbolTable& symbols, TypeResolver& r
         TypeAST* explicit_t = resolver.resolveType(node.varType.get());
         if (explicit_t) {
             elemType = explicit_t;
-						LUC_LOG_SEMANTIC_EXTREME("\texplicit var type overrides: " 
+            LUC_LOG_SEMANTIC_EXTREME("\texplicit var type overrides: " 
                                    << LucDebug::kindToString(elemType->kind));
         }
     }
 
-		LUC_LOG_SEMANTIC_EXTREME("\tloop var type: " << (elemType ? LucDebug::kindToString(elemType->kind) : "null"));
+    LUC_LOG_SEMANTIC_EXTREME("\tloop var type: " << (elemType ? LucDebug::kindToString(elemType->kind) : "null"));
     
     loopDepth++;
-		LUC_LOG_SEMANTIC_EXTREME("\tloopDepth incremented to " << loopDepth);
+    LUC_LOG_SEMANTIC_EXTREME("\tloopDepth incremented to " << loopDepth);
     
     symbols.pushScope();
 
@@ -423,24 +423,24 @@ static void checkForStmt(ForStmtAST& node, SymbolTable& symbols, TypeResolver& r
     loopVar.loc        = node.loc;
     
     if (!symbols.declare(loopVar)) {
-				LUC_LOG_SEMANTIC("\tERROR: loop variable '" << node.varName << "' already declared");
+        LUC_LOG_SEMANTIC("\tERROR: loop variable '" << node.varName << "' already declared");
         dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3005,
                  "loop variable '" + node.varName + "' already declared in this scope");
     } else {
-				LUC_LOG_SEMANTIC_EXTREME("\tloop variable declared: " << node.varName);
+        LUC_LOG_SEMANTIC_EXTREME("\tloop variable declared: " << node.varName);
     }
 
     if (node.body) {
-				LUC_LOG_SEMANTIC_EXTREME("\tchecking loop body");
+        LUC_LOG_SEMANTIC_EXTREME("\tchecking loop body");
         checkStmt(node.body.get(), symbols, resolver, dc, expectedReturn,
                   asyncDepth, loopDepth, parallelDepth, insideExtern);
     }
 
     symbols.popScope();
     loopDepth--;
-		LUC_LOG_SEMANTIC_EXTREME("\tloopDepth decremented to " << loopDepth);
+    LUC_LOG_SEMANTIC_EXTREME("\tloopDepth decremented to " << loopDepth);
     
-		LUC_LOG_SEMANTIC_VERBOSE("checkForStmt: complete");
+    LUC_LOG_SEMANTIC_VERBOSE("checkForStmt: complete");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -450,30 +450,30 @@ static void checkWhileStmt(WhileStmtAST& node, SymbolTable& symbols,
                              TypeResolver& resolver, DiagnosticEngine& dc,
                              TypeAST* expectedReturn, int& asyncDepth,
                              int& loopDepth, int& parallelDepth, bool insideExtern) {
-		LUC_LOG_SEMANTIC_VERBOSE("checkWhileStmt: loopDepth=" << loopDepth);
+    LUC_LOG_SEMANTIC_VERBOSE("checkWhileStmt: loopDepth=" << loopDepth);
     
     TypeAST* condType = checkExpr(node.condition.get(), symbols, resolver, dc,
                                   asyncDepth, loopDepth, parallelDepth, insideExtern);
     if (condType && !TypeChecker::isBooleanCompatible(condType)) {
-				LUC_LOG_SEMANTIC("\tERROR: condition is not bool-compatible");
+        LUC_LOG_SEMANTIC("\tERROR: condition is not bool-compatible");
         dc.error(DiagnosticCategory::Semantic, node.condition->loc, DiagCode::E3002,
                  "while condition must be bool");
     } else {
-				LUC_LOG_SEMANTIC_EXTREME("\tcondition type is bool-compatible");
+        LUC_LOG_SEMANTIC_EXTREME("\tcondition type is bool-compatible");
     }
 
     loopDepth++;
-		LUC_LOG_SEMANTIC_EXTREME("\tloopDepth incremented to " << loopDepth);
+    LUC_LOG_SEMANTIC_EXTREME("\tloopDepth incremented to " << loopDepth);
     
     if (node.body) {
-				LUC_LOG_SEMANTIC_EXTREME("\tchecking loop body");
+        LUC_LOG_SEMANTIC_EXTREME("\tchecking loop body");
         checkStmt(node.body.get(), symbols, resolver, dc, expectedReturn,
                   asyncDepth, loopDepth, parallelDepth, insideExtern);
     }
     
     loopDepth--;
-		LUC_LOG_SEMANTIC_EXTREME("\tloopDepth decremented to " << loopDepth);
-		LUC_LOG_SEMANTIC_VERBOSE("checkWhileStmt: complete");
+    LUC_LOG_SEMANTIC_EXTREME("\tloopDepth decremented to " << loopDepth);
+    LUC_LOG_SEMANTIC_VERBOSE("checkWhileStmt: complete");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -484,31 +484,31 @@ static void checkDoWhileStmt(DoWhileStmtAST& node, SymbolTable& symbols,
                                TypeResolver& resolver, DiagnosticEngine& dc,
                                TypeAST* expectedReturn, int& asyncDepth,
                                int& loopDepth, int& parallelDepth, bool insideExtern) {
-		LUC_LOG_SEMANTIC_VERBOSE("checkDoWhileStmt: loopDepth=" << loopDepth);
+    LUC_LOG_SEMANTIC_VERBOSE("checkDoWhileStmt: loopDepth=" << loopDepth);
     
     loopDepth++;
-		LUC_LOG_SEMANTIC_EXTREME("\tloopDepth incremented to " << loopDepth);
+    LUC_LOG_SEMANTIC_EXTREME("\tloopDepth incremented to " << loopDepth);
     
     if (node.body) {
-				LUC_LOG_SEMANTIC_EXTREME("\tchecking body (executes before condition)");
+        LUC_LOG_SEMANTIC_EXTREME("\tchecking body (executes before condition)");
         checkStmt(node.body.get(), symbols, resolver, dc, expectedReturn,
                   asyncDepth, loopDepth, parallelDepth, insideExtern);
     }
     
     loopDepth--;
-		LUC_LOG_SEMANTIC_EXTREME("\tloopDepth decremented to " << loopDepth);
+    LUC_LOG_SEMANTIC_EXTREME("\tloopDepth decremented to " << loopDepth);
 
     TypeAST* condType = checkExpr(node.condition.get(), symbols, resolver, dc,
                                   asyncDepth, loopDepth, parallelDepth, insideExtern);
     if (condType && !TypeChecker::isBooleanCompatible(condType)) {
-				LUC_LOG_SEMANTIC("\tERROR: condition is not bool-compatible");
+        LUC_LOG_SEMANTIC("\tERROR: condition is not bool-compatible");
         dc.error(DiagnosticCategory::Semantic, node.condition->loc, DiagCode::E3002,
                  "do-while condition must be bool");
     } else {
-				LUC_LOG_SEMANTIC_EXTREME("\tcondition type is bool-compatible");
+        LUC_LOG_SEMANTIC_EXTREME("\tcondition type is bool-compatible");
     }
     
-		LUC_LOG_SEMANTIC_VERBOSE("checkDoWhileStmt: complete");
+    LUC_LOG_SEMANTIC_VERBOSE("checkDoWhileStmt: complete");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -523,10 +523,10 @@ static void checkReturnStmt(ReturnStmtAST& node, SymbolTable& symbols,
                               TypeResolver& resolver, DiagnosticEngine& dc,
                               TypeAST* expectedReturn, int& asyncDepth,
                               int& loopDepth, int& parallelDepth, bool insideExtern) {
-		LUC_LOG_SEMANTIC_VERBOSE("checkReturnStmt: parallelDepth=" << parallelDepth);
+    LUC_LOG_SEMANTIC_VERBOSE("checkReturnStmt: parallelDepth=" << parallelDepth);
     
     if (parallelDepth > 0) {
-				LUC_LOG_SEMANTIC("\tERROR: return inside parallel scope");
+        LUC_LOG_SEMANTIC("\tERROR: return inside parallel scope");
         dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                  "'return' is not allowed inside a parallel scope");
         return;
@@ -534,35 +534,35 @@ static void checkReturnStmt(ReturnStmtAST& node, SymbolTable& symbols,
 
     if (!node.value) {
         // Bare return — valid only when expected return is void (nullptr).
-				LUC_LOG_SEMANTIC_EXTREME("\tvoid return");
+        LUC_LOG_SEMANTIC_EXTREME("\tvoid return");
         if (expectedReturn != nullptr) {
-						LUC_LOG_SEMANTIC("\tERROR: non-void function cannot use bare return");
+            LUC_LOG_SEMANTIC("\tERROR: non-void function cannot use bare return");
             dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                      "non-void function must return a value");
         }
         return;
     }
 
-		LUC_LOG_SEMANTIC_EXTREME("\tchecking return value expression");
+    LUC_LOG_SEMANTIC_EXTREME("\tchecking return value expression");
     TypeAST* valType = checkExpr(node.value.get(), symbols, resolver, dc,
                                  asyncDepth, loopDepth, parallelDepth, insideExtern);
 
     if (!expectedReturn) {
-				LUC_LOG_SEMANTIC("\tERROR: void function returning a value");
+        LUC_LOG_SEMANTIC("\tERROR: void function returning a value");
         dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                  "void function cannot return a value");
         return;
     }
 
     if (valType && !TypeChecker::isAssignable(valType, expectedReturn)) {
-				LUC_LOG_SEMANTIC("\tERROR: return type mismatch");
+        LUC_LOG_SEMANTIC("\tERROR: return type mismatch");
         dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                  "return type mismatch");
     } else {
-				LUC_LOG_SEMANTIC_EXTREME("\treturn type matches expected");
+        LUC_LOG_SEMANTIC_EXTREME("\treturn type matches expected");
     }
     
-		LUC_LOG_SEMANTIC_VERBOSE("checkReturnStmt: complete");
+    LUC_LOG_SEMANTIC_VERBOSE("checkReturnStmt: complete");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -570,19 +570,19 @@ static void checkReturnStmt(ReturnStmtAST& node, SymbolTable& symbols,
 // ─────────────────────────────────────────────────────────────────────────────
 static void checkBreakStmt(BreakStmtAST& node, DiagnosticEngine& dc,
                              int loopDepth, int parallelDepth) {
-		LUC_LOG_SEMANTIC_VERBOSE("checkBreakStmt: loopDepth=" << loopDepth 
+    LUC_LOG_SEMANTIC_VERBOSE("checkBreakStmt: loopDepth=" << loopDepth 
                            << ", parallelDepth=" << parallelDepth);
     
     if (parallelDepth > 0) {
-				LUC_LOG_SEMANTIC("\tERROR: break inside parallel scope");
+        LUC_LOG_SEMANTIC("\tERROR: break inside parallel scope");
         dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                  "'break' is not allowed inside a parallel scope");
     } else if (loopDepth <= 0) {
-				LUC_LOG_SEMANTIC("\tERROR: break outside loop");
+        LUC_LOG_SEMANTIC("\tERROR: break outside loop");
         dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                  "'break' must be inside a loop");
     } else {
-				LUC_LOG_SEMANTIC_EXTREME("\tbreak is valid");
+        LUC_LOG_SEMANTIC_EXTREME("\tbreak is valid");
     }
 }
 
@@ -591,19 +591,19 @@ static void checkBreakStmt(BreakStmtAST& node, DiagnosticEngine& dc,
 // ─────────────────────────────────────────────────────────────────────────────
 static void checkContinueStmt(ContinueStmtAST& node, DiagnosticEngine& dc,
                                 int loopDepth, int parallelDepth) {
-		LUC_LOG_SEMANTIC_VERBOSE("checkContinueStmt: loopDepth=" << loopDepth 
+    LUC_LOG_SEMANTIC_VERBOSE("checkContinueStmt: loopDepth=" << loopDepth 
                            << ", parallelDepth=" << parallelDepth);
     
     if (parallelDepth > 0) {
-				LUC_LOG_SEMANTIC("\tERROR: continue inside parallel scope");
+        LUC_LOG_SEMANTIC("\tERROR: continue inside parallel scope");
         dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                  "'continue' is not allowed inside a parallel scope");
     } else if (loopDepth <= 0) {
-				LUC_LOG_SEMANTIC("\tERROR: continue outside loop");
+        LUC_LOG_SEMANTIC("\tERROR: continue outside loop");
         dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                  "'continue' must be inside a loop");
     } else {
-				LUC_LOG_SEMANTIC_EXTREME("\tcontinue is valid");
+        LUC_LOG_SEMANTIC_EXTREME("\tcontinue is valid");
     }
 }
 
@@ -620,26 +620,26 @@ static void checkParallelForStmt(ParallelForStmtAST& node, SymbolTable& symbols,
                                    TypeResolver& resolver, DiagnosticEngine& dc,
                                    TypeAST* expectedReturn, int& asyncDepth,
                                    int& loopDepth, int& parallelDepth, bool insideExtern) {
-		LUC_LOG_SEMANTIC_VERBOSE("checkParallelForStmt: varName='" << node.varName 
+    LUC_LOG_SEMANTIC_VERBOSE("checkParallelForStmt: varName='" << node.varName 
                            << "', parallelDepth=" << parallelDepth);
     
     TypeAST* iterType = checkExpr(node.iterable.get(), symbols, resolver, dc,
                                   asyncDepth, loopDepth, parallelDepth, insideExtern);
-		LUC_LOG_SEMANTIC_EXTREME("\titerable type checked");
+    LUC_LOG_SEMANTIC_EXTREME("\titerable type checked");
 
     TypeAST* elemType = stmtPrimType(PrimitiveKind::Int);
     if (iterType) {
         if (iterType->isa<FixedArrayTypeAST>()) {
             elemType = iterType->as<FixedArrayTypeAST>()->element.get();
-						LUC_LOG_SEMANTIC_EXTREME("\titerable is FixedArray");
+            LUC_LOG_SEMANTIC_EXTREME("\titerable is FixedArray");
         } else if (iterType->isa<SliceTypeAST>()) {
             elemType = iterType->as<SliceTypeAST>()->element.get();
-						LUC_LOG_SEMANTIC_EXTREME("\titerable is Slice");
+            LUC_LOG_SEMANTIC_EXTREME("\titerable is Slice");
         } else if (iterType->isa<DynamicArrayTypeAST>()) {
             elemType = iterType->as<DynamicArrayTypeAST>()->element.get();
-						LUC_LOG_SEMANTIC_EXTREME("\titerable is DynamicArray");
+            LUC_LOG_SEMANTIC_EXTREME("\titerable is DynamicArray");
         } else {
-						LUC_LOG_SEMANTIC_EXTREME("\titerable is other type");
+            LUC_LOG_SEMANTIC_EXTREME("\titerable is other type");
         }
     }
 
@@ -647,11 +647,11 @@ static void checkParallelForStmt(ParallelForStmtAST& node, SymbolTable& symbols,
         TypeAST* explicit_t = resolver.resolveType(node.varType.get());
         if (explicit_t) {
             elemType = explicit_t;
-						LUC_LOG_SEMANTIC_EXTREME("\texplicit var type overrides");
+            LUC_LOG_SEMANTIC_EXTREME("\texplicit var type overrides");
         }
     }
 
-		LUC_LOG_SEMANTIC_EXTREME("\tparallelDepth incremented to " << (parallelDepth + 1));
+    LUC_LOG_SEMANTIC_EXTREME("\tparallelDepth incremented to " << (parallelDepth + 1));
     parallelDepth++;
     symbols.pushScope();
 
@@ -666,23 +666,23 @@ static void checkParallelForStmt(ParallelForStmtAST& node, SymbolTable& symbols,
     loopVar.loc = node.loc;
     
     if (!symbols.declare(loopVar)) {
-				LUC_LOG_SEMANTIC("\tERROR: parallel loop variable already declared");
+        LUC_LOG_SEMANTIC("\tERROR: parallel loop variable already declared");
         dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3005,
                  "parallel loop variable '" + node.varName + "' already declared");
     } else {
-				LUC_LOG_SEMANTIC_EXTREME("\tparallel loop variable declared: " << node.varName);
+        LUC_LOG_SEMANTIC_EXTREME("\tparallel loop variable declared: " << node.varName);
     }
 
     if (node.body) {
-				LUC_LOG_SEMANTIC_EXTREME("\tchecking parallel body");
+        LUC_LOG_SEMANTIC_EXTREME("\tchecking parallel body");
         checkStmt(node.body.get(), symbols, resolver, dc, expectedReturn,
                   asyncDepth, loopDepth, parallelDepth, insideExtern);
     }
 
     symbols.popScope();
     parallelDepth--;
-		LUC_LOG_SEMANTIC_EXTREME("\tparallelDepth decremented to " << parallelDepth);
-		LUC_LOG_SEMANTIC_VERBOSE("checkParallelForStmt: complete");
+    LUC_LOG_SEMANTIC_EXTREME("\tparallelDepth decremented to " << parallelDepth);
+    LUC_LOG_SEMANTIC_VERBOSE("checkParallelForStmt: complete");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -693,23 +693,23 @@ static void checkParallelBlockStmt(ParallelBlockStmtAST& node, SymbolTable& symb
                                     TypeResolver& resolver, DiagnosticEngine& dc,
                                     TypeAST* expectedReturn, int& asyncDepth,
                                     int& loopDepth, int& parallelDepth, bool insideExtern) {
-		LUC_LOG_SEMANTIC_VERBOSE("checkParallelBlockStmt: " << node.subBlocks.size() 
+    LUC_LOG_SEMANTIC_VERBOSE("checkParallelBlockStmt: " << node.subBlocks.size() 
                            << " sub-blocks, parallelDepth=" << parallelDepth);
     
-		LUC_LOG_SEMANTIC_EXTREME("\tparallelDepth incremented to " << (parallelDepth + 1));
+    LUC_LOG_SEMANTIC_EXTREME("\tparallelDepth incremented to " << (parallelDepth + 1));
     parallelDepth++;
     
     int subBlockCount = 0;
     for (auto& sub : node.subBlocks) {
         subBlockCount++;
-				LUC_LOG_SEMANTIC_EXTREME("\tchecking sub-block " << subBlockCount);
+        LUC_LOG_SEMANTIC_EXTREME("\tchecking sub-block " << subBlockCount);
         checkBlock(*sub, symbols, resolver, dc, expectedReturn,
                    asyncDepth, loopDepth, parallelDepth, insideExtern);
     }
     
     parallelDepth--;
-		LUC_LOG_SEMANTIC_EXTREME("\tparallelDepth decremented to " << parallelDepth);
-		LUC_LOG_SEMANTIC_VERBOSE("checkParallelBlockStmt: complete, checked " 
+    LUC_LOG_SEMANTIC_EXTREME("\tparallelDepth decremented to " << parallelDepth);
+    LUC_LOG_SEMANTIC_VERBOSE("checkParallelBlockStmt: complete, checked " 
                            << subBlockCount << " sub-blocks");
 }
 
@@ -721,96 +721,96 @@ void checkStmt(StmtAST* node, SymbolTable& symbols, TypeResolver& resolver,
                int& asyncDepth, int& loopDepth, int& parallelDepth,
                bool insideExtern) {
     if (!node) {
-				LUC_LOG_SEMANTIC_EXTREME("checkStmt: null node");
+        LUC_LOG_SEMANTIC_EXTREME("checkStmt: null node");
         return;
     }
 
-		LUC_LOG_SEMANTIC_EXTREME("checkStmt: kind=" << LucDebug::kindToString(node->kind));
+    LUC_LOG_SEMANTIC_EXTREME("checkStmt: kind=" << LucDebug::kindToString(node->kind));
 
     switch (node->kind) {
         case ASTKind::BlockStmt:
-						LUC_LOG_SEMANTIC_EXTREME("\t-> BlockStmt");
+            LUC_LOG_SEMANTIC_EXTREME("\t-> BlockStmt");
             checkBlock(*node->as<BlockStmtAST>(), symbols, resolver, dc, expectedReturn,
                        asyncDepth, loopDepth, parallelDepth, insideExtern);
             break;
 
         case ASTKind::ExprStmt:
-						LUC_LOG_SEMANTIC_EXTREME("\t-> ExprStmt");
+            LUC_LOG_SEMANTIC_EXTREME("\t-> ExprStmt");
             checkExprStmt(*node->as<ExprStmtAST>(), symbols, resolver, dc,
                           asyncDepth, loopDepth, parallelDepth, insideExtern);
             break;
 
         case ASTKind::DeclStmt:
-						LUC_LOG_SEMANTIC_EXTREME("\t-> DeclStmt");
+            LUC_LOG_SEMANTIC_EXTREME("\t-> DeclStmt");
             checkDeclStmt(*node->as<DeclStmtAST>(), symbols, resolver, dc,
                           asyncDepth, loopDepth, parallelDepth, insideExtern);
             break;
 
         case ASTKind::IfStmt:
-						LUC_LOG_SEMANTIC_EXTREME("\t-> IfStmt");
+            LUC_LOG_SEMANTIC_EXTREME("\t-> IfStmt");
             checkIfStmt(*node->as<IfStmtAST>(), symbols, resolver, dc, expectedReturn,
                         asyncDepth, loopDepth, parallelDepth, insideExtern);
             break;
 
         case ASTKind::SwitchStmt:
-						LUC_LOG_SEMANTIC_EXTREME("\t-> SwitchStmt");
+            LUC_LOG_SEMANTIC_EXTREME("\t-> SwitchStmt");
             checkSwitchStmt(*node->as<SwitchStmtAST>(), symbols, resolver, dc,
                             expectedReturn, asyncDepth, loopDepth, parallelDepth,
                             insideExtern);
             break;
 
         case ASTKind::ForStmt:
-						LUC_LOG_SEMANTIC_EXTREME("\t-> ForStmt");
+            LUC_LOG_SEMANTIC_EXTREME("\t-> ForStmt");
             checkForStmt(*node->as<ForStmtAST>(), symbols, resolver, dc, expectedReturn,
                          asyncDepth, loopDepth, parallelDepth, insideExtern);
             break;
 
         case ASTKind::WhileStmt:
-						LUC_LOG_SEMANTIC_EXTREME("\t-> WhileStmt");
+            LUC_LOG_SEMANTIC_EXTREME("\t-> WhileStmt");
             checkWhileStmt(*node->as<WhileStmtAST>(), symbols, resolver, dc, expectedReturn,
                            asyncDepth, loopDepth, parallelDepth, insideExtern);
             break;
 
         case ASTKind::DoWhileStmt:
-						LUC_LOG_SEMANTIC_EXTREME("\t-> DoWhileStmt");
+            LUC_LOG_SEMANTIC_EXTREME("\t-> DoWhileStmt");
             checkDoWhileStmt(*node->as<DoWhileStmtAST>(), symbols, resolver, dc,
                              expectedReturn, asyncDepth, loopDepth, parallelDepth,
                              insideExtern);
             break;
 
         case ASTKind::ReturnStmt:
-						LUC_LOG_SEMANTIC_EXTREME("\t-> ReturnStmt");
+            LUC_LOG_SEMANTIC_EXTREME("\t-> ReturnStmt");
             checkReturnStmt(*node->as<ReturnStmtAST>(), symbols, resolver, dc,
                             expectedReturn, asyncDepth, loopDepth, parallelDepth,
                             insideExtern);
             break;
 
         case ASTKind::BreakStmt:
-						LUC_LOG_SEMANTIC_EXTREME("\t-> BreakStmt");
+            LUC_LOG_SEMANTIC_EXTREME("\t-> BreakStmt");
             checkBreakStmt(*node->as<BreakStmtAST>(), dc, loopDepth, parallelDepth);
             break;
 
         case ASTKind::ContinueStmt:
-						LUC_LOG_SEMANTIC_EXTREME("\t-> ContinueStmt");
+            LUC_LOG_SEMANTIC_EXTREME("\t-> ContinueStmt");
             checkContinueStmt(*node->as<ContinueStmtAST>(), dc, loopDepth, parallelDepth);
             break;
 
         case ASTKind::ParallelForStmt:
-						LUC_LOG_SEMANTIC_EXTREME("\t-> ParallelForStmt");
+            LUC_LOG_SEMANTIC_EXTREME("\t-> ParallelForStmt");
             checkParallelForStmt(*node->as<ParallelForStmtAST>(), symbols, resolver, dc,
                                  expectedReturn, asyncDepth, loopDepth, parallelDepth,
                                  insideExtern);
             break;
 
         case ASTKind::ParallelBlockStmt:
-						LUC_LOG_SEMANTIC_EXTREME("\t-> ParallelBlockStmt");
+            LUC_LOG_SEMANTIC_EXTREME("\t-> ParallelBlockStmt");
             checkParallelBlockStmt(*node->as<ParallelBlockStmtAST>(), symbols, resolver,
                                    dc, expectedReturn, asyncDepth, loopDepth,
                                    parallelDepth, insideExtern);
             break;
 
         default:
-						LUC_LOG_SEMANTIC("\tWARNING: Unknown statement kind: " 
+            LUC_LOG_SEMANTIC("\tWARNING: Unknown statement kind: " 
                            << static_cast<int>(node->kind));
             break;
     }

@@ -22,14 +22,14 @@
 Parser::Parser(std::vector<Token> tokens, DiagnosticEngine &dc,
                std::string filePath)
     : tokens_(std::move(tokens)), filePath_(std::move(filePath)), dc_(dc) {
-		LUC_LOG_PARSER("=== Parser constructed ===");
-		LUC_LOG_PARSER("\tToken count: " << tokens_.size());
-		LUC_LOG_PARSER("\tFile path: " << filePath_);
+    LUC_LOG_PARSER("=== Parser constructed ===");
+    LUC_LOG_PARSER("\tToken count: " << tokens_.size());
+    LUC_LOG_PARSER("\tFile path: " << filePath_);
     
     // The Lexer guarantees a trailing EOF_TOKEN. If for any reason the stream
     // is empty, push one now so all peek/advance logic remains branch-free.
     if (tokens_.empty() || tokens_.back().type != TokenType::EOF_TOKEN) {
-				LUC_LOG_PARSER("\tWarning: No EOF_TOKEN found, adding one");
+        LUC_LOG_PARSER("\tWarning: No EOF_TOKEN found, adding one");
         tokens_.push_back({TokenType::EOF_TOKEN, "EOF", 0, 0});
     }
 }
@@ -149,7 +149,7 @@ SourceLocation Parser::locOf(const Token &tok) const {
 
 void Parser::error(const SourceLocation &loc, DiagCode code,
                    const std::string &msg) {
-		LUC_LOG_PARSER("ERROR at " << loc.line << ":" << loc.column 
+    LUC_LOG_PARSER("ERROR at " << loc.line << ":" << loc.column 
                    << " - " << msg << " (code=" << static_cast<int>(code) << ")");
     dc_.report(DiagnosticSeverity::Error, DiagnosticCategory::Syntax, loc, code,
                msg);
@@ -160,13 +160,13 @@ void Parser::errorAt(DiagCode code, const std::string &msg) {
 }
 
 void Parser::synchronize() {
-		LUC_LOG_PARSER("SYNCHRONIZE: skipping tokens until declaration/statement boundary");
-		LUC_LOG_PARSER("\tCurrent token: '" << peek().value << "' type=" << static_cast<int>(peek().type));
+    LUC_LOG_PARSER("SYNCHRONIZE: skipping tokens until declaration/statement boundary");
+    LUC_LOG_PARSER("\tCurrent token: '" << peek().value << "' type=" << static_cast<int>(peek().type));
 
     advance();
     while (!isAtEnd()) {
         TokenType t = peek().type;
-				LUC_LOG_PARSER_EXTREME("\tChecking token: '" << peek().value << "' type=" << static_cast<int>(t));
+        LUC_LOG_PARSER_EXTREME("\tChecking token: '" << peek().value << "' type=" << static_cast<int>(t));
 
         switch (t) {
         case TokenType::AT_SIGN:
@@ -195,7 +195,7 @@ void Parser::synchronize() {
         case TokenType::SWITCH:
         // A closing brace ends the current block — caller handles it.
         case TokenType::RBRACE:
-						LUC_LOG_PARSER("SYNCHRONIZE: stopped at token '" << peek().value << "'");
+            LUC_LOG_PARSER("SYNCHRONIZE: stopped at token '" << peek().value << "'");
             return;
         default:
             break;
@@ -203,7 +203,7 @@ void Parser::synchronize() {
 
         advance();
     }
-		LUC_LOG_PARSER("SYNCHRONIZE: reached end of file");
+    LUC_LOG_PARSER("SYNCHRONIZE: reached end of file");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -212,14 +212,14 @@ void Parser::synchronize() {
 
 Visibility Parser::parseVisibility() {
     if (match(TokenType::PUB)) {
-				LUC_LOG_PARSER("parseVisibility: found 'pub' -> Package");
+        LUC_LOG_PARSER("parseVisibility: found 'pub' -> Package");
         return Visibility::Package;
     }
     if (match(TokenType::EXPORT)) {
-				LUC_LOG_PARSER("parseVisibility: found 'export' -> Export");
+        LUC_LOG_PARSER("parseVisibility: found 'export' -> Export");
         return Visibility::Export;
     }
-		LUC_LOG_PARSER_EXTREME("parseVisibility: no modifier -> Private");
+    LUC_LOG_PARSER_EXTREME("parseVisibility: no modifier -> Private");
     return Visibility::Private;
 }
 
@@ -229,12 +229,12 @@ Visibility Parser::parseVisibility() {
 
 std::optional<DocComment> Parser::harvestDocComment() {
     if (pos_ == 0) {
-				LUC_LOG_PARSER_EXTREME("harvestDocComment: pos=0, returning nullopt");
+        LUC_LOG_PARSER_EXTREME("harvestDocComment: pos=0, returning nullopt");
         return std::nullopt;
     }
 
     int declLine = peek().line;
-		LUC_LOG_PARSER_VERBOSE("harvestDocComment: declLine=" << declLine);
+    LUC_LOG_PARSER_VERBOSE("harvestDocComment: declLine=" << declLine);
 
     // ── Pass 1: scan backward, skip only LINE_COMMENT and DOC_COMMENT tokens.
     // Stop at the first non-comment token.  Record what we find.
@@ -333,7 +333,7 @@ std::optional<DocComment> Parser::harvestDocComment() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 bool Parser::looksLikeType() const {
-		LUC_LOG_PARSER_EXTREME("looksLikeType: checking token '" << peek().value 
+    LUC_LOG_PARSER_EXTREME("looksLikeType: checking token '" << peek().value 
                            << "' type=" << static_cast<int>(peek().type));
     
     bool result = false;
@@ -381,12 +381,12 @@ bool Parser::looksLikeType() const {
         break;
     }
     
-		LUC_LOG_PARSER_EXTREME("looksLikeType: returning " << (result ? "true" : "false"));
+    LUC_LOG_PARSER_EXTREME("looksLikeType: returning " << (result ? "true" : "false"));
     return result;
 }
 
 bool Parser::looksLikeFuncDecl() const {
-		LUC_LOG_PARSER_VERBOSE("looksLikeFuncDecl: starting at pos=" << pos_ 
+    LUC_LOG_PARSER_VERBOSE("looksLikeFuncDecl: starting at pos=" << pos_ 
                            << ", token='" << peek().value << "'");
     
     std::size_t i = pos_;
@@ -394,17 +394,17 @@ bool Parser::looksLikeFuncDecl() const {
     // Skip the name IDENTIFIER. Strategy: we must move past the name 
     // to find the signature start (generics or parentheses).
     if (i < tokens_.size() && tokens_[i].type == TokenType::IDENTIFIER) {
-				LUC_LOG_PARSER_VERBOSE("\tfound IDENTIFIER: '" << tokens_[i].value << "'");
+        LUC_LOG_PARSER_VERBOSE("\tfound IDENTIFIER: '" << tokens_[i].value << "'");
         ++i;
     } else {
-				LUC_LOG_PARSER_VERBOSE("\tnot an IDENTIFIER, returning false");
+        LUC_LOG_PARSER_VERBOSE("\tnot an IDENTIFIER, returning false");
         return false;
     }
 
     // Skip generic params if present: < ... >
     // We match angle brackets by depth so nested generics don't confuse us.
     if (i < tokens_.size() && tokens_[i].type == TokenType::LESS) {
-				LUC_LOG_PARSER_VERBOSE("\tfound generic params start '<'");
+        LUC_LOG_PARSER_VERBOSE("\tfound generic params start '<'");
         int depth = 1;
         ++i;
         while (i < tokens_.size() && depth > 0) {
@@ -416,22 +416,22 @@ bool Parser::looksLikeFuncDecl() const {
                 break;
             ++i;
         }
-				LUC_LOG_PARSER_VERBOSE("\tafter generic params, at token '" << tokens_[i].value << "'");
+        LUC_LOG_PARSER_VERBOSE("\tafter generic params, at token '" << tokens_[i].value << "'");
     }
 
     // After optional generics, we need at least one parameter group.
     if (!(i < tokens_.size() && tokens_[i].type == TokenType::LPAREN)) {
-				LUC_LOG_PARSER_VERBOSE("\tno '(' found after name/generics, returning false");
+        LUC_LOG_PARSER_VERBOSE("\tno '(' found after name/generics, returning false");
         return false;
     }
 
-		LUC_LOG_PARSER_VERBOSE("\tlooksLikeFuncDecl: returning true");
+    LUC_LOG_PARSER_VERBOSE("\tlooksLikeFuncDecl: returning true");
     return true;
 }
 
 bool Parser::looksLikeStructLiteral() const {
     if (!check(TokenType::IDENTIFIER)) {
-				LUC_LOG_PARSER_EXTREME("looksLikeStructLiteral: not IDENTIFIER, false");
+        LUC_LOG_PARSER_EXTREME("looksLikeStructLiteral: not IDENTIFIER, false");
         return false;
     }
 
@@ -452,7 +452,7 @@ bool Parser::looksLikeStructLiteral() const {
     }
 
     bool result = (i < tokens_.size() && tokens_[i].type == TokenType::LBRACE);
-		LUC_LOG_PARSER_EXTREME("looksLikeStructLiteral: " << (result ? "true" : "false"));
+    LUC_LOG_PARSER_EXTREME("looksLikeStructLiteral: " << (result ? "true" : "false"));
     return result;
 }
 
@@ -471,7 +471,7 @@ bool Parser::looksLikeStmtStart() const {
         case TokenType::MATCH:
         case TokenType::SWITCH:
         case TokenType::AT_SIGN:
-						LUC_LOG_PARSER_EXTREME("looksLikeStmtStart: true (keyword)");
+            LUC_LOG_PARSER_EXTREME("looksLikeStmtStart: true (keyword)");
             return true;
     default:
         bool result = looksLikeType() || check(TokenType::IDENTIFIER) ||
@@ -483,7 +483,7 @@ bool Parser::looksLikeStmtStart() const {
                check(TokenType::MINUS) || check(TokenType::NOT) ||
                check(TokenType::BIT_NOT) || check(TokenType::AMPERSAND) ||
                check(TokenType::AWAIT) || check(TokenType::LPAREN);
-				LUC_LOG_PARSER_EXTREME("looksLikeStmtStart: " << (result ? "true" : "false") 
+        LUC_LOG_PARSER_EXTREME("looksLikeStmtStart: " << (result ? "true" : "false") 
                                << " (expression starter)");
         return result;
     }
@@ -504,10 +504,10 @@ bool Parser::looksLikeDeclStart() const {
         case TokenType::FROM:
         case TokenType::LET:
         case TokenType::CONST:
-						LUC_LOG_PARSER_EXTREME("looksLikeDeclStart: true");
+            LUC_LOG_PARSER_EXTREME("looksLikeDeclStart: true");
             return true;
     default:
-				LUC_LOG_PARSER_EXTREME("looksLikeDeclStart: false");
+        LUC_LOG_PARSER_EXTREME("looksLikeDeclStart: false");
         return false;
     }
 }
@@ -520,7 +520,7 @@ bool Parser::looksLikeDeclStart() const {
 // ─────────────────────────────────────────────────────────────────────────────
 
 std::unique_ptr<ProgramAST> Parser::parse() {
-		LUC_LOG_PARSER("\n === PARSE START ===");
+    LUC_LOG_PARSER("\n === PARSE START ===");
     
     auto program = std::make_unique<ProgramAST>();
     program->filePath = filePath_;
@@ -531,11 +531,11 @@ std::unique_ptr<ProgramAST> Parser::parse() {
     // Must be the first non-comment token in the file.  harvestDocComment()
     // is called here because a doc comment may appear before 'package'.
     {
-				LUC_LOG_PARSER("Parsing package declaration...");
+        LUC_LOG_PARSER("Parsing package declaration...");
         std::optional<DocComment> pkgDoc = harvestDocComment();
 
         if (!check(TokenType::PACKAGE)) {
-						LUC_LOG_PARSER("ERROR: No 'package' declaration found at start of file");
+            LUC_LOG_PARSER("ERROR: No 'package' declaration found at start of file");
             errorAt(DiagCode::E2001,
                     "expected 'package' declaration at the start of the file");
             synchronize();
@@ -544,7 +544,7 @@ std::unique_ptr<ProgramAST> Parser::parse() {
         auto pkgDecl = parsePackageDecl();
         attachDoc(*pkgDecl, std::move(pkgDoc));
         program->packageName = pkgDecl->name;
-				LUC_LOG_PARSER("\tPackage name: '" << program->packageName << "'");
+        LUC_LOG_PARSER("\tPackage name: '" << program->packageName << "'");
 
         // Store the package decl as the first entry in decls so the AST is
         // self-contained and visitors can find it at decls[0].
@@ -552,28 +552,28 @@ std::unique_ptr<ProgramAST> Parser::parse() {
     }
 
     // ── 2. top-level declarations ─────────────────────────────────────────────
-		LUC_LOG_PARSER("Parsing top-level declarations...");
+    LUC_LOG_PARSER("Parsing top-level declarations...");
     int declCount = 0;
     
     while (!isAtEnd()) {
         std::optional<DocComment> doc = harvestDocComment();
 
-				LUC_LOG_PARSER("Parsing top-level declaration at line " << peek().line 
+        LUC_LOG_PARSER("Parsing top-level declaration at line " << peek().line 
                        << ", token: " << LucDebug::tokenTypeToString(peek().type));
 
         DeclPtr decl = parseTopLevelDecl();
         if (decl) {
             declCount++;
-						LUC_LOG_PARSER("\tSuccessfully parsed declaration #" << declCount 
+            LUC_LOG_PARSER("\tSuccessfully parsed declaration #" << declCount 
                            << " of kind: " << LucDebug::kindToString(decl->kind));
             program->decls.push_back(std::move(decl));
         } else {
-						LUC_LOG_PARSER("\tFailed to parse declaration, synchronizing...");
+            LUC_LOG_PARSER("\tFailed to parse declaration, synchronizing...");
             synchronize();
         }
     }
 
-		LUC_LOG_PARSER("\n === parse() END: parsed " << declCount 
+    LUC_LOG_PARSER("\n === parse() END: parsed " << declCount 
                    << " top-level declarations ===");
     return program;
 }
@@ -583,24 +583,24 @@ std::unique_ptr<ProgramAST> Parser::parse() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 DeclPtr Parser::parseTopLevelDecl() {
-		LUC_LOG_PARSER("parseTopLevelDecl: current token = '" << peek().value 
+    LUC_LOG_PARSER("parseTopLevelDecl: current token = '" << peek().value 
                    << "', type = " << static_cast<int>(peek().type));
 
     // ── Collect leading '@' attributes ───────────────────────────────────────
-		LUC_LOG_PARSER_VERBOSE("\tParsing attributes...");
+    LUC_LOG_PARSER_VERBOSE("\tParsing attributes...");
     std::vector<AttributePtr> attrs = parseAttributes();
-		LUC_LOG_PARSER_VERBOSE("\tFound " << attrs.size() << " attribute(s)");
+    LUC_LOG_PARSER_VERBOSE("\tFound " << attrs.size() << " attribute(s)");
 
     // ── Visibility modifier ───────────────────────────────────────────────────
     // All remaining top-level declarations may carry a visibility modifier.
     Visibility vis = parseVisibility();
-		LUC_LOG_PARSER_VERBOSE("\tVisibility: " << (vis == Visibility::Private ? "private" : 
+    LUC_LOG_PARSER_VERBOSE("\tVisibility: " << (vis == Visibility::Private ? "private" : 
                                                  vis == Visibility::Package ? "package" : "export"));
 
     // ── 'use' ─────────────────────────────────────────────────────────────────
     // 'export use math.vec2' is supported, so use can take a visibility tier.
     if (check(TokenType::USE)) {
-				LUC_LOG_PARSER("\tDetected 'use' declaration");
+        LUC_LOG_PARSER("\tDetected 'use' declaration");
         if (!attrs.empty())
             errorAt(DiagCode::E2002, "attributes are not valid on 'use' declarations");
         return parseUseDecl(vis);
@@ -608,7 +608,7 @@ DeclPtr Parser::parseTopLevelDecl() {
 
     // ── 'struct' ──────────────────────────────────────────────────────────────
     if (check(TokenType::STRUCT)) {
-				LUC_LOG_PARSER("\tDetected 'struct' declaration");
+        LUC_LOG_PARSER("\tDetected 'struct' declaration");
         auto decl = parseStructDecl(vis);
         if (decl) decl->attributes = std::move(attrs);
         return decl;
@@ -616,7 +616,7 @@ DeclPtr Parser::parseTopLevelDecl() {
 
     // ── 'enum' ────────────────────────────────────────────────────────────────
     if (check(TokenType::ENUM)) {
-				LUC_LOG_PARSER("\tDetected 'enum' declaration");
+        LUC_LOG_PARSER("\tDetected 'enum' declaration");
         if (!attrs.empty())
             errorAt(DiagCode::E2002, "attributes are not valid on 'enum' declarations");
         return parseEnumDecl(vis);
@@ -624,7 +624,7 @@ DeclPtr Parser::parseTopLevelDecl() {
 
     // ── 'trait' ───────────────────────────────────────────────────────────────
     if (check(TokenType::TRAIT)) {
-				LUC_LOG_PARSER("\tDetected 'trait' declaration");
+        LUC_LOG_PARSER("\tDetected 'trait' declaration");
         if (!attrs.empty())
             errorAt(DiagCode::E2002, "attributes are not valid on 'trait' declarations");
         return parseTraitDecl(vis);
@@ -632,7 +632,7 @@ DeclPtr Parser::parseTopLevelDecl() {
 
     // ── 'impl' ────────────────────────────────────────────────────────────────
     if (check(TokenType::IMPL)) {
-				LUC_LOG_PARSER("\tDetected 'impl' declaration");
+        LUC_LOG_PARSER("\tDetected 'impl' declaration");
         if (!attrs.empty())
             errorAt(DiagCode::E2002, "attributes are not valid on 'impl' declarations");
         return parseImplDecl(vis);
@@ -640,7 +640,7 @@ DeclPtr Parser::parseTopLevelDecl() {
 
     // ── 'from' ────────────────────────────────────────────────────────────────
     if (check(TokenType::FROM)) {
-				LUC_LOG_PARSER("\tDetected 'from' declaration");
+        LUC_LOG_PARSER("\tDetected 'from' declaration");
         if (!attrs.empty())
             errorAt(DiagCode::E2002, "attributes are not valid on 'from' declarations");
         return parseFromDecl(vis);
@@ -648,7 +648,7 @@ DeclPtr Parser::parseTopLevelDecl() {
 
     // ── 'type' ────────────────────────────────────────────────────────────────
     if (check(TokenType::TYPE)) {
-				LUC_LOG_PARSER("\tDetected 'type' alias declaration");
+        LUC_LOG_PARSER("\tDetected 'type' alias declaration");
         if (!attrs.empty())
             errorAt(DiagCode::E2002, "attributes are not valid on 'type' alias declarations");
         return parseTypeAliasDecl(vis);
@@ -660,23 +660,23 @@ DeclPtr Parser::parseTopLevelDecl() {
     // whether a '(' follows (with optional generic params) to decide.
     if (checkAny({TokenType::LET, TokenType::CONST})) {
         Token kwTok = advance();
-				LUC_LOG_PARSER("\tDetected keyword: '" << kwTok.value << "'");
+        LUC_LOG_PARSER("\tDetected keyword: '" << kwTok.value << "'");
         
         DeclKeyword kw;
         switch (kwTok.type) {
         case TokenType::LET:
             kw = DeclKeyword::Let;
-						LUC_LOG_PARSER_VERBOSE("\t\t-> DeclKeyword::Let");
+            LUC_LOG_PARSER_VERBOSE("\t\t-> DeclKeyword::Let");
             break;
         default:
             kw = DeclKeyword::Const;
-						LUC_LOG_PARSER_VERBOSE("\t\t-> DeclKeyword::Const");
+            LUC_LOG_PARSER_VERBOSE("\t\t-> DeclKeyword::Const");
             break;
         }
 
         // After the keyword we expect the name.
         if (!check(TokenType::IDENTIFIER)) {
-						LUC_LOG_PARSER("\tERROR: expected name after keyword");
+            LUC_LOG_PARSER("\tERROR: expected name after keyword");
             errorAt(DiagCode::E2003, "expected name after '" + kwTok.value + "'");
             return nullptr;
         }
@@ -686,13 +686,13 @@ DeclPtr Parser::parseTopLevelDecl() {
         for (const auto& attr : attrs) {
             if (attr->name == "extern") {
                 hasExternAttr = true;
-								LUC_LOG_PARSER("\tFound @extern attribute");
+                LUC_LOG_PARSER("\tFound @extern attribute");
                 break;
             }
         }
 
         if (hasExternAttr) {
-						LUC_LOG_PARSER("\tProcessing @extern declaration...");
+            LUC_LOG_PARSER("\tProcessing @extern declaration...");
             
             // Look ahead to see if there's a '(' after the name (skip comments)
             std::size_t lookAhead = pos_ + 1;
@@ -701,27 +701,27 @@ DeclPtr Parser::parseTopLevelDecl() {
             }
             
             bool hasParenAfterName = (lookAhead < tokens_.size() && tokens_[lookAhead].type == TokenType::LPAREN);
-						LUC_LOG_PARSER("\thasParenAfterName: " << (hasParenAfterName ? "true" : "false"));
+            LUC_LOG_PARSER("\thasParenAfterName: " << (hasParenAfterName ? "true" : "false"));
             
             if (hasParenAfterName) {
-								LUC_LOG_PARSER("\t-> Parsing as @extern function");
+                LUC_LOG_PARSER("\t-> Parsing as @extern function");
                 return parseFuncDecl(kw, vis, std::move(attrs));
             } else {
-								LUC_LOG_PARSER("\t-> Parsing as @extern variable");
+                LUC_LOG_PARSER("\t-> Parsing as @extern variable");
                 auto decl = parseVarDecl(vis, std::move(attrs));
                 return decl;
             }
         }
 
-				LUC_LOG_PARSER("\tChecking if this looks like a function declaration...");
+        LUC_LOG_PARSER("\tChecking if this looks like a function declaration...");
         bool isFunc = looksLikeFuncDecl();
-				LUC_LOG_PARSER("\tlooksLikeFuncDecl: " << (isFunc ? "true" : "false"));
+        LUC_LOG_PARSER("\tlooksLikeFuncDecl: " << (isFunc ? "true" : "false"));
         
         if (isFunc) {
-						LUC_LOG_PARSER("\t-> Parsing as function declaration");
+            LUC_LOG_PARSER("\t-> Parsing as function declaration");
             return parseFuncDecl(kw, vis, std::move(attrs));
         } else {
-						LUC_LOG_PARSER("\t-> Parsing as variable declaration");
+            LUC_LOG_PARSER("\t-> Parsing as variable declaration");
             auto decl = parseVarDecl(vis);
             if (decl) decl->attributes = std::move(attrs);
             return decl;
@@ -729,7 +729,7 @@ DeclPtr Parser::parseTopLevelDecl() {
     }
 
     // ── Unrecognised token ────────────────────────────────────────────────────
-		LUC_LOG_PARSER("\tUnrecognised declaration start");
+    LUC_LOG_PARSER("\tUnrecognised declaration start");
     if (!attrs.empty()) {
         errorAt(DiagCode::E2002, "expected a declaration after '@' attribute(s)");
     } else if (vis != Visibility::Private) {

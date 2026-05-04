@@ -74,17 +74,17 @@
 // identifiers — no runtime expressions inside attribute argument lists.
 // ─────────────────────────────────────────────────────────────────────────────
 std::vector<AttributePtr> Parser::parseAttributes() {
-		LUC_LOG_PARSER_VERBOSE("parseAttributes: starting");
+    LUC_LOG_PARSER_VERBOSE("parseAttributes: starting");
     std::vector<AttributePtr> attrs;
     while (check(TokenType::AT_SIGN)) {
-				LUC_LOG_PARSER_VERBOSE("\tFound '@', parsing attribute");
+        LUC_LOG_PARSER_VERBOSE("\tFound '@', parsing attribute");
         AttributePtr attr = parseAttribute();
         if (attr) {
-						LUC_LOG_PARSER_VERBOSE("\t\tParsed attribute: @" << attr->name);
+            LUC_LOG_PARSER_VERBOSE("\t\tParsed attribute: @" << attr->name);
             attrs.push_back(std::move(attr));
         }
     }
-		LUC_LOG_PARSER_VERBOSE("parseAttributes: found " << attrs.size() << " attributes");
+    LUC_LOG_PARSER_VERBOSE("parseAttributes: found " << attrs.size() << " attributes");
     return attrs;
 }
 
@@ -256,7 +256,7 @@ std::unique_ptr<VarDeclAST> Parser::parseVarDecl(Visibility vis, std::vector<Att
                     externName = arg.value;
                 }
             }
-						LUC_LOG_PARSER("\t*** @extern attribute detected on variable! C name: '" << externName << "' ***");
+            LUC_LOG_PARSER("\t*** @extern attribute detected on variable! C name: '" << externName << "' ***");
             break;
         }
     }
@@ -267,7 +267,7 @@ std::unique_ptr<VarDeclAST> Parser::parseVarDecl(Visibility vis, std::vector<Att
         return nullptr;
     }
     std::string name = advance().value;
-		LUC_LOG_PARSER("Variable name: '" << name << "'");
+    LUC_LOG_PARSER("Variable name: '" << name << "'");
 
     // Type annotation (required)
     if (!looksLikeType()) {
@@ -324,7 +324,7 @@ std::unique_ptr<VarDeclAST> Parser::parseVarDecl(Visibility vis, std::vector<Att
         }
         if (attr->name == "deprecated") {
             // @deprecated is allowed on variables - keep as warning later
-						LUC_LOG_PARSER("\t'@deprecated' attribute on variable '" << name << "'");
+            LUC_LOG_PARSER("\t'@deprecated' attribute on variable '" << name << "'");
         }
     }
 
@@ -355,8 +355,8 @@ std::unique_ptr<VarDeclAST> Parser::parseVarDecl(Visibility vis, std::vector<Att
 std::unique_ptr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vis, std::vector<AttributePtr> attrs) {
     SourceLocation loc = currentLoc();
 
-		LUC_LOG_PARSER("=== parseFuncDecl START ===");
-		LUC_LOG_PARSER("Current token (peek filtered): '" << peek().value << "' (type: " << static_cast<int>(peek().type) << ")");
+    LUC_LOG_PARSER("=== parseFuncDecl START ===");
+    LUC_LOG_PARSER("Current token (peek filtered): '" << peek().value << "' (type: " << static_cast<int>(peek().type) << ")");
     
     // Check for @extern early
     bool hasExternAttr = false;
@@ -370,7 +370,7 @@ std::unique_ptr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vi
                     externName = arg.value;
                 }
             }
-						LUC_LOG_PARSER("\t*** @extern attribute detected! C name: '" << externName << "' ***");
+            LUC_LOG_PARSER("\t*** @extern attribute detected! C name: '" << externName << "' ***");
             break;
         }
     }
@@ -381,13 +381,13 @@ std::unique_ptr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vi
         return nullptr;
     }
     std::string name = advance().value;
-		LUC_LOG_PARSER("Function name: '" << name << "'");
+    LUC_LOG_PARSER("Function name: '" << name << "'");
     
     // DEBUG: Show raw token at current position (after consuming name)
     std::size_t rawPos = pos_;
     while (rawPos < tokens_.size() && tokens_[rawPos].type == TokenType::LINE_COMMENT) rawPos++;
     if (rawPos < tokens_.size()) {
-				LUC_LOG_PARSER("Raw token at position " << rawPos << ": '" << tokens_[rawPos].value 
+        LUC_LOG_PARSER("Raw token at position " << rawPos << ": '" << tokens_[rawPos].value 
                        << "' (type: " << static_cast<int>(tokens_[rawPos].type) << ")");
     }
 
@@ -400,13 +400,13 @@ std::unique_ptr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vi
 
     // Optional generic params
     if (check(TokenType::LESS)) {
-				LUC_LOG_PARSER("Found generic parameters");
+        LUC_LOG_PARSER("Found generic parameters");
         node->genericParams = parseGenericParams();
     }
 
     // Parse parameter groups
     // IMPORTANT: Use raw token check, not filtered peek()
-		LUC_LOG_PARSER("Checking for '(' in raw token stream...");
+    LUC_LOG_PARSER("Checking for '(' in raw token stream...");
     
     // Find the next non-comment token
     std::size_t nextNonComment = pos_;
@@ -415,8 +415,8 @@ std::unique_ptr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vi
     }
     
     if (nextNonComment >= tokens_.size() || tokens_[nextNonComment].type != TokenType::LPAREN) {
-				LUC_LOG_PARSER("ERROR: No '(' found for function '" << node->name << "'");
-				LUC_LOG_PARSER("\tNext non-comment token at " << nextNonComment << ": '" 
+        LUC_LOG_PARSER("ERROR: No '(' found for function '" << node->name << "'");
+        LUC_LOG_PARSER("\tNext non-comment token at " << nextNonComment << ": '" 
                        << (nextNonComment < tokens_.size() ? tokens_[nextNonComment].value : "EOF")
                        << "' (type: " << (nextNonComment < tokens_.size() ? static_cast<int>(tokens_[nextNonComment].type) : -1) << ")");
         errorAt(DiagCode::E2001, "expected '(' to start parameter list for function '" + node->name + "'");
@@ -430,53 +430,53 @@ std::unique_ptr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vi
     
     // Now parse parameter groups - parseParamGroup returns vector<ParamPtr>
     while (check(TokenType::LPAREN)) {
-				LUC_LOG_PARSER("\tParsing parameter group at pos " << pos_);
+        LUC_LOG_PARSER("\tParsing parameter group at pos " << pos_);
         std::vector<ParamPtr> paramGroup = parseParamGroup();
-				LUC_LOG_PARSER("\t\tParsed " << paramGroup.size() << " parameters");
+        LUC_LOG_PARSER("\t\tParsed " << paramGroup.size() << " parameters");
         node->paramGroups.push_back(std::move(paramGroup));
     }
 
-		LUC_LOG_PARSER("Total parameter groups: " << node->paramGroups.size());
+    LUC_LOG_PARSER("Total parameter groups: " << node->paramGroups.size());
     for (size_t i = 0; i < node->paramGroups.size(); i++) {
-				LUC_LOG_PARSER("\tGroup " << i << " has " << node->paramGroups[i].size() << " params");
+        LUC_LOG_PARSER("\tGroup " << i << " has " << node->paramGroups[i].size() << " params");
         for (const auto& param : node->paramGroups[i]) {
             if (param) {
-								LUC_LOG_PARSER("\t\tparam: " << param->name);
+                LUC_LOG_PARSER("\t\tparam: " << param->name);
             }
         }
     }
 
     // Optional return type
-		LUC_LOG_PARSER("Checking for return type...");
-		LUC_LOG_PARSER("\tCurrent token: '" << peek().value << "' (type: " << static_cast<int>(peek().type) << ")");
+    LUC_LOG_PARSER("Checking for return type...");
+    LUC_LOG_PARSER("\tCurrent token: '" << peek().value << "' (type: " << static_cast<int>(peek().type) << ")");
 
     if (looksLikeType() && !check(TokenType::ASSIGN) && !check(TokenType::SEMICOLON)) {
-				LUC_LOG_PARSER("\tParsing return type...");
+        LUC_LOG_PARSER("\tParsing return type...");
         node->returnType = parseType();
         if (node->returnType) {
-						LUC_LOG_PARSER("\t\tReturn type parsed: " << static_cast<int>(node->returnType->kind));
+            LUC_LOG_PARSER("\t\tReturn type parsed: " << static_cast<int>(node->returnType->kind));
         }
     }
 
     // Handle extern vs normal function bodies
     if (hasExternAttr) {
-				LUC_LOG_PARSER("Processing @extern function '" << node->name << "'");
+        LUC_LOG_PARSER("Processing @extern function '" << node->name << "'");
         
         // Extern declarations end with semicolon
         // Skip any LINE_COMMENTs before checking for semicolon
         while (check(TokenType::LINE_COMMENT)) advance();
         
         if (check(TokenType::SEMICOLON)) {
-						LUC_LOG_PARSER("\tFound semicolon - valid extern declaration");
+            LUC_LOG_PARSER("\tFound semicolon - valid extern declaration");
             advance(); // Consume semicolon
         } else if (check(TokenType::ASSIGN)) {
-						LUC_LOG_PARSER("\tERROR: extern function cannot have body");
+            LUC_LOG_PARSER("\tERROR: extern function cannot have body");
             errorAt(DiagCode::E2002, "'@extern' function '" + node->name + "' must not have a body");
         } else {
-						LUC_LOG_PARSER("\tWarning: extern declaration missing semicolon, current token: '" << peek().value << "'");
+            LUC_LOG_PARSER("\tWarning: extern declaration missing semicolon, current token: '" << peek().value << "'");
         }
         
-				LUC_LOG_PARSER("=== parseFuncDecl END (extern) ===");
+        LUC_LOG_PARSER("=== parseFuncDecl END (extern) ===");
         return node;
     }
 
@@ -486,10 +486,10 @@ std::unique_ptr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vi
         return nullptr;
     }
 
-		LUC_LOG_PARSER("Parsing function body...");
+    LUC_LOG_PARSER("Parsing function body...");
     node->body = parseFuncBody(node->bodyKind, node->isAsync);
     
-		LUC_LOG_PARSER("=== parseFuncDecl END (normal) ===");
+    LUC_LOG_PARSER("=== parseFuncDecl END (normal) ===");
     return node;
 }
 
@@ -503,14 +503,14 @@ std::unique_ptr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vi
 // Returns the list of params for a single group. Variadic must be last.
 // ─────────────────────────────────────────────────────────────────────────────
 std::vector<ParamPtr> Parser::parseParamGroup() {
-		LUC_LOG_PARSER_VERBOSE("parseParamGroup: starting at pos " << pos_);
+    LUC_LOG_PARSER_VERBOSE("parseParamGroup: starting at pos " << pos_);
     std::vector<ParamPtr> params;
 
     consume(TokenType::LPAREN, "expected '('");
 
     if (check(TokenType::RPAREN)) {
         advance(); // empty param list
-				LUC_LOG_PARSER_VERBOSE("parseParamGroup: empty parameter group");
+        LUC_LOG_PARSER_VERBOSE("parseParamGroup: empty parameter group");
         return params;
     }
 
@@ -545,7 +545,7 @@ std::vector<ParamPtr> Parser::parseParamGroup() {
 
     consume(TokenType::RPAREN, "expected ')' to close parameter list");
 
-		LUC_LOG_PARSER_VERBOSE("parseParamGroup: returning " << params.size() << " params");
+    LUC_LOG_PARSER_VERBOSE("parseParamGroup: returning " << params.size() << " params");
     return params;
 }
 
@@ -561,18 +561,18 @@ std::vector<ParamPtr> Parser::parseParamGroup() {
 // ─────────────────────────────────────────────────────────────────────────────
 ParamPtr Parser::parseParam() {
     SourceLocation loc = currentLoc();
-		LUC_LOG_PARSER_VERBOSE("parseParam: parsing at pos " << pos_);
+    LUC_LOG_PARSER_VERBOSE("parseParam: parsing at pos " << pos_);
 
     if (!check(TokenType::IDENTIFIER)) {
         errorAt(DiagCode::E2003, "expected parameter name");
         return nullptr;
     }
     std::string name = advance().value;
-		LUC_LOG_PARSER_VERBOSE("\tparam name: '" << name << "'");
+    LUC_LOG_PARSER_VERBOSE("\tparam name: '" << name << "'");
 
     bool isVariadic = match(TokenType::VARIADIC);
     if (isVariadic) {
-				LUC_LOG_PARSER_VERBOSE("\tparam is variadic");
+        LUC_LOG_PARSER_VERBOSE("\tparam is variadic");
     }
 
     TypePtr type;
@@ -595,7 +595,7 @@ ParamPtr Parser::parseParam() {
     p->type = std::move(type);
     p->isVariadic = isVariadic;
 
-		LUC_LOG_PARSER_VERBOSE("\tparam type parsed successfully");
+    LUC_LOG_PARSER_VERBOSE("\tparam type parsed successfully");
     return p;
 }
 
@@ -610,7 +610,7 @@ ParamPtr Parser::parseParam() {
 // ParserType.cpp.
 // ─────────────────────────────────────────────────────────────────────────────
 std::vector<GenericParamPtr> Parser::parseGenericParams() {
-		LUC_LOG_PARSER_VERBOSE("parseGenericParams: starting");
+    LUC_LOG_PARSER_VERBOSE("parseGenericParams: starting");
     std::vector<GenericParamPtr> params;
 
     consume(TokenType::LESS, "expected '<' to open generic parameters");
@@ -633,7 +633,7 @@ std::vector<GenericParamPtr> Parser::parseGenericParams() {
 
     consume(TokenType::GREATER, "expected '>' to close generic parameters");
     
-		LUC_LOG_PARSER_VERBOSE("parseGenericParams: found " << params.size() << " generic params");
+    LUC_LOG_PARSER_VERBOSE("parseGenericParams: found " << params.size() << " generic params");
     return params;
 }
 
@@ -648,7 +648,7 @@ std::vector<GenericParamPtr> Parser::parseGenericParams() {
 // Examples:  T     K : Hashable     V : Hashable + Comparable
 // ─────────────────────────────────────────────────────────────────────────────
 GenericParamPtr Parser::parseGenericParam() {
-		LUC_LOG_PARSER_VERBOSE("parseGenericParam: parsing");
+    LUC_LOG_PARSER_VERBOSE("parseGenericParam: parsing");
     SourceLocation loc = currentLoc();
 
     if (!check(TokenType::IDENTIFIER)) {
@@ -677,7 +677,7 @@ GenericParamPtr Parser::parseGenericParam() {
         }
     }
 
-		LUC_LOG_PARSER_VERBOSE("\tgeneric param: '" << name << "' with " << gp->constraints.size() << " constraints");
+    LUC_LOG_PARSER_VERBOSE("\tgeneric param: '" << name << "' with " << gp->constraints.size() << " constraints");
     return gp;
 }
 
@@ -689,7 +689,7 @@ GenericParamPtr Parser::parseGenericParam() {
 //                  '{' { field_decl } '}'
 // ─────────────────────────────────────────────────────────────────────────────
 std::unique_ptr<StructDeclAST> Parser::parseStructDecl(Visibility vis) {
-		LUC_LOG_PARSER("parseStructDecl: parsing struct");
+    LUC_LOG_PARSER("parseStructDecl: parsing struct");
     SourceLocation loc = currentLoc();
     consume(TokenType::STRUCT, "expected 'struct'");
 
@@ -698,7 +698,7 @@ std::unique_ptr<StructDeclAST> Parser::parseStructDecl(Visibility vis) {
         return nullptr;
     }
     std::string name = advance().value;
-		LUC_LOG_PARSER("\tstruct name: '" << name << "'");
+    LUC_LOG_PARSER("\tstruct name: '" << name << "'");
 
     auto node = std::make_unique<StructDeclAST>();
     node->loc = loc;
@@ -732,7 +732,7 @@ std::unique_ptr<StructDeclAST> Parser::parseStructDecl(Visibility vis) {
     }
 
     consume(TokenType::RBRACE, "expected '}' to close struct body");
-		LUC_LOG_PARSER("\tparsed " << node->fields.size() << " fields");
+    LUC_LOG_PARSER("\tparsed " << node->fields.size() << " fields");
     return node;
 }
 
@@ -780,7 +780,7 @@ FieldDeclPtr Parser::parseFieldDecl() {
 //   enum_decl := [ 'pub' ] 'enum' IDENTIFIER '{' enum_variant { [','] enum_variant } '}'
 // ─────────────────────────────────────────────────────────────────────────────
 std::unique_ptr<EnumDeclAST> Parser::parseEnumDecl(Visibility vis) {
-		LUC_LOG_PARSER("parseEnumDecl: parsing enum");
+    LUC_LOG_PARSER("parseEnumDecl: parsing enum");
     SourceLocation loc = currentLoc();
     consume(TokenType::ENUM, "expected 'enum'");
 
@@ -789,7 +789,7 @@ std::unique_ptr<EnumDeclAST> Parser::parseEnumDecl(Visibility vis) {
         return nullptr;
     }
     std::string name = advance().value;
-		LUC_LOG_PARSER("\tenum name: '" << name << "'");
+    LUC_LOG_PARSER("\tenum name: '" << name << "'");
 
     auto node = std::make_unique<EnumDeclAST>();
     node->loc = loc;
@@ -816,7 +816,7 @@ std::unique_ptr<EnumDeclAST> Parser::parseEnumDecl(Visibility vis) {
     }
 
     consume(TokenType::RBRACE, "expected '}' to close enum body");
-		LUC_LOG_PARSER("\tparsed " << node->variants.size() << " variants");
+    LUC_LOG_PARSER("\tparsed " << node->variants.size() << " variants");
     return node;
 }
 
@@ -878,7 +878,7 @@ EnumVariantPtr Parser::parseEnumVariant() {
 //                 '{' { trait_method } '}'
 // ─────────────────────────────────────────────────────────────────────────────
 std::unique_ptr<TraitDeclAST> Parser::parseTraitDecl(Visibility vis) {
-		LUC_LOG_PARSER("parseTraitDecl: parsing trait");
+    LUC_LOG_PARSER("parseTraitDecl: parsing trait");
     SourceLocation loc = currentLoc();
     consume(TokenType::TRAIT, "expected 'trait'");
 
@@ -918,7 +918,7 @@ std::unique_ptr<TraitDeclAST> Parser::parseTraitDecl(Visibility vis) {
     }
 
     consume(TokenType::RBRACE, "expected '}' to close trait body");
-		LUC_LOG_PARSER("\ttrait name: '" << name << "', methods: " << node->methods.size());
+    LUC_LOG_PARSER("\ttrait name: '" << name << "', methods: " << node->methods.size());
     return node;
 }
 
@@ -980,7 +980,7 @@ TraitMethodPtr Parser::parseTraitMethod() {
 //   - from_decl is only valid inside pub impl — recorded as error otherwise
 // ─────────────────────────────────────────────────────────────────────────────
 std::unique_ptr<ImplDeclAST> Parser::parseImplDecl(Visibility vis) {
-		LUC_LOG_PARSER("parseImplDecl: parsing impl");
+    LUC_LOG_PARSER("parseImplDecl: parsing impl");
     SourceLocation loc = currentLoc();
     consume(TokenType::IMPL, "expected 'impl'");
 
@@ -994,7 +994,7 @@ std::unique_ptr<ImplDeclAST> Parser::parseImplDecl(Visibility vis) {
         return nullptr;
     }
     node->structName = advance().value;
-		LUC_LOG_PARSER("\timpl for struct: '" << node->structName << "'");
+    LUC_LOG_PARSER("\timpl for struct: '" << node->structName << "'");
 
     // 2. Optional generic params (definition style): impl Scene<T : Drawable>
     if (check(TokenType::LESS)) {
@@ -1044,7 +1044,7 @@ std::unique_ptr<ImplDeclAST> Parser::parseImplDecl(Visibility vis) {
     }
 
     consume(TokenType::RBRACE, "expected '}' to close impl body");
-		LUC_LOG_PARSER("\tparsed " << node->methods.size() << " methods");
+    LUC_LOG_PARSER("\tparsed " << node->methods.size() << " methods");
     return node;
 }
 
@@ -1272,7 +1272,7 @@ std::unique_ptr<TypeAliasDeclAST> Parser::parseTypeAliasDecl(Visibility vis) {
 // Callers:  parseFuncDecl, parseMethodDecl, parseFromDecl
 // ─────────────────────────────────────────────────────────────────────────────
 StmtPtr Parser::parseFuncBody(FuncBodyKind &outBodyKind, bool &outIsAsync) {
-		LUC_LOG_PARSER_VERBOSE("parseFuncBody: starting");
+    LUC_LOG_PARSER_VERBOSE("parseFuncBody: starting");
     consume(TokenType::ASSIGN, "expected '='");
 
     outIsAsync = false;
@@ -1339,7 +1339,7 @@ StmtPtr Parser::parseFuncBody(FuncBodyKind &outBodyKind, bool &outIsAsync) {
         body = std::move(block);
     }
 
-		LUC_LOG_PARSER_VERBOSE("parseFuncBody: form = " 
+    LUC_LOG_PARSER_VERBOSE("parseFuncBody: form = " 
         << (outBodyKind == FuncBodyKind::Block ? "Block" :
             outBodyKind == FuncBodyKind::AnonFunc ? "AnonFunc" : "ExprBody")
         << ", isAsync = " << (outIsAsync ? "true" : "false"));
@@ -1349,6 +1349,6 @@ StmtPtr Parser::parseFuncBody(FuncBodyKind &outBodyKind, bool &outIsAsync) {
         --asyncDepth_;
     }
 
-		LUC_LOG_PARSER_VERBOSE("parseFuncBody: returning body");
+    LUC_LOG_PARSER_VERBOSE("parseFuncBody: returning body");
     return body;
 }

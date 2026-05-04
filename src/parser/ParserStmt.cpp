@@ -55,7 +55,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 std::unique_ptr<BlockStmtAST> Parser::parseBlock()
 {
-		LUC_LOG_STMT("parseBlock");
+    LUC_LOG_STMT("parseBlock");
     SourceLocation loc = currentLoc();
     consume(TokenType::LBRACE, "expected '{'");
 
@@ -81,7 +81,7 @@ std::unique_ptr<BlockStmtAST> Parser::parseBlock()
     }
 
     consume(TokenType::RBRACE, "expected '}' to close block");
-		LUC_LOG_STMT("parseBlock: parsed " << stmtCount << " statements");
+    LUC_LOG_STMT("parseBlock: parsed " << stmtCount << " statements");
     return block;
 }
 
@@ -104,17 +104,17 @@ std::unique_ptr<BlockStmtAST> Parser::parseBlock()
 // ─────────────────────────────────────────────────────────────────────────────
 StmtPtr Parser::parseStmt()
 {
-		LUC_LOG_STMT_VERBOSE("parseStmt: token='" << peek().value << "' type=" << static_cast<int>(peek().type));
+    LUC_LOG_STMT_VERBOSE("parseStmt: token='" << peek().value << "' type=" << static_cast<int>(peek().type));
     
     // ── Local declarations ────────────────────────────────────────────────────
     if (checkAny({ TokenType::LET, TokenType::CONST })) {
-				LUC_LOG_STMT_VERBOSE("parseStmt: local declaration");
+        LUC_LOG_STMT_VERBOSE("parseStmt: local declaration");
         return parseLocalDecl();
     }
 
     // ── 'pub' inside a block is always wrong ──────────────────────────────────
     if (check(TokenType::PUB)) {
-				LUC_LOG_STMT("parseStmt: 'pub' inside block - error");
+        LUC_LOG_STMT("parseStmt: 'pub' inside block - error");
         errorAt(DiagCode::E2006, "'pub' is not valid inside a block — visibility modifiers are only allowed at top level");
         advance();   // consume 'pub' so we don't spin
         // Try to recover: if the next token is let/const, parse as local decl.
@@ -126,35 +126,35 @@ StmtPtr Parser::parseStmt()
 
     // ── Control flow ──────────────────────────────────────────────────────────
     if (check(TokenType::IF)) {
-				LUC_LOG_STMT_VERBOSE("parseStmt: if statement");
+        LUC_LOG_STMT_VERBOSE("parseStmt: if statement");
         return parseIfStmt();
     }
     if (check(TokenType::SWITCH)) {
-				LUC_LOG_STMT_VERBOSE("parseStmt: switch statement");
+        LUC_LOG_STMT_VERBOSE("parseStmt: switch statement");
         return parseSwitchStmt();
     }
     if (check(TokenType::FOR)) {
-				LUC_LOG_STMT_VERBOSE("parseStmt: for loop");
+        LUC_LOG_STMT_VERBOSE("parseStmt: for loop");
         return parseForStmt();
     }
     if (check(TokenType::WHILE)) {
-				LUC_LOG_STMT_VERBOSE("parseStmt: while loop");
+        LUC_LOG_STMT_VERBOSE("parseStmt: while loop");
         return parseWhileStmt();
     }
     if (check(TokenType::DO)) {
-				LUC_LOG_STMT_VERBOSE("parseStmt: do-while loop");
+        LUC_LOG_STMT_VERBOSE("parseStmt: do-while loop");
         return parseDoWhileStmt();
     }
     if (check(TokenType::RETURN)) {
-				LUC_LOG_STMT_VERBOSE("parseStmt: return statement");
+        LUC_LOG_STMT_VERBOSE("parseStmt: return statement");
         return parseReturnStmt();
     }
     if (check(TokenType::BREAK)) {
-				LUC_LOG_STMT_VERBOSE("parseStmt: break statement");
+        LUC_LOG_STMT_VERBOSE("parseStmt: break statement");
         return parseBreakStmt();
     }
     if (check(TokenType::CONTINUE)) {
-				LUC_LOG_STMT_VERBOSE("parseStmt: continue statement");
+        LUC_LOG_STMT_VERBOSE("parseStmt: continue statement");
         return parseContinueStmt();
     }
 
@@ -162,10 +162,10 @@ StmtPtr Parser::parseStmt()
     if (check(TokenType::PARALLEL)) {
         // 'parallel for' vs 'parallel { ... }'
         if (peekNext().type == TokenType::FOR) {
-						LUC_LOG_STMT_VERBOSE("parseStmt: parallel for");
+            LUC_LOG_STMT_VERBOSE("parseStmt: parallel for");
             return parseParallelForStmt();
         } else {
-						LUC_LOG_STMT_VERBOSE("parseStmt: parallel block");
+            LUC_LOG_STMT_VERBOSE("parseStmt: parallel block");
             return parseParallelBlockStmt();
         }
     }
@@ -174,7 +174,7 @@ StmtPtr Parser::parseStmt()
     // Anything that is not a keyword starts an expression.
     // We check looksLikeStmtStart() for a readable error on truly garbage input.
     if (!looksLikeStmtStart()) {
-				LUC_LOG_STMT("parseStmt: unexpected token - not a statement start");
+        LUC_LOG_STMT("parseStmt: unexpected token - not a statement start");
         errorAt(DiagCode::E2002, "unexpected token '" + peek().value + "' in statement position");
         return nullptr;
     }
@@ -185,7 +185,7 @@ StmtPtr Parser::parseStmt()
 
     auto stmt = std::make_unique<ExprStmtAST>(std::move(expr));
     stmt->loc = loc;
-		LUC_LOG_STMT_EXTREME("parseStmt: expression statement");
+    LUC_LOG_STMT_EXTREME("parseStmt: expression statement");
     return stmt;
 }
 
@@ -206,7 +206,7 @@ StmtPtr Parser::parseStmt()
 // ─────────────────────────────────────────────────────────────────────────────
 std::unique_ptr<DeclStmtAST> Parser::parseLocalDecl()
 {
-		LUC_LOG_STMT("parseLocalDecl");
+    LUC_LOG_STMT("parseLocalDecl");
     SourceLocation loc = currentLoc();
 
     // Consume the keyword.
@@ -216,7 +216,7 @@ std::unique_ptr<DeclStmtAST> Parser::parseLocalDecl()
         case TokenType::LET:   kw = DeclKeyword::Let;   break;
         default:               kw = DeclKeyword::Const; break;
     }
-		LUC_LOG_STMT_VERBOSE("parseLocalDecl: keyword='" << kwTok.value << "'");
+    LUC_LOG_STMT_VERBOSE("parseLocalDecl: keyword='" << kwTok.value << "'");
 
     // Name must follow immediately.
     if (!check(TokenType::IDENTIFIER)) {
@@ -226,7 +226,7 @@ std::unique_ptr<DeclStmtAST> Parser::parseLocalDecl()
 
     // looksLikeFuncDecl() inspects pos_ which is now on the name.
     if (looksLikeFuncDecl()) {
-				LUC_LOG_STMT_VERBOSE("parseLocalDecl: parsing as local function");
+        LUC_LOG_STMT_VERBOSE("parseLocalDecl: parsing as local function");
         // Local function declaration.
         auto funcDecl = parseFuncDecl(kw, Visibility::Private);
         if (!funcDecl) return nullptr;
@@ -239,7 +239,7 @@ std::unique_ptr<DeclStmtAST> Parser::parseLocalDecl()
         ds->loc = loc;
         return ds;
     } else {
-				LUC_LOG_STMT_VERBOSE("parseLocalDecl: parsing as local variable");
+        LUC_LOG_STMT_VERBOSE("parseLocalDecl: parsing as local variable");
         // Local variable declaration.
         // parseVarDecl reads tokens_[pos_ - 1] to recover the keyword — that
         // is kwTok, which we just consumed. This contract holds.
@@ -274,7 +274,7 @@ std::unique_ptr<DeclStmtAST> Parser::parseLocalDecl()
 // ────────────────────────────────────────────────────────────────────────────
 std::unique_ptr<IfStmtAST> Parser::parseIfStmt()
 {
-		LUC_LOG_STMT("parseIfStmt");
+    LUC_LOG_STMT("parseIfStmt");
     SourceLocation loc = currentLoc();
     consume(TokenType::IF, "expected 'if'");
 
@@ -285,14 +285,14 @@ std::unique_ptr<IfStmtAST> Parser::parseIfStmt()
         errorAt(DiagCode::E2008, "expected condition after 'if'");
         return nullptr;
     }
-		LUC_LOG_STMT_VERBOSE("parseIfStmt: condition parsed");
+    LUC_LOG_STMT_VERBOSE("parseIfStmt: condition parsed");
 
     if (!check(TokenType::LBRACE)) {
         errorAt(DiagCode::E2001, "expected '{' after if condition");
         return nullptr;
     }
     StmtPtr thenBranch = parseBlock();
-		LUC_LOG_STMT_VERBOSE("parseIfStmt: then branch parsed");
+    LUC_LOG_STMT_VERBOSE("parseIfStmt: then branch parsed");
 
     auto node = std::make_unique<IfStmtAST>();
     node->loc = loc;
@@ -301,23 +301,23 @@ std::unique_ptr<IfStmtAST> Parser::parseIfStmt()
 
     // Optional else clause.
     if (match(TokenType::ELSE)) {
-				LUC_LOG_STMT_VERBOSE("parseIfStmt: has else clause");
+        LUC_LOG_STMT_VERBOSE("parseIfStmt: has else clause");
         if (check(TokenType::IF)) {
             // else if — recurse, produces another IfStmtAST as elseBranch.
             node->elseBranch = parseIfStmt();
-						LUC_LOG_STMT_VERBOSE("parseIfStmt: else-if chain");
+            LUC_LOG_STMT_VERBOSE("parseIfStmt: else-if chain");
         } else if (check(TokenType::LBRACE)) {
             node->elseBranch = parseBlock();
-						LUC_LOG_STMT_VERBOSE("parseIfStmt: else block");
+            LUC_LOG_STMT_VERBOSE("parseIfStmt: else block");
         } else {
             errorAt(DiagCode::E2001, "expected 'if' or '{' after 'else'");
         }
     } else {
-				LUC_LOG_STMT_EXTREME("parseIfStmt: no else clause");
+        LUC_LOG_STMT_EXTREME("parseIfStmt: no else clause");
     }
     // elseBranch remains nullptr when no else clause is present.
 
-		LUC_LOG_STMT_VERBOSE("parseIfStmt: returning IfStmtAST");
+    LUC_LOG_STMT_VERBOSE("parseIfStmt: returning IfStmtAST");
     return node;
 }
 
@@ -337,7 +337,7 @@ std::unique_ptr<IfStmtAST> Parser::parseIfStmt()
 // ─────────────────────────────────────────────────────────────────────────────
 std::unique_ptr<SwitchStmtAST> Parser::parseSwitchStmt()
 {
-		LUC_LOG_STMT("parseSwitchStmt");
+    LUC_LOG_STMT("parseSwitchStmt");
     SourceLocation loc = currentLoc();
     consume(TokenType::SWITCH, "expected 'switch'");
 
@@ -346,7 +346,7 @@ std::unique_ptr<SwitchStmtAST> Parser::parseSwitchStmt()
         errorAt(DiagCode::E2008, "expected expression after 'switch'");
         return nullptr;
     }
-		LUC_LOG_STMT_VERBOSE("parseSwitchStmt: subject parsed");
+    LUC_LOG_STMT_VERBOSE("parseSwitchStmt: subject parsed");
 
     consume(TokenType::LBRACE, "expected '{' after switch subject");
 
@@ -373,7 +373,7 @@ std::unique_ptr<SwitchStmtAST> Parser::parseSwitchStmt()
                 errorAt(DiagCode::E2007, "duplicate 'default' clause in switch statement");
             }
             node->defaultLoc = currentLoc();
-						LUC_LOG_STMT_VERBOSE("parseSwitchStmt: parsing default clause");
+            LUC_LOG_STMT_VERBOSE("parseSwitchStmt: parsing default clause");
             advance();  // consume 'default'
             consume(TokenType::COLON, DiagCode::E2001, "expected ':' after 'default'");
             // Default body is a block (the grammar says { stmt } but we always
@@ -391,7 +391,7 @@ std::unique_ptr<SwitchStmtAST> Parser::parseSwitchStmt()
     }
 
     consume(TokenType::RBRACE, "expected '}' to close switch statement");
-		LUC_LOG_STMT("parseSwitchStmt: " << caseCount << " cases, hasDefault=" << (node->defaultBody != nullptr));
+    LUC_LOG_STMT("parseSwitchStmt: " << caseCount << " cases, hasDefault=" << (node->defaultBody != nullptr));
     return node;
 }
 
@@ -409,7 +409,7 @@ std::unique_ptr<SwitchStmtAST> Parser::parseSwitchStmt()
 // ─────────────────────────────────────────────────────────────────────────────
 SwitchCasePtr Parser::parseSwitchCase()
 {
-		LUC_LOG_STMT_VERBOSE("parseSwitchCase");
+    LUC_LOG_STMT_VERBOSE("parseSwitchCase");
     SourceLocation loc = currentLoc();
     consume(TokenType::CASE, "expected 'case'");
 
@@ -434,17 +434,17 @@ SwitchCasePtr Parser::parseSwitchCase()
         // If '..' follows, this is a range value.
         if (check(TokenType::RANGE)) {
             sc->values.push_back(parseRangeExpr(std::move(val)));
-						LUC_LOG_STMT_EXTREME("parseSwitchCase: range value");
+            LUC_LOG_STMT_EXTREME("parseSwitchCase: range value");
         } else {
             sc->values.push_back(std::move(val));
-						LUC_LOG_STMT_EXTREME("parseSwitchCase: single value");
+            LUC_LOG_STMT_EXTREME("parseSwitchCase: single value");
         }
         valueCount++;
 
     } while (check(TokenType::COMMA));
 
     consume(TokenType::COLON, DiagCode::E2001, "expected ':' after case values");
-		LUC_LOG_STMT_VERBOSE("parseSwitchCase: " << valueCount << " values");
+    LUC_LOG_STMT_VERBOSE("parseSwitchCase: " << valueCount << " values");
 
     if (!check(TokenType::LBRACE)) {
         errorAt(DiagCode::E2001, "expected '{' to start case body");
@@ -469,7 +469,7 @@ SwitchCasePtr Parser::parseSwitchCase()
 // ─────────────────────────────────────────────────────────────────────────────
 std::unique_ptr<ForStmtAST> Parser::parseForStmt()
 {
-		LUC_LOG_STMT("parseForStmt");
+    LUC_LOG_STMT("parseForStmt");
     SourceLocation loc = currentLoc();
     consume(TokenType::FOR, "expected 'for'");
 
@@ -478,7 +478,7 @@ std::unique_ptr<ForStmtAST> Parser::parseForStmt()
         return nullptr;
     }
     std::string varName = advance().value;
-		LUC_LOG_STMT_VERBOSE("parseForStmt: varName='" << varName << "'");
+    LUC_LOG_STMT_VERBOSE("parseForStmt: varName='" << varName << "'");
 
     // Optional: Parse explicit type annotation if 'in' does not follow immediately.
     TypePtr varType = nullptr;
@@ -488,7 +488,7 @@ std::unique_ptr<ForStmtAST> Parser::parseForStmt()
             errorAt(DiagCode::E2005, "expected 'in' or explicit type after iteration variable name");
             return nullptr;
         }
-				LUC_LOG_STMT_VERBOSE("parseForStmt: explicit var type");
+        LUC_LOG_STMT_VERBOSE("parseForStmt: explicit var type");
     }
 
     consume(TokenType::IN, "expected 'in' after iteration variable");
@@ -503,7 +503,7 @@ std::unique_ptr<ForStmtAST> Parser::parseForStmt()
     // Optional: if '..' follows, build RangeExprAST from boundaries and step.
     ExprPtr step = nullptr;
     if (check(TokenType::RANGE)) {
-				LUC_LOG_STMT_VERBOSE("parseForStmt: range iteration");
+        LUC_LOG_STMT_VERBOSE("parseForStmt: range iteration");
         iterable = parseRangeExpr(std::move(iterable));
         
         // After start..end, an optional second '..' can signal a step.
@@ -513,7 +513,7 @@ std::unique_ptr<ForStmtAST> Parser::parseForStmt()
                 errorAt(DiagCode::E2008, "expected step expression after '..'");
                 return nullptr;
             }
-						LUC_LOG_STMT_VERBOSE("parseForStmt: with step");
+            LUC_LOG_STMT_VERBOSE("parseForStmt: with step");
         }
     }
 
@@ -522,11 +522,11 @@ std::unique_ptr<ForStmtAST> Parser::parseForStmt()
         return nullptr;
     }
 
-		LUC_LOG_STMT_VERBOSE("parseForStmt: entering loop body (loopDepth=" << loopDepth_ << "->" << loopDepth_ + 1 << ")");
+    LUC_LOG_STMT_VERBOSE("parseForStmt: entering loop body (loopDepth=" << loopDepth_ << "->" << loopDepth_ + 1 << ")");
     ++loopDepth_;
     StmtPtr body = parseBlock();
     --loopDepth_;
-		LUC_LOG_STMT_VERBOSE("parseForStmt: exited loop body");
+    LUC_LOG_STMT_VERBOSE("parseForStmt: exited loop body");
 
     auto node = std::make_unique<ForStmtAST>();
     node->loc = loc;
@@ -535,7 +535,7 @@ std::unique_ptr<ForStmtAST> Parser::parseForStmt()
     node->iterable = std::move(iterable);
     node->step = std::move(step);
     node->body = std::move(body);
-		LUC_LOG_STMT_VERBOSE("parseForStmt: returning ForStmtAST");
+    LUC_LOG_STMT_VERBOSE("parseForStmt: returning ForStmtAST");
     return node;
 }
 
@@ -547,7 +547,7 @@ std::unique_ptr<ForStmtAST> Parser::parseForStmt()
 // ─────────────────────────────────────────────────────────────────────────────
 std::unique_ptr<WhileStmtAST> Parser::parseWhileStmt()
 {
-		LUC_LOG_STMT("parseWhileStmt");
+    LUC_LOG_STMT("parseWhileStmt");
     SourceLocation loc = currentLoc();
     consume(TokenType::WHILE, "expected 'while'");
 
@@ -556,24 +556,24 @@ std::unique_ptr<WhileStmtAST> Parser::parseWhileStmt()
         errorAt(DiagCode::E2008, "expected condition after 'while'");
         return nullptr;
     }
-		LUC_LOG_STMT_VERBOSE("parseWhileStmt: condition parsed");
+    LUC_LOG_STMT_VERBOSE("parseWhileStmt: condition parsed");
 
     if (!check(TokenType::LBRACE)) {
         errorAt(DiagCode::E2001, "expected '{' to start while loop body");
         return nullptr;
     }
 
-		LUC_LOG_STMT_VERBOSE("parseWhileStmt: entering loop body (loopDepth=" << loopDepth_ << "->" << loopDepth_ + 1 << ")");
+    LUC_LOG_STMT_VERBOSE("parseWhileStmt: entering loop body (loopDepth=" << loopDepth_ << "->" << loopDepth_ + 1 << ")");
     ++loopDepth_;
     StmtPtr body = parseBlock();
     --loopDepth_;
-		LUC_LOG_STMT_VERBOSE("parseWhileStmt: exited loop body");
+    LUC_LOG_STMT_VERBOSE("parseWhileStmt: exited loop body");
 
     auto node = std::make_unique<WhileStmtAST>();
     node->loc = loc;
     node->condition = std::move(condition);
     node->body = std::move(body);
-		LUC_LOG_STMT_VERBOSE("parseWhileStmt: returning WhileStmtAST");
+    LUC_LOG_STMT_VERBOSE("parseWhileStmt: returning WhileStmtAST");
     return node;
 }
 
@@ -587,7 +587,7 @@ std::unique_ptr<WhileStmtAST> Parser::parseWhileStmt()
 // ─────────────────────────────────────────────────────────────────────────────
 std::unique_ptr<DoWhileStmtAST> Parser::parseDoWhileStmt()
 {
-		LUC_LOG_STMT("parseDoWhileStmt");
+    LUC_LOG_STMT("parseDoWhileStmt");
     SourceLocation loc = currentLoc();
     consume(TokenType::DO, "expected 'do'");
 
@@ -596,11 +596,11 @@ std::unique_ptr<DoWhileStmtAST> Parser::parseDoWhileStmt()
         return nullptr;
     }
 
-		LUC_LOG_STMT_VERBOSE("parseDoWhileStmt: entering loop body (loopDepth=" << loopDepth_ << "->" << loopDepth_ + 1 << ")");
+    LUC_LOG_STMT_VERBOSE("parseDoWhileStmt: entering loop body (loopDepth=" << loopDepth_ << "->" << loopDepth_ + 1 << ")");
     ++loopDepth_;
     StmtPtr body = parseBlock();
     --loopDepth_;
-		LUC_LOG_STMT_VERBOSE("parseDoWhileStmt: exited loop body");
+    LUC_LOG_STMT_VERBOSE("parseDoWhileStmt: exited loop body");
 
     consume(TokenType::WHILE, "expected 'while' after do body");
 
@@ -609,13 +609,13 @@ std::unique_ptr<DoWhileStmtAST> Parser::parseDoWhileStmt()
         errorAt(DiagCode::E2008, "expected condition after 'while' in do-while loop");
         return nullptr;
     }
-		LUC_LOG_STMT_VERBOSE("parseDoWhileStmt: condition parsed");
+    LUC_LOG_STMT_VERBOSE("parseDoWhileStmt: condition parsed");
 
     auto node = std::make_unique<DoWhileStmtAST>();
     node->loc = loc;
     node->body = std::move(body);
     node->condition = std::move(condition);
-		LUC_LOG_STMT_VERBOSE("parseDoWhileStmt: returning DoWhileStmtAST");
+    LUC_LOG_STMT_VERBOSE("parseDoWhileStmt: returning DoWhileStmtAST");
     return node;
 }
 
@@ -630,12 +630,12 @@ std::unique_ptr<DoWhileStmtAST> Parser::parseDoWhileStmt()
 // ─────────────────────────────────────────────────────────────────────────────
 std::unique_ptr<ReturnStmtAST> Parser::parseReturnStmt()
 {
-		LUC_LOG_STMT("parseReturnStmt");
+    LUC_LOG_STMT("parseReturnStmt");
     SourceLocation loc = currentLoc();
     consume(TokenType::RETURN, "expected 'return'");
 
     if (parallelDepth_ > 0) {
-				LUC_LOG_STMT("parseReturnStmt: ERROR - return inside parallel body");
+        LUC_LOG_STMT("parseReturnStmt: ERROR - return inside parallel body");
         error(loc, DiagCode::E2006, "'return' is not valid inside a 'parallel' body");
     }
 
@@ -658,10 +658,10 @@ std::unique_ptr<ReturnStmtAST> Parser::parseReturnStmt()
     }
 
     if (hasValue) {
-				LUC_LOG_STMT_VERBOSE("parseReturnStmt: has return value");
+        LUC_LOG_STMT_VERBOSE("parseReturnStmt: has return value");
         node->value = parseExpr();
     } else {
-				LUC_LOG_STMT_VERBOSE("parseReturnStmt: void return");
+        LUC_LOG_STMT_VERBOSE("parseReturnStmt: void return");
     }
 
     return node;
@@ -675,22 +675,22 @@ std::unique_ptr<ReturnStmtAST> Parser::parseReturnStmt()
 // ─────────────────────────────────────────────────────────────────────────────
 std::unique_ptr<BreakStmtAST> Parser::parseBreakStmt()
 {
-		LUC_LOG_STMT("parseBreakStmt");
+    LUC_LOG_STMT("parseBreakStmt");
     SourceLocation loc = currentLoc();
     consume(TokenType::BREAK, "expected 'break'");
 
     if (loopDepth_ == 0) {
-				LUC_LOG_STMT("parseBreakStmt: ERROR - break outside loop");
+        LUC_LOG_STMT("parseBreakStmt: ERROR - break outside loop");
         error(loc, DiagCode::E2006, "'break' is only valid inside a loop body");
     }
     if (parallelDepth_ > 0) {
-				LUC_LOG_STMT("parseBreakStmt: ERROR - break inside parallel body");
+        LUC_LOG_STMT("parseBreakStmt: ERROR - break inside parallel body");
         error(loc, DiagCode::E2006, "'break' is not valid inside a 'parallel' body");
     }
 
     auto node = std::make_unique<BreakStmtAST>();
     node->loc = loc;
-		LUC_LOG_STMT_EXTREME("parseBreakStmt: returning BreakStmtAST");
+    LUC_LOG_STMT_EXTREME("parseBreakStmt: returning BreakStmtAST");
     return node;
 }
 
@@ -702,22 +702,22 @@ std::unique_ptr<BreakStmtAST> Parser::parseBreakStmt()
 // ─────────────────────────────────────────────────────────────────────────────
 std::unique_ptr<ContinueStmtAST> Parser::parseContinueStmt()
 {
-		LUC_LOG_STMT("parseContinueStmt");
+    LUC_LOG_STMT("parseContinueStmt");
     SourceLocation loc = currentLoc();
     consume(TokenType::CONTINUE, "expected 'continue'");
 
     if (loopDepth_ == 0) {
-				LUC_LOG_STMT("parseContinueStmt: ERROR - continue outside loop");
+        LUC_LOG_STMT("parseContinueStmt: ERROR - continue outside loop");
         error(loc, DiagCode::E2006, "'continue' is only valid inside a loop body");
     }
     if (parallelDepth_ > 0) {
-				LUC_LOG_STMT("parseContinueStmt: ERROR - continue inside parallel body");
+        LUC_LOG_STMT("parseContinueStmt: ERROR - continue inside parallel body");
         error(loc, DiagCode::E2006, "'continue' is not valid inside a 'parallel' body");
     }
 
     auto node = std::make_unique<ContinueStmtAST>();
     node->loc = loc;
-		LUC_LOG_STMT_EXTREME("parseContinueStmt: returning ContinueStmtAST");
+    LUC_LOG_STMT_EXTREME("parseContinueStmt: returning ContinueStmtAST");
     return node;
 }
 
@@ -733,7 +733,7 @@ std::unique_ptr<ContinueStmtAST> Parser::parseContinueStmt()
 // ─────────────────────────────────────────────────────────────────────────────
 std::unique_ptr<ParallelForStmtAST> Parser::parseParallelForStmt()
 {
-		LUC_LOG_STMT("parseParallelForStmt");
+    LUC_LOG_STMT("parseParallelForStmt");
     SourceLocation loc = currentLoc();
     consume(TokenType::PARALLEL, "expected 'parallel'");
     consume(TokenType::FOR, "expected 'for' after 'parallel'");
@@ -743,7 +743,7 @@ std::unique_ptr<ParallelForStmtAST> Parser::parseParallelForStmt()
         return nullptr;
     }
     std::string varName = advance().value;
-		LUC_LOG_STMT_VERBOSE("parseParallelForStmt: varName='" << varName << "'");
+    LUC_LOG_STMT_VERBOSE("parseParallelForStmt: varName='" << varName << "'");
 
     // Optional: Parse explicit type annotation if 'in' does not follow immediately.
     TypePtr varType = nullptr;
@@ -753,7 +753,7 @@ std::unique_ptr<ParallelForStmtAST> Parser::parseParallelForStmt()
             errorAt(DiagCode::E2005, "expected 'in' or explicit type after iteration variable name");
             return nullptr;
         }
-				LUC_LOG_STMT_VERBOSE("parseParallelForStmt: explicit var type");
+        LUC_LOG_STMT_VERBOSE("parseParallelForStmt: explicit var type");
     }
 
     consume(TokenType::IN, "expected 'in' after iteration variable");
@@ -768,7 +768,7 @@ std::unique_ptr<ParallelForStmtAST> Parser::parseParallelForStmt()
     // Optional: if '..' follows, build RangeExprAST from boundaries and step.
     ExprPtr step = nullptr;
     if (check(TokenType::RANGE)) {
-				LUC_LOG_STMT_VERBOSE("parseParallelForStmt: range iteration");
+        LUC_LOG_STMT_VERBOSE("parseParallelForStmt: range iteration");
         iterable = parseRangeExpr(std::move(iterable));
         
         // After start..end, an optional second '..' can signal a step.
@@ -778,7 +778,7 @@ std::unique_ptr<ParallelForStmtAST> Parser::parseParallelForStmt()
                 errorAt(DiagCode::E2008, "expected step expression after '..'");
                 return nullptr;
             }
-						LUC_LOG_STMT_VERBOSE("parseParallelForStmt: with step");
+            LUC_LOG_STMT_VERBOSE("parseParallelForStmt: with step");
         }
     }
 
@@ -788,11 +788,11 @@ std::unique_ptr<ParallelForStmtAST> Parser::parseParallelForStmt()
     }
 
     // Inside a parallel body: no await, no return, no break/continue.
-		LUC_LOG_STMT_VERBOSE("parseParallelForStmt: entering parallel body (parallelDepth=" << parallelDepth_ << "->" << parallelDepth_ + 1 << ")");
+    LUC_LOG_STMT_VERBOSE("parseParallelForStmt: entering parallel body (parallelDepth=" << parallelDepth_ << "->" << parallelDepth_ + 1 << ")");
     ++parallelDepth_;
     StmtPtr body = parseBlock();
     --parallelDepth_;
-		LUC_LOG_STMT_VERBOSE("parseParallelForStmt: exited parallel body");
+    LUC_LOG_STMT_VERBOSE("parseParallelForStmt: exited parallel body");
 
     auto node = std::make_unique<ParallelForStmtAST>();
     node->loc = loc;
@@ -801,7 +801,7 @@ std::unique_ptr<ParallelForStmtAST> Parser::parseParallelForStmt()
     node->iterable = std::move(iterable);
     node->step = std::move(step);
     node->body = std::move(body);
-		LUC_LOG_STMT("parseParallelForStmt: returning ParallelForStmtAST");
+    LUC_LOG_STMT("parseParallelForStmt: returning ParallelForStmtAST");
     return node;
 }
 
@@ -819,7 +819,7 @@ std::unique_ptr<ParallelForStmtAST> Parser::parseParallelForStmt()
 // ─────────────────────────────────────────────────────────────────────────────
 std::unique_ptr<ParallelBlockStmtAST> Parser::parseParallelBlockStmt()
 {
-		LUC_LOG_STMT("parseParallelBlockStmt");
+    LUC_LOG_STMT("parseParallelBlockStmt");
     SourceLocation loc = currentLoc();
     consume(TokenType::PARALLEL, "expected 'parallel'");
     consume(TokenType::LBRACE, "expected '{' after 'parallel'");
@@ -828,7 +828,7 @@ std::unique_ptr<ParallelBlockStmtAST> Parser::parseParallelBlockStmt()
     node->loc = loc;
     int subBlockCount = 0;
 
-		LUC_LOG_STMT_VERBOSE("parseParallelBlockStmt: entering parallel body (parallelDepth=" << parallelDepth_ << "->" << parallelDepth_ + 1 << ")");
+    LUC_LOG_STMT_VERBOSE("parseParallelBlockStmt: entering parallel body (parallelDepth=" << parallelDepth_ << "->" << parallelDepth_ + 1 << ")");
     ++parallelDepth_;
 
     // Each '{' that appears directly inside the outer '{' is one sub-task block.
@@ -844,19 +844,19 @@ std::unique_ptr<ParallelBlockStmtAST> Parser::parseParallelBlockStmt()
 
         node->subBlocks.push_back(parseBlock());
         subBlockCount++;
-				LUC_LOG_STMT_EXTREME("parseParallelBlockStmt: parsed sub-block " << subBlockCount);
+        LUC_LOG_STMT_EXTREME("parseParallelBlockStmt: parsed sub-block " << subBlockCount);
     }
 
     --parallelDepth_;
-		LUC_LOG_STMT_VERBOSE("parseParallelBlockStmt: exited parallel body");
+    LUC_LOG_STMT_VERBOSE("parseParallelBlockStmt: exited parallel body");
 
     consume(TokenType::RBRACE, "expected '}' to close parallel block");
 
     if (node->subBlocks.empty()) {
-				LUC_LOG_STMT("parseParallelBlockStmt: ERROR - empty parallel block");
+        LUC_LOG_STMT("parseParallelBlockStmt: ERROR - empty parallel block");
         error(loc, DiagCode::E2007, "parallel block must contain at least one sub-task block");
     }
 
-		LUC_LOG_STMT("parseParallelBlockStmt: " << subBlockCount << " sub-blocks");
+    LUC_LOG_STMT("parseParallelBlockStmt: " << subBlockCount << " sub-blocks");
     return node;
 }

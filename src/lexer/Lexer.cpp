@@ -8,7 +8,7 @@
 
 Lexer::Lexer(const std::string &source)
     : src(source), pos(0), line(1), column(1) {
-		LUC_LOG_LEXER("Lexer constructed, source size: " << source.size() << " bytes");
+    LUC_LOG_LEXER("Lexer constructed, source size: " << source.size() << " bytes");
     
   // ── Modifiers ──────────────────────────────────────────────────────────────
   keywords["pub"] = TokenType::PUB;
@@ -101,43 +101,43 @@ Lexer::Lexer(const std::string &source)
 // ─────────────────────────────────────────────────────────────────────────────
 
 Token Lexer::makeToken(TokenType type, const std::string &value) {
-		LUC_LOG_LEXER_EXTREME("makeToken: type=" << static_cast<int>(type) << ", value='" << value << "', line=" << line << ", col=" << column);
+    LUC_LOG_LEXER_EXTREME("makeToken: type=" << static_cast<int>(type) << ", value='" << value << "', line=" << line << ", col=" << column);
     return {type, value, line, column};
 }
 
 char Lexer::peek() { 
     char c = isAtEnd() ? '\0' : src[pos];
-		LUC_LOG_LEXER_EXTREME("peek: '" << (c == '\n' ? '\\' : c) << "' at pos=" << pos);
+    LUC_LOG_LEXER_EXTREME("peek: '" << (c == '\n' ? '\\' : c) << "' at pos=" << pos);
     return c;
 }
 
 char Lexer::peekNext() { 
     char c = (pos + 1 >= src.size()) ? '\0' : src[pos + 1];
-		LUC_LOG_LEXER_EXTREME("peekNext: '" << (c == '\n' ? '\\' : c) << "'");
+    LUC_LOG_LEXER_EXTREME("peekNext: '" << (c == '\n' ? '\\' : c) << "'");
     return c;
 }
 
 char Lexer::advance() {
     char c = src[pos++];
     column++;
-		LUC_LOG_LEXER_EXTREME("advance: consumed '" << (c == '\n' ? '\\' : c) << "', new pos=" << pos);
+    LUC_LOG_LEXER_EXTREME("advance: consumed '" << (c == '\n' ? '\\' : c) << "', new pos=" << pos);
     return c;
 }
 
 bool Lexer::isAtEnd() { 
     bool end = pos >= src.size();
-		LUC_LOG_LEXER_EXTREME("isAtEnd: " << (end ? "true" : "false"));
+    LUC_LOG_LEXER_EXTREME("isAtEnd: " << (end ? "true" : "false"));
     return end;
 }
 
 bool Lexer::match(char expected) {
     if (isAtEnd() || src[pos] != expected) {
-				LUC_LOG_LEXER_EXTREME("match('" << expected << "'): false");
+        LUC_LOG_LEXER_EXTREME("match('" << expected << "'): false");
         return false;
     }
     pos++;
     column++;
-		LUC_LOG_LEXER_EXTREME("match('" << expected << "'): true");
+    LUC_LOG_LEXER_EXTREME("match('" << expected << "'): true");
     return true;
 }
 
@@ -146,23 +146,23 @@ bool Lexer::match(char expected) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void Lexer::skipWhitespace() {
-		LUC_LOG_LEXER_VERBOSE("skipWhitespace: pos=" << pos << ", line=" << line);
+    LUC_LOG_LEXER_VERBOSE("skipWhitespace: pos=" << pos << ", line=" << line);
     
     while (!isAtEnd()) {
         char c = peek();
 
         if (c == ' ' || c == '\r' || c == '\t') {
-						LUC_LOG_LEXER_EXTREME("skipWhitespace: skipping whitespace char '" << c << "'");
+            LUC_LOG_LEXER_EXTREME("skipWhitespace: skipping whitespace char '" << c << "'");
             advance();
         } else if (c == '\n') {
-						LUC_LOG_LEXER_VERBOSE("skipWhitespace: newline, line=" << line << "->" << line + 1);
+            LUC_LOG_LEXER_VERBOSE("skipWhitespace: newline, line=" << line << "->" << line + 1);
             line++;
             column = 1;
             advance();
         }
         // Single-line comment: --
         else if (c == '-' && peekNext() == '-') {
-						LUC_LOG_LEXER_VERBOSE("skipWhitespace: found line comment start '--', breaking");
+            LUC_LOG_LEXER_VERBOSE("skipWhitespace: found line comment start '--', breaking");
             break;
         }
         // Block comment: /- ... -/
@@ -170,12 +170,12 @@ void Lexer::skipWhitespace() {
         else if (c == '/' && peekNext() == '-') {
             bool isDoc = (pos + 1 < src.size() && src[pos + 1] == '-');
             if (isDoc) {
-								LUC_LOG_LEXER_VERBOSE("skipWhitespace: found doc comment '/--', breaking");
+                LUC_LOG_LEXER_VERBOSE("skipWhitespace: found doc comment '/--', breaking");
                 break;
             }
 
             // Plain block comment /- ... -/
-						LUC_LOG_LEXER_VERBOSE("skipWhitespace: skipping block comment");
+            LUC_LOG_LEXER_VERBOSE("skipWhitespace: skipping block comment");
             advance(); // consume '/'
             advance(); // consume '-'
             while (!isAtEnd() && !(peek() == '-' && peekNext() == '/')) {
@@ -193,7 +193,7 @@ void Lexer::skipWhitespace() {
             break;
         }
     }
-		LUC_LOG_LEXER_VERBOSE("skipWhitespace: done, pos=" << pos);
+    LUC_LOG_LEXER_VERBOSE("skipWhitespace: done, pos=" << pos);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -201,26 +201,26 @@ void Lexer::skipWhitespace() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 Token Lexer::readNumber(char first) {
-		LUC_LOG_LEXER_VERBOSE("readNumber: first char='" << first << "'");
+    LUC_LOG_LEXER_VERBOSE("readNumber: first char='" << first << "'");
     std::string num(1, first);
 
     // Hex: 0xFF
     if (first == '0' && (peek() == 'x' || peek() == 'X')) {
-				LUC_LOG_LEXER_VERBOSE("readNumber: hex literal");
+        LUC_LOG_LEXER_VERBOSE("readNumber: hex literal");
         num += advance(); // consume 'x'
         while (isxdigit(peek()) || peek() == '_')
             num += advance();
-				LUC_LOG_LEXER("readNumber: hex literal: " << num);
+        LUC_LOG_LEXER("readNumber: hex literal: " << num);
         return makeToken(TokenType::HEX_LITERAL, num);
     }
 
     // Binary: 0b1010
     if (first == '0' && (peek() == 'b' || peek() == 'B')) {
-				LUC_LOG_LEXER_VERBOSE("readNumber: binary literal");
+        LUC_LOG_LEXER_VERBOSE("readNumber: binary literal");
         num += advance(); // consume 'b'
         while (peek() == '0' || peek() == '1' || peek() == '_')
             num += advance();
-				LUC_LOG_LEXER("readNumber: binary literal: " << num);
+        LUC_LOG_LEXER("readNumber: binary literal: " << num);
         return makeToken(TokenType::BINARY_LITERAL, num);
     }
 
@@ -231,7 +231,7 @@ Token Lexer::readNumber(char first) {
 
     if (peek() == '.' && peekNext() != '.') {
         isFloat = true;
-				LUC_LOG_LEXER_VERBOSE("readNumber: decimal point detected");
+        LUC_LOG_LEXER_VERBOSE("readNumber: decimal point detected");
         num += advance(); // consume '.'
         while (isdigit(peek()) || peek() == '_')
             num += advance();
@@ -240,7 +240,7 @@ Token Lexer::readNumber(char first) {
     // Exponent: 1e10, 1.5e-3
     if (peek() == 'e' || peek() == 'E') {
         isFloat = true;
-				LUC_LOG_LEXER_VERBOSE("readNumber: exponent detected");
+        LUC_LOG_LEXER_VERBOSE("readNumber: exponent detected");
         num += advance();
         if (peek() == '+' || peek() == '-')
             num += advance();
@@ -248,12 +248,12 @@ Token Lexer::readNumber(char first) {
             num += advance();
     }
 
-		LUC_LOG_LEXER("readNumber: " << (isFloat ? "float" : "int") << " literal: " << num);
+    LUC_LOG_LEXER("readNumber: " << (isFloat ? "float" : "int") << " literal: " << num);
     return makeToken(isFloat ? TokenType::FLOAT_LITERAL : TokenType::INT_LITERAL, num);
 }
 
 Token Lexer::readString() {
-		LUC_LOG_LEXER_VERBOSE("readString: starting");
+    LUC_LOG_LEXER_VERBOSE("readString: starting");
     std::string str;
     while (!isAtEnd() && peek() != '"') {
         if (peek() == '\n') {
@@ -263,7 +263,7 @@ Token Lexer::readString() {
         if (peek() == '\\') {
             advance(); // consume '\'
             char esc = advance();
-						LUC_LOG_LEXER_EXTREME("readString: escape sequence '\\" << esc << "'");
+            LUC_LOG_LEXER_EXTREME("readString: escape sequence '\\" << esc << "'");
             switch (esc) {
             case 'n':
                 str += '\n';
@@ -346,12 +346,12 @@ Token Lexer::readString() {
     if (!isAtEnd())
         advance(); // consume closing '"'
     
-		LUC_LOG_LEXER_VERBOSE("readString: result length=" << str.size());
+    LUC_LOG_LEXER_VERBOSE("readString: result length=" << str.size());
     return makeToken(TokenType::STRING_LITERAL, str);
 }
 
 Token Lexer::readChar() {
-		LUC_LOG_LEXER_VERBOSE("readChar: starting");
+    LUC_LOG_LEXER_VERBOSE("readChar: starting");
     std::string ch;
     if (!isAtEnd() && peek() != '\'') {
         if (peek() == '\\') {
@@ -366,12 +366,12 @@ Token Lexer::readChar() {
     if (!isAtEnd() && peek() == '\'')
         advance(); // consume closing '\''
     
-		LUC_LOG_LEXER_VERBOSE("readChar: '" << ch << "'");
+    LUC_LOG_LEXER_VERBOSE("readChar: '" << ch << "'");
     return makeToken(TokenType::CHAR_LITERAL, ch);
 }
 
 Token Lexer::readRawString() {
-		LUC_LOG_LEXER_VERBOSE("readRawString: starting");
+    LUC_LOG_LEXER_VERBOSE("readRawString: starting");
     std::string str;
     while (!isAtEnd() && peek() != '"') {
         if (peek() == '\n') {
@@ -383,12 +383,12 @@ Token Lexer::readRawString() {
     if (!isAtEnd())
         advance(); // consume closing '"'
     
-		LUC_LOG_LEXER_VERBOSE("readRawString: result length=" << str.size());
+    LUC_LOG_LEXER_VERBOSE("readRawString: result length=" << str.size());
     return makeToken(TokenType::RAW_STRING_LITERAL, str);
 }
 
 Token Lexer::readDocComment() {
-		LUC_LOG_LEXER_VERBOSE("readDocComment: starting");
+    LUC_LOG_LEXER_VERBOSE("readDocComment: starting");
     advance(); // consume first '-' (of opening --)
     advance(); // consume second '-'
 
@@ -410,12 +410,12 @@ Token Lexer::readDocComment() {
         doc += advance();
     }
 
-		LUC_LOG_LEXER_VERBOSE("readDocComment: length=" << doc.size());
+    LUC_LOG_LEXER_VERBOSE("readDocComment: length=" << doc.size());
     return makeToken(TokenType::DOC_COMMENT, doc);
 }
 
 Token Lexer::readLineComment() {
-		LUC_LOG_LEXER_VERBOSE("readLineComment: starting");
+    LUC_LOG_LEXER_VERBOSE("readLineComment: starting");
     advance(); // consume the second '-'
 
     // Strip a single optional leading space (the common "-- text" style).
@@ -426,21 +426,21 @@ Token Lexer::readLineComment() {
     while (!isAtEnd() && peek() != '\n')
         text += advance();
 
-		LUC_LOG_LEXER_VERBOSE("readLineComment: '" << text << "'");
+    LUC_LOG_LEXER_VERBOSE("readLineComment: '" << text << "'");
     return makeToken(TokenType::LINE_COMMENT, text);
 }
 
 Token Lexer::getNextToken() {
-		LUC_LOG_LEXER_VERBOSE("getNextToken: pos=" << pos << ", line=" << line << ", col=" << column);
+    LUC_LOG_LEXER_VERBOSE("getNextToken: pos=" << pos << ", line=" << line << ", col=" << column);
     
     skipWhitespace();
     if (isAtEnd()) {
-				LUC_LOG_LEXER("getNextToken: EOF");
+        LUC_LOG_LEXER("getNextToken: EOF");
         return makeToken(TokenType::EOF_TOKEN, "EOF");
     }
 
     char c = advance();
-		LUC_LOG_LEXER_EXTREME("getNextToken: processing char '" << c << "'");
+    LUC_LOG_LEXER_EXTREME("getNextToken: processing char '" << c << "'");
 
     // ── Identifiers & Keywords ─────────────────────────────────────────────────
     if (isalpha(c) || c == '_') {
@@ -450,23 +450,23 @@ Token Lexer::getNextToken() {
 
         // r"..." raw string literal — 'r' immediately followed by '"'
         if (ident == "r" && peek() == '"') {
-						LUC_LOG_LEXER_VERBOSE("getNextToken: raw string literal");
+            LUC_LOG_LEXER_VERBOSE("getNextToken: raw string literal");
             advance(); // consume opening '"'
             return readRawString();
         }
 
         // Standalone _ is a wildcard token
         if (ident == "_") {
-						LUC_LOG_LEXER_EXTREME("getNextToken: wildcard '_'");
+            LUC_LOG_LEXER_EXTREME("getNextToken: wildcard '_'");
             return makeToken(TokenType::WILDCARD, "_");
         }
 
         auto it = keywords.find(ident);
         if (it != keywords.end()) {
-						LUC_LOG_LEXER_VERBOSE("getNextToken: keyword '" << ident << "'");
+            LUC_LOG_LEXER_VERBOSE("getNextToken: keyword '" << ident << "'");
             return makeToken(it->second, ident);
         }
-				LUC_LOG_LEXER_VERBOSE("getNextToken: identifier '" << ident << "'");
+        LUC_LOG_LEXER_VERBOSE("getNextToken: identifier '" << ident << "'");
         return makeToken(TokenType::IDENTIFIER, ident);
     }
 
@@ -477,13 +477,13 @@ Token Lexer::getNextToken() {
 
     // ── String literals ────────────────────────────────────────────────────────
     if (c == '"') {
-				LUC_LOG_LEXER_VERBOSE("getNextToken: string literal");
+        LUC_LOG_LEXER_VERBOSE("getNextToken: string literal");
         return readString();
     }
 
     // ── Char literals ──────────────────────────────────────────────────────────
     if (c == '\'') {
-				LUC_LOG_LEXER_VERBOSE("getNextToken: char literal");
+        LUC_LOG_LEXER_VERBOSE("getNextToken: char literal");
         return readChar();
     }
 
@@ -492,216 +492,216 @@ Token Lexer::getNextToken() {
     // ── Access ─────────────────────────────────────────────────────────────────
     case '.':
         if (match('?')) {
-						LUC_LOG_LEXER_EXTREME("getNextToken: '.?'");
+            LUC_LOG_LEXER_EXTREME("getNextToken: '.?'");
             return makeToken(TokenType::DOT_QUESTION, ".?");
         }
         if (match('.')) {
             if (match('.')) {
-								LUC_LOG_LEXER_EXTREME("getNextToken: '...' (variadic)");
+                LUC_LOG_LEXER_EXTREME("getNextToken: '...' (variadic)");
                 return makeToken(TokenType::VARIADIC, "...");
             }
-						LUC_LOG_LEXER_EXTREME("getNextToken: '..' (range)");
+            LUC_LOG_LEXER_EXTREME("getNextToken: '..' (range)");
             return makeToken(TokenType::RANGE, "..");
         }
-				LUC_LOG_LEXER_EXTREME("getNextToken: '.'");
+        LUC_LOG_LEXER_EXTREME("getNextToken: '.'");
         return makeToken(TokenType::DOT, ".");
 
     case ':':
-				LUC_LOG_LEXER_EXTREME("getNextToken: ':'");
+        LUC_LOG_LEXER_EXTREME("getNextToken: ':'");
         return makeToken(TokenType::COLON, ":");
 
     case '?':
         if (match('?')) {
-						LUC_LOG_LEXER_EXTREME("getNextToken: '??'");
+            LUC_LOG_LEXER_EXTREME("getNextToken: '\?\?'");
             return makeToken(TokenType::QUESTION_QUESTION, "??");
         }
-				LUC_LOG_LEXER_EXTREME("getNextToken: '?'");
+        LUC_LOG_LEXER_EXTREME("getNextToken: '?'");
         return makeToken(TokenType::QUESTION, "?");
 
     case '=':
         if (match('=')) {
             if (match('=')) {
-								LUC_LOG_LEXER_EXTREME("getNextToken: '==='");
+                LUC_LOG_LEXER_EXTREME("getNextToken: '==='");
                 return makeToken(TokenType::EQUAL_EQUAL_EQUAL, "===");
             }
-						LUC_LOG_LEXER_EXTREME("getNextToken: '=='");
+            LUC_LOG_LEXER_EXTREME("getNextToken: '=='");
             return makeToken(TokenType::EQUAL_EQUAL, "==");
         }
-				LUC_LOG_LEXER_EXTREME("getNextToken: '='");
+        LUC_LOG_LEXER_EXTREME("getNextToken: '='");
         return makeToken(TokenType::ASSIGN, "=");
 
     case '!':
         if (match('=')) {
-						LUC_LOG_LEXER_EXTREME("getNextToken: '!='");
+            LUC_LOG_LEXER_EXTREME("getNextToken: '!='");
             return makeToken(TokenType::NOT_EQUAL, "!=");
         }
-				LUC_LOG_LEXER_EXTREME("getNextToken: '!'");
+        LUC_LOG_LEXER_EXTREME("getNextToken: '!'");
         return makeToken(TokenType::BANG, "!");
 
     case '<':
         if (match('<')) {
             if (match('=')) {
-								LUC_LOG_LEXER_EXTREME("getNextToken: '<<='");
+                LUC_LOG_LEXER_EXTREME("getNextToken: '<<='");
                 return makeToken(TokenType::SHL_ASSIGN, "<<=");
             }
-						LUC_LOG_LEXER_EXTREME("getNextToken: '<<'");
+            LUC_LOG_LEXER_EXTREME("getNextToken: '<<'");
             return makeToken(TokenType::SHL, "<<");
         }
         if (match('=')) {
-						LUC_LOG_LEXER_EXTREME("getNextToken: '<='");
+            LUC_LOG_LEXER_EXTREME("getNextToken: '<='");
             return makeToken(TokenType::LESS_EQUAL, "<=");
         }
-				LUC_LOG_LEXER_EXTREME("getNextToken: '<'");
+        LUC_LOG_LEXER_EXTREME("getNextToken: '<'");
         return makeToken(TokenType::LESS, "<");
 
     case '>':
         if (match('>')) {
             if (match('=')) {
-								LUC_LOG_LEXER_EXTREME("getNextToken: '>>='");
+                LUC_LOG_LEXER_EXTREME("getNextToken: '>>='");
                 return makeToken(TokenType::SHR_ASSIGN, ">>=");
             }
-						LUC_LOG_LEXER_EXTREME("getNextToken: '>>'");
+            LUC_LOG_LEXER_EXTREME("getNextToken: '>>'");
             return makeToken(TokenType::SHR, ">>");
         }
         if (match('=')) {
-						LUC_LOG_LEXER_EXTREME("getNextToken: '>='");
+            LUC_LOG_LEXER_EXTREME("getNextToken: '>='");
             return makeToken(TokenType::GREATER_EQUAL, ">=");
         }
-				LUC_LOG_LEXER_EXTREME("getNextToken: '>'");
+        LUC_LOG_LEXER_EXTREME("getNextToken: '>'");
         return makeToken(TokenType::GREATER, ">");
 
     case '+':
         if (match('>')) {
-						LUC_LOG_LEXER_EXTREME("getNextToken: '+>'");
+            LUC_LOG_LEXER_EXTREME("getNextToken: '+>'");
             return makeToken(TokenType::COMPOSE, "+>");
         }
         if (match('=')) {
-						LUC_LOG_LEXER_EXTREME("getNextToken: '+='");
+            LUC_LOG_LEXER_EXTREME("getNextToken: '+='");
             return makeToken(TokenType::PLUS_ASSIGN, "+=");
         }
-				LUC_LOG_LEXER_EXTREME("getNextToken: '+'");
+        LUC_LOG_LEXER_EXTREME("getNextToken: '+'");
         return makeToken(TokenType::PLUS, "+");
 
     case '-':
         if (peek() == '-') {
-						LUC_LOG_LEXER_EXTREME("getNextToken: line comment '--'");
+            LUC_LOG_LEXER_EXTREME("getNextToken: line comment '--'");
             return readLineComment();
         }
         if (match('=')) {
-						LUC_LOG_LEXER_EXTREME("getNextToken: '-='");
+            LUC_LOG_LEXER_EXTREME("getNextToken: '-='");
             return makeToken(TokenType::MINUS_ASSIGN, "-=");
         }
         if (match('>')) {
-						LUC_LOG_LEXER_EXTREME("getNextToken: '->'");
+            LUC_LOG_LEXER_EXTREME("getNextToken: '->'");
             return makeToken(TokenType::ARROW, "->");
         }
-				LUC_LOG_LEXER_EXTREME("getNextToken: '-'");
+        LUC_LOG_LEXER_EXTREME("getNextToken: '-'");
         return makeToken(TokenType::MINUS, "-");
 
     case '*':
         if (match('=')) {
-						LUC_LOG_LEXER_EXTREME("getNextToken: '*='");
+            LUC_LOG_LEXER_EXTREME("getNextToken: '*='");
             return makeToken(TokenType::MUL_ASSIGN, "*=");
         }
-				LUC_LOG_LEXER_EXTREME("getNextToken: '*'");
+        LUC_LOG_LEXER_EXTREME("getNextToken: '*'");
         return makeToken(TokenType::MUL, "*");
 
     case '/':
         if (peek() == '-' && pos + 1 < src.size() && src[pos + 1] == '-') {
-						LUC_LOG_LEXER_EXTREME("getNextToken: doc comment '/--'");
+            LUC_LOG_LEXER_EXTREME("getNextToken: doc comment '/--'");
             return readDocComment();
         }
         if (match('=')) {
-						LUC_LOG_LEXER_EXTREME("getNextToken: '/='");
+            LUC_LOG_LEXER_EXTREME("getNextToken: '/='");
             return makeToken(TokenType::DIV_ASSIGN, "/=");
         }
-				LUC_LOG_LEXER_EXTREME("getNextToken: '/'");
+        LUC_LOG_LEXER_EXTREME("getNextToken: '/'");
         return makeToken(TokenType::DIV, "/");
 
     case '%':
         if (match('=')) {
-						LUC_LOG_LEXER_EXTREME("getNextToken: '%='");
+            LUC_LOG_LEXER_EXTREME("getNextToken: '%='");
             return makeToken(TokenType::MOD_ASSIGN, "%=");
         }
-				LUC_LOG_LEXER_EXTREME("getNextToken: '%'");
+        LUC_LOG_LEXER_EXTREME("getNextToken: '%'");
         return makeToken(TokenType::MOD, "%");
 
     case '^':
         if (match('=')) {
-						LUC_LOG_LEXER_EXTREME("getNextToken: '^='");
+            LUC_LOG_LEXER_EXTREME("getNextToken: '^='");
             return makeToken(TokenType::POW_ASSIGN, "^=");
         }
-				LUC_LOG_LEXER_EXTREME("getNextToken: '^'");
+        LUC_LOG_LEXER_EXTREME("getNextToken: '^'");
         return makeToken(TokenType::POW, "^");
 
     case '&':
         if (match('&')) {
             if (match('=')) {
-								LUC_LOG_LEXER_EXTREME("getNextToken: '&&='");
+                LUC_LOG_LEXER_EXTREME("getNextToken: '&&='");
                 return makeToken(TokenType::BIT_AND_ASSIGN, "&&=");
             }
-						LUC_LOG_LEXER_EXTREME("getNextToken: '&&'");
+            LUC_LOG_LEXER_EXTREME("getNextToken: '&&'");
             return makeToken(TokenType::BIT_AND, "&&");
         }
-				LUC_LOG_LEXER_EXTREME("getNextToken: '&'");
+        LUC_LOG_LEXER_EXTREME("getNextToken: '&'");
         return makeToken(TokenType::AMPERSAND, "&");
 
     case '|':
         if (match('|')) {
             if (match('=')) {
-								LUC_LOG_LEXER_EXTREME("getNextToken: '||='");
+                LUC_LOG_LEXER_EXTREME("getNextToken: '||='");
                 return makeToken(TokenType::BIT_OR_ASSIGN, "||=");
             }
-						LUC_LOG_LEXER_EXTREME("getNextToken: '||'");
+            LUC_LOG_LEXER_EXTREME("getNextToken: '||'");
             return makeToken(TokenType::BIT_OR, "||");
         }
-				LUC_LOG_LEXER_EXTREME("getNextToken: '|'");
+        LUC_LOG_LEXER_EXTREME("getNextToken: '|'");
         return makeToken(TokenType::PIPE, "|");
 
     case '~':
         if (match('^')) {
             if (match('=')) {
-								LUC_LOG_LEXER_EXTREME("getNextToken: '~^='");
+                LUC_LOG_LEXER_EXTREME("getNextToken: '~^='");
                 return makeToken(TokenType::BIT_XOR_ASSIGN, "~^=");
             }
-						LUC_LOG_LEXER_EXTREME("getNextToken: '~^'");
+            LUC_LOG_LEXER_EXTREME("getNextToken: '~^'");
             return makeToken(TokenType::BIT_XOR, "~^");
         }
-				LUC_LOG_LEXER_EXTREME("getNextToken: '~'");
+        LUC_LOG_LEXER_EXTREME("getNextToken: '~'");
         return makeToken(TokenType::BIT_NOT, "~");
 
     case '@':
-				LUC_LOG_LEXER_EXTREME("getNextToken: '@'");
+        LUC_LOG_LEXER_EXTREME("getNextToken: '@'");
         return makeToken(TokenType::AT_SIGN, "@");
 
     case ',':
-				LUC_LOG_LEXER_EXTREME("getNextToken: ','");
+        LUC_LOG_LEXER_EXTREME("getNextToken: ','");
         return makeToken(TokenType::COMMA, ",");
     case ';':
-				LUC_LOG_LEXER_EXTREME("getNextToken: ';'");
+        LUC_LOG_LEXER_EXTREME("getNextToken: ';'");
         return makeToken(TokenType::SEMICOLON, ";");
     case '(':
-				LUC_LOG_LEXER_EXTREME("getNextToken: '('");
+        LUC_LOG_LEXER_EXTREME("getNextToken: '('");
         return makeToken(TokenType::LPAREN, "(");
     case ')':
-				LUC_LOG_LEXER_EXTREME("getNextToken: ')'");
+        LUC_LOG_LEXER_EXTREME("getNextToken: ')'");
         return makeToken(TokenType::RPAREN, ")");
     case '{':
-				LUC_LOG_LEXER_EXTREME("getNextToken: '{'");
+        LUC_LOG_LEXER_EXTREME("getNextToken: '{'");
         return makeToken(TokenType::LBRACE, "{");
     case '}':
-				LUC_LOG_LEXER_EXTREME("getNextToken: '}'");
+        LUC_LOG_LEXER_EXTREME("getNextToken: '}'");
         return makeToken(TokenType::RBRACE, "}");
     case '[':
-				LUC_LOG_LEXER_EXTREME("getNextToken: '['");
+        LUC_LOG_LEXER_EXTREME("getNextToken: '['");
         return makeToken(TokenType::LBRACKET, "[");
     case ']':
-				LUC_LOG_LEXER_EXTREME("getNextToken: ']'");
+        LUC_LOG_LEXER_EXTREME("getNextToken: ']'");
         return makeToken(TokenType::RBRACKET, "]");
     }
 
     // Unknown character
-		LUC_LOG_LEXER("getNextToken: UNKNOWN character '" << c << "'");
+    LUC_LOG_LEXER("getNextToken: UNKNOWN character '" << c << "'");
     return makeToken(TokenType::UNKNOWN, std::string(1, c));
 }
 
@@ -710,7 +710,7 @@ Token Lexer::getNextToken() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 std::vector<Token> Lexer::tokenize() {
-		LUC_LOG_LEXER("tokenize: starting");
+    LUC_LOG_LEXER("tokenize: starting");
     std::vector<Token> tokens;
     Token t = makeToken(TokenType::EOF_TOKEN, "");
     int tokenCount = 0;
@@ -719,9 +719,9 @@ std::vector<Token> Lexer::tokenize() {
         t = getNextToken();
         tokens.push_back(t);
         tokenCount++;
-				LUC_LOG_LEXER_EXTREME("tokenize: token " << tokenCount << " - type=" << static_cast<int>(t.type) << ", value='" << t.value << "'");
+        LUC_LOG_LEXER_EXTREME("tokenize: token " << tokenCount << " - type=" << static_cast<int>(t.type) << ", value='" << t.value << "'");
     } while (t.type != TokenType::EOF_TOKEN);
 
-		LUC_LOG_LEXER("tokenize: complete, " << tokenCount << " tokens produced");
+    LUC_LOG_LEXER("tokenize: complete, " << tokenCount << " tokens produced");
     return tokens;
 }
