@@ -529,35 +529,26 @@ ExprPtr Parser::parsePrimaryExpr(bool allowStructLiteral) {
         return parseAwaitExpr();
     }
 
-    // ── async function body / async anonymous function ────────────────────────
-    // Two forms:
-    //   async { ... }             — block body form (no param list repeated)
-    //   async (params) ret { ... } — explicit anon func form
-    //
-    // Both map to AnonFuncExprAST with isAsync = true.
-    // The block body form has empty params and nullptr returnType — the outer
-    // FuncDeclAST already carries the signature; this node is just the body.
-    if (check(TokenType::ASYNC)) {
-        // Peek past 'async': if the very next meaningful token is '{', this is
-        // the short block-body form.  Otherwise it is the explicit anon func
-        // form that starts with '(' — delegate to parseAnonFuncExpr() which
-        // consumes the param group and optional return type itself.
+        if (check(TokenType::ASYNC)) {
         TokenType afterAsync = peekNext().type;
         if (afterAsync == TokenType::LBRACE) {
-            // async { ... }  — block body, no param repetition
-            SourceLocation asyncLoc = currentLoc();
+            // async { ... } is only valid as a function body (inside parseFuncBody)
+            // In expression position, this is invalid
+            errorAt(DiagCode::E2007, 
+                    "'async { ... }' is not a valid expression. "
+                    "Did you mean 'async (params) { ... }' for an async anonymous function, "
+                    "or use 'async' on the function declaration?");
+            
+            // Error recovery
             advance(); // consume 'async'
-            ++asyncDepth_;
-
-            auto node = std::make_unique<AnonFuncExprAST>();
-            node->loc     = asyncLoc;
-            node->isAsync = true;
-            // paramGroups intentionally left empty (no groups) and returnType
-            // nullptr — the enclosing FuncDeclAST owns the real signature.
-            node->body = parseBlock();
-
-            --asyncDepth_;
-            return node;
+            consume(TokenType::LBRACE, "expected '{'");
+            int braceDepth = 1;
+            while (!isAtEnd() && braceDepth > 0) {
+                if (match(TokenType::LBRACE)) braceDepth++;
+                else if (match(TokenType::RBRACE)) braceDepth--;
+                else advance();
+            }
+            return nullptr;
         }
         // async (params) ret { ... } — fall through to parseAnonFuncExpr
         return parseAnonFuncExpr();
@@ -567,29 +558,30 @@ ExprPtr Parser::parsePrimaryExpr(bool allowStructLiteral) {
     if (check(TokenType::LBRACKET))
         return parseArrayLiteralExpr();
 
-    // ── bare block body  { stmts }  in expression position ───────────────────
-    // Handles two cases from the grammar:
-    //
-    //   func_body := block      — e.g.  let f (x int) int = { return x + 1 }
-    //                              or   f = { return 42 }   (reassignment)
-    //
-    // When the expression parser reaches a lone '{', it means the RHS of a
-    // function declaration or reassignment is a plain block body — not a struct
-    // literal (those are always preceded by IDENTIFIER) and not a block
-    // statement (those are parsed by parseStmt, never by parseExpr).
-    //
-    // We produce an AnonFuncExprAST with empty params and nullptr returnType.
-    // The enclosing FuncDeclAST already owns the real signature; this node
-    // carries only the body.  The semantic pass treats this form identically
-    // to the explicit anon-func form.
+    // Bare '{' in expression position - this is invalid Luc syntax
+    // Valid blocks always have a prefix: TypeName, 'match', '(', or 'async'
     if (check(TokenType::LBRACE)) {
-        SourceLocation blockLoc = currentLoc();
-        auto node = std::make_unique<AnonFuncExprAST>();
-        node->loc     = blockLoc;
-        node->isAsync = false;
-        // params intentionally empty, returnType intentionally nullptr
-        node->body = parseBlock();
-        return node;
+        errorAt(DiagCode::E2007, 
+                "unexpected block in expression position. "
+                "Did you mean a struct literal (TypeName { ... }), "
+                "match expression (match ... { ... }), "
+                "or anonymous function ((params) { ... })?");
+
+        // Error recovery: consume the entire block to avoid cascading errors
+        consume(TokenType::LBRACE, "expected '{'");
+        int braceDepth = 1;
+        while (!isAtEnd() && braceDepth > 0) {
+            if (match(TokenType::LBRACE)) {
+                braceDepth++;
+            } else if (match(TokenType::RBRACE)) {
+                braceDepth--;
+            } else {
+                advance();
+            }
+        }
+        
+        // Return nullptr - caller will handle the error
+        return nullptr;
     }
 
     // ── anonymous function (non-async) ────────────────────────────────────────

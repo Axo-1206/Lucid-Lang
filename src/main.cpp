@@ -56,7 +56,7 @@ int main(int argc, char* argv[]) {
     // ========================================================================
     // MAIN LOGS - Using direct cout for clarity
     // ========================================================================
-    std::cout << "\n==============================================" << std::endl;
+    std::cout << "\n===============================================" << std::endl;
     std::cout << "[MAIN] Luc Compiler Starting" << std::endl;
     std::cout << "[MAIN] ========================================" << std::endl;
     std::cout << "[MAIN] Program started with " << (argc - 1) << " arguments" << std::endl;

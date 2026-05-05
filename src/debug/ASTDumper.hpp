@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ast/BaseAST.hpp"
+#include "ast/BaseAST.hpp" 
 #include <string>
 
 namespace LucDebug {
@@ -12,6 +12,17 @@ class ASTDumper : public ASTVisitor {
 
     void indent();
     void printHeader(const BaseAST& node, const std::string& nodeName);
+    void visitChild(BaseAST* child, const std::string& label = "");
+    std::string formatType(struct TypeAST* type);
+
+private:
+    void printLine(const std::string& text);
+    void printKV(const std::string& key, const std::string& value);
+    void printNodeHeader(const BaseAST& node, const std::string& nodeName);
+    
+    // Cache for frequently used strings
+    std::string indentCache[16]; // Cache indentation strings up to level 15
+    void rebuildIndentCache();
     
 public:
     ASTDumper(int verbosity);
