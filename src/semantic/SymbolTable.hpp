@@ -37,6 +37,12 @@ public:
 
     int currentDepth() const;
     void dump() const;
+
+
+    const std::unordered_map<std::string, Symbol>& getGlobalScope() const {
+        static std::unordered_map<std::string, Symbol> empty;
+        return scopes_.empty() ? empty : scopes_[0];
+    }
 private:
     std::vector<std::unordered_map<std::string, Symbol>> scopes_;
 };

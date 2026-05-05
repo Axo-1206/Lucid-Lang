@@ -269,8 +269,9 @@ static TypeAST* checkBehaviorAccessExpr(BehaviorAccessExprAST& node, SymbolTable
                  "undeclared identifier '" + node.typeName + "'");
         return errorFallback(&node);
     }
-
+    
     // DISALLOW STATIC ACCESS
+    // The left side of ':' must be an instance, not a type name
     if (lhsSym->kind != SymbolKind::Var && lhsSym->kind != SymbolKind::Param) {
         LUC_LOG_SEMANTIC("\tERROR: static behavior access");
         dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
@@ -279,7 +280,7 @@ static TypeAST* checkBehaviorAccessExpr(BehaviorAccessExprAST& node, SymbolTable
         return errorFallback(&node);
     }
 
-    // Extract the underlying struct/type name from the instance.
+    // Extract the underlying struct/type name from the instance
     if (!lhsSym->type || !lhsSym->type->isa<NamedTypeAST>()) {
         LUC_LOG_SEMANTIC("\tERROR: identifier does not resolve to named struct type");
         dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
@@ -292,6 +293,7 @@ static TypeAST* checkBehaviorAccessExpr(BehaviorAccessExprAST& node, SymbolTable
     std::string mangled = actualTypeName + "." + node.method;
     LUC_LOG_SEMANTIC_EXTREME("\tmangled name: " << mangled);
 
+    // Look up the method in the type's namespace
     Symbol* sym = symbols.lookup(mangled);
     if (!sym) {
         LUC_LOG_SEMANTIC("\tERROR: no method '" << node.method << "' on '" << actualTypeName << "'");
@@ -299,9 +301,10 @@ static TypeAST* checkBehaviorAccessExpr(BehaviorAccessExprAST& node, SymbolTable
                  "no method '" + node.method + "' found on '" + actualTypeName + "'");
         return errorFallback(&node);
     }
+    
     node.isBehaviorMember = true;
-
-    // Codegen annotations
+    
+    // Codegen annotations for generic structs
     std::vector<std::string> concreteArgs;
     bool receiverIsAbstract = receiverNamedType->isGenericParam;
 
@@ -309,8 +312,6 @@ static TypeAST* checkBehaviorAccessExpr(BehaviorAccessExprAST& node, SymbolTable
         for (auto& arg : receiverNamedType->genericArgs) {
             std::string s = typeArgString(arg.get());
             if (s.empty()) {
-                // One abstract arg makes the whole instantiation abstract.
-                // Clear whatever we collected and stop.
                 concreteArgs.clear();
                 receiverIsAbstract = true;
                 break;
@@ -324,19 +325,15 @@ static TypeAST* checkBehaviorAccessExpr(BehaviorAccessExprAST& node, SymbolTable
         ? ""
         : buildMangledMethodName(actualTypeName, concreteArgs, node.method);
 
-    // Strip outermost self-group
-    TypeAST* exposedType = sym->type;
-    if (exposedType && exposedType->isa<FuncTypeAST>()) {
-        TypeAST* inner = exposedType->as<FuncTypeAST>()->returnType.get();
-        if (inner) exposedType = inner;
-    }
-
-    node.resolvedType = exposedType;
-    // Update the node's type name to the resolved struct base name.
+    // CRITICAL FIX: NO STRIPPING OF SELF
+    // The method signature stored in the symbol table has NO self parameter.
+    // It is exactly what the user sees: (params...) -> return
+    // Therefore we use it directly without any modification.
+    node.resolvedType = sym->type;
     node.typeName = actualTypeName;
     
-    LUC_LOG_SEMANTIC_EXTREME("\tresolved type: " << (exposedType ? LucDebug::kindToString(exposedType->kind) : "null"));
-    return exposedType;
+    LUC_LOG_SEMANTIC_EXTREME("\tresolved type: " << (sym->type ? LucDebug::kindToString(sym->type->kind) : "null"));
+    return sym->type;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1369,6 +1366,91 @@ static TypeAST* checkAssignExpr(AssignExprAST& node, SymbolTable& symbols,
                 node.resolvedType = lhsType;
                 return lhsType;
             }
+        }
+    }
+
+    // ── DIRECT FUNCTION ASSIGNMENT:  f = existingFunction  ────────────────────────────
+    // NEW CASE: Handle assignment where RHS is a direct identifier that resolves
+    // to a function (e.g., let myAdd (a int) (b int) int = existingFunction)
+    // This covers both curried and non-curried function assignments.
+    if (node.op == AssignOp::Assign &&
+        node.rhs->isa<IdentifierExprAST>() &&
+        node.lhs->isa<IdentifierExprAST>()) {
+        
+        auto* lhsIdent = node.lhs->as<IdentifierExprAST>();
+        auto* rhsIdent = node.rhs->as<IdentifierExprAST>();
+        
+        LUC_LOG_SEMANTIC_EXTREME("\tDirect function assignment: '" << lhsIdent->name 
+                               << "' = '" << rhsIdent->name << "'");
+        
+        // Look up LHS symbol (the target function being assigned to)
+        Symbol* lhsSym = symbols.lookup(lhsIdent->name);
+        if (!lhsSym) {
+            LUC_LOG_SEMANTIC("\tERROR: LHS symbol not found: '" << lhsIdent->name << "'");
+            dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
+                     "undeclared identifier '" + lhsIdent->name + "'");
+            return errorFallback(&node);
+        }
+        
+        // Look up RHS symbol (the source function being assigned)
+        Symbol* rhsSym = symbols.lookup(rhsIdent->name);
+        if (!rhsSym) {
+            LUC_LOG_SEMANTIC("\tERROR: RHS symbol not found: '" << rhsIdent->name << "'");
+            dc.error(DiagnosticCategory::Semantic, node.rhs->loc, DiagCode::E3001,
+                     "undeclared identifier '" + rhsIdent->name + "'");
+            return errorFallback(&node);
+        }
+        
+        // Both must be functions (or extern functions) for this to be a valid assignment
+        bool lhsIsFunc = (lhsSym->kind == SymbolKind::Func || lhsSym->kind == SymbolKind::ExternFunc);
+        bool rhsIsFunc = (rhsSym->kind == SymbolKind::Func || rhsSym->kind == SymbolKind::ExternFunc);
+        
+        if (!lhsIsFunc || !rhsIsFunc) {
+            // Not a function assignment - let the general case handle it
+            LUC_LOG_SEMANTIC_EXTREME("\tNot a function assignment (LHS func=" << lhsIsFunc 
+                                   << ", RHS func=" << rhsIsFunc << "), falling through");
+            // Fall through to general case
+        } else {
+            // Verify LHS is mutable (let-declared)
+            if (lhsSym->declKw != DeclKeyword::Let) {
+                LUC_LOG_SEMANTIC("\tERROR: cannot reassign const function");
+                dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3004,
+                         "cannot reassign '" + lhsIdent->name + "': declared with const");
+            }
+            
+            // Check parallel scope restrictions
+            if (parallelDepth > 0) {
+                LUC_LOG_SEMANTIC("\tERROR: assignment inside parallel scope");
+                dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
+                         "assignment to outer variable inside parallel scope is not allowed");
+            }
+            
+            // Get the function signatures
+            TypeAST* lhsFuncType = lhsSym->type;
+            TypeAST* rhsFuncType = rhsSym->type;
+            
+            if (!lhsFuncType || !rhsFuncType) {
+                LUC_LOG_SEMANTIC("\tERROR: missing function type for assignment");
+                dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
+                         "internal error: missing function type for '" + 
+                         (lhsFuncType ? rhsIdent->name : lhsIdent->name) + "'");
+            } else {
+                LUC_LOG_SEMANTIC_EXTREME("\tLHS type: " << LucDebug::kindToString(lhsFuncType->kind));
+                LUC_LOG_SEMANTIC_EXTREME("\tRHS type: " << LucDebug::kindToString(rhsFuncType->kind));
+                
+                // Check assignability between the two function signatures
+                if (!TypeChecker::isAssignable(rhsFuncType, lhsFuncType)) {
+                    LUC_LOG_SEMANTIC("\tERROR: function signature mismatch in assignment");
+                    dc.error(DiagnosticCategory::Semantic, node.rhs->loc, DiagCode::E3002,
+                             "function signature mismatch in assignment to '" + lhsIdent->name +
+                             "': cannot assign from '" + rhsIdent->name + "'");
+                } else {
+                    LUC_LOG_SEMANTIC_EXTREME("\tFunction assignment type check passed");
+                }
+            }
+            
+            node.resolvedType = lhsFuncType;
+            return lhsFuncType;
         }
     }
 

@@ -57,6 +57,32 @@ SemanticAnalyzer::SemanticAnalyzer(DiagnosticEngine& dc)
 SemanticAnalyzer::~SemanticAnalyzer() = default;
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Validate duplicate symbols
+// ─────────────────────────────────────────────────────────────────────────────
+
+void SemanticAnalyzer::validateNoDuplicateSymbols() {
+    LUC_LOG_SEMANTIC("\n--- Phase 1.5: Validate No Duplicate Symbols ---");
+    
+    std::unordered_map<std::string, SourceLocation> firstDecl;
+    
+    // Need to iterate global scope - add this method to SymbolTable
+    const auto& globalScope = symbols_->getGlobalScope();
+    
+    for (const auto& [name, sym] : globalScope) {
+        auto it = firstDecl.find(name);
+        if (it != firstDecl.end()) {
+            LUC_LOG_SEMANTIC("\tDuplicate symbol: " << name);
+            dc_.error(DiagnosticCategory::Semantic, sym.loc, DiagCode::E3005,
+                      "symbol '" + name + "' is already declared");
+        } else {
+            firstDecl[name] = sym.loc;
+        }
+    }
+    
+    LUC_LOG_SEMANTIC_VERBOSE("Phase 1.5 complete: " << firstDecl.size() << " unique symbols");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // analyze  — top-level entry point
 // ─────────────────────────────────────────────────────────────────────────────
 bool SemanticAnalyzer::analyze(std::vector<ProgramAST*>& files) {
@@ -81,6 +107,7 @@ bool SemanticAnalyzer::analyze(std::vector<ProgramAST*>& files) {
     }
     LUC_LOG_SEMANTIC("Phase 1 completed successfully");
 
+    validateNoDuplicateSymbols();
     dumpSymbols();
 
     // Phase 2: Resolve Types.

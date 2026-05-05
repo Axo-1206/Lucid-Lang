@@ -286,12 +286,12 @@ void TypeResolver::visit(FuncDeclAST& node) {
     
     resolveFunctionSignature(node);
     
-    // Update symbol table to point to resolved signature
+    // CRITICAL: Point directly to AST-owned signature - NO CLONE
     Symbol* sym = symbols_.lookup(node.name);
     if (sym && node.signature) {
         sym->type = node.signature.get();
         LUC_LOG_SEMANTIC_VERBOSE("\tupdated symbol '" << node.name 
-                               << "' type to resolved signature");
+                               << "' type to signature");
     }
     
     resolved_ = node.signature.get();
@@ -351,7 +351,7 @@ void TypeResolver::resolveMethodSignature(MethodDeclAST& node) {
         }
     }
     
-    // Resolve all parameter types
+    // Resolve all parameter types in all curry groups
     for (auto& group : node.paramGroups) {
         for (auto& param : group) {
             if (param->type) {
@@ -364,8 +364,16 @@ void TypeResolver::resolveMethodSignature(MethodDeclAST& node) {
         }
     }
     
-    // Build the resolved signature using SemanticHelpers
-    node.signature = SemanticHelpers::buildResolvedMethodSignature(node);
+    // IMPORTANT: DO NOT rebuild the signature here
+    // The signature was already built in Phase 1 (SemanticCollector) WITHOUT self
+    // We only need to ensure the resolved types are available through the signature
+    // The signature should already point to the correct TypeAST nodes
+    
+    // If for some reason the signature is null (defensive programming), build it now
+    if (!node.signature) {
+        LUC_LOG_SEMANTIC("\tWARNING: method signature was null, building now (should not happen)");
+        node.signature = SemanticHelpers::buildResolvedMethodSignature(node);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -427,11 +435,20 @@ void TypeResolver::visit(StructDeclAST& node) {
     
     resolveStructFields(node);
     
-    // For structs, resolved_ points to selfType (the struct's type)
+    // Ensure selfType exists
     if (!node.selfType) {
         node.selfType = std::make_unique<NamedTypeAST>(node.name);
         node.selfType->loc = node.loc;
     }
+    
+    // Point directly to AST-owned selfType
+    Symbol* sym = symbols_.lookup(node.name);
+    if (sym) {
+        sym->type = node.selfType.get();
+        LUC_LOG_SEMANTIC_VERBOSE("\tupdated symbol '" << node.name 
+                               << "' type to selfType");
+    }
+    
     resolved_ = node.selfType.get();
 }
 
@@ -462,16 +479,23 @@ void TypeResolver::resolveStructFields(StructDeclAST& node) {
 void TypeResolver::visit(VarDeclAST& node) {
     LUC_LOG_SEMANTIC("visit(VarDeclAST): name='" << node.name << "'");
     
+    TypeAST* resolvedType = nullptr;
     if (node.type) {
-        TypeAST* resolvedType = resolveType(node.type.get());
+        resolvedType = resolveType(node.type.get());
         if (resolvedType) {
             node.resolvedType = resolvedType;
         }
     }
     
-   resolved_ = node.resolvedType 
-            ? static_cast<TypeAST*>(node.resolvedType) 
-            : (node.type ? node.type.get() : nullptr);
+    // Point directly to resolved type
+    Symbol* sym = symbols_.lookup(node.name);
+    if (sym && resolvedType) {
+        sym->type = resolvedType;
+        LUC_LOG_SEMANTIC_VERBOSE("\tupdated symbol '" << node.name 
+                               << "' type to resolved type");
+    }
+    
+    resolved_ = resolvedType;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -506,13 +530,15 @@ void TypeResolver::visit(ImplDeclAST& node) {
     for (auto& method : node.methods) {
         resolveMethodSignature(*method);
         
-        // CRITICAL: Update the symbol in the symbol table to point to the resolved signature
+        // Update symbol with the resolved signature (which has no self)
         std::string mangledName = node.structName + "." + method->name;
         Symbol* sym = symbols_.lookup(mangledName);
         if (sym && method->signature) {
+            // Point directly to the method's signature (no cloning)
+            // The signature already has no self parameter
             sym->type = method->signature.get();
             LUC_LOG_SEMANTIC_VERBOSE("\tupdated symbol '" << mangledName 
-                                   << "' type to resolved signature");
+                                   << "' type to resolved method signature (no self)");
         }
     }
     

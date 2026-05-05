@@ -405,7 +405,6 @@ std::unique_ptr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vi
     }
 
     // Parse parameter groups
-    // IMPORTANT: Use raw token check, not filtered peek()
     LUC_LOG_PARSER("Checking for '(' in raw token stream...");
     
     // Find the next non-comment token
@@ -416,9 +415,6 @@ std::unique_ptr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vi
     
     if (nextNonComment >= tokens_.size() || tokens_[nextNonComment].type != TokenType::LPAREN) {
         LUC_LOG_PARSER("ERROR: No '(' found for function '" << node->name << "'");
-        LUC_LOG_PARSER("\tNext non-comment token at " << nextNonComment << ": '" 
-                       << (nextNonComment < tokens_.size() ? tokens_[nextNonComment].value : "EOF")
-                       << "' (type: " << (nextNonComment < tokens_.size() ? static_cast<int>(tokens_[nextNonComment].type) : -1) << ")");
         errorAt(DiagCode::E2001, "expected '(' to start parameter list for function '" + node->name + "'");
         return nullptr;
     }
@@ -428,7 +424,7 @@ std::unique_ptr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vi
         advance();
     }
     
-    // Now parse parameter groups - parseParamGroup returns vector<ParamPtr>
+    // Parse parameter groups
     while (check(TokenType::LPAREN)) {
         LUC_LOG_PARSER("\tParsing parameter group at pos " << pos_);
         std::vector<ParamPtr> paramGroup = parseParamGroup();
@@ -462,7 +458,6 @@ std::unique_ptr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vi
     if (hasExternAttr) {
         LUC_LOG_PARSER("Processing @extern function '" << node->name << "'");
         
-        // Extern declarations end with semicolon
         // Skip any LINE_COMMENTs before checking for semicolon
         while (check(TokenType::LINE_COMMENT)) advance();
         
@@ -482,12 +477,56 @@ std::unique_ptr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vi
 
     // Non-extern functions must have '=' and body
     if (!check(TokenType::ASSIGN)) {
+        LUC_LOG_PARSER("\tERROR: expected '=' before function body ");
         errorAt(DiagCode::E2001, "expected '=' before function body for '" + node->name + "'");
         return nullptr;
     }
+    advance(); // Consume '='
 
     LUC_LOG_PARSER("Parsing function body...");
-    node->body = parseFuncBody(node->bodyKind, node->isAsync);
+    
+    // Parse async keyword if present
+    bool isAsync = false;
+    if (match(TokenType::ASYNC)) {
+        isAsync = true;
+        node->isAsync = true;
+        ++asyncDepth_;
+        LUC_LOG_PARSER("Async function detected");
+    }
+    
+    // Parse the body - determine if block or expression
+    if (check(TokenType::LBRACE)) {
+        // Block body
+        node->bodyKind = FuncBodyKind::Block;
+        node->body = parseBlock();
+        node->exprBody = nullptr;
+    } else if (check(TokenType::LPAREN)) {
+        // Anon func form with repeated signature
+        node->bodyKind = FuncBodyKind::AnonFunc;
+        // Parse the repeated signature (parseFuncBody will handle it)
+        node->body = parseFuncBody(node->bodyKind, node->isAsync);
+        node->exprBody = nullptr;
+    } else {
+        // Expression body - NO WRAPPING
+        node->bodyKind = FuncBodyKind::ExprBody;
+        node->exprBody = parseExpr();
+        node->body = nullptr;
+        
+        if (!node->exprBody) {
+            LUC_LOG_PARSER("\tERROR: expected expression after '='");
+            errorAt(DiagCode::E2008, "expected expression after '='");
+            return nullptr;
+        }
+    }
+
+    if (isAsync) {
+        --asyncDepth_;
+    }
+    
+    // Optional semicolon after body (for expression bodies in certain contexts)
+    if (match(TokenType::SEMICOLON)) {
+        LUC_LOG_PARSER("Optional semicolon consumed after function body");
+    }
     
     LUC_LOG_PARSER("=== parseFuncDecl END (normal) ===");
     return node;
@@ -1121,8 +1160,51 @@ MethodDeclPtr Parser::parseMethodDecl() {
         errorAt(DiagCode::E2001, "expected '=' before method body for '" + method->name + "'");
         return nullptr;
     }
+    advance(); // Consume '='
 
-    method->body = parseFuncBody(method->bodyKind, method->isAsync);
+    LUC_LOG_PARSER("parseMethodDecl: parsing body for method '" << method->name << "'");
+
+    // Parse async keyword if present
+    bool isAsync = false;
+    if (match(TokenType::ASYNC)) {
+        isAsync = true;
+        method->isAsync = true;
+        LUC_LOG_PARSER("parseMethodDecl: async method");
+    }
+
+    // Determine body type
+    if (check(TokenType::LBRACE)) {
+        // Block body
+        method->bodyKind = FuncBodyKind::Block;
+        method->body = parseBlock();
+        method->exprBody = nullptr;
+        LUC_LOG_PARSER("parseMethodDecl: block body");
+    } else if (check(TokenType::LPAREN)) {
+        // Anon func form with repeated signature - parse via parseFuncBody
+        method->bodyKind = FuncBodyKind::AnonFunc;
+        method->body = parseFuncBody(method->bodyKind, method->isAsync);
+        method->exprBody = nullptr;
+        LUC_LOG_PARSER("parseMethodDecl: anon func body");
+    } else {
+        // Expression body - store directly, NO WRAPPING
+        method->bodyKind = FuncBodyKind::ExprBody;
+        method->exprBody = parseExpr();
+        method->body = nullptr;  // No block body for expression bodies
+
+        if (!method->exprBody) {
+            errorAt(DiagCode::E2008, "expected expression after '=' for method '" + method->name + "'");
+            return nullptr;
+        }
+
+        LUC_LOG_PARSER("parseMethodDecl: expression body, kind=" << LucDebug::kindToString(method->exprBody->kind));
+    }
+
+    // Optional semicolon after body (for expression bodies in certain contexts)
+    if (match(TokenType::SEMICOLON)) {
+        LUC_LOG_PARSER("parseMethodDecl: optional semicolon consumed");
+    }
+
+    LUC_LOG_PARSER("parseMethodDecl: success for method '" << method->name << "'");
     return method;
 }
 
@@ -1190,6 +1272,7 @@ std::unique_ptr<FromDeclAST> Parser::parseFromDecl(Visibility vis) {
             synchronize();
             continue;
         }
+        advance(); // Consume the '=' token
 
         bool isAsync = false;
         entry->body = parseFuncBody(entry->bodyKind, isAsync);
@@ -1273,8 +1356,9 @@ std::unique_ptr<TypeAliasDeclAST> Parser::parseTypeAliasDecl(Visibility vis) {
 // ─────────────────────────────────────────────────────────────────────────────
 StmtPtr Parser::parseFuncBody(FuncBodyKind &outBodyKind, bool &outIsAsync) {
     LUC_LOG_PARSER_VERBOSE("parseFuncBody: starting");
-    consume(TokenType::ASSIGN, "expected '='");
-
+    
+    // NOTE: Caller has already consumed '='
+    
     outIsAsync = false;
     outBodyKind = FuncBodyKind::Block;
 
@@ -1284,71 +1368,44 @@ StmtPtr Parser::parseFuncBody(FuncBodyKind &outBodyKind, bool &outIsAsync) {
         ++asyncDepth_;
     }
 
-    StmtPtr body;
+    StmtPtr body = nullptr;
 
     if (check(TokenType::LBRACE)) {
         // Block form: { ... }
         outBodyKind = FuncBodyKind::Block;
         body = parseBlock();
+        LUC_LOG_PARSER_VERBOSE("parseFuncBody: block form");
     } else if (check(TokenType::LPAREN)) {
         // Anon func form: (params) [ret] { ... }
-        // We parse the params and return type but discard them — the caller
-        // already parsed them from the outer signature. The anon func form
-        // is purely for symmetry/documentation; semantically it is identical
-        // to the block form. We record AnonFunc so the LSP / pretty printer
-        // can reproduce the source accurately.
         outBodyKind = FuncBodyKind::AnonFunc;
-
-        // Consume the repeated param list
-        parseParamGroup(); // params discarded — already on FuncDeclAST
-
-        // Consume the optional repeated return type
+        
+        LUC_LOG_PARSER_VERBOSE("parseFuncBody: anon func form");
+        
+        // Parse and discard the repeated param list
+        parseParamGroup();
+        
+        // Parse and discard the optional repeated return type
         if (looksLikeType() && !check(TokenType::LBRACE)) {
-            parseType(); // type discarded — already on FuncDeclAST
+            parseType();
         }
-
+        
         if (!check(TokenType::LBRACE)) {
             errorAt(DiagCode::E2001, "expected '{' to start function body");
-        } else {
-            body = parseBlock();
-        }
-    } else {
-        // Expression form: identifier or function call
-        // Parse the expression and wrap it in a BlockStmtAST containing a ReturnStmtAST
-        outBodyKind = FuncBodyKind::ExprBody;
-        
-        ExprPtr expr = parseExpr();
-        if (!expr) {
-            errorAt(DiagCode::E2001, "expected expression for function body");
-            if (outIsAsync) {
-                --asyncDepth_;
-            }
+            if (outIsAsync) --asyncDepth_;
             return nullptr;
         }
-
-        // Create a ReturnStmtAST wrapping the expression
-        auto returnStmt = std::make_unique<ReturnStmtAST>();
-        returnStmt->loc = expr->loc;
-        returnStmt->value = std::move(expr);
-
-        // Create a BlockStmtAST containing the return statement
-        auto block = std::make_unique<BlockStmtAST>();
-        block->loc = returnStmt->loc;
-        block->stmts.push_back(std::move(returnStmt));
         
-        body = std::move(block);
+        body = parseBlock();
+    } else {
+        // No brace, no parens - expression bodies are handled by the caller
+        errorAt(DiagCode::E2008, "expected '{' or '(' to start function body");
+        if (outIsAsync) --asyncDepth_;
+        return nullptr;
     }
-
-    LUC_LOG_PARSER_VERBOSE("parseFuncBody: form = " 
-        << (outBodyKind == FuncBodyKind::Block ? "Block" :
-            outBodyKind == FuncBodyKind::AnonFunc ? "AnonFunc" : "ExprBody")
-        << ", isAsync = " << (outIsAsync ? "true" : "false"));
-
 
     if (outIsAsync) {
         --asyncDepth_;
     }
 
-    LUC_LOG_PARSER_VERBOSE("parseFuncBody: returning body");
     return body;
 }

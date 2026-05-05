@@ -309,15 +309,16 @@ struct FuncDeclAST : DeclAST {
 
     DeclKeyword keyword;
     std::string name;
-    std::vector<GenericParamPtr> genericParams;     // empty if non-generic
-    std::vector<std::vector<ParamPtr>> paramGroups; // outer = curry groups
-    TypePtr returnType;                             // nullptr = void
-	StmtPtr body;                                   // BlockStmtAST
+    std::vector<GenericParamPtr> genericParams;
+    std::vector<std::vector<ParamPtr>> paramGroups;
+    TypePtr returnType;
+    StmtPtr body;                                   // For block bodies only
+    ExprPtr exprBody;                               // For expression bodies
     FuncBodyKind bodyKind = FuncBodyKind::Block;
     bool isAsync = false;
-    TypePtr signature;                              // Synthesized Function Type (signature)
+    TypePtr signature;
     Visibility visibility = Visibility::Private;
-    std::vector<AttributePtr> attributes;           // @extern("sym"), @inline, etc.
+    std::vector<AttributePtr> attributes;
 
     FuncDeclAST() : DeclAST(ASTKind::FuncDecl) {}
 
@@ -570,12 +571,13 @@ struct MethodDeclAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::MethodDecl;
 
     std::string name;
-    std::vector<std::vector<ParamPtr>> paramGroups; // outer = curry groups
-    TypePtr returnType; // nullptr = void
-    StmtPtr body;       // BlockStmtAST
+    std::vector<std::vector<ParamPtr>> paramGroups;
+    TypePtr returnType;
+    StmtPtr body;                                   // For block bodies only
+    ExprPtr exprBody;                               // For expression bodies
     FuncBodyKind bodyKind = FuncBodyKind::Block;
     bool isAsync = false;
-    TypePtr signature;                              // Synthesized Function Type (signature)
+    TypePtr signature;
 
     MethodDeclAST() : BaseAST(ASTKind::MethodDecl) {}
 

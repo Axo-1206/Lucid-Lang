@@ -257,14 +257,12 @@ inline std::unique_ptr<TypeAST> cloneType(TypeAST* type) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 inline std::unique_ptr<TypeAST> buildResolvedFunctionSignature(const FuncDeclAST& node) {
-    // VERBOSE level because this is an important step but not critical for every call
     LUC_LOG_SEMANTIC_VERBOSE("buildResolvedFunctionSignature: " << node.name
                            << ", paramGroups=" << node.paramGroups.size());
 
     // Get the resolved return type
     TypeAST* returnType = nullptr;
     if (node.returnType) {
-        // Use the resolved type if available, otherwise fall back to the raw AST node
         returnType = node.returnType->resolvedType
                      ? static_cast<TypeAST*>(node.returnType->resolvedType)
                      : node.returnType.get();
@@ -382,6 +380,7 @@ inline std::unique_ptr<TypeAST> buildResolvedMethodSignature(const MethodDeclAST
         curReturn = std::move(funcType);
     }
 
+    std::cout << "=== END ===" << std::endl;
     return curReturn;
 }
 

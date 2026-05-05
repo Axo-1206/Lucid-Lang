@@ -63,6 +63,7 @@ private:
     void resolveTypes  (std::vector<ProgramAST*>& files);  // Phase 2: type resolution
     void checkDecls    (std::vector<ProgramAST*>& files);  // Phase 3: full checking
     void annotate      (std::vector<ProgramAST*>& files);  // Phase 4: write annotations
+    void validateNoDuplicateSymbols();
 
     // Sub-components owned by the analyzer.
     std::unique_ptr<SymbolTable>   symbols_;

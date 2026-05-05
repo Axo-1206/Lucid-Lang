@@ -112,7 +112,7 @@ void SemanticCollector::visit(VarDeclAST& node) {
     sym.kind         = isExtern ? SymbolKind::ExternFunc : SymbolKind::Var;
     sym.declKw       = node.keyword;
     sym.visibility   = node.visibility;
-    sym.type         = node.type.get();
+    sym.type         = nullptr;  // Phase 2 will set this
     sym.decl         = &node;
     sym.isAsync      = false;
     sym.loc          = node.loc;
@@ -191,7 +191,7 @@ void SemanticCollector::visit(FuncDeclAST& node) {
     sym.kind         = isExtern ? SymbolKind::ExternFunc : SymbolKind::Func;
     sym.declKw       = node.keyword;
     sym.visibility   = node.visibility;
-    sym.type         = node.signature.get();
+    sym.type         = nullptr; // Phase 2 will set this
     sym.decl         = &node;
     sym.isAsync      = node.isAsync;
     sym.loc          = node.loc;
@@ -291,7 +291,7 @@ void SemanticCollector::visit(StructDeclAST& node) {
         SymbolKind::Struct,
         DeclKeyword::Let,
         node.visibility,
-        node.selfType.get(),
+        nullptr,  // Phase 2 will set this
         &node,
         false,
         node.loc
@@ -462,69 +462,84 @@ void SemanticCollector::visit(ImplDeclAST& node) {
     for (const auto& method : node.methods) {
         LUC_LOG_SEMANTIC_VERBOSE("\tprocessing impl method: " << method->name);
         
-        // Build signature for method
+        // ─────────────────────────────────────────────────────────────────────────
+        // Build signature for method - WITHOUT self parameter
+        // The signature is exactly what the user wrote: (params...) -> return
+        // Self is handled by codegen, not the type system
+        // ─────────────────────────────────────────────────────────────────────────
+        
         TypePtr sig = nullptr;
         
-        // 1. Create the implicit 'self' group for methods
-        auto selfGroup = std::make_unique<FuncTypeAST>();
-        selfGroup->loc = method->loc;
-        selfGroup->params.push_back(std::make_unique<NamedTypeAST>(node.structName));
-        
-        // 2. Build the rest of the signature from paramGroups
+        // Build from the LAST parameter group to the FIRST (creates curry chain)
         for (int i = (int)method->paramGroups.size() - 1; i >= 0; --i) {
             auto ft = std::make_unique<FuncTypeAST>();
             ft->loc = method->loc;
+            
+            // Add parameter types for this group (using placeholder types in Phase 1)
             for (auto& p : method->paramGroups[i]) {
                 if (p->type->kind == ASTKind::PrimitiveType) {
-                    ft->params.push_back(std::make_unique<PrimitiveTypeAST>(static_cast<PrimitiveTypeAST*>(p->type.get())->primitiveKind));
+                    ft->params.push_back(std::make_unique<PrimitiveTypeAST>(
+                        static_cast<PrimitiveTypeAST*>(p->type.get())->primitiveKind));
                 } else if (p->type->kind == ASTKind::NamedType) {
-                    ft->params.push_back(std::make_unique<NamedTypeAST>(static_cast<NamedTypeAST*>(p->type.get())->name));
+                    const auto *named = static_cast<NamedTypeAST*>(p->type.get());
+                    ft->params.push_back(std::make_unique<NamedTypeAST>(named->name));
                 } else {
+                    // Fallback for complex types during Phase 1
                     ft->params.push_back(std::make_unique<PrimitiveTypeAST>(PrimitiveKind::Any));
                 }
             }
+            
+            // Set return type to the previously built signature (inner curry layer)
             if (sig) {
                 ft->returnType = std::move(sig);
             } else if (method->returnType) {
+                // This is the innermost return type
                 if (method->returnType->kind == ASTKind::PrimitiveType) {
-                    ft->returnType = std::make_unique<PrimitiveTypeAST>(static_cast<PrimitiveTypeAST*>(method->returnType.get())->primitiveKind);
+                    ft->returnType = std::make_unique<PrimitiveTypeAST>(
+                        static_cast<PrimitiveTypeAST*>(method->returnType.get())->primitiveKind);
                 } else if (method->returnType->kind == ASTKind::NamedType) {
-                    ft->returnType = std::make_unique<NamedTypeAST>(static_cast<NamedTypeAST*>(method->returnType.get())->name);
+                    ft->returnType = std::make_unique<NamedTypeAST>(
+                        static_cast<NamedTypeAST*>(method->returnType.get())->name);
                 } else {
                     ft->returnType = std::make_unique<PrimitiveTypeAST>(PrimitiveKind::Any);
                 }
             }
+            
             sig = std::move(ft);
         }
         
-        // Connect the 'self' group to the front
-        if (sig) {
-            selfGroup->returnType = std::move(sig);
-        } else if (method->returnType) {
-            // Case for magSquared() where There are no param groups, only self.
-             if (method->returnType->kind == ASTKind::PrimitiveType) {
-                selfGroup->returnType = std::make_unique<PrimitiveTypeAST>(static_cast<PrimitiveTypeAST*>(method->returnType.get())->primitiveKind);
+        // If no parameter groups, the signature is just the return type (or void)
+        if (!sig && method->returnType) {
+            if (method->returnType->kind == ASTKind::PrimitiveType) {
+                sig = std::make_unique<PrimitiveTypeAST>(
+                    static_cast<PrimitiveTypeAST*>(method->returnType.get())->primitiveKind);
             } else if (method->returnType->kind == ASTKind::NamedType) {
-                selfGroup->returnType = std::make_unique<NamedTypeAST>(static_cast<NamedTypeAST*>(method->returnType.get())->name);
+                sig = std::make_unique<NamedTypeAST>(
+                    static_cast<NamedTypeAST*>(method->returnType.get())->name);
             } else {
-                selfGroup->returnType = std::make_unique<PrimitiveTypeAST>(PrimitiveKind::Any);
+                sig = std::make_unique<PrimitiveTypeAST>(PrimitiveKind::Any);
             }
         }
-        method->signature = std::move(selfGroup);
-
+        
+        // Store the signature (NO self parameter)
+        method->signature = std::move(sig);
+        
+        // Register the method symbol with the signature (which has no self)
         std::string mangledName = node.structName + "." + method->name;
         LUC_LOG_SEMANTIC_EXTREME("\t\tmangled name: " << mangledName);
+        
         declareSymbol({
             mangledName,
             SymbolKind::Method,
             DeclKeyword::Let,
             node.visibility,
-            method->signature.get(),
+            method->signature.get(),  // Type points to signature WITHOUT self
             method.get(),
             method->isAsync,
             method->loc
         });
     }
+    
     LUC_LOG_SEMANTIC_VERBOSE("\timpl registered successfully");
 }
  
@@ -578,7 +593,7 @@ void SemanticCollector::visit(TypeAliasDeclAST& node) {
         SymbolKind::TypeAlias,
         DeclKeyword::Let,
         node.visibility,
-        node.aliasedType.get(),
+        nullptr,
         &node,
         false,
         node.loc

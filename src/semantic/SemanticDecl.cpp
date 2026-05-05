@@ -603,21 +603,83 @@ void checkFuncDecl(FuncDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
         }
     }
 
-    // Check the body - use the pre-resolved signature
-    if (node.body) {
-        TypeAST* expectedReturnType = nullptr;
+    // Check the body based on body kind
+    if (node.bodyKind == FuncBodyKind::ExprBody && node.exprBody) {
+        // ── Expression Body: function assignment (e.g., let f = core_add) ─────────
+        // This covers both curried and non-curried function assignments.
+        //
+        // Examples:
+        //   let myAdd (a int) (b int) int = core_add     (curried assignment)
+        //   let square (x int) int = existingSquare      (non-curried assignment)
+        //
+        // The RHS must be an expression that evaluates to a function with a
+        // signature compatible with this function's declaration.
         
-        // For expression bodies that return functions, use the full signature
-        if (node.bodyKind == FuncBodyKind::ExprBody && node.paramGroups.size() > 0) {
-            expectedReturnType = node.signature.get();
-        } else if (node.returnType) {
-            expectedReturnType = node.returnType->resolvedType 
-                     ? static_cast<TypeAST*>(node.returnType->resolvedType) 
-                     : node.returnType.get();
+        LUC_LOG_SEMANTIC("checkFuncDecl: expression body for '" << node.name 
+                    << "', checking assignment");
+        
+        // Resolve the expression type
+        TypeAST* exprType = checkExpr(node.exprBody.get(), symbols, resolver, dc,
+                                    asyncDepth, loopDepth, parallelDepth, insideExtern);
+        
+        if (!exprType) {
+            LUC_LOG_SEMANTIC("\tERROR: failed to resolve expression type");
+            dc.error(DiagnosticCategory::Semantic, node.exprBody->loc, DiagCode::E3002,
+                    "cannot resolve expression type in function assignment for '" + node.name + "'");
+            return;
         }
         
+        // Get the expected function signature
+        TypeAST* expectedType = node.signature.get();
+        if (!expectedType) {
+            LUC_LOG_SEMANTIC("\tERROR: function signature is null");
+            dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
+                    "internal error: function signature not built for '" + node.name + "'");
+            return;
+        }
+        
+        LUC_LOG_SEMANTIC_EXTREME("\texprType: " << LucDebug::kindToString(exprType->kind));
+        LUC_LOG_SEMANTIC_EXTREME("\texpectedType: " << LucDebug::kindToString(expectedType->kind));
+
+        // Check assignability between expression type and function signature
+        if (!TypeChecker::isAssignable(exprType, expectedType)) {
+            LUC_LOG_SEMANTIC("\tERROR: type mismatch in function assignment");
+            dc.error(DiagnosticCategory::Semantic, node.exprBody->loc, DiagCode::E3002,
+                    "type mismatch in function assignment for '" + node.name + 
+                    "': expression type does not match function signature");
+            return;
+        }
+        
+        LUC_LOG_SEMANTIC_VERBOSE("\tfunction assignment type check passed");
+        
+    } else if (node.body) {
+        // ── Block Body: normal function body with statements ─────────────────────
+        // This covers:
+        //   - Block bodies: = { return expr } or = { stmt*; expr }
+        //   - Anon func forms: = (params) ret { ... }
+        //   - Async block bodies: = async { ... }
+        
+        LUC_LOG_SEMANTIC("checkFuncDecl: block body for '" << node.name 
+                    << "', kind=" << (node.bodyKind == FuncBodyKind::AnonFunc ? "AnonFunc" : "Block"));
+        
+        TypeAST* expectedReturnType = nullptr;
+        
+        // Determine expected return type for the block body
+        if (node.returnType) {
+            expectedReturnType = node.returnType->resolvedType 
+                            ? static_cast<TypeAST*>(node.returnType->resolvedType) 
+                            : node.returnType.get();
+        }
+        // Note: For void functions (no return type), expectedReturnType remains nullptr
+        
         checkStmt(node.body.get(), symbols, resolver, dc, expectedReturnType,
-                  asyncDepth, loopDepth, parallelDepth, insideExtern);
+                asyncDepth, loopDepth, parallelDepth, insideExtern);
+        
+    } else {
+        // ── No Body: This should not happen for non-extern functions ──────────────
+        LUC_LOG_SEMANTIC("\tERROR: function '" << node.name << "' has no body");
+        dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
+                "function '" + node.name + "' has no body and is not marked @extern");
     }
     
     symbols.popScope();
