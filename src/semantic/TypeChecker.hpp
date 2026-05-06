@@ -14,6 +14,7 @@
 #pragma once
 
 #include "SymbolTable.hpp"
+#include "diagnostics/DiagnosticEngine.hpp"
 #include "ast/TypeAST.hpp"
 #include <cassert>
 
@@ -27,6 +28,31 @@ public:
     static TypeAST* unify(TypeAST* a, TypeAST* b);
     static bool primitiveWidening(PrimitiveKind from, PrimitiveKind to);
     static bool isFromCastable(TypeAST* src, TypeAST* target, SymbolTable* symbols = nullptr);
+
+    // ── Integer type validation ───────────────────────────────────────────────
+    
+    // isIntegerType — returns true when a type is any integer primitive.
+    // Used for: shift operations, bitwise ops, array index type validation.
+    static bool isIntegerType(TypeAST* type);
+    
+    // isValidArrayIndex — checks BOTH type and value constraints for array indexing.
+    // Returns: true if the index can be used (with runtime bounds check if needed)
+    //          false with error message if invalid at compile time.
+    // 
+    // For constant expressions (literals): validates value >= 0 at compile time.
+    // For variable expressions: validates type is integer (runtime panic handles negative).
+    static bool isValidArrayIndex(ExprAST* indexExpr, DiagnosticEngine& dc, 
+                                   const SourceLocation& loc);
+    
+    // isValidSliceBound — checks BOTH type and value constraints for slice bounds.
+    // For slice expressions like arr[start..end] where both bounds are constant.
+    // Enforces: start >= 0, end >= start, both are constants.
+    static bool isValidSliceBound(ExprAST* boundExpr, const std::string& boundName,
+                                   DiagnosticEngine& dc, const SourceLocation& loc);
+    
+    // Get constant integer value from expression (if compile-time known)
+    // Returns true and sets value if expression is a constant integer literal.
+    static bool getConstantIntValue(ExprAST* expr, int64_t& outValue);
 
     // ── Comparison validity helpers ───────────────────────────────────────────
 

@@ -25,6 +25,7 @@
 #include "ast/BaseAST.hpp"
 #include "ast/DeclAST.hpp"
 #include "debug/DebugMacros.hpp"
+#include "debug/DebugUtils.hpp"
 
 #include <unordered_map>
 #include <unordered_set>

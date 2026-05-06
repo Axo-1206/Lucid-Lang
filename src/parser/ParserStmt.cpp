@@ -104,88 +104,56 @@ std::unique_ptr<BlockStmtAST> Parser::parseBlock()
 // ─────────────────────────────────────────────────────────────────────────────
 StmtPtr Parser::parseStmt()
 {
-    LUC_LOG_STMT_VERBOSE("parseStmt: token='" << peek().value << "' type=" << static_cast<int>(peek().type));
+    LUC_LOG_STMT_VERBOSE("parseStmt: token='" << peek().value << "'");
     
     // ── Local declarations ────────────────────────────────────────────────────
     if (checkAny({ TokenType::LET, TokenType::CONST })) {
-        LUC_LOG_STMT_VERBOSE("parseStmt: local declaration");
         return parseLocalDecl();
     }
 
-    // ── 'pub' inside a block is always wrong ──────────────────────────────────
+    // ── 'pub' inside a block ──────────────────────────────────────────────────
     if (check(TokenType::PUB)) {
-        LUC_LOG_STMT("parseStmt: 'pub' inside block - error");
-        errorAt(DiagCode::E2006, "'pub' is not valid inside a block — visibility modifiers are only allowed at top level");
-        advance();   // consume 'pub' so we don't spin
-        // Try to recover: if the next token is let/const, parse as local decl.
+        errorAt(DiagCode::E2006, "'pub' is not valid inside a block");
+        advance();
         if (checkAny({ TokenType::LET, TokenType::CONST })) {
             return parseLocalDecl();
         }
-        return nullptr;
+        return makeUnknownStmt(currentLoc());  // ← Changed
     }
 
     // ── Control flow ──────────────────────────────────────────────────────────
-    if (check(TokenType::IF)) {
-        LUC_LOG_STMT_VERBOSE("parseStmt: if statement");
-        return parseIfStmt();
-    }
-    if (check(TokenType::SWITCH)) {
-        LUC_LOG_STMT_VERBOSE("parseStmt: switch statement");
-        return parseSwitchStmt();
-    }
-    if (check(TokenType::FOR)) {
-        LUC_LOG_STMT_VERBOSE("parseStmt: for loop");
-        return parseForStmt();
-    }
-    if (check(TokenType::WHILE)) {
-        LUC_LOG_STMT_VERBOSE("parseStmt: while loop");
-        return parseWhileStmt();
-    }
-    if (check(TokenType::DO)) {
-        LUC_LOG_STMT_VERBOSE("parseStmt: do-while loop");
-        return parseDoWhileStmt();
-    }
-    if (check(TokenType::RETURN)) {
-        LUC_LOG_STMT_VERBOSE("parseStmt: return statement");
-        return parseReturnStmt();
-    }
-    if (check(TokenType::BREAK)) {
-        LUC_LOG_STMT_VERBOSE("parseStmt: break statement");
-        return parseBreakStmt();
-    }
-    if (check(TokenType::CONTINUE)) {
-        LUC_LOG_STMT_VERBOSE("parseStmt: continue statement");
-        return parseContinueStmt();
-    }
+    if (check(TokenType::IF)) return parseIfStmt();
+    if (check(TokenType::SWITCH)) return parseSwitchStmt();
+    if (check(TokenType::FOR)) return parseForStmt();
+    if (check(TokenType::WHILE)) return parseWhileStmt();
+    if (check(TokenType::DO)) return parseDoWhileStmt();
+    if (check(TokenType::RETURN)) return parseReturnStmt();
+    if (check(TokenType::BREAK)) return parseBreakStmt();
+    if (check(TokenType::CONTINUE)) return parseContinueStmt();
 
     // ── Parallel ──────────────────────────────────────────────────────────────
     if (check(TokenType::PARALLEL)) {
-        // 'parallel for' vs 'parallel { ... }'
         if (peekNext().type == TokenType::FOR) {
-            LUC_LOG_STMT_VERBOSE("parseStmt: parallel for");
             return parseParallelForStmt();
         } else {
-            LUC_LOG_STMT_VERBOSE("parseStmt: parallel block");
             return parseParallelBlockStmt();
         }
     }
 
     // ── Expression statement ──────────────────────────────────────────────────
-    // Anything that is not a keyword starts an expression.
-    // We check looksLikeStmtStart() for a readable error on truly garbage input.
     if (!looksLikeStmtStart()) {
-        LUC_LOG_STMT("parseStmt: unexpected token - not a statement start");
-        errorAt(DiagCode::E2002, "unexpected token '" + peek().value + "' in statement position");
-        return nullptr;
+        errorAt(DiagCode::E2002, "unexpected token '" + peek().value + "'");
+        return makeUnknownStmt(currentLoc()); 
     }
 
     SourceLocation loc = currentLoc();
     ExprPtr expr = parseExpr();
-    if (!expr) return nullptr;
+    if (!expr) {
+        return makeUnknownStmt(loc); 
+    }
 
     auto stmt = std::make_unique<ExprStmtAST>(std::move(expr));
     stmt->loc = loc;
-    LUC_LOG_STMT_EXTREME("parseStmt: expression statement");
     return stmt;
 }
 
@@ -208,50 +176,26 @@ std::unique_ptr<DeclStmtAST> Parser::parseLocalDecl()
 {
     LUC_LOG_STMT("parseLocalDecl");
     SourceLocation loc = currentLoc();
-
-    // Consume the keyword.
     Token kwTok = advance();
-    DeclKeyword kw;
-    switch (kwTok.type) {
-        case TokenType::LET:   kw = DeclKeyword::Let;   break;
-        default:               kw = DeclKeyword::Const; break;
-    }
-    LUC_LOG_STMT_VERBOSE("parseLocalDecl: keyword='" << kwTok.value << "'");
+    DeclKeyword kw = (kwTok.type == TokenType::LET) ? DeclKeyword::Let : DeclKeyword::Const;
 
-    // Name must follow immediately.
     if (!check(TokenType::IDENTIFIER)) {
         errorAt(DiagCode::E2003, "expected name after '" + kwTok.value + "'");
-        return nullptr;
+        return nullptr;  // DeclStmtAST can't be unknown - caller handles nullptr
     }
 
-    // looksLikeFuncDecl() inspects pos_ which is now on the name.
     if (looksLikeFuncDecl()) {
-        LUC_LOG_STMT_VERBOSE("parseLocalDecl: parsing as local function");
-        // Local function declaration.
         auto funcDecl = parseFuncDecl(kw, Visibility::Private);
         if (!funcDecl) return nullptr;
-
         funcDecl->loc = loc;
-        funcDecl->visibility = Visibility::Private;   // enforce: no pub inside a block
-
-        LocalDecl ld = std::move(funcDecl);
-        auto ds = std::make_unique<DeclStmtAST>(std::move(ld));
+        auto ds = std::make_unique<DeclStmtAST>(std::move(funcDecl));
         ds->loc = loc;
         return ds;
     } else {
-        LUC_LOG_STMT_VERBOSE("parseLocalDecl: parsing as local variable");
-        // Local variable declaration.
-        // parseVarDecl reads tokens_[pos_ - 1] to recover the keyword — that
-        // is kwTok, which we just consumed. This contract holds.
-        // parseLocalDecl currently calls parseVarDecl(Visibility::Private)
-        auto varDecl = parseVarDecl(Visibility::Private, {});  // No attributes in local scope
+        auto varDecl = parseVarDecl(Visibility::Private, {});
         if (!varDecl) return nullptr;
-
         varDecl->loc = loc;
-        varDecl->visibility = Visibility::Private;
-
-        LocalDecl ld = std::move(varDecl);
-        auto ds = std::make_unique<DeclStmtAST>(std::move(ld));
+        auto ds = std::make_unique<DeclStmtAST>(std::move(varDecl));
         ds->loc = loc;
         return ds;
     }
@@ -283,13 +227,20 @@ std::unique_ptr<IfStmtAST> Parser::parseIfStmt()
     ExprPtr condition = parseExpr(false);
     if (!condition) {
         errorAt(DiagCode::E2008, "expected condition after 'if'");
-        return nullptr;
+        auto node = std::make_unique<IfStmtAST>();  // ← Create placeholder
+        node->loc = loc;
+        node->condition = makeUnknownExpr(loc);
+        node->thenBranch = makeUnknownStmt(loc);  
+        return node;
     }
-    LUC_LOG_STMT_VERBOSE("parseIfStmt: condition parsed");
 
     if (!check(TokenType::LBRACE)) {
         errorAt(DiagCode::E2001, "expected '{' after if condition");
-        return nullptr;
+        auto node = std::make_unique<IfStmtAST>();
+        node->loc = loc;
+        node->condition = std::move(condition);
+        node->thenBranch = makeUnknownStmt(loc);
+        return node;
     }
     StmtPtr thenBranch = parseBlock();
     LUC_LOG_STMT_VERBOSE("parseIfStmt: then branch parsed");

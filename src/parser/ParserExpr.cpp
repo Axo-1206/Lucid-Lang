@@ -14,6 +14,7 @@
 #include "Parser.hpp"
 #include "ast/BaseAST.hpp"
 #include "diagnostics/DiagnosticCodes.hpp"
+#include "debug/DebugUtils.hpp"
 
 #include <cassert>
 
@@ -253,7 +254,7 @@ ExprPtr Parser::parsePrattExpr(int minPrec, bool allowStructLiteral) {
     ExprPtr lhs = parsePrefixExpr(allowStructLiteral);
     if (!lhs) {
         LUC_LOG_EXPR("parsePrattExpr: prefix parsing failed");
-        return nullptr;
+        return std::make_unique<UnknownExprAST>();
     }
 
     // Apply postfix operators before entering the infix loop.
@@ -438,7 +439,7 @@ ExprPtr Parser::parsePrefixExpr(bool allowStructLiteral) {
             ExprPtr operand = parsePrefixExpr(allowStructLiteral);
             if (!operand) {
                 errorAt(DiagCode::E2008, "expected expression after '-'");
-                return nullptr;
+                return std::make_unique<UnknownExprAST>();
             }
             auto node = std::make_unique<UnaryExprAST>();
             node->loc = loc;
@@ -451,7 +452,7 @@ ExprPtr Parser::parsePrefixExpr(bool allowStructLiteral) {
             ExprPtr operand = parsePrefixExpr(allowStructLiteral);
             if (!operand) {
                 errorAt(DiagCode::E2008, "expected expression after 'not'");
-                return nullptr;
+                return std::make_unique<UnknownExprAST>();
             }
             auto node = std::make_unique<UnaryExprAST>();
             node->loc = loc;
@@ -464,7 +465,7 @@ ExprPtr Parser::parsePrefixExpr(bool allowStructLiteral) {
             ExprPtr operand = parsePrefixExpr(allowStructLiteral);
             if (!operand) {
                 errorAt(DiagCode::E2008, "expected expression after '~'");
-                return nullptr;
+                return std::make_unique<UnknownExprAST>();
             }
             auto node = std::make_unique<UnaryExprAST>();
             node->loc = loc;
@@ -479,7 +480,7 @@ ExprPtr Parser::parsePrefixExpr(bool allowStructLiteral) {
             ExprPtr operand = parsePrefixExpr(allowStructLiteral);
             if (!operand) {
                 errorAt(DiagCode::E2008, "expected expression after '&'");
-                return nullptr;
+                return std::make_unique<UnknownExprAST>();
             }
             auto node = std::make_unique<UnaryExprAST>();
             node->loc = loc;
@@ -556,7 +557,7 @@ ExprPtr Parser::parsePrimaryExpr(bool allowStructLiteral) {
         }
         
         // Return nullptr - caller will handle the error
-        return nullptr;
+        return std::make_unique<UnknownExprAST>();
     }
 
     // ── anonymous function (non-async) ────────────────────────────────────────
@@ -675,11 +676,11 @@ ExprPtr Parser::parsePrimaryExpr(bool allowStructLiteral) {
         TypePtr targetType = parseBaseType();
         if (!targetType) {
             errorAt(DiagCode::E2005, "expected type after '*' in unsafe cast");
-            return nullptr;
+            return std::make_unique<UnknownExprAST>();
         }
         if (!check(TokenType::LPAREN)) {
             errorAt(DiagCode::E2001, "expected '(' after type in unsafe cast '*T(expr)'");
-            return nullptr;
+            return std::make_unique<UnknownExprAST>();
         }
         return parseTypeConvExpr(/*isUnsafe=*/true, std::move(targetType));
     }
@@ -767,7 +768,7 @@ ExprPtr Parser::parsePrimaryExpr(bool allowStructLiteral) {
 
     // ── Nothing matched ───────────────────────────────────────────────────────
     errorAt(DiagCode::E2002, "expected expression, got '" + peek().value + "'");
-    return nullptr;
+    return std::make_unique<UnknownExprAST>();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -936,7 +937,7 @@ ExprPtr Parser::parseLiteralExpr() {
             break;
         default:
             errorAt(DiagCode::E2002, "internal error: parseLiteralExpr on non-literal token");
-            return nullptr;
+            return std::make_unique<UnknownExprAST>();
     }
 
     auto node = std::make_unique<LiteralExprAST>(kind, tok.value);
@@ -1108,7 +1109,7 @@ ExprPtr Parser::parseIntrinsicCallExpr() {
 
     if (!check(TokenType::IDENTIFIER)) {
         errorAt(DiagCode::E2003, "expected intrinsic name after '@'");
-        return nullptr;
+        return std::make_unique<UnknownExprAST>();
     }
 
     auto node = std::make_unique<IntrinsicCallExprAST>();
@@ -1118,7 +1119,7 @@ ExprPtr Parser::parseIntrinsicCallExpr() {
     if (!check(TokenType::LPAREN)) {
         errorAt(DiagCode::E2001,
                 "expected '(' after intrinsic '@" + node->intrinsicName + "'");
-        return nullptr;
+        return std::make_unique<UnknownExprAST>();
     }
     LUC_LOG_EXPR("parseIntrinsicCallExpr: name='" << node->intrinsicName << "'");
     consume(TokenType::LPAREN, "expected '('");
@@ -1187,7 +1188,7 @@ ExprPtr Parser::parseAwaitExpr() {
     ExprPtr inner = parsePrattExpr(PREC_NONE);
     if (!inner) {
         errorAt(DiagCode::E2008, "expected expression after 'await'");
-        return nullptr;
+        return std::make_unique<UnknownExprAST>();
     }
 
     auto node = std::make_unique<AwaitExprAST>(std::move(inner));
@@ -1210,7 +1211,7 @@ ExprPtr Parser::parseMatchExpr() {
     ExprPtr subject = parseExpr();
     if (!subject) {
         errorAt(DiagCode::E2008, "expected expression after 'match'");
-        return nullptr;
+        return std::make_unique<UnknownExprAST>();
     }
     LUC_LOG_EXPR_VERBOSE("parseMatchExpr: subject parsed");
 
@@ -1275,14 +1276,14 @@ ExprPtr Parser::parseIfExpr() {
     ExprPtr condition = parsePrattExpr(PREC_NULLCOAL); 
     if (!condition) {
         errorAt(DiagCode::E2008, "expected condition after 'if'");
-        return nullptr;
+        return std::make_unique<UnknownExprAST>();
     }
     LUC_LOG_EXPR_VERBOSE("parseIfExpr: condition parsed");
 
     // Inline if expression: if cond ?? thenExpr else elseExpr
     if (!match(TokenType::QUESTION_QUESTION)) {
         errorAt(DiagCode::E2001, "expected '\?\?' after if condition in expression form");
-        return nullptr;
+        return std::make_unique<UnknownExprAST>();
     }
 
     ExprPtr thenBranch = parseExpr();
@@ -1293,7 +1294,7 @@ ExprPtr Parser::parseIfExpr() {
 
     if (!match(TokenType::ELSE)) {
         errorAt(DiagCode::E2006, "expression-form 'if' requires an 'else' branch");
-        return nullptr;
+        return std::make_unique<UnknownExprAST>();
     }
 
     ExprPtr elseBranch = parseExpr();
@@ -1329,7 +1330,7 @@ ExprPtr Parser::parseTypeConvExpr(bool isUnsafe, TypePtr targetType) {
     ExprPtr expr = parseExpr();
     if (!expr) {
         errorAt(DiagCode::E2008, "expected expression inside explicit type cast");
-        return nullptr;
+        return std::make_unique<UnknownExprAST>();
     }
 
     consume(TokenType::RPAREN, "expected ')' to close explicit type cast");
@@ -1360,7 +1361,7 @@ ExprPtr Parser::parseRangeExpr(ExprPtr lo) {
     ExprPtr hi = parsePrattExpr(PREC_ADD); // stop before low-prec operators
     if (!hi) {
         errorAt(DiagCode::E2008, "expected upper bound after '..'");
-        return nullptr;
+        return std::make_unique<UnknownExprAST>();
     }
     LUC_LOG_EXPR_VERBOSE("parseRangeExpr: hi parsed");
 
@@ -1428,7 +1429,7 @@ ExprPtr Parser::parseIndexExpr(ExprPtr target) {
     ExprPtr startExpr = parseExpr();
     if (!startExpr) {
         errorAt(DiagCode::E2008, "expected index expression");
-        return nullptr;
+        return std::make_unique<UnknownExprAST>();
     }
 
     auto node = std::make_unique<IndexExprAST>();
@@ -1444,7 +1445,7 @@ ExprPtr Parser::parseIndexExpr(ExprPtr target) {
         ExprPtr endExpr = parseExpr();
         if (!endExpr) {
             errorAt(DiagCode::E2008, "expected end of slice range after '..'");
-            return nullptr;
+            return std::make_unique<UnknownExprAST>();
         }
         node->index = std::move(startExpr);
         node->sliceEnd = std::move(endExpr);
@@ -1700,7 +1701,7 @@ ExprPtr Parser::parseNullCoalesceExpr(ExprPtr lhs) {
     // This path is taken by the parsePrattExpr infix loop directly.
     // Kept as a named function for future refactoring.
     (void)lhs;
-    return nullptr;
+    return std::make_unique<UnknownExprAST>();
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -1847,7 +1848,7 @@ std::unique_ptr<BaseAST> Parser::parsePattern() {
 
     errorAt(DiagCode::E2007, "expected pattern");
     LUC_LOG_EXPR_VERBOSE("parsePattern: returning nullptr (error)");
-    return nullptr;
+    return std::make_unique<UnknownExprAST>();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1901,7 +1902,7 @@ std::unique_ptr<BaseAST> Parser::parseLiteralOrRangePattern() {
             break;
         default:
             errorAt(DiagCode::E2009, "expected literal value in pattern");
-            return nullptr;
+            return std::make_unique<UnknownExprAST>();
     }
  
     std::string rawValue = negative ? ("-" + tok.value) : tok.value;
@@ -1920,7 +1921,7 @@ std::unique_ptr<BaseAST> Parser::parseLiteralOrRangePattern() {
         if (!checkAny({TokenType::INT_LITERAL, TokenType::HEX_LITERAL,
                        TokenType::FLOAT_LITERAL})) {
             errorAt(DiagCode::E2009, "expected literal after '..' in range pattern");
-            return nullptr;
+            return std::make_unique<UnknownExprAST>();
         }
         Token hiTok = advance();
         std::string hiRaw = negHi ? ("-" + hiTok.value) : hiTok.value;

@@ -31,6 +31,7 @@
 #include "ast/ExprAST.hpp"
 #include "ast/TypeAST.hpp"
 #include "debug/DebugMacros.hpp"
+#include "debug/DebugUtils.hpp"
 #include "diagnostics/DiagnosticEngine.hpp"
 #include "diagnostics/DiagnosticCodes.hpp"
 #include "TypeResolver.hpp"

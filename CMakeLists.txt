@@ -48,6 +48,7 @@ add_executable(luc-comp
     src/semantic/TypeChecker.cpp
     src/semantic/Annotator.cpp
     src/debug/ASTDumper.cpp
+    src/semantic/BuiltinMethodRegistry.cpp
     # src/codegen/CodeGen.cpp
     # src/codegen/CodeGenExpr.cpp
     # src/codegen/CodeGenDecl.cpp

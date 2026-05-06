@@ -99,7 +99,7 @@ export const main () int = {
     let asyncRes int = computeAsync(10)
     let anonRes int = anonAsync(20)(30)
 
-    let testFunc (x int) (m int) int = computeAsync +> anonAsync 
+    -- let testFunc (x int) (m int) int = computeAsync +> anonAsync 
 
     -- Pipeline with curried functions
     -- f1 takes an int and returns a function
@@ -115,6 +115,13 @@ export const main () int = {
     -- Pipeline: 5 -> f1 produces (y int) int { return 5 + y }
     -- Then that function is piped into f2, which calls it with 10. Result: 15
     let pipeRes int = 5 -> f1 -> f2
+
+    let f<T> (x T) = { 
+        if x is int {
+            x + 2
+        }
+    }
+    f<int>(5)
 
     return 0
 }

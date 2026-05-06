@@ -10,6 +10,7 @@
 
 #include "Parser.hpp"
 #include "diagnostics/DiagnosticEngine.hpp"
+#include "debug/DebugUtils.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -550,7 +551,6 @@ bool Parser::looksLikeDeclStart() const {
 // Grammar:
 //   program := package_decl { top_level_decl }
 // ─────────────────────────────────────────────────────────────────────────────
-
 std::unique_ptr<ProgramAST> Parser::parse() {
     LUC_LOG_PARSER("\n === PARSE START ===");
     
@@ -559,9 +559,6 @@ std::unique_ptr<ProgramAST> Parser::parse() {
     program->loc = currentLoc();
 
     // ── 1. package declaration ────────────────────────────────────────────────
-    //
-    // Must be the first non-comment token in the file.  harvestDocComment()
-    // is called here because a doc comment may appear before 'package'.
     {
         LUC_LOG_PARSER("Parsing package declaration...");
         std::optional<DocComment> pkgDoc = harvestDocComment();
@@ -571,21 +568,35 @@ std::unique_ptr<ProgramAST> Parser::parse() {
             errorAt(DiagCode::E2001,
                     "expected 'package' declaration at the start of the file");
             synchronize();
+            
+            // Create a dummy package with unknown name
+            auto dummyPkg = std::make_unique<PackageDeclAST>("<unknown>");
+            dummyPkg->loc = currentLoc();
+            attachDoc(*dummyPkg, std::move(pkgDoc));
+            program->packageName = "<unknown>";
+            program->decls.push_back(std::move(dummyPkg));
+        } else {
+            auto pkgDecl = parsePackageDecl();
+            attachDoc(*pkgDecl, std::move(pkgDoc));
+            if (pkgDecl) {
+                program->packageName = pkgDecl->name;
+                program->decls.push_back(std::move(pkgDecl));
+            } else {
+                // parsePackageDecl returned nullptr - insert UnknownDeclAST
+                LUC_LOG_PARSER("parsePackageDecl returned nullptr, inserting UnknownDeclAST");
+                auto unknown = std::make_unique<UnknownDeclAST>();
+                unknown->loc = currentLoc();
+                program->packageName = "<error>";
+                program->decls.push_back(std::move(unknown));
+            }
         }
-
-        auto pkgDecl = parsePackageDecl();
-        attachDoc(*pkgDecl, std::move(pkgDoc));
-        program->packageName = pkgDecl->name;
         LUC_LOG_PARSER("\tPackage name: '" << program->packageName << "'");
-
-        // Store the package decl as the first entry in decls so the AST is
-        // self-contained and visitors can find it at decls[0].
-        program->decls.push_back(std::move(pkgDecl));
     }
 
     // ── 2. top-level declarations ─────────────────────────────────────────────
     LUC_LOG_PARSER("Parsing top-level declarations...");
     int declCount = 0;
+    int errorCount = 0;
     
     while (!isAtEnd()) {
         std::optional<DocComment> doc = harvestDocComment();
@@ -594,19 +605,31 @@ std::unique_ptr<ProgramAST> Parser::parse() {
                        << ", token: " << LucDebug::tokenTypeToString(peek().type));
 
         DeclPtr decl = parseTopLevelDecl();
+        
         if (decl) {
             declCount++;
             LUC_LOG_PARSER("\tSuccessfully parsed declaration #" << declCount 
                            << " of kind: " << LucDebug::kindToString(decl->kind));
+            attachDoc(*decl, std::move(doc));
             program->decls.push_back(std::move(decl));
         } else {
-            LUC_LOG_PARSER("\tFailed to parse declaration, synchronizing...");
+            // parseTopLevelDecl returned nullptr - insert UnknownDeclAST
+            errorCount++;
+            LUC_LOG_PARSER("\tFailed to parse declaration #" << (declCount + errorCount) 
+                           << ", inserting UnknownDeclAST");
+            auto unknown = std::make_unique<UnknownDeclAST>();
+            unknown->loc = currentLoc();
+            attachDoc(*unknown, std::move(doc));
+            program->decls.push_back(std::move(unknown));
             synchronize();
         }
     }
 
     LUC_LOG_PARSER("\n === parse() END: parsed " << declCount 
-                   << " top-level declarations ===");
+                   << " declarations, " << errorCount << " errors ===");
+    
+    // Always return a program, even if it contains UnknownDeclAST nodes
+    // Caller should check dc_.hasErrors() to know if parsing succeeded
     return program;
 }
 

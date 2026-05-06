@@ -8,6 +8,7 @@
 
 #include "Parser.hpp"
 #include "diagnostics/DiagnosticCodes.hpp"
+#include "debug/DebugUtils.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -161,13 +162,13 @@ std::unique_ptr<PackageDeclAST> Parser::parsePackageDecl() {
 
     if (!check(TokenType::IDENTIFIER)) {
         errorAt(DiagCode::E2003, "expected package name");
-        // Return a dummy node so the parser can continue without crashing
+        // Return a valid node with error name instead of nullptr
         auto node = std::make_unique<PackageDeclAST>("<error>");
         node->loc = loc;
         return node;
     }
+    
     std::string name = advance().value;
-
     auto node = std::make_unique<PackageDeclAST>(std::move(name));
     node->loc = loc;
     return node;

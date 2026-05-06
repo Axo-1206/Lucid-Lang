@@ -13,6 +13,8 @@
 
 #pragma once
 
+#include "debug/DebugMacros.hpp"
+
 #include <string>
 #include <optional>
 #include <memory>
@@ -53,6 +55,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 enum class ASTKind : uint16_t {
+    Unknown,
+
     // ── Type nodes ────────────────────────────────────────────────────────────
     PrimitiveType,
     NamedType,
@@ -534,3 +538,80 @@ struct ProgramAST : BaseAST {
 
     void accept(ASTVisitor& visitor) override { visitor.visit(*this); }
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UnknownAST definition and helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct UnknownAST : BaseAST {
+    static constexpr ASTKind staticKind = ASTKind::Unknown;
+    
+    UnknownAST() : BaseAST(ASTKind::Unknown) {}
+    
+    void accept(ASTVisitor& v) override { 
+        // No-op or log warning
+        LUC_LOG_SEMANTIC("visit(UnknownAST) - this should not happen");
+    }
+};
+
+// Singleton instance for null replacement
+inline UnknownAST* unknownAST() {
+    static UnknownAST instance;
+    return &instance;
+}
+
+// Helper to check if node is unknown/null-equivalent
+inline bool isUnknown(BaseAST* node) {
+    return !node || node->kind == ASTKind::Unknown;
+}
+
+
+
+struct UnknownDeclAST : DeclAST {
+    static constexpr ASTKind staticKind = ASTKind::Unknown;
+    UnknownDeclAST() : DeclAST(ASTKind::Unknown) {}
+    void accept(ASTVisitor& v) override {}
+};
+
+struct UnknownExprAST : ExprAST {
+    static constexpr ASTKind staticKind = ASTKind::Unknown;
+    UnknownExprAST() : ExprAST(ASTKind::Unknown) {}
+    void accept(ASTVisitor& v) override {}
+};
+
+struct UnknownStmtAST : StmtAST {
+    static constexpr ASTKind staticKind = ASTKind::Unknown;
+    UnknownStmtAST() : StmtAST(ASTKind::Unknown) {}
+    void accept(ASTVisitor& v) override {}
+};
+
+struct UnknownTypeAST : TypeAST {
+    static constexpr ASTKind staticKind = ASTKind::Unknown;
+    UnknownTypeAST() : TypeAST(ASTKind::Unknown) {}
+    void accept(ASTVisitor& v) override {}
+};
+
+// Helper factory functions
+inline std::unique_ptr<DeclAST> makeUnknownDecl(SourceLocation loc = {}) {
+    auto node = std::make_unique<UnknownDeclAST>();
+    node->loc = loc;
+    return node;
+}
+
+inline std::unique_ptr<ExprAST> makeUnknownExpr(SourceLocation loc = {}) {
+    auto node = std::make_unique<UnknownExprAST>();
+    node->loc = loc;
+    return node;
+}
+
+inline std::unique_ptr<StmtAST> makeUnknownStmt(SourceLocation loc = {}) {
+    auto node = std::make_unique<UnknownStmtAST>();
+    node->loc = loc;
+    return node;
+}
+
+inline std::unique_ptr<TypeAST> makeUnknownType(SourceLocation loc = {}) {
+    auto node = std::make_unique<UnknownTypeAST>();
+    node->loc = loc;
+    return node;
+}

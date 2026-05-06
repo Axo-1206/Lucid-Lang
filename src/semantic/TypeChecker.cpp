@@ -15,6 +15,8 @@
 #include "SemanticHelpers.hpp"
 
 #include <iostream>
+#include <cstdlib> 
+#include <cerrno>
 
 // ─────────────────────────────────────────────────────────────────────────────
 // isEqual  — Verifies structural equality precisely, ignoring widening rules
@@ -271,6 +273,261 @@ bool TypeChecker::isCallable(TypeAST* type) {
     LUC_LOG_SEMANTIC_EXTREME("isCallable: " << LucDebug::kindToString(type->kind) 
                         << " -> " << (result ? "true" : "false"));
     return result;
+}
+
+// Add after isBoolOrNullable or at the end of the file
+
+// ─────────────────────────────────────────────────────────────────────────────
+// isIntegerType — returns true when a type is any integer primitive.
+//
+// Valid integer types:
+//   Signed:   byte, short, int, long, int8, int16, int32, int64
+//   Unsigned: ubyte, ushort, uint, ulong, uint8, uint16, uint32, uint64
+//
+// Returns false for:
+//   float, double, decimal, bool, string, char, any, structs, arrays, etc.
+// ─────────────────────────────────────────────────────────────────────────────
+bool TypeChecker::isIntegerType(TypeAST* type) {
+    if (!type) {
+        LUC_LOG_SEMANTIC_EXTREME("isIntegerType: type is null -> false");
+        return false;
+    }
+    
+    if (!type->isa<PrimitiveTypeAST>()) {
+        LUC_LOG_SEMANTIC_EXTREME("isIntegerType: not primitive -> false");
+        return false;
+    }
+    
+    auto* prim = type->as<PrimitiveTypeAST>();
+    switch (prim->primitiveKind) {
+        // Signed integers
+        case PrimitiveKind::Byte:
+        case PrimitiveKind::Short:
+        case PrimitiveKind::Int:
+        case PrimitiveKind::Long:
+        case PrimitiveKind::Int8:
+        case PrimitiveKind::Int16:
+        case PrimitiveKind::Int32:
+        case PrimitiveKind::Int64:
+        // Unsigned integers
+        case PrimitiveKind::Ubyte:
+        case PrimitiveKind::Ushort:
+        case PrimitiveKind::Uint:
+        case PrimitiveKind::Ulong:
+        case PrimitiveKind::Uint8:
+        case PrimitiveKind::Uint16:
+        case PrimitiveKind::Uint32:
+        case PrimitiveKind::Uint64:
+            LUC_LOG_SEMANTIC_EXTREME("isIntegerType: true");
+            return true;
+        
+        // Not integer types
+        case PrimitiveKind::Bool:
+        case PrimitiveKind::Float:
+        case PrimitiveKind::Double:
+        case PrimitiveKind::Decimal:
+        case PrimitiveKind::String:
+        case PrimitiveKind::Char:
+        case PrimitiveKind::Any:
+            LUC_LOG_SEMANTIC_EXTREME("isIntegerType: false");
+            return false;
+    }
+    
+    return false;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// getConstantIntValue — extracts integer value from compile-time constant
+//
+// Returns true and sets outValue if expr is a constant integer literal.
+// Returns false for variable expressions, function calls, etc.
+// Uses manual parsing without exceptions (exceptions disabled in build).
+// ─────────────────────────────────────────────────────────────────────────────
+bool TypeChecker::getConstantIntValue(ExprAST* expr, int64_t& outValue) {
+    if (!expr) return false;
+    
+    // Check if it's a literal integer expression
+    if (expr->isa<LiteralExprAST>()) {
+        auto* lit = expr->as<LiteralExprAST>();
+        if (lit->kind == LiteralKind::Int || lit->kind == LiteralKind::Hex || 
+            lit->kind == LiteralKind::Binary) {
+            
+            std::string val = lit->value;
+            const char* str = val.c_str();
+            char* endptr = nullptr;
+            int64_t result = 0;
+            
+            // Handle hex literals (0x or 0X)
+            if (val.find("0x") == 0 || val.find("0X") == 0) {
+                result = std::strtoll(str, &endptr, 16);
+            }
+            // Handle binary literals (0b or 0B)
+            else if (val.find("0b") == 0 || val.find("0B") == 0) {
+                // strtoll doesn't support binary, parse manually
+                result = 0;
+                for (size_t i = 2; i < val.length(); ++i) {
+                    char c = val[i];
+                    if (c == '_') continue;
+                    if (c == '0') {
+                        result = (result << 1);
+                    } else if (c == '1') {
+                        result = (result << 1) | 1;
+                    } else {
+                        return false; // invalid binary digit
+                    }
+                }
+                endptr = const_cast<char*>(str + val.length());
+            }
+            // Decimal literal
+            else {
+                result = std::strtoll(str, &endptr, 10);
+            }
+            
+            // Check if entire string was consumed (no invalid characters)
+            if (endptr != str + val.length()) {
+                // Strip underscores and try again (for numbers like 1_000_000)
+                std::string cleaned;
+                cleaned.reserve(val.length());
+                for (char c : val) {
+                    if (c != '_') cleaned += c;
+                }
+                const char* cleanedStr = cleaned.c_str();
+                char* cleanedEndptr = nullptr;
+                result = std::strtoll(cleanedStr, &cleanedEndptr, 10);
+                if (cleanedEndptr != cleanedStr + cleaned.length()) {
+                    return false;
+                }
+            }
+            
+            outValue = result;
+            return true;
+        }
+    }
+    
+    // Check for unary negation of constant (e.g., -5)
+    if (expr->isa<UnaryExprAST>()) {
+        auto* unary = expr->as<UnaryExprAST>();
+        if (unary->op == UnaryOp::Neg) {
+            int64_t innerValue;
+            if (getConstantIntValue(unary->operand.get(), innerValue)) {
+                outValue = -innerValue;
+                return true;
+            }
+        }
+    }
+    
+    // Check for binary arithmetic of constants (e.g., 5 + 3)
+    if (expr->isa<BinaryExprAST>()) {
+        auto* binary = expr->as<BinaryExprAST>();
+        int64_t leftVal, rightVal;
+        if (getConstantIntValue(binary->left.get(), leftVal) &&
+            getConstantIntValue(binary->right.get(), rightVal)) {
+            switch (binary->op) {
+                case BinaryOp::Add: outValue = leftVal + rightVal; return true;
+                case BinaryOp::Sub: outValue = leftVal - rightVal; return true;
+                case BinaryOp::Mul: outValue = leftVal * rightVal; return true;
+                case BinaryOp::Div: 
+                    if (rightVal != 0) { outValue = leftVal / rightVal; return true; }
+                    return false;
+                case BinaryOp::Mod:
+                    if (rightVal != 0) { outValue = leftVal % rightVal; return true; }
+                    return false;
+                default: return false;
+            }
+        }
+    }
+    
+    return false;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// isValidArrayIndex — validates array index expression
+//
+// Rules:
+//   1. Expression must be an integer type
+//   2. If constant expression, value must be >= 0 (compile-time error)
+//   3. If variable expression, type check only (runtime panic handles negative)
+//
+// Returns true if index is valid for array access.
+// Emits compile error for constant negative indices.
+// ─────────────────────────────────────────────────────────────────────────────
+bool TypeChecker::isValidArrayIndex(ExprAST* indexExpr, DiagnosticEngine& dc, 
+                                     const SourceLocation& loc) {
+    if (!indexExpr) {
+        dc.error(DiagnosticCategory::Semantic, loc, DiagCode::E3002,
+                 "array index expression is null");
+        return false;
+    }
+    
+    // Check type is integer
+    TypeAST* indexType = static_cast<TypeAST*>(indexExpr->resolvedType);
+    if (!isIntegerType(indexType)) {
+        dc.error(DiagnosticCategory::Semantic, indexExpr->loc, DiagCode::E3002,
+                 "array index must be an integer type (got '" +
+                 LucDebug::kindToString(indexType ? indexType->kind : ASTKind::Unknown) + "')");
+        return false;
+    }
+    
+    // Check constant value for negative indices
+    int64_t constValue;
+    if (getConstantIntValue(indexExpr, constValue)) {
+        if (constValue < 0) {
+            dc.error(DiagnosticCategory::Semantic, indexExpr->loc, DiagCode::E3002,
+                     "array index cannot be negative (got " + std::to_string(constValue) + ")");
+            return false;
+        }
+        // Positive constant is fine (bounds checking happens at runtime)
+    }
+    
+    // Variable index - type is valid, runtime will check bounds
+    return true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// isValidSliceBound — validates slice bound expression (start or end)
+//
+// For slice expressions like arr[start..end], bounds are expected to be
+// compile-time constants. Enforces:
+//   1. Bound must be an integer type
+//   2. Bound must be a constant expression (compile-time known)
+//   3. Bound value must be >= 0
+//
+// boundName is "start" or "end" for error messages.
+// Returns true if bound is valid.
+// ─────────────────────────────────────────────────────────────────────────────
+bool TypeChecker::isValidSliceBound(ExprAST* boundExpr, const std::string& boundName,
+                                     DiagnosticEngine& dc, const SourceLocation& loc) {
+    if (!boundExpr) {
+        dc.error(DiagnosticCategory::Semantic, loc, DiagCode::E3002,
+                 "slice " + boundName + " bound expression is null");
+        return false;
+    }
+    
+    // Check type is integer
+    TypeAST* boundType = static_cast<TypeAST*>(boundExpr->resolvedType);
+    if (!isIntegerType(boundType)) {
+        dc.error(DiagnosticCategory::Semantic, boundExpr->loc, DiagCode::E3002,
+                 "slice " + boundName + " bound must be an integer type");
+        return false;
+    }
+    
+    // Slice bounds must be compile-time constants
+    int64_t constValue;
+    if (!getConstantIntValue(boundExpr, constValue)) {
+        dc.error(DiagnosticCategory::Semantic, boundExpr->loc, DiagCode::E3002,
+                 "slice " + boundName + " bound must be a constant expression");
+        return false;
+    }
+    
+    // Check non-negative
+    if (constValue < 0) {
+        dc.error(DiagnosticCategory::Semantic, boundExpr->loc, DiagCode::E3002,
+                 "slice " + boundName + " bound cannot be negative (got " + 
+                 std::to_string(constValue) + ")");
+        return false;
+    }
+    
+    return true;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

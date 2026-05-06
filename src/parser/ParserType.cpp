@@ -10,6 +10,7 @@
 
 #include "Parser.hpp"
 #include "diagnostics/DiagnosticCodes.hpp"
+#include "debug/DebugUtils.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -135,7 +136,7 @@ TypePtr Parser::parseBaseType() {
         default:
             // Not a recognisable type start — caller decides if that is an error.
             LUC_LOG_TYPE("parseBaseType: unrecognized type start: '" << peek().value << "'");
-            return nullptr;
+            return std::make_unique<UnknownTypeAST>();
     }
 }
 
@@ -234,7 +235,7 @@ TypePtr Parser::parsePrimitiveType() {
             // Should never reach here — parseBaseType only calls us on known
             // primitive tokens.
             errorAt(DiagCode::E2002, "internal error: parsePrimitiveType called on non-primitive token");
-            return nullptr;
+            return std::make_unique<UnknownTypeAST>();
     }
 
     auto node = std::make_unique<PrimitiveTypeAST>(kind);
@@ -305,7 +306,7 @@ TypePtr Parser::parseArrayType() {
         if (!elem) {
             errorAt(DiagCode::E2005, "expected element type after '[*]'");
             LUC_LOG_TYPE_VERBOSE("=== parseArrayType END (error: no element type after [*]) ===");
-            return nullptr;
+            return std::make_unique<UnknownTypeAST>();
         }
 
         auto node = std::make_unique<DynamicArrayTypeAST>(std::move(elem));
@@ -325,7 +326,7 @@ TypePtr Parser::parseArrayType() {
         if (!elem) {
             errorAt(DiagCode::E2005, "expected element type after '[]'");
             LUC_LOG_TYPE_VERBOSE("=== parseArrayType END (error: no element type after []) ===");
-            return nullptr;
+            return std::make_unique<UnknownTypeAST>();
         }
 
         auto node = std::make_unique<SliceTypeAST>(std::move(elem));
@@ -359,7 +360,7 @@ TypePtr Parser::parseArrayType() {
         if (!elem) {
             errorAt(DiagCode::E2005, "expected element type after '[" + sizeTok.value + "]'");
             LUC_LOG_TYPE_VERBOSE("=== parseArrayType END (error: no element type after [N]) ===");
-            return nullptr;
+            return std::make_unique<UnknownTypeAST>();
         }
 
         auto node = std::make_unique<FixedArrayTypeAST>(size, std::move(elem));
@@ -381,7 +382,7 @@ TypePtr Parser::parseArrayType() {
         advance();
     }
     LUC_LOG_TYPE_VERBOSE("=== parseArrayType END (error) ===");
-    return nullptr;
+    return std::make_unique<UnknownTypeAST>();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -408,7 +409,7 @@ TypePtr Parser::parseRefType() {
     if (!inner) {
         LUC_LOG_TYPE("parseRefType: ERROR - no inner type after '&'");
         errorAt(DiagCode::E2005, "expected type after '&'");
-        return nullptr;
+        return std::make_unique<UnknownTypeAST>();
     }
 
     LUC_LOG_TYPE_VERBOSE("parseRefType: inner type parsed, kind = " << LucDebug::kindToString(inner->kind));
@@ -440,7 +441,7 @@ TypePtr Parser::parsePtrType() {
     if (!inner) {
         LUC_LOG_TYPE("parsePtrType: inner type parsing FAILED");
         errorAt(DiagCode::E2005, "expected type after '*'");
-        return nullptr;
+        return std::make_unique<UnknownTypeAST>();
     }
 
     LUC_LOG_TYPE("parsePtrType: inner type parsed, kind = " << LucDebug::kindToString(inner->kind));
