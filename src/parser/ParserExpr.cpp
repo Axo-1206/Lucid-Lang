@@ -1061,40 +1061,41 @@ ExprPtr Parser::parseStructLiteralExpr(std::string typeName, std::vector<TypePtr
 // ─────────────────────────────────────────────────────────────────────────────
 ExprPtr Parser::parseAnonFuncExpr() {
     SourceLocation loc = currentLoc();
-    bool isAsync = match(TokenType::ASYNC);
-    LUC_LOG_EXPR("parseAnonFuncExpr: isAsync=" << (isAsync ? "true" : "false"));
-
-    if (isAsync)
-        ++asyncDepth_;
-
+    
+    // ── Parse type qualifiers (~async, etc.) BEFORE '(' ──────────────────────
+    uint32_t qualifiers = 0;
+    while (check(TokenType::TILDE)) {
+        advance();
+        if (!check(TokenType::IDENTIFIER)) {
+            errorAt(DiagCode::E2003, "expected qualifier name after '~'");
+            break;
+        }
+        std::string qualName = advance().value;
+        if (qualName == "async") qualifiers |= FuncTypeAST::QUAL_ASYNC;
+        else if (qualName == "noinline") qualifiers |= FuncTypeAST::QUAL_NOINLINE;
+        else errorAt(DiagCode::E2010, "unknown type qualifier '~" + qualName + "'");
+    }
+    
     auto node = std::make_unique<AnonFuncExprAST>();
     node->loc = loc;
-    node->isAsync = isAsync;
-
-    // Parse one or more parameter groups — same loop as parseFuncDecl.
-    // At least one '(' is guaranteed here because the caller already
-    // verified the current token is '(' (or 'async' followed by '(').
+    node->qualifiers = qualifiers;  // Add this field to AnonFuncExprAST
+    
+    // Parse parameter groups
     while (check(TokenType::LPAREN)) {
         node->paramGroups.push_back(parseParamGroup());
     }
-
-    // Optional return type — present if current token looks like a type
-    // but is not '{' (which would start the body).
+    
+    // Optional return type
     if (looksLikeType() && !check(TokenType::LBRACE)) {
         node->returnType = parseType();
     }
-
+    
     if (!check(TokenType::LBRACE)) {
         errorAt(DiagCode::E2001, "expected '{' to start anonymous function body");
     } else {
         node->body = parseBlock();
     }
-
-    if (isAsync)
-        --asyncDepth_;
-
-    LUC_LOG_EXPR_VERBOSE("parseAnonFuncExpr: paramGroups=" << node->paramGroups.size() 
-                        << ", hasReturnType=" << (node->returnType != nullptr));
+    
     return node;
 }
 

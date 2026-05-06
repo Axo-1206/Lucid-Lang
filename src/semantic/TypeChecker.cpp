@@ -100,6 +100,10 @@ bool TypeChecker::isEqual(TypeAST* a, TypeAST* b) {
     if (a->isa<FuncTypeAST>()) {
         auto* fa = a->as<FuncTypeAST>();
         auto* fb = b->as<FuncTypeAST>();
+        if (fa->qualifiers != fb->qualifiers) {
+            LUC_LOG_SEMANTIC_VERBOSE("\tFuncType qualifier mismatch -> false");
+            return false;
+        }
         if (fa->isNullable != fb->isNullable) {
             LUC_LOG_SEMANTIC_VERBOSE("\tFuncType nullability mismatch -> false");
             return false;

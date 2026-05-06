@@ -404,6 +404,21 @@ std::unique_ptr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vi
         node->genericParams = parseGenericParams();
     }
 
+    // Parse leading type qualifiers (~async, ~noinline, etc.)
+    uint32_t qualifiers = 0;
+    while (check(TokenType::TILDE)) {
+        advance();
+        if (!check(TokenType::IDENTIFIER)) {
+            errorAt(DiagCode::E2003, "expected qualifier name after '~'");
+            break;
+        }
+        std::string qualName = advance().value;
+        if (qualName == "async") qualifiers |= FuncTypeAST::QUAL_ASYNC;
+        else if (qualName == "noinline") qualifiers |= FuncTypeAST::QUAL_NOINLINE;
+        else errorAt(DiagCode::E2010, "unknown type qualifier '~" + qualName + "'");
+    }
+    node->qualifiers = qualifiers;
+
     // Parse parameter groups
     LUC_LOG_PARSER("Checking for '(' in raw token stream...");
     
@@ -489,7 +504,6 @@ std::unique_ptr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vi
     bool isAsync = false;
     if (match(TokenType::ASYNC)) {
         isAsync = true;
-        node->isAsync = true;
         ++asyncDepth_;
         LUC_LOG_PARSER("Async function detected");
     }
@@ -504,7 +518,7 @@ std::unique_ptr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vi
         // Anon func form with repeated signature
         node->bodyKind = FuncBodyKind::AnonFunc;
         // Parse the repeated signature (parseFuncBody will handle it)
-        node->body = parseFuncBody(node->bodyKind, node->isAsync);
+        node->body = parseFuncBody(node->bodyKind);
         node->exprBody = nullptr;
     } else {
         // Expression body - NO WRAPPING
@@ -1168,7 +1182,6 @@ MethodDeclPtr Parser::parseMethodDecl() {
     bool isAsync = false;
     if (match(TokenType::ASYNC)) {
         isAsync = true;
-        method->isAsync = true;
         LUC_LOG_PARSER("parseMethodDecl: async method");
     }
 
@@ -1182,7 +1195,7 @@ MethodDeclPtr Parser::parseMethodDecl() {
     } else if (check(TokenType::LPAREN)) {
         // Anon func form with repeated signature - parse via parseFuncBody
         method->bodyKind = FuncBodyKind::AnonFunc;
-        method->body = parseFuncBody(method->bodyKind, method->isAsync);
+        method->body = parseFuncBody(method->bodyKind);
         method->exprBody = nullptr;
         LUC_LOG_PARSER("parseMethodDecl: anon func body");
     } else {
@@ -1275,7 +1288,7 @@ std::unique_ptr<FromDeclAST> Parser::parseFromDecl(Visibility vis) {
         advance(); // Consume the '=' token
 
         bool isAsync = false;
-        entry->body = parseFuncBody(entry->bodyKind, isAsync);
+        entry->body = parseFuncBody(entry->bodyKind);
 
         if (isAsync) {
             errorAt(DiagCode::E2006, "conversion bodies cannot be async");
@@ -1354,17 +1367,15 @@ std::unique_ptr<TypeAliasDeclAST> Parser::parseTypeAliasDecl(Visibility vis) {
 //
 // Callers:  parseFuncDecl, parseMethodDecl, parseFromDecl
 // ─────────────────────────────────────────────────────────────────────────────
-StmtPtr Parser::parseFuncBody(FuncBodyKind &outBodyKind, bool &outIsAsync) {
+StmtPtr Parser::parseFuncBody(FuncBodyKind &outBodyKind) {
     LUC_LOG_PARSER_VERBOSE("parseFuncBody: starting");
     
     // NOTE: Caller has already consumed '='
     
-    outIsAsync = false;
     outBodyKind = FuncBodyKind::Block;
 
     // async modifier
     if (match(TokenType::ASYNC)) {
-        outIsAsync = true;
         ++asyncDepth_;
     }
 
@@ -1391,7 +1402,6 @@ StmtPtr Parser::parseFuncBody(FuncBodyKind &outBodyKind, bool &outIsAsync) {
         
         if (!check(TokenType::LBRACE)) {
             errorAt(DiagCode::E2001, "expected '{' to start function body");
-            if (outIsAsync) --asyncDepth_;
             return nullptr;
         }
         
@@ -1399,12 +1409,7 @@ StmtPtr Parser::parseFuncBody(FuncBodyKind &outBodyKind, bool &outIsAsync) {
     } else {
         // No brace, no parens - expression bodies are handled by the caller
         errorAt(DiagCode::E2008, "expected '{' or '(' to start function body");
-        if (outIsAsync) --asyncDepth_;
         return nullptr;
-    }
-
-    if (outIsAsync) {
-        --asyncDepth_;
     }
 
     return body;

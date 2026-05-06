@@ -659,17 +659,26 @@ Token Lexer::getNextToken() {
         return makeToken(TokenType::PIPE, "|");
 
     case '~':
+        // Check for ~~ first (new bitwise NOT)
+        if (match('~')) {
+            // ~~ is bitwise NOT
+            if (match('^')) {
+                // ~~^ is bitwise XOR? This is getting messy
+                // Better: keep ~^ as XOR, only change single ~ to TILDE
+                // But then ~~ and ~ are different...
+            }
+            return makeToken(TokenType::BIT_NOT, "~~");
+        }
+        // Check for ~^ (bitwise XOR) - keep as is
         if (match('^')) {
             if (match('=')) {
-                LUC_LOG_LEXER_EXTREME("getNextToken: '~^='");
                 return makeToken(TokenType::BIT_XOR_ASSIGN, "~^=");
             }
-            LUC_LOG_LEXER_EXTREME("getNextToken: '~^'");
             return makeToken(TokenType::BIT_XOR, "~^");
         }
-        LUC_LOG_LEXER_EXTREME("getNextToken: '~'");
-        return makeToken(TokenType::BIT_NOT, "~");
-
+        // Single ~ is type qualifier prefix
+        return makeToken(TokenType::TILDE, "~");
+        
     case '@':
         LUC_LOG_LEXER_EXTREME("getNextToken: '@'");
         return makeToken(TokenType::AT_SIGN, "@");

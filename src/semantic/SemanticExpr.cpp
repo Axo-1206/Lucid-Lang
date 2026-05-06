@@ -28,8 +28,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 void checkStmt(StmtAST* node, SymbolTable& symbols, TypeResolver& resolver,
                DiagnosticEngine& dc, TypeAST* expectedReturn,
-               int& asyncDepth, int& loopDepth, int& parallelDepth,
-               bool insideExtern);
+               int& loopDepth, int& parallelDepth, bool insideExtern);
 
 
 
@@ -103,17 +102,15 @@ static TypeAST* checkIdentExpr(IdentifierExprAST& node, SymbolTable& symbols,
 
 // Forward declare checkExpr so the helpers below can call it.
 TypeAST* checkExpr(ExprAST* node, SymbolTable& symbols, TypeResolver& resolver,
-                   DiagnosticEngine& dc, int& asyncDepth, int& loopDepth,
-                   int& parallelDepth, bool insideExtern);
+                   DiagnosticEngine& dc, int& loopDepth, int& parallelDepth, bool insideExtern);
 
 static TypeAST* checkFieldAccessExpr(FieldAccessExprAST& node, SymbolTable& symbols,
                                      TypeResolver& resolver, DiagnosticEngine& dc,
-                                     int& asyncDepth, int& loopDepth,
-                                     int& parallelDepth, bool insideExtern) {
+                                     int& loopDepth, int& parallelDepth, bool insideExtern) {
     LUC_LOG_SEMANTIC_VERBOSE("checkFieldAccessExpr: field='" << node.field << "'");
     
     TypeAST* objType = checkExpr(node.object.get(), symbols, resolver, dc,
-                                 asyncDepth, loopDepth, parallelDepth, insideExtern);
+                                 loopDepth, parallelDepth, insideExtern);
     if (!objType) return errorFallback(&node);
     
     LUC_LOG_SEMANTIC_EXTREME("\tobject type: " << LucDebug::kindToString(objType->kind));
@@ -354,14 +351,13 @@ static TypeAST* checkBehaviorAccessExpr(BehaviorAccessExprAST& node, SymbolTable
 // ─────────────────────────────────────────────────────────────────────────────
 static TypeAST* checkBinaryExpr(BinaryExprAST& node, SymbolTable& symbols,
                                  TypeResolver& resolver, DiagnosticEngine& dc,
-                                 int& asyncDepth, int& loopDepth,
-                                 int& parallelDepth, bool insideExtern) {
+                                 int& loopDepth, int& parallelDepth, bool insideExtern) {
     LUC_LOG_SEMANTIC_VERBOSE("checkBinaryExpr: op=" << static_cast<int>(node.op));
     
     TypeAST* lt = checkExpr(node.left.get(),  symbols, resolver, dc,
-                            asyncDepth, loopDepth, parallelDepth, insideExtern);
+                            loopDepth, parallelDepth, insideExtern);
     TypeAST* rt = checkExpr(node.right.get(), symbols, resolver, dc,
-                            asyncDepth, loopDepth, parallelDepth, insideExtern);
+                            loopDepth, parallelDepth, insideExtern);
     
     LUC_LOG_SEMANTIC_EXTREME("\tleft type: " << (lt ? LucDebug::kindToString(lt->kind) : "null"));
     LUC_LOG_SEMANTIC_EXTREME("\tright type: " << (rt ? LucDebug::kindToString(rt->kind) : "null"));
@@ -590,11 +586,10 @@ static TypeAST* checkBinaryExpr(BinaryExprAST& node, SymbolTable& symbols,
 // ─────────────────────────────────────────────────────────────────────────────
 static TypeAST* checkUnaryExpr(UnaryExprAST& node, SymbolTable& symbols,
                                 TypeResolver& resolver, DiagnosticEngine& dc,
-                                int& asyncDepth, int& loopDepth,
-                                int& parallelDepth, bool insideExtern) {
+                                int& loopDepth, int& parallelDepth, bool insideExtern) {
     LUC_LOG_SEMANTIC_VERBOSE("checkUnaryExpr: op=" << static_cast<int>(node.op));
     TypeAST* inner = checkExpr(node.operand.get(), symbols, resolver, dc,
-                               asyncDepth, loopDepth, parallelDepth, insideExtern);
+                               loopDepth, parallelDepth, insideExtern);
     TypeAST* result = inner;
 
     switch (node.op) {
@@ -644,18 +639,17 @@ static TypeAST* checkUnaryExpr(UnaryExprAST& node, SymbolTable& symbols,
 // ─────────────────────────────────────────────────────────────────────────────
 static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
                                TypeResolver& resolver, DiagnosticEngine& dc,
-                               int& asyncDepth, int& loopDepth,
-                               int& parallelDepth, bool insideExtern) {
+                               int& loopDepth, int& parallelDepth, bool insideExtern) {
     LUC_LOG_SEMANTIC_VERBOSE("checkCallExpr");
     // Check each argument.
     for (auto& arg : node.args) {
         checkExpr(arg.get(), symbols, resolver, dc,
-                  asyncDepth, loopDepth, parallelDepth, insideExtern);
+                  loopDepth, parallelDepth, insideExtern);
     }
 
     // Resolve callee type.
     TypeAST* calleeType = checkExpr(node.callee.get(), symbols, resolver, dc,
-                                    asyncDepth, loopDepth, parallelDepth, insideExtern);
+                                    loopDepth, parallelDepth, insideExtern);
 
     // ── Built-in array methods: arr.len(), arr.push(x), etc. ────────────────
     // Detect field access on array types and handle known method names before
@@ -665,7 +659,7 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
         TypeAST* objType = static_cast<TypeAST*>(fieldAcc->object->resolvedType);
         if (!objType) {
             objType = checkExpr(fieldAcc->object.get(), symbols, resolver, dc,
-                                asyncDepth, loopDepth, parallelDepth, insideExtern);
+                                loopDepth, parallelDepth, insideExtern);
         }
         const std::string& methodName = fieldAcc->field;
 
@@ -743,7 +737,7 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
                     return errorFallback(&node);
                 }
                 TypeAST* argType = checkExpr(node.args[0].get(), symbols, resolver, dc,
-                                             asyncDepth, loopDepth, parallelDepth, insideExtern);
+                                             loopDepth, parallelDepth, insideExtern);
                 if (argType && elemType && !TypeChecker::isAssignable(argType, elemType)) {
                     LUC_LOG_SEMANTIC("\tERROR: argument type mismatch in .push()");
                     dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
@@ -784,9 +778,9 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
                     return errorFallback(&node);
                 }
                 checkExpr(node.args[0].get(), symbols, resolver, dc,
-                          asyncDepth, loopDepth, parallelDepth, insideExtern);
+                          loopDepth, parallelDepth, insideExtern);
                 TypeAST* valType = checkExpr(node.args[1].get(), symbols, resolver, dc,
-                                             asyncDepth, loopDepth, parallelDepth, insideExtern);
+                                             loopDepth, parallelDepth, insideExtern);
                 if (valType && elemType && !TypeChecker::isAssignable(valType, elemType)) {
                     LUC_LOG_SEMANTIC("\tERROR: value type mismatch in .insert()");
                     dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
@@ -810,7 +804,7 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
                     return errorFallback(&node);
                 }
                 checkExpr(node.args[0].get(), symbols, resolver, dc,
-                          asyncDepth, loopDepth, parallelDepth, insideExtern);
+                          loopDepth, parallelDepth, insideExtern);
                 node.resolvedType = elemType;
                 return elemType;
             }
@@ -846,7 +840,7 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
                     return errorFallback(&node);
                 }
                 checkExpr(node.args[0].get(), symbols, resolver, dc,
-                          asyncDepth, loopDepth, parallelDepth, insideExtern);
+                          loopDepth, parallelDepth, insideExtern);
                 node.resolvedType = nullptr;
                 return nullptr;
             }
@@ -1026,7 +1020,21 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
         LUC_LOG_SEMANTIC("\t\treturnType is NULL");
     }
 
-    
+    // Determine if this is an async call
+    bool isAsync = false;
+
+    // Check callee by symbol (direct function call)
+    if (calleeSym && calleeSym->kind == SymbolKind::Func && calleeSym->type) {
+        if (calleeSym->type->isa<FuncTypeAST>()) {
+            isAsync = calleeSym->type->as<FuncTypeAST>()->isAsync();
+        }
+    }
+    // Check callee by type (indirect call via variable)
+    else if (calleeType && calleeType->isa<FuncTypeAST>()) {
+        isAsync = calleeType->as<FuncTypeAST>()->isAsync();
+    }
+
+    node.isAsyncCall = isAsync;  // Set the flag
 
     node.resolvedType = returnType;
     return returnType;
@@ -1059,12 +1067,11 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
 // ─────────────────────────────────────────────────────────────────────────────
 static TypeAST* checkAssignExpr(AssignExprAST& node, SymbolTable& symbols,
                                  TypeResolver& resolver, DiagnosticEngine& dc,
-                                 int& asyncDepth, int& loopDepth,
-                                 int& parallelDepth, bool insideExtern) {
+                                 int& loopDepth, int& parallelDepth, bool insideExtern) {
     LUC_LOG_SEMANTIC_VERBOSE("checkAssignExpr: op=" << static_cast<int>(node.op));
     
     TypeAST* lhsType = checkExpr(node.lhs.get(), symbols, resolver, dc,
-                                 asyncDepth, loopDepth, parallelDepth, insideExtern);
+                                 loopDepth, parallelDepth, insideExtern);
     LUC_LOG_SEMANTIC_EXTREME("\tlhs type: " << (lhsType ? LucDebug::kindToString(lhsType->kind) : "null"));
 
     // ── Function body reassignment:  f = { ... }  or  f = async { ... } ──────
@@ -1107,14 +1114,6 @@ static TypeAST* checkAssignExpr(AssignExprAST& node, SymbolTable& symbols,
                     returnType = resolver.resolveType(funcDecl->returnType.get());
                 }
 
-                // Honour the async flag from either the original declaration or
-                // the new body (= async { ... } sets isAsync on the AnonFuncExprAST).
-                bool bodyIsAsync = funcDecl->isAsync || anonBody->isAsync;
-                if (bodyIsAsync) {
-                    LUC_LOG_SEMANTIC_EXTREME("\tasync function body");
-                    asyncDepth++;
-                }
-
                 symbols.pushScope();
                 LUC_LOG_SEMANTIC_EXTREME("\tpushing scope for function params");
 
@@ -1130,7 +1129,6 @@ static TypeAST* checkAssignExpr(AssignExprAST& node, SymbolTable& symbols,
                         ps.visibility = Visibility::Private;
                         ps.type       = pt;
                         ps.decl       = param.get();
-                        ps.isAsync    = false;
                         ps.loc        = param->loc;
                         if (!symbols.declare(ps)) {
                             LUC_LOG_SEMANTIC("\tERROR: duplicate param name");
@@ -1147,13 +1145,12 @@ static TypeAST* checkAssignExpr(AssignExprAST& node, SymbolTable& symbols,
                 if (anonBody->body) {
                     LUC_LOG_SEMANTIC_EXTREME("\tchecking function body");
                     checkStmt(anonBody->body.get(), symbols, resolver, dc,
-                              returnType, asyncDepth, loopDepth,
+                              returnType, loopDepth,
                               parallelDepth, insideExtern);
                 }
 
                 symbols.popScope();
                 LUC_LOG_SEMANTIC_EXTREME("\tpopped function scope");
-                if (bodyIsAsync) asyncDepth--;
 
                 node.resolvedType = lhsType;
                 return lhsType;
@@ -1311,11 +1308,6 @@ static TypeAST* checkAssignExpr(AssignExprAST& node, SymbolTable& symbols,
                              "assignment to outer variable inside parallel scope is not allowed");
                 }
 
-                // Check the body
-                if (anonRhs->isAsync) {
-                    LUC_LOG_SEMANTIC_EXTREME("	async function body");
-                    asyncDepth++;
-                }
                 symbols.pushScope();
                 LUC_LOG_SEMANTIC_EXTREME("	pushing scope for function params");
 
@@ -1338,7 +1330,6 @@ static TypeAST* checkAssignExpr(AssignExprAST& node, SymbolTable& symbols,
                             ps.visibility = Visibility::Private;
                             ps.type       = pt;
                             ps.decl       = anonParam.get();
-                            ps.isAsync    = false;
                             ps.loc        = anonParam->loc;
                             if (!symbols.declare(ps)) {
                                 LUC_LOG_SEMANTIC("\tERROR: duplicate param name");
@@ -1355,13 +1346,11 @@ static TypeAST* checkAssignExpr(AssignExprAST& node, SymbolTable& symbols,
                 if (anonRhs->body) {
                     LUC_LOG_SEMANTIC_EXTREME("	checking function body");
                     checkStmt(anonRhs->body.get(), symbols, resolver, dc,
-                              declReturn, asyncDepth, loopDepth,
-                              parallelDepth, insideExtern);
+                              declReturn, loopDepth, parallelDepth, insideExtern);
                 }
 
                 symbols.popScope();
                 LUC_LOG_SEMANTIC_EXTREME("	popped function scope");
-                if (anonRhs->isAsync) asyncDepth--;
 
                 node.resolvedType = lhsType;
                 return lhsType;
@@ -1456,7 +1445,7 @@ static TypeAST* checkAssignExpr(AssignExprAST& node, SymbolTable& symbols,
 
     // ── General case ──────────────────────────────────────────────────────────
     TypeAST* rhsType = checkExpr(node.rhs.get(), symbols, resolver, dc,
-                                 asyncDepth, loopDepth, parallelDepth, insideExtern);
+                                 loopDepth, parallelDepth, insideExtern);
     LUC_LOG_SEMANTIC_EXTREME("	rhs type: " << (rhsType ? LucDebug::kindToString(rhsType->kind) : "null"));
 
     // Check the LHS is a let-declared symbol.
@@ -1505,7 +1494,7 @@ static TypeAST* checkAssignExpr(AssignExprAST& node, SymbolTable& symbols,
 
                 // Re-check so resolvedType is stamped correctly on the new node.
                 checkExpr(node.rhs.get(), symbols, resolver, dc,
-                          asyncDepth, loopDepth, parallelDepth, insideExtern);
+                          loopDepth, parallelDepth, insideExtern);
             } else {
                 LUC_LOG_SEMANTIC("\tERROR: type mismatch in assignment");
                 dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
@@ -1525,11 +1514,10 @@ static TypeAST* checkAssignExpr(AssignExprAST& node, SymbolTable& symbols,
 // ─────────────────────────────────────────────────────────────────────────────
 static TypeAST* checkIsExpr(IsExprAST& node, SymbolTable& symbols,
                              TypeResolver& resolver, DiagnosticEngine& dc,
-                             int& asyncDepth, int& loopDepth,
-                             int& parallelDepth, bool insideExtern) {
+                             int& loopDepth, int& parallelDepth, bool insideExtern) {
     LUC_LOG_SEMANTIC_VERBOSE("checkIsExpr");
     checkExpr(node.expr.get(), symbols, resolver, dc,
-              asyncDepth, loopDepth, parallelDepth, insideExtern);
+              loopDepth, parallelDepth, insideExtern);
     resolver.resolveType(node.checkType.get());
     node.resolvedType = SemanticHelpers::getPrimitiveType(PrimitiveKind::Bool);
     return SemanticHelpers::getPrimitiveType(PrimitiveKind::Bool);
@@ -1541,12 +1529,11 @@ static TypeAST* checkIsExpr(IsExprAST& node, SymbolTable& symbols,
 // ─────────────────────────────────────────────────────────────────────────────
 static TypeAST* checkIfExpr(IfExprAST& node, SymbolTable& symbols,
                               TypeResolver& resolver, DiagnosticEngine& dc,
-                              TypeAST* expectedReturn,
-                              int& asyncDepth, int& loopDepth,
+                              TypeAST* expectedReturn, int& loopDepth,
                               int& parallelDepth, bool insideExtern) {
     LUC_LOG_SEMANTIC_VERBOSE("checkIfExpr");
     TypeAST* condType = checkExpr(node.condition.get(), symbols, resolver, dc,
-                                  asyncDepth, loopDepth, parallelDepth, insideExtern);
+                                 loopDepth, parallelDepth, insideExtern);
     if (condType && !TypeChecker::isBooleanCompatible(condType)) {
         LUC_LOG_SEMANTIC("\tERROR: if condition must be bool");
         dc.error(DiagnosticCategory::Semantic, node.condition->loc, DiagCode::E3002,
@@ -1556,13 +1543,13 @@ static TypeAST* checkIfExpr(IfExprAST& node, SymbolTable& symbols,
     TypeAST* thenType = nullptr;
     if (node.thenBranch) {
         thenType = checkExpr(node.thenBranch.get(), symbols, resolver, dc,
-                              asyncDepth, loopDepth, parallelDepth, insideExtern);
+                              loopDepth, parallelDepth, insideExtern);
     }
     
     TypeAST* elseType = nullptr;
     if (node.elseBranch) {
         elseType = checkExpr(node.elseBranch.get(), symbols, resolver, dc,
-                               asyncDepth, loopDepth, parallelDepth, insideExtern);
+                               loopDepth, parallelDepth, insideExtern);
     } else {
         LUC_LOG_SEMANTIC("\tERROR: if expression requires else branch");
         dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
@@ -1587,19 +1574,18 @@ static TypeAST* checkIfExpr(IfExprAST& node, SymbolTable& symbols,
 // ─────────────────────────────────────────────────────────────────────────────
 static TypeAST* checkMatchExpr(MatchExprAST& node, SymbolTable& symbols,
                                 TypeResolver& resolver, DiagnosticEngine& dc,
-                                TypeAST* expectedReturn,
-                                int& asyncDepth, int& loopDepth,
+                                TypeAST* expectedReturn, int& loopDepth,
                                 int& parallelDepth, bool insideExtern) {
     LUC_LOG_SEMANTIC_VERBOSE("checkMatchExpr");
     TypeAST* subjectType = checkExpr(node.subject.get(), symbols, resolver, dc,
-                                     asyncDepth, loopDepth, parallelDepth, insideExtern);
+                                     loopDepth, parallelDepth, insideExtern);
  
     TypeAST* unified = nullptr;
     for (auto& arm : node.arms) {
         // Check guard if present.
         if (arm->guard) {
             TypeAST* gt = checkExpr(arm->guard.get(), symbols, resolver, dc,
-                                    asyncDepth, loopDepth, parallelDepth, insideExtern);
+                                    loopDepth, parallelDepth, insideExtern);
             if (gt && !TypeChecker::isBooleanCompatible(gt)) {
                 LUC_LOG_SEMANTIC("\tERROR: match arm guard must be bool");
                 dc.error(DiagnosticCategory::Semantic, arm->guard->loc, DiagCode::E3002,
@@ -1617,7 +1603,7 @@ static TypeAST* checkMatchExpr(MatchExprAST& node, SymbolTable& symbols,
                 Symbol bs;
                 bs.name = bp->name; bs.kind = SymbolKind::Var;
                 bs.declKw = DeclKeyword::Let; bs.visibility = Visibility::Private;
-                bs.type = subjectType; bs.decl = bp; bs.isAsync = false; bs.loc = bp->loc;
+                bs.type = subjectType; bs.decl = bp; bs.loc = bp->loc;
                 symbols.declare(bs);
             }
         }
@@ -1625,7 +1611,7 @@ static TypeAST* checkMatchExpr(MatchExprAST& node, SymbolTable& symbols,
         TypeAST* armType = nullptr;
         for (auto& expr : arm->exprs) {
             TypeAST* et = checkExpr(expr.get(), symbols, resolver, dc,
-                                    asyncDepth, loopDepth, parallelDepth, insideExtern);
+                                    loopDepth, parallelDepth, insideExtern);
             // Primary value (first expression) determines the match arm return type.
             if (!armType) armType = et;
         }
@@ -1644,7 +1630,7 @@ static TypeAST* checkMatchExpr(MatchExprAST& node, SymbolTable& symbols,
         TypeAST* defaultType = nullptr;
         for (auto& expr : node.defaultBody->exprs) {
             TypeAST* et = checkExpr(expr.get(), symbols, resolver, dc,
-                                    asyncDepth, loopDepth, parallelDepth, insideExtern);
+                                    loopDepth, parallelDepth, insideExtern);
             if (!defaultType) defaultType = et;
         }
         if (unified && defaultType) {
@@ -1668,23 +1654,41 @@ static TypeAST* checkMatchExpr(MatchExprAST& node, SymbolTable& symbols,
 // ─────────────────────────────────────────────────────────────────────────────
 static TypeAST* checkAwaitExpr(AwaitExprAST& node, SymbolTable& symbols,
                                 TypeResolver& resolver, DiagnosticEngine& dc,
-                                int& asyncDepth, int& loopDepth,
-                                int& parallelDepth, bool insideExtern) {
-    LUC_LOG_SEMANTIC_VERBOSE("checkAwaitExpr");
-    if (asyncDepth <= 0) {
-        LUC_LOG_SEMANTIC("\tERROR: 'await' outside async body");
-        dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                 "'await' is only valid inside an async function body");
-    }
-    if (parallelDepth > 0) {
-        LUC_LOG_SEMANTIC("\tERROR: 'await' inside parallel scope");
-        dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                 "'await' is not allowed inside a parallel scope");
-    }
+                                int& loopDepth, int& parallelDepth, bool insideExtern) {
+    
+    // Check the inner expression
     TypeAST* innerType = checkExpr(node.inner.get(), symbols, resolver, dc,
-                                   asyncDepth, loopDepth, parallelDepth, insideExtern);
-    node.resolvedType = innerType;
-    return innerType;
+                                   loopDepth, parallelDepth, insideExtern);
+    
+    if (!innerType) {
+        return errorFallback(&node);
+    }
+    
+    // Check if inner is an async call
+    bool isAsyncCall = false;
+    if (node.inner->isa<CallExprAST>()) {
+        isAsyncCall = node.inner->as<CallExprAST>()->isAsyncCall;
+    }
+    
+    // Also check type as fallback (for expressions like `await someAsyncFunc`)
+    if (!isAsyncCall && innerType->isa<FuncTypeAST>()) {
+        isAsyncCall = innerType->as<FuncTypeAST>()->isAsync();
+    }
+    
+    if (!isAsyncCall) {
+        dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
+                 "'await' can only be used on async function calls");
+        return errorFallback(&node);
+    }
+    
+    // Extract return type
+    TypeAST* returnType = innerType;
+    if (innerType->isa<FuncTypeAST>()) {
+        returnType = innerType->as<FuncTypeAST>()->returnType.get();
+    }
+    
+    node.resolvedType = returnType;
+    return returnType;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1697,13 +1701,10 @@ static TypeAST* checkAwaitExpr(AwaitExprAST& node, SymbolTable& symbols,
 // ─────────────────────────────────────────────────────────────────────────────
 static TypeAST* checkAnonFuncExpr(AnonFuncExprAST& node, SymbolTable& symbols,
                                    TypeResolver& resolver, DiagnosticEngine& dc,
-                                   int& asyncDepth, int& loopDepth,
-                                   int& parallelDepth, bool insideExtern) {
+                                   int& loopDepth, int& parallelDepth, bool insideExtern) {
     LUC_LOG_SEMANTIC_VERBOSE("checkAnonFuncExpr");
     TypeAST* returnType = nullptr;
     if (node.returnType) returnType = resolver.resolveType(node.returnType.get());
-
-    if (node.isAsync) asyncDepth++;
     symbols.pushScope();
 
     // Declare every parameter from every curry group into the function scope.
@@ -1718,7 +1719,6 @@ static TypeAST* checkAnonFuncExpr(AnonFuncExprAST& node, SymbolTable& symbols,
                 ps.visibility = Visibility::Private;
                 ps.type       = pt;
                 ps.decl       = param.get();
-                ps.isAsync    = false;
                 ps.loc        = param->loc;
                 if (!symbols.declare(ps)) {
                     LUC_LOG_SEMANTIC("\tERROR: duplicate parameter name");
@@ -1732,11 +1732,10 @@ static TypeAST* checkAnonFuncExpr(AnonFuncExprAST& node, SymbolTable& symbols,
 
     if (node.body) {
         checkStmt(node.body.get(), symbols, resolver, dc, returnType,
-                  asyncDepth, loopDepth, parallelDepth, insideExtern);
+                  loopDepth, parallelDepth, insideExtern);
     }
 
     symbols.popScope();
-    if (node.isAsync) asyncDepth--;
 
     // The type of an anon func is a FuncTypeAST built from its signature.
     // For now, return nullptr — the anon func value's type is tracked by its
@@ -1752,11 +1751,10 @@ static TypeAST* checkAnonFuncExpr(AnonFuncExprAST& node, SymbolTable& symbols,
 // ─────────────────────────────────────────────────────────────────────────────
 static TypeAST* checkNullableChainExpr(NullableChainExprAST& node, SymbolTable& symbols,
                                         TypeResolver& resolver, DiagnosticEngine& dc,
-                                        int& asyncDepth, int& loopDepth,
-                                        int& parallelDepth, bool insideExtern) {
+                                        int& loopDepth, int& parallelDepth, bool insideExtern) {
     LUC_LOG_SEMANTIC_VERBOSE("checkNullableChainExpr");
     TypeAST* objType = checkExpr(node.object.get(), symbols, resolver, dc,
-                                 asyncDepth, loopDepth, parallelDepth, insideExtern);
+                                 loopDepth, parallelDepth, insideExtern);
     if (objType && !TypeChecker::isNullable(objType)) {
         LUC_LOG_SEMANTIC("\tERROR: '.?' chain on non-nullable type");
         dc.error(DiagnosticCategory::Semantic, node.object->loc, DiagCode::E3002,
@@ -1766,7 +1764,7 @@ static TypeAST* checkNullableChainExpr(NullableChainExprAST& node, SymbolTable& 
     TypeAST* fallbackType = nullptr;
     if (node.fallback) {
         fallbackType = checkExpr(node.fallback.get(), symbols, resolver, dc,
-                                 asyncDepth, loopDepth, parallelDepth, insideExtern);
+                                 loopDepth, parallelDepth, insideExtern);
     }
 
     if (!fallbackType) {
@@ -1782,13 +1780,12 @@ static TypeAST* checkNullableChainExpr(NullableChainExprAST& node, SymbolTable& 
 // ─────────────────────────────────────────────────────────────────────────────
 static TypeAST* checkRangeExpr(RangeExprAST& node, SymbolTable& symbols,
                                 TypeResolver& resolver, DiagnosticEngine& dc,
-                                int& asyncDepth, int& loopDepth,
-                                int& parallelDepth, bool insideExtern) {
+                                int& loopDepth, int& parallelDepth, bool insideExtern) {
     LUC_LOG_SEMANTIC_VERBOSE("checkRangeExpr");
     TypeAST* loType = checkExpr(node.lo.get(), symbols, resolver, dc,
-                                asyncDepth, loopDepth, parallelDepth, insideExtern);
+                                loopDepth, parallelDepth, insideExtern);
     TypeAST* hiType = checkExpr(node.hi.get(), symbols, resolver, dc,
-                                asyncDepth, loopDepth, parallelDepth, insideExtern);
+                                loopDepth, parallelDepth, insideExtern);
 
     if (loType && hiType && !TypeChecker::isAssignable(loType, hiType) &&
         !TypeChecker::isAssignable(hiType, loType)) {
@@ -1808,11 +1805,10 @@ static TypeAST* checkRangeExpr(RangeExprAST& node, SymbolTable& symbols,
 // ─────────────────────────────────────────────────────────────────────────────
 static TypeAST* checkPipelineExpr(PipelineExprAST& node, SymbolTable& symbols,
                                    TypeResolver& resolver, DiagnosticEngine& dc,
-                                   int& asyncDepth, int& loopDepth,
-                                   int& parallelDepth, bool insideExtern) {
+                                   int& loopDepth, int& parallelDepth, bool insideExtern) {
     LUC_LOG_SEMANTIC_VERBOSE("checkPipelineExpr");
     TypeAST* current = checkExpr(node.seed.get(), symbols, resolver, dc,
-                                 asyncDepth, loopDepth, parallelDepth, insideExtern);
+                                 loopDepth, parallelDepth, insideExtern);
 
     for (auto& step : node.steps) {
         switch (step->kind) {
@@ -1865,13 +1861,12 @@ static TypeAST* checkPipelineExpr(PipelineExprAST& node, SymbolTable& symbols,
 // ─────────────────────────────────────────────────────────────────────────────
 static TypeAST* checkIndexExpr(IndexExprAST& node, SymbolTable& symbols,
                                 TypeResolver& resolver, DiagnosticEngine& dc,
-                                int& asyncDepth, int& loopDepth,
-                                int& parallelDepth, bool insideExtern) {
+                                int& loopDepth, int& parallelDepth, bool insideExtern) {
     LUC_LOG_SEMANTIC_VERBOSE("checkIndexExpr");
     TypeAST* targetType = checkExpr(node.target.get(), symbols, resolver, dc,
-                                    asyncDepth, loopDepth, parallelDepth, insideExtern);
+                                    loopDepth, parallelDepth, insideExtern);
     TypeAST* idxType = checkExpr(node.index.get(), symbols, resolver, dc,
-                                 asyncDepth, loopDepth, parallelDepth, insideExtern);
+                                 loopDepth, parallelDepth, insideExtern);
 
     // Index must be an integer type.
     if (idxType && idxType->isa<PrimitiveTypeAST>()) {
@@ -1888,7 +1883,7 @@ static TypeAST* checkIndexExpr(IndexExprAST& node, SymbolTable& symbols,
 
     if (node.sliceEnd) {
         checkExpr(node.sliceEnd.get(), symbols, resolver, dc,
-                  asyncDepth, loopDepth, parallelDepth, insideExtern);
+                  loopDepth, parallelDepth, insideExtern);
     }
 
     // Resolve the element type from the target array type.
@@ -1957,8 +1952,7 @@ static TypeAST* checkIndexExpr(IndexExprAST& node, SymbolTable& symbols,
 // ─────────────────────────────────────────────────────────────────────────────
 static TypeAST* checkStructLiteralExpr(StructLiteralExprAST& node, SymbolTable& symbols,
                                         TypeResolver& resolver, DiagnosticEngine& dc,
-                                        int& asyncDepth, int& loopDepth,
-                                        int& parallelDepth, bool insideExtern) {
+                                        int& loopDepth, int& parallelDepth, bool insideExtern) {
     LUC_LOG_SEMANTIC_VERBOSE("checkStructLiteralExpr: typeName='" << node.typeName << "'");
     Symbol* sym = symbols.lookup(node.typeName);
     if (!sym || sym->kind != SymbolKind::Struct) {
@@ -1996,7 +1990,7 @@ static TypeAST* checkStructLiteralExpr(StructLiteralExprAST& node, SymbolTable& 
         }
         TypeAST* ft = resolver.resolveType(fieldDecl->type.get());
         TypeAST* vt = checkExpr(init.value.get(), symbols, resolver, dc,
-                                asyncDepth, loopDepth, parallelDepth, insideExtern);
+                                loopDepth, parallelDepth, insideExtern);
         if (ft && vt && !TypeChecker::isAssignable(vt, ft)) {
             LUC_LOG_SEMANTIC("\tERROR: type mismatch for field '" << init.name << "' in struct literal");
             dc.error(DiagnosticCategory::Semantic, init.loc, DiagCode::E3002,
@@ -2082,13 +2076,12 @@ static TypeAST* checkStructLiteralExpr(StructLiteralExprAST& node, SymbolTable& 
 // ─────────────────────────────────────────────────────────────────────────────
 static TypeAST* checkArrayLiteralExpr(ArrayLiteralExprAST& node, SymbolTable& symbols,
                                        TypeResolver& resolver, DiagnosticEngine& dc,
-                                       int& asyncDepth, int& loopDepth,
-                                       int& parallelDepth, bool insideExtern) {
+                                       int& loopDepth, int& parallelDepth, bool insideExtern) {
     LUC_LOG_SEMANTIC_VERBOSE("checkArrayLiteralExpr");
     TypeAST* elemType = nullptr;
     for (auto& elem : node.elements) {
         TypeAST* et = checkExpr(elem.get(), symbols, resolver, dc,
-                                asyncDepth, loopDepth, parallelDepth, insideExtern);
+                                loopDepth, parallelDepth, insideExtern);
         if (!elemType && et) elemType = et;
     }
     // The resolved type is left as nullptr; context (declaration type) determines
@@ -2103,8 +2096,7 @@ static TypeAST* checkArrayLiteralExpr(ArrayLiteralExprAST& node, SymbolTable& sy
 // ─────────────────────────────────────────────────────────────────────────────
 static TypeAST* checkTypeConvExpr(TypeConvExprAST& node, SymbolTable& symbols,
                                    TypeResolver& resolver, DiagnosticEngine& dc,
-                                   int& asyncDepth, int& loopDepth,
-                                   int& parallelDepth, bool insideExtern) {
+                                   int& loopDepth, int& parallelDepth, bool insideExtern) {
     LUC_LOG_SEMANTIC_VERBOSE("checkTypeConvExpr");
     if (node.isUnsafe && !insideExtern) {
         LUC_LOG_SEMANTIC("\tERROR: unsafe reinterpret outside extern");
@@ -2112,8 +2104,7 @@ static TypeAST* checkTypeConvExpr(TypeConvExprAST& node, SymbolTable& symbols,
                  "unsafe type reinterpret '*' is only valid on '@extern'-decorated declarations; "
                  "use '@bitcast(T, x)' for general-purpose bit reinterpretation");
     }
-    checkExpr(node.expr.get(), symbols, resolver, dc,
-              asyncDepth, loopDepth, parallelDepth, insideExtern);
+    checkExpr(node.expr.get(), symbols, resolver, dc,loopDepth, parallelDepth, insideExtern);
     TypeAST* targetType = resolver.resolveType(node.targetType.get());
     if (!targetType) {
         return errorFallback(&node);
@@ -2160,12 +2151,9 @@ static TypeAST* checkTypeConvExpr(TypeConvExprAST& node, SymbolTable& symbols,
 //
 // Unknown intrinsic names → E3009. Wrong arg counts / bad types → E3010.
 // ─────────────────────────────────────────────────────────────────────────────
-static TypeAST* checkIntrinsicCallExpr(IntrinsicCallExprAST& node,
-                                        SymbolTable& symbols,
-                                        TypeResolver& resolver,
-                                        DiagnosticEngine& dc,
-                                        int& asyncDepth, int& loopDepth,
-                                        int& parallelDepth, bool insideExtern) {
+static TypeAST* checkIntrinsicCallExpr(IntrinsicCallExprAST& node, SymbolTable& symbols,
+                                        TypeResolver& resolver, DiagnosticEngine& dc,
+                                        int& loopDepth, int& parallelDepth, bool insideExtern) {
     LUC_LOG_SEMANTIC_VERBOSE("checkIntrinsicCallExpr: name='" << node.intrinsicName << "'");
     const std::string& name = node.intrinsicName;
 
@@ -2178,8 +2166,7 @@ static TypeAST* checkIntrinsicCallExpr(IntrinsicCallExprAST& node,
                  "known intrinsics: " + IntrinsicRegistry::allNames());
         // Still walk any provided args so their sub-expressions are visited.
         for (auto& arg : node.args)
-            checkExpr(arg.get(), symbols, resolver, dc,
-                      asyncDepth, loopDepth, parallelDepth, insideExtern);
+            checkExpr(arg.get(), symbols, resolver, dc, loopDepth, parallelDepth, insideExtern);
         return errorFallback(&node);
     }
 
@@ -2221,8 +2208,7 @@ static TypeAST* checkIntrinsicCallExpr(IntrinsicCallExprAST& node,
             dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3010,
                      "'@bitcast' requires exactly 1 value argument: '@bitcast(T, x)'");
         } else {
-            checkExpr(node.args[0].get(), symbols, resolver, dc,
-                      asyncDepth, loopDepth, parallelDepth, insideExtern);
+            checkExpr(node.args[0].get(), symbols, resolver, dc, loopDepth, parallelDepth, insideExtern);
         }
         // Return type is the target type (typeArg).
         TypeAST* ret = node.typeArg ? resolver.resolveType(node.typeArg.get())
@@ -2244,7 +2230,7 @@ static TypeAST* checkIntrinsicCallExpr(IntrinsicCallExprAST& node,
                      "'@ptrToRef' requires exactly 1 value argument: '@ptrToRef(T, ptr)'");
         } else {
             TypeAST* pt = checkExpr(node.args[0].get(), symbols, resolver, dc,
-                                    asyncDepth, loopDepth, parallelDepth, insideExtern);
+                                    loopDepth, parallelDepth, insideExtern);
             if (pt && !pt->isa<PtrTypeAST>()) {
                 LUC_LOG_SEMANTIC("\tERROR: @ptrToRef arg must be raw pointer");
                 dc.error(DiagnosticCategory::Semantic, node.args[0]->loc, DiagCode::E3010,
@@ -2285,8 +2271,7 @@ static TypeAST* checkIntrinsicCallExpr(IntrinsicCallExprAST& node,
         LUC_LOG_SEMANTIC("\tERROR: intrinsic argument count mismatch");
         // Walk args anyway to surface nested errors.
         for (auto& arg : node.args)
-            checkExpr(arg.get(), symbols, resolver, dc,
-                      asyncDepth, loopDepth, parallelDepth, insideExtern);
+            checkExpr(arg.get(), symbols, resolver, dc, loopDepth, parallelDepth, insideExtern);
         return errorFallback(&node);
     }
 
@@ -2297,7 +2282,7 @@ static TypeAST* checkIntrinsicCallExpr(IntrinsicCallExprAST& node,
 
     for (size_t i = 0; i < node.args.size(); ++i) {
         TypeAST* at = checkExpr(node.args[i].get(), symbols, resolver, dc,
-                                asyncDepth, loopDepth, parallelDepth, insideExtern);
+                                loopDepth, parallelDepth, insideExtern);
         argTypes.push_back(at);
 
         // Determine which slot kind applies.
@@ -2430,11 +2415,10 @@ static TypeAST* checkIntrinsicCallExpr(IntrinsicCallExprAST& node,
 // ─────────────────────────────────────────────────────────────────────────────
 static TypeAST* checkComposeExpr(ComposeExprAST& node, SymbolTable& symbols,
                                   TypeResolver& resolver, DiagnosticEngine& dc,
-                                  int& asyncDepth, int& loopDepth,
-                                  int& parallelDepth, bool insideExtern) {
+                                  int& loopDepth, int& parallelDepth, bool insideExtern) {
     LUC_LOG_SEMANTIC_VERBOSE("checkComposeExpr");
     TypeAST* current = checkExpr(node.left.get(), symbols, resolver, dc,
-                                 asyncDepth, loopDepth, parallelDepth, insideExtern);
+                                  loopDepth, parallelDepth, insideExtern);
 
     for (auto& operand : node.operands) {
         TypeAST* opType = nullptr;
@@ -2475,8 +2459,7 @@ static TypeAST* checkComposeExpr(ComposeExprAST& node, SymbolTable& symbols,
 // checkExpr — main dispatcher
 // ─────────────────────────────────────────────────────────────────────────────
 TypeAST* checkExpr(ExprAST* node, SymbolTable& symbols, TypeResolver& resolver,
-                   DiagnosticEngine& dc, int& asyncDepth, int& loopDepth,
-                   int& parallelDepth, bool insideExtern) {
+                   DiagnosticEngine& dc, int& loopDepth, int& parallelDepth, bool insideExtern) {
     if (!node) return nullptr;
 
     LUC_LOG_SEMANTIC("checkExpr: kind=" << LucDebug::kindToString(node->kind));
@@ -2493,88 +2476,82 @@ TypeAST* checkExpr(ExprAST* node, SymbolTable& symbols, TypeResolver& resolver,
 
         case ASTKind::FieldAccessExpr:
             return checkFieldAccessExpr(*node->as<FieldAccessExprAST>(), symbols,
-                                        resolver, dc, asyncDepth, loopDepth,
-                                        parallelDepth, insideExtern);
+                                        resolver, dc, loopDepth,parallelDepth, insideExtern);
 
         case ASTKind::BehaviorAccessExpr:
-            return checkBehaviorAccessExpr(*node->as<BehaviorAccessExprAST>(),
-                                           symbols, dc);
+            return checkBehaviorAccessExpr(*node->as<BehaviorAccessExprAST>(),symbols, dc);
 
         case ASTKind::BinaryExpr:
             return checkBinaryExpr(*node->as<BinaryExprAST>(), symbols, resolver, dc,
-                                   asyncDepth, loopDepth, parallelDepth, insideExtern);
+                                   loopDepth, parallelDepth, insideExtern);
 
         case ASTKind::UnaryExpr:
             return checkUnaryExpr(*node->as<UnaryExprAST>(), symbols, resolver, dc,
-                                  asyncDepth, loopDepth, parallelDepth, insideExtern);
+                                  loopDepth, parallelDepth, insideExtern);
 
         case ASTKind::CallExpr:
             return checkCallExpr(*node->as<CallExprAST>(), symbols, resolver, dc,
-                                 asyncDepth, loopDepth, parallelDepth, insideExtern);
+                                 loopDepth, parallelDepth, insideExtern);
 
         case ASTKind::AssignExpr:
             return checkAssignExpr(*node->as<AssignExprAST>(), symbols, resolver, dc,
-                                   asyncDepth, loopDepth, parallelDepth, insideExtern);
+                                   loopDepth, parallelDepth, insideExtern);
 
         case ASTKind::IsExpr:
             return checkIsExpr(*node->as<IsExprAST>(), symbols, resolver, dc,
-                               asyncDepth, loopDepth, parallelDepth, insideExtern);
+                               loopDepth, parallelDepth, insideExtern);
 
         case ASTKind::IfExpr:
             return checkIfExpr(*node->as<IfExprAST>(), symbols, resolver, dc,
-                               nullptr, asyncDepth, loopDepth, parallelDepth, insideExtern);
+                               nullptr, loopDepth, parallelDepth, insideExtern);
 
         case ASTKind::MatchExpr:
             return checkMatchExpr(*node->as<MatchExprAST>(), symbols, resolver, dc,
-                                  nullptr, asyncDepth, loopDepth, parallelDepth, insideExtern);
+                                  nullptr, loopDepth, parallelDepth, insideExtern);
 
         case ASTKind::AwaitExpr:
             return checkAwaitExpr(*node->as<AwaitExprAST>(), symbols, resolver, dc,
-                                  asyncDepth, loopDepth, parallelDepth, insideExtern);
+                                  loopDepth, parallelDepth, insideExtern);
 
         case ASTKind::AnonFuncExpr:
             return checkAnonFuncExpr(*node->as<AnonFuncExprAST>(), symbols, resolver, dc,
-                                     asyncDepth, loopDepth, parallelDepth, insideExtern);
+                                     loopDepth, parallelDepth, insideExtern);
 
         case ASTKind::NullableChainExpr:
             return checkNullableChainExpr(*node->as<NullableChainExprAST>(), symbols,
-                                          resolver, dc, asyncDepth, loopDepth,
-                                          parallelDepth, insideExtern);
+                                          resolver, dc, loopDepth,parallelDepth, insideExtern);
 
         case ASTKind::RangeExpr:
             return checkRangeExpr(*node->as<RangeExprAST>(), symbols, resolver, dc,
-                                  asyncDepth, loopDepth, parallelDepth, insideExtern);
+                                  loopDepth, parallelDepth, insideExtern);
 
         case ASTKind::PipelineExpr:
             return checkPipelineExpr(*node->as<PipelineExprAST>(), symbols, resolver, dc,
-                                     asyncDepth, loopDepth, parallelDepth, insideExtern);
+                                     loopDepth, parallelDepth, insideExtern);
 
         case ASTKind::ComposeExpr:
             return checkComposeExpr(*node->as<ComposeExprAST>(), symbols, resolver, dc,
-                                    asyncDepth, loopDepth, parallelDepth, insideExtern);
+                                    loopDepth, parallelDepth, insideExtern);
 
         case ASTKind::IndexExpr:
             return checkIndexExpr(*node->as<IndexExprAST>(), symbols, resolver, dc,
-                                  asyncDepth, loopDepth, parallelDepth, insideExtern);
+                                  loopDepth, parallelDepth, insideExtern);
 
         case ASTKind::StructLiteralExpr:
             return checkStructLiteralExpr(*node->as<StructLiteralExprAST>(), symbols,
-                                          resolver, dc, asyncDepth, loopDepth,
-                                          parallelDepth, insideExtern);
+                                          resolver, dc, loopDepth, parallelDepth, insideExtern);
 
         case ASTKind::ArrayLiteralExpr:
             return checkArrayLiteralExpr(*node->as<ArrayLiteralExprAST>(), symbols,
-                                         resolver, dc, asyncDepth, loopDepth,
-                                         parallelDepth, insideExtern);
+                                         resolver, dc, loopDepth, parallelDepth, insideExtern);
 
         case ASTKind::TypeConvExpr:
             return checkTypeConvExpr(*node->as<TypeConvExprAST>(), symbols, resolver, dc,
-                                     asyncDepth, loopDepth, parallelDepth, insideExtern);
+                                     loopDepth, parallelDepth, insideExtern);
 
         case ASTKind::IntrinsicCallExpr:
             return checkIntrinsicCallExpr(*node->as<IntrinsicCallExprAST>(), symbols,
-                                          resolver, dc, asyncDepth, loopDepth,
-                                          parallelDepth, insideExtern);
+                                          resolver, dc, loopDepth,parallelDepth, insideExtern);
 
         default:
             // Unknown or unhandled expression kind — skip silently.

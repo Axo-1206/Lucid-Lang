@@ -78,7 +78,6 @@ private:
 
     // Context flags shared across Phase 3 sub-passes.
     bool insideExtern_  = false;
-    int  asyncDepth_    = 0;
     int  loopDepth_     = 0;
     int  parallelDepth_ = 0;
 };

@@ -114,7 +114,6 @@ void SemanticCollector::visit(VarDeclAST& node) {
     sym.visibility   = node.visibility;
     sym.type         = nullptr;  // Phase 2 will set this
     sym.decl         = &node;
-    sym.isAsync      = false;
     sym.loc          = node.loc;
     sym.isExtern     = isExtern;
     sym.externSymbol = externSym;
@@ -193,7 +192,6 @@ void SemanticCollector::visit(FuncDeclAST& node) {
     sym.visibility   = node.visibility;
     sym.type         = nullptr; // Phase 2 will set this
     sym.decl         = &node;
-    sym.isAsync      = node.isAsync;
     sym.loc          = node.loc;
     sym.isExtern     = isExtern;
     sym.externSymbol = externSym;
@@ -213,7 +211,6 @@ void SemanticCollector::visit(FuncDeclAST& node) {
                 Visibility::Private,
                 param->type.get(),
                 param.get(),
-                false,
                 param->loc
             });
         }
@@ -293,7 +290,6 @@ void SemanticCollector::visit(StructDeclAST& node) {
         node.visibility,
         nullptr,  // Phase 2 will set this
         &node,
-        false,
         node.loc
     });
 
@@ -309,7 +305,6 @@ void SemanticCollector::visit(StructDeclAST& node) {
             Visibility::Private,
             field->type.get(),
             field.get(),
-            false,
             field->loc
         });
     }
@@ -334,7 +329,6 @@ void SemanticCollector::visit(EnumDeclAST& node) {
         node.visibility,
         nullptr,
         &node,
-        false,
         node.loc
     });
 
@@ -349,7 +343,6 @@ void SemanticCollector::visit(EnumDeclAST& node) {
             Visibility::Private,
             nullptr,
             variant.get(),
-            false,
             variant->loc
         });
     }
@@ -374,7 +367,6 @@ void SemanticCollector::visit(TraitDeclAST& node) {
         node.visibility,
         nullptr,
         &node,
-        false,
         node.loc
     });
 
@@ -439,7 +431,6 @@ void SemanticCollector::visit(TraitDeclAST& node) {
             Visibility::Export,
             method->signature.get(),
             method.get(),
-            method->isAsync,
             method->loc
         });
     }
@@ -535,7 +526,6 @@ void SemanticCollector::visit(ImplDeclAST& node) {
             node.visibility,
             method->signature.get(),  // Type points to signature WITHOUT self
             method.get(),
-            method->isAsync,
             method->loc
         });
     }
@@ -572,7 +562,6 @@ void SemanticCollector::visit(FromDeclAST& node) {
             node.visibility,
             nullptr,
             entry.get(),
-            false,
             entry->loc
         });
     }
@@ -595,7 +584,6 @@ void SemanticCollector::visit(TypeAliasDeclAST& node) {
         node.visibility,
         nullptr,
         &node,
-        false,
         node.loc
     });
     LUC_LOG_SEMANTIC_VERBOSE("\ttype alias registered successfully");

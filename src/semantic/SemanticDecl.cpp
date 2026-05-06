@@ -300,12 +300,12 @@ static void checkAttributes(const std::vector<AttributePtr>& attributes,
 // instead of a header to avoid complex circular dependency loops.
 // ─────────────────────────────────────────────────────────────────────────────
 TypeAST* checkExpr(ExprAST* node, SymbolTable& symbols, TypeResolver& resolver,
-                   DiagnosticEngine& dc, int& asyncDepth, int& loopDepth,
+                   DiagnosticEngine& dc, int& loopDepth,
                    int& parallelDepth, bool insideExtern);
 
 void checkStmt(StmtAST* node, SymbolTable& symbols, TypeResolver& resolver,
                DiagnosticEngine& dc, TypeAST* expectedReturn,
-               int& asyncDepth, int& loopDepth, int& parallelDepth,
+               int& loopDepth, int& parallelDepth,
                bool insideExtern);
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -385,8 +385,7 @@ static bool isConstExpr(ExprAST* expr, SymbolTable& symbols) {
 //   - const does not allow nil (nil is never a compile-time constant).
 // ─────────────────────────────────────────────────────────────────────────────
 void checkVarDecl(VarDeclAST& node, SymbolTable& symbols, TypeResolver& resolver,
-                  DiagnosticEngine& dc, int& asyncDepth, int& loopDepth,
-                  int& parallelDepth, bool insideExtern) {
+                  DiagnosticEngine& dc, int& loopDepth, int& parallelDepth, bool insideExtern) {
     LUC_LOG_SEMANTIC("checkVarDecl: name=" << node.name << " kw=" << static_cast<int>(node.keyword));
 
     // 0. Validate '@' attributes on this variable declaration.
@@ -430,7 +429,7 @@ void checkVarDecl(VarDeclAST& node, SymbolTable& symbols, TypeResolver& resolver
 
     // 3. Check the initialiser type and verify assignability.
     TypeAST* initType = checkExpr(node.init.get(), symbols, resolver, dc,
-                                  asyncDepth, loopDepth, parallelDepth, insideExtern);
+                                  loopDepth, parallelDepth, insideExtern);
     
     LUC_LOG_SEMANTIC("\tVarDecl initType = " << initType);
     if (initType) {
@@ -489,7 +488,7 @@ void checkVarDecl(VarDeclAST& node, SymbolTable& symbols, TypeResolver& resolver
             // checkTypeConvExpr returns the target type, which is exactly declaredType,
             // so the implicit assignment check that follows this block will pass.
             checkExpr(node.init.get(), symbols, resolver, dc,
-                      asyncDepth, loopDepth, parallelDepth, insideExtern);
+                      loopDepth, parallelDepth, insideExtern);
         } else {
             // No casting available — report the type mismatch error.
             LUC_LOG_SEMANTIC("\tERROR: type mismatch in variable initialisation");
@@ -512,7 +511,7 @@ void checkVarDecl(VarDeclAST& node, SymbolTable& symbols, TypeResolver& resolver
 //   - Curried multi-group functions: each group creates a nested function scope.
 // ─────────────────────────────────────────────────────────────────────────────
 void checkFuncDecl(FuncDeclAST& node, SymbolTable& symbols, TypeResolver& resolver,
-                   DiagnosticEngine& dc, int& asyncDepth, int& loopDepth,
+                   DiagnosticEngine& dc, int& loopDepth,
                    int& parallelDepth, bool insideExtern) {
 
     // 0. Validate '@' attributes on this function.
@@ -576,10 +575,8 @@ void checkFuncDecl(FuncDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
     }
 
     // Build signature using shared helper
-    node.signature = SemanticHelpers::buildResolvedFunctionSignature(node);
+    node.signature = SemanticHelpers::buildResolvedFunctionSignature(node, node.qualifiers);
 
-    // async increments depth so nested await checks work correctly.
-    if (node.isAsync) asyncDepth++;
 
     symbols.pushScope();
 
@@ -597,7 +594,6 @@ void checkFuncDecl(FuncDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
             ps.visibility = Visibility::Private;
             ps.type = pt;
             ps.decl = param.get();
-            ps.isAsync = false;
             ps.loc = param->loc;
             symbols.declare(ps);
         }
@@ -620,7 +616,7 @@ void checkFuncDecl(FuncDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
         
         // Resolve the expression type
         TypeAST* exprType = checkExpr(node.exprBody.get(), symbols, resolver, dc,
-                                    asyncDepth, loopDepth, parallelDepth, insideExtern);
+                                    loopDepth, parallelDepth, insideExtern);
         
         if (!exprType) {
             LUC_LOG_SEMANTIC("\tERROR: failed to resolve expression type");
@@ -673,7 +669,7 @@ void checkFuncDecl(FuncDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
         // Note: For void functions (no return type), expectedReturnType remains nullptr
         
         checkStmt(node.body.get(), symbols, resolver, dc, expectedReturnType,
-                asyncDepth, loopDepth, parallelDepth, insideExtern);
+                loopDepth, parallelDepth, insideExtern);
         
     } else {
         // ── No Body: This should not happen for non-extern functions ──────────────
@@ -683,7 +679,6 @@ void checkFuncDecl(FuncDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
     }
     
     symbols.popScope();
-    if (node.isAsync) asyncDepth--;
     
     // Clear generic parameters context after checking function.
     resolver.setGenericParams(nullptr);
@@ -698,7 +693,7 @@ void checkFuncDecl(FuncDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
 //   - Default value types must match their field types.
 // ─────────────────────────────────────────────────────────────────────────────
 void checkStructDecl(StructDeclAST& node, SymbolTable& symbols, TypeResolver& resolver,
-                     DiagnosticEngine& dc, int& asyncDepth, int& loopDepth,
+                     DiagnosticEngine& dc, int& loopDepth,
                      int& parallelDepth, bool insideExtern) {
     LUC_LOG_SEMANTIC("checkStructDecl: name=" << node.name);
 
@@ -730,7 +725,7 @@ void checkStructDecl(StructDeclAST& node, SymbolTable& symbols, TypeResolver& re
 
         if (field->defaultVal) {
             TypeAST* dvt = checkExpr(field->defaultVal.get(), symbols, resolver, dc,
-                                     asyncDepth, loopDepth, parallelDepth, insideExtern);
+                                     loopDepth, parallelDepth, insideExtern);
             if (dvt && !TypeChecker::isAssignable(dvt, ft)) {
                 LUC_LOG_SEMANTIC("\tERROR: default value type mismatch for field '" << field->name << "'");
                 dc.error(DiagnosticCategory::Semantic, field->loc, DiagCode::E3002,
@@ -887,7 +882,7 @@ void checkTraitDecl(TraitDeclAST& node, TypeResolver& resolver, DiagnosticEngine
 //   }
 // ─────────────────────────────────────────────────────────────────────────────
 void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolver,
-                   DiagnosticEngine& dc, int& asyncDepth, int& loopDepth,
+                   DiagnosticEngine& dc, int& loopDepth,
                    int& parallelDepth, bool insideExtern) {
     LUC_LOG_SEMANTIC("checkImplDecl: structName=" << node.structName);
  
@@ -964,8 +959,7 @@ void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
             returnType = resolver.resolveType(method->returnType.get());
             if (!returnType) continue;
         }
- 
-        if (method->isAsync) asyncDepth++;
+
         symbols.pushScope();
 
         // RE-LOOKUP struct symbol inside the loop AFTER pushScope.
@@ -1002,7 +996,6 @@ void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
         Symbol* structSym = symbols.lookup(node.structName);
         if (!structSym || !structSym->decl || !structSym->decl->isa<StructDeclAST>()) {
             symbols.popScope();
-            if (method->isAsync) asyncDepth--;
             LUC_LOG_SEMANTIC("\tERROR: impl target corrupt/missing during scope mutation");
             dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
                      "impl target '" + node.structName + "' has a corrupt or missing declaration");
@@ -1022,7 +1015,6 @@ void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
             fs.visibility = Visibility::Private;
             fs.type       = ft;
             fs.decl       = field.get();
-            fs.isAsync    = false;
             fs.loc        = field->loc;
             symbols.declare(fs);
         }
@@ -1039,7 +1031,6 @@ void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
                 ps.visibility = Visibility::Private;
                 ps.type = pt;
                 ps.decl = param.get();
-                ps.isAsync = false;
                 ps.loc = param->loc;
                 if (!symbols.declare(ps)) {
                     LUC_LOG_SEMANTIC("\tERROR: duplicate parameter '" << param->name << "' in impl method");
@@ -1051,13 +1042,11 @@ void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
  
         if (method->body) {
             checkStmt(method->body.get(), symbols, resolver, dc, returnType,
-                      asyncDepth, loopDepth, parallelDepth, insideExtern);
+                      loopDepth, parallelDepth, insideExtern);
         }
 
  
         symbols.popScope();
-        if (method->isAsync) asyncDepth--;
-
     }
  
     // Trait conformance check. Re-lookup after all scope mutations are complete.
@@ -1128,7 +1117,7 @@ void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
 //   - Body is checked to return the target type (implicitly or explicitly).
 // ─────────────────────────────────────────────────────────────────────────────
 void checkFromDecl(FromDeclAST& node, SymbolTable& symbols, TypeResolver& resolver,
-                   DiagnosticEngine& dc, int& asyncDepth, int& loopDepth,
+                   DiagnosticEngine& dc, int& loopDepth,
                    int& parallelDepth, bool insideExtern) {
     LUC_LOG_SEMANTIC("checkFromDecl: target=" << node.targetTypeName);
 
@@ -1175,7 +1164,6 @@ void checkFromDecl(FromDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
                 ps.visibility = Visibility::Private;
                 ps.type       = pt;
                 ps.decl       = param.get();
-                ps.isAsync    = false;
                 ps.loc        = param->loc;
                 if (!symbols.declare(ps)) {
                     LUC_LOG_SEMANTIC("\tERROR: duplicate parameter '" << param->name << "' in from entry");
@@ -1188,7 +1176,7 @@ void checkFromDecl(FromDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
         // Check the body. Expected return is the target type.
         if (entry->body) {
             checkStmt(entry->body.get(), symbols, resolver, dc, targetType,
-                      asyncDepth, loopDepth, parallelDepth, insideExtern);
+                      loopDepth, parallelDepth, insideExtern);
         }
 
         symbols.popScope();
@@ -1238,22 +1226,22 @@ void checkFromDecl(FromDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
 // checkTopLevelDecl  — Dispatcher called by SemanticAnalyzer::checkDecls()
 // ─────────────────────────────────────────────────────────────────────────────
 void checkTopLevelDecl(DeclAST* decl, SymbolTable& symbols, TypeResolver& resolver,
-                       DiagnosticEngine& dc, int& asyncDepth, int& loopDepth,
+                       DiagnosticEngine& dc, int& loopDepth,
                        int& parallelDepth, bool insideExtern) {
     if (!decl) return;
     LUC_LOG_SEMANTIC("checkTopLevelDecl: kind=" << LucDebug::kindToString(decl->kind));
 
     if (decl->isa<VarDeclAST>())
         checkVarDecl(*decl->as<VarDeclAST>(), symbols, resolver, dc,
-                     asyncDepth, loopDepth, parallelDepth, insideExtern);
+                     loopDepth, parallelDepth, insideExtern);
 
     else if (decl->isa<FuncDeclAST>())
         checkFuncDecl(*decl->as<FuncDeclAST>(), symbols, resolver, dc,
-                      asyncDepth, loopDepth, parallelDepth, insideExtern);
+                      loopDepth, parallelDepth, insideExtern);
 
     else if (decl->isa<StructDeclAST>())
         checkStructDecl(*decl->as<StructDeclAST>(), symbols, resolver, dc,
-                        asyncDepth, loopDepth, parallelDepth, insideExtern);
+                        loopDepth, parallelDepth, insideExtern);
 
     else if (decl->isa<EnumDeclAST>())
         checkEnumDecl(*decl->as<EnumDeclAST>(), dc);
@@ -1263,11 +1251,11 @@ void checkTopLevelDecl(DeclAST* decl, SymbolTable& symbols, TypeResolver& resolv
 
     else if (decl->isa<ImplDeclAST>())
         checkImplDecl(*decl->as<ImplDeclAST>(), symbols, resolver, dc,
-                      asyncDepth, loopDepth, parallelDepth, insideExtern);
+                      loopDepth, parallelDepth, insideExtern);
 
     else if (decl->isa<FromDeclAST>())
         checkFromDecl(*decl->as<FromDeclAST>(), symbols, resolver, dc,
-                      asyncDepth, loopDepth, parallelDepth, insideExtern);
+                      loopDepth, parallelDepth, insideExtern);
 
     // PackageDecl, UseDecl, TypeAliasDecl, ModuleDecl — nothing to check at phase 3.
 }

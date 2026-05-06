@@ -315,13 +315,12 @@ struct FuncDeclAST : DeclAST {
     StmtPtr body;                                   // For block bodies only
     ExprPtr exprBody;                               // For expression bodies
     FuncBodyKind bodyKind = FuncBodyKind::Block;
-    bool isAsync = false;
     TypePtr signature;
     Visibility visibility = Visibility::Private;
     std::vector<AttributePtr> attributes;
+    uint32_t qualifiers = 0;                        // type qualifiers (~async, etc.)
 
     FuncDeclAST() : DeclAST(ASTKind::FuncDecl) {}
-
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
 
@@ -494,7 +493,6 @@ struct TraitMethodAST : BaseAST {
     std::string name;
     std::vector<std::vector<ParamPtr>> paramGroups; // outer = curry groups
     TypePtr returnType; // nullptr = void
-    bool isAsync = false;
     TypePtr signature;                              // Synthesized Function Type (signature)
 
     TraitMethodAST() : BaseAST(ASTKind::TraitMethod) {}
@@ -576,8 +574,8 @@ struct MethodDeclAST : BaseAST {
     StmtPtr body;                                   // For block bodies only
     ExprPtr exprBody;                               // For expression bodies
     FuncBodyKind bodyKind = FuncBodyKind::Block;
-    bool isAsync = false;
     TypePtr signature;
+    uint32_t qualifiers = 0;                        // type qualifiers (~async, etc.)
 
     MethodDeclAST() : BaseAST(ASTKind::MethodDecl) {}
 

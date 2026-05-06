@@ -52,7 +52,6 @@ struct Symbol {
     Visibility visibility;
     TypeAST *type;      // resolved type (non-owning)
     BaseAST *decl;      // back-pointer to the AST node
-    bool isAsync = false;
     SourceLocation loc;
 
     // ── @extern metadata ──────────────────────────────────────────────────────

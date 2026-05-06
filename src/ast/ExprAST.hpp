@@ -457,7 +457,8 @@ struct CallExprAST : ExprAST {
     std::vector<TypePtr> genericArgs;  // explicit type args — empty if absent
     std::vector<ExprPtr> args;         // call arguments in order
     bool                 isArgPack = false; // true → fn(args)! pipeline argument pack
-
+    bool                 isAsyncCall = false;
+    
     CallExprAST() : ExprAST(ASTKind::CallExpr) {}
 
     void accept(ASTVisitor& v) override { v.visit(*this); }
@@ -823,17 +824,17 @@ struct ComposeExprAST : ExprAST {
 // isAsync marks async anonymous functions.
 // body is always a BlockStmtAST.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct AnonFuncExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::AnonFuncExpr;
 
-    std::vector<std::vector<ParamPtr>> paramGroups;  // outer = curry groups
-    TypePtr                            returnType;   // nullptr = void
-    StmtPtr                            body;         // BlockStmtAST
-    bool                               isAsync = false;
-
+    std::vector<std::vector<ParamPtr>> paramGroups;
+    TypePtr returnType;
+    StmtPtr body;
+    uint32_t qualifiers = 0;  // ADD THIS
+    
+    bool isAsync() const { return qualifiers & FuncTypeAST::QUAL_ASYNC; }
+    
     AnonFuncExprAST() : ExprAST(ASTKind::AnonFuncExpr) {}
-
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
 

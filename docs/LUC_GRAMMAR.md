@@ -518,21 +518,37 @@ nullable parameters to express the same intent.
 ### Function Type
 
 ```
-func_type       := '(' [ param_list ] ')' [ return_type ]
-                 | '(' '(' [ param_list ] ')' [ return_type ] ')' '?'
-                   -- second form: entire function type is nullable
-                   -- e.g.  ((num int) int)?
+func_type       := [ qualifier_list ] '(' [ param_list ] ')' [ return_type ]
+                 | [ qualifier_list ] '(' '(' [ param_list ] ')' [ return_type ] ')' '?'
+
+qualifier_list  := { '~' IDENTIFIER }
 
 return_type     := type
                  | '(' type ')' '?'        -- nullable return grouped explicitly
+```
+
+Example: 
+```luc
+-- Normal function type
+let callback (int) string
+
+-- Async function type
+let asyncCallback ~async (int) string
+
+-- Nullable async function
+let maybeHandler (~async (int) string)?
+
+-- Multiple qualifiers
+let optimized ~async ~noinline (float) float
 ```
 
 ### Function Declaration (shorthand — preferred)
 
 ```
 func_decl       := decl_keyword IDENTIFIER [ generic_params ]
-                   param_group { param_group } [ return_type ] [ '?' ]
-                   '=' func_body
+                   [ qualifier_list ] param_group { param_group } [return_type ] [ '?' ] '=' block
+
+qualifier_list  := { '~' IDENTIFIER }
 
 param_group     := '(' [ param_list ] ')'
                    -- single group = normal function
@@ -542,12 +558,47 @@ func_body       := block                   -- body block: = { stmts }
                  | anon_func               -- explicit anonymous function: = (params) ret { stmts }
 ```
 
+### Example 
+
+```luc
+-- Normal function (no qualifiers)
+let square (x int) int = { return x * x }
+
+-- Async function (~async qualifier in type)
+let computeAsync ~async (x int) int = {
+    return await doWork(x)
+}
+
+-- Async with noinline
+let fetchData ~async ~noinline (url string) string = {
+    return await httpGet(url)
+}
+
+-- Async curried function
+let fetchAll ~async (urls []string) []string = {
+    let results = await parallelMap(urls, httpGet)
+    return results
+}
+```
+
 ### Anonymous Function
 
 ```
-anon_func       := [ async_mod ] '(' [ param_list ] ')' [ return_type ] block
+anon_func       := [ qualifier_list ] '(' [ param_list ] ')' [ return_type ] block
 
-async_mod       := 'async'
+qualifier_list  := { '~' IDENTIFIER }
+```
+
+### Examples
+```luc
+-- Normal anonymous function
+let add = (x int, y int) int { return x + y }
+
+-- Async anonymous function
+let fetch ~async (url string) string = ~async (url string) string { return await httpGet(url) }
+
+-- Multiple qualifiers
+let process = ~async ~noinline (data []byte) []byte { ... }
 ```
 
 ### Parameter List
@@ -583,9 +634,9 @@ let parse (s string) int? = { ... }
 let handler ((req Request) Response)? = nil
 
 -- Async function
-let fetch (url string) string = async (url string) string { ... }
+let fetch ~async (url string) string = ~async (url string) string { ... }
 
-let fetch (url string) string = async { ... }
+let fetch ~async (url string) string = { ... }
 ```
 
 ## Struct Declaration
@@ -629,7 +680,7 @@ field_assign    := expr '.' IDENTIFIER '=' expr
                    -- const fields are not reassignable
 ```
 
-Examples:
+### Examples
 ```luc
 -- Basic struct declaration
 struct Vec2 {
@@ -2711,7 +2762,7 @@ case_value      := expr                                -- single value:  case 1:
 default_clause  := 'default' ':' { stmt }
 ```
 
-Examples:
+### Examples
 ```luc
 -- Multiple values per case
 switch code {
@@ -2783,11 +2834,24 @@ eventual value type; the compiler wraps the return in a future internally.
 then produces the actual value.
 
 ```
--- async modifier on an anonymous function body
-anon_func       := 'async' '(' [ param_list ] ')' [ return_type ] block
+-- Async function declaration (type includes ~async, body is normal block)
+let fetch ~async (url string) string = {
+    let data string = await httpGet(url)
+    return data
+}
 
 -- await in expression position — only valid inside an async function
+-- await can only be used on expressions that evaluate to a Future
 await_expr      := 'await' expr
+
+-- Correct await usage
+let result string = await fetch("https://api.example.com")
+
+-- Wrong: cannot await a plain value
+-- let x int = await 42  -- ERROR
+
+-- Wrong: cannot call async function without await
+-- let bad string = fetch("url")  -- ERROR: async function requires await
 ```
 
 ### Rules
@@ -2803,23 +2867,31 @@ await_expr      := 'await' expr
 ### Examples
 
 ```luc
--- async function declaration
-let fetch (url string) string = async (url string) string {
-    let data string = await httpGet(url)
-    return data
+-- Async function declaration with block body
+let fetch ~async (url string) string = {
+    return await httpGet(url)
 }
 
--- composing async and parallel: fetch first (async), then process (parallel)
-let process (items []Item) []Result = async (items []Item) []Result {
-    -- I/O phase: async and sequential
-    let raw []RawData = await fetchAll(items)
+-- Async function with explicit anonymous function body
+let process ~async (data []byte) []byte = ~async (data []byte) []byte {
+    let validated = await validate(data)
+    return await transform(validated)
+}
 
-    -- CPU phase: parallel and synchronous — no await inside
-    parallel for item in raw {
-        item.value = item.value -> transform -> normalize
-    }
+-- await usage
+let result string = await fetch("https://api.example.com")
 
-    return raw -> toResults
+-- Wrong: cannot await a plain value
+-- let x int = await 42  -- ERROR: 42 is not an async call
+
+-- Wrong: cannot await a non-async function call
+-- let y int = await computeSync(5)  -- ERROR: computeSync is not async
+
+-- Async function composition
+let getData ~async () string = {
+    let raw = await fetch("url")
+    let processed = await process(raw)
+    return processed
 }
 ```
 

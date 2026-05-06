@@ -281,17 +281,16 @@ void TypeResolver::visit(FuncTypeAST& node) {
 // visit(FuncDeclAST)  — Resolves function parameter and return types
 // ─────────────────────────────────────────────────────────────────────────────
 void TypeResolver::visit(FuncDeclAST& node) {
-    LUC_LOG_SEMANTIC("visit(FuncDeclAST): name='" << node.name 
-                   << "', paramGroups=" << node.paramGroups.size());
-    
     resolveFunctionSignature(node);
     
-    // CRITICAL: Point directly to AST-owned signature - NO CLONE
+    // Ensure qualifiers are preserved on the resolved signature
+    if (node.signature && node.signature->isa<FuncTypeAST>()) {
+        node.signature->as<FuncTypeAST>()->qualifiers = node.qualifiers;
+    }
+    
     Symbol* sym = symbols_.lookup(node.name);
     if (sym && node.signature) {
         sym->type = node.signature.get();
-        LUC_LOG_SEMANTIC_VERBOSE("\tupdated symbol '" << node.name 
-                               << "' type to signature");
     }
     
     resolved_ = node.signature.get();

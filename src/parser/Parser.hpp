@@ -211,7 +211,7 @@ class Parser {
 
     // '(' [ param_types ] ')' [ return_type ] [ '?' ]
     // Handles nullable function form: '(' '(' ... ')' ret ')' '?'
-    TypePtr parseFuncType();
+    TypePtr parseFuncType(bool allowQualifiers = true);
 
     // Wrap a TypePtr in NullableTypeAST if the next token is '?'.
     TypePtr wrapNullable(TypePtr inner);
@@ -313,7 +313,7 @@ class Parser {
     // Sets bodyKind and isAsync on the owning decl. Returns the BlockStmtAST.
     // paramGroups and returnType are passed in so they can be overridden when
     // the explicit anonymous form repeats them.
-    StmtPtr parseFuncBody(FuncBodyKind &outBodyKind, bool &outIsAsync);
+    StmtPtr parseFuncBody(FuncBodyKind &outBodyKind);
 
     // ─────────────────────────────────────────────────────────────────────────
     // ParserExpr.cpp — Pratt expression parser

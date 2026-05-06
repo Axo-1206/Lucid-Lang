@@ -35,8 +35,7 @@
 // Forward declaration of Phase 3 dispatcher (defined in SemanticDecl.cpp)
 // ─────────────────────────────────────────────────────────────────────────────
 void checkTopLevelDecl(DeclAST* decl, SymbolTable& symbols, TypeResolver& resolver,
-                       DiagnosticEngine& dc, int& asyncDepth, int& loopDepth,
-                       int& parallelDepth, bool insideExtern);
+                       DiagnosticEngine& dc, int& loopDepth, int& parallelDepth, bool insideExtern);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Forward declaration of Phase 4 dispatcher (defined in Annotator.cpp)
@@ -211,14 +210,7 @@ bool SemanticAnalyzer::analyze(std::vector<ProgramAST*>& files) {
                 LUC_LOG_SEMANTIC("\tERROR: main does not return int");
                 dc_.error(DiagnosticCategory::Semantic, func->loc, DiagCode::E3007,
                           "'main' function must return 'int'");
-            }
-            
-            // 5. MUST NOT be async
-            if (func->isAsync) {
-                LUC_LOG_SEMANTIC("\tERROR: main is async");
-                dc_.error(DiagnosticCategory::Semantic, func->loc, DiagCode::E3007,
-                          "'main' function cannot be async");
-            }
+            }   
 
             // 6. @aot and @jit validation on main
             bool hasAot = false;
@@ -440,8 +432,7 @@ void SemanticAnalyzer::checkDecls(std::vector<ProgramAST*>& files) {
                                    << " kind=" << LucDebug::kindToString(decl->kind));
             
             checkTopLevelDecl(decl.get(), *symbols_, *typeResolver_, dc_,
-                              asyncDepth_, loopDepth_, parallelDepth_,
-                              insideExtern_);
+                              loopDepth_, parallelDepth_, insideExtern_);
         }
     }
     LUC_LOG_SEMANTIC_VERBOSE("checkDecls: checked " << declCount << " declarations");

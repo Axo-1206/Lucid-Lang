@@ -216,6 +216,7 @@ inline std::unique_ptr<TypeAST> cloneType(const TypeAST* type) {
         case ASTKind::FuncType: {
             auto* f = static_cast<const FuncTypeAST*>(type);
             auto clone = std::make_unique<FuncTypeAST>(f->isNullable);
+            clone->qualifiers = f->qualifiers;  // ADD THIS
             clone->returnType = cloneType(f->returnType.get());
             for (auto& p : f->params) {
                 clone->params.push_back(cloneType(p.get()));
@@ -256,7 +257,7 @@ inline std::unique_ptr<TypeAST> cloneType(TypeAST* type) {
 // Ownership: Returns a unique_ptr that the caller should store in node.signature.
 // ─────────────────────────────────────────────────────────────────────────────
 
-inline std::unique_ptr<TypeAST> buildResolvedFunctionSignature(const FuncDeclAST& node) {
+inline std::unique_ptr<TypeAST> buildResolvedFunctionSignature(const FuncDeclAST& node, int32_t qualifiers = 0) {
     LUC_LOG_SEMANTIC_VERBOSE("buildResolvedFunctionSignature: " << node.name
                            << ", paramGroups=" << node.paramGroups.size());
 
@@ -301,6 +302,10 @@ inline std::unique_ptr<TypeAST> buildResolvedFunctionSignature(const FuncDeclAST
         curReturn = std::move(funcType);
     }
 
+    if (curReturn && curReturn->isa<FuncTypeAST>()) {
+        curReturn->as<FuncTypeAST>()->qualifiers = qualifiers;
+    }
+
     LUC_LOG_SEMANTIC_EXTREME("\tsignature built");
     return curReturn;
 }
@@ -338,7 +343,7 @@ inline std::unique_ptr<TypeAST> buildResolvedFunctionSignature(const FuncDeclAST
 // Ownership: Returns a unique_ptr that the caller should store in node.signature.
 //   The caller takes ownership of the newly created FuncTypeAST tree.
 // ─────────────────────────────────────────────────────────────────────────────
-inline std::unique_ptr<TypeAST> buildResolvedMethodSignature(const MethodDeclAST& node) {
+inline std::unique_ptr<TypeAST> buildResolvedMethodSignature(const MethodDeclAST& node, int32_t qualifiers = 0) {
     LUC_LOG_SEMANTIC_VERBOSE("buildResolvedMethodSignature: " << node.name
                            << ", paramGroups=" << node.paramGroups.size());
 
@@ -380,7 +385,10 @@ inline std::unique_ptr<TypeAST> buildResolvedMethodSignature(const MethodDeclAST
         curReturn = std::move(funcType);
     }
 
-    std::cout << "=== END ===" << std::endl;
+    if (curReturn && curReturn->isa<FuncTypeAST>()) {
+        curReturn->as<FuncTypeAST>()->qualifiers = qualifiers;
+    }
+
     return curReturn;
 }
 

@@ -487,7 +487,6 @@ void ASTDumper::visit(ComposeExprAST& node) {
 
 void ASTDumper::visit(AnonFuncExprAST& node) {
     std::string header = "AnonFuncExprAST";
-    if (node.isAsync) header += " async";
     for (const auto& group : node.paramGroups) {
         header += " (";
         for (size_t i = 0; i < group.size(); ++i) {

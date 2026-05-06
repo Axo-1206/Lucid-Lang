@@ -157,10 +157,11 @@ enum class TokenType {
     // to avoid ambiguity with the reference operator &T and union type |.
     BIT_AND,  // &&        - bitwise AND  (integer types only)
     BIT_OR,   // ||        - bitwise OR   (integer types only)
-    BIT_XOR, // ~^
-    BIT_NOT, // ~
-    SHL,     // <<
-    SHR,     // >>
+    BIT_XOR,  // ~^
+    BIT_NOT,  // ~~   -- bitwise NOT
+    SHL,      // <<
+    SHR,      // >>
+    TILDE,    // ~         - type qualifier prefix: ~async, ~noinline
 
     // ─── Delimiters ───────────────────────────────────────────────────────────
     COMMA,     // ,

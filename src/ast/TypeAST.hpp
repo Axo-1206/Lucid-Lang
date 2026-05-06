@@ -374,16 +374,30 @@ struct PtrTypeAST : TypeAST {
 
 struct FuncTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::FuncType;
-
-    std::vector<TypePtr>  params;       // parameter types in order, no names
-    TypePtr               returnType;   // nullptr = no return (void equivalent)
-    bool                  isNullable;   // true → ((params) ret)?  function itself is nil-able
-
+    
+    std::vector<TypePtr>  params;
+    TypePtr               returnType;
+    bool                  isNullable = false;
+    
+    // NEW: Type qualifiers as bitmask
+    uint32_t              qualifiers = 0;
+    
+    // Qualifier bit definitions
+    static constexpr uint32_t QUAL_ASYNC    = 1 << 0;
+    static constexpr uint32_t QUAL_NOINLINE = 1 << 1;
+    static constexpr uint32_t QUAL_CDECL    = 1 << 2;
+    static constexpr uint32_t QUAL_STDCALL  = 1 << 3;
+    static constexpr uint32_t QUAL_FASTCALL = 1 << 4;
+    static constexpr uint32_t QUAL_HEAP     = 1 << 5;
+    static constexpr uint32_t QUAL_COLD     = 1 << 6;
+    
+    // Helper methods
+    bool hasQualifier(uint32_t q) const { return qualifiers & q; }
+    void setQualifier(uint32_t q) { qualifiers |= q; }
+    bool isAsync() const { return hasQualifier(QUAL_ASYNC); }
+    
     explicit FuncTypeAST(bool nullable = false)
-        : TypeAST(ASTKind::FuncType), returnType(nullptr), isNullable(nullable) {}
-
-    // Convenience — returns true when the function has no return value
-    bool isVoid() const { return returnType == nullptr; }
-
+        : TypeAST(ASTKind::FuncType), isNullable(nullable) {}
+    
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
