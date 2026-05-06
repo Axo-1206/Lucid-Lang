@@ -100,25 +100,47 @@ bool TypeChecker::isEqual(TypeAST* a, TypeAST* b) {
     if (a->isa<FuncTypeAST>()) {
         auto* fa = a->as<FuncTypeAST>();
         auto* fb = b->as<FuncTypeAST>();
-        if (fa->qualifiers != fb->qualifiers) {
+        
+        // Compare qualifiers that affect type equality
+        uint32_t equalityMask = QualifierRegistry::instance().equalityMask();
+        if ((fa->qualifiers & equalityMask) != (fb->qualifiers & equalityMask)) {
             LUC_LOG_SEMANTIC_VERBOSE("\tFuncType qualifier mismatch -> false");
             return false;
         }
+        
+        // Compare nullability (function itself nullable)
         if (fa->isNullable != fb->isNullable) {
             LUC_LOG_SEMANTIC_VERBOSE("\tFuncType nullability mismatch -> false");
             return false;
         }
-        if (fa->params.size() != fb->params.size()) {
-            LUC_LOG_SEMANTIC_VERBOSE("\tFuncType param count mismatch -> false");
+        
+        // Compare parameter group count (curry levels)
+        if (fa->paramGroups.size() != fb->paramGroups.size()) {
+            LUC_LOG_SEMANTIC_VERBOSE("\tFuncType param group count mismatch -> false");
             return false;
         }
-        for (size_t i = 0; i < fa->params.size(); ++i) {
-            if (!isEqual(fa->params[i].get(), fb->params[i].get())) {
-                LUC_LOG_SEMANTIC_VERBOSE("\tFuncType param " << i << " mismatch -> false");
+        
+        // Compare each parameter group
+        for (size_t g = 0; g < fa->paramGroups.size(); ++g) {
+            const auto& groupA = fa->paramGroups[g];
+            const auto& groupB = fb->paramGroups[g];
+            
+            if (groupA.size() != groupB.size()) {
+                LUC_LOG_SEMANTIC_VERBOSE("\tFuncType param group " << g << " size mismatch -> false");
                 return false;
             }
+            
+            for (size_t i = 0; i < groupA.size(); ++i) {
+                // Compare parameter types (ignoring parameter names)
+                if (!isEqual(groupA[i].type.get(), groupB[i].type.get())) {
+                    LUC_LOG_SEMANTIC_VERBOSE("\tFuncType param " << i << " in group " << g << " mismatch -> false");
+                    return false;
+                }
+            }
         }
-        result = isEqual(fa->returnType.get(), fb->returnType.get());
+        
+        // Compare return types
+        bool result = isEqual(fa->returnType.get(), fb->returnType.get());
         LUC_LOG_SEMANTIC_VERBOSE("\tFuncType: " << (result ? "true" : "false"));
         return result;
     }
@@ -599,7 +621,7 @@ bool TypeChecker::isFromCastable(TypeAST* src, TypeAST* target, SymbolTable* sym
             continue;
         }
 
-        TypeAST* firstParamType = entry->paramGroups[0][0]->type.get();
+        TypeAST* firstParamType = entry->paramGroups[0][0].type.get();
         if (!firstParamType) {
             LUC_LOG_SEMANTIC_EXTREME("\t\tfirst param type is null");
             continue;

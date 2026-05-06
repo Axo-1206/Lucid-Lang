@@ -105,12 +105,16 @@ std::string ASTDumper::formatType(TypeAST* type) {
             return "[*]" + formatType(static_cast<DynamicArrayTypeAST*>(type)->element.get());
         case ASTKind::FuncType: {
             auto* f = static_cast<FuncTypeAST*>(type);
-            std::string res = "(";
-            for (size_t i = 0; i < f->params.size(); ++i) {
-                if (i > 0) res += ", ";
-                res += formatType(f->params[i].get());
+            std::string res;
+            for (const auto& group : f->paramGroups) {
+                res += "(";
+                for (size_t i = 0; i < group.size(); ++i) {
+                    if (i > 0) res += ", ";
+                    if (group[i].type) res += formatType(group[i].type.get());
+                    if (group[i].isVariadic) res += "...";
+                }
+                res += ")";
             }
-            res += ")";
             if (f->returnType) {
                 res += " " + formatType(f->returnType.get());
             }
@@ -189,7 +193,13 @@ void ASTDumper::visit(FuncTypeAST& node) {
     if (node.isNullable) header += " (nullable)";
     printNodeHeader(node, header);
     indentLevel++;
-    for (const auto& param : node.params) visitChild(param.get(), "param");
+    // Fix: iterate over paramGroups, not params
+    for (const auto& group : node.paramGroups) {
+        for (const auto& param : group) {
+            // ParamInfo is a struct, use .type
+            if (param.type) visitChild(param.type.get(), "param");
+        }
+    }
     if (node.returnType) visitChild(node.returnType.get(), "return");
     indentLevel--;
 }
@@ -222,17 +232,18 @@ void ASTDumper::visit(VarDeclAST& node) {
 
 void ASTDumper::visit(FuncDeclAST& node) {
     std::string header = "FuncDeclAST '" + node.name + "'";
-    for (const auto& group : node.paramGroups) {
+    // Fix: node.type (not node->type), paramGroups (not paramGroups)
+    for (const auto& group : node.type.paramGroups) {
         header += " (";
         for (size_t i = 0; i < group.size(); ++i) {
             if (i > 0) header += ", ";
-            if (group[i] && group[i]->type) {
-                header += formatType(group[i]->type.get());
+            if (group[i].type) {  // ParamInfo is struct, use .type
+                header += formatType(group[i].type.get());
             }
         }
         header += ")";
     }
-    if (node.returnType) header += " " + formatType(node.returnType.get());
+    if (node.type.returnType) header += " " + formatType(node.type.returnType.get());
     printNodeHeader(node, header);
     indentLevel++;
     if (node.body) visitChild(node.body.get());
@@ -276,18 +287,22 @@ void ASTDumper::visit(EnumVariantAST& node) {
 
 void ASTDumper::visit(TraitMethodAST& node) {
     std::string header = "TraitMethodAST '" + node.name + "'";
-    for (const auto& group : node.paramGroups) {
+    // Fix: node.type (not node->type), paramGroups (not paramGroups)
+    for (const auto& group : node.type.paramGroups) {
         header += " (";
         for (size_t i = 0; i < group.size(); ++i) {
-            if (group[i] && group[i]->type) {
-                header += formatType(group[i]->type.get());
-                if (i + 1 < group.size()) header += ", ";
+            if (i > 0) header += ", ";
+            if (group[i].type) {  // ParamInfo is struct, use .type
+                header += formatType(group[i].type.get());
             }
         }
         header += ")";
     }
-    if (node.returnType) header += " " + formatType(node.returnType.get());
+    if (node.type.returnType) header += " " + formatType(node.type.returnType.get());
     printNodeHeader(node, header);
+    indentLevel++;
+    // No body for trait methods
+    indentLevel--;
 }
 
 void ASTDumper::visit(TraitDeclAST& node) {
@@ -314,17 +329,17 @@ void ASTDumper::visit(ImplDeclAST& node) {
 
 void ASTDumper::visit(MethodDeclAST& node) {
     std::string header = "MethodDeclAST '" + node.name + "'";
-    for (const auto& group : node.paramGroups) {
+    for (const auto& group : node.type.paramGroups) {
         header += " (";
         for (size_t i = 0; i < group.size(); ++i) {
-            if (group[i] && group[i]->type) {
-                header += formatType(group[i]->type.get());
-                if (i + 1 < group.size()) header += ", ";
+            if (i > 0) header += ", ";
+            if (group[i].type) {
+                header += formatType(group[i].type.get());
             }
         }
         header += ")";
     }
-    if (node.returnType) header += " " + formatType(node.returnType.get());
+    if (node.type.returnType) header += " " + formatType(node.type.returnType.get());
     printNodeHeader(node, header);
     if (node.body) visitChild(node.body.get());
 }
@@ -338,12 +353,13 @@ void ASTDumper::visit(FromDeclAST& node) {
 
 void ASTDumper::visit(FromEntryAST& node) {
     std::string header = "FromEntryAST '" + node.returnTypeName + "'";
+    // FromEntryAST uses paramGroups directly (ParamGroup)
     for (const auto& group : node.paramGroups) {
         header += " (";
         for (size_t i = 0; i < group.size(); ++i) {
-            if (group[i] && group[i]->type) {
-                header += formatType(group[i]->type.get());
-                if (i + 1 < group.size()) header += ", ";
+            if (i > 0) header += ", ";
+            if (group[i].type) {  // ParamInfo is struct, use .type
+                header += formatType(group[i].type.get());
             }
         }
         header += ")";
@@ -351,17 +367,13 @@ void ASTDumper::visit(FromEntryAST& node) {
     printNodeHeader(node, header);
     if (node.body) visitChild(node.body.get());
 }
+
 void ASTDumper::visit(TypeAliasDeclAST& node) {
     std::string header = "TypeAliasDeclAST '" + node.name + "'";
     if (node.aliasedType) header += " = " + formatType(node.aliasedType.get());
     printNodeHeader(node, header);
 }
 
-void ASTDumper::visit(ParamAST& node) {
-    std::string header = "ParamAST '" + node.name + "'";
-    if (node.type) header += " : " + formatType(node.type.get());
-    printNodeHeader(node, header);
-}
 
 void ASTDumper::visit(GenericParamAST& node) {
     std::string header = "GenericParamAST '" + node.name + "'";
@@ -487,17 +499,18 @@ void ASTDumper::visit(ComposeExprAST& node) {
 
 void ASTDumper::visit(AnonFuncExprAST& node) {
     std::string header = "AnonFuncExprAST";
-    for (const auto& group : node.paramGroups) {
+    for (const auto& group : node.type.paramGroups) {
         header += " (";
         for (size_t i = 0; i < group.size(); ++i) {
-            if (group[i] && group[i]->type) {
-                header += formatType(group[i]->type.get());
-                if (i + 1 < group.size()) header += ", ";
+            if (i > 0) header += ", ";
+            if (group[i].type) {
+                header += formatType(group[i].type.get());
             }
+            if (group[i].isVariadic) header += "...";
         }
         header += ")";
     }
-    if (node.returnType) header += " " + formatType(node.returnType.get());
+    if (node.type.returnType) header += " " + formatType(node.type.returnType.get());
     printNodeHeader(node, header);
     if (node.body) visitChild(node.body.get());
 }

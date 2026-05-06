@@ -368,6 +368,19 @@ bool Parser::looksLikeType() const {
     case TokenType::IDENTIFIER:
         return true;
 
+    // Type qualifiers: ~async, ~noinline, ~cdecl, etc.
+    // A '~' followed by an identifier indicates a type qualifier,
+    // which is part of a function type.
+    case TokenType::TILDE:
+        // Look ahead: after '~' there must be an IDENTIFIER
+        // to consider this as a type. If not, it might be a syntax error.
+        if (peekNext().type == TokenType::IDENTIFIER) {
+            LUC_LOG_PARSER_EXTREME("looksLikeType: '~' followed by identifier -> true (type qualifier)");
+            return true;
+        }
+        result = false;
+        break;
+
     // Function type starts with '(' — must distinguish from a grouped
     // expression.  A function type '(' has at least a ')' somewhere and
     // then optionally a return type.  We accept '(' conservatively here;
@@ -376,6 +389,7 @@ bool Parser::looksLikeType() const {
     case TokenType::LPAREN:
         result = true;
         break;
+        
     default:
         result = false;
         break;
@@ -391,8 +405,7 @@ bool Parser::looksLikeFuncDecl() const {
     
     std::size_t i = pos_;
 
-    // Skip the name IDENTIFIER. Strategy: we must move past the name 
-    // to find the signature start (generics or parentheses).
+    // Skip the name IDENTIFIER
     if (i < tokens_.size() && tokens_[i].type == TokenType::IDENTIFIER) {
         LUC_LOG_PARSER_VERBOSE("\tfound IDENTIFIER: '" << tokens_[i].value << "'");
         ++i;
@@ -402,7 +415,6 @@ bool Parser::looksLikeFuncDecl() const {
     }
 
     // Skip generic params if present: < ... >
-    // We match angle brackets by depth so nested generics don't confuse us.
     if (i < tokens_.size() && tokens_[i].type == TokenType::LESS) {
         LUC_LOG_PARSER_VERBOSE("\tfound generic params start '<'");
         int depth = 1;
@@ -410,7 +422,8 @@ bool Parser::looksLikeFuncDecl() const {
         while (i < tokens_.size() && depth > 0) {
             if (tokens_[i].type == TokenType::LESS) ++depth;
             else if (tokens_[i].type == TokenType::GREATER) --depth;
-            else if (tokens_[i].type == TokenType::SEMICOLON || tokens_[i].type == TokenType::RBRACE) 
+            else if (tokens_[i].type == TokenType::SEMICOLON || 
+                     tokens_[i].type == TokenType::RBRACE) 
                 break;
             else if (tokens_[i].type == TokenType::EOF_TOKEN)
                 break;
@@ -419,9 +432,28 @@ bool Parser::looksLikeFuncDecl() const {
         LUC_LOG_PARSER_VERBOSE("\tafter generic params, at token '" << tokens_[i].value << "'");
     }
 
-    // After optional generics, we need at least one parameter group.
+    // Skip type qualifiers (~async, ~noinline, etc.) that appear after the name
+    // These are part of the function's type, not the declaration syntax
+    while (i < tokens_.size() && tokens_[i].type == TokenType::TILDE) {
+        ++i; // skip '~'
+        // Expect an identifier after '~'
+        if (i < tokens_.size() && tokens_[i].type == TokenType::IDENTIFIER) {
+            LUC_LOG_PARSER_VERBOSE("\tskipping qualifier '~" << tokens_[i].value << "'");
+            ++i;
+        } else {
+            // Invalid: '~' without identifier - not a valid function
+            LUC_LOG_PARSER_VERBOSE("\t'~' without identifier, returning false");
+            return false;
+        }
+        // Skip any comments between qualifiers
+        while (i < tokens_.size() && tokens_[i].type == TokenType::LINE_COMMENT) {
+            ++i;
+        }
+    }
+
+    // we need at least one parameter group '('
     if (!(i < tokens_.size() && tokens_[i].type == TokenType::LPAREN)) {
-        LUC_LOG_PARSER_VERBOSE("\tno '(' found after name/generics, returning false");
+        LUC_LOG_PARSER_VERBOSE("\tno '(' found after name/generics/qualifiers, returning false");
         return false;
     }
 

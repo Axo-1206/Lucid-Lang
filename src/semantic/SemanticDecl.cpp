@@ -26,6 +26,148 @@
 #include <string>
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Forward declarations 
+// NOTE: These are required because Declarations, Statements, and Expressions
+// cross-call each other recursively. We use manual forward declarations here
+// instead of a header to avoid complex circular dependency loops.
+// ─────────────────────────────────────────────────────────────────────────────
+TypeAST* checkExpr(ExprAST* node, SymbolTable& symbols, TypeResolver& resolver,
+                   DiagnosticEngine& dc, int& loopDepth,
+                   int& parallelDepth, bool insideExtern);
+
+void checkStmt(StmtAST* node, SymbolTable& symbols, TypeResolver& resolver,
+               DiagnosticEngine& dc, TypeAST* expectedReturn,
+               int& loopDepth, int& parallelDepth,
+               bool insideExtern);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HELPER FUNCTIONS (in order of dependency)
+// ─────────────────────────────────────────────────────────────────────────────               
+
+// -----------------------------------------------------------------------------
+// resolveFunctionType — Resolves all types inside a FuncTypeAST
+// -----------------------------------------------------------------------------
+static void resolveFunctionType(FuncTypeAST& type, TypeResolver& resolver, DiagnosticEngine& dc) {
+    for (auto& group : type.paramGroups) {
+        for (auto& param : group) {
+            if (param.type) {
+                resolver.resolveType(param.type.get());
+            }
+        }
+    }
+    
+    if (type.returnType) {
+        resolver.resolveType(type.returnType.get());
+    }
+}
+
+// -----------------------------------------------------------------------------
+// declareFunctionParameters — Declares all parameters in the symbol table
+// -----------------------------------------------------------------------------
+static void declareFunctionParameters(FuncTypeAST& type, SymbolTable& symbols, 
+                                       DiagnosticEngine& dc) {
+    for (const auto& group : type.paramGroups) {
+        for (const auto& param : group) {
+            Symbol ps;
+            ps.name = param.name;
+            ps.kind = SymbolKind::Param;
+            ps.declKw = DeclKeyword::Let;
+            ps.visibility = Visibility::Private;
+            ps.type = param.type.get();
+            ps.decl = nullptr;  // ParamInfo doesn't have AST back pointer
+            ps.loc = param.loc;
+            
+            if (!symbols.declare(ps)) {
+                LUC_LOG_SEMANTIC("\tERROR: duplicate parameter '" << param.name << "'");
+                dc.error(DiagnosticCategory::Semantic, param.loc, DiagCode::E3005,
+                         "duplicate parameter name '" + param.name + "'");
+            }
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// checkFunctionBody
+//
+// Checks a function body (block or expression) with the given expected return type.
+// Used by checkFuncDecl, checkMethodDecl, and checkAnonFuncExpr.
+// ─────────────────────────────────────────────────────────────────────────────
+static void checkFunctionBody(FuncBodyKind bodyKind, StmtPtr& body, ExprPtr& exprBody,
+                               FuncTypeAST& type, SymbolTable& symbols,
+                               TypeResolver& resolver, DiagnosticEngine& dc,
+                               int& loopDepth, int& parallelDepth, bool insideExtern) {
+    TypeAST* expectedReturnType = type.returnType ? type.returnType.get() : nullptr;
+    
+    if (bodyKind == FuncBodyKind::ExprBody && exprBody) {
+        // Expression body: function assignment (e.g., let f = existingFunc)
+        LUC_LOG_SEMANTIC("checkFunctionBody: expression body");
+        
+        TypeAST* exprType = checkExpr(exprBody.get(), symbols, resolver, dc,
+                                       loopDepth, parallelDepth, insideExtern);
+        
+        if (exprType && !TypeChecker::isAssignable(exprType, &type)) {
+            dc.error(DiagnosticCategory::Semantic, exprBody->loc, DiagCode::E3002,
+                     "type mismatch in function assignment");
+        }
+    } else if (body) {
+        // Block body
+        LUC_LOG_SEMANTIC("checkFunctionBody: block body");
+        checkStmt(body.get(), symbols, resolver, dc, expectedReturnType,
+                  loopDepth, parallelDepth, insideExtern);
+    }
+}
+
+
+
+// -----------------------------------------------------------------------------
+// checkFunctionLikeDeclaration — Unified checker for all function-like nodes
+// -----------------------------------------------------------------------------
+static void checkFunctionLikeDeclaration(FuncTypeAST& type,
+                                          std::vector<GenericParamPtr>& genericParams,
+                                          FuncBodyKind bodyKind,
+                                          StmtPtr& body,
+                                          ExprPtr& exprBody,
+                                          SymbolTable& symbols,
+                                          TypeResolver& resolver,
+                                          DiagnosticEngine& dc,
+                                          int& loopDepth,
+                                          int& parallelDepth,
+                                          bool insideExtern,
+                                          const std::string& name) {
+    // Set generic parameters context
+    resolver.setGenericParams(&genericParams);
+    
+    // Resolve all types in the function signature
+    resolveFunctionType(type, resolver, dc);
+    
+    // Push scope for parameters
+    symbols.pushScope();
+    
+    // Declare parameters in the symbol table
+    declareFunctionParameters(type, symbols, dc);
+    
+    // Check the body
+    checkFunctionBody(bodyKind, body, exprBody, type, symbols, resolver, dc,
+                      loopDepth, parallelDepth, insideExtern);
+    
+    // Pop scope
+    symbols.popScope();
+    
+    // Clear generic parameters context
+    resolver.setGenericParams(nullptr);
+}
+
+// -----------------------------------------------------------------------------
+// getReturnTypeFromFunctionType — Returns resolved return type (nullptr = void)
+// -----------------------------------------------------------------------------
+static TypeAST* getReturnTypeFromFunctionType(FuncTypeAST& type, TypeResolver& resolver) {
+    if (type.returnType) {
+        return resolver.resolveType(type.returnType.get());
+    }
+    return nullptr;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // AttributeContext — which kind of declaration owns the attribute list.
 // Controls which attribute names are valid in a given position.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -294,21 +436,6 @@ static void checkAttributes(const std::vector<AttributePtr>& attributes,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Forward declarations 
-// NOTE: These are required because Declarations, Statements, and Expressions
-// cross-call each other recursively. We use manual forward declarations here
-// instead of a header to avoid complex circular dependency loops.
-// ─────────────────────────────────────────────────────────────────────────────
-TypeAST* checkExpr(ExprAST* node, SymbolTable& symbols, TypeResolver& resolver,
-                   DiagnosticEngine& dc, int& loopDepth,
-                   int& parallelDepth, bool insideExtern);
-
-void checkStmt(StmtAST* node, SymbolTable& symbols, TypeResolver& resolver,
-               DiagnosticEngine& dc, TypeAST* expectedReturn,
-               int& loopDepth, int& parallelDepth,
-               bool insideExtern);
-
-// ─────────────────────────────────────────────────────────────────────────────
 // isConstExpr  — Returns true when an expression is a compile-time constant
 //
 // Called during Phase 3 (before the Annotator runs in Phase 4), so we cannot
@@ -514,174 +641,27 @@ void checkFuncDecl(FuncDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
                    DiagnosticEngine& dc, int& loopDepth,
                    int& parallelDepth, bool insideExtern) {
 
-    // 0. Validate '@' attributes on this function.
+    // Validate '@' attributes
     bool attrIsExtern = false;
     std::string attrExternSym, attrCallingConv;
     checkAttributes(node.attributes, AttributeContext::Func, node.keyword, dc,
                     attrIsExtern, attrExternSym, attrCallingConv);
 
-    // @extern("sym") on a function means the body is resolved by the linker.
-    // We still resolve param/return types so they are available to codegen.
+    // Handle @extern functions
     if (attrIsExtern) {
         resolver.setGenericParams(&node.genericParams);
         resolver.setInsideExtern(true);
-
-        // Resolve param types — *T is valid here.
-        for (auto& group : node.paramGroups) {
-            for (auto& param : group)
-                resolver.resolveType(param->type.get());
-        }
-        if (node.returnType)
-            resolver.resolveType(node.returnType.get());
-
+        resolveFunctionType(node.type, resolver, dc);
         resolver.setInsideExtern(false);
         resolver.setGenericParams(nullptr);
-
-        // ── Body classification ───────────────────────────────────────────────
-        if (node.body) {
-            bool bodyEmpty = false;
-            if (node.body->isa<BlockStmtAST>()) {
-                bodyEmpty = node.body->as<BlockStmtAST>()->stmts.empty();
-            }
-
-            if (bodyEmpty) {
-                dc.warning(DiagnosticCategory::Semantic, node.body->loc,
-                           DiagCode::W3002,
-                           "'@extern(\"" + attrExternSym + "\")' function '" + node.name +
-                           "' has an empty body '= {}' — the body is ignored and the "
-                           "linker symbol is used; remove the body to suppress this warning");
-            } else if (!bodyEmpty && node.body->isa<BlockStmtAST>()) {
-                dc.error(DiagnosticCategory::Semantic, node.body->loc,
-                         DiagCode::E3002,
-                         "'@extern(\"" + attrExternSym + "\")' function '" + node.name +
-                         "' has a body with statements — this code will never execute "
-                         "because the linker resolves the symbol; remove the body");
-            }
-        }
         return;
     }
 
-    // Set generic parameters context so that T in let foo<T> resolves as a valid generic param.
-    resolver.setGenericParams(&node.genericParams);
-
-    // Resolve return type (nullptr is void — valid).
-    TypeAST* returnType = nullptr;
-    if (node.returnType) {
-        returnType = resolver.resolveType(node.returnType.get());
-        if (!returnType) {
-            resolver.setGenericParams(nullptr);
-            return;
-        }
-    }
-
-    // Build signature using shared helper
-    node.signature = SemanticHelpers::buildResolvedFunctionSignature(node, node.qualifiers);
-
-
-    symbols.pushScope();
-
-    // Declare parameters (types are already resolved)
-    for (auto& group : node.paramGroups) {
-        for (auto& param : group) {
-            // param->type should already have resolvedType set from Phase 2
-            TypeAST* pt = param->type->resolvedType 
-              ? static_cast<TypeAST*>(param->type->resolvedType) 
-              : param->type.get();
-            Symbol ps;
-            ps.name = param->name;
-            ps.kind = SymbolKind::Param;
-            ps.declKw = DeclKeyword::Let;
-            ps.visibility = Visibility::Private;
-            ps.type = pt;
-            ps.decl = param.get();
-            ps.loc = param->loc;
-            symbols.declare(ps);
-        }
-    }
-
-    // Check the body based on body kind
-    if (node.bodyKind == FuncBodyKind::ExprBody && node.exprBody) {
-        // ── Expression Body: function assignment (e.g., let f = core_add) ─────────
-        // This covers both curried and non-curried function assignments.
-        //
-        // Examples:
-        //   let myAdd (a int) (b int) int = core_add     (curried assignment)
-        //   let square (x int) int = existingSquare      (non-curried assignment)
-        //
-        // The RHS must be an expression that evaluates to a function with a
-        // signature compatible with this function's declaration.
-        
-        LUC_LOG_SEMANTIC("checkFuncDecl: expression body for '" << node.name 
-                    << "', checking assignment");
-        
-        // Resolve the expression type
-        TypeAST* exprType = checkExpr(node.exprBody.get(), symbols, resolver, dc,
-                                    loopDepth, parallelDepth, insideExtern);
-        
-        if (!exprType) {
-            LUC_LOG_SEMANTIC("\tERROR: failed to resolve expression type");
-            dc.error(DiagnosticCategory::Semantic, node.exprBody->loc, DiagCode::E3002,
-                    "cannot resolve expression type in function assignment for '" + node.name + "'");
-            return;
-        }
-        
-        // Get the expected function signature
-        TypeAST* expectedType = node.signature.get();
-        if (!expectedType) {
-            LUC_LOG_SEMANTIC("\tERROR: function signature is null");
-            dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
-                    "internal error: function signature not built for '" + node.name + "'");
-            return;
-        }
-        
-        LUC_LOG_SEMANTIC_EXTREME("\texprType: " << LucDebug::kindToString(exprType->kind));
-        LUC_LOG_SEMANTIC_EXTREME("\texpectedType: " << LucDebug::kindToString(expectedType->kind));
-
-        // Check assignability between expression type and function signature
-        if (!TypeChecker::isAssignable(exprType, expectedType)) {
-            LUC_LOG_SEMANTIC("\tERROR: type mismatch in function assignment");
-            dc.error(DiagnosticCategory::Semantic, node.exprBody->loc, DiagCode::E3002,
-                    "type mismatch in function assignment for '" + node.name + 
-                    "': expression type does not match function signature");
-            return;
-        }
-        
-        LUC_LOG_SEMANTIC_VERBOSE("\tfunction assignment type check passed");
-        
-    } else if (node.body) {
-        // ── Block Body: normal function body with statements ─────────────────────
-        // This covers:
-        //   - Block bodies: = { return expr } or = { stmt*; expr }
-        //   - Anon func forms: = (params) ret { ... }
-        //   - Async block bodies: = async { ... }
-        
-        LUC_LOG_SEMANTIC("checkFuncDecl: block body for '" << node.name 
-                    << "', kind=" << (node.bodyKind == FuncBodyKind::AnonFunc ? "AnonFunc" : "Block"));
-        
-        TypeAST* expectedReturnType = nullptr;
-        
-        // Determine expected return type for the block body
-        if (node.returnType) {
-            expectedReturnType = node.returnType->resolvedType 
-                            ? static_cast<TypeAST*>(node.returnType->resolvedType) 
-                            : node.returnType.get();
-        }
-        // Note: For void functions (no return type), expectedReturnType remains nullptr
-        
-        checkStmt(node.body.get(), symbols, resolver, dc, expectedReturnType,
-                loopDepth, parallelDepth, insideExtern);
-        
-    } else {
-        // ── No Body: This should not happen for non-extern functions ──────────────
-        LUC_LOG_SEMANTIC("\tERROR: function '" << node.name << "' has no body");
-        dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                "function '" + node.name + "' has no body and is not marked @extern");
-    }
-    
-    symbols.popScope();
-    
-    // Clear generic parameters context after checking function.
-    resolver.setGenericParams(nullptr);
+    // Use unified helper for normal functions
+    checkFunctionLikeDeclaration(
+        node.type, node.genericParams, node.bodyKind,
+        node.body, node.exprBody, symbols, resolver, dc,
+        loopDepth, parallelDepth, insideExtern, node.name);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -773,29 +753,20 @@ void checkEnumDecl(EnumDeclAST& node, DiagnosticEngine& dc) {
 //   - No duplicate method names within the trait.
 // ─────────────────────────────────────────────────────────────────────────────
 void checkTraitDecl(TraitDeclAST& node, TypeResolver& resolver, DiagnosticEngine& dc) {
-    LUC_LOG_SEMANTIC("checkTraitDecl: name=" << node.name);
-    // Set generic parameters context so that T in Container<T> resolves as a valid generic param.
     resolver.setGenericParams(&node.genericParams);
     
     std::unordered_set<std::string> seen;
     for (auto& method : node.methods) {
         if (!seen.insert(method->name).second) {
-            LUC_LOG_SEMANTIC("\tERROR: duplicate method '" << method->name << "' in trait");
             dc.error(DiagnosticCategory::Semantic, method->loc, DiagCode::E3005,
                      "duplicate method '" + method->name + "' in trait '" + node.name + "'");
             continue;
         }
-        for (auto& group : method->paramGroups) {
-            for (auto& param : group) {
-                resolver.resolveType(param->type.get());
-            }
-        }
-        if (method->returnType) {
-            resolver.resolveType(method->returnType.get());
-        }
+        
+        // Just resolve the types - no scope, no body
+        resolveFunctionType(method->type, resolver, dc);
     }
     
-    // Clear generic parameters context after resolving trait methods.
     resolver.setGenericParams(nullptr);
 }
 
@@ -954,11 +925,7 @@ void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
             continue;
         }
  
-        TypeAST* returnType = nullptr;
-        if (method->returnType) {
-            returnType = resolver.resolveType(method->returnType.get());
-            if (!returnType) continue;
-        }
+        TypeAST* returnType = getReturnTypeFromFunctionType(method->type, resolver);
 
         symbols.pushScope();
 
@@ -1020,31 +987,12 @@ void checkImplDecl(ImplDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
         }
 
         // Inject parameters. Re-resolve each param type fresh.
-        for (auto& group : method->paramGroups) {
-            for (auto& param : group) {
-                TypeAST* pt = resolver.resolveType(param->type.get());
-                if (!pt) continue;
-                Symbol ps;
-                ps.name = param->name;
-                ps.kind = SymbolKind::Param;
-                ps.declKw = DeclKeyword::Let;
-                ps.visibility = Visibility::Private;
-                ps.type = pt;
-                ps.decl = param.get();
-                ps.loc = param->loc;
-                if (!symbols.declare(ps)) {
-                    LUC_LOG_SEMANTIC("\tERROR: duplicate parameter '" << param->name << "' in impl method");
-                    dc.error(DiagnosticCategory::Semantic, param->loc, DiagCode::E3005,
-                             "duplicate parameter '" + param->name + "'");
-                }
-            }
-        }
+        declareFunctionParameters(method->type, symbols, dc);
  
         if (method->body) {
             checkStmt(method->body.get(), symbols, resolver, dc, returnType,
                       loopDepth, parallelDepth, insideExtern);
         }
-
  
         symbols.popScope();
     }
@@ -1132,7 +1080,13 @@ void checkFromDecl(FromDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
     
     // Synthesize a NamedTypeAST on the stack to represent the expected return type.
     NamedTypeAST targetTypeAST(node.targetTypeName);
+    targetTypeAST.loc = node.loc;
     TypeAST* targetType = resolver.resolveType(&targetTypeAST);
+    if (!targetType) {
+        dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
+                 "from block: cannot resolve target type '" + node.targetTypeName + "'");
+        return;
+    }
 
     // We accumulate validated entries here to cross-check full signatures and prevent duplicates.
     std::vector<FromEntryAST*> verifiedEntries;
@@ -1153,22 +1107,35 @@ void checkFromDecl(FromDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
         symbols.pushScope();
 
         // Declare all parameters from all curry groups into the body scope.
-        for (auto& group : entry->paramGroups) {
-            for (auto& param : group) {
-                TypeAST* pt = resolver.resolveType(param->type.get());
+        // entry->paramGroups is std::vector<ParamGroup> (ParamInfo)
+        for (const auto& group : entry->paramGroups) {
+            for (const auto& param : group) {
+                // Resolve parameter type if not already resolved
+                TypeAST* pt = param.type.get();
+                if (!pt) {
+                    LUC_LOG_SEMANTIC("\tERROR: parameter '" << param.name << "' has no type");
+                    dc.error(DiagnosticCategory::Semantic, param.loc, DiagCode::E3001,
+                             "parameter '" + param.name + "' has no type");
+                    continue;
+                }
+                
+                // Ensure the type is resolved
+                pt = resolver.resolveType(pt);
                 if (!pt) continue;
+                
                 Symbol ps;
-                ps.name       = param->name;
+                ps.name       = param.name;
                 ps.kind       = SymbolKind::Param;
                 ps.declKw     = DeclKeyword::Let;
                 ps.visibility = Visibility::Private;
                 ps.type       = pt;
-                ps.decl       = param.get();
-                ps.loc        = param->loc;
+                ps.decl       = nullptr;  // ParamInfo doesn't have AST back pointer
+                ps.loc        = param.loc;
+                
                 if (!symbols.declare(ps)) {
-                    LUC_LOG_SEMANTIC("\tERROR: duplicate parameter '" << param->name << "' in from entry");
-                    dc.error(DiagnosticCategory::Semantic, param->loc, DiagCode::E3005,
-                             "duplicate parameter name '" + param->name + "' in from casting");
+                    LUC_LOG_SEMANTIC("\tERROR: duplicate parameter '" << param.name << "' in from entry");
+                    dc.error(DiagnosticCategory::Semantic, param.loc, DiagCode::E3005,
+                             "duplicate parameter name '" + param.name + "' in from casting");
                 }
             }
         }
@@ -1190,14 +1157,17 @@ void checkFromDecl(FromDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
 
             bool allGroupsMatch = true;
             for (size_t i = 0; i < entry->paramGroups.size(); ++i) {
-                auto& g1 = entry->paramGroups[i];
-                auto& g2 = seen->paramGroups[i];
+                const auto& g1 = entry->paramGroups[i];
+                const auto& g2 = seen->paramGroups[i];
+                
                 if (g1.size() != g2.size()) {
                     allGroupsMatch = false;
                     break;
                 }
+                
                 for (size_t j = 0; j < g1.size(); ++j) {
-                    if (!TypeChecker::isEqual(g1[j]->type.get(), g2[j]->type.get())) {
+                    // Compare parameter types (ignoring names)
+                    if (!TypeChecker::isEqual(g1[j].type.get(), g2[j].type.get())) {
                         allGroupsMatch = false;
                         break;
                     }

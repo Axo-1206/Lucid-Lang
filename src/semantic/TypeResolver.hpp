@@ -42,15 +42,13 @@ public:
     void visit(VarDeclAST& node)            override;
     void visit(ImplDeclAST& node)           override;
     void visit(FromDeclAST& node)           override;
-    void visit(FromEntryAST& node)          override;
     void visit(TypeAliasDeclAST& node)      override;
-    
-    void resolveMethodSignature(MethodDeclAST& node);
-    void resolveFunctionSignature(FuncDeclAST& node);
-    TypePtr buildResolvedSignature(FuncDeclAST& node);
+    void visit(TraitDeclAST& node)          override;
+    void visit(MethodDeclAST& node)         override;
+    void visit(TraitMethodAST& node)        override;
+
     void resolveStructFields(StructDeclAST& node);
     void resolveImplMethods(ImplDeclAST& node);
-    void resolveFromEntries(FromDeclAST& node);
 
     // Call this before resolving types in an @extern-decorated declaration
     // so that *T raw pointer types are permitted in that context.

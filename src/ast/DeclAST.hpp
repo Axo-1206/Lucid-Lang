@@ -74,7 +74,6 @@
 // Parameters are restricted to string literals, integer literals, booleans, and
 // type identifiers — no runtime expressions inside attributes.
 // ─────────────────────────────────────────────────────────────────────────────
-
 // AttributeArg — one argument inside an attribute's parentheses.
 // Valid forms:  "string"  |  42  |  true/false  |  TypeName
 struct AttributeArgAST {
@@ -155,15 +154,12 @@ enum class FuncBodyKind {
 // package name as a plain string; this node carries the source location for
 // error reporting when the name mismatches the directory.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct PackageDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::PackageDecl;
 
     std::string name; // "math", "renderer", "app", ...
 
-    explicit PackageDeclAST(std::string n)
-        : DeclAST(ASTKind::PackageDecl), name(std::move(n)) {}
-
+    explicit PackageDeclAST(std::string n) : DeclAST(ASTKind::PackageDecl), name(std::move(n)) {}
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
 
@@ -178,7 +174,6 @@ struct PackageDeclAST : DeclAST {
 // path stores the segments split on '.'. The semantic pass joins them back
 // when resolving against the package root.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct UseDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::UseDecl;
 
@@ -187,7 +182,6 @@ struct UseDeclAST : DeclAST {
     Visibility visibility = Visibility::Private;
 
     UseDeclAST() : DeclAST(ASTKind::UseDecl) {}
-
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
 
@@ -205,7 +199,6 @@ struct UseDeclAST : DeclAST {
 // const — the semantic pass enforces that const always has an initialiser).
 // visibility tracks the visibility modifier when used at top level.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct VarDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::VarDecl;
 
@@ -217,36 +210,8 @@ struct VarDeclAST : DeclAST {
     std::vector<AttributePtr> attributes;  // @extern, @inline, etc. — may be empty
 
     VarDeclAST() : DeclAST(ASTKind::VarDecl) {}
-
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ParamAST
-//
-// A single parameter in a parameter list.
-//   name  type           →  positional:  x int,  other Vec2
-//   name  ...type        →  variadic:    args ...int
-//
-// Variadic params must be last in the list — enforced by the parser.
-// ParamAST is not a DeclAST because it never stands alone as a top-level
-// declaration — it is always owned by a FuncDeclAST, MethodDeclAST,
-// TraitMethodAST, or FuncTypeAST.
-// ─────────────────────────────────────────────────────────────────────────────
-
-struct ParamAST : BaseAST {
-    static constexpr ASTKind staticKind = ASTKind::Param;
-
-    std::string name;
-    TypePtr type;
-    bool isVariadic = false; // true → args ...int
-
-    ParamAST() : BaseAST(ASTKind::Param) {}
-
-    void accept(ASTVisitor& v) override { v.visit(*this); }
-};
-
-using ParamPtr = std::unique_ptr<ParamAST>;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GenericParamAST
@@ -260,16 +225,13 @@ using ParamPtr = std::unique_ptr<ParamAST>;
 // constraints stores the trait names as plain strings — the semantic pass
 // resolves each name to a TraitDeclAST in the symbol table.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct GenericParamAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::GenericParam;
 
     std::string name;                     // "T", "K", "V"
     std::vector<std::string> constraints; // trait names — empty if unconstrained
 
-    explicit GenericParamAST(std::string n)
-        : BaseAST(ASTKind::GenericParam), name(std::move(n)) {}
-
+    explicit GenericParamAST(std::string n) : BaseAST(ASTKind::GenericParam), name(std::move(n)) {}
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
 
@@ -279,47 +241,31 @@ using GenericParamPtr = std::unique_ptr<GenericParamAST>;
 // FuncDeclAST
 //
 // A function declaration — syntactic sugar for a variable holding a function.
-//   let   add (a int) (b int) int    = { return a + b }
-//   const greet (name string)        = { io.printl("hi " + name) }
-//   let   fetch (url string) string  = async { return await httpGet(url) }
+//   let add (a int) (b int) int = { return a + b }
+//   let fetch ~async (url string) string = { return await httpGet(url) }
 //
-// paramGroups — multiple groups = curried function. Each group is a list of
-//   ParamAST. The semantic pass desugars multi-group functions into nested
-//   anonymous functions. Single-group = normal function.
+// The function's complete signature (parameters, return type, qualifiers)
+// is stored in the 'type' field (FuncTypeAST).
 //
-// returnType — nullptr means void (no return value).
-//   For multiple return values use a tuple return type: (int, string).
-//
-// isAsync — true when the body was written as  = async { ... }
-//   or  = async (params) ret { ... }
-//
-// body — always a BlockStmtAST. match/if direct bodies are desugared by the
-//   parser into a single-statement block before storing here.
-//
-// bodyKind — records which syntactic form was written (for LSP / pretty print).
-//
-// visibility — the visibility modifier on the declaration.
-//
-// Generics: let process<T : Numeric> (x T) string = { ... }
-//   genericParams holds the T declarations.
+// paramGroups, returnType, qualifiers, rawQualifiers are all inside FuncTypeAST.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct FuncDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::FuncDecl;
 
     DeclKeyword keyword;
     std::string name;
     std::vector<GenericParamPtr> genericParams;
-    std::vector<std::vector<ParamPtr>> paramGroups;
-    TypePtr returnType;
+    FuncTypeAST type;                               // (params + return + qualifiers)
     StmtPtr body;                                   // For block bodies only
     ExprPtr exprBody;                               // For expression bodies
     FuncBodyKind bodyKind = FuncBodyKind::Block;
-    TypePtr signature;
     Visibility visibility = Visibility::Private;
     std::vector<AttributePtr> attributes;
-    uint32_t qualifiers = 0;                        // type qualifiers (~async, etc.)
 
+    // Convenience helpers
+    bool isAsync() const { return type.isAsync(); }
+    bool hasParams() const { return type.hasParams(); }
+    
     FuncDeclAST() : DeclAST(ASTKind::FuncDecl) {}
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
@@ -335,7 +281,6 @@ struct FuncDeclAST : DeclAST {
 // defaultVal is null when no default was written. The semantic pass enforces
 // that struct literals must supply every field without a default.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct FieldDeclAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::FieldDecl;
 
@@ -344,7 +289,6 @@ struct FieldDeclAST : BaseAST {
     ExprPtr defaultVal; // nullptr if no default
 
     FieldDeclAST() : BaseAST(ASTKind::FieldDecl) {}
-
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
 
@@ -389,7 +333,6 @@ using FieldDeclPtr = std::unique_ptr<FieldDeclAST>;
 //   - Once created, remains constant for the semantic pass
 //   - Stored in Symbol::type when declaring the struct symbol
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct StructDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::StructDecl;
 
@@ -413,7 +356,6 @@ struct StructDeclAST : DeclAST {
     mutable std::unique_ptr<NamedTypeAST> selfType;
 
     StructDeclAST() : DeclAST(ASTKind::StructDecl) {}
-
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
 
@@ -430,7 +372,6 @@ struct StructDeclAST : DeclAST {
 //   - explicit value resets the counter from that point
 // Duplicate values within the same enum are a semantic error.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct EnumVariantAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::EnumVariant;
 
@@ -438,9 +379,7 @@ struct EnumVariantAST : BaseAST {
     std::optional<int>
         explicitValue; // only present when '= INT_LITERAL' was written
 
-    explicit EnumVariantAST(std::string n)
-        : BaseAST(ASTKind::EnumVariant), name(std::move(n)) {}
-
+    explicit EnumVariantAST(std::string n) : BaseAST(ASTKind::EnumVariant), name(std::move(n)) {}
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
 
@@ -458,7 +397,6 @@ using EnumVariantPtr = std::unique_ptr<EnumVariantAST>;
 //   - short (int16) for more
 // Variants are accessed via EnumName.Variant dot syntax — never bare names.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct EnumDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::EnumDecl;
 
@@ -467,7 +405,6 @@ struct EnumDeclAST : DeclAST {
     Visibility visibility = Visibility::Private;
 
     EnumDeclAST() : DeclAST(ASTKind::EnumDecl) {}
-
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
 
@@ -486,17 +423,16 @@ struct EnumDeclAST : DeclAST {
 // this node when checking that ImplDeclAST provides every required method.
 // returnType is nullptr for void methods.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct TraitMethodAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::TraitMethod;
 
     std::string name;
-    std::vector<std::vector<ParamPtr>> paramGroups; // outer = curry groups
-    TypePtr returnType; // nullptr = void
-    TypePtr signature;                              // Synthesized Function Type (signature)
+    FuncTypeAST type;                               // (params + return + qualifiers)
 
+    // Convenience helpers
+    bool isAsync() const { return type.isAsync(); }
+    
     TraitMethodAST() : BaseAST(ASTKind::TraitMethod) {}
-
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
 
@@ -512,7 +448,6 @@ using TraitMethodPtr = std::unique_ptr<TraitMethodAST>;
 // Used by the semantic pass to verify impl conformance and as a constraint
 // in generic param declarations (T : Drawable).
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct TraitDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::TraitDecl;
 
@@ -538,7 +473,6 @@ struct TraitDeclAST : DeclAST {
 // The semantic pass resolves name to a TraitDeclAST and checks that
 // genericArgs count matches the trait's generic params.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct TraitRefAST {
     std::string name;   // trait name, e.g. "Comparable"
     std::vector<TypePtr>
@@ -554,31 +488,25 @@ using TraitRefPtr = std::unique_ptr<TraitRefAST>;
 //
 // A method body inside an impl block.
 //   length () float = { return (x*x + y*y) -> sqrt }
-//   dot (other Vec2) float = { return x*other.x + y*other.y }
-//   drawAll () = { for obj in objects { obj.draw() } }
-//   clamp (min int) (max int) (value int) int = { ... }   -- curried method
+//   offset ~async (dx float) (dy float) Point = { ... }
 //
-// paramGroups mirrors FuncDeclAST: outer = curry groups, inner = params.
-// Single group = normal method; multiple groups = curried method.
 // No per-method visibility prefix — visibility is set at the ImplDeclAST level.
-// returnType is nullptr for void methods.
-// isAsync is true when the body was written as async { ... }.
+// The method name is separate from the function type.
+// The function's signature (parameters, return type, qualifiers) is stored in 'type'.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct MethodDeclAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::MethodDecl;
 
     std::string name;
-    std::vector<std::vector<ParamPtr>> paramGroups;
-    TypePtr returnType;
+    FuncTypeAST type;                               // (params + return + qualifiers)
     StmtPtr body;                                   // For block bodies only
     ExprPtr exprBody;                               // For expression bodies
     FuncBodyKind bodyKind = FuncBodyKind::Block;
-    TypePtr signature;
-    uint32_t qualifiers = 0;                        // type qualifiers (~async, etc.)
 
+    // Convenience helpers
+    bool isAsync() const { return type.isAsync(); }
+    
     MethodDeclAST() : BaseAST(ASTKind::MethodDecl) {}
-
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
 
@@ -591,7 +519,7 @@ using MethodDeclPtr = std::unique_ptr<MethodDeclAST>;
 //   celsius (c Celsius) Fahrenheit = { ... }
 //   celsius (c Celsius) (scale float) Fahrenheit = { ... }   -- curried
 //
-// paramGroups mirrors FuncDeclAST: outer = curry groups, inner = params.
+// paramGroups mirrors FuncTypeAST: outer = curry groups, inner = params.
 // Single group = normal conversion; multiple groups = curried conversion.
 // returnTypeName must match the enclosing FromDeclAST's targetTypeName —
 // enforced by the semantic pass.
@@ -599,13 +527,12 @@ using MethodDeclPtr = std::unique_ptr<MethodDeclAST>;
 struct FromEntryAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::FromEntry;
 
-    std::vector<std::vector<ParamPtr>> paramGroups; // outer = curry groups
-    std::string returnTypeName; // "Fahrenheit"
-    StmtPtr     body;           // BlockStmtAST
+    std::vector<ParamGroup> paramGroups;            // outer = curry groups
+    std::string returnTypeName;                     // "Fahrenheit"
+    StmtPtr body;                                   // BlockStmtAST
     FuncBodyKind bodyKind = FuncBodyKind::Block;
 
     FromEntryAST() : BaseAST(ASTKind::FromEntry) {}
-
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
 
@@ -621,7 +548,6 @@ using FromEntryPtr = std::unique_ptr<FromEntryAST>;
 //
 // Multiple from declarations are allowed, each with a different source parameter type.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct FromDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::FromDecl;
 
@@ -630,7 +556,6 @@ struct FromDeclAST : DeclAST {
     std::vector<FromEntryPtr> entries;
 
     FromDeclAST() : DeclAST(ASTKind::FromDecl) {}
-
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
 
@@ -661,7 +586,6 @@ struct FromDeclAST : DeclAST {
 //
 // Multiple impl blocks for the same struct merge at semantic time.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct ImplDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::ImplDecl;
 
@@ -673,7 +597,6 @@ struct ImplDeclAST : DeclAST {
     std::vector<MethodDeclPtr> methods;
 
     ImplDeclAST() : DeclAST(ASTKind::ImplDecl) {}
-
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
 
@@ -690,7 +613,6 @@ struct ImplDeclAST : DeclAST {
 // semantic level. Use struct for a distinct nominal type.
 // aliasedType holds the full TypeAST on the right-hand side.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct TypeAliasDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::TypeAliasDecl;
 
@@ -700,6 +622,5 @@ struct TypeAliasDeclAST : DeclAST {
     Visibility visibility = Visibility::Private;
 
     TypeAliasDeclAST() : DeclAST(ASTKind::TypeAliasDecl) {}
-
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };

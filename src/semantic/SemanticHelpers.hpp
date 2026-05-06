@@ -36,8 +36,12 @@
 #include "TypeResolver.hpp"
 #include "TypeChecker.hpp"
 
+
 namespace SemanticHelpers {
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Print utilities
+// ─────────────────────────────────────────────────────────────────────────────
 
 inline void printTypeAST(const std::string& label, TypeAST* t, int indent = 0) {
     if (!t) {
@@ -96,23 +100,8 @@ inline void printTypeAST(const std::string& label, TypeAST* t, int indent = 0) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Primitive Type Singletons
 // ─────────────────────────────────────────────────────────────────────────────
-//
-// Returns a pointer to a static singleton PrimitiveTypeAST for the given kind.
-// These singletons are safe to use across the entire semantic pass because:
-//   1. PrimitiveTypeAST nodes are immutable after construction
-//   2. The static storage duration ensures they live for the program's lifetime
-//   3. Multiple returns of the same pointer allow pointer equality comparisons
-//
-// Usage:
-//   TypeAST* intType = SemanticHelpers::getPrimitiveType(PrimitiveKind::Int);
-//
-// IMPORTANT: Do NOT delete or take ownership of the returned pointer.
-// These singletons are owned by this function and must not be freed.
-// ─────────────────────────────────────────────────────────────────────────────
 
 inline PrimitiveTypeAST* getPrimitiveType(PrimitiveKind k) {
-    // One singleton per kind, lazily constructed on first access.
-    // Using function-local statics guarantees thread-safe initialization (C++11).
     static PrimitiveTypeAST singletons[] = {
         PrimitiveTypeAST(PrimitiveKind::Bool),
         PrimitiveTypeAST(PrimitiveKind::Byte),
@@ -142,29 +131,12 @@ inline PrimitiveTypeAST* getPrimitiveType(PrimitiveKind k) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Type Cloning — Deep copy a TypeAST node
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// Creates a deep copy of the given TypeAST node. All child nodes are recursively
-// cloned. Required for:
-//   - Building function signatures where the same type node appears in multiple places
-//   - Generic instantiation where we need to create a concrete copy of a template
-//   - Storing resolved types without aliasing the original AST nodes
-//
-// Ownership: Returns a unique_ptr that the caller must manage.
-// The cloned nodes are completely independent of the original.
-//
-// IMPORTANT: Does NOT clone the resolvedType pointer (that's semantic state,
-// not part of the type's syntactic structure). The cloned type will have
-// resolvedType = nullptr.
+// Type Cloning
 // ─────────────────────────────────────────────────────────────────────────────
 
 inline std::unique_ptr<TypeAST> cloneType(const TypeAST* type) {
     if (!type) return nullptr;
 
-    // EXTREME level is appropriate here because cloneType is called frequently,
-    // and EXTREME logging is disabled by default. Only enable when debugging
-    // memory ownership issues.
     LUC_LOG_SEMANTIC_EXTREME("cloneType: kind=" << LucDebug::kindToString(type->kind));
 
     switch (type->kind) {
@@ -216,10 +188,15 @@ inline std::unique_ptr<TypeAST> cloneType(const TypeAST* type) {
         case ASTKind::FuncType: {
             auto* f = static_cast<const FuncTypeAST*>(type);
             auto clone = std::make_unique<FuncTypeAST>(f->isNullable);
-            clone->qualifiers = f->qualifiers;  // ADD THIS
+            clone->qualifiers = f->qualifiers;
             clone->returnType = cloneType(f->returnType.get());
-            for (auto& p : f->params) {
-                clone->params.push_back(cloneType(p.get()));
+            for (auto& group : f->paramGroups) {
+                ParamGroup newGroup;
+                for (auto& param : group) {
+                    newGroup.emplace_back(param.name, cloneType(param.type.get()), 
+                                          param.isVariadic, param.loc);
+                }
+                clone->paramGroups.push_back(std::move(newGroup));
             }
             return clone;
         }
@@ -230,179 +207,93 @@ inline std::unique_ptr<TypeAST> cloneType(const TypeAST* type) {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Clone a TypeAST from a raw pointer (non-const overload)
-// ─────────────────────────────────────────────────────────────────────────────
 inline std::unique_ptr<TypeAST> cloneType(TypeAST* type) {
     return cloneType(static_cast<const TypeAST*>(type));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Build Function Signature — Creates a FuncTypeAST from a function declaration
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// This function builds the complete curried signature of a function by:
-//   1. Starting with the innermost return type
-//   2. Wrapping outward with each parameter group (from last group to first)
-//
-// For a non-curried function (single param group): (a int, b int) int
-//   Returns: FuncTypeAST with params=[int, int], returnType=int
-//
-// For a curried function: (a int) (b int) int
-//   Returns: FuncTypeAST with params=[int], returnType=FuncTypeAST([int], int)
-//
-// PRECONDITION: All parameter and return types have already been resolved
-//   by the TypeResolver and have their resolvedType pointers set correctly.
-//
-// Ownership: Returns a unique_ptr that the caller should store in node.signature.
+// FUNCTION SIGNATURE HELPERS (Unified for all function-like nodes)
 // ─────────────────────────────────────────────────────────────────────────────
 
-inline std::unique_ptr<TypeAST> buildResolvedFunctionSignature(const FuncDeclAST& node, int32_t qualifiers = 0) {
-    LUC_LOG_SEMANTIC_VERBOSE("buildResolvedFunctionSignature: " << node.name
-                           << ", paramGroups=" << node.paramGroups.size());
-
-    // Get the resolved return type
-    TypeAST* returnType = nullptr;
-    if (node.returnType) {
-        returnType = node.returnType->resolvedType
-                     ? static_cast<TypeAST*>(node.returnType->resolvedType)
-                     : node.returnType.get();
-    }
-
-    // No parameter groups → signature is just the return type (or void)
-    if (node.paramGroups.empty()) {
-        if (returnType) {
-            return cloneType(returnType);
+// ─────────────────────────────────────────────────────────────────────────────
+// resolveFunctionType
+//
+// Resolves all types inside a FuncTypeAST (parameter types and return type).
+// Called during Phase 3 for function-like declarations.
+// ─────────────────────────────────────────────────────────────────────────────
+inline void resolveFunctionType(FuncTypeAST& type, TypeResolver& resolver) {
+    // Resolve parameter types in all curry groups
+    for (auto& group : type.paramGroups) {
+        for (auto& param : group) {
+            if (param.type) {
+                resolver.resolveType(param.type.get());
+            }
         }
-        return nullptr;
     }
-
-    // Start with the innermost return type
-    std::unique_ptr<TypeAST> curReturn = returnType ? cloneType(returnType) : nullptr;
-
-    // Wrap from the LAST parameter group to the FIRST (builds curry chain)
-    for (int i = static_cast<int>(node.paramGroups.size()) - 1; i >= 0; --i) {
-        auto funcType = std::make_unique<FuncTypeAST>();
-        funcType->isNullable = false;
-        funcType->loc = node.loc;
-
-        // Add all parameters from this group using their resolved types
-        for (auto& param : node.paramGroups[i]) {
-            TypeAST* paramType = param->type->resolvedType
-                                 ? static_cast<TypeAST*>(param->type->resolvedType)
-                                 : param->type.get();
-            funcType->params.push_back(cloneType(paramType));
-        }
-
-        // Set the return type (previous layer of the curry chain)
-        if (curReturn) {
-            funcType->returnType = std::move(curReturn);
-        }
-
-        curReturn = std::move(funcType);
+    
+    // Resolve return type
+    if (type.returnType) {
+        resolver.resolveType(type.returnType.get());
     }
-
-    if (curReturn && curReturn->isa<FuncTypeAST>()) {
-        curReturn->as<FuncTypeAST>()->qualifiers = qualifiers;
-    }
-
-    LUC_LOG_SEMANTIC_EXTREME("\tsignature built");
-    return curReturn;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// buildResolvedMethodSignature  — Creates a FuncTypeAST from a resolved method
+// declareFunctionParameters
 //
-// Unlike buildResolvedFunctionSignature (which works on FuncDeclAST), this
-// operates on MethodDeclAST nodes from impl blocks. The key difference is
-// that methods do NOT have their own generic parameters — they inherit from
-// the impl block's generic parameters (e.g., impl Scene<T> { drawAll() ... }).
-//
-// Signature building process:
-//   1. Start with the innermost resolved return type
-//   2. Wrap outward with each parameter group (from last group to first)
-//   3. The resulting signature represents the method's type with ALL parameters,
-//      NOT including the implicit 'self' parameter (which is handled separately
-//      by the semantic pass when building mangled names).
-//
-// For a non-curried method: offset (dx float) (dy float) Point
-//   Returns: FuncTypeAST { params=[float, float], returnType=NamedType("Point") }
-//
-// For a curried method: setTransform (x float) (y float) (z float) void
-//   Returns: FuncTypeAST { params=[float], 
-//              returnType=FuncTypeAST { params=[float], 
-//                returnType=FuncTypeAST { params=[float], returnType=nullptr } } }
-//
-// PRECONDITION: All parameter and return types have already been resolved by
-//   TypeResolver and have their resolvedType pointers set correctly.
-//
-// PRECONDITION: The caller (TypeResolver::visit(ImplDeclAST)) has already set
-//   the genericParams_ context to the impl block's generic parameters, so any
-//   generic type references (e.g., T in struct Scene<T>) resolve correctly.
-//
-// Ownership: Returns a unique_ptr that the caller should store in node.signature.
-//   The caller takes ownership of the newly created FuncTypeAST tree.
+// Declares all parameters from a FuncTypeAST into the current symbol table scope.
+// Used when entering a function body to make parameters available.
 // ─────────────────────────────────────────────────────────────────────────────
-inline std::unique_ptr<TypeAST> buildResolvedMethodSignature(const MethodDeclAST& node, int32_t qualifiers = 0) {
-    LUC_LOG_SEMANTIC_VERBOSE("buildResolvedMethodSignature: " << node.name
-                           << ", paramGroups=" << node.paramGroups.size());
-
-    // Get resolved return type
-    TypeAST* returnType = nullptr;
-    if (node.returnType) {
-        returnType = node.returnType->resolvedType
-                     ? static_cast<TypeAST*>(node.returnType->resolvedType)
-                     : node.returnType.get();
-    }
-
-    if (node.paramGroups.empty()) {
-        if (returnType) {
-            return cloneType(returnType);
+inline void declareFunctionParameters(FuncTypeAST& type, SymbolTable& symbols,
+                                       DiagnosticEngine& dc) {
+    for (const auto& group : type.paramGroups) {
+        for (const auto& param : group) {
+            Symbol ps;
+            ps.name = param.name;
+            ps.kind = SymbolKind::Param;
+            ps.declKw = DeclKeyword::Let;
+            ps.visibility = Visibility::Private;
+            ps.type = param.type.get();
+            ps.decl = nullptr;  // ParamInfo doesn't have AST back pointer
+            ps.loc = param.loc;
+            
+            if (!symbols.declare(ps)) {
+                LUC_LOG_SEMANTIC("\tERROR: duplicate parameter '" << param.name << "'");
+                dc.error(DiagnosticCategory::Semantic, param.loc, DiagCode::E3005,
+                         "duplicate parameter name '" + param.name + "'");
+            }
         }
-        return nullptr;
     }
-
-    // Start with return type as the innermost
-    std::unique_ptr<TypeAST> curReturn = returnType ? cloneType(returnType) : nullptr;
-
-    // Wrap from last parameter group to first
-    for (int i = static_cast<int>(node.paramGroups.size()) - 1; i >= 0; --i) {
-        auto funcType = std::make_unique<FuncTypeAST>();
-        funcType->isNullable = false;
-        funcType->loc = node.loc;
-
-        for (auto& param : node.paramGroups[i]) {
-            TypeAST* paramType = param->type->resolvedType
-                                 ? static_cast<TypeAST*>(param->type->resolvedType)
-                                 : param->type.get();
-            funcType->params.push_back(cloneType(paramType));
-        }
-
-        if (curReturn) {
-            funcType->returnType = std::move(curReturn);
-        }
-
-        curReturn = std::move(funcType);
-    }
-
-    if (curReturn && curReturn->isa<FuncTypeAST>()) {
-        curReturn->as<FuncTypeAST>()->qualifiers = qualifiers;
-    }
-
-    return curReturn;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Resolve Expression Type Helper
+// getFunctionReturnType
+//
+// Returns the resolved return type from a FuncTypeAST (nullptr = void).
 // ─────────────────────────────────────────────────────────────────────────────
-//
-// Safely extracts the resolved type from an expression node, handling:
-//   - Null pointers
-//   - Missing resolvedType (returns nullptr)
-//
-// Usage:
-//   TypeAST* t = SemanticHelpers::getExprType(exprNode);
-//   if (!t) { /* error already reported or type inference needed */ }
+inline TypeAST* getFunctionReturnType(FuncTypeAST& type, TypeResolver& resolver) {
+    if (type.returnType) {
+        return resolver.resolveType(type.returnType.get());
+    }
+    return nullptr;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// resolveFunctionTypeSignature (DEPRECATED - kept for backward compatibility)
+// ─────────────────────────────────────────────────────────────────────────────
+
+inline std::unique_ptr<TypeAST> buildResolvedFunctionSignature(const FuncDeclAST& node, uint32_t qualifiers = 0) {
+    // DEPRECATED: Use resolveFunctionType on node.type instead
+    // This is kept as a no-op wrapper for compatibility
+    return nullptr;
+}
+
+inline std::unique_ptr<TypeAST> buildResolvedMethodSignature(const MethodDeclAST& node, uint32_t qualifiers = 0) {
+    // DEPRECATED: Use resolveFunctionType on node.type instead
+    return nullptr;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Other Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
 inline TypeAST* getExprType(const ExprAST* expr) {
@@ -410,28 +301,10 @@ inline TypeAST* getExprType(const ExprAST* expr) {
     return static_cast<TypeAST*>(expr->resolvedType);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Check Type Compatibility and Report Error
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// Convenience wrapper around TypeChecker::isAssignable that also logs debug
-// information and optionally reports a diagnostic error.
-//
-// Parameters:
-//   from   - source type (being assigned from)
-//   to     - target type (being assigned to)
-//   loc    - source location for error reporting
-//   dc     - diagnostic engine for error reporting
-//   reportError - if true, emits a diagnostic on failure
-//
-// Returns: true if assignable, false otherwise
-// ─────────────────────────────────────────────────────────────────────────────
-
 inline bool checkAssignable(TypeAST* from, TypeAST* to,
                             const SourceLocation& loc,
                             DiagnosticEngine& dc,
                             bool reportError = true) {
-    // VERBOSE level because this is called frequently during type checking
     LUC_LOG_SEMANTIC_VERBOSE("checkAssignable: from=" << (from ? LucDebug::kindToString(from->kind) : "null")
                            << ", to=" << (to ? LucDebug::kindToString(to->kind) : "null"));
 

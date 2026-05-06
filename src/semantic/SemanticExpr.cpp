@@ -641,6 +641,7 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
                                TypeResolver& resolver, DiagnosticEngine& dc,
                                int& loopDepth, int& parallelDepth, bool insideExtern) {
     LUC_LOG_SEMANTIC_VERBOSE("checkCallExpr");
+    
     // Check each argument.
     for (auto& arg : node.args) {
         checkExpr(arg.get(), symbols, resolver, dc,
@@ -652,8 +653,6 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
                                     loopDepth, parallelDepth, insideExtern);
 
     // ── Built-in array methods: arr.len(), arr.push(x), etc. ────────────────
-    // Detect field access on array types and handle known method names before
-    // falling through to the normal function lookup logic.
     if (node.callee->isa<FieldAccessExprAST>()) {
         auto* fieldAcc = node.callee->as<FieldAccessExprAST>();
         TypeAST* objType = static_cast<TypeAST*>(fieldAcc->object->resolvedType);
@@ -675,7 +674,6 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
             // .len()
             if (methodName == "len") {
                 if (!node.args.empty()) {
-                    LUC_LOG_SEMANTIC("\tERROR: .len() takes no arguments");
                     dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3003,
                              "'.len()' takes no arguments");
                     return errorFallback(&node);
@@ -686,7 +684,6 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
             // .isEmpty()
             if (methodName == "isEmpty") {
                 if (!node.args.empty()) {
-                    LUC_LOG_SEMANTIC("\tERROR: .isEmpty() takes no arguments");
                     dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3003,
                              "'.isEmpty()' takes no arguments");
                     return errorFallback(&node);
@@ -697,13 +694,11 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
             // .cap() — slice and dynamic only
             if (methodName == "cap") {
                 if (!isSlice && !isDynamic) {
-                    LUC_LOG_SEMANTIC("\tERROR: .cap() only on slices/dynamic arrays");
                     dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                              "'.cap()' is only available on slices and dynamic arrays");
                     return errorFallback(&node);
                 }
                 if (!node.args.empty()) {
-                    LUC_LOG_SEMANTIC("\tERROR: .cap() takes no arguments");
                     dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3003,
                              "'.cap()' takes no arguments");
                     return errorFallback(&node);
@@ -714,7 +709,6 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
             // .first() / .last()
             if (methodName == "first" || methodName == "last") {
                 if (!node.args.empty()) {
-                    LUC_LOG_SEMANTIC("\tERROR: .first()/.last() take no arguments");
                     dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3003,
                              "'.first()' / '.last()' take no arguments");
                     return errorFallback(&node);
@@ -725,13 +719,11 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
             // .push(value) — dynamic only
             if (methodName == "push") {
                 if (!isDynamic) {
-                    LUC_LOG_SEMANTIC("\tERROR: .push() only on dynamic arrays");
                     dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                              "'.push()' is only available on dynamic arrays [*]T");
                     return errorFallback(&node);
                 }
                 if (node.args.size() != 1) {
-                    LUC_LOG_SEMANTIC("\tERROR: .push() expects one argument");
                     dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3003,
                              "'.push()' expects exactly one argument");
                     return errorFallback(&node);
@@ -739,7 +731,6 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
                 TypeAST* argType = checkExpr(node.args[0].get(), symbols, resolver, dc,
                                              loopDepth, parallelDepth, insideExtern);
                 if (argType && elemType && !TypeChecker::isAssignable(argType, elemType)) {
-                    LUC_LOG_SEMANTIC("\tERROR: argument type mismatch in .push()");
                     dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                              "argument type mismatch in '.push()'");
                 }
@@ -749,13 +740,11 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
             // .pop() — dynamic only
             if (methodName == "pop") {
                 if (!isDynamic) {
-                    LUC_LOG_SEMANTIC("\tERROR: .pop() only on dynamic arrays");
                     dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                              "'.pop()' is only available on dynamic arrays [*]T");
                     return errorFallback(&node);
                 }
                 if (!node.args.empty()) {
-                    LUC_LOG_SEMANTIC("\tERROR: .pop() takes no arguments");
                     dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3003,
                              "'.pop()' takes no arguments");
                     return errorFallback(&node);
@@ -766,13 +755,11 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
             // .insert(index, value) — dynamic only
             if (methodName == "insert") {
                 if (!isDynamic) {
-                    LUC_LOG_SEMANTIC("\tERROR: .insert() only on dynamic arrays");
                     dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                              "'.insert()' is only available on dynamic arrays [*]T");
                     return errorFallback(&node);
                 }
                 if (node.args.size() != 2) {
-                    LUC_LOG_SEMANTIC("\tERROR: .insert() expects two arguments");
                     dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3003,
                              "'.insert()' expects two arguments: index and value");
                     return errorFallback(&node);
@@ -782,7 +769,6 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
                 TypeAST* valType = checkExpr(node.args[1].get(), symbols, resolver, dc,
                                              loopDepth, parallelDepth, insideExtern);
                 if (valType && elemType && !TypeChecker::isAssignable(valType, elemType)) {
-                    LUC_LOG_SEMANTIC("\tERROR: value type mismatch in .insert()");
                     dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                              "value type mismatch in '.insert()'");
                 }
@@ -792,13 +778,11 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
             // .remove(index) — dynamic only
             if (methodName == "remove") {
                 if (!isDynamic) {
-                    LUC_LOG_SEMANTIC("\tERROR: .remove() only on dynamic arrays");
                     dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                              "'.remove()' is only available on dynamic arrays [*]T");
                     return errorFallback(&node);
                 }
                 if (node.args.size() != 1) {
-                    LUC_LOG_SEMANTIC("\tERROR: .remove() expects one argument");
                     dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3003,
                              "'.remove()' expects one argument (index)");
                     return errorFallback(&node);
@@ -811,13 +795,11 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
             // .clear() — dynamic only
             if (methodName == "clear") {
                 if (!isDynamic) {
-                    LUC_LOG_SEMANTIC("\tERROR: .clear() only on dynamic arrays");
                     dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                              "'.clear()' is only available on dynamic arrays [*]T");
                     return errorFallback(&node);
                 }
                 if (!node.args.empty()) {
-                    LUC_LOG_SEMANTIC("\tERROR: .clear() takes no arguments");
                     dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3003,
                              "'.clear()' takes no arguments");
                     return errorFallback(&node);
@@ -828,13 +810,11 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
             // .reserve(capacity) — dynamic only
             if (methodName == "reserve") {
                 if (!isDynamic) {
-                    LUC_LOG_SEMANTIC("\tERROR: .reserve() only on dynamic arrays");
                     dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                              "'.reserve()' is only available on dynamic arrays [*]T");
                     return errorFallback(&node);
                 }
                 if (node.args.size() != 1) {
-                    LUC_LOG_SEMANTIC("\tERROR: .reserve() expects one argument");
                     dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3003,
                              "'.reserve()' expects one argument (capacity)");
                     return errorFallback(&node);
@@ -844,7 +824,6 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
                 node.resolvedType = nullptr;
                 return nullptr;
             }
-            // Unknown method — fall through to normal error path
         }
     }
 
@@ -853,8 +832,6 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
         auto* ident = node.callee->as<IdentifierExprAST>();
         Symbol* sym = symbols.lookup(ident->name);
         if (sym && sym->kind == SymbolKind::Struct) {
-            // Struct literal call — return a NamedTypeAST for this struct.
-            // The type pointer from the symbol table is the best we have here.
             node.resolvedType = sym->type ? sym->type : calleeType;
             return static_cast<TypeAST*>(node.resolvedType);
         }
@@ -870,25 +847,13 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
     }
 
     // ── ExternFunc (@extern-decorated function) ──────────────────────────────
-    // ExternFunc symbols have their param types stored in the FuncDeclAST just
-    // like normal functions. We check args against those param groups exactly
-    // as we do for Func, but we don't attempt to check a body (there isn't one).
     if (calleeSym && calleeSym->kind == SymbolKind::ExternFunc && calleeSym->decl) {
         auto* funcDecl = static_cast<FuncDeclAST*>(calleeSym->decl);
-        // Flat extern functions (no curry): check args against flat first group.
         
-
-        LUC_LOG_SEMANTIC("\tExternFunc: " << calleeSym->name);
-        LUC_LOG_SEMANTIC("\t\tfuncDecl->returnType = " << funcDecl->returnType.get());
-        if (funcDecl->returnType.get()) {
-            LUC_LOG_SEMANTIC("\t\treturnType kind = " << LucDebug::kindToString(funcDecl->returnType.get()->kind));
-        }
-
-        
-        if (!funcDecl->paramGroups.empty()) {
-            auto& firstGroup = funcDecl->paramGroups[0];
+        // Use the unified FuncTypeAST (funcDecl->type)
+        if (!funcDecl->type.paramGroups.empty()) {
+            auto& firstGroup = funcDecl->type.paramGroups[0];
             if (node.args.size() != firstGroup.size()) {
-                LUC_LOG_SEMANTIC("\tERROR: extern function argument count mismatch");
                 dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3003,
                          "extern function '" + calleeSym->name +
                          "' expects " + std::to_string(firstGroup.size()) +
@@ -896,9 +861,8 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
             } else {
                 for (size_t i = 0; i < node.args.size(); ++i) {
                     TypeAST* argType = static_cast<TypeAST*>(node.args[i]->resolvedType);
-                    TypeAST* paramType = firstGroup[i]->type.get();
+                    TypeAST* paramType = firstGroup[i].type.get();
                     if (argType && paramType && !TypeChecker::isAssignable(argType, paramType)) {
-                        LUC_LOG_SEMANTIC("\tERROR: argument type mismatch in call to extern function");
                         dc.error(DiagnosticCategory::Semantic, node.args[i]->loc,
                                  DiagCode::E3002,
                                  "argument " + std::to_string(i + 1) +
@@ -907,22 +871,20 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
                 }
             }
         }
-        returnType = funcDecl->returnType.get();
+        returnType = funcDecl->type.returnType.get();
         node.resolvedType = returnType;
         return returnType;
     }
     
+    // ── Regular function or method call ──────────────────────────────────────
     if (calleeSym && (calleeSym->kind == SymbolKind::Func || calleeSym->kind == SymbolKind::Method) && calleeSym->decl) {
         auto* funcDecl = static_cast<FuncDeclAST*>(calleeSym->decl);
         
-        // For curried functions, support partial application.
-        // The function signature is built as a curry chain where each level is a FuncTypeAST.
-        if (!funcDecl->paramGroups.empty()) {
-            auto& firstGroup = funcDecl->paramGroups[0];
+        // Use the unified FuncTypeAST (funcDecl->type)
+        if (!funcDecl->type.paramGroups.empty()) {
+            auto& firstGroup = funcDecl->type.paramGroups[0];
             
-            // Check that we're not providing too many arguments for the first group
             if (node.args.size() > firstGroup.size()) {
-                LUC_LOG_SEMANTIC("\tERROR: wrong number of arguments");
                 dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3003,
                          "wrong number of arguments: expected " +
                          std::to_string(firstGroup.size()) + ", got " +
@@ -933,9 +895,8 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
             // Check argument types against first parameter group
             for (size_t i = 0; i < node.args.size(); ++i) {
                 TypeAST* argType = static_cast<TypeAST*>(node.args[i]->resolvedType);
-                TypeAST* paramType = firstGroup[i]->type.get();
+                TypeAST* paramType = firstGroup[i].type.get();
                 if (argType && paramType && !TypeChecker::isAssignable(argType, paramType)) {
-                    LUC_LOG_SEMANTIC("\tERROR: argument type mismatch");
                     dc.error(DiagnosticCategory::Semantic, node.args[i]->loc, DiagCode::E3002,
                              "argument " + std::to_string(i + 1) + " type mismatch");
                 }
@@ -943,31 +904,52 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
             
             if (node.args.size() < firstGroup.size()) {
                 // Partial application: return the curried function type
-                // which is the return type of the first function in the chain
-                if (funcDecl->signature && funcDecl->signature->isa<FuncTypeAST>()) {
-                    returnType = funcDecl->signature->as<FuncTypeAST>()->returnType.get();
+                if (funcDecl->type.paramGroups.size() > 1) {
+                    // Build the remaining signature
+                    auto remainingType = std::make_unique<FuncTypeAST>();
+                    remainingType->isNullable = false;
+                    for (size_t g = 1; g < funcDecl->type.paramGroups.size(); ++g) {
+                        // Clone remaining param groups
+                        ParamGroup newGroup;
+                        for (const auto& pi : funcDecl->type.paramGroups[g]) {
+                            newGroup.emplace_back(pi.name, SemanticHelpers::cloneType(pi.type.get()),
+                                                  pi.isVariadic, pi.loc);
+                        }
+                        remainingType->paramGroups.push_back(std::move(newGroup));
+                    }
+                    remainingType->returnType = SemanticHelpers::cloneType(funcDecl->type.returnType.get());
+                    node.resolvedType = remainingType.get();
+                    returnType = remainingType.release();
                 } else {
-                    returnType = nullptr;
+                    returnType = &funcDecl->type;
                 }
             } else if (node.args.size() == firstGroup.size()) {
                 // Full first group provided
-                if (funcDecl->paramGroups.size() > 1) {
-                    // More groups exist: return the next curried function
-                    if (funcDecl->signature && funcDecl->signature->isa<FuncTypeAST>()) {
-                        returnType = funcDecl->signature->as<FuncTypeAST>()->returnType.get();
-                    } else {
-                        returnType = nullptr;
+                if (funcDecl->type.paramGroups.size() > 1) {
+                    // More groups exist: return the next curried function type
+                    auto nextType = std::make_unique<FuncTypeAST>();
+                    nextType->isNullable = false;
+                    for (size_t g = 1; g < funcDecl->type.paramGroups.size(); ++g) {
+                        // Clone remaining param groups
+                        ParamGroup newGroup;
+                        for (const auto& pi : funcDecl->type.paramGroups[g]) {
+                            newGroup.emplace_back(pi.name, SemanticHelpers::cloneType(pi.type.get()),
+                                                  pi.isVariadic, pi.loc);
+                        }
+                        nextType->paramGroups.push_back(std::move(newGroup));
                     }
+                    nextType->returnType = SemanticHelpers::cloneType(funcDecl->type.returnType.get());
+                    node.resolvedType = nextType.get();
+                    returnType = nextType.release();
                 } else {
                     // No more groups: return the final return type
-                    returnType = funcDecl->returnType.get();
+                    returnType = funcDecl->type.returnType.get();
                 }
             }
         } else {
             // No parameters
-            returnType = funcDecl->returnType.get();
+            returnType = funcDecl->type.returnType.get();
             if (node.args.size() > 0) {
-                LUC_LOG_SEMANTIC("\tERROR: wrong number of arguments");
                 dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3003,
                          "wrong number of arguments: expected 0, got " +
                          std::to_string(node.args.size()));
@@ -978,64 +960,53 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
     else if (calleeType && calleeType->isa<FuncTypeAST>()) {
         auto* ft = calleeType->as<FuncTypeAST>();
         
-        // Support partial application: if fewer args provided, we return the return type
-        // (which for curried functions is the next function in the chain)
-        if (node.args.size() > ft->params.size()) {
-            LUC_LOG_SEMANTIC("\tERROR: wrong number of arguments");
-            dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3003,
-                     "wrong number of arguments: expected " +
-                     std::to_string(ft->params.size()) + ", got " +
-                     std::to_string(node.args.size()));
-            return errorFallback(&node);
-        }
-        
-        // Check argument types.
-        for (size_t i = 0; i < node.args.size(); ++i) {
-            TypeAST* argType = static_cast<TypeAST*>(node.args[i]->resolvedType);
-            TypeAST* paramType = ft->params[i].get();
-            if (argType && paramType && !TypeChecker::isAssignable(argType, paramType)) {
-                LUC_LOG_SEMANTIC("\tERROR: argument type mismatch");
-                dc.error(DiagnosticCategory::Semantic, node.args[i]->loc, DiagCode::E3002,
-                         "argument " + std::to_string(i + 1) + " type mismatch");
+        if (!ft->paramGroups.empty() && !ft->paramGroups[0].empty()) {
+            if (node.args.size() > ft->paramGroups[0].size()) {
+                dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3003,
+                         "wrong number of arguments: expected " +
+                         std::to_string(ft->paramGroups[0].size()) + ", got " +
+                         std::to_string(node.args.size()));
+                return errorFallback(&node);
+            }
+            
+            // Check argument types
+            for (size_t i = 0; i < node.args.size(); ++i) {
+                TypeAST* argType = static_cast<TypeAST*>(node.args[i]->resolvedType);
+                TypeAST* paramType = ft->paramGroups[0][i].type.get();
+                if (argType && paramType && !TypeChecker::isAssignable(argType, paramType)) {
+                    dc.error(DiagnosticCategory::Semantic, node.args[i]->loc, DiagCode::E3002,
+                             "argument " + std::to_string(i + 1) + " type mismatch");
+                }
             }
         }
         
         // Return the appropriate type based on argument count
-        returnType = ft->returnType.get();
+        if (node.args.size() < ft->paramGroups[0].size() || ft->paramGroups.size() > 1) {
+            // Partial application: return the remaining function type
+            returnType = ft;
+        } else {
+            // Full call: return the return type
+            returnType = ft->returnType.get();
+        }
     } 
     // 3. Not callable.
     else {
-        LUC_LOG_SEMANTIC("\tERROR: expression is not callable");
         dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                  "expression is not callable");
         return errorFallback(&node);
     }
 
-    
-
-    LUC_LOG_SEMANTIC("\tcheckCallExpr returning type: " << returnType);
-    if (returnType) {
-        LUC_LOG_SEMANTIC("\t\treturnType kind: " << LucDebug::kindToString(returnType->kind));
-    } else {
-        LUC_LOG_SEMANTIC("\t\treturnType is NULL");
-    }
-
     // Determine if this is an async call
     bool isAsync = false;
-
-    // Check callee by symbol (direct function call)
     if (calleeSym && calleeSym->kind == SymbolKind::Func && calleeSym->type) {
         if (calleeSym->type->isa<FuncTypeAST>()) {
             isAsync = calleeSym->type->as<FuncTypeAST>()->isAsync();
         }
-    }
-    // Check callee by type (indirect call via variable)
-    else if (calleeType && calleeType->isa<FuncTypeAST>()) {
+    } else if (calleeType && calleeType->isa<FuncTypeAST>()) {
         isAsync = calleeType->as<FuncTypeAST>()->isAsync();
     }
 
-    node.isAsyncCall = isAsync;  // Set the flag
-
+    node.isAsyncCall = isAsync;
     node.resolvedType = returnType;
     return returnType;
 }
@@ -1050,16 +1021,15 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
 //   f = async { return await doWork() }
 //
 // The RHS is an AnonFuncExprAST produced by parsePrimaryExpr when it sees a
-// bare '{' or 'async {' in expression position (the block-body form).  That
-// node carries empty params and nullptr returnType because the parser has no
-// access to the symbol table — the real signature lives on the FuncDeclAST
-// that was stored when 'f' was first declared.
+// bare '{' in expression position (the block-body form).  That node carries
+// empty params and nullptr returnType because the parser has no access to the
+// symbol table — the real signature lives on the FuncDeclAST that was stored
+// when 'f' was first declared.
 //
-// Detection: RHS is AnonFuncExprAST AND its params vector is empty AND its
+// Detection: RHS is AnonFuncExprAST AND its paramGroups is empty AND its
 // returnType is nullptr.  In this case we look up the LHS symbol, recover the
-// FuncDeclAST's paramGroups and returnType, declare the params into scope, and
-// check the body with the correct expectedReturn — exactly what checkFuncDecl
-// does for the initial declaration.
+// FuncDeclAST's type (FuncTypeAST), declare the params into scope, and check
+// the body with the correct expectedReturn.
 //
 // If the LHS symbol is not a Func (e.g. the user assigns a block to a plain
 // variable of function-type), we fall through to the generic checkExpr path
@@ -1074,7 +1044,7 @@ static TypeAST* checkAssignExpr(AssignExprAST& node, SymbolTable& symbols,
                                  loopDepth, parallelDepth, insideExtern);
     LUC_LOG_SEMANTIC_EXTREME("\tlhs type: " << (lhsType ? LucDebug::kindToString(lhsType->kind) : "null"));
 
-    // ── Function body reassignment:  f = { ... }  or  f = async { ... } ──────
+    // ── Function body reassignment:  f = { ... } ─────────────────────────────
     // Detect the block-body form: RHS is an AnonFuncExprAST with no params and
     // no return type — the parser produces this when it sees a bare block in
     // expression position.  We need to use the LHS FuncDeclAST's signature
@@ -1086,7 +1056,7 @@ static TypeAST* checkAssignExpr(AssignExprAST& node, SymbolTable& symbols,
         auto* anonBody = node.rhs->as<AnonFuncExprAST>();
         // Only treat as a block-body reassignment when the node has no
         // params and no return type (i.e. it was produced from a bare '{').
-        if (anonBody->paramGroups.empty() && !anonBody->returnType) {
+        if (anonBody->type.paramGroups.empty() && !anonBody->type.returnType) {
             auto* ident = node.lhs->as<IdentifierExprAST>();
             Symbol* sym = symbols.lookup(ident->name);
             LUC_LOG_SEMANTIC_EXTREME("\tfunction body reassignment for '" << ident->name << "'");
@@ -1106,37 +1076,35 @@ static TypeAST* checkAssignExpr(AssignExprAST& node, SymbolTable& symbols,
                              "assignment to outer variable inside parallel scope is not allowed");
                 }
 
-                // Recover the real signature from the FuncDeclAST.
+                // Recover the real signature from the FuncDeclAST's type.
                 auto* funcDecl = static_cast<FuncDeclAST*>(sym->decl);
 
-                TypeAST* returnType = nullptr;
-                if (funcDecl->returnType) {
-                    returnType = resolver.resolveType(funcDecl->returnType.get());
-                }
+                // Get return type from the unified FuncTypeAST
+                TypeAST* returnType = funcDecl->type.returnType.get();
 
                 symbols.pushScope();
                 LUC_LOG_SEMANTIC_EXTREME("\tpushing scope for function params");
 
-                // Declare the function's parameters into the body scope.
-                for (auto& group : funcDecl->paramGroups) {
+                // Declare the function's parameters into the body scope using the unified type
+                for (auto& group : funcDecl->type.paramGroups) {
                     for (auto& param : group) {
-                        TypeAST* pt = resolver.resolveType(param->type.get());
+                        TypeAST* pt = param.type.get();
                         if (!pt) continue;
                         Symbol ps;
-                        ps.name       = param->name;
+                        ps.name       = param.name;
                         ps.kind       = SymbolKind::Param;
                         ps.declKw     = DeclKeyword::Let;
                         ps.visibility = Visibility::Private;
                         ps.type       = pt;
-                        ps.decl       = param.get();
-                        ps.loc        = param->loc;
+                        ps.decl       = nullptr;  // ParamInfo has no AST back pointer
+                        ps.loc        = param.loc;
                         if (!symbols.declare(ps)) {
                             LUC_LOG_SEMANTIC("\tERROR: duplicate param name");
-                            dc.error(DiagnosticCategory::Semantic, param->loc,
+                            dc.error(DiagnosticCategory::Semantic, param.loc,
                                      DiagCode::E3005,
-                                     "duplicate parameter name '" + param->name + "'");
+                                     "duplicate parameter name '" + param.name + "'");
                         } else {
-                            LUC_LOG_SEMANTIC_EXTREME("\t\tdeclared param: " << param->name);
+                            LUC_LOG_SEMANTIC_EXTREME("\t\tdeclared param: " << param.name);
                         }
                     }
                 }
@@ -1160,28 +1128,7 @@ static TypeAST* checkAssignExpr(AssignExprAST& node, SymbolTable& symbols,
 
     // ── Explicit anonymous function reassignment:  f = (x int) int { ... } ────
     // The RHS is an AnonFuncExprAST with its own param groups and return type
-    // written explicitly by the programmer.  This covers both single-group and
-    // curried reassignment:
-    //
-    //   Single-group:
-    //     let f (x int) int = { return x }
-    //     f = (n int) int { return n * 2 }        -- valid: same signature
-    //     f = (n str) int { return 0 }            -- error: param type mismatch
-    //     f = (n int) str { return "" }           -- error: return type mismatch
-    //
-    //   Curried:
-    //     let add (a int) (b int) int = { return a + b }
-    //     add = (a int) (b int) int { return a * b }  -- valid: same groups
-    //     add = (a int) int { return a }              -- error: group count mismatch
-    //
-    // Rules:
-    //   - Group count must match exactly.
-    //   - Within each group, parameter count must match exactly.
-    //   - Each parameter's type must be assignable to the declared type
-    //     (positional — names are irrelevant, types must match).
-    //   - The variadic flag on each parameter must match exactly.
-    //   - The return type must be assignable to the declared return type;
-    //     both nullptr (void) also matches.
+    // written explicitly by the programmer.
     if (node.op == AssignOp::Assign &&
         node.rhs->isa<AnonFuncExprAST>() &&
         node.lhs->isa<IdentifierExprAST>()) {
@@ -1189,11 +1136,9 @@ static TypeAST* checkAssignExpr(AssignExprAST& node, SymbolTable& symbols,
         auto* anonRhs = node.rhs->as<AnonFuncExprAST>();
 
         // Only enter this branch when the anon func has an explicit signature —
-        // i.e. it is NOT the bare block-body form.  The bare block-body form
-        // (produced by a lone '{') has paramGroups.empty() AND nullptr returnType.
-        // An explicit signature has at least one group OR an explicit return type.
-        bool hasExplicitSignature = !anonRhs->paramGroups.empty() ||
-                                    anonRhs->returnType != nullptr;
+        // i.e. it is NOT the bare block-body form.
+        bool hasExplicitSignature = !anonRhs->type.paramGroups.empty() ||
+                                    anonRhs->type.returnType != nullptr;
 
         if (hasExplicitSignature) {
             auto* ident = node.lhs->as<IdentifierExprAST>();
@@ -1205,21 +1150,21 @@ static TypeAST* checkAssignExpr(AssignExprAST& node, SymbolTable& symbols,
                 bool signatureOk = true;
 
                 // Curry group count check
-                if (anonRhs->paramGroups.size() != funcDecl->paramGroups.size()) {
+                if (anonRhs->type.paramGroups.size() != funcDecl->type.paramGroups.size()) {
                     LUC_LOG_SEMANTIC("\tERROR: param group count mismatch");
                     dc.error(DiagnosticCategory::Semantic, anonRhs->loc,
                              DiagCode::E3003,
                              "anonymous function assigned to '" + ident->name +
                              "' has " +
-                             std::to_string(anonRhs->paramGroups.size()) +
+                             std::to_string(anonRhs->type.paramGroups.size()) +
                              " parameter group(s) but declaration has " +
-                             std::to_string(funcDecl->paramGroups.size()));
+                             std::to_string(funcDecl->type.paramGroups.size()));
                     signatureOk = false;
                 } else {
                     // Per-group, per-parameter check
-                    for (size_t g = 0; g < funcDecl->paramGroups.size(); ++g) {
-                        const auto& declGroup = funcDecl->paramGroups[g];
-                        const auto& anonGroup = anonRhs->paramGroups[g];
+                    for (size_t g = 0; g < funcDecl->type.paramGroups.size(); ++g) {
+                        const auto& declGroup = funcDecl->type.paramGroups[g];
+                        const auto& anonGroup = anonRhs->type.paramGroups[g];
 
                         if (anonGroup.size() != declGroup.size()) {
                             LUC_LOG_SEMANTIC("\tERROR: param count mismatch in group " << g);
@@ -1238,10 +1183,10 @@ static TypeAST* checkAssignExpr(AssignExprAST& node, SymbolTable& symbols,
                             const auto& declParam = declGroup[i];
                             const auto& anonParam = anonGroup[i];
 
-                            // Variadic flag must match exactly.
-                            if (anonParam->isVariadic != declParam->isVariadic) {
+                            // Variadic flag must match exactly
+                            if (anonParam.isVariadic != declParam.isVariadic) {
                                 LUC_LOG_SEMANTIC("\tERROR: variadic mismatch for param " << i);
-                                dc.error(DiagnosticCategory::Semantic, anonParam->loc,
+                                dc.error(DiagnosticCategory::Semantic, anonParam.loc,
                                          DiagCode::E3002,
                                          "group " + std::to_string(g + 1) +
                                          " parameter " + std::to_string(i + 1) +
@@ -1250,12 +1195,12 @@ static TypeAST* checkAssignExpr(AssignExprAST& node, SymbolTable& symbols,
                                 continue;
                             }
 
-                            TypeAST* declType = resolver.resolveType(declParam->type.get());
-                            TypeAST* anonType = resolver.resolveType(anonParam->type.get());
+                            TypeAST* declType = declParam.type.get();
+                            TypeAST* anonType = anonParam.type.get();
 
                             if (declType && anonType && !TypeChecker::isAssignable(anonType, declType)) {
                                 LUC_LOG_SEMANTIC("\tERROR: type mismatch for param " << i);
-                                dc.error(DiagnosticCategory::Semantic, anonParam->loc,
+                                dc.error(DiagnosticCategory::Semantic, anonParam.loc,
                                          DiagCode::E3002,
                                          "group " + std::to_string(g + 1) +
                                          " parameter " + std::to_string(i + 1) +
@@ -1267,12 +1212,8 @@ static TypeAST* checkAssignExpr(AssignExprAST& node, SymbolTable& symbols,
                 }
 
                 // Return type check
-                TypeAST* declReturn = funcDecl->returnType
-                                       ? resolver.resolveType(funcDecl->returnType.get())
-                                       : nullptr;
-                TypeAST* anonReturn = anonRhs->returnType
-                                       ? resolver.resolveType(anonRhs->returnType.get())
-                                       : nullptr;
+                TypeAST* declReturn = funcDecl->type.returnType.get();
+                TypeAST* anonReturn = anonRhs->type.returnType.get();
 
                 bool returnMatches;
                 if (!declReturn && !anonReturn) {
@@ -1309,48 +1250,45 @@ static TypeAST* checkAssignExpr(AssignExprAST& node, SymbolTable& symbols,
                 }
 
                 symbols.pushScope();
-                LUC_LOG_SEMANTIC_EXTREME("	pushing scope for function params");
+                LUC_LOG_SEMANTIC_EXTREME("\tpushing scope for function params");
 
-                // Declare params using the anon func's own param names (the
-                // programmer writes the new names for this body), but the declared
-                // types — so that the body is type-checked correctly.
-                // Skip if signatureOk is false (count mismatch would cause OOB).
+                // Declare params using the anon func's own param names, but the declared types
                 if (signatureOk) {
-                    for (size_t g = 0; g < funcDecl->paramGroups.size(); ++g) {
-                        const auto& declGroup = funcDecl->paramGroups[g];
-                        const auto& anonGroup = anonRhs->paramGroups[g];
+                    for (size_t g = 0; g < funcDecl->type.paramGroups.size(); ++g) {
+                        const auto& declGroup = funcDecl->type.paramGroups[g];
+                        const auto& anonGroup = anonRhs->type.paramGroups[g];
                         for (size_t i = 0; i < declGroup.size(); ++i) {
                             const auto& anonParam = anonGroup[i];
-                            TypeAST* pt = resolver.resolveType(declGroup[i]->type.get());
+                            TypeAST* pt = declGroup[i].type.get();
                             if (!pt) continue;
                             Symbol ps;
-                            ps.name       = anonParam->name;
+                            ps.name       = anonParam.name;
                             ps.kind       = SymbolKind::Param;
                             ps.declKw     = DeclKeyword::Let;
                             ps.visibility = Visibility::Private;
                             ps.type       = pt;
-                            ps.decl       = anonParam.get();
-                            ps.loc        = anonParam->loc;
+                            ps.decl       = nullptr;
+                            ps.loc        = anonParam.loc;
                             if (!symbols.declare(ps)) {
                                 LUC_LOG_SEMANTIC("\tERROR: duplicate param name");
-                                dc.error(DiagnosticCategory::Semantic, anonParam->loc,
+                                dc.error(DiagnosticCategory::Semantic, anonParam.loc,
                                          DiagCode::E3005,
-                                         "duplicate parameter name '" + anonParam->name + "'");
+                                         "duplicate parameter name '" + anonParam.name + "'");
                             } else {
-                                LUC_LOG_SEMANTIC_EXTREME("		declared param: " << anonParam->name);
+                                LUC_LOG_SEMANTIC_EXTREME("\t\tdeclared param: " << anonParam.name);
                             }
                         }
                     }
                 }
 
                 if (anonRhs->body) {
-                    LUC_LOG_SEMANTIC_EXTREME("	checking function body");
+                    LUC_LOG_SEMANTIC_EXTREME("\tchecking function body");
                     checkStmt(anonRhs->body.get(), symbols, resolver, dc,
                               declReturn, loopDepth, parallelDepth, insideExtern);
                 }
 
                 symbols.popScope();
-                LUC_LOG_SEMANTIC_EXTREME("	popped function scope");
+                LUC_LOG_SEMANTIC_EXTREME("\tpopped function scope");
 
                 node.resolvedType = lhsType;
                 return lhsType;
@@ -1358,10 +1296,7 @@ static TypeAST* checkAssignExpr(AssignExprAST& node, SymbolTable& symbols,
         }
     }
 
-    // ── DIRECT FUNCTION ASSIGNMENT:  f = existingFunction  ────────────────────────────
-    // NEW CASE: Handle assignment where RHS is a direct identifier that resolves
-    // to a function (e.g., let myAdd (a int) (b int) int = existingFunction)
-    // This covers both curried and non-curried function assignments.
+    // ── DIRECT FUNCTION ASSIGNMENT:  f = existingFunction ────────────────────
     if (node.op == AssignOp::Assign &&
         node.rhs->isa<IdentifierExprAST>() &&
         node.lhs->isa<IdentifierExprAST>()) {
@@ -1372,7 +1307,6 @@ static TypeAST* checkAssignExpr(AssignExprAST& node, SymbolTable& symbols,
         LUC_LOG_SEMANTIC_EXTREME("\tDirect function assignment: '" << lhsIdent->name 
                                << "' = '" << rhsIdent->name << "'");
         
-        // Look up LHS symbol (the target function being assigned to)
         Symbol* lhsSym = symbols.lookup(lhsIdent->name);
         if (!lhsSym) {
             LUC_LOG_SEMANTIC("\tERROR: LHS symbol not found: '" << lhsIdent->name << "'");
@@ -1381,7 +1315,6 @@ static TypeAST* checkAssignExpr(AssignExprAST& node, SymbolTable& symbols,
             return errorFallback(&node);
         }
         
-        // Look up RHS symbol (the source function being assigned)
         Symbol* rhsSym = symbols.lookup(rhsIdent->name);
         if (!rhsSym) {
             LUC_LOG_SEMANTIC("\tERROR: RHS symbol not found: '" << rhsIdent->name << "'");
@@ -1390,31 +1323,24 @@ static TypeAST* checkAssignExpr(AssignExprAST& node, SymbolTable& symbols,
             return errorFallback(&node);
         }
         
-        // Both must be functions (or extern functions) for this to be a valid assignment
         bool lhsIsFunc = (lhsSym->kind == SymbolKind::Func || lhsSym->kind == SymbolKind::ExternFunc);
         bool rhsIsFunc = (rhsSym->kind == SymbolKind::Func || rhsSym->kind == SymbolKind::ExternFunc);
         
         if (!lhsIsFunc || !rhsIsFunc) {
-            // Not a function assignment - let the general case handle it
-            LUC_LOG_SEMANTIC_EXTREME("\tNot a function assignment (LHS func=" << lhsIsFunc 
-                                   << ", RHS func=" << rhsIsFunc << "), falling through");
-            // Fall through to general case
+            LUC_LOG_SEMANTIC_EXTREME("\tNot a function assignment, falling through");
         } else {
-            // Verify LHS is mutable (let-declared)
             if (lhsSym->declKw != DeclKeyword::Let) {
                 LUC_LOG_SEMANTIC("\tERROR: cannot reassign const function");
                 dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3004,
                          "cannot reassign '" + lhsIdent->name + "': declared with const");
             }
             
-            // Check parallel scope restrictions
             if (parallelDepth > 0) {
                 LUC_LOG_SEMANTIC("\tERROR: assignment inside parallel scope");
                 dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                          "assignment to outer variable inside parallel scope is not allowed");
             }
             
-            // Get the function signatures
             TypeAST* lhsFuncType = lhsSym->type;
             TypeAST* rhsFuncType = rhsSym->type;
             
@@ -1424,17 +1350,10 @@ static TypeAST* checkAssignExpr(AssignExprAST& node, SymbolTable& symbols,
                          "internal error: missing function type for '" + 
                          (lhsFuncType ? rhsIdent->name : lhsIdent->name) + "'");
             } else {
-                LUC_LOG_SEMANTIC_EXTREME("\tLHS type: " << LucDebug::kindToString(lhsFuncType->kind));
-                LUC_LOG_SEMANTIC_EXTREME("\tRHS type: " << LucDebug::kindToString(rhsFuncType->kind));
-                
-                // Check assignability between the two function signatures
                 if (!TypeChecker::isAssignable(rhsFuncType, lhsFuncType)) {
-                    LUC_LOG_SEMANTIC("\tERROR: function signature mismatch in assignment");
                     dc.error(DiagnosticCategory::Semantic, node.rhs->loc, DiagCode::E3002,
                              "function signature mismatch in assignment to '" + lhsIdent->name +
                              "': cannot assign from '" + rhsIdent->name + "'");
-                } else {
-                    LUC_LOG_SEMANTIC_EXTREME("\tFunction assignment type check passed");
                 }
             }
             
@@ -1446,7 +1365,7 @@ static TypeAST* checkAssignExpr(AssignExprAST& node, SymbolTable& symbols,
     // ── General case ──────────────────────────────────────────────────────────
     TypeAST* rhsType = checkExpr(node.rhs.get(), symbols, resolver, dc,
                                  loopDepth, parallelDepth, insideExtern);
-    LUC_LOG_SEMANTIC_EXTREME("	rhs type: " << (rhsType ? LucDebug::kindToString(rhsType->kind) : "null"));
+    LUC_LOG_SEMANTIC_EXTREME("\trhs type: " << (rhsType ? LucDebug::kindToString(rhsType->kind) : "null"));
 
     // Check the LHS is a let-declared symbol.
     if (node.lhs->isa<IdentifierExprAST>()) {
@@ -1456,8 +1375,6 @@ static TypeAST* checkAssignExpr(AssignExprAST& node, SymbolTable& symbols,
             LUC_LOG_SEMANTIC("\tERROR: cannot assign to const variable");
             dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3004,
                      "cannot assign to '" + ident->name + "': declared with const");
-        } else {
-            LUC_LOG_SEMANTIC_EXTREME("	LHS is mutable (let)");
         }
     }
 
@@ -1471,17 +1388,13 @@ static TypeAST* checkAssignExpr(AssignExprAST& node, SymbolTable& symbols,
     // Type compatibility for plain assignment.
     if (node.op == AssignOp::Assign && lhsType && rhsType) {
         if (!TypeChecker::isAssignable(rhsType, lhsType)) {
-            // Check if a from-casting block can handle this conversion.
-            // If so, desugar:  x = s  →  x = TargetType(s)
-            // by wrapping node.rhs in a TypeConvExprAST.
             if (lhsType->isa<NamedTypeAST>() &&
                 TypeChecker::isFromCastable(rhsType, lhsType, &symbols)) {
-                LUC_LOG_SEMANTIC_EXTREME("	applying from-casting conversion");
+                LUC_LOG_SEMANTIC_EXTREME("\tapplying from-casting conversion");
                 auto targetTypeNode = std::make_unique<NamedTypeAST>(
                     lhsType->as<NamedTypeAST>()->name);
                 targetTypeNode->loc = node.rhs->loc;
 
-                // Wrap the RHS in a TypeConvExprAST.
                 SourceLocation rhsLoc = node.rhs->loc;
                 auto convExpr = std::make_unique<TypeConvExprAST>(
                     std::move(targetTypeNode),
@@ -1489,10 +1402,7 @@ static TypeAST* checkAssignExpr(AssignExprAST& node, SymbolTable& symbols,
                     /*isUnsafe=*/false);
                 convExpr->loc = rhsLoc;
 
-                // Replace node.rhs with the desugared cast expression.
                 node.rhs = std::move(convExpr);
-
-                // Re-check so resolvedType is stamped correctly on the new node.
                 checkExpr(node.rhs.get(), symbols, resolver, dc,
                           loopDepth, parallelDepth, insideExtern);
             } else {
@@ -1500,14 +1410,13 @@ static TypeAST* checkAssignExpr(AssignExprAST& node, SymbolTable& symbols,
                 dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
                          "type mismatch in assignment");
             }
-        } else {
-            LUC_LOG_SEMANTIC_EXTREME("	assignment types compatible");
         }
     }
 
     node.resolvedType = lhsType;
     return lhsType;
 }
+
 // ─────────────────────────────────────────────────────────────────────────────
 // checkIsExpr
 // x is int → produces bool, marks the narrowed type on the node.
@@ -1703,43 +1612,58 @@ static TypeAST* checkAnonFuncExpr(AnonFuncExprAST& node, SymbolTable& symbols,
                                    TypeResolver& resolver, DiagnosticEngine& dc,
                                    int& loopDepth, int& parallelDepth, bool insideExtern) {
     LUC_LOG_SEMANTIC_VERBOSE("checkAnonFuncExpr");
+    
+    // ── Resolve qualifiers using registry (if not already resolved) ──────────
+    if (!node.type.rawQualifiers.empty()) {
+        for (const auto& qualName : node.type.rawQualifiers) {
+            uint32_t bit = QualifierRegistry::instance().getBit(qualName);
+            if (bit == 0) {
+                dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E2010,
+                         "unknown type qualifier '~" + qualName + "'; " +
+                         "known qualifiers: " + QualifierRegistry::instance().allNames());
+            } else {
+                node.type.qualifiers |= bit;
+            }
+        }
+        node.type.rawQualifiers.clear();  // Free memory
+    }
+    
     TypeAST* returnType = nullptr;
-    if (node.returnType) returnType = resolver.resolveType(node.returnType.get());
+    if (node.type.returnType) {
+        returnType = resolver.resolveType(node.type.returnType.get());
+    }
+    
     symbols.pushScope();
-
-    // Declare every parameter from every curry group into the function scope.
-    for (auto& group : node.paramGroups) {
-        for (auto& param : group) {
-            TypeAST* pt = resolver.resolveType(param->type.get());
+    
+    // Declare parameters from node.type.paramGroups
+    for (const auto& group : node.type.paramGroups) {
+        for (const auto& param : group) {
+            TypeAST* pt = resolver.resolveType(param.type.get());
             if (pt) {
                 Symbol ps;
-                ps.name       = param->name;
+                ps.name       = param.name;
                 ps.kind       = SymbolKind::Param;
                 ps.declKw     = DeclKeyword::Let;
                 ps.visibility = Visibility::Private;
                 ps.type       = pt;
-                ps.decl       = param.get();
-                ps.loc        = param->loc;
+                ps.decl       = nullptr;  // ParamInfo has no AST back pointer
+                ps.loc        = param.loc;
                 if (!symbols.declare(ps)) {
-                    LUC_LOG_SEMANTIC("\tERROR: duplicate parameter name");
-                    dc.error(DiagnosticCategory::Semantic, param->loc,
+                    dc.error(DiagnosticCategory::Semantic, param.loc,
                              DiagCode::E3005,
-                             "duplicate parameter name '" + param->name + "'");
+                             "duplicate parameter name '" + param.name + "'");
                 }
             }
         }
     }
-
+    
     if (node.body) {
         checkStmt(node.body.get(), symbols, resolver, dc, returnType,
                   loopDepth, parallelDepth, insideExtern);
     }
-
+    
     symbols.popScope();
-
-    // The type of an anon func is a FuncTypeAST built from its signature.
-    // For now, return nullptr — the anon func value's type is tracked by its
-    // declaration site. Full FuncType construction would need ownership management.
+    
     node.resolvedType = nullptr;
     return nullptr;
 }
@@ -2439,12 +2363,15 @@ static TypeAST* checkComposeExpr(ComposeExprAST& node, SymbolTable& symbols,
 
         if (current && opType && opType->isa<FuncTypeAST>()) {
             auto* ft = opType->as<FuncTypeAST>();
-            if (!ft->params.empty() &&
-                !TypeChecker::isAssignable(current, ft->params[0].get())) {
-                LUC_LOG_SEMANTIC("\tERROR: type mismatch in composition");
-                dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                         "type mismatch in '+>' composition: output type does not match next input");
+            // Check if the function has at least one parameter
+            if (!ft->paramGroups.empty() && !ft->paramGroups[0].empty()) {
+                if (!TypeChecker::isAssignable(current, ft->paramGroups[0][0].type.get())) {
+                    LUC_LOG_SEMANTIC("\tERROR: type mismatch in composition");
+                    dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
+                             "type mismatch in '+>' composition: output type does not match next input");
+                }
             }
+            // The result type is the function's return type
             current = ft->returnType.get();
         } else {
             current = nullptr;

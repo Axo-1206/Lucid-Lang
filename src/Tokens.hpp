@@ -32,7 +32,7 @@ enum class TokenType {
     CONST,   // const     - not reassignable, not mutable in place, nil allowed
 
     // ─── Concurrency ──────────────────────────────────────────────────────────
-    ASYNC,    // async     - async function modifier
+    // ASYNC,    // async     - async function modifier
     AWAIT,    // await     - await async result
     PARALLEL, // parallel  - parallel block for DOD data processing
 

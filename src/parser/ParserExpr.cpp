@@ -529,31 +529,6 @@ ExprPtr Parser::parsePrimaryExpr(bool allowStructLiteral) {
         return parseAwaitExpr();
     }
 
-        if (check(TokenType::ASYNC)) {
-        TokenType afterAsync = peekNext().type;
-        if (afterAsync == TokenType::LBRACE) {
-            // async { ... } is only valid as a function body (inside parseFuncBody)
-            // In expression position, this is invalid
-            errorAt(DiagCode::E2007, 
-                    "'async { ... }' is not a valid expression. "
-                    "Did you mean 'async (params) { ... }' for an async anonymous function, "
-                    "or use 'async' on the function declaration?");
-            
-            // Error recovery
-            advance(); // consume 'async'
-            consume(TokenType::LBRACE, "expected '{'");
-            int braceDepth = 1;
-            while (!isAtEnd() && braceDepth > 0) {
-                if (match(TokenType::LBRACE)) braceDepth++;
-                else if (match(TokenType::RBRACE)) braceDepth--;
-                else advance();
-            }
-            return nullptr;
-        }
-        // async (params) ret { ... } — fall through to parseAnonFuncExpr
-        return parseAnonFuncExpr();
-    }
-
     // ── array literal ─────────────────────────────────────────────────────────
     if (check(TokenType::LBRACKET))
         return parseArrayLiteralExpr();
@@ -1053,7 +1028,7 @@ ExprPtr Parser::parseStructLiteralExpr(std::string typeName, std::vector<TypePtr
 // parseAnonFuncExpr
 //
 // Grammar (updated to match func_decl — multiple param groups allowed):
-//   anon_func := [ 'async' ] param_group { param_group } [ return_type ] block
+//   anon_func       := [ qualifier_list ] '(' [ param_list ] ')' [ return_type ] block
 //
 // Single-group:   (x int) int { return x * 2 }
 // Multi-group:    (a int) (b int) int { return a + b }
@@ -1062,39 +1037,48 @@ ExprPtr Parser::parseStructLiteralExpr(std::string typeName, std::vector<TypePtr
 ExprPtr Parser::parseAnonFuncExpr() {
     SourceLocation loc = currentLoc();
     
-    // ── Parse type qualifiers (~async, etc.) BEFORE '(' ──────────────────────
-    uint32_t qualifiers = 0;
+    auto node = std::make_unique<AnonFuncExprAST>();
+    node->loc = loc;
+    
+    // ── Parse type qualifiers into FuncTypeAST (~async, ~noinline, etc.) ──────
     while (check(TokenType::TILDE)) {
-        advance();
+        advance(); // consume '~'
+        
         if (!check(TokenType::IDENTIFIER)) {
             errorAt(DiagCode::E2003, "expected qualifier name after '~'");
             break;
         }
-        std::string qualName = advance().value;
-        if (qualName == "async") qualifiers |= FuncTypeAST::QUAL_ASYNC;
-        else if (qualName == "noinline") qualifiers |= FuncTypeAST::QUAL_NOINLINE;
-        else errorAt(DiagCode::E2010, "unknown type qualifier '~" + qualName + "'");
+        
+        // Store raw names in the type field
+        node->type.rawQualifiers.push_back(advance().value);
+        LUC_LOG_EXPR_VERBOSE("\tqualifier: '~" << node->type.rawQualifiers.back() << "'");
     }
     
-    auto node = std::make_unique<AnonFuncExprAST>();
-    node->loc = loc;
-    node->qualifiers = qualifiers;  // Add this field to AnonFuncExprAST
-    
-    // Parse parameter groups
+    // Parse parameter groups into FuncTypeAST
     while (check(TokenType::LPAREN)) {
-        node->paramGroups.push_back(parseParamGroup());
+        node->type.paramGroups.push_back(parseParamGroup());
+        LUC_LOG_EXPR_VERBOSE("\tparsed param group with " 
+                            << node->type.paramGroups.back().size() << " params");
     }
     
     // Optional return type
     if (looksLikeType() && !check(TokenType::LBRACE)) {
-        node->returnType = parseType();
+        node->type.returnType = parseType();
+        LUC_LOG_EXPR_VERBOSE("\treturn type parsed");
     }
+    
+    // Optional nullable function suffix '?'
+    node->type.isNullable = match(TokenType::QUESTION);
     
     if (!check(TokenType::LBRACE)) {
         errorAt(DiagCode::E2001, "expected '{' to start anonymous function body");
     } else {
         node->body = parseBlock();
     }
+    
+    LUC_LOG_EXPR_VERBOSE("parseAnonFuncExpr: paramGroups=" << node->type.paramGroups.size() 
+                        << ", returnType=" << (node->type.returnType != nullptr)
+                        << ", isNullable=" << node->type.isNullable);
     
     return node;
 }
@@ -1568,15 +1552,6 @@ PipelineStepPtr Parser::parsePipelineStep() {
     SourceLocation loc = currentLoc();
     auto step = std::make_unique<PipelineStepAST>();
     step->loc = loc;
-
-    // ── AnonFunc: '(' ... or 'async' '(' ─────────────────────────────────────
-    if (check(TokenType::LPAREN) || check(TokenType::ASYNC)) {
-        step->kind = PipelineStepKind::AnonFunc;
-        ExprPtr af = parseAnonFuncExpr();
-        step->anonFunc = std::unique_ptr<AnonFuncExprAST>(
-            static_cast<AnonFuncExprAST *>(af.release()));
-        return step;
-    }
 
     if (!check(TokenType::IDENTIFIER)) {
         errorAt(DiagCode::E2002, "expected function name, method reference, or anonymous function as pipeline step");

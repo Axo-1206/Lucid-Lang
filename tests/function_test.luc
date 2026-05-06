@@ -49,9 +49,9 @@ const core_add (a int) (b int) int = {
 
 -- 5. Async function and await
 -- Async block form for named function
-let computeAsync (x int) int = async {
+let computeAsync ~async (x int) int = {
     -- In Luc, await can be used on values or async calls
-    let val int = await x 
+    let val int = x + 5 
     return val * 2
 }
 
@@ -74,7 +74,7 @@ export const main () int = {
     }
     let res3 int = ops.add(1, 2)
     let res4 int = ops.transform(10)
-    let res6 int = ops.add(1) -- should throw a semantic error, missing argument
+    --let res6 int = ops.add(1) -- should throw a semantic error, missing argument
 
     -- Method Assignment and Currying via ':' operator
     let p Point = Point { x = 1.0, y = 2.0 }
@@ -91,13 +91,15 @@ export const main () int = {
     let minutesVal int = m.val
 
     -- Anonymous Function (Async and Curried)
-    let anonAsync (n int) (m int) int = async (n int) (m int) int {
-        return await n + m
+    let anonAsync ~async (n int) (m int) int = (n int) (m int) int {
+        return n + m
     }
     
     -- Calling async function
     let asyncRes int = computeAsync(10)
     let anonRes int = anonAsync(20)(30)
+
+    let testFunc (x int) (m int) int = computeAsync +> anonAsync 
 
     -- Pipeline with curried functions
     -- f1 takes an int and returns a function

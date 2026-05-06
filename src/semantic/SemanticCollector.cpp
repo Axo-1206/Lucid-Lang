@@ -129,11 +129,13 @@ void SemanticCollector::visit(VarDeclAST& node) {
 // share the same name locally, then instantly discards the parameter bindings.
 // If @extern("sym") is present, the symbol is tagged as linker-resolved and
 // SymbolKind::ExternFunc is used so codegen emits an external declaration.
+//
+// UPDATED: Now uses node.type (FuncTypeAST) as the unified signature.
 // ─────────────────────────────────────────────────────────────────────────────
 void SemanticCollector::visit(FuncDeclAST& node) {
     LUC_LOG_SEMANTIC("visit(FuncDeclAST): name='" << node.name 
                    << "', keyword=" << (node.keyword == DeclKeyword::Const ? "const" : "let")
-                   << ", paramGroups=" << node.paramGroups.size());
+                   << ", paramGroups=" << node.type.paramGroups.size());
     
     // Detect @extern attribute on this function
     std::string externSym, callingConv;
@@ -144,53 +146,12 @@ void SemanticCollector::visit(FuncDeclAST& node) {
                                << "', conv='" << callingConv << "'");
     }
 
-    // Build signature
-    TypePtr sig = nullptr;
-    // Iterate groups in REVERSE to build the curry chain
-    for (int i = (int)node.paramGroups.size() - 1; i >= 0; --i) {
-        auto ft = std::make_unique<FuncTypeAST>();
-        ft->loc = node.loc;
-        LUC_LOG_SEMANTIC_EXTREME("\tbuilding param group " << i << " with " 
-                               << node.paramGroups[i].size() << " params");
-        for (auto& p : node.paramGroups[i]) {
-            // Proxy type: just enough for the type checker. 
-            // We use the same name/kind for now. 
-            // In a better design, TypeAST would have a clone().
-            if (p->type->kind == ASTKind::PrimitiveType) {
-                ft->params.push_back(std::make_unique<PrimitiveTypeAST>(
-                    static_cast<PrimitiveTypeAST*>(p->type.get())->primitiveKind));
-            } else if (p->type->kind == ASTKind::NamedType) {
-                const auto *named = static_cast<NamedTypeAST*>(p->type.get());
-                ft->params.push_back(std::make_unique<NamedTypeAST>(named->name));
-            } else {
-                // Fallback: just use a dummy any for complex types during Phase 1
-                ft->params.push_back(std::make_unique<PrimitiveTypeAST>(PrimitiveKind::Any));
-            }
-        }
-        if (sig) {
-            ft->returnType = std::move(sig);
-        } else if (node.returnType) {
-            if (node.returnType->kind == ASTKind::PrimitiveType) {
-                ft->returnType = std::make_unique<PrimitiveTypeAST>(
-                    static_cast<PrimitiveTypeAST*>(node.returnType.get())->primitiveKind);
-            } else if (node.returnType->kind == ASTKind::NamedType) {
-                ft->returnType = std::make_unique<NamedTypeAST>(
-                    static_cast<NamedTypeAST*>(node.returnType.get())->name);
-            } else {
-                ft->returnType = std::make_unique<PrimitiveTypeAST>(PrimitiveKind::Any);
-            }
-        }
-        sig = std::move(ft);
-    }
-    node.signature = std::move(sig);
-    LUC_LOG_SEMANTIC_EXTREME("\tsignature built");
-
     Symbol sym;
     sym.name         = node.name;
     sym.kind         = isExtern ? SymbolKind::ExternFunc : SymbolKind::Func;
     sym.declKw       = node.keyword;
     sym.visibility   = node.visibility;
-    sym.type         = nullptr; // Phase 2 will set this
+    sym.type         = &node.type;  // Point to the FuncTypeAST (Phase 2 will resolve)
     sym.decl         = &node;
     sym.loc          = node.loc;
     sym.isExtern     = isExtern;
@@ -201,17 +162,17 @@ void SemanticCollector::visit(FuncDeclAST& node) {
     // Register params to check for duplicates
     LUC_LOG_SEMANTIC_EXTREME("\tregistering parameters");
     symbols_.pushScope();
-    for (const auto& group : node.paramGroups) {
+    for (const auto& group : node.type.paramGroups) {
         for (const auto& param : group) {
-            LUC_LOG_SEMANTIC_EXTREME("\t\tparam: " << param->name);
+            LUC_LOG_SEMANTIC_EXTREME("\t\tparam: " << param.name);
             declareSymbol({
-                param->name,
+                param.name,
                 SymbolKind::Param,
                 DeclKeyword::Let,
                 Visibility::Private,
-                param->type.get(),
-                param.get(),
-                param->loc
+                param.type.get(),
+                nullptr,  // ParamInfo is not a BaseAST, so no back pointer
+                param.loc
             });
         }
     }
@@ -225,64 +186,18 @@ void SemanticCollector::visit(FuncDeclAST& node) {
 // Like functions, maps the struct globally. Pushes a mock localized scope to
 // iterate through the struct's definition, asserting no duplicate field aliases
 // are used before popping the ephemeral scope.
-//
-// Semantic Phase (Phase 1): Self-Type Synthesis
-// ─────────────────────────────────────────────────────────────────────────────
-// CRITICAL FIX: StructDeclAST previously set sym->type = nullptr, which caused
-// false "type mismatch" errors when struct literals were assigned to variables.
-//
-// WHY selfType IS NEEDED:
-// ────────────────────────
-// When a user writes `let ops MathOps = MathOps { add = ..., transform = ... }`,
-// the compiler needs to:
-//   1. Determine the type of the struct literal (checkStructLiteralExpr)
-//   2. Compare it against the declared type MathOps (checkVarDecl)
-//   3. Call TypeChecker::isAssignable(literalType, declaredType)
-//
-// If the struct symbol's type is nullptr, isAssignable(nullptr, MathOps) fails.
-//
-// THE FIX: Create a NamedTypeAST("MathOps") and store it as sym->type.
-// Now checkStructLiteralExpr can return this type, and type checking passes.
-//
-// WHY LAZY INITIALIZATION (mutable + unique_ptr):
-// ───────────────────────────────────────────────
-// - Mutable: Allows creation during const visitor traversal (SemanticCollector
-//   receives const references in some paths, yet needs to initialize selfType)
-// - Unique_ptr: Owns the allocated NamedTypeAST for the lifetime of the struct
-// - Lazy: Only created when SemanticCollector visits this struct (efficient)
-//
-// MEMORY SAFETY:
-// ──────────────
-// - selfType.get() is stored in Symbol::type (a raw pointer)
-// - The raw pointer remains valid because:
-//   1. selfType is owned by StructDeclAST (unique_ptr keeps it alive)
-//   2. StructDeclAST lives for the entire semantic pass (until cleanup)
-//   3. Symbol table lookups retrieve these pointers, always before StructDeclAST destruction
-//
-// INITIALIZATION SEQUENCE:
-// ────────────────────────
-// 1. Parser creates StructDeclAST with selfType = nullptr
-// 2. SemanticCollector::visit(StructDeclAST) checks if selfType is null
-// 3. If null, creates: selfType = make_unique<NamedTypeAST>(node.name)
-// 4. Sets Symbol::type = selfType.get()
-// 5. Later, checkStructLiteralExpr retrieves sym->type and uses it
-// 6. checkVarDecl compares the struct literal type against declared type
 // ─────────────────────────────────────────────────────────────────────────────
 void SemanticCollector::visit(StructDeclAST& node) {
     LUC_LOG_SEMANTIC("visit(StructDeclAST): name='" << node.name 
                    << "', fields=" << node.fields.size());
     
     // Lazy-initialize the struct's self-type representation.
-    // This is mutable to allow initialization from const contexts.
     if (!node.selfType) {
         LUC_LOG_SEMANTIC_VERBOSE("\tcreating selfType for struct: " << node.name);
         node.selfType = std::make_unique<NamedTypeAST>(node.name);
         node.selfType->loc = node.loc;
-    } else {
-        LUC_LOG_SEMANTIC_EXTREME("\tselfType already exists");
     }
 
-    // Declare the struct symbol with its type
     declareSymbol({
         node.name,
         SymbolKind::Struct,
@@ -355,6 +270,8 @@ void SemanticCollector::visit(EnumDeclAST& node) {
 //
 // Adds the trait name itself, validating inside an ephemeral scope that no
 // internal method signatures possess exactly duplicate naming.
+//
+// UPDATED: Now uses method->type (FuncTypeAST) as the unified signature.
 // ─────────────────────────────────────────────────────────────────────────────
 void SemanticCollector::visit(TraitDeclAST& node) {
     LUC_LOG_SEMANTIC("visit(TraitDeclAST): name='" << node.name 
@@ -373,63 +290,18 @@ void SemanticCollector::visit(TraitDeclAST& node) {
     for (const auto& method : node.methods) {
         LUC_LOG_SEMANTIC_VERBOSE("\tprocessing trait method: " << method->name);
         
-        // Build signature for trait method
-        TypePtr sig = nullptr;
+        // The signature is already in method->type (FuncTypeAST)
+        // No need to build it again - just register the method
         
-        // 1. Create the implicit 'self' group (the trait itself)
-        auto selfGroup = std::make_unique<FuncTypeAST>();
-        selfGroup->loc = method->loc;
-        selfGroup->params.push_back(std::make_unique<NamedTypeAST>(node.name));
-        
-        // 2. Build the rest of the signature from paramGroups
-        for (int i = (int)method->paramGroups.size() - 1; i >= 0; --i) {
-            auto ft = std::make_unique<FuncTypeAST>();
-            ft->loc = method->loc;
-            for (auto& p : method->paramGroups[i]) {
-                if (p->type->kind == ASTKind::PrimitiveType) {
-                    ft->params.push_back(std::make_unique<PrimitiveTypeAST>(static_cast<PrimitiveTypeAST*>(p->type.get())->primitiveKind));
-                } else if (p->type->kind == ASTKind::NamedType) {
-                    ft->params.push_back(std::make_unique<NamedTypeAST>(static_cast<NamedTypeAST*>(p->type.get())->name));
-                } else {
-                    ft->params.push_back(std::make_unique<PrimitiveTypeAST>(PrimitiveKind::Any));
-                }
-            }
-            if (sig) {
-                ft->returnType = std::move(sig);
-            } else if (method->returnType) {
-                if (method->returnType->kind == ASTKind::PrimitiveType) {
-                    ft->returnType = std::make_unique<PrimitiveTypeAST>(static_cast<PrimitiveTypeAST*>(method->returnType.get())->primitiveKind);
-                } else if (method->returnType->kind == ASTKind::NamedType) {
-                    ft->returnType = std::make_unique<NamedTypeAST>(static_cast<NamedTypeAST*>(method->returnType.get())->name);
-                } else {
-                    ft->returnType = std::make_unique<PrimitiveTypeAST>(PrimitiveKind::Any);
-                }
-            }
-            sig = std::move(ft);
-        }
-        
-        // Connect the 'self' group
-        if (sig) {
-            selfGroup->returnType = std::move(sig);
-        } else if (method->returnType) {
-             if (method->returnType->kind == ASTKind::PrimitiveType) {
-                selfGroup->returnType = std::make_unique<PrimitiveTypeAST>(static_cast<PrimitiveTypeAST*>(method->returnType.get())->primitiveKind);
-            } else if (method->returnType->kind == ASTKind::NamedType) {
-                selfGroup->returnType = std::make_unique<NamedTypeAST>(static_cast<NamedTypeAST*>(method->returnType.get())->name);
-            } else {
-                selfGroup->returnType = std::make_unique<PrimitiveTypeAST>(PrimitiveKind::Any);
-            }
-        }
-        method->signature = std::move(selfGroup);
-
         std::string mangledName = node.name + "." + method->name;
         LUC_LOG_SEMANTIC_EXTREME("\t\tmangled name: " << mangledName);
+        
         declareSymbol({
             mangledName,
             SymbolKind::Method,
             DeclKeyword::Let,
             Visibility::Export,
-            method->signature.get(),
+            &method->type,  // Point to the FuncTypeAST
             method.get(),
             method->loc
         });
@@ -443,6 +315,8 @@ void SemanticCollector::visit(TraitDeclAST& node) {
 // Struct instance actions aren't directly available without instance traversal.
 // To map them, we synthesize artificial `StructName.methodName` tags on the
 // global scope index. It catches multi-impl blocks conflicting via same names.
+//
+// UPDATED: Now uses method->type (FuncTypeAST) as the unified signature.
 // ─────────────────────────────────────────────────────────────────────────────
 void SemanticCollector::visit(ImplDeclAST& node) {
     LUC_LOG_SEMANTIC("visit(ImplDeclAST): structName='" << node.structName 
@@ -453,69 +327,9 @@ void SemanticCollector::visit(ImplDeclAST& node) {
     for (const auto& method : node.methods) {
         LUC_LOG_SEMANTIC_VERBOSE("\tprocessing impl method: " << method->name);
         
-        // ─────────────────────────────────────────────────────────────────────────
-        // Build signature for method - WITHOUT self parameter
-        // The signature is exactly what the user wrote: (params...) -> return
-        // Self is handled by codegen, not the type system
-        // ─────────────────────────────────────────────────────────────────────────
+        // The signature is already in method->type (FuncTypeAST)
+        // Built during parsing with NO self parameter
         
-        TypePtr sig = nullptr;
-        
-        // Build from the LAST parameter group to the FIRST (creates curry chain)
-        for (int i = (int)method->paramGroups.size() - 1; i >= 0; --i) {
-            auto ft = std::make_unique<FuncTypeAST>();
-            ft->loc = method->loc;
-            
-            // Add parameter types for this group (using placeholder types in Phase 1)
-            for (auto& p : method->paramGroups[i]) {
-                if (p->type->kind == ASTKind::PrimitiveType) {
-                    ft->params.push_back(std::make_unique<PrimitiveTypeAST>(
-                        static_cast<PrimitiveTypeAST*>(p->type.get())->primitiveKind));
-                } else if (p->type->kind == ASTKind::NamedType) {
-                    const auto *named = static_cast<NamedTypeAST*>(p->type.get());
-                    ft->params.push_back(std::make_unique<NamedTypeAST>(named->name));
-                } else {
-                    // Fallback for complex types during Phase 1
-                    ft->params.push_back(std::make_unique<PrimitiveTypeAST>(PrimitiveKind::Any));
-                }
-            }
-            
-            // Set return type to the previously built signature (inner curry layer)
-            if (sig) {
-                ft->returnType = std::move(sig);
-            } else if (method->returnType) {
-                // This is the innermost return type
-                if (method->returnType->kind == ASTKind::PrimitiveType) {
-                    ft->returnType = std::make_unique<PrimitiveTypeAST>(
-                        static_cast<PrimitiveTypeAST*>(method->returnType.get())->primitiveKind);
-                } else if (method->returnType->kind == ASTKind::NamedType) {
-                    ft->returnType = std::make_unique<NamedTypeAST>(
-                        static_cast<NamedTypeAST*>(method->returnType.get())->name);
-                } else {
-                    ft->returnType = std::make_unique<PrimitiveTypeAST>(PrimitiveKind::Any);
-                }
-            }
-            
-            sig = std::move(ft);
-        }
-        
-        // If no parameter groups, the signature is just the return type (or void)
-        if (!sig && method->returnType) {
-            if (method->returnType->kind == ASTKind::PrimitiveType) {
-                sig = std::make_unique<PrimitiveTypeAST>(
-                    static_cast<PrimitiveTypeAST*>(method->returnType.get())->primitiveKind);
-            } else if (method->returnType->kind == ASTKind::NamedType) {
-                sig = std::make_unique<NamedTypeAST>(
-                    static_cast<NamedTypeAST*>(method->returnType.get())->name);
-            } else {
-                sig = std::make_unique<PrimitiveTypeAST>(PrimitiveKind::Any);
-            }
-        }
-        
-        // Store the signature (NO self parameter)
-        method->signature = std::move(sig);
-        
-        // Register the method symbol with the signature (which has no self)
         std::string mangledName = node.structName + "." + method->name;
         LUC_LOG_SEMANTIC_EXTREME("\t\tmangled name: " << mangledName);
         
@@ -524,7 +338,7 @@ void SemanticCollector::visit(ImplDeclAST& node) {
             SymbolKind::Method,
             DeclKeyword::Let,
             node.visibility,
-            method->signature.get(),  // Type points to signature WITHOUT self
+            &method->type,  // Point to the FuncTypeAST
             method.get(),
             method->loc
         });
@@ -540,6 +354,8 @@ void SemanticCollector::visit(ImplDeclAST& node) {
 // Because the language supports curried casting overloads, and Phase 1 runs
 // before type resolution, we assign them a unique address-based mangled name here.
 // True duplicate signature checking is deferred to Phase 3 (SemanticDecl).
+//
+// UPDATED: Now uses entry->paramGroups (ParamGroup) instead of ParamPtr.
 // ─────────────────────────────────────────────────────────────────────────────
 void SemanticCollector::visit(FromDeclAST& node) {
     LUC_LOG_SEMANTIC("visit(FromDeclAST): targetType='" << node.targetTypeName 
@@ -560,7 +376,7 @@ void SemanticCollector::visit(FromDeclAST& node) {
             SymbolKind::Casting,
             DeclKeyword::Let,
             node.visibility,
-            nullptr,
+            nullptr,  // Type will be resolved in Phase 2
             entry.get(),
             entry->loc
         });
@@ -582,7 +398,7 @@ void SemanticCollector::visit(TypeAliasDeclAST& node) {
         SymbolKind::TypeAlias,
         DeclKeyword::Let,
         node.visibility,
-        nullptr,
+        nullptr,  // Phase 2 will set this
         &node,
         node.loc
     });

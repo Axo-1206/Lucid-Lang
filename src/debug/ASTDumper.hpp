@@ -57,7 +57,6 @@ public:
     void visit(FromDeclAST& node) override;
     void visit(FromEntryAST& node) override;
     void visit(TypeAliasDeclAST& node) override;
-    void visit(ParamAST& node) override;
     void visit(GenericParamAST& node) override;
     
     // ── Expression nodes ──────────────────────────────────────────────────────

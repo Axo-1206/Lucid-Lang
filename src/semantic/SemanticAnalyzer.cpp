@@ -132,7 +132,7 @@ bool SemanticAnalyzer::analyze(std::vector<ProgramAST*>& files) {
         LUC_LOG_SEMANTIC("\tNo 'main' function found");
         SourceLocation loc = files.empty() ? SourceLocation() : files[0]->loc;
         dc_.error(DiagnosticCategory::Semantic, loc, DiagCode::E3006, 
-                  "program is missing a 'main' entry point");
+                "program is missing a 'main' entry point");
     } else {
         LUC_LOG_SEMANTIC("\tFound 'main' function, validating signature...");
         if (mainSym->kind != SymbolKind::Func) {
@@ -141,7 +141,7 @@ bool SemanticAnalyzer::analyze(std::vector<ProgramAST*>& files) {
                 : "";
             LUC_LOG_SEMANTIC("\tERROR: 'main' is not a regular function");
             dc_.error(DiagnosticCategory::Semantic, mainSym->loc, DiagCode::E3007, 
-                      "'main' must be a regular function" + kindNote);
+                    "'main' must be a regular function" + kindNote);
         } else {
             auto* func = static_cast<FuncDeclAST*>(mainSym->decl);
             LUC_LOG_SEMANTIC_VERBOSE("\tFunction: " << func->name);
@@ -150,28 +150,29 @@ bool SemanticAnalyzer::analyze(std::vector<ProgramAST*>& files) {
             if (func->visibility != Visibility::Export) {
                 LUC_LOG_SEMANTIC("\tERROR: main not exported");
                 dc_.error(DiagnosticCategory::Semantic, func->loc, DiagCode::E3007,
-                          "'main' function must be exported (use 'export const main')");
+                        "'main' function must be exported (use 'export const main')");
             }
             
             // 2. MUST be const: const main ...
             if (func->keyword != DeclKeyword::Const) {
                 LUC_LOG_SEMANTIC("\tERROR: main not const");
                 dc_.error(DiagnosticCategory::Semantic, func->loc, DiagCode::E3007,
-                          "'main' function must use 'const' keyword");
+                        "'main' function must use 'const' keyword");
             }
             
             // 3. MUST have zero parameters: () or slice of strings: (args []string)
             bool hasParams = false;
             bool isValidArgsParam = false;
             
-            if (func->paramGroups.size() == 1) {
-                const auto& group = func->paramGroups[0];
+            // Use func->type (unified FuncTypeAST) instead of old paramGroups
+            if (func->type.paramGroups.size() == 1) {
+                const auto& group = func->type.paramGroups[0];
                 if (!group.empty()) {
                     hasParams = true;
                     if (group.size() == 1) {
-                        auto* param0 = group[0].get();
-                        if (param0->type && param0->type->kind == ASTKind::SliceType) {
-                            auto* slice = static_cast<SliceTypeAST*>(param0->type.get());
+                        const auto& param0 = group[0];
+                        if (param0.type && param0.type->kind == ASTKind::SliceType) {
+                            auto* slice = static_cast<SliceTypeAST*>(param0.type.get());
                             if (slice->element && slice->element->kind == ASTKind::PrimitiveType) {
                                 auto* pt = static_cast<PrimitiveTypeAST*>(slice->element.get());
                                 if (pt->primitiveKind == PrimitiveKind::String) {
@@ -182,8 +183,8 @@ bool SemanticAnalyzer::analyze(std::vector<ProgramAST*>& files) {
                         }
                     }
                 }
-            } else if (func->paramGroups.size() > 1) {
-                for (const auto& group : func->paramGroups) {
+            } else if (func->type.paramGroups.size() > 1) {
+                for (const auto& group : func->type.paramGroups) {
                     if (!group.empty()) {
                         hasParams = true;
                         break;
@@ -194,13 +195,13 @@ bool SemanticAnalyzer::analyze(std::vector<ProgramAST*>& files) {
             if (hasParams && !isValidArgsParam) {
                 LUC_LOG_SEMANTIC("\tERROR: invalid parameter signature for main");
                 dc_.error(DiagnosticCategory::Semantic, func->loc, DiagCode::E3007,
-                          "'main' function must have no parameters or take a string slice: (args []string)");
+                        "'main' function must have no parameters or take a string slice: (args []string)");
             }
             
             // 4. MUST return int
             bool returnsInt = false;
-            if (func->returnType && func->returnType->kind == ASTKind::PrimitiveType) {
-                auto* pt = static_cast<PrimitiveTypeAST*>(func->returnType.get());
+            if (func->type.returnType && func->type.returnType->kind == ASTKind::PrimitiveType) {
+                auto* pt = static_cast<PrimitiveTypeAST*>(func->type.returnType.get());
                 if (pt->primitiveKind == PrimitiveKind::Int) {
                     returnsInt = true;
                     LUC_LOG_SEMANTIC_VERBOSE("\tReturn type: int");
@@ -209,8 +210,15 @@ bool SemanticAnalyzer::analyze(std::vector<ProgramAST*>& files) {
             if (!returnsInt) {
                 LUC_LOG_SEMANTIC("\tERROR: main does not return int");
                 dc_.error(DiagnosticCategory::Semantic, func->loc, DiagCode::E3007,
-                          "'main' function must return 'int'");
+                        "'main' function must return 'int'");
             }   
+
+            // 5. MUST NOT be async (check via type qualifier)
+            if (func->type.isAsync()) {
+                LUC_LOG_SEMANTIC("\tERROR: main is async");
+                dc_.error(DiagnosticCategory::Semantic, func->loc, DiagCode::E3007,
+                        "'main' function cannot be async (remove '~async' qualifier)");
+            }
 
             // 6. @aot and @jit validation on main
             bool hasAot = false;
@@ -389,27 +397,6 @@ void SemanticAnalyzer::resolveTypes(std::vector<ProgramAST*>& files) {
                 typeResolver_->visit(*decl->as<VarDeclAST>());
                 resolvedCount++;
                 LUC_LOG_SEMANTIC_EXTREME("\tresolved variable: " << decl->as<VarDeclAST>()->name);
-            }
-        }
-    }
-
-    for (auto* prog : files) {
-        for (auto& decl : prog->decls) {
-            if (decl->isa<FuncDeclAST>()) {
-                auto* func = decl->as<FuncDeclAST>();
-                Symbol* sym = symbols_->lookup(func->name);
-                if (sym && func->signature) {
-                    sym->type = func->signature.get();
-                    LUC_LOG_SEMANTIC_EXTREME("\tupdated symbol '" << func->name << "' type to resolved signature");
-                }
-            }
-            else if (decl->isa<StructDeclAST>()) {
-                auto* structDecl = decl->as<StructDeclAST>();
-                Symbol* sym = symbols_->lookup(structDecl->name);
-                if (sym && structDecl->selfType) {
-                    sym->type = structDecl->selfType.get();
-                    LUC_LOG_SEMANTIC_EXTREME("\tupdated symbol '" << structDecl->name << "' type to selfType");
-                }
             }
         }
     }

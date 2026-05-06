@@ -107,12 +107,6 @@ private:
         logConst("VarDecl", node.name, node.isConst);
     }
 
-    void visit(ParamAST& node) override {
-        LUC_LOG_SEMANTIC_EXTREME("visit(ParamAST): name=" << node.name);
-        // Parameters are always let-like — they accept any value passed in.
-        node.isConst = false;
-    }
-
     void visit(GenericParamAST& /*node*/) override {
         LUC_LOG_SEMANTIC_EXTREME("visit(GenericParamAST)");
         // Generic params are compile-time, but they are not runtime values.
@@ -120,13 +114,18 @@ private:
 
     void visit(FuncDeclAST& node) override {
         LUC_LOG_SEMANTIC_VERBOSE("visit(FuncDeclAST): name=" << node.name 
-                               << ", keyword=" << (node.keyword == DeclKeyword::Const ? "const" : "let"));
+                            << ", keyword=" << (node.keyword == DeclKeyword::Const ? "const" : "let"));
         
-        // Walk attributes, parameter groups, and body.
+        // Walk attributes, and body (parameters are in node.type)
         for (auto& attr : node.attributes) walk(attr.get());
-        for (auto& group : node.paramGroups)
-            for (auto& param : group)
-                walk(param.get());
+        
+        // Walk parameter groups from the unified FuncTypeAST
+        for (auto& group : node.type.paramGroups) {
+            for (auto& param : group) {
+                // ParamInfo is not a BaseAST, so no walk needed
+                // Just log or skip - no AST to traverse
+            }
+        }
         walk(node.body.get());
 
         // 'const' functions are permanently bound (not reassignable at call sites).
@@ -141,6 +140,7 @@ private:
         for (auto& field : node.fields)
             walk(field.get());
         // Struct type declarations themselves are not runtime values.
+        // No isConst flag needed.
     }
 
     void visit(FieldDeclAST& node) override {
@@ -185,9 +185,9 @@ private:
     void visit(MethodDeclAST& node) override {
         LUC_LOG_SEMANTIC_EXTREME("visit(MethodDeclAST): name=" << node.name);
         
-        for (auto& group : node.paramGroups)
-            for (auto& param : group)
-                walk(param.get());
+        // Parameters are in node.type (unified FuncTypeAST)
+        // ParamInfo is not a BaseAST, so no walk needed
+        
         walk(node.body.get());
         // Methods are never compile-time constants; they dispatch at runtime.
         node.isConst = false;
@@ -205,9 +205,8 @@ private:
     void visit(FromEntryAST& node) override {
         LUC_LOG_SEMANTIC_EXTREME("visit(FromEntryAST)");
         
-        for (auto& group : node.paramGroups)
-            for (auto& param : group)
-                walk(param.get());
+        // paramGroups now contains ParamInfo (not BaseAST), so no walk needed
+        // for the parameters themselves - only walk the body
         walk(node.body.get());
         // Individual casting entries are not constants.
         node.isConst = false;
@@ -370,9 +369,9 @@ private:
 
     void visit(AnonFuncExprAST& node) override {
         LUC_LOG_SEMANTIC_EXTREME("visit(AnonFuncExprAST)");
-        for (auto& group : node.paramGroups)
-            for (auto& param : group)
-                walk(param.get());
+        
+        // Parameters are in node.type.paramGroups (ParamInfo, not BaseAST)
+        // No walking needed for ParamInfo - only walk the body
         walk(node.body.get());
         // Anonymous function expressions are runtime closures — not const.
         node.isConst = false;

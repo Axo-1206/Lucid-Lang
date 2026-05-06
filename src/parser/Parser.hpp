@@ -247,10 +247,7 @@ class Parser {
 
     // Parse one parameter group '(' [ param_list ] ')'.
     // Used by parseFuncDecl and parseFuncType.
-    std::vector<ParamPtr> parseParamGroup();
-
-    // Parse a single parameter: IDENTIFIER type  or  IDENTIFIER '...' type
-    ParamPtr parseParam();
+    ParamGroup parseParamGroup();
 
     // Parse generic parameter list: '<' generic_param { ',' generic_param } '>'
     std::vector<GenericParamPtr> parseGenericParams();

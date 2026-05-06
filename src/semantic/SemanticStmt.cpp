@@ -81,33 +81,58 @@ static PrimitiveTypeAST* stmtPrimType(PrimitiveKind k) {
 // Build a function signature for local function declarations in statement scope.
 // This mirrors SemanticCollector's curry-chain shape so local calls type-check
 // the same way as top-level functions.
-static TypePtr buildLocalFuncSignature(FuncDeclAST& node) {
+static FuncTypeAST buildLocalFuncSignature(FuncDeclAST& node) {
     LUC_LOG_SEMANTIC_VERBOSE("buildLocalFuncSignature: for function '" << node.name 
-                           << "', paramGroups=" << node.paramGroups.size());
+                           << "', paramGroups=" << node.type.paramGroups.size());
+    
+    FuncTypeAST result;
+    result.loc = node.loc;
+    result.rawQualifiers = node.type.rawQualifiers;
+    result.qualifiers = node.type.qualifiers;
+    result.isNullable = node.type.isNullable;
     
     TypePtr sig = nullptr;
-    for (int i = static_cast<int>(node.paramGroups.size()) - 1; i >= 0; --i) {
+    // Build from the LAST parameter group to the FIRST (creates curry chain)
+    for (int i = static_cast<int>(node.type.paramGroups.size()) - 1; i >= 0; --i) {
         auto ft = std::make_unique<FuncTypeAST>();
         ft->loc = node.loc;
         LUC_LOG_SEMANTIC_EXTREME("\tbuilding param group " << i 
-                               << " with " << node.paramGroups[i].size() << " params");
+                               << " with " << node.type.paramGroups[i].size() << " params");
         
-        for (auto& p : node.paramGroups[i]) {
-            // Use cloneType instead of manual creation
-            ft->params.push_back(SemanticHelpers::cloneType(p->type.get()));
+        // Build a ParamGroup for this function level (for curry chain)
+        ParamGroup group;
+        for (const auto& param : node.type.paramGroups[i]) {
+            // ParamInfo needs name, type, isVariadic, loc
+            group.emplace_back(param.name, 
+                               SemanticHelpers::cloneType(param.type.get()),
+                               param.isVariadic,
+                               param.loc);
         }
+        ft->paramGroups.push_back(std::move(group));
 
         if (sig) {
             ft->returnType = std::move(sig);
-        } else if (node.returnType) {
-            ft->returnType = SemanticHelpers::cloneType(node.returnType.get());
+        } else if (node.type.returnType) {
+            ft->returnType = SemanticHelpers::cloneType(node.type.returnType.get());
         }
         sig = std::move(ft);
     }
     
+    if (sig) {
+        // Copy the built signature into result
+        if (sig->isa<FuncTypeAST>()) {
+            auto* builtSig = sig->as<FuncTypeAST>();
+            result.paramGroups = std::move(builtSig->paramGroups);
+            result.returnType = SemanticHelpers::cloneType(builtSig->returnType.get());
+            result.qualifiers = builtSig->qualifiers;
+            result.isNullable = builtSig->isNullable;
+        }
+    }
+    
     LUC_LOG_SEMANTIC_EXTREME("\tsignature built");
-    return sig;
+    return result;
 }
+
 // ─────────────────────────────────────────────────────────────────────────────
 // checkStmt — main dispatcher (defined after all helpers)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -165,8 +190,7 @@ static void checkExprStmt(ExprStmtAST& node, SymbolTable& symbols, TypeResolver&
 // Dispatches to checkVarDecl or checkFuncDecl then declares the symbol locally.
 // ─────────────────────────────────────────────────────────────────────────────
 static void checkDeclStmt(DeclStmtAST& node, SymbolTable& symbols, TypeResolver& resolver,
-                           DiagnosticEngine& dc, int& loopDepth,
-                           int& parallelDepth, bool insideExtern) {
+                           DiagnosticEngine& dc, int& loopDepth, int& parallelDepth, bool insideExtern) {
     LUC_LOG_SEMANTIC_VERBOSE("checkDeclStmt: " << (node.isVar() ? "var" : "func"));
     
     if (node.isVar()) {
@@ -199,8 +223,12 @@ static void checkDeclStmt(DeclStmtAST& node, SymbolTable& symbols, TypeResolver&
         checkFuncDecl(*fd, symbols, resolver, dc, loopDepth, parallelDepth, insideExtern);
 
         // Ensure local function symbols carry a callable FuncType signature.
-        if (!fd->signature) {
-            fd->signature = buildLocalFuncSignature(*fd);
+        // The signature is now fd->type (unified FuncTypeAST)
+        // No need to build a separate signature unless it's missing
+        if (fd->type.paramGroups.empty() && !fd->type.returnType) {
+            // If the type is empty, build a signature from the declaration
+            // This should not happen normally, but as a fallback
+            fd->type = buildLocalFuncSignature(*fd);
         }
 
         Symbol sym;
@@ -208,7 +236,7 @@ static void checkDeclStmt(DeclStmtAST& node, SymbolTable& symbols, TypeResolver&
         sym.kind       = SymbolKind::Func;
         sym.declKw     = fd->keyword;
         sym.visibility = Visibility::Private;
-        sym.type       = fd->signature.get();
+        sym.type       = &fd->type;  // Point to the unified FuncTypeAST
         sym.decl       = fd;
         sym.loc        = fd->loc;
         

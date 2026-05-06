@@ -479,58 +479,37 @@ TypePtr Parser::parsePtrType() {
 TypePtr Parser::parseFuncType(bool allowQualifiers) {
     LUC_LOG_TYPE("parseFuncType");
     
-    // ── Parse type qualifiers (~async, ~noinline, etc.) BEFORE '(' ────────────
-    uint32_t qualifiers = 0;
-    // ONLY parse qualifiers if allowed (top-level function type, not inside param)
+    // ── Parse type qualifiers - just collect strings, don't validate ─────────
+    std::vector<std::string> rawQualifiers;
     if (allowQualifiers) {
         while (check(TokenType::TILDE)) {
-            advance();
+            advance(); // consume '~'
+            
             if (!check(TokenType::IDENTIFIER)) {
                 errorAt(DiagCode::E2003, "expected qualifier name after '~'");
                 break;
             }
-            std::string qualName = advance().value;
-            if (qualName == "async") qualifiers |= FuncTypeAST::QUAL_ASYNC;
-            else if (qualName == "noinline") qualifiers |= FuncTypeAST::QUAL_NOINLINE;
-            else if (qualName == "cdecl") qualifiers |= FuncTypeAST::QUAL_CDECL;
-            else if (qualName == "stdcall") qualifiers |= FuncTypeAST::QUAL_STDCALL;
-            else if (qualName == "fastcall") qualifiers |= FuncTypeAST::QUAL_FASTCALL;
-            else if (qualName == "heap") qualifiers |= FuncTypeAST::QUAL_HEAP;
-            else if (qualName == "cold") qualifiers |= FuncTypeAST::QUAL_COLD;
-            else {
-                errorAt(DiagCode::E2010, "unknown type qualifier '~" + qualName + "'");
-            }
+            
+            // Just store the name as-is, no validation (semantic phase will validate)
+            rawQualifiers.push_back(advance().value);
+            LUC_LOG_TYPE_VERBOSE("\tqualifier: '~" << rawQualifiers.back() << "'");
         }
     }
     
     // ── Check if this is a nullable function: '(' at start? ───────────────────
-    // If after parsing qualifiers we see a '(' then it's a normal function.
-    // But the nullable function form has an extra outer '('.
-    // Example:  (~async (int) int)?   vs   ~async (int) int?
-    //
-    // We need to peek ahead to distinguish:
-    //   ( (params) ret )?  → nullable function (outer parentheses)
-    //   (params) ret?      → normal function with nullable return
-    //
-    // The nullable function form has a '(' immediately followed by '(' or '~'
-    
     bool isNullableFunction = false;
     SourceLocation nullableLoc;
     
     // Check for outer '(' that indicates nullable function
     if (check(TokenType::LPAREN)) {
-        // Peek ahead: if after '(' we see '(' or '~' (qualifiers), then ')' later
-        // This is the nullable function form:  ( ~async (int) int )?
         size_t savedPos = pos_;
         int parenDepth = 1;
         advance(); // consume the first '('
         
-        // Skip qualifiers and find the inner function's '('
         while (!isAtEnd() && parenDepth > 0) {
             if (check(TokenType::LPAREN)) parenDepth++;
             else if (check(TokenType::RPAREN)) parenDepth--;
             else if (check(TokenType::TILDE)) {
-                // Skip qualifier name
                 advance();
                 if (check(TokenType::IDENTIFIER)) advance();
                 continue;
@@ -538,12 +517,10 @@ TypePtr Parser::parseFuncType(bool allowQualifiers) {
             advance();
         }
         
-        // After matching parentheses, check for '?'
         bool hasQuestion = check(TokenType::QUESTION);
-        pos_ = savedPos; // restore position
+        pos_ = savedPos;
         
         if (hasQuestion) {
-            // This is the nullable function form: ( ~async (int) int )?
             isNullableFunction = true;
             nullableLoc = currentLoc();
             advance(); // consume the outer '('
@@ -551,20 +528,15 @@ TypePtr Parser::parseFuncType(bool allowQualifiers) {
     }
     
     // ── Parse the actual function type (inner part) ───────────────────────────
-    // Now we should be at the start of the function signature: either '(' or '~'
-    
-    // Parse the core function type
     consume(TokenType::LPAREN, "expected '(' for function type");
     
-    std::vector<TypePtr> paramTypes;
+    // Build a single parameter group for this function type
+    ParamGroup paramGroup;
+    
     if (!check(TokenType::RPAREN)) {
         do {
             // Optional parameter name (ignore it in type position)
-            // If we see IDENTIFIER followed by something that looks like a type,
-            // consume the name and then parse the type.
             if (check(TokenType::IDENTIFIER)) {
-                // Peek ahead to see if the next token can start a type
-                // Types can start with: primitive keywords, IDENTIFIER, '(', '&', '*', '['
                 bool nextIsType = false;
                 TokenType nextType = peekNext().type;
                 switch (nextType) {
@@ -603,8 +575,7 @@ TypePtr Parser::parseFuncType(bool allowQualifiers) {
                 }
                 
                 if (nextIsType) {
-                    // This is "name type" pattern - consume the name and ignore it
-                    advance(); // consume parameter name
+                    advance(); // consume parameter name, ignore it
                     LUC_LOG_TYPE_EXTREME("parseFuncType: ignoring parameter name");
                 }
             }
@@ -614,34 +585,31 @@ TypePtr Parser::parseFuncType(bool allowQualifiers) {
                 errorAt(DiagCode::E2005, "expected parameter type");
                 break;
             }
-            paramTypes.push_back(std::move(paramType));
+            
+            // Create ParamInfo with empty name (type position)
+            paramGroup.emplace_back("", std::move(paramType), false, currentLoc());
         } while (match(TokenType::COMMA));
     }
     consume(TokenType::RPAREN, "expected ')' after parameter list");
     
     TypePtr returnType = nullptr;
-    if (looksLikeType()) {
+    if (looksLikeType() && !check(TokenType::LBRACE)) {
         returnType = parseType();
     }
     
     auto funcType = std::make_unique<FuncTypeAST>();
-    funcType->qualifiers = qualifiers;
-    funcType->params = std::move(paramTypes);
+    funcType->rawQualifiers = std::move(rawQualifiers);
+    funcType->paramGroups.push_back(std::move(paramGroup));  // Single group for function type
     funcType->returnType = std::move(returnType);
     
     // ── Handle nullable RETURN type: (params) ret? ────────────────────────────
     if (match(TokenType::QUESTION)) {
-        // This makes the RETURN type nullable, not the function itself
-        // Return a NullableTypeAST wrapping the function type
         auto nullableReturn = std::make_unique<NullableTypeAST>(std::move(funcType));
         return nullableReturn;
     }
-
     
     // ── Handle nullable FUNCTION: ( (params) ret )? ───────────────────────────
     if (isNullableFunction) {
-        // The outer '(' was already consumed. Now we need to consume the closing ')'
-        // and then the '?'
         consume(TokenType::RPAREN, "expected ')' to close nullable function wrapper");
         consume(TokenType::QUESTION, "expected '?' for nullable function");
         
