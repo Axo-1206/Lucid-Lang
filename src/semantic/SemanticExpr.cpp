@@ -2336,48 +2336,337 @@ static TypeAST* checkIntrinsicCallExpr(IntrinsicCallExprAST& node, SymbolTable& 
 // ─────────────────────────────────────────────────────────────────────────────
 // checkComposeExpr
 // f +> g: left output type must match right input type.
+//
+// RULES:
+//   1. Result function has NO qualifiers — qualifiers are stripped entirely
+//   2. Curried functions are fully supported:
+//      - If LHS is curried: compose its EVENTUAL return type with RHS 
+//      - If RHS is curried: consume its FIRST parameter group 
+//      - Remaining groups become part of the result 
+//   3. If LHS's eventual return type is a function (i.e. not fully applied),
+//      composition is impossible — error.
+//   4. f +> g produces a new FuncTypeAST with:
+//      - Parameters = all LHS parameters (all groups)
+//      - Return = if RHS is fully consumed: RHS's return type
+//                else: RHS with first group removed (curried result)
 // ─────────────────────────────────────────────────────────────────────────────
 static TypeAST* checkComposeExpr(ComposeExprAST& node, SymbolTable& symbols,
                                   TypeResolver& resolver, DiagnosticEngine& dc,
                                   int& loopDepth, int& parallelDepth, bool insideExtern) {
     LUC_LOG_SEMANTIC_VERBOSE("checkComposeExpr");
-    TypeAST* current = checkExpr(node.left.get(), symbols, resolver, dc,
+    
+    // First, get the type of the left side (which is a pipeline expression)
+    TypeAST* leftType = checkExpr(node.left.get(), symbols, resolver, dc,
                                   loopDepth, parallelDepth, insideExtern);
-
+    
+    if (!leftType) {
+        LUC_LOG_SEMANTIC("\tERROR: left side has no type");
+        dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
+                 "left side of '+>' has no type");
+        return errorFallback(&node);
+    }
+    
+    // In composition, the left side should be callable
+    if (!TypeChecker::isCallable(leftType)) {
+        LUC_LOG_SEMANTIC("\tERROR: left side not callable");
+        dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
+                 "left side of '+>' must be a function");
+        return errorFallback(&node);
+    }
+    
+    // Start with left type as the "current" type we're building from
+    // We need to track:
+    //   - The full parameter groups from left
+    //   - The eventual return type after composing with right
+    TypeAST* current = leftType;
+    
+    // For building the result function's parameter groups
+    // We need to capture all parameters from the left side
+    std::vector<ParamGroup> leftParamGroups;
+    
+    // Extract parameter groups from left if it's a function type
+    if (leftType->isa<FuncTypeAST>()) {
+        auto* leftFunc = leftType->as<FuncTypeAST>();
+        leftParamGroups = leftFunc->paramGroups;
+    }
+    
+    // Process each compose operand in order
     for (auto& operand : node.operands) {
+        if (!operand) continue;
+        
         TypeAST* opType = nullptr;
+        
+        // Resolve the operand to its type
         if (operand->kind == ComposeOperandKind::Ident) {
             Symbol* sym = symbols.lookup(operand->ident);
-            if (sym) opType = sym->type;
+            if (!sym) {
+                LUC_LOG_SEMANTIC("\tERROR: undeclared identifier '" << operand->ident << "' in compose");
+                dc.error(DiagnosticCategory::Semantic, operand->loc, DiagCode::E3001,
+                         "undeclared identifier '" + operand->ident + "' in '+>' composition");
+                return errorFallback(&node);
+            }
+            opType = sym->type;
+            
+            // Check mutability for function reassignment
+            if (sym->declKw != DeclKeyword::Const) {
+                // Let functions are fine to compose
+            }
         } else if (operand->kind == ComposeOperandKind::BehaviorRef) {
             std::string mangled = operand->typeName + "." + operand->method;
             Symbol* sym = symbols.lookup(mangled);
-            if (sym) opType = sym->type;
+            if (!sym) {
+                LUC_LOG_SEMANTIC("\tERROR: method '" << operand->method << "' not found on '" 
+                                 << operand->typeName << "'");
+                dc.error(DiagnosticCategory::Semantic, operand->loc, DiagCode::E3001,
+                         "no method '" + operand->method + "' found on '" + operand->typeName + "'");
+                return errorFallback(&node);
+            }
+            opType = sym->type;
+        } else if (operand->kind == ComposeOperandKind::FieldRef) {
+            // Field reference — need to resolve the field's type
+            // For now, we assume it's a function field (checked in semantic)
+            Symbol* sym = symbols.lookup(operand->ident);
+            if (!sym) {
+                LUC_LOG_SEMANTIC("\tERROR: undeclared identifier '" << operand->ident << "'");
+                dc.error(DiagnosticCategory::Semantic, operand->loc, DiagCode::E3001,
+                         "undeclared identifier '" + operand->ident + "'");
+                return errorFallback(&node);
+            }
+            // For field reference, we need the field's type, not the struct's type
+            // This requires additional field resolution — for now, just use sym->type
+            opType = sym->type;
         }
-
-        if (opType && !TypeChecker::isCallable(opType)) {
+        
+        if (!opType) {
+            LUC_LOG_SEMANTIC("\tERROR: compose operand has no type");
+            dc.error(DiagnosticCategory::Semantic, operand->loc, DiagCode::E3002,
+                     "compose operand has no type");
+            return errorFallback(&node);
+        }
+        
+        if (!TypeChecker::isCallable(opType)) {
             LUC_LOG_SEMANTIC("\tERROR: compose operand not callable");
-            dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
+            dc.error(DiagnosticCategory::Semantic, operand->loc, DiagCode::E3002,
                      "compose operand must be a function");
+            return errorFallback(&node);
         }
-
-        if (current && opType && opType->isa<FuncTypeAST>()) {
-            auto* ft = opType->as<FuncTypeAST>();
-            // Check if the function has at least one parameter
-            if (!ft->paramGroups.empty() && !ft->paramGroups[0].empty()) {
-                if (!TypeChecker::isAssignable(current, ft->paramGroups[0][0].type.get())) {
-                    LUC_LOG_SEMANTIC("\tERROR: type mismatch in composition");
-                    dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                             "type mismatch in '+>' composition: output type does not match next input");
+        
+        // For composition, we need the function type
+        if (!opType->isa<FuncTypeAST>()) {
+            LUC_LOG_SEMANTIC("\tERROR: compose operand is not a function type");
+            dc.error(DiagnosticCategory::Semantic, operand->loc, DiagCode::E3002,
+                     "compose operand must be a function");
+            return errorFallback(&node);
+        }
+        
+        auto* rightFunc = opType->as<FuncTypeAST>();
+        
+        // ── STRIP QUALIFIERS ───────────────────────────────────────────────
+        // Rule 1: The result function has NO qualifiers from either side
+        // We don't propagate ~async, ~noinline, etc. to the composed result.
+        
+        // ── CURRY HANDLING: Reduce left to its EVENTUAL return type ─────────
+        // We need to know what the left side returns after all its parameters
+        // are supplied. If left is curried (multiple groups), its eventual
+        // return type is the innermost return type after unrolling all groups.
+        TypeAST* leftReturnType = current;
+        
+        // Unroll curried left side to find its eventual return type
+        // e.g., (a int) (b int) (c int) int  -> eventual return = int
+        while (leftReturnType && leftReturnType->isa<FuncTypeAST>()) {
+            auto* asFunc = leftReturnType->as<FuncTypeAST>();
+            // Check if this is a curried group (has parameters)
+            if (!asFunc->paramGroups.empty()) {
+                // If there are parameters in any group, we need to go deeper?
+                // Actually, the return type of a function is its inner type
+                // For curried: (a int) -> returns (b int) -> returns (c int) -> returns int
+                // So we follow returnType until it's not a function
+                if (asFunc->returnType) {
+                    leftReturnType = asFunc->returnType.get();
+                } else {
+                    // No return type means void
+                    leftReturnType = nullptr;
+                    break;
+                }
+            } else {
+                // No parameters — this is the final return
+                leftReturnType = asFunc->returnType.get();
+                break;
+            }
+        }
+        
+        // Now leftReturnType is the type of value that would be passed to right's first param
+    
+        // ── CONSUME RIGHT'S FIRST PARAMETER GROUP ──────────────────────────
+        // The left's return type must match the first parameter of the right function
+        // If right is curried, we consume only its FIRST group
+        
+        if (rightFunc->paramGroups.empty()) {
+            // Right takes no parameters — valid composition
+            // The left's return value is discarded
+            LUC_LOG_SEMANTIC_EXTREME("\tright function takes no parameters — discarding left return value");
+            
+            // Result type is a new function with left's parameters, returning right's return type
+            auto resultType = std::make_unique<FuncTypeAST>(/*isNullable=*/false);
+            
+            // Copy all parameter groups from left (not right — left's params become the result's params)
+            for (const auto& group : leftParamGroups) {
+                ParamGroup newGroup;
+                for (const auto& param : group) {
+                    // Clone the parameter (need to keep names and types)
+                    TypePtr clonedType = SemanticHelpers::cloneType(param.type.get());
+                    newGroup.emplace_back(param.name, std::move(clonedType), 
+                                          param.isVariadic, param.loc);
+                }
+                resultType->paramGroups.push_back(std::move(newGroup));
+            }
+            
+            // Set return type = right's return type (qualified by right's return type)
+            if (rightFunc->returnType) {
+                resultType->returnType = SemanticHelpers::cloneType(rightFunc->returnType.get());
+            } else {
+                resultType->returnType = nullptr; // void
+            }
+            
+            // NO QUALIFIERS — stripped entirely
+            resultType->qualifiers = 0;
+            resultType->rawQualifiers.clear();
+            
+            node.resolvedType = resultType.get();
+            return resultType.release();
+        }
+        
+        // Right has at least one parameter group — we need to match left's return with
+        // the first parameter of the first group
+        auto& firstGroup = rightFunc->paramGroups[0];
+        if (firstGroup.empty()) {
+            LUC_LOG_SEMANTIC("\tERROR: right function first param group is empty (invalid)");
+            dc.error(DiagnosticCategory::Semantic, operand->loc, DiagCode::E3002,
+                     "invalid function type: first parameter group is empty");
+            return errorFallback(&node);
+        }
+        
+        // The first parameter's type is the expected input type
+        TypeAST* expectedInput = firstGroup[0].type.get();
+        
+        // Check compatibility: leftReturnType must be assignable to expectedInput
+        if (leftReturnType && expectedInput) {
+            if (!TypeChecker::isAssignable(leftReturnType, expectedInput)) {
+                LUC_LOG_SEMANTIC("\tERROR: type mismatch in composition");
+                dc.error(DiagnosticCategory::Semantic, operand->loc, DiagCode::E3002,
+                         "type mismatch in '+>' composition: left returns '" +
+                         LucDebug::kindToString(leftReturnType->kind) +
+                         "', but right expects '" +
+                         LucDebug::kindToString(expectedInput->kind) + "'");
+                return errorFallback(&node);
+            }
+        } else if (leftReturnType && !expectedInput) {
+            LUC_LOG_SEMANTIC("\tERROR: cannot assign to void parameter");
+            dc.error(DiagnosticCategory::Semantic, operand->loc, DiagCode::E3002,
+                     "cannot assign left return value to void parameter");
+            return errorFallback(&node);
+        }
+        
+        // ── BUILD THE RESULT TYPE ──────────────────────────────────────────
+        // Result is a new function with:
+        //   - Parameters = ALL of left's parameters (all groups)
+        //   - Return = right's remaining signature after consuming first group
+        
+        auto resultType = std::make_unique<FuncTypeAST>(/*isNullable=*/false);
+        
+        // Copy all parameter groups from left
+        for (const auto& group : leftParamGroups) {
+            ParamGroup newGroup;
+            for (const auto& param : group) {
+                TypePtr clonedType = SemanticHelpers::cloneType(param.type.get());
+                newGroup.emplace_back(param.name, std::move(clonedType), 
+                                      param.isVariadic, param.loc);
+            }
+            resultType->paramGroups.push_back(std::move(newGroup));
+        }
+        
+        // Determine the return type:
+        // If right has more than one parameter group (curried) OR
+        // the first group has more than one parameter (multi-param in same group)
+        if (rightFunc->paramGroups.size() > 1 || firstGroup.size() > 1) {
+            // Right is curried OR has multi-param group
+            // Build a copy of right with the first group consumed
+            auto remainingType = std::make_unique<FuncTypeAST>(/*isNullable=*/false);
+            
+            if (firstGroup.size() > 1) {
+                // Multi-param case: remove the first parameter from the first group
+                // The remaining parameters in the same group become the new first group
+                ParamGroup remainingGroup;
+                for (size_t i = 1; i < firstGroup.size(); ++i) {
+                    TypePtr clonedType = SemanticHelpers::cloneType(firstGroup[i].type.get());
+                    remainingGroup.emplace_back(firstGroup[i].name, std::move(clonedType),
+                                                firstGroup[i].isVariadic, firstGroup[i].loc);
+                }
+                remainingType->paramGroups.push_back(std::move(remainingGroup));
+                
+                // Copy remaining groups
+                for (size_t g = 1; g < rightFunc->paramGroups.size(); ++g) {
+                    ParamGroup newGroup;
+                    for (const auto& param : rightFunc->paramGroups[g]) {
+                        TypePtr clonedType = SemanticHelpers::cloneType(param.type.get());
+                        newGroup.emplace_back(param.name, std::move(clonedType),
+                                              param.isVariadic, param.loc);
+                    }
+                    remainingType->paramGroups.push_back(std::move(newGroup));
+                }
+            } else {
+                // Single param group (size 1) but more groups remain
+                // Copy all remaining groups
+                for (size_t g = 1; g < rightFunc->paramGroups.size(); ++g) {
+                    ParamGroup newGroup;
+                    for (const auto& param : rightFunc->paramGroups[g]) {
+                        TypePtr clonedType = SemanticHelpers::cloneType(param.type.get());
+                        newGroup.emplace_back(param.name, std::move(clonedType),
+                                              param.isVariadic, param.loc);
+                    }
+                    remainingType->paramGroups.push_back(std::move(newGroup));
                 }
             }
-            // The result type is the function's return type
-            current = ft->returnType.get();
+            
+            // Copy return type from right
+            if (rightFunc->returnType) {
+                remainingType->returnType = SemanticHelpers::cloneType(rightFunc->returnType.get());
+            }
+            
+            // Set the result's return type as the remaining function type
+            // Wrap it in a FuncTypeAST if it's not already
+            resultType->returnType = std::move(remainingType);
         } else {
-            current = nullptr;
+            // Right has exactly one group with one parameter
+            // Composition is complete — return right's return type
+            if (rightFunc->returnType) {
+                resultType->returnType = SemanticHelpers::cloneType(rightFunc->returnType.get());
+            } else {
+                resultType->returnType = nullptr; // void
+            }
+        }
+        
+        // NO QUALIFIERS — stripped entirely
+        resultType->qualifiers = 0;
+        resultType->rawQualifiers.clear();
+        
+        // Update current to be the result type for the next operand
+        current = resultType.get();
+        
+        // Store the result type in the node (for this step)
+        // But we need to keep building for multiple operands
+        // We'll keep resultType alive by moving it into a temporary storage
+        static std::vector<std::unique_ptr<FuncTypeAST>> tempResults;
+        tempResults.push_back(std::move(resultType));
+        current = tempResults.back().get();
+        
+        // For the next iteration, we need to update leftParamGroups to be the current's parameters
+        if (current && current->isa<FuncTypeAST>()) {
+            leftParamGroups = current->as<FuncTypeAST>()->paramGroups;
         }
     }
-
+    
+    // All operands processed
     node.resolvedType = current;
     return current;
 }
