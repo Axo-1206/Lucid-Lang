@@ -50,7 +50,7 @@ void ASTDumper::printNodeHeader(const BaseAST& node, const std::string& nodeName
 }
 
 void ASTDumper::visitChild(BaseAST* child, const std::string& label) {
-    if (!child || verbosity < 2) return;
+    // if (!child || verbosity < 2) return;
     indentLevel++;
     child->accept(*this);
     indentLevel--;

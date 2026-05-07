@@ -141,17 +141,17 @@ static void checkFunctionLikeDeclaration(FuncTypeAST& type,
     // Resolve all types in the function signature
     resolveFunctionType(type, resolver, dc);
     
-    // Push scope for parameters
+    // Push scope for parameters (and any local declarations inside the body)
     symbols.pushScope();
     
     // Declare parameters in the symbol table
     declareFunctionParameters(type, symbols, dc);
     
-    // Check the body
+    // Check the body (this will recursively call checkFuncDecl for nested local functions)
     checkFunctionBody(bodyKind, body, exprBody, type, symbols, resolver, dc,
                       loopDepth, parallelDepth, insideExtern);
     
-    // Pop scope
+    // Pop scope - this removes parameters and local functions declared inside
     symbols.popScope();
     
     // Clear generic parameters context
@@ -519,7 +519,7 @@ void checkVarDecl(VarDeclAST& node, SymbolTable& symbols, TypeResolver& resolver
 void checkFuncDecl(FuncDeclAST& node, SymbolTable& symbols, TypeResolver& resolver,
                    DiagnosticEngine& dc, int& loopDepth,
                    int& parallelDepth, bool insideExtern) {
-
+    LUC_LOG_SEMANTIC("checkFuncDecl: name=" << node.name);
     // Validate '@' attributes
     bool attrIsExtern = false;
     std::string attrExternSym, attrCallingConv;
@@ -536,17 +536,18 @@ void checkFuncDecl(FuncDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
         return;
     }
 
-    // Get the function symbol (should already exist from Phase 1)
+    // ── Try to find existing symbol (top-level function from Phase 1) ─────────
     Symbol* funcSym = symbols.lookup(node.name);
-    if (!funcSym) {
-        LUC_LOG_SEMANTIC("\tERROR: Function symbol not found for '" << node.name << "'");
-        dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
-                 "internal error: function symbol '" + node.name + "' not found");
-        return;
-    }
+    
+    // Track whether we created a local symbol (so we don't push it to FunctionContext)
+    bool isLocalFunction = false;
 
-    // ── Track current function for await checking using FunctionContext ──────
-    SemanticHelpers::pushFunction(node.name, funcSym);
+    // ── Track current function for await checking ─────────────────────────────
+    // Only push top-level functions onto the FunctionContext stack
+    // Local functions inherit async context from their parent
+    if (!isLocalFunction) {
+        SemanticHelpers::pushFunction(node.name, funcSym);
+    }
 
     // Use unified helper for normal functions
     checkFunctionLikeDeclaration(
@@ -554,8 +555,10 @@ void checkFuncDecl(FuncDeclAST& node, SymbolTable& symbols, TypeResolver& resolv
         node.body, node.exprBody, symbols, resolver, dc,
         loopDepth, parallelDepth, insideExtern, node.name);
 
-    // Pop the function from the stack after body checking is complete
-    SemanticHelpers::popFunction();
+    // Pop only if we pushed
+    if (!isLocalFunction) {
+        SemanticHelpers::popFunction();
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
