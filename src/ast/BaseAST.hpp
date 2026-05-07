@@ -56,6 +56,10 @@
 
 enum class ASTKind : uint16_t {
     Unknown,
+    UnknownDecl,
+    UnknownExpr,
+    UnknownStmt,
+    UnknownType,
 
     // ── Type nodes ────────────────────────────────────────────────────────────
     PrimitiveType,
@@ -82,6 +86,7 @@ enum class ASTKind : uint16_t {
     EnumDecl,
     TraitMethod,
     TraitDecl,
+    TraitRef,
     MethodDecl,
     FromDecl,
     FromEntry,
@@ -102,8 +107,11 @@ enum class ASTKind : uint16_t {
     AssignExpr,
     IsExpr,
     NullableChainExpr,
+    NullCoalesceExpr,
     PipelineExpr,
+    PipelineStep,
     ComposeExpr,
+    ComposeOperand,
     AnonFuncExpr,
     AwaitExpr,
     MatchExpr,
@@ -117,6 +125,7 @@ enum class ASTKind : uint16_t {
     DeclStmt,
     IfStmt,
     SwitchStmt,
+    SwitchCase,
     ForStmt,
     WhileStmt,
     DoWhileStmt,
@@ -127,12 +136,11 @@ enum class ASTKind : uint16_t {
     ParallelBlockStmt,
 
     // ── Pattern nodes ─────────────────────────────────────────────────────────
-    // Note: literal and range patterns are not listed here — they reuse
-    // LiteralExpr and RangeExpr directly in pattern position.
     BindPattern,
     WildcardPattern,
     TypePattern,
     StructPattern,
+    PatternExpr,
     MatchArm,
     DefaultArm,
 
@@ -169,6 +177,7 @@ struct EnumVariantAST;      // the data inside the enum definition
 struct EnumDeclAST;         // enum definition
 struct TraitMethodAST;
 struct TraitDeclAST;
+struct TraitRefAST;         // trait reference in impl conformance
 struct MethodDeclAST;
 struct FromDeclAST;         // from [method definition] - use for type casting
 struct FromEntryAST;        // entry inside the from block
@@ -187,10 +196,13 @@ struct IndexExprAST;
 struct FieldAccessExprAST;
 struct BehaviorAccessExprAST;
 struct NullableChainExprAST;
+struct NullCoalesceExprAST;
 struct AssignExprAST;
 struct IsExprAST;
 struct PipelineExprAST;
+struct PipelineStepAST;
 struct ComposeExprAST;
+struct ComposeOperandAST;
 struct AnonFuncExprAST;
 struct AwaitExprAST;
 struct MatchExprAST;
@@ -199,12 +211,11 @@ struct RangeExprAST;
 struct TypeConvExprAST;
 
 // Pattern nodes (defined in ExprAST.hpp alongside MatchArmAST / DefaultArmAST)
-// LiteralPatternAST and RangePatternAST are removed — LiteralExprAST and
-// RangeExprAST are used directly in pattern position inside MatchArmAST::patterns.
 struct BindPatternAST;
 struct WildcardPatternAST;
 struct TypePatternAST;
 struct StructPatternAST;
+struct PatternExprAST;
 struct MatchArmAST;
 struct DefaultArmAST;
 
@@ -214,6 +225,7 @@ struct ExprStmtAST;
 struct DeclStmtAST;
 struct IfStmtAST;
 struct SwitchStmtAST;
+struct SwitchCaseAST;
 struct ForStmtAST;
 struct WhileStmtAST;
 struct DoWhileStmtAST;
@@ -225,6 +237,12 @@ struct ParallelBlockStmtAST;
 
 // Root
 struct ProgramAST;
+
+// Unknown nodes
+struct UnknownDeclAST;
+struct UnknownExprAST;
+struct UnknownStmtAST;
+struct UnknownTypeAST;
 
 // ── Compiler Directive nodes (@) ──────────────────────────────────────────────
 // Defined in DeclAST.hpp and ExprAST.hpp respectively.
@@ -332,6 +350,7 @@ struct ASTVisitor {
     virtual void visit(EnumVariantAST&)     {}
     virtual void visit(TraitMethodAST&)     {}
     virtual void visit(TraitDeclAST&)       {}
+    virtual void visit(TraitRefAST&)        {}
     virtual void visit(ImplDeclAST&)        {}
     virtual void visit(MethodDeclAST&)      {}
     virtual void visit(FromDeclAST&)        {}
@@ -353,10 +372,13 @@ struct ASTVisitor {
     virtual void visit(FieldAccessExprAST&)     {}
     virtual void visit(BehaviorAccessExprAST&)  {}
     virtual void visit(NullableChainExprAST&)   {}
+    virtual void visit(NullCoalesceExprAST&)    {}
     virtual void visit(AssignExprAST&)          {}
     virtual void visit(IsExprAST&)              {}
     virtual void visit(PipelineExprAST&)        {}
+    virtual void visit(PipelineStepAST&)        {}
     virtual void visit(ComposeExprAST&)         {}
+    virtual void visit(ComposeOperandAST&)      {}
     virtual void visit(AnonFuncExprAST&)        {}
     virtual void visit(AwaitExprAST&)           {}
     virtual void visit(MatchExprAST&)           {}
@@ -365,12 +387,11 @@ struct ASTVisitor {
     virtual void visit(TypeConvExprAST&)        {}
 
     // ── Pattern nodes ─────────────────────────────────────────────────────────
-    // No visit() for LiteralExprAST or RangeExprAST in pattern position —
-    // those are dispatched through the existing expression visit() overrides above.
     virtual void visit(BindPatternAST&)         {}
     virtual void visit(WildcardPatternAST&)     {}
     virtual void visit(TypePatternAST&)         {}
     virtual void visit(StructPatternAST&)       {}
+    virtual void visit(PatternExprAST&)         {}
     virtual void visit(MatchArmAST&)            {}
     virtual void visit(DefaultArmAST&)          {}
 
@@ -380,6 +401,7 @@ struct ASTVisitor {
     virtual void visit(DeclStmtAST&)            {}
     virtual void visit(IfStmtAST&)              {}
     virtual void visit(SwitchStmtAST&)          {}
+    virtual void visit(SwitchCaseAST&)          {}
     virtual void visit(ForStmtAST&)             {}
     virtual void visit(WhileStmtAST&)           {}
     virtual void visit(DoWhileStmtAST&)         {}
@@ -395,6 +417,12 @@ struct ASTVisitor {
     // ── Compiler Directive nodes (@) ──────────────────────────────────────────
     virtual void visit(AttributeAST&)           {}
     virtual void visit(IntrinsicCallExprAST&)   {}
+
+    // ── Unknown / Recovery nodes ──────────────────────────────────────────────
+    virtual void visit(UnknownDeclAST&)         {}
+    virtual void visit(UnknownExprAST&)         {}
+    virtual void visit(UnknownStmtAST&)         {}
+    virtual void visit(UnknownTypeAST&)         {}
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -561,34 +589,42 @@ inline UnknownAST* unknownAST() {
 }
 
 // Helper to check if node is unknown/null-equivalent
-inline bool isUnknown(BaseAST* node) {
-    return !node || node->kind == ASTKind::Unknown;
+inline bool isUnknown(const BaseAST* node) {
+    if (!node) return true;
+    switch (node->kind) {
+        case ASTKind::Unknown:
+        case ASTKind::UnknownDecl:
+        case ASTKind::UnknownExpr:
+        case ASTKind::UnknownStmt:
+        case ASTKind::UnknownType:
+            return true;
+        default:
+            return false;
+    }
 }
 
-
-
 struct UnknownDeclAST : DeclAST {
-    static constexpr ASTKind staticKind = ASTKind::Unknown;
-    UnknownDeclAST() : DeclAST(ASTKind::Unknown) {}
-    void accept(ASTVisitor& v) override {}
+    static constexpr ASTKind staticKind = ASTKind::UnknownDecl;
+    UnknownDeclAST() : DeclAST(ASTKind::UnknownDecl) {}
+    void accept(ASTVisitor& v) override { v.visit(*this); }
 };
 
 struct UnknownExprAST : ExprAST {
-    static constexpr ASTKind staticKind = ASTKind::Unknown;
-    UnknownExprAST() : ExprAST(ASTKind::Unknown) {}
-    void accept(ASTVisitor& v) override {}
+    static constexpr ASTKind staticKind = ASTKind::UnknownExpr;
+    UnknownExprAST() : ExprAST(ASTKind::UnknownExpr) {}
+    void accept(ASTVisitor& v) override { v.visit(*this); }
 };
 
 struct UnknownStmtAST : StmtAST {
-    static constexpr ASTKind staticKind = ASTKind::Unknown;
-    UnknownStmtAST() : StmtAST(ASTKind::Unknown) {}
-    void accept(ASTVisitor& v) override {}
+    static constexpr ASTKind staticKind = ASTKind::UnknownStmt;
+    UnknownStmtAST() : StmtAST(ASTKind::UnknownStmt) {}
+    void accept(ASTVisitor& v) override { v.visit(*this); }
 };
 
 struct UnknownTypeAST : TypeAST {
-    static constexpr ASTKind staticKind = ASTKind::Unknown;
-    UnknownTypeAST() : TypeAST(ASTKind::Unknown) {}
-    void accept(ASTVisitor& v) override {}
+    static constexpr ASTKind staticKind = ASTKind::UnknownType;
+    UnknownTypeAST() : TypeAST(ASTKind::UnknownType) {}
+    void accept(ASTVisitor& v) override { v.visit(*this); }
 };
 
 // Helper factory functions

@@ -58,6 +58,8 @@ public:
     void visit(FromEntryAST& node) override;
     void visit(TypeAliasDeclAST& node) override;
     void visit(GenericParamAST& node) override;
+    void visit(ParamAST& node) override;
+    void visit(ModuleDeclAST& node) override;
     
     // ── Expression nodes ──────────────────────────────────────────────────────
     void visit(LiteralExprAST& node) override;
@@ -71,10 +73,13 @@ public:
     void visit(FieldAccessExprAST& node) override;
     void visit(BehaviorAccessExprAST& node) override;
     void visit(NullableChainExprAST& node) override;
+    void visit(NullCoalesceExprAST& node) override;
     void visit(AssignExprAST& node) override;
     void visit(IsExprAST& node) override;
     void visit(PipelineExprAST& node) override;
+    void visit(PipelineStepAST& node) override;
     void visit(ComposeExprAST& node) override;
+    void visit(ComposeOperandAST& node) override;
     void visit(AnonFuncExprAST& node) override;
     void visit(AwaitExprAST& node) override;
     void visit(MatchExprAST& node) override;
@@ -87,6 +92,7 @@ public:
     void visit(WildcardPatternAST& node) override;
     void visit(TypePatternAST& node) override;
     void visit(StructPatternAST& node) override;
+    void visit(PatternExprAST& node) override;
     void visit(MatchArmAST& node) override;
     void visit(DefaultArmAST& node) override;
 

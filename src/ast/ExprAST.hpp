@@ -10,11 +10,14 @@
  *   - src/ast/StmtAST.hpp (Statements often contain expressions)
  *
  * @note
- *   - PatternAST is removed then merge into ExprAST(to reduce cyclic dependency).
- *   - LiteralPatternAST and RangePatternAST are removed.
- *   - LiteralExprAST and RangeExprAST are used directly in pattern position.
- *   - MatchArmAST::patterns now holds BaseAST* instead of PatternAST*.
- *   - StructPatternAST::subPattern now holds BaseAST* instead of PatternAST*.
+ *   The current design separates expression nodes and pattern nodes:
+ *   - PatternAST is a separate BaseAST subclass (not merged into ExprAST)
+ *   - Five concrete pattern types inherit from PatternAST:
+ *     BindPatternAST, WildcardPatternAST, TypePatternAST, StructPatternAST, PatternExprAST
+ *   - PatternExprAST wraps literal (LiteralExprAST) and range (RangeExprAST) nodes
+ *   - MatchArmAST::patterns holds vector<unique_ptr<PatternAST>>
+ *   - StructPatternAST::subPattern holds unique_ptr<PatternAST>
+ *   This unified pattern type eliminates the need for BaseAST* container types.
  */
 
 #pragma once
@@ -641,9 +644,20 @@ struct NullableChainExprAST : ExprAST {
 
     ExprPtr                  object;    // root expression
     std::vector<std::string> steps;     // field names accessed via ?.
-    ExprPtr                  fallback;  // the ?? value
+    // No fallback here — the grammar requires ?? to be a separate operator
 
     NullableChainExprAST() : ExprAST(ASTKind::NullableChainExpr) {}
+
+    void accept(ASTVisitor& v) override { v.visit(*this); }
+};
+
+struct NullCoalesceExprAST : ExprAST {
+    static constexpr ASTKind staticKind = ASTKind::NullCoalesceExpr;
+
+    ExprPtr value;
+    ExprPtr fallback;
+
+    NullCoalesceExprAST() : ExprAST(ASTKind::NullCoalesceExpr) {}
 
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
@@ -675,7 +689,9 @@ struct NullableChainExprAST : ExprAST {
 //   AnonFunc:    anonFunc filled
 // ─────────────────────────────────────────────────────────────────────────────
 
-struct PipelineStepAST {
+struct PipelineStepAST : BaseAST {
+    static constexpr ASTKind staticKind = ASTKind::PipelineStep;
+
     PipelineStepKind          kind;
 
     // Ident / FieldRef / ArgPack — the base identifier
@@ -692,9 +708,11 @@ struct PipelineStepAST {
     std::vector<ExprPtr>      packArgs;   // the args inside fn(args)!
 
     // AnonFunc — inline anonymous function
-    std::unique_ptr<struct AnonFuncExprAST> anonFunc;  // forward declared below
+    ExprPtr  anonFunc;  // AnonFuncExprAST
 
-    SourceLocation            loc;
+    PipelineStepAST() : BaseAST(ASTKind::PipelineStep) {}
+
+    void accept(ASTVisitor& v) override { v.visit(*this); }
 };
 
 using PipelineStepPtr = std::unique_ptr<PipelineStepAST>;
@@ -744,7 +762,9 @@ struct PipelineExprAST : ExprAST {
 // output type of the left operand exactly matches the input type of the right.
 // ─────────────────────────────────────────────────────────────────────────────
 
-struct ComposeOperandAST {
+struct ComposeOperandAST : BaseAST {
+    static constexpr ASTKind staticKind = ASTKind::ComposeOperand;
+
     ComposeOperandKind  kind;
 
     std::string         ident;      // Ident / FieldRef
@@ -752,7 +772,9 @@ struct ComposeOperandAST {
     std::string         method;     // BehaviorRef — "normalize"
     std::string         field;      // FieldRef
 
-    SourceLocation      loc;
+    ComposeOperandAST() : BaseAST(ASTKind::ComposeOperand) {}
+
+    void accept(ASTVisitor& v) override { v.visit(*this); }
 };
 
 using ComposeOperandPtr = std::unique_ptr<ComposeOperandAST>;
@@ -810,12 +832,12 @@ struct ComposeExprAST : ExprAST {
 struct AnonFuncExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::AnonFuncExpr;
 
-    FuncTypeAST type;                               // (params + return + qualifiers)
-    StmtPtr body;                                   // BlockStmtAST
+    FuncSignature sig;
+    StmtPtr body;                                   // always BlockStmtAST
 
     // Convenience helpers
-    bool isAsync() const { return type.isAsync(); }
-    bool hasParams() const { return type.hasParams(); }
+    bool isAsync() const { return sig.isAsync(); }
+    bool hasParams() const { return sig.hasParams(); }
     
     AnonFuncExprAST() : ExprAST(ASTKind::AnonFuncExpr) {}
     void accept(ASTVisitor& v) override { v.visit(*this); }
@@ -862,9 +884,10 @@ struct AwaitExprAST : ExprAST {
 //   - in any expression position        → IfExprAST
 //   - as a standalone statement         → IfStmtAST
 //
-// Both then and elseBranch are StmtPtr (BlockStmtAST) — the same block type
-// used everywhere. The semantic pass checks that both branches produce the
-// same type and that elseBranch is present.
+// Both thenBranch and elseBranch are ExprPtr — plain expressions, not blocks.
+// The grammar is: if_expr := 'if' expr '??' expr 'else' expr
+// The semantic pass checks that both branches produce the same type and that
+// elseBranch is present.
 // ─────────────────────────────────────────────────────────────────────────────
 
 struct IfExprAST : ExprAST {
@@ -1068,6 +1091,15 @@ struct WildcardPatternAST : PatternAST {
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
 
+struct PatternExprAST : PatternAST {
+    static constexpr ASTKind staticKind = ASTKind::PatternExpr;
+
+    ExprPtr inner; // LiteralExprAST or RangeExprAST
+
+    PatternExprAST() : PatternAST(ASTKind::PatternExpr) {}
+    void accept(ASTVisitor& v) override { v.visit(*this); }
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // TypePatternAST
 //
@@ -1121,9 +1153,9 @@ struct TypePatternAST : PatternAST {
 //
 // When subPattern is nullptr the field is bound by name (shorthand form).
 // When subPattern is present the field value must match the sub-pattern.
-// subPattern is BaseAST* for the same reason as MatchArmAST::patterns —
-// literal sub-patterns are LiteralExprAST (ExprAST), while structural
-// sub-patterns are PatternAST; no common subtype tighter than BaseAST exists.
+// subPattern is unique_ptr<PatternAST> because PatternExprAST wraps literal
+// and range nodes (LiteralExprAST, RangeExprAST) as PatternAST subclasses,
+// providing a common type for all valid pattern nodes.
 //
 // Note: struct patterns use ':' as the field separator — this is pattern
 // syntax only. Struct literals always use '=' (never ':').
@@ -1131,7 +1163,7 @@ struct TypePatternAST : PatternAST {
 
 struct FieldPatternAST {
     std::string                  field;        // field name from the struct
-    std::unique_ptr<BaseAST>     subPattern;   // nullptr → shorthand bind by name
+    std::unique_ptr<PatternAST>  subPattern;   // nullptr → shorthand bind by name
     SourceLocation               loc;
 };
 
@@ -1189,19 +1221,15 @@ struct StructPatternAST : PatternAST {
 //   Vec2 { x, y } -> "at " + string(x) + ", " + string(y)
 //
 // patterns — one or more patterns, comma-separated in source. Stored as
-//   vector<unique_ptr<BaseAST>> rather than vector<unique_ptr<PatternAST>>
-//   because literal and range arms now place LiteralExprAST and RangeExprAST
-//   nodes here directly — those inherit from ExprAST, not PatternAST, so there
-//   is no common subtype tighter than BaseAST. The semantic pass uses isa<> /
-//   as<> on ASTKind to discriminate each node; no compile-time narrower type
-//   is available or necessary.
+//   vector<unique_ptr<PatternAST>> — all valid pattern nodes are now
+//   PatternAST subclasses. LiteralExprAST and RangeExprAST patterns are
+//   wrapped in PatternExprAST, which is a PatternAST subclass.
 //   Valid ASTKind values in this vector:
-//     LiteralExpr     — literal value pattern: 42, "ok", true
-//     RangeExpr       — range pattern: 1..10, 1..<10
 //     BindPattern     — bind pattern: n
 //     WildcardPattern — discard pattern: _
 //     TypePattern     — type + bind pattern: v is Circle
 //     StructPattern   — destructure pattern: Vec2 { x, y }
+//     PatternExpr     — wraps LiteralExprAST (42, "ok", true) or RangeExprAST (1..10)
 //   All patterns in the list are tried — the arm fires if any matches.
 //   Multiple patterns share the same guard and body.
 //   Constraint: all patterns in a list must bind the same set of names
@@ -1226,9 +1254,9 @@ struct StructPatternAST : PatternAST {
 struct MatchArmAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::MatchArm;
 
-    std::vector<std::unique_ptr<BaseAST>> patterns;   // at least one — see comment above
-    ExprPtr                               guard;       // nullptr if no guard
-    std::vector<ExprPtr>                  exprs;       // 1 or more result expressions
+    std::vector<std::unique_ptr<PatternAST>> patterns;   // at least one
+    ExprPtr                                  guard;       // nullptr if no guard
+    std::vector<ExprPtr>                     exprs;       // 1 or more result expressions
 
     MatchArmAST() : BaseAST(ASTKind::MatchArm) {}
 

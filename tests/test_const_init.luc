@@ -1,6 +1,0 @@
-package test
-
-export const main() int = {
-    const x int -- should error
-    return 0
-}

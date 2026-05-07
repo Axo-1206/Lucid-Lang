@@ -52,8 +52,7 @@
 //
 // Foundational building block — every body in the language is a block.
 // ─────────────────────────────────────────────────────────────────────────────
-std::unique_ptr<BlockStmtAST> Parser::parseBlock()
-{
+std::unique_ptr<BlockStmtAST> Parser::parseBlock() {
     LUC_LOG_STMT("parseBlock");
     SourceLocation loc = currentLoc();
     consume(TokenType::LBRACE, "expected '{'");
@@ -63,22 +62,29 @@ std::unique_ptr<BlockStmtAST> Parser::parseBlock()
     int stmtCount = 0;
 
     while (!check(TokenType::RBRACE) && !isAtEnd()) {
-        // Skip optional statement separators.
         if (match(TokenType::SEMICOLON)) continue;
 
+        // Save position for error recovery
+        std::size_t savedPos = pos_;
+        
         StmtPtr stmt = parseStmt();
         if (stmt) {
             block->stmts.push_back(std::move(stmt));
             stmtCount++;
         } else {
-            // parseStmt already recorded an error.
-            // Synchronize to the next statement boundary so we can keep parsing.
+            // If we didn't advance, manually advance to avoid infinite loop
+            if (pos_ == savedPos) {
+                LUC_LOG_STMT("parseBlock: parser didn't advance, forcing advance");
+                advance();
+            }
+            
             if (!check(TokenType::RBRACE) && !isAtEnd()) {
                 synchronize();
             }
         }
     }
 
+    LUC_LOG_STMT_VERBOSE("parseBlock: consuming '}', current token='" << peek().value << "'");
     consume(TokenType::RBRACE, "expected '}' to close block");
     LUC_LOG_STMT("parseBlock: parsed " << stmtCount << " statements");
     return block;
@@ -578,8 +584,7 @@ std::unique_ptr<DoWhileStmtAST> Parser::parseDoWhileStmt()
 // A bare 'return' (no expression) is valid in void functions.
 // Return inside a parallel body is a parse-time error.
 // ─────────────────────────────────────────────────────────────────────────────
-std::unique_ptr<ReturnStmtAST> Parser::parseReturnStmt()
-{
+std::unique_ptr<ReturnStmtAST> Parser::parseReturnStmt() {
     LUC_LOG_STMT("parseReturnStmt");
     SourceLocation loc = currentLoc();
     consume(TokenType::RETURN, "expected 'return'");
@@ -592,24 +597,16 @@ std::unique_ptr<ReturnStmtAST> Parser::parseReturnStmt()
     auto node = std::make_unique<ReturnStmtAST>();
     node->loc = loc;
 
-    // A return value is present when the next token can start an expression
-    // and is not a statement terminator ('}', ';', or a declaration keyword
-    // that would belong to the next statement).
-    // We check conservatively: if the next token can start an expression, parse it.
-    bool hasValue = !check(TokenType::RBRACE)
-                 && !check(TokenType::SEMICOLON)
-                 && !isAtEnd()
-                 && looksLikeStmtStart();
-
-    // Tighter check: a return value starts an expression, not a new declaration.
-    // Exclude the declaration keywords so 'return\nlet x = 5' is two statements.
-    if (hasValue && checkAny({ TokenType::LET, TokenType::CONST })) {
-        hasValue = false;
-    }
-
-    if (hasValue) {
-        LUC_LOG_STMT_VERBOSE("parseReturnStmt: has return value");
+    // CRITICAL: Check if there's a return value
+    // Don't consume the '}' that ends the block
+    if (!check(TokenType::RBRACE) && !check(TokenType::SEMICOLON) && !isAtEnd()) {
+        LUC_LOG_STMT_VERBOSE("parseReturnStmt: parsing return value");
         node->value = parseExpr();
+        if (!node->value) {
+            errorAt(DiagCode::E2008, "expected expression after 'return'");
+        } else {
+            LUC_LOG_STMT_VERBOSE("parseReturnStmt: return value parsed, next token='" << peek().value << "'");
+        }
     } else {
         LUC_LOG_STMT_VERBOSE("parseReturnStmt: void return");
     }

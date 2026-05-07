@@ -340,106 +340,29 @@ struct PtrTypeAST : TypeAST {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ParamInfo
+// FuncSignature
 //
-// Represents a single parameter in a function type or declaration.
-// In type position (e.g., (int, string) -> bool), names are empty.
-// In declaration position (e.g., (x int, y string)), names are preserved.
+// Plain data — not a BaseAST, not visited.
+// Holds the signature data shared by FuncTypeAST and declarations.
 // ─────────────────────────────────────────────────────────────────────────────
-struct ParamInfo {
-    std::string name;           // Empty for type position, filled for declarations
-    TypePtr type;               // Parameter type
-    bool isVariadic = false;    // true for ...type (variadic parameter)
-    SourceLocation loc;         // For error reporting
-    
-    ParamInfo() = default;
-    ParamInfo(std::string n, TypePtr t, bool variadic = false, SourceLocation l = {})
-        : name(std::move(n)), type(std::move(t)), isVariadic(variadic), loc(l) {}
-};
-
-// Convenience aliases
-using ParamInfoPtr = std::unique_ptr<ParamInfo>;
-using ParamGroup = std::vector<ParamInfo>;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// FuncTypeAST
-//
-// THE UNIFIED FUNCTION TYPE NODE
-//
-// Used for BOTH:
-//   1. Function TYPES in annotations (e.g., let callback (int) string)
-//   2. Function SIGNATURES in declarations (e.g., let add (a int) (b int) int)
-//
-// Parameter names are optional:
-//   - In type position: name fields are empty
-//   - In declaration position: name fields contain parameter names
-//
-// This eliminates the need for separate FuncSignatureAST or duplicating
-// paramGroups across FuncDeclAST, MethodDeclAST, TraitMethodAST, AnonFuncExprAST.
-//
-// Standard form:
-//   (int) string          →  paramGroups = [[{name="", type=Int}]], returnType=String
-//   (a int) (b int) int   →  paramGroups = [[{name="a", type=Int}], [{name="b", type=Int}]], returnType=Int
-//   ()                    →  paramGroups = [], returnType=nullptr
-//
-// Nullable function form — the function itself may be nil:
-//   ((int) string)?       →  isNullable = true
-//
-// Note: a nullable *return type* is expressed as returnType = NullableTypeAST,
-// not by setting isNullable = true.
-//
-// Type Qualifiers (~async, ~noinline, etc.)
-// ─────────────────────────────────────────────────────────────────────────────
-// DESIGN: "Parse first, validate later"
-//
-// Phase 1 (Parser):
-//   - Parser collects raw qualifier names as strings
-//   - No validation, no bitmask conversion
-//   - Raw names stored in rawQualifiers vector
-//
-// Phase 2 (TypeResolver - Semantic):
-//   - Validates each qualifier name against QualifierRegistry
-//   - Converts valid names to bitmask in 'qualifiers' field
-//   - Reports error for unknown qualifiers
-//   - Clears rawQualifiers after conversion
-// ─────────────────────────────────────────────────────────────────────────────
-struct FuncTypeAST : TypeAST {
-    static constexpr ASTKind staticKind = ASTKind::FuncType;
-    
-    // ── Core signature components ────────────────────────────────────────────
-    std::vector<ParamGroup> paramGroups;  // Outer vector = curry groups
-    TypePtr returnType;                    // nullptr = void
-    bool isNullable = false;               // Function itself nullable? ((T) U)?
-    
-    // ── Type qualifiers (bitmask for runtime efficiency) ─────────────────────
-    // Set by TypeResolver during semantic phase
-    uint32_t qualifiers = 0;
-    
-    // ── Raw qualifier names (parser output, semantic input) ──────────────────
+struct FuncSignature {
+    std::vector<std::vector<std::unique_ptr<ParamAST>>> paramGroups;
+    TypePtr                  returnType;
+    bool                     isNullable   = false;
+    uint32_t                 qualifiers   = 0;
     std::vector<std::string> rawQualifiers;
-    
-    // ── Helper methods ───────────────────────────────────────────────────────
-    
-    // Qualifier checks
+
     bool hasQualifier(const std::string& name) const {
         uint32_t bit = QualifierRegistry::instance().getBit(name);
         return bit != 0 && (qualifiers & bit);
     }
-    
-    bool isAsync() const { return hasQualifier("async"); }
-    bool isNoInline() const { return hasQualifier("noinline"); }
-    
-    // Check if qualifiers have been resolved
-    bool isResolved() const { return rawQualifiers.empty(); }
-    
-    // Parameter queries
-    bool hasParams() const {
+    bool isAsync()    const { return hasQualifier("async"); }
+    bool hasParams()  const {
         for (const auto& group : paramGroups) {
             if (!group.empty()) return true;
         }
         return false;
     }
-    
     size_t totalParamCount() const {
         size_t count = 0;
         for (const auto& group : paramGroups) {
@@ -447,50 +370,23 @@ struct FuncTypeAST : TypeAST {
         }
         return count;
     }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FuncTypeAST
+//
+// THE UNIFIED FUNCTION TYPE NODE
+//
+// Used for function TYPES in annotations (e.g., let callback (int) string).
+// Declarations now embed FuncSignature directly to avoid the "embedded node" problem.
+// ─────────────────────────────────────────────────────────────────────────────
+struct FuncTypeAST : TypeAST {
+    static constexpr ASTKind staticKind = ASTKind::FuncType;
     
-    // For type comparison: get parameter types only (ignoring names)
-    std::vector<std::vector<TypeAST*>> getParamTypes() const {
-        std::vector<std::vector<TypeAST*>> result;
-        result.reserve(paramGroups.size());
-        for (const auto& group : paramGroups) {
-            std::vector<TypeAST*> types;
-            types.reserve(group.size());
-            for (const auto& param : group) {
-                types.push_back(param.type.get());
-            }
-            result.push_back(std::move(types));
-        }
-        return result;
-    }
+    FuncSignature sig;
     
-    // Check structural equality (ignores parameter names)
-    bool structurallyEquals(const FuncTypeAST& other) const {
-        if (qualifiers != other.qualifiers) return false;
-        if (isNullable != other.isNullable) return false;
-        
-        // Compare param groups count
-        if (paramGroups.size() != other.paramGroups.size()) return false;
-        
-        // Compare each param group's types
-        for (size_t i = 0; i < paramGroups.size(); ++i) {
-            if (paramGroups[i].size() != other.paramGroups[i].size()) return false;
-            for (size_t j = 0; j < paramGroups[i].size(); ++j) {
-                // Need TypeChecker::isEqual for this, but that's in semantic phase
-                // For now, just compare pointer equality or use a helper
-                if (paramGroups[i][j].type.get() != other.paramGroups[i][j].type.get()) {
-                    // Different type pointers - may still be structurally equal
-                    // This will be handled by TypeChecker::isEqual later
-                    return false;
-                }
-            }
-        }
-        
-        // Compare return types
-        return returnType.get() == other.returnType.get();
-    }
-    
-    explicit FuncTypeAST(bool nullable = false)
-        : TypeAST(ASTKind::FuncType), isNullable(nullable) {}
+    explicit FuncTypeAST() : TypeAST(ASTKind::FuncType) {}
     
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
+

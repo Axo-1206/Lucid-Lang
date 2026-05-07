@@ -1,9 +1,0 @@
-package tests
-
-export const main () int = {
-    let my_bool bool = true
-    if my_bool {
-        let x int = 1
-    }
-    return 0
-}

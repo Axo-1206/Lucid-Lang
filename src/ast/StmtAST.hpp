@@ -228,14 +228,10 @@ struct IfStmtAST : StmtAST {
 // ─────────────────────────────────────────────────────────────────────────────
 // SwitchCaseAST
 //
-// One case clause inside a switch statement — a plain struct, not a StmtAST.
+// One case clause inside a switch statement — now a full BaseAST node.
 //   case 200, 201, 202: { io.printl("success") }
 //   case 1..10:         { io.printl("light") }
 //   case 0x41, 0x30..0x39: { handleInput() }
-//
-// Not a StmtAST because it never appears independently — it only lives as
-// a child of SwitchStmtAST. No visitor dispatch is needed; the semantic pass
-// reads it directly through the parent node.
 //
 // values — one or more match values for this case. Each entry is either:
 //   - a plain ExprPtr   (single value: case 200)
@@ -246,10 +242,15 @@ struct IfStmtAST : StmtAST {
 // No fallthrough — each case is fully isolated.
 // ─────────────────────────────────────────────────────────────────────────────
 
-struct SwitchCaseAST {
+struct SwitchCaseAST : BaseAST {
+    static constexpr ASTKind staticKind = ASTKind::SwitchCase;
+
     std::vector<ExprPtr>          values;   // one or more match values / ranges
     std::unique_ptr<BlockStmtAST> body;     // statements for this case
     SourceLocation                loc;      // location of 'case' keyword
+
+    SwitchCaseAST() : BaseAST(ASTKind::SwitchCase) {}
+    void accept(ASTVisitor& v) override { v.visit(*this); }
 };
 
 using SwitchCasePtr = std::unique_ptr<SwitchCaseAST>;
@@ -303,11 +304,14 @@ struct SwitchStmtAST : StmtAST {
 //
 // Both grammar forms (collection and range) map to a single node. The
 // semantic pass determines the iteration variable's type from the element
-// type of iterable — if iterable is a RangeExprAST, varType is int; if it
-// is a collection, varType is the element type of that collection.
+// type of iterable — if iterable is a RangeExprAST, the variable is inferred
+// as int; if it is a collection, the variable is inferred as the element type
+// of that collection. Explicit type annotation (iterVar->type) overrides inference.
 //
-// varName  — iteration variable name, local to each iteration of body
+// iterVar  — iteration variable parameter (name + optional explicit type)
+//            nullptr type = inferred from iterable
 // iterable — any expression resolving to a collection or RangeExprAST
+// step     — optional step expression for range loops (nullptr if omitted)
 // body     — loop body, always a BlockStmtAST
 //
 // Valid inside body: break, continue, return (exits enclosing function).
@@ -316,8 +320,7 @@ struct SwitchStmtAST : StmtAST {
 struct ForStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::ForStmt;
 
-    std::string varName;    // "item", "i", "v"
-    TypePtr     varType;    // optional explicit type (nullptr if inferred)
+    ParamPtr    iterVar;    // iteration variable: name + optional type annotation
     ExprPtr     iterable;   // collection or RangeExprAST (start..end)
     ExprPtr     step;       // optional step (only for range loops, nullptr if omitted)
     StmtPtr     body;       // always a BlockStmtAST
@@ -466,8 +469,10 @@ struct ContinueStmtAST : StmtAST {
 //       particles[i].pos += particles[i].velocity * dt
 //   }
 //
-// varName  — iteration variable, independently bound per iteration
+// iterVar  — iteration variable parameter (name + optional explicit type)
+//            nullptr type = inferred from iterable. Independently bound per iteration.
 // iterable — must resolve to a collection type (array or slice)
+// step     — optional step expression for range loops (nullptr if omitted)
 // body     — parallel body, always a BlockStmtAST
 //
 // Semantic pass enforces inside body (sets isParallel on body scope):
@@ -475,14 +480,13 @@ struct ContinueStmtAST : StmtAST {
 //   - no await expressions
 //   - no return statements
 //   - no break or continue statements
-//   - varName is a fresh binding per iteration — no shared mutable state
+//   - iterVar is a fresh binding per iteration — no shared mutable state
 // ─────────────────────────────────────────────────────────────────────────────
 
 struct ParallelForStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::ParallelForStmt;
 
-    std::string varName;    // per-iteration variable name
-    TypePtr     varType;    // optional explicit type (nullptr if inferred)
+    ParamPtr    iterVar;    // per-iteration variable: name + optional type annotation
     ExprPtr     iterable;   // collection or RangeExprAST (start..end)
     ExprPtr     step;       // optional step (only for range loops, nullptr if omitted)
     StmtPtr     body;       // always a BlockStmtAST

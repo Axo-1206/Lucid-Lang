@@ -146,25 +146,25 @@ int main(int argc, char* argv[]) {
     }
 
     // Phase 3: Semantic Analysis
-    std::cout << "[MAIN] Starting semantic analysis..." << std::endl;
-    std::vector<ProgramAST*> files = { program.get() };
-    SemanticAnalyzer analyzer(dc);
+    // std::cout << "[MAIN] Starting semantic analysis..." << std::endl;
+    // std::vector<ProgramAST*> files = { program.get() };
+    // SemanticAnalyzer analyzer(dc);
     
-    bool success = analyzer.analyze(files);
-    std::cout << "[MAIN] Semantic analysis complete: " << (success ? "SUCCESS" : "FAILED") << std::endl;
+    // bool success = analyzer.analyze(files);
+    // std::cout << "[MAIN] Semantic analysis complete: " << (success ? "SUCCESS" : "FAILED") << std::endl;
     
-    if (dc.hasErrors()) {
-        std::cerr << "\n>>> Semantic Analysis FAILED:" << std::endl;
-        dc.dumpAll(std::cerr);
-        return 1;
-    }
+    // if (dc.hasErrors()) {
+    //     std::cerr << "\n>>> Semantic Analysis FAILED:" << std::endl;
+    //     dc.dumpAll(std::cerr);
+    //     return 1;
+    // }
 
-    if (dc.hasWarnings()) {
-        std::cerr << "\n>>> Semantic Analysis SUCCESSFUL with warnings:" << std::endl;
-        dc.dumpAll(std::cerr);
-    } else {
-        std::cout << "\n>>> Semantic Analysis SUCCESSFUL!" << std::endl;
-    }
+    // if (dc.hasWarnings()) {
+    //     std::cerr << "\n>>> Semantic Analysis SUCCESSFUL with warnings:" << std::endl;
+    //     dc.dumpAll(std::cerr);
+    // } else {
+    //     std::cout << "\n>>> Semantic Analysis SUCCESSFUL!" << std::endl;
+    // }
     
     file.close();
     

@@ -506,19 +506,51 @@ bool Parser::looksLikeStmtStart() const {
         case TokenType::AT_SIGN:
             LUC_LOG_PARSER_EXTREME("looksLikeStmtStart: true (keyword)");
             return true;
-    default:
-        bool result = looksLikeType() || check(TokenType::IDENTIFIER) ||
-               check(TokenType::INT_LITERAL) || check(TokenType::FLOAT_LITERAL) ||
-               check(TokenType::STRING_LITERAL) || check(TokenType::RAW_STRING_LITERAL) ||
-               check(TokenType::CHAR_LITERAL) || check(TokenType::HEX_LITERAL) ||
-               check(TokenType::BINARY_LITERAL) || check(TokenType::TRUE) ||
-               check(TokenType::FALSE) || check(TokenType::NIL) ||
-               check(TokenType::MINUS) || check(TokenType::NOT) ||
-               check(TokenType::BIT_NOT) || check(TokenType::AMPERSAND) ||
-               check(TokenType::AWAIT) || check(TokenType::LPAREN);
-        LUC_LOG_PARSER_EXTREME("looksLikeStmtStart: " << (result ? "true" : "false") 
-                               << " (expression starter)");
-        return result;
+        default:
+            // Also allow primitive type keywords as expression starters (e.g., string(x) conversion)
+            bool isPrimitiveType = false;
+            switch (peek().type) {
+                case TokenType::TYPE_BOOL:
+                case TokenType::TYPE_BYTE:
+                case TokenType::TYPE_SHORT:
+                case TokenType::TYPE_INT:
+                case TokenType::TYPE_LONG:
+                case TokenType::TYPE_UBYTE:
+                case TokenType::TYPE_USHORT:
+                case TokenType::TYPE_UINT:
+                case TokenType::TYPE_ULONG:
+                case TokenType::TYPE_INT8:
+                case TokenType::TYPE_INT16:
+                case TokenType::TYPE_INT32:
+                case TokenType::TYPE_INT64:
+                case TokenType::TYPE_UINT8:
+                case TokenType::TYPE_UINT16:
+                case TokenType::TYPE_UINT32:
+                case TokenType::TYPE_UINT64:
+                case TokenType::TYPE_FLOAT:
+                case TokenType::TYPE_DOUBLE:
+                case TokenType::TYPE_DECIMAL:
+                case TokenType::TYPE_STRING:
+                case TokenType::TYPE_CHAR:
+                case TokenType::TYPE_ANY:
+                    isPrimitiveType = true;
+                    break;
+                default:
+                    break;
+            }
+        
+            bool result = looksLikeType() || check(TokenType::IDENTIFIER) || isPrimitiveType ||
+                   check(TokenType::INT_LITERAL) || check(TokenType::FLOAT_LITERAL) ||
+                   check(TokenType::STRING_LITERAL) || check(TokenType::RAW_STRING_LITERAL) ||
+                   check(TokenType::CHAR_LITERAL) || check(TokenType::HEX_LITERAL) ||
+                   check(TokenType::BINARY_LITERAL) || check(TokenType::TRUE) ||
+                   check(TokenType::FALSE) || check(TokenType::NIL) ||
+                   check(TokenType::MINUS) || check(TokenType::NOT) ||
+                   check(TokenType::BIT_NOT) || check(TokenType::AMPERSAND) ||
+                   check(TokenType::AWAIT) || check(TokenType::LPAREN);
+            LUC_LOG_PARSER_EXTREME("looksLikeStmtStart: " << (result ? "true" : "false") 
+                                   << " (expression starter)");
+            return result;
     }
 }
 

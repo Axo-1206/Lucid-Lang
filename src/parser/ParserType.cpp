@@ -536,6 +536,10 @@ TypePtr Parser::parseFuncType(bool allowQualifiers) {
     
     if (!check(TokenType::RPAREN)) {
         do {
+            SourceLocation paramLoc = currentLoc();
+            std::string name = "";
+            bool variadic = match(TokenType::VARIADIC);
+
             // Optional parameter name (ignore it in type position)
             if (check(TokenType::IDENTIFIER)) {
                 bool nextIsType = false;
@@ -576,8 +580,8 @@ TypePtr Parser::parseFuncType(bool allowQualifiers) {
                 }
                 
                 if (nextIsType) {
-                    advance(); // consume parameter name, ignore it
-                    LUC_LOG_TYPE_EXTREME("parseFuncType: ignoring parameter name");
+                    name = advance().value; // consume parameter name, ignore it mostly
+                    LUC_LOG_TYPE_EXTREME("parseFuncType: ignoring parameter name '" << name << "'");
                 }
             }
             
@@ -587,8 +591,12 @@ TypePtr Parser::parseFuncType(bool allowQualifiers) {
                 break;
             }
             
-            // Create ParamInfo with empty name (type position)
-            paramGroup.emplace_back("", std::move(paramType), false, currentLoc());
+            auto paramNode = std::make_unique<ParamAST>();
+            paramNode->loc = paramLoc;
+            paramNode->name = std::move(name);
+            paramNode->type = std::move(paramType);
+            paramNode->isVariadic = variadic;
+            paramGroup.push_back(std::move(paramNode));
         } while (match(TokenType::COMMA));
     }
     consume(TokenType::RPAREN, "expected ')' after parameter list");
@@ -599,9 +607,9 @@ TypePtr Parser::parseFuncType(bool allowQualifiers) {
     }
     
     auto funcType = std::make_unique<FuncTypeAST>();
-    funcType->rawQualifiers = std::move(rawQualifiers);
-    funcType->paramGroups.push_back(std::move(paramGroup));  // Single group for function type
-    funcType->returnType = std::move(returnType);
+    funcType->sig.rawQualifiers = std::move(rawQualifiers);
+    funcType->sig.paramGroups.push_back(std::move(paramGroup));  // Single group for function type
+    funcType->sig.returnType = std::move(returnType);
     
     // ── Handle nullable RETURN type: (params) ret? ────────────────────────────
     if (match(TokenType::QUESTION)) {

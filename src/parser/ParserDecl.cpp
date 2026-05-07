@@ -406,7 +406,7 @@ std::unique_ptr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vi
         node->genericParams = parseGenericParams();
     }
 
-    // ── Parse type qualifiers (~async, ~noinline, etc.) into FuncTypeAST ──────
+    // ── Parse type qualifiers (~async, ~noinline, etc.) into FuncSignature ──────
     while (check(TokenType::TILDE)) {
         advance(); // consume '~'
         
@@ -415,8 +415,8 @@ std::unique_ptr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vi
             break;
         }
         
-        node->type.rawQualifiers.push_back(advance().value);
-        LUC_LOG_PARSER_VERBOSE("\tqualifier: '~" << node->type.rawQualifiers.back() << "'");
+        node->sig.rawQualifiers.push_back(advance().value);
+        LUC_LOG_PARSER_VERBOSE("\tqualifier: '~" << node->sig.rawQualifiers.back() << "'");
     }
 
     // Parse parameter groups into FuncTypeAST
@@ -442,15 +442,15 @@ std::unique_ptr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vi
     // Parse parameter groups
     while (check(TokenType::LPAREN)) {
         LUC_LOG_PARSER("\tParsing parameter group at pos " << pos_);
-        node->type.paramGroups.push_back(parseParamGroup());
-        LUC_LOG_PARSER("\t\tParsed " << node->type.paramGroups.back().size() << " parameters");
+        node->sig.paramGroups.push_back(parseParamGroup());
+        LUC_LOG_PARSER("\t\tParsed " << node->sig.paramGroups.back().size() << " parameters");
     }
 
-    LUC_LOG_PARSER("Total parameter groups: " << node->type.paramGroups.size());
-    for (size_t i = 0; i < node->type.paramGroups.size(); i++) {
-        LUC_LOG_PARSER("\tGroup " << i << " has " << node->type.paramGroups[i].size() << " params");
-        for (const auto& param : node->type.paramGroups[i]) {
-            LUC_LOG_PARSER("\t\tparam: " << param.name);
+    LUC_LOG_PARSER("Total parameter groups: " << node->sig.paramGroups.size());
+    for (size_t i = 0; i < node->sig.paramGroups.size(); i++) {
+        LUC_LOG_PARSER("\tGroup " << i << " has " << node->sig.paramGroups[i].size() << " params");
+        for (const auto& param : node->sig.paramGroups[i]) {
+            LUC_LOG_PARSER("\t\tparam: " << param->name);
         }
     }
 
@@ -460,14 +460,14 @@ std::unique_ptr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vi
 
     if (looksLikeType() && !check(TokenType::ASSIGN) && !check(TokenType::SEMICOLON)) {
         LUC_LOG_PARSER("\tParsing return type...");
-        node->type.returnType = parseType();
-        if (node->type.returnType) {
-            LUC_LOG_PARSER("\t\tReturn type parsed: " << static_cast<int>(node->type.returnType->kind));
+        node->sig.returnType = parseType();
+        if (node->sig.returnType) {
+            LUC_LOG_PARSER("\t\tReturn type parsed: " << static_cast<int>(node->sig.returnType->kind));
         }
     }
 
     // Optional nullable function suffix '?'
-    node->type.isNullable = match(TokenType::QUESTION);
+    node->sig.isNullable = match(TokenType::QUESTION);
 
     // Handle extern vs normal function bodies
     if (hasExternAttr) {
@@ -502,36 +502,39 @@ std::unique_ptr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vi
     
     // Parse the body - determine if block or expression
     if (check(TokenType::LBRACE)) {
-        // Block body
-        node->bodyKind = FuncBodyKind::Block;
+        // Block body: = { ... }
         node->body = parseBlock();
-        node->exprBody = nullptr;
     } else if (check(TokenType::LPAREN)) {
-        // Anon func form with repeated signature (verbose form)
-        node->bodyKind = FuncBodyKind::AnonFunc;
-        // Parse the repeated signature
+        // Anon func form with repeated signature (verbose form): = (params) ret { ... }
+        // We consume it but don't store it separately — the declaration's sig is the source of truth.
         parseParamGroup(); // Consume the repeated param group
-        // Optional repeated return type
         if (looksLikeType() && !check(TokenType::LBRACE)) {
-            parseType();
+            parseType(); // Optional repeated return type
         }
         if (!check(TokenType::LBRACE)) {
             errorAt(DiagCode::E2001, "expected '{' to start function body");
             return nullptr;
         }
         node->body = parseBlock();
-        node->exprBody = nullptr;
     } else {
-        // Expression body - function assignment: let f type = existingFunc
-        node->bodyKind = FuncBodyKind::ExprBody;
-        node->exprBody = parseExpr();
-        node->body = nullptr;
-        
-        if (!node->exprBody) {
+        // Expression body - function assignment: = existingFunc
+        // We desugar this into a BlockStmtAST containing a ReturnStmtAST.
+        SourceLocation bodyLoc = currentLoc();
+        ExprPtr expr = parseExpr();
+        if (!expr) {
             LUC_LOG_PARSER("\tERROR: expected expression after '='");
             errorAt(DiagCode::E2008, "expected expression after '='");
             return nullptr;
         }
+
+        auto ret = std::make_unique<ReturnStmtAST>();
+        ret->loc = bodyLoc;
+        ret->value = std::move(expr);
+
+        auto block = std::make_unique<BlockStmtAST>();
+        block->loc = bodyLoc;
+        block->stmts.push_back(std::move(ret));
+        node->body = std::move(block);
     }
     
     // Optional semicolon after body (for expression bodies in certain contexts)
@@ -552,18 +555,20 @@ std::unique_ptr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vi
 //
 // Returns the list of params for a single group. Variadic must be last.
 // ─────────────────────────────────────────────────────────────────────────────
-ParamGroup Parser::parseParamGroup() {
+std::vector<std::unique_ptr<ParamAST>> Parser::parseParamGroup() {
     LUC_LOG_PARSER_VERBOSE("parseParamGroup: parsing parameter group");
     SourceLocation loc = currentLoc();
     consume(TokenType::LPAREN, "expected '(' to start parameter group");
     
-    ParamGroup group;
+    std::vector<std::unique_ptr<ParamAST>> group;
     
     while (!check(TokenType::RPAREN) && !isAtEnd()) {
         match(TokenType::COMMA); // optional separator
         
         if (check(TokenType::RPAREN)) break;
         
+        SourceLocation paramLoc = currentLoc();
+
         // Parse parameter name
         if (!check(TokenType::IDENTIFIER)) {
             errorAt(DiagCode::E2003, "expected parameter name");
@@ -581,7 +586,12 @@ ParamGroup Parser::parseParamGroup() {
             break;
         }
         
-        group.emplace_back(paramName, std::move(paramType), isVariadic, loc);
+        auto paramNode = std::make_unique<ParamAST>();
+        paramNode->loc = paramLoc;
+        paramNode->name = std::move(paramName);
+        paramNode->type = std::move(paramType);
+        paramNode->isVariadic = isVariadic;
+        group.push_back(std::move(paramNode));
     }
     
     consume(TokenType::RPAREN, "expected ')' to close parameter group");
@@ -948,7 +958,7 @@ TraitMethodPtr Parser::parseTraitMethod() {
             errorAt(DiagCode::E2003, "expected qualifier name after '~'");
             break;
         }
-        method->type.rawQualifiers.push_back(advance().value);
+        method->sig.rawQualifiers.push_back(advance().value);
     }
     
     // Parse parameter groups
@@ -958,16 +968,16 @@ TraitMethodPtr Parser::parseTraitMethod() {
     }
     
     while (check(TokenType::LPAREN)) {
-        method->type.paramGroups.push_back(parseParamGroup());
+        method->sig.paramGroups.push_back(parseParamGroup());
     }
     
     // Optional return type
     if (looksLikeType() && !check(TokenType::SEMICOLON) && !check(TokenType::RBRACE)) {
-        method->type.returnType = parseType();
+        method->sig.returnType = parseType();
     }
     
     LUC_LOG_PARSER_VERBOSE("parseTraitMethod: parsed method '" << method->name 
-                           << "' with " << method->type.paramGroups.size() << " param groups");
+                           << "' with " << method->sig.paramGroups.size() << " param groups");
     return method;
 }
 
@@ -1114,7 +1124,7 @@ MethodDeclPtr Parser::parseMethodDecl() {
     }
     method->name = advance().value;
 
-    // ── Parse type qualifiers (~async, ~noinline, etc.) into FuncTypeAST ──────
+    // ── Parse type qualifiers (~async, ~noinline, etc.) into FuncSignature ──────
     while (check(TokenType::TILDE)) {
         advance(); // consume '~'
         
@@ -1123,8 +1133,8 @@ MethodDeclPtr Parser::parseMethodDecl() {
             break;
         }
         
-        method->type.rawQualifiers.push_back(advance().value);
-        LUC_LOG_PARSER_VERBOSE("\tmethod qualifier: '~" << method->type.rawQualifiers.back() << "'");
+        method->sig.rawQualifiers.push_back(advance().value);
+        LUC_LOG_PARSER_VERBOSE("\tmethod qualifier: '~" << method->sig.rawQualifiers.back() << "'");
     }
 
     // Parse one or more parameter groups (curried method support)
@@ -1134,12 +1144,12 @@ MethodDeclPtr Parser::parseMethodDecl() {
     }
     
     while (check(TokenType::LPAREN)) {
-        method->type.paramGroups.push_back(parseParamGroup());
+        method->sig.paramGroups.push_back(parseParamGroup());
     }
 
     // Optional return type
     if (looksLikeType() && !check(TokenType::ASSIGN)) {
-        method->type.returnType = parseType();
+        method->sig.returnType = parseType();
     }
 
     if (!check(TokenType::ASSIGN)) {
@@ -1152,17 +1162,12 @@ MethodDeclPtr Parser::parseMethodDecl() {
 
     // Determine body type
     if (check(TokenType::LBRACE)) {
-        // Block body
-        method->bodyKind = FuncBodyKind::Block;
+        // Block body: = { ... }
         method->body = parseBlock();
-        method->exprBody = nullptr;
         LUC_LOG_PARSER("parseMethodDecl: block body");
     } else if (check(TokenType::LPAREN)) {
-        // Anon func form with repeated signature
-        method->bodyKind = FuncBodyKind::AnonFunc;
-        // Parse the repeated signature
+        // Anon func form with repeated signature: = (params) ret { ... }
         parseParamGroup(); // Consume the repeated param group
-        // Optional repeated return type
         if (looksLikeType() && !check(TokenType::LBRACE)) {
             parseType();
         }
@@ -1171,20 +1176,26 @@ MethodDeclPtr Parser::parseMethodDecl() {
             return nullptr;
         }
         method->body = parseBlock();
-        method->exprBody = nullptr;
         LUC_LOG_PARSER("parseMethodDecl: anon func body");
     } else {
-        // Expression body - method assignment: method = existingFunc
-        method->bodyKind = FuncBodyKind::ExprBody;
-        method->exprBody = parseExpr();
-        method->body = nullptr;
-
-        if (!method->exprBody) {
+        // Expression body - method assignment: = existingFunc
+        SourceLocation bodyLoc = currentLoc();
+        ExprPtr expr = parseExpr();
+        if (!expr) {
             errorAt(DiagCode::E2008, "expected expression after '=' for method '" + method->name + "'");
             return nullptr;
         }
 
-        LUC_LOG_PARSER("parseMethodDecl: expression body, kind=" << LucDebug::kindToString(method->exprBody->kind));
+        auto ret = std::make_unique<ReturnStmtAST>();
+        ret->loc = bodyLoc;
+        ret->value = std::move(expr);
+
+        auto block = std::make_unique<BlockStmtAST>();
+        block->loc = bodyLoc;
+        block->stmts.push_back(std::move(ret));
+        method->body = std::move(block);
+
+        LUC_LOG_PARSER("parseMethodDecl: expression body");
     }
 
     // Optional semicolon after body (for expression bodies in certain contexts)
@@ -1263,7 +1274,26 @@ std::unique_ptr<FromDeclAST> Parser::parseFromDecl(Visibility vis) {
         }
         advance();
 
-        entry->body = parseFuncBody(entry->bodyKind);
+        // Normalized body parsing
+        SourceLocation bodyLoc = currentLoc();
+        if (check(TokenType::LBRACE)) {
+            entry->body = parseBlock();
+        } else {
+            // Expression body: = expr
+            ExprPtr expr = parseExpr();
+            if (expr) {
+                auto ret = std::make_unique<ReturnStmtAST>();
+                ret->loc = bodyLoc;
+                ret->value = std::move(expr);
+                
+                auto block = std::make_unique<BlockStmtAST>();
+                block->loc = bodyLoc;
+                block->stmts.push_back(std::move(ret));
+                entry->body = std::move(block);
+            } else {
+                errorAt(DiagCode::E2008, "expected expression after '=' in conversion entry");
+            }
+        }
 
         node->entries.push_back(std::move(entry));
     }

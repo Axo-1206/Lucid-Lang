@@ -1,6 +1,0 @@
-package test
-
-export const main() int = {
-    let x int? -- should be fine
-    return 0
-}

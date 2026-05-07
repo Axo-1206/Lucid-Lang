@@ -122,27 +122,21 @@ enum class DeclKeyword {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FuncBodyKind — which syntactic form was used for the function body.
-// The parser sets this so the semantic pass knows what it is walking.
+// Function bodies
 //
-//   Block    — let f (x int) int = { return x + 1 }
-//   AnonFunc — let f (x int) int = (x int) int { return x + 1 }   (verbose form)
-//   ExprBody — let f (x int) = existingFunc   (function/expression assignment)
+// All function bodies are desugared by the parser into BlockStmtAST:
+//   - { block }                     → BlockStmtAST as-is
+//   - (params) { block }            → BlockStmtAST (verbose form)
+//   - expression                    → BlockStmtAST { return expr }
+//   - match expr { ... }            → BlockStmtAST { match expr { ... } }
+//   - if expr ?? then else          → BlockStmtAST { if expr ?? then else }
 //
-// Note: match-as-body and if-as-body are sugar — the parser desugars them
-// into a BlockStmtAST containing a single MatchExprAST / IfExprAST statement
-// before storing, so the AST always holds a block. FuncBodyKind::Block covers
-// all three of those forms from the parser's perspective.
-// ExprBody is also desugared into a BlockStmtAST containing a ReturnStmtAST.
+// The body is always stored as StmtPtr (BlockStmtAST in practice).
+// The semantic pass and codegen both work with BlockStmtAST uniformly —
+// no additional kind tag is needed to distinguish the original syntax.
 // async bodies are indicated by the isAsync flag on FuncDeclAST /
-// MethodDeclAST.
+// MethodDeclAST / FromEntryAST.
 // ─────────────────────────────────────────────────────────────────────────────
-
-enum class FuncBodyKind {
-    Block,    // standard expr_block body: = { ... }
-    AnonFunc, // explicit anonymous function: = (params) ret { ... }
-    ExprBody, // function/expression assignment: = expression
-};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PackageDeclAST
@@ -235,6 +229,20 @@ struct GenericParamAST : BaseAST {
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
 
+struct ParamAST : BaseAST {
+    static constexpr ASTKind staticKind = ASTKind::Param;
+
+    std::string name;
+    TypePtr     type;
+    bool        isVariadic = false;
+
+    ParamAST() : BaseAST(ASTKind::Param) {}
+    void accept(ASTVisitor& v) override { v.visit(*this); }
+};
+
+using ParamPtr   = std::unique_ptr<ParamAST>;
+using ParamGroup = std::vector<ParamPtr>;
+
 using GenericParamPtr = std::unique_ptr<GenericParamAST>;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -255,16 +263,14 @@ struct FuncDeclAST : DeclAST {
     DeclKeyword keyword;
     std::string name;
     std::vector<GenericParamPtr> genericParams;
-    FuncTypeAST type;                               // (params + return + qualifiers)
-    StmtPtr body;                                   // For block bodies only
-    ExprPtr exprBody;                               // For expression bodies
-    FuncBodyKind bodyKind = FuncBodyKind::Block;
+    FuncSignature sig;
+    StmtPtr body;                                   // always BlockStmtAST
     Visibility visibility = Visibility::Private;
     std::vector<AttributePtr> attributes;
 
     // Convenience helpers
-    bool isAsync() const { return type.isAsync(); }
-    bool hasParams() const { return type.hasParams(); }
+    bool isAsync() const { return sig.isAsync(); }
+    bool hasParams() const { return sig.hasParams(); }
     
     FuncDeclAST() : DeclAST(ASTKind::FuncDecl) {}
     void accept(ASTVisitor& v) override { v.visit(*this); }
@@ -427,10 +433,10 @@ struct TraitMethodAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::TraitMethod;
 
     std::string name;
-    FuncTypeAST type;                               // (params + return + qualifiers)
+    FuncSignature sig;
 
     // Convenience helpers
-    bool isAsync() const { return type.isAsync(); }
+    bool isAsync() const { return sig.isAsync(); }
     
     TraitMethodAST() : BaseAST(ASTKind::TraitMethod) {}
     void accept(ASTVisitor& v) override { v.visit(*this); }
@@ -469,16 +475,20 @@ struct TraitDeclAST : DeclAST {
 //   : Drawable          →  name="Drawable",    genericArgs={}
 //   : Comparable<int>   →  name="Comparable",  genericArgs=[Int]
 //
-// Not a DeclAST — it is a helper owned by ImplDeclAST.
+// Now a full BaseAST node with visitor support, allowing the semantic pass
+// to walk impl conformance declarations uniformly.
 // The semantic pass resolves name to a TraitDeclAST and checks that
 // genericArgs count matches the trait's generic params.
 // ─────────────────────────────────────────────────────────────────────────────
-struct TraitRefAST {
+struct TraitRefAST : BaseAST {
+    static constexpr ASTKind staticKind = ASTKind::TraitRef;
+
     std::string name;   // trait name, e.g. "Comparable"
     std::vector<TypePtr>
         genericArgs;    // concrete args, e.g. [Int] for Comparable<int>
 
-    SourceLocation loc; // for error reporting
+    TraitRefAST() : BaseAST(ASTKind::TraitRef) {}
+    void accept(ASTVisitor& v) override { v.visit(*this); }
 };
 
 using TraitRefPtr = std::unique_ptr<TraitRefAST>;
@@ -498,13 +508,11 @@ struct MethodDeclAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::MethodDecl;
 
     std::string name;
-    FuncTypeAST type;                               // (params + return + qualifiers)
-    StmtPtr body;                                   // For block bodies only
-    ExprPtr exprBody;                               // For expression bodies
-    FuncBodyKind bodyKind = FuncBodyKind::Block;
+    FuncSignature sig;
+    StmtPtr body;                                   // always BlockStmtAST
 
     // Convenience helpers
-    bool isAsync() const { return type.isAsync(); }
+    bool isAsync() const { return sig.isAsync(); }
     
     MethodDeclAST() : BaseAST(ASTKind::MethodDecl) {}
     void accept(ASTVisitor& v) override { v.visit(*this); }
@@ -527,10 +535,9 @@ using MethodDeclPtr = std::unique_ptr<MethodDeclAST>;
 struct FromEntryAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::FromEntry;
 
-    std::vector<ParamGroup> paramGroups;            // outer = curry groups
-    std::string returnTypeName;                     // "Fahrenheit"
-    StmtPtr body;                                   // BlockStmtAST
-    FuncBodyKind bodyKind = FuncBodyKind::Block;
+    FuncSignature sig;
+    std::string   returnTypeName;                     // "Fahrenheit"
+    StmtPtr       body;                                   // always BlockStmtAST
 
     FromEntryAST() : BaseAST(ASTKind::FromEntry) {}
     void accept(ASTVisitor& v) override { v.visit(*this); }

@@ -1,0 +1,229 @@
+-- test_functions.luc
+-- Compiler test file for function declarations, currying, async, and pipelines
+
+package test
+
+-- ============================================================================
+-- SECTION 1: Basic Function Declarations
+-- ============================================================================
+
+-- Shorthand form with block body
+const test (x int) int = {
+    return x * 2
+}
+
+-- Let function (reassignable)
+let greet (name string) string = {
+    return "Hello, " + name
+}
+
+-- Explicit anonymous function form
+let add (a int, b int) int = (a int, b int) int {
+    return a + b
+}
+
+-- Function with nullable return
+let parse (s string) int? = {
+    if s == "" {
+        return nil
+    }
+    return 42
+}
+
+-- Nullable function variable
+let handler (f (req int) string)? = nil
+
+-- ============================================================================
+-- SECTION 2: Currying and Partial Application
+-- ============================================================================
+
+-- Curried function with two groups
+let multiply (a int) (b int) int = {
+    return a * b
+}
+
+-- Partial application
+let doubleVal (x int) int = multiply(2)
+let ten int = doubleVal(5)  -- 10
+
+-- Curried function with three groups
+let clamp (min int) (max int) (value int) int = {
+    if value < min { return min }
+    if value > max { return max }
+    return value
+}
+
+-- Partial application of first two groups
+let clamp0to100 (x int) int = clamp(0)(100)
+let clamped int = clamp0to100(150)  -- 100
+
+-- ============================================================================
+-- SECTION 3: First-Class Functions
+-- ============================================================================
+
+-- Type alias for function type
+type Transformer = (n int) int
+
+-- Assign function to type alias
+let trans Transformer = (x int) int { return x * 3 }
+
+-- Higher-order function
+let applyTwice (f (int) int, x int) int = {
+    return f(f(x))
+}
+
+-- Using higher-order function
+let addThree (x int) int = { return x + 3 }
+let result int = applyTwice(addThree, 5)  -- 11
+
+-- Function returning a closure
+let makeCounter () () int = {
+    let count int = 0
+    return () int {
+        count = count + 1
+        return count
+    }
+}
+
+let counter () int = makeCounter()
+let first int = counter()   -- 1
+let second int = counter()  -- 2
+
+-- ============================================================================
+-- SECTION 4: Async Functions
+-- ============================================================================
+
+-- Async function declaration
+let fetch ~async (url string) string = {
+    return await httpGet(url)
+}
+
+-- Async function with block body
+-- let processData ~async (data []byte) []byte = {
+--     -- let validated = await validate(data)
+--     -- let transformed = await transform(validated)
+--     -- return transformed
+-- }
+
+-- Async curried function
+let fetchAll ~async (urls []string) (timeout int) []string = {
+    -- let results = await parallelMap(urls, fetch)
+    return "abc"
+}
+
+-- Calling async functions requires await
+let getData ~async () string = {
+    -- let raw string = await fetch("https://api.example.com")
+    -- let processed []byte = await processData(raw)
+    return "testing"
+}
+
+-- ============================================================================
+-- SECTION 5: Pipeline Operator with Functions
+-- ============================================================================
+
+-- Basic pipeline
+-- let pipelineTest () int = {
+--     let result = 42 -> double -> string -> len
+--     return result
+-- }
+
+-- Pipeline with anonymous function step
+let anonStepTest = {
+    let result = 5 -> (x int) string { return string(x * 10) }
+    return result  -- "50"
+}
+
+-- Pipeline with argument pack (!)
+let scale (v int, factor int) int = {
+    return v * factor
+}
+
+let pipelineWithPack = {
+    let result = 10 -> scale(3)!  -- calls scale(10, 3)
+    return result  -- 30
+}
+
+-- Pipeline with impl method reference
+struct Vec2 { x float  y float }
+
+impl Vec2 {
+    length () float = { return (x*x + y*y) }
+    normalize () Vec2 = {
+        let len = self:length()
+        return Vec2 { x = x / len  y = y / len }
+    }
+}
+
+let methodPipeline = {
+    let v Vec2 = Vec2 { x = 3.0  y = 4.0 }
+    let result = v -> Vec2:normalize -> Vec2:length
+    return result  -- 1.0
+}
+
+-- ============================================================================
+-- SECTION 6: Edge Cases and Error Testing
+-- ============================================================================
+
+-- -- Function with no parameters
+-- let noParams () int = {
+--     return 42
+-- }
+
+-- -- Function with variadic parameter
+-- let sum (nums ...int) int = {
+--     let total int = 0
+--     for n in nums {
+--         total = total + n
+--     }
+--     return total
+-- }
+
+-- -- Function that returns a function (manual currying)
+-- let makeMultiplier (factor int) (x int) int = {
+--     return factor * x
+-- }
+
+-- -- Generic function
+-- let identity<T> (value T) T = {
+--     return value
+-- }
+
+-- -- Using generic function
+-- let idInt = identity<int>(42)
+-- let idString = identity<string>("hello")
+
+-- -- Function with type alias parameter
+-- type Callback = (event string) bool
+
+-- let register (cb Callback) = {
+--     return cb("click")
+-- }
+
+-- ============================================================================
+-- SECTION 7: Compilation Mode Directives
+-- ============================================================================
+
+@aot
+export const main () int = {
+    -- Test all function features
+    let db double = double(10)           -- 20
+    let gt string = greet("World")       -- "Hello, World"
+    
+    let mult int = multiply(4)(5)     -- 20
+    let cl int = clamp(0)(100)(50)    -- 50
+    
+    let applied int = applyTwice(addThree, 2)  -- 8
+    
+    -- let pipeline string = 10 -> double -> string
+    -- io.printl(pipeline)
+    
+    return 0
+}
+
+-- Alternative JIT entry point (comment out AOT version to use this)
+-- @jit
+-- export const main () int = {
+--     io.printl("Running in JIT mode")
+--     return 0
+-- }

@@ -338,25 +338,13 @@ ExprPtr Parser::parsePrattExpr(int minPrec, bool allowStructLiteral) {
                 break;
             }
 
-            // If lhs is already a NullableChainExprAST, attach the fallback.
-            if (lhs->isa<NullableChainExprAST>()) {
-                auto* chain = lhs->as<NullableChainExprAST>();
-                if (chain->fallback) {
-                    errorAt(DiagCode::E2007, "duplicate '\?\?' in nullable chain");
-                } else {
-                    chain->fallback = std::move(fallback);
-                }
-            } else {
-                // Standalone ?? not part of a ?. chain — still valid as a
-                // general nil-coalescing expression.
-                SourceLocation loc = lhs->loc;
-                auto node = std::make_unique<NullableChainExprAST>();
-                node->loc = loc;
-                node->object = std::move(lhs);
-                // steps is empty — this is just  expr ?? fallback
-                node->fallback = std::move(fallback);
-                lhs = std::move(node);
-            }
+            SourceLocation loc = lhs->loc;
+            auto node = std::make_unique<NullCoalesceExprAST>();
+            node->loc = loc;
+            node->value = std::move(lhs);
+            node->fallback = std::move(fallback);
+            lhs = std::move(node);
+            
             break; // '??' terminates the chain — nothing binds tighter
         }
 
@@ -665,8 +653,19 @@ ExprPtr Parser::parsePrimaryExpr(bool allowStructLiteral) {
 
         // ── grouped expression: '(' expr ')' ──────────────────────────────────
         advance(); // consume '('
-        ExprPtr inner = parseExpr();
-        consume(TokenType::RPAREN, DiagCode::E2001, "expected ')' to close grouped expression");
+
+        // Parse the inner expression - use parsePrattExpr directly to get full expression
+        ExprPtr inner = parsePrattExpr(PREC_NONE);
+
+        // IMPORTANT: Consume the closing ')' and VERIFY it's consumed
+        if (!check(TokenType::RPAREN)) {
+            errorAt(DiagCode::E2001, "expected ')' to close grouped expression");
+        } else {
+            LUC_LOG_EXPR_VERBOSE("parsePrimaryExpr: about to consume ')', current token='" << peek().value << "'");
+            advance(); // consume ')'
+            LUC_LOG_EXPR_VERBOSE("parsePrimaryExpr: after consuming ')', new token='" << peek().value << "'");
+        }
+        // Return the inner expression directly - do NOT call parsePostfixExpr here
         return inner;
     }
 
@@ -784,10 +783,27 @@ ExprPtr Parser::parsePrimaryExpr(bool allowStructLiteral) {
 //                          via BehaviorAccessExprAST when lhs is IDENTIFIER)
 //   '?.' IDENTIFIER     — nullable chain step
 //   '!!'                — not valid here (only inside pipeline steps)
+//
+// IMPORTANT: Does NOT handle '->' (pipeline) or '+>' (composition) - those
+// are handled at a higher precedence level in parsePrattExpr.
 // ─────────────────────────────────────────────────────────────────────────────
 ExprPtr Parser::parsePostfixExpr(ExprPtr lhs) {
     LUC_LOG_EXPR_VERBOSE("parsePostfixExpr: lhs kind=" << LucDebug::kindToString(lhs->kind));
     while (true) {
+
+        // Stop at closing parenthesis - they are handled by the grouped expression parser
+        if (check(TokenType::RPAREN)) {
+            LUC_LOG_EXPR_VERBOSE("parsePostfixExpr: stopping at ')'");
+            break;
+        }
+
+
+        // Stop at pipeline or composition operators - they are handled by parsePrattExpr
+        if (check(TokenType::ARROW) || check(TokenType::COMPOSE)) {
+            LUC_LOG_EXPR_VERBOSE("parsePostfixExpr: stopping at pipeline/compose operator");
+            break;
+        }
+        
         // ── Function call: lhs '(' args ')' ──────────────────────────────────
         if (check(TokenType::LPAREN)) {
             LUC_LOG_EXPR_VERBOSE("parsePostfixExpr: function call");
@@ -796,12 +812,6 @@ ExprPtr Parser::parsePostfixExpr(ExprPtr lhs) {
         }
 
         // ── Generic call: lhs '<' types '>' '(' args ')' ─────────────────────
-        // This is ambiguous with less-than comparisons. We use a simple
-        // heuristic: only treat '<' as a generic open when the lhs is an
-        // IdentifierExprAST or BehaviorAccessExprAST (i.e. a name), and when the
-        // content between '<' and '>' looks like a type list.
-        // Full disambiguation would require unbounded lookahead; we handle the
-        // common cases and let the semantic pass catch the rest.
         if (check(TokenType::LESS) &&
             (lhs->isa<IdentifierExprAST>() || lhs->isa<BehaviorAccessExprAST>())) {
             // Save position so we can roll back if this is actually '<' comparison.
@@ -809,7 +819,6 @@ ExprPtr Parser::parsePostfixExpr(ExprPtr lhs) {
             std::vector<TypePtr> genericArgs;
             bool ok = false;
             // Attempt to parse generic args.
-            // We do a simple bracket-balanced scan to detect '>'.
             int depth = 1;
             std::size_t i = pos_ + 1;
             while (i < tokens_.size() && depth > 0) {
@@ -877,7 +886,7 @@ ExprPtr Parser::parsePostfixExpr(ExprPtr lhs) {
             }
 
             advance(); // consume '?.'
-
+            
             if (!check(TokenType::IDENTIFIER)) {
                 errorAt(DiagCode::E2003, "expected field name after '?.'");
                 break;
@@ -1041,7 +1050,7 @@ ExprPtr Parser::parseAnonFuncExpr() {
     auto node = std::make_unique<AnonFuncExprAST>();
     node->loc = loc;
     
-    // ── Parse type qualifiers into FuncTypeAST (~async, ~noinline, etc.) ──────
+    // ── Parse type qualifiers into FuncSignature (~async, ~noinline, etc.) ──────
     while (check(TokenType::TILDE)) {
         advance(); // consume '~'
         
@@ -1050,26 +1059,25 @@ ExprPtr Parser::parseAnonFuncExpr() {
             break;
         }
         
-        // Store raw names in the type field
-        node->type.rawQualifiers.push_back(advance().value);
-        LUC_LOG_EXPR_VERBOSE("\tqualifier: '~" << node->type.rawQualifiers.back() << "'");
+        node->sig.rawQualifiers.push_back(advance().value);
+        LUC_LOG_EXPR_VERBOSE("\tqualifier: '~" << node->sig.rawQualifiers.back() << "'");
     }
     
-    // Parse parameter groups into FuncTypeAST
+    // Parse parameter groups into FuncSignature
     while (check(TokenType::LPAREN)) {
-        node->type.paramGroups.push_back(parseParamGroup());
+        node->sig.paramGroups.push_back(parseParamGroup());
         LUC_LOG_EXPR_VERBOSE("\tparsed param group with " 
-                            << node->type.paramGroups.back().size() << " params");
+                            << node->sig.paramGroups.back().size() << " params");
     }
     
     // Optional return type
     if (looksLikeType() && !check(TokenType::LBRACE)) {
-        node->type.returnType = parseType();
+        node->sig.returnType = parseType();
         LUC_LOG_EXPR_VERBOSE("\treturn type parsed");
     }
     
     // Optional nullable function suffix '?'
-    node->type.isNullable = match(TokenType::QUESTION);
+    node->sig.isNullable = match(TokenType::QUESTION);
     
     if (!check(TokenType::LBRACE)) {
         errorAt(DiagCode::E2001, "expected '{' to start anonymous function body");
@@ -1077,9 +1085,9 @@ ExprPtr Parser::parseAnonFuncExpr() {
         node->body = parseBlock();
     }
     
-    LUC_LOG_EXPR_VERBOSE("parseAnonFuncExpr: paramGroups=" << node->type.paramGroups.size() 
-                        << ", returnType=" << (node->type.returnType != nullptr)
-                        << ", isNullable=" << node->type.isNullable);
+    LUC_LOG_EXPR_VERBOSE("parseAnonFuncExpr: paramGroups=" << node->sig.paramGroups.size() 
+                        << ", returnType=" << (node->sig.returnType != nullptr)
+                        << ", isNullable=" << node->sig.isNullable);
     
     return node;
 }
@@ -1513,6 +1521,11 @@ std::vector<ExprPtr> Parser::parseArgList() {
 // ─────────────────────────────────────────────────────────────────────────────
 ExprPtr Parser::parsePipelineExpr(ExprPtr seed) {
     LUC_LOG_EXPR("parsePipelineExpr: building pipeline");
+    if (!seed) {
+        errorAt(DiagCode::E2008, "expected pipeline seed before '->'");
+        return makeUnknownExpr(currentLoc());
+    }
+    
     LUC_LOG_EXPR_VERBOSE("parsePipelineExpr: seed kind=" << LucDebug::kindToString(seed->kind));
     SourceLocation loc = seed->loc;
 
@@ -1522,17 +1535,22 @@ ExprPtr Parser::parsePipelineExpr(ExprPtr seed) {
 
     while (check(TokenType::ARROW)) {
         advance(); // consume '->'
+        
         PipelineStepPtr step = parsePipelineStep();
-        if (!step) {
-            errorAt(DiagCode::E2002, "expected pipeline step after '->'");
+        if (step) {
+            node->steps.push_back(std::move(step));
+        } else {
+            // This should not happen with the updated parsePipelineStep,
+            // but handle it just in case
+            LUC_LOG_EXPR("parsePipelineExpr: parsePipelineStep returned nullptr, breaking");
             break;
         }
-        node->steps.push_back(std::move(step));
     }
 
     if (node->steps.empty()) {
         errorAt(DiagCode::E2006, "pipeline '->' requires at least one step");
-        return node->seed ? std::move(node->seed) : nullptr;
+        // Return the seed alone
+        return node->seed ? std::move(node->seed) : makeUnknownExpr(loc);
     }
 
     LUC_LOG_EXPR("parsePipelineExpr: " << node->steps.size() << " pipeline steps");
@@ -1543,42 +1561,139 @@ ExprPtr Parser::parsePipelineExpr(ExprPtr seed) {
 // parsePipelineStep
 //
 // Five forms:
-//   Ident       fn
+//   Ident       fn (IDENTIFIER or PRIMITIVE_TYPE)
 //   BehaviorRef Type:method
-//   FieldRef    obj.field       (IDENTIFIER '.' IDENTIFIER, non-callable obj)
-//   ArgPack     fn(args)!
-//   AnonFunc    [ async ] '(' params ')' [ ret ] block
+//   FieldRef    obj.field       (IDENTIFIER '.' IDENTIFIER)
+//   ArgPack     fn(args)!       (IDENTIFIER or PRIMITIVE_TYPE)
+//   AnonFunc    (params) { ... } or ~async (params) { ... }
 // ─────────────────────────────────────────────────────────────────────────────
 PipelineStepPtr Parser::parsePipelineStep() {
-    LUC_LOG_EXPR_VERBOSE("parsePipelineStep: token='" << peek().value << "'");
+    LUC_LOG_EXPR_VERBOSE("parsePipelineStep: token='" << peek().value << "', type=" << static_cast<int>(peek().type));
     SourceLocation loc = currentLoc();
     auto step = std::make_unique<PipelineStepAST>();
     step->loc = loc;
 
-    if (!check(TokenType::IDENTIFIER)) {
-        errorAt(DiagCode::E2002, "expected function name, method reference, or anonymous function as pipeline step");
-        return nullptr;
+    // ── Anonymous function detection ─────────────────────────────────────────
+    // Check if this looks like an anonymous function (starts with '(' or '~')
+    bool isAnonFunc = false;
+    
+    if (check(TokenType::LPAREN)) {
+        // Simple heuristic: if we see '(' then later ')' then '{', it's an anon func
+        isAnonFunc = true;  // Assume it's an anon func, parseAnonFuncExpr will validate
+    } else if (check(TokenType::TILDE)) {
+        // Check if '~' is followed by identifier and then '('
+        if (peekNext().type == TokenType::IDENTIFIER) {
+            TokenType afterIdent = peekAt(2).type;
+            if (afterIdent == TokenType::LPAREN) {
+                isAnonFunc = true;
+            }
+        }
     }
-
-    std::string name = advance().value;
-
-    // ── BehaviorRef: IDENTIFIER ':' IDENTIFIER ────────────────────────────────
-    if (check(TokenType::COLON) && peekNext().type == TokenType::IDENTIFIER) {
-        advance(); // consume ':'
-        std::string method = advance().value;
-        step->kind = PipelineStepKind::BehaviorRef;
-        step->typeName = std::move(name);
-        step->method = std::move(method);
+    
+    if (isAnonFunc) {
+        LUC_LOG_EXPR_VERBOSE("parsePipelineStep: parsing anonymous function");
+        ExprPtr anonFuncExpr = parseAnonFuncExpr();
+        if (!anonFuncExpr) {
+            errorAt(DiagCode::E2002, "expected anonymous function as pipeline step");
+            // Return a step with error marker
+            step->kind = PipelineStepKind::Ident;
+            step->ident = "<error>";
+            return step;
+        }
+        step->kind = PipelineStepKind::AnonFunc;
+        step->anonFunc = std::move(anonFuncExpr);
         return step;
     }
 
+    // ── Check for primitive type keywords (valid conversion functions) ────────
+    bool isPrimitiveType = false;
+    TokenType currentType = peek().type;
+    
+    switch (currentType) {
+        case TokenType::TYPE_BOOL:
+        case TokenType::TYPE_BYTE:
+        case TokenType::TYPE_SHORT:
+        case TokenType::TYPE_INT:
+        case TokenType::TYPE_LONG:
+        case TokenType::TYPE_UBYTE:
+        case TokenType::TYPE_USHORT:
+        case TokenType::TYPE_UINT:
+        case TokenType::TYPE_ULONG:
+        case TokenType::TYPE_INT8:
+        case TokenType::TYPE_INT16:
+        case TokenType::TYPE_INT32:
+        case TokenType::TYPE_INT64:
+        case TokenType::TYPE_UINT8:
+        case TokenType::TYPE_UINT16:
+        case TokenType::TYPE_UINT32:
+        case TokenType::TYPE_UINT64:
+        case TokenType::TYPE_FLOAT:
+        case TokenType::TYPE_DOUBLE:
+        case TokenType::TYPE_DECIMAL:
+        case TokenType::TYPE_STRING:
+        case TokenType::TYPE_CHAR:
+        case TokenType::TYPE_ANY:
+            isPrimitiveType = true;
+            LUC_LOG_EXPR_VERBOSE("parsePipelineStep: primitive type detected");
+            break;
+        default:
+            break;
+    }
+
+    // Must be either IDENTIFIER or primitive type
+    if (!check(TokenType::IDENTIFIER) && !isPrimitiveType) {
+        errorAt(DiagCode::E2002, 
+                "expected function name, method reference, or anonymous function as pipeline step, got '" + 
+                peek().value + "'");
+        // Return an error marker step and advance to avoid infinite loop
+        step->kind = PipelineStepKind::Ident;
+        step->ident = "<error>";
+        advance();
+        return step;
+    }
+
+    // Get the name - handle both IDENTIFIER and primitive type tokens
+    std::string name;
+    if (isPrimitiveType) {
+        Token tok = advance();
+        name = tok.value;
+        LUC_LOG_EXPR_VERBOSE("parsePipelineStep: primitive type conversion '" << name << "'");
+    } else {
+        name = advance().value;
+        LUC_LOG_EXPR_VERBOSE("parsePipelineStep: identifier '" << name << "'");
+    }
+
+    // ── BehaviorRef: IDENTIFIER ':' IDENTIFIER ────────────────────────────────
+    if (check(TokenType::COLON)) {
+        // Need to check that after ':' there's an IDENTIFIER
+        if (peekNext().type == TokenType::IDENTIFIER) {
+            advance(); // consume ':'
+            std::string method = advance().value;
+            step->kind = PipelineStepKind::BehaviorRef;
+            step->typeName = std::move(name);
+            step->method = std::move(method);
+            LUC_LOG_EXPR_VERBOSE("parsePipelineStep: BehaviorRef " << step->typeName << ":" << step->method);
+            return step;
+        }
+        // ':' but not followed by IDENTIFIER - treat as regular identifier
+        LUC_LOG_EXPR_VERBOSE("parsePipelineStep: colon without identifier, treating as regular ident");
+    }
+
     // ── FieldRef: IDENTIFIER '.' IDENTIFIER ──────────────────────────────────
-    if (check(TokenType::DOT) && peekNext().type == TokenType::IDENTIFIER) {
-        advance(); // consume '.'
-        std::string field = advance().value;
-        step->kind = PipelineStepKind::FieldRef;
-        step->ident = std::move(name);
-        step->field = std::move(field);
+    if (check(TokenType::DOT)) {
+        if (peekNext().type == TokenType::IDENTIFIER) {
+            advance(); // consume '.'
+            std::string field = advance().value;
+            step->kind = PipelineStepKind::FieldRef;
+            step->ident = std::move(name);
+            step->field = std::move(field);
+            LUC_LOG_EXPR_VERBOSE("parsePipelineStep: FieldRef " << step->ident << "." << step->field);
+            return step;
+        }
+        // '.' but not followed by IDENTIFIER - error
+        errorAt(DiagCode::E2003, "expected field name after '.'");
+        step->kind = PipelineStepKind::Ident;
+        step->ident = "<error>";
         return step;
     }
 
@@ -1590,17 +1705,26 @@ PipelineStepPtr Parser::parsePipelineStep() {
             packArgs = parseArgList();
         }
         consume(TokenType::RPAREN, "expected ')'");
-        consume(TokenType::BANG, "expected '!' to mark argument pack in pipeline step");
+        
+        if (!check(TokenType::BANG)) {
+            errorAt(DiagCode::E2001, "expected '!' to mark argument pack in pipeline step");
+            step->kind = PipelineStepKind::Ident;
+            step->ident = "<error>";
+            return step;
+        }
+        advance(); // consume '!'
+        
         step->kind = PipelineStepKind::ArgPack;
         step->ident = std::move(name);
         step->packArgs = std::move(packArgs);
+        LUC_LOG_EXPR_VERBOSE("parsePipelineStep: ArgPack " << step->ident << " with " << step->packArgs.size() << " args");
         return step;
     }
 
-    // ── Ident: bare function name ─────────────────────────────────────────────
+    // ── Ident: bare function name (IDENTIFIER or primitive type) ──────────────
     step->kind = PipelineStepKind::Ident;
     step->ident = std::move(name);
-    LUC_LOG_EXPR_VERBOSE("parsePipelineStep: kind=" << static_cast<int>(step->kind));
+    LUC_LOG_EXPR_VERBOSE("parsePipelineStep: Ident '" << step->ident << "'");
     return step;
 }
 
@@ -1648,7 +1772,7 @@ ExprPtr Parser::parseComposeExpr(ExprPtr lhs) {
 // parseComposeOperand
 //
 // Three forms (no AnonFunc, no ArgPack — compile-time only):
-//   Ident       fn
+//   Ident       fn (IDENTIFIER or PRIMITIVE_TYPE)
 //   BehaviorRef Type:method
 //   FieldRef    obj.field
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1658,12 +1782,51 @@ ComposeOperandPtr Parser::parseComposeOperand() {
     auto op = std::make_unique<ComposeOperandAST>();
     op->loc = loc;
 
-    if (!check(TokenType::IDENTIFIER)) {
+    // Check if current token is a primitive type keyword
+    bool isPrimitiveType = false;
+    switch (peek().type) {
+        case TokenType::TYPE_BOOL:
+        case TokenType::TYPE_BYTE:
+        case TokenType::TYPE_SHORT:
+        case TokenType::TYPE_INT:
+        case TokenType::TYPE_LONG:
+        case TokenType::TYPE_UBYTE:
+        case TokenType::TYPE_USHORT:
+        case TokenType::TYPE_UINT:
+        case TokenType::TYPE_ULONG:
+        case TokenType::TYPE_INT8:
+        case TokenType::TYPE_INT16:
+        case TokenType::TYPE_INT32:
+        case TokenType::TYPE_INT64:
+        case TokenType::TYPE_UINT8:
+        case TokenType::TYPE_UINT16:
+        case TokenType::TYPE_UINT32:
+        case TokenType::TYPE_UINT64:
+        case TokenType::TYPE_FLOAT:
+        case TokenType::TYPE_DOUBLE:
+        case TokenType::TYPE_DECIMAL:
+        case TokenType::TYPE_STRING:
+        case TokenType::TYPE_CHAR:
+        case TokenType::TYPE_ANY:
+            isPrimitiveType = true;
+            break;
+        default:
+            break;
+    }
+
+    if (!check(TokenType::IDENTIFIER) && !isPrimitiveType) {
         errorAt(DiagCode::E2002, "expected function name or method reference as composition operand");
         return nullptr;
     }
 
-    std::string name = advance().value;
+    // Get the name
+    std::string name;
+    if (isPrimitiveType) {
+        Token tok = advance();
+        name = tok.value;
+    } else {
+        name = advance().value;
+    }
 
     // BehaviorRef
     if (check(TokenType::COLON) && peekNext().type == TokenType::IDENTIFIER) {
@@ -1725,8 +1888,6 @@ MatchArmPtr Parser::parseMatchArm() {
     do {
         auto pat = parsePattern();
         if (!pat) {
-            // Error already recorded by parsePattern() if it returned nullptr,
-            // but we ensure we don't proceed with an empty or broken arm.
             break;
         }
         arm->patterns.push_back(std::move(pat));
@@ -1788,7 +1949,7 @@ DefaultArmPtr Parser::parseDefaultArm() {
 //   IDENTIFIER '{'           → StructPatternAST
 //   IDENTIFIER               → BindPatternAST (or RangePatternAST if '..' follows)
 // ─────────────────────────────────────────────────────────────────────────────
-std::unique_ptr<BaseAST> Parser::parsePattern() {
+std::unique_ptr<PatternAST> Parser::parsePattern() {
     LUC_LOG_EXPR_VERBOSE("parsePattern: token='" << peek().value << "'");
     // Wildcard
     if (check(TokenType::WILDCARD)) {
@@ -1831,18 +1992,14 @@ std::unique_ptr<BaseAST> Parser::parsePattern() {
             return parseStructPattern(std::move(name));
         }
 
-        // Bind pattern (may be followed by '..' for range)
+        // Bind pattern
         advance(); // consume IDENTIFIER
 
-        // Range from bind: n..m — unusual but supported
+        // Check for range from bind (invalid but parsed defensively)
         if (check(TokenType::RANGE)) {
-            // Wrap name as a literal-like expression and build a range pattern.
-            // Bind names cannot appear in range patterns per the grammar, but
-            // we parse defensively and let the semantic pass reject it.
-            advance(); // consume '..'
-            auto hi = parseLiteralOrRangePattern();
-            // Fall back: treat as a bind pattern.
-            (void)hi;
+             errorAt(DiagCode::E2007, "bind patterns cannot be used as range bounds");
+             advance(); // consume '..'
+             parseLiteralOrRangePattern(); // consume hi to recover
         }
 
         return parseBindPattern(std::move(name));
@@ -1850,7 +2007,7 @@ std::unique_ptr<BaseAST> Parser::parsePattern() {
 
     errorAt(DiagCode::E2007, "expected pattern");
     LUC_LOG_EXPR_VERBOSE("parsePattern: returning nullptr (error)");
-    return std::make_unique<UnknownExprAST>();
+    return nullptr;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1859,7 +2016,7 @@ std::unique_ptr<BaseAST> Parser::parsePattern() {
 // Parses a literal token (possibly prefixed with '-' for negatives) and
 // checks if '..' follows to build a RangePatternAST.
 // ─────────────────────────────────────────────────────────────────────────────
-std::unique_ptr<BaseAST> Parser::parseLiteralOrRangePattern() {
+std::unique_ptr<PatternAST> Parser::parseLiteralOrRangePattern() {
     SourceLocation loc = currentLoc();
  
     // Handle unary minus for negative literals
@@ -1904,7 +2061,7 @@ std::unique_ptr<BaseAST> Parser::parseLiteralOrRangePattern() {
             break;
         default:
             errorAt(DiagCode::E2009, "expected literal value in pattern");
-            return std::make_unique<UnknownExprAST>();
+            return nullptr;
     }
  
     std::string rawValue = negative ? ("-" + tok.value) : tok.value;
@@ -1923,7 +2080,7 @@ std::unique_ptr<BaseAST> Parser::parseLiteralOrRangePattern() {
         if (!checkAny({TokenType::INT_LITERAL, TokenType::HEX_LITERAL,
                        TokenType::FLOAT_LITERAL})) {
             errorAt(DiagCode::E2009, "expected literal after '..' in range pattern");
-            return std::make_unique<UnknownExprAST>();
+            return nullptr;
         }
         Token hiTok = advance();
         std::string hiRaw = negHi ? ("-" + hiTok.value) : hiTok.value;
@@ -1951,12 +2108,13 @@ std::unique_ptr<BaseAST> Parser::parseLiteralOrRangePattern() {
         range->lo = std::move(loExpr);
         range->hi = std::move(hiExpr);
         range->isExclusive = isExclusive;
-        return range;
+        
+        return std::make_unique<PatternExprAST>(std::move(range));
     }
  
-    auto pat = std::make_unique<LiteralExprAST>(kind, std::move(rawValue));
-    pat->loc = loc;
-    return pat;
+    auto lit = std::make_unique<LiteralExprAST>(kind, std::move(rawValue));
+    lit->loc = loc;
+    return std::make_unique<PatternExprAST>(std::move(lit));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
