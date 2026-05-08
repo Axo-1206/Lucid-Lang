@@ -20,8 +20,7 @@
 // Construction
 // ─────────────────────────────────────────────────────────────────────────────
 
-Parser::Parser(std::vector<Token> tokens, DiagnosticEngine &dc,
-               std::string filePath)
+Parser::Parser(std::vector<Token> tokens, DiagnosticEngine &dc, InternedString filePath)
     : tokens_(std::move(tokens)), filePath_(std::move(filePath)), dc_(dc) {
     LUC_LOG_PARSER("=== Parser constructed ===");
     LUC_LOG_PARSER("\tToken count: " << tokens_.size());

@@ -47,7 +47,7 @@ void DiagnosticEngine::warning(DiagnosticCategory category, SourceLocation loc, 
     report(DiagnosticSeverity::Warning, category, loc, code, msg);
 }
 
-void DiagnosticEngine::dumpAll(std::ostream &os) const {
+void DiagnosticEngine::dumpAll(const StringPool& pool, std::ostream &os) const {
     for (const auto &d : diagnostics_) {
         // Determine prefix: W for warnings, E for everything else.
         // Warning codes are in the 5000+ range.
@@ -61,7 +61,7 @@ void DiagnosticEngine::dumpAll(std::ostream &os) const {
         // Output format:
         // C:/path/file.luc:10:5 [E2001] Error: some message
         // C:/path/file.luc:10:5 [W3001] Warning: some message
-        os << d.location.file << ":" << d.location.line << ":" << d.location.column
+        os << pool.lookup(d.location.file) << ":" << d.location.line << ":" << d.location.column
            << " [" << prefix << displayCode << "] "
            << severityToString(d.severity) << ": " << d.message << "\n";
     }

@@ -6,7 +6,7 @@
 #include <filesystem>
 #include "lexer/Lexer.hpp"
 #include "parser/Parser.hpp"
-#include "semantic/SemanticAnalyzer.hpp"
+#include "semantic/header/SemanticAnalyzer.hpp"
 #include "diagnostics/DiagnosticEngine.hpp"
 #include "debug/DebugMacros.hpp"
 #include "debug/ASTDumper.hpp"
@@ -82,6 +82,7 @@ int main(int argc, char* argv[]) {
     std::cout << "[MAIN] Source file size: " << source.size() << " bytes" << std::endl;
 
     DiagnosticEngine dc;
+    StringPool stringPool; 
     
     // Phase 1: Lexical Analysis
     std::cout << "[MAIN] Starting lexical analysis..." << std::endl;
@@ -108,7 +109,7 @@ int main(int argc, char* argv[]) {
     int errorCount = 0;
     for (const auto& tok : tokens) {
         if (tok.type == TokenType::UNKNOWN) {
-            dc.error(DiagnosticCategory::Lexical, {tok.line, tok.column, filePath},
+            dc.error(DiagnosticCategory::Lexical, {tok.line, tok.column, stringPool.intern(filePath)},
                     DiagCode::E1001, "Unexpected character: '" + tok.value + "'");
             errorCount++;
             if (errorCount > 50) break;
@@ -117,17 +118,17 @@ int main(int argc, char* argv[]) {
 
     if (dc.hasErrors()) {
         std::cerr << "[MAIN] Lexical Analysis FAILED:" << std::endl;
-        dc.dumpAll(std::cerr);
+        dc.dumpAll(stringPool, std::cerr);
         return 1;
     }
 
     // Phase 2: Syntax Analysis (Parsing)
     std::cout << "[MAIN] Starting syntax analysis..." << std::endl;
-    Parser parser(tokens, dc, filePath);
+    Parser parser(tokens, dc, stringPool.intern(filePath));
     std::unique_ptr<ProgramAST> program = parser.parse();
     
     if (program && LucDebug::isDebugEnabled("PARSE_RESULT")) {
-        LucDebug::ASTDumper dumper(LucDebug::getVerbosity());
+        LucDebug::ASTDumper dumper(LucDebug::getVerbosity(), stringPool);
         program->accept(dumper);
         LUC_LOG_PARSE_RESULT_MINIMAL("\n" << dumper.getOutput());
     }
@@ -136,7 +137,7 @@ int main(int argc, char* argv[]) {
     
     if (dc.hasErrors()) {
         std::cerr << "[MAIN] Syntax Analysis (Parsing) FAILED:" << std::endl;
-        dc.dumpAll(std::cerr);
+        dc.dumpAll(stringPool, std::cerr);
         return 1;
     }
 

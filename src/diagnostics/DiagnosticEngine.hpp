@@ -10,6 +10,7 @@
 
 #include "Diagnostic.hpp"
 #include "DiagnosticCodes.hpp"
+#include "ast/support/StringPool.hpp"
 #include <vector>
 #include <iostream>
 
@@ -73,7 +74,7 @@ public:
     // Iterates through the raw diagnostic list and streams their text representations
     // to the specified output stream (defaults to standard error).
     // ─────────────────────────────────────────────────────────────────────────────
-    void dumpAll(std::ostream& os = std::cerr) const;
+    void dumpAll(const StringPool& pool, std::ostream& os = std::cerr) const;
 
 private:
     std::vector<Diagnostic> diagnostics_; ///< Internal storage for all reports.

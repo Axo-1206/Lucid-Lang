@@ -22,6 +22,7 @@
 #include "ast/ExprAST.hpp"
 #include "ast/StmtAST.hpp"
 #include "ast/TypeAST.hpp"
+#include "ast/support/InternedString.hpp"
 
 #include <memory>
 #include <optional>
@@ -56,8 +57,7 @@ class Parser {
     // filePath is stored on every ProgramAST node and propagated to
     // SourceLocation::file — it should be the path relative to the package root
     // (e.g. "math/vec2.luc").
-    explicit Parser(std::vector<Token> tokens, DiagnosticEngine &dc,
-                    std::string filePath = "");
+    explicit Parser(std::vector<Token> tokens, DiagnosticEngine &dc, InternedString filePath);
 
     // ── Entry point ───────────────────────────────────────────────────────────
 

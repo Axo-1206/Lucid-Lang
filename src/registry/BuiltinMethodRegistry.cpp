@@ -1,7 +1,7 @@
 #include "BuiltinMethodRegistry.hpp"
 #include "ast/ExprAST.hpp"
-#include "semantic/SemanticHelpers.hpp"
-#include "semantic/SymbolTable.hpp"  // Add this
+#include "semantic/header/SemanticHelpers.hpp"
+#include "semantic/header/SymbolTable.hpp"  // Add this
 
 // Forward declare checkExpr
 TypeAST* checkExpr(ExprAST* node, SymbolTable& symbols, TypeResolver& resolver,
