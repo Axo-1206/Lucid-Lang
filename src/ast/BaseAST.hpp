@@ -589,8 +589,8 @@ using PatternPtr = std::unique_ptr<PatternAST, ASTDeleter>;
 struct ProgramAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::Program;
 
-    InternedString            packageName;   // from `package foo`
-    std::string            filePath;      // relative path, e.g. "math/vec2.luc"
+    InternedString         packageName;   // from `package foo`
+    InternedString         filePath;      // relative path, e.g. "math/vec2.luc"
     std::vector<DeclPtr>   decls;         // top-level declarations in order
 
     ProgramAST() : BaseAST(ASTKind::Program) {}

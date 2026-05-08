@@ -9,6 +9,7 @@
  */
 
 #include "Parser.hpp"
+#include "ast/support/InternedString.hpp"
 #include "diagnostics/DiagnosticCodes.hpp"
 #include "debug/DebugUtils.hpp"
 
@@ -136,7 +137,7 @@ TypePtr Parser::parseBaseType() {
         default:
             // Not a recognisable type start — caller decides if that is an error.
             LUC_LOG_TYPE("parseBaseType: unrecognized type start: '" << peek().value << "'");
-            return std::make_unique<UnknownTypeAST>();
+            return arena_.make<UnknownTypeAST>();
     }
 }
 
@@ -235,10 +236,10 @@ TypePtr Parser::parsePrimitiveType() {
             // Should never reach here — parseBaseType only calls us on known
             // primitive tokens.
             errorAt(DiagCode::E2002, "internal error: parsePrimitiveType called on non-primitive token");
-            return std::make_unique<UnknownTypeAST>();
+            return arena_.make<UnknownTypeAST>();
     }
 
-    auto node = std::make_unique<PrimitiveTypeAST>(kind);
+    auto node = arena_.make<PrimitiveTypeAST>(kind);
     node->loc = loc;
     LUC_LOG_TYPE_VERBOSE("parsePrimitiveType: returning PrimitiveTypeAST for '" << tok.value << "'");
     return wrapNullable(std::move(node));
@@ -258,17 +259,17 @@ TypePtr Parser::parseNamedType() {
     std::string name = advance().value;
     LUC_LOG_TYPE("parseNamedType: name = '" << name << "'");
 
-    auto node = std::make_unique<NamedTypeAST>(std::move(name));
+    auto node = arena_.make<NamedTypeAST>(std::move(pool_.intern(name)));
     node->loc = loc;
 
     // Optional generic argument list: '<' type { ',' type } '>'
     if (check(TokenType::LESS)) {
-        LUC_LOG_TYPE("parseNamedType: parsing generic arguments for '" << node->name << "'");
+        LUC_LOG_TYPE("parseNamedType: parsing generic arguments for '" << pool_.lookup(node->name) << "'");
         node->genericArgs = parseGenericArgs();
-        LUC_LOG_TYPE("parseNamedType: parsed " << node->genericArgs.size() << " generic argument(s) for '" << node->name << "'");
+        LUC_LOG_TYPE("parseNamedType: parsed " << node->genericArgs.size() << " generic argument(s) for '" << pool_.lookup(node->name) << "'");
     }
 
-    LUC_LOG_TYPE_VERBOSE("parseNamedType: returning NamedTypeAST for '" << node->name << "'");
+    LUC_LOG_TYPE_VERBOSE("parseNamedType: returning NamedTypeAST for '" << pool_.lookup(node->name) << "'");
     return wrapNullable(std::move(node));
 }
 
@@ -306,10 +307,10 @@ TypePtr Parser::parseArrayType() {
         if (!elem) {
             errorAt(DiagCode::E2005, "expected element type after '[*]'");
             LUC_LOG_TYPE_VERBOSE("=== parseArrayType END (error: no element type after [*]) ===");
-            return std::make_unique<UnknownTypeAST>();
+            return arena_.make<UnknownTypeAST>();
         }
 
-        auto node = std::make_unique<DynamicArrayTypeAST>(std::move(elem));
+        auto node = arena_.make<DynamicArrayTypeAST>(std::move(elem));
         node->loc = loc;
         // Dynamic array types are not nullable by themselves — wrapNullable
         // would produce [*]T? which is a nullable dynamic array, a valid form.
@@ -326,10 +327,10 @@ TypePtr Parser::parseArrayType() {
         if (!elem) {
             errorAt(DiagCode::E2005, "expected element type after '[]'");
             LUC_LOG_TYPE_VERBOSE("=== parseArrayType END (error: no element type after []) ===");
-            return std::make_unique<UnknownTypeAST>();
+            return arena_.make<UnknownTypeAST>();
         }
 
-        auto node = std::make_unique<SliceTypeAST>(std::move(elem));
+        auto node = arena_.make<SliceTypeAST>(std::move(elem));
         node->loc = loc;
         LUC_LOG_TYPE_VERBOSE("parseArrayType: returning SliceTypeAST");
         return wrapNullable(std::move(node));
@@ -360,10 +361,10 @@ TypePtr Parser::parseArrayType() {
         if (!elem) {
             errorAt(DiagCode::E2005, "expected element type after '[" + sizeTok.value + "]'");
             LUC_LOG_TYPE_VERBOSE("=== parseArrayType END (error: no element type after [N]) ===");
-            return std::make_unique<UnknownTypeAST>();
+            return arena_.make<UnknownTypeAST>();
         }
 
-        auto node = std::make_unique<FixedArrayTypeAST>(size, std::move(elem));
+        auto node = arena_.make<FixedArrayTypeAST>(size, std::move(elem));
         node->loc = loc;
         LUC_LOG_TYPE_VERBOSE("parseArrayType: returning FixedArrayTypeAST (size=" << size << ")");
         return wrapNullable(std::move(node));
@@ -382,7 +383,7 @@ TypePtr Parser::parseArrayType() {
         advance();
     }
     LUC_LOG_TYPE_VERBOSE("=== parseArrayType END (error) ===");
-    return std::make_unique<UnknownTypeAST>();
+    return arena_.make<UnknownTypeAST>();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -409,11 +410,11 @@ TypePtr Parser::parseRefType() {
     if (!inner) {
         LUC_LOG_TYPE("parseRefType: ERROR - no inner type after '&'");
         errorAt(DiagCode::E2005, "expected type after '&'");
-        return std::make_unique<UnknownTypeAST>();
+        return arena_.make<UnknownTypeAST>();
     }
 
     LUC_LOG_TYPE_VERBOSE("parseRefType: inner type parsed, kind = " << LucDebug::kindToString(inner->kind));
-    auto node = std::make_unique<RefTypeAST>(std::move(inner));
+    auto node = arena_.make<RefTypeAST>(std::move(inner));
     node->loc = loc;
     // RefTypeAST itself is not wrapped in wrapNullable — the '?' lives on the
     // inner type or on the enclosing declaration.  A nullable reference is
@@ -441,11 +442,11 @@ TypePtr Parser::parsePtrType() {
     if (!inner) {
         LUC_LOG_TYPE("parsePtrType: inner type parsing FAILED");
         errorAt(DiagCode::E2005, "expected type after '*'");
-        return std::make_unique<UnknownTypeAST>();
+        return arena_.make<UnknownTypeAST>();
     }
 
     LUC_LOG_TYPE("parsePtrType: inner type parsed, kind = " << LucDebug::kindToString(inner->kind));
-    auto node = std::make_unique<PtrTypeAST>(std::move(inner));
+    auto node = arena_.make<PtrTypeAST>(std::move(inner));
     node->loc = loc;
     LUC_LOG_TYPE_VERBOSE("parsePtrType: returning PtrTypeAST");
     return node;
@@ -481,7 +482,7 @@ TypePtr Parser::parseFuncType(bool allowQualifiers) {
     LUC_LOG_TYPE("parseFuncType");
     
     // ── Parse type qualifiers - just collect strings, don't validate ─────────
-    std::vector<std::string> rawQualifiers;
+    std::vector<InternedString> rawQualifiers;
     if (allowQualifiers) {
         while (check(TokenType::TILDE)) {
             advance(); // consume '~'
@@ -492,8 +493,8 @@ TypePtr Parser::parseFuncType(bool allowQualifiers) {
             }
             
             // Just store the name as-is, no validation (semantic phase will validate)
-            rawQualifiers.push_back(advance().value);
-            LUC_LOG_TYPE_VERBOSE("\tqualifier: '~" << rawQualifiers.back() << "'");
+            rawQualifiers.push_back(pool_.intern(advance().value));
+            LUC_LOG_TYPE_VERBOSE("\tqualifier: '~" << pool_.lookup(rawQualifiers.back()) << "'");
         }
     }
     
@@ -591,9 +592,9 @@ TypePtr Parser::parseFuncType(bool allowQualifiers) {
                 break;
             }
             
-            auto paramNode = std::make_unique<ParamAST>();
+            auto paramNode = arena_.make<ParamAST>();
             paramNode->loc = paramLoc;
-            paramNode->name = std::move(name);
+            paramNode->name = std::move(pool_.intern(name));
             paramNode->type = std::move(paramType);
             paramNode->isVariadic = variadic;
             paramGroup.push_back(std::move(paramNode));
@@ -606,14 +607,14 @@ TypePtr Parser::parseFuncType(bool allowQualifiers) {
         returnType = parseType();
     }
     
-    auto funcType = std::make_unique<FuncTypeAST>();
+    auto funcType = arena_.make<FuncTypeAST>();
     funcType->sig.rawQualifiers = std::move(rawQualifiers);
     funcType->sig.paramGroups.push_back(std::move(paramGroup));  // Single group for function type
     funcType->sig.returnType = std::move(returnType);
     
     // ── Handle nullable RETURN type: (params) ret? ────────────────────────────
     if (match(TokenType::QUESTION)) {
-        auto nullableReturn = std::make_unique<NullableTypeAST>(std::move(funcType));
+        auto nullableReturn = arena_.make<NullableTypeAST>(std::move(funcType));
         return nullableReturn;
     }
     
@@ -622,7 +623,7 @@ TypePtr Parser::parseFuncType(bool allowQualifiers) {
         consume(TokenType::RPAREN, "expected ')' to close nullable function wrapper");
         consume(TokenType::QUESTION, "expected '?' for nullable function");
         
-        auto nullableFunc = std::make_unique<NullableTypeAST>(std::move(funcType));
+        auto nullableFunc = arena_.make<NullableTypeAST>(std::move(funcType));
         nullableFunc->loc = nullableLoc;
         return nullableFunc;
     }
@@ -653,7 +654,7 @@ TypePtr Parser::wrapNullable(TypePtr inner) {
     LUC_LOG_TYPE("wrapNullable: consuming '?' token, wrapping "
                  << LucDebug::kindToString(inner->kind) << " in NullableTypeAST");
     SourceLocation loc = inner->loc; // loc spans from the base type
-    auto node = std::make_unique<NullableTypeAST>(std::move(inner));
+    auto node = arena_.make<NullableTypeAST>(std::move(inner));
     node->loc = loc;
     LUC_LOG_TYPE_VERBOSE("wrapNullable: returning NullableTypeAST");
     return node;

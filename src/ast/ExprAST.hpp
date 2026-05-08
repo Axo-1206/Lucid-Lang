@@ -1116,7 +1116,7 @@ struct PatternExprAST : PatternAST {
 
     ExprPtr inner; // LiteralExprAST or RangeExprAST
 
-    PatternExprAST() : PatternAST(ASTKind::PatternExpr) {}
+    PatternExprAST(ExprPtr expr) : PatternAST(ASTKind::PatternExpr), inner(std::move(expr)) {}
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
 

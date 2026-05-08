@@ -6,6 +6,7 @@
 #include <filesystem>
 #include "lexer/Lexer.hpp"
 #include "parser/Parser.hpp"
+#include "ast/support/ASTArena.hpp"
 #include "semantic/header/SemanticAnalyzer.hpp"
 #include "diagnostics/DiagnosticEngine.hpp"
 #include "debug/DebugMacros.hpp"
@@ -124,8 +125,9 @@ int main(int argc, char* argv[]) {
 
     // Phase 2: Syntax Analysis (Parsing)
     std::cout << "[MAIN] Starting syntax analysis..." << std::endl;
-    Parser parser(tokens, dc, stringPool.intern(filePath));
-    std::unique_ptr<ProgramAST> program = parser.parse();
+    ASTArena arena;
+    Parser parser(tokens, dc, stringPool.intern(filePath), stringPool, arena);
+    ASTPtr<ProgramAST> program = parser.parse();
     
     if (program && LucDebug::isDebugEnabled("PARSE_RESULT")) {
         LucDebug::ASTDumper dumper(LucDebug::getVerbosity(), stringPool);

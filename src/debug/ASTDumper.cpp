@@ -5,6 +5,7 @@
 #include "ast/StmtAST.hpp"
 #include "ast/TypeAST.hpp"
 #include <sstream>
+#include <string>
 
 namespace LucDebug {
 
@@ -134,7 +135,7 @@ void ASTDumper::visit(ProgramAST& node) {
     printNodeHeader(node, "ProgramAST");
     if (verbosity >= 3) {
         indent(); out += "\tpackageName: '" + toStr(pool, node.packageName) + "'\n";
-        indent(); out += "\tfilePath: '" + node.filePath + "'\n";
+        indent(); out += "\tfilePath: '" + std::string(pool->lookup(node.filePath)) + "'\n";
         indent(); out += "\tdecls (count): " + std::to_string(node.decls.size()) + "\n";
 
         indentLevel++;

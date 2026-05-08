@@ -42,16 +42,25 @@ luc/
 ├── src/
 │   ├── main.cpp                # compiler entry point
 │   ├── Tokens.hpp              # all token definitions
-│   ├── QualifierRegistry.hpp   # qualifier management
 │   ├── lexer/
 │   │   ├── Lexer.hpp
 │   │   └── Lexer.cpp
 │   ├── ast/
+│   │   ├── support/
+│   │   │   ├── ASTArena.hpp
+│   │   │   ├── InternedString.hpp
+│   │   │   ├── StringPool.hpp
+│   │   │   └── StringPool.cpp
 │   │   ├── BaseAST.hpp         # foundation + ASTVisitor
 │   │   ├── TypeAST.hpp
 │   │   ├── DeclAST.hpp
 │   │   ├── ExprAST.hpp
 │   │   └── StmtAST.hpp
+│   ├── registry/
+│   │   ├── AttributeRegistry.hpp/cpp
+│   │   ├── QualifierRegistry.hpp
+│   │   ├── BuiltinMethodRegistry.hpp/cpp
+│   │   └── IntrinsicRegistry.hpp
 │   ├── diagnostics/
 │   │   ├── Diagnostic.hpp
 │   │   ├── DiagnosticCodes.hpp

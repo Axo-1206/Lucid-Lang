@@ -23,6 +23,7 @@
 #include "ast/StmtAST.hpp"
 #include "ast/TypeAST.hpp"
 #include "ast/support/InternedString.hpp"
+#include "ast/support/ASTArena.hpp"
 
 #include <memory>
 #include <optional>
@@ -57,14 +58,16 @@ class Parser {
     // filePath is stored on every ProgramAST node and propagated to
     // SourceLocation::file — it should be the path relative to the package root
     // (e.g. "math/vec2.luc").
-    explicit Parser(std::vector<Token> tokens, DiagnosticEngine &dc, InternedString filePath);
+    // Parser.hpp
+explicit Parser(std::vector<Token> tokens, DiagnosticEngine &dc,
+                InternedString filePath, StringPool& pool, ASTArena& arena);
 
     // ── Entry point ───────────────────────────────────────────────────────────
 
     // Parses the entire token stream and returns the root AST node.
     // Never throws — all errors are collected in errors_.
     // Caller must check hasErrors() before using the returned tree.
-    std::unique_ptr<ProgramAST> parse();
+    ASTPtr<ProgramAST> parse();
 
     // ── Error reporting ───────────────────────────────────────────────────────
 
@@ -77,7 +80,9 @@ class Parser {
 
     std::vector<Token> tokens_; // full token stream, EOF_TOKEN guaranteed last
     std::size_t pos_ = 0;       // index of the current (not yet consumed) token
-    std::string filePath_;      // stored on ProgramAST and every SourceLocation
+    InternedString filePath_;      // stored on ProgramAST and every SourceLocation
+    StringPool& pool_;
+    ASTArena&   arena_;
 
     DiagnosticEngine &dc_;      // shared diagnostic engine
 
@@ -230,20 +235,20 @@ class Parser {
     DeclPtr parseTopLevelDecl();
 
     // package IDENTIFIER
-    std::unique_ptr<PackageDeclAST> parsePackageDecl();
+    ASTPtr<PackageDeclAST> parsePackageDecl();
 
     // [vis] use module_path [ as IDENTIFIER ]
-    std::unique_ptr<UseDeclAST> parseUseDecl(Visibility vis);
+    ASTPtr<UseDeclAST> parseUseDecl(Visibility vis);
 
     // [vis] let / const IDENTIFIER type [ '=' expr ]
-    std::unique_ptr<VarDeclAST> parseVarDecl(Visibility vis, std::vector<AttributePtr> attrs = {});
+    ASTPtr<VarDeclAST> parseVarDecl(Visibility vis, std::vector<AttributePtr> attrs = {});
 
     // [vis] let / const IDENTIFIER [<generics>] param_group+ [return_type]
     // '=' body Distinguishes a function from a variable by lookahead after the
     // name:
     //   function → next meaningful token after name (and optional generics) is '('
     //   variable → type keyword, named type, '[', '&', '*', or '?'
-    std::unique_ptr<FuncDeclAST> parseFuncDecl(DeclKeyword kw, Visibility vis, std::vector<AttributePtr> attrs = {});
+    ASTPtr<FuncDeclAST> parseFuncDecl(DeclKeyword kw, Visibility vis, std::vector<AttributePtr> attrs = {});
 
     // Parse one parameter group '(' [ param_list ] ')'.
     // Used by parseFuncDecl and parseFuncType.
@@ -257,19 +262,19 @@ class Parser {
     GenericParamPtr parseGenericParam();
 
     // [vis] struct IDENTIFIER [<generics>] '{' { field_decl } '}'
-    std::unique_ptr<StructDeclAST> parseStructDecl(Visibility vis);
+    ASTPtr<StructDeclAST> parseStructDecl(Visibility vis);
 
     // IDENTIFIER type [ '=' expr ]  — inside a struct body
     FieldDeclPtr parseFieldDecl();
 
     // [vis] enum IDENTIFIER '{' enum_variant { ',' enum_variant } '}'
-    std::unique_ptr<EnumDeclAST> parseEnumDecl(Visibility vis);
+    ASTPtr<EnumDeclAST> parseEnumDecl(Visibility vis);
 
     // IDENTIFIER [ '=' INT_LITERAL ]
     EnumVariantPtr parseEnumVariant();
 
     // [vis] trait IDENTIFIER [<generics>] '{' { trait_method } '}'
-    std::unique_ptr<TraitDeclAST> parseTraitDecl(Visibility vis);
+    ASTPtr<TraitDeclAST> parseTraitDecl(Visibility vis);
 
     // IDENTIFIER '(' [ param_list ] ')' [ return_type ]  — signature only, no
     // body
@@ -277,7 +282,7 @@ class Parser {
 
     // [vis] impl [<generics>] IDENTIFIER [generic_args] [':' trait_ref] '{'
     // members '}'
-    std::unique_ptr<ImplDeclAST> parseImplDecl(Visibility vis);
+    ASTPtr<ImplDeclAST> parseImplDecl(Visibility vis);
 
     // ':' IDENTIFIER [ '<' type_args '>' ] — the trait conformance annotation
     TraitRefPtr parseTraitRef();
@@ -286,10 +291,10 @@ class Parser {
     MethodDeclPtr parseMethodDecl();
 
     // [vis] from '(' IDENTIFIER type ')' IDENTIFIER '=' body
-    std::unique_ptr<FromDeclAST> parseFromDecl(Visibility vis);
+    ASTPtr<FromDeclAST> parseFromDecl(Visibility vis);
 
     // [vis] type IDENTIFIER [<generics>] '=' type
-    std::unique_ptr<TypeAliasDeclAST> parseTypeAliasDecl(Visibility vis);
+    ASTPtr<TypeAliasDeclAST> parseTypeAliasDecl(Visibility vis);
 
     // ── Compiler Directive (@) parsers ────────────────────────────────────────
 
@@ -301,16 +306,6 @@ class Parser {
     // Parse zero or more '@' directives that precede a declaration.
     // Stops when the current token is not AT_SIGN.
     std::vector<AttributePtr> parseAttributes();
-
-    // Parse a function body in one of the supported forms:
-    //   block form:     '=' '{' stmts '}'
-    //   anon func form: '=' '(' params ')' ret '{' stmts '}'
-    //   async form:     '=' 'async' ( '{' stmts '}' | '(' params ')' ret '{'
-    //   stmts '}' )
-    // Sets bodyKind and isAsync on the owning decl. Returns the BlockStmtAST.
-    // paramGroups and returnType are passed in so they can be overridden when
-    // the explicit anonymous form repeats them.
-    StmtPtr parseFuncBody(FuncBodyKind &outBodyKind);
 
     // ─────────────────────────────────────────────────────────────────────────
     // ParserExpr.cpp — Pratt expression parser
@@ -379,8 +374,7 @@ class Parser {
     // Struct literal: IDENTIFIER [generic_args] '{' { IDENTIFIER '=' expr } '}'
     // Called from parsePrimaryExpr when IDENTIFIER is followed by '{' (and the
     // previous token context rules out a block statement).
-    ExprPtr parseStructLiteralExpr(std::string typeName,
-                                   std::vector<TypePtr> genericArgs);
+    ExprPtr parseStructLiteralExpr(std::string typeName, std::vector<TypePtr> genericArgs);
 
     // Anonymous function: [ async ] '(' params ')' [ return_type ] block
     ExprPtr parseAnonFuncExpr();
@@ -441,25 +435,25 @@ class Parser {
     MatchArmPtr parseMatchArm();
 
     // Parse the default arm: 'default' '->' body
-    std::unique_ptr<DefaultArmAST> parseDefaultArm();
+    ASTPtr<DefaultArmAST> parseDefaultArm();
 
     // Dispatch to the correct pattern sub-parser based on current token.
-    std::unique_ptr<BaseAST> parsePattern();
+    ASTPtr<PatternAST> parsePattern();
 
     // Literal or range pattern: literal [ '..' [ '<' ] literal ]
-    std::unique_ptr<BaseAST> parseLiteralOrRangePattern();
+    ASTPtr<PatternAST> parseLiteralOrRangePattern();
 
     // Bind pattern: IDENTIFIER  (not followed by 'is' or '{')
-    std::unique_ptr<BindPatternAST> parseBindPattern(std::string name);
+    ASTPtr<BindPatternAST> parseBindPattern(InternedString name);
 
     // Type pattern: IDENTIFIER 'is' type
-    std::unique_ptr<TypePatternAST> parseTypePattern(std::string bindName);
+    ASTPtr<TypePatternAST> parseTypePattern(InternedString bindName);
 
     // Wildcard pattern: '_'
-    std::unique_ptr<WildcardPatternAST> parseWildcardPattern();
+    ASTPtr<WildcardPatternAST> parseWildcardPattern();
 
     // Struct pattern: IDENTIFIER '{' { field_pattern } '}'
-    std::unique_ptr<StructPatternAST> parseStructPattern(std::string typeName);
+    ASTPtr<StructPatternAST> parseStructPattern(InternedString typeName);
 
     // One field entry inside a struct pattern: IDENTIFIER [ ':' pattern ]
     FieldPatternPtr parseFieldPattern();
@@ -472,45 +466,45 @@ class Parser {
     StmtPtr parseStmt();
 
     // '{' { stmt } '}'
-    std::unique_ptr<BlockStmtAST> parseBlock();
+    ASTPtr<BlockStmtAST> parseBlock();
 
     // if expr block [ else ( if_stmt | block ) ]  — statement form
-    std::unique_ptr<IfStmtAST> parseIfStmt();
+    ASTPtr<IfStmtAST> parseIfStmt();
 
     // switch expr '{' { case_clause } [ default_clause ] '}'
-    std::unique_ptr<SwitchStmtAST> parseSwitchStmt();
+    ASTPtr<SwitchStmtAST> parseSwitchStmt();
 
     // One case clause: 'case' case_value { ',' case_value } ':' { stmt }
     SwitchCasePtr parseSwitchCase();
 
     // for IDENTIFIER in expr block
-    std::unique_ptr<ForStmtAST> parseForStmt();
+    ASTPtr<ForStmtAST> parseForStmt();
 
     // while expr block
-    std::unique_ptr<WhileStmtAST> parseWhileStmt();
+    ASTPtr<WhileStmtAST> parseWhileStmt();
 
     // do block while expr
-    std::unique_ptr<DoWhileStmtAST> parseDoWhileStmt();
+    ASTPtr<DoWhileStmtAST> parseDoWhileStmt();
 
     // return [ expr ]
-    std::unique_ptr<ReturnStmtAST> parseReturnStmt();
+    ASTPtr<ReturnStmtAST> parseReturnStmt();
 
     // break
-    std::unique_ptr<BreakStmtAST> parseBreakStmt();
+    ASTPtr<BreakStmtAST> parseBreakStmt();
 
     // continue
-    std::unique_ptr<ContinueStmtAST> parseContinueStmt();
+    ASTPtr<ContinueStmtAST> parseContinueStmt();
 
     // parallel for IDENTIFIER in expr block
-    std::unique_ptr<ParallelForStmtAST> parseParallelForStmt();
+    ASTPtr<ParallelForStmtAST> parseParallelForStmt();
 
     // parallel '{' { block } '}'
-    std::unique_ptr<ParallelBlockStmtAST> parseParallelBlockStmt();
+    ASTPtr<ParallelBlockStmtAST> parseParallelBlockStmt();
 
     // Local declaration inside a block: let / const → VarDeclAST or
     // FuncDeclAST. Wrapped in DeclStmtAST. pub is forbidden inside a block —
     // recorded as an error if encountered and then ignored so parsing continues.
-    std::unique_ptr<DeclStmtAST> parseLocalDecl();
+    ASTPtr<DeclStmtAST> parseLocalDecl();
 
     // ─────────────────────────────────────────────────────────────────────────
     // Context flags

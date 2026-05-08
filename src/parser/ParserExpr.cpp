@@ -13,10 +13,13 @@
 
 #include "Parser.hpp"
 #include "ast/BaseAST.hpp"
+#include "ast/ExprAST.hpp"
+#include "ast/support/InternedString.hpp"
 #include "diagnostics/DiagnosticCodes.hpp"
 #include "debug/DebugUtils.hpp"
 
 #include <cassert>
+#include <string>
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ParserExpr.cpp
@@ -254,7 +257,7 @@ ExprPtr Parser::parsePrattExpr(int minPrec, bool allowStructLiteral) {
     ExprPtr lhs = parsePrefixExpr(allowStructLiteral);
     if (!lhs) {
         LUC_LOG_EXPR("parsePrattExpr: prefix parsing failed");
-        return std::make_unique<UnknownExprAST>();
+        return arena_.make<UnknownExprAST>();
     }
 
     // Apply postfix operators before entering the infix loop.
@@ -285,7 +288,7 @@ ExprPtr Parser::parsePrattExpr(int minPrec, bool allowStructLiteral) {
             }
 
             SourceLocation loc = lhs->loc;
-            auto node = std::make_unique<AssignExprAST>();
+            auto node = arena_.make<AssignExprAST>();
             node->loc = loc;
             node->op = op;
             node->lhs = std::move(lhs);
@@ -306,7 +309,7 @@ ExprPtr Parser::parsePrattExpr(int minPrec, bool allowStructLiteral) {
             }
 
             SourceLocation loc = lhs->loc;
-            auto node = std::make_unique<IsExprAST>();
+            auto node = arena_.make<IsExprAST>();
             node->loc = loc;
             node->expr = std::move(lhs);
             node->checkType = std::move(checkType);
@@ -339,7 +342,7 @@ ExprPtr Parser::parsePrattExpr(int minPrec, bool allowStructLiteral) {
             }
 
             SourceLocation loc = lhs->loc;
-            auto node = std::make_unique<NullCoalesceExprAST>();
+            auto node = arena_.make<NullCoalesceExprAST>();
             node->loc = loc;
             node->value = std::move(lhs);
             node->fallback = std::move(fallback);
@@ -400,7 +403,7 @@ ExprPtr Parser::parsePrattExpr(int minPrec, bool allowStructLiteral) {
         }
 
         SourceLocation loc = lhs->loc;
-        auto node = std::make_unique<BinaryExprAST>();
+        auto node = arena_.make<BinaryExprAST>();
         node->loc = loc;
         node->op = tokenToBinaryOp(opTok);
         node->left = std::move(lhs);
@@ -427,9 +430,9 @@ ExprPtr Parser::parsePrefixExpr(bool allowStructLiteral) {
             ExprPtr operand = parsePrefixExpr(allowStructLiteral);
             if (!operand) {
                 errorAt(DiagCode::E2008, "expected expression after '-'");
-                return std::make_unique<UnknownExprAST>();
+                return arena_.make<UnknownExprAST>();
             }
-            auto node = std::make_unique<UnaryExprAST>();
+            auto node = arena_.make<UnaryExprAST>();
             node->loc = loc;
             node->op = UnaryOp::Neg;
             node->operand = std::move(operand);
@@ -440,9 +443,9 @@ ExprPtr Parser::parsePrefixExpr(bool allowStructLiteral) {
             ExprPtr operand = parsePrefixExpr(allowStructLiteral);
             if (!operand) {
                 errorAt(DiagCode::E2008, "expected expression after 'not'");
-                return std::make_unique<UnknownExprAST>();
+                return arena_.make<UnknownExprAST>();
             }
-            auto node = std::make_unique<UnaryExprAST>();
+            auto node = arena_.make<UnaryExprAST>();
             node->loc = loc;
             node->op = UnaryOp::Not;
             node->operand = std::move(operand);
@@ -453,9 +456,9 @@ ExprPtr Parser::parsePrefixExpr(bool allowStructLiteral) {
             ExprPtr operand = parsePrefixExpr(allowStructLiteral);
             if (!operand) {
                 errorAt(DiagCode::E2008, "expected expression after '~'");
-                return std::make_unique<UnknownExprAST>();
+                return arena_.make<UnknownExprAST>();
             }
-            auto node = std::make_unique<UnaryExprAST>();
+            auto node = arena_.make<UnaryExprAST>();
             node->loc = loc;
             node->op = UnaryOp::BitNot;
             node->operand = std::move(operand);
@@ -468,9 +471,9 @@ ExprPtr Parser::parsePrefixExpr(bool allowStructLiteral) {
             ExprPtr operand = parsePrefixExpr(allowStructLiteral);
             if (!operand) {
                 errorAt(DiagCode::E2008, "expected expression after '&'");
-                return std::make_unique<UnknownExprAST>();
+                return arena_.make<UnknownExprAST>();
             }
-            auto node = std::make_unique<UnaryExprAST>();
+            auto node = arena_.make<UnaryExprAST>();
             node->loc = loc;
             node->op = UnaryOp::Ref;
             node->operand = std::move(operand);
@@ -545,7 +548,7 @@ ExprPtr Parser::parsePrimaryExpr(bool allowStructLiteral) {
         }
         
         // Return nullptr - caller will handle the error
-        return std::make_unique<UnknownExprAST>();
+        return arena_.make<UnknownExprAST>();
     }
 
     // ── anonymous function (non-async) ────────────────────────────────────────
@@ -675,11 +678,11 @@ ExprPtr Parser::parsePrimaryExpr(bool allowStructLiteral) {
         TypePtr targetType = parseBaseType();
         if (!targetType) {
             errorAt(DiagCode::E2005, "expected type after '*' in unsafe cast");
-            return std::make_unique<UnknownExprAST>();
+            return arena_.make<UnknownExprAST>();
         }
         if (!check(TokenType::LPAREN)) {
             errorAt(DiagCode::E2001, "expected '(' after type in unsafe cast '*T(expr)'");
-            return std::make_unique<UnknownExprAST>();
+            return arena_.make<UnknownExprAST>();
         }
         return parseTypeConvExpr(/*isUnsafe=*/true, std::move(targetType));
     }
@@ -719,17 +722,17 @@ ExprPtr Parser::parsePrimaryExpr(bool allowStructLiteral) {
             advance();                            // consume ':'
             std::string method = advance().value; // consume method name
 
-            auto node = std::make_unique<BehaviorAccessExprAST>();
+            auto node = arena_.make<BehaviorAccessExprAST>();
             node->loc = loc;
-            node->typeName = std::move(name);
-            node->method = std::move(method);
+            node->typeName = std::move(pool_.intern(name));
+            node->method = std::move(pool_.intern(name));
             node->isBehaviorMember = true;
             return node;
         }
 
         // Plain identifier
         advance();
-        auto node = std::make_unique<IdentifierExprAST>(std::move(name));
+        auto node = arena_.make<IdentifierExprAST>(std::move(pool_.intern(name)));
         node->loc = loc;
 
         LUC_LOG_EXPR_VERBOSE("parsePrimaryExpr: returning identifier/struct literal");
@@ -767,7 +770,7 @@ ExprPtr Parser::parsePrimaryExpr(bool allowStructLiteral) {
 
     // ── Nothing matched ───────────────────────────────────────────────────────
     errorAt(DiagCode::E2002, "expected expression, got '" + peek().value + "'");
-    return std::make_unique<UnknownExprAST>();
+    return arena_.make<UnknownExprAST>();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -861,10 +864,10 @@ ExprPtr Parser::parsePostfixExpr(ExprPtr lhs) {
                 break;
             }
             std::string field = advance().value;
-            auto node = std::make_unique<FieldAccessExprAST>();
+            auto node = arena_.make<FieldAccessExprAST>();
             node->loc = lhs->loc;
             node->object = std::move(lhs);
-            node->field = std::move(field);
+            node->field = std::move(pool_.intern(field));
             lhs = std::move(node);
             continue;
         }
@@ -878,7 +881,7 @@ ExprPtr Parser::parsePostfixExpr(ExprPtr lhs) {
 
             if (!existing) {
                 // Start a new chain.
-                auto chain = std::make_unique<NullableChainExprAST>();
+                auto chain = arena_.make<NullableChainExprAST>();
                 chain->loc = lhs->loc;
                 chain->object = std::move(lhs);
                 lhs = std::move(chain);
@@ -891,7 +894,7 @@ ExprPtr Parser::parsePostfixExpr(ExprPtr lhs) {
                 errorAt(DiagCode::E2003, "expected field name after '?.'");
                 break;
             }
-            existing->steps.push_back(advance().value);
+            existing->steps.push_back(pool_.intern(advance().value));
             continue;
         }
 
@@ -946,10 +949,10 @@ ExprPtr Parser::parseLiteralExpr() {
             break;
         default:
             errorAt(DiagCode::E2002, "internal error: parseLiteralExpr on non-literal token");
-            return std::make_unique<UnknownExprAST>();
+            return arena_.make<UnknownExprAST>();
     }
 
-    auto node = std::make_unique<LiteralExprAST>(kind, tok.value);
+    auto node = arena_.make<LiteralExprAST>(kind, pool_.intern(tok.value));
     node->loc = loc;
     LUC_LOG_EXPR_VERBOSE("parseLiteralExpr: created " << LucDebug::kindToString(static_cast<ASTKind>(node->kind)));
     return node;
@@ -965,7 +968,7 @@ ExprPtr Parser::parseArrayLiteralExpr() {
     SourceLocation loc = currentLoc();
     consume(TokenType::LBRACKET, "expected '['");
 
-    auto node = std::make_unique<ArrayLiteralExprAST>();
+    auto node = arena_.make<ArrayLiteralExprAST>();
     node->loc = loc;
 
     while (!check(TokenType::RBRACKET) && !isAtEnd()) {
@@ -998,9 +1001,9 @@ ExprPtr Parser::parseStructLiteralExpr(std::string typeName, std::vector<TypePtr
     SourceLocation loc = currentLoc();
     consume(TokenType::LBRACE, "expected '{' to open struct literal");
 
-    auto node = std::make_unique<StructLiteralExprAST>();
+    auto node = arena_.make<StructLiteralExprAST>();
     node->loc = loc;
-    node->typeName = std::move(typeName);
+    node->typeName = std::move(pool_.intern(typeName));
     node->genericArgs = std::move(genericArgs);
 
     while (!check(TokenType::RBRACE) && !isAtEnd()) {
@@ -1026,7 +1029,9 @@ ExprPtr Parser::parseStructLiteralExpr(std::string typeName, std::vector<TypePtr
             continue;
         }
 
-        node->inits.push_back({std::move(fieldName), std::move(val), fieldLoc});
+        auto init = arena_.make<FieldInitAST>(pool_.intern(fieldName), std::move(val));
+        init->loc = fieldLoc;
+        node->inits.push_back(std::move(init));
     }
 
     consume(TokenType::RBRACE, "expected '}' to close struct literal");
@@ -1047,7 +1052,7 @@ ExprPtr Parser::parseStructLiteralExpr(std::string typeName, std::vector<TypePtr
 ExprPtr Parser::parseAnonFuncExpr() {
     SourceLocation loc = currentLoc();
     
-    auto node = std::make_unique<AnonFuncExprAST>();
+    auto node = arena_.make<AnonFuncExprAST>();
     node->loc = loc;
     
     // ── Parse type qualifiers into FuncSignature (~async, ~noinline, etc.) ──────
@@ -1059,8 +1064,8 @@ ExprPtr Parser::parseAnonFuncExpr() {
             break;
         }
         
-        node->sig.rawQualifiers.push_back(advance().value);
-        LUC_LOG_EXPR_VERBOSE("\tqualifier: '~" << node->sig.rawQualifiers.back() << "'");
+        node->sig.rawQualifiers.push_back(pool_.intern(advance().value));
+        LUC_LOG_EXPR_VERBOSE("\tqualifier: '~" << pool_.lookup(node->sig.rawQualifiers.back()) << "'");
     }
     
     // Parse parameter groups into FuncSignature
@@ -1117,19 +1122,19 @@ ExprPtr Parser::parseIntrinsicCallExpr() {
 
     if (!check(TokenType::IDENTIFIER)) {
         errorAt(DiagCode::E2003, "expected intrinsic name after '@'");
-        return std::make_unique<UnknownExprAST>();
+        return arena_.make<UnknownExprAST>();
     }
 
-    auto node = std::make_unique<IntrinsicCallExprAST>();
+    auto node = arena_.make<IntrinsicCallExprAST>();
     node->loc           = loc;
-    node->intrinsicName = advance().value; // e.g. "sizeof", "sqrt"
+    node->intrinsicName = pool_.intern(advance().value); // e.g. "sizeof", "sqrt"
 
     if (!check(TokenType::LPAREN)) {
         errorAt(DiagCode::E2001,
-                "expected '(' after intrinsic '@" + node->intrinsicName + "'");
-        return std::make_unique<UnknownExprAST>();
+                "expected '(' after intrinsic '@" + std::string(pool_.lookup(node->intrinsicName)) + "'");
+        return arena_.make<UnknownExprAST>();
     }
-    LUC_LOG_EXPR("parseIntrinsicCallExpr: name='" << node->intrinsicName << "'");
+    LUC_LOG_EXPR("parseIntrinsicCallExpr: name='" << pool_.lookup(node->intrinsicName) << "'");
     consume(TokenType::LPAREN, "expected '('");
 
     // ── Decide if the first argument is a type ────────────────────────────────
@@ -1139,7 +1144,7 @@ ExprPtr Parser::parseIntrinsicCallExpr() {
     };
     bool isTypeParam = false;
     for (const auto& n : typeParamIntrinsics)
-        if (n == node->intrinsicName) { isTypeParam = true; break; }
+        if (n == pool_.lookup(node->intrinsicName)) { isTypeParam = true; break; }
 
     if (isTypeParam) {
         // Parse a type argument.
@@ -1147,7 +1152,7 @@ ExprPtr Parser::parseIntrinsicCallExpr() {
             TypePtr typeArg = parseType();
             if (!typeArg) {
                 errorAt(DiagCode::E2005,
-                        "expected type argument for '@" + node->intrinsicName + "'");
+                        "expected type argument for '@" + std::string(pool_.lookup(node->intrinsicName)) + "'");
             } else {
                 node->typeArg = std::move(typeArg);
             }
@@ -1158,7 +1163,7 @@ ExprPtr Parser::parseIntrinsicCallExpr() {
             ExprPtr arg = parseExpr();
             if (!arg) {
                 errorAt(DiagCode::E2008,
-                        "expected argument expression in '@" + node->intrinsicName + "'");
+                        "expected argument expression in '@" + std::string(pool_.lookup(node->intrinsicName)) + "'");
                 break;
             }
             node->args.push_back(std::move(arg));
@@ -1197,10 +1202,10 @@ ExprPtr Parser::parseAwaitExpr() {
     ExprPtr inner = parsePrattExpr(PREC_NONE);
     if (!inner) {
         errorAt(DiagCode::E2008, "expected expression after 'await'");
-        return std::make_unique<UnknownExprAST>();
+        return arena_.make<UnknownExprAST>();
     }
 
-    auto node = std::make_unique<AwaitExprAST>(std::move(inner));
+    auto node = arena_.make<AwaitExprAST>(std::move(inner));
     node->loc = loc;
     LUC_LOG_EXPR_VERBOSE("parseAwaitExpr: returning await expression");
     return node;
@@ -1220,13 +1225,13 @@ ExprPtr Parser::parseMatchExpr() {
     ExprPtr subject = parseExpr();
     if (!subject) {
         errorAt(DiagCode::E2008, "expected expression after 'match'");
-        return std::make_unique<UnknownExprAST>();
+        return arena_.make<UnknownExprAST>();
     }
     LUC_LOG_EXPR_VERBOSE("parseMatchExpr: subject parsed");
 
     consume(TokenType::LBRACE, "expected '{' after match subject");
 
-    auto node = std::make_unique<MatchExprAST>();
+    auto node = arena_.make<MatchExprAST>();
     node->loc = loc;
     node->subject = std::move(subject);
 
@@ -1285,14 +1290,14 @@ ExprPtr Parser::parseIfExpr() {
     ExprPtr condition = parsePrattExpr(PREC_NULLCOAL); 
     if (!condition) {
         errorAt(DiagCode::E2008, "expected condition after 'if'");
-        return std::make_unique<UnknownExprAST>();
+        return arena_.make<UnknownExprAST>();
     }
     LUC_LOG_EXPR_VERBOSE("parseIfExpr: condition parsed");
 
     // Inline if expression: if cond ?? thenExpr else elseExpr
     if (!match(TokenType::QUESTION_QUESTION)) {
         errorAt(DiagCode::E2001, "expected '\?\?' after if condition in expression form");
-        return std::make_unique<UnknownExprAST>();
+        return arena_.make<UnknownExprAST>();
     }
 
     ExprPtr thenBranch = parseExpr();
@@ -1303,7 +1308,7 @@ ExprPtr Parser::parseIfExpr() {
 
     if (!match(TokenType::ELSE)) {
         errorAt(DiagCode::E2006, "expression-form 'if' requires an 'else' branch");
-        return std::make_unique<UnknownExprAST>();
+        return arena_.make<UnknownExprAST>();
     }
 
     ExprPtr elseBranch = parseExpr();
@@ -1312,7 +1317,7 @@ ExprPtr Parser::parseIfExpr() {
     }
     LUC_LOG_EXPR_VERBOSE("parseIfExpr: else branch parsed");
 
-    auto node = std::make_unique<IfExprAST>();
+    auto node = arena_.make<IfExprAST>();
     node->loc = loc;
     node->condition = std::move(condition);
     node->thenBranch = std::move(thenBranch);
@@ -1339,13 +1344,13 @@ ExprPtr Parser::parseTypeConvExpr(bool isUnsafe, TypePtr targetType) {
     ExprPtr expr = parseExpr();
     if (!expr) {
         errorAt(DiagCode::E2008, "expected expression inside explicit type cast");
-        return std::make_unique<UnknownExprAST>();
+        return arena_.make<UnknownExprAST>();
     }
 
     consume(TokenType::RPAREN, "expected ')' to close explicit type cast");
     LUC_LOG_EXPR_VERBOSE("parseTypeConvExpr: expression parsed");
 
-    auto node = std::make_unique<TypeConvExprAST>(
+    auto node = arena_.make<TypeConvExprAST>(
         std::move(targetType), std::move(expr), isUnsafe);
     node->loc = loc;
     LUC_LOG_EXPR_VERBOSE("parseTypeConvExpr: returning TypeConvExprAST");
@@ -1370,11 +1375,11 @@ ExprPtr Parser::parseRangeExpr(ExprPtr lo) {
     ExprPtr hi = parsePrattExpr(PREC_ADD); // stop before low-prec operators
     if (!hi) {
         errorAt(DiagCode::E2008, "expected upper bound after '..'");
-        return std::make_unique<UnknownExprAST>();
+        return arena_.make<UnknownExprAST>();
     }
     LUC_LOG_EXPR_VERBOSE("parseRangeExpr: hi parsed");
 
-    auto node = std::make_unique<RangeExprAST>();
+    auto node = arena_.make<RangeExprAST>();
     node->loc = loc;
     node->lo = std::move(lo);
     node->hi = std::move(hi);
@@ -1398,7 +1403,7 @@ ExprPtr Parser::parseCallExpr(ExprPtr callee, std::vector<TypePtr> genericArgs) 
     SourceLocation loc = callee->loc;
     consume(TokenType::LPAREN, "expected '('");
 
-    auto node = std::make_unique<CallExprAST>();
+    auto node = arena_.make<CallExprAST>();
     node->loc = loc;
     node->callee = std::move(callee);
     node->genericArgs = std::move(genericArgs);
@@ -1438,10 +1443,10 @@ ExprPtr Parser::parseIndexExpr(ExprPtr target) {
     ExprPtr startExpr = parseExpr();
     if (!startExpr) {
         errorAt(DiagCode::E2008, "expected index expression");
-        return std::make_unique<UnknownExprAST>();
+        return arena_.make<UnknownExprAST>();
     }
 
-    auto node = std::make_unique<IndexExprAST>();
+    auto node = arena_.make<IndexExprAST>();
     node->loc = loc;
     node->target = std::move(target);
 
@@ -1454,7 +1459,7 @@ ExprPtr Parser::parseIndexExpr(ExprPtr target) {
         ExprPtr endExpr = parseExpr();
         if (!endExpr) {
             errorAt(DiagCode::E2008, "expected end of slice range after '..'");
-            return std::make_unique<UnknownExprAST>();
+            return arena_.make<UnknownExprAST>();
         }
         node->index = std::move(startExpr);
         node->sliceEnd = std::move(endExpr);
@@ -1529,7 +1534,7 @@ ExprPtr Parser::parsePipelineExpr(ExprPtr seed) {
     LUC_LOG_EXPR_VERBOSE("parsePipelineExpr: seed kind=" << LucDebug::kindToString(seed->kind));
     SourceLocation loc = seed->loc;
 
-    auto node = std::make_unique<PipelineExprAST>();
+    auto node = arena_.make<PipelineExprAST>();
     node->loc = loc;
     node->seed = std::move(seed);
 
@@ -1570,7 +1575,7 @@ ExprPtr Parser::parsePipelineExpr(ExprPtr seed) {
 PipelineStepPtr Parser::parsePipelineStep() {
     LUC_LOG_EXPR_VERBOSE("parsePipelineStep: token='" << peek().value << "', type=" << static_cast<int>(peek().type));
     SourceLocation loc = currentLoc();
-    auto step = std::make_unique<PipelineStepAST>();
+    auto step = arena_.make<PipelineStepAST>();
     step->loc = loc;
 
     // ── Anonymous function detection ─────────────────────────────────────────
@@ -1597,7 +1602,7 @@ PipelineStepPtr Parser::parsePipelineStep() {
             errorAt(DiagCode::E2002, "expected anonymous function as pipeline step");
             // Return a step with error marker
             step->kind = PipelineStepKind::Ident;
-            step->ident = "<error>";
+            step->ident = pool_.intern("<error>");
             return step;
         }
         step->kind = PipelineStepKind::AnonFunc;
@@ -1647,7 +1652,7 @@ PipelineStepPtr Parser::parsePipelineStep() {
                 peek().value + "'");
         // Return an error marker step and advance to avoid infinite loop
         step->kind = PipelineStepKind::Ident;
-        step->ident = "<error>";
+        step->ident = pool_.intern("<error>");
         advance();
         return step;
     }
@@ -1670,9 +1675,9 @@ PipelineStepPtr Parser::parsePipelineStep() {
             advance(); // consume ':'
             std::string method = advance().value;
             step->kind = PipelineStepKind::BehaviorRef;
-            step->typeName = std::move(name);
-            step->method = std::move(method);
-            LUC_LOG_EXPR_VERBOSE("parsePipelineStep: BehaviorRef " << step->typeName << ":" << step->method);
+            step->typeName = std::move(pool_.intern(name));
+            step->method = std::move(pool_.intern(method));
+            LUC_LOG_EXPR_VERBOSE("parsePipelineStep: BehaviorRef " << pool_.lookup(step->typeName) << ":" << pool_.lookup(step->method));
             return step;
         }
         // ':' but not followed by IDENTIFIER - treat as regular identifier
@@ -1685,15 +1690,15 @@ PipelineStepPtr Parser::parsePipelineStep() {
             advance(); // consume '.'
             std::string field = advance().value;
             step->kind = PipelineStepKind::FieldRef;
-            step->ident = std::move(name);
-            step->field = std::move(field);
-            LUC_LOG_EXPR_VERBOSE("parsePipelineStep: FieldRef " << step->ident << "." << step->field);
+            step->ident = std::move(pool_.intern(name));
+            step->field = std::move(pool_.intern(field));
+            LUC_LOG_EXPR_VERBOSE("parsePipelineStep: FieldRef " << pool_.lookup(step->ident) << "." << pool_.lookup(step->field));
             return step;
         }
         // '.' but not followed by IDENTIFIER - error
         errorAt(DiagCode::E2003, "expected field name after '.'");
         step->kind = PipelineStepKind::Ident;
-        step->ident = "<error>";
+        step->ident = pool_.intern("<error>");
         return step;
     }
 
@@ -1709,22 +1714,22 @@ PipelineStepPtr Parser::parsePipelineStep() {
         if (!check(TokenType::BANG)) {
             errorAt(DiagCode::E2001, "expected '!' to mark argument pack in pipeline step");
             step->kind = PipelineStepKind::Ident;
-            step->ident = "<error>";
+            step->ident = pool_.intern("<error>");
             return step;
         }
         advance(); // consume '!'
         
         step->kind = PipelineStepKind::ArgPack;
-        step->ident = std::move(name);
+        step->ident = std::move(pool_.intern(name));
         step->packArgs = std::move(packArgs);
-        LUC_LOG_EXPR_VERBOSE("parsePipelineStep: ArgPack " << step->ident << " with " << step->packArgs.size() << " args");
+        LUC_LOG_EXPR_VERBOSE("parsePipelineStep: ArgPack " << pool_.lookup(step->ident) << " with " << step->packArgs.size() << " args");
         return step;
     }
 
     // ── Ident: bare function name (IDENTIFIER or primitive type) ──────────────
     step->kind = PipelineStepKind::Ident;
-    step->ident = std::move(name);
-    LUC_LOG_EXPR_VERBOSE("parsePipelineStep: Ident '" << step->ident << "'");
+    step->ident = std::move(pool_.intern(name));
+    LUC_LOG_EXPR_VERBOSE("parsePipelineStep: Ident '" << pool_.lookup(step->ident) << "'");
     return step;
 }
 
@@ -1741,7 +1746,7 @@ ExprPtr Parser::parseComposeExpr(ExprPtr lhs) {
     LUC_LOG_EXPR_VERBOSE("parseComposeExpr: lhs kind=" << LucDebug::kindToString(lhs->kind));
     SourceLocation loc = lhs->loc;
 
-    auto node = std::make_unique<ComposeExprAST>();
+    auto node = arena_.make<ComposeExprAST>();
     node->loc = loc;
     node->left = std::move(lhs);
     int operandCount = 0;
@@ -1779,7 +1784,7 @@ ExprPtr Parser::parseComposeExpr(ExprPtr lhs) {
 ComposeOperandPtr Parser::parseComposeOperand() {
     LUC_LOG_EXPR_VERBOSE("parseComposeOperand: token='" << peek().value << "'");
     SourceLocation loc = currentLoc();
-    auto op = std::make_unique<ComposeOperandAST>();
+    auto op = arena_.make<ComposeOperandAST>();
     op->loc = loc;
 
     // Check if current token is a primitive type keyword
@@ -1833,9 +1838,9 @@ ComposeOperandPtr Parser::parseComposeOperand() {
         advance();
         std::string method = advance().value;
         op->kind = ComposeOperandKind::BehaviorRef;
-        op->typeName = std::move(name);
-        op->method = std::move(method);
-        LUC_LOG_EXPR_VERBOSE("parseComposeOperand: BehaviorRef " << op->typeName << ":" << op->method);
+        op->typeName = std::move(pool_.intern(name));
+        op->method = std::move(pool_.intern(method));
+        LUC_LOG_EXPR_VERBOSE("parseComposeOperand: BehaviorRef " << pool_.lookup(op->typeName) << ":" << pool_.lookup(op->method));
         return op;
     }
 
@@ -1844,16 +1849,16 @@ ComposeOperandPtr Parser::parseComposeOperand() {
         advance();
         std::string field = advance().value;
         op->kind = ComposeOperandKind::FieldRef;
-        op->ident = std::move(name);
-        op->field = std::move(field);
-        LUC_LOG_EXPR_VERBOSE("parseComposeOperand: FieldRef " << op->ident << "." << op->field);
+        op->ident = std::move(pool_.intern(name));
+        op->field = std::move(pool_.intern(field));
+        LUC_LOG_EXPR_VERBOSE("parseComposeOperand: FieldRef " << pool_.lookup(op->ident) << "." << pool_.lookup(op->field));
         return op;
     }
 
     // Ident
     op->kind = ComposeOperandKind::Ident;
-    op->ident = std::move(name);
-    LUC_LOG_EXPR_VERBOSE("parseComposeOperand: Ident " << op->ident);
+    op->ident = std::move(pool_.intern(name));
+    LUC_LOG_EXPR_VERBOSE("parseComposeOperand: Ident " << pool_.lookup(op->ident));
     return op;
 }
 
@@ -1865,7 +1870,7 @@ ExprPtr Parser::parseNullCoalesceExpr(ExprPtr lhs) {
     // This path is taken by the parsePrattExpr infix loop directly.
     // Kept as a named function for future refactoring.
     (void)lhs;
-    return std::make_unique<UnknownExprAST>();
+    return arena_.make<UnknownExprAST>();
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -1881,7 +1886,7 @@ ExprPtr Parser::parseNullCoalesceExpr(ExprPtr lhs) {
 MatchArmPtr Parser::parseMatchArm() {
     SourceLocation loc = currentLoc();
 
-    auto arm = std::make_unique<MatchArmAST>();
+    auto arm = arena_.make<MatchArmAST>();
     arm->loc = loc;
 
     // Parse comma-separated pattern list
@@ -1926,7 +1931,7 @@ DefaultArmPtr Parser::parseDefaultArm() {
     consume(TokenType::DEFAULT, "expected 'default'");
     consume(TokenType::FAT_ARROW, "expected '=>' after 'default'");
 
-    auto arm = std::make_unique<DefaultArmAST>();
+    auto arm = arena_.make<DefaultArmAST>();
     arm->loc = loc;
 
     // Parse one or more result expressions
@@ -1949,7 +1954,7 @@ DefaultArmPtr Parser::parseDefaultArm() {
 //   IDENTIFIER '{'           → StructPatternAST
 //   IDENTIFIER               → BindPatternAST (or RangePatternAST if '..' follows)
 // ─────────────────────────────────────────────────────────────────────────────
-std::unique_ptr<PatternAST> Parser::parsePattern() {
+ASTPtr<PatternAST> Parser::parsePattern() {
     LUC_LOG_EXPR_VERBOSE("parsePattern: token='" << peek().value << "'");
     // Wildcard
     if (check(TokenType::WILDCARD)) {
@@ -1983,13 +1988,13 @@ std::unique_ptr<PatternAST> Parser::parsePattern() {
         if (peekNext().type == TokenType::IS) {
             LUC_LOG_EXPR_VERBOSE("parsePattern: type pattern (is)");
             advance(); // consume IDENTIFIER
-            return parseTypePattern(std::move(name));
+            return parseTypePattern(std::move(pool_.intern(name)));
         }
 
         // Struct pattern: IDENTIFIER '{'
         if (peekNext().type == TokenType::LBRACE) {
             advance(); // consume IDENTIFIER
-            return parseStructPattern(std::move(name));
+            return parseStructPattern(std::move(pool_.intern(name)));
         }
 
         // Bind pattern
@@ -2002,7 +2007,7 @@ std::unique_ptr<PatternAST> Parser::parsePattern() {
              parseLiteralOrRangePattern(); // consume hi to recover
         }
 
-        return parseBindPattern(std::move(name));
+        return parseBindPattern(std::move(pool_.intern(name)));
     }
 
     errorAt(DiagCode::E2007, "expected pattern");
@@ -2016,7 +2021,7 @@ std::unique_ptr<PatternAST> Parser::parsePattern() {
 // Parses a literal token (possibly prefixed with '-' for negatives) and
 // checks if '..' follows to build a RangePatternAST.
 // ─────────────────────────────────────────────────────────────────────────────
-std::unique_ptr<PatternAST> Parser::parseLiteralOrRangePattern() {
+ASTPtr<PatternAST> Parser::parseLiteralOrRangePattern() {
     SourceLocation loc = currentLoc();
  
     // Handle unary minus for negative literals
@@ -2065,6 +2070,7 @@ std::unique_ptr<PatternAST> Parser::parseLiteralOrRangePattern() {
     }
  
     std::string rawValue = negative ? ("-" + tok.value) : tok.value;
+    InternedString internedValue = pool_.intern(rawValue);
  
     // Check for range: lo '..' [ '<' ] hi
     if (check(TokenType::RANGE)) {
@@ -2084,6 +2090,7 @@ std::unique_ptr<PatternAST> Parser::parseLiteralOrRangePattern() {
         }
         Token hiTok = advance();
         std::string hiRaw = negHi ? ("-" + hiTok.value) : hiTok.value;
+        InternedString hiInterned = pool_.intern(hiRaw);
  
         LiteralKind hiKind;
         switch (hiTok.type) {
@@ -2098,31 +2105,33 @@ std::unique_ptr<PatternAST> Parser::parseLiteralOrRangePattern() {
                 break;
         }
  
-        auto loExpr = std::make_unique<LiteralExprAST>(kind, std::move(rawValue));
+        auto loExpr = arena_.make<LiteralExprAST>(kind, internedValue);
         loExpr->loc = loc;
-        auto hiExpr = std::make_unique<LiteralExprAST>(hiKind, std::move(hiRaw));
+        auto hiExpr = arena_.make<LiteralExprAST>(hiKind, hiInterned);
         hiExpr->loc = locOf(hiTok);
  
-        auto range = std::make_unique<RangeExprAST>();
+        auto range = arena_.make<RangeExprAST>();
         range->loc = loc;
         range->lo = std::move(loExpr);
         range->hi = std::move(hiExpr);
         range->isExclusive = isExclusive;
         
-        return std::make_unique<PatternExprAST>(std::move(range));
+        // Wrap RangeExprAST in PatternExprAST
+        return arena_.make<PatternExprAST>(std::move(range));
     }
  
-    auto lit = std::make_unique<LiteralExprAST>(kind, std::move(rawValue));
+    // Simple literal pattern
+    auto lit = arena_.make<LiteralExprAST>(kind, internedValue);
     lit->loc = loc;
-    return std::make_unique<PatternExprAST>(std::move(lit));
+    return arena_.make<PatternExprAST>(std::move(lit));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // parseBindPattern
 // ─────────────────────────────────────────────────────────────────────────────
-std::unique_ptr<BindPatternAST> Parser::parseBindPattern(std::string name) {
+ASTPtr<BindPatternAST> Parser::parseBindPattern(InternedString name) {
     SourceLocation loc = currentLoc();
-    auto pat = std::make_unique<BindPatternAST>(std::move(name));
+    auto pat = arena_.make<BindPatternAST>(std::move(name));
     pat->loc = loc;
     return pat;
 }
@@ -2133,7 +2142,7 @@ std::unique_ptr<BindPatternAST> Parser::parseBindPattern(std::string name) {
 // Grammar:  IDENTIFIER 'is' type
 // Called after the IDENTIFIER has been consumed.
 // ─────────────────────────────────────────────────────────────────────────────
-std::unique_ptr<TypePatternAST> Parser::parseTypePattern(std::string bindName) {
+ASTPtr<TypePatternAST> Parser::parseTypePattern(InternedString bindName) {
     SourceLocation loc = currentLoc();
     consume(TokenType::IS, "expected 'is' in type pattern");
 
@@ -2143,7 +2152,7 @@ std::unique_ptr<TypePatternAST> Parser::parseTypePattern(std::string bindName) {
         return nullptr;
     }
 
-    auto pat = std::make_unique<TypePatternAST>();
+    auto pat = arena_.make<TypePatternAST>();
     pat->loc = loc;
     pat->bindName = std::move(bindName);
     pat->checkType = std::move(checkType);
@@ -2153,10 +2162,10 @@ std::unique_ptr<TypePatternAST> Parser::parseTypePattern(std::string bindName) {
 // ─────────────────────────────────────────────────────────────────────────────
 // parseWildcardPattern
 // ─────────────────────────────────────────────────────────────────────────────
-std::unique_ptr<WildcardPatternAST> Parser::parseWildcardPattern() {
+ASTPtr<WildcardPatternAST> Parser::parseWildcardPattern() {
     SourceLocation loc = currentLoc();
     consume(TokenType::WILDCARD, "expected '_'");
-    auto pat = std::make_unique<WildcardPatternAST>();
+    auto pat = arena_.make<WildcardPatternAST>();
     pat->loc = loc;
     return pat;
 }
@@ -2167,12 +2176,12 @@ std::unique_ptr<WildcardPatternAST> Parser::parseWildcardPattern() {
 // Grammar:  IDENTIFIER '{' { field_pattern } '}'
 // Called after the type name has been consumed.
 // ─────────────────────────────────────────────────────────────────────────────
-std::unique_ptr<StructPatternAST> Parser::parseStructPattern(std::string typeName) {
-    LUC_LOG_EXPR("parseStructPattern: type='" << typeName << "'");
+ASTPtr<StructPatternAST> Parser::parseStructPattern(InternedString typeName) {
+    LUC_LOG_EXPR("parseStructPattern: type='" << pool_.lookup(typeName) << "'");
     SourceLocation loc = currentLoc();
     consume(TokenType::LBRACE, "expected '{' in struct pattern");
 
-    auto pat = std::make_unique<StructPatternAST>();
+    auto pat = arena_.make<StructPatternAST>();
     pat->loc = loc;
     pat->typeName = std::move(typeName);
 
@@ -2207,9 +2216,9 @@ FieldPatternPtr Parser::parseFieldPattern() {
     }
     std::string fieldName = advance().value;
 
-    auto fp = std::make_unique<FieldPatternAST>();
+    auto fp = arena_.make<FieldPatternAST>();
     fp->loc = loc;
-    fp->field = std::move(fieldName);
+    fp->field = std::move(pool_.intern(fieldName));
 
     // Full form: 'fieldName : sub_pattern'
     if (check(TokenType::COLON)) {

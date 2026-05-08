@@ -20,11 +20,13 @@
 // Construction
 // ─────────────────────────────────────────────────────────────────────────────
 
-Parser::Parser(std::vector<Token> tokens, DiagnosticEngine &dc, InternedString filePath)
-    : tokens_(std::move(tokens)), filePath_(std::move(filePath)), dc_(dc) {
+Parser::Parser(std::vector<Token> tokens, DiagnosticEngine &dc, 
+               InternedString filePath, StringPool& pool, ASTArena& arena)
+    : tokens_(std::move(tokens)), filePath_(std::move(filePath)), dc_(dc),
+      pool_(pool), arena_(arena) {
     LUC_LOG_PARSER("=== Parser constructed ===");
     LUC_LOG_PARSER("\tToken count: " << tokens_.size());
-    LUC_LOG_PARSER("\tFile path: " << filePath_);
+    LUC_LOG_PARSER("\tFile path: " << pool.lookup(filePath_));
     
     // The Lexer guarantees a trailing EOF_TOKEN. If for any reason the stream
     // is empty, push one now so all peek/advance logic remains branch-free.
@@ -306,8 +308,10 @@ std::optional<DocComment> Parser::harvestDocComment() {
     // ── Priority resolution ──────────────────────────────────────────────────
 
     // Block doc wins over everything.
-    if (blockText)
-        return DocComment{*blockText, DocCommentForm::Block};
+    if (blockText) {
+        // Intern the block comment text
+        return DocComment{pool_.intern(*blockText), DocCommentForm::Block};
+    }
 
     // Stacked run wins over trailing.
     if (!stackedLines.empty()) {
@@ -318,12 +322,15 @@ std::optional<DocComment> Parser::harvestDocComment() {
             if (!combined.empty()) combined += '\n';
             combined += stackedLines[i];
         }
-        return DocComment{combined, DocCommentForm::Stacked};
+        // Intern the combined stacked comment
+        return DocComment{pool_.intern(combined), DocCommentForm::Stacked};
     }
 
     // Trailing comment (same line as declaration).
-    if (trailingText)
-        return DocComment{*trailingText, DocCommentForm::Trailing};
+    if (trailingText) {
+        // Intern the trailing comment text
+        return DocComment{pool_.intern(*trailingText), DocCommentForm::Trailing};
+    }
 
     return std::nullopt;
 }
@@ -582,10 +589,10 @@ bool Parser::looksLikeDeclStart() const {
 // Grammar:
 //   program := package_decl { top_level_decl }
 // ─────────────────────────────────────────────────────────────────────────────
-std::unique_ptr<ProgramAST> Parser::parse() {
+ASTPtr<ProgramAST> Parser::parse() {
     LUC_LOG_PARSER("\n === PARSE START ===");
     
-    auto program = std::make_unique<ProgramAST>();
+    auto program = arena_.make<ProgramAST>();
     program->filePath = filePath_;
     program->loc = currentLoc();
 
@@ -601,13 +608,14 @@ std::unique_ptr<ProgramAST> Parser::parse() {
             synchronize();
             
             // Create a dummy package with unknown name
-            auto dummyPkg = std::make_unique<PackageDeclAST>("<unknown>");
+            // Fix: Pass InternedString to PackageDeclAST constructor
+            auto dummyPkg = arena_.make<PackageDeclAST>(pool_.intern("<unknown>"));
             dummyPkg->loc = currentLoc();
             attachDoc(*dummyPkg, std::move(pkgDoc));
-            program->packageName = "<unknown>";
+            program->packageName = pool_.intern("<unknown>");
             program->decls.push_back(std::move(dummyPkg));
         } else {
-            auto pkgDecl = parsePackageDecl();
+            auto pkgDecl = parsePackageDecl();  // returns ASTPtr<PackageDeclAST>
             attachDoc(*pkgDecl, std::move(pkgDoc));
             if (pkgDecl) {
                 program->packageName = pkgDecl->name;
@@ -615,13 +623,16 @@ std::unique_ptr<ProgramAST> Parser::parse() {
             } else {
                 // parsePackageDecl returned nullptr - insert UnknownDeclAST
                 LUC_LOG_PARSER("parsePackageDecl returned nullptr, inserting UnknownDeclAST");
-                auto unknown = std::make_unique<UnknownDeclAST>();
+                // Fix: use arena allocation instead of std::make_unique
+                auto unknown = arena_.make<UnknownDeclAST>();
                 unknown->loc = currentLoc();
-                program->packageName = "<error>";
+                // Fix: intern the error string
+                program->packageName = pool_.intern("<error>");
                 program->decls.push_back(std::move(unknown));
             }
         }
-        LUC_LOG_PARSER("\tPackage name: '" << program->packageName << "'");
+        // Fix: use pool_.lookup() to display the package name (optional, but avoids streaming InternedString)
+        LUC_LOG_PARSER("\tPackage name: '" << pool_.lookup(program->packageName) << "'");
     }
 
     // ── 2. top-level declarations ─────────────────────────────────────────────
@@ -648,7 +659,7 @@ std::unique_ptr<ProgramAST> Parser::parse() {
             errorCount++;
             LUC_LOG_PARSER("\tFailed to parse declaration #" << (declCount + errorCount) 
                            << ", inserting UnknownDeclAST");
-            auto unknown = std::make_unique<UnknownDeclAST>();
+            auto unknown = arena_.make<UnknownDeclAST>();
             unknown->loc = currentLoc();
             attachDoc(*unknown, std::move(doc));
             program->decls.push_back(std::move(unknown));
@@ -770,7 +781,7 @@ DeclPtr Parser::parseTopLevelDecl() {
         // Check if this is @extern
         bool hasExternAttr = false;
         for (const auto& attr : attrs) {
-            if (attr->name == "extern") {
+            if (attr->name == pool_.intern("extern")) {
                 hasExternAttr = true;
                 LUC_LOG_PARSER("\tFound @extern attribute");
                 break;
