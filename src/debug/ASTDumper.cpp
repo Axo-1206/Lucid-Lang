@@ -8,7 +8,8 @@
 
 namespace LucDebug {
 
-ASTDumper::ASTDumper(int verb) : verbosity(verb), indentLevel(0) {
+ASTDumper::ASTDumper(int verb, const StringPool& p) 
+    : verbosity(verb), indentLevel(0), pool(&p) {
     rebuildIndentCache();
 }
 
@@ -29,19 +30,16 @@ void ASTDumper::indent() {
     }
 }
 
-// Helper to print a single line with proper indentation
 void ASTDumper::printLine(const std::string& text) {
     indent();
     out += text + "\n";
 }
 
-// Helper to print key-value pair
 void ASTDumper::printKV(const std::string& key, const std::string& value) {
     indent();
     out += "\t" + key + ": '" + value + "'\n";
 }
 
-// Helper for node header (indentation + node info)
 void ASTDumper::printNodeHeader(const BaseAST& node, const std::string& nodeName) {
     indent();
     out += "[" + std::to_string(indentLevel) + "] " + nodeName;
@@ -50,13 +48,18 @@ void ASTDumper::printNodeHeader(const BaseAST& node, const std::string& nodeName
 }
 
 void ASTDumper::visitChild(BaseAST* child, const std::string& label) {
-    // if (!child || verbosity < 2) return;
+    if (!child) return;
     indentLevel++;
     child->accept(*this);
     indentLevel--;
 }
 
-// Cache for primitive type strings (avoid repeated lookups)
+// Helper: convert InternedString to display string
+static std::string toStr(const StringPool* pool, const InternedString& s) {
+    if (!s.isValid()) return "";
+    return std::string(pool->lookup(s));
+}
+
 static const std::string primitiveKindStrings[] = {
     "bool", "byte", "short", "int", "long", "ubyte", "ushort", "uint", "ulong",
     "float", "double", "string", "char", "any", "primitive"
@@ -72,13 +75,13 @@ static std::string primitiveKindToString(PrimitiveKind k) {
 
 std::string ASTDumper::formatType(TypeAST* type) {
     if (!type) return "<unresolved>";
-    
+
     switch (type->kind) {
         case ASTKind::PrimitiveType:
             return primitiveKindToString(static_cast<PrimitiveTypeAST*>(type)->primitiveKind);
         case ASTKind::NamedType: {
             auto* n = static_cast<NamedTypeAST*>(type);
-            std::string res = n->name;
+            std::string res = toStr(pool, n->name);
             if (!n->genericArgs.empty()) {
                 res += "<";
                 for (size_t i = 0; i < n->genericArgs.size(); ++i) {
@@ -130,15 +133,13 @@ std::string ASTDumper::formatType(TypeAST* type) {
 void ASTDumper::visit(ProgramAST& node) {
     printNodeHeader(node, "ProgramAST");
     if (verbosity >= 3) {
-        indent(); out += "\tpackageName: '" + node.packageName + "'\n";
+        indent(); out += "\tpackageName: '" + toStr(pool, node.packageName) + "'\n";
         indent(); out += "\tfilePath: '" + node.filePath + "'\n";
         indent(); out += "\tdecls (count): " + std::to_string(node.decls.size()) + "\n";
-        
-        // Recurse into children
+
         indentLevel++;
         for (const auto& decl : node.decls) {
             if (decl) {
-                indent();
                 decl->accept(*this);
             }
         }
@@ -152,7 +153,7 @@ void ASTDumper::visit(PrimitiveTypeAST& node) {
 }
 
 void ASTDumper::visit(NamedTypeAST& node) {
-    printNodeHeader(node, "NamedTypeAST '" + node.name + "'");
+    printNodeHeader(node, "NamedTypeAST '" + toStr(pool, node.name) + "'");
     indentLevel++;
     for (const auto& arg : node.genericArgs) visitChild(arg.get());
     indentLevel--;
@@ -204,22 +205,22 @@ void ASTDumper::visit(FuncTypeAST& node) {
 
 // ── Declaration nodes ─────────────────────────────────────────────────────
 void ASTDumper::visit(PackageDeclAST& node) {
-    printNodeHeader(node, "PackageDeclAST '" + node.name + "'");
+    printNodeHeader(node, "PackageDeclAST '" + toStr(pool, node.name) + "'");
 }
 
 void ASTDumper::visit(UseDeclAST& node) {
     std::string pathStr;
     for (size_t i = 0; i < node.path.size(); ++i) {
         if (i > 0) pathStr += ".";
-        pathStr += node.path[i];
+        pathStr += toStr(pool, node.path[i]);
     }
     std::string header = "UseDeclAST '" + pathStr + "'";
-    if (node.alias) header += " as " + *node.alias;
+    if (node.alias) header += " as " + toStr(pool, *node.alias);
     printNodeHeader(node, header);
 }
 
 void ASTDumper::visit(VarDeclAST& node) {
-    std::string header = "VarDeclAST '" + node.name + "'";
+    std::string header = "VarDeclAST '" + toStr(pool, node.name) + "'";
     if (node.type) header += " : " + formatType(node.type.get());
     printNodeHeader(node, header);
     indentLevel++;
@@ -229,7 +230,7 @@ void ASTDumper::visit(VarDeclAST& node) {
 }
 
 void ASTDumper::visit(FuncDeclAST& node) {
-    std::string header = "FuncDeclAST '" + node.name + "'";
+    std::string header = "FuncDeclAST '" + toStr(pool, node.name) + "'";
     for (const auto& group : node.sig.paramGroups) {
         header += " (";
         for (size_t i = 0; i < group.size(); ++i) {
@@ -249,7 +250,7 @@ void ASTDumper::visit(FuncDeclAST& node) {
 }
 
 void ASTDumper::visit(StructDeclAST& node) {
-    printNodeHeader(node, "StructDeclAST '" + node.name + "'");
+    printNodeHeader(node, "StructDeclAST '" + toStr(pool, node.name) + "'");
     indentLevel++;
     for (const auto& field : node.fields) visitChild(field.get());
     for (const auto& attr : node.attributes) visitChild(attr.get());
@@ -257,14 +258,13 @@ void ASTDumper::visit(StructDeclAST& node) {
 }
 
 void ASTDumper::visit(FieldDeclAST& node) {
-    std::string header = "FieldDeclAST '" + node.name + "'";
+    std::string header = "FieldDeclAST '" + toStr(pool, node.name) + "'";
     if (node.type) header += " : " + formatType(node.type.get());
     printNodeHeader(node, header);
     indentLevel++;
     if (node.defaultVal) {
-        indent();
-        out += "\tdefault: ";
-        indentLevel++; // Increase for the value's own indentation
+        indent(); out += "\tdefault: ";
+        indentLevel++;
         node.defaultVal->accept(*this);
         indentLevel--;
     }
@@ -272,18 +272,18 @@ void ASTDumper::visit(FieldDeclAST& node) {
 }
 
 void ASTDumper::visit(EnumDeclAST& node) {
-    printNodeHeader(node, "EnumDeclAST '" + node.name + "'");
+    printNodeHeader(node, "EnumDeclAST '" + toStr(pool, node.name) + "'");
     for (const auto& variant : node.variants) visitChild(variant.get());
 }
 
 void ASTDumper::visit(EnumVariantAST& node) {
-    std::string header = "EnumVariantAST '" + node.name + "'";
+    std::string header = "EnumVariantAST '" + toStr(pool, node.name) + "'";
     if (node.explicitValue) header += " = " + std::to_string(*node.explicitValue);
     printNodeHeader(node, header);
 }
 
 void ASTDumper::visit(TraitMethodAST& node) {
-    std::string header = "TraitMethodAST '" + node.name + "'";
+    std::string header = "TraitMethodAST '" + toStr(pool, node.name) + "'";
     for (const auto& group : node.sig.paramGroups) {
         header += " (";
         for (size_t i = 0; i < group.size(); ++i) {
@@ -299,13 +299,14 @@ void ASTDumper::visit(TraitMethodAST& node) {
 }
 
 void ASTDumper::visit(TraitDeclAST& node) {
-    printNodeHeader(node, "TraitDeclAST '" + node.name + "'");
+    printNodeHeader(node, "TraitDeclAST '" + toStr(pool, node.name) + "'");
     for (const auto& method : node.methods) visitChild(method.get());
 }
+
 void ASTDumper::visit(ImplDeclAST& node) {
-    std::string header = "ImplDeclAST '" + node.structName + "'";
+    std::string header = "ImplDeclAST '" + toStr(pool, node.structName) + "'";
     if (node.traitRef) {
-        header += " : " + node.traitRef->name;
+        header += " : " + toStr(pool, node.traitRef->name);
         if (!node.traitRef->genericArgs.empty()) {
             header += "<";
             for (size_t i = 0; i < node.traitRef->genericArgs.size(); ++i) {
@@ -321,7 +322,7 @@ void ASTDumper::visit(ImplDeclAST& node) {
 }
 
 void ASTDumper::visit(MethodDeclAST& node) {
-    std::string header = "MethodDeclAST '" + node.name + "'";
+    std::string header = "MethodDeclAST '" + toStr(pool, node.name) + "'";
     for (const auto& group : node.sig.paramGroups) {
         header += " (";
         for (size_t i = 0; i < group.size(); ++i) {
@@ -345,7 +346,7 @@ void ASTDumper::visit(FromDeclAST& node) {
 }
 
 void ASTDumper::visit(FromEntryAST& node) {
-    std::string header = "FromEntryAST '" + node.returnTypeName + "'";
+    std::string header = "FromEntryAST '" + toStr(pool, node.returnTypeName) + "'";
     for (const auto& group : node.sig.paramGroups) {
         header += " (";
         for (size_t i = 0; i < group.size(); ++i) {
@@ -361,18 +362,17 @@ void ASTDumper::visit(FromEntryAST& node) {
 }
 
 void ASTDumper::visit(TypeAliasDeclAST& node) {
-    std::string header = "TypeAliasDeclAST '" + node.name + "'";
+    std::string header = "TypeAliasDeclAST '" + toStr(pool, node.name) + "'";
     if (node.aliasedType) header += " = " + formatType(node.aliasedType.get());
     printNodeHeader(node, header);
 }
 
-
 void ASTDumper::visit(GenericParamAST& node) {
-    std::string header = "GenericParamAST '" + node.name + "'";
+    std::string header = "GenericParamAST '" + toStr(pool, node.name) + "'";
     if (!node.constraints.empty()) {
         header += " : ";
         for (size_t i = 0; i < node.constraints.size(); ++i) {
-            header += node.constraints[i];
+            header += toStr(pool, node.constraints[i]);
             if (i + 1 < node.constraints.size()) header += " + ";
         }
     }
@@ -380,7 +380,7 @@ void ASTDumper::visit(GenericParamAST& node) {
 }
 
 void ASTDumper::visit(ParamAST& node) {
-    std::string header = "ParamAST '" + node.name + "'";
+    std::string header = "ParamAST '" + toStr(pool, node.name) + "'";
     if (node.type) header += " : " + formatType(node.type.get());
     if (node.isVariadic) header += "...";
     printNodeHeader(node, header);
@@ -388,10 +388,11 @@ void ASTDumper::visit(ParamAST& node) {
 
 // ── Expression nodes ──────────────────────────────────────────────────────
 void ASTDumper::visit(LiteralExprAST& node) {
-    printNodeHeader(node, "LiteralExprAST '" + node.value + "'");
+    printNodeHeader(node, "LiteralExprAST '" + toStr(pool, node.value) + "'");
 }
+
 void ASTDumper::visit(IdentifierExprAST& node) {
-    printNodeHeader(node, "IdentifierExprAST '" + node.name + "'");
+    printNodeHeader(node, "IdentifierExprAST '" + toStr(pool, node.name) + "'");
 }
 
 void ASTDumper::visit(ArrayLiteralExprAST& node) {
@@ -400,9 +401,9 @@ void ASTDumper::visit(ArrayLiteralExprAST& node) {
 }
 
 void ASTDumper::visit(StructLiteralExprAST& node) {
-    printNodeHeader(node, "StructLiteralExprAST '" + node.typeName + "'");
+    printNodeHeader(node, "StructLiteralExprAST '" + toStr(pool, node.typeName) + "'");
     for (const auto& init : node.inits) {
-        if (init.value) visitChild(init.value.get());
+        if (init->value) visitChild(init->value.get());
     }
 }
 
@@ -431,12 +432,12 @@ void ASTDumper::visit(IndexExprAST& node) {
 }
 
 void ASTDumper::visit(FieldAccessExprAST& node) {
-    printNodeHeader(node, "FieldAccessExprAST ." + node.field);
+    printNodeHeader(node, "FieldAccessExprAST ." + toStr(pool, node.field));
     if (node.object) visitChild(node.object.get(), "object");
 }
 
 void ASTDumper::visit(BehaviorAccessExprAST& node) {
-    printNodeHeader(node, "BehaviorAccessExprAST " + node.typeName + ":" + node.method);
+    printNodeHeader(node, "BehaviorAccessExprAST " + toStr(pool, node.typeName) + ":" + toStr(pool, node.method));
 }
 
 void ASTDumper::visit(NullableChainExprAST& node) {
@@ -445,7 +446,7 @@ void ASTDumper::visit(NullableChainExprAST& node) {
     if (!node.steps.empty()) {
         indent(); out += "\tsteps: ";
         for (size_t i = 0; i < node.steps.size(); ++i) {
-            out += node.steps[i];
+            out += toStr(pool, node.steps[i]);
             if (i + 1 < node.steps.size()) out += ", ";
         }
         out += "\n";
@@ -480,10 +481,10 @@ void ASTDumper::visit(PipelineExprAST& node) {
 void ASTDumper::visit(PipelineStepAST& node) {
     printNodeHeader(node, "PipelineStepAST (kind=" + std::to_string((int)node.kind) + ")");
     indentLevel++;
-    if (!node.ident.empty()) { indent(); out += "ident: " + node.ident + "\n"; }
-    if (!node.typeName.empty()) { indent(); out += "typeName: " + node.typeName + "\n"; }
-    if (!node.method.empty()) { indent(); out += "method: " + node.method + "\n"; }
-    if (!node.field.empty()) { indent(); out += "field: " + node.field + "\n"; }
+    if (node.ident.isValid()) { indent(); out += "ident: " + toStr(pool, node.ident) + "\n"; }
+    if (node.typeName.isValid()) { indent(); out += "typeName: " + toStr(pool, node.typeName) + "\n"; }
+    if (node.method.isValid()) { indent(); out += "method: " + toStr(pool, node.method) + "\n"; }
+    if (node.field.isValid()) { indent(); out += "field: " + toStr(pool, node.field) + "\n"; }
     for (const auto& arg : node.packArgs) visitChild(arg.get(), "packArg");
     if (node.anonFunc) visitChild(node.anonFunc.get(), "anonFunc");
     indentLevel--;
@@ -499,10 +500,10 @@ void ASTDumper::visit(ComposeExprAST& node) {
 void ASTDumper::visit(ComposeOperandAST& node) {
     printNodeHeader(node, "ComposeOperandAST (kind=" + std::to_string((int)node.kind) + ")");
     indentLevel++;
-    if (!node.ident.empty()) { indent(); out += "ident: " + node.ident + "\n"; }
-    if (!node.typeName.empty()) { indent(); out += "typeName: " + node.typeName + "\n"; }
-    if (!node.method.empty()) { indent(); out += "method: " + node.method + "\n"; }
-    if (!node.field.empty()) { indent(); out += "field: " + node.field + "\n"; }
+    if (node.ident.isValid()) { indent(); out += "ident: " + toStr(pool, node.ident) + "\n"; }
+    if (node.typeName.isValid()) { indent(); out += "typeName: " + toStr(pool, node.typeName) + "\n"; }
+    if (node.method.isValid()) { indent(); out += "method: " + toStr(pool, node.method) + "\n"; }
+    if (node.field.isValid()) { indent(); out += "field: " + toStr(pool, node.field) + "\n"; }
     indentLevel--;
 }
 
@@ -559,7 +560,7 @@ void ASTDumper::visit(TypeConvExprAST& node) {
 
 // ── Pattern nodes ─────────────────────────────────────────────────────────
 void ASTDumper::visit(BindPatternAST& node) {
-    printNodeHeader(node, "BindPatternAST '" + node.name + "'");
+    printNodeHeader(node, "BindPatternAST '" + toStr(pool, node.name) + "'");
 }
 
 void ASTDumper::visit(WildcardPatternAST& node) {
@@ -571,11 +572,11 @@ void ASTDumper::visit(TypePatternAST& node) {
 }
 
 void ASTDumper::visit(StructPatternAST& node) {
-    printNodeHeader(node, "StructPatternAST '" + node.typeName + "'");
+    printNodeHeader(node, "StructPatternAST '" + toStr(pool, node.typeName) + "'");
     for (const auto& field : node.fields) {
-        if (field && field->subPattern) visitChild(field->subPattern.get(), field->field);
+        if (field && field->subPattern) visitChild(field->subPattern.get(), toStr(pool, field->field));
         else if (field) {
-            indent(); out += "\t\tField: " + field->field + " (shorthand)\n";
+            indent(); out += "\t\tField: " + toStr(pool, field->field) + " (shorthand)\n";
         }
     }
 }
@@ -636,7 +637,7 @@ void ASTDumper::visit(SwitchStmtAST& node) {
 }
 
 void ASTDumper::visit(ForStmtAST& node) {
-    printNodeHeader(node, "ForStmtAST '" + node.iterVar->name + "'");
+    printNodeHeader(node, "ForStmtAST '" + toStr(pool, node.iterVar->name) + "'");
     if (node.iterVar->type) {
         indent(); out += "\tvarType: " + formatType(node.iterVar->type.get()) + "\n";
     }
@@ -671,7 +672,7 @@ void ASTDumper::visit(ContinueStmtAST& node) {
 }
 
 void ASTDumper::visit(ParallelForStmtAST& node) {
-    printNodeHeader(node, "ParallelForStmtAST '" + node.iterVar->name + "'");
+    printNodeHeader(node, "ParallelForStmtAST '" + toStr(pool, node.iterVar->name) + "'");
     if (node.iterVar->type) {
         indent(); out += "\tvarType: " + formatType(node.iterVar->type.get()) + "\n";
     }
@@ -685,13 +686,12 @@ void ASTDumper::visit(ParallelBlockStmtAST& node) {
     for (const auto& block : node.subBlocks) visitChild(block.get());
 }
 
-
 void ASTDumper::visit(AttributeAST& node) {
-    std::string header = "AttributeAST @" + node.name;
+    std::string header = "AttributeAST @" + toStr(pool, node.name);
     if (!node.args.empty()) {
         header += "(";
         for (size_t i = 0; i < node.args.size(); ++i) {
-            header += node.args[i].value;
+            header += toStr(pool, node.args[i]->value);
             if (i + 1 < node.args.size()) header += ", ";
         }
         header += ")";
@@ -700,7 +700,7 @@ void ASTDumper::visit(AttributeAST& node) {
 }
 
 void ASTDumper::visit(IntrinsicCallExprAST& node) {
-    printNodeHeader(node, "IntrinsicCallExprAST " + node.intrinsicName);
+    printNodeHeader(node, "IntrinsicCallExprAST " + toStr(pool, node.intrinsicName));
     if (node.typeArg) visitChild(node.typeArg.get(), "typeArg");
     for (const auto& e : node.args) visitChild(e.get(), "arg");
 }
@@ -708,15 +708,12 @@ void ASTDumper::visit(IntrinsicCallExprAST& node) {
 void ASTDumper::visit(UnknownDeclAST& node) {
     printNodeHeader(node, "UnknownDeclAST");
 }
-
 void ASTDumper::visit(UnknownExprAST& node) {
     printNodeHeader(node, "UnknownExprAST");
 }
-
 void ASTDumper::visit(UnknownStmtAST& node) {
     printNodeHeader(node, "UnknownStmtAST");
 }
-
 void ASTDumper::visit(UnknownTypeAST& node) {
     printNodeHeader(node, "UnknownTypeAST");
 }

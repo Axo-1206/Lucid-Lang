@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ast/BaseAST.hpp" 
+#include "ast/support/StringPool.hpp"
 #include <string>
 
 namespace LucDebug {
@@ -9,6 +10,7 @@ class ASTDumper : public ASTVisitor {
     int verbosity;
     int indentLevel;
     std::string out; // Build the string here
+    const StringPool* pool;
 
     void indent();
     void printHeader(const BaseAST& node, const std::string& nodeName);
@@ -25,7 +27,7 @@ private:
     void rebuildIndentCache();
     
 public:
-    ASTDumper(int verbosity);
+    ASTDumper(int verbosity, const StringPool& pool);
     
     // Get the resulting string
     std::string getOutput() const { return out; }

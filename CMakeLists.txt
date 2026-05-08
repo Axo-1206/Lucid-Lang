@@ -33,11 +33,11 @@ add_executable(luc-comp
     src/main.cpp 
     src/lexer/Lexer.cpp
     src/diagnostics/DiagnosticEngine.cpp
-    # src/parser/Parser.cpp
-    # src/parser/ParserExpr.cpp
-    # src/parser/ParserDecl.cpp
-    # src/parser/ParserType.cpp
-    # src/parser/ParserStmt.cpp
+    src/parser/Parser.cpp
+    src/parser/ParserExpr.cpp
+    src/parser/ParserDecl.cpp
+    src/parser/ParserType.cpp
+    src/parser/ParserStmt.cpp
     # src/semantic/SymbolTable.cpp
     # src/semantic/SemanticAnalyzer.cpp
     # src/semantic/TypeResolver.cpp
@@ -47,10 +47,10 @@ add_executable(luc-comp
     # src/semantic/SemanticStmt.cpp
     # src/semantic/TypeChecker.cpp
     # src/semantic/Annotator.cpp
-    # src/debug/ASTDumper.cpp
-    # src/registry/BuiltinMethodRegistry.cpp
-    # src/registry/AttributeRegistry.cpp
-    src/registry/StringPool.cpp
+    src/debug/ASTDumper.cpp
+    src/registry/BuiltinMethodRegistry.cpp
+    src/registry/AttributeRegistry.cpp
+    src/ast/support/StringPool.cpp
     # src/codegen/CodeGen.cpp
     # src/codegen/CodeGenExpr.cpp
     # src/codegen/CodeGenDecl.cpp
