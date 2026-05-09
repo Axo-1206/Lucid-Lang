@@ -105,7 +105,7 @@ AttributePtr Parser::parseAttribute() {
     // 1. Intern the attribute name
     auto attr = arena_.make<AttributeAST>();
     attr->loc  = loc;
-    attr->name = pool_.intern(advance().value); // <-- fix: intern the string
+    attr->name = pool_.intern(advance().value);
 
     // Optional argument list: '(' attr_arg { ',' attr_arg } ')'
     if (match(TokenType::LPAREN)) {
@@ -277,12 +277,12 @@ ASTPtr<VarDeclAST> Parser::parseVarDecl(Visibility vis, std::vector<AttributePtr
     std::string externName;
     InternedString externStr = pool_.intern("extern");
     for (const auto& attr : attrs) {
-        if (attr->name == externStr) {   // <-- fix: compare with InternedString
+        if (attr->name == externStr) {
             hasExternAttr = true;
             if (!attr->args.empty()) {
                 const auto& arg = attr->args[0];
-                if (arg->kind == AttributeArgKind::StringLit) {  // <-- fix: dereference, correct enum
-                    externName = pool_.lookup(arg->value);      // <-- convert InternedString to std::string
+                if (arg->kind == AttributeArgKind::StringLit) {  
+                    externName = pool_.lookup(arg->value);    
                 }
             }
             LUC_LOG_PARSER("\t*** @extern attribute detected on variable! C name: '" << externName << "' ***");
@@ -318,15 +318,10 @@ ASTPtr<VarDeclAST> Parser::parseVarDecl(Visibility vis, std::vector<AttributePtr
             errorAt(DiagCode::E3002, 
                     "'@extern' variable '" + nameRaw + "' must not have an initialiser — "
                     "the symbol is resolved by the linker");
-            // Skip the initialiser to recover
-            int parenDepth = 0;
-            while (!isAtEnd() && !check(TokenType::SEMICOLON) && 
-                   !check(TokenType::RBRACE) && 
-                   !(parenDepth == 0 && checkAny({TokenType::SEMICOLON, TokenType::RBRACE}))) {
-                if (check(TokenType::LPAREN)) parenDepth++;
-                else if (check(TokenType::RPAREN) && parenDepth > 0) parenDepth--;
-                advance();
-            }
+            // Consume the initializer expression to recover (ignore the result)
+            parseExpr();
+            // After the expression, consume a semicolon if present to keep the token stream clean
+            match(TokenType::SEMICOLON);
         } else {
             init = parseExpr();
             if (!init) {

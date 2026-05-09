@@ -1525,7 +1525,9 @@ ExprPtr Parser::parsePipelineExpr(ExprPtr seed) {
     LUC_LOG_EXPR("parsePipelineExpr: building pipeline");
     if (!seed) {
         errorAt(DiagCode::E2008, "expected pipeline seed before '->'");
-        return makeUnknownExpr(currentLoc());
+        auto unknown = arena_.make<UnknownExprAST>();
+        unknown->loc = currentLoc();
+        return unknown;
     }
     
     LUC_LOG_EXPR_VERBOSE("parsePipelineExpr: seed kind=" << LucDebug::kindToString(seed->kind));
@@ -1542,8 +1544,6 @@ ExprPtr Parser::parsePipelineExpr(ExprPtr seed) {
         if (step) {
             node->steps.push_back(std::move(step));
         } else {
-            // This should not happen with the updated parsePipelineStep,
-            // but handle it just in case
             LUC_LOG_EXPR("parsePipelineExpr: parsePipelineStep returned nullptr, breaking");
             break;
         }
@@ -1551,8 +1551,8 @@ ExprPtr Parser::parsePipelineExpr(ExprPtr seed) {
 
     if (node->steps.empty()) {
         errorAt(DiagCode::E2006, "pipeline '->' requires at least one step");
-        // Return the seed alone
-        return node->seed ? std::move(node->seed) : makeUnknownExpr(loc);
+        // node->seed is still valid (was moved from seed, not null)
+        return std::move(node->seed);
     }
 
     LUC_LOG_EXPR("parsePipelineExpr: " << node->steps.size() << " pipeline steps");

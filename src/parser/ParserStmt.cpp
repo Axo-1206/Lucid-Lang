@@ -123,7 +123,9 @@ StmtPtr Parser::parseStmt()
         if (checkAny({ TokenType::LET, TokenType::CONST })) {
             return parseLocalDecl();
         }
-        return makeUnknownStmt(currentLoc());  // ← Changed
+        auto unknown = arena_.make<UnknownStmtAST>();
+        unknown->loc = currentLoc();
+        return unknown;
     }
 
     // ── Control flow ──────────────────────────────────────────────────────────
@@ -148,13 +150,17 @@ StmtPtr Parser::parseStmt()
     // ── Expression statement ──────────────────────────────────────────────────
     if (!looksLikeStmtStart()) {
         errorAt(DiagCode::E2002, "unexpected token '" + peek().value + "'");
-        return makeUnknownStmt(currentLoc()); 
+        auto unknown = arena_.make<UnknownStmtAST>();
+        unknown->loc = currentLoc();
+        return unknown;
     }
 
     SourceLocation loc = currentLoc();
     ExprPtr expr = parseExpr();
     if (!expr) {
-        return makeUnknownStmt(loc); 
+        auto unknown = arena_.make<UnknownStmtAST>();
+        unknown->loc = currentLoc();
+        return unknown;
     }
 
     auto stmt = arena_.make<ExprStmtAST>(std::move(expr));
@@ -232,19 +238,29 @@ ASTPtr<IfStmtAST> Parser::parseIfStmt()
     ExprPtr condition = parseExpr(false);
     if (!condition) {
         errorAt(DiagCode::E2008, "expected condition after 'if'");
+        auto unknownExpr = arena_.make<UnknownExprAST>();
+        unknownExpr->loc = loc;
+
+        auto unknownStmt = arena_.make<UnknownStmtAST>();
+        unknownStmt->loc = loc;  
+
         auto node = arena_.make<IfStmtAST>();  // ← Create placeholder
         node->loc = loc;
-        node->condition = makeUnknownExpr(loc);
-        node->thenBranch = makeUnknownStmt(loc);  
+        node->condition = std::move(unknownExpr);
+        node->thenBranch = std::move(unknownStmt);
         return node;
     }
 
     if (!check(TokenType::LBRACE)) {
         errorAt(DiagCode::E2001, "expected '{' after if condition");
+
+        auto unknownStmt = arena_.make<UnknownStmtAST>();
+        unknownStmt->loc = loc;  
+
         auto node = arena_.make<IfStmtAST>();
         node->loc = loc;
         node->condition = std::move(condition);
-        node->thenBranch = makeUnknownStmt(loc);
+        node->thenBranch = std::move(unknownStmt);
         return node;
     }
     StmtPtr thenBranch = parseBlock();
@@ -486,8 +502,13 @@ ASTPtr<ForStmtAST> Parser::parseForStmt()
 
     auto node = arena_.make<ForStmtAST>();
     node->loc = loc;
-    node->iterVar->name = std::move(pool_.intern(varName));
+
+    // Allocate and initialise iterVar
+    node->iterVar = arena_.make<ParamAST>();
+    node->iterVar->name = pool_.intern(varName);
     node->iterVar->type = std::move(varType);
+    node->iterVar->isVariadic = false;  // loops never use variadic
+
     node->iterable = std::move(iterable);
     node->step = std::move(step);
     node->body = std::move(body);
@@ -743,8 +764,12 @@ ASTPtr<ParallelForStmtAST> Parser::parseParallelForStmt()
 
     auto node = arena_.make<ParallelForStmtAST>();
     node->loc = loc;
-    node->iterVar->name = std::move(pool_.intern(varName));
+
+    node->iterVar = arena_.make<ParamAST>();
+    node->iterVar->name = pool_.intern(varName);
     node->iterVar->type = std::move(varType);
+    node->iterVar->isVariadic = false;
+
     node->iterable = std::move(iterable);
     node->step = std::move(step);
     node->body = std::move(body);

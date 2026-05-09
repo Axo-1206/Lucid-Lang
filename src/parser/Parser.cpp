@@ -608,7 +608,6 @@ ASTPtr<ProgramAST> Parser::parse() {
             synchronize();
             
             // Create a dummy package with unknown name
-            // Fix: Pass InternedString to PackageDeclAST constructor
             auto dummyPkg = arena_.make<PackageDeclAST>(pool_.intern("<unknown>"));
             dummyPkg->loc = currentLoc();
             attachDoc(*dummyPkg, std::move(pkgDoc));
@@ -623,15 +622,12 @@ ASTPtr<ProgramAST> Parser::parse() {
             } else {
                 // parsePackageDecl returned nullptr - insert UnknownDeclAST
                 LUC_LOG_PARSER("parsePackageDecl returned nullptr, inserting UnknownDeclAST");
-                // Fix: use arena allocation instead of std::make_unique
                 auto unknown = arena_.make<UnknownDeclAST>();
                 unknown->loc = currentLoc();
-                // Fix: intern the error string
                 program->packageName = pool_.intern("<error>");
                 program->decls.push_back(std::move(unknown));
             }
         }
-        // Fix: use pool_.lookup() to display the package name (optional, but avoids streaming InternedString)
         LUC_LOG_PARSER("\tPackage name: '" << pool_.lookup(program->packageName) << "'");
     }
 

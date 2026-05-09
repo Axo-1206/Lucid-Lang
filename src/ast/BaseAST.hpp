@@ -656,28 +656,3 @@ struct UnknownTypeAST : TypeAST {
     UnknownTypeAST() : TypeAST(ASTKind::UnknownType) {}
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
-
-// Helper factory functions
-inline DeclPtr makeUnknownDecl(SourceLocation loc = {}) {
-    auto node = std::make_unique<UnknownDeclAST>();
-    node->loc = loc;
-    return DeclPtr(node.release(), ASTDeleter{});
-}
-
-inline ExprPtr makeUnknownExpr(SourceLocation loc = {}) {
-    auto node = std::make_unique<UnknownExprAST>();
-    node->loc = loc;
-    return ExprPtr(node.release(), ASTDeleter{});
-}
-
-inline StmtPtr makeUnknownStmt(SourceLocation loc = {}) {
-    auto node = std::make_unique<UnknownStmtAST>();
-    node->loc = loc;
-    return StmtPtr(node.release(), ASTDeleter{});
-}
-
-inline TypePtr makeUnknownType(SourceLocation loc = {}) {
-    auto node = std::make_unique<UnknownTypeAST>();
-    node->loc = loc;
-    return TypePtr(node.release(), ASTDeleter{});
-}
