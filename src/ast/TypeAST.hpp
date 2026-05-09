@@ -15,9 +15,7 @@
 #pragma once
 
 #include "BaseAST.hpp"
-#include "support/InternedString.hpp"
 #include "registry/QualifierRegistry.hpp"
-#include "support/InternedString.hpp"
 
 #include <string>
 #include <vector>

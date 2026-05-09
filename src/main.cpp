@@ -7,6 +7,8 @@
 #include "lexer/Lexer.hpp"
 #include "parser/Parser.hpp"
 #include "ast/support/ASTArena.hpp"
+#include "registry/AttributeRegistry.hpp"
+#include "registry/IntrinsicRegistry.hpp"
 #include "semantic/header/SemanticAnalyzer.hpp"
 #include "diagnostics/DiagnosticEngine.hpp"
 #include "debug/DebugMacros.hpp"
@@ -84,6 +86,8 @@ int main(int argc, char* argv[]) {
 
     DiagnosticEngine dc;
     StringPool stringPool; 
+    AttributeRegistry::instance().setStringPool(stringPool);
+    IntrinsicRegistry::instance().setStringPool(stringPool);
     
     // Phase 1: Lexical Analysis
     std::cout << "[MAIN] Starting lexical analysis..." << std::endl;

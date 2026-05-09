@@ -22,8 +22,9 @@
 #include "ast/ExprAST.hpp"
 #include "ast/StmtAST.hpp"
 #include "ast/TypeAST.hpp"
-#include "ast/support/InternedString.hpp"
 #include "ast/support/ASTArena.hpp"
+#include "registry/AttributeRegistry.hpp"
+#include "registry/IntrinsicRegistry.hpp"
 
 #include <memory>
 #include <optional>
@@ -51,7 +52,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 class Parser {
-  public:
+public:
     // ── Construction ──────────────────────────────────────────────────────────
 
     // Takes ownership of the token stream produced by Lexer::tokenize().
@@ -59,8 +60,8 @@ class Parser {
     // SourceLocation::file — it should be the path relative to the package root
     // (e.g. "math/vec2.luc").
     // Parser.hpp
-explicit Parser(std::vector<Token> tokens, DiagnosticEngine &dc,
-                InternedString filePath, StringPool& pool, ASTArena& arena);
+    explicit Parser(std::vector<Token> tokens, DiagnosticEngine &dc,
+                    InternedString filePath, StringPool& pool, ASTArena& arena);
 
     // ── Entry point ───────────────────────────────────────────────────────────
 
@@ -75,7 +76,7 @@ explicit Parser(std::vector<Token> tokens, DiagnosticEngine &dc,
         return dc_.hasErrors();
     }
 
-  private:
+private:
     // ── Token stream state ────────────────────────────────────────────────────
 
     std::vector<Token> tokens_; // full token stream, EOF_TOKEN guaranteed last
@@ -85,6 +86,17 @@ explicit Parser(std::vector<Token> tokens, DiagnosticEngine &dc,
     ASTArena&   arena_;
 
     DiagnosticEngine &dc_;      // shared diagnostic engine
+
+    // Pre‑interned attribute IDs (from registry)
+    InternedString kw_extern;
+    InternedString kw_packed;
+    InternedString kw_inline;
+    InternedString kw_noinline;
+    InternedString kw_deprecated;
+
+    // Pre‑interned intrinsic names for fast O(1) comparison
+    InternedString kw_sizeof;
+    InternedString kw_alignof;
 
     // ─────────────────────────────────────────────────────────────────────────
     // Token stream primitives
@@ -360,9 +372,6 @@ explicit Parser(std::vector<Token> tokens, DiagnosticEngine &dc,
     // Parse a single compose operand (after '+>' has been consumed).
     ComposeOperandPtr parseComposeOperand();
 
-    // Nullable fallback: lhs '??' expr
-    ExprPtr parseNullCoalesceExpr(ExprPtr lhs);
-
     // ── Primary sub-parsers ───────────────────────────────────────────────────
 
     // INT, FLOAT, STRING, RAW_STRING, CHAR, HEX, BINARY, true, false, nil
@@ -537,10 +546,42 @@ explicit Parser(std::vector<Token> tokens, DiagnosticEngine &dc,
     // parameter-list-then-')' shape (function type).
     bool looksLikeType() const;
 
+    /**
+    * @brief Determines whether a token type is a primitive type keyword.
+    *
+    * Primitive types include bool, byte, short, int, long, ubyte, ushort, uint,
+    * ulong, int8, int16, int32, int64, uint8, uint16, uint32, uint64, float,
+    * double, decimal, string, char, any.
+    *
+    * This helper centralises the 22‑case switch that previously appeared in
+    * five different locations (looksLikeStmtStart, parsePipelineStep,
+    * parseComposeOperand, parseFuncType, and the isTypeStart lambda in
+    * parsePrimaryExpr). It is static because it only inspects the TokenType
+    * enum and does not depend on any parser instance state.
+    */
+    static bool isPrimitiveTypeToken(TokenType type);
+
     // True when current token is IDENTIFIER and the token after any optional
     // generic args '<...>' is '(' — indicating a function declaration rather
     // than a variable declaration.
     bool looksLikeFuncDecl() const;
+
+    /**
+    * @brief Performs a non‑consuming lookahead to detect an anonymous function.
+    *
+    * The grammar for an anonymous function is:
+    *   [ '~' IDENTIFIER ]* '(' [ param_list ] ')' [ return_type ] block
+    * where param_list is ( IDENTIFIER type [ ',' ... ] ) and block is '{' ... '}'.
+    * Currying (multiple parameter groups) is supported, e.g. (a int) (b int) int { ... }.
+    *
+    * This function returns true when the current token stream matches a valid
+    * anonymous function header. It never modifies the parser position.
+    *
+    * Used in parsePipelineStep to avoid misclassifying a parenthesised expression
+    * (e.g., (x + y)) as an anonymous function, which would produce confusing
+    * error messages.
+    */
+    bool looksLikeAnonFunc() const;
 
     // True when current token is IDENTIFIER followed immediately by '{' in an
     // expression context — indicating a struct literal rather than a block.

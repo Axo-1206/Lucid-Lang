@@ -275,7 +275,7 @@ ASTPtr<VarDeclAST> Parser::parseVarDecl(Visibility vis, std::vector<AttributePtr
     // Check for @extern attribute in the attributes list
     bool hasExternAttr = false;
     std::string externName;
-    InternedString externStr = pool_.intern("extern");
+    InternedString externStr = kw_extern;
     for (const auto& attr : attrs) {
         if (attr->name == externStr) {
             hasExternAttr = true;
@@ -338,10 +338,10 @@ ASTPtr<VarDeclAST> Parser::parseVarDecl(Visibility vis, std::vector<AttributePtr
     }
 
     // Additional validation: '@packed' only valid on structs
-    InternedString packedStr = pool_.intern("packed");
-    InternedString inlineStr = pool_.intern("inline");
-    InternedString noinlineStr = pool_.intern("noinline");
-    InternedString deprecatedStr = pool_.intern("deprecated");
+    InternedString packedStr = kw_packed;
+    InternedString inlineStr = kw_inline;
+    InternedString noinlineStr = kw_inline;
+    InternedString deprecatedStr = kw_deprecated;
     for (const auto& attr : attrs) {
         if (attr->name == packedStr) {
             errorAt(DiagCode::E2010, 
@@ -400,7 +400,7 @@ ASTPtr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vis, std::v
     // Check for @extern early
     bool hasExternAttr = false;
     std::string externName;
-    InternedString externStr = pool_.intern("extern");
+    InternedString externStr = kw_extern;
     for (const auto& attr : attrs) {
         if (attr->name == externStr) {
             hasExternAttr = true;
@@ -596,10 +596,10 @@ std::vector<ASTPtr<ParamAST>> Parser::parseParamGroup() {
     std::vector<ASTPtr<ParamAST>> group;
     
     while (!check(TokenType::RPAREN) && !isAtEnd()) {
-        match(TokenType::COMMA); // optional separator
-        
+        match(TokenType::COMMA);
         if (check(TokenType::RPAREN)) break;
-        
+
+        size_t savedPos = pos_;
         SourceLocation paramLoc = currentLoc();
 
         // Parse parameter name
@@ -612,16 +612,15 @@ std::vector<ASTPtr<ParamAST>> Parser::parseParamGroup() {
         // Parse variadic '...' if present
         bool isVariadic = match(TokenType::VARIADIC);
         
-        // Parse parameter type (required)
         TypePtr paramType = parseType();
-        if (!paramType) {
+        if (paramType->isa<UnknownTypeAST>() && pos_ == savedPos) {
             errorAt(DiagCode::E2005, "expected parameter type");
-            break;
+            break;  // exit loop to avoid infinite recursion
         }
         
         auto paramNode = arena_.make<ParamAST>();
         paramNode->loc = paramLoc;
-        paramNode->name = std::move(paramName);
+        paramNode->name = paramName;
         paramNode->type = std::move(paramType);
         paramNode->isVariadic = isVariadic;
         group.push_back(std::move(paramNode));

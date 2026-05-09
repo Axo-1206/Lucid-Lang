@@ -379,44 +379,43 @@ ASTPtr<SwitchStmtAST> Parser::parseSwitchStmt()
 // build a RangeExprAST from the already-parsed lo expression and the hi
 // expression that follows '..'.
 // ─────────────────────────────────────────────────────────────────────────────
-SwitchCasePtr Parser::parseSwitchCase()
-{
+SwitchCasePtr Parser::parseSwitchCase() {
     LUC_LOG_STMT_VERBOSE("parseSwitchCase");
     SourceLocation loc = currentLoc();
     consume(TokenType::CASE, "expected 'case'");
 
     auto sc = arena_.make<SwitchCaseAST>();
     sc->loc = loc;
-    int valueCount = 0;
 
-    // Parse one or more comma-separated case values.
-    do {
-        match(TokenType::COMMA);   // optional separator / skip after first
-        if (check(TokenType::COLON)) break;   // end of value list
-
-        // Parse a primary-level expression (literal or named constant).
-        // We do NOT parse a full expression here to avoid consuming ',' or ':'
-        // as binary operators.  The semantic pass verifies values are constants.
-        ExprPtr val = parsePrattExpr(0);   // full expression — range check below
-        if (!val) {
-            errorAt(DiagCode::E2008, "expected case value after 'case'");
-            break;
+    // Parse first value
+    if (check(TokenType::COLON)) {
+        errorAt(DiagCode::E2001, "expected case value before ':'");
+    } else {
+        ExprPtr val = parsePrattExpr(0);
+        if (val) {
+            if (check(TokenType::RANGE)) {
+                sc->values.push_back(parseRangeExpr(std::move(val)));
+            } else {
+                sc->values.push_back(std::move(val));
+            }
         }
+    }
 
-        // If '..' follows, this is a range value.
-        if (check(TokenType::RANGE)) {
-            sc->values.push_back(parseRangeExpr(std::move(val)));
-            LUC_LOG_STMT_EXTREME("parseSwitchCase: range value");
-        } else {
-            sc->values.push_back(std::move(val));
-            LUC_LOG_STMT_EXTREME("parseSwitchCase: single value");
+    // Parse additional comma-separated values
+    while (check(TokenType::COMMA)) {
+        advance();
+        if (check(TokenType::COLON)) break; // trailing comma allowed
+        ExprPtr val = parsePrattExpr(0);
+        if (val) {
+            if (check(TokenType::RANGE)) {
+                sc->values.push_back(parseRangeExpr(std::move(val)));
+            } else {
+                sc->values.push_back(std::move(val));
+            }
         }
-        valueCount++;
-
-    } while (check(TokenType::COMMA));
+    }
 
     consume(TokenType::COLON, DiagCode::E2001, "expected ':' after case values");
-    LUC_LOG_STMT_VERBOSE("parseSwitchCase: " << valueCount << " values");
 
     if (!check(TokenType::LBRACE)) {
         errorAt(DiagCode::E2001, "expected '{' to start case body");

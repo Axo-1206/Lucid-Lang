@@ -15,6 +15,7 @@
 
 #include "debug/DebugMacros.hpp"
 #include "support/ASTArena.hpp"
+#include "support/InternedString.hpp"
 
 #include <string>
 #include <optional>

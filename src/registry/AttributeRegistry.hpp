@@ -1,39 +1,36 @@
 #pragma once
 
 #include "ast/DeclAST.hpp"
+#include "ast/support/StringPool.hpp"
 
 #include <string>
-#include <vector>
 #include <unordered_map>
-#include <functional>
 #include <cstdint>
 
-// Forward declarations
 struct AttributeAST;
 class DiagnosticEngine;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// AttributeContext - where the attribute can appear
+// AttributeContext – where an attribute may appear
 // ─────────────────────────────────────────────────────────────────────────────
 enum class AttributeContext : uint32_t {
     None    = 0,
-    Func    = 1 << 0,   // Regular function
-    Var     = 1 << 1,   // Variable
-    Struct  = 1 << 2,   // Struct declaration
-    Impl    = 1 << 3,   // Impl block
-    Main    = 1 << 4,   // Only the 'main' function (special)
+    Func    = 1 << 0,
+    Var     = 1 << 1,
+    Struct  = 1 << 2,
+    Impl    = 1 << 3,
+    Main    = 1 << 4,
 };
 
 inline AttributeContext operator|(AttributeContext a, AttributeContext b) {
     return static_cast<AttributeContext>(static_cast<uint32_t>(a) | static_cast<uint32_t>(b));
 }
-
 inline bool hasFlag(AttributeContext value, AttributeContext flag) {
     return (static_cast<uint32_t>(value) & static_cast<uint32_t>(flag)) != 0;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// AttrArgKind - what kind of arguments are allowed
+// AttrArgKind – allowed argument types for an attribute
 // ─────────────────────────────────────────────────────────────────────────────
 enum class AttrArgKind : uint32_t {
     None     = 0,
@@ -47,61 +44,86 @@ enum class AttrArgKind : uint32_t {
 inline AttrArgKind operator|(AttrArgKind a, AttrArgKind b) {
     return static_cast<AttrArgKind>(static_cast<uint32_t>(a) | static_cast<uint32_t>(b));
 }
-
 inline bool hasFlag(AttrArgKind value, AttrArgKind flag) {
     return (static_cast<uint32_t>(value) & static_cast<uint32_t>(flag)) != 0;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// AttributeInfo - metadata about a single attribute
+// AttributeInfo – metadata about one attribute
 // ─────────────────────────────────────────────────────────────────────────────
 struct AttributeInfo {
-    std::string name;
+    InternedString id;                        // interned ID (key)
+    std::string_view name;                    // human‑readable (from pool)
     AttributeContext validContexts;
     bool takesArgs;
     int minArgs;
-    int maxArgs;                    // -1 = unlimited
+    int maxArgs;                              // -1 = unlimited
     AttrArgKind allowedArgKinds;
-    bool requiresConst;             // @extern requires 'const', not 'let'
-    std::string exclusiveWith;      // e.g., "aot" excludes "jit"
-    
-    // Custom validator for complex constraints
-    // Returns true if valid, false if error (error already reported via dc)
-    bool (*validator)(const std::vector<AttributeArgAST>& args,
+    bool requiresConst;                       // @extern requires 'const'
+    InternedString exclusiveWith;             // ID of mutually exclusive attribute, or invalid
+
+    // Custom validator (optional)
+    bool (*validator)(const std::vector<ASTPtr<AttributeArgAST>>& args,
                       const std::string& declName, DiagnosticEngine& dc,
                       const SourceLocation& loc) = nullptr;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// AttributeRegistry - singleton registry
+// AttributeRegistry – singleton providing attribute metadata
 // ─────────────────────────────────────────────────────────────────────────────
 class AttributeRegistry {
 public:
     static AttributeRegistry& instance();
-    
+
+    void setStringPool(StringPool& pool);   // must be called once before any lookups
+
+    const AttributeInfo* lookup(InternedString id) const;
     const AttributeInfo* lookup(const std::string& name) const;
+
+    bool isValidOn(InternedString id, AttributeContext ctx) const;
     bool isValidOn(const std::string& name, AttributeContext ctx) const;
+
     std::string allNames() const;
-    
-    // Validate an attribute with full context
+
     bool validateAttribute(const AttributeAST& attr,
                            AttributeContext ctx,
                            const std::string& declName,
                            DeclKeyword declKw,
                            DiagnosticEngine& dc) const;
-    
-    // Special getters for known attributes
-    bool isExternAttribute(const std::string& name) const { return name == "extern"; }
+
+    bool isExternAttribute(InternedString id) const;
+    bool isExternAttribute(const std::string& name) const;
+    bool isMainOnlyAttribute(InternedString id) const;
     bool isMainOnlyAttribute(const std::string& name) const;
 
-    bool checkMutualExclusion(const std::string& name1, 
-                            const std::string& name2,
-                            DiagnosticEngine& dc,
-                            const SourceLocation& loc) const;
-    
+    bool checkMutualExclusion(InternedString id1, InternedString id2,
+                              DiagnosticEngine& dc, const SourceLocation& loc) const;
+    bool checkMutualExclusion(const std::string& name1, const std::string& name2,
+                              DiagnosticEngine& dc, const SourceLocation& loc) const;
+
+    // Pre‑interned well‑known IDs (zero‑cost after setStringPool)
+    InternedString getExternId() const     { return externId; }
+    InternedString getPackedId() const     { return packedId; }
+    InternedString getInlineId() const     { return inlineId; }
+    InternedString getNoinlineId() const   { return noinlineId; }
+    InternedString getDeprecatedId() const { return deprecatedId; }
+
 private:
     AttributeRegistry();
-    void registerAttribute(const AttributeInfo& info);
-    
-    std::unordered_map<std::string, AttributeInfo> attributes_;
+    void registerAttribute(const std::string& name,
+                           AttributeContext contexts,
+                           bool takesArgs, int minArgs, int maxArgs,
+                           AttrArgKind argKinds,
+                           bool requiresConst,
+                           const std::string& exclusiveWith = "",
+                           bool (*validator)(const std::vector<ASTPtr<AttributeArgAST>>&,
+                                             const std::string&, DiagnosticEngine&,
+                                             const SourceLocation&) = nullptr);
+
+    StringPool* stringPool = nullptr;
+    std::unordered_map<InternedString, AttributeInfo> byId;
+    std::unordered_map<std::string, InternedString> nameToId; // for lookup by string
+
+    // Pre‑interned IDs for well‑known attributes
+    InternedString externId, packedId, inlineId, noinlineId, deprecatedId;
 };

@@ -504,28 +504,35 @@ TypePtr Parser::parseFuncType(bool allowQualifiers) {
     
     // Check for outer '(' that indicates nullable function
     if (check(TokenType::LPAREN)) {
-        size_t savedPos = pos_;
+        std::size_t i = pos_;
         int parenDepth = 1;
-        advance(); // consume the first '('
-        
-        while (!isAtEnd() && parenDepth > 0) {
-            if (check(TokenType::LPAREN)) parenDepth++;
-            else if (check(TokenType::RPAREN)) parenDepth--;
-            else if (check(TokenType::TILDE)) {
-                advance();
-                if (check(TokenType::IDENTIFIER)) advance();
+        // Move past the first '('
+        ++i;
+        // Scan forward, skipping comments and qualifiers, to find matching ')'
+        while (i < tokens_.size() && parenDepth > 0) {
+            TokenType tt = tokens_[i].type;
+            if (tt == TokenType::LPAREN) {
+                ++parenDepth;
+            } else if (tt == TokenType::RPAREN) {
+                --parenDepth;
+            } else if (tt == TokenType::LINE_COMMENT || tt == TokenType::DOC_COMMENT) {
+                ++i;
+                continue;
+            } else if (tt == TokenType::TILDE) {
+                // Skip '~' and the following identifier (qualifier)
+                ++i;
+                if (i < tokens_.size() && tokens_[i].type == TokenType::IDENTIFIER) ++i;
                 continue;
             }
-            advance();
+            ++i;
         }
-        
-        bool hasQuestion = check(TokenType::QUESTION);
-        pos_ = savedPos;
-        
-        if (hasQuestion) {
+        // After the matching ')', check if there's a '?'
+        bool hasQuestion = (i < tokens_.size() && tokens_[i].type == TokenType::QUESTION);
+        if (parenDepth == 0 && hasQuestion) {
             isNullableFunction = true;
-            nullableLoc = currentLoc();
-            advance(); // consume the outer '('
+            nullableLoc = currentLoc(); // location of the original '('
+            // Consume the outer '(' now – it is part of the nullable function syntax.
+            advance();
         }
     }
     
@@ -543,45 +550,15 @@ TypePtr Parser::parseFuncType(bool allowQualifiers) {
 
             // Optional parameter name (ignore it in type position)
             if (check(TokenType::IDENTIFIER)) {
-                bool nextIsType = false;
                 TokenType nextType = peekNext().type;
-                switch (nextType) {
-                    case TokenType::TYPE_BOOL:
-                    case TokenType::TYPE_BYTE:
-                    case TokenType::TYPE_SHORT:
-                    case TokenType::TYPE_INT:
-                    case TokenType::TYPE_LONG:
-                    case TokenType::TYPE_UBYTE:
-                    case TokenType::TYPE_USHORT:
-                    case TokenType::TYPE_UINT:
-                    case TokenType::TYPE_ULONG:
-                    case TokenType::TYPE_INT8:
-                    case TokenType::TYPE_INT16:
-                    case TokenType::TYPE_INT32:
-                    case TokenType::TYPE_INT64:
-                    case TokenType::TYPE_UINT8:
-                    case TokenType::TYPE_UINT16:
-                    case TokenType::TYPE_UINT32:
-                    case TokenType::TYPE_UINT64:
-                    case TokenType::TYPE_FLOAT:
-                    case TokenType::TYPE_DOUBLE:
-                    case TokenType::TYPE_DECIMAL:
-                    case TokenType::TYPE_STRING:
-                    case TokenType::TYPE_CHAR:
-                    case TokenType::TYPE_ANY:
-                    case TokenType::IDENTIFIER:
-                    case TokenType::LPAREN:
-                    case TokenType::AMPERSAND:
-                    case TokenType::MUL:
-                    case TokenType::LBRACKET:
-                        nextIsType = true;
-                        break;
-                    default:
-                        break;
-                }
-                
+                bool nextIsType = Parser::isPrimitiveTypeToken(nextType) ||
+                                nextType == TokenType::IDENTIFIER ||
+                                nextType == TokenType::LPAREN ||
+                                nextType == TokenType::AMPERSAND ||
+                                nextType == TokenType::MUL ||
+                                nextType == TokenType::LBRACKET;
                 if (nextIsType) {
-                    name = advance().value; // consume parameter name, ignore it mostly
+                    name = advance().value;
                     LUC_LOG_TYPE_EXTREME("parseFuncType: ignoring parameter name '" << name << "'");
                 }
             }

@@ -556,6 +556,22 @@ ExprPtr Parser::parsePrimaryExpr(bool allowStructLiteral) {
     //   - next is IDENTIFIER and the token after that looks like a type start
     // then it's an anonymous function.
     if (check(TokenType::LPAREN)) {
+        auto isTypeStart = [&](TokenType tt) {
+            if (Parser::isPrimitiveTypeToken(tt))
+                return true;
+            switch (tt) {
+                case TokenType::IDENTIFIER:
+                case TokenType::LBRACKET:
+                case TokenType::AMPERSAND:
+                case TokenType::MUL:
+                case TokenType::LPAREN:
+                case TokenType::VARIADIC:
+                    return true;
+                default:
+                    return false;
+            }
+        };
+
         // Lookahead to distinguish anon func from grouped expr.
         // An anon func must have ')' as its only next token (empty), or
         // IDENTIFIER followed by something that looks like a type.
@@ -565,44 +581,8 @@ ExprPtr Parser::parsePrimaryExpr(bool allowStructLiteral) {
             // Peek further: after ')' comes a type start or '{' → anon func.
             TokenType n2 = peekAt(2).type;
             bool anonFunc = (n2 == TokenType::LBRACE) || // () { ... }
-                            looksLikeType();             // () RetType { ... } — approximate
-            // More precise: after '(' ')' check if token at offset 2 looks like type start
-            // We check if offset 2 is looksLikeType by inspecting tokens directly.
-            auto isTypeStart = [&](TokenType tt) {
-                switch (tt) {
-                    case TokenType::TYPE_BOOL:
-                    case TokenType::TYPE_BYTE:
-                    case TokenType::TYPE_SHORT:
-                    case TokenType::TYPE_INT:
-                    case TokenType::TYPE_LONG:
-                    case TokenType::TYPE_UBYTE:
-                    case TokenType::TYPE_USHORT:
-                    case TokenType::TYPE_UINT:
-                    case TokenType::TYPE_ULONG:
-                    case TokenType::TYPE_INT8:
-                    case TokenType::TYPE_INT16:
-                    case TokenType::TYPE_INT32:
-                    case TokenType::TYPE_INT64:
-                    case TokenType::TYPE_UINT8:
-                    case TokenType::TYPE_UINT16:
-                    case TokenType::TYPE_UINT32:
-                    case TokenType::TYPE_UINT64:
-                    case TokenType::TYPE_FLOAT:
-                    case TokenType::TYPE_DOUBLE:
-                    case TokenType::TYPE_DECIMAL:
-                    case TokenType::TYPE_STRING:
-                    case TokenType::TYPE_CHAR:
-                    case TokenType::TYPE_ANY:
-                    case TokenType::IDENTIFIER:
-                    case TokenType::LBRACKET:
-                    case TokenType::AMPERSAND:
-                    case TokenType::MUL:
-                    case TokenType::LPAREN:
-                        return true;
-                    default:
-                        return false;
-                }
-            };
+                            isTypeStart(n2);             // () RetType { ... } — approximate
+            
             if (n2 == TokenType::LBRACE || isTypeStart(n2)) {
                 return parseAnonFuncExpr();
             }
@@ -611,41 +591,7 @@ ExprPtr Parser::parsePrimaryExpr(bool allowStructLiteral) {
         } else if (n1 == TokenType::IDENTIFIER) {
             // Could be  (name type ...)  — anon func if token after name is a type.
             TokenType n2 = peekAt(2).type;
-            auto isTypeStart = [&](TokenType tt) {
-                switch (tt) {
-                    case TokenType::TYPE_BOOL:
-                    case TokenType::TYPE_BYTE:
-                    case TokenType::TYPE_SHORT:
-                    case TokenType::TYPE_INT:
-                    case TokenType::TYPE_LONG:
-                    case TokenType::TYPE_UBYTE:
-                    case TokenType::TYPE_USHORT:
-                    case TokenType::TYPE_UINT:
-                    case TokenType::TYPE_ULONG:
-                    case TokenType::TYPE_INT8:
-                    case TokenType::TYPE_INT16:
-                    case TokenType::TYPE_INT32:
-                    case TokenType::TYPE_INT64:
-                    case TokenType::TYPE_UINT8:
-                    case TokenType::TYPE_UINT16:
-                    case TokenType::TYPE_UINT32:
-                    case TokenType::TYPE_UINT64:
-                    case TokenType::TYPE_FLOAT:
-                    case TokenType::TYPE_DOUBLE:
-                    case TokenType::TYPE_DECIMAL:
-                    case TokenType::TYPE_STRING:
-                    case TokenType::TYPE_CHAR:
-                    case TokenType::TYPE_ANY:
-                    case TokenType::IDENTIFIER:
-                    case TokenType::LBRACKET:
-                    case TokenType::AMPERSAND:
-                    case TokenType::MUL:
-                    case TokenType::VARIADIC:
-                        return true;
-                    default:
-                        return false;
-                }
-            };
+
             if (isTypeStart(n2)) {
                 return parseAnonFuncExpr();
             }
@@ -722,7 +668,7 @@ ExprPtr Parser::parsePrimaryExpr(bool allowStructLiteral) {
             auto node = arena_.make<BehaviorAccessExprAST>();
             node->loc = loc;
             node->typeName = std::move(pool_.intern(name));
-            node->method = std::move(pool_.intern(name));
+            node->method = std::move(pool_.intern(method));
             node->isBehaviorMember = true;
             return node;
         }
@@ -969,13 +915,16 @@ ExprPtr Parser::parseArrayLiteralExpr() {
     node->loc = loc;
 
     while (!check(TokenType::RBRACKET) && !isAtEnd()) {
-        match(TokenType::COMMA); // optional separator / trailing comma
-        if (check(TokenType::RBRACKET))
-            break;
+        match(TokenType::COMMA);
+        if (check(TokenType::RBRACKET)) break;
 
+        size_t beforePos = pos_;
         ExprPtr elem = parseExpr();
-        if (!elem) {
+        if (pos_ == beforePos) {
+            // parseExpr made no progress
             errorAt(DiagCode::E2008, "expected expression inside array literal");
+            // Skip the current token to avoid infinite loop
+            advance();
             break;
         }
         node->elements.push_back(std::move(elem));
@@ -1014,6 +963,8 @@ ExprPtr Parser::parseStructLiteralExpr(std::string typeName, std::vector<TypePtr
         if (!check(TokenType::IDENTIFIER)) {
             errorAt(DiagCode::E2003, "expected field name in struct literal");
             synchronize();
+            if (check(TokenType::RBRACE) || isAtEnd())
+                break;
             continue;
         }
         std::string fieldName = advance().value;
@@ -1124,7 +1075,7 @@ ExprPtr Parser::parseIntrinsicCallExpr() {
 
     auto node = arena_.make<IntrinsicCallExprAST>();
     node->loc           = loc;
-    node->intrinsicName = pool_.intern(advance().value); // e.g. "sizeof", "sqrt"
+    node->intrinsicName = pool_.intern(advance().value);
 
     if (!check(TokenType::LPAREN)) {
         errorAt(DiagCode::E2001,
@@ -1134,14 +1085,9 @@ ExprPtr Parser::parseIntrinsicCallExpr() {
     LUC_LOG_EXPR("parseIntrinsicCallExpr: name='" << pool_.lookup(node->intrinsicName) << "'");
     consume(TokenType::LPAREN, "expected '('");
 
-    // ── Decide if the first argument is a type ────────────────────────────────
-    // Type-parameter intrinsics only take one argument and it is a type name.
-    static const std::initializer_list<std::string> typeParamIntrinsics = {
-        "sizeof", "alignof"
-    };
-    bool isTypeParam = false;
-    for (const auto& n : typeParamIntrinsics)
-        if (n == pool_.lookup(node->intrinsicName)) { isTypeParam = true; break; }
+    // Check if this intrinsic takes a type argument (sizeof/alignof)
+    bool isTypeParam = (node->intrinsicName == kw_sizeof) ||
+                       (node->intrinsicName == kw_alignof);
 
     if (isTypeParam) {
         // Parse a type argument.
@@ -1251,12 +1197,23 @@ ExprPtr Parser::parseMatchExpr() {
             }
             
             hasDefault = true;
-            continue;
+            break;
         }
 
+        size_t beforePos = pos_;
         MatchArmPtr arm = parseMatchArm();
-        if (arm)
+        if (pos_ == beforePos) {
+            // No progress – abort this arm and skip to next sync point
+            errorAt(DiagCode::E2007, "failed to parse match arm, skipping");
+            synchronize();
+            // If we hit the closing brace or EOF, stop entirely
+            if (check(TokenType::RBRACE) || isAtEnd())
+                break;
+            continue;
+        }
+        if (arm) {
             node->arms.push_back(std::move(arm));
+        }
     }
 
     consume(TokenType::RBRACE, "expected '}' to close match expression");
@@ -1575,24 +1532,8 @@ PipelineStepPtr Parser::parsePipelineStep() {
     auto step = arena_.make<PipelineStepAST>();
     step->loc = loc;
 
-    // ── Anonymous function detection ─────────────────────────────────────────
-    // Check if this looks like an anonymous function (starts with '(' or '~')
-    bool isAnonFunc = false;
-    
-    if (check(TokenType::LPAREN)) {
-        // Simple heuristic: if we see '(' then later ')' then '{', it's an anon func
-        isAnonFunc = true;  // Assume it's an anon func, parseAnonFuncExpr will validate
-    } else if (check(TokenType::TILDE)) {
-        // Check if '~' is followed by identifier and then '('
-        if (peekNext().type == TokenType::IDENTIFIER) {
-            TokenType afterIdent = peekAt(2).type;
-            if (afterIdent == TokenType::LPAREN) {
-                isAnonFunc = true;
-            }
-        }
-    }
-    
-    if (isAnonFunc) {
+    // ── Anonymous function detection using precise lookahead ─────────────────
+    if (looksLikeAnonFunc()) {
         LUC_LOG_EXPR_VERBOSE("parsePipelineStep: parsing anonymous function");
         ExprPtr anonFuncExpr = parseAnonFuncExpr();
         if (!anonFuncExpr) {
@@ -1608,39 +1549,7 @@ PipelineStepPtr Parser::parsePipelineStep() {
     }
 
     // ── Check for primitive type keywords (valid conversion functions) ────────
-    bool isPrimitiveType = false;
-    TokenType currentType = peek().type;
-    
-    switch (currentType) {
-        case TokenType::TYPE_BOOL:
-        case TokenType::TYPE_BYTE:
-        case TokenType::TYPE_SHORT:
-        case TokenType::TYPE_INT:
-        case TokenType::TYPE_LONG:
-        case TokenType::TYPE_UBYTE:
-        case TokenType::TYPE_USHORT:
-        case TokenType::TYPE_UINT:
-        case TokenType::TYPE_ULONG:
-        case TokenType::TYPE_INT8:
-        case TokenType::TYPE_INT16:
-        case TokenType::TYPE_INT32:
-        case TokenType::TYPE_INT64:
-        case TokenType::TYPE_UINT8:
-        case TokenType::TYPE_UINT16:
-        case TokenType::TYPE_UINT32:
-        case TokenType::TYPE_UINT64:
-        case TokenType::TYPE_FLOAT:
-        case TokenType::TYPE_DOUBLE:
-        case TokenType::TYPE_DECIMAL:
-        case TokenType::TYPE_STRING:
-        case TokenType::TYPE_CHAR:
-        case TokenType::TYPE_ANY:
-            isPrimitiveType = true;
-            LUC_LOG_EXPR_VERBOSE("parsePipelineStep: primitive type detected");
-            break;
-        default:
-            break;
-    }
+    bool isPrimitiveType = Parser::isPrimitiveTypeToken(peek().type);
 
     // Must be either IDENTIFIER or primitive type
     if (!check(TokenType::IDENTIFIER) && !isPrimitiveType) {
@@ -1785,36 +1694,7 @@ ComposeOperandPtr Parser::parseComposeOperand() {
     op->loc = loc;
 
     // Check if current token is a primitive type keyword
-    bool isPrimitiveType = false;
-    switch (peek().type) {
-        case TokenType::TYPE_BOOL:
-        case TokenType::TYPE_BYTE:
-        case TokenType::TYPE_SHORT:
-        case TokenType::TYPE_INT:
-        case TokenType::TYPE_LONG:
-        case TokenType::TYPE_UBYTE:
-        case TokenType::TYPE_USHORT:
-        case TokenType::TYPE_UINT:
-        case TokenType::TYPE_ULONG:
-        case TokenType::TYPE_INT8:
-        case TokenType::TYPE_INT16:
-        case TokenType::TYPE_INT32:
-        case TokenType::TYPE_INT64:
-        case TokenType::TYPE_UINT8:
-        case TokenType::TYPE_UINT16:
-        case TokenType::TYPE_UINT32:
-        case TokenType::TYPE_UINT64:
-        case TokenType::TYPE_FLOAT:
-        case TokenType::TYPE_DOUBLE:
-        case TokenType::TYPE_DECIMAL:
-        case TokenType::TYPE_STRING:
-        case TokenType::TYPE_CHAR:
-        case TokenType::TYPE_ANY:
-            isPrimitiveType = true;
-            break;
-        default:
-            break;
-    }
+    bool isPrimitiveType = Parser::isPrimitiveTypeToken(peek().type);
 
     if (!check(TokenType::IDENTIFIER) && !isPrimitiveType) {
         errorAt(DiagCode::E2002, "expected function name or method reference as composition operand");
@@ -1859,17 +1739,6 @@ ComposeOperandPtr Parser::parseComposeOperand() {
     return op;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// parseNullCoalesceExpr  — handled inline in parsePrattExpr
-// (separate function kept for symmetry; currently unused)
-// ─────────────────────────────────────────────────────────────────────────────
-ExprPtr Parser::parseNullCoalesceExpr(ExprPtr lhs) {
-    // This path is taken by the parsePrattExpr infix loop directly.
-    // Kept as a named function for future refactoring.
-    (void)lhs;
-    return arena_.make<UnknownExprAST>();
-}
-
 // ═════════════════════════════════════════════════════════════════════════════
 // PATTERN PARSING
 // ═════════════════════════════════════════════════════════════════════════════
@@ -1908,12 +1777,35 @@ MatchArmPtr Parser::parseMatchArm() {
     // Use FAT_ARROW (=>) instead of ARROW (->)
     consume(TokenType::FAT_ARROW, "expected '=>' after match pattern");
 
-    // Parse one or more result expressions
-    do {
-        ExprPtr exp = parseExpr();
-        if (!exp) break;
-        arm->exprs.push_back(std::move(exp));
-    } while (match(TokenType::COMMA));
+    // Parse result expressions: at least one, at most two, no trailing commas
+    // First expression (required)
+    size_t beforePos = pos_;
+    ExprPtr first = parseExpr();
+    if (pos_ == beforePos || !first) {
+        errorAt(DiagCode::E2008, "expected result expression after '=>' in match arm");
+    } else {
+        arm->exprs.push_back(std::move(first));
+    }
+
+    // Optional second expression after comma
+    if (match(TokenType::COMMA)) {
+        // If there's a comma, there must be a second expression
+        if (check(TokenType::COMMA) || check(TokenType::RBRACE) || check(TokenType::FAT_ARROW) || isAtEnd()) {
+            errorAt(DiagCode::E2001, "expected expression after ',' in match arm");
+        } else {
+            size_t beforePos2 = pos_;
+            ExprPtr second = parseExpr();
+            if (pos_ == beforePos2 || !second) {
+                errorAt(DiagCode::E2008, "expected second result expression after ',' in match arm");
+            } else {
+                arm->exprs.push_back(std::move(second));
+            }
+        }
+        // No more commas allowed
+        if (match(TokenType::COMMA)) {
+            errorAt(DiagCode::E2001, "match arm cannot have more than two expressions");
+        }
+    }
     
     return arm;
 }

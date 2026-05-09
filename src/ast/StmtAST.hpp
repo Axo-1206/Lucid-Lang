@@ -12,7 +12,6 @@
 #pragma once
 
 #include "BaseAST.hpp"
-#include "support/InternedString.hpp"
 #include "TypeAST.hpp"
 #include "DeclAST.hpp"
 #include "ExprAST.hpp"

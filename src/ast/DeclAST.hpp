@@ -14,7 +14,6 @@
 #pragma once
 
 #include "BaseAST.hpp"
-#include "support/InternedString.hpp"
 #include "TypeAST.hpp"
 
 #include <memory>
