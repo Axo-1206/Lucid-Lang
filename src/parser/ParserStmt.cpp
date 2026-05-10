@@ -391,8 +391,12 @@ SwitchCasePtr Parser::parseSwitchCase() {
     if (check(TokenType::COLON)) {
         errorAt(DiagCode::E2001, "expected case value before ':'");
     } else {
+        std::size_t savedPos = pos_;
         ExprPtr val = parsePrattExpr(0);
-        if (val) {
+        if (pos_ == savedPos) {
+            errorAt(DiagCode::E2002, "expected case value");
+            if (!isAtEnd()) advance(); // consume the offending token to avoid infinite loop
+        } else if (val) {  // val is always non-null, but keep the guard
             if (check(TokenType::RANGE)) {
                 sc->values.push_back(parseRangeExpr(std::move(val)));
             } else {
@@ -796,8 +800,7 @@ ASTPtr<ParallelForStmtAST> Parser::parseParallelForStmt()
 // Minimum one sub-block — a parallel block with zero tasks is a semantic error
 // (recorded as a parse-time error for an earlier diagnostic).
 // ─────────────────────────────────────────────────────────────────────────────
-ASTPtr<ParallelBlockStmtAST> Parser::parseParallelBlockStmt()
-{
+ASTPtr<ParallelBlockStmtAST> Parser::parseParallelBlockStmt() {
     LUC_LOG_STMT("parseParallelBlockStmt");
     SourceLocation loc = currentLoc();
     consume(TokenType::PARALLEL, "expected 'parallel'");
@@ -807,7 +810,8 @@ ASTPtr<ParallelBlockStmtAST> Parser::parseParallelBlockStmt()
     node->loc = loc;
     int subBlockCount = 0;
 
-    LUC_LOG_STMT_VERBOSE("parseParallelBlockStmt: entering parallel body (parallelDepth=" << parallelDepth_ << "->" << parallelDepth_ + 1 << ")");
+    LUC_LOG_STMT_VERBOSE("parseParallelBlockStmt: entering parallel body (parallelDepth=" 
+                         << parallelDepth_ << "->" << parallelDepth_ + 1 << ")");
     ++parallelDepth_;
 
     // Each '{' that appears directly inside the outer '{' is one sub-task block.
@@ -818,6 +822,11 @@ ASTPtr<ParallelBlockStmtAST> Parser::parseParallelBlockStmt()
         if (!check(TokenType::LBRACE)) {
             errorAt(DiagCode::E2001, "expected '{' to start a parallel sub-task block");
             synchronize();
+            // After synchronize, if we're not at a '{' and not at '}', stop trying.
+            if (!check(TokenType::LBRACE) && !check(TokenType::RBRACE)) {
+                // Probably hit a top-level declaration – break out to avoid spam.
+                break;
+            }
             continue;
         }
 

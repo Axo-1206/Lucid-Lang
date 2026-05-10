@@ -9,6 +9,7 @@
  */
 
 #include "Parser.hpp"
+#include "diagnostics/Diagnostic.hpp"
 #include "diagnostics/DiagnosticEngine.hpp"
 #include "debug/DebugUtils.hpp"
 
@@ -31,8 +32,29 @@ Parser::Parser(std::vector<Token> tokens, DiagnosticEngine &dc,
     kw_noinline   = AttributeRegistry::instance().getNoinlineId();
     kw_deprecated = AttributeRegistry::instance().getDeprecatedId();
 
+    // Assert that all attribute IDs are valid (non‑zero). This ensures
+    // AttributeRegistry::setStringPool() was called before constructing the parser.
+    // If you hit this assertion, call AttributeRegistry::instance().setStringPool(pool)
+    // before creating the Parser.
+    if (!kw_extern.isValid() ||
+        !kw_packed.isValid() ||
+        !kw_inline.isValid() ||
+        !kw_noinline.isValid() ||
+        !kw_deprecated.isValid()) {
+        dc.report(DiagnosticSeverity::Fatal, DiagnosticCategory::General, 
+                SourceLocation{}, DiagCode::E0001,
+                "Parser constructed before AttributeRegistry initialised");
+    }
+
     kw_sizeof  = IntrinsicRegistry::instance().getSizeofId();
     kw_alignof = IntrinsicRegistry::instance().getAlignofId();
+
+    if (!kw_sizeof.isValid() ||
+        !kw_alignof.isValid()) {
+        dc.report(DiagnosticSeverity::Fatal, DiagnosticCategory::General,
+                SourceLocation{}, DiagCode::E0001,
+                "Parser constructed before IntrinsicRegistry initialised");
+    }
 
     LUC_LOG_PARSER("=== Parser constructed ===");
     LUC_LOG_PARSER("\tToken count: " << tokens_.size());
@@ -543,9 +565,8 @@ bool Parser::looksLikeAnonFunc() const {
 
     // Helper to parse a parameter group (starting at '(') and return index after matching ')'
     auto parseOneGroup = [&](std::size_t start) -> std::size_t {
-        if (start >= tokens_.size() || tokens_[start].type != TokenType::LPAREN) {
+        if (start >= tokens_.size() || tokens_[start].type != TokenType::LPAREN)
             return start;
-        }
         int parenDepth = 1;
         std::size_t j = start + 1;
         while (j < tokens_.size() && parenDepth > 0) {
@@ -558,9 +579,11 @@ bool Parser::looksLikeAnonFunc() const {
                 ++j;
                 continue;
             } else if (tt == TokenType::TILDE) {
-                // Skip qualifiers inside the group (rare, but allow)
-                ++j;
-                if (j < tokens_.size() && tokens_[j].type == TokenType::IDENTIFIER) ++j;
+                // Skip '~' and the following identifier
+                ++j; // skip '~'
+                if (j < tokens_.size() && tokens_[j].type == TokenType::IDENTIFIER)
+                    ++j; // skip identifier name
+                // Do NOT run the final ++j at loop bottom
                 continue;
             }
             ++j;

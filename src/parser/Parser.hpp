@@ -308,6 +308,25 @@ private:
     // [vis] type IDENTIFIER [<generics>] '=' type
     ASTPtr<TypeAliasDeclAST> parseTypeAliasDecl(Visibility vis);
 
+    // ── Anon-func body signature helper ──────────────────────────────────
+
+    // Called when a func/method body uses the verbose anon-func form:
+    //   = (params...) RetType { ... }
+    //   = (a int) (b int) RetType { ... }   ← curried form
+    //
+    // Responsibilities:
+    //   1. Consume ALL repeated parameter groups (while LPAREN).
+    //   2. Optionally parse a repeated return type annotation.
+    //   3. Compare against declaredSig.returnType:
+    //        • Kinds match         → no diagnostic.
+    //        • Kinds differ        → W3001 warning; header type is canonical.
+    //        • Header has no type  → adopt body's return type (permissive).
+    //
+    // After returning, the parser sits immediately before '{' (or at a bad
+    // token if malformed — the caller owns the final LBRACE check).
+    void validateAnonFuncBodySig(FuncSignature& declaredSig,
+                                 const std::string& declName);
+
     // ── Compiler Directive parsers ────────────────────────────────────────
 
     // Parse one '@' directive: '@' IDENTIFIER [ '(' attr_args ')' ]

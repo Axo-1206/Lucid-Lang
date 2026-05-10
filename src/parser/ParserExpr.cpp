@@ -971,7 +971,16 @@ ExprPtr Parser::parseStructLiteralExpr(std::string typeName, std::vector<TypePtr
 
         consume(TokenType::ASSIGN, "expected '=' after field name '" + fieldName + "' in struct literal");
 
+        // Progress tracking
+        std::size_t savedPos = pos_;
         ExprPtr val = parseExpr();
+        if (pos_ == savedPos) {
+            errorAt(DiagCode::E2008, "expected expression for field '" + fieldName + "' in struct literal");
+            if (!isAtEnd()) advance(); // consume the offending token to avoid infinite loop
+            continue;
+        }
+
+        // parseExpr never returns null, but keep a defensive check
         if (!val) {
             errorAt(DiagCode::E2008, "expected expression for field '" + fieldName + "' in struct literal");
             continue;
@@ -1205,7 +1214,6 @@ ExprPtr Parser::parseMatchExpr() {
             if (node->defaultBody) {
                 node->defaultLoc = node->defaultBody->loc;
             }
-            
             hasDefault = true;
             break;
         }
@@ -1213,17 +1221,21 @@ ExprPtr Parser::parseMatchExpr() {
         size_t beforePos = pos_;
         MatchArmPtr arm = parseMatchArm();
         if (pos_ == beforePos) {
-            // No progress – abort this arm and skip to next sync point
             errorAt(DiagCode::E2007, "failed to parse match arm, skipping");
             synchronize();
-            // If we hit the closing brace or EOF, stop entirely
             if (check(TokenType::RBRACE) || isAtEnd())
                 break;
             continue;
         }
-        if (arm) {
-            node->arms.push_back(std::move(arm));
+        // Check if parseMatchArm failed (returned nullptr) even though progress was made
+        if (!arm) {
+            errorAt(DiagCode::E2007, "invalid match arm, skipping");
+            synchronize();
+            if (check(TokenType::RBRACE) || isAtEnd())
+                break;
+            continue;
         }
+        node->arms.push_back(std::move(arm));
     }
 
     consume(TokenType::RBRACE, "expected '}' to close match expression");
@@ -1894,33 +1906,36 @@ DefaultArmPtr Parser::parseDefaultArm() {
     auto arm = arena_.make<DefaultArmAST>();
     arm->loc = loc;
 
-    // Parse one or more result expressions, separated by commas.
-    // Use position tracking to break if no progress is made.
-    while (true) {
-        // If we're at a comma, consume it unless it's the first iteration.
-        // But the grammar allows optional comma before the first expression?
-        // For consistency with parseMatchArm, we require at least one expression
-        // and then optional commas. We'll handle it as:
-        //   expr { ',' expr }
-        // The leading comma is not allowed.
+    // First expression (required)
+    std::size_t savedPos = pos_;
+    ExprPtr exp = parseExpr();
+    if (pos_ == savedPos || !exp) {
+        errorAt(DiagCode::E2008, "expected expression after '=>' in default arm");
+        return arm;
+    }
+    arm->exprs.push_back(std::move(exp));
 
-        size_t savedPos = pos_;
-        ExprPtr exp = parseExpr();
-        if (pos_ == savedPos) {
-            // No progress — stop parsing expressions.
-            if (!arm->exprs.empty()) {
-                // Already have at least one expression, break gracefully.
-                break;
+    // Optional second expression after comma
+    if (match(TokenType::COMMA)) {
+        if (check(TokenType::COMMA) || check(TokenType::RBRACE) || check(TokenType::FAT_ARROW) || isAtEnd()) {
+            errorAt(DiagCode::E2001, "expected expression after ',' in default arm");
+        } else {
+            std::size_t savedPos2 = pos_;
+            ExprPtr second = parseExpr();
+            if (pos_ == savedPos2 || !second) {
+                errorAt(DiagCode::E2008, "expected second expression after ',' in default arm");
+            } else {
+                arm->exprs.push_back(std::move(second));
             }
-            // No expressions at all — error.
-            errorAt(DiagCode::E2008, "expected expression after '=>' in default arm");
-            break;
         }
-
-        arm->exprs.push_back(std::move(exp));
-
-        // If the next token is not a comma, we're done.
-        if (!match(TokenType::COMMA)) break;
+        // No more commas allowed
+        if (match(TokenType::COMMA)) {
+            errorAt(DiagCode::E2001, "default arm cannot have more than two expressions");
+            // Skip any further tokens until a safe boundary (optional)
+            while (!isAtEnd() && !check(TokenType::RBRACE) && !check(TokenType::DEFAULT)) {
+                advance();
+            }
+        }
     }
 
     return arm;

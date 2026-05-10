@@ -75,6 +75,102 @@
 // Parameters are intentionally restricted to compile-time literals and type
 // identifiers — no runtime expressions inside attribute argument lists.
 // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// validateAnonFuncBodySig
+//
+// Shared helper for parseFuncDecl and parseMethodDecl.
+//
+// When a function/method body is written in the verbose anon-func form:
+//   = (params) RetType { ... }
+// or, for curried declarations:
+//   = (a int) (b int) RetType { ... }
+//
+// the repeated parameter groups and optional return type must be consumed.
+// This helper does exactly that, then validates the repeated return type
+// against the already-declared signature (which is the authoritative source).
+//
+// Cursor contract:
+//   On entry : positioned at the first token of the repeated signature.
+//              This may be '~' (qualifier) or '(' (first param group) —
+//              both forms are handled correctly.
+//   On return: positioned at '{' (or at a bad token — caller owns that check).
+// ─────────────────────────────────────────────────────────────────────────────
+void Parser::validateAnonFuncBodySig(FuncSignature& declaredSig,
+                                     const std::string& declName) {
+    // ── 0. Consume any repeated type qualifiers (~async, ~noinline, etc.) ──
+    //
+    // Without this step the helper would reach looksLikeType() with '~' as the
+    // current token.  looksLikeType() returns true for '~IDENTIFIER' (function
+    // type qualifier), so it would call parseType() → parseBaseType().
+    // parseBaseType() has no TILDE case and falls through to default:, which
+    // returns UnknownTypeAST while consuming ZERO tokens.  The '~' is left
+    // unconsumed, check(LBRACE) fails, and the caller reports "expected '{'"
+    // and returns nullptr — the entire function body is silently dropped.
+    //
+    // The fix: discard repeated qualifiers here, before the param-group loop,
+    // exactly mirroring the qualifier loop in parseFuncDecl's declaration header.
+    // We do not validate consistency against declaredSig.rawQualifiers here;
+    // the semantic pass is the right place for that check.
+    while (check(TokenType::TILDE)) {
+        advance(); // consume '~'
+        if (!check(TokenType::IDENTIFIER)) {
+            errorAt(DiagCode::E2003,
+                    "expected qualifier name after '~' in repeated signature for '" +
+                    declName + "'");
+            break; // stop; let the param-group loop handle whatever comes next
+        }
+        advance(); // consume qualifier name (e.g. 'async', 'noinline')
+    }
+
+    // ── 1. Consume ALL repeated parameter groups ─────────────────────────
+    // This correctly handles both single-group and curried (multi-group) forms.
+    // Without this loop the previous code only consumed one group, leaving the
+    // second (and subsequent) groups to be misidentified as the return type.
+    while (check(TokenType::LPAREN)) {
+        parseParamGroup(); // discard — declared signature is authoritative
+    }
+
+    // ── 2. Optional repeated return type ─────────────────────────────────
+    if (looksLikeType() && !check(TokenType::LBRACE)) {
+        SourceLocation repeatedRetLoc = currentLoc();
+        TypePtr repeatedRet = parseType();
+
+        if (declaredSig.returnType && repeatedRet) {
+            // Both declared and repeated return types are present — compare.
+            // ASTKind is the fast first-pass check; it catches mismatches
+            // between entirely different type categories (e.g. int vs MyStruct).
+            bool mismatch = (declaredSig.returnType->kind != repeatedRet->kind);
+
+            // For named types, kinds match but names might differ (Foo vs Bar).
+            if (!mismatch &&
+                declaredSig.returnType->isa<NamedTypeAST>() &&
+                repeatedRet->isa<NamedTypeAST>()) {
+                mismatch = (declaredSig.returnType->as<NamedTypeAST>()->name !=
+                            repeatedRet->as<NamedTypeAST>()->name);
+            }
+            // Primitive types: each primitive has a unique ASTKind, so the
+            // kind comparison above is already sufficient — no extra check.
+
+            if (mismatch) {
+                error(repeatedRetLoc, DiagCode::W3001,
+                      "repeated return type in body does not match the declared "
+                      "return type for '" + declName + "'; "
+                      "the declaration's type is authoritative");
+                LUC_LOG_PARSER("validateAnonFuncBodySig: return-type MISMATCH for '" << declName << "'");
+            } else {
+                LUC_LOG_PARSER("validateAnonFuncBodySig: return-type matches for '" << declName << "'");
+            }
+        } else if (!declaredSig.returnType && repeatedRet) {
+            // No return type in the header — adopt the body's annotation.
+            // This is a permissive fallback; the semantic pass will confirm.
+            LUC_LOG_PARSER("validateAnonFuncBodySig: adopting repeated return type for '" << declName << "'");
+            declaredSig.returnType = std::move(repeatedRet);
+        }
+        // If repeatedRet is null (parse error), we leave declaredSig unchanged.
+    }
+}
+
+
 std::vector<AttributePtr> Parser::parseAttributes() {
     LUC_LOG_PARSER_VERBOSE("parseAttributes: starting");
     std::vector<AttributePtr> attrs;
@@ -119,6 +215,7 @@ AttributePtr Parser::parseAttribute() {
             match(TokenType::COMMA); // optional separator
             if (check(TokenType::RPAREN)) break;
 
+            std::size_t savedPos = pos_;
             SourceLocation argLoc = currentLoc();
 
             if (check(TokenType::STRING_LITERAL)) {
@@ -131,7 +228,7 @@ AttributePtr Parser::parseAttribute() {
                 attr->args.push_back(std::move(arg));
             }
             else if (checkAny({TokenType::INT_LITERAL, TokenType::HEX_LITERAL,
-                               TokenType::BINARY_LITERAL})) {
+                            TokenType::BINARY_LITERAL})) {
                 std::string raw = advance().value;
                 auto arg = arena_.make<AttributeArgAST>(
                     AttributeArgKind::IntLit,
@@ -171,8 +268,16 @@ AttributePtr Parser::parseAttribute() {
             else {
                 errorAt(DiagCode::E2009,
                         "attribute argument must be a string, integer, boolean, or type name");
-                // Skip to closing paren.
+                // Skip to closing parenthesis for recovery
                 while (!check(TokenType::RPAREN) && !isAtEnd()) advance();
+                break;
+            }
+
+            // Ensure progress was made
+            if (pos_ == savedPos) {
+                errorAt(DiagCode::E2009, "invalid attribute argument – no progress");
+                // consume the offending token to avoid infinite loop
+                if (!isAtEnd()) advance();
                 break;
             }
         }
@@ -521,6 +626,16 @@ ASTPtr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vis, std::v
         } else if (check(TokenType::ASSIGN)) {
             LUC_LOG_PARSER("\tERROR: extern function cannot have body");
             errorAt(DiagCode::E2002, "'@extern' function '" + nameRaw + "' must not have a body");
+            
+            // Consume the '=' and skip the body to recover
+            advance(); // consume '='
+            if (check(TokenType::LBRACE)) {
+                parseBlock(); // discard the block body
+            } else {
+                parseExpr(); // discard the expression body
+            }
+            // Optionally consume a following semicolon (if present)
+            match(TokenType::SEMICOLON);
         } else {
             LUC_LOG_PARSER("\tWarning: extern declaration missing semicolon, current token: '" << peek().value << "'");
         }
@@ -544,12 +659,12 @@ ASTPtr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vis, std::v
         // Block body: = { ... }
         node->body = parseBlock();  // returns StmtPtr (BlockStmtAST)
     } else if (check(TokenType::LPAREN)) {
-        // Anon func form with repeated signature (verbose form): = (params) ret { ... }
-        // We consume it but don't store it separately — the declaration's sig is the source of truth.
-        parseParamGroup(); // Consume the repeated param group
-        if (looksLikeType() && !check(TokenType::LBRACE)) {
-            parseType(); // Optional repeated return type
-        }
+        // Anon func form with repeated signature (verbose/curried form):
+        //   = (params) ret { ... }
+        //   = (a int) (b int) ret { ... }   ← curried
+        // The declaration header is authoritative. The helper consumes all
+        // repeated param groups (loop) and validates the return type.
+        validateAnonFuncBodySig(node->sig, nameRaw);
         if (!check(TokenType::LBRACE)) {
             errorAt(DiagCode::E2001, "expected '{' to start function body");
             return nullptr;
@@ -605,7 +720,6 @@ std::vector<ASTPtr<ParamAST>> Parser::parseParamGroup() {
         match(TokenType::COMMA);
         if (check(TokenType::RPAREN)) break;
 
-        size_t savedPos = pos_;
         SourceLocation paramLoc = currentLoc();
 
         // Parse parameter name
@@ -619,11 +733,20 @@ std::vector<ASTPtr<ParamAST>> Parser::parseParamGroup() {
         bool isVariadic = match(TokenType::VARIADIC);
 
         // Save position right before parsing the type
-        savedPos = pos_;
+        std::size_t savedPos = pos_;
         TypePtr paramType = parseType();
-        if (paramType->isa<UnknownTypeAST>() && pos_ == savedPos) {
-            errorAt(DiagCode::E2005, "expected parameter type");
-            break;  // exit loop to avoid infinite recursion
+
+        // Case 1: No progress → infinite loop risk
+        if (pos_ == savedPos) {
+            errorAt(DiagCode::E2005, "expected parameter type, no token consumed");
+            if (!isAtEnd()) advance(); // consume offending token to avoid infinite loop
+            break;
+        }
+
+        // Case 2: parseType returned an unknown type (invalid syntax)
+        if (paramType->isa<UnknownTypeAST>()) {
+            errorAt(DiagCode::E2005, "invalid parameter type");
+            break;  // do NOT add this parameter
         }
         
         auto paramNode = arena_.make<ParamAST>();
@@ -1231,11 +1354,11 @@ MethodDeclPtr Parser::parseMethodDecl() {
         method->body = parseBlock();
         LUC_LOG_PARSER("parseMethodDecl: block body");
     } else if (check(TokenType::LPAREN)) {
-        // Anon func form with repeated signature: = (params) ret { ... }
-        parseParamGroup(); // Consume the repeated param group
-        if (looksLikeType() && !check(TokenType::LBRACE)) {
-            parseType();
-        }
+        // Anon func form with repeated signature (verbose/curried form):
+        //   = (params) ret { ... }
+        //   = (a int) (b int) ret { ... }   ← curried
+        std::string methodName = std::string(pool_.lookup(method->name));
+        validateAnonFuncBodySig(method->sig, methodName);
         if (!check(TokenType::LBRACE)) {
             errorAt(DiagCode::E2001, "expected '{' to start method body");
             return nullptr;
@@ -1310,24 +1433,29 @@ ASTPtr<FromDeclAST> Parser::parseFromDecl(Visibility vis) {
 
         SourceLocation entryLoc = currentLoc();
 
-        auto entry = arena_.make<FromEntryAST>();
-        entry->loc = entryLoc;
-
-        // Parse one or more parameter groups - using the SAME parseParamGroup()
+        // Parse one or more parameter groups
         if (!check(TokenType::LPAREN)) {
             errorAt(DiagCode::E2001, "expected '(' to start parameter list for conversion entry");
             synchronize();
+            // If we landed on a declaration start or RBRACE, abort this block
+            if (looksLikeDeclStart() || check(TokenType::RBRACE))
+                break;
             continue;
         }
-        
+
+        auto entry = arena_.make<FromEntryAST>();
+        entry->loc = entryLoc;
+
         while (check(TokenType::LPAREN)) {
-            entry->sig.paramGroups.push_back(parseParamGroup()); 
+            entry->sig.paramGroups.push_back(parseParamGroup());
         }
 
         // Return type name
         if (!check(TokenType::IDENTIFIER)) {
             errorAt(DiagCode::E2003, "expected target type name after parameter list");
             synchronize();
+            if (looksLikeDeclStart() || check(TokenType::RBRACE))
+                break;
             continue;
         }
         entry->returnTypeName = pool_.intern(advance().value);
@@ -1335,6 +1463,8 @@ ASTPtr<FromDeclAST> Parser::parseFromDecl(Visibility vis) {
         if (!check(TokenType::ASSIGN)) {
             errorAt(DiagCode::E2001, "expected '=' before body for conversion entry");
             synchronize();
+            if (looksLikeDeclStart() || check(TokenType::RBRACE))
+                break;
             continue;
         }
         advance();
