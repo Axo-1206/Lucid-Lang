@@ -137,9 +137,7 @@ struct ExprStmtAST : StmtAST {
 //     on any VarDeclAST or FuncDeclAST it constructs for a block context.
 //
 //   - extern is a linker-level directive. Linkage is a global program
-//     concern — the linker has no concept of block scope. Raw pointer
-//     types (@T) are only valid inside extern declarations, so allowing
-//     extern in a block would also leak @T into block scope. Both the
+//     concern — the linker has no concept of block scope. Both the
 //     parser and the semantic pass reject extern in non-top-level position.
 //
 // The parser constructs one of these two types when it sees a declaration

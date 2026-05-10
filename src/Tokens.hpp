@@ -109,10 +109,6 @@ enum class TokenType {
     QUESTION_DOT,      // ?.     - nullable field chain, propagates nil: player?.weapon?.damage
     QUESTION_QUESTION, // ??     - nil fallback, terminates a ?. chain: ?.field ?? default
 
-    // Reference & FFI
-    AMPERSAND, // &         - reference type: &T  (safe, managed)
-    AT_SIGN,   // @         - compiler directive: @extern("sym"), @inline, @sizeof(T), etc.
-
     // Type operators
     PIPE,     // |         
     VARIADIC, // ...       - variadic params: args ...int
@@ -158,7 +154,6 @@ enum class TokenType {
     BIT_NOT,  // ~~   -- bitwise NOT
     SHL,      // <<
     SHR,      // >>
-    TILDE,    // ~         - type qualifier prefix: ~async, ~noinline
 
     // ─── Delimiters ───────────────────────────────────────────────────────────
     COMMA,     // ,
@@ -180,6 +175,13 @@ enum class TokenType {
     CHAR_LITERAL,       // 'a'
     HEX_LITERAL,        // 0xFF   (important for Vulkan flags/bitmasks)
     BINARY_LITERAL,     // 0b1010
+
+    // ─── Symbols ──────────────────────────────────────────────────────────────
+    AT_SIGN,   // @    - attribute prefix: @noinline, @test
+    HASH,      // #    - intrinsic prefix: #malloc, #memcpy
+    TILDE,     // ~    - type qualifier prefix: ~async, ~cdecl
+
+    AMPERSAND, // &         - reference type: &T  (safe, managed)
 
     // ─── Meta ─────────────────────────────────────────────────────────────────
     DOC_COMMENT,  // /-- ... --/  - block documentation comment, attached to next declaration

@@ -686,6 +686,9 @@ Token Lexer::getNextToken() {
     case '@':
         LUC_LOG_LEXER_EXTREME("getNextToken: '@'");
         return makeToken(TokenType::AT_SIGN, "@");
+    case '#':
+        LUC_LOG_LEXER_EXTREME("getNextToken: '#'");
+        return makeToken(TokenType::HASH, "#");
 
     case ',':
         LUC_LOG_LEXER_EXTREME("getNextToken: ','");

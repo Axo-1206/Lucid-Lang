@@ -4,7 +4,7 @@
  * @brief Implementation of the IntrinsicRegistry singleton.
  *
  * This file contains:
- *   - The static table of all Luc '@' intrinsics (kEntries)
+ *   - The static table of all Luc '#' intrinsics (kEntries)
  *   - Initialisation of the table with interned string IDs
  *   - O(1) lookup functions using InternedString keys
  *
@@ -31,13 +31,13 @@ IntrinsicEntry IntrinsicRegistry::kEntries[] = {
     // ════════════════════════════════════════════════════════════════════════
     {
         InternedString(),               // id (filled later)
-        "sizeof",                       // Luc name: @sizeof(T)
+        "sizeof",                       // Luc name: #sizeof(T)
         "llvm.none",                    // not a real LLVM intrinsic
         { IntrinsicArgKind::TypeArg },  // one type argument
         IntrinsicReturnKind::Uint64,    // returns compile-time integer
         false,                          // not overloaded
         0, 0,                           // no value arguments
-        "@sizeof(T) — compile-time byte size of type T"
+        "#sizeof(T) — compile-time byte size of type T"
     },
     {
         InternedString(),
@@ -47,7 +47,7 @@ IntrinsicEntry IntrinsicRegistry::kEntries[] = {
         IntrinsicReturnKind::Uint64,
         false,
         0, 0,
-        "@alignof(T) — compile-time alignment requirement of type T in bytes"
+        "#alignof(T) — compile-time alignment requirement of type T in bytes"
     },
 
     // ════════════════════════════════════════════════════════════════════════
@@ -61,7 +61,7 @@ IntrinsicEntry IntrinsicRegistry::kEntries[] = {
         IntrinsicReturnKind::SameAsArg0,
         true,   // overloaded: .f32 or .f64 suffix
         1, 1,
-        "@sqrt(x) — hardware-accelerated square root; x must be float or double"
+        "#sqrt(x) — hardware-accelerated square root; x must be float or double"
     },
     {
         InternedString(),
@@ -71,7 +71,7 @@ IntrinsicEntry IntrinsicRegistry::kEntries[] = {
         IntrinsicReturnKind::SameAsArg0,
         true,
         1, 1,
-        "@abs(x) — absolute value; works on integers and floats"
+        "#abs(x) — absolute value; works on integers and floats"
     },
     {
         InternedString(),
@@ -81,7 +81,7 @@ IntrinsicEntry IntrinsicRegistry::kEntries[] = {
         IntrinsicReturnKind::SameAsArg0,
         true,
         2, 2,
-        "@min(a, b) — minimum of two values; both must be the same type"
+        "#min(a, b) — minimum of two values; both must be the same type"
     },
     {
         InternedString(),
@@ -91,7 +91,7 @@ IntrinsicEntry IntrinsicRegistry::kEntries[] = {
         IntrinsicReturnKind::SameAsArg0,
         true,
         2, 2,
-        "@max(a, b) — maximum of two values; both must be the same type"
+        "#max(a, b) — maximum of two values; both must be the same type"
     },
     {
         InternedString(),
@@ -101,7 +101,7 @@ IntrinsicEntry IntrinsicRegistry::kEntries[] = {
         IntrinsicReturnKind::SameAsArg0,
         true,
         1, 1,
-        "@floor(x) — round x down to the nearest integer (as float)"
+        "#floor(x) — round x down to the nearest integer (as float)"
     },
     {
         InternedString(),
@@ -111,7 +111,7 @@ IntrinsicEntry IntrinsicRegistry::kEntries[] = {
         IntrinsicReturnKind::SameAsArg0,
         true,
         1, 1,
-        "@ceil(x) — round x up to the nearest integer (as float)"
+        "#ceil(x) — round x up to the nearest integer (as float)"
     },
     {
         InternedString(),
@@ -121,7 +121,7 @@ IntrinsicEntry IntrinsicRegistry::kEntries[] = {
         IntrinsicReturnKind::SameAsArg0,
         true,
         1, 1,
-        "@round(x) — round x to the nearest integer, halfway away from zero"
+        "#round(x) — round x to the nearest integer, halfway away from zero"
     },
     {
         InternedString(),
@@ -131,7 +131,7 @@ IntrinsicEntry IntrinsicRegistry::kEntries[] = {
         IntrinsicReturnKind::SameAsArg0,
         true,
         2, 2,
-        "@pow(base, exp) — base raised to exp; both float/double"
+        "#pow(base, exp) — base raised to exp; both float/double"
     },
     {
         InternedString(),
@@ -143,7 +143,7 @@ IntrinsicEntry IntrinsicRegistry::kEntries[] = {
         IntrinsicReturnKind::SameAsArg0,
         true,
         3, 3,
-        "@fma(a, b, c) — fused multiply‑add: (a * b) + c, single rounding"
+        "#fma(a, b, c) — fused multiply‑add: (a * b) + c, single rounding"
     },
 
     // ════════════════════════════════════════════════════════════════════════
@@ -157,7 +157,7 @@ IntrinsicEntry IntrinsicRegistry::kEntries[] = {
         IntrinsicReturnKind::SameAsArg0,
         true,   // suffix: .i32, .i64, etc.
         1, 1,
-        "@clz(x) — count leading zero bits in x; x must be an integer type"
+        "#clz(x) — count leading zero bits in x; x must be an integer type"
     },
     {
         InternedString(),
@@ -167,7 +167,7 @@ IntrinsicEntry IntrinsicRegistry::kEntries[] = {
         IntrinsicReturnKind::SameAsArg0,
         true,
         1, 1,
-        "@ctz(x) — count trailing zero bits in x"
+        "#ctz(x) — count trailing zero bits in x"
     },
     {
         InternedString(),
@@ -177,7 +177,7 @@ IntrinsicEntry IntrinsicRegistry::kEntries[] = {
         IntrinsicReturnKind::SameAsArg0,
         true,
         1, 1,
-        "@popcount(x) — number of set (1) bits in x"
+        "#popcount(x) — number of set (1) bits in x"
     },
     {
         InternedString(),
@@ -187,7 +187,7 @@ IntrinsicEntry IntrinsicRegistry::kEntries[] = {
         IntrinsicReturnKind::SameAsArg0,
         true,
         1, 1,
-        "@bswap(x) — reverse byte order of x (endianness conversion)"
+        "#bswap(x) — reverse byte order of x (endianness conversion)"
     },
 
     // ════════════════════════════════════════════════════════════════════════
@@ -203,7 +203,7 @@ IntrinsicEntry IntrinsicRegistry::kEntries[] = {
         IntrinsicReturnKind::Void,
         true,   // overloaded on pointer address space
         3, 3,
-        "@memcpy(dest, src, len) — copy len bytes; regions must not overlap"
+        "#memcpy(dest, src, len) — copy len bytes; regions must not overlap"
     },
     {
         InternedString(),
@@ -215,7 +215,7 @@ IntrinsicEntry IntrinsicRegistry::kEntries[] = {
         IntrinsicReturnKind::Void,
         true,
         3, 3,
-        "@memmove(dest, src, len) — copy len bytes; handles overlapping regions"
+        "#memmove(dest, src, len) — copy len bytes; handles overlapping regions"
     },
     {
         InternedString(),
@@ -227,7 +227,7 @@ IntrinsicEntry IntrinsicRegistry::kEntries[] = {
         IntrinsicReturnKind::Void,
         true,
         3, 3,
-        "@memset(dest, value, len) — fill len bytes with byte value"
+        "#memset(dest, value, len) — fill len bytes with byte value"
     },
 
     // ════════════════════════════════════════════════════════════════════════
@@ -241,7 +241,7 @@ IntrinsicEntry IntrinsicRegistry::kEntries[] = {
         IntrinsicReturnKind::SameAsArg1,   // result type = typeArg
         false,  // not overloaded – uses direct bitcast
         1, 1,
-        "@bitcast(T, x) — reinterpret bits of x as type T; sizes must match"
+        "#bitcast(T, x) — reinterpret bits of x as type T; sizes must match"
     },
 
     // ════════════════════════════════════════════════════════════════════════
@@ -255,7 +255,7 @@ IntrinsicEntry IntrinsicRegistry::kEntries[] = {
         IntrinsicReturnKind::RefOfTypeArg0,
         false,
         1, 1,
-        "@ptrToRef(T, ptr) — convert raw pointer *T to safe reference &T"
+        "#ptrToRef(T, ptr) — convert raw pointer *T to safe reference &T"
     },
     {
         InternedString(),
@@ -265,7 +265,7 @@ IntrinsicEntry IntrinsicRegistry::kEntries[] = {
         IntrinsicReturnKind::SameAsArg0,
         false,
         1, 1,
-        "@refToPtr(ref) — convert safe reference &T to raw pointer *T"
+        "#refToPtr(ref) — convert safe reference &T to raw pointer *T"
     },
     {
         InternedString(),
@@ -275,7 +275,7 @@ IntrinsicEntry IntrinsicRegistry::kEntries[] = {
         IntrinsicReturnKind::SameAsArg0,
         false,
         2, 2,
-        "@ptrOffset(ptr, n) — pointer arithmetic: returns ptr + n"
+        "#ptrOffset(ptr, n) — pointer arithmetic: returns ptr + n"
     },
     {
         InternedString(),
@@ -285,7 +285,7 @@ IntrinsicEntry IntrinsicRegistry::kEntries[] = {
         IntrinsicReturnKind::Int64,
         false,
         2, 2,
-        "@ptrDiff(p1, p2) — distance between two pointers (in elements)"
+        "#ptrDiff(p1, p2) — distance between two pointers (in elements)"
     },
 };
 

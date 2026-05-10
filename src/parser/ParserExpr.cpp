@@ -504,11 +504,11 @@ ExprPtr Parser::parsePrimaryExpr(bool allowStructLiteral) {
         return parseIfExpr();
     }
 
-    // ── @intrinsic call ───────────────────────────────────────────────────────
-    // '@' IDENTIFIER '(' args ')'  — compiler-builtin call.
-    // Examples:  @sizeof(Vec2)   @memcpy(dst, src, n)   @sqrt(x)
+    // ── #intrinsic call ───────────────────────────────────────────────────────
+    // '#' IDENTIFIER '(' args ')'  — compiler-builtin call.
+    // Examples:  #sizeof(Vec2)   #memcpy(dst, src, n)   #sqrt(x)
     if (check(TokenType::AT_SIGN)) {
-        LUC_LOG_EXPR("parsePrimaryExpr: parsing @ intrinsic");
+        LUC_LOG_EXPR("parsePrimaryExpr: parsing # intrinsic");
         return parseIntrinsicCallExpr();
     }
 
@@ -1049,27 +1049,27 @@ ExprPtr Parser::parseAnonFuncExpr() {
 // parseIntrinsicCallExpr
 //
 // Grammar:
-//   intrinsic_call := '@' IDENTIFIER '(' [ intrinsic_arg_list ] ')'
+//   intrinsic_call := '#' IDENTIFIER '(' [ intrinsic_arg_list ] ')'
 //   intrinsic_arg_list := intrinsic_arg { ',' intrinsic_arg }
-//   intrinsic_arg  := type_name            -- for @sizeof(T), @alignof(T)
-//                   | expr                 -- for @sqrt(x), @memcpy(dst,src,n)
+//   intrinsic_arg  := type_name            -- for #sizeof(T), #alignof(T)
+//                   | expr                 -- for #sqrt(x), #memcpy(dst,src,n)
 //
 // The parser uses a simple disambiguation:
 //   If the first argument after '(' is a bare IDENTIFIER that looks like a
 //   named type (not followed by an infix operator), and the intrinsic is a
-//   type-parameter intrinsic (@sizeof / @alignof), we parse it as typeArg.
+//   type-parameter intrinsic (#sizeof / #alignof), we parse it as typeArg.
 //   Otherwise all arguments are parsed as regular expressions.
 //
 // Type-parameter intrinsics:  sizeof, alignof
 // Value-argument intrinsics:  sqrt, abs, min, max, memcpy, memset, ...
 // ─────────────────────────────────────────────────────────────────────────────
 ExprPtr Parser::parseIntrinsicCallExpr() {
-    LUC_LOG_EXPR("parseIntrinsicCallExpr: parsing @ intrinsic");
+    LUC_LOG_EXPR("parseIntrinsicCallExpr: parsing # intrinsic");
     SourceLocation loc = currentLoc();
-    consume(TokenType::AT_SIGN, "expected '@'");
+    consume(TokenType::AT_SIGN, "expected '#'");
 
     if (!check(TokenType::IDENTIFIER)) {
-        errorAt(DiagCode::E2003, "expected intrinsic name after '@'");
+        errorAt(DiagCode::E2003, "expected intrinsic name after '#'");
         return arena_.make<UnknownExprAST>();
     }
 
@@ -1079,7 +1079,7 @@ ExprPtr Parser::parseIntrinsicCallExpr() {
 
     if (!check(TokenType::LPAREN)) {
         errorAt(DiagCode::E2001,
-                "expected '(' after intrinsic '@" + std::string(pool_.lookup(node->intrinsicName)) + "'");
+                "expected '(' after intrinsic '#" + std::string(pool_.lookup(node->intrinsicName)) + "'");
         return arena_.make<UnknownExprAST>();
     }
     LUC_LOG_EXPR("parseIntrinsicCallExpr: name='" << pool_.lookup(node->intrinsicName) << "'");
@@ -1095,7 +1095,7 @@ ExprPtr Parser::parseIntrinsicCallExpr() {
             TypePtr typeArg = parseType();
             if (!typeArg) {
                 errorAt(DiagCode::E2005,
-                        "expected type argument for '@" + std::string(pool_.lookup(node->intrinsicName)) + "'");
+                        "expected type argument for '#" + std::string(pool_.lookup(node->intrinsicName)) + "'");
             } else {
                 node->typeArg = std::move(typeArg);
             }
@@ -1110,7 +1110,7 @@ ExprPtr Parser::parseIntrinsicCallExpr() {
             // Check for progress – break if parseExpr consumed no tokens
             if (pos_ == savedPos) {
                 errorAt(DiagCode::E2008,
-                        "expected argument expression in '@" +
+                        "expected argument expression in '#" +
                         std::string(pool_.lookup(node->intrinsicName)) + "'");
                 // Skip to closing parenthesis to recover
                 while (!check(TokenType::RPAREN) && !isAtEnd()) advance();

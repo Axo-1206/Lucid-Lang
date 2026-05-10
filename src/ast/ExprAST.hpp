@@ -991,22 +991,22 @@ struct TypeConvExprAST : ExprAST {
 // ─────────────────────────────────────────────────────────────────────────────
 // IntrinsicCallExprAST
 //
-// A compiler-builtin call invoked with the '@' prefix in expression position.
+// A compiler-builtin call invoked with the '#' prefix in expression position.
 //
-//   @sizeof(T)                   — compile-time size of a type in bytes
-//   @alignof(T)                  — alignment requirement of a type
-//   @memcpy(dest, src, len)      — LLVM memcpy intrinsic
-//   @memset(dest, val, len)      — LLVM memset intrinsic
-//   @sqrt(x)                     — hardware-accelerated sqrt (llvm.sqrt)
-//   @abs(x)                      — hardware-accelerated abs (llvm.abs)
-//   @min(a, b)                   — hardware-accelerated min
-//   @max(a, b)                   — hardware-accelerated max
+//   #sizeof(T)                   — compile-time size of a type in bytes
+//   #alignof(T)                  — alignment requirement of a type
+//   #memcpy(dest, src, len)      — LLVM memcpy intrinsic
+//   #memset(dest, val, len)      — LLVM memset intrinsic
+//   #sqrt(x)                     — hardware-accelerated sqrt (llvm.sqrt)
+//   #abs(x)                      — hardware-accelerated abs (llvm.abs)
+//   #min(a, b)                   — hardware-accelerated min
+//   #max(a, b)                   — hardware-accelerated max
 //
-// intrinsicName — the identifier after '@', e.g. "sizeof", "memcpy".
-// typeArg       — present for type-parameter intrinsics (@sizeof(T)).
+// intrinsicName — the identifier after '#', e.g. "sizeof", "memcpy".
+// typeArg       — present for type-parameter intrinsics (#sizeof(T)).
 //                 Stored as a TypeAST because the argument is a type name, not a value.
 //                 nullptr when the intrinsic takes only value arguments.
-// args          — value arguments; may be empty (e.g. @sizeof(T) has zero value args).
+// args          — value arguments; may be empty (e.g. #sizeof(T) has zero value args).
 //
 // The semantic pass validates argument counts / types and sets resolvedType.
 // Codegen maps the intrinsicName to the corresponding LLVM intrinsic ID.
@@ -1016,7 +1016,7 @@ struct IntrinsicCallExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::IntrinsicCallExpr;
 
     InternedString          intrinsicName;  // "sizeof", "memcpy", "sqrt", …
-    TypePtr              typeArg;        // for @sizeof(T) / @alignof(T) — nullptr otherwise
+    TypePtr              typeArg;        // for #sizeof(T) / #alignof(T) — nullptr otherwise
     std::vector<ExprPtr> args;           // value arguments in order
 
     IntrinsicCallExprAST() : ExprAST(ASTKind::IntrinsicCallExpr) {}

@@ -354,7 +354,6 @@ struct FuncSignature {
     // Zero‑cost helpers — direct bitmask test
     bool hasQualifier(uint32_t bit) const { return (qualifiers & bit) != 0; }
     bool isAsync()    const { return hasQualifier(QualifierBits::Async); }
-    bool isNoInline() const { return hasQualifier(QualifierBits::NoInline); }
     bool isParallel() const { return hasQualifier(QualifierBits::Parallel); }
 
     bool hasParams()  const {

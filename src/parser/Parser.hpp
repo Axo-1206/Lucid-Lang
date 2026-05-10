@@ -308,7 +308,7 @@ private:
     // [vis] type IDENTIFIER [<generics>] '=' type
     ASTPtr<TypeAliasDeclAST> parseTypeAliasDecl(Visibility vis);
 
-    // ── Compiler Directive (@) parsers ────────────────────────────────────────
+    // ── Compiler Directive parsers ────────────────────────────────────────
 
     // Parse one '@' directive: '@' IDENTIFIER [ '(' attr_args ')' ]
     // Called before any declaration that may carry attributes.
@@ -391,7 +391,7 @@ private:
     // await expr
     ExprPtr parseAwaitExpr();
 
-    // @intrinsicName ( [ type | expr, ... ] )
+    // #intrinsicName ( [ type | expr, ... ] )
     ExprPtr parseIntrinsicCallExpr();
 
     // match expr '{' arm* default_arm '}'

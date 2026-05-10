@@ -154,7 +154,7 @@ enum class ASTKind : uint16_t {
     // ── Compiler Directives (@) ───────────────────────────────────────────────
     Attribute,          // @extern("name"), @inline, @packed, @deprecated("msg")
     AttributeArg,       // argument inside an attribute's parentheses
-    IntrinsicCallExpr,  // @sizeof(T), @memcpy(dest, src, len), @sqrt(x)
+    IntrinsicCallExpr,  // #sizeof(T), #memcpy(dest, src, len), #sqrt(x)
 };
 
 // TypeAST.hpp
@@ -250,11 +250,11 @@ struct UnknownExprAST;
 struct UnknownStmtAST;
 struct UnknownTypeAST;
 
-// ── Compiler Directive nodes (@) ──────────────────────────────────────────────
+// ── Compiler Directive nodes ──────────────────────────────────────────────
 // Defined in DeclAST.hpp and ExprAST.hpp respectively.
 struct AttributeAST;         // @name or @name(args) — attached to declarations
 struct AttributeArgAST;      // argument inside an attribute's parentheses
-struct IntrinsicCallExprAST; // @name(args) — in expression position
+struct IntrinsicCallExprAST; // #name(args) — in expression position
 
 // ─────────────────────────────────────────────────────────────────────────────
 // IndexKind — distinguishes the two postfix index operations on arrays.
@@ -422,7 +422,7 @@ struct ASTVisitor {
     // ── Root ──────────────────────────────────────────────────────────────────
     virtual void visit(ProgramAST&)             {}
 
-    // ── Compiler Directive nodes (@) ──────────────────────────────────────────
+    // ── Compiler Directive nodes ──────────────────────────────────────────
     virtual void visit(AttributeAST&)           {}
     virtual void visit(AttributeArgAST&)        {}
     virtual void visit(IntrinsicCallExprAST&)   {}

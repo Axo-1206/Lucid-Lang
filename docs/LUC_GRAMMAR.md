@@ -3031,31 +3031,28 @@ export use math.vec2         -- Re-export all pub items from vec2
 export use math.matrix.Mat2  -- Granular re-export of a single type
 ```
 
-## `@` Compiler Directives
+## `@` and `#` — Compiler Directives
 
-`@` is the **compiler authority** prefix. It marks anything that cannot be
-expressed through ordinary procedural logic — FFI bindings, optimizer hints,
-struct layout control, and compile-time intrinsic calls. If you see `@`, the
-compiler is directly involved: either linking to an external symbol, guiding
-the backend, or computing a value at compile time.
+The language uses two distinct prefixes for compiler‑directed features:
 
-There are two syntactic positions for `@`:
+- **`@`** — **Attribute prefix**. Placed before a declaration to attach metadata (e.g. `@extern`, `@inline`, `@packed`).
+- **`#`** — **Intrinsic prefix**. Used in expression position to call a compiler built‑in function (e.g. `#sizeof(T)`, `#sqrt(x)`).
+
+If you see `@`, the compiler is attaching metadata to a declaration.  
+If you see `#`, the compiler is directly substituting a low‑level operation (no function call overhead).
 
 | Position | Form | Purpose |
-|---|---|---|
-| **Attribute** | `@name` / `@name(args)` before a declaration | Attach metadata to a `let`, `const`, or `struct` |
-| **Intrinsic call** | `@name(args)` in expression position | Compiler-builtin function call |
+|----------|------|---------|
+| **Attribute** | `@name` / `@name(args)` before a declaration | Attach metadata to a `let`, `const`, `struct`, etc. |
+| **Intrinsic call** | `#name(args)` in expression position | Compiler‑builtin function call |
 
-Attributes and intrinsic calls share the same `@name` syntax but are
-distinguished by position. Attributes precede a declaration; intrinsic calls
-appear where any other expression appears.
+Attributes and intrinsic calls share the same `@`/`#` prefix but are distinguished by position. Attributes always precede a declaration; intrinsic calls appear where any other expression appears.
 
-### Attributes
+---
 
-An attribute is a compile-time annotation placed on a declaration. Attributes
-are processed during the semantic phase and stored in the symbol table.
-Multiple attributes may appear before the same declaration, one per line or
-stacked inline.
+### Attributes (`@`)
+
+An attribute is a compile‑time annotation placed on a declaration. Attributes are processed during the semantic phase and stored in the symbol table. Multiple attributes may appear before the same declaration, one per line or stacked inline.
 
 ```
 attribute       := '@' IDENTIFIER [ '(' attr_arg_list ')' ]
@@ -3069,34 +3066,29 @@ attr_arg        := STRING_LITERAL      -- e.g. "malloc", "stdcall"
                  | IDENTIFIER          -- type name: @sizeof(Vec2)
 ```
 
-**Parameter restriction:** attribute arguments are intentionally limited to
-compile-time literals and type identifiers. Runtime expressions, arithmetic,
-and function calls are not valid inside attribute argument lists.
+**Parameter restriction:** attribute arguments are intentionally limited to compile‑time literals and type identifiers. Runtime expressions, arithmetic, and function calls are not valid inside attribute argument lists.
 
 #### Known Attributes
 
 | Attribute | Valid on | Arguments | Purpose |
-|---|---|---|---|
+|-----------|----------|-----------|---------|
 | `@extern("sym")` | `let`, `const` func/var | 1–2 strings | Bind to a C/OS/Vulkan symbol by name |
 | `@extern("sym", "conv")` | `let`, `const` func/var | 2 strings | Same, with explicit calling convention |
 | `@inline` | `let`, `const` func | none | Suggest the backend always inline this function |
 | `@noinline` | `let`, `const` func | none | Prevent the backend from inlining this function |
-| `@packed` | `struct` | none | Remove padding — all fields are byte-adjacent |
+| `@packed` | `struct` | none | Remove padding — all fields are byte‑adjacent |
 | `@deprecated("msg")` | func, var, struct | 0–1 string | Emit a warning at every use site |
-| `@aot` | `main` entry point only | none | Use ahead-of-time compilation |
-| `@jit` | `main` entry point only | none | Use just-in-time compilation via LLVM JIT |
+| `@aot` | `main` entry point only | none | Use ahead‑of‑time compilation |
+| `@jit` | `main` entry point only | none | Use just‑in‑time compilation via LLVM JIT |
 
-`@inline` and `@noinline` are mutually exclusive on the same declaration.
+`@inline` and `@noinline` are mutually exclusive on the same declaration.  
 `@aot` and `@jit` are mutually exclusive on the same declaration.
 
 #### `@extern` — FFI Binding
 
-`@extern("symbol")` declares that a function or variable is resolved by the
-**linker** rather than compiled from Luc source. The body is omitted. The
-calling convention defaults to `"C"` and may be overridden with a second
-argument.
+`@extern("symbol")` declares that a function or variable is resolved by the **linker** rather than compiled from Luc source. The body is omitted. The calling convention defaults to `"C"` and may be overridden with a second argument.
 
-```
+```luc
 -- Grammar:
 --   @extern(symbol_name)
 --   @extern(symbol_name, calling_convention)
@@ -3107,29 +3099,18 @@ argument.
 
 **Rules:**
 
-- `@extern` requires **`const`**, not `let`. An `@extern` binding is resolved
-  permanently by the linker — using `let` would allow the binding to be
-  replaced at runtime (e.g. `malloc = { return nil }`), which is meaningless
-  for a linked symbol. The semantic pass emits **W3001** when `let` is used;
-  compilation continues but you are warned to change it to `const`.
+- `@extern` requires **`const`**, not `let`. An `@extern` binding is resolved permanently by the linker — using `let` would allow the binding to be replaced at runtime (e.g. `malloc = { return nil }`), which is meaningless for a linked symbol. The semantic pass emits **W3001** when `let` is used; compilation continues but you are warned to change it to `const`.
 
-- `@extern` on a **function** — the declaration must have no body. The
-  compiler emits an external function declaration in the LLVM IR; the linker
-  resolves it.
+- `@extern` on a **function** — the declaration must have no body. The compiler emits an external function declaration in the LLVM IR; the linker resolves it.
   - **No body** (preferred) — no diagnostic.
-  - **Empty body `= {}`** — **W3002** warning: the body is silently ignored;
-    remove it to suppress the warning.
-  - **Non-empty body** — **E3002** error: the body contains statements that
-    will never execute; this is always a mistake.
+  - **Empty body `= {}`** — **W3002** warning: the body is silently ignored; remove it to suppress the warning.
+  - **Non-empty body** — **E3002** error: the body contains statements that will never execute; this is always a mistake.
 
-- `@extern` on a **variable** — the declaration must have no initialiser. The
-  linker provides the symbol's address.
+- `@extern` on a **variable** — the declaration must have no initialiser. The linker provides the symbol's address.
 
-- Raw pointer type `*T` is only valid in declarations carrying `@extern`.
-  The semantic pass enables `*T` resolution when `@extern` is detected.
+- Raw pointer type `*T` is only valid in declarations carrying `@extern`. The semantic pass enables `*T` resolution when `@extern` is detected.
 
-- `@extern` functions are fully callable from Luc code; the semantic pass
-  validates argument count and types against the declared signature.
+- `@extern` functions are fully callable from Luc code; the semantic pass validates argument count and types against the declared signature.
 
 ```luc
 -- C stdlib bindings
@@ -3178,11 +3159,7 @@ const stackTop *uint8
 
 #### `@packed` — Struct Layout
 
-`@packed` removes all compiler-inserted padding from a struct. Every field is
-placed at the next byte boundary after the previous field, regardless of
-alignment requirements. This produces a layout identical to C's
-`__attribute__((packed))` and is necessary for Vulkan push constants, file
-format headers, and network packets.
+`@packed` removes all compiler‑inserted padding from a struct. Every field is placed at the next byte boundary after the previous field, regardless of alignment requirements. This produces a layout identical to C's `__attribute__((packed))` and is necessary for Vulkan push constants, file format headers, and network packets.
 
 ```luc
 @packed
@@ -3199,16 +3176,11 @@ struct EthernetHeader {
 }
 ```
 
-> **Note:** Using `@packed` on a struct with fields that require alignment
-> greater than 1 byte can cause unaligned memory accesses, which are
-> undefined behaviour on some architectures. Use only when the packed layout
-> is required by an external protocol or API.
+> **Note:** Using `@packed` on a struct with fields that require alignment greater than 1 byte can cause unaligned memory accesses, which are undefined behaviour on some architectures. Use only when the packed layout is required by an external protocol or API.
 
 #### `@inline` / `@noinline` — Inlining Hints
 
-`@inline` suggests to the LLVM backend that every call site of this function
-should be inlined. `@noinline` prevents inlining even when the optimiser
-would normally choose to inline.
+`@inline` suggests to the LLVM backend that every call site of this function should be inlined. `@noinline` prevents inlining even when the optimiser would normally choose to inline.
 
 ```luc
 @inline
@@ -3224,8 +3196,7 @@ const handleError (e Error) = {
 
 #### `@deprecated` — Deprecation Warning
 
-`@deprecated` causes the compiler to emit a warning at every call site or use
-of the annotated symbol. An optional message string explains the replacement.
+`@deprecated` causes the compiler to emit a warning at every call site or use of the annotated symbol. An optional message string explains the replacement.
 
 ```luc
 @deprecated("use Vec3:normalise instead")
@@ -3235,123 +3206,102 @@ let normalize (v Vec3) Vec3 = { ... }
 struct OldConfig { ... }
 ```
 
----
+### Compiler Intrinsics (`#`)
 
-### Compiler Intrinsics
+Compiler intrinsics look like function calls but are implemented directly by the compiler backend — no function pointer, no call instruction, no overhead beyond what the underlying hardware instruction requires.
 
-Compiler intrinsics look like function calls but are implemented directly by
-the compiler backend — no function pointer, no call instruction, no overhead
-beyond what the underlying hardware instruction requires.
-
-**Syntax:** `@name(args)` in any expression position.
+**Syntax:** `#name(args)` in any expression position.
 
 ```
-intrinsic_call  := '@' IDENTIFIER '(' [ intrinsic_arg_list ] ')'
+intrinsic_call  := '#' IDENTIFIER '(' [ intrinsic_arg_list ] ')'
 
 intrinsic_arg_list := intrinsic_arg { ',' intrinsic_arg }
 
-intrinsic_arg   := type                -- for @sizeof(T), @alignof(T), @bitcast(T, x)
+intrinsic_arg   := type                -- for #sizeof(T), #alignof(T), #bitcast(T, x)
                  | expr                -- all other intrinsics
 ```
 
-The parser distinguishes type-argument intrinsics (`@sizeof`, `@alignof`,
-`@bitcast`) from value-argument intrinsics at parse time. For all others,
-arguments are parsed as regular expressions.
+The parser distinguishes type‑argument intrinsics (`#sizeof`, `#alignof`, `#bitcast`) from value‑argument intrinsics at parse time. For all others, arguments are parsed as regular expressions.
 
 #### Categories
 
-**Compile-time type queries** — resolved entirely at compile time. The result
-is a compile-time constant (`isConst = true`) and may be used anywhere a
-`const` initialiser is expected.
+**Compile‑time type queries** — resolved entirely at compile time. The result is a compile‑time constant (`isConst = true`) and may be used anywhere a `const` initialiser is expected.
 
 | Intrinsic | Arguments | Returns | Notes |
-|---|---|---|---|
-| `@sizeof(T)` | 1 type | `uint64` | Byte size of type `T` in memory |
-| `@alignof(T)` | 1 type | `uint64` | Alignment requirement of `T` in bytes |
+|-----------|-----------|---------|-------|
+| `#sizeof(T)` | 1 type | `uint64` | Byte size of type `T` in memory |
+| `#alignof(T)` | 1 type | `uint64` | Alignment requirement of `T` in bytes |
 
-**Floating-point math** — maps to hardware-accelerated instructions via LLVM
-overloaded intrinsics. The return type matches the argument type: if `x` is
-`double`, the result is `double`.
+**Floating‑point math** — maps to hardware‑accelerated instructions via LLVM overloaded intrinsics. The return type matches the argument type: if `x` is `double`, the result is `double`.
 
 | Intrinsic | Arguments | Returns | Notes |
-|---|---|---|---|
-| `@sqrt(x)` | 1 float/double | same as arg | Hardware square root |
-| `@floor(x)` | 1 float/double | same as arg | Round toward −∞ |
-| `@ceil(x)` | 1 float/double | same as arg | Round toward +∞ |
-| `@round(x)` | 1 float/double | same as arg | Round to nearest, half away from zero |
-| `@abs(x)` | 1 numeric | same as arg | Absolute value; works on integers and floats |
-| `@pow(base, exp)` | 2 float/double | same as arg0 | Exponentiation |
-| `@fma(a, b, c)` | 3 float/double | same as arg0 | Fused multiply-add: `(a * b) + c`, single rounding |
-| `@min(a, b)` | 2 same-type | same as arg0 | Minimum value |
-| `@max(a, b)` | 2 same-type | same as arg0 | Maximum value |
+|-----------|-----------|---------|-------|
+| `#sqrt(x)` | 1 float/double | same as arg | Hardware square root |
+| `#floor(x)` | 1 float/double | same as arg | Round toward −∞ |
+| `#ceil(x)` | 1 float/double | same as arg | Round toward +∞ |
+| `#round(x)` | 1 float/double | same as arg | Round to nearest, half away from zero |
+| `#abs(x)` | 1 numeric | same as arg | Absolute value; works on integers and floats |
+| `#pow(base, exp)` | 2 float/double | same as arg0 | Exponentiation |
+| `#fma(a, b, c)` | 3 float/double | same as arg0 | Fused multiply‑add: `(a * b) + c`, single rounding |
+| `#min(a, b)` | 2 same‑type | same as arg0 | Minimum value |
+| `#max(a, b)` | 2 same‑type | same as arg0 | Maximum value |
 
-**Bit manipulation** — works on integer types only. Return type matches the
-argument. Useful for low-level graphics and systems programming.
-
-| Intrinsic | Arguments | Returns | Notes |
-|---|---|---|---|
-| `@clz(x)` | 1 integer | same as arg | Count leading zero bits |
-| `@ctz(x)` | 1 integer | same as arg | Count trailing zero bits |
-| `@popcount(x)` | 1 integer | same as arg | Count set (1) bits |
-| `@bswap(x)` | 1 integer | same as arg | Reverse byte order (endianness swap) |
-
-**Memory operations** — map to LLVM `memcpy`/`memmove`/`memset` intrinsics
-with full hardware acceleration. All three are `void` (return no value).
+**Bit manipulation** — works on integer types only. Return type matches the argument. Useful for low‑level graphics and systems programming.
 
 | Intrinsic | Arguments | Returns | Notes |
-|---|---|---|---|
-| `@memcpy(dst, src, len)` | dest, src, uint64 | void | Copy `len` bytes; regions must not overlap |
-| `@memmove(dst, src, len)` | dest, src, uint64 | void | Copy `len` bytes; handles overlap |
-| `@memset(dst, val, len)` | dest, ubyte, uint64 | void | Fill `len` bytes with `val` |
+|-----------|-----------|---------|-------|
+| `#clz(x)` | 1 integer | same as arg | Count leading zero bits |
+| `#ctz(x)` | 1 integer | same as arg | Count trailing zero bits |
+| `#popcount(x)` | 1 integer | same as arg | Count set (1) bits |
+| `#bswap(x)` | 1 integer | same as arg | Reverse byte order (endianness swap) |
 
-**Unsafe / Vulkan** — raw bit-level operations with no runtime cost beyond
-moving data. Use with care; incorrect use is undefined behaviour.
+**Memory operations** — map to LLVM `memcpy`/`memmove`/`memset` intrinsics with full hardware acceleration. All three are `void` (return no value).
 
 | Intrinsic | Arguments | Returns | Notes |
-|---|---|---|---|
-| `@bitcast(T, x)` | 1 type, 1 value | `T` | Reinterpret bits of `x` as type `T`; sizes must match |
+|-----------|-----------|---------|-------|
+| `#memcpy(dst, src, len)` | dest, src, uint64 | void | Copy `len` bytes; regions must not overlap |
+| `#memmove(dst, src, len)` | dest, src, uint64 | void | Copy `len` bytes; handles overlap |
+| `#memset(dst, val, len)` | dest, ubyte, uint64 | void | Fill `len` bytes with `val` |
+
+**Unsafe / Vulkan** — raw bit‑level operations with no runtime cost beyond moving data. Use with care; incorrect use is undefined behaviour.
+
+| Intrinsic | Arguments | Returns | Notes |
+|-----------|-----------|---------|-------|
+| `#bitcast(T, x)` | 1 type, 1 value | `T` | Reinterpret bits of `x` as type `T`; sizes must match |
 
 #### Examples
 
 ```luc
 -- Compile-time size queries
-const vecSize  uint64 = @sizeof(Vec3)     -- 12 on typical platforms
-const alignment uint64 = @alignof(float)  -- 4
+const vecSize  uint64 = #sizeof(Vec3)     -- 12 on typical platforms
+const alignment uint64 = #alignof(float)  -- 4
 
--- Use in a const: @sizeof is isConst = true
+-- Use in a const: #sizeof is isConst = true
 const maxVerts uint64 = 65536
-const bufBytes uint64 = maxVerts * @sizeof(Vertex)
+const bufBytes uint64 = maxVerts * #sizeof(Vertex)
 
 -- Floating-point math
-let len float = @sqrt(v.x*v.x + v.y*v.y + v.z*v.z)
-let t   float = @clamp(@fma(a, b, c), 0.0, 1.0)   -- clamp via @min/@max
-let t   float = @min(@max(@fma(a, b, c), 0.0), 1.0)
+let len float = #sqrt(v.x*v.x + v.y*v.y + v.z*v.z)
+let t   float = #min(#max(#fma(a, b, c), 0.0), 1.0)
 
 -- Bit manipulation
 let bits uint32 = 0b1010_1100
-let n    uint32 = @popcount(bits)    -- 4
-let swap uint32 = @bswap(0xDEADBEEF) -- 0xEFBEADDE  (big/little endian swap)
+let n    uint32 = #popcount(bits)    -- 4
+let swap uint32 = #bswap(0xDEADBEEF) -- 0xEFBEADDE  (big/little endian swap)
 
 -- Memory
 let buf [*]ubyte = [*]ubyte {}
 buf.reserve(1024)
-@memset(buf[0], 0, @sizeof(Header))
-@memcpy(dst.ptr, src.ptr, len)
+#memset(buf[0], 0, #sizeof(Header))
+#memcpy(dst.ptr, src.ptr, len)
 
 -- Unsafe bit reinterpret (Vulkan / GPU use)
-let asFloat float = @bitcast(float, bits)   -- interpret uint32 bits as float32
+let asFloat float = #bitcast(float, bits)   -- interpret uint32 bits as float32
 ```
 
-> **Note — `@sizeof` vs `float(x)` casts:** `@sizeof(T)` is a compiler
-> intrinsic that returns the byte size of a type at compile time. It is
-> entirely unrelated to explicit type casts like `float(x)` (which use the
-> `from` system or built-in primitive conversion). Do not confuse the two.
+> **Note — `#sizeof` vs `float(x)` casts:** `#sizeof(T)` is a compiler intrinsic that returns the byte size of a type at compile time. It is entirely unrelated to explicit type casts like `float(x)` (which use the `from` system or built‑in primitive conversion). Do not confuse the two.
 
-> **Note — `@bitcast` vs unsafe `*T(x)` reinterpret:** The legacy pipeline
-> unsafe reinterpret `*float(x)` (raw pointer cast in expression position)
-> still works in `@extern` contexts for Vulkan struct reinterpretation.
-> `@bitcast(T, x)` is the cleaner modern form for the same operation and
-> does not require an `@extern` context.
+> **Note — `#bitcast` vs unsafe `*T(x)` reinterpret:** The legacy pipeline unsafe reinterpret `*float(x)` (raw pointer cast in expression position) still works in `@extern` contexts for Vulkan struct reinterpretation. `#bitcast(T, x)` is the cleaner modern form for the same operation and does not require an `@extern` context.
 
 ## Choice and Fallback Operators
 
