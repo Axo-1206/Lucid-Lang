@@ -405,7 +405,15 @@ SwitchCasePtr Parser::parseSwitchCase() {
     while (check(TokenType::COMMA)) {
         advance(); // consume ','
         if (check(TokenType::COLON)) break; // trailing comma allowed
+
+        std::size_t savedPos = pos_;
         ExprPtr val = parsePrattExpr(0);
+        if (pos_ == savedPos) {
+            // No progress – skip the token and break to avoid infinite loop
+            errorAt(DiagCode::E2002, "expected case value after comma");
+            advance(); // consume the offending token to recover
+            break;
+        }
         if (val) {
             if (check(TokenType::RANGE)) {
                 sc->values.push_back(parseRangeExpr(std::move(val)));

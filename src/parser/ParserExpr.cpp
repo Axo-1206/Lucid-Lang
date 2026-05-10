@@ -1766,14 +1766,44 @@ MatchArmPtr Parser::parseMatchArm() {
     arm->loc = loc;
 
     // Parse comma-separated pattern list
-    do {
-        auto pat = parsePattern();
+    // First pattern (required)
+    ASTPtr<PatternAST> pat = parsePattern();
+    if (!pat) {
+        // No pattern – arm is invalid; caller will handle.
+        return nullptr;
+    }
+    arm->patterns.push_back(std::move(pat));
+
+    // Additional patterns after commas
+    while (check(TokenType::COMMA)) {
+        // Peek ahead – is the next token a valid pattern start?
+        TokenType nextType = peekNext().type;
+        bool isPatternStart = (nextType == TokenType::WILDCARD ||
+                            nextType == TokenType::INT_LITERAL ||
+                            nextType == TokenType::FLOAT_LITERAL ||
+                            nextType == TokenType::STRING_LITERAL ||
+                            nextType == TokenType::RAW_STRING_LITERAL ||
+                            nextType == TokenType::CHAR_LITERAL ||
+                            nextType == TokenType::HEX_LITERAL ||
+                            nextType == TokenType::BINARY_LITERAL ||
+                            nextType == TokenType::TRUE ||
+                            nextType == TokenType::FALSE ||
+                            nextType == TokenType::NIL ||
+                            nextType == TokenType::MINUS ||     // negative literal
+                            nextType == TokenType::IDENTIFIER);
+        if (!isPatternStart) {
+            errorAt(DiagCode::E2007, "expected pattern after ',' in match arm");
+            break;   // do NOT consume the comma – leave it for error recovery
+        }
+        advance(); // consume the comma
+        pat = parsePattern();
         if (!pat) {
+            // parsePattern failed – error already reported.
+            // The comma was already consumed, but no pattern added.
             break;
         }
         arm->patterns.push_back(std::move(pat));
-
-    } while (match(TokenType::COMMA));
+    }
 
     // Optional guard: 'if' expr
     if (check(TokenType::IF)) {
@@ -1815,9 +1845,30 @@ MatchArmPtr Parser::parseMatchArm() {
                 arm->exprs.push_back(std::move(second));
             }
         }
-        // No more commas allowed
+        // No more commas allowed – if another comma appears, skip the rest of the arm body
         if (match(TokenType::COMMA)) {
             errorAt(DiagCode::E2001, "match arm cannot have more than two expressions");
+            // Skip tokens until the start of the next arm or the closing brace
+            while (!isAtEnd() && !check(TokenType::RBRACE) && !check(TokenType::DEFAULT)) {
+                TokenType t = peek().type;
+                // Break if we see a token that can begin a match pattern or the default keyword
+                if (t == TokenType::WILDCARD ||
+                    t == TokenType::IDENTIFIER ||
+                    t == TokenType::INT_LITERAL ||
+                    t == TokenType::FLOAT_LITERAL ||
+                    t == TokenType::STRING_LITERAL ||
+                    t == TokenType::RAW_STRING_LITERAL ||
+                    t == TokenType::CHAR_LITERAL ||
+                    t == TokenType::HEX_LITERAL ||
+                    t == TokenType::BINARY_LITERAL ||
+                    t == TokenType::TRUE ||
+                    t == TokenType::FALSE ||
+                    t == TokenType::NIL ||
+                    t == TokenType::MINUS) {
+                    break;
+                }
+                advance();
+            }
         }
     }
     

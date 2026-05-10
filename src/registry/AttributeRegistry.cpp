@@ -41,91 +41,59 @@ AttributeRegistry& AttributeRegistry::instance() {
     //   - validator:   optional custom validation function
     // ─────────────────────────────────────────────────────────────────────────
 AttributeRegistry::AttributeRegistry() {
-    // Register built‑in attributes
-    // @extern: on functions and variables, takes 0 or 1 string arg (C name)
-    registerAttribute("extern", AttributeContext::Func | AttributeContext::Var,
-                      true, 0, 1, AttrArgKind::String, false);
-
-    // @packed: on structs only, no args
-    registerAttribute("packed", AttributeContext::Struct,
-                      false, 0, 0, AttrArgKind::None, false);
-
-    // @inline: on functions only, no args
-    registerAttribute("inline", AttributeContext::Func,
-                      false, 0, 0, AttrArgKind::None, false);
-
-    // @noinline: on functions only, no args
-    registerAttribute("noinline", AttributeContext::Func,
-                      false, 0, 0, AttrArgKind::None, false);
-
-    // @deprecated: on functions, variables, enums, structs, traits, impls
-    // Takes optional string argument (deprecation message)
-    registerAttribute("deprecated",
-                      AttributeContext::Func | AttributeContext::Var |
-                      AttributeContext::Struct | AttributeContext::Impl,
-                      true, 0, 1, AttrArgKind::String, false);
 }
 
-// We'll use a static vector of pending registrations
 namespace {
-    struct PendingAttr {
-        std::string name;
+    struct BuiltinAttribute {
+        std::string_view name;
         AttributeContext contexts;
         bool takesArgs;
         int minArgs;
         int maxArgs;
         AttrArgKind argKinds;
         bool requiresConst;
-        std::string exclusiveWith;
-        bool (*validator)(const std::vector<ASTPtr<AttributeArgAST>>&,
-                          const std::string&, DiagnosticEngine&,
-                          const SourceLocation&) = nullptr;
+        std::string_view exclusiveWith;   // empty if none
     };
-    // This vector is filled exclusively by AttributeRegistry::registerAttribute(),
-    // which is called from the constructor (and possibly future test code).
-    // DO NOT add static initialisers that push to this vector; the order of
-    // initialisation across translation units is undefined. Use the constructor.
-    std::vector<PendingAttr> pending;
-}
 
-void AttributeRegistry::registerAttribute(const std::string& name,
-                                          AttributeContext contexts,
-                                          bool takesArgs, int minArgs, int maxArgs,
-                                          AttrArgKind argKinds,
-                                          bool requiresConst,
-                                          const std::string& exclusiveWith,
-                                          bool (*validator)(const std::vector<ASTPtr<AttributeArgAST>>&,
-                                                            const std::string&, DiagnosticEngine&,
-                                                            const SourceLocation&)) {
-    pending.push_back({name, contexts, takesArgs, minArgs, maxArgs, argKinds, requiresConst, exclusiveWith, validator});
+    const BuiltinAttribute kBuiltinAttrs[] = {
+        { "extern",   AttributeContext::Func | AttributeContext::Var, true, 0, 1, AttrArgKind::String, false, "" },
+        { "packed",   AttributeContext::Struct,                        false, 0, 0, AttrArgKind::None, false, "" },
+        { "inline",   AttributeContext::Func,                          false, 0, 0, AttrArgKind::None, false, "" },
+        { "noinline", AttributeContext::Func,                          false, 0, 0, AttrArgKind::None, false, "" },
+        { "deprecated", AttributeContext::Func | AttributeContext::Var | AttributeContext::Struct | AttributeContext::Impl,
+          true, 0, 1, AttrArgKind::String, false, "" },
+    };
+    const size_t kNumBuiltinAttrs = sizeof(kBuiltinAttrs) / sizeof(kBuiltinAttrs[0]);
 }
 
 void AttributeRegistry::setStringPool(StringPool& pool) {
-    if (stringPool) return; // already set
+    // Always rebuild from the static array (even if already set, to allow re‑init).
     stringPool = &pool;
 
-    // Process pending registrations
-    for (const auto& p : pending) {
-        InternedString id = pool.intern(p.name);
+    // Clear existing maps
+    byId.clear();
+    nameToId.clear();
+
+    for (const auto& builtin : kBuiltinAttrs) {
+        InternedString id = pool.intern(std::string(builtin.name));
         std::string_view nameView = pool.lookup(id);
         AttributeInfo info;
         info.id = id;
         info.name = nameView;
-        info.validContexts = p.contexts;
-        info.takesArgs = p.takesArgs;
-        info.minArgs = p.minArgs;
-        info.maxArgs = p.maxArgs;
-        info.allowedArgKinds = p.argKinds;
-        info.requiresConst = p.requiresConst;
-        info.exclusiveWith = p.exclusiveWith.empty() ? InternedString() : pool.intern(p.exclusiveWith);
-        info.validator = p.validator;
+        info.validContexts = builtin.contexts;
+        info.takesArgs = builtin.takesArgs;
+        info.minArgs = builtin.minArgs;
+        info.maxArgs = builtin.maxArgs;
+        info.allowedArgKinds = builtin.argKinds;
+        info.requiresConst = builtin.requiresConst;
+        info.exclusiveWith = builtin.exclusiveWith.empty() ? InternedString() : pool.intern(std::string(builtin.exclusiveWith));
+        // validator remains nullptr for now – add later if needed
 
         byId[id] = info;
-        nameToId[p.name] = id;
+        nameToId[std::string(builtin.name)] = id;
     }
-    pending.clear();
 
-    // Pre‑intern well‑known IDs
+    // Pre‑intern well‑known IDs (still needed for fast access)
     externId     = pool.intern("extern");
     packedId     = pool.intern("packed");
     inlineId     = pool.intern("inline");
@@ -147,7 +115,7 @@ void AttributeRegistry::resetStringPool() {
 }
 
 const AttributeInfo* AttributeRegistry::lookup(InternedString id) const {
-    getPool();
+    if (!stringPool) return nullptr;
     auto it = byId.find(id);
     return (it != byId.end()) ? &it->second : nullptr;
 }
@@ -185,7 +153,7 @@ bool AttributeRegistry::validateAttribute(const AttributeAST& attr,
                                           const std::string& declName,
                                           DeclKeyword declKw,
                                           DiagnosticEngine& dc) const {
-    if (!getPool()) return false;
+    if (!stringPool) return false;
 
     const AttributeInfo* info = lookup(attr.name);
     if (!info) {

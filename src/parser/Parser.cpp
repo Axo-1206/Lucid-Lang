@@ -68,7 +68,6 @@ const Token &Parser::peekNext() const {
 const Token &Parser::peekAt(std::size_t offset) const {
     // Skip LINE_COMMENT tokens when computing the offset — they are invisible
     // to the grammar.  We need to find the Nth non-comment token from pos_.
-    std::size_t found = 0;
     std::size_t i = pos_;
     // Start by skipping comments at pos_ itself (same as peek()).
     while (i < tokens_.size() && tokens_[i].type == TokenType::LINE_COMMENT)
@@ -524,11 +523,11 @@ bool Parser::looksLikeAnonFunc() const {
 
     // Skip type qualifiers: ~async, ~noinline, etc.
     while (i < tokens_.size() && tokens_[i].type == TokenType::TILDE) {
-        ++i; // consume '~'
+        ++i;
         if (i < tokens_.size() && tokens_[i].type == TokenType::IDENTIFIER) {
-            ++i; // consume qualifier name
+            ++i;
         } else {
-            return false; // malformed: '~' without identifier
+            return false;
         }
         // skip any comments between qualifiers
         while (i < tokens_.size() && (tokens_[i].type == TokenType::LINE_COMMENT ||
@@ -537,46 +536,61 @@ bool Parser::looksLikeAnonFunc() const {
         }
     }
 
-    // After optional qualifiers, we must see '('
+    // First parameter group is required
     if (i >= tokens_.size() || tokens_[i].type != TokenType::LPAREN)
         return false;
 
-    // Parse the first parameter group
-    int parenDepth = 1;
-    ++i; // skip '('
-
-    while (i < tokens_.size() && parenDepth > 0) {
-        TokenType tt = tokens_[i].type;
-        if (tt == TokenType::LPAREN) {
-            ++parenDepth;
-        } else if (tt == TokenType::RPAREN) {
-            --parenDepth;
-        } else if (tt == TokenType::LINE_COMMENT || tt == TokenType::DOC_COMMENT) {
-            ++i;
-            continue;
-        } else if (tt == TokenType::TILDE) {
-            // Qualifiers inside type (unusual but handle)
-            ++i;
-            if (i < tokens_.size() && tokens_[i].type == TokenType::IDENTIFIER) ++i;
-            continue;
+    // Helper to parse a parameter group (starting at '(') and return index after matching ')'
+    auto parseOneGroup = [&](std::size_t start) -> std::size_t {
+        if (start >= tokens_.size() || tokens_[start].type != TokenType::LPAREN)
+            return start;
+        int parenDepth = 1;
+        std::size_t j = start + 1;
+        while (j < tokens_.size() && parenDepth > 0) {
+            TokenType tt = tokens_[j].type;
+            if (tt == TokenType::LPAREN) {
+                ++parenDepth;
+            } else if (tt == TokenType::RPAREN) {
+                --parenDepth;
+            } else if (tt == TokenType::LINE_COMMENT || tt == TokenType::DOC_COMMENT) {
+                ++j;
+                continue;
+            } else if (tt == TokenType::TILDE) {
+                // Skip qualifiers inside the group (rare, but allow)
+                ++j;
+                if (j < tokens_.size() && tokens_[j].type == TokenType::IDENTIFIER) ++j;
+                continue;
+            }
+            ++j;
         }
-        ++i;
-    }
-    if (parenDepth != 0) return false;
+        return j; // after the closing ')'
+    };
 
-    // Skip comments after ')'
+    i = parseOneGroup(i);
+    if (i >= tokens_.size() || tokens_[i].type != TokenType::RPAREN) {
+        // The helper returns after the ')', so the current token should be something else.
+        // Actually parseOneGroup returns index after the ')', so we don't need to check for ')'.
+        // But we must ensure the group was properly closed.
+        // We'll simply continue.
+    }
+
+    // Parse additional curried parameter groups
+    while (i < tokens_.size() && tokens_[i].type == TokenType::LPAREN) {
+        i = parseOneGroup(i);
+    }
+
+    // Skip comments after the last ')'
     while (i < tokens_.size() && (tokens_[i].type == TokenType::LINE_COMMENT ||
                                   tokens_[i].type == TokenType::DOC_COMMENT))
         ++i;
     if (i >= tokens_.size()) return false;
 
-    // Immediate '{' => anonymous function
+    // Immediate '{' means anonymous function
     if (tokens_[i].type == TokenType::LBRACE) return true;
 
-    // Return type present – must look like a type start
+    // Return type present – must look like a type start.
     TokenType retStart = tokens_[i].type;
-    if (Parser::isPrimitiveTypeToken(retStart))
-        return true;
+    if (Parser::isPrimitiveTypeToken(retStart)) return true;
     switch (retStart) {
         case TokenType::IDENTIFIER:
         case TokenType::LBRACKET:

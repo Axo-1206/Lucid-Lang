@@ -340,7 +340,7 @@ void IntrinsicRegistry::resetStringPool() {
 // O(1) hash map lookup by pre‑interned ID.
 // ─────────────────────────────────────────────────────────────────────────────
 const IntrinsicEntry* IntrinsicRegistry::lookup(InternedString id) const {
-    getPool(); // asserts
+    if (!stringPool) return nullptr;
     auto it = idToEntry.find(id);
     return (it != idToEntry.end()) ? it->second : nullptr;
 }
@@ -374,7 +374,7 @@ InternedString IntrinsicRegistry::getId(const std::string& name) const {
 // Quick existence checks.
 // ─────────────────────────────────────────────────────────────────────────────
 bool IntrinsicRegistry::isKnown(InternedString id) const {
-    getPool(); // asserts
+    if (!stringPool) return false;
     return lookup(id) != nullptr;
 }
 

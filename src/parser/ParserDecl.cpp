@@ -649,24 +649,26 @@ std::vector<GenericParamPtr> Parser::parseGenericParams() {
     consume(TokenType::LESS, "expected '<' to open generic parameters");
 
     if (check(TokenType::GREATER)) {
-        advance(); // empty — unusual but not illegal
+        advance();
         return params;
     }
 
+    bool stalled = false;
     do {
         match(TokenType::COMMA);
         if (check(TokenType::GREATER))
-            break; // trailing comma
+            break;
 
         // Record position before parsing the generic parameter
         std::size_t savedPos = pos_;
         GenericParamPtr gp = parseGenericParam();
 
         if (!gp) {
-            // If no progress was made, skip the offending token to avoid infinite loop.
-            if (pos_ == savedPos && !isAtEnd()) {
+            if (pos_ == savedPos) {
                 errorAt(DiagCode::E2002, "expected generic parameter, skipping token '" + peek().value + "'");
-                break; // exit loop, then consume the '>' later (may fail, but better than infinite loop)
+                advance(); // consume the unexpected token to avoid infinite loop
+                stalled = true;
+                break;      // exit loop early to avoid cascading errors
             }
             // Continue to next iteration (loop condition will be re-evaluated)
             continue;
@@ -676,7 +678,15 @@ std::vector<GenericParamPtr> Parser::parseGenericParams() {
 
     } while (!check(TokenType::GREATER) && !isAtEnd());
 
-    consume(TokenType::GREATER, "expected '>' to close generic parameters");
+    // If we stalled, we might not be at GREATER. Skip to it or to end.
+    if (stalled) {
+        while (!isAtEnd() && !check(TokenType::GREATER)) {
+            advance();
+        }
+    }
+
+    // Now consume the closing '>'
+    consume(TokenType::GREATER, DiagCode::E2001, "expected '>' to close generic parameters");
     
     LUC_LOG_PARSER_VERBOSE("parseGenericParams: found " << params.size() << " generic params");
     return params;

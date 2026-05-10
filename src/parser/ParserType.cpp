@@ -509,18 +509,11 @@ TypePtr Parser::parseFuncType(bool allowQualifiers) {
     
     // Check for outer '(' that indicates nullable function
     if (check(TokenType::LPAREN)) {
-        // Assert that we are at a '(' after consuming qualifiers.
-        // This ensures the scan logic's precondition holds.
-        if (!check(TokenType::LPAREN)) {
-            // Should not happen if the caller ensures a valid function type start.
-            errorAt(DiagCode::E2001, "expected '(' for function type after qualifiers");
-            return arena_.make<UnknownTypeAST>();
-        }
-
         // Scan forward to find matching ')' and check for '?'
         std::size_t i = pos_;
         int parenDepth = 1;
         ++i; // skip the first '('
+
         while (i < tokens_.size() && parenDepth > 0) {
             TokenType tt = tokens_[i].type;
             if (tt == TokenType::LPAREN) {
@@ -531,7 +524,14 @@ TypePtr Parser::parseFuncType(bool allowQualifiers) {
                 ++i;
                 continue;
             } else if (tt == TokenType::TILDE) {
-                // Skip qualifiers inside the type (they belong to inner function)
+                // Skip type qualifiers that may appear between the outer '(' and the inner '('.
+                // This is safe because:
+                //   1. Qualifiers are always of the form '~' IDENTIFIER.
+                //   2. The token after '~' is guaranteed to be IDENTIFIER (grammar rule).
+                //   3. A qualifier cannot contain '(' or ')', so skipping it does not
+                //      affect parenthesis depth tracking.
+                // If the qualifier syntax ever changes (e.g., ~async<T>), this code will need
+                // to be revisited.
                 ++i;
                 if (i < tokens_.size() && tokens_[i].type == TokenType::IDENTIFIER) ++i;
                 continue;
@@ -574,7 +574,16 @@ TypePtr Parser::parseFuncType(bool allowQualifiers) {
                 }
             }
             
+            // Progress tracking
+            std::size_t savedPos = pos_;
             TypePtr paramType = parseType();
+            if (pos_ == savedPos) {
+                errorAt(DiagCode::E2005, "expected parameter type in function type");
+                // Skip the problematic token to avoid infinite loop
+                if (!isAtEnd()) advance();
+                break;
+            }
+            
             if (!paramType) {
                 errorAt(DiagCode::E2005, "expected parameter type");
                 break;
@@ -586,6 +595,7 @@ TypePtr Parser::parseFuncType(bool allowQualifiers) {
             paramNode->type = std::move(paramType);
             paramNode->isVariadic = variadic;
             paramGroup.push_back(std::move(paramNode));
+
         } while (match(TokenType::COMMA));
     }
     consume(TokenType::RPAREN, "expected ')' after parameter list");

@@ -119,20 +119,6 @@ public:
 
 private:
     AttributeRegistry();
-    void registerAttribute(const std::string& name,
-                           AttributeContext contexts,
-                           bool takesArgs, int minArgs, int maxArgs,
-                           AttrArgKind argKinds,
-                           bool requiresConst,
-                           const std::string& exclusiveWith = "",
-                           bool (*validator)(const std::vector<ASTPtr<AttributeArgAST>>&,
-                                             const std::string&, DiagnosticEngine&,
-                                             const SourceLocation&) = nullptr);
-
-    StringPool* getPool() const {
-        assert(stringPool && "AttributeRegistry used after StringPool destroyed or before setStringPool()");
-        return stringPool;
-    }
 
     StringPool* stringPool = nullptr;
     std::unordered_map<InternedString, AttributeInfo> byId;

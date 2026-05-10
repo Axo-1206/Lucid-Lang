@@ -63,11 +63,6 @@ private:
     IntrinsicRegistry();
     void buildMap();
 
-    StringPool* getPool() const {
-        assert(stringPool && "IntrinsicRegistry used after StringPool destroyed or before setStringPool()");
-        return stringPool;
-    }
-
     StringPool* stringPool = nullptr;
     std::unordered_map<InternedString, const IntrinsicEntry*> idToEntry;
     InternedString sizeofId, alignofId;
