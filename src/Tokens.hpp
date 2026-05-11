@@ -32,11 +32,11 @@ enum class TokenType {
     CONST,   // const     - not reassignable, not mutable in place, nil allowed
 
     // ─── Concurrency ──────────────────────────────────────────────────────────
-    // ASYNC,    // async     - async function modifier
     AWAIT,    // await     - await async result
-    PARALLEL, // parallel  - parallel block for DOD data processing
+    // ASYNC,    // deprecated - use ~async instead
+    // PARALLEL, // deprecated - use ~parallel instead
 
-    // ─── Primary Types (C# style) ─────────────────────────────────────────────
+    // ─── Primary Types ──────────────────────────────────────────────────────────
     // Boolean
     TYPE_BOOL, // bool
 

@@ -30,9 +30,9 @@ Lexer::Lexer(const std::string &source)
     keywords["const"] = TokenType::CONST;
 
     // ── Concurrency ────────────────────────────────────────────────────────────
-    // keywords["async"] = TokenType::ASYNC;
     keywords["await"] = TokenType::AWAIT;
-    keywords["parallel"] = TokenType::PARALLEL;
+    // keywords["async"] = TokenType::ASYNC; deprecated use ~async instead
+    // keywords["parallel"] = TokenType::PARALLEL; deprecated use ~parallel instead
 
     // ── Primary Types ──────────────────────────────────────────────────────────
     keywords["bool"] = TokenType::TYPE_BOOL;
