@@ -290,7 +290,7 @@ functions, check for nil, but never dereference directly.
 1. Store in a variable, struct field, or parameter
 2. Pass to an `@extern` function
 3. Nil check (`== nil`, `!= nil`)
-4. Pass to pointer intrinsics (`@ptrToRef`, `@ptrOffset`, etc.)
+4. Pass to pointer intrinsics (`#ptrToRef`, `#ptrOffset`, etc.)
 5. Print the address for debugging
 
 ### Forbidden operations (compiler error)
@@ -298,16 +298,16 @@ functions, check for nil, but never dereference directly.
 - Dereferencing: `*ptr`
 - Field access: `ptr.field`
 - Indexing: `ptr[i]`
-- Arithmetic: `ptr + 4` — use `@ptrOffset` instead
+- Arithmetic: `ptr + 4` — use `#ptrOffset` instead
 - Assignment: `*ptr = value`
 
 ### Boundary crossing (intrinsics)
 
 ```
-@ptrToRef(T, ptr)   -- *T → &T  (assert validity, cross to safe reference)
-@refToPtr(ref)      -- &T → *T  (convert back to raw pointer)
-@ptrOffset(ptr, n)  -- pointer arithmetic, returns new *T
-@ptrDiff(p1, p2)    -- distance between two pointers as int64
+#ptrToRef(T, ptr)   -- *T → &T  (assert validity, cross to safe reference)
+#refToPtr(ref)      -- &T → *T  (convert back to raw pointer)
+#ptrOffset(ptr, n)  -- pointer arithmetic, returns new *T
+#ptrDiff(p1, p2)    -- distance between two pointers as int64
 ```
 
 ```luc
@@ -317,10 +317,10 @@ const malloc (size uint64) -> *uint8?
 let buf *uint8? = malloc(1024)
 if buf == nil { return 1 }
 
-let ref &uint8 = @ptrToRef(&uint8, buf)    -- cross the boundary
+let ref &uint8 = #ptrToRef(&uint8, buf)    -- cross the boundary
 ref = 0xFF                                  -- work with it safely
 
-let next *uint8? = @ptrOffset(buf, 1)      -- pointer arithmetic
+let next *uint8? = #ptrOffset(buf, 1)      -- pointer arithmetic
 ```
 
 ---
@@ -1124,7 +1124,7 @@ Rules:
 ```luc
 pub impl Vec2 {
     length () -> float = {
-        return @sqrt(x*x + y*y)
+        return #sqrt(x*x + y*y)
     }
 
     dot (other Vec2) -> float = {
@@ -1825,16 +1825,16 @@ let shifted uint32 = 1 << 4           -- 16
 
 ---
 
-## `@` — Compiler Directives
+## `@` and `#` — Compiler Directives
 
-Two roles, distinguished by position:
+Two distinct prefixes, distinguished by position and symbol:
 
-| Position | Form | Purpose |
-|---|---|---|
-| Before a declaration | `@name` / `@name(args)` | Attach metadata (attribute) |
-| In expression position | `@name(args)` | Compiler-builtin call (intrinsic) |
+| Prefix | Position | Purpose |
+|--------|----------|---------|
+| `@name` / `@name(args)` | Before a declaration | Attach metadata (attribute) |
+| `#name(args)` | In expression position | Compiler-builtin call (intrinsic) |
 
-### Attributes
+### Attributes (`@`)
 
 ```
 attribute       := '@' IDENTIFIER [ '(' attr_arg_list ')' ]
@@ -1893,66 +1893,133 @@ const vkCreateInstance (
 const stackTop *uint8
 ```
 
-### Compiler Intrinsics
+---
 
-Intrinsic calls appear in expression position.
+### Compiler Intrinsics (`#`)
+
+Intrinsic calls appear in expression position and are prefixed with `#`.
 
 ```
-intrinsic_call  := '@' IDENTIFIER '(' [ intrinsic_arg_list ] ')'
+intrinsic_call  := '#' IDENTIFIER '(' [ intrinsic_arg_list ] ')'
+
+intrinsic_arg_list := intrinsic_arg { ',' intrinsic_arg }
+
+intrinsic_arg   := expr
+                 | type
 ```
+
+Unlike attributes, intrinsics can take runtime expressions and types as arguments.
+
+---
 
 #### Compile-time type queries
 
 | Intrinsic | Returns | Notes |
 |---|---|---|
-| `@sizeof(T)` | `uint64` | Byte size of type T — compile-time constant |
-| `@alignof(T)` | `uint64` | Alignment requirement of T — compile-time constant |
+| `#sizeof(T)` | `uint64` | Byte size of type T — compile-time constant |
+| `#alignof(T)` | `uint64` | Alignment requirement of T — compile-time constant |
+
+```luc
+let size   uint64 = #sizeof(Vertex)
+let align  uint64 = #alignof(Vec2)
+```
+
+---
 
 #### Floating-point math
 
 | Intrinsic | Args | Returns | Notes |
 |---|---|---|---|
-| `@sqrt(x)` | float/double | same | Hardware square root |
-| `@floor(x)` | float/double | same | Round toward −∞ |
-| `@ceil(x)` | float/double | same | Round toward +∞ |
-| `@round(x)` | float/double | same | Round to nearest, half away from zero |
-| `@abs(x)` | numeric | same | Absolute value |
-| `@pow(base, exp)` | float/double | same | Exponentiation |
-| `@fma(a, b, c)` | float/double | same | Fused multiply-add: `(a*b)+c` |
-| `@min(a, b)` | same type | same | Minimum |
-| `@max(a, b)` | same type | same | Maximum |
+| `#sqrt(x)` | float/double | same | Hardware square root |
+| `#floor(x)` | float/double | same | Round toward −∞ |
+| `#ceil(x)` | float/double | same | Round toward +∞ |
+| `#round(x)` | float/double | same | Round to nearest, half away from zero |
+| `#abs(x)` | numeric | same | Absolute value |
+| `#pow(base, exp)` | float/double | same | Exponentiation |
+| `#fma(a, b, c)` | float/double | same | Fused multiply-add: `(a*b)+c` |
+| `#min(a, b)` | same type | same | Minimum |
+| `#max(a, b)` | same type | same | Maximum |
+
+```luc
+let hyp       float = #sqrt(x*x + y*y)
+let rounded   float = #round(value)
+let maxVal    int   = #min(a, b)
+```
+
+---
 
 #### Bit manipulation (integer types only)
 
 | Intrinsic | Args | Returns | Notes |
 |---|---|---|---|
-| `@clz(x)` | integer | same | Count leading zero bits |
-| `@ctz(x)` | integer | same | Count trailing zero bits |
-| `@popcount(x)` | integer | same | Count set (1) bits |
-| `@bswap(x)` | integer | same | Reverse byte order (endianness) |
+| `#clz(x)` | integer | same | Count leading zero bits |
+| `#ctz(x)` | integer | same | Count trailing zero bits |
+| `#popcount(x)` | integer | same | Count set (1) bits |
+| `#bswap(x)` | integer | same | Reverse byte order (endianness) |
+
+```luc
+let leading   uint32 = #clz(flags)
+let trailing  uint32 = #ctz(flags)
+let bits      uint32 = #popcount(mask)
+let swapped   uint32 = #bswap(networkOrder)
+```
+
+---
 
 #### Memory operations
 
 | Intrinsic | Args | Returns | Notes |
 |---|---|---|---|
-| `@memcpy(dst, src, len)` | ptr, ptr, uint64 | void | Copy bytes, no overlap |
-| `@memmove(dst, src, len)` | ptr, ptr, uint64 | void | Copy bytes, handles overlap |
-| `@memset(dst, val, len)` | ptr, ubyte, uint64 | void | Fill bytes with value |
+| `#memcpy(dst, src, len)` | ptr, ptr, uint64 | void | Copy bytes, no overlap |
+| `#memmove(dst, src, len)` | ptr, ptr, uint64 | void | Copy bytes, handles overlap |
+| `#memset(dst, val, len)` | ptr, ubyte, uint64 | void | Fill bytes with value |
 
-#### Pointer operations
+All memory intrinsics operate on raw pointers (`*T`) and are only valid inside
+`@extern`-decorated functions or other intrinsic calls.
+
+```luc
+#memcpy(dest, src, #sizeof(Buffer))
+#memset(ptr, 0, size)
+```
+
+---
+
+#### Pointer operations (The Sealed Conduit boundary)
 
 | Intrinsic | Args | Returns | Notes |
 |---|---|---|---|
-| `@ptrToRef(T, ptr)` | type, `*T` | `&T` | Assert valid, cross to safe reference |
-| `@refToPtr(ref)` | `&T` | `*T` | Convert reference to raw pointer |
-| `@ptrOffset(ptr, n)` | `*T`, int | `*T` | Pointer arithmetic |
-| `@ptrDiff(p1, p2)` | `*T`, `*T` | `int64` | Distance between pointers in elements |
+| `#ptrToRef(T, ptr)` | type, `*T` | `&T` | Assert valid, cross to safe reference |
+| `#refToPtr(ref)` | `&T` | `*T` | Convert reference to raw pointer |
+| `#ptrOffset(ptr, n)` | `*T`, int | `*T` | Pointer arithmetic (element offset) |
+| `#ptrDiff(p1, p2)` | `*T`, `*T` | `int64` | Distance between pointers in elements |
 
-#### Unsafe
+These intrinsics are the only way to cross the sealed conduit boundary or
+perform pointer arithmetic.
+
+```luc
+let buf *uint8 = malloc(1024)
+let ref &uint8 = #ptrToRef(&uint8, buf)
+ref = 0xFF
+
+let next *uint8 = #ptrOffset(buf, 1)
+let distance int64 = #ptrDiff(next, buf)
+```
+
+---
+
+#### Unsafe / Bit reinterpretation
 
 | Intrinsic | Args | Returns | Notes |
 |---|---|---|---|
-| `@bitcast(T, x)` | type, value | `T` | Reinterpret bits of x as type T; sizes must match |
+| `#bitcast(T, x)` | type, value | `T` | Reinterpret bits of x as type T; sizes must match |
+
+Valid only inside `@extern`-decorated functions or when the compiler flag
+`--unsafe` is enabled.
+
+```luc
+let bits uint32 = 0x3F800000
+let f   float32 = #bitcast(float32, bits)   -- 1.0
+```
 
 ---
 
