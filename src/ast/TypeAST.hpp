@@ -354,6 +354,7 @@ struct FuncSignature {
     bool hasQualifier(uint32_t bit) const { return (qualifiers & bit) != 0; }
     bool isAsync()    const { return hasQualifier(QualifierBits::Async); }
     bool isParallel() const { return hasQualifier(QualifierBits::Parallel); }
+    bool isNullable() const { return hasQualifier(QualifierBits::Nullable); }
 
     bool hasParams()  const {
         for (const auto& group : paramGroups) {

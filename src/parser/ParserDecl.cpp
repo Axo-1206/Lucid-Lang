@@ -54,6 +54,119 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────────────────────
+// validateAnonFuncBodySig
+//
+// Shared helper for parseFuncDecl and parseMethodDecl.
+//
+// When a function/method body is written in the verbose anon‑func form:
+//   = (params) -> ret { ... }   or   = (a int)(b int) -> ret { ... }  (curried)
+//
+// the repeated parameter groups and optional return list must be consumed.
+// This helper does exactly that, then validates the repeated return list
+// against the already-declared signature (the declaration is authoritative).
+//
+// Anonymous functions cannot have qualifiers (~async, ~nullable, ~parallel) –
+// they are plain values.  They also cannot be marked nullable with '?'.
+// This helper rejects both.
+//
+// Cursor contract:
+//   On entry : positioned at the first token after '=' (may be '(' or '{').
+//   On return: positioned after the repeated signature (at '{' or a bad token).
+// ─────────────────────────────────────────────────────────────────────────────
+void Parser::validateAnonFuncBodySig(FuncSignature& declaredSig, const std::string& declName) {
+    // ── 0. Anonymous functions cannot have qualifiers ─────────────────────
+    if (check(TokenType::TILDE)) {
+        errorAt(DiagCode::E2002,
+                "anonymous function body cannot have qualifiers (e.g., ~async, ~nullable). "
+                "Qualifiers belong on the declaration itself.");
+        // Skip the qualifier(s) to recover
+        while (check(TokenType::TILDE)) {
+            advance(); // consume '~'
+            if (!check(TokenType::IDENTIFIER)) {
+                errorAt(DiagCode::E2003, "expected qualifier name after '~'");
+                break;
+            }
+            advance(); // consume qualifier name
+        }
+    }
+
+    // ── 1. Consume ALL repeated parameter groups (curried) ─────────────────
+    while (check(TokenType::LPAREN)) {
+        parseParamGroup(); // discard – declared signature is authoritative
+    }
+
+    // ── 2. Optional '->' and return list ─────────────────────────────────
+    bool hasArrow = match(TokenType::ARROW);
+    std::vector<TypePtr> repeatedReturnTypes;
+
+    if (hasArrow) {
+        // Parse one or more return types separated by commas
+        do {
+            if (check(TokenType::LPAREN)) {
+                // Nested function type (curried return)
+                TypePtr t = parseFuncType();
+                if (t) repeatedReturnTypes.push_back(std::move(t));
+                else errorAt(DiagCode::E2005, "expected return type after '->'");
+            } else {
+                TypePtr t = parseType();
+                if (t) repeatedReturnTypes.push_back(std::move(t));
+                else errorAt(DiagCode::E2005, "expected return type after '->'");
+            }
+        } while (match(TokenType::COMMA));
+    }
+
+    // ── 3. Validate or adopt return types ────────────────────────────────
+    // Case A: Declaration has no return types (void function)
+    if (declaredSig.returnTypes.empty()) {
+        if (hasArrow) {
+            if (!repeatedReturnTypes.empty()) {
+                // Adopt the repeated list (the semantic pass may still warn)
+                LUC_LOG_PARSER("validateAnonFuncBodySig: adopting repeated return types for '"
+                               << declName << "'");
+                declaredSig.returnTypes = std::move(repeatedReturnTypes);
+            } else {
+                errorAt(DiagCode::E2005,
+                        "expected at least one return type after '->'");
+            }
+        }
+        // else: both are void → nothing to do
+    }
+    // Case B: Both have return types – compare
+    else if (hasArrow) {
+        if (declaredSig.returnTypes.size() != repeatedReturnTypes.size()) {
+            errorAt(DiagCode::E2005,
+                    "repeated return type count (" + std::to_string(repeatedReturnTypes.size()) +
+                    ") does not match declared count (" + std::to_string(declaredSig.returnTypes.size()) +
+                    ") for '" + declName + "'");
+        } else {
+            // Simple equality check (type category)
+            for (size_t i = 0; i < declaredSig.returnTypes.size(); ++i) {
+                if (declaredSig.returnTypes[i]->kind != repeatedReturnTypes[i]->kind) {
+                    errorAt(DiagCode::W3001,
+                            "repeated return type #" + std::to_string(i) +
+                            " in body does not match declared return type for '" +
+                            declName + "'; the declaration is authoritative");
+                    break;
+                }
+            }
+        }
+    }
+    // Case C: Declaration has return types but repeated signature omitted '->'
+    else {
+        errorAt(DiagCode::E2001,
+                "expected '->' return list in repeated signature for function '" +
+                declName + "' because the declaration has a return type");
+    }
+
+    // ── 4. Anonymous function cannot be nullable ──────────────────────────
+    if (match(TokenType::QUESTION)) {
+        errorAt(DiagCode::E2007,
+                "anonymous function body cannot be marked nullable with '?'. "
+                "Use the '~nullable' qualifier on the function declaration instead.");
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // parseAttributes / parseAttribute
 //
 // Grammar:
@@ -75,102 +188,6 @@
 // Parameters are intentionally restricted to compile-time literals and type
 // identifiers — no runtime expressions inside attribute argument lists.
 // ─────────────────────────────────────────────────────────────────────────────
-// ─────────────────────────────────────────────────────────────────────────────
-// validateAnonFuncBodySig
-//
-// Shared helper for parseFuncDecl and parseMethodDecl.
-//
-// When a function/method body is written in the verbose anon-func form:
-//   = (params) RetType { ... }
-// or, for curried declarations:
-//   = (a int) (b int) RetType { ... }
-//
-// the repeated parameter groups and optional return type must be consumed.
-// This helper does exactly that, then validates the repeated return type
-// against the already-declared signature (which is the authoritative source).
-//
-// Cursor contract:
-//   On entry : positioned at the first token of the repeated signature.
-//              This may be '~' (qualifier) or '(' (first param group) —
-//              both forms are handled correctly.
-//   On return: positioned at '{' (or at a bad token — caller owns that check).
-// ─────────────────────────────────────────────────────────────────────────────
-void Parser::validateAnonFuncBodySig(FuncSignature& declaredSig,
-                                     const std::string& declName) {
-    // ── 0. Consume any repeated type qualifiers (~async, ~noinline, etc.) ──
-    //
-    // Without this step the helper would reach looksLikeType() with '~' as the
-    // current token.  looksLikeType() returns true for '~IDENTIFIER' (function
-    // type qualifier), so it would call parseType() → parseBaseType().
-    // parseBaseType() has no TILDE case and falls through to default:, which
-    // returns UnknownTypeAST while consuming ZERO tokens.  The '~' is left
-    // unconsumed, check(LBRACE) fails, and the caller reports "expected '{'"
-    // and returns nullptr — the entire function body is silently dropped.
-    //
-    // The fix: discard repeated qualifiers here, before the param-group loop,
-    // exactly mirroring the qualifier loop in parseFuncDecl's declaration header.
-    // We do not validate consistency against declaredSig.rawQualifiers here;
-    // the semantic pass is the right place for that check.
-    while (check(TokenType::TILDE)) {
-        advance(); // consume '~'
-        if (!check(TokenType::IDENTIFIER)) {
-            errorAt(DiagCode::E2003,
-                    "expected qualifier name after '~' in repeated signature for '" +
-                    declName + "'");
-            break; // stop; let the param-group loop handle whatever comes next
-        }
-        advance(); // consume qualifier name (e.g. 'async', 'noinline')
-    }
-
-    // ── 1. Consume ALL repeated parameter groups ─────────────────────────
-    // This correctly handles both single-group and curried (multi-group) forms.
-    // Without this loop the previous code only consumed one group, leaving the
-    // second (and subsequent) groups to be misidentified as the return type.
-    while (check(TokenType::LPAREN)) {
-        parseParamGroup(); // discard — declared signature is authoritative
-    }
-
-    // ── 2. Optional repeated return type ─────────────────────────────────
-    if (looksLikeType() && !check(TokenType::LBRACE)) {
-        SourceLocation repeatedRetLoc = currentLoc();
-        TypePtr repeatedRet = parseType();
-
-        if (declaredSig.returnType && repeatedRet) {
-            // Both declared and repeated return types are present — compare.
-            // ASTKind is the fast first-pass check; it catches mismatches
-            // between entirely different type categories (e.g. int vs MyStruct).
-            bool mismatch = (declaredSig.returnType->kind != repeatedRet->kind);
-
-            // For named types, kinds match but names might differ (Foo vs Bar).
-            if (!mismatch &&
-                declaredSig.returnType->isa<NamedTypeAST>() &&
-                repeatedRet->isa<NamedTypeAST>()) {
-                mismatch = (declaredSig.returnType->as<NamedTypeAST>()->name !=
-                            repeatedRet->as<NamedTypeAST>()->name);
-            }
-            // Primitive types: each primitive has a unique ASTKind, so the
-            // kind comparison above is already sufficient — no extra check.
-
-            if (mismatch) {
-                error(repeatedRetLoc, DiagCode::W3001,
-                      "repeated return type in body does not match the declared "
-                      "return type for '" + declName + "'; "
-                      "the declaration's type is authoritative");
-                LUC_LOG_PARSER("validateAnonFuncBodySig: return-type MISMATCH for '" << declName << "'");
-            } else {
-                LUC_LOG_PARSER("validateAnonFuncBodySig: return-type matches for '" << declName << "'");
-            }
-        } else if (!declaredSig.returnType && repeatedRet) {
-            // No return type in the header — adopt the body's annotation.
-            // This is a permissive fallback; the semantic pass will confirm.
-            LUC_LOG_PARSER("validateAnonFuncBodySig: adopting repeated return type for '" << declName << "'");
-            declaredSig.returnType = std::move(repeatedRet);
-        }
-        // If repeatedRet is null (parse error), we leave declaredSig unchanged.
-    }
-}
-
-
 std::vector<AttributePtr> Parser::parseAttributes() {
     LUC_LOG_PARSER_VERBOSE("parseAttributes: starting");
     std::vector<AttributePtr> attrs;
@@ -486,21 +503,24 @@ ASTPtr<VarDeclAST> Parser::parseVarDecl(Visibility vis, std::vector<AttributePtr
 //
 // Grammar:
 //   func_decl := decl_keyword IDENTIFIER [ generic_params ]
-//               [ qualifier_list ] param_group { param_group } [ return_type ] [ '?' ]
-//               '=' block
+//                [ qualifier_list ] param_group { param_group }
+//                [ '->' return_list ]
+//                '=' func_body
 //
-//   qualifier_list := { '~' IDENTIFIER }
+//   qualifier_list := { '~' IDENTIFIER }            -- ~async, ~nullable, ~parallel
+//   return_list     := return_type { ',' return_type }
+//   return_type     := type
+//                    | param_group { param_group } '->' return_list   -- curried return
 //
 // Examples:
-//   let square (x int) int = { return x * x }
-//   let fetch ~async (url string) string = { return await httpGet(url) }
-//   let process ~async ~noinline (data []byte) []byte = { ... }
+//   let square (x int) -> int = { return x * x }
+//   let fetch ~async (url string) -> string = { return await httpGet(url) }
+//   let process ~async (data []byte) -> []byte = { ... }
+//   let parse (src string) -> int, string = { ... }
+//   let add (a int)(b int) -> int = { return a + b }
+//   let f (a int) -> int, (s string)(n float) -> int = { ... }
 //
-// The async-ness of a function is now part of its type (via ~async qualifier),
-// not a separate flag on the declaration. The 'async' keyword is no longer used
-// before the body.
-//
-// Returns a unique_ptr<FuncDeclAST> or nullptr on error.
+// Returns a FuncDeclAST or nullptr on error.
 // ─────────────────────────────────────────────────────────────────────────────
 ASTPtr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vis, std::vector<AttributePtr> attrs) {
     SourceLocation loc = currentLoc();
@@ -546,27 +566,31 @@ ASTPtr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vis, std::v
     // Optional generic params
     if (check(TokenType::LESS)) {
         LUC_LOG_PARSER("Found generic parameters");
-        node->genericParams = parseGenericParams();  // already returns vector<GenericParamPtr>
+        node->genericParams = parseGenericParams();
     }
 
-    // ── Parse type qualifiers (~async, ~noinline, etc.) into FuncSignature ──────
+    // ── Parse type qualifiers (~async, ~nullable, ~parallel) ─────────────────
+    uint32_t qualifiersMask = 0;
     while (check(TokenType::TILDE)) {
         advance(); // consume '~'
-        
         if (!check(TokenType::IDENTIFIER)) {
             errorAt(DiagCode::E2003, "expected qualifier name after '~'");
             break;
         }
-        
         std::string qualRaw = advance().value;
+        if (!QualifierRegistry::instance().applyQualifier(qualifiersMask, qualRaw)) {
+            errorAt(DiagCode::E2003,
+                    "unknown type qualifier '~" + qualRaw + "'; known: " +
+                    QualifierRegistry::instance().allNames());
+        }
         node->sig.rawQualifiers.push_back(pool_.intern(qualRaw));
         LUC_LOG_PARSER_VERBOSE("\tqualifier: '~" << qualRaw << "'");
     }
+    node->sig.qualifiers = qualifiersMask;
 
-    // Parse parameter groups into FuncSignature
+    // Parse parameter groups
     LUC_LOG_PARSER("Checking for '(' in raw token stream...");
     
-    // Find the next non-comment token
     std::size_t nextNonComment = pos_;
     while (nextNonComment < tokens_.size() && tokens_[nextNonComment].type == TokenType::LINE_COMMENT) {
         nextNonComment++;
@@ -578,12 +602,10 @@ ASTPtr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vis, std::v
         return nullptr;
     }
     
-    // If we have LINE_COMMENTs before the '(', advance through them
-    while (check(TokenType::LINE_COMMENT)) {
-        advance();
-    }
+    // Skip comments before '('
+    while (check(TokenType::LINE_COMMENT)) advance();
     
-    // Parse parameter groups - parseParamGroup returns vector<ASTPtr<ParamAST>>
+    // Parse parameter groups
     while (check(TokenType::LPAREN)) {
         LUC_LOG_PARSER("\tParsing parameter group at pos " << pos_);
         node->sig.paramGroups.push_back(parseParamGroup());
@@ -591,50 +613,36 @@ ASTPtr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vis, std::v
     }
 
     LUC_LOG_PARSER("Total parameter groups: " << node->sig.paramGroups.size());
-    for (size_t i = 0; i < node->sig.paramGroups.size(); i++) {
-        LUC_LOG_PARSER("\tGroup " << i << " has " << node->sig.paramGroups[i].size() << " params");
-        for (const auto& param : node->sig.paramGroups[i]) {
-            LUC_LOG_PARSER("\t\tparam: " << pool_.lookup(param->name));
-        }
+
+    // ── Parse return list after '->' ───────────────────────────────────────
+    if (match(TokenType::ARROW)) {
+        node->sig.returnTypes = parseReturnList();
+        LUC_LOG_PARSER("\tParsed " << node->sig.returnTypes.size() << " return type(s)");
+    } else {
+        // Void function – no return types
+        LUC_LOG_PARSER("\tNo return types (void function)");
     }
 
-    // Optional return type
-    LUC_LOG_PARSER("Checking for return type...");
-    LUC_LOG_PARSER("\tCurrent token: '" << peek().value << "' (type: " << static_cast<int>(peek().type) << ")");
-
-    if (looksLikeType() && !check(TokenType::ASSIGN) && !check(TokenType::SEMICOLON)) {
-        LUC_LOG_PARSER("\tParsing return type...");
-        node->sig.returnType = parseType();  // returns TypePtr
-        if (node->sig.returnType) {
-            LUC_LOG_PARSER("\t\tReturn type parsed: " << static_cast<int>(node->sig.returnType->kind));
-        }
-    }
-
-    // Optional nullable function suffix '?'
-    node->sig.isNullable = match(TokenType::QUESTION);
-
-    // Handle extern vs normal function bodies
+    // ── Handle extern vs normal function bodies ─────────────────────────────
     if (hasExternAttr) {
         LUC_LOG_PARSER("Processing @extern function '" << nameRaw << "'");
         
-        // Skip any LINE_COMMENTs before checking for semicolon
         while (check(TokenType::LINE_COMMENT)) advance();
         
         if (check(TokenType::SEMICOLON)) {
             LUC_LOG_PARSER("\tFound semicolon - valid extern declaration");
-            advance(); // Consume semicolon
+            advance();
         } else if (check(TokenType::ASSIGN)) {
             LUC_LOG_PARSER("\tERROR: extern function cannot have body");
             errorAt(DiagCode::E2002, "'@extern' function '" + nameRaw + "' must not have a body");
             
-            // Consume the '=' and skip the body to recover
+            // Skip the '=' and the body to recover
             advance(); // consume '='
             if (check(TokenType::LBRACE)) {
-                parseBlock(); // discard the block body
+                parseBlock(); // discard block body
             } else {
-                parseExpr(); // discard the expression body
+                parseExpr(); // discard expression body
             }
-            // Optionally consume a following semicolon (if present)
             match(TokenType::SEMICOLON);
         } else {
             LUC_LOG_PARSER("\tWarning: extern declaration missing semicolon, current token: '" << peek().value << "'");
@@ -654,16 +662,14 @@ ASTPtr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vis, std::v
 
     LUC_LOG_PARSER("Parsing function body...");
     
-    // Parse the body - determine if block or expression
+    // Parse the body - block, anon‑func (verbose), or expression
     if (check(TokenType::LBRACE)) {
         // Block body: = { ... }
-        node->body = parseBlock();  // returns StmtPtr (BlockStmtAST)
+        node->body = parseBlock();
     } else if (check(TokenType::LPAREN)) {
-        // Anon func form with repeated signature (verbose/curried form):
-        //   = (params) ret { ... }
-        //   = (a int) (b int) ret { ... }   ← curried
-        // The declaration header is authoritative. The helper consumes all
-        // repeated param groups (loop) and validates the return type.
+        // Verbose anon-func form: = (params) -> ret { ... }
+        // The declaration header is authoritative. The helper consumes the
+        // repeated signature and validates it against the declared signature.
         validateAnonFuncBodySig(node->sig, nameRaw);
         if (!check(TokenType::LBRACE)) {
             errorAt(DiagCode::E2001, "expected '{' to start function body");
@@ -671,8 +677,7 @@ ASTPtr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vis, std::v
         }
         node->body = parseBlock();
     } else {
-        // Expression body - function assignment: = existingFunc
-        // We desugar this into a BlockStmtAST containing a ReturnStmtAST.
+        // Expression body: = existingFunc
         SourceLocation bodyLoc = currentLoc();
         ExprPtr expr = parseExpr();
         if (!expr) {
@@ -691,182 +696,13 @@ ASTPtr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vis, std::v
         node->body = std::move(block);
     }
     
-    // Optional semicolon after body (for expression bodies in certain contexts)
+    // Optional semicolon after body (for expression bodies)
     if (match(TokenType::SEMICOLON)) {
         LUC_LOG_PARSER("Optional semicolon consumed after function body");
     }
     
     LUC_LOG_PARSER("=== parseFuncDecl END (normal) ===");
     return node;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// parseParamGroup
-//
-// Grammar:
-//   param_group := '(' [ param_list ] ')'
-//   param_list  := param { [','] param } [ [','] variadic_param ]
-//
-// Returns the list of params for a single group. Variadic must be last.
-// ─────────────────────────────────────────────────────────────────────────────
-std::vector<ASTPtr<ParamAST>> Parser::parseParamGroup() {
-    LUC_LOG_PARSER_VERBOSE("parseParamGroup: parsing parameter group");
-    SourceLocation loc = currentLoc();
-    consume(TokenType::LPAREN, "expected '(' to start parameter group");
-    
-    std::vector<ASTPtr<ParamAST>> group;
-    
-    while (!check(TokenType::RPAREN) && !isAtEnd()) {
-        match(TokenType::COMMA);
-        if (check(TokenType::RPAREN)) break;
-
-        SourceLocation paramLoc = currentLoc();
-
-        // Parse parameter name
-        if (!check(TokenType::IDENTIFIER)) {
-            errorAt(DiagCode::E2003, "expected parameter name");
-            break;
-        }
-        InternedString paramName = pool_.intern(advance().value);
-        
-        // Parse variadic '...' if present
-        bool isVariadic = match(TokenType::VARIADIC);
-
-        // Save position right before parsing the type
-        std::size_t savedPos = pos_;
-        TypePtr paramType = parseType();
-
-        // Case 1: No progress → infinite loop risk
-        if (pos_ == savedPos) {
-            errorAt(DiagCode::E2005, "expected parameter type, no token consumed");
-            if (!isAtEnd()) advance(); // consume offending token to avoid infinite loop
-            break;
-        }
-
-        // Case 2: parseType returned an unknown type (invalid syntax)
-        if (paramType->isa<UnknownTypeAST>()) {
-            errorAt(DiagCode::E2005, "invalid parameter type");
-            break;  // do NOT add this parameter
-        }
-        
-        auto paramNode = arena_.make<ParamAST>();
-        paramNode->loc = paramLoc;
-        paramNode->name = paramName;
-        paramNode->type = std::move(paramType);
-        paramNode->isVariadic = isVariadic;
-        group.push_back(std::move(paramNode));
-    }
-    
-    consume(TokenType::RPAREN, "expected ')' to close parameter group");
-    return group;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// parseGenericParams
-//
-// Grammar:
-//   generic_params := '<' generic_param { [','] generic_param } '>'
-//
-// Called on the declaration side (func, struct, trait, impl, type alias).
-// For the use side (call sites, named types), use parseGenericArgs() in
-// ParserType.cpp.
-// ─────────────────────────────────────────────────────────────────────────────
-std::vector<GenericParamPtr> Parser::parseGenericParams() {
-    LUC_LOG_PARSER_VERBOSE("parseGenericParams: starting");
-    std::vector<GenericParamPtr> params;
-
-    consume(TokenType::LESS, "expected '<' to open generic parameters");
-
-    if (check(TokenType::GREATER)) {
-        advance();
-        return params;
-    }
-
-    bool stalled = false;
-    do {
-        match(TokenType::COMMA);
-        if (check(TokenType::GREATER))
-            break;
-
-        // Record position before parsing the generic parameter
-        std::size_t savedPos = pos_;
-        GenericParamPtr gp = parseGenericParam();
-
-        if (!gp) {
-            if (pos_ == savedPos) {
-                errorAt(DiagCode::E2002, "expected generic parameter, skipping token '" + peek().value + "'");
-                advance(); // consume the unexpected token to avoid infinite loop
-                stalled = true;
-                break;      // exit loop early to avoid cascading errors
-            }
-            // Continue to next iteration (loop condition will be re-evaluated)
-            continue;
-        }
-
-        params.push_back(std::move(gp));
-
-    } while (!check(TokenType::GREATER) && !isAtEnd());
-
-    // If we stalled, we might not be at GREATER. Skip to it or to end.
-    if (stalled) {
-        while (!isAtEnd() && !check(TokenType::GREATER)) {
-            advance();
-        }
-    }
-
-    // Now consume the closing '>'
-    consume(TokenType::GREATER, DiagCode::E2001, "expected '>' to close generic parameters");
-    
-    LUC_LOG_PARSER_VERBOSE("parseGenericParams: found " << params.size() << " generic params");
-    return params;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// parseGenericParam
-//
-// Grammar:
-//   generic_param   := IDENTIFIER
-//                    | IDENTIFIER ':' IDENTIFIER
-//                    | IDENTIFIER ':' IDENTIFIER { '+' IDENTIFIER }
-//
-// Examples:  T     K : Hashable     V : Hashable + Comparable
-// ─────────────────────────────────────────────────────────────────────────────
-GenericParamPtr Parser::parseGenericParam() {
-    LUC_LOG_PARSER_VERBOSE("parseGenericParam: parsing");
-    SourceLocation loc = currentLoc();
-
-    if (!check(TokenType::IDENTIFIER)) {
-        errorAt(DiagCode::E2003, "expected type parameter name");
-        return nullptr;
-    }
-    std::string nameRaw = advance().value;
-    InternedString name = pool_.intern(nameRaw);
-
-    // Allocate via arena
-    auto gp = arena_.make<GenericParamAST>(name);
-    gp->loc = loc;
-
-    // Optional constraints: ':' IDENTIFIER { '+' IDENTIFIER }
-    if (match(TokenType::COLON)) {
-        if (!check(TokenType::IDENTIFIER)) {
-            errorAt(DiagCode::E2003, "expected trait name after ':' in generic parameter");
-        } else {
-            std::string traitRaw = advance().value;
-            gp->constraints.push_back(pool_.intern(traitRaw));
-
-            while (match(TokenType::PLUS)) {
-                if (!check(TokenType::IDENTIFIER)) {
-                    errorAt(DiagCode::E2003, "expected trait name after '+' in generic constraint");
-                    break;
-                }
-                traitRaw = advance().value;
-                gp->constraints.push_back(pool_.intern(traitRaw));
-            }
-        }
-    }
-
-    LUC_LOG_PARSER_VERBOSE("\tgeneric param: '" << nameRaw << "' with " << gp->constraints.size() << " constraints");
-    return gp;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1113,18 +949,22 @@ ASTPtr<TraitDeclAST> Parser::parseTraitDecl(Visibility vis) {
 // parseTraitMethod
 //
 // Grammar:
-//   trait_method :=  IDENTIFIER [ qualifier_list ] '(' [ param_list ] ')' [ return_type ]
+//   trait_method := IDENTIFIER [ qualifier_list ] param_group { param_group }
+//                  [ '->' return_list ]
 //
-//   qualifier_list := { '~' IDENTIFIER }
+//   qualifier_list := { '~' IDENTIFIER }            -- ~async, ~nullable, ~parallel
+//   return_list     := return_type { ',' return_type }
+//   return_type     := type
+//                    | param_group { param_group } '->' return_list   -- curried return
 //
 // Signature only — no '=' and no body.
-// Supports curried trait methods: IDENTIFIER param_group { param_group } return_type
-//
+// Supports curried trait methods and multiple returns.
 // Examples:
 //   draw ()
-//   bounds () Rect
-//   fetch ~async (url string) string
-//   clamp (min int) (max int) (value int) int
+//   bounds () -> Rect
+//   fetch ~async (url string) -> string
+//   clamp (min int)(max int)(value int) -> int
+//   process (data []byte) -> int, string, bool
 // ─────────────────────────────────────────────────────────────────────────────
 TraitMethodPtr Parser::parseTraitMethod() {
     SourceLocation loc = currentLoc();
@@ -1139,17 +979,26 @@ TraitMethodPtr Parser::parseTraitMethod() {
     }
     method->name = pool_.intern(advance().value);
     
-    // Parse qualifiers (~async, etc.) - store as raw strings
+    // ── Parse type qualifiers (~async, ~nullable, ~parallel) ──────────────
+    uint32_t qualifiersMask = 0;
     while (check(TokenType::TILDE)) {
-        advance();
+        advance(); // consume '~'
         if (!check(TokenType::IDENTIFIER)) {
             errorAt(DiagCode::E2003, "expected qualifier name after '~'");
             break;
         }
-        method->sig.rawQualifiers.push_back(pool_.intern(advance().value));
+        std::string qualRaw = advance().value;
+        if (!QualifierRegistry::instance().applyQualifier(qualifiersMask, qualRaw)) {
+            errorAt(DiagCode::E2003,
+                    "unknown type qualifier '~" + qualRaw + "'; known: " +
+                    QualifierRegistry::instance().allNames());
+        }
+        method->sig.rawQualifiers.push_back(pool_.intern(qualRaw));
+        LUC_LOG_PARSER_VERBOSE("\tqualifier: '~" << qualRaw << "'");
     }
+    method->sig.qualifiers = qualifiersMask;
     
-    // Parse parameter groups
+    // ── Parse parameter groups ────────────────────────────────────────────
     if (!check(TokenType::LPAREN)) {
         errorAt(DiagCode::E2001, "expected '(' for trait method parameters");
         return nullptr;
@@ -1159,13 +1008,17 @@ TraitMethodPtr Parser::parseTraitMethod() {
         method->sig.paramGroups.push_back(parseParamGroup());
     }
     
-    // Optional return type
-    if (looksLikeType() && !check(TokenType::SEMICOLON) && !check(TokenType::RBRACE)) {
-        method->sig.returnType = parseType();
+    // ── Parse return types after '->' (if present) ───────────────────────
+    if (match(TokenType::ARROW)) {
+        method->sig.returnTypes = parseReturnList();
+        LUC_LOG_PARSER_VERBOSE("\tparsed " << method->sig.returnTypes.size() << " return type(s)");
+    } else {
+        // void trait method (no return types)
+        LUC_LOG_PARSER_VERBOSE("\tvoid trait method (no return types)");
     }
     
-    LUC_LOG_PARSER_VERBOSE("parseTraitMethod: parsed method '" << pool_.lookup(method->name )
-                           << "' with " << method->sig.paramGroups.size() << " param groups");
+    LUC_LOG_PARSER_VERBOSE("parseTraitMethod: parsed method '" << pool_.lookup(method->name)
+                           << "' with " << method->sig.paramGroups.size() << " param group(s)");
     return method;
 }
 
@@ -1286,18 +1139,25 @@ TraitRefPtr Parser::parseTraitRef() {
 // parseMethodDecl
 //
 // Grammar:
-//   method_decl := IDENTIFIER [ qualifier_list ] param_group { param_group } [ return_type ] '=' func_body
+//   method_decl := IDENTIFIER [ qualifier_list ] param_group { param_group }
+//                 [ '->' return_list ] '=' func_body
 //
-//   qualifier_list := { '~' IDENTIFIER }
+//   qualifier_list := { '~' IDENTIFIER }            -- ~async, ~nullable, ~parallel
+//   return_list     := return_type { ',' return_type }
+//   return_type     := type
+//                    | param_group { param_group } '->' return_list
 //
-// Supports curried methods:
-//   length () float = { ... }
-//   dot (other Vec2) float = { ... }
-//   clamp (min int) (max int) (value int) int = { ... }
-//   fetch ~async (url string) string = { return await httpGet(url) }
+// Supports curried methods and multiple returns.
+// Examples:
+//   length () -> float = { ... }
+//   dot (other Vec2) -> float = { ... }
+//   clamp (min int)(max int)(value int) -> int = { ... }
+//   fetch ~async (url string) -> string = { return await httpGet(url) }
+//   process (data []byte) -> int, string = { ... }
 //
 // No visibility prefix per method — visibility comes from the enclosing impl block.
-// Async-ness is now specified via ~async qualifier, not by 'async' keyword before body.
+// ● The ~nullable qualifier marks the method binding as nullable (caller must guard).
+// ● '?' is not used on function types – use ~nullable instead.
 // ─────────────────────────────────────────────────────────────────────────────
 MethodDeclPtr Parser::parseMethodDecl() {
     SourceLocation loc = currentLoc();
@@ -1312,36 +1172,49 @@ MethodDeclPtr Parser::parseMethodDecl() {
     }
     method->name = pool_.intern(advance().value);
 
-    // ── Parse type qualifiers (~async, ~noinline, etc.) into FuncSignature ──────
+    // ── Parse type qualifiers (~async, ~nullable, ~parallel) ────────────────
+    uint32_t qualifiersMask = 0;
     while (check(TokenType::TILDE)) {
         advance(); // consume '~'
-        
         if (!check(TokenType::IDENTIFIER)) {
             errorAt(DiagCode::E2003, "expected qualifier name after '~'");
             break;
         }
-        
-        method->sig.rawQualifiers.push_back(pool_.intern(advance().value));
-        LUC_LOG_PARSER_VERBOSE("\tmethod qualifier: '~" << pool_.lookup(method->sig.rawQualifiers.back()) << "'");
+        std::string qualRaw = advance().value;
+        if (!QualifierRegistry::instance().applyQualifier(qualifiersMask, qualRaw)) {
+            errorAt(DiagCode::E2003,
+                    "unknown type qualifier '~" + qualRaw + "'; known: " +
+                    QualifierRegistry::instance().allNames());
+        }
+        method->sig.rawQualifiers.push_back(pool_.intern(qualRaw));
+        LUC_LOG_PARSER_VERBOSE("\tmethod qualifier: '~" << qualRaw << "'");
     }
+    method->sig.qualifiers = qualifiersMask;
 
     // Parse one or more parameter groups (curried method support)
     if (!check(TokenType::LPAREN)) {
-        errorAt(DiagCode::E2001, "expected '(' to start parameter list for method '" + std::string( pool_.lookup(method->name)) + "'");
+        errorAt(DiagCode::E2001, "expected '(' to start parameter list for method '" +
+                std::string(pool_.lookup(method->name)) + "'");
         return nullptr;
     }
-    
+
     while (check(TokenType::LPAREN)) {
         method->sig.paramGroups.push_back(parseParamGroup());
     }
 
-    // Optional return type
-    if (looksLikeType() && !check(TokenType::ASSIGN)) {
-        method->sig.returnType = parseType();
+    // ── Parse return types after '->' (if present) ─────────────────────────
+    if (match(TokenType::ARROW)) {
+        method->sig.returnTypes = parseReturnList();
+        LUC_LOG_PARSER_VERBOSE("\tparsed " << method->sig.returnTypes.size() << " return type(s)");
+    } else {
+        // Void method (no return types)
+        LUC_LOG_PARSER_VERBOSE("\tvoid method (no return types)");
     }
 
+    // Must have '=' body
     if (!check(TokenType::ASSIGN)) {
-        errorAt(DiagCode::E2001, "expected '=' before method body for '" + std::string(pool_.lookup(method->name)) + "'");
+        errorAt(DiagCode::E2001, "expected '=' before method body for '" +
+                std::string(pool_.lookup(method->name)) + "'");
         return nullptr;
     }
     advance(); // Consume '='
@@ -1354,9 +1227,9 @@ MethodDeclPtr Parser::parseMethodDecl() {
         method->body = parseBlock();
         LUC_LOG_PARSER("parseMethodDecl: block body");
     } else if (check(TokenType::LPAREN)) {
-        // Anon func form with repeated signature (verbose/curried form):
-        //   = (params) ret { ... }
-        //   = (a int) (b int) ret { ... }   ← curried
+        // Verbose anon-func form: = (params) -> ret { ... }  or curried form
+        // The declaration header is authoritative. The helper consumes the
+        // repeated signature and validates it against the declared signature.
         std::string methodName = std::string(pool_.lookup(method->name));
         validateAnonFuncBodySig(method->sig, methodName);
         if (!check(TokenType::LBRACE)) {
@@ -1364,13 +1237,14 @@ MethodDeclPtr Parser::parseMethodDecl() {
             return nullptr;
         }
         method->body = parseBlock();
-        LUC_LOG_PARSER("parseMethodDecl: anon func body");
+        LUC_LOG_PARSER("parseMethodDecl: verbose anon-func body");
     } else {
-        // Expression body - method assignment: = existingFunc
+        // Expression body: = existingFunc
         SourceLocation bodyLoc = currentLoc();
         ExprPtr expr = parseExpr();
         if (!expr) {
-            errorAt(DiagCode::E2008, "expected expression after '=' for method '" + std::string(pool_.lookup(method->name)) + "'");
+            errorAt(DiagCode::E2008, "expected expression after '=' for method '" +
+                    std::string(pool_.lookup(method->name)) + "'");
             return nullptr;
         }
 
@@ -1382,7 +1256,6 @@ MethodDeclPtr Parser::parseMethodDecl() {
         block->loc = bodyLoc;
         block->stmts.push_back(std::move(ret));
         method->body = std::move(block);
-
         LUC_LOG_PARSER("parseMethodDecl: expression body");
     }
 

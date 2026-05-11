@@ -110,6 +110,14 @@ std::string ASTDumper::formatType(TypeAST* type) {
         case ASTKind::FuncType: {
             auto* f = static_cast<FuncTypeAST*>(type);
             std::string res;
+
+            // Qualifiers
+            uint32_t q = f->sig.qualifiers;
+            if (q & QualifierBits::Async) res += "~async ";
+            if (q & QualifierBits::Nullable) res += "~nullable ";
+            if (q & QualifierBits::Parallel) res += "~parallel ";
+
+            // Parameter groups
             for (const auto& group : f->sig.paramGroups) {
                 res += "(";
                 for (size_t i = 0; i < group.size(); ++i) {
@@ -119,10 +127,15 @@ std::string ASTDumper::formatType(TypeAST* type) {
                 }
                 res += ")";
             }
-            if (f->sig.returnType) {
-                res += " " + formatType(f->sig.returnType.get());
+
+            // Return types (after ->)
+            if (!f->sig.returnTypes.empty()) {
+                res += " -> ";
+                for (size_t i = 0; i < f->sig.returnTypes.size(); ++i) {
+                    if (i > 0) res += ", ";
+                    res += formatType(f->sig.returnTypes[i].get());
+                }
             }
-            if (f->sig.isNullable) res += "?";
             return res;
         }
         default:
@@ -192,15 +205,22 @@ void ASTDumper::visit(PtrTypeAST& node) {
 
 void ASTDumper::visit(FuncTypeAST& node) {
     std::string header = "FuncTypeAST";
-    if (node.sig.isNullable) header += " (nullable)";
+    uint32_t q = node.sig.qualifiers;
+    if (q & QualifierBits::Async) header += " ~async";
+    if (q & QualifierBits::Nullable) header += " ~nullable";
+    if (q & QualifierBits::Parallel) header += " ~parallel";
     printNodeHeader(node, header);
     indentLevel++;
+    // Parameter groups
     for (const auto& group : node.sig.paramGroups) {
         for (const auto& param : group) {
             if (param) visitChild(param.get(), "param");
         }
     }
-    if (node.sig.returnType) visitChild(node.sig.returnType.get(), "return");
+    // Return types
+    for (const auto& ret : node.sig.returnTypes) {
+        if (ret) visitChild(ret.get(), "return");
+    }
     indentLevel--;
 }
 
@@ -232,6 +252,14 @@ void ASTDumper::visit(VarDeclAST& node) {
 
 void ASTDumper::visit(FuncDeclAST& node) {
     std::string header = "FuncDeclAST '" + toStr(pool, node.name) + "'";
+    
+    // Qualifiers
+    uint32_t q = node.sig.qualifiers;
+    if (q & QualifierBits::Async) header += " ~async";
+    if (q & QualifierBits::Nullable) header += " ~nullable";
+    if (q & QualifierBits::Parallel) header += " ~parallel";
+    
+    // Parameter groups
     for (const auto& group : node.sig.paramGroups) {
         header += " (";
         for (size_t i = 0; i < group.size(); ++i) {
@@ -242,7 +270,16 @@ void ASTDumper::visit(FuncDeclAST& node) {
         }
         header += ")";
     }
-    if (node.sig.returnType) header += " " + formatType(node.sig.returnType.get());
+    
+    // Return types
+    if (!node.sig.returnTypes.empty()) {
+        header += " -> ";
+        for (size_t i = 0; i < node.sig.returnTypes.size(); ++i) {
+            if (i > 0) header += ", ";
+            header += formatType(node.sig.returnTypes[i].get());
+        }
+    }
+    
     printNodeHeader(node, header);
     indentLevel++;
     if (node.body) visitChild(node.body.get());
@@ -285,6 +322,14 @@ void ASTDumper::visit(EnumVariantAST& node) {
 
 void ASTDumper::visit(TraitMethodAST& node) {
     std::string header = "TraitMethodAST '" + toStr(pool, node.name) + "'";
+    
+    // Qualifiers
+    uint32_t q = node.sig.qualifiers;
+    if (q & QualifierBits::Async) header += " ~async";
+    if (q & QualifierBits::Nullable) header += " ~nullable";
+    if (q & QualifierBits::Parallel) header += " ~parallel";
+    
+    // Parameter groups
     for (const auto& group : node.sig.paramGroups) {
         header += " (";
         for (size_t i = 0; i < group.size(); ++i) {
@@ -295,7 +340,16 @@ void ASTDumper::visit(TraitMethodAST& node) {
         }
         header += ")";
     }
-    if (node.sig.returnType) header += " " + formatType(node.sig.returnType.get());
+    
+    // Return types
+    if (!node.sig.returnTypes.empty()) {
+        header += " -> ";
+        for (size_t i = 0; i < node.sig.returnTypes.size(); ++i) {
+            if (i > 0) header += ", ";
+            header += formatType(node.sig.returnTypes[i].get());
+        }
+    }
+    
     printNodeHeader(node, header);
 }
 
@@ -324,6 +378,14 @@ void ASTDumper::visit(ImplDeclAST& node) {
 
 void ASTDumper::visit(MethodDeclAST& node) {
     std::string header = "MethodDeclAST '" + toStr(pool, node.name) + "'";
+
+    // Qualifiers
+    uint32_t q = node.sig.qualifiers;
+    if (q & QualifierBits::Async) header += " ~async";
+    if (q & QualifierBits::Nullable) header += " ~nullable";
+    if (q & QualifierBits::Parallel) header += " ~parallel";
+
+    // Parameter groups
     for (const auto& group : node.sig.paramGroups) {
         header += " (";
         for (size_t i = 0; i < group.size(); ++i) {
@@ -334,7 +396,16 @@ void ASTDumper::visit(MethodDeclAST& node) {
         }
         header += ")";
     }
-    if (node.sig.returnType) header += " " + formatType(node.sig.returnType.get());
+
+    // Return types
+    if (!node.sig.returnTypes.empty()) {
+        header += " -> ";
+        for (size_t i = 0; i < node.sig.returnTypes.size(); ++i) {
+            if (i > 0) header += ", ";
+            header += formatType(node.sig.returnTypes[i].get());
+        }
+    }
+
     printNodeHeader(node, header);
     if (node.body) visitChild(node.body.get());
 }
@@ -510,6 +581,9 @@ void ASTDumper::visit(ComposeOperandAST& node) {
 
 void ASTDumper::visit(AnonFuncExprAST& node) {
     std::string header = "AnonFuncExprAST";
+
+    // Anonymous functions have no qualifiers
+    // Parameter groups
     for (const auto& group : node.sig.paramGroups) {
         header += " (";
         for (size_t i = 0; i < group.size(); ++i) {
@@ -521,7 +595,16 @@ void ASTDumper::visit(AnonFuncExprAST& node) {
         }
         header += ")";
     }
-    if (node.sig.returnType) header += " " + formatType(node.sig.returnType.get());
+
+    // Return types (after ->)
+    if (!node.sig.returnTypes.empty()) {
+        header += " -> ";
+        for (size_t i = 0; i < node.sig.returnTypes.size(); ++i) {
+            if (i > 0) header += ", ";
+            header += formatType(node.sig.returnTypes[i].get());
+        }
+    }
+
     printNodeHeader(node, header);
     if (node.body) visitChild(node.body.get());
 }
@@ -670,21 +753,6 @@ void ASTDumper::visit(BreakStmtAST& node) {
 
 void ASTDumper::visit(ContinueStmtAST& node) {
     printNodeHeader(node, "ContinueStmtAST");
-}
-
-void ASTDumper::visit(ParallelForStmtAST& node) {
-    printNodeHeader(node, "ParallelForStmtAST '" + toStr(pool, node.iterVar->name) + "'");
-    if (node.iterVar->type) {
-        indent(); out += "\tvarType: " + formatType(node.iterVar->type.get()) + "\n";
-    }
-    if (node.iterable) visitChild(node.iterable.get(), "iterable");
-    if (node.step) visitChild(node.step.get(), "step");
-    if (node.body) visitChild(node.body.get());
-}
-
-void ASTDumper::visit(ParallelBlockStmtAST& node) {
-    printNodeHeader(node, "ParallelBlockStmtAST");
-    for (const auto& block : node.subBlocks) visitChild(block.get());
 }
 
 void ASTDumper::visit(AttributeAST& node) {

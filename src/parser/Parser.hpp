@@ -226,9 +226,8 @@ private:
     // produces PtrTypeAST regardless of context.
     TypePtr parsePtrType();
 
-    // '(' [ param_types ] ')' [ return_type ] [ '?' ]
-    // Handles nullable function form: '(' '(' ... ')' ret ')' '?'
-    TypePtr parseFuncType(bool allowQualifiers = true);
+    // func_type := [ qualifier_list ] param_group { param_group } [ '->' return_list ]
+    TypePtr parseFuncType();
 
     // Wrap a TypePtr in NullableTypeAST if the next token is '?'.
     TypePtr wrapNullable(TypePtr inner);
@@ -265,6 +264,9 @@ private:
     // Parse one parameter group '(' [ param_list ] ')'.
     // Used by parseFuncDecl and parseFuncType.
     ParamGroup parseParamGroup();
+
+    // return_list := return_type { ',' return_type }
+    std::vector<TypePtr> parseReturnList();
 
     // Parse generic parameter list: '<' generic_param { ',' generic_param } '>'
     std::vector<GenericParamPtr> parseGenericParams();
@@ -522,12 +524,6 @@ private:
 
     // continue
     ASTPtr<ContinueStmtAST> parseContinueStmt();
-
-    // parallel for IDENTIFIER in expr block
-    ASTPtr<ParallelForStmtAST> parseParallelForStmt();
-
-    // parallel '{' { block } '}'
-    ASTPtr<ParallelBlockStmtAST> parseParallelBlockStmt();
 
     // Local declaration inside a block: let / const → VarDeclAST or
     // FuncDeclAST. Wrapped in DeclStmtAST. pub is forbidden inside a block —

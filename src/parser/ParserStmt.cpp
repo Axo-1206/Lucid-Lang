@@ -107,8 +107,7 @@ ASTPtr<BlockStmtAST> Parser::parseBlock() {
 // is parsed as IfStmtAST (else optional) rather than IfExprAST (else required).
 // This distinction matters for error messages and for the semantic pass.
 // ─────────────────────────────────────────────────────────────────────────────
-StmtPtr Parser::parseStmt()
-{
+StmtPtr Parser::parseStmt() {
     LUC_LOG_STMT_VERBOSE("parseStmt: token='" << peek().value << "'");
     
     // ── Local declarations ────────────────────────────────────────────────────
@@ -137,15 +136,6 @@ StmtPtr Parser::parseStmt()
     if (check(TokenType::RETURN)) return parseReturnStmt();
     if (check(TokenType::BREAK)) return parseBreakStmt();
     if (check(TokenType::CONTINUE)) return parseContinueStmt();
-
-    // ── Parallel ──────────────────────────────────────────────────────────────
-    if (check(TokenType::PARALLEL)) {
-        if (peekNext().type == TokenType::FOR) {
-            return parseParallelForStmt();
-        } else {
-            return parseParallelBlockStmt();
-        }
-    }
 
     // ── Expression statement ──────────────────────────────────────────────────
     if (!looksLikeStmtStart()) {
@@ -183,8 +173,7 @@ StmtPtr Parser::parseStmt()
 // The keyword is consumed here; the name remains at pos_ so that
 // looksLikeFuncDecl() and the individual parsers read it correctly.
 // ─────────────────────────────────────────────────────────────────────────────
-ASTPtr<DeclStmtAST> Parser::parseLocalDecl()
-{
+ASTPtr<DeclStmtAST> Parser::parseLocalDecl() {
     LUC_LOG_STMT("parseLocalDecl");
     SourceLocation loc = currentLoc();
     Token kwTok = advance();
@@ -227,8 +216,7 @@ ASTPtr<DeclStmtAST> Parser::parseLocalDecl()
 //   In expression position (e.g. assignment RHS, function return body),
 //   parseExpr() → parsePrimaryExpr() → parseIfExpr() is taken instead.
 // ────────────────────────────────────────────────────────────────────────────
-ASTPtr<IfStmtAST> Parser::parseIfStmt()
-{
+ASTPtr<IfStmtAST> Parser::parseIfStmt() {
     LUC_LOG_STMT("parseIfStmt");
     SourceLocation loc = currentLoc();
     consume(TokenType::IF, "expected 'if'");
@@ -307,8 +295,7 @@ ASTPtr<IfStmtAST> Parser::parseIfStmt()
 // Multiple values and ranges per case; no fallthrough.
 // default is optional (unlike match where it is required).
 // ─────────────────────────────────────────────────────────────────────────────
-ASTPtr<SwitchStmtAST> Parser::parseSwitchStmt()
-{
+ASTPtr<SwitchStmtAST> Parser::parseSwitchStmt() {
     LUC_LOG_STMT("parseSwitchStmt");
     SourceLocation loc = currentLoc();
     consume(TokenType::SWITCH, "expected 'switch'");
@@ -450,8 +437,7 @@ SwitchCasePtr Parser::parseSwitchCase() {
 // is followed by '..' we convert it to a RangeExprAST.  The semantic pass
 // determines the iteration variable type from the iterable.
 // ─────────────────────────────────────────────────────────────────────────────
-ASTPtr<ForStmtAST> Parser::parseForStmt()
-{
+ASTPtr<ForStmtAST> Parser::parseForStmt() {
     LUC_LOG_STMT("parseForStmt");
     SourceLocation loc = currentLoc();
     consume(TokenType::FOR, "expected 'for'");
@@ -533,8 +519,7 @@ ASTPtr<ForStmtAST> Parser::parseForStmt()
 //
 // Grammar:  while_stmt := 'while' expr block
 // ─────────────────────────────────────────────────────────────────────────────
-ASTPtr<WhileStmtAST> Parser::parseWhileStmt()
-{
+ASTPtr<WhileStmtAST> Parser::parseWhileStmt() {
     LUC_LOG_STMT("parseWhileStmt");
     SourceLocation loc = currentLoc();
     consume(TokenType::WHILE, "expected 'while'");
@@ -573,8 +558,7 @@ ASTPtr<WhileStmtAST> Parser::parseWhileStmt()
 //
 // The body executes unconditionally before the condition is first evaluated.
 // ─────────────────────────────────────────────────────────────────────────────
-ASTPtr<DoWhileStmtAST> Parser::parseDoWhileStmt()
-{
+ASTPtr<DoWhileStmtAST> Parser::parseDoWhileStmt() {
     LUC_LOG_STMT("parseDoWhileStmt");
     SourceLocation loc = currentLoc();
     consume(TokenType::DO, "expected 'do'");
@@ -652,8 +636,7 @@ ASTPtr<ReturnStmtAST> Parser::parseReturnStmt() {
 //
 // Grammar:  break_stmt := 'break'
 // ─────────────────────────────────────────────────────────────────────────────
-ASTPtr<BreakStmtAST> Parser::parseBreakStmt()
-{
+ASTPtr<BreakStmtAST> Parser::parseBreakStmt() {
     LUC_LOG_STMT("parseBreakStmt");
     SourceLocation loc = currentLoc();
     consume(TokenType::BREAK, "expected 'break'");
@@ -679,8 +662,7 @@ ASTPtr<BreakStmtAST> Parser::parseBreakStmt()
 //
 // Grammar:  continue_stmt := 'continue'
 // ─────────────────────────────────────────────────────────────────────────────
-ASTPtr<ContinueStmtAST> Parser::parseContinueStmt()
-{
+ASTPtr<ContinueStmtAST> Parser::parseContinueStmt() {
     LUC_LOG_STMT("parseContinueStmt");
     SourceLocation loc = currentLoc();
     consume(TokenType::CONTINUE, "expected 'continue'");
@@ -697,154 +679,5 @@ ASTPtr<ContinueStmtAST> Parser::parseContinueStmt()
     auto node = arena_.make<ContinueStmtAST>();
     node->loc = loc;
     LUC_LOG_STMT_EXTREME("parseContinueStmt: returning ContinueStmtAST");
-    return node;
-}
-
-
-// ─────────────────────────────────────────────────────────────────────────────
-// parseParallelForStmt
-//
-// Grammar:
-//   parallel_for := 'parallel' 'for' IDENTIFIER 'in' expr block
-//
-// The iteration variable is independently bound per iteration — no shared
-// mutable state.  The parallel body disallows await, return, break, continue.
-// ─────────────────────────────────────────────────────────────────────────────
-ASTPtr<ParallelForStmtAST> Parser::parseParallelForStmt()
-{
-    LUC_LOG_STMT("parseParallelForStmt");
-    SourceLocation loc = currentLoc();
-    consume(TokenType::PARALLEL, "expected 'parallel'");
-    consume(TokenType::FOR, "expected 'for' after 'parallel'");
-
-    if (!check(TokenType::IDENTIFIER)) {
-        errorAt(DiagCode::E2003, "expected iteration variable name after 'parallel for'");
-        return nullptr;
-    }
-    std::string varName = advance().value;
-    LUC_LOG_STMT_VERBOSE("parseParallelForStmt: varName='" << varName << "'");
-
-    // Optional: Parse explicit type annotation if 'in' does not follow immediately.
-    TypePtr varType = nullptr;
-    if (!check(TokenType::IN)) {
-        varType = parseType();
-        if (!varType) {
-            errorAt(DiagCode::E2005, "expected 'in' or explicit type after iteration variable name");
-            return nullptr;
-        }
-        LUC_LOG_STMT_VERBOSE("parseParallelForStmt: explicit var type");
-    }
-
-    consume(TokenType::IN, "expected 'in' after iteration variable");
-
-    // Parse the iterable expression (collection or RangeExprAST).
-    ExprPtr iterable = parseExpr(false);
-    if (!iterable) {
-        errorAt(DiagCode::E2008, "expected iterable expression after 'in'");
-        return nullptr;
-    }
-
-    // Optional: if '..' follows, build RangeExprAST from boundaries and step.
-    ExprPtr step = nullptr;
-    if (check(TokenType::RANGE)) {
-        LUC_LOG_STMT_VERBOSE("parseParallelForStmt: range iteration");
-        iterable = parseRangeExpr(std::move(iterable));
-        
-        // After start..end, an optional second '..' can signal a step.
-        if (match(TokenType::RANGE)) {
-            step = parseExpr();
-            if (!step) {
-                errorAt(DiagCode::E2008, "expected step expression after '..'");
-                return nullptr;
-            }
-            LUC_LOG_STMT_VERBOSE("parseParallelForStmt: with step");
-        }
-    }
-
-    if (!check(TokenType::LBRACE)) {
-        errorAt(DiagCode::E2001, "expected '{' to start parallel for body");
-        return nullptr;
-    }
-
-    // Inside a parallel body: no await, no return, no break/continue.
-    LUC_LOG_STMT_VERBOSE("parseParallelForStmt: entering parallel body (parallelDepth=" << parallelDepth_ << "->" << parallelDepth_ + 1 << ")");
-    ++parallelDepth_;
-    StmtPtr body = parseBlock();
-    --parallelDepth_;
-    LUC_LOG_STMT_VERBOSE("parseParallelForStmt: exited parallel body");
-
-    auto node = arena_.make<ParallelForStmtAST>();
-    node->loc = loc;
-
-    node->iterVar = arena_.make<ParamAST>();
-    node->iterVar->name = pool_.intern(varName);
-    node->iterVar->type = std::move(varType);
-    node->iterVar->isVariadic = false;
-
-    node->iterable = std::move(iterable);
-    node->step = std::move(step);
-    node->body = std::move(body);
-    LUC_LOG_STMT("parseParallelForStmt: returning ParallelForStmtAST");
-    return node;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// parseParallelBlockStmt
-//
-// Grammar:
-//   parallel_block := 'parallel' '{' { block } '}'
-//
-// Each inner block is an independent concurrent task.  The outer '{' is the
-// parallel container; the inner '{' blocks are the sub-tasks.
-//
-// Minimum one sub-block — a parallel block with zero tasks is a semantic error
-// (recorded as a parse-time error for an earlier diagnostic).
-// ─────────────────────────────────────────────────────────────────────────────
-ASTPtr<ParallelBlockStmtAST> Parser::parseParallelBlockStmt() {
-    LUC_LOG_STMT("parseParallelBlockStmt");
-    SourceLocation loc = currentLoc();
-    consume(TokenType::PARALLEL, "expected 'parallel'");
-    consume(TokenType::LBRACE, "expected '{' after 'parallel'");
-
-    auto node = arena_.make<ParallelBlockStmtAST>();
-    node->loc = loc;
-    int subBlockCount = 0;
-
-    LUC_LOG_STMT_VERBOSE("parseParallelBlockStmt: entering parallel body (parallelDepth=" 
-                         << parallelDepth_ << "->" << parallelDepth_ + 1 << ")");
-    ++parallelDepth_;
-
-    // Each '{' that appears directly inside the outer '{' is one sub-task block.
-    while (!check(TokenType::RBRACE) && !isAtEnd()) {
-        match(TokenType::SEMICOLON);
-        if (check(TokenType::RBRACE)) break;
-
-        if (!check(TokenType::LBRACE)) {
-            errorAt(DiagCode::E2001, "expected '{' to start a parallel sub-task block");
-            synchronize();
-            // After synchronize, if we're not at a '{' and not at '}', stop trying.
-            if (!check(TokenType::LBRACE) && !check(TokenType::RBRACE)) {
-                // Probably hit a top-level declaration – break out to avoid spam.
-                break;
-            }
-            continue;
-        }
-
-        node->subBlocks.push_back(parseBlock());
-        subBlockCount++;
-        LUC_LOG_STMT_EXTREME("parseParallelBlockStmt: parsed sub-block " << subBlockCount);
-    }
-
-    --parallelDepth_;
-    LUC_LOG_STMT_VERBOSE("parseParallelBlockStmt: exited parallel body");
-
-    consume(TokenType::RBRACE, "expected '}' to close parallel block");
-
-    if (node->subBlocks.empty()) {
-        LUC_LOG_STMT("parseParallelBlockStmt: ERROR - empty parallel block");
-        error(loc, DiagCode::E2007, "parallel block must contain at least one sub-task block");
-    }
-
-    LUC_LOG_STMT("parseParallelBlockStmt: " << subBlockCount << " sub-blocks");
     return node;
 }

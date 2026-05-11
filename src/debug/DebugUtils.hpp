@@ -73,8 +73,6 @@ namespace LucDebug {
             case ASTKind::ReturnStmt:        return "ReturnStmt";
             case ASTKind::BreakStmt:         return "BreakStmt";
             case ASTKind::ContinueStmt:      return "ContinueStmt";
-            case ASTKind::ParallelForStmt:   return "ParallelForStmt";
-            case ASTKind::ParallelBlockStmt: return "ParallelBlockStmt";
             
             // Pattern nodes
             case ASTKind::BindPattern:       return "BindPattern";

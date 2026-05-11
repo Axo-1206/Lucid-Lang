@@ -999,12 +999,20 @@ ExprPtr Parser::parseStructLiteralExpr(std::string typeName, std::vector<TypePtr
 // ─────────────────────────────────────────────────────────────────────────────
 // parseAnonFuncExpr
 //
-// Grammar (updated to match func_decl — multiple param groups allowed):
-//   anon_func       := [ qualifier_list ] '(' [ param_list ] ')' [ return_type ] block
+// Grammar:
+//   anon_func := param_group { param_group } [ '->' return_list ] block
 //
-// Single-group:   (x int) int { return x * 2 }
-// Multi-group:    (a int) (b int) int { return a + b }
-// Async:          async (url string) string { return await httpGet(url) }
+// Notes:
+//   - Anonymous functions CANNOT have qualifiers (~async, ~nullable). They are
+//     plain values. Qualifiers belong on declarations or parameter types.
+//   - Multiple parameter groups = curried anonymous function.
+//   - Return list after '->' can contain multiple types (comma separated).
+//   - No nullable suffix '?' – anonymous functions are never nil.
+//
+// Examples:
+//   (x int) -> int { return x * 2 }
+//   (a int)(b int) -> int { return a + b }
+//   (src string) -> int, string { ... }
 // ─────────────────────────────────────────────────────────────────────────────
 ExprPtr Parser::parseAnonFuncExpr() {
     SourceLocation loc = currentLoc();
@@ -1012,44 +1020,52 @@ ExprPtr Parser::parseAnonFuncExpr() {
     auto node = arena_.make<AnonFuncExprAST>();
     node->loc = loc;
     
-    // ── Parse type qualifiers into FuncSignature (~async, ~noinline, etc.) ──────
-    while (check(TokenType::TILDE)) {
-        advance(); // consume '~'
-        
-        if (!check(TokenType::IDENTIFIER)) {
-            errorAt(DiagCode::E2003, "expected qualifier name after '~'");
-            break;
+    // ── Anonymous functions cannot have qualifiers ─────────────────────────
+    if (check(TokenType::TILDE)) {
+        errorAt(DiagCode::E2002,
+                "anonymous function cannot have qualifiers (e.g., ~async, ~nullable). "
+                "Qualifiers belong on declarations, not values.");
+        // Skip the qualifier(s) to recover
+        while (check(TokenType::TILDE)) {
+            advance(); // consume '~'
+            if (!check(TokenType::IDENTIFIER)) {
+                errorAt(DiagCode::E2003, "expected qualifier name after '~'");
+                break;
+            }
+            advance(); // consume qualifier name
         }
-        
-        node->sig.rawQualifiers.push_back(pool_.intern(advance().value));
-        LUC_LOG_EXPR_VERBOSE("\tqualifier: '~" << pool_.lookup(node->sig.rawQualifiers.back()) << "'");
     }
     
-    // Parse parameter groups into FuncSignature
+    // ── Parse parameter groups (curried) ──────────────────────────────────
+    if (!check(TokenType::LPAREN)) {
+        errorAt(DiagCode::E2001, "expected '(' to start anonymous function parameters");
+        return arena_.make<UnknownExprAST>();
+    }
+    
     while (check(TokenType::LPAREN)) {
         node->sig.paramGroups.push_back(parseParamGroup());
         LUC_LOG_EXPR_VERBOSE("\tparsed param group with " 
                             << node->sig.paramGroups.back().size() << " params");
     }
     
-    // Optional return type
-    if (looksLikeType() && !check(TokenType::LBRACE)) {
-        node->sig.returnType = parseType();
-        LUC_LOG_EXPR_VERBOSE("\treturn type parsed");
+    // ── Optional '->' and return list (multiple returns) ──────────────────
+    if (match(TokenType::ARROW)) {
+        node->sig.returnTypes = parseReturnList();
+        LUC_LOG_EXPR_VERBOSE("\tparsed " << node->sig.returnTypes.size() << " return type(s)");
+    } else {
+        // void anonymous function (no return types)
+        LUC_LOG_EXPR_VERBOSE("\tvoid anonymous function (no return types)");
     }
     
-    // Optional nullable function suffix '?'
-    node->sig.isNullable = match(TokenType::QUESTION);
-    
+    // ── Body block must follow ────────────────────────────────────────────
     if (!check(TokenType::LBRACE)) {
         errorAt(DiagCode::E2001, "expected '{' to start anonymous function body");
-    } else {
-        node->body = parseBlock();
+        return arena_.make<UnknownExprAST>();
     }
+    node->body = parseBlock();
     
     LUC_LOG_EXPR_VERBOSE("parseAnonFuncExpr: paramGroups=" << node->sig.paramGroups.size() 
-                        << ", returnType=" << (node->sig.returnType != nullptr)
-                        << ", isNullable=" << node->sig.isNullable);
+                        << ", returnTypes=" << node->sig.returnTypes.size());
     
     return node;
 }

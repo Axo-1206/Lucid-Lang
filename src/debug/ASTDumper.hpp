@@ -109,8 +109,6 @@ public:
     void visit(ReturnStmtAST& node) override;
     void visit(BreakStmtAST& node) override;
     void visit(ContinueStmtAST& node) override;
-    void visit(ParallelForStmtAST& node) override;
-    void visit(ParallelBlockStmtAST& node) override;
 
     // ── Unknown / Recovery nodes ──────────────────────────────────────────────
     void visit(UnknownDeclAST&) override;

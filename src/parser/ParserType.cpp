@@ -132,7 +132,7 @@ TypePtr Parser::parseBaseType() {
         // expression would only appear in expression context, never here.
         case TokenType::LPAREN:
             LUC_LOG_TYPE_VERBOSE("parseBaseType: dispatching to parseFuncType");
-            return parseFuncType(true);
+            return parseFuncType();
 
         default:
             // Not a recognisable type start — caller decides if that is an error.
@@ -454,186 +454,52 @@ TypePtr Parser::parsePtrType() {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // parseFuncType
-//
-// Grammar:
-//   func_type := '(' [ param_types ] ')' [ return_type ]
-//              | '(' '(' [ param_types ] ')' [ return_type ] ')' '?'
-//
-// The outer '(' starts either:
-//   a) a normal function type:          (int) string
-//   b) a nullable function type:        ((int) string)?
-//      — the outer parens wrap a complete function type, followed by '?'.
-//
-// Disambiguating (a) vs (b):
-//   Peek inside the outer '(' — if the very next token is also '(' then we
-//   are in form (b) and need to parse the inner function type, consume ')',
-//   then consume '?'.
-//
-// Parameter types in function types discard names — only the type matters.
-// The parameter list here is  type { ',' type }  not  name type { ',' name type }.
-// However, Luc allows annotated params in type position too (e.g. inside type
-// alias  type Callback = (event Event) bool ), so we parse optionally:
-//   If IDENTIFIER follows and the next-next token looks like a type, consume
-//   the name and then the type; otherwise parse just the type.
-//
-// Variadic params in function types:  args ...int  →  just the type is stored.
 // ─────────────────────────────────────────────────────────────────────────────
-TypePtr Parser::parseFuncType(bool allowQualifiers) {
+TypePtr Parser::parseFuncType() {
     LUC_LOG_TYPE("parseFuncType");
-    
-    // ── Parse type qualifiers - just collect strings, don't validate ─────────
+
+    uint32_t qualifiersMask = 0;
     std::vector<InternedString> rawQualifiers;
-    if (allowQualifiers) {
-        while (check(TokenType::TILDE)) {
-            advance(); // consume '~'
-            
-            if (!check(TokenType::IDENTIFIER)) {
-                errorAt(DiagCode::E2003, "expected qualifier name after '~'");
-                break;
-            }
-            
-            // Just store the name as-is, no validation (semantic phase will validate)
-            rawQualifiers.push_back(pool_.intern(advance().value));
-            LUC_LOG_TYPE_VERBOSE("\tqualifier: '~" << pool_.lookup(rawQualifiers.back()) << "'");
+
+    // ── Parse type qualifiers (e.g., ~async, ~nullable, ~parallel) ──────────
+    while (check(TokenType::TILDE)) {
+        advance(); // consume '~'
+        if (!check(TokenType::IDENTIFIER)) {
+            errorAt(DiagCode::E2003, "expected qualifier name after '~'");
+            break;
         }
-    }
-    
-    // ── Nullable function detection: (( ... )?) ──────────────────────────────
-    // IMPORTANT: Qualifiers (if any) have been consumed above. The next token
-    //            MUST be '(' for a valid function type (nullable or not).
-    //            We scan forward without modifying pos_ to check for the
-    //            pattern '(' ... ')' '?' where the entire function type is
-    //            wrapped in an extra pair of parentheses.
-    bool isNullableFunction = false;
-    SourceLocation nullableLoc;
-    
-    // Check for outer '(' that indicates nullable function
-    if (check(TokenType::LPAREN)) {
-        // Scan forward to find matching ')' and check for '?'
-        std::size_t i = pos_;
-        int parenDepth = 1;
-        ++i; // skip the first '('
+        std::string qualName = advance().value;
+        InternedString qualId = pool_.intern(qualName);
 
-        while (i < tokens_.size() && parenDepth > 0) {
-            TokenType tt = tokens_[i].type;
-            if (tt == TokenType::LPAREN) {
-                ++parenDepth;
-            } else if (tt == TokenType::RPAREN) {
-                --parenDepth;
-            } else if (tt == TokenType::LINE_COMMENT || tt == TokenType::DOC_COMMENT) {
-                ++i;
-                continue;
-            } else if (tt == TokenType::TILDE) {
-                // Skip type qualifiers that may appear between the outer '(' and the inner '('.
-                // This is safe because:
-                //   1. Qualifiers are always of the form '~' IDENTIFIER.
-                //   2. The token after '~' is guaranteed to be IDENTIFIER (grammar rule).
-                //   3. A qualifier cannot contain '(' or ')', so skipping it does not
-                //      affect parenthesis depth tracking.
-                // If the qualifier syntax ever changes (e.g., ~async<T>), this code will need
-                // to be revisited.
-                ++i;
-                if (i < tokens_.size() && tokens_[i].type == TokenType::IDENTIFIER) ++i;
-                continue;
-            }
-            ++i;
+        if (!QualifierRegistry::instance().applyQualifier(qualifiersMask, qualName)) {
+            errorAt(DiagCode::E2003,
+                    "unknown type qualifier '~" + qualName + "'; known: " +
+                    QualifierRegistry::instance().allNames());
         }
-        // After the matching ')', check if there's a '?'
-        bool hasQuestion = (i < tokens_.size() && tokens_[i].type == TokenType::QUESTION);
-        if (parenDepth == 0 && hasQuestion) {
-            isNullableFunction = true;
-            nullableLoc = currentLoc();
-            advance(); // consume the outer '('
-
-            // Defensive check: after consuming outer '(', the next token MUST be '('
-            if (!check(TokenType::LPAREN)) {
-                errorAt(DiagCode::E2001,
-                        "expected '(' after outer parentheses in nullable function type");
-                // Revert to normal function type parsing (no outer wrapper)
-                isNullableFunction = false;
-            }
-        }
+        rawQualifiers.push_back(qualId);
     }
-    
-    // ── Parse the actual function type (inner part) ───────────────────────────
-    consume(TokenType::LPAREN, "expected '(' for function type");
-    
-    // Build a single parameter group for this function type
-    ParamGroup paramGroup;
-    
-    if (!check(TokenType::RPAREN)) {
-        do {
-            SourceLocation paramLoc = currentLoc();
-            std::string name = "";
-            bool variadic = match(TokenType::VARIADIC);
 
-            // Optional parameter name (ignore it in type position)
-            if (check(TokenType::IDENTIFIER)) {
-                TokenType nextType = peekNext().type;
-                bool nextIsType = Parser::isPrimitiveTypeToken(nextType) ||
-                                nextType == TokenType::IDENTIFIER ||
-                                nextType == TokenType::LPAREN ||
-                                nextType == TokenType::AMPERSAND ||
-                                nextType == TokenType::MUL ||
-                                nextType == TokenType::LBRACKET;
-                if (nextIsType) {
-                    name = advance().value;
-                    LUC_LOG_TYPE_EXTREME("parseFuncType: ignoring parameter name '" << name << "'");
-                }
-            }
-            
-            // Progress tracking
-            std::size_t savedPos = pos_;
-            TypePtr paramType = parseType();
-            if (pos_ == savedPos) {
-                errorAt(DiagCode::E2005, "expected parameter type in function type");
-                // Skip the problematic token to avoid infinite loop
-                if (!isAtEnd()) advance();
-                break;
-            }
-            
-            if (!paramType) {
-                errorAt(DiagCode::E2005, "expected parameter type");
-                break;
-            }
-            
-            auto paramNode = arena_.make<ParamAST>();
-            paramNode->loc = paramLoc;
-            paramNode->name = std::move(pool_.intern(name));
-            paramNode->type = std::move(paramType);
-            paramNode->isVariadic = variadic;
-            paramGroup.push_back(std::move(paramNode));
+    // ── Parse one or more parameter groups ──────────────────────────────────
+    std::vector<ParamGroup> paramGroups;
+    while (check(TokenType::LPAREN)) {
+        paramGroups.push_back(parseParamGroup());
+    }
 
-        } while (match(TokenType::COMMA));
+    // ── Parse return list after '->' (if present) ───────────────────────────
+    std::vector<TypePtr> returnTypes;
+
+    if (match(TokenType::ARROW)) { // token "->"
+        // Parse first return type
+        returnTypes = parseReturnList();
     }
-    consume(TokenType::RPAREN, "expected ')' after parameter list");
-    
-    TypePtr returnType = nullptr;
-    if (looksLikeType() && !check(TokenType::LBRACE)) {
-        returnType = parseType();
-    }
-    
+
+    // ── Build the function type node ─────────────────────────────────────────
     auto funcType = arena_.make<FuncTypeAST>();
+    funcType->sig.qualifiers = qualifiersMask;
     funcType->sig.rawQualifiers = std::move(rawQualifiers);
-    funcType->sig.paramGroups.push_back(std::move(paramGroup));  // Single group for function type
-    funcType->sig.returnType = std::move(returnType);
-    
-    // ── Handle nullable RETURN type: (params) ret? ────────────────────────────
-    if (match(TokenType::QUESTION)) {
-        auto nullableReturn = arena_.make<NullableTypeAST>(std::move(funcType));
-        return nullableReturn;
-    }
-    
-    // ── Handle nullable FUNCTION: ( (params) ret )? ───────────────────────────
-    if (isNullableFunction) {
-        consume(TokenType::RPAREN, "expected ')' to close nullable function wrapper");
-        consume(TokenType::QUESTION, "expected '?' for nullable function");
-        
-        auto nullableFunc = arena_.make<NullableTypeAST>(std::move(funcType));
-        nullableFunc->loc = nullableLoc;
-        return nullableFunc;
-    }
-    
+    funcType->sig.paramGroups = std::move(paramGroups);
+    funcType->sig.returnTypes = std::move(returnTypes);
+
     return funcType;
 }
 

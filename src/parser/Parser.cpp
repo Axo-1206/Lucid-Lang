@@ -180,8 +180,7 @@ SourceLocation Parser::locOf(const Token &tok) const {
 // Error handling & recovery
 // ─────────────────────────────────────────────────────────────────────────────
 
-void Parser::error(const SourceLocation &loc, DiagCode code,
-                   const std::string &msg) {
+void Parser::error(const SourceLocation &loc, DiagCode code, const std::string &msg) {
     LUC_LOG_PARSER("ERROR at " << loc.line << ":" << loc.column 
                    << " - " << msg << " (code=" << static_cast<int>(code) << ")");
     dc_.report(DiagnosticSeverity::Error, DiagnosticCategory::Syntax, loc, code,
@@ -223,7 +222,6 @@ void Parser::synchronize() {
         case TokenType::RETURN:
         case TokenType::BREAK:
         case TokenType::CONTINUE:
-        case TokenType::PARALLEL:
         case TokenType::MATCH:
         case TokenType::SWITCH:
         // A closing brace ends the current block — caller handles it.
@@ -254,6 +252,224 @@ Visibility Parser::parseVisibility() {
     }
     LUC_LOG_PARSER_EXTREME("parseVisibility: no modifier -> Private");
     return Visibility::Private;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Function signature helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// parseParamGroup
+//
+// Grammar:
+//   param_group := '(' [ param_list ] ')'
+//   param_list  := param { [','] param } [ [','] variadic_param ]
+//
+// Returns the list of params for a single group. Variadic must be last.
+// ─────────────────────────────────────────────────────────────────────────────
+std::vector<ASTPtr<ParamAST>> Parser::parseParamGroup() {
+    LUC_LOG_PARSER_VERBOSE("parseParamGroup: parsing parameter group");
+    SourceLocation loc = currentLoc();
+    consume(TokenType::LPAREN, "expected '(' to start parameter group");
+    
+    std::vector<ASTPtr<ParamAST>> group;
+    
+    while (!check(TokenType::RPAREN) && !isAtEnd()) {
+        match(TokenType::COMMA);
+        if (check(TokenType::RPAREN)) break;
+
+        SourceLocation paramLoc = currentLoc();
+
+        // Parse parameter name
+        if (!check(TokenType::IDENTIFIER)) {
+            errorAt(DiagCode::E2003, "expected parameter name");
+            break;
+        }
+        InternedString paramName = pool_.intern(advance().value);
+        
+        // Parse variadic '...' if present
+        bool isVariadic = match(TokenType::VARIADIC);
+
+        // Save position right before parsing the type
+        std::size_t savedPos = pos_;
+        TypePtr paramType = parseType();
+
+        // Case 1: No progress → infinite loop risk
+        if (pos_ == savedPos) {
+            errorAt(DiagCode::E2005, "expected parameter type, no token consumed");
+            if (!isAtEnd()) advance(); // consume offending token to avoid infinite loop
+            break;
+        }
+
+        // Case 2: parseType returned an unknown type (invalid syntax)
+        if (paramType->isa<UnknownTypeAST>()) {
+            errorAt(DiagCode::E2005, "invalid parameter type");
+            break;  // do NOT add this parameter
+        }
+        
+        auto paramNode = arena_.make<ParamAST>();
+        paramNode->loc = paramLoc;
+        paramNode->name = paramName;
+        paramNode->type = std::move(paramType);
+        paramNode->isVariadic = isVariadic;
+        group.push_back(std::move(paramNode));
+    }
+    
+    consume(TokenType::RPAREN, "expected ')' to close parameter group");
+    return group;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// parseReturnList
+//
+// Grammar:
+//   return_list := return_type { ',' return_type }
+//   return_type := type
+//                | param_group { param_group } '->' return_list   -- curried return
+//
+// Parses one or more return types separated by commas.  If a '(' is seen,
+// it recursively invokes parseFuncType() to handle a nested curried return.
+// Called after encountering '->' in a function signature or anon‑func body.
+//
+// Returns a vector of TypePtr, one per return value.  Empty vector indicates
+// a void function (no '->' present in the calling context).
+// ─────────────────────────────────────────────────────────────────────────────
+std::vector<TypePtr> Parser::parseReturnList() {
+    std::vector<TypePtr> types;
+
+    do {
+        if (check(TokenType::LPAREN)) {
+            // Nested curry function – parse recursively
+            types.push_back(parseFuncType());
+        } else {
+            // Ordinary type – with progress tracking
+            std::size_t savedPos = pos_;
+            TypePtr t = parseType();
+            if (pos_ == savedPos) {
+                errorAt(DiagCode::E2005, "expected return type after '->'");
+                break;
+            }
+            if (!t) {
+                errorAt(DiagCode::E2005, "expected return type after '->'");
+                break;
+            }
+            types.push_back(std::move(t));
+        }
+    } while (match(TokenType::COMMA));
+
+    return types;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Generic
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// parseGenericParams
+//
+// Grammar:
+//   generic_params := '<' generic_param { [','] generic_param } '>'
+//
+// Called on the declaration side (func, struct, trait, impl, type alias).
+// For the use side (call sites, named types), use parseGenericArgs() in
+// ParserType.cpp.
+// ─────────────────────────────────────────────────────────────────────────────
+std::vector<GenericParamPtr> Parser::parseGenericParams() {
+    LUC_LOG_PARSER_VERBOSE("parseGenericParams: starting");
+    std::vector<GenericParamPtr> params;
+
+    consume(TokenType::LESS, "expected '<' to open generic parameters");
+
+    if (check(TokenType::GREATER)) {
+        advance();
+        return params;
+    }
+
+    bool stalled = false;
+    do {
+        match(TokenType::COMMA);
+        if (check(TokenType::GREATER))
+            break;
+
+        // Record position before parsing the generic parameter
+        std::size_t savedPos = pos_;
+        GenericParamPtr gp = parseGenericParam();
+
+        if (!gp) {
+            if (pos_ == savedPos) {
+                errorAt(DiagCode::E2002, "expected generic parameter, skipping token '" + peek().value + "'");
+                advance(); // consume the unexpected token to avoid infinite loop
+                stalled = true;
+                break;      // exit loop early to avoid cascading errors
+            }
+            // Continue to next iteration (loop condition will be re-evaluated)
+            continue;
+        }
+
+        params.push_back(std::move(gp));
+
+    } while (!check(TokenType::GREATER) && !isAtEnd());
+
+    // If we stalled, we might not be at GREATER. Skip to it or to end.
+    if (stalled) {
+        while (!isAtEnd() && !check(TokenType::GREATER)) {
+            advance();
+        }
+    }
+
+    // Now consume the closing '>'
+    consume(TokenType::GREATER, DiagCode::E2001, "expected '>' to close generic parameters");
+    
+    LUC_LOG_PARSER_VERBOSE("parseGenericParams: found " << params.size() << " generic params");
+    return params;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// parseGenericParam
+//
+// Grammar:
+//   generic_param   := IDENTIFIER
+//                    | IDENTIFIER ':' IDENTIFIER
+//                    | IDENTIFIER ':' IDENTIFIER { '+' IDENTIFIER }
+//
+// Examples:  T     K : Hashable     V : Hashable + Comparable
+// ─────────────────────────────────────────────────────────────────────────────
+GenericParamPtr Parser::parseGenericParam() {
+    LUC_LOG_PARSER_VERBOSE("parseGenericParam: parsing");
+    SourceLocation loc = currentLoc();
+
+    if (!check(TokenType::IDENTIFIER)) {
+        errorAt(DiagCode::E2003, "expected type parameter name");
+        return nullptr;
+    }
+    std::string nameRaw = advance().value;
+    InternedString name = pool_.intern(nameRaw);
+
+    // Allocate via arena
+    auto gp = arena_.make<GenericParamAST>(name);
+    gp->loc = loc;
+
+    // Optional constraints: ':' IDENTIFIER { '+' IDENTIFIER }
+    if (match(TokenType::COLON)) {
+        if (!check(TokenType::IDENTIFIER)) {
+            errorAt(DiagCode::E2003, "expected trait name after ':' in generic parameter");
+        } else {
+            std::string traitRaw = advance().value;
+            gp->constraints.push_back(pool_.intern(traitRaw));
+
+            while (match(TokenType::PLUS)) {
+                if (!check(TokenType::IDENTIFIER)) {
+                    errorAt(DiagCode::E2003, "expected trait name after '+' in generic constraint");
+                    break;
+                }
+                traitRaw = advance().value;
+                gp->constraints.push_back(pool_.intern(traitRaw));
+            }
+        }
+    }
+
+    LUC_LOG_PARSER_VERBOSE("\tgeneric param: '" << nameRaw << "' with " << gp->constraints.size() << " constraints");
+    return gp;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -543,15 +759,14 @@ bool Parser::looksLikeFuncDecl() const {
 bool Parser::looksLikeAnonFunc() const {
     std::size_t i = pos_;
 
-    // Skip type qualifiers: ~async, ~noinline, etc.
+    // Skip type qualifiers (though anonymous functions should not have them)
     while (i < tokens_.size() && tokens_[i].type == TokenType::TILDE) {
         ++i;
         if (i < tokens_.size() && tokens_[i].type == TokenType::IDENTIFIER) {
             ++i;
         } else {
-            return false; // malformed '~' without identifier
+            return false;
         }
-        // skip any comments between qualifiers
         while (i < tokens_.size() && (tokens_[i].type == TokenType::LINE_COMMENT ||
                                       tokens_[i].type == TokenType::DOC_COMMENT)) {
             ++i;
@@ -559,11 +774,10 @@ bool Parser::looksLikeAnonFunc() const {
     }
 
     // First parameter group is required
-    if (i >= tokens_.size() || tokens_[i].type != TokenType::LPAREN) {
+    if (i >= tokens_.size() || tokens_[i].type != TokenType::LPAREN)
         return false;
-    }
 
-    // Helper to parse a parameter group (starting at '(') and return index after matching ')'
+    // Helper to parse a parameter group and return index after matching ')'
     auto parseOneGroup = [&](std::size_t start) -> std::size_t {
         if (start >= tokens_.size() || tokens_[start].type != TokenType::LPAREN)
             return start;
@@ -579,53 +793,50 @@ bool Parser::looksLikeAnonFunc() const {
                 ++j;
                 continue;
             } else if (tt == TokenType::TILDE) {
-                // Skip '~' and the following identifier
-                ++j; // skip '~'
-                if (j < tokens_.size() && tokens_[j].type == TokenType::IDENTIFIER)
-                    ++j; // skip identifier name
-                // Do NOT run the final ++j at loop bottom
+                ++j;
+                if (j < tokens_.size() && tokens_[j].type == TokenType::IDENTIFIER) ++j;
                 continue;
             }
             ++j;
         }
-        return j; // after the closing ')'
+        return j;
     };
 
     std::size_t startPos = i;
     i = parseOneGroup(i);
-    // The group must have been properly closed (i advanced past the ')')
-    if (i == startPos) {
-        return false; // unmatched '(' or no progress
-    }
+    if (i == startPos) return false; // no progress
 
     // Parse additional curried parameter groups
     while (i < tokens_.size() && tokens_[i].type == TokenType::LPAREN) {
         startPos = i;
         i = parseOneGroup(i);
-        if (i == startPos) {
-            return false; // malformed curried group
-        }
+        if (i == startPos) return false;
     }
 
     // Skip comments after the last ')'
     while (i < tokens_.size() && (tokens_[i].type == TokenType::LINE_COMMENT ||
-                                  tokens_[i].type == TokenType::DOC_COMMENT)) {
+                                  tokens_[i].type == TokenType::DOC_COMMENT))
         ++i;
-    }
-    if (i >= tokens_.size()) {
-        return false; // EOF without '{' or return type
-    }
+    if (i >= tokens_.size()) return false;
 
-    // Immediate '{' means anonymous function
-    if (tokens_[i].type == TokenType::LBRACE) {
+    // Immediate '{' → void anonymous function
+    if (tokens_[i].type == TokenType::LBRACE)
         return true;
-    }
 
-    // Return type present – must look like a type start.
+    // Otherwise, require '->' followed by a return type
+    if (tokens_[i].type != TokenType::ARROW)
+        return false;
+
+    // Consume '->' in the lookahead (i is a copy, pos_ unchanged)
+    ++i;
+    while (i < tokens_.size() && (tokens_[i].type == TokenType::LINE_COMMENT ||
+                                  tokens_[i].type == TokenType::DOC_COMMENT))
+        ++i;
+    if (i >= tokens_.size()) return false;
+
+    // The token after '->' must start a type
     TokenType retStart = tokens_[i].type;
-    if (Parser::isPrimitiveTypeToken(retStart)) {
-        return true;
-    }
+    if (Parser::isPrimitiveTypeToken(retStart)) return true;
     switch (retStart) {
         case TokenType::IDENTIFIER:
         case TokenType::LBRACKET:
@@ -683,7 +894,6 @@ bool Parser::looksLikeStmtStart() const {
         case TokenType::RETURN:
         case TokenType::BREAK:
         case TokenType::CONTINUE:
-        case TokenType::PARALLEL:
         case TokenType::MATCH:
         case TokenType::SWITCH:
         case TokenType::AT_SIGN:
