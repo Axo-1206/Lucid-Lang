@@ -416,7 +416,7 @@ void ASTDumper::visit(FromDeclAST& node) {
 }
 
 void ASTDumper::visit(FromEntryAST& node) {
-    std::string header = "FromEntryAST '" + toStr(pool, node.returnTypeName) + "'";
+    std::string header = "FromEntryAST '" + formatType(node.returnType.get()) + "'";
     for (const auto& group : node.sig.paramGroups) {
         header += " (";
         for (size_t i = 0; i < group.size(); ++i) {

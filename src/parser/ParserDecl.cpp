@@ -1181,18 +1181,26 @@ ASTPtr<FromDeclAST> Parser::parseFromDecl(Visibility vis) {
     SourceLocation loc = currentLoc();
     consume(TokenType::FROM, "expected 'from'");
 
+    // Parse target struct name
     if (!check(TokenType::IDENTIFIER)) {
-        errorAt(DiagCode::E2003, "expected target struct name after 'from'");
+        errorAt(DiagCode::E2003, "expected struct name after 'from'");
         return nullptr;
     }
     std::string targetName = advance().value;
+
+    // Optional generic parameters on the target struct
+    std::vector<GenericParamPtr> genericParams;
+    if (check(TokenType::LESS)) {
+        genericParams = parseGenericParams();
+    }
 
     auto node = arena_.make<FromDeclAST>();
     node->loc = loc;
     node->visibility = vis;
     node->targetTypeName = pool_.intern(targetName);
+    node->genericParams = std::move(genericParams);  // add this field to FromDeclAST
 
-    consume(TokenType::LBRACE, "expected '{' after target name '" + targetName + "'");
+    consume(TokenType::LBRACE, "expected '{' after target name" + std::string(node->genericParams.empty() ? "" : " (including generic)") );
 
     while (!check(TokenType::RBRACE) && !isAtEnd()) {
         match(TokenType::SEMICOLON);
@@ -1206,7 +1214,6 @@ ASTPtr<FromDeclAST> Parser::parseFromDecl(Visibility vis) {
         if (!check(TokenType::LPAREN)) {
             errorAt(DiagCode::E2001, "expected '(' to start parameter list for conversion entry");
             synchronize();
-            // If we landed on a declaration start or RBRACE, abort this block
             if (looksLikeDeclStart() || check(TokenType::RBRACE))
                 break;
             continue;
@@ -1219,15 +1226,16 @@ ASTPtr<FromDeclAST> Parser::parseFromDecl(Visibility vis) {
             entry->sig.paramGroups.push_back(parseParamGroup());
         }
 
-        // Return type name
-        if (!check(TokenType::IDENTIFIER)) {
-            errorAt(DiagCode::E2003, "expected target type name after parameter list");
+        // Parse return type (can be a full type, e.g., Unwrapped<T>)
+        TypePtr returnType = parseType();
+        if (!returnType) {
+            errorAt(DiagCode::E2005, "expected return type after parameter list");
             synchronize();
             if (looksLikeDeclStart() || check(TokenType::RBRACE))
                 break;
             continue;
         }
-        entry->returnTypeName = pool_.intern(advance().value);
+        entry->returnType = std::move(returnType);
 
         if (!check(TokenType::ASSIGN)) {
             errorAt(DiagCode::E2001, "expected '=' before body for conversion entry");

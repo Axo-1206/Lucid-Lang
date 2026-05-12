@@ -1194,7 +1194,8 @@ ExprPtr Parser::parseMatchExpr() {
     SourceLocation loc = currentLoc();
     consume(TokenType::MATCH, "expected 'match'");
 
-    ExprPtr subject = parseExpr();
+    // Parse subject — disable struct literal because '{' belongs to the match arms
+    ExprPtr subject = parseExpr(false);
     if (!subject) {
         errorAt(DiagCode::E2008, "expected expression after 'match'");
         return arena_.make<UnknownExprAST>();
@@ -1963,13 +1964,14 @@ DefaultArmPtr Parser::parseDefaultArm() {
 // ─────────────────────────────────────────────────────────────────────────────
 ASTPtr<PatternAST> Parser::parsePattern() {
     LUC_LOG_EXPR_VERBOSE("parsePattern: token='" << peek().value << "'");
+    
     // Wildcard
     if (check(TokenType::WILDCARD)) {
         LUC_LOG_EXPR_VERBOSE("parsePattern: wildcard pattern");
         return parseWildcardPattern();
     }
 
-    // Literal patterns (and possibly ranges starting with a literal)
+    // Literal patterns (and ranges)
     switch (peek().type) {
         case TokenType::INT_LITERAL:
         case TokenType::FLOAT_LITERAL:
@@ -1981,7 +1983,7 @@ ASTPtr<PatternAST> Parser::parsePattern() {
         case TokenType::TRUE:
         case TokenType::FALSE:
         case TokenType::NIL:
-        case TokenType::MINUS: // negative numeric literals: -42
+        case TokenType::MINUS:
             return parseLiteralOrRangePattern();
         default:
             break;
@@ -2004,21 +2006,28 @@ ASTPtr<PatternAST> Parser::parsePattern() {
             return parseStructPattern(std::move(pool_.intern(name)));
         }
 
-        // Bind pattern
-        advance(); // consume IDENTIFIER
-
-        // Check for range from bind (invalid but parsed defensively)
-        if (check(TokenType::RANGE)) {
-             errorAt(DiagCode::E2007, "bind patterns cannot be used as range bounds");
-             advance(); // consume '..'
-             parseLiteralOrRangePattern(); // consume hi to recover
+        // Qualified constant pattern: IDENTIFIER '.' ...
+        if (peekNext().type == TokenType::DOT) {
+            // Parse the entire expression (e.g., Direction.North)
+            ExprPtr expr = parseExpr();
+            if (!expr) {
+                errorAt(DiagCode::E2007, "expected expression after '.' in pattern");
+                return nullptr;
+            }
+            return arena_.make<PatternExprAST>(std::move(expr));
         }
 
-        return parseBindPattern(std::move(pool_.intern(name)));
+        // Simple bind pattern
+        advance(); // consume IDENTIFIER
+        if (check(TokenType::RANGE)) {
+            errorAt(DiagCode::E2007, "bind patterns cannot be used as range bounds");
+            advance(); // consume '..'
+            parseLiteralOrRangePattern(); // recover
+        }
+        return parseBindPattern(pool_.intern(name));
     }
 
     errorAt(DiagCode::E2007, "expected pattern");
-    LUC_LOG_EXPR_VERBOSE("parsePattern: returning nullptr (error)");
     return nullptr;
 }
 

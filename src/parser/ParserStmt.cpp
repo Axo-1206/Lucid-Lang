@@ -300,7 +300,7 @@ ASTPtr<SwitchStmtAST> Parser::parseSwitchStmt() {
     SourceLocation loc = currentLoc();
     consume(TokenType::SWITCH, "expected 'switch'");
 
-    ExprPtr subject = parseExpr(false);
+    ExprPtr subject = parseExpr(false); // disallow struct literal
     if (!subject) {
         errorAt(DiagCode::E2008, "expected expression after 'switch'");
         return nullptr;

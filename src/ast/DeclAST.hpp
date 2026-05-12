@@ -540,7 +540,7 @@ struct FromEntryAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::FromEntry;
 
     FuncSignature   sig;
-    InternedString  returnTypeName;                     // "Fahrenheit"
+    TypePtr         returnType;                   
     StmtPtr         body;                               // always BlockStmtAST
 
     FromEntryAST() : BaseAST(ASTKind::FromEntry) {}
@@ -564,6 +564,7 @@ struct FromDeclAST : DeclAST {
 
     Visibility      visibility = Visibility::Private;
     InternedString  targetTypeName; // "Fahrenheit"
+    std::vector<GenericParamPtr> genericParams;  // e.g. <T> in from Unwrapped<T>
     std::vector<FromEntryPtr> entries;
 
     FromDeclAST() : DeclAST(ASTKind::FromDecl) {}

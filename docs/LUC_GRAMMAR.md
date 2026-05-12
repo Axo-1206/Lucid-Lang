@@ -1181,9 +1181,9 @@ pub impl Scene<T : Drawable> {
 ## From Declaration
 
 ```
-from_block      := [ visibility_mod ] 'from' IDENTIFIER '{' { from_entry } '}'
+from_block          := [ visibility_mod ] 'from' IDENTIFIER [ generic_params ] '{' { from_entry } '}'
 
-from_entry      := param_group { param_group } IDENTIFIER '=' func_body
+from_entry          := param_group { param_group } type '=' func_body
                    -- source param(s), target type name, body
                    -- target type name must match the enclosing from target
 ```

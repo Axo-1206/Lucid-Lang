@@ -527,7 +527,7 @@ Token Lexer::getNextToken() {
             LUC_LOG_LEXER_EXTREME("getNextToken: '=='");
             return makeToken(TokenType::EQUAL_EQUAL, "==");
         }
-        if (peekNext() == '>') {
+        if (peek() == '>') {
             advance();
             return Token{TokenType::FAT_ARROW, "=>", line, column};
         }

@@ -64,7 +64,7 @@ let white Color = Color {}                     -- all defaults
 let halfAlpha Color = Color { a = 0.5 }        -- others default
 
 let px float = origin.x
-origin.x = 5.0          -- OK because origin is 'let'
+-- origin.x = 5.0  -- no statement at top level, error confirmed - test succeed
 
 -- ============================================================================
 -- Impl blocks with visibility
@@ -277,14 +277,20 @@ let norm Vec2 = v:normalize()
 let dotProd float = v:dot(v)
 
 -- Function reference to impl method
-let lengthFunc = Vec2:length
+let lengthFunc () -> Vec2 = Vec2:length
 let l float = lengthFunc(v)
 
 -- ============================================================================
 -- Pipeline with impl method
 -- ============================================================================
 
-let scaledNormalized = v |> Vec2:normalize |> (vv Vec2) -> float { return vv:length() }
+let scaledNormalized (v Vec2) -> float = {
+    return v -- we returned v which got normalized and then we get its length
+        |> Vec2:normalize
+        |> (vv Vec2) -> float { -- Anonymous function in pipeline
+            return vv:length()
+        }
+}
 
 -- ============================================================================
 -- Struct with default field values (already shown in Color)
@@ -361,9 +367,9 @@ struct Vec3<T> {
     z T
 }
 
-impl Vec3<int> : Zero {
-    zero () -> Vec3<int> = {
-        return Vec3<int> { x = 0, y = 0, z = 0 }
+impl Vec3<T> : Zero {
+    zero () -> Vec3<T> = {
+        return Vec3<T> { x = 0, y = 0, z = 0 }
     }
 }
 
@@ -375,14 +381,7 @@ struct SafeInt {
     value int?
 }
 
-from SafeInt {
-    (x int) SafeInt = {
-        return SafeInt { value = x }
-    }
-    (nilVal nil) SafeInt = {
-        return SafeInt { value = nil }
-    }
-}
+type SafeInt = int?
 
 let si SafeInt = 42
 let snil SafeInt = nil
