@@ -32,7 +32,7 @@
 //
 //   PREC_ASSIGN   = 1   =  +=  -=  *=  /=  ^=  %=  &&=  ||=  ~^=  <<=  >>=  (right-assoc)
 //   PREC_COMPOSE  = 2   +>                                   (left-assoc)
-//   PREC_PIPE     = 3   ->                                   (left-assoc)
+//   PREC_PIPELINE = 3   |>                                   (left-assoc)
 //   PREC_NULLCOAL = 4   ??                                   (right-assoc)
 //   PREC_OR       = 5   or
 //   PREC_AND      = 6   and
@@ -90,7 +90,8 @@ int Parser::infixPrec(TokenType t) const {
             return PREC_ASSIGN;
 
         case TokenType::COMPOSE:            return PREC_COMPOSE;
-        case TokenType::ARROW:              return PREC_PIPE;
+        case TokenType::ARROW:              return PREC_PIPE;   // for '->'
+        case TokenType::PIPELINE:           return PREC_PIPE;   // for '|>'
         case TokenType::QUESTION_QUESTION:  return PREC_NULLCOAL;
         case TokenType::OR:                 return PREC_OR;
         case TokenType::AND:                return PREC_AND;
@@ -315,10 +316,10 @@ ExprPtr Parser::parsePrattExpr(int minPrec, bool allowStructLiteral) {
             continue;
         }
 
-        // ── '->' pipeline ─────────────────────────────────────────────────────
-        if (opTok == TokenType::ARROW) {
+        // ── '|>' pipeline ─────────────────────────────────────────────────────
+        if (opTok == TokenType::PIPELINE) {
             lhs = parsePipelineExpr(std::move(lhs));
-            // parsePipelineExpr consumed all '->' steps; continue the outer loop.
+            // parsePipelineExpr consumed all '|>' steps; continue the outer loop.
             continue;
         }
 
@@ -507,7 +508,7 @@ ExprPtr Parser::parsePrimaryExpr(bool allowStructLiteral) {
     // ── #intrinsic call ───────────────────────────────────────────────────────
     // '#' IDENTIFIER '(' args ')'  — compiler-builtin call.
     // Examples:  #sizeof(Vec2)   #memcpy(dst, src, n)   #sqrt(x)
-    if (check(TokenType::AT_SIGN)) {
+    if (check(TokenType::HASH)) {
         LUC_LOG_EXPR("parsePrimaryExpr: parsing # intrinsic");
         return parseIntrinsicCallExpr();
     }
@@ -1091,7 +1092,7 @@ ExprPtr Parser::parseAnonFuncExpr() {
 ExprPtr Parser::parseIntrinsicCallExpr() {
     LUC_LOG_EXPR("parseIntrinsicCallExpr: parsing # intrinsic");
     SourceLocation loc = currentLoc();
-    consume(TokenType::AT_SIGN, "expected '#'");
+    consume(TokenType::HASH, "expected '#'");
 
     if (!check(TokenType::IDENTIFIER)) {
         errorAt(DiagCode::E2003, "expected intrinsic name after '#'");
@@ -1099,7 +1100,7 @@ ExprPtr Parser::parseIntrinsicCallExpr() {
     }
 
     auto node = arena_.make<IntrinsicCallExprAST>();
-    node->loc           = loc;
+    node->loc = loc;
     node->intrinsicName = pool_.intern(advance().value);
 
     if (!check(TokenType::LPAREN)) {
@@ -1110,52 +1111,45 @@ ExprPtr Parser::parseIntrinsicCallExpr() {
     LUC_LOG_EXPR("parseIntrinsicCallExpr: name='" << pool_.lookup(node->intrinsicName) << "'");
     consume(TokenType::LPAREN, "expected '('");
 
-    // Check if this intrinsic takes a type argument (sizeof/alignof)
-    bool isTypeParam = (node->intrinsicName == kw_sizeof) ||
-                       (node->intrinsicName == kw_alignof);
+    std::string intrinsicStr = std::string(pool_.lookup(node->intrinsicName));
+    bool isTypeIntrinsic = (intrinsicStr == "sizeof" || intrinsicStr == "alignof");
 
-    if (isTypeParam) {
-        // Parse a type argument.
-        if (!check(TokenType::RPAREN)) {
+    if (isTypeIntrinsic) {
+        // Parse a single type argument.
+        if (check(TokenType::RPAREN)) {
+            errorAt(DiagCode::E2005, "expected type argument for intrinsic '#" + intrinsicStr + "'");
+        } else {
             TypePtr typeArg = parseType();
             if (!typeArg) {
-                errorAt(DiagCode::E2005,
-                        "expected type argument for '#" + std::string(pool_.lookup(node->intrinsicName)) + "'");
+                errorAt(DiagCode::E2005, "expected type argument for intrinsic '#" + intrinsicStr + "'");
             } else {
                 node->typeArg = std::move(typeArg);
             }
         }
+        consume(TokenType::RPAREN, "expected ')' after type argument");
     } else {
-        // Parse regular expression arguments.
+        // Parse zero or more expression arguments.
         while (!check(TokenType::RPAREN) && !isAtEnd()) {
-            // Record position before parsing the argument
             std::size_t savedPos = pos_;
             ExprPtr arg = parseExpr();
-
-            // Check for progress – break if parseExpr consumed no tokens
             if (pos_ == savedPos) {
                 errorAt(DiagCode::E2008,
-                        "expected argument expression in '#" +
-                        std::string(pool_.lookup(node->intrinsicName)) + "'");
+                        "expected argument expression in '#" + intrinsicStr + "'");
                 // Skip to closing parenthesis to recover
                 while (!check(TokenType::RPAREN) && !isAtEnd()) advance();
                 break;
             }
-
             node->args.push_back(std::move(arg));
-
             if (check(TokenType::RPAREN)) break;
             if (!match(TokenType::COMMA)) {
-                errorAt(DiagCode::E2001,
-                        "expected ',' or ')' in intrinsic argument list");
-                // Skip to closing parenthesis
+                errorAt(DiagCode::E2001, "expected ',' or ')' in intrinsic argument list");
                 while (!check(TokenType::RPAREN) && !isAtEnd()) advance();
                 break;
             }
         }
+        consume(TokenType::RPAREN, "expected ')' to close intrinsic call");
     }
 
-    consume(TokenType::RPAREN, "expected ')' to close intrinsic call");
     LUC_LOG_EXPR_VERBOSE("parseIntrinsicCallExpr: typeArg=" << (node->typeArg != nullptr) 
                          << ", args=" << node->args.size());
     return node;
@@ -1517,15 +1511,15 @@ std::vector<ExprPtr> Parser::parseArgList() {
 // parsePipelineExpr
 //
 // Grammar:
-//   pipeline_expr := seed { '->' pipeline_step }
+//   pipeline_expr := seed { '|>' pipeline_step }
 //
-// Called from parsePrattExpr when '->' is seen. lhs is already parsed as seed.
-// Consumes ALL '->' steps greedily.
+// Called from parsePrattExpr when '|>' is seen. lhs is already parsed as seed.
+// Consumes ALL '|>' steps greedily.
 // ─────────────────────────────────────────────────────────────────────────────
 ExprPtr Parser::parsePipelineExpr(ExprPtr seed) {
     LUC_LOG_EXPR("parsePipelineExpr: building pipeline");
     if (!seed) {
-        errorAt(DiagCode::E2008, "expected pipeline seed before '->'");
+        errorAt(DiagCode::E2008, "expected pipeline seed before '|>'");
         auto unknown = arena_.make<UnknownExprAST>();
         unknown->loc = currentLoc();
         return unknown;
@@ -1538,8 +1532,8 @@ ExprPtr Parser::parsePipelineExpr(ExprPtr seed) {
     node->loc = loc;
     node->seed = std::move(seed);
 
-    while (check(TokenType::ARROW)) {
-        advance(); // consume '->'
+    while (check(TokenType::PIPELINE)) {
+        advance(); // consume '|>'
         
         PipelineStepPtr step = parsePipelineStep();
         if (step) {

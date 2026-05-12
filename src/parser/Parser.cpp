@@ -26,36 +26,6 @@ Parser::Parser(std::vector<Token> tokens, DiagnosticEngine &dc,
     : tokens_(std::move(tokens)), filePath_(std::move(filePath)), dc_(dc),
       pool_(pool), arena_(arena) {
 
-    kw_extern     = AttributeRegistry::instance().getExternId();
-    kw_packed     = AttributeRegistry::instance().getPackedId();
-    kw_inline     = AttributeRegistry::instance().getInlineId();
-    kw_noinline   = AttributeRegistry::instance().getNoinlineId();
-    kw_deprecated = AttributeRegistry::instance().getDeprecatedId();
-
-    // Assert that all attribute IDs are valid (non‑zero). This ensures
-    // AttributeRegistry::setStringPool() was called before constructing the parser.
-    // If you hit this assertion, call AttributeRegistry::instance().setStringPool(pool)
-    // before creating the Parser.
-    if (!kw_extern.isValid() ||
-        !kw_packed.isValid() ||
-        !kw_inline.isValid() ||
-        !kw_noinline.isValid() ||
-        !kw_deprecated.isValid()) {
-        dc.report(DiagnosticSeverity::Fatal, DiagnosticCategory::General, 
-                SourceLocation{}, DiagCode::E0001,
-                "Parser constructed before AttributeRegistry initialised");
-    }
-
-    kw_sizeof  = IntrinsicRegistry::instance().getSizeofId();
-    kw_alignof = IntrinsicRegistry::instance().getAlignofId();
-
-    if (!kw_sizeof.isValid() ||
-        !kw_alignof.isValid()) {
-        dc.report(DiagnosticSeverity::Fatal, DiagnosticCategory::General,
-                SourceLocation{}, DiagCode::E0001,
-                "Parser constructed before IntrinsicRegistry initialised");
-    }
-
     LUC_LOG_PARSER("=== Parser constructed ===");
     LUC_LOG_PARSER("\tToken count: " << tokens_.size());
     LUC_LOG_PARSER("\tFile path: " << pool.lookup(filePath_));
@@ -281,8 +251,8 @@ std::vector<ASTPtr<ParamAST>> Parser::parseParamGroup() {
         SourceLocation paramLoc = currentLoc();
 
         // Parse parameter name
-        if (!check(TokenType::IDENTIFIER)) {
-            errorAt(DiagCode::E2003, "expected parameter name");
+        if (!check(TokenType::IDENTIFIER)) { 
+            errorAt(DiagCode::E2003, "expected parameter name, got '" + peek().value + "'");
             break;
         }
         InternedString paramName = pool_.intern(advance().value);
@@ -323,40 +293,78 @@ std::vector<ASTPtr<ParamAST>> Parser::parseParamGroup() {
 // parseReturnList
 //
 // Grammar:
-//   return_list := return_type { ',' return_type }
-//   return_type := type
-//                | param_group { param_group } '->' return_list   -- curried return
+//   return_list := '(' [ type { ',' type } ] ')'   -- multiple returns
+//                | type                            -- single return
 //
-// Parses one or more return types separated by commas.  If a '(' is seen,
-// it recursively invokes parseFuncType() to handle a nested curried return.
 // Called after encountering '->' in a function signature or anon‑func body.
-//
-// Returns a vector of TypePtr, one per return value.  Empty vector indicates
+// Returns a vector of TypePtr, one per return value. Empty vector indicates
 // a void function (no '->' present in the calling context).
+//
+// Note: When a single return type is a function type that begins with (, 
+// the parentheses are not interpreted as a multiple‑return list.
+// The parser distinguishes based on the content inside the parentheses.
+// For example, -> (x int) -> int is a single function type,
+// while -> (int, string) is a multiple return.
 // ─────────────────────────────────────────────────────────────────────────────
 std::vector<TypePtr> Parser::parseReturnList() {
     std::vector<TypePtr> types;
 
-    do {
-        if (check(TokenType::LPAREN)) {
-            // Nested curry function – parse recursively
-            types.push_back(parseFuncType());
-        } else {
-            // Ordinary type – with progress tracking
+    // Single return that is a function type starting with '(' ?
+    if (check(TokenType::LPAREN)) {
+        TokenType next = peekNext().type;
+        // Case 1: '(' IDENTIFIER type... → function type parameter
+        if (next == TokenType::IDENTIFIER) {
+            TokenType next2 = peekAt(2).type;
+            if (isPrimitiveTypeToken(next2) || next2 == TokenType::IDENTIFIER ||
+                next2 == TokenType::LBRACKET || next2 == TokenType::AMPERSAND ||
+                next2 == TokenType::MUL || next2 == TokenType::LPAREN) {
+                // Looks like a parameter: IDENTIFIER type -> parse as function type
+                TypePtr funcType = parseFuncType();
+                if (funcType && !funcType->isa<UnknownTypeAST>()) {
+                    types.push_back(std::move(funcType));
+                    return types;
+                }
+            }
+        }
+        // Case 2: '(' ')' '->' → function type with no parameters
+        else if (next == TokenType::RPAREN) {
+            TokenType next2 = peekAt(2).type;
+            if (next2 == TokenType::ARROW) {
+                TypePtr funcType = parseFuncType();
+                if (funcType && !funcType->isa<UnknownTypeAST>()) {
+                    types.push_back(std::move(funcType));
+                    return types;
+                }
+            }
+        }
+
+        // Otherwise, parse as parenthesised multiple‑return list: ( type, type, ... )
+        advance(); // consume '('
+        while (!check(TokenType::RPAREN) && !isAtEnd()) {
+            match(TokenType::COMMA);
+            if (check(TokenType::RPAREN)) break;
+
             std::size_t savedPos = pos_;
             TypePtr t = parseType();
             if (pos_ == savedPos) {
-                errorAt(DiagCode::E2005, "expected return type after '->'");
+                errorAt(DiagCode::E2005, "expected return type in parenthesised list");
+                while (!check(TokenType::RPAREN) && !isAtEnd()) advance();
                 break;
             }
-            if (!t) {
-                errorAt(DiagCode::E2005, "expected return type after '->'");
-                break;
-            }
-            types.push_back(std::move(t));
+            if (t) types.push_back(std::move(t));
         }
-    } while (match(TokenType::COMMA));
+        consume(TokenType::RPAREN, DiagCode::E2001, "expected ')' to close return type list");
+        return types;
+    }
 
+    // Single return (not starting with '(')
+    std::size_t savedPos = pos_;
+    TypePtr t = parseType();
+    if (pos_ == savedPos) {
+        errorAt(DiagCode::E2005, "expected return type after '->'");
+    } else if (t) {
+        types.push_back(std::move(t));
+    }
     return types;
 }
 
@@ -1105,8 +1113,9 @@ DeclPtr Parser::parseTopLevelDecl() {
 
     // ── 'let' / 'const' ──────────────────────────────────────────────────────
     // Could be a variable declaration or a function declaration.
-    // After consuming the keyword and name, looksLikeFuncDecl() inspects
-    // whether a '(' follows (with optional generic params) to decide.
+    // looksLikeFuncDecl() inspects whether a '(' follows (with optional
+    // generic params / qualifiers) to decide — this works for @extern too,
+    // since an @extern function still has a parameter group.
     if (checkAny({TokenType::LET, TokenType::CONST})) {
         Token kwTok = advance();
         LUC_LOG_PARSER("\tDetected keyword: '" << kwTok.value << "'");
@@ -1130,38 +1139,9 @@ DeclPtr Parser::parseTopLevelDecl() {
             return nullptr;
         }
 
-        // Check if this is @extern
-        bool hasExternAttr = false;
-        for (const auto& attr : attrs) {
-            if (attr->name == kw_extern) {
-                hasExternAttr = true;
-                LUC_LOG_PARSER("\tFound @extern attribute");
-                break;
-            }
-        }
-
-        if (hasExternAttr) {
-            LUC_LOG_PARSER("\tProcessing @extern declaration...");
-            
-            // Look ahead to see if there's a '(' after the name (skip comments)
-            std::size_t lookAhead = pos_ + 1;
-            while (lookAhead < tokens_.size() && (tokens_[lookAhead].type == TokenType::LINE_COMMENT ||
-                    tokens_[lookAhead].type == TokenType::DOC_COMMENT))
-                lookAhead++;
-            
-            bool hasParenAfterName = (lookAhead < tokens_.size() && tokens_[lookAhead].type == TokenType::LPAREN);
-            LUC_LOG_PARSER("\thasParenAfterName: " << (hasParenAfterName ? "true" : "false"));
-            
-            if (hasParenAfterName) {
-                LUC_LOG_PARSER("\t-> Parsing as @extern function");
-                return parseFuncDecl(kw, vis, std::move(attrs));
-            } else {
-                LUC_LOG_PARSER("\t-> Parsing as @extern variable");
-                auto decl = parseVarDecl(vis, std::move(attrs));
-                return decl;
-            }
-        }
-
+        // looksLikeFuncDecl() checks: IDENTIFIER [<generics>] [~qualifiers] '('
+        // This correctly distinguishes functions from variables for both ordinary
+        // and @extern declarations without any registry involvement.
         LUC_LOG_PARSER("\tChecking if this looks like a function declaration...");
         bool isFunc = looksLikeFuncDecl();
         LUC_LOG_PARSER("\tlooksLikeFuncDecl: " << (isFunc ? "true" : "false"));
@@ -1171,7 +1151,6 @@ DeclPtr Parser::parseTopLevelDecl() {
             return parseFuncDecl(kw, vis, std::move(attrs));
         } else {
             LUC_LOG_PARSER("\t-> Parsing as variable declaration");
-            // Pass attrs into parseVarDecl; it will validate and attach them.
             auto decl = parseVarDecl(vis, std::move(attrs));
             return decl;
         }

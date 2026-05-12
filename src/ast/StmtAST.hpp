@@ -398,7 +398,7 @@ struct DoWhileStmtAST : StmtAST {
 struct ReturnStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::ReturnStmt;
 
-    ExprPtr value;   // nullptr for bare 'return'
+    std::vector<ExprPtr> values;   // empty for bare 'return'
 
     ReturnStmtAST() : StmtAST(ASTKind::ReturnStmt) {}
 

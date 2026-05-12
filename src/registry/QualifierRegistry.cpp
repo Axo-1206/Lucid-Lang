@@ -1,5 +1,5 @@
 #include "QualifierRegistry.hpp"
-#include "diagnostics/DiagnosticEngine.hpp" // for assert-like logging (optional)
+#include "diagnostics/DiagnosticEngine.hpp" 
 #include <cassert>
 #include <sstream>
 

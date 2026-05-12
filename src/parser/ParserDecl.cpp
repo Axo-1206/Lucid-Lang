@@ -383,7 +383,9 @@ ASTPtr<UseDeclAST> Parser::parseUseDecl(Visibility vis) {
 // Called from Parser.cpp after the keyword token has ALREADY been consumed.
 // pos_ sits on the IDENTIFIER (the variable name).
 //
-// isPub is passed in from the outer loop (was 'pub' seen before the keyword?).
+// The parser attaches all attributes as-is to the node. It does NOT enforce
+// @extern semantics (no initialiser, must be const, etc.) — those are
+// semantic-phase rules validated by the semantic pass via AttributeRegistry.
 // ─────────────────────────────────────────────────────────────────────────────
 ASTPtr<VarDeclAST> Parser::parseVarDecl(Visibility vis, std::vector<AttributePtr> attrs) {
     // The keyword was consumed by parseTopLevelDecl before this call.
@@ -399,24 +401,6 @@ ASTPtr<VarDeclAST> Parser::parseVarDecl(Visibility vis, std::vector<AttributePtr
     }
 
     SourceLocation loc = currentLoc();
-
-    // Check for @extern attribute in the attributes list
-    bool hasExternAttr = false;
-    std::string externName;
-    InternedString externStr = kw_extern;
-    for (const auto& attr : attrs) {
-        if (attr->name == externStr) {
-            hasExternAttr = true;
-            if (!attr->args.empty()) {
-                const auto& arg = attr->args[0];
-                if (arg->kind == AttributeArgKind::StringLit) {  
-                    externName = pool_.lookup(arg->value);    
-                }
-            }
-            LUC_LOG_PARSER("\t*** @extern attribute detected on variable! C name: '" << externName << "' ***");
-            break;
-        }
-    }
 
     // Name
     if (!check(TokenType::IDENTIFIER)) {
@@ -439,49 +423,13 @@ ASTPtr<VarDeclAST> Parser::parseVarDecl(Visibility vis, std::vector<AttributePtr
         return nullptr;
     }
 
-    // Optional initialiser
+    // Optional initialiser — the semantic phase enforces whether an initialiser
+    // is required or forbidden (e.g. @extern must not have one; const requires one).
     ExprPtr init;
     if (match(TokenType::ASSIGN)) {
-        if (hasExternAttr) {
-            errorAt(DiagCode::E3002, 
-                    "'@extern' variable '" + nameRaw + "' must not have an initialiser — "
-                    "the symbol is resolved by the linker");
-            // Consume the initializer expression to recover (ignore the result)
-            parseExpr();
-            // After the expression, consume a semicolon if present to keep the token stream clean
-            match(TokenType::SEMICOLON);
-        } else {
-            init = parseExpr();
-            if (!init) {
-                errorAt(DiagCode::E2008, "expected expression after '=' in variable declaration");
-            }
-        }
-    }
-
-    // Warn: @extern with 'let' instead of 'const'
-    if (hasExternAttr && kw == DeclKeyword::Let) {
-        errorAt(DiagCode::W3001, 
-                "'@extern' variable '" + nameRaw + "' should be declared as 'const', not 'let' — "
-                "extern symbols are resolved permanently by the linker and cannot be reassigned");
-    }
-
-    // Additional validation: '@packed' only valid on structs
-    InternedString packedStr = kw_packed;
-    InternedString inlineStr = kw_inline;
-    InternedString noinlineStr = kw_noinline;
-    InternedString deprecatedStr = kw_deprecated;
-    for (const auto& attr : attrs) {
-        if (attr->name == packedStr) {
-            errorAt(DiagCode::E2010, 
-                    "'@packed' attribute is only valid on 'struct' declarations, not on variables");
-        }
-        if (attr->name == inlineStr || attr->name == noinlineStr) {
-            errorAt(DiagCode::E2010, 
-                    "'@" + std::string(pool_.lookup(attr->name)) + "' attribute is only valid on function declarations");
-        }
-        if (attr->name == deprecatedStr) {
-            // @deprecated is allowed on variables - keep as warning later
-            LUC_LOG_PARSER("\t'@deprecated' attribute on variable '" << nameRaw << "'");
+        init = parseExpr();
+        if (!init) {
+            errorAt(DiagCode::E2008, "expected expression after '=' in variable declaration");
         }
     }
 
@@ -493,7 +441,7 @@ ASTPtr<VarDeclAST> Parser::parseVarDecl(Visibility vis, std::vector<AttributePtr
     node->type = std::move(type);
     node->init = std::move(init);
     node->visibility = vis;
-    node->attributes = std::move(attrs);   // Attach all attributes
+    node->attributes = std::move(attrs);
 
     return node;
 }
@@ -505,46 +453,34 @@ ASTPtr<VarDeclAST> Parser::parseVarDecl(Visibility vis, std::vector<AttributePtr
 //   func_decl := decl_keyword IDENTIFIER [ generic_params ]
 //                [ qualifier_list ] param_group { param_group }
 //                [ '->' return_list ]
-//                '=' func_body
+//                [ '=' func_body ]
 //
-//   qualifier_list := { '~' IDENTIFIER }            -- ~async, ~nullable, ~parallel
+//   qualifier_list := { '~' IDENTIFIER }
 //   return_list     := return_type { ',' return_type }
 //   return_type     := type
-//                    | param_group { param_group } '->' return_list   -- curried return
+//                    | param_group { param_group } '->' return_list
+//
+// The body ('=' ...) is OPTIONAL at the parser level. Whether a body is
+// required or forbidden is a semantic rule:
+//   - @extern functions must have no body (semantic error if '=' present).
+//   - All other functions must have a body (semantic error if '=' absent).
+//
+// Qualifier names are stored raw in sig.rawQualifiers. The semantic phase
+// resolves them to the sig.qualifiers bitmask via QualifierRegistry and
+// reports unknown qualifier names.
 //
 // Examples:
 //   let square (x int) -> int = { return x * x }
 //   let fetch ~async (url string) -> string = { return await httpGet(url) }
-//   let process ~async (data []byte) -> []byte = { ... }
 //   let parse (src string) -> int, string = { ... }
 //   let add (a int)(b int) -> int = { return a + b }
-//   let f (a int) -> int, (s string)(n float) -> int = { ... }
-//
-// Returns a FuncDeclAST or nullptr on error.
+//   @extern("malloc") const malloc (size uint64) -> *uint8?   -- no body
 // ─────────────────────────────────────────────────────────────────────────────
 ASTPtr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vis, std::vector<AttributePtr> attrs) {
     SourceLocation loc = currentLoc();
 
     LUC_LOG_PARSER("=== parseFuncDecl START ===");
     LUC_LOG_PARSER("Current token (peek filtered): '" << peek().value << "' (type: " << static_cast<int>(peek().type) << ")");
-    
-    // Check for @extern early
-    bool hasExternAttr = false;
-    std::string externName;
-    InternedString externStr = kw_extern;
-    for (const auto& attr : attrs) {
-        if (attr->name == externStr) {
-            hasExternAttr = true;
-            if (!attr->args.empty()) {
-                const auto& arg = attr->args[0];
-                if (arg->kind == AttributeArgKind::StringLit) {
-                    externName = pool_.lookup(arg->value);
-                }
-            }
-            LUC_LOG_PARSER("\t*** @extern attribute detected! C name: '" << externName << "' ***");
-            break;
-        }
-    }
 
     // Name
     if (!check(TokenType::IDENTIFIER)) {
@@ -569,8 +505,10 @@ ASTPtr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vis, std::v
         node->genericParams = parseGenericParams();
     }
 
-    // ── Parse type qualifiers (~async, ~nullable, ~parallel) ─────────────────
-    uint32_t qualifiersMask = 0;
+    // ── Collect raw qualifier names (~async, ~nullable, ~parallel, ...) ───────
+    // The parser does NOT validate qualifier names — it stores them as raw
+    // InternedStrings. The semantic phase resolves names to bits via
+    // QualifierRegistry and reports any unknown qualifier.
     while (check(TokenType::TILDE)) {
         advance(); // consume '~'
         if (!check(TokenType::IDENTIFIER)) {
@@ -578,17 +516,12 @@ ASTPtr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vis, std::v
             break;
         }
         std::string qualRaw = advance().value;
-        if (!QualifierRegistry::instance().applyQualifier(qualifiersMask, qualRaw)) {
-            errorAt(DiagCode::E2003,
-                    "unknown type qualifier '~" + qualRaw + "'; known: " +
-                    QualifierRegistry::instance().allNames());
-        }
         node->sig.rawQualifiers.push_back(pool_.intern(qualRaw));
-        LUC_LOG_PARSER_VERBOSE("\tqualifier: '~" << qualRaw << "'");
+        LUC_LOG_PARSER_VERBOSE("\traw qualifier stored: '~" << qualRaw << "'");
     }
-    node->sig.qualifiers = qualifiersMask;
+    // sig.qualifiers bitmask starts at 0 — filled by the semantic phase.
 
-    // Parse parameter groups
+    // ── Parse parameter groups ────────────────────────────────────────────────
     LUC_LOG_PARSER("Checking for '(' in raw token stream...");
     
     std::size_t nextNonComment = pos_;
@@ -605,7 +538,7 @@ ASTPtr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vis, std::v
     // Skip comments before '('
     while (check(TokenType::LINE_COMMENT)) advance();
     
-    // Parse parameter groups
+    // Parse parameter groups (one or more for curried functions)
     while (check(TokenType::LPAREN)) {
         LUC_LOG_PARSER("\tParsing parameter group at pos " << pos_);
         node->sig.paramGroups.push_back(parseParamGroup());
@@ -614,55 +547,32 @@ ASTPtr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vis, std::v
 
     LUC_LOG_PARSER("Total parameter groups: " << node->sig.paramGroups.size());
 
-    // ── Parse return list after '->' ───────────────────────────────────────
+    // ── Parse return list after '->' ───────────────────────────────────────────
     if (match(TokenType::ARROW)) {
         node->sig.returnTypes = parseReturnList();
         LUC_LOG_PARSER("\tParsed " << node->sig.returnTypes.size() << " return type(s)");
     } else {
-        // Void function – no return types
         LUC_LOG_PARSER("\tNo return types (void function)");
     }
 
-    // ── Handle extern vs normal function bodies ─────────────────────────────
-    if (hasExternAttr) {
-        LUC_LOG_PARSER("Processing @extern function '" << nameRaw << "'");
-        
-        while (check(TokenType::LINE_COMMENT)) advance();
-        
-        if (check(TokenType::SEMICOLON)) {
-            LUC_LOG_PARSER("\tFound semicolon - valid extern declaration");
-            advance();
-        } else if (check(TokenType::ASSIGN)) {
-            LUC_LOG_PARSER("\tERROR: extern function cannot have body");
-            errorAt(DiagCode::E2002, "'@extern' function '" + nameRaw + "' must not have a body");
-            
-            // Skip the '=' and the body to recover
-            advance(); // consume '='
-            if (check(TokenType::LBRACE)) {
-                parseBlock(); // discard block body
-            } else {
-                parseExpr(); // discard expression body
-            }
-            match(TokenType::SEMICOLON);
-        } else {
-            LUC_LOG_PARSER("\tWarning: extern declaration missing semicolon, current token: '" << peek().value << "'");
-        }
-        
-        LUC_LOG_PARSER("=== parseFuncDecl END (extern) ===");
+    // ── Optional body ('=' ...) ────────────────────────────────────────────────
+    // The semantic phase enforces the invariant:
+    //   - @extern → must have NO body.
+    //   - non-@extern → must have a body.
+    // Here the parser simply accepts or omits the body without inspecting attrs.
+    if (!check(TokenType::ASSIGN)) {
+        // No body — valid for @extern declarations, semantic error otherwise.
+        LUC_LOG_PARSER("parseFuncDecl: no body (node->body remains nullptr)");
+        // Consume optional trailing semicolon common in @extern declarations.
+        match(TokenType::SEMICOLON);
+        LUC_LOG_PARSER("=== parseFuncDecl END (no body) ===");
         return node;
     }
 
-    // Non-extern functions must have '=' and body
-    if (!check(TokenType::ASSIGN)) {
-        LUC_LOG_PARSER("\tERROR: expected '=' before function body ");
-        errorAt(DiagCode::E2001, "expected '=' before function body for '" + nameRaw + "'");
-        return nullptr;
-    }
-    advance(); // Consume '='
-
+    advance(); // consume '='
     LUC_LOG_PARSER("Parsing function body...");
-    
-    // Parse the body - block, anon‑func (verbose), or expression
+
+    // Parse the body — block, verbose anon-func form, or expression
     if (check(TokenType::LBRACE)) {
         // Block body: = { ... }
         node->body = parseBlock();
@@ -688,7 +598,7 @@ ASTPtr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vis, std::v
 
         auto ret = arena_.make<ReturnStmtAST>();
         ret->loc = bodyLoc;
-        ret->value = std::move(expr);
+        ret->values.push_back(std::move(expr));
 
         auto block = arena_.make<BlockStmtAST>();
         block->loc = bodyLoc;
@@ -697,11 +607,9 @@ ASTPtr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vis, std::v
     }
     
     // Optional semicolon after body (for expression bodies)
-    if (match(TokenType::SEMICOLON)) {
-        LUC_LOG_PARSER("Optional semicolon consumed after function body");
-    }
+    match(TokenType::SEMICOLON);
     
-    LUC_LOG_PARSER("=== parseFuncDecl END (normal) ===");
+    LUC_LOG_PARSER("=== parseFuncDecl END (with body) ===");
     return node;
 }
 
@@ -979,8 +887,7 @@ TraitMethodPtr Parser::parseTraitMethod() {
     }
     method->name = pool_.intern(advance().value);
     
-    // ── Parse type qualifiers (~async, ~nullable, ~parallel) ──────────────
-    uint32_t qualifiersMask = 0;
+    // ── Collect raw qualifier names — resolved to bitmask by semantic phase ──
     while (check(TokenType::TILDE)) {
         advance(); // consume '~'
         if (!check(TokenType::IDENTIFIER)) {
@@ -988,15 +895,10 @@ TraitMethodPtr Parser::parseTraitMethod() {
             break;
         }
         std::string qualRaw = advance().value;
-        if (!QualifierRegistry::instance().applyQualifier(qualifiersMask, qualRaw)) {
-            errorAt(DiagCode::E2003,
-                    "unknown type qualifier '~" + qualRaw + "'; known: " +
-                    QualifierRegistry::instance().allNames());
-        }
         method->sig.rawQualifiers.push_back(pool_.intern(qualRaw));
-        LUC_LOG_PARSER_VERBOSE("\tqualifier: '~" << qualRaw << "'");
+        LUC_LOG_PARSER_VERBOSE("\traw qualifier stored: '~" << qualRaw << "'");
     }
-    method->sig.qualifiers = qualifiersMask;
+    // sig.qualifiers bitmask starts at 0 — filled by the semantic phase.
     
     // ── Parse parameter groups ────────────────────────────────────────────
     if (!check(TokenType::LPAREN)) {
@@ -1172,8 +1074,7 @@ MethodDeclPtr Parser::parseMethodDecl() {
     }
     method->name = pool_.intern(advance().value);
 
-    // ── Parse type qualifiers (~async, ~nullable, ~parallel) ────────────────
-    uint32_t qualifiersMask = 0;
+    // ── Collect raw qualifier names — resolved to bitmask by semantic phase ──
     while (check(TokenType::TILDE)) {
         advance(); // consume '~'
         if (!check(TokenType::IDENTIFIER)) {
@@ -1181,15 +1082,10 @@ MethodDeclPtr Parser::parseMethodDecl() {
             break;
         }
         std::string qualRaw = advance().value;
-        if (!QualifierRegistry::instance().applyQualifier(qualifiersMask, qualRaw)) {
-            errorAt(DiagCode::E2003,
-                    "unknown type qualifier '~" + qualRaw + "'; known: " +
-                    QualifierRegistry::instance().allNames());
-        }
         method->sig.rawQualifiers.push_back(pool_.intern(qualRaw));
-        LUC_LOG_PARSER_VERBOSE("\tmethod qualifier: '~" << qualRaw << "'");
+        LUC_LOG_PARSER_VERBOSE("\traw qualifier stored: '~" << qualRaw << "'");
     }
-    method->sig.qualifiers = qualifiersMask;
+    // sig.qualifiers bitmask starts at 0 — filled by the semantic phase.
 
     // Parse one or more parameter groups (curried method support)
     if (!check(TokenType::LPAREN)) {
@@ -1250,7 +1146,7 @@ MethodDeclPtr Parser::parseMethodDecl() {
 
         auto ret = arena_.make<ReturnStmtAST>();
         ret->loc = bodyLoc;
-        ret->value = std::move(expr);
+        ret->values.push_back(std::move(expr));
 
         auto block = arena_.make<BlockStmtAST>();
         block->loc = bodyLoc;
@@ -1352,7 +1248,7 @@ ASTPtr<FromDeclAST> Parser::parseFromDecl(Visibility vis) {
             if (expr) {
                 auto ret = arena_.make<ReturnStmtAST>();
                 ret->loc = bodyLoc;
-                ret->value = std::move(expr);
+                ret->values.push_back(std::move(expr));
                 
                 auto block = arena_.make<BlockStmtAST>();
                 block->loc = bodyLoc;

@@ -146,19 +146,17 @@ std::string ASTDumper::formatType(TypeAST* type) {
 // ── Root ──────────────────────────────────────────────────────────────────
 void ASTDumper::visit(ProgramAST& node) {
     printNodeHeader(node, "ProgramAST");
-    if (verbosity >= 3) {
-        indent(); out += "\tpackageName: '" + toStr(pool, node.packageName) + "'\n";
-        indent(); out += "\tfilePath: '" + std::string(pool->lookup(node.filePath)) + "'\n";
-        indent(); out += "\tdecls (count): " + std::to_string(node.decls.size()) + "\n";
+    indent(); out += "\tpackageName: '" + toStr(pool, node.packageName) + "'\n";
+    indent(); out += "\tfilePath: '" + std::string(pool->lookup(node.filePath)) + "'\n";
+    indent(); out += "\tdecls (count): " + std::to_string(node.decls.size()) + "\n";
 
-        indentLevel++;
-        for (const auto& decl : node.decls) {
-            if (decl) {
-                decl->accept(*this);
-            }
+    indentLevel++;
+    for (const auto& decl : node.decls) {
+        if (decl) {
+            decl->accept(*this);
         }
-        indentLevel--;
     }
+    indentLevel--;
 }
 
 // ── Type nodes ────────────────────────────────────────────────────────────
@@ -744,7 +742,20 @@ void ASTDumper::visit(DoWhileStmtAST& node) {
 
 void ASTDumper::visit(ReturnStmtAST& node) {
     printNodeHeader(node, "ReturnStmtAST");
-    if (node.value) visitChild(node.value.get());
+    if (node.values.empty()) return;
+    
+    if (node.values.size() == 1) {
+        // Single return value – no label for backward compatibility
+        if (node.values[0]) visitChild(node.values[0].get());
+    } else {
+        // Multiple return values – label each with index
+        for (size_t i = 0; i < node.values.size(); ++i) {
+            if (node.values[i]) {
+                std::string label = "value_" + std::to_string(i);
+                visitChild(node.values[i].get(), label);
+            }
+        }
+    }
 }
 
 void ASTDumper::visit(BreakStmtAST& node) {

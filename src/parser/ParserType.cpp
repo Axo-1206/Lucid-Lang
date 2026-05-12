@@ -133,6 +133,9 @@ TypePtr Parser::parseBaseType() {
         case TokenType::LPAREN:
             LUC_LOG_TYPE_VERBOSE("parseBaseType: dispatching to parseFuncType");
             return parseFuncType();
+        case TokenType::TILDE:
+            LUC_LOG_TYPE_VERBOSE("parseBaseType: dispatching to parseFuncType (qualifier start)");
+            return parseFuncType();
 
         default:
             // Not a recognisable type start — caller decides if that is an error.
@@ -458,10 +461,11 @@ TypePtr Parser::parsePtrType() {
 TypePtr Parser::parseFuncType() {
     LUC_LOG_TYPE("parseFuncType");
 
-    uint32_t qualifiersMask = 0;
     std::vector<InternedString> rawQualifiers;
 
-    // ── Parse type qualifiers (e.g., ~async, ~nullable, ~parallel) ──────────
+    // ── Collect raw qualifier names — resolved to bitmask by semantic phase ──
+    // The parser does NOT validate qualifier names here. Raw strings are stored
+    // in rawQualifiers; the semantic phase resolves them via QualifierRegistry.
     while (check(TokenType::TILDE)) {
         advance(); // consume '~'
         if (!check(TokenType::IDENTIFIER)) {
@@ -469,14 +473,8 @@ TypePtr Parser::parseFuncType() {
             break;
         }
         std::string qualName = advance().value;
-        InternedString qualId = pool_.intern(qualName);
-
-        if (!QualifierRegistry::instance().applyQualifier(qualifiersMask, qualName)) {
-            errorAt(DiagCode::E2003,
-                    "unknown type qualifier '~" + qualName + "'; known: " +
-                    QualifierRegistry::instance().allNames());
-        }
-        rawQualifiers.push_back(qualId);
+        rawQualifiers.push_back(pool_.intern(qualName));
+        LUC_LOG_TYPE_VERBOSE("parseFuncType: raw qualifier stored '~" << qualName << "'");
     }
 
     // ── Parse one or more parameter groups ──────────────────────────────────
@@ -485,17 +483,24 @@ TypePtr Parser::parseFuncType() {
         paramGroups.push_back(parseParamGroup());
     }
 
+    // After collecting qualifiers, ensure at least one parameter group is present. 
+    // If not, report an error and return an UnknownTypeAST
+    if (paramGroups.empty()) {
+        errorAt(DiagCode::E2001, "function type must have at least one parameter group '(' ... ')'");
+        return arena_.make<UnknownTypeAST>();
+    }
+
     // ── Parse return list after '->' (if present) ───────────────────────────
     std::vector<TypePtr> returnTypes;
 
-    if (match(TokenType::ARROW)) { // token "->"
-        // Parse first return type
+    if (match(TokenType::ARROW)) {
         returnTypes = parseReturnList();
     }
 
     // ── Build the function type node ─────────────────────────────────────────
+    // sig.qualifiers starts at 0 — filled by the semantic phase.
     auto funcType = arena_.make<FuncTypeAST>();
-    funcType->sig.qualifiers = qualifiersMask;
+    funcType->sig.qualifiers = 0;
     funcType->sig.rawQualifiers = std::move(rawQualifiers);
     funcType->sig.paramGroups = std::move(paramGroups);
     funcType->sig.returnTypes = std::move(returnTypes);

@@ -7,6 +7,18 @@
  * units (ParserDecl, ParserExpr, etc.) to keep file sizes manageable. It uses a
  * Pratt Parser for expressions and a Recursive Descent approach for declarations.
  *
+ *   The parser is registry-free by design. It performs no attribute validation,
+ *   qualifier resolution, or intrinsic lookup — those are semantic concerns.
+ *   Specifically:
+ *     - Qualifier names (~async, ~nullable, ~parallel) are stored as raw
+ *       InternedStrings in FuncSignature::rawQualifiers. The semantic phase
+ *       resolves them to the qualifiers bitmask and reports unknown names.
+ *     - @extern and other attribute semantics (body presence, etc.) are not
+ *       enforced here. The parser makes a '=' body optional for all top-level
+ *       function declarations; the semantic phase enforces the rules.
+ *     - Intrinsic type-vs-value argument disambiguation uses a syntactic
+ *       looksLikeType() check; the semantic phase validates correctness.
+ *
  * @related_files
  *   - src/lexer/Lexer.hpp, Tokens.hpp (Input provider)
  *   - src/diagnostics/DiagnosticEngine.hpp, DiagnosticCodes.hpp (Error reporting)
@@ -23,8 +35,6 @@
 #include "ast/StmtAST.hpp"
 #include "ast/TypeAST.hpp"
 #include "ast/support/ASTArena.hpp"
-#include "registry/AttributeRegistry.hpp"
-#include "registry/IntrinsicRegistry.hpp"
 
 #include <memory>
 #include <optional>
@@ -86,17 +96,6 @@ private:
     ASTArena&   arena_;
 
     DiagnosticEngine &dc_;      // shared diagnostic engine
-
-    // Pre‑interned attribute IDs (from registry)
-    InternedString kw_extern;
-    InternedString kw_packed;
-    InternedString kw_inline;
-    InternedString kw_noinline;
-    InternedString kw_deprecated;
-
-    // Pre‑interned intrinsic names for fast O(1) comparison
-    InternedString kw_sizeof;
-    InternedString kw_alignof;
 
     // ─────────────────────────────────────────────────────────────────────────
     // Token stream primitives

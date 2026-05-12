@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional> 
 
 /**
  * @brief A lightweight, 32-bit identifier for an interned string.
@@ -51,3 +52,13 @@ struct InternedString {
     /** True for any string that was actually interned (id != 0). */
     bool isValid() const { return id != 0; }
 };
+
+// Specialize std::hash for InternedString so it can be used in unordered_map.
+namespace std {
+    template <>
+    struct hash<InternedString> {
+        size_t operator()(const InternedString& s) const noexcept {
+            return hash<uint32_t>{}(s.id);
+        }
+    };
+}

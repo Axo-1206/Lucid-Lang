@@ -1,0 +1,388 @@
+package test
+
+-- ============================================================================
+-- Basic struct
+-- ============================================================================
+
+pub struct Vec2 {
+    x float
+    y float
+}
+
+struct Color {
+    r float = 1.0
+    g float = 1.0
+    b float = 1.0
+    a float = 1.0
+}
+
+-- ============================================================================
+-- Generic struct with constraints
+-- ============================================================================
+
+trait Drawable {
+    draw ()
+    bounds () -> Rect
+}
+
+struct Rect {
+    x float
+    y float
+    w float
+    h float
+}
+
+impl Rect {
+    area () -> float = { return w * h }
+}
+
+struct Scene<T : Drawable> {
+    objects [*]T
+    name string
+}
+
+struct Cache<K : Comparable + Hashable, V> {
+    keys   [*]K
+    values [*]V
+}
+
+trait Comparable {
+    compareTo (other any) -> int
+}
+
+trait Hashable {
+    hash () -> uint64
+    equals (other any) -> bool
+}
+
+-- ============================================================================
+-- Struct literals and field access
+-- ============================================================================
+
+let origin Vec2 = Vec2 { x = 0.0, y = 0.0 }
+let white Color = Color {}                     -- all defaults
+let halfAlpha Color = Color { a = 0.5 }        -- others default
+
+let px float = origin.x
+origin.x = 5.0          -- OK because origin is 'let'
+
+-- ============================================================================
+-- Impl blocks with visibility
+-- ============================================================================
+
+pub impl Vec2 {
+    length () -> float = {
+        return #sqrt(x*x + y*y)
+    }
+
+    dot (other Vec2) -> float = {
+        return x*other.x + y*other.y
+    }
+}
+
+export impl Vec2 {
+    normalize () -> Vec2 = {
+        let len float = Vec2:length()
+        return Vec2 { x = x / len, y = y / len }
+    }
+}
+
+impl Vec2 {
+    -- file‑private helper
+    isZero () -> bool = {
+        return x == 0.0 and y == 0.0
+    }
+}
+
+-- ============================================================================
+-- Trait definitions
+-- ============================================================================
+
+pub trait Drawable {
+    draw   ()
+    bounds () -> Rect
+}
+
+pub trait AsyncFetcher {
+    fetch ~async (url string) -> string
+}
+
+pub trait Serializable {
+    serialize () -> string
+    deserialize (src string)
+}
+
+-- ============================================================================
+-- Trait implementation
+-- ============================================================================
+
+struct Circle {
+    center Vec2
+    radius float
+}
+
+pub impl Circle : Drawable {
+    draw () = {
+        -- drawing code (placeholder)
+    }
+    bounds () -> Rect = {
+        return Rect {
+            x = center.x - radius
+            y = center.y - radius
+            w = radius * 2.0
+            h = radius * 2.0
+        }
+    }
+}
+
+struct HttpClient {
+    baseUrl string
+}
+
+pub impl HttpClient : AsyncFetcher {
+    fetch ~async (url string) -> string = {
+        -- would call external async HTTP library
+        return "response"
+    }
+}
+
+-- Multiple traits for one struct
+struct User {
+    id int
+    name string
+}
+
+impl User : Comparable {
+    compareTo (other any) -> int = {
+        let u User = other      -- downcast (runtime check omitted for brevity)
+        return id - u.id
+    }
+}
+
+impl User : Serializable {
+    serialize () -> string = {
+        return "User:" + string(id) + ":" + name
+    }
+    deserialize (src string) = {
+        -- parse logic (placeholder)
+    }
+}
+
+-- ============================================================================
+-- From conversion (explicit casting / implicit casting contexts)
+-- ============================================================================
+
+export struct Celsius {
+    value float
+}
+
+export struct Fahrenheit {
+    value float
+}
+
+export struct Kelvin {
+    value float
+}
+
+-- From Celsius to Fahrenheit
+export from Fahrenheit {
+    (c Celsius) Fahrenheit = {
+        return Fahrenheit { value = c.value * 9.0 / 5.0 + 32.0 }
+    }
+}
+
+-- From Kelvin to Fahrenheit
+export from Fahrenheit {
+    (k Kelvin) Fahrenheit = {
+        return Fahrenheit { value = (k.value - 273.15) * 9.0 / 5.0 + 32.0 }
+    }
+}
+
+pub from Kelvin {
+    (c Celsius) Kelvin = {
+        return Kelvin { value = c.value + 273.15 }
+    }
+}
+
+-- Implicit casting contexts
+let boiling Celsius = Celsius { value = 100.0 }
+let hot Fahrenheit = boiling               -- implicit casting: Celsius -> Fahrenheit
+let alsoHot Fahrenheit = Fahrenheit(boiling)  -- explicit call
+
+let roomKelvin Kelvin = Celsius { value = 25.0 } |> Kelvin   -- via pipeline
+
+-- Multiple from blocks for same target, different sources
+struct Meters { value float }
+struct Kilometers { value float }
+
+export from Meters {
+    (km Kilometers) Meters = {
+        return Meters { value = km.value * 1000.0 }
+    }
+    (miles Miles) Meters = {
+        return Meters { value = miles.value * 1609.344 }
+    }
+}
+
+struct Miles { value float }
+
+-- ============================================================================
+-- Generic from conversion
+-- ============================================================================
+
+struct Wrapper<T> {
+    value T
+}
+
+struct Unwrapped<T> {
+    inner T
+}
+
+from Unwrapped<T> {
+    (w Wrapper<T>) Unwrapped<T> = {
+        return Unwrapped<T> { inner = w.value }
+    }
+}
+
+-- ============================================================================
+-- Visibility on impl blocks (pub impl / export impl)
+-- ============================================================================
+
+struct InternalData {
+    counter int
+}
+
+impl InternalData {
+    -- file‑private methods
+    increment () = { counter = counter + 1 }
+}
+
+pub impl InternalData {
+    -- package‑visible method
+    get () -> int = { return counter }
+}
+
+export impl InternalData {
+    -- world‑visible method
+    reset () = { counter = 0 }
+}
+
+-- ============================================================================
+-- Using impl methods (behavior member access via ':')
+-- ============================================================================
+
+let v Vec2 = Vec2 { x = 3.0, y = 4.0 }
+let len float = v:length()
+let norm Vec2 = v:normalize()
+let dotProd float = v:dot(v)
+
+-- Function reference to impl method
+let lengthFunc = Vec2:length
+let l float = lengthFunc(v)
+
+-- ============================================================================
+-- Pipeline with impl method
+-- ============================================================================
+
+let scaledNormalized = v |> Vec2:normalize |> (vv Vec2) -> float { return vv:length() }
+
+-- ============================================================================
+-- Struct with default field values (already shown in Color)
+-- ============================================================================
+
+struct Config {
+    timeout int = 30
+    retries int = 3
+    verbose bool = false
+}
+
+let defaultCfg Config = Config {}                 -- uses defaults
+let customCfg Config = Config { timeout = 60 }   -- override one field
+
+-- ============================================================================
+-- Packed struct attribute
+-- ============================================================================
+
+@packed
+struct Vertex {
+    x float
+    y float
+    z float
+    color uint32
+}
+
+-- ============================================================================
+-- From with multiple arguments? Grammar only allows single param group.
+-- All examples show single parameter.
+-- ============================================================================
+
+-- Additional valid from: converting between numeric wrapper types
+struct Inches { value float }
+struct Centimeters { value float }
+
+export from Inches {
+    (cm Centimeters) Inches = {
+        return Inches { value = cm.value / 2.54 }
+    }
+}
+
+export from Centimeters {
+    (inch Inches) Centimeters = {
+        return Centimeters { value = inch.value * 2.54 }
+    }
+}
+
+-- Implicit conversion in variable declaration
+let lenInInches Inches = Centimeters { value = 10.0 }   -- Centimeters -> Inches
+let lenCm Centimeters = lenInInches                     -- Inches -> Centimeters
+
+-- ============================================================================
+-- Complex example: generic trait + impl
+-- ============================================================================
+
+trait Zero {
+    zero () -> Self
+}
+
+struct Complex {
+    re float
+    im float
+}
+
+impl Complex : Zero {
+    zero () -> Complex = {
+        return Complex { re = 0.0, im = 0.0 }
+    }
+}
+
+struct Vec3<T> {
+    x T
+    y T
+    z T
+}
+
+impl Vec3<int> : Zero {
+    zero () -> Vec3<int> = {
+        return Vec3<int> { x = 0, y = 0, z = 0 }
+    }
+}
+
+-- ============================================================================
+-- From with nullable? Not specified. Use safe.
+-- ============================================================================
+
+struct SafeInt {
+    value int?
+}
+
+from SafeInt {
+    (x int) SafeInt = {
+        return SafeInt { value = x }
+    }
+    (nilVal nil) SafeInt = {
+        return SafeInt { value = nil }
+    }
+}
+
+let si SafeInt = 42
+let snil SafeInt = nil

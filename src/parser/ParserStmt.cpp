@@ -595,7 +595,7 @@ ASTPtr<DoWhileStmtAST> Parser::parseDoWhileStmt() {
 // ─────────────────────────────────────────────────────────────────────────────
 // parseReturnStmt
 //
-// Grammar:  return_stmt := 'return' [ expr ]
+// Grammar:  return_stmt := 'return' [ expr { ',' expr } ]
 //
 // A bare 'return' (no expression) is valid in void functions.
 // Return inside a parallel body is a parse-time error.
@@ -613,23 +613,47 @@ ASTPtr<ReturnStmtAST> Parser::parseReturnStmt() {
     auto node = arena_.make<ReturnStmtAST>();
     node->loc = loc;
 
-    // CRITICAL: Check if there's a return value
-    // Don't consume the '}' that ends the block
+    // Check if there is any expression after 'return'
     if (!check(TokenType::RBRACE) && !check(TokenType::SEMICOLON) && !isAtEnd()) {
-        LUC_LOG_STMT_VERBOSE("parseReturnStmt: parsing return value");
-        node->value = parseExpr();
-        if (!node->value) {
-            errorAt(DiagCode::E2008, "expected expression after 'return'");
-        } else {
-            LUC_LOG_STMT_VERBOSE("parseReturnStmt: return value parsed, next token='" << peek().value << "'");
+        // Parse one or more comma‑separated expressions
+        bool first = true;
+        while (!check(TokenType::RBRACE) && !check(TokenType::SEMICOLON) && !isAtEnd()) {
+            if (!first) {
+                // Expect a comma before the next expression
+                if (!match(TokenType::COMMA)) {
+                    // No comma – we are done (e.g., no more expressions)
+                    break;
+                }
+                // If we just consumed a comma and the next token is another comma, that's an empty expression
+                if (check(TokenType::COMMA)) {
+                    errorAt(DiagCode::E2008, "empty expression in return list (consecutive commas)");
+                    // Skip the second comma to avoid infinite loop
+                    advance();
+                    continue;
+                }
+                // If after comma we reach a closing brace, semicolon, or EOF, that's a trailing comma error
+                if (check(TokenType::RBRACE) || check(TokenType::SEMICOLON) || isAtEnd()) {
+                    errorAt(DiagCode::E2001, "trailing comma in return list");
+                    break;
+                }
+            }
+            first = false;
+
+            std::size_t savedPos = pos_;
+            ExprPtr expr = parseExpr();
+            if (pos_ == savedPos) {
+                errorAt(DiagCode::E2008, "expected expression after 'return'");
+                // Consume the offending token to avoid infinite loop
+                if (!isAtEnd()) advance();
+                // Do not break – maybe there are more expressions after an error? Better to break.
+                break;
+            }
+            node->values.push_back(std::move(expr));
         }
-    } else {
-        LUC_LOG_STMT_VERBOSE("parseReturnStmt: void return");
     }
 
     return node;
 }
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 // parseBreakStmt

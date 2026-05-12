@@ -166,7 +166,8 @@ func_type       := [ qualifier_list ] param_group { param_group } [ '->' return_
 
 qualifier_list  := { '~' IDENTIFIER }
 
-return_list     := return_type { ',' return_type }
+return_list     := '(' [ return_type { ',' return_type } ] ')'   -- multiple returns
+                 | return_type                                    -- single return
 
 return_type     := type
                  | param_group { param_group } '->' return_list
@@ -695,18 +696,22 @@ let name (id int)       -> string
 **Multiple return** — comma separated after `->`:
 
 ```luc
-let f (a int) -> int, string
-let g (src string) -> int, bool, string
+let f (a int) -> (int, string)
+let g (src string) -> (int, bool, string)
 ```
 
-> **Good practice — write each return type on its own line for complex signatures:**
+> **Good practice — write each return type on its own line if one of the return types is a function:**
 >
 > ```luc
-> let parse (src string)
->     -> int,
->        string,
->        bool
-> = {
+> -- Bad: return type too complex
+> let parse (src string) -> (int, string, (a float) -> int)
+> 
+> -- Good: each return type on its own line
+> let parse (src string) -> (
+>         int,
+>         string,
+>         (a float) -> int
+> ) = {
 >     ...
 > }
 > ```
@@ -768,10 +773,10 @@ A return type can itself be a curry function type. The `,` separates top-level
 return items. Each `->` belongs to its nearest preceding parameter group chain.
 
 ```luc
-let f (a int)
-    -> int,
-       (s string)(n float) -> int
-= {
+let f (a int) -> (
+    int,
+    (s string)(n float) -> int
+) = {
     ...
 }
 ```
@@ -800,10 +805,8 @@ f(int) -> (
 > ```luc
 > type FloatParser = (s string)(n float) -> int
 >
-> let f (a int)
->     -> int,
->        FloatParser
-> = {
+> -- we don't need to write the function type in a new line if we use type alias
+> let f (a int) -> (int, FloatParser) = {
 >     ...
 > }
 > ```
@@ -865,12 +868,14 @@ let log (msg string)
 let add (a int, b int) -> int
 
 -- multiple return
-let f (a int) -> int, string
+let f (a int) -> (int, string)
 
 -- multiple return, formatted
 let parse (src string)
-    -> int,
-       string
+    -> (
+        int,
+        (a float) -> int
+    )
 = { ... }
 
 -- curry
@@ -880,7 +885,7 @@ let add (a int)(b int) -> int
 let clamp (min int)(max int)(value int) -> int
 
 -- curry with multiple return
-let f (a int)(b string) -> int, string
+let f (a int)(b string) -> (int, string)
 
 -- qualifiers
 let fetch ~async    (url string) -> string
@@ -890,10 +895,10 @@ let find  ~nullable (items [*]int, pred (item int) -> bool) -> int
 let map<T, U> (items [*]T, f (item T) -> U) -> [*]U
 
 -- returned curry function, formatted
-let f (a int)
-    -> int,
-       (s string)(n float) -> int
-= { ... }
+let f (a int) -> (
+    int,
+    (s string)(n float) -> int
+) = { ... }
 
 -- nullable return value
 let f (a int) -> int?
