@@ -42,6 +42,7 @@ private:
     bool  isAtEnd();
     char  peek();
     char  peekNext();
+    char  peekNext(int offset) const;
     char  advance();
     bool  match(char expected);
 
@@ -56,7 +57,7 @@ private:
     // ── Literal readers ────────────────────────────────────────────────────────
     Token readNumber(char first);
     Token readString();
-    Token readRawString();
+    Token readRawString(int hashCount);
     Token readChar();
 
     // Reads a -- ... line comment. Called from getNextToken after the first '-'

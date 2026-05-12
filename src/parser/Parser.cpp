@@ -43,10 +43,11 @@ Parser::Parser(std::vector<Token> tokens, DiagnosticEngine &dc,
 // ─────────────────────────────────────────────────────────────────────────────
 
 const Token &Parser::peek() const {
-    // Skip any LINE_COMMENT tokens at the current position — they are
+    // Skip any LINE_COMMENT, DOC_COMMENT tokens at the current position — they are
     // transparent to the grammar; only harvestDocComment() reads them directly.
     std::size_t i = pos_;
-    while (i < tokens_.size() && tokens_[i].type == TokenType::LINE_COMMENT)
+    while (i < tokens_.size() && (tokens_[i].type == TokenType::LINE_COMMENT ||
+                                   tokens_[i].type == TokenType::DOC_COMMENT))
         ++i;
     if (i >= tokens_.size())
         return tokens_.back();
@@ -58,16 +59,18 @@ const Token &Parser::peekNext() const {
 }
 
 const Token &Parser::peekAt(std::size_t offset) const {
-    // Skip LINE_COMMENT tokens when computing the offset — they are invisible
+    // Skip LINE_COMMENT, DOC_COMMENT tokens when computing the offset — they are invisible
     // to the grammar.  We need to find the Nth non-comment token from pos_.
     std::size_t i = pos_;
     // Start by skipping comments at pos_ itself (same as peek()).
-    while (i < tokens_.size() && tokens_[i].type == TokenType::LINE_COMMENT)
+    while (i < tokens_.size() && (tokens_[i].type == TokenType::LINE_COMMENT ||
+                                   tokens_[i].type == TokenType::DOC_COMMENT))
         ++i;
     // Now advance 'offset' more non-comment tokens.
     while (offset > 0 && i < tokens_.size()) {
         ++i;
-        while (i < tokens_.size() && tokens_[i].type == TokenType::LINE_COMMENT)
+        while (i < tokens_.size() && (tokens_[i].type == TokenType::LINE_COMMENT ||
+                                       tokens_[i].type == TokenType::DOC_COMMENT))
             ++i;
         --offset;
     }
@@ -78,16 +81,21 @@ const Token &Parser::peekAt(std::size_t offset) const {
 }
 
 Token Parser::advance() {
-    // Find the current non-comment token index (same logic as peek()).
-    std::size_t i = pos_;
-    while (i < tokens_.size() && tokens_[i].type == TokenType::LINE_COMMENT)
-        ++i;
+    // Skip any comment tokens at the current position (both LINE and DOC)
+    while (!isAtEnd() && (tokens_[pos_].type == TokenType::LINE_COMMENT ||
+                          tokens_[pos_].type == TokenType::DOC_COMMENT)) {
+        ++pos_;
+    }
 
+    std::size_t i = pos_;
     Token t = (i < tokens_.size()) ? tokens_[i] : tokens_.back();
 
     pos_ = (i < tokens_.size()) ? i + 1 : i;
-    while (!isAtEnd() && tokens_[pos_].type == TokenType::LINE_COMMENT)
+    // Skip any comment tokens after the consumed token
+    while (!isAtEnd() && (tokens_[pos_].type == TokenType::LINE_COMMENT ||
+                          tokens_[pos_].type == TokenType::DOC_COMMENT)) {
         ++pos_;
+    }
 
     return t;
 }
@@ -123,6 +131,10 @@ Token Parser::consume(TokenType type, DiagCode code, const std::string &msg) {
         return advance();
     }
     errorAt(code, msg);
+    // Consume at least one token to avoid infinite loop.
+    if (!isAtEnd()) {
+        advance();
+    }
     return {type, "", peek().line, peek().column};
 }
 
@@ -905,6 +917,7 @@ bool Parser::looksLikeStmtStart() const {
         case TokenType::MATCH:
         case TokenType::SWITCH:
         case TokenType::AT_SIGN:
+        case TokenType::HASH:
             LUC_LOG_PARSER_EXTREME("looksLikeStmtStart: true (keyword)");
             return true;
         default:

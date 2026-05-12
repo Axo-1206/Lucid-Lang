@@ -1055,9 +1055,11 @@ type Parser       = (src string) -> int, string
 type Step         = (a int)(b string) -> int
 type ParallelBody = ~parallel (item int)
 
+-- Generic type alias
+type Transform<T> = (v T) -> T                -- T can be any type
+
 -- nullable alias
 type Transform    = (v Vec2) -> Vec2
-let f (a int) -> Transform? = { ... }    -- Transform? = nullable Transform
 ```
 
 ---
@@ -1219,6 +1221,15 @@ export from Fahrenheit {
 pub from Kelvin {
     (c Celsius) Kelvin = {
         return Kelvin { value = c.value + 273.15 }
+    }
+}
+
+-- Generic from block
+struct Wrapper<T> { value T }
+
+from Wrapper<T> {
+    (val T) Wrapper<T> = {
+        return Wrapper<T> { value = val }
     }
 }
 
@@ -2052,6 +2063,21 @@ literal         := INT_LITERAL
                  | CHAR_LITERAL
                  | HEX_LITERAL             -- 0xFF
                  | BINARY_LITERAL          -- 0b1010
+
+RAW_STRING_LITERAL := 'r' [ '#'+ ] '"' { any character } '"' [ '#'+ ]
+                   -- the number of '#' before the opening quote must match
+                   -- the number after the closing quote (e.g., r#"..."#, r##"..."##)
+                   -- no escape processing; the literal content does not close the string
+                   -- when it contains a quote that would otherwise be ambiguous.
+```
+
+Raw string literals use r followed by zero or more # characters, then a double quote, the literal content, a double quote, and the same number of # characters.
+The content is taken verbatim – no escape sequences are processed, and the delimiter pairs ("# / #") allow the string to contain arbitrary quotes and backslashes without ambiguity.
+
+```luc
+let a = r"hello"                     -- simple, no quotes inside
+let b = r#"He said "Hello""#         -- contains a double quote
+let c = r##"She said "#Hello"#"##    -- contains both " and "# sequences
 ```
 
 ### String Escape Sequences

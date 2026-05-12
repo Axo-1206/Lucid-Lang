@@ -1096,6 +1096,7 @@ ExprPtr Parser::parseIntrinsicCallExpr() {
 
     if (!check(TokenType::IDENTIFIER)) {
         errorAt(DiagCode::E2003, "expected intrinsic name after '#'");
+        if (!isAtEnd()) advance();
         return arena_.make<UnknownExprAST>();
     }
 
@@ -1104,8 +1105,7 @@ ExprPtr Parser::parseIntrinsicCallExpr() {
     node->intrinsicName = pool_.intern(advance().value);
 
     if (!check(TokenType::LPAREN)) {
-        errorAt(DiagCode::E2001,
-                "expected '(' after intrinsic '#" + std::string(pool_.lookup(node->intrinsicName)) + "'");
+        errorAt(DiagCode::E2001, "expected '(' after intrinsic '#" + std::string(pool_.lookup(node->intrinsicName)) + "'");
         return arena_.make<UnknownExprAST>();
     }
     LUC_LOG_EXPR("parseIntrinsicCallExpr: name='" << pool_.lookup(node->intrinsicName) << "'");
@@ -1115,35 +1115,38 @@ ExprPtr Parser::parseIntrinsicCallExpr() {
     bool isTypeIntrinsic = (intrinsicStr == "sizeof" || intrinsicStr == "alignof");
 
     if (isTypeIntrinsic) {
-        // Parse a single type argument.
         if (check(TokenType::RPAREN)) {
-            errorAt(DiagCode::E2005, "expected type argument for intrinsic '#" + intrinsicStr + "'");
+            errorAt(DiagCode::E2005, "expected type argument");
         } else {
             TypePtr typeArg = parseType();
-            if (!typeArg) {
-                errorAt(DiagCode::E2005, "expected type argument for intrinsic '#" + intrinsicStr + "'");
-            } else {
-                node->typeArg = std::move(typeArg);
-            }
+            if (!typeArg) errorAt(DiagCode::E2005, "invalid type argument");
+            else node->typeArg = std::move(typeArg);
         }
         consume(TokenType::RPAREN, "expected ')' after type argument");
     } else {
-        // Parse zero or more expression arguments.
         while (!check(TokenType::RPAREN) && !isAtEnd()) {
             std::size_t savedPos = pos_;
             ExprPtr arg = parseExpr();
             if (pos_ == savedPos) {
-                errorAt(DiagCode::E2008,
-                        "expected argument expression in '#" + intrinsicStr + "'");
-                // Skip to closing parenthesis to recover
-                while (!check(TokenType::RPAREN) && !isAtEnd()) advance();
+                errorAt(DiagCode::E2008, "expected argument expression in '#" + intrinsicStr + "'");
+                // Skip the offending token
+                if (!isAtEnd()) advance();
+                // Skip to the next comma or closing parenthesis
+                while (!isAtEnd() && !check(TokenType::COMMA) && !check(TokenType::RPAREN)) {
+                    advance();
+                }
+                if (check(TokenType::COMMA)) {
+                    advance(); // consume comma and continue
+                    continue;
+                }
                 break;
             }
             node->args.push_back(std::move(arg));
             if (check(TokenType::RPAREN)) break;
             if (!match(TokenType::COMMA)) {
                 errorAt(DiagCode::E2001, "expected ',' or ')' in intrinsic argument list");
-                while (!check(TokenType::RPAREN) && !isAtEnd()) advance();
+                // Skip to the closing parenthesis
+                while (!isAtEnd() && !check(TokenType::RPAREN)) advance();
                 break;
             }
         }
@@ -1473,38 +1476,49 @@ ExprPtr Parser::parseIndexExpr(ExprPtr target) {
 std::vector<ExprPtr> Parser::parseArgList() {
     LUC_LOG_EXPR_VERBOSE("parseArgList");
     std::vector<ExprPtr> args;
-    int argCount = 0;
 
     while (!check(TokenType::RPAREN) && !isAtEnd()) {
         std::size_t savedPos = pos_;
         ExprPtr arg = parseExpr();
 
-        // Check for progress – if parseExpr consumed no tokens, error and break
         if (pos_ == savedPos) {
+            // No progress – skip the offending token
             errorAt(DiagCode::E2008, "expected argument expression");
-            // Consume the bad token to avoid infinite loop
             if (!isAtEnd()) advance();
-            break;
+            // If the next token is a comma, consume it and continue
+            if (check(TokenType::COMMA)) advance();
+            // Continue to try next argument (or exit)
+            continue;
         }
 
         args.push_back(std::move(arg));
-        argCount++;
-        LUC_LOG_EXPR_EXTREME("parseArgList: parsed argument " << argCount);
 
         if (check(TokenType::RPAREN)) break;
 
         if (!match(TokenType::COMMA)) {
             errorAt(DiagCode::E2001, "expected ',' after argument");
+            // Skip tokens until we find a comma or closing parenthesis
+            while (!isAtEnd() && !check(TokenType::COMMA) && !check(TokenType::RPAREN)) {
+                advance();
+            }
+            if (check(TokenType::COMMA)) {
+                advance(); // consume the comma
+                // After consuming a comma, continue to parse the next argument
+                continue;
+            }
+            // If we reached ')' or EOF, break out of the loop
             break;
         }
 
-        if (check(TokenType::RPAREN)) {
-            errorAt(DiagCode::E2001, "unexpected trailing ',' in argument list");
-            break;
+        // Check for consecutive commas (empty argument)
+        if (check(TokenType::COMMA)) {
+            errorAt(DiagCode::E2008, "empty argument in call (consecutive commas)");
+            // Skip the extra comma
+            advance();
         }
     }
 
-    LUC_LOG_EXPR_VERBOSE("parseArgList: parsed " << argCount << " arguments");
+    LUC_LOG_EXPR_VERBOSE("parseArgList: parsed " << args.size() << " arguments");
     return args;
 }
 

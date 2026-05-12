@@ -70,14 +70,9 @@ let city string? = validUser?.address?.city   -- nil because address is nil
 -- Catch step (|> catch)
 -- ============================================================================
 
-let safeDivide (a int, b int) -> int, Error? = {
+let safeDivide (a int, b int) -> (int, Error?) = {
     if b == 0 { return 0, Error { msg = "division by zero" } }
     return a / b, nil
-}
-
-let result int = safeDivide(10, 0) |> catch(err) {
-    io.printl("Error: " + err.msg)
-    return -1
 }
 
 -- ============================================================================
@@ -95,18 +90,18 @@ let rightAssoc int = 2 ^ 3 ^ 2  -- 2 ^ (3 ^ 2) = 2 ^ 9 = 512
 
 let sum (numbers ...int) -> int = {
     let total int = 0
-    for i int in 0..<numbers.len() {
+    for i int in 0..<numbers.len()..1 {
         total = total + numbers[i]
     }
     return total
 }
 
 let average (first int, rest ...int) -> float = {
-    let total int = first + sum(rest...)
+    let total int = first + sum(rest)
     return float(total) / float(1 + rest.len())
 }
 
--- ============================================================================
+-- -- ============================================================================
 -- For loop with step
 -- ============================================================================
 
@@ -157,7 +152,9 @@ const free (ptr *uint8)
 let copyMemory () -> int = {
     let src *uint8? = malloc(100)
     let dst *uint8? = malloc(100)
-    if src == nil or dst == nil { return 1 }
+    if src == nil or dst == nil { 
+        return 1 
+    }
 
     #memcpy(dst, src, 100)
     #memset(src, 0, 100)
@@ -185,11 +182,11 @@ const reinterpret () -> float32 = {
 
 let regex string = r"^\d{3}-\d{2}-\d{4}$"
 let path string = r"C:\Users\name\file.txt"
-let rawWithQuotes string = r"He said "Hello""
+let rawWithQuotes string = r#"He said "Hello""#
 
--- ============================================================================
--- Char literals with escapes
--- ============================================================================
+-- -- ============================================================================
+-- -- Char literals with escapes
+-- -- ============================================================================
 
 let newline char = '\n'
 let tab char = '\t'
@@ -233,16 +230,6 @@ type MapFn<K, V> = (key K) -> V
 type AsyncMap<T, U> = ~async (item T) -> U
 
 -- ============================================================================
--- main entry point with @aot
--- ============================================================================
-
-@aot
-export const main (args []string) -> int = {
-    io.printl("Hello from AOT compiled Luc")
-    return 0
-}
-
--- ============================================================================
 -- Combined operator tests (compound assignment, etc.)
 -- ============================================================================
 
@@ -276,11 +263,11 @@ let fmaDemo (a float, b float, c float) -> float = {
     return #fma(a, b, c)   -- a*b + c
 }
 
-let minMax (a int, b int) -> int, int = {
+let minMax (a int, b int) -> (int, int) = {
     return #min(a, b), #max(a, b)
 }
 
-let bitOps (x uint32) -> uint32, uint32, uint32 = {
+let bitOps (x uint32) -> (uint32, uint32, uint32) = {
     let leading uint32 = #clz(x)
     let trailing uint32 = #ctz(x)
     let pop uint32 = #popcount(x)
@@ -307,9 +294,16 @@ let notReady bool = not isReady
 -- ============================================================================
 
 let getFlag () -> bool? = nil
-if getFlag() and isReady {   -- nil treated as false, short-circuit
-    io.printl("both true")
-}
-if getFlag() or isReady {
-    io.printl("at least one true")
+
+@aot
+export const main () -> int = {
+
+    if getFlag() and isReady {   -- nil treated as false, short-circuit
+        io.printl("both true")
+    }
+    if getFlag() or isReady {
+        io.printl("at least one true")
+    }
+    
+    return 0
 }

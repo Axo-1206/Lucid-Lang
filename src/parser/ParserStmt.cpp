@@ -95,14 +95,21 @@ StmtPtr Parser::parseStmt() {
         errorAt(DiagCode::E2002, "unexpected token '" + peek().value + "'");
         auto unknown = arena_.make<UnknownStmtAST>();
         unknown->loc = currentLoc();
+        if (!isAtEnd()) advance();
         return unknown;
     }
 
     SourceLocation loc = currentLoc();
     ExprPtr expr = parseExpr();
     if (!expr) {
+        errorAt(DiagCode::E2008, "expected expression statement");
         auto unknown = arena_.make<UnknownStmtAST>();
         unknown->loc = currentLoc();
+        // Skip tokens until a statement boundary to avoid infinite loop.
+        while (!isAtEnd() && !check(TokenType::SEMICOLON) && !check(TokenType::RBRACE)) {
+            advance();
+        }
+        if (check(TokenType::SEMICOLON)) advance();
         return unknown;
     }
 
@@ -593,7 +600,7 @@ ASTPtr<ForStmtAST> Parser::parseForStmt() {
     }
 
     if (!check(TokenType::LBRACE)) {
-        errorAt(DiagCode::E2001, "expected '{' to start for loop body");
+        errorAt(DiagCode::E2001, "expected '{' to start for loop body, found: " + peek().value);
         return nullptr;
     }
 

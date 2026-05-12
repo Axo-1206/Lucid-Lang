@@ -65,7 +65,7 @@ namespace LucDebug {
 
     inline std::ostream& getDebugStream() {
         #ifdef LUC_DEBUG_TO_FILE
-            static std::ofstream file(getLogFilePath(), std::ios::app);
+            static std::ofstream file(getLogFilePath(), std::ios::out | std::ios::trunc);
             
             // Print message once when first accessed
             if (!logFileMessagePrinted()) {

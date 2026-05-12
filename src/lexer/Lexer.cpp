@@ -117,6 +117,11 @@ char Lexer::peekNext() {
     return c;
 }
 
+char Lexer::peekNext(int offset) const {
+    size_t idx = pos + offset;
+    return (idx < src.size()) ? src[idx] : '\0';
+}
+
 char Lexer::advance() {
     char c = src[pos++];
     column++;
@@ -352,38 +357,140 @@ Token Lexer::readString() {
 
 Token Lexer::readChar() {
     LUC_LOG_LEXER_VERBOSE("readChar: starting");
-    std::string ch;
-    if (!isAtEnd() && peek() != '\'') {
-        if (peek() == '\\') {
-            advance();
-            ch += '\\';
-            if (!isAtEnd())
-                ch += advance();
+    std::string result;
+    bool closed = false;
+
+    while (!isAtEnd()) {
+        char c = peek();
+        if (c == '\'') {
+            advance();          // consume closing '
+            closed = true;
+            break;
+        }
+        if (c == '\\') {
+            advance();          // consume backslash
+            char esc = advance();
+            switch (esc) {
+                case 'n':  result += '\n'; break;
+                case 't':  result += '\t'; break;
+                case 'r':  result += '\r'; break;
+                case '"':  result += '"';  break;
+                case '\\': result += '\\'; break;
+                case '\'': result += '\''; break;
+                case '0':  result += '\0'; break;
+                case 'x': {
+                    std::string hex;
+                    for (int i = 0; i < 2 && isxdigit(peek()); ++i)
+                        hex += advance();
+                    if (hex.size() != 2) {
+                        // incomplete hex escape – error recovery
+                        return makeToken(TokenType::UNKNOWN, "");
+                    }
+                    unsigned long val = std::stoul(hex, nullptr, 16);
+                    result += static_cast<char>(val);
+                    break;
+                }
+                case 'u': {
+                    std::string hex;
+                    for (int i = 0; i < 4 && isxdigit(peek()); ++i)
+                        hex += advance();
+                    if (hex.size() != 4) {
+                        return makeToken(TokenType::UNKNOWN, "");
+                    }
+                    unsigned long cp = std::stoul(hex, nullptr, 16);
+                    // UTF‑8 encoding (same as string)
+                    if (cp < 0x80) {
+                        result += static_cast<char>(cp);
+                    } else if (cp < 0x800) {
+                        result += static_cast<char>(0xC0 | (cp >> 6));
+                        result += static_cast<char>(0x80 | (cp & 0x3F));
+                    } else if (cp < 0x10000) {
+                        result += static_cast<char>(0xE0 | (cp >> 12));
+                        result += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                        result += static_cast<char>(0x80 | (cp & 0x3F));
+                    } else {
+                        result += static_cast<char>(0xF0 | (cp >> 18));
+                        result += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+                        result += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                        result += static_cast<char>(0x80 | (cp & 0x3F));
+                    }
+                    break;
+                }
+                case 'U': {
+                    std::string hex;
+                    for (int i = 0; i < 8 && isxdigit(peek()); ++i)
+                        hex += advance();
+                    if (hex.size() != 8) {
+                        return makeToken(TokenType::UNKNOWN, "");
+                    }
+                    unsigned long cp = std::stoul(hex, nullptr, 16);
+                    // UTF‑8 encoding (same as string)
+                    if (cp < 0x80) {
+                        result += static_cast<char>(cp);
+                    } else if (cp < 0x800) {
+                        result += static_cast<char>(0xC0 | (cp >> 6));
+                        result += static_cast<char>(0x80 | (cp & 0x3F));
+                    } else if (cp < 0x10000) {
+                        result += static_cast<char>(0xE0 | (cp >> 12));
+                        result += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                        result += static_cast<char>(0x80 | (cp & 0x3F));
+                    } else {
+                        result += static_cast<char>(0xF0 | (cp >> 18));
+                        result += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+                        result += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                        result += static_cast<char>(0x80 | (cp & 0x3F));
+                    }
+                    break;
+                }
+                default:
+                    // unknown escape – keep as two characters (error may be reported later)
+                    result += '\\';
+                    result += esc;
+                    break;
+            }
         } else {
-            ch += advance();
+            // normal character (not a backslash)
+            result += advance();
         }
     }
-    if (!isAtEnd() && peek() == '\'')
-        advance(); // consume closing '\''
-    
-    LUC_LOG_LEXER_VERBOSE("readChar: '" << ch << "'");
-    return makeToken(TokenType::CHAR_LITERAL, ch);
+
+    if (!closed) {
+        // unterminated character literal
+        return makeToken(TokenType::UNKNOWN, "");
+    }
+
+    return makeToken(TokenType::CHAR_LITERAL, result);
 }
 
-Token Lexer::readRawString() {
-    LUC_LOG_LEXER_VERBOSE("readRawString: starting");
+Token Lexer::readRawString(int hashCount) {
+    LUC_LOG_LEXER_VERBOSE("readRawString: starting with " << hashCount << " hash delimiters");
     std::string str;
-    while (!isAtEnd() && peek() != '"') {
+    while (!isAtEnd()) {
+        if (peek() == '"') {
+            // Check if the next hashCount characters are '#' and then end
+            bool match = true;
+            for (int i = 0; i < hashCount; ++i) {
+                if (peekNext(i + 1) != '#') {
+                    match = false;
+                    break;
+                }
+            }
+            if (match) {
+                advance(); // consume "
+                for (int i = 0; i < hashCount; ++i) advance(); // consume the #s
+                break;
+            }
+        }
         if (peek() == '\n') {
             line++;
             column = 1;
         }
         str += advance();
+        if (isAtEnd()) {
+            // Unterminated raw string – error recovery
+            break;
+        }
     }
-    if (!isAtEnd())
-        advance(); // consume closing '"'
-    
-    LUC_LOG_LEXER_VERBOSE("readRawString: result length=" << str.size());
     return makeToken(TokenType::RAW_STRING_LITERAL, str);
 }
 
@@ -448,11 +555,17 @@ Token Lexer::getNextToken() {
         while (isalnum(peek()) || peek() == '_')
             ident += advance();
 
-        // r"..." raw string literal — 'r' immediately followed by '"'
-        if (ident == "r" && peek() == '"') {
-            LUC_LOG_LEXER_VERBOSE("getNextToken: raw string literal");
-            advance(); // consume opening '"'
-            return readRawString();
+        // r"..." raw string literal with optional # delimiters
+        if (ident == "r") {
+            int hashCount = 0;
+            while (peek() == '#') {
+                ++hashCount;
+                advance();
+            }
+            if (peek() == '"') {
+                advance(); // consume opening "
+                return readRawString(hashCount);
+            }
         }
 
         // Standalone _ is a wildcard token
