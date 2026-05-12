@@ -1,0 +1,315 @@
+package test
+
+-- ============================================================================
+-- Module system (use declarations - parser must accept, even if linking later)
+-- ============================================================================
+
+use math                         -- all exported items
+use math.vec2                    -- specific file
+use math as m                    -- alias
+export use math.vec2             -- re-export
+export use math.matrix.Mat2      -- granular re-export
+
+-- ============================================================================
+-- Doc comments (attached to following declaration)
+-- ============================================================================
+
+/--
+ - This is a doc comment for the Config struct.
+ - It supports Markdown.
+--/
+struct Config {
+    timeout int = 30
+}
+
+-- Single-line doc comment attached to function
+-- Returns the square of a number.
+let square (x int) -> int = { return x * x }
+
+-- ============================================================================
+-- If expression (if cond ?? then else)
+-- ============================================================================
+
+let status int = 200
+let message string = if status == 200 ?? "OK" else "Error"
+
+-- Chained if expression (right-associative)
+let code int = -5
+let label string = if code < 0 ?? "negative" else if code == 0 ?? "zero" else "positive"
+
+-- ============================================================================
+-- Null-coalescing operator (??)
+-- ============================================================================
+
+let maybeValue int? = nil
+let fallback int = maybeValue ?? 42
+
+let config string? = nil
+let useConfig string = config ?? "default"
+
+-- ============================================================================
+-- Safe navigation operator (?.)
+-- ============================================================================
+
+struct User {
+    name string
+    address &Address?
+}
+
+struct Address {
+    city string
+}
+
+let user User? = nil
+let cityName string? = user?.address?.city   -- nil if any step is nil
+
+let validUser User = User { name = "Alice", address = nil }
+let city string? = validUser?.address?.city   -- nil because address is nil
+
+-- ============================================================================
+-- Catch step (|> catch)
+-- ============================================================================
+
+let safeDivide (a int, b int) -> int, Error? = {
+    if b == 0 { return 0, Error { msg = "division by zero" } }
+    return a / b, nil
+}
+
+let result int = safeDivide(10, 0) |> catch(err) {
+    io.printl("Error: " + err.msg)
+    return -1
+}
+
+-- ============================================================================
+-- Power operator (^) - right-associative
+-- ============================================================================
+
+let base int = 2
+let exp int = 3
+let power int = base ^ exp      -- 8
+let rightAssoc int = 2 ^ 3 ^ 2  -- 2 ^ (3 ^ 2) = 2 ^ 9 = 512
+
+-- ============================================================================
+-- Variadic parameters
+-- ============================================================================
+
+let sum (numbers ...int) -> int = {
+    let total int = 0
+    for i int in 0..<numbers.len() {
+        total = total + numbers[i]
+    }
+    return total
+}
+
+let average (first int, rest ...int) -> float = {
+    let total int = first + sum(rest...)
+    return float(total) / float(1 + rest.len())
+}
+
+-- ============================================================================
+-- For loop with step
+-- ============================================================================
+
+let evenSum (limit int) -> int = {
+    let total int = 0
+    for i int in 0..limit..2 {
+        total = total + i
+    }
+    return total
+}
+
+-- ============================================================================
+-- Array concatenation (+)
+-- ============================================================================
+
+let a [*]int = [1, 2, 3]
+let b [*]int = [4, 5, 6]
+let c [*]int = a + b      -- [1,2,3,4,5,6]
+
+let sliceA []int = a[0..<2]
+let sliceB []int = b[0..<2]
+let sliceSum []int = sliceA + sliceB   -- slice concatenation
+
+-- ============================================================================
+-- #sizeof, #alignof compile-time intrinsics
+-- ============================================================================
+
+struct Vertex {
+    x float
+    y float
+    z float
+}
+
+let vertexSize uint64 = #sizeof(Vertex)
+let vertexAlign uint64 = #alignof(Vertex)
+let intSize uint64 = #sizeof(int)
+
+-- ============================================================================
+-- #memcpy, #memset, #memmove (inside @extern function)
+-- ============================================================================
+
+@extern("stdlib")
+const malloc (size uint64) -> *uint8?
+
+@extern("stdlib")
+const free (ptr *uint8)
+
+let copyMemory () -> int = {
+    let src *uint8? = malloc(100)
+    let dst *uint8? = malloc(100)
+    if src == nil or dst == nil { return 1 }
+
+    #memcpy(dst, src, 100)
+    #memset(src, 0, 100)
+    #memmove(dst, src, 50)
+
+    free(src)
+    free(dst)
+    return 0
+}
+
+-- ============================================================================
+-- #bitcast (requires --unsafe or inside @extern)
+-- ============================================================================
+
+@extern("example")
+const reinterpret () -> float32 = {
+    let bits uint32 = 0x3F800000
+    let f float32 = #bitcast(float32, bits)   -- 1.0
+    return f
+}
+
+-- ============================================================================
+-- Raw string literals (r"...")
+-- ============================================================================
+
+let regex string = r"^\d{3}-\d{2}-\d{4}$"
+let path string = r"C:\Users\name\file.txt"
+let rawWithQuotes string = r"He said "Hello""
+
+-- ============================================================================
+-- Char literals with escapes
+-- ============================================================================
+
+let newline char = '\n'
+let tab char = '\t'
+let hexChar char = '\xFF'
+let unicodeChar char = '\u0041'    -- 'A'
+let largeUnicode char = '\U0001F600' -- 😀
+
+-- ============================================================================
+-- from with generic parameters
+-- ============================================================================
+
+struct Wrapper<T> {
+    value T
+}
+
+struct Unwrapped<T> {
+    inner T
+}
+
+from Unwrapped<T> {
+    (w Wrapper<T>) Unwrapped<T> = {
+        return Unwrapped<T> { inner = w.value }
+    }
+}
+
+let wrapped Wrapper<int> = Wrapper<int> { value = 42 }
+let unwrapped Unwrapped<int> = wrapped   -- implicit conversion via from
+
+-- ============================================================================
+-- type alias with generic parameters
+-- ============================================================================
+
+type Option<T> = T?
+type Result<T, E> = T?   -- simplified; actual would be union but Luc doesn't have unions
+type MapFn<K, V> = (key K) -> V
+
+-- ============================================================================
+-- Qualifiers on type aliases (already tested, but include generic variant)
+-- ============================================================================
+
+type AsyncMap<T, U> = ~async (item T) -> U
+
+-- ============================================================================
+-- main entry point with @aot
+-- ============================================================================
+
+@aot
+export const main (args []string) -> int = {
+    io.printl("Hello from AOT compiled Luc")
+    return 0
+}
+
+-- ============================================================================
+-- Combined operator tests (compound assignment, etc.)
+-- ============================================================================
+
+let modify (x int) -> int = {
+    let y int = 10
+    y += x      -- y = y + x
+    y *= 2
+    y &&= 0xFF  -- bitwise AND assign
+    y ||= 0x01  -- bitwise OR assign
+    y ~^= 0xAA  -- bitwise XOR assign
+    y <<= 1
+    y >>= 1
+    return y
+}
+
+-- ============================================================================
+-- Power assignment (^=) - not in grammar? Grammar has '^=' in assign_op. Yes.
+-- ============================================================================
+
+let powerAssign (a int, b int) -> int = {
+    let result int = a
+    result ^= b     -- result = result ^ b (power, not XOR)
+    return result
+}
+
+-- ============================================================================
+-- Additional intrinsics not yet tested
+-- ============================================================================
+
+let fmaDemo (a float, b float, c float) -> float = {
+    return #fma(a, b, c)   -- a*b + c
+}
+
+let minMax (a int, b int) -> int, int = {
+    return #min(a, b), #max(a, b)
+}
+
+let bitOps (x uint32) -> uint32, uint32, uint32 = {
+    let leading uint32 = #clz(x)
+    let trailing uint32 = #ctz(x)
+    let pop uint32 = #popcount(x)
+    let swapped uint32 = #bswap(x)
+    return leading, trailing, pop, swapped
+}
+
+-- ============================================================================
+-- ??= operator? Not in grammar. But we have '??' as binary.
+-- ============================================================================
+
+let nullableCounter int? = nil
+let counter int = nullableCounter ?? 0   -- not assignment
+
+-- ============================================================================
+-- not operator (logical not)
+-- ============================================================================
+
+let isReady bool = false
+let notReady bool = not isReady
+
+-- ============================================================================
+-- and / or with nullable semantics
+-- ============================================================================
+
+let getFlag () -> bool? = nil
+if getFlag() and isReady {   -- nil treated as false, short-circuit
+    io.printl("both true")
+}
+if getFlag() or isReady {
+    io.printl("at least one true")
+}

@@ -16,82 +16,6 @@
 #include <iostream>
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ParserStmt.cpp
-//
-// Implements every statement parse function declared in Parser.hpp.
-// This is the last layer of the parser — it calls into all four other files:
-//   parseType()  (ParserType.cpp)
-//   parseDecl()  (ParserDecl.cpp)  — for local declarations inside blocks
-//   parseExpr()  (ParserExpr.cpp)
-//   parseBlock() (this file)       — recursive
-//
-// Entry point for all statement parsing is parseStmt(), which is called by
-// parseBlock() in a loop. parseBlock() is called by:
-//   parseFuncBody()      (ParserDecl.cpp)
-//   parseIfStmt/Expr()   (this file / ParserExpr.cpp)
-//   parseForStmt()
-//   parseWhileStmt()
-//   parseDoWhileStmt()
-//   parseParallelForStmt()
-//   parseParallelBlockStmt()
-//   parseArmBody()       (ParserExpr.cpp)
-//
-// Context depth counters (declared on Parser) are maintained here:
-//   loopDepth_     — incremented/decremented around for/while/do bodies
-//   parallelDepth_ — incremented/decremented around parallel bodies
-//                    ParserExpr.cpp::parseAnonFuncExpr / parseAwaitExpr
-//
-// Grammar source: LUC_GRAMMAR.md §Statements
-// ─────────────────────────────────────────────────────────────────────────────
-
-
-// ─────────────────────────────────────────────────────────────────────────────
-// parseBlock
-//
-// Grammar:  block := '{' { stmt } '}'
-//
-// Foundational building block — every body in the language is a block.
-// ─────────────────────────────────────────────────────────────────────────────
-ASTPtr<BlockStmtAST> Parser::parseBlock() {
-    LUC_LOG_STMT("parseBlock");
-    SourceLocation loc = currentLoc();
-    consume(TokenType::LBRACE, "expected '{'");
-
-    auto block = arena_.make<BlockStmtAST>();
-    block->loc = loc;
-    int stmtCount = 0;
-
-    while (!check(TokenType::RBRACE) && !isAtEnd()) {
-        if (match(TokenType::SEMICOLON)) continue;
-
-        // Save position for error recovery
-        std::size_t savedPos = pos_;
-        
-        StmtPtr stmt = parseStmt();
-        if (stmt) {
-            block->stmts.push_back(std::move(stmt));
-            stmtCount++;
-        } else {
-            // If we didn't advance, manually advance to avoid infinite loop
-            if (pos_ == savedPos) {
-                LUC_LOG_STMT("parseBlock: parser didn't advance, forcing advance");
-                advance();
-            }
-            
-            if (!check(TokenType::RBRACE) && !isAtEnd()) {
-                synchronize();
-            }
-        }
-    }
-
-    LUC_LOG_STMT_VERBOSE("parseBlock: consuming '}', current token='" << peek().value << "'");
-    consume(TokenType::RBRACE, "expected '}' to close block");
-    LUC_LOG_STMT("parseBlock: parsed " << stmtCount << " statements");
-    return block;
-}
-
-
-// ─────────────────────────────────────────────────────────────────────────────
 // parseStmt  — root statement dispatcher
 //
 // Dispatch priority (in order):
@@ -110,9 +34,38 @@ ASTPtr<BlockStmtAST> Parser::parseBlock() {
 StmtPtr Parser::parseStmt() {
     LUC_LOG_STMT_VERBOSE("parseStmt: token='" << peek().value << "'");
     
-    // ── Local declarations ────────────────────────────────────────────────────
+    // ── Local declarations or multi‑assignment ─────────────────────────────
     if (checkAny({ TokenType::LET, TokenType::CONST })) {
-        return parseLocalDecl();
+        // Lookahead: parse the first variable spec (keyword + name + type)
+        // and see if a comma follows. If yes, it's multi‑assignment.
+        std::size_t savedPos = pos_;
+
+        // Consume keyword and name temporarily
+        if (!checkAny({TokenType::LET, TokenType::CONST})) {
+            // Not a keyword – shouldn't happen
+            return parseLocalDecl();
+        }
+        advance(); // consume keyword
+        bool hasIdentifier = check(TokenType::IDENTIFIER);
+        if (hasIdentifier) advance(); // consume identifier
+        bool hasType = looksLikeType();
+        TypePtr dummy = nullptr;
+        if (hasType) {
+            // Parse the type (may allocate, but we discard it)
+            dummy = parseType();
+            if (!dummy) hasType = false;
+        }
+        bool nextIsComma = check(TokenType::COMMA);
+
+        pos_ = savedPos; // restore position
+
+        if (hasIdentifier && hasType && nextIsComma) {
+            // It's a multi‑assignment statement
+            return parseMultiAssign();
+        } else {
+            // Regular local variable or function declaration
+            return parseLocalDecl();
+        }
     }
 
     // ── 'pub' inside a block ──────────────────────────────────────────────────
@@ -158,6 +111,159 @@ StmtPtr Parser::parseStmt() {
     return stmt;
 }
 
+/**
+* @brief Parses a multi‑assignment statement.
+*
+* Grammar:
+*   multi_assign := decl_keyword var_spec { ',' var_spec } '=' expr
+*   var_spec     := IDENTIFIER type_ann
+*   decl_keyword := 'let' | 'const'
+*
+* All variables share a single keyword and each has an explicit type.
+* The right‑hand side is a single expression that must return as many
+* values as there are variables (e.g., a function with multiple returns).
+*
+* Examples:
+*   let q int, r int     = divmod(10, 3)
+*   const w int, h int  = getScreenSize()
+*
+* @return A MultiAssignStmtAST node, or nullptr on error.
+*
+* @related parseStmt()      – dispatches to this function when a comma
+*                              follows the first variable's type.
+*          parseLocalDecl() – handles single variable/function declarations.
+*
+* @semantics The semantic pass will:
+*   - Verify that the RHS produces exactly as many values as variables.
+*   - Check type compatibility per variable.
+*   - Ensure `const` RHS is a compile‑time constant.
+*   - Introduce variables into the current scope.
+*/
+ASTPtr<MultiAssignStmtAST> Parser::parseMultiAssign() {
+    SourceLocation loc = currentLoc();
+
+    // Single keyword at the start
+    if (!checkAny({TokenType::LET, TokenType::CONST})) {
+        errorAt(DiagCode::E2002, "expected 'let' or 'const'");
+        return nullptr;
+    }
+    Token kwTok = advance();
+    DeclKeyword kw = (kwTok.type == TokenType::LET) ? DeclKeyword::Let : DeclKeyword::Const;
+
+    std::vector<std::pair<InternedString, TypePtr>> vars;
+
+    // Parse first variable
+    if (!check(TokenType::IDENTIFIER)) {
+        errorAt(DiagCode::E2003, "expected variable name");
+        return nullptr;
+    }
+    std::string firstName = advance().value;
+    if (!looksLikeType()) {
+        errorAt(DiagCode::E2005, "expected type annotation for '" + firstName + "'");
+        return nullptr;
+    }
+    TypePtr firstType = parseType();
+    if (!firstType) return nullptr;
+    vars.emplace_back(pool_.intern(firstName), std::move(firstType));
+
+    // Parse additional variables separated by commas
+    while (check(TokenType::COMMA)) {
+        advance(); // consume ','
+        if (!check(TokenType::IDENTIFIER)) {
+            errorAt(DiagCode::E2003, "expected variable name after comma");
+            break;
+        }
+        std::string name = advance().value;
+        if (!looksLikeType()) {
+            errorAt(DiagCode::E2005, "expected type annotation for '" + name + "'");
+            break;
+        }
+        TypePtr type = parseType();
+        if (!type) break;
+        vars.emplace_back(pool_.intern(name), std::move(type));
+    }
+
+    // Must have '='
+    if (!check(TokenType::ASSIGN)) {
+        errorAt(DiagCode::E2001, "expected '=' in multi-assignment");
+        // Skip to a safe point: next semicolon or closing brace
+        while (!isAtEnd() && !check(TokenType::SEMICOLON) && !check(TokenType::RBRACE))
+            advance();
+        return nullptr;
+    }
+    advance(); // consume '='
+
+    // Parse RHS with error recovery
+    ExprPtr rhs = parseExpr();
+    if (!rhs) {
+        errorAt(DiagCode::E2008, "expected expression after '=' in multi-assignment");
+        // Recover: skip to semicolon or closing brace
+        while (!isAtEnd() && !check(TokenType::SEMICOLON) && !check(TokenType::RBRACE))
+            advance();
+        return nullptr;
+    }
+
+    // If after RHS we see a comma, the user probably tried to write multiple expressions.
+    // This is invalid; skip to the end of the statement.
+    if (check(TokenType::COMMA)) {
+        errorAt(DiagCode::E2008, "unexpected comma after expression; the right-hand side of a multi-assignment must be a single expression that returns multiple values (e.g., a function call). Did you forget parentheses?");
+        while (!isAtEnd() && !check(TokenType::SEMICOLON) && !check(TokenType::RBRACE))
+            advance();
+        return nullptr;
+    }
+
+    auto node = arena_.make<MultiAssignStmtAST>();
+    node->loc = loc;
+    node->keyword = kw;
+    node->vars = std::move(vars);
+    node->rhs = std::move(rhs);
+    return node;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// parseBlock
+//
+// Grammar:  block := '{' { stmt } '}'
+//
+// Foundational building block — every body in the language is a block.
+// ─────────────────────────────────────────────────────────────────────────────
+ASTPtr<BlockStmtAST> Parser::parseBlock() {
+    LUC_LOG_STMT("parseBlock");
+    SourceLocation loc = currentLoc();
+    consume(TokenType::LBRACE, "expected '{'");
+
+    auto block = arena_.make<BlockStmtAST>();
+    block->loc = loc;
+    int stmtCount = 0;
+
+    while (!check(TokenType::RBRACE) && !isAtEnd()) {
+        if (match(TokenType::SEMICOLON)) continue;
+
+        // Save position for error recovery
+        std::size_t savedPos = pos_;
+        
+        StmtPtr stmt = parseStmt();
+        if (stmt) {
+            block->stmts.push_back(std::move(stmt));
+            stmtCount++;
+        } else {
+            // If we didn't advance, manually advance to avoid infinite loop
+            if (pos_ == savedPos) {
+                LUC_LOG_STMT("parseBlock: parser didn't advance, forcing advance");
+                advance();
+            }
+            
+            if (!check(TokenType::RBRACE) && !isAtEnd()) {
+                synchronize();
+            }
+        }
+    }
+
+    LUC_LOG_STMT_VERBOSE("parseBlock: consuming '}', current token='" << peek().value << "'");
+    consume(TokenType::RBRACE, "expected '}' to close block");
+    LUC_LOG_STMT("parseBlock: parsed " << stmtCount << " statements");
+    return block;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // parseLocalDecl

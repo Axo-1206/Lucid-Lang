@@ -444,3 +444,49 @@ struct ContinueStmtAST : StmtAST {
 
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
+
+// ═════════════════════════════════════════════════════════════════════════════
+// MULTI‑ASSIGNMENT STATEMENT
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MultiAssignStmtAST
+//
+// Assigns multiple values to multiple variables in a single statement.
+//   let x int, y int, z int = getCoordinates()
+//   const w int, h int = getScreenSize()
+//
+// Grammar:
+//   multi_assign := decl_keyword var_spec { ',' var_spec } '=' expr
+//   var_spec     := IDENTIFIER type_ann
+//   decl_keyword := 'let' | 'const'
+//
+// Key rules (enforced by the semantic pass):
+//   - All variables share the same keyword (all 'let' or all 'const').
+//   - Each variable has an explicit type annotation (no type inference).
+//   - The right‑hand side expression must return exactly as many values
+//     as there are variables, and each value must be assignable to the
+//     corresponding variable's type.
+//   - The statement is only valid at block scope, not at top level.
+//   - Variables are introduced into the current scope after this statement.
+//   - For 'const' variables, the right‑hand side must be a compile‑time
+//     constant expression.
+//
+// Example:
+//   let q int, r int = divmod(10, 3)   // q = 3, r = 1
+//
+// vars — sequence of (name, type) pairs, in the order they appear.
+// rhs  — the expression that produces the values to assign.
+// keyword — 'let' or 'const' applied to all declared variables.
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct MultiAssignStmtAST : StmtAST {
+    static constexpr ASTKind staticKind = ASTKind::MultiAssignStmt;
+
+    DeclKeyword keyword;                          // let or const
+    std::vector<std::pair<InternedString, TypePtr>> vars;   // (name, type)
+    ExprPtr rhs;                                  // source expression
+
+    MultiAssignStmtAST() : StmtAST(ASTKind::MultiAssignStmt) {}
+    void accept(ASTVisitor& v) override { v.visit(*this); }
+};

@@ -394,14 +394,14 @@ A function returning multiple values can be assigned to multiple variables in a
 single statement. Each variable requires its own explicit type annotation.
 
 ```
-multi_assign    := multi_var { ',' multi_var } '=' expr
-
-multi_var       := decl_keyword IDENTIFIER type_ann
+multi_assign := decl_keyword var_spec { ',' var_spec } '=' expr
+var_spec     := IDENTIFIER type_ann
+decl_keyword := 'let' | 'const'
 ```
 
 ```luc
--- two return values, both let
-let value int, let msg string = doSomething()
+-- two return values
+let value int, msg string = doSomething()
 
 -- shorthand without per-variable keyword is NOT supported
 let value, msg int = ...          -- ERROR: each variable needs its own type
@@ -416,7 +416,7 @@ let value int, msg string = ...   -- OK: implicit let on second variable
 >
 > ```luc
 > -- receive both as let
-> let value int, let msg string = doSomething()
+> let value int, msg string = doSomething()
 >
 > -- promote to const in a separate step
 > const FIXED int = value

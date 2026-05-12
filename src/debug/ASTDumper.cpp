@@ -766,6 +766,27 @@ void ASTDumper::visit(ContinueStmtAST& node) {
     printNodeHeader(node, "ContinueStmtAST");
 }
 
+void ASTDumper::visit(MultiAssignStmtAST& node) {
+    std::string header = "MultiAssignStmtAST (";
+    header += (node.keyword == DeclKeyword::Let) ? "let" : "const";
+    header += ") ";
+    for (size_t i = 0; i < node.vars.size(); ++i) {
+        if (i > 0) header += ", ";
+        header += toStr(pool, node.vars[i].first);
+        if (node.vars[i].second)
+            header += " : " + formatType(node.vars[i].second.get());
+    }
+    header += " = ...";
+    printNodeHeader(node, header);
+    if (node.rhs) {
+        indentLevel++;
+        visitChild(node.rhs.get(), "rhs");
+        indentLevel--;
+    }
+}
+
+// ── Other nodes ───────────────────────────────────────────────────────
+
 void ASTDumper::visit(AttributeAST& node) {
     std::string header = "AttributeAST @" + toStr(pool, node.name);
     if (!node.args.empty()) {

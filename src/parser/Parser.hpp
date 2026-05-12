@@ -494,6 +494,12 @@ private:
     // Root statement dispatcher. Called in a loop by parseBlock().
     StmtPtr parseStmt();
 
+    /**
+     * @brief Parses a multi‑assignment statement.
+     * ... (the comment shown above) ...
+     */
+    ASTPtr<MultiAssignStmtAST> parseMultiAssign();
+
     // '{' { stmt } '}'
     ASTPtr<BlockStmtAST> parseBlock();
 

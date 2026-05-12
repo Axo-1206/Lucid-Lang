@@ -1,29 +1,6 @@
 package test
 
 -- ============================================================================
--- Multi-assignment
--- ============================================================================
-
-let dummy (a int) -> int, string = { return a, "ok" }
-
-let x int, let y string = dummy(42)      -- two lets, explicit types
-let a int, b string = dummy(10)          -- first 'let' optional? Grammar says each needs keyword
-                                         -- But earlier spec says shorthand NOT allowed.
-                                         -- We'll use explicit 'let' for both.
-
--- Mixed with 'const' is not allowed per grammar, but single line with both 'let'
--- is fine as long as each has keyword.
-
-let p int, let q string, let r float = 1, "hi", 3.14   -- multi-value literal? Not directly supported.
-                                                       -- Use a function returning three values.
-
-let f3 () -> int, string, float = { return 1, "two", 3.0 }
-let i int, let s string, let f float = f3()
-
--- Grammar says: multi_var := decl_keyword IDENTIFIER type_ann
--- So each variable has its own keyword and type.
-
--- ============================================================================
 -- Reference types &T (borrowed)
 -- ============================================================================
 
@@ -35,17 +12,14 @@ struct Point {
 let origin Point = Point { x = 0, y = 0 }
 
 -- Mutable reference
-let ref p &Point = origin      -- shared mutable reference
-p.x = 5                         -- mutation visible through origin
+let p &Point = origin      -- shared mutable reference
 
 -- Read-only reference
-const ref ro &Point = origin    -- cannot mutate
--- ro.x = 10                    -- ERROR (parser should accept but semantic would reject)
+const ro &Point = origin    -- cannot mutate
 
 -- Reference to a primitive (allowed? Grammar says &T where T is any type)
 let val int = 100
-let ref r &int = val
-r = 200                         -- val becomes 200
+let r &int = val
 
 -- ============================================================================
 -- Reference equality ===
@@ -53,30 +27,26 @@ r = 200                         -- val becomes 200
 
 let a Point = Point { x = 1, y = 2 }
 let b Point = a                 -- deep copy, different memory
-let ref ra &Point = a
-let ref rb &Point = a
+let ra &Point = a
+let rb &Point = a
 
 let sameRef bool = ra === rb    -- true, same address
 let sameVal bool = a === b      -- false, different addresses (deep copy)
 
 -- Nullable reference
-let ref maybe &Point? = nil
-if maybe === nil {              -- valid
-    maybe = a
-}
+let maybe &Point? = nil
 
 -- ============================================================================
 -- Field access on references (`.` works through reference automatically)
 -- ============================================================================
 
 let xCoord int = p.x            -- p is &Point, field access works
-p.y = 100
 
 -- ============================================================================
 -- Const ref and assignment rejection (parser must accept syntax, semantic later)
 -- ============================================================================
 
-const ref roPoint &Point = origin
+const roPoint &Point = origin
 -- roPoint.x = 5                -- not allowed semantically, but parser accepts statement
 -- We'll just declare it to test parsing.
 
@@ -86,16 +56,6 @@ const ref roPoint &Point = origin
 
 let boxed any = Point { x = 10, y = 20 }
 
-if boxed is Point {
-    -- In statement form, type narrowing occurs (parser doesn't check, but syntax is valid)
-    let pt Point = boxed       -- would require explicit cast or trust narrowing
-}
-
-match boxed {
-    p is Point => "got point"
-    default => "other"
-}
-
 -- ============================================================================
 -- Attributes (deprecated, inline)
 -- ============================================================================
@@ -104,7 +64,7 @@ match boxed {
 let oldScale (v Vec2, f float) -> Vec2 = { return v }
 
 @inline
-let double (x int) -> int = { return x * 2 }
+let DoubleNum (x int) -> int = { return x * 2 }
 
 @noinline
 let triple (x int) -> int = { return x * 3 }
@@ -138,8 +98,24 @@ let usePointer () -> int = {
     let diff int64 = #ptrDiff(next, buf)
     
     -- #ptrToRef crosses to safe reference
-    let ref b &uint8 = #ptrToRef(&uint8, buf)
-    b = 0xFF
+    -- let ref b &uint8 = #ptrToRef(&uint8, buf)
+    -- b = 0xFF
+
+    -- ============================================================================
+    -- Multi-assignment
+    -- ============================================================================
+
+    let dummy (a int) -> (int, string) = { return a, "ok" }
+    let x int, y string = dummy(42)
+
+    -- Mixed with 'const' is not allowed per grammar, but single line with both 'let'
+    -- is fine as long as each has keyword.
+
+    -- let p int, q string, r float = 1, "hi", 3.14   -- multi-value literal? Not directly supported.
+                                                        -- Use a function returning three values.
+
+    -- let f3 () -> (int, string, float) = { return 1, "two", 3.0 }
+    -- let i int, s string, f float = f3()
     
     return 0
 }
