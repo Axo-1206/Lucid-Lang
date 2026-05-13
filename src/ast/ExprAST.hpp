@@ -32,78 +32,6 @@
 #include <optional>
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ExprAST.hpp — all expression nodes, match arm nodes, and pattern nodes
-//
-// Every expression node here inherits from ExprAST (defined in BaseAST.hpp).
-// StmtAST.hpp includes this header — statements contain expressions.
-//
-// Pattern nodes (BindPatternAST, WildcardPatternAST, TypePatternAST,
-// StructPatternAST) also live here instead of a separate PatternAST.hpp.
-// This avoids a circular include: PatternAST.hpp would need ExprAST.hpp for
-// guard expressions and arm bodies, and ExprAST.hpp would need PatternAST.hpp
-// for MatchExprAST — a cycle. Keeping everything in one file breaks it cleanly.
-//
-// Node inventory:
-//
-//   Literals
-//     LiteralExprAST          — 42, 3.14, "hello", r"raw", 'a', 0xFF, 0b1010, true, false, nil
-//     ArrayLiteralExprAST     — [1, 2, 3]  (kind inferred from declared type)
-//     StructLiteralExprAST    — Vec2 { x = 1.0  y = 2.0 }
-//
-//   Names & access
-//     IdentifierExprAST       — bare name: x, foo, Direction
-//     FieldAccessExprAST      — v.x  (data member, . operator)
-//     BehaviorAccessExprAST   — Vec2:normalize  (impl method, : operator)
-//
-//   Calls & indexing
-//     CallExprAST             — f(args)  or  T<U>(args)
-//     IndexExprAST            — nums[i]  or  nums[i..j]  (IndexKind distinguishes)
-//
-//   Operators
-//     BinaryExprAST           — a + b, a == b, a and b, a | b  (all infix binary ops)
-//     UnaryExprAST            — -x, not x, ~x, &x
-//     AssignExprAST           — x = expr, x += expr, x -= expr, ...
-//     IsExprAST               — x is int, shape is Circle  (type check + narrowing)
-//
-//   Nullable chain
-//     NullableChainExprAST    — player?.weapon?.damage ?? 0
-//
-//   Pipeline & composition
-//     PipelineExprAST         — seed -> step -> step
-//     PipelineStepAST         — one step in a pipeline (not an ExprAST — see below)
-//     ComposeExprAST          — f +> g +> h
-//     ComposeOperandAST       — one operand in a compose chain (not an ExprAST)
-//
-//   Functions
-//     AnonFuncExprAST         — (x int) int { ... }  or  async (x int) int { ... }
-//     AwaitExprAST            — await httpGet(url)
-//
-//   Control flow expressions
-//     MatchExprAST            — match expr { arm* default }
-//                               each arm body is one or two comma-separated exprs
-//     IfExprAST               — if cond ?? thenExpr else elseExpr  (inline form)
-//
-//   Other
-//     RangeExprAST            — 0..10 / 0..<10  (for loops, match patterns, slice indexing)
-//     TypeConvExprAST         — float(x)  safe explicit cast  |  *float(x)  unsafe bit reinterpret
-//
-//   Match infrastructure  (not ExprAST — BaseAST directly)
-//     MatchArmAST             — pattern_list [guard] -> expr [, expr]
-//     DefaultArmAST           — default -> expr [, expr]
-//
-//   Pattern nodes  (PatternAST — matched against the subject, never evaluated)
-//     BindPatternAST          — n  (captures matched value into name)
-//     WildcardPatternAST      — _  (matches anything, discards value)
-//     TypePatternAST          — v is Circle  (bind + narrow to concrete type)
-//     StructPatternAST        — Vec2 { x: 0.0, y }  (struct field destructuring)
-//
-//   Retired pattern nodes (removed — reuse existing ExprAST nodes directly):
-//     LiteralPatternAST       — replaced by LiteralExprAST in pattern position
-//     RangePatternAST         — replaced by RangeExprAST in pattern position
-//
-// ─────────────────────────────────────────────────────────────────────────────
-
-// ─────────────────────────────────────────────────────────────────────────────
 // LiteralKind — which literal token was written.
 // The parser maps the token type to this enum before constructing the node.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -236,7 +164,6 @@ enum class ComposeOperandKind {
 // value stores the raw lexeme from the token. The semantic pass converts to
 // a typed constant value during type checking.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct LiteralExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::LiteralExpr;
 
@@ -261,7 +188,6 @@ struct LiteralExprAST : ExprAST {
 // of the variable being initialised — the literal itself is kind-neutral.
 // The semantic pass sets resolvedType after inferring from context.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct ArrayLiteralExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::ArrayLiteralExpr;
 
@@ -284,7 +210,6 @@ struct ArrayLiteralExprAST : ExprAST {
 // field-to-expression binding uniformly. The field name is part of the node,
 // not buried in a separate structure.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct FieldInitAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::FieldInit;
 
@@ -318,7 +243,6 @@ using FieldInitPtr = ASTPtr<FieldInitAST>;
 // inits maps field name → initialiser expression. Ordering is not significant
 // — the semantic pass matches by name against the struct's field declarations.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct StructLiteralExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::StructLiteralExpr;
 
@@ -350,7 +274,6 @@ struct StructLiteralExprAST : ExprAST {
 // parser actually produces a FieldAccessExprAST — an IdentifierExprAST always
 // refers to a single symbol, never a qualified name.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct IdentifierExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::IdentifierExpr;
 
@@ -377,7 +300,6 @@ struct IdentifierExprAST : ExprAST {
 // The semantic pass checks that field exists on the resolved type of object
 // and that any write to the field is through a 'let' variable.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct FieldAccessExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::FieldAccessExpr;
 
@@ -426,7 +348,6 @@ struct FieldAccessExprAST : ExprAST {
 //     Example: inside generic body where receiver is T-typed
 //              → empty string (codegen must use substitution map at runtime)
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct BehaviorAccessExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::BehaviorAccessExpr;
 
@@ -470,7 +391,6 @@ struct BehaviorAccessExprAST : ExprAST {
 //   fn(args)!  — upstream value will be injected as the first argument.
 // The semantic pass checks that isArgPack is only true inside a pipeline step.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct CallExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::CallExpr;
 
@@ -503,7 +423,6 @@ struct CallExprAST : ExprAST {
 //   Slice   — start >= 0, end >= start, both < array.len() at runtime
 //   Write   — only valid when the target is a 'let' variable (imt/val = error)
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct IndexExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::IndexExpr;
 
@@ -541,7 +460,6 @@ struct IndexExprAST : ExprAST {
 // Note: '&' is the unary reference operator (&x, &T) — never a binary op.
 // Bitwise AND uses '&&' (BIT_AND token) and bitwise OR uses '||' (BIT_OR token)
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct BinaryExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::BinaryExpr;
 
@@ -560,10 +478,9 @@ struct BinaryExprAST : ExprAST {
 // A prefix unary operation.
 //   -x      →  op=Neg,    operand=x
 //   not x   →  op=Not,    operand=x
-//   ~x      →  op=BitNot, operand=x
+//   ~~x      →  op=BitNot, operand=x
 //   &x      →  op=Ref,    operand=x   — take a reference
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct UnaryExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::UnaryExpr;
 
@@ -589,7 +506,6 @@ struct UnaryExprAST : ExprAST {
 //   - imt and val on lhs is an error
 //   - operator is defined for the lhs type (e.g. -= on string is an error)
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct AssignExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::AssignExpr;
 
@@ -617,7 +533,6 @@ struct AssignExprAST : ExprAST {
 // The semantic pass writes the narrowedType semantic flag on the node so that
 // the type checker can use it when checking the branch body.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct IsExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::IsExpr;
 
@@ -654,7 +569,6 @@ struct IsExprAST : ExprAST {
 //   - every field in steps exists on the corresponding nullable type
 //   - fallback type is compatible with the final resolved type of the chain
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct NullableChainExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::NullableChainExpr;
 
@@ -704,7 +618,6 @@ struct NullCoalesceExprAST : ExprAST {
 //   ArgPack:     ident (fn) + packArgs filled
 //   AnonFunc:    anonFunc filled
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct PipelineStepAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::PipelineStep;
 
@@ -736,10 +649,10 @@ using PipelineStepPtr = ASTPtr<PipelineStepAST>;
 // ─────────────────────────────────────────────────────────────────────────────
 // PipelineExprAST
 //
-// A runtime pipeline chain — seed -> step -> step -> ...
-//   42 -> float -> sqrt
-//   getUser(id) -> validate -> save
-//   v -> Vec2:normalize -> scale(2.0)!
+// A runtime pipeline chain — seed |> step |> step |> ...
+//   42 |> float |> sqrt
+//   getUser(id) |> validate |> save
+//   v |> Vec2:normalize |> scale(2.0)!
 //
 // seed — any expression: variable, literal, function call result, arithmetic.
 // steps — one or more pipeline steps in order.
@@ -751,7 +664,6 @@ using PipelineStepPtr = ASTPtr<PipelineStepAST>;
 // The semantic pass verifies each step is callable and that non-nullable
 // rules are respected for FieldRef steps.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct PipelineExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::PipelineExpr;
 
@@ -777,7 +689,6 @@ struct PipelineExprAST : ExprAST {
 // The semantic pass checks that each operand is non-nullable and that the
 // output type of the left operand exactly matches the input type of the right.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct ComposeOperandAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::ComposeOperand;
 
@@ -811,7 +722,6 @@ using ComposeOperandPtr = ASTPtr<ComposeOperandAST>;
 // The semantic pass validates these type chains. Generics must be explicitly
 // instantiated before composing — type inference across +> is not supported.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct ComposeExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::ComposeExpr;
 
@@ -844,7 +754,6 @@ struct ComposeExprAST : ExprAST {
 // is stored in the 'type' field (FuncTypeAST).
 // body is always a BlockStmtAST.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct AnonFuncExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::AnonFuncExpr;
 
@@ -870,7 +779,6 @@ struct AnonFuncExprAST : ExprAST {
 // error if await appears outside of one.
 // Also invalid inside parallel for and parallel block bodies.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct AwaitExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::AwaitExpr;
 
@@ -905,7 +813,6 @@ struct AwaitExprAST : ExprAST {
 // The semantic pass checks that both branches produce the same type and that
 // elseBranch is present.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct IfExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::IfExpr;
 
@@ -938,7 +845,6 @@ struct IfExprAST : ExprAST {
 //   - match pattern: lo and hi must be integer literals
 //   - slice index: both must be >= 0 and end >= start
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct RangeExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::RangeExpr;
 
@@ -973,7 +879,6 @@ struct RangeExprAST : ExprAST {
 //   - safe: only valid cast paths are allowed (primitive widening, enum→int)
 //   - unsafe (*): only valid inside extern declaration subtrees
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct TypeConvExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::TypeConvExpr;
 
@@ -1011,7 +916,6 @@ struct TypeConvExprAST : ExprAST {
 // The semantic pass validates argument counts / types and sets resolvedType.
 // Codegen maps the intrinsicName to the corresponding LLVM intrinsic ID.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct IntrinsicCallExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::IntrinsicCallExpr;
 
@@ -1068,7 +972,6 @@ struct IntrinsicCallExprAST : ExprAST {
 // with a bind pattern has at most one guard. The pattern itself is just
 // the name binding.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct BindPatternAST : PatternAST {
     static constexpr ASTKind staticKind = ASTKind::BindPattern;
 
@@ -1098,7 +1001,6 @@ struct BindPatternAST : PatternAST {
 // The semantic pass enforces that _ does not appear as the last pattern
 // before 'default' in a way that makes 'default' unreachable.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct WildcardPatternAST : PatternAST {
     static constexpr ASTKind staticKind = ASTKind::WildcardPattern;
 
@@ -1133,7 +1035,6 @@ struct PatternExprAST : PatternAST {
 // checkType for the duration of the arm body. Outside the arm the original
 // subject type is unchanged.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct TypePatternAST : PatternAST {
     static constexpr ASTKind staticKind = ASTKind::TypePattern;
 
@@ -1156,7 +1057,6 @@ struct TypePatternAST : PatternAST {
 // Now a proper BaseAST node with visitor support, allowing the semantic pass
 // and tools to walk struct pattern fields uniformly.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct FieldPatternAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::FieldPattern;
 
@@ -1193,7 +1093,6 @@ using FieldPatternPtr = ASTPtr<FieldPatternAST>;
 //   - every listed field name exists on that struct
 //   - sub-pattern types are compatible with the field types
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct StructPatternAST : PatternAST {
     static constexpr ASTKind staticKind = ASTKind::StructPattern;
 
@@ -1250,7 +1149,6 @@ struct StructPatternAST : PatternAST {
 //     any arm after it is unreachable — semantic error
 //   - Wildcard without guard is also unreachable if not last before default
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct MatchArmAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::MatchArm;
 
@@ -1281,7 +1179,6 @@ using  MatchArmPtr = ASTPtr<MatchArmAST>;
 //   secondary). Must be consistent with the secondary value presence across
 //   all other arms — enforced by the semantic pass.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct DefaultArmAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::DefaultArm;
 
@@ -1299,9 +1196,9 @@ using  DefaultArmPtr = ASTPtr<DefaultArmAST>;
 //
 // Pattern matching expression — always produces a value.
 //   match status {
-//       200      -> "ok"
-//       404      -> "not found"
-//       default  -> "unknown"
+//       200      => "ok"
+//       404      => "not found"
+//       default  => "unknown"
 //   }
 //
 // subject — the expression being matched.
@@ -1318,7 +1215,6 @@ using  DefaultArmPtr = ASTPtr<DefaultArmAST>;
 // defaultBody is stored as a DefaultArmPtr (DefaultArmAST) which contains
 // the executable body (exprs) of the fallback case.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct MatchExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::MatchExpr;
 

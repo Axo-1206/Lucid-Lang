@@ -21,44 +21,6 @@
 #include <memory>
 #include <optional>
 
-// ─────────────────────────────────────────────────────────────────────────────
-// StmtAST.hpp — all statement nodes
-//
-// Every node here inherits from StmtAST (defined in BaseAST.hpp).
-// This is the last file in the include chain:
-//
-//   BaseAST.hpp
-//       ↑
-//   TypeAST.hpp
-//       ↑
-//   DeclAST.hpp   (needs TypeAST for param/field types)
-//       ↑
-//   ExprAST.hpp   (needs TypeAST + DeclAST for params in AnonFuncExprAST)
-//       ↑
-//   StmtAST.hpp   (needs all of the above)
-//
-// DeclAST bodies (FuncDeclAST, MethodDeclAST, FromDeclAST) are stored as
-// StmtPtr. That forward declaration lives in BaseAST.hpp so DeclAST.hpp can
-// use it without including StmtAST.hpp and creating a cycle.
-//
-// Node inventory:
-//   BlockStmtAST         — { stmt* }
-//   ExprStmtAST          — expr used as a statement (result discarded)
-//   DeclStmtAST          — var_decl or func_decl inside a block
-//   IfStmtAST            — if expr block [else (if_stmt | block)]
-//   SwitchCaseAST        — case value[, value]* : stmts  (helper, not a StmtAST)
-//   SwitchStmtAST        — switch expr { case* default? }
-//   ForStmtAST           — for IDENTIFIER in expr/range block
-//   WhileStmtAST         — while expr block
-//   DoWhileStmtAST       — do block while expr
-//   ReturnStmtAST        — return [expr]
-//   BreakStmtAST         — break
-//   ContinueStmtAST      — continue
-//   parallel_for         := 'parallel' 'for' IDENTIFIER [ type ] 'in' ( range_iter | expression ) [ 'step' expression ] block
-//   ParallelBlockStmtAST — parallel { block* }
-// ─────────────────────────────────────────────────────────────────────────────
-
-
 // ═════════════════════════════════════════════════════════════════════════════
 // BLOCK
 // ═════════════════════════════════════════════════════════════════════════════
@@ -79,7 +41,6 @@
 //   - expression statements
 //   - nested blocks
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct BlockStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::BlockStmt;
 
@@ -100,14 +61,13 @@ struct BlockStmtAST : StmtAST {
 //
 // An expression used as a statement — its value is silently discarded.
 //   f(args)                — function call for side effects
-//   x -> validate -> save  — pipeline as a statement
+//   x |> validate |> save  — pipeline as a statement
 //   io.printl("done")      — void call
 //
 // The semantic pass emits a warning when a non-void expression result is
 // discarded without explicit intent — e.g. a function returning Result<T>
 // whose return value is never checked (grammar rule from LUC_ERROR.md).
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct ExprStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::ExprStmt;
 
@@ -192,7 +152,6 @@ struct DeclStmtAST : StmtAST {
 // The semantic pass enforces type narrowing inside thenBranch when condition
 // is an is-expression (if x is SomeType { ... }).
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct IfStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::IfStmt;
 
@@ -221,7 +180,6 @@ struct IfStmtAST : StmtAST {
 // body — the block of statements executed when any value matches.
 // No fallthrough — each case is fully isolated.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct SwitchCaseAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::SwitchCase;
 
@@ -254,7 +212,6 @@ using SwitchCasePtr = ASTPtr<SwitchCaseAST>;
 // defaultBody — nullptr when no default clause was written
 // defaultLoc  — location of the 'default' keyword, for error reporting
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct SwitchStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::SwitchStmt;
 
@@ -295,7 +252,6 @@ struct SwitchStmtAST : StmtAST {
 //
 // Valid inside body: break, continue, return (exits enclosing function).
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct ForStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::ForStmt;
 
@@ -320,8 +276,7 @@ struct ForStmtAST : StmtAST {
 // body      — loop body, always a BlockStmtAST
 //
 // The loop exits when condition is false or when break is reached.
-// ─────────────────────────────────────────────────────────────────────────────
-
+// ───────────────────────────────────────────────────────────────────────────── 
 struct WhileStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::WhileStmt;
 
@@ -345,7 +300,6 @@ struct WhileStmtAST : StmtAST {
 //
 // Useful when the exit condition depends on a side effect of the body.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct DoWhileStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::DoWhileStmt;
 
@@ -376,7 +330,6 @@ struct DoWhileStmtAST : StmtAST {
 //   - NOT valid inside parallel for or parallel block bodies
 //     (enforced via the isParallel semantic flag on enclosing scopes)
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct ReturnStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::ReturnStmt;
 
@@ -395,10 +348,8 @@ struct ReturnStmtAST : StmtAST {
 //
 // Semantic rules enforced by the semantic pass:
 //   - only valid directly inside a loop body (for, while, do-while)
-//   - NOT valid inside parallel for or parallel block bodies
 //   - NOT valid outside of any loop (semantic error)
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct BreakStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::BreakStmt;
 
@@ -415,10 +366,8 @@ struct BreakStmtAST : StmtAST {
 //
 // Semantic rules enforced by the semantic pass:
 //   - only valid directly inside a loop body (for, while, do-while)
-//   - NOT valid inside parallel for or parallel block bodies
 //   - NOT valid outside of any loop (semantic error)
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct ContinueStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::ContinueStmt;
 
@@ -481,7 +430,6 @@ struct MultiVarDeclAST : StmtAST {
 // lhs – vector of expressions, each must be an assignable lvalue.
 // rhs – the single expression producing the values to assign.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct MultiAssignStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::MultiAssignStmt;
 

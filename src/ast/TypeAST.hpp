@@ -23,30 +23,6 @@
 #include <cstdint>
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TypeAST.hpp — all type nodes
-//
-// Every node here inherits from TypeAST (defined in BaseAST.hpp).
-// The parser constructs these while parsing type annotations — they are never
-// constructed by the semantic pass.
-//
-// Include order for other family headers:
-//   ExprAST.hpp   →  #include "TypeAST.hpp"  (nodes hold TypePtr fields)
-//   DeclAST.hpp   →  #include "TypeAST.hpp"  (params, return types, etc.)
-//
-// Node inventory:
-//   PrimitiveTypeAST      — bool, int, float, string, any, ...
-//   NamedTypeAST          — user-defined type by name, optional generic args
-//   NullableTypeAST       — wraps any type with ?
-//   FixedArrayTypeAST     — [N]T   compile-time size, stack allocated
-//   SliceTypeAST          — []T    fat-pointer view, no ownership
-//   DynamicArrayTypeAST   — [*]T   heap-owned, growable
-//   RefTypeAST            — &T     safe managed reference
-//   PtrTypeAST            — *T     raw pointer, extern/FFI only
-//   FuncTypeAST           — (params) return?   first-class function type
-// ─────────────────────────────────────────────────────────────────────────────
-
-
-// ─────────────────────────────────────────────────────────────────────────────
 // PrimitiveKind — mirrors the TYPE_* tokens from Tokens.hpp but as a
 // self-contained enum so the rest of the AST doesn't need to include
 // Tokens.hpp just to inspect a primitive type node.
@@ -103,7 +79,6 @@ enum class PrimitiveKind {
 //   let s string = "hi"    →  PrimitiveTypeAST { kind = String }
 //   let v any    = getData()→  PrimitiveTypeAST { kind = Any }
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct PrimitiveTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::PrimitiveType;
 
@@ -140,7 +115,6 @@ struct PrimitiveTypeAST : TypeAST {
 //   recorded. Only NamedTypeASTs with isGenericParam == false represent
 //   concrete types suitable for monomorphization.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct NamedTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::NamedType;
 
@@ -173,7 +147,6 @@ struct NamedTypeAST : TypeAST {
 //   - ?. chain operator is only valid on NullableTypeAST targets
 //   - every ?. chain must be terminated by ??
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct NullableTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::NullableType;
 
@@ -200,7 +173,6 @@ struct NullableTypeAST : TypeAST {
 // size is stored as uint64_t — INT_LITERAL from the lexer, always non-negative.
 // The semantic pass checks that size > 0 and fits the target platform's limits.
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct FixedArrayTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::FixedArrayType;
 
@@ -228,7 +200,6 @@ struct FixedArrayTypeAST : TypeAST {
 // (they share memory with the original — writing through the slice is valid,
 // but rebinding the slice variable to a new array is not if declared imt/val).
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct SliceTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::SliceType;
 
@@ -255,7 +226,6 @@ struct SliceTypeAST : TypeAST {
 //     only valid when the variable is declared with 'let'
 //   - Concatenation with + produces a new [*]T
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct DynamicArrayTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::DynamicArrayType;
 
@@ -280,7 +250,6 @@ struct DynamicArrayTypeAST : TypeAST {
 // References are always valid (non-nullable by default). To express a
 // nullable reference, wrap in NullableTypeAST: &Vec2?
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct RefTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::RefType;
 
@@ -326,7 +295,6 @@ struct RefTypeAST : TypeAST {
 //   - Input/output types of pointer-related intrinsics (@ptrToRef, etc.)
 //   - Variables/parameters holding values returned by @extern / intrinsics
 // ─────────────────────────────────────────────────────────────────────────────
-
 struct PtrTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::PtrType;
 
@@ -388,4 +356,3 @@ struct FuncTypeAST : TypeAST {
     
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
-

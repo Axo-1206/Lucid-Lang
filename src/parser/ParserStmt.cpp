@@ -63,7 +63,7 @@ StmtPtr Parser::parseStmt() {
     // ── 3. All other local declarations (type, struct, enum, impl, trait, from, let/const) ──
     if (checkAny({TokenType::TYPE, TokenType::STRUCT, TokenType::ENUM,
                   TokenType::IMPL, TokenType::TRAIT, TokenType::FROM,
-                  TokenType::LET, TokenType::CONST})) {
+                  TokenType::LET, TokenType::CONST, TokenType::AT_SIGN})) {
         // Unified local declaration parser – consumes the keyword,
         // handles attributes, rejects pub/export, returns DeclPtr.
         DeclPtr decl = parseDeclaration(DeclContext::Local);

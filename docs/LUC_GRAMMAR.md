@@ -1324,6 +1324,9 @@ pipeline_step   := IDENTIFIER
 
 ### The `!` argument pack annotation
 
+> [!NOTE]
+> The `!` is **forbidden** for anonymous functions.
+
 `fn(args)!` is not a function call — the `!` marks an intentionally incomplete
 argument list. The upstream value is injected as the first argument when `|>` fires.
 

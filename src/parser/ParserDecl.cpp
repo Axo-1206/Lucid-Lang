@@ -17,43 +17,6 @@
 #include <string>
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ParserDecl.cpp
-//
-// Implements every declaration parse function declared in Parser.hpp.
-// This file handles all top-level constructs: use, var, func, struct,
-// enum, trait, impl (with from/method bodies), type alias, and the
-// '@' compiler directive attributes.
-//
-// Entry points (called from Parser.cpp::parseTopLevelDecl):
-//   parseAttributes()        — zero or more '@' directives
-//   parseAttribute()         — one '@' IDENTIFIER [ '(' args ')' ]
-//   parseUseDecl(vis)
-//   parseVarDecl(vis)
-//   parseFuncDecl(kw, vis)
-//   parseStructDecl(vis)
-//   parseEnumDecl(vis)
-//   parseTraitDecl(vis)
-//   parseImplDecl(vis)
-//   parseFromDecl(vis)
-//   parseTypeAliasDecl(vis)
-//
-// Internal helpers used across multiple parsers:
-//   parseParamGroup()        — one '(' param* ')'
-//   parseParam()             — IDENTIFIER [ '...' ] type
-//   parseGenericParams()     — '<' generic_param { ',' generic_param } '>'
-//   parseGenericParam()      — IDENTIFIER [ ':' constraint { '+' constraint } ]
-//   parseFieldDecl()         — IDENTIFIER type [ '=' expr ]
-//   parseEnumVariant()       — IDENTIFIER [ '=' INT_LITERAL | HEX_LITERAL ]
-//   parseTraitMethod()       — IDENTIFIER '(' params ')' [ returnType ]
-//   parseMethodDecl()        — IDENTIFIER '(' params ')' [ returnType ] '=' body
-//   parseFromDecl()          — 'from' '(' name type ')' returnType '=' body
-//   parseTraitRef()          — IDENTIFIER [ generic_args ]
-//   parseFuncBody()          — '=' ( block | anon_func )
-//
-// Grammar source: LUC_GRAMMAR.md
-// ─────────────────────────────────────────────────────────────────────────────
-
-// ─────────────────────────────────────────────────────────────────────────────
 // validateAnonFuncBodySig
 //
 // Shared helper for parseFuncDecl and parseMethodDecl.
@@ -74,12 +37,12 @@
 //   On return: positioned after the repeated signature (at '{' or a bad token).
 // ─────────────────────────────────────────────────────────────────────────────
 void Parser::validateAnonFuncBodySig(FuncSignature& declaredSig, const std::string& declName) {
-    // ── 0. Anonymous functions cannot have qualifiers ─────────────────────
+    // ── 1. Anonymous functions cannot have qualifiers ─────────────────────
     if (check(TokenType::TILDE)) {
         errorAt(DiagCode::E2002,
                 "anonymous function body cannot have qualifiers (e.g., ~async, ~nullable). "
                 "Qualifiers belong on the declaration itself.");
-        // Skip the qualifier(s) to recover
+        // Skip qualifiers to recover (consume ~ and following identifier)
         while (check(TokenType::TILDE)) {
             advance(); // consume '~'
             if (!check(TokenType::IDENTIFIER)) {
@@ -90,79 +53,63 @@ void Parser::validateAnonFuncBodySig(FuncSignature& declaredSig, const std::stri
         }
     }
 
-    // ── 1. Consume ALL repeated parameter groups (curried) ─────────────────
+    // ── 2. Consume all repeated parameter groups (curried) ────────────────
+    // These are the parameter groups written in the body, e.g., (a int)(b int)
     while (check(TokenType::LPAREN)) {
-        parseParamGroup(); // discard – declared signature is authoritative
+        parseParamGroup(); // discard; the declaration's signature is authoritative
     }
 
-    // ── 2. Optional '->' and return list ─────────────────────────────────
+    // ── 3. Parse the repeated return list after optional '->' ─────────────
     bool hasArrow = match(TokenType::ARROW);
-    std::vector<TypePtr> repeatedReturnTypes;
+    std::vector<TypePtr> bodyReturnTypes;
 
     if (hasArrow) {
-        // Parse one or more return types separated by commas
-        do {
-            if (check(TokenType::LPAREN)) {
-                // Nested function type (curried return)
-                TypePtr t = parseFuncType();
-                if (t) repeatedReturnTypes.push_back(std::move(t));
-                else errorAt(DiagCode::E2005, "expected return type after '->'");
-            } else {
-                TypePtr t = parseType();
-                if (t) repeatedReturnTypes.push_back(std::move(t));
-                else errorAt(DiagCode::E2005, "expected return type after '->'");
-            }
-        } while (match(TokenType::COMMA));
+        bodyReturnTypes = parseReturnList();
+        if (bodyReturnTypes.empty()) {
+            errorAt(DiagCode::E2005, "expected at least one return type after '->'");
+        }
     }
 
-    // ── 3. Validate or adopt return types ────────────────────────────────
-    // Case A: Declaration has no return types (void function)
+    // ── 4. Validate or adopt return types ─────────────────────────────────
+    // Case 1: Declaration has no return types (void function)
     if (declaredSig.returnTypes.empty()) {
         if (hasArrow) {
-            if (!repeatedReturnTypes.empty()) {
-                // Adopt the repeated list (the semantic pass may still warn)
-                LUC_LOG_PARSER("validateAnonFuncBodySig: adopting repeated return types for '"
+            if (!bodyReturnTypes.empty()) {
+                // Adopt the body's return types (the semantic pass may still warn)
+                LUC_LOG_PARSER("validateAnonFuncBodySig: adopting return types from body for '"
                                << declName << "'");
-                declaredSig.returnTypes = std::move(repeatedReturnTypes);
+                declaredSig.returnTypes = std::move(bodyReturnTypes);
             } else {
-                errorAt(DiagCode::E2005,
-                        "expected at least one return type after '->'");
+                errorAt(DiagCode::E2005, "expected return type after '->' for function '" + declName + "'");
             }
         }
-        // else: both are void → nothing to do
+        // else: both void → OK
     }
-    // Case B: Both have return types – compare
-    else if (hasArrow) {
-        if (declaredSig.returnTypes.size() != repeatedReturnTypes.size()) {
+    // Case 2: Declaration has return types, but body has no '->'
+    else if (!hasArrow) {
+        errorAt(DiagCode::E2001,
+                "expected '->' return list in body for function '" + declName +
+                "' because the declaration has a return type");
+    }
+    // Case 3: Both have return types – compare counts and kinds
+    else {
+        if (declaredSig.returnTypes.size() != bodyReturnTypes.size()) {
             errorAt(DiagCode::E2005,
-                    "repeated return type count (" + std::to_string(repeatedReturnTypes.size()) +
-                    ") does not match declared count (" + std::to_string(declaredSig.returnTypes.size()) +
-                    ") for '" + declName + "'");
+                    "return type count mismatch for function '" + declName +
+                    "': declaration has " + std::to_string(declaredSig.returnTypes.size()) +
+                    ", body has " + std::to_string(bodyReturnTypes.size()));
         } else {
-            // Simple equality check (type category)
             for (size_t i = 0; i < declaredSig.returnTypes.size(); ++i) {
-                if (declaredSig.returnTypes[i]->kind != repeatedReturnTypes[i]->kind) {
+                // Simple structural comparison (kind equality)
+                if (declaredSig.returnTypes[i]->kind != bodyReturnTypes[i]->kind) {
                     errorAt(DiagCode::W3001,
-                            "repeated return type #" + std::to_string(i) +
-                            " in body does not match declared return type for '" +
-                            declName + "'; the declaration is authoritative");
-                    break;
+                            "return type #" + std::to_string(i) + " in body does not match "
+                            "declared return type for function '" + declName +
+                            "'; the declaration is authoritative");
+                    break; // only report first mismatch
                 }
             }
         }
-    }
-    // Case C: Declaration has return types but repeated signature omitted '->'
-    else {
-        errorAt(DiagCode::E2001,
-                "expected '->' return list in repeated signature for function '" +
-                declName + "' because the declaration has a return type");
-    }
-
-    // ── 4. Anonymous function cannot be nullable ──────────────────────────
-    if (match(TokenType::QUESTION)) {
-        errorAt(DiagCode::E2007,
-                "anonymous function body cannot be marked nullable with '?'. "
-                "Use the '~nullable' qualifier on the function declaration instead.");
     }
 }
 
@@ -472,7 +419,7 @@ ASTPtr<VarDeclAST> Parser::parseVarDecl(Visibility vis, std::vector<AttributePtr
 // Examples:
 //   let square (x int) -> int = { return x * x }
 //   let fetch ~async (url string) -> string = { return await httpGet(url) }
-//   let parse (src string) -> int, string = { ... }
+//   let parse (src string) -> (int, string) = { ... }
 //   let add (a int)(b int) -> int = { return a + b }
 //   @extern("malloc") const malloc (size uint64) -> *uint8?   -- no body
 // ─────────────────────────────────────────────────────────────────────────────
@@ -617,7 +564,7 @@ ASTPtr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vis, std::v
 // parseStructDecl
 //
 // Grammar:
-//   struct_decl := [ 'pub' ] 'struct' IDENTIFIER [ generic_params ]
+//   struct_decl := [ vis ] 'struct' IDENTIFIER [ generic_params ]
 //                  '{' { field_decl } '}'
 // ─────────────────────────────────────────────────────────────────────────────
 ASTPtr<StructDeclAST> Parser::parseStructDecl(Visibility vis) {
@@ -709,7 +656,7 @@ FieldDeclPtr Parser::parseFieldDecl() {
 // parseEnumDecl
 //
 // Grammar:
-//   enum_decl := [ 'pub' ] 'enum' IDENTIFIER '{' enum_variant { [','] enum_variant } '}'
+//   enum_decl := [ vis ] 'enum' IDENTIFIER '{' enum_variant { [','] enum_variant } '}'
 // ─────────────────────────────────────────────────────────────────────────────
 ASTPtr<EnumDeclAST> Parser::parseEnumDecl(Visibility vis) {
     LUC_LOG_PARSER("parseEnumDecl: parsing enum");
@@ -805,7 +752,7 @@ EnumVariantPtr Parser::parseEnumVariant() {
 // parseTraitDecl
 //
 // Grammar:
-//   trait_decl := [ 'pub' ] 'trait' IDENTIFIER [ generic_params ]
+//   trait_decl := [ vis ] 'trait' IDENTIFIER [ generic_params ]
 //                 '{' { trait_method } '}'
 // ─────────────────────────────────────────────────────────────────────────────
 ASTPtr<TraitDeclAST> Parser::parseTraitDecl(Visibility vis) {
@@ -861,18 +808,20 @@ ASTPtr<TraitDeclAST> Parser::parseTraitDecl(Visibility vis) {
 //                  [ '->' return_list ]
 //
 //   qualifier_list := { '~' IDENTIFIER }            -- ~async, ~nullable, ~parallel
-//   return_list     := return_type { ',' return_type }
+//   return_list     := '(' [ return_type { ',' return_type } ] ')'   -- multiple returns
+//                   | return_type                                    -- single return
 //   return_type     := type
 //                    | param_group { param_group } '->' return_list   -- curried return
 //
 // Signature only — no '=' and no body.
-// Supports curried trait methods and multiple returns.
+// Supports curried trait methods and multiple returns (parenthesised).
+//
 // Examples:
 //   draw ()
 //   bounds () -> Rect
 //   fetch ~async (url string) -> string
 //   clamp (min int)(max int)(value int) -> int
-//   process (data []byte) -> int, string, bool
+//   process (data []byte) -> (int, string, bool)     -- multiple return
 // ─────────────────────────────────────────────────────────────────────────────
 TraitMethodPtr Parser::parseTraitMethod() {
     SourceLocation loc = currentLoc();
@@ -928,7 +877,7 @@ TraitMethodPtr Parser::parseTraitMethod() {
 // parseImplDecl
 //
 // Grammar:
-//   impl_decl := [ 'pub' ] 'impl' [ generic_params ] IDENTIFIER [ generic_args ]
+//   impl_decl := [ vis ] 'impl' [ generic_params ] IDENTIFIER [ generic_args ]
 //                [ ':' trait_ref ] '{' { impl_member } '}'
 //
 //   impl_member := method_decl | from_decl
@@ -1055,11 +1004,11 @@ TraitRefPtr Parser::parseTraitRef() {
 //   dot (other Vec2) -> float = { ... }
 //   clamp (min int)(max int)(value int) -> int = { ... }
 //   fetch ~async (url string) -> string = { return await httpGet(url) }
-//   process (data []byte) -> int, string = { ... }
+//   process (data []byte) -> (int, string) = { ... }
 //
 // No visibility prefix per method — visibility comes from the enclosing impl block.
-// ● The ~nullable qualifier marks the method binding as nullable (caller must guard).
-// ● '?' is not used on function types – use ~nullable instead.
+// - The ~nullable qualifier marks the method binding as nullable (caller must guard).
+// - '?' is not used on function types – use ~nullable instead.
 // ─────────────────────────────────────────────────────────────────────────────
 MethodDeclPtr Parser::parseMethodDecl() {
     SourceLocation loc = currentLoc();
@@ -1168,7 +1117,7 @@ MethodDeclPtr Parser::parseMethodDecl() {
 // parseFromDecl
 //
 // Grammar:
-//   from_block  := [ visibility_mod ] 'from' IDENTIFIER generic_params? '{' from_entry* '}'
+//   from_block  := [ vis ] 'from' IDENTIFIER generic_params? '{' from_entry* '}'
 //
 //   from_entry  := param_group { param_group } IDENTIFIER "->" returnType "=" func_body
 //                  -- one or more param groups   return type
@@ -1280,7 +1229,7 @@ ASTPtr<FromDeclAST> Parser::parseFromDecl(Visibility vis) {
 // parseTypeAliasDecl
 //
 // Grammar:
-//   type_decl := [ 'pub' ] 'type' IDENTIFIER [ generic_params ] '=' type
+//   type_decl := [ vis ] 'type' IDENTIFIER [ generic_params ] '=' type
 // ─────────────────────────────────────────────────────────────────────────────
 ASTPtr<TypeAliasDeclAST> Parser::parseTypeAliasDecl(Visibility vis) {
     SourceLocation loc = currentLoc();

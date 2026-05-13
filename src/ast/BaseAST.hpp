@@ -434,7 +434,9 @@ struct ASTVisitor {
     virtual void visit(UnknownTypeAST&)         {}
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
 // ── Forward declaration of AttributeAST (needed for AttributePtr) ──
+// ─────────────────────────────────────────────────────────────────────────────
 struct AttributeAST;
 struct AttributeArgAST;
 
@@ -659,6 +661,60 @@ struct ProgramAST : BaseAST {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // UnknownAST definition and helpers
+//
+// UnknownAST and its derivatives (UnknownDeclAST, UnknownExprAST, etc.) are
+// **error recovery nodes**. They are inserted by the parser when it encounters
+// a syntactic error and cannot produce a valid AST node. Instead of returning
+// `nullptr` (which would force the caller to handle null checks everywhere),
+// the parser returns a concrete node that implements the same interface as a
+// valid node but carries no meaningful content.
+//
+// ## Why these nodes exist
+//
+//   1. **No null pointers** – Every AST pointer (DeclPtr, ExprPtr, etc.) is
+//      guaranteed to point to a valid BaseAST node. This simplifies traversal
+//      and lowers the risk of crashes.
+//
+//   2. **Graceful error recovery** – The parser can continue parsing after an
+//      error by substituting an Unknown node for the malformed construct.
+//      Semantic passes can safely traverse the AST without special‑casing
+//      nulls, and later flag the error from the diagnostic engine.
+//
+//   3. **Uniform visitor dispatch** – Visitors can choose to handle Unknown
+//      nodes (e.g., by skipping them or marking them as erroneous) or ignore
+//      them with a default `visit()` implementation that does nothing.
+//
+// ## How they are used
+//
+//   - `parseX()` functions (e.g., `parseType()`, `parseExpr()`) return an
+//     `arena_.make<UnknownTypeAST>()` instead of `nullptr` on failure.
+//   - The top‑level `parse()` inserts `UnknownDeclAST` when a declaration
+//     cannot be parsed.
+//   - The semantic pass records errors on the nodes, but never dereferences
+//     unknown nodes as if they were valid.
+//
+// ## The `unknownAST()` singleton
+//
+//   Provides a single, globally unique `UnknownAST` instance for situations
+//   where a `BaseAST*` is required but no real node exists. It is used
+//   sparingly, mainly as a sentinel in containers or during early phases.
+//   Because all unknown nodes are distinct (they have different ASTKind
+//   values), the singleton is only for the base `UnknownAST` type, not for
+//   the specific derivations.
+//
+// ## Helper `isUnknown()`
+//
+//   Convenience function that returns `true` for any node whose `kind` is
+//   `Unknown` or any of the specific unknown family kinds. This is often
+//   used in visitors to quickly skip over erroneous subtrees.
+//
+// ## Relationship to the diagnostic engine
+//
+//   The parser records an error (`dc_.report(...)`) **before** creating an
+//   Unknown node. Therefore the unknown node itself does not need to store
+//   error details – the diagnostic system already holds them. The presence
+//   of an unknown node in the AST simply marks a location where parsing
+//   failed, allowing later passes to avoid invalid data.
 // ─────────────────────────────────────────────────────────────────────────────
 
 struct UnknownAST : BaseAST {

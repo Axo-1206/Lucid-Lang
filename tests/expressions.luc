@@ -265,175 +265,162 @@ export const main (args []string) -> int = {
     let test &ABC? = nil
     let test *ABC? = 6
 
-    struct test {}
-
-    from abd {
-        (method int) -> int = {} 
+    struct Container {
+        data &Point?
     }
-
-    impl abc {}
-
-    trait Name {
-        method (param int) -> any   
-        
-    }
-
-    -- struct Container {
-    --     data &Point?
-    -- }
-    -- let container Container? = nil
-    -- let coordX int? = container?.data?.x
+    let container Container? = nil
+    let coordX int? = container?.data?.x
 
     -- ========================================================================
     -- Catch step (|> catch)
     -- ========================================================================
-    -- struct Error { msg string }
-    -- let riskyOp (x int) -> int, Error? = {
-    --     if x < 0 { return 0, Error { msg = "negative" } }
-    --     return x, nil
-    -- }
-    -- let safeResult int = riskyOp(-5) |> catch(err) {
-    --     io.printl("Caught: " + err.msg)
-    --     return -1
-    -- }
+    struct Error { msg string }
+    let riskyOp (x int) -> (int, Error?) = {
+        if x < 0 { return 0, Error { msg = "negative" } }
+        return x, nil
+    }
+    let safeResult int = riskyOp(-5) |> (err Error?) {
+        io.printl("Caught: " + err.msg)
+        return -1
+    }
 
-    -- -- ========================================================================
-    -- -- Power operator (^) - right-associative
-    -- -- ========================================================================
-    -- let pow1 int = 2 ^ 3        -- 8
-    -- let pow2 int = 2 ^ 3 ^ 2    -- 2^(3^2)=2^9=512
+    -- ========================================================================
+    -- Power operator (^) - right-associative
+    -- ========================================================================
+    let pow1 int = 2 ^ 3        -- 8
+    let pow2 int = 2 ^ 3 ^ 2    -- 2^(3^2)=2^9=512
 
-    -- -- ========================================================================
-    -- -- Bitwise operators (&&, ||, ~^, ~~, <<, >>)
-    -- -- ========================================================================
-    -- let flags uint32 = 0b1100
-    -- let mask uint32 = 0b1010
-    -- let andRes uint32 = flags && mask   -- 0b1000
-    -- let orRes  uint32 = flags || mask   -- 0b1110
-    -- let xorRes uint32 = flags ~^ mask   -- 0b0110
-    -- let notRes uint32 = ~~flags         -- bitwise NOT (on 32 bits)
-    -- let shifted uint32 = flags << 2
+    -- ========================================================================
+    -- Bitwise operators (&&, ||, ~^, ~~, <<, >>)
+    -- ========================================================================
+    let flags uint32 = 0b1100
+    let mask uint32 = 0b1010
+    let andRes uint32 = flags && mask   -- 0b1000
+    let orRes  uint32 = flags || mask   -- 0b1110
+    let xorRes uint32 = flags ~^ mask   -- 0b0110
+    let notRes uint32 = ~~flags         -- bitwise NOT (on 32 bits)
+    let shifted uint32 = flags << 2
 
-    -- -- ========================================================================
-    -- -- Logical operators (and, or, not) with short-circuit
-    -- -- ========================================================================
-    -- let cond1 bool = true
-    -- let cond2 bool = false
-    -- let logAnd bool = cond1 and cond2
-    -- let logOr  bool = cond1 or cond2
-    -- let logNot bool = not cond1
+    -- ========================================================================
+    -- Logical operators (and, or, not) with short-circuit
+    -- ========================================================================
+    let cond1 bool = true
+    let cond2 bool = false
+    let logAnd bool = cond1 and cond2
+    let logOr  bool = cond1 or cond2
+    let logNot bool = not cond1
 
-    -- -- ========================================================================
-    -- -- Array operations (fixed, slice, dynamic)
-    -- -- ========================================================================
-    -- let fixed [3]int = [10, 20, 30]
-    -- let fixedElem int = fixed[1]
-    -- let slice []int = fixed[0..2]       -- inclusive end
-    -- let sliceExcl []int = fixed[0..<2]   -- exclusive end
+    -- ========================================================================
+    -- Array operations (fixed, slice, dynamic)
+    -- ========================================================================
+    let fixed [3]int = [10, 20, 30]
+    let fixedElem int = fixed[1]
+    let slice []int = fixed[0..2]       -- inclusive end
+    let sliceExcl []int = fixed[0..<2]   -- exclusive end
 
-    -- let dyn [*]int = [1, 2, 3]
-    -- dyn.push(4)
-    -- let last int = dyn.pop()
-    -- dyn.insert(1, 99)
-    -- let removed int = dyn.remove(2)
-    -- dyn.clear()
-    -- dyn.reserve(100)
+    let dyn [*]int = [1, 2, 3]
+    dyn.push(4)
+    let last int = dyn.pop()
+    dyn.insert(1, 99)
+    let removed int = dyn.remove(2)
+    dyn.clear()
+    dyn.reserve(100)
 
-    -- let isEmpty bool = dyn.isEmpty()
-    -- let length int = dyn.len()
-    -- let cap int = dyn.cap()
-    -- let first int = dyn.first()
-    -- let lastElem int = dyn.last()
+    let isEmpty bool = dyn.isEmpty()
+    let length int = dyn.len()
+    let cap int = dyn.cap()
+    let first int = dyn.first()
+    let lastElem int = dyn.last()
 
-    -- -- Array concatenation (+)
-    -- let aArr [*]int = [1,2]
-    -- let bArr [*]int = [3,4]
-    -- let cArr [*]int = aArr + bArr
+    -- Array concatenation (+)
+    let aArr [*]int = [1,2]
+    let bArr [*]int = [3,4]
+    let cArr [*]int = aArr + bArr
 
-    -- -- ========================================================================
-    -- -- References (&T) and reference equality (===)
-    -- -- ========================================================================
-    -- let pointA Point = Point { x = 1, y = 2 }
-    -- let ref pRef &Point = pointA
-    -- pRef.x = 100              -- modifies pointA
-    -- let pointB Point = pointA
-    -- let ref pRef2 &Point = pointA
-    -- let sameRef bool = pRef === pRef2   -- true
-    -- let sameVal bool = pointA === pointB -- false (different addresses)
+    -- ========================================================================
+    -- References (&T) and reference equality (===)
+    -- ========================================================================
+    let pointA Point = Point { x = 1, y = 2 }
+    let ref pRef &Point = pointA
+    pRef.x = 100              -- modifies pointA
+    let pointB Point = pointA
+    let ref pRef2 &Point = pointA
+    let sameRef bool = pRef === pRef2   -- true
+    let sameVal bool = pointA === pointB -- false (different addresses)
 
-    -- -- ========================================================================
-    -- -- any with is checks
-    -- -- ========================================================================
-    -- let anything any = 42
-    -- if anything is int {
-    --     let intVal int = anything   -- narrowing (semantic)
-    --     io.printl("int: " + string(intVal))
-    -- }
+    -- ========================================================================
+    -- any with is checks
+    -- ========================================================================
+    let anything any = 42
+    if anything is int {
+        let intVal int = anything   -- narrowing (semantic)
+        io.printl("int: " + string(intVal))
+    }
 
-    -- -- ========================================================================
-    -- -- Intrinsics (#sizeof, #alignof, #sqrt, #min, #max, #clz, etc.)
-    -- -- ========================================================================
-    -- let sz uint64 = #sizeof(Point)
-    -- let align uint64 = #alignof(Point)
-    -- let root float = #sqrt(16.0)
-    -- let floorVal float = #floor(3.7)
-    -- let ceilVal float = #ceil(3.2)
-    -- let roundVal float = #round(3.5)
-    -- let absVal int = #abs(-10)
-    -- let powVal float = #pow(2.0, 3.0)
-    -- let fmaVal float = #fma(2.0, 3.0, 1.0)   -- 7.0
-    -- let minVal int = #min(10, 20)
-    -- let maxVal int = #max(10, 20)
-    -- let leading int = #clz(0b00110000)
-    -- let trailing int = #ctz(0b00110000)
-    -- let popcnt int = #popcount(0b110011)
-    -- let swapped int = #bswap(0x12345678)
+    -- ========================================================================
+    -- Intrinsics (#sizeof, #alignof, #sqrt, #min, #max, #clz, etc.)
+    -- ========================================================================
+    let sz uint64 = #sizeof(Point)
+    let align uint64 = #alignof(Point)
+    let root float = #sqrt(16.0)
+    let floorVal float = #floor(3.7)
+    let ceilVal float = #ceil(3.2)
+    let roundVal float = #round(3.5)
+    let absVal int = #abs(-10)
+    let powVal float = #pow(2.0, 3.0)
+    let fmaVal float = #fma(2.0, 3.0, 1.0)   -- 7.0
+    let minVal int = #min(10, 20)
+    let maxVal int = #max(10, 20)
+    let leading int = #clz(0b00110000)
+    let trailing int = #ctz(0b00110000)
+    let popcnt int = #popcount(0b110011)
+    let swapped int = #bswap(0x12345678)
 
-    -- -- ========================================================================
-    -- -- Raw pointers and pointer intrinsics (only inside @extern functions)
-    -- -- Declare an extern function and use in main? Not allowed because main
-    -- -- is not @extern. But we can call an extern function that uses them.
-    -- -- Already tested in separate extern function. Here just call it.
-    -- -- ========================================================================
-    -- @extern("test")
-    -- const pointerDemo () -> int
+    -- ========================================================================
+    -- Raw pointers and pointer intrinsics (only inside @extern functions)
+    -- Declare an extern function and use in main? Not allowed because main
+    -- is not @extern. But we can call an extern function that uses them.
+    -- Already tested in separate extern function. Here just call it.
+    -- ========================================================================
+    @extern("test")
+    const pointerDemo () -> int
 
-    -- let demoResult int = pointerDemo()
+    let demoResult int = pointerDemo()
 
-    -- -- ========================================================================
-    -- -- async/await (only inside ~async function)
-    -- -- ========================================================================
-    -- let asyncMain ~async () -> int = {
-    --     let data string = await asyncFetch("https://example.com")
-    --     return data.len()
-    -- }
-    -- -- Cannot call await in non-async main, so we just define.
+    -- ========================================================================
+    -- async/await (only inside ~async function)
+    -- ========================================================================
+    let asyncMain ~async () -> int = {
+        let data string = await asyncFetch("https://example.com")
+        return data.len()
+    }
+    -- Cannot call await in non-async main, so we just define.
 
-    -- -- ========================================================================
-    -- -- from implicit conversion (already tested via struct Feet)
-    -- -- ========================================================================
-    -- let meters Meters = Meters { value = 10.0 }
-    -- let feet Feet = meters   -- implicit via from Feet
+    -- ========================================================================
+    -- from implicit conversion (already tested via struct Feet)
+    -- ========================================================================
+    let meters Meters = Meters { value = 10.0 }
+    let feet Feet = meters   -- implicit via from Feet
 
-    -- -- ========================================================================
-    -- -- Type alias usage
-    -- -- ========================================================================
-    -- let id IntAlias = 100
-    -- let maybeInt NullableInt = nil
+    -- ========================================================================
+    -- Type alias usage
+    -- ========================================================================
+    let id IntAlias = 100
+    let maybeInt NullableInt = nil
 
-    -- -- ========================================================================
-    -- -- Enum variant access
-    -- -- ========================================================================
-    -- let selected Color = Color.Red
+    -- ========================================================================
+    -- Enum variant access
+    -- ========================================================================
+    let selected Color = Color.Red
 
-    -- -- ========================================================================
-    -- -- Struct literal with defaults
-    -- -- ========================================================================
-    -- struct Defaults {
-    --     a int = 1
-    --     b string = "default"
-    -- }
-    -- let def Defaults = Defaults { a = 42 }   -- b uses default
+    -- ========================================================================
+    -- Struct literal with defaults
+    -- ========================================================================
+    struct Defaults {
+        a int = 1
+        b string = "default"
+    }
+    let def Defaults = Defaults { a = 42 }   -- b uses default
 
     -- ========================================================================
     -- Return statement (end of main)
