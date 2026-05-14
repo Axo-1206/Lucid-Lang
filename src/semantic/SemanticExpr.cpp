@@ -670,25 +670,48 @@ static TypeAST* checkCallExpr(CallExprAST& node, SymbolTable& symbols,
         const BuiltinMethodInfo* builtin = BuiltinMethodRegistry::instance().lookup(typeKey, methodName);
         
         if (builtin) {
-            // Call the registered checker - ORDER MATTERS!
-            BuiltinMethodResult result = builtin->checker(
-                node,           // CallExprAST&
-                objType,        // TypeAST*
-                symbols,        // SymbolTable&  ← FIXED
-                resolver,       // TypeResolver& ← FIXED
-                dc,             // DiagnosticEngine&
-                loopDepth,      // int&
-                parallelDepth,  // int&
-                insideExtern    // bool
-            );
-            
-            if (result.isHandled) {
-                node.resolvedType = result.returnType;
-                return result.returnType;
-            } else {
-                // Error already reported by the checker
+            // Check argument count
+            if (node.args.size() != builtin->argKinds.size()) {
+                dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3003,
+                         "'" + methodName + "()' expects " + 
+                         std::to_string(builtin->argKinds.size()) + " argument(s)");
                 return errorFallback(&node);
             }
+            
+            // Get element type for arrays
+            TypeAST* elemType = nullptr;
+            if (objType->isa<FixedArrayTypeAST>()) elemType = objType->as<FixedArrayTypeAST>()->element.get();
+            else if (objType->isa<SliceTypeAST>()) elemType = objType->as<SliceTypeAST>()->element.get();
+            else if (objType->isa<DynamicArrayTypeAST>()) elemType = objType->as<DynamicArrayTypeAST>()->element.get();
+            
+            // Check arguments
+            for (size_t i = 0; i < node.args.size(); ++i) {
+                TypeAST* argType = checkExpr(node.args[i].get(), symbols, resolver, dc, loopDepth, parallelDepth, insideExtern);
+                
+                if (builtin->argKinds[i] == BuiltinArgKind::IntegerType) {
+                    if (argType && !TypeChecker::isIntegerType(argType)) {
+                        dc.error(DiagnosticCategory::Semantic, node.args[i]->loc, DiagCode::E3002,
+                                 "'" + methodName + "()' argument must be an integer type");
+                    }
+                } else if (builtin->argKinds[i] == BuiltinArgKind::ElementType) {
+                    if (argType && elemType && !TypeChecker::isAssignable(argType, elemType)) {
+                        dc.error(DiagnosticCategory::Semantic, node.args[i]->loc, DiagCode::E3002,
+                                 "argument type mismatch in '" + methodName + "()'");
+                    }
+                }
+            }
+            
+            // Determine return type
+            TypeAST* returnType = nullptr;
+            switch (builtin->returnKind) {
+                case BuiltinReturnKind::Void: returnType = nullptr; break;
+                case BuiltinReturnKind::IntType: returnType = SemanticHelpers::getPrimitiveType(PrimitiveKind::Int); break;
+                case BuiltinReturnKind::BoolType: returnType = SemanticHelpers::getPrimitiveType(PrimitiveKind::Bool); break;
+                case BuiltinReturnKind::ElementType: returnType = elemType; break;
+            }
+            
+            node.resolvedType = returnType;
+            return returnType;
         }
         // If not a built-in method, continue to normal function resolution
     }

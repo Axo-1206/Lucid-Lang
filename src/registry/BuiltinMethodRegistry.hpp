@@ -1,84 +1,56 @@
-// #pragma once
+#pragma once
 
-// #include "ast/TypeAST.hpp"
-// #include "diagnostics/DiagnosticEngine.hpp"
-// #include <string>
-// #include <vector>
-// #include <functional>
-// #include <unordered_map>
-// #include <memory>
+#include "ast/support/InternedString.hpp"
+#include "ast/support/StringPool.hpp"
+#include <string>
+#include <unordered_map>
+#include <vector>
 
-// /**
-//  * @file BuiltinMethodRegistry.hpp
-//  * 
-//  * @responsibility Central registry for all built-in methods on array types
-//  *   and other language-provided types.
-//  * 
-//  * @design_pattern Registry pattern with pluggable checkers.
-//  * 
-//  * @usage:
-//  *   // In checkCallExpr:
-//  *   if (auto* method = BuiltinMethodRegistry::instance().lookup(objType, methodName)) {
-//  *       return method->check(callNode, resolver, dc, ...);
-//  *   }
-//  * 
-//  * @extensibility:
-//  *   To add a new built-in method, call `registerMethod()` during initialization
-//  *   or add a static entry to the `initialize()` method.
-//  */
+enum class BuiltinArgKind {
+    ElementType,    // Argument must match the array's element type
+    IntegerType,    // Argument must be an integer (e.g., for capacity or index)
+};
 
-// // Forward declarations
-// struct CallExprAST;
-// struct TypeResolver;
-// struct DiagnosticEngine;
-// struct SymbolTable;  // Add this forward declaration
+enum class BuiltinReturnKind {
+    Void,           // Returns nothing
+    IntType,        // Returns an integer (e.g., length, capacity)
+    BoolType,       // Returns a boolean (e.g., isEmpty)
+    ElementType,    // Returns the array's element type (e.g., first, last, pop)
+};
 
-// // Result of a built-in method check
-// struct BuiltinMethodResult {
-//     TypeAST* returnType = nullptr;  // nullptr for void
-//     bool isHandled = false;          // true if this method handled the call
-//     std::string errorMessage;        // populated if isHandled=false with error
-// };
+struct BuiltinMethodInfo {
+    InternedString id;               // interned method name
+    const char* name;                // original string (for debugging)
+    std::vector<BuiltinArgKind> argKinds;
+    BuiltinReturnKind returnKind;
+    const char* description;
+};
 
-// // Function signature for a built-in method checker
-// // Now includes SymbolTable& parameter
-// using BuiltinMethodChecker = std::function<BuiltinMethodResult(
-//     CallExprAST& node,
-//     TypeAST* receiverType,
-//     SymbolTable& symbols,      // Added
-//     TypeResolver& resolver,
-//     DiagnosticEngine& dc,
-//     int& loopDepth,
-//     int& parallelDepth,
-//     bool insideExtern
-// )>;
+class BuiltinMethodRegistry {
+public:
+    static BuiltinMethodRegistry& instance();
 
-// // Represents a registered built-in method
-// struct BuiltinMethodInfo {
-//     std::string name;
-//     BuiltinMethodChecker checker;
-//     std::string description;  // For debugging
-// };
+    // Must be called once before any lookups
+    void setStringPool(StringPool& pool);
+    void resetStringPool();
 
-// class BuiltinMethodRegistry {
-// public:
-//     static BuiltinMethodRegistry& instance() {
-//         static BuiltinMethodRegistry registry;
-//         return registry;
-//     }
-    
-//     void registerMethod(const std::string& typeKey, const BuiltinMethodInfo& method);
-//     const BuiltinMethodInfo* lookup(const std::string& typeKey, const std::string& methodName) const;
-//     bool hasMethods(const std::string& typeKey) const;
-//     std::vector<BuiltinMethodInfo> getMethodsForType(const std::string& typeKey) const;
-    
-// private:
-//     BuiltinMethodRegistry() { initialize(); }
-//     ~BuiltinMethodRegistry() = default;
-    
-//     void initialize();
-    
-//     std::unordered_map<std::string, std::unordered_map<std::string, BuiltinMethodInfo>> registry_;
-// };
+    // Lookup by interned type key and interned method name
+    const BuiltinMethodInfo* lookup(InternedString typeKey, InternedString methodName) const;
 
-// std::string getBuiltinTypeKey(TypeAST* type);
+    // Convenience – interns the strings on the fly
+    const BuiltinMethodInfo* lookup(const std::string& typeKey, const std::string& methodName) const;
+
+    // Pre‑interned well‑known type keys
+    InternedString getFixedArrayKey()   const { return fixedArrayId; }
+    InternedString getSliceKey()        const { return sliceId; }
+    InternedString getDynamicArrayKey() const { return dynamicArrayId; }
+
+private:
+    BuiltinMethodRegistry();
+    void registerBuiltins();
+
+    StringPool* stringPool = nullptr;
+    std::unordered_map<InternedString, std::unordered_map<InternedString, BuiltinMethodInfo>> registry_;
+    // Pre‑interned IDs for well‑known type keys
+    InternedString fixedArrayId, sliceId, dynamicArrayId;
+};
