@@ -315,6 +315,16 @@ export const main (args []string) -> int = {
         return result
     }
 
+    -- function/struct member/field/array access - call
+    test[0]:abds() -- the array contain struct, we are calling the behavior member of the struct
+    test[0].abc() -- succeed
+    funcTest():abc() -- the function return a struct so we calling its behavior member
+    funcTest().testA() -- succeed
+    arrayTest()[0].testB() -- succeed
+    arrayTest()[0]:testB() -- same problem as above
+    -- complex tests
+    arrayTest()[1]()()[2].abc() -- succeed
+
     -- Verify some results (compiler would check, here just parsing)
     let check int = sumAll(1, 2, 3)   -- 6
     let check2 int = powerVal          -- should be 8

@@ -1582,6 +1582,68 @@ elements of both operands.
 
 ---
 
+### Arrays of Function Types
+
+Arrays of any type, including function types, are fully supported.
+```luc
+-- slice of functions that take an int and return a bool
+let predicates [] (int) -> bool = [isEven, isPositive, isPrime]
+
+-- dynamic array of async functions
+let asyncTasks [*] ~async (url string) -> string = [fetchUser, fetchPosts]
+
+-- fixed array of curried functions
+let curries [2] (int)(int) -> int = [add, mul]
+```
+
+#### Allowed Operations
+
+| Operation            | Example                         | Notes                                                                      |
+| -------------------- | ------------------------------- | -------------------------------------------------------------------------- |
+| Store function       | `handlers[0] = validate`        | The function type must match the array’s element type exactly.             |
+| Call through index   | `let result = handlers[i](arg)` | The index expression must be an integer; the call follows normal rules.    |
+| Pass as argument     | `applyAll(handlers, data)`      | The array itself is passed by value (owned) or by reference (`&[]T`).      |
+| Return from function | `return getCallbacks()`         | Ownership follows array semantics (deep copy for dynamic, view for slice). |
+
+> [!WARNING] Restrictions
+>These are limitation about array of function
+
+1. **No equality** – Function types are not comparable (`==`, `!=`). Consequently, arrays of functions are also not comparable. This is enforced at the type level.
+
+```luc
+let a [] (int) -> int = [f]
+let b [] (int) -> int = [f]
+if a == b { ... }   -- ERROR: cannot compare arrays of function type
+```
+
+2. Qualifiers are not part of type identity – Storing a ~async function in an array does not make the array element ~async. The qualifier belongs to the binding at the call site, not to the value. The stored value is a plain function pointer or closure.
+
+```luc
+let asyncFn ~async (x int) -> int = { ... }
+let arr [] (int) -> int = [asyncFn]   -- OK: qualifier ignored for storage
+
+-- Call site must still obey qualifier rules
+let result = await arr[0](5)   -- OK: caller uses await because the stored function is ~async
+let result = arr[0](5)         -- ERROR: ~async called without await
+```
+
+3. Closure capture – If a stored function captures variables (a closure), the array holds a reference to the closure’s environment. This may prevent memory from being freed until the array is cleared or goes out of scope. Use .clear() on dynamic arrays to release closures early if needed.
+
+4. No generic specialisation – The element type of an array is a concrete function signature. Generic functions cannot be stored directly unless instantiated:
+
+```luc
+let idInt   = identity<int>   -- instantiate to (int) -> int
+let arr [] (int) -> int = [idInt]   -- OK
+let arr [] (T) -> T = [identity]    -- ERROR: generic function without type arguments
+```
+
+> [!TIP] Arrays of function types enable:  
+> - Dispatch tables – Replace switch/match with indexed function lookup.    
+> - Callback lists – Event handlers, middleware chains, plugin systems.  
+> - Higher‑order collections – Store partially applied functions, curried functions, or stateful closures.
+> - Interpreters & DSLs – Represent operations as functions in a data structure.
+
+
 ## Statements
 
 ```

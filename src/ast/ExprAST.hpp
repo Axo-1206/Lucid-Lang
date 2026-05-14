@@ -126,6 +126,9 @@ enum class PipelineStepKind {
     Ident,        // fn          — bare function name
     BehaviorRef,  // Type:method — impl method reference
     FieldRef,     // obj.field   — data field of non-nullable function type
+    IndexRef,     // arr[idx]    — function reference
+    FieldArgPack,    // Type.field(args)!    (field with argument pack)
+    IndexArgPack,    // Array[x](args)!      (array instance with argument pack)
     BehaviorArgPack, // Type:method(args)!   (method with argument pack)
     ArgPack,      // fn(args)!   — argument pack, upstream injected as first arg
     AnonFunc,     // (x T) R { } — inline anonymous function
@@ -621,24 +624,19 @@ struct NullCoalesceExprAST : ExprAST {
 // ─────────────────────────────────────────────────────────────────────────────
 struct PipelineStepAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::PipelineStep;
-
     PipelineStepKind          kind;
-
-    // Ident / FieldRef / ArgPack — the base identifier
-    InternedString               ident;
-
+    InternedString            ident; // Ident / FieldRef / ArgPack — the base identifier
+    
     // BehaviorRef — Type:method
     InternedString               typeName;   // "Vec2"
     InternedString               method;     // "normalize"
-
-    // FieldRef — obj.field
-    InternedString               field;
+    InternedString               field;      // FieldRef — obj.field
 
     // ArgPack — fn(args)!
     std::vector<ExprPtr>      packArgs;   // the args inside fn(args)!
 
-    // AnonFunc — inline anonymous function
-    ExprPtr  anonFunc;  // AnonFuncExprAST
+    ExprPtr index;                  // for IndexRef, IndexArgPack
+    ExprPtr  anonFunc;  // AnonFuncExprAST -AnonFunc — inline anonymous function
 
     PipelineStepAST() : BaseAST(ASTKind::PipelineStep) {}
 

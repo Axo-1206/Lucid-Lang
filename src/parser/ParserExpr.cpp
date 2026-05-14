@@ -1588,59 +1588,43 @@ PipelineStepPtr Parser::parsePipelineStep() {
     auto step = arena_.make<PipelineStepAST>();
     step->loc = loc;
 
-    // ── Save position for lookahead ─────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════════════
+    // 1. ANONYMOUS FUNCTION DETECTION (lookahead)
+    // ═══════════════════════════════════════════════════════════════════════
     std::size_t savedPos = pos_;
-
-    // ── Lookahead: Check for anonymous function header ──────────────────────
-    // Pattern: [ '~' IDENTIFIER ]* '(' param_list ')' { '->' return_type }? '{' body '}'
-    // We need to see if after parameter groups there is a '{' (body) - that makes it an anonymous function.
-    
     std::size_t testPos = savedPos;
     bool isAnonFunc = false;
-    
-    // Check for qualifiers - anonymous functions cannot have them
+
+    // Skip qualifiers (error if present)
     if (testPos < tokens_.size() && tokens_[testPos].type == TokenType::TILDE) {
         errorAt(DiagCode::E2002,
                 "anonymous function cannot have qualifiers (e.g., ~async, ~nullable). "
                 "Qualifiers belong on declarations, not values.");
-        
-        // Skip the qualifier(s) to recover (but error already reported)
         while (testPos < tokens_.size() && tokens_[testPos].type == TokenType::TILDE) {
-            ++testPos; // skip '~'
-            if (testPos < tokens_.size() && tokens_[testPos].type == TokenType::IDENTIFIER) {
-                ++testPos; // skip qualifier name
-            } else {
-                break;
-            }
-            // Skip comments between qualifiers
-            while (testPos < tokens_.size() && (tokens_[testPos].type == TokenType::LINE_COMMENT ||
-                                                tokens_[testPos].type == TokenType::DOC_COMMENT)) {
+            ++testPos;
+            if (testPos < tokens_.size() && tokens_[testPos].type == TokenType::IDENTIFIER)
                 ++testPos;
-            }
+            while (testPos < tokens_.size() && (tokens_[testPos].type == TokenType::LINE_COMMENT ||
+                                                tokens_[testPos].type == TokenType::DOC_COMMENT))
+                ++testPos;
         }
     }
-    
-    // Parse parameter groups until we find a non-'(' token
+
+    // Parse parameter groups
     if (testPos < tokens_.size() && tokens_[testPos].type == TokenType::LPAREN) {
-        // Helper to skip a full parameter group and return the position after ')'
         auto skipParamGroup = [&](std::size_t& pos) -> bool {
-            if (pos >= tokens_.size() || tokens_[pos].type != TokenType::LPAREN)
-                return false;
+            if (pos >= tokens_.size() || tokens_[pos].type != TokenType::LPAREN) return false;
             int parenDepth = 1;
             ++pos;
             while (pos < tokens_.size() && parenDepth > 0) {
-                // Skip comments
                 while (pos < tokens_.size() && (tokens_[pos].type == TokenType::LINE_COMMENT ||
-                                                tokens_[pos].type == TokenType::DOC_COMMENT)) {
+                                                tokens_[pos].type == TokenType::DOC_COMMENT))
                     ++pos;
-                }
                 if (pos >= tokens_.size()) break;
                 TokenType tt = tokens_[pos].type;
-                if (tt == TokenType::LPAREN) {
-                    ++parenDepth;
-                } else if (tt == TokenType::RPAREN) {
-                    --parenDepth;
-                } else if (tt == TokenType::TILDE) {
+                if (tt == TokenType::LPAREN) ++parenDepth;
+                else if (tt == TokenType::RPAREN) --parenDepth;
+                else if (tt == TokenType::TILDE) {
                     ++pos;
                     if (pos < tokens_.size() && tokens_[pos].type == TokenType::IDENTIFIER) ++pos;
                     continue;
@@ -1649,40 +1633,27 @@ PipelineStepPtr Parser::parsePipelineStep() {
             }
             return true;
         };
-        
+
         bool hasParamGroups = false;
-        // Parse all consecutive parameter groups (currying)
         while (testPos < tokens_.size() && tokens_[testPos].type == TokenType::LPAREN) {
             hasParamGroups = true;
             if (!skipParamGroup(testPos)) break;
-            // Skip comments after the group
             while (testPos < tokens_.size() && (tokens_[testPos].type == TokenType::LINE_COMMENT ||
-                                                tokens_[testPos].type == TokenType::DOC_COMMENT)) {
+                                                tokens_[testPos].type == TokenType::DOC_COMMENT))
                 ++testPos;
-            }
         }
-        
+
         if (hasParamGroups) {
-            // After parameter groups, skip comments
-            while (testPos < tokens_.size() && (tokens_[testPos].type == TokenType::LINE_COMMENT ||
-                                                tokens_[testPos].type == TokenType::DOC_COMMENT)) {
-                ++testPos;
-            }
-            
-            // handle optional '->' and return type.
+            // Optional '->' and return type
             if (testPos < tokens_.size() && tokens_[testPos].type == TokenType::ARROW) {
-                ++testPos; // consume '->'
-                // Skip comments after '->'
+                ++testPos;
                 while (testPos < tokens_.size() && (tokens_[testPos].type == TokenType::LINE_COMMENT ||
-                                                    tokens_[testPos].type == TokenType::DOC_COMMENT)) {
+                                                    tokens_[testPos].type == TokenType::DOC_COMMENT))
                     ++testPos;
-                }
-                // Consume the return type (simple type: primitive, identifier, or with generic args)
                 if (testPos < tokens_.size()) {
                     TokenType retStart = tokens_[testPos].type;
                     if (isPrimitiveTypeToken(retStart) || retStart == TokenType::IDENTIFIER) {
-                        ++testPos; // consume the type name
-                        // If generic arguments follow (e.g., List<int>), skip them
+                        ++testPos;
                         if (testPos < tokens_.size() && tokens_[testPos].type == TokenType::LESS) {
                             int depth = 1;
                             ++testPos;
@@ -1692,48 +1663,30 @@ PipelineStepPtr Parser::parsePipelineStep() {
                                 ++testPos;
                             }
                         }
-                    } 
+                    }
                 }
             }
-            
-            // Skip more comments before checking for '{'
+
             while (testPos < tokens_.size() && (tokens_[testPos].type == TokenType::LINE_COMMENT ||
-                                                tokens_[testPos].type == TokenType::DOC_COMMENT)) {
+                                                tokens_[testPos].type == TokenType::DOC_COMMENT))
                 ++testPos;
-            }
-            
-            // If the next token is '{', this is an anonymous function
-            if (testPos < tokens_.size() && tokens_[testPos].type == TokenType::LBRACE) {
+
+            if (testPos < tokens_.size() && tokens_[testPos].type == TokenType::LBRACE)
                 isAnonFunc = true;
-            }
         }
     }
-    
-    // Restore position
-    pos_ = savedPos;
-    
-    // ── If it looks like an anonymous function, parse it as such ───────────────
+
+    pos_ = savedPos;  // restore position
+
     if (isAnonFunc) {
         LUC_LOG_EXPR_VERBOSE("parsePipelineStep: parsing anonymous function");
-        std::size_t beforePos = pos_;
         ExprPtr anonFuncExpr = parseAnonFuncExpr();
         if (!anonFuncExpr || anonFuncExpr->isa<UnknownExprAST>()) {
             errorAt(DiagCode::E2002, "expected valid anonymous function as pipeline step");
-            // Recover: skip to the next '{' or to the end of the step
-            while (!isAtEnd() && !check(TokenType::LBRACE) && !check(TokenType::PIPELINE) &&
-                !check(TokenType::SEMICOLON) && !check(TokenType::RBRACE)) {
+            // Recover: skip to next pipeline or brace
+            while (!isAtEnd() && !check(TokenType::PIPELINE) && !check(TokenType::RBRACE) &&
+                   !check(TokenType::SEMICOLON))
                 advance();
-            }
-            if (check(TokenType::LBRACE)) {
-                // Skip the entire block to avoid further errors
-                int braceDepth = 1;
-                advance();
-                while (!isAtEnd() && braceDepth > 0) {
-                    if (match(TokenType::LBRACE)) braceDepth++;
-                    else if (match(TokenType::RBRACE)) braceDepth--;
-                    else advance();
-                }
-            }
             step->kind = PipelineStepKind::Ident;
             step->ident = pool_.intern("<error>");
             return step;
@@ -1742,125 +1695,201 @@ PipelineStepPtr Parser::parsePipelineStep() {
         step->anonFunc = std::move(anonFuncExpr);
         return step;
     }
-    
-    // ── Otherwise, parse as a normal function / method reference / field access ──
-    
-    // Check for primitive type keywords (valid conversion functions)
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // 2. OTHER STEP FORMS (identifier‑based)
+    // ═══════════════════════════════════════════════════════════════════════
     bool isPrimitiveType = Parser::isPrimitiveTypeToken(peek().type);
-    
-    // Must be either IDENTIFIER or primitive type
     if (!check(TokenType::IDENTIFIER) && !isPrimitiveType) {
-        errorAt(DiagCode::E2002, 
-                "expected function name, method reference, or anonymous function as pipeline step, got '" + 
+        errorAt(DiagCode::E2002,
+                "expected function name, method reference, array access, or anonymous function as pipeline step, got '" +
                 peek().value + "'");
         step->kind = PipelineStepKind::Ident;
         step->ident = pool_.intern("<error>");
         advance();
         return step;
     }
-    
-    // Get the name
+
     std::string name;
     if (isPrimitiveType) {
         Token tok = advance();
         name = tok.value;
-        LUC_LOG_EXPR_VERBOSE("parsePipelineStep: primitive type conversion '" << name << "'");
     } else {
         name = advance().value;
-        LUC_LOG_EXPR_VERBOSE("parsePipelineStep: identifier '" << name << "'");
     }
-    
-    // ── BehaviorRef: IDENTIFIER ':' IDENTIFIER [ '(' args ')' '!' ] ───────────
+
+    // ── Type:method [ (args)! ] ──────────────────────────────────────────
     if (check(TokenType::COLON)) {
-        if (peekNext().type == TokenType::IDENTIFIER) {
-            advance(); // consume ':'
-            std::string method = advance().value;
-            
-            // Check for optional argument pack: '(' args ')' '!'
-            if (check(TokenType::LPAREN)) {
-                // Parse argument pack
-                consume(TokenType::LPAREN, "expected '('");
-                std::vector<ExprPtr> packArgs;
-                if (!check(TokenType::RPAREN)) {
-                    packArgs = parseArgList();
-                }
-                consume(TokenType::RPAREN, "expected ')'");
-                
-                if (!match(TokenType::BANG)) {
-                    errorAt(DiagCode::E2001, "expected '!' to mark argument pack in pipeline step");
-                    step->kind = PipelineStepKind::Ident;
-                    step->ident = pool_.intern("<error>");
-                    return step;
-                }
-                
-                step->kind = PipelineStepKind::BehaviorArgPack;
-                step->typeName = std::move(pool_.intern(name));
-                step->method = std::move(pool_.intern(method));
-                step->packArgs = std::move(packArgs);
-                LUC_LOG_EXPR_VERBOSE("parsePipelineStep: BehaviorArgPack " << pool_.lookup(step->typeName) << ":" << pool_.lookup(step->method) << " with " << step->packArgs.size() << " args");
+        if (peekNext().type != TokenType::IDENTIFIER) {
+            errorAt(DiagCode::E2003, "expected method name after ':'");
+            step->kind = PipelineStepKind::Ident;
+            step->ident = pool_.intern("<error>");
+            advance();
+            return step;
+        }
+        advance(); // consume ':'
+        std::string method = advance().value;
+
+        if (check(TokenType::LPAREN)) {
+            consume(TokenType::LPAREN, "expected '('");
+            std::vector<ExprPtr> packArgs;
+            if (!check(TokenType::RPAREN)) packArgs = parseArgList();
+            consume(TokenType::RPAREN, "expected ')'");
+            if (!match(TokenType::BANG)) {
+                errorAt(DiagCode::E2001, "expected '!' after arguments for method argument pack");
+                step->kind = PipelineStepKind::Ident;
+                step->ident = pool_.intern("<error>");
                 return step;
             }
-            
-            // No argument pack – plain BehaviorRef
-            step->kind = PipelineStepKind::BehaviorRef;
-            step->typeName = std::move(pool_.intern(name));
-            step->method = std::move(pool_.intern(method));
-            LUC_LOG_EXPR_VERBOSE("parsePipelineStep: BehaviorRef " << pool_.lookup(step->typeName) << ":" << pool_.lookup(step->method));
+            step->kind = PipelineStepKind::BehaviorArgPack;
+            step->typeName = pool_.intern(name);
+            step->method = pool_.intern(method);
+            step->packArgs = std::move(packArgs);
             return step;
         }
-        // ':' but not followed by IDENTIFIER - treat as regular identifier
-        LUC_LOG_EXPR_VERBOSE("parsePipelineStep: colon without identifier, treating as regular ident");
-    }
-    
-    // ── FieldRef: IDENTIFIER '.' IDENTIFIER ──────────────────────────────────
-    if (check(TokenType::DOT)) {
-        if (peekNext().type == TokenType::IDENTIFIER) {
-            advance(); // consume '.'
-            std::string field = advance().value;
-            step->kind = PipelineStepKind::FieldRef;
-            step->ident = std::move(pool_.intern(name));
-            step->field = std::move(pool_.intern(field));
-            LUC_LOG_EXPR_VERBOSE("parsePipelineStep: FieldRef " << pool_.lookup(step->ident) << "." << pool_.lookup(step->field));
-            return step;
-        }
-        errorAt(DiagCode::E2003, "expected field name after '.'");
-        step->kind = PipelineStepKind::Ident;
-        step->ident = pool_.intern("<error>");
+
+        step->kind = PipelineStepKind::BehaviorRef;
+        step->typeName = pool_.intern(name);
+        step->method = pool_.intern(method);
         return step;
     }
-    
-    // ── ArgPack or regular call: IDENTIFIER '(' args ')' [ '!' ] ──────────────
+
+    // ── obj.field or obj.field(args)! ────────────────────────────────────────
+    if (check(TokenType::DOT)) {
+        if (peekNext().type != TokenType::IDENTIFIER) {
+            errorAt(DiagCode::E2003, "expected field name after '.'");
+            step->kind = PipelineStepKind::Ident;
+            step->ident = pool_.intern("<error>");
+            advance(); // consume '.'
+            return step;
+        }
+        advance(); // consume '.'
+        std::string field = advance().value;
+
+        // Check for argument pack call: (args)!
+        if (check(TokenType::LPAREN)) {
+            consume(TokenType::LPAREN, "expected '('");
+            std::vector<ExprPtr> packArgs;
+            if (!check(TokenType::RPAREN)) {
+                packArgs = parseArgList();
+            }
+            consume(TokenType::RPAREN, "expected ')'");
+            if (!match(TokenType::BANG)) {
+                errorAt(DiagCode::E2001, "expected '!' after arguments for field argument pack");
+                step->kind = PipelineStepKind::Ident;
+                step->ident = pool_.intern("<error>");
+                return step;
+            }
+            step->kind = PipelineStepKind::FieldArgPack;
+            step->ident = pool_.intern(name);
+            step->field = pool_.intern(field);
+            step->packArgs = std::move(packArgs);
+            return step;
+        }
+
+        // Plain field reference (no call)
+        step->kind = PipelineStepKind::FieldRef;
+        step->ident = pool_.intern(name);
+        step->field = pool_.intern(field);
+        return step;
+    }
+
+    // ── Array indexing: arr[0] or arr[0][1]... ───────────────────────────
+    if (check(TokenType::LBRACKET)) {
+        auto addIndex = [&](ExprPtr target, ExprPtr idx) -> ExprPtr {
+            auto node = arena_.make<IndexExprAST>();
+            node->target = std::move(target);
+            node->index = std::move(idx);
+            node->kind = IndexKind::Element;
+            return node;
+        };
+
+        ExprPtr indexChain = nullptr;
+        // first bracket
+        advance();
+        ExprPtr idx = parseExpr();
+        if (!idx) {
+            errorAt(DiagCode::E2008, "expected index expression");
+            // skip to matching ']'
+            int bracketDepth = 1;
+            while (!isAtEnd() && bracketDepth > 0) {
+                if (check(TokenType::LBRACKET)) ++bracketDepth;
+                else if (check(TokenType::RBRACKET)) --bracketDepth;
+                advance();
+            }
+            step->kind = PipelineStepKind::Ident;
+            step->ident = pool_.intern("<error>");
+            return step;
+        }
+        consume(TokenType::RBRACKET, "expected ']' after index");
+        ExprPtr base = arena_.make<IdentifierExprAST>(pool_.intern(name));
+        base->loc = loc;
+        indexChain = addIndex(std::move(base), std::move(idx));
+
+        // additional brackets
+        while (check(TokenType::LBRACKET)) {
+            advance();
+            ExprPtr nextIdx = parseExpr();
+            if (!nextIdx) {
+                errorAt(DiagCode::E2008, "expected index expression");
+                int bracketDepth = 1;
+                while (!isAtEnd() && bracketDepth > 0) {
+                    if (check(TokenType::LBRACKET)) ++bracketDepth;
+                    else if (check(TokenType::RBRACKET)) --bracketDepth;
+                    advance();
+                }
+                break;
+            }
+            consume(TokenType::RBRACKET, "expected ']' after index");
+            indexChain = addIndex(std::move(indexChain), std::move(nextIdx));
+        }
+
+        // optional argument pack call
+        if (check(TokenType::LPAREN)) {
+            consume(TokenType::LPAREN, "expected '('");
+            std::vector<ExprPtr> packArgs;
+            if (!check(TokenType::RPAREN)) packArgs = parseArgList();
+            consume(TokenType::RPAREN, "expected ')'");
+            if (!match(TokenType::BANG)) {
+                errorAt(DiagCode::E2001, "expected '!' after arguments for array index argument pack");
+                step->kind = PipelineStepKind::Ident;
+                step->ident = pool_.intern("<error>");
+                return step;
+            }
+            step->kind = PipelineStepKind::IndexArgPack;
+            step->ident = pool_.intern(name);
+            step->index = std::move(indexChain);
+            step->packArgs = std::move(packArgs);
+            return step;
+        }
+
+        step->kind = PipelineStepKind::IndexRef;
+        step->ident = pool_.intern(name);
+        step->index = std::move(indexChain);
+        return step;
+    }
+
+    // ── Function call with argument pack ─────────────────────────────────
     if (check(TokenType::LPAREN)) {
         consume(TokenType::LPAREN, "expected '('");
         std::vector<ExprPtr> packArgs;
-        if (!check(TokenType::RPAREN)) {
-            packArgs = parseArgList();
-        }
+        if (!check(TokenType::RPAREN)) packArgs = parseArgList();
         consume(TokenType::RPAREN, "expected ')'");
-        
-        // Now look for '!'
-        bool hasBang = match(TokenType::BANG);
-        
-        if (hasBang) {
-            step->kind = PipelineStepKind::ArgPack;
-            step->ident = std::move(pool_.intern(name));
-            step->packArgs = std::move(packArgs);
-            LUC_LOG_EXPR_VERBOSE("parsePipelineStep: ArgPack " << pool_.lookup(step->ident) << " with " << step->packArgs.size() << " args");
-        } else {
-            // No '!' – this is an error according to grammar
-            errorAt(DiagCode::E2001, 
-                    "expected '!' to mark argument pack in pipeline step (e.g., fn(args)!). "
-                    "For anonymous functions, use (params) { ... } instead.");
+        if (!match(TokenType::BANG)) {
+            errorAt(DiagCode::E2001, "expected '!' after arguments for function argument pack");
             step->kind = PipelineStepKind::Ident;
             step->ident = pool_.intern("<error>");
+            return step;
         }
+        step->kind = PipelineStepKind::ArgPack;
+        step->ident = pool_.intern(name);
+        step->packArgs = std::move(packArgs);
         return step;
     }
-    
-    // ── Ident: bare function name (IDENTIFIER or primitive type) ──────────────
+
+    // ── Plain identifier ─────────────────────────────────────────────────
     step->kind = PipelineStepKind::Ident;
-    step->ident = std::move(pool_.intern(name));
-    LUC_LOG_EXPR_VERBOSE("parsePipelineStep: Ident '" << pool_.lookup(step->ident) << "'");
+    step->ident = pool_.intern(name);
     return step;
 }
 
