@@ -368,6 +368,8 @@ struct BehaviorAccessExprAST : ExprAST {
     // codegen must resolve through the active TypeSubst map in that case.
     std::string resolvedMangledName;
 
+    std::vector<TypePtr> genericArgs;
+
     BehaviorAccessExprAST() : ExprAST(ASTKind::BehaviorAccessExpr) {}
 
     void accept(ASTVisitor& v) override { v.visit(*this); }
@@ -625,18 +627,14 @@ struct NullCoalesceExprAST : ExprAST {
 struct PipelineStepAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::PipelineStep;
     PipelineStepKind          kind;
-    InternedString            ident; // Ident / FieldRef / ArgPack — the base identifier
-    
-    // BehaviorRef — Type:method
-    InternedString               typeName;   // "Vec2"
-    InternedString               method;     // "normalize"
-    InternedString               field;      // FieldRef — obj.field
-
-    // ArgPack — fn(args)!
-    std::vector<ExprPtr>      packArgs;   // the args inside fn(args)!
-
-    ExprPtr index;                  // for IndexRef, IndexArgPack
-    ExprPtr  anonFunc;  // AnonFuncExprAST -AnonFunc — inline anonymous function
+    InternedString            ident;        // base identifier (function name, object name)
+    std::vector<TypePtr>      genericArgs;  // optional explicit generic arguments
+    InternedString            typeName;     // for BehaviorRef / BehaviorArgPack
+    InternedString            method;       // for BehaviorRef / BehaviorArgPack
+    InternedString            field;        // for FieldRef / FieldArgPack
+    ExprPtr                   index;        // for IndexRef / IndexArgPack
+    std::vector<ExprPtr>      packArgs;     // for ArgPack, BehaviorArgPack, FieldArgPack, IndexArgPack
+    ExprPtr                   anonFunc;     // for AnonFunc
 
     PipelineStepAST() : BaseAST(ASTKind::PipelineStep) {}
 

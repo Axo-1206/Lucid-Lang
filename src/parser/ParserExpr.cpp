@@ -631,21 +631,9 @@ ExprPtr Parser::parsePrimaryExpr(bool allowStructLiteral) {
         return parseTypeConvExpr(/*isUnsafe=*/true, std::move(targetType));
     }
 
-    // ── Identifier — struct literal, explicit type cast, behavior access, or name ─
+    // ── Identifier — struct literal, behavior access, or plain name ─────────
     if (check(TokenType::IDENTIFIER)) {
         std::string name = peek().value;
-
-        // Safe explicit cast: primitive name or named type immediately followed by '('
-        // e.g.  float(x)  string(n)  Fahrenheit(boiling)
-        // The key: IDENTIFIER '(' where the IDENTIFIER is used as a type name.
-        // We distinguish this from a regular call f(args) by checking whether
-        // the name is a type keyword (primitives) or if this looks like a struct
-        // constructor (from() dispatch) — both are handled as TypeConvExprAST.
-        // For simplicity, all IDENTIFIER '(' cases go through parseCallExpr
-        // first; the semantic pass recognises explicit type casts by resolving the
-        // callee name to a type rather than a function.
-        // Exception: primitives with type-keyword tokens are handled separately
-        // below.
 
         // Struct literal: IDENTIFIER [ '<' ... '>' ] '{'
         if (allowStructLiteral && looksLikeStructLiteral()) {
@@ -657,29 +645,101 @@ ExprPtr Parser::parsePrimaryExpr(bool allowStructLiteral) {
             return parseStructLiteralExpr(std::move(name), std::move(genericArgs));
         }
 
-        // Behavior access: IDENTIFIER ':' IDENTIFIER  (not ':' used in switch/match)
-        // Peek: if after consuming the ident we see ':', and after that an IDENTIFIER,
-        // this is a behavior member reference.
-        if (peekNext().type == TokenType::COLON &&
-            peekAt(2).type == TokenType::IDENTIFIER) {
-            advance();                            // consume type name
-            advance();                            // consume ':'
-            std::string method = advance().value; // consume method name
+        // ── Behavior access: IDENTIFIER [ '<' type { ',' type } '>' ] ':' IDENTIFIER ──
+        // Perform a non‑destructive lookahead to verify the pattern.
+        std::size_t savedPos = pos_;
+        bool isBehavior = false;
+        std::vector<TypePtr> genericArgs;
+        std::string methodName;
+
+        // Manual scan: we need to check if there is an optional '<' ... '>' followed by ':' and an identifier.
+        // We'll use a temporary index `scan` that starts after the current token (the identifier).
+        std::size_t scan = savedPos + 1; // position after the identifier
+
+        // Skip any comments before checking for '<'
+        while (scan < tokens_.size() && (tokens_[scan].type == TokenType::LINE_COMMENT ||
+                                        tokens_[scan].type == TokenType::DOC_COMMENT))
+            ++scan;
+
+        // If the next token is '<', try to parse generic arguments.
+        if (scan < tokens_.size() && tokens_[scan].type == TokenType::LESS) {
+            // Count brackets to find the matching '>'
+            int depth = 1;
+            ++scan; // move past '<'
+            while (scan < tokens_.size() && depth > 0) {
+                // Skip comments inside the generic argument list
+                while (scan < tokens_.size() && (tokens_[scan].type == TokenType::LINE_COMMENT ||
+                                                tokens_[scan].type == TokenType::DOC_COMMENT))
+                    ++scan;
+                if (scan >= tokens_.size()) break;
+                TokenType tt = tokens_[scan].type;
+                if (tt == TokenType::LESS) ++depth;
+                else if (tt == TokenType::GREATER) --depth;
+                ++scan;
+            }
+            if (depth == 0) {
+                // Now after the '>', skip comments and check for ':'
+                while (scan < tokens_.size() && (tokens_[scan].type == TokenType::LINE_COMMENT ||
+                                                tokens_[scan].type == TokenType::DOC_COMMENT))
+                    ++scan;
+                if (scan < tokens_.size() && tokens_[scan].type == TokenType::COLON) {
+                    ++scan; // move past ':'
+                    while (scan < tokens_.size() && (tokens_[scan].type == TokenType::LINE_COMMENT ||
+                                                    tokens_[scan].type == TokenType::DOC_COMMENT))
+                        ++scan;
+                    if (scan < tokens_.size() && tokens_[scan].type == TokenType::IDENTIFIER) {
+                        isBehavior = true;
+                        methodName = tokens_[scan].value;
+                    }
+                }
+            }
+        } else {
+            // No generic args: check for ':' directly
+            if (scan < tokens_.size() && tokens_[scan].type == TokenType::COLON) {
+                ++scan; // move past ':'
+                while (scan < tokens_.size() && (tokens_[scan].type == TokenType::LINE_COMMENT ||
+                                                tokens_[scan].type == TokenType::DOC_COMMENT))
+                    ++scan;
+                if (scan < tokens_.size() && tokens_[scan].type == TokenType::IDENTIFIER) {
+                    isBehavior = true;
+                    methodName = tokens_[scan].value;
+                }
+            }
+        }
+
+        if (isBehavior) {
+            // Commit: consume the identifier, then optional generic args, then ':', then method name.
+            advance(); // consume the identifier (name)
+            if (check(TokenType::LESS)) {
+                genericArgs = parseGenericArgs(); // consumes '<' ... '>'
+            }
+            // Consume ':'
+            if (!check(TokenType::COLON)) {
+                errorAt(DiagCode::E2001, "expected ':' in behavior access");
+            } else {
+                advance();
+            }
+            // Consume method name
+            if (!check(TokenType::IDENTIFIER)) {
+                errorAt(DiagCode::E2003, "expected method name after ':'");
+                return arena_.make<UnknownExprAST>();
+            }
+            methodName = advance().value;
 
             auto node = arena_.make<BehaviorAccessExprAST>();
             node->loc = loc;
-            node->typeName = std::move(pool_.intern(name));
-            node->method = std::move(pool_.intern(method));
+            node->typeName = pool_.intern(name);
+            node->genericArgs = std::move(genericArgs);
+            node->method = pool_.intern(methodName);
             node->isBehaviorMember = true;
             return node;
         }
 
-        // Plain identifier
+        // ── Fallback: plain identifier ──────────────────────────────────────
         advance();
-        auto node = arena_.make<IdentifierExprAST>(std::move(pool_.intern(name)));
+        auto node = arena_.make<IdentifierExprAST>(pool_.intern(name));
         node->loc = loc;
-
-        LUC_LOG_EXPR_VERBOSE("parsePrimaryExpr: returning identifier/struct literal");
+        LUC_LOG_EXPR_VERBOSE("parsePrimaryExpr: returning identifier");
         return node;
     }
 
@@ -731,7 +791,7 @@ ExprPtr Parser::parsePrimaryExpr(bool allowStructLiteral) {
 //   '?.' IDENTIFIER     — nullable chain step
 //   '!!'                — not valid here (only inside pipeline steps)
 //
-// IMPORTANT: Does NOT handle '->' (pipeline) or '+>' (composition) - those
+// IMPORTANT: Does NOT handle '|>' (pipeline) or '+>' (composition) - those
 // are handled at a higher precedence level in parsePrattExpr.
 // ─────────────────────────────────────────────────────────────────────────────
 ExprPtr Parser::parsePostfixExpr(ExprPtr lhs) {
@@ -1718,6 +1778,12 @@ PipelineStepPtr Parser::parsePipelineStep() {
         name = advance().value;
     }
 
+    // ── Process possible generic arguments ─────────────────────────────────
+    std::vector<TypePtr> genericArgs;
+    if (check(TokenType::LESS)) {
+        genericArgs = parseGenericArgs();
+    }
+
     // ── Type:method [ (args)! ] ──────────────────────────────────────────
     if (check(TokenType::COLON)) {
         if (peekNext().type != TokenType::IDENTIFIER) {
@@ -1745,12 +1811,19 @@ PipelineStepPtr Parser::parsePipelineStep() {
             step->typeName = pool_.intern(name);
             step->method = pool_.intern(method);
             step->packArgs = std::move(packArgs);
+            // genericArgs are not allowed on BehaviorRef – ignore if present
+            if (!genericArgs.empty()) {
+                errorAt(DiagCode::E2002, "generic arguments not allowed on method reference");
+            }
             return step;
         }
 
         step->kind = PipelineStepKind::BehaviorRef;
         step->typeName = pool_.intern(name);
         step->method = pool_.intern(method);
+        if (!genericArgs.empty()) {
+            errorAt(DiagCode::E2002, "generic arguments not allowed on method reference");
+        }
         return step;
     }
 
@@ -1784,6 +1857,9 @@ PipelineStepPtr Parser::parsePipelineStep() {
             step->ident = pool_.intern(name);
             step->field = pool_.intern(field);
             step->packArgs = std::move(packArgs);
+            if (!genericArgs.empty()) {
+                errorAt(DiagCode::E2002, "generic arguments not allowed on field reference");
+            }
             return step;
         }
 
@@ -1791,10 +1867,13 @@ PipelineStepPtr Parser::parsePipelineStep() {
         step->kind = PipelineStepKind::FieldRef;
         step->ident = pool_.intern(name);
         step->field = pool_.intern(field);
+        if (!genericArgs.empty()) {
+            errorAt(DiagCode::E2002, "generic arguments not allowed on field reference");
+        }
         return step;
     }
 
-    // ── Array indexing: arr[0] or arr[0][1]... ───────────────────────────
+    // ── Array indexing: arr[0] or arr[0][1]... ────────────────────────────
     if (check(TokenType::LBRACKET)) {
         auto addIndex = [&](ExprPtr target, ExprPtr idx) -> ExprPtr {
             auto node = arena_.make<IndexExprAST>();
@@ -1863,13 +1942,17 @@ PipelineStepPtr Parser::parsePipelineStep() {
             return step;
         }
 
+        if (!genericArgs.empty()) {
+            errorAt(DiagCode::E2002, "generic arguments not allowed on array index step");
+        }
+
         step->kind = PipelineStepKind::IndexRef;
         step->ident = pool_.intern(name);
         step->index = std::move(indexChain);
         return step;
     }
 
-    // ── Function call with argument pack ─────────────────────────────────
+    // ── Function call with argument pack (or plain generic function name) ──
     if (check(TokenType::LPAREN)) {
         consume(TokenType::LPAREN, "expected '('");
         std::vector<ExprPtr> packArgs;
@@ -1883,13 +1966,15 @@ PipelineStepPtr Parser::parsePipelineStep() {
         }
         step->kind = PipelineStepKind::ArgPack;
         step->ident = pool_.intern(name);
+        step->genericArgs = std::move(genericArgs);
         step->packArgs = std::move(packArgs);
         return step;
     }
 
-    // ── Plain identifier ─────────────────────────────────────────────────
+    // ── Plain identifier (function reference) with optional generic arguments ──
     step->kind = PipelineStepKind::Ident;
     step->ident = pool_.intern(name);
+    step->genericArgs = std::move(genericArgs);
     return step;
 }
 
