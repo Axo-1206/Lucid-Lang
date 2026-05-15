@@ -1,11 +1,88 @@
 /**
  * @file Parser.cpp
- * 
- * @responsibility Entry point and basic primitives (peek, advance, synchronize).
- * 
- * @logic Root parse() loop and Doc-Comment harvesting.
- * 
- * @related src/diagnostics/DiagnosticEngine.hpp, DiagnosticCodes.hpp
+ *
+ * @responsibility Core parsing infrastructure and top‑level dispatch.
+ *
+ * This file implements the fundamental parser operations:
+ *   - Token stream management (peek, advance, match, consume)
+ *   - Error handling and panic‑mode recovery (synchronize)
+ *   - Doc comment harvesting and attachment
+ *   - Disambiguation helpers (looksLikeType, looksLikeFuncDecl, …)
+ *   - Top‑level parsing (parse, parseDeclaration)
+ *   - Grammar rules that are not expression‑ or declaration‑specific:
+ *       - Parameter groups (parseParamGroup)
+ *       - Return lists (parseReturnList)
+ *       - Generic parameters (parseGenericParams, parseGenericParam)
+ *       - Visibility modifiers (parseVisibility)
+ *
+ * @related_files
+ *   - Parser.hpp – class declaration and interface
+ *   - ParserDecl.cpp – top‑level and local declarations
+ *   - ParserExpr.cpp – expressions, patterns, pipelines, composition
+ *   - ParserStmt.cpp – statements, blocks, control flow
+ *   - ParserType.cpp – type annotations
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * NAVIGATION – Functions in this file (in order of appearance)
+ * ─────────────────────────────────────────────────────────────────────────────
+ *
+ * ██ Constructor & Initialisation
+ *   Parser::Parser()                     – initialise with token stream
+ *
+ * ██ Token Stream Primitives
+ *   peek()                               – current token (skip comments)
+ *   peekNext()                           – one token ahead
+ *   peekAt()                             – Nth token ahead
+ *   advance()                            – consume current token, skip comments
+ *   check() / checkAny()                 – test current token type(s)
+ *   match() / matchAny()                 – test + consume if matches
+ *   consume()                            – require token, else error + recover
+ *   isAtEnd()                            – EOF reached?
+ *   currentLoc() / locOf()               – create SourceLocation from token
+ *   isPrimitiveTypeToken()               – static helper for primitive keywords
+ *
+ *██ Token-skip helpers
+ *   skipComments()                       – advance index over LINE/DOC comments
+ *   skipType()                           – advance over a full type without allocating
+ *
+ * ██ Error Handling & Recovery
+ *   error() / errorAt()                  – record diagnostic
+ *   synchronize()                        – skip to next statement/declaration start
+ *
+ * ██ Visibility & Modifiers
+ *   parseVisibility()                    – pub / export / private
+ *
+ * ██ Function Signature Helpers
+ *   parseParamGroup()                    – '(' [ param_list ] ')'
+ *   parseReturnList()                    – → type or ( type { ',' type } )
+ *
+ * ██ Generic Parameters
+ *   parseGenericParams()                 – '<' generic_param { ',' generic_param } '>'
+ *   parseGenericParam()                  – IDENTIFIER [ ':' trait_constraints ]
+ *
+ * ██ Documentation Comments
+ *   harvestDocComment()                  – collect attached doc comment
+ *
+ * ██ Disambiguation / Lookahead Helpers
+ *   looksLikeType()                      – current token starts a type?
+ *   looksLikeFuncDecl()                  – IDENTIFIER [generics] [qualifiers] '(' … ?
+ *   looksLikeAnonFunc()                  – '(' param_list ')' [ '->' type ] block ?
+ *   looksLikeStructLiteral()             – IDENTIFIER [generics] '{' … ?
+ *   looksLikeStmtStart()                 – token can begin a statement?
+ *   looksLikeDeclStart()                 – token can begin a declaration?
+ *   looksLikeMultiAssignStart()          – IDENTIFIER [suffix] ',' … '=' ?
+ *
+ * ██ Top‑Level Parsing
+ *   parse()                              – program root: package + declarations
+ *   parseTopLevelDecl()                  – wrapper for parseDeclaration(TopLevel)
+ *   parseDeclaration()                   – unified entry for top‑level & local decls
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Note: Expression, statement, declaration, and type parsers are implemented
+ * in their respective translation units (see @related_files). This file
+ * contains only the infrastructure and grammar rules that are not specific
+ * to those categories.
+ * ─────────────────────────────────────────────────────────────────────────────
  */
 
 #include "Parser.hpp"
@@ -190,6 +267,119 @@ bool Parser::isPrimitiveTypeToken(TokenType type) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Token-skip helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+void Parser::skipComments(std::size_t& i) const {
+    while (i < tokens_.size() &&
+           (tokens_[i].type == TokenType::LINE_COMMENT ||
+            tokens_[i].type == TokenType::DOC_COMMENT)) {
+        ++i;
+    }
+}
+
+bool Parser::skipType(std::size_t& i) const {
+    skipComments(i);
+    if (i >= tokens_.size()) return false;
+
+    // Skip qualifiers: ~async, ~noinline, etc.
+    while (i < tokens_.size() && tokens_[i].type == TokenType::TILDE) {
+        ++i;
+        skipComments(i);
+        if (i < tokens_.size() && tokens_[i].type == TokenType::IDENTIFIER) {
+            ++i;
+            skipComments(i);
+        } else {
+            return false;
+        }
+    }
+
+    if (i >= tokens_.size()) return false;
+
+    TokenType tt = tokens_[i].type;
+    if (isPrimitiveTypeToken(tt)) {
+        ++i;
+    } else if (tt == TokenType::IDENTIFIER) {
+        ++i;
+        skipComments(i);
+        // Generic args? < T, U >
+        if (i < tokens_.size() && tokens_[i].type == TokenType::LESS) {
+            int depth = 1;
+            ++i;
+            while (i < tokens_.size() && depth > 0) {
+                TokenType innerT = tokens_[i].type;
+                if (innerT == TokenType::LESS) ++depth;
+                else if (innerT == TokenType::GREATER) --depth;
+                else if (innerT == TokenType::SEMICOLON || innerT == TokenType::RBRACE) return false;
+                ++i;
+            }
+            if (depth > 0) return false;
+        }
+    } else if (tt == TokenType::LBRACKET) {
+        ++i;
+        skipComments(i);
+        // [N] or [] or [*]
+        if (i < tokens_.size() && (tokens_[i].type == TokenType::INT_LITERAL || tokens_[i].type == TokenType::MUL)) {
+            ++i;
+            skipComments(i);
+        }
+        if (i < tokens_.size() && tokens_[i].type == TokenType::RBRACKET) {
+            ++i;
+            if (!skipType(i)) return false;
+        } else {
+            return false;
+        }
+    } else if (tt == TokenType::AMPERSAND || tt == TokenType::MUL) {
+        ++i;
+        if (!skipType(i)) return false;
+    } else if (tt == TokenType::LPAREN) {
+        // Function type: (params) -> ret
+        int parenDepth = 1;
+        ++i;
+        while (i < tokens_.size() && parenDepth > 0) {
+            TokenType innerT = tokens_[i].type;
+            if (innerT == TokenType::LPAREN) ++parenDepth;
+            else if (innerT == TokenType::RPAREN) --parenDepth;
+            else if (innerT == TokenType::SEMICOLON || innerT == TokenType::RBRACE) return false;
+            ++i;
+        }
+        if (parenDepth > 0) return false;
+        
+        skipComments(i);
+        // Optional return type
+        if (i < tokens_.size() && tokens_[i].type == TokenType::ARROW) {
+            ++i;
+            skipComments(i);
+            // return list can be (T, U) or T
+            if (i < tokens_.size() && tokens_[i].type == TokenType::LPAREN) {
+                int pDepth = 1;
+                ++i;
+                while (i < tokens_.size() && pDepth > 0) {
+                    TokenType innerT = tokens_[i].type;
+                    if (innerT == TokenType::LPAREN) ++pDepth;
+                    else if (innerT == TokenType::RPAREN) --pDepth;
+                    else if (innerT == TokenType::SEMICOLON || innerT == TokenType::RBRACE) return false;
+                    ++i;
+                }
+                if (pDepth > 0) return false;
+            } else {
+                if (!skipType(i)) return false;
+            }
+        }
+    } else {
+        return false;
+    }
+
+    // Optional nullable suffix
+    skipComments(i);
+    if (i < tokens_.size() && tokens_[i].type == TokenType::QUESTION) {
+        ++i;
+    }
+
+    return true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Error handling & recovery
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -274,11 +464,42 @@ Visibility Parser::parseVisibility() {
 // ─────────────────────────────────────────────────────────────────────────────
 // parseParamGroup
 //
+// Parses a single parameter group: '(' [ param_list ] ')'
+//
 // Grammar:
 //   param_group := '(' [ param_list ] ')'
 //   param_list  := param { [','] param } [ [','] variadic_param ]
+//   param       := IDENTIFIER type
+//   variadic_param := IDENTIFIER '...' type
 //
-// Returns the list of params for a single group. Variadic must be last.
+// Returns a vector of ParamAST nodes (may be empty if no parameters).
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the opening '(' (expected, reports error if missing).
+// - Iterates until the closing ')' or EOF.
+// - For each parameter:
+//     * Consumes an IDENTIFIER (parameter name).
+//     * Optionally consumes a VARIADIC token '...' (if present).
+//     * Calls parseType() to consume the type annotation.
+// - Finally consumes the closing ')' (reports error if missing).
+//
+// ─── Loop Safety & Infinite Loop Prevention ─────────────────────────────────
+// - After parsing the name and optional '...', the position is saved (savedPos).
+// - If parseType() does NOT advance pos_ (pos_ == savedPos):
+//     * Reports an error "expected parameter type, no token consumed".
+//     * Forces consumption of one token (advance()) to avoid getting stuck.
+//     * Breaks out of the parameter loop (no further parameters in this group).
+// - If parseType() returns an UnknownTypeAST (invalid syntax):
+//     * Reports an error "invalid parameter type".
+//     * Breaks out of the loop (does NOT add this parameter).
+// - Normal progress (pos_ != savedPos and valid type) adds the parameter and continues.
+//
+// ─── Error Recovery ─────────────────────────────────────────────────────────
+// - On missing '(' or ')', consume(TokenType::LPAREN/RPAREN) records error and
+//   consumes at least one token, then returns whatever was parsed (possibly empty).
+// - Malformed parameters (missing name, missing type) are skipped, and the loop
+//   either breaks or continues depending on the error type, always guaranteeing
+//   forward progress.
 // ─────────────────────────────────────────────────────────────────────────────
 std::vector<ASTPtr<ParamAST>> Parser::parseParamGroup() {
     LUC_LOG_PARSER_VERBOSE("parseParamGroup: parsing parameter group");
@@ -443,18 +664,54 @@ std::vector<TypePtr> Parser::parseReturnList() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Generic
+// Generic Parameters
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────────────────────
 // parseGenericParams
 //
+// Parses a list of generic type parameters on a declaration.
+//
 // Grammar:
 //   generic_params := '<' generic_param { [','] generic_param } '>'
 //
 // Called on the declaration side (func, struct, trait, impl, type alias).
-// For the use side (call sites, named types), use parseGenericArgs() in
-// ParserType.cpp.
+// For the use side (generic arguments at call sites), see parseGenericArgs()
+// in ParserType.cpp.
+//
+// Returns a vector of GenericParamPtr (may be empty if no parameters or empty list).
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the opening '<' (expected, reports error if missing).
+// - If the next token is '>', consumes it and returns empty list (zero params).
+// - Iterates until '>' or EOF:
+//     * Optionally consumes a COMMA (between parameters).
+//     * Calls parseGenericParam() to consume one generic parameter.
+// - Finally consumes the closing '>' (reports error if missing).
+//
+// ─── Loop Safety & Infinite Loop Prevention ─────────────────────────────────
+// - Uses a consecutive error counter (max 5) to prevent endless error loops.
+// - For each iteration:
+//     * Saves current position (savedPos) before calling parseGenericParam().
+//     * If parseGenericParam() returns nullptr:
+//         - If pos_ == savedPos (no progress): consumes one token, increments error
+//           counter, sets stalled flag, and breaks out of loop.
+//         - Else (progress made but parsing failed): increments error counter,
+//           continues to next parameter (does NOT push anything).
+//     * If parseGenericParam() succeeds: pushes parameter, resets error counter.
+// - If consecutiveErrors reaches MAX_CONSECUTIVE_ERRORS (5):
+//     * Reports an error and skips tokens until the closing '>' (or EOF).
+//     * Sets stalled flag, then exits loop.
+// - After loop exits (either normally or stalled), if stalled, skips remaining
+//   tokens until '>' to ensure parser can continue.
+// - Finally consumes the closing '>' – if missing, reports error.
+//
+// ─── Error Recovery ─────────────────────────────────────────────────────────
+// - Missing '<' or '>' are caught by consume() which records an error and forces
+//   token consumption.
+// - Invalid generic parameters are skipped individually; the loop continues to
+//   parse the next parameter if possible.
+// - Too many errors cause a skip to the closing '>', avoiding a cascading failure.
 // ─────────────────────────────────────────────────────────────────────────────
 std::vector<GenericParamPtr> Parser::parseGenericParams() {
     LUC_LOG_PARSER_VERBOSE("parseGenericParams: starting");
@@ -527,12 +784,44 @@ std::vector<GenericParamPtr> Parser::parseGenericParams() {
 // ─────────────────────────────────────────────────────────────────────────────
 // parseGenericParam
 //
+// Parses a single generic type parameter (with optional trait constraints).
+//
 // Grammar:
 //   generic_param   := IDENTIFIER
 //                    | IDENTIFIER ':' IDENTIFIER
 //                    | IDENTIFIER ':' IDENTIFIER { '+' IDENTIFIER }
 //
-// Examples:  T     K : Hashable     V : Hashable + Comparable
+// Examples:
+//   T
+//   K : Hashable
+//   V : Hashable + Comparable + Printable
+//
+// Returns a GenericParamPtr (never nullptr on success; on error returns nullptr
+// after reporting an error).
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes an IDENTIFIER (the parameter name). If missing, reports error and
+//   returns nullptr (caller must handle recovery).
+// - Optionally, if a COLON ':' is present:
+//     * Consumes the first trait name (IDENTIFIER) – required after ':'.
+//     * While a PLUS '+' is present: consumes the next trait name (IDENTIFIER).
+// - Does NOT consume any tokens beyond the constraint list (i.e., stops before
+//   the next comma, '>', or end of parameter list).
+//
+// ─── Loop Safety ────────────────────────────────────────────────────────────
+// - No long‑running loops; the only loop is over optional '+' constraints.
+// - Each iteration consumes exactly one '+' token and one IDENTIFIER.
+// - If a '+' is present but no IDENTIFIER follows, reports error and breaks
+//   the loop (prevents infinite loop on malformed input).
+// - The loop terminates naturally when no further '+' tokens are found.
+//
+// ─── Error Recovery ─────────────────────────────────────────────────────────
+// - Missing identifier after ':' or '+' triggers an error, but the function still
+//   returns the partially constructed GenericParamAST (with whatever constraints
+//   were successfully parsed). This allows the caller to continue parsing.
+// - The parser does NOT attempt to skip ahead; it simply stops consuming further
+//   constraints and returns. The caller (parseGenericParams) may then decide to
+//   skip the entire parameter or continue to the next one.
 // ─────────────────────────────────────────────────────────────────────────────
 GenericParamPtr Parser::parseGenericParam() {
     LUC_LOG_PARSER_VERBOSE("parseGenericParam: parsing");
@@ -573,7 +862,7 @@ GenericParamPtr Parser::parseGenericParam() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Doc comment harvesting (keep existing implementation, just add logging)
+// Doc comment harvesting 
 // ─────────────────────────────────────────────────────────────────────────────
 std::optional<DocComment> Parser::harvestDocComment() {
     if (pos_ == 0) {
@@ -684,118 +973,35 @@ std::optional<DocComment> Parser::harvestDocComment() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Disambiguation helpers
+// Disambiguation / Lookahead Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-void Parser::skipComments(std::size_t& i) const {
-    while (i < tokens_.size() &&
-           (tokens_[i].type == TokenType::LINE_COMMENT ||
-            tokens_[i].type == TokenType::DOC_COMMENT)) {
-        ++i;
-    }
-}
-
-bool Parser::skipType(std::size_t& i) const {
-    skipComments(i);
-    if (i >= tokens_.size()) return false;
-
-    // Skip qualifiers: ~async, ~noinline, etc.
-    while (i < tokens_.size() && tokens_[i].type == TokenType::TILDE) {
-        ++i;
-        skipComments(i);
-        if (i < tokens_.size() && tokens_[i].type == TokenType::IDENTIFIER) {
-            ++i;
-            skipComments(i);
-        } else {
-            return false;
-        }
-    }
-
-    if (i >= tokens_.size()) return false;
-
-    TokenType tt = tokens_[i].type;
-    if (isPrimitiveTypeToken(tt)) {
-        ++i;
-    } else if (tt == TokenType::IDENTIFIER) {
-        ++i;
-        skipComments(i);
-        // Generic args? < T, U >
-        if (i < tokens_.size() && tokens_[i].type == TokenType::LESS) {
-            int depth = 1;
-            ++i;
-            while (i < tokens_.size() && depth > 0) {
-                TokenType innerT = tokens_[i].type;
-                if (innerT == TokenType::LESS) ++depth;
-                else if (innerT == TokenType::GREATER) --depth;
-                else if (innerT == TokenType::SEMICOLON || innerT == TokenType::RBRACE) return false;
-                ++i;
-            }
-            if (depth > 0) return false;
-        }
-    } else if (tt == TokenType::LBRACKET) {
-        ++i;
-        skipComments(i);
-        // [N] or [] or [*]
-        if (i < tokens_.size() && (tokens_[i].type == TokenType::INT_LITERAL || tokens_[i].type == TokenType::MUL)) {
-            ++i;
-            skipComments(i);
-        }
-        if (i < tokens_.size() && tokens_[i].type == TokenType::RBRACKET) {
-            ++i;
-            if (!skipType(i)) return false;
-        } else {
-            return false;
-        }
-    } else if (tt == TokenType::AMPERSAND || tt == TokenType::MUL) {
-        ++i;
-        if (!skipType(i)) return false;
-    } else if (tt == TokenType::LPAREN) {
-        // Function type: (params) -> ret
-        int parenDepth = 1;
-        ++i;
-        while (i < tokens_.size() && parenDepth > 0) {
-            TokenType innerT = tokens_[i].type;
-            if (innerT == TokenType::LPAREN) ++parenDepth;
-            else if (innerT == TokenType::RPAREN) --parenDepth;
-            else if (innerT == TokenType::SEMICOLON || innerT == TokenType::RBRACE) return false;
-            ++i;
-        }
-        if (parenDepth > 0) return false;
-        
-        skipComments(i);
-        // Optional return type
-        if (i < tokens_.size() && tokens_[i].type == TokenType::ARROW) {
-            ++i;
-            skipComments(i);
-            // return list can be (T, U) or T
-            if (i < tokens_.size() && tokens_[i].type == TokenType::LPAREN) {
-                int pDepth = 1;
-                ++i;
-                while (i < tokens_.size() && pDepth > 0) {
-                    TokenType innerT = tokens_[i].type;
-                    if (innerT == TokenType::LPAREN) ++pDepth;
-                    else if (innerT == TokenType::RPAREN) --pDepth;
-                    else if (innerT == TokenType::SEMICOLON || innerT == TokenType::RBRACE) return false;
-                    ++i;
-                }
-                if (pDepth > 0) return false;
-            } else {
-                if (!skipType(i)) return false;
-            }
-        }
-    } else {
-        return false;
-    }
-
-    // Optional nullable suffix
-    skipComments(i);
-    if (i < tokens_.size() && tokens_[i].type == TokenType::QUESTION) {
-        ++i;
-    }
-
-    return true;
-}
-
+// ─────────────────────────────────────────────────────────────────────────────
+// looksLikeType
+//
+// Predicate that checks whether the current token stream begins with a valid
+// type annotation (primitive, named, array, reference, pointer, or function type).
+//
+// ─── Pure Lookahead – No Token Consumption ─────────────────────────────────
+// - Inspects tokens starting at pos_, skipping comments, but does NOT modify pos_.
+// - Used by callers to decide whether to parse a type or something else.
+//
+// ─── Detection Strategy ─────────────────────────────────────────────────────
+// - Returns true if the current token is a primitive keyword, IDENTIFIER,
+//   LBRACKET, AMPERSAND, MUL, TILDE (qualifier start of function type),
+//   or LPAREN (possible function type start).
+// - For TILDE '~': peeks at the next token; if it is an IDENTIFIER, returns true
+//   (qualifier list is part of a function type). Otherwise false.
+// - For LPAREN '(': returns true conservatively; the caller may need to further
+//   disambiguate between a parenthesised type and a grouped expression (but
+//   in type‑annotation positions, '(' always starts a function type).
+// - For all other tokens, returns false.
+//
+// ─── Loop Safety & Infinite Loop Prevention ─────────────────────────────────
+// - No loops; only a single switch statement with constant‑time lookahead.
+// - Uses peek() and peekNext() which skip comments internally and never advance pos_.
+// - Cannot cause infinite recursion or stalling.
+// ─────────────────────────────────────────────────────────────────────────────
 bool Parser::looksLikeType() const {
     LUC_LOG_PARSER_EXTREME("looksLikeType: checking token '" << peek().value 
                            << "' type=" << static_cast<int>(peek().type));
@@ -863,6 +1069,35 @@ bool Parser::looksLikeType() const {
     return result;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// looksLikeFuncDecl
+//
+// Predicate that checks whether the current position looks like a function
+// declaration (as opposed to a variable declaration) after 'let' or 'const'.
+//
+// ─── Pure Lookahead – No Token Consumption ─────────────────────────────────
+// - Scans forward using a local index `i` (copy of pos_), never modifies pos_.
+// - Skips comments using skipComments(i) where necessary.
+//
+// ─── Detection Strategy ─────────────────────────────────────────────────────
+// 1. Current token must be IDENTIFIER (function name). If not, return false.
+// 2. Optional generic parameter list: < ... > – balanced bracket counting.
+//    - If unbalanced (depth != 0 after scanning), return false.
+// 3. Optional qualifier list: zero or more '~' followed by IDENTIFIER.
+// 4. After skipping these, the next token must be '(' (start of parameter group).
+//    If not, return false.
+//
+// ─── Loop Safety & Infinite Loop Prevention ─────────────────────────────────
+// - The generic parameter scan uses a depth counter and iterates token by token.
+// - Each iteration increments `i`; the loop terminates when depth reaches 0 or
+//   end of file/statement boundary (SEMICOLON, RBRACE, EOF) is encountered.
+// - The qualifier loop iterates at most once per '~' token; each iteration consumes
+//   two tokens ('~' and IDENTIFIER) or fails early.
+// - The overall function is bounded by the length of the token stream, and
+//   the loops are guaranteed to make progress because `i` is incremented each
+//   iteration.
+// - Because this is a pure lookahead, infinite recursion is impossible.
+// ─────────────────────────────────────────────────────────────────────────────
 bool Parser::looksLikeFuncDecl() const {
     LUC_LOG_PARSER_VERBOSE("looksLikeFuncDecl: starting at pos=" << pos_ 
                            << ", token='" << peek().value << "'");
@@ -929,6 +1164,45 @@ bool Parser::looksLikeFuncDecl() const {
     return true;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// looksLikeAnonFunc
+//
+// Predicate that checks whether the current position looks like an anonymous
+// function expression (as opposed to a parenthesised grouped expression).
+//
+// Grammar of an anonymous function:
+//   [ '~' IDENTIFIER ]* '(' param_list ')' { '(' param_list ')' }
+//   [ '->' return_list ] block
+//
+// ─── Pure Lookahead – No Token Consumption ─────────────────────────────────
+// - Uses a local index `i` that starts at pos_. Does not modify parser state.
+// - Skips comments using skipComments(i) and inline checks.
+//
+// ─── Detection Strategy ─────────────────────────────────────────────────────
+// 1. Skip optional qualifiers ('~' IDENTIFIER) – though anonymous functions
+//    should not have them, the predicate still handles them.
+// 2. There must be at least one '(' (start of first parameter group).
+// 3. Parse the first parameter group by scanning for matching ')' (handles nesting).
+//    - Uses a helper lambda parseOneGroup that advances `i` past a complete
+//      parameter group, respecting parentheses depth.
+// 4. Parse additional curried parameter groups (zero or more) similarly.
+// 5. After all parameter groups, skip comments and look at the next token:
+//    - If it is '{' → void anonymous function (no return type), return true.
+//    - If it is '->' → advance past '->', skip comments, and check if the following
+//      token can start a type (primitive, identifier, '[', '&', '*', '(').
+//      If yes → return true.
+// 6. Otherwise return false.
+//
+// ─── Loop Safety & Infinite Loop Prevention ─────────────────────────────────
+// - The outer while loop over curried groups calls parseOneGroup each time.
+// - parseOneGroup advances `j` until the matching ')' is found; it strictly
+//   increments the index, so it makes progress.
+// - If parseOneGroup returns without making progress (i == startPos), the function
+//   returns false immediately, preventing an infinite loop.
+// - The total number of iterations is bounded by the number of '(' tokens in the
+//   token stream.
+// - Because `i` is a local copy, the parser’s actual position (pos_) is untouched.
+// ─────────────────────────────────────────────────────────────────────────────
 bool Parser::looksLikeAnonFunc() const {
     std::size_t i = pos_;
 
@@ -1019,6 +1293,39 @@ bool Parser::looksLikeAnonFunc() const {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// looksLikeStructLiteral
+//
+// Predicate that checks whether the current position looks like a struct literal
+// expression: IDENTIFIER [ generic_args ] '{' ...
+//
+// Used in parsePrimaryExpr to distinguish a struct literal from a plain identifier
+// or a block statement.
+//
+// ─── Pure Lookahead – No Token Consumption ─────────────────────────────────
+// - Uses a local index `i` starting at pos_ + 1. Does not modify pos_.
+// - Skips comments inline where necessary.
+//
+// ─── Detection Strategy ─────────────────────────────────────────────────────
+// 1. Current token must be IDENTIFIER (struct type name). If not, return false.
+// 2. Optional generic argument list: `< ... >` – balanced bracket counting.
+//    - Depth starts at 0; if a '<' is found, depth becomes 1 and the scan
+//      proceeds until depth returns to 0 or a statement boundary is hit.
+//    - Comments are skipped during the scan.
+// 3. After the optional generic list (or immediately after the identifier),
+//    the next token must be LBRACE '{'. If not, return false.
+// 4. Returns true only if depth == 0 and a '{' is found.
+//
+// ─── Loop Safety & Infinite Loop Prevention ─────────────────────────────────
+// - The generic argument scan uses a depth counter and strictly increments `i`
+//   each iteration. The loop terminates when depth == 0 or end of file/statement
+//   boundary is reached.
+// - If the generic brackets are unbalanced (depth never returns to 0), the function
+//   returns false (since the final condition requires depth == 0).
+// - Because the scan is bounded by the token stream length and each iteration
+//   advances `i`, infinite loops are impossible.
+// - The function does not call any other parsing functions that might modify state.
+// ─────────────────────────────────────────────────────────────────────────────
 bool Parser::looksLikeStructLiteral() const {
     if (!check(TokenType::IDENTIFIER)) {
         LUC_LOG_PARSER_EXTREME("looksLikeStructLiteral: not IDENTIFIER, false");
@@ -1053,6 +1360,35 @@ bool Parser::looksLikeStructLiteral() const {
     return result;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// looksLikeStmtStart
+//
+// Predicate that checks whether the current token can begin a statement.
+//
+// Used in parseStmt() to decide whether to parse a statement or treat the input
+// as an expression statement (fallback).
+//
+// ─── Pure Lookahead – No Token Consumption ─────────────────────────────────
+// - Only inspects the current token (peek()) and possibly its type category.
+// - Does not advance pos_ or modify any state.
+//
+// ─── Detection Strategy ─────────────────────────────────────────────────────
+// Returns true if the current token is any of:
+//   - Declaration / control‑flow keywords:
+//       LET, CONST, IF, FOR, WHILE, DO, RETURN, BREAK, CONTINUE, MATCH, SWITCH
+//   - Compiler directives:
+//       AT_SIGN, HASH
+//   - Type / local declaration keywords:
+//       TYPE, STRUCT, ENUM, TRAIT, IMPL, FROM
+//   - Otherwise, falls back to checking expression starters:
+//       looksLikeType(), IDENTIFIER, primitive type keywords, literals,
+//       unary operators (MINUS, NOT, BIT_NOT, AMPERSAND), AWAIT, LPAREN.
+//
+// ─── Loop Safety & Infinite Loop Prevention ─────────────────────────────────
+// - No loops; only a switch statement with constant‑time checks.
+// - Calls looksLikeType() which itself is a pure lookahead with no loops.
+// - Cannot cause infinite recursion or stalling.
+// ─────────────────────────────────────────────────────────────────────────────
 bool Parser::looksLikeStmtStart() const {
     switch (peek().type) {
         case TokenType::LET:
@@ -1096,6 +1432,30 @@ bool Parser::looksLikeStmtStart() const {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// looksLikeDeclStart
+//
+// Predicate that checks whether the current token can begin a top‑level or local
+// declaration (as opposed to a statement or expression).
+//
+// Used in synchronize() to stop skipping tokens when a declaration boundary is
+// reached during error recovery.
+//
+// ─── Pure Lookahead – No Token Consumption ─────────────────────────────────
+// - Only inspects the current token (peek()). Does not modify pos_.
+//
+// ─── Detection Strategy ─────────────────────────────────────────────────────
+// Returns true if the current token is any of:
+//   - AT_SIGN (attribute, may precede any declaration)
+//   - PACKAGE, USE, PUB, EXPORT
+//   - STRUCT, ENUM, TRAIT, IMPL, TYPE, FROM
+//   - LET, CONST
+// For all other token types, returns false.
+//
+// ─── Loop Safety & Infinite Loop Prevention ─────────────────────────────────
+// - No loops; simple switch statement.
+// - Cannot cause infinite recursion or stalling.
+// ─────────────────────────────────────────────────────────────────────────────
 bool Parser::looksLikeDeclStart() const {
     switch (peek().type) {
         case TokenType::AT_SIGN:
@@ -1119,6 +1479,48 @@ bool Parser::looksLikeDeclStart() const {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// looksLikeMultiAssignStart
+//
+// Predicate that checks whether the current position looks like a multi‑assignment
+// statement (reassignment to multiple existing variables), as opposed to a
+// single assignment or a multi‑variable declaration.
+//
+// Used in parseStmt() to detect patterns like:
+//   a, b = f()          -- reassignment
+//   arr[i], obj.field = g()   -- with indices and field accesses
+//
+// ─── Pure Lookahead – No Token Consumption ─────────────────────────────────
+// - Uses a local index `i` starting at pos_. Does not modify pos_.
+// - Skips comments using skipComments(i) where needed.
+// - Does NOT parse full expressions; only scans for syntactic pattern.
+//
+// ─── Detection Strategy ─────────────────────────────────────────────────────
+// 1. Skip leading comments.
+// 2. The first token must be IDENTIFIER (start of first lvalue). If not, false.
+// 3. Consume the identifier, then optionally parse suffixes that are part of
+//    the same lvalue:
+//        - '.' IDENTIFIER (field access)
+//        - '[' ... ']' (array/slice index, skips bracket content with depth)
+//    The scan stops when a token that cannot be part of an lvalue is encountered.
+// 4. After the first lvalue, skip comments and expect a COMMA ','.
+//    If no comma, return false (not a multi‑assign).
+// 5. Once a comma is found, scan forward until we see:
+//        - ASSIGN '=' → return true (multi‑assign)
+//        - SEMICOLON, LBRACE, RBRACE, EOF → return false (no assignment)
+//    Any other tokens are skipped (they are part of subsequent lvalues).
+//
+// ─── Loop Safety & Infinite Loop Prevention ─────────────────────────────────
+// - The suffix scanning loop increments `i` each iteration (consumes '.' + field
+//   or bracket contents). Bracket scanning uses a depth counter and strictly
+//   advances `i`; it terminates when depth reaches 0 or end of file.
+// - The final scan for '=' also increments `i` each iteration, bounded by the
+//   distance to the next ASSIGN or a statement‑terminating token.
+// - Because `i` is a local copy and always moves forward, the function cannot
+//   loop indefinitely. Each pass over a token consumes it exactly once.
+// - The function does not allocate AST nodes or call parseType/parseExpr,
+//   so no side effects occur.
+// ─────────────────────────────────────────────────────────────────────────────
 bool Parser::looksLikeMultiAssignStart() const {
     std::size_t i = pos_;  // start from current parser position (without consuming)
 
@@ -1197,10 +1599,48 @@ bool Parser::looksLikeMultiAssignStart() const {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// parse()  — program root
+// Top‑Level Parsing
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// parse
+//
+// Parses the entire token stream and returns the root ProgramAST node.
 //
 // Grammar:
 //   program := package_decl { top_level_decl }
+//
+// ─── Overall Flow ───────────────────────────────────────────────────────────
+// 1. Creates a ProgramAST node.
+// 2. Parses the mandatory package declaration (first non‑comment line).
+// 3. Repeatedly parses top‑level declarations (functions, structs, enums, etc.)
+//    until EOF_TOKEN is reached.
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes tokens sequentially from pos_ = 0 to end.
+// - After parsing the package declaration, pos_ is positioned at the first token
+//   after the package name.
+// - For each top‑level declaration, calls parseTopLevelDecl() which consumes the
+//   entire declaration (including any trailing semicolons or whitespace).
+// - Stops when peek() returns EOF_TOKEN.
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - If the package declaration is missing or invalid, a dummy PackageDeclAST is
+//   inserted and synchronize() is called to skip to the next valid token.
+// - If parseTopLevelDecl() returns nullptr (parsing failure), an UnknownDeclAST
+//   is inserted and synchronize() is called to resume parsing at the next
+//   declaration boundary.
+// - All errors are reported via the diagnostic engine (dc_).
+// - The function never returns nullptr; it always returns a ProgramAST, even if
+//   it contains UnknownDeclAST nodes. The caller should check dc_.hasErrors()
+//   to determine whether the parse was successful.
+//
+// ─── Infinite Loop Prevention ───────────────────────────────────────────────
+// - The main loop advances by consuming at least one token per iteration:
+//     * On success, parseTopLevelDecl() consumes the declaration.
+//     * On failure, synchronize() consumes tokens until a declaration boundary.
+// - The loop terminates when isAtEnd() returns true (EOF_TOKEN reached).
+// - No unbounded recursion; each top‑level declaration is parsed independently.
 // ─────────────────────────────────────────────────────────────────────────────
 ASTPtr<ProgramAST> Parser::parse() {
     LUC_LOG_PARSER("\n === PARSE START ===");
@@ -1284,13 +1724,82 @@ ASTPtr<ProgramAST> Parser::parse() {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // parseTopLevelDecl
+//
+// Convenience wrapper that calls parseDeclaration(DeclContext::TopLevel).
+//
+// ─── Purpose ────────────────────────────────────────────────────────────────
+// Provides a named entry point for top‑level declaration parsing, used by
+// parse() and potentially other callers that need to parse a declaration in
+// file scope.
+//
+// ─── Token Consumption ──────────────────────────────────────────────────────
+// - Delegates entirely to parseDeclaration(TopLevel). The token consumption,
+//   error recovery, and loop safety are the same as parseDeclaration.
+// - Does not consume any tokens on its own; merely forwards the call.
+//
+// ─── Error Handling ─────────────────────────────────────────────────────────
+// - Returns nullptr if no valid declaration could be parsed. The caller
+//   (parse()) is responsible for inserting an UnknownDeclAST and calling
+//   synchronize().
+// - Errors are reported via the diagnostic engine inside parseDeclaration.
 // ─────────────────────────────────────────────────────────────────────────────
 DeclPtr Parser::parseTopLevelDecl() {
     return parseDeclaration(DeclContext::TopLevel);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// parseDeclaration (unified entry point for both top‑level and local declarations)
+// parseDeclaration
+//
+// Unified entry point for parsing a declaration (either top‑level or local).
+//
+// Grammar (common prefixes):
+//   declaration := [ attributes ] [ visibility ] actual_decl
+//
+//   actual_decl := use_decl | struct_decl | enum_decl | trait_decl | type_decl
+//                | impl_decl | from_decl | var_decl | func_decl
+//
+// ─── Context (DeclContext) ──────────────────────────────────────────────────
+// - TopLevel   : File scope. Visibility modifiers (pub/export) and attributes
+//                are allowed. The entire file is parsed with this context.
+// - Local      : Inside a block. Visibility modifiers are forbidden (error).
+//                Attributes are still allowed.
+//
+// ─── Token Consumption ──────────────────────────────────────────────────────
+// 1. Parses zero or more attributes (parseAttributes()) – consumes '@' tokens.
+// 2. If context == TopLevel, parses optional visibility (pub/export) token.
+//    If context == Local and pub/export appears, reports error and consumes it.
+// 3. Dispatches to the appropriate sub‑parser based on the current token:
+//        USE, STRUCT, ENUM, TRAIT, IMPL, FROM, TYPE, LET, CONST.
+//    Each sub‑parser consumes the complete declaration (including its body,
+//    trailing semicolon, etc.).
+// 4. After successful dispatch, attaches the parsed attributes to the declaration
+//    node and sets its source location.
+//
+// ─── Distinguishing Variable vs Function Declaration ───────────────────────
+// - For LET and CONST, the sub‑parser cannot be determined by the keyword alone.
+//   The function looks ahead using looksLikeFuncDecl() to decide:
+//        true  → parseFuncDecl()
+//        false → parseVarDecl()
+//   This lookahead does not consume tokens; it only inspects the token stream.
+//
+// ─── Error Handling & Recovery ─────────────────────────────────────────────
+// - If the current token does not match any known declaration start:
+//     * Reports an error (appropriate message based on context).
+//     * Returns nullptr; the caller (parse()) inserts an UnknownDeclAST and calls
+//       synchronize() to recover.
+// - If an attribute or visibility modifier is present but no valid declaration
+//   follows, an error is reported and nullptr is returned.
+// - Sub‑parsers are responsible for their own internal error recovery and
+//   progress guarantees.
+//
+// ─── Infinite Loop Prevention ───────────────────────────────────────────────
+// - The function does not contain long loops; dispatch is a single pass.
+// - Sub‑parsers (e.g., parseFuncDecl, parseStructDecl) are responsible for
+//   making progress and not stalling (they have their own safety guards).
+// - The lookahead for looksLikeFuncDecl() is pure and does not modify state.
+// - If no dispatch matches, the function returns nullptr without consuming
+//   any tokens – the caller must consume one token or call synchronize() to
+//   avoid infinite loops.
 // ─────────────────────────────────────────────────────────────────────────────
 DeclPtr Parser::parseDeclaration(DeclContext ctx) {
     SourceLocation loc = currentLoc();

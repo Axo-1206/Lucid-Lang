@@ -624,21 +624,7 @@ private:
     // than a variable declaration.
     bool looksLikeFuncDecl() const;
 
-    /**
-    * @brief Performs a non‑consuming lookahead to detect an anonymous function.
-    *
-    * The grammar for an anonymous function is:
-    *   [ '~' IDENTIFIER ]* '(' [ param_list ] ')' [ return_type ] block
-    * where param_list is ( IDENTIFIER type [ ',' ... ] ) and block is '{' ... '}'.
-    * Currying (multiple parameter groups) is supported, e.g. (a int) (b int) int { ... }.
-    *
-    * This function returns true when the current token stream matches a valid
-    * anonymous function header. It never modifies the parser position.
-    *
-    * Used in parsePipelineStep to avoid misclassifying a parenthesised expression
-    * (e.g., (x + y)) as an anonymous function, which would produce confusing
-    * error messages.
-    */
+    // Performs a non‑consuming lookahead to detect an anonymous function.
     bool looksLikeAnonFunc() const;
 
     // True when current token is IDENTIFIER followed immediately by '{' in an

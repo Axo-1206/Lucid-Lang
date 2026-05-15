@@ -1,11 +1,88 @@
 /**
  * @file ParserType.cpp
  *
- * @responsibility Parses type annotations and signatures.
+ * @responsibility Parses all type annotations and signatures.
  *
- * @grammar_rules Primitive types, Nullable (?), Generics (<>), Functions.
+ * This file implements the complete type parsing subsystem:
+ *   - Root type parser (parseType) with optional nullable suffix
+ *   - Base type dispatcher (parseBaseType) for all type forms
+ *   - Primitive types (bool, int, float, string, etc.)
+ *   - Named types (user-defined types, with optional generic arguments)
+ *   - Array types: fixed [N]T, slice []T, dynamic [*]T
+ *   - Reference types &T (safe managed references)
+ *   - Raw pointer types *T (extern/FFI only)
+ *   - Function types with qualifiers, parameter groups, and return lists
+ *   - Generic argument lists for type instantiation
+ *   - Nullable wrapper (?) post-processing
  *
- * @related src/diagnostics/DiagnosticEngine.hpp, DiagnosticCodes.hpp
+ * All type parsers consume tokens from the parser's stream and build
+ * corresponding TypeAST nodes. They include error recovery and progress
+ * guarantees to prevent infinite loops.
+ *
+ * @related_files
+ *   - Parser.hpp – class declaration and shared utilities
+ *   - Parser.cpp – core token stream primitives
+ *   - ParserDecl.cpp – declaration parsing (uses type parsers for annotations)
+ *   - ParserExpr.cpp – expression parsing (uses type parsers for casts and is-expr)
+ *   - ParserStmt.cpp – statement parsing (uses type parsers for for-loop types)
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * NAVIGATION – Functions in this file (in order of appearance)
+ * ─────────────────────────────────────────────────────────────────────────────
+ *
+ * ██ Root Type Parsers
+ *   parseType()                      – type := base_type [ '?' ]
+ *   parseBaseType()                  – dispatches to concrete type parsers
+ *
+ * ██ Concrete Type Parsers
+ *   parsePrimitiveType()             – bool, int, float, string, any, etc.
+ *   parseNamedType()                 – IDENTIFIER [ '<' generic_args '>' ]
+ *   parseArrayType()                 – [N]T | []T | [*]T
+ *   parseRefType()                   – &T (safe reference)
+ *   parsePtrType()                   – *T (raw pointer, extern only)
+ *   parseFuncType()                  – [qualifiers] param_group+ [ '->' return_list ]
+ *
+ * ██ Helpers
+ *   wrapNullable()                   – optionally wraps type in NullableTypeAST
+ *   parseGenericArgs()               – '<' type { ',' type } '>'
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * TYPE GRAMMAR (from LUC_GRAMMAR.md)
+ *
+ *   type            := base_type [ '?' ]
+ *   base_type       := primitive_type | IDENTIFIER | array_type
+ *                    | ref_type | ptr_type | func_type
+ *   primitive_type  := 'bool' | 'byte' | 'short' | 'int' | 'long'
+ *                    | 'ubyte' | 'ushort' | 'uint' | 'ulong'
+ *                    | 'int8' | 'int16' | 'int32' | 'int64'
+ *                    | 'uint8' | 'uint16' | 'uint32' | 'uint64'
+ *                    | 'float' | 'double' | 'decimal'
+ *                    | 'string' | 'char' | 'any'
+ *   array_type      := '[' INT_LITERAL ']' type   (fixed)
+ *                    | '[' ']' type               (slice)
+ *                    | '[' '*' ']' type           (dynamic)
+ *   ref_type        := '&' type
+ *   ptr_type        := '*' type
+ *   func_type       := [ qualifier_list ] param_group { param_group }
+ *                      [ '->' return_list ]
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * NULLABLE RULES
+ *
+ *   - '?' suffix attaches to the immediately preceding type.
+ *   - Generic arguments always come before '?': List<int>? not List<int?>.
+ *   - Not called on ref_type or ptr_type (nullable reference is &T? where '?'
+ *     attaches to T, not to &).
+ *   - Function types are not nullable directly; use a named type alias.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * LOOP SAFETY & PROGRESS GUARDS
+ *
+ *   - parseArrayType() includes bracket depth tracking and error recovery.
+ *   - parseGenericArgs() uses progress guards to prevent infinite loops.
+ *   - All type parsers consume at least one token on success or report an error.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
  */
 
 #include "Parser.hpp"
@@ -19,37 +96,46 @@
 #include <string>
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ParserType.cpp
-//
-// Implements every type-annotation parse function declared in Parser.hpp.
-// No expression or statement parsing happens here — this file is purely about
-// turning a token stream position that starts a type annotation into the
-// correct TypeAST subtree.
-//
-// Entry point:  TypePtr parseType()
-//
-// Call hierarchy:
-//
-//   parseType()               
-//     └─ parseBaseType()      
-//          ├─ parsePrimitiveType()
-//          ├─ parseNamedType()     — IDENTIFIER [ '<' generic_args '>' ]
-//          ├─ parseArrayType()     — '[' ...  →  fixed / slice / dynamic
-//          ├─ parseRefType()       — '&' T
-//          ├─ parsePtrType()       — '*' T
-//          └─ parseFuncType()      — '(' params ')' [ ret ] [ '?' ]
-//
-//   wrapNullable(inner)       — wraps any TypePtr in NullableTypeAST when '?' follows
-//   parseGenericArgs()        — '<' type { ',' type } '>'
-//
-// Grammar source: LUC_GRAMMAR.md §Types
+// Root Type Parsers
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────────────────────
-// parseType  — root entry point
+// parseType
+//
+// Root entry point for parsing a type annotation.
 //
 // Grammar:
 //   type := base_type [ '?' ]
+//
+// Examples:
+//   int
+//   Vec2?
+//   []string
+//   &T
+//   (x int) -> string
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Calls parseBaseType() to parse the core type (primitive, named, array,
+//   reference, pointer, or function type).
+// - If the next token is '?', consumes it and wraps the result in a
+//   NullableTypeAST.
+// - Does NOT consume any tokens beyond the optional '?'.
+//
+// ─── Return Value ───────────────────────────────────────────────────────────
+// - Returns a TypePtr (never nullptr; on error returns UnknownTypeAST).
+// - The caller should check the diagnostic engine for errors.
+//
+// ─── Error Handling ─────────────────────────────────────────────────────────
+// - If parseBaseType() fails (returns UnknownTypeAST), returns that node
+//   without attempting to parse '?' (since the base type is already invalid).
+// - All errors are reported by the sub‑parsers.
+//
+// ─── Notes ──────────────────────────────────────────────────────────────────
+// - This function is called from many contexts: variable declarations,
+//   function parameters, struct fields, return types, generic arguments,
+//   type casts, and is‑expressions.
+// - The '?' suffix is only valid on value types (primitives, structs, arrays,
+//   named aliases). The semantic pass enforces this restriction.
 // ─────────────────────────────────────────────────────────────────────────────
 TypePtr Parser::parseType() {
     LUC_LOG_TYPE_VERBOSE("=== parseType START ===");
@@ -68,11 +154,46 @@ TypePtr Parser::parseType() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// parseBaseType  — single type
+// parseBaseType
 //
-// Dispatches on the current token to the specific sub-parser.  Each sub-parser
-// is responsible for consuming the tokens that make up its form and calling
-// wrapNullable() on its result before returning.
+// Parses a single type (without the optional nullable suffix).
+//
+// Grammar:
+//   base_type := primitive_type
+//              | named_type
+//              | array_type
+//              | ref_type
+//              | ptr_type
+//              | func_type
+//
+// ─── Dispatch Logic ─────────────────────────────────────────────────────────
+// Dispatches based on the current token:
+//   - Primitive type keywords → parsePrimitiveType()
+//   - IDENTIFIER              → parseNamedType()
+//   - '['                     → parseArrayType()
+//   - '&'                     → parseRefType() (then wrapNullable)
+//   - '*'                     → parsePtrType() (then wrapNullable)
+//   - '(' or '~'              → parseFuncType()
+//   - default                 → returns UnknownTypeAST
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the tokens that form the base type (delegates to sub‑parsers).
+// - Does NOT consume the optional '?' suffix – that is handled by parseType()
+//   calling wrapNullable() after parseBaseType() returns.
+// - For '&' and '*', the sub‑parser returns the raw type; parseBaseType then
+//   calls wrapNullable() to handle any trailing '?'.
+//
+// ─── Error Handling ─────────────────────────────────────────────────────────
+// - If the current token does not match any recognised type start, returns
+//   UnknownTypeAST (no error reported; the caller decides if this is an error).
+// - Sub‑parsers report their own errors.
+//
+// ─── Notes ──────────────────────────────────────────────────────────────────
+// - This function intentionally does NOT handle '?' – that is deferred to
+//   parseType() or wrapNullable() so that all type forms can be uniformly
+//   made nullable.
+// - The dispatch order matches the precedence in the grammar (primitive
+//   keywords before identifiers, etc.).
 // ─────────────────────────────────────────────────────────────────────────────
 TypePtr Parser::parseBaseType() {
     LUC_LOG_TYPE_VERBOSE("parseBaseType: current token = '" << peek().value
@@ -145,7 +266,13 @@ TypePtr Parser::parseBaseType() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Concrete Type Parsers
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
 // parsePrimitiveType
+//
+// Parses a primitive type keyword.
 //
 // Grammar:
 //   primitive_type := 'bool' | 'byte' | 'short' | 'int' | 'long'
@@ -155,7 +282,29 @@ TypePtr Parser::parseBaseType() {
 //                   | 'float' | 'double' | 'decimal'
 //                   | 'string' | 'char' | 'any'
 //
-// Maps each keyword token to its PrimitiveKind and calls wrapNullable().
+// Examples:
+//   int           → PrimitiveTypeAST { primitiveKind = Int }
+//   string        → PrimitiveTypeAST { primitiveKind = String }
+//   float32?      → (after wrapNullable) NullableTypeAST { inner = Float32 }
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the primitive type keyword token.
+// - Does NOT consume any tokens beyond the keyword.
+//
+// ─── Kind Mapping ───────────────────────────────────────────────────────────
+// Maps each TokenType to the corresponding PrimitiveKind enum value.
+// The mapping is exhaustive – every primitive keyword has an entry.
+//
+// ─── Error Handling ─────────────────────────────────────────────────────────
+// - If called on a non‑primitive token (should not happen), reports an internal
+//   error and returns UnknownTypeAST.
+// - The caller (parseBaseType) ensures this function is only called on valid
+//   primitive tokens.
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   PrimitiveTypeAST {
+//       primitiveKind: PrimitiveKind (Bool, Int, String, Float, etc.)
+//   }
 // ─────────────────────────────────────────────────────────────────────────────
 TypePtr Parser::parsePrimitiveType() {
     LUC_LOG_TYPE_VERBOSE("=== parsePrimitiveType START ===");
@@ -251,10 +400,41 @@ TypePtr Parser::parsePrimitiveType() {
 // ─────────────────────────────────────────────────────────────────────────────
 // parseNamedType
 //
+// Parses a named type (user-defined type reference), optionally with generic
+// arguments.
+//
 // Grammar:
 //   named_type := IDENTIFIER [ '<' type { [','] type } '>' ] [ '?' ]
 //
-// Handles both simple named types (Vec2) and generic instantiations (Buffer<int>).
+// Examples:
+//   Vec2
+//   Buffer<int>
+//   Map<string, Vec2>
+//   Option<T>?        (nullable after generic args)
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes an IDENTIFIER (type name).
+// - If the next token is '<', calls parseGenericArgs() to consume the generic
+//   argument list.
+// - Does NOT consume the optional '?' suffix – that is handled by the caller
+//   (parseBaseType calls wrapNullable on the result).
+//
+// ─── Generic Arguments ──────────────────────────────────────────────────────
+// - Generic arguments are parsed as a comma‑separated list of types inside
+//   angle brackets: < T, U, V >
+// - The argument list may be empty (e.g., `Buffer<>` – allowed by grammar).
+// - The semantic pass resolves the type name and validates the argument count.
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing type name (no IDENTIFIER): error reported by caller before call.
+// - Generic argument parsing errors are reported by parseGenericArgs().
+// - Returns a NamedTypeAST even if generic args failed to parse (empty list).
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   NamedTypeAST {
+//       name:         InternedString (the type name)
+//       genericArgs:  vector<TypePtr> (empty if no generic args)
+//   }
 // ─────────────────────────────────────────────────────────────────────────────
 TypePtr Parser::parseNamedType() {
     LUC_LOG_TYPE_VERBOSE("=== parseNamedType START ===");
@@ -279,21 +459,48 @@ TypePtr Parser::parseNamedType() {
 // ─────────────────────────────────────────────────────────────────────────────
 // parseArrayType
 //
-// Grammar:
-//   array_type := '[' INT_LITERAL ']' type      — fixed:   [100]int
-//              |  '[' ']' type                  — slice:   []int
-//              |  '[' '*' ']' type              — dynamic: [*]int
+// Parses an array type – fixed, slice, or dynamic.
 //
-// Multidimensional arrays are handled naturally because the element type is
-// parsed via parseType() which will recursively call parseArrayType() again
-// if the element itself starts with '['.
+// Grammar:
+//   array_type := '[' INT_LITERAL ']' type   -- fixed:   [100]int
+//               | '[' ']' type               -- slice:   []int
+//               | '[' '*' ']' type           -- dynamic: [*]int
 //
 // Examples:
-//   [4]float     →  FixedArrayTypeAST { size=4, element=Float }
-//   []int        →  SliceTypeAST      { element=Int }
-//   [*]Vec2      →  DynamicArrayTypeAST { element=Vec2 }
-//   [][*]float   →  SliceTypeAST      { element=DynamicArrayTypeAST{Float} }
-//   [4][4]float  →  FixedArrayTypeAST { size=4, element=FixedArrayTypeAST{4,Float} }
+//   [4]float     → FixedArrayTypeAST { size=4, element=Float }
+//   []int        → SliceTypeAST { element=Int }
+//   [*]Vec2      → DynamicArrayTypeAST { element=Vec2 }
+//   [][*]float   → SliceTypeAST { element=DynamicArrayTypeAST{Float} }
+//   [4][4]float  → FixedArrayTypeAST { size=4, element=FixedArrayTypeAST{4,Float} }
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the opening '['.
+// - Determines the array kind based on the token after '[':
+//     * '*'        → dynamic array: consumes '*', expects ']', then element type
+//     * ']'        → slice: consumes ']', then element type
+//     * INT_LITERAL → fixed array: consumes the integer, expects ']', then element type
+// - After parsing the element type, calls wrapNullable() to handle optional '?'.
+// - Consumes all tokens that are part of the array type (including nested arrays).
+//
+// ─── Multidimensional Arrays ────────────────────────────────────────────────
+// - Handled naturally because the element type is parsed via parseType(), which
+//   will recursively call parseArrayType() if the element itself starts with '['.
+// - Example: [4][4]float → first parses [4], then element type is [4]float.
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing closing ']' after '*' or size: reports error.
+// - Invalid size literal (non-integer or overflow): reports error, size set to 0.
+// - Missing element type after array brackets: reports error, returns UnknownTypeAST.
+// - Unrecognised content inside brackets: reports error, skips to matching ']'.
+//
+// ─── Loop Safety ────────────────────────────────────────────────────────────
+// - Brackets are balanced using a depth counter when skipping to the matching ']'
+//   on error recovery, guaranteeing progress.
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   FixedArrayTypeAST   → { size: uint64_t, element: TypePtr }
+//   SliceTypeAST        → { element: TypePtr }
+//   DynamicArrayTypeAST → { element: TypePtr }
 // ─────────────────────────────────────────────────────────────────────────────
 TypePtr Parser::parseArrayType() {
     LUC_LOG_TYPE_VERBOSE("=== parseArrayType START ===");
@@ -392,13 +599,39 @@ TypePtr Parser::parseArrayType() {
 // ─────────────────────────────────────────────────────────────────────────────
 // parseRefType
 //
-// Grammar:  ref_type := '&' type
+// Parses a safe managed reference type: &T
 //
-// Produces:  RefTypeAST { inner = parseType() }
+// Grammar:
+//   ref_type := '&' type
 //
-// A '?' after the inner type is handled by wrapNullable inside parseType(),
-// so  &Vec2?  parses as  RefTypeAST{ NullableTypeAST{ Vec2 } }  which means
-// "a reference to a nullable Vec2".
+// Example:
+//   &int           → RefTypeAST { inner = Int }
+//   &Vec2          → RefTypeAST { inner = Vec2 }
+//   &Vec2?         → RefTypeAST { inner = NullableTypeAST { Vec2 } }
+//
+// ─── Semantics ──────────────────────────────────────────────────────────────
+// - References are always valid (non‑nullable by default).
+// - To express a nullable reference, write &T? where '?' attaches to T.
+// - References are used for shared ownership without copying.
+// - Field access through references is supported (ref.field).
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the '&' token.
+// - Parses the inner type using parseBaseType() (not parseType()).
+//   This ensures that &int | string parses as (&int) | string rather than
+//   &(int | string) – note that union types are not in the grammar, but this
+//   avoids ambiguity if they were added.
+// - Does NOT call wrapNullable() on the result – the '?' suffix attaches to the
+//   inner type, not to the reference itself.
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing inner type after '&': reports error, returns UnknownTypeAST.
+// - Inner type parsing errors are reported by parseBaseType().
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   RefTypeAST {
+//       inner: TypePtr (the referenced type)
+//   }
 // ─────────────────────────────────────────────────────────────────────────────
 TypePtr Parser::parseRefType() {
     LUC_LOG_TYPE_VERBOSE("=== parseRefType START ===");
@@ -429,10 +662,41 @@ TypePtr Parser::parseRefType() {
 // ─────────────────────────────────────────────────────────────────────────────
 // parsePtrType
 //
-// Grammar:  ptr_type := '*' type   (extern / FFI only)
+// Parses a raw pointer type: *T (only valid on @extern declarations).
 //
-// The semantic pass enforces the extern-only restriction.  The parser produces
-// PtrTypeAST regardless of context so it can continue and report all errors.
+// Grammar:
+//   ptr_type := '*' type
+//
+// Example:
+//   *uint8         → PtrTypeAST { inner = Uint8 }
+//   *VkInstance    → PtrTypeAST { inner = NamedTypeAST("VkInstance") }
+//
+// ─── The Sealed Conduit Model ───────────────────────────────────────────────
+// - Raw pointers are "sealed conduits" – they cannot be dereferenced directly.
+// - Allowed operations: store, pass to @extern, nil check, pointer intrinsics.
+// - Forbidden operations: dereference (*ptr), field access (ptr.f), indexing,
+//   arithmetic (use #ptrOffset instead).
+// - Boundary crossing: #ptrToRef(ptr) -> &T, #refToPtr(ref) -> *T.
+//
+// ─── Restrictions (Enforced by Semantic Pass) ───────────────────────────────
+// - Raw pointers are only valid inside @extern‑decorated declarations.
+// - The parser produces PtrTypeAST regardless of context; the semantic pass
+//   reports an error if a raw pointer appears outside an extern declaration.
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the '*' token.
+// - Parses the inner type using parseBaseType() (same reasoning as parseRefType).
+// - Does NOT call wrapNullable() on the result – the '?' suffix attaches to the
+//   inner type, not to the pointer itself.
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing inner type after '*': reports error, returns UnknownTypeAST.
+// - Inner type parsing errors are reported by parseBaseType().
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   PtrTypeAST {
+//       inner: TypePtr (the pointed‑to type)
+//   }
 // ─────────────────────────────────────────────────────────────────────────────
 TypePtr Parser::parsePtrType() {
     LUC_LOG_TYPE_VERBOSE("=== parsePtrType START ===");
@@ -457,6 +721,51 @@ TypePtr Parser::parsePtrType() {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // parseFuncType
+//
+// Parses a function type annotation.
+//
+// Grammar:
+//   func_type := [ qualifier_list ] param_group { param_group } [ '->' return_list ]
+//   qualifier_list := { '~' IDENTIFIER }
+//   param_group     := '(' [ param_list ] ')'
+//   return_list     := '(' [ return_type { ',' return_type } ] ')' | return_type
+//
+// Examples:
+//   (x int) -> int
+//   ~async (url string) -> string
+//   (a int)(b int) -> int                    (curried)
+//   (src string) -> (int, string)            (multiple returns)
+//   () -> int                                (zero parameters)
+//
+// ─── Qualifier Handling ─────────────────────────────────────────────────────
+// - Qualifiers (e.g., ~async, ~nullable, ~parallel) are stored raw in
+//   rawQualifiers as InternedStrings.
+// - The parser does NOT validate qualifier names – that is deferred to the
+//   semantic phase which resolves them via QualifierRegistry.
+// - The qualifiers bitmask (sig.qualifiers) is initialised to 0 and filled by
+//   the semantic phase.
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes zero or more '~' IDENTIFIER pairs (qualifiers).
+// - Consumes one or more parameter groups via parseParamGroup().
+// - If '->' is present, consumes it and parses the return list via parseReturnList().
+// - Does NOT consume any tokens beyond the return list.
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - If no parameter group is found after qualifiers, reports an error and returns
+//   UnknownTypeAST (function type must have at least one parameter group).
+// - Missing parameter name inside a group is handled by parseParamGroup().
+// - Return list errors are reported by parseReturnList().
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   FuncTypeAST {
+//       sig: FuncSignature {
+//           rawQualifiers: vector<InternedString>
+//           qualifiers:    uint32_t (0 initially, set by semantic pass)
+//           paramGroups:   vector<vector<ParamPtr>>
+//           returnTypes:   vector<TypePtr>
+//       }
+//   }
 // ─────────────────────────────────────────────────────────────────────────────
 TypePtr Parser::parseFuncType() {
     LUC_LOG_TYPE("parseFuncType");
@@ -509,17 +818,44 @@ TypePtr Parser::parseFuncType() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
 // wrapNullable
 //
-// If the current token is '?', consume it and wrap inner in NullableTypeAST.
-// Otherwise return inner unchanged.
+// Optionally wraps a type in a NullableTypeAST if the next token is '?'.
 //
-// Called at the end of every concrete type parser that can carry '?':
-//   primitive, named, array kinds.
+// Grammar:
+//   nullable_type := type '?'
 //
-// NOT called by:
-//   parseRefType / parsePtrType  — '?' in  &Vec2?  attaches to Vec2, not to &.
-//   parseFuncType                — nullable function uses the outer-paren form.
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - If the current token is '?', consumes it and returns a NullableTypeAST
+//   wrapping the inner type.
+// - Otherwise, returns the inner type unchanged.
+// - Does NOT consume any tokens beyond the optional '?'.
+//
+// ─── Where It Is Called ─────────────────────────────────────────────────────
+// Called by parseType() and by specific type parsers that can be followed by '?':
+//   - parsePrimitiveType()   – int?, string?, bool?
+//   - parseNamedType()       – Vec2?, Buffer<int>?
+//   - parseArrayType()       – [4]float?, []int?, [*]T?
+//
+// ─── Where It Is NOT Called ─────────────────────────────────────────────────
+//   - parseRefType()   – &T? has '?' attach to T, not to & (handled by wrapNullable
+//                        on the inner type after parseRefType returns)
+//   - parsePtrType()   – same reasoning as ref type
+//   - parseFuncType()  – function types are not directly nullable; use a named
+//                        type alias instead
+//
+// ─── Error Handling ─────────────────────────────────────────────────────────
+// - No error reporting – if '?' is present, it is consumed unconditionally.
+// - The semantic pass enforces that '?' is only valid on value types.
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   NullableTypeAST {
+//       inner: TypePtr (the type being made nullable)
+//   }
 // ─────────────────────────────────────────────────────────────────────────────
 TypePtr Parser::wrapNullable(TypePtr inner) {
     if (!match(TokenType::QUESTION)) {
@@ -539,16 +875,53 @@ TypePtr Parser::wrapNullable(TypePtr inner) {
 // ─────────────────────────────────────────────────────────────────────────────
 // parseGenericArgs
 //
-// Grammar:  generic_args := '<' type { [','] type } '>'
+// Parses a generic argument list: < type { ',' type } >
 //
-// Used by:
-//   parseNamedType()  — Buffer<int>, Map<K, V>
-//   parseCallExpr()   — explicit generic instantiation at call sites (ParserExpr.cpp)
+// Grammar:
+//   generic_args := '<' type { [','] type } '>'
 //
-// Returns an empty vector on failure (error already recorded).
+// Examples:
+//   <int>
+//   <string, Vec2>
+//   <T, U, V>
+//   <>                    (empty – allowed by grammar)
 //
-// The LESS token ('<') is consumed by the caller (parseNamedType already
-// checked it) — this function starts immediately after it.
+// ─── Preconditions ──────────────────────────────────────────────────────────
+// - The caller (parseNamedType or parsePostfixExpr) has already consumed the
+//   opening '<' token.
+// - This function starts immediately after the '<'.
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - If the next token is '>', consumes it and returns an empty vector (empty list).
+// - Otherwise, repeatedly parses types:
+//     * Optional comma before each type (allows trailing commas)
+//     * Parses a type via parseType()
+//     * Adds the type to the argument list
+// - Stops when '>' is encountered or EOF is reached.
+// - Consumes the closing '>'.
+//
+// ─── Loop Safety & Progress Guarantee ───────────────────────────────────────
+// - Uses a progress guard: saves pos_ before each parseType() call.
+// - If parseType() makes no progress (pos_ == savedPos):
+//     * Reports an error
+//     * Consumes one token to avoid infinite loop
+//     * Breaks out of the loop
+// - The loop terminates when '>' is found or after a fatal error.
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing '>' at the end: consume() reports error and recovers.
+// - Missing type after comma: parseType() reports error, loop may continue
+//   if a comma or '>' is found.
+// - Returns an empty vector on error (error already reported).
+//
+// ─── Usage Contexts ─────────────────────────────────────────────────────────
+// - parseNamedType()   – for generic type instantiation: Buffer<int>
+// - parseCallExpr()    – for explicit generic function calls: process<int>(42)
+//   (via parsePostfixExpr in ParserExpr.cpp)
+//
+// ─── Result ─────────────────────────────────────────────────────────────────
+//   std::vector<TypePtr> – the parsed generic arguments in order.
+//   Returns an empty vector on error or for an empty list <>.
 // ─────────────────────────────────────────────────────────────────────────────
 std::vector<TypePtr> Parser::parseGenericArgs() {
     LUC_LOG_TYPE_VERBOSE("=== parseGenericArgs START ===");

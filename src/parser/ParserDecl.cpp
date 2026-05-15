@@ -1,9 +1,63 @@
 /**
  * @file ParserDecl.cpp
  *
- * @responsibility Parses all top-level declarations (let, func, struct, etc.).
+ * @responsibility Parses all declaration‑oriented grammar rules.
  *
- * @related src/diagnostics/DiagnosticEngine.hpp, DiagnosticCodes.hpp
+ * This file implements the parsers for:
+ *   - Attributes and their arguments (@extern, @inline, etc.)
+ *   - Package, use, variable, function, struct, enum, trait, impl, from, and type alias declarations
+ *   - Trait methods, impl methods, and from entries
+ *   - Helper validateAnonFuncBodySig for verbose anon‑func body signatures
+ *
+ * All functions consume tokens from the parser’s stream and build corresponding
+ * AST nodes. They include error recovery and infinite‑loop prevention mechanisms.
+ *
+ * @related_files
+ *   - Parser.hpp – class declaration and shared utilities
+ *   - Parser.cpp – core token stream primitives and top‑level dispatch
+ *   - ParserExpr.cpp – expression parsing (used in initialisers and bodies)
+ *   - ParserStmt.cpp – statement parsing (blocks, control flow)
+ *   - ParserType.cpp – type annotation parsing
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * NAVIGATION – Functions in this file (in order of appearance)
+ * ─────────────────────────────────────────────────────────────────────────────
+ *
+ * ██ Shared Helpers
+ *   validateAnonFuncBodySig()          – validate verbose anon‑func body signature
+ *
+ * ██ Attributes
+ *   parseAttributes()                  – zero or more '@' attributes
+ *   parseAttribute()                   – single '@' attribute
+ *   parseAttributeArgLiteral()         – literal argument inside attribute
+ *
+ * ██ Top-level Declarations
+ *   parsePackageDecl()                 – 'package' name
+ *
+ * ██ Declarations
+ *   parseUseDecl()                     – 'use' module path [as alias]
+ *   parseVarDecl()                     – let/const variable (keyword already consumed)
+ *   parseFuncDecl()                    – let/const function (keyword already consumed)
+ *
+ * ██ Type Declarations
+ *   parseStructDecl()                  – 'struct' with fields
+ *   parseFieldDecl()                   – field inside struct
+ *   parseEnumDecl()                    – 'enum' with variants
+ *   parseEnumVariant()                 – variant [= value]
+ *   parseTraitDecl()                   – 'trait' with methods
+ *   parseTraitMethod()                 – method signature inside trait
+ *   parseImplDecl()                    – 'impl' block for struct
+ *   parseTraitRef()                    – ': TraitName[<args>]'
+ *   parseMethodDecl()                  – method inside impl
+ *   parseFromDecl()                    – 'from' conversion block
+ *   parseTypeAliasDecl()               – 'type' alias definition
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Note: Each declaration parser assumes the leading keyword (or visibility
+ * modifier) has already been consumed by parseDeclaration() in Parser.cpp.
+ * The functions are responsible for consuming their entire syntactic domain
+ * and reporting errors with recovery.
+ * ─────────────────────────────────────────────────────────────────────────────
  */
 
 #include "Parser.hpp"
@@ -20,21 +74,54 @@
 // validateAnonFuncBodySig
 //
 // Shared helper for parseFuncDecl and parseMethodDecl.
+// Validates and consumes the verbose anonymous‑function body signature form:
+//   = (params) -> ret { ... }   or   = (a int)(b int) -> ret { ... } (curried)
 //
-// When a function/method body is written in the verbose anon‑func form:
-//   = (params) -> ret { ... }   or   = (a int)(b int) -> ret { ... }  (curried)
+// ─── Purpose ────────────────────────────────────────────────────────────────
+// When a function/method body is written in the verbose anon‑func syntax,
+// the body repeats the parameter groups and return type. The declaration header
+// is authoritative. This helper consumes the repeated signature, validates it
+// against the declared signature, and issues appropriate diagnostics.
 //
-// the repeated parameter groups and optional return list must be consumed.
-// This helper does exactly that, then validates the repeated return list
-// against the already-declared signature (the declaration is authoritative).
+// ─── Token Consumption ──────────────────────────────────────────────────────
+// On entry : parser is positioned at the first token after '=' (may be '(' or '{').
+// On return: parser is positioned after the repeated signature (at '{' or at a
+//            bad token if an error occurred).
 //
-// Anonymous functions cannot have qualifiers (~async, ~nullable, ~parallel) –
-// they are plain values.  They also cannot be marked nullable with '?'.
-// This helper rejects both.
+// Consumption steps:
+//   1. Rejects any '~' qualifiers (anonymous functions cannot have them) and
+//      consumes them if present (for error recovery).
+//   2. Consumes all repeated parameter groups (each '(' ... ')') by calling
+//      parseParamGroup() – the groups are discarded; the declaration’s signature is
+//      authoritative.
+//   3. Optionally consumes '->' and parses the repeated return list via
+//      parseReturnList().
+//   4. Validates or adopts return types as described below.
 //
-// Cursor contract:
-//   On entry : positioned at the first token after '=' (may be '(' or '{').
-//   On return: positioned after the repeated signature (at '{' or a bad token).
+// ─── Validation Logic ───────────────────────────────────────────────────────
+//   - If the declaration has no return types (void) and the body has no '->':
+//         OK (void function).
+//   - If the declaration has no return types but the body has '->':
+//         Adopts the body’s return types (the semantic pass may issue a warning).
+//   - If the declaration has return types but the body has no '->':
+//         Error: "expected '->' return list in body".
+//   - If both have return types:
+//         Compares count and kind (ASTKind) of each type.
+//         Mismatches trigger an error (the declaration is authoritative).
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Qualifiers found in the body: error reported, then consumed (to avoid
+//   infinite loop).
+// - Missing return type after '->': error reported.
+// - After validation, the caller must parse the body block (already positioned
+//   at '{' or error token).
+//
+// ─── Infinite Loop Prevention ───────────────────────────────────────────────
+// - The parameter group loop consumes one '(' each iteration and always makes
+//   progress because parseParamGroup() consumes its entire group or reports an
+//   error and advances.
+// - The return list parser (parseReturnList) guarantees progress.
+// - No unbounded recursion; all loops are bounded by the number of '(' tokens.
 // ─────────────────────────────────────────────────────────────────────────────
 void Parser::validateAnonFuncBodySig(FuncSignature& declaredSig, const std::string& declName) {
     // ── 1. Anonymous functions cannot have qualifiers ─────────────────────
@@ -114,26 +201,40 @@ void Parser::validateAnonFuncBodySig(FuncSignature& declaredSig, const std::stri
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// parseAttributes / parseAttribute
+// Attributes
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// parseAttributes
+//
+// Parses zero or more attribute directives that precede a declaration.
 //
 // Grammar:
-//   attributes    := { attribute }
-//   attribute     := '@' IDENTIFIER [ '(' attr_arg_list ')' ]
-//   attr_arg_list := attr_arg { ',' attr_arg }
-//   attr_arg      := STRING_LITERAL
-//                  | INT_LITERAL | HEX_LITERAL | BINARY_LITERAL
-//                  | 'true' | 'false'
-//                  | IDENTIFIER      -- type name used in @sizeof(T)
+//   attributes := { attribute }
+//   attribute  := '@' IDENTIFIER [ '(' attr_arg_list ')' ]
 //
 // Examples:
-//   @extern("malloc")
-//   @extern("vkCreateInstance", "C")
 //   @inline
-//   @packed
-//   @deprecated("Use newAlloc instead")
+//   @deprecated("Use newAPI")
+//   @extern("malloc") @noalias
 //
-// Parameters are intentionally restricted to compile-time literals and type
-// identifiers — no runtime expressions inside attribute argument lists.
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - While the current token is AT_SIGN, calls parseAttribute().
+// - Each call to parseAttribute() consumes the entire '@' directive (including
+//   its parentheses and arguments).
+// - Stops when the current token is not AT_SIGN.
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - If parseAttribute() returns nullptr and no progress was made (pos_ unchanged),
+//   reports an error and forcibly consumes the '@' token to avoid infinite loop.
+// - Invalid attributes are skipped; parsing continues with the next attribute
+//   or the following declaration.
+//
+// ─── Loop Safety ─────────────────────────────────────────────────────────────
+// - Uses a progress guard: saves pos_ before calling parseAttribute().
+// - If parseAttribute() fails to advance the parser, consumes one token (the '@')
+//   and continues – guarantees forward progress.
+// - The loop is bounded by the number of '@' tokens in the token stream.
 // ─────────────────────────────────────────────────────────────────────────────
 std::vector<AttributePtr> Parser::parseAttributes() {
     LUC_LOG_PARSER_VERBOSE("parseAttributes: starting");
@@ -156,6 +257,52 @@ std::vector<AttributePtr> Parser::parseAttributes() {
     return attrs;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// parseAttribute
+//
+// Parses a single attribute directive starting with '@'.
+//
+// Grammar:
+//   attribute := '@' IDENTIFIER [ '(' attr_arg_list ')' ]
+//   attr_arg_list := attr_arg { ',' attr_arg }
+//   attr_arg   := STRING_LITERAL | INT_LITERAL | HEX_LITERAL | BINARY_LITERAL
+//               | 'true' | 'false' | IDENTIFIER
+//
+// Examples:
+//   @inline
+//   @extern("malloc")
+//   @deprecated("Use newAlloc", true)
+//
+// Returns an AttributePtr (never nullptr on success; may return nullptr on error
+// after reporting an error).
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the leading '@' token.
+// - Consumes an IDENTIFIER as the attribute name.
+// - If a '(' follows, enters argument list parsing:
+//     * While not RPAREN and not EOF:
+//         - Optionally consumes COMMA.
+//         - Calls parseAttributeArgLiteral() to consume one argument.
+//         - If argument parsing fails without progress, consumes one token to avoid stall.
+//     * Consumes the closing ')'.
+// - Does NOT consume any tokens beyond the attribute (i.e., stops at the next
+//   token after the ')' or after the attribute name if no arguments).
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing attribute name after '@': reports error, returns nullptr.
+// - Invalid token inside argument list: reports error, consumes the offending token,
+//   and continues to parse next argument (or stops if progress is impossible).
+// - Missing closing ')': reports error, consumes tokens until a safe boundary
+//   (end of file or next declaration start) is found.
+//
+// ─── Loop Safety ─────────────────────────────────────────────────────────────
+// - The argument list loop uses a progress guard: saves pos_ before each
+//   parseAttributeArgLiteral() call.
+// - If no progress is made, consumes one token, reports an error, and continues
+//   to the next iteration (the loop will either find a comma or break).
+// - The loop always advances because it consumes at least one token per iteration
+//   (either a comma, an argument, or the closing parenthesis).
+// ─────────────────────────────────────────────────────────────────────────────
 AttributePtr Parser::parseAttribute() {
     if (!check(TokenType::AT_SIGN))
         return nullptr;
@@ -196,6 +343,39 @@ AttributePtr Parser::parseAttribute() {
     return attr;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// parseAttributeArgLiteral
+//
+// Parses a single literal argument inside an attribute's argument list.
+//
+// Grammar:
+//   attr_arg := STRING_LITERAL
+//             | INT_LITERAL | HEX_LITERAL | BINARY_LITERAL
+//             | 'true' | 'false'
+//             | IDENTIFIER   (type name, e.g., in @sizeof(T))
+//
+// Returns an AttributeArgPtr (never nullptr on success; returns nullptr on error
+// after reporting an error).
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Inspects the current token and consumes it if it matches a literal type:
+//     * STRING_LITERAL          → AttributeArgKind::StringLit
+//     * INT/HEX/BINARY_LITERAL  → AttributeArgKind::IntLit
+//     * TRUE/FALSE              → AttributeArgKind::BoolLit
+//     * IDENTIFIER              → AttributeArgKind::TypeIdent
+// - For any other token, returns nullptr without consuming anything.
+// - Does NOT consume any tokens beyond the literal (stops after the matched token).
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - No error is reported by this function; it simply returns nullptr on mismatch.
+//   The caller (parseAttribute) is responsible for reporting an appropriate error.
+// - This allows the caller to attempt recovery (e.g., skip the offending token).
+//
+// ─── Notes ──────────────────────────────────────────────────────────────────
+// - The value is stored as an InternedString of the raw token text.
+// - No semantic validation is performed here (e.g., integer bounds, type name
+//   resolution) – that is left to the semantic phase.
+// ─────────────────────────────────────────────────────────────────────────────
 AttributeArgPtr Parser::parseAttributeArgLiteral() {
     SourceLocation loc = currentLoc();
 
@@ -250,10 +430,34 @@ AttributeArgPtr Parser::parseAttributeArgLiteral() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Top-level Declarations
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
 // parsePackageDecl
+//
+// Parses the mandatory package declaration at the start of every Luc file.
 //
 // Grammar:
 //   package_decl := 'package' IDENTIFIER
+//
+// Example:
+//   package math
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the 'package' keyword.
+// - Consumes an IDENTIFIER as the package name.
+// - Does NOT consume any tokens beyond the identifier.
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - If 'package' is missing, the caller (parse()) handles the error and inserts
+//   a dummy node.
+// - If the package name is missing (no IDENTIFIER), reports an error and returns
+//   a dummy node with name "<error>" to allow parsing to continue.
+//
+// ─── Return Value ───────────────────────────────────────────────────────────
+// - Always returns a non-null PackageDeclAST node (even on error, a dummy node
+//   is returned). The caller should check the diagnostic engine for errors.
 // ─────────────────────────────────────────────────────────────────────────────
 ASTPtr<PackageDeclAST> Parser::parsePackageDecl() {
     SourceLocation loc = currentLoc();
@@ -275,7 +479,13 @@ ASTPtr<PackageDeclAST> Parser::parsePackageDecl() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Declarations
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
 // parseUseDecl
+//
+// Parses a 'use' declaration that imports a module path into the current scope.
 //
 // Grammar:
 //   use_decl := 'use' module_path [ 'as' IDENTIFIER ]
@@ -285,6 +495,26 @@ ASTPtr<PackageDeclAST> Parser::parsePackageDecl() {
 //   use math.vec2
 //   use renderer.types
 //   use math as m
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the 'use' keyword.
+// - Consumes the module path (sequence of dot‑separated identifiers):
+//     * First IDENTIFIER is mandatory.
+//     * While the next token is '.' followed by an IDENTIFIER, consumes both.
+// - Optionally consumes 'as' followed by an IDENTIFIER (alias).
+// - Stops after the alias identifier (or after the last path segment if no alias).
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - If the module path is missing (no IDENTIFIER after 'use'), reports an error
+//   and returns a node with an empty path.
+// - If 'as' is present but no alias identifier follows, reports an error.
+// - The returned node is always non‑null; errors are recorded in the diagnostic
+//   engine.
+//
+// ─── Loop Safety ─────────────────────────────────────────────────────────────
+// - The module path loop iterates once per dot‑separated segment. Each iteration
+//   consumes a '.' and an IDENTIFIER, guaranteeing progress.
+// - No unbounded loops; the loop stops when no '.' or following identifier is found.
 // ─────────────────────────────────────────────────────────────────────────────
 ASTPtr<UseDeclAST> Parser::parseUseDecl(Visibility vis) {
     SourceLocation loc = currentLoc();
@@ -322,15 +552,30 @@ ASTPtr<UseDeclAST> Parser::parseUseDecl(Visibility vis) {
 // ─────────────────────────────────────────────────────────────────────────────
 // parseVarDecl
 //
+// Parses a variable declaration (let or const) after the keyword has been consumed.
+//
 // Grammar:
 //   var_decl := decl_keyword IDENTIFIER type_ann [ '=' expr ]
 //
-// Called from Parser.cpp after the keyword token has ALREADY been consumed.
-// pos_ sits on the IDENTIFIER (the variable name).
+// Important: The caller (parseDeclaration) has already consumed the 'let' or 'const'
+// keyword. This function is called with pos_ positioned on the variable name.
 //
-// The parser attaches all attributes as-is to the node. It does NOT enforce
-// @extern semantics (no initialiser, must be const, etc.) — those are
-// semantic-phase rules validated by the semantic pass via AttributeRegistry.
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes an IDENTIFIER (variable name).
+// - Consumes a type annotation via parseType() (required).
+// - Optionally, if '=' is present, consumes it and parses an initialiser expression.
+// - Does NOT consume any trailing semicolon (the caller may handle optional semicolons).
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing variable name: reports error, returns nullptr.
+// - Type annotation missing or invalid: reports error, returns nullptr.
+// - If '=' is present but no expression follows: reports error, returns node with
+//   null init (the caller may recover).
+// - Attributes are attached to the node but not validated here (semantic phase).
+//
+// ─── Notes ──────────────────────────────────────────────────────────────────
+// - The keyword (let/const) is retrieved from the previous token (pos_ - 1).
+// - The semantic phase enforces @extern constraints and const initialiser rules.
 // ─────────────────────────────────────────────────────────────────────────────
 ASTPtr<VarDeclAST> Parser::parseVarDecl(Visibility vis, std::vector<AttributePtr> attrs) {
     // The keyword was consumed by parseTopLevelDecl before this call.
@@ -394,6 +639,8 @@ ASTPtr<VarDeclAST> Parser::parseVarDecl(Visibility vis, std::vector<AttributePtr
 // ─────────────────────────────────────────────────────────────────────────────
 // parseFuncDecl
 //
+// Parses a function declaration (let or const) after the keyword has been consumed.
+//
 // Grammar:
 //   func_decl := decl_keyword IDENTIFIER [ generic_params ]
 //                [ qualifier_list ] param_group { param_group }
@@ -402,24 +649,42 @@ ASTPtr<VarDeclAST> Parser::parseVarDecl(Visibility vis, std::vector<AttributePtr
 //
 //   qualifier_list := { '~' IDENTIFIER }
 //   return_list     := return_type { ',' return_type }
-//   return_type     := type
-//                    | param_group { param_group } '->' return_list
-//
-// The body ('=' ...) is OPTIONAL at the parser level. Whether a body is
-// required or forbidden is a semantic rule:
-//   - @extern functions must have no body (semantic error if '=' present).
-//   - All other functions must have a body (semantic error if '=' absent).
-//
-// Qualifier names are stored raw in sig.rawQualifiers. The semantic phase
-// resolves them to the sig.qualifiers bitmask via QualifierRegistry and
-// reports unknown qualifier names.
+//   return_type     := type | param_group { param_group } '->' return_list
+//   func_body       := block | anon_func | expr
 //
 // Examples:
 //   let square (x int) -> int = { return x * x }
 //   let fetch ~async (url string) -> string = { return await httpGet(url) }
-//   let parse (src string) -> (int, string) = { ... }
 //   let add (a int)(b int) -> int = { return a + b }
 //   @extern("malloc") const malloc (size uint64) -> *uint8?   -- no body
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes an IDENTIFIER (function name).
+// - Optional generic parameters via parseGenericParams().
+// - Optional qualifiers ('~' IDENTIFIER) – stored raw, resolved semantically.
+// - One or more parameter groups via parseParamGroup().
+// - Optional '->' followed by return list via parseReturnList().
+// - Optional '=' followed by body (block, verbose anon‑func, or expression).
+// - Does NOT consume trailing semicolon (caller handles optional semicolons).
+//
+// ─── Body Parsing Variants ───────────────────────────────────────────────────
+//   1. Block body:          = { ... }                    → parseBlock()
+//   2. Verbose anon‑func:   = (params) -> ret { ... }    → validateAnonFuncBodySig() + parseBlock()
+//   3. Expression body:     = expr                       → wrapped in ReturnStmt + BlockStmt
+//   4. No body:             (no '=')                     → node->body remains nullptr
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing function name after keyword: reports error, returns nullptr.
+// - Missing '(' after name/generics/qualifiers: reports error, returns nullptr.
+// - If parseParamGroup() fails during any group, the function returns nullptr.
+// - Missing body after '=': reports error, returns nullptr.
+// - The semantic phase enforces @extern body rules (no body required/forbidden).
+//
+// ─── Loop Safety ─────────────────────────────────────────────────────────────
+// - Parameter group loop consumes one '(' per iteration; parseParamGroup() makes
+//   progress or reports error and consumes tokens.
+// - Qualifier loop consumes '~' and following IDENTIFIER per iteration.
+// - No unbounded loops; each loop is bounded by the number of tokens present.
 // ─────────────────────────────────────────────────────────────────────────────
 ASTPtr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vis, std::vector<AttributePtr> attrs) {
     SourceLocation loc = currentLoc();
@@ -559,11 +824,43 @@ ASTPtr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vis, std::v
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Type Declarations
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
 // parseStructDecl
+//
+// Parses a struct type declaration.
 //
 // Grammar:
 //   struct_decl := [ vis ] 'struct' IDENTIFIER [ generic_params ]
 //                  '{' { field_decl } '}'
+//
+// Examples:
+//   struct Vec2 { x float, y float }
+//   pub struct Scene<T : Drawable> { objects []T }
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the 'struct' keyword.
+// - Consumes an IDENTIFIER (struct name).
+// - Optional generic parameters via parseGenericParams().
+// - Consumes '{' to open the struct body.
+// - Repeatedly calls parseFieldDecl() to consume field definitions until '}'.
+// - Consumes the closing '}'.
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing struct name: reports error, returns nullptr.
+// - Missing '{' after name/generics: reports error, returns nullptr.
+// - If parseFieldDecl() returns nullptr:
+//     * If no progress was made (pos_ == savedPos), forcibly consumes one token.
+//     * Calls synchronize() to skip to the next field or closing brace.
+// - Missing closing '}': reports error (consume tries to recover).
+//
+// ─── Loop Safety ─────────────────────────────────────────────────────────────
+// - The field loop uses a progress guard: saves pos_ before parseFieldDecl().
+// - If parseFieldDecl() fails to advance, consumes one token, then calls
+//   synchronize() – guarantees forward progress.
+// - The loop terminates when RBRACE is found or EOF is reached.
 // ─────────────────────────────────────────────────────────────────────────────
 ASTPtr<StructDeclAST> Parser::parseStructDecl(Visibility vis) {
     LUC_LOG_PARSER("parseStructDecl: parsing struct");
@@ -624,8 +921,34 @@ ASTPtr<StructDeclAST> Parser::parseStructDecl(Visibility vis) {
 // ─────────────────────────────────────────────────────────────────────────────
 // parseFieldDecl
 //
+// Parses a single field declaration inside a struct body.
+//
 // Grammar:
 //   field_decl := IDENTIFIER type [ '=' expr ]
+//
+// Examples:
+//   x float
+//   r float = 1.0
+//   items [*]string
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes an IDENTIFIER (field name).
+// - Consumes a type annotation via parseType().
+// - Optionally, if '=' is present, consumes it and parses an initialiser expression.
+// - Does NOT consume trailing commas or semicolons (the caller handles optional
+//   separators).
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing field name: reports error, returns nullptr.
+// - Missing type annotation: reports error, returns nullptr.
+// - If '=' is present but no expression follows: reports error, field node still
+//   created with null defaultVal.
+// - Returns non‑null on success, nullptr on error (caller handles recovery).
+//
+// ─── Notes ──────────────────────────────────────────────────────────────────
+// - Default values are stored as ExprPtr; the semantic phase validates type
+//   compatibility and const‑correctness.
+// - The struct literal may omit fields with default values.
 // ─────────────────────────────────────────────────────────────────────────────
 FieldDeclPtr Parser::parseFieldDecl() {
     SourceLocation loc = currentLoc();
@@ -661,8 +984,36 @@ FieldDeclPtr Parser::parseFieldDecl() {
 // ─────────────────────────────────────────────────────────────────────────────
 // parseEnumDecl
 //
+// Parses an enum type declaration.
+//
 // Grammar:
 //   enum_decl := [ vis ] 'enum' IDENTIFIER '{' enum_variant { [','] enum_variant } '}'
+//
+// Examples:
+//   enum Direction { North, South, East, West }
+//   pub enum ShaderStage { Vertex = 0x01, Fragment = 0x02, Compute = 0x04 }
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the 'enum' keyword.
+// - Consumes an IDENTIFIER (enum name).
+// - Consumes '{' to open the enum body.
+// - Repeatedly calls parseEnumVariant() to consume variant definitions until '}'.
+// - Consumes the closing '}'.
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing enum name after 'enum': reports error, returns nullptr.
+// - Missing '{' after name: reports error, returns nullptr.
+// - If parseEnumVariant() returns nullptr:
+//     * If no progress was made (pos_ == savedPos), forcibly consumes one token.
+//     * Calls synchronize() to skip to the next variant or closing brace.
+// - Missing closing '}': reports error (consume tries to recover).
+//
+// ─── Loop Safety ─────────────────────────────────────────────────────────────
+// - The variant loop uses a progress guard: saves pos_ before parseEnumVariant().
+// - If parseEnumVariant() fails to advance, consumes one token, then calls
+//   synchronize() – guarantees forward progress.
+// - Optional commas and semicolons are matched and consumed without stalling.
+// - The loop terminates when RBRACE is found or EOF is reached.
 // ─────────────────────────────────────────────────────────────────────────────
 ASTPtr<EnumDeclAST> Parser::parseEnumDecl(Visibility vis) {
     LUC_LOG_PARSER("parseEnumDecl: parsing enum");
@@ -714,11 +1065,40 @@ ASTPtr<EnumDeclAST> Parser::parseEnumDecl(Visibility vis) {
 // ─────────────────────────────────────────────────────────────────────────────
 // parseEnumVariant
 //
+// Parses a single variant inside an enum declaration.
+//
 // Grammar:
 //   enum_variant := IDENTIFIER [ '=' ( INT_LITERAL | HEX_LITERAL ) ]
 //
-// Explicit values may be decimal (INT_LITERAL) or hex (HEX_LITERAL) —
-// both are common in Vulkan flag enums (e.g. Vertex = 0x01).
+// Examples:
+//   North
+//   Vertex = 0x01
+//   MaxValue = 65535
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes an IDENTIFIER (variant name).
+// - Optionally, if '=' is present:
+//     * Consumes the '=' token.
+//     * Consumes an integer literal (decimal INT_LITERAL or HEX_LITERAL).
+// - Does NOT consume trailing commas or semicolons (caller handles optional separators).
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing variant name: reports error, returns nullptr.
+// - If '=' is present but no integer literal follows: reports error, returns variant
+//   node with no explicit value (the caller may still accept it).
+// - Invalid integer literal (malformed or out of range): reports error, variant
+//   node created with no explicit value (the semantic phase will handle it).
+//
+// ─── Value Parsing ───────────────────────────────────────────────────────────
+// - Strips underscore separators (e.g., 0xFF_FF_FF_FF) before conversion.
+// - Supports decimal (base 10) and hexadecimal (base 16) literals.
+// - Uses std::strtoll for conversion; overflow is detected and reported.
+// - Explicit values are stored as std::optional<int64_t> (nullopt if no value given).
+//
+// ─── Notes ──────────────────────────────────────────────────────────────────
+// - The semantic phase computes final integer values for all variants, handling
+//   auto‑increment and duplicate detection.
+// - Explicit values reset the auto‑increment counter for subsequent variants.
 // ─────────────────────────────────────────────────────────────────────────────
 EnumVariantPtr Parser::parseEnumVariant() {
     SourceLocation loc = currentLoc();
@@ -763,9 +1143,44 @@ EnumVariantPtr Parser::parseEnumVariant() {
 // ─────────────────────────────────────────────────────────────────────────────
 // parseTraitDecl
 //
+// Parses a trait declaration (method contract, no implementations).
+//
 // Grammar:
 //   trait_decl := [ vis ] 'trait' IDENTIFIER [ generic_params ]
 //                 '{' { trait_method } '}'
+//
+// Examples:
+//   trait Drawable { draw () bounds () -> Rect }
+//   pub trait Comparable<T> { compareTo (other T) -> int }
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the 'trait' keyword.
+// - Consumes an IDENTIFIER (trait name).
+// - Optional generic parameters via parseGenericParams().
+// - Consumes '{' to open the trait body.
+// - Repeatedly calls parseTraitMethod() to consume method signatures until '}'.
+// - Consumes the closing '}'.
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing trait name after 'trait': reports error, returns nullptr.
+// - Missing '{' after name/generics: reports error, returns nullptr.
+// - If parseTraitMethod() returns nullptr:
+//     * If no progress was made (pos_ == savedPos), forcibly consumes one token.
+//     * Calls synchronize() to skip to the next method or closing brace.
+// - Missing closing '}': reports error (consume tries to recover).
+//
+// ─── Loop Safety ─────────────────────────────────────────────────────────────
+// - The method loop uses a progress guard: saves pos_ before parseTraitMethod().
+// - If parseTraitMethod() fails to advance, consumes one token, then calls
+//   synchronize() – guarantees forward progress.
+// - Optional commas and semicolons are matched and consumed without stalling.
+// - The loop terminates when RBRACE is found or EOF is reached.
+//
+// ─── Notes ──────────────────────────────────────────────────────────────────
+// - Trait methods are signatures only – no '=' and no body.
+// - Trait declarations are top‑level only (parseDeclaration with Local context
+//   rejects TRAIT token).
+// - The semantic phase verifies that impl blocks provide all required methods.
 // ─────────────────────────────────────────────────────────────────────────────
 ASTPtr<TraitDeclAST> Parser::parseTraitDecl(Visibility vis) {
     LUC_LOG_PARSER("parseTraitDecl: parsing trait");
@@ -821,25 +1236,48 @@ ASTPtr<TraitDeclAST> Parser::parseTraitDecl(Visibility vis) {
 // ─────────────────────────────────────────────────────────────────────────────
 // parseTraitMethod
 //
+// Parses a single method signature inside a trait declaration.
+//
 // Grammar:
 //   trait_method := IDENTIFIER [ qualifier_list ] param_group { param_group }
 //                  [ '->' return_list ]
 //
-//   qualifier_list := { '~' IDENTIFIER }            -- ~async, ~nullable, ~parallel
+//   qualifier_list := { '~' IDENTIFIER }   -- ~async, ~nullable, ~parallel
 //   return_list     := '(' [ return_type { ',' return_type } ] ')'   -- multiple returns
 //                   | return_type                                    -- single return
 //   return_type     := type
-//                    | param_group { param_group } '->' return_list   -- curried return
-//
-// Signature only — no '=' and no body.
-// Supports curried trait methods and multiple returns (parenthesised).
+//                    | param_group { param_group } '->' return_list  -- curried return
 //
 // Examples:
 //   draw ()
 //   bounds () -> Rect
 //   fetch ~async (url string) -> string
 //   clamp (min int)(max int)(value int) -> int
-//   process (data []byte) -> (int, string, bool)     -- multiple return
+//   process (data []byte) -> (int, string, bool)
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes an IDENTIFIER (method name).
+// - Optional qualifiers ('~' IDENTIFIER) – stored raw, resolved semantically.
+// - One or more parameter groups via parseParamGroup().
+// - Optional '->' followed by return list via parseReturnList().
+// - Does NOT consume any tokens beyond the return list (stops at '}' or separator).
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing method name: reports error, returns nullptr.
+// - Missing '(' after name/qualifiers: reports error, returns nullptr.
+// - If parseParamGroup() fails, returns nullptr.
+// - Return list errors are reported by parseReturnList().
+//
+// ─── Loop Safety ─────────────────────────────────────────────────────────────
+// - Qualifier loop consumes '~' and following IDENTIFIER per iteration.
+// - Parameter group loop consumes one '(' per iteration; parseParamGroup() makes
+//   progress or reports error.
+// - No unbounded loops; each loop is bounded by the number of tokens present.
+//
+// ─── Notes ──────────────────────────────────────────────────────────────────
+// - Trait methods are signatures only – no '=' and no body.
+// - Supports curried methods (multiple parameter groups) and multiple returns.
+// - The semantic phase resolves qualifier names to bitmask via QualifierRegistry.
 // ─────────────────────────────────────────────────────────────────────────────
 TraitMethodPtr Parser::parseTraitMethod() {
     SourceLocation loc = currentLoc();
@@ -894,17 +1332,49 @@ TraitMethodPtr Parser::parseTraitMethod() {
 // ─────────────────────────────────────────────────────────────────────────────
 // parseImplDecl
 //
+// Parses an impl block that binds methods to a struct (with optional trait conformance).
+//
 // Grammar:
 //   impl_decl := [ vis ] 'impl' [ generic_params ] IDENTIFIER [ generic_args ]
-//                [ ':' trait_ref ] '{' { impl_member } '}'
+//                [ ':' trait_ref ] '{' { method_decl } '}'
 //
-//   impl_member := method_decl | from_decl
+//   impl_member := method_decl | from_decl (from_decl only valid in pub/export impl)
 //
-// Notes:
-//   - generic_params on the impl itself: <T : Drawable> in  impl Scene<T : Drawable>
-//   - generic_args on the struct name:   <T>            in  impl Scene<T : Drawable>
-//   - trait conformance:                 : Drawable      in  impl Circle : Drawable
-//   - from_decl is only valid inside pub impl — recorded as error otherwise
+// Examples:
+//   impl Vec2 { length () -> float = { ... } }
+//   pub impl Circle : Drawable { draw () = { ... } bounds () -> Rect = { ... } }
+//   impl Scene<T : Drawable> { drawAll () = { ... } }
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the 'impl' keyword.
+// - Consumes an IDENTIFIER (struct name).
+// - Optional generic parameters (definition style) via parseGenericParams().
+// - If generic parameters were parsed, synthesises structGenericArgs from them.
+// - Optional trait conformance ':' followed by parseTraitRef().
+// - Consumes '{' to open the impl body.
+// - Repeatedly calls parseMethodDecl() to consume method definitions until '}'.
+// - Consumes the closing '}'.
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing struct name after 'impl': reports error, returns nullptr.
+// - Missing '{' after name/generics/trait: reports error, returns nullptr.
+// - If parseMethodDecl() returns nullptr:
+//     * If no progress was made (pos_ == savedPos), forcibly consumes one token.
+//     * Calls synchronize() to skip to the next method or closing brace.
+// - Unrecognised token inside impl body: reports error, synchronizes.
+// - Missing closing '}': reports error (consume tries to recover).
+//
+// ─── Loop Safety ─────────────────────────────────────────────────────────────
+// - The method loop uses a progress guard: saves pos_ before parseMethodDecl().
+// - If parseMethodDecl() fails to advance, consumes one token, then calls
+//   synchronize() – guarantees forward progress.
+// - The loop terminates when RBRACE is found or EOF is reached.
+//
+// ─── Notes ──────────────────────────────────────────────────────────────────
+// - genericParams stores the impl's own type parameters (e.g., <T : Drawable>).
+// - structGenericArgs stores NamedTypeAST nodes bound to those parameters.
+// - The semantic phase merges multiple impl blocks for the same struct.
+// - from_decl is only valid inside pub/export impl (rejected elsewhere).
 // ─────────────────────────────────────────────────────────────────────────────
 ASTPtr<ImplDeclAST> Parser::parseImplDecl(Visibility vis) {
     LUC_LOG_PARSER("parseImplDecl: parsing impl");
@@ -981,10 +1451,35 @@ ASTPtr<ImplDeclAST> Parser::parseImplDecl(Visibility vis) {
 // ─────────────────────────────────────────────────────────────────────────────
 // parseTraitRef
 //
+// Parses a trait reference in an impl conformance declaration.
+//
 // Grammar:
 //   trait_ref := ':' IDENTIFIER [ generic_args ]
 //
 // Called when ':' is seen in an impl header. Consumes the ':' itself.
+//
+// Examples:
+//   : Drawable
+//   : Comparable<int>
+//   : Hashable + Comparable (not allowed – use multiple trait bounds on generic param)
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the ':' token (already checked by caller).
+// - Consumes an IDENTIFIER (trait name).
+// - Optional generic arguments via parseGenericArgs() (e.g., <int>).
+// - Does NOT consume any tokens beyond the generic args (stops before '{' or next token).
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing trait name after ':': reports error, returns nullptr.
+// - Generic argument parsing errors are reported by parseGenericArgs().
+// - Returns nullptr on error; caller should handle recovery.
+//
+// ─── Notes ──────────────────────────────────────────────────────────────────
+// - The semantic phase resolves the trait name to a TraitDeclAST and validates
+//   that the impl struct provides all required methods.
+// - Generic arguments are validated against the trait's generic parameters.
+// - Multiple trait bounds (e.g., : Drawable + Serializable) are not supported
+//   on impl conformance; use generic parameter constraints instead.
 // ─────────────────────────────────────────────────────────────────────────────
 TraitRefPtr Parser::parseTraitRef() {
     SourceLocation loc = currentLoc();
@@ -1010,26 +1505,54 @@ TraitRefPtr Parser::parseTraitRef() {
 // ─────────────────────────────────────────────────────────────────────────────
 // parseMethodDecl
 //
+// Parses a method declaration inside an impl block.
+//
 // Grammar:
 //   method_decl := IDENTIFIER [ qualifier_list ] param_group { param_group }
 //                 [ '->' return_list ] '=' func_body
 //
-//   qualifier_list := { '~' IDENTIFIER }            -- ~async, ~nullable, ~parallel
+//   qualifier_list := { '~' IDENTIFIER }   -- ~async, ~nullable, ~parallel
 //   return_list     := return_type { ',' return_type }
-//   return_type     := type
-//                    | param_group { param_group } '->' return_list
+//   return_type     := type | param_group { param_group } '->' return_list
+//   func_body       := block | anon_func | expr
 //
-// Supports curried methods and multiple returns.
 // Examples:
-//   length () -> float = { ... }
-//   dot (other Vec2) -> float = { ... }
-//   clamp (min int)(max int)(value int) -> int = { ... }
+//   length () -> float = { return #sqrt(x*x + y*y) }
 //   fetch ~async (url string) -> string = { return await httpGet(url) }
+//   clamp (min int)(max int)(value int) -> int = { ... }
 //   process (data []byte) -> (int, string) = { ... }
 //
-// No visibility prefix per method — visibility comes from the enclosing impl block.
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes an IDENTIFIER (method name).
+// - Optional qualifiers ('~' IDENTIFIER) – stored raw, resolved semantically.
+// - One or more parameter groups via parseParamGroup().
+// - Optional '->' followed by return list via parseReturnList().
+// - Consumes '=' (required).
+// - Parses the body – block, verbose anon‑func, or expression (same as func body).
+// - Does NOT consume trailing semicolon (caller handles optional semicolons).
+//
+// ─── Body Parsing Variants ───────────────────────────────────────────────────
+//   1. Block body:          = { ... }                    → parseBlock()
+//   2. Verbose anon‑func:   = (params) -> ret { ... }    → validateAnonFuncBodySig() + parseBlock()
+//   3. Expression body:     = expr                       → wrapped in ReturnStmt + BlockStmt
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing method name: reports error, returns nullptr.
+// - Missing '(' after name/qualifiers: reports error, returns nullptr.
+// - Missing '=' before body: reports error, returns nullptr.
+// - Missing body after '=': reports error, returns nullptr.
+// - If validateAnonFuncBodySig() fails, returns nullptr (error already reported).
+//
+// ─── Loop Safety ─────────────────────────────────────────────────────────────
+// - Qualifier loop consumes '~' and following IDENTIFIER per iteration.
+// - Parameter group loop consumes one '(' per iteration; parseParamGroup() makes
+//   progress or reports error.
+// - No unbounded loops; each loop is bounded by the number of tokens present.
+//
+// ─── Notes ──────────────────────────────────────────────────────────────────
+// - No visibility prefix per method – visibility comes from enclosing impl block.
 // - The ~nullable qualifier marks the method binding as nullable (caller must guard).
-// - '?' is not used on function types – use ~nullable instead.
+// - The semantic phase resolves qualifier names to bitmask via QualifierRegistry.
 // ─────────────────────────────────────────────────────────────────────────────
 MethodDeclPtr Parser::parseMethodDecl() {
     SourceLocation loc = currentLoc();
@@ -1137,15 +1660,53 @@ MethodDeclPtr Parser::parseMethodDecl() {
 // ─────────────────────────────────────────────────────────────────────────────
 // parseFromDecl
 //
+// Parses a 'from' declaration that defines implicit conversions to a target type.
+//
 // Grammar:
-//   from_block  := [ vis ] 'from' IDENTIFIER generic_params? '{' from_entry* '}'
+//   from_block  := [ vis ] 'from' IDENTIFIER [ generic_params ] '{' from_entry* '}'
 //
-//   from_entry  := param_group { param_group } IDENTIFIER "->" returnType "=" func_body
-//                  -- one or more param groups   return type
+//   from_entry  := param_group { param_group } '->' type '=' func_body
 //
-// Supports curried conversions:
-//   (c Celsius) -> Fahrenheit = { ... }
-//   (c Celsius) (scale float) -> Fahrenheit = { ... }
+// Examples:
+//   export from Fahrenheit {
+//       (c Celsius) -> Fahrenheit = { return Fahrenheit { value = c.value * 9/5 + 32 } }
+//       (k Kelvin)  -> Fahrenheit = { return Fahrenheit { value = (k.value - 273.15) * 9/5 + 32 } }
+//   }
+//
+//   from Wrapper<T> { (val T) -> Wrapper<T> = { return Wrapper<T> { value = val } } }
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the 'from' keyword.
+// - Consumes an IDENTIFIER (target struct name).
+// - Optional generic parameters on the target struct via parseGenericParams().
+// - Consumes '{' to open the from block.
+// - Repeatedly parses from_entry blocks until '}'.
+// - Consumes the closing '}'.
+//
+// ─── From Entry Parsing ──────────────────────────────────────────────────────
+// - Each entry begins with one or more parameter groups (curried conversion sources).
+// - Consumes '->' (mandatory).
+// - Consumes a return type (must match the target struct name semantically).
+// - Consumes '=' followed by the conversion body (block or expression).
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing target struct name: reports error, returns nullptr.
+// - Missing '{' after name/generics: reports error, returns nullptr.
+// - If entry has no '(' (parameter group start): reports error, synchronizes.
+// - Missing '->' before return type: reports error, synchronizes.
+// - Missing return type: reports error, synchronizes.
+// - Missing '=' before body: reports error, synchronizes.
+// - Missing closing '}': reports error (consume tries to recover).
+//
+// ─── Loop Safety ─────────────────────────────────────────────────────────────
+// - The entry loop uses a progress guard: saves pos_ before parsing each entry.
+// - If entry parsing makes no progress, forcibly consumes one token and synchronizes.
+// - The loop terminates when RBRACE is found or EOF is reached.
+//
+// ─── Notes ──────────────────────────────────────────────────────────────────
+// - From blocks can be top‑level or local. When local, visibility modifiers are omitted.
+// - The semantic phase registers conversions for implicit casting contexts.
+// - Generic parameters on the target struct are stored in genericParams.
 // ─────────────────────────────────────────────────────────────────────────────
 ASTPtr<FromDeclAST> Parser::parseFromDecl(Visibility vis) {
     SourceLocation loc = currentLoc();
@@ -1254,8 +1815,35 @@ ASTPtr<FromDeclAST> Parser::parseFromDecl(Visibility vis) {
 // ─────────────────────────────────────────────────────────────────────────────
 // parseTypeAliasDecl
 //
+// Parses a type alias declaration ('type' keyword).
+//
 // Grammar:
 //   type_decl := [ vis ] 'type' IDENTIFIER [ generic_params ] '=' type
+//
+// Examples:
+//   type ID = int
+//   type AsyncOp = ~async (a int) -> int
+//   type Transform<T> = (v T) -> T
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the 'type' keyword.
+// - Consumes an IDENTIFIER (alias name).
+// - Optional generic parameters via parseGenericParams().
+// - Consumes '=' (required).
+// - Consumes the aliased type via parseType().
+// - Does NOT consume trailing semicolon (caller handles optional semicolons).
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing alias name after 'type': reports error, returns nullptr.
+// - Missing '=' after name/generics: reports error, returns nullptr.
+// - Missing type on right‑hand side: reports error, returns node with null aliasedType.
+// - Returns non‑null even on error (aliasedType may be null).
+//
+// ─── Notes ──────────────────────────────────────────────────────────────────
+// - Type aliases can be top‑level or local. When local, visibility modifiers are omitted.
+// - Does NOT create a new nominal type – the alias is interchangeable with its target.
+// - Generic parameters allow the alias to be instantiated with concrete types.
+// - The semantic phase resolves the alias by substituting the aliased type.
 // ─────────────────────────────────────────────────────────────────────────────
 ASTPtr<TypeAliasDeclAST> Parser::parseTypeAliasDecl(Visibility vis) {
     SourceLocation loc = currentLoc();

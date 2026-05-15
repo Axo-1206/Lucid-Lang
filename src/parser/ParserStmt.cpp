@@ -1,11 +1,88 @@
 /**
  * @file ParserStmt.cpp
- * 
- * @responsibility Parses control-flow, blocks, and parallel statements.
- * 
- * @grammar_rules If, Switch, For, While, Do, Return, Parallel.
- * 
- * @related src/diagnostics/DiagnosticEngine.hpp, DiagnosticCodes.hpp
+ *
+ * @responsibility Parses all statement-oriented grammar rules.
+ *
+ * This file implements the parsers for:
+ *   - Statement dispatch (parseStmt) – the root of statement parsing
+ *   - Multi‑variable declaration (parseMultiVarDecl) – let x int, y int = f()
+ *   - Multi‑assignment (parseMultiAssignStmt) – a, b = f()
+ *   - Block statements (parseBlock) – { stmt* }
+ *   - Control flow: if, switch, for, while, do-while
+ *   - Jump statements: return, break, continue
+ *
+ * All statement parsers consume tokens from the parser's stream and build
+ * corresponding StmtAST nodes. They include error recovery and infinite‑loop
+ * prevention mechanisms.
+ *
+ * @related_files
+ *   - Parser.hpp – class declaration and shared utilities
+ *   - Parser.cpp – core token stream primitives
+ *   - ParserDecl.cpp – declaration parsing (called for local declarations inside blocks)
+ *   - ParserExpr.cpp – expression parsing (used in conditions, iterables, etc.)
+ *   - ParserType.cpp – type parsing (used in for loop type annotations)
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * NAVIGATION – Functions in this file (in order of appearance)
+ * ─────────────────────────────────────────────────────────────────────────────
+ *
+ * ██ Root Statement Dispatcher
+ *   parseStmt()                      – dispatch to appropriate statement parser
+ *
+ * ██ Multi‑Assignment & Declaration
+ *   parseMultiVarDecl()              – let x int, y int = f()
+ *   parseMultiAssignStmt()           – a, b = f()
+ *
+ * ██ Block
+ *   parseBlock()                     – { stmt* }
+ *
+ * ██ Branching Statements
+ *   parseIfStmt()                    – if expr block [ else (if_stmt | block) ]
+ *   parseSwitchStmt()                – switch expr { case ... default ... }
+ *   parseSwitchCase()                – case value { ',' value } ':' block
+ *
+ * ██ Loop Statements
+ *   parseForStmt()                   – for ident [type] in expr block
+ *   parseWhileStmt()                 – while expr block
+ *   parseDoWhileStmt()               – do block while expr
+ *
+ * ██ Jump Statements
+ *   parseReturnStmt()                – return [ expr { ',' expr } ]
+ *   parseBreakStmt()                 – break
+ *   parseContinueStmt()              – continue
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * CONTEXT FLAGS (parser state)
+ *
+ *   loopDepth_      – incremented when entering a loop (for/while/do-while),
+ *                     decremented on exit. Used by parseBreakStmt() and
+ *                     parseContinueStmt() to report errors when outside a loop.
+ *
+ *   parallelDepth_  – incremented when entering a parallel body, decremented
+ *                     on exit. Used by parseReturnStmt(), parseBreakStmt(),
+ *                     parseContinueStmt(), and parseAwaitExpr() (in ExprParser)
+ *                     to report invalid usage inside parallel contexts.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * DISPATCH PRIORITY IN parseStmt()
+ *
+ *   1. Multi‑assignment (reassignment)     – looksLikeMultiAssignStart()
+ *   2. Multi‑variable declaration           – let/const with commas
+ *   3. Local declarations                   – type, struct, enum, impl, trait, from, let/const, use
+ *   4. 'pub' inside a block                 – error + skip
+ *   5. Control flow keywords                – if, switch, for, while, do, return, break, continue
+ *   6. Expression statement                 – fallback
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * LOOP SAFETY & PROGRESS GUARDS
+ *
+ *   - parseBlock() uses a progress guard: if parseStmt() makes no progress,
+ *     consumes one token and continues (prevents infinite loop).
+ *   - parseSwitchCase() uses a consecutive error counter (max 5) to prevent
+ *     infinite loops on malformed case values.
+ *   - All loops that parse statements/declarations have progress checks.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
  */
 
 #include "Parser.hpp"
@@ -16,16 +93,45 @@
 #include <iostream>
 
 // ─────────────────────────────────────────────────────────────────────────────
-// parseStmt  — root statement dispatcher
+// Root Statement Dispatcher
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// parseStmt
 //
-// Dispatch priority (in order):
-//   1. Multi‑assignment (reassignment) – safe lookahead
-//   2. Multi‑variable declaration (let/const with commas) – handled separately
-//   3. All other local declarations (type, struct, enum, impl, from, let/const)
-//        -> parsed via parseDeclaration(DeclContext::Local)
-//   4. 'pub' inside a block -> error + skip
-//   5. Control-flow keywords -> specific parsers
-//   6. Expression statement
+// Root dispatcher for statement parsing. Examines the current token and routes
+// to the appropriate statement parser.
+//
+// Grammar (statement):
+//   stmt := multi_assign_stmt | multi_var_decl | local_decl | if_stmt
+//         | switch_stmt | for_stmt | while_stmt | do_while_stmt
+//         | return_stmt | break_stmt | continue_stmt | expr_stmt
+//
+// ─── Dispatch Priority (in order) ───────────────────────────────────────────
+//   1. Multi‑assignment (reassignment)     – looksLikeMultiAssignStart()
+//   2. Multi‑variable declaration           – let/const with commas (detected by lookahead)
+//   3. Local declarations                   – type, struct, enum, impl, trait, from, let/const, use
+//   4. 'pub' inside a block                 – error + skip (pub/export not allowed locally)
+//   5. Control flow keywords                – if, switch, for, while, do, return, break, continue
+//   6. Expression statement                 – fallback
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the entire statement (including optional trailing semicolon).
+// - Returns a StmtPtr (never nullptr; on error returns UnknownStmtAST).
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Invalid variable declaration without let/const (e.g., "x int = 5") is detected
+//   and reported; tokens are skipped until semicolon or closing brace.
+// - If no valid statement start is recognised, reports error, consumes one token,
+//   and returns UnknownStmtAST.
+// - Expression statement fallback: if parseExpr() fails, skips tokens until a
+//   statement boundary to avoid infinite loop.
+//
+// ─── Loop Safety ────────────────────────────────────────────────────────────
+// - The multi‑var detection lookahead is pure (restores pos_ on failure).
+// - Each branch consumes at least one token or returns an error node.
+// - Expression statement fallback includes a loop that skips tokens until a
+//   safe boundary, guaranteeing progress.
 // ─────────────────────────────────────────────────────────────────────────────
 StmtPtr Parser::parseStmt() {
     LUC_LOG_STMT_VERBOSE("parseStmt: token='" << peek().value << "'");
@@ -163,34 +269,54 @@ StmtPtr Parser::parseStmt() {
     return stmt;
 }
 
-/**
- * @brief Parses a multi‑variable declaration statement (with let/const).
- *
- * Grammar:
- *   multi_assign := decl_keyword var_spec { ',' var_spec } '=' expr
- *   var_spec     := IDENTIFIER type_ann
- *   decl_keyword := 'let' | 'const'
- *
- * All variables share a single keyword and each has an explicit type.
- * The right‑hand side must be a single expression that returns exactly
- * as many values as there are variables (e.g., a function with multiple returns).
- *
- * Examples:
- *   let q int, r int     = divmod(10, 3)
- *   const w int, h int  = getScreenSize()
- *
- * @return A MultiVarDeclAST node, or nullptr on error.
- *
- * @related parseStmt()      – dispatches to this function when it sees
- *                              'let'/'const', an identifier, a type, and then a comma.
- *          parseLocalDecl() – handles single variable/function declarations.
- *
- * @semantics The semantic pass will:
- *   - Verify that the RHS produces exactly as many values as variables.
- *   - Check type compatibility per variable.
- *   - Ensure `const` RHS is a compile‑time constant.
- *   - Introduce variables into the current scope.
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// Multi‑Assignment & Declaration
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// parseMultiVarDecl
+//
+// Parses a multi‑variable declaration statement (with let/const).
+//
+// Grammar:
+//   multi_var_decl := decl_keyword var_spec { ',' var_spec } '=' expr
+//   var_spec       := IDENTIFIER type_ann
+//   decl_keyword   := 'let' | 'const'
+//
+// Examples:
+//   let q int, r int = divmod(10, 3)
+//   const w int, h int = getScreenSize()
+//
+// ─── Preconditions ──────────────────────────────────────────────────────────
+// - Called when the current token is 'let' or 'const' and lookahead indicates
+//   a multi‑variable declaration pattern (identifier, type, comma).
+// - The keyword token is consumed by this function.
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the 'let' or 'const' keyword.
+// - For each variable:
+//     * Consumes an IDENTIFIER (variable name)
+//     * Consumes a type annotation via parseType()
+// - Consumes commas between variable specifications.
+// - Consumes '=' (required).
+// - Consumes the RHS expression via parseExpr().
+// - Does NOT consume trailing semicolon (caller handles optional semicolons).
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing variable name: reports error, returns nullptr.
+// - Missing type annotation: reports error, returns nullptr.
+// - Missing '=': reports error, returns nullptr.
+// - Missing RHS expression: reports error, returns nullptr.
+// - If a variable fails to parse, the loop may break or continue depending on
+//   error severity.
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   MultiVarDeclAST {
+//       keyword: DeclKeyword (Let or Const)
+//       vars:    vector<pair<InternedString, TypePtr>> (name + type pairs)
+//       rhs:     ExprPtr (the initialiser expression)
+//   }
+// ─────────────────────────────────────────────────────────────────────────────
 ASTPtr<MultiVarDeclAST> Parser::parseMultiVarDecl(std::vector<AttributePtr> attrs) {
     SourceLocation loc = currentLoc();
 
@@ -250,33 +376,53 @@ ASTPtr<MultiVarDeclAST> Parser::parseMultiVarDecl(std::vector<AttributePtr> attr
     return node;
 }
 
-/**
- * @brief Parses a multi‑assignment statement to existing variables (reassignment).
- *
- * Grammar:
- *   multi_assign_stmt := expr_lhs { ',' expr_lhs } '=' expr
- *   expr_lhs          := IDENTIFIER | expr '.' IDENTIFIER | expr '[' expr ']'
- *
- * The left‑hand side expressions must be assignable lvalues (variables,
- * field accesses, indices). The right‑hand side is a single expression that
- * must return exactly as many values as there are left‑hand side expressions.
- *
- * Examples:
- *   a, b = f()
- *   p.x, arr[i] = g()
- *
- * @return A MultiAssignStmtAST node, or nullptr on error.
- *
- * @related parseStmt() – dispatches to this function when a statement starts
- *          with an identifier (or eventually any lvalue) followed by a comma
- *          and then more expressions before '='.
- *
- * @semantics The semantic pass will:
- *   - Verify that each left‑hand side is a valid lvalue (not a const, not a literal, etc.).
- *   - Check that the RHS returns the same number of values.
- *   - Perform type compatibility per left‑hand side.
- *   - If any left‑hand side is a const variable, emit an error.
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// parseMultiAssignStmt
+//
+// Parses a multi‑assignment statement (reassignment to existing variables).
+//
+// Grammar:
+//   multi_assign_stmt := expr_lhs { ',' expr_lhs } '=' expr
+//   expr_lhs          := IDENTIFIER
+//                      | expr '.' IDENTIFIER
+//                      | expr '[' expr ']'
+//
+// Examples:
+//   a, b = f()
+//   p.x, arr[i] = g()
+//   x, y = getCoordinates()
+//
+// ─── Preconditions ──────────────────────────────────────────────────────────
+// - Called when looksLikeMultiAssignStart() returns true (identifier followed
+//   by comma and eventually '=').
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Parses the first lvalue via parseLvalue().
+// - While the next token is ',':
+//     * Consumes ','
+//     * Parses the next lvalue via parseLvalue()
+// - Consumes '=' (required).
+// - Consumes the RHS expression via parseExpr().
+// - Does NOT consume trailing semicolon (caller handles optional semicolons).
+//
+// ─── Lvalue Parsing ─────────────────────────────────────────────────────────
+// - Uses parseLvalue() which handles identifiers, field accesses, and indices.
+// - Function calls and behavior accesses are NOT valid lvalues.
+// - The RHS must be a single expression that returns as many values as there
+//   are lvalues (semantic pass enforces this).
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing first lvalue: reports error, returns nullptr.
+// - Missing lvalue after comma: reports error, breaks.
+// - Missing '=': reports error, skips tokens until semicolon or brace, returns nullptr.
+// - Missing RHS expression: reports error, returns nullptr.
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   MultiAssignStmtAST {
+//       lhs: vector<ExprPtr> (lvalue expressions in order)
+//       rhs: ExprPtr (the right‑hand side expression)
+//   }
+// ─────────────────────────────────────────────────────────────────────────────
 ASTPtr<MultiAssignStmtAST> Parser::parseMultiAssignStmt() {
     SourceLocation loc = currentLoc();
     std::vector<ExprPtr> lhs;
@@ -324,11 +470,52 @@ ASTPtr<MultiAssignStmtAST> Parser::parseMultiAssignStmt() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Block
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
 // parseBlock
 //
-// Grammar:  block := '{' { stmt } '}'
+// Parses a block statement: a brace‑delimited sequence of statements.
 //
-// Foundational building block — every body in the language is a block.
+// Grammar:
+//   block := '{' { stmt } '}'
+//
+// Examples:
+//   { let x int = 5; io.printl(x) }
+//   { return 42 }
+//   {}   // empty block
+//
+// ─── Foundational Role ──────────────────────────────────────────────────────
+// - Every function body, if branch, loop body, and parallel sub‑block is a BlockStmtAST.
+// - The semantic pass opens a new scope when entering a block and closes it on exit.
+// - Names declared inside are not visible outside.
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the opening '{'.
+// - Repeatedly calls parseStmt() to parse statements until '}' or EOF.
+// - Consumes the closing '}'.
+// - Optional semicolons between statements are consumed by parseStmt() or matched.
+//
+// ─── Loop Safety & Progress Guarantee ───────────────────────────────────────
+// - Uses a progress guard: saves pos_ before each parseStmt() call.
+// - If parseStmt() makes no progress (pos_ == savedPos):
+//     * Forcibly consumes one token (advance())
+//     * Skips any following semicolons that might cause another stall
+//     * Continues to next iteration (does NOT push a statement)
+// - This guarantees forward progress even on malformed input.
+// - The loop terminates when '}' is found or EOF is reached.
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing opening '{': consume() reports error.
+// - If parseStmt() returns nullptr (error), the statement is skipped and the
+//   loop continues.
+// - Missing closing '}': consume() reports error and recovers.
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   BlockStmtAST {
+//       stmts: vector<StmtPtr> (statements in source order)
+//   }
 // ─────────────────────────────────────────────────────────────────────────────
 ASTPtr<BlockStmtAST> Parser::parseBlock() {
     LUC_LOG_STMT("parseBlock");
@@ -370,19 +557,59 @@ ASTPtr<BlockStmtAST> Parser::parseBlock() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Branching Statements
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
 // parseIfStmt
+//
+// Parses an 'if' statement (statement form, not expression form).
 //
 // Grammar:
 //   if_stmt := 'if' expr block [ 'else' ( if_stmt | block ) ]
 //
-// Statement form — else is optional.  This is distinct from parseIfExpr()
-// (in ParserExpr.cpp) where else is required.
+// Examples:
+//   if score >= 90 { io.printl("A") }
+//   if score >= 90 { io.printl("A") } else { io.printl("F") }
+//   if x < 0 { return } else if x == 0 { ... } else { ... }
 //
-// Dispatching:
-//   In parseStmt() we always route 'if' here.
-//   In expression position (e.g. assignment RHS, function return body),
-//   parseExpr() → parsePrimaryExpr() → parseIfExpr() is taken instead.
-// ────────────────────────────────────────────────────────────────────────────
+// ─── Comparison with parseIfExpr() ──────────────────────────────────────────
+//   IfStmtAST (this function)       | IfExprAST (in ParserExpr.cpp)
+//   --------------------------------|------------------------------------------
+//   Statement context               | Expression context
+//   'else' optional                 | 'else' required
+//   No value produced               | Produces a value
+//   No '??' separator               | Uses '??' as separator
+//
+// ─── Dispatching ────────────────────────────────────────────────────────────
+// - In parseStmt(), 'if' always routes here.
+// - In expression position (assignment RHS, function return), parseExpr() →
+//   parsePrimaryExpr() → parseIfExpr() is used instead.
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the 'if' keyword.
+// - Parses the condition expression (struct literals disabled to avoid ambiguity
+//   with the following block).
+// - Consumes the then‑branch block via parseBlock().
+// - Optional 'else' clause:
+//     * If 'else if' → recursively calls parseIfStmt() (produces nested IfStmtAST)
+//     * If 'else {' → parses a block via parseBlock()
+// - Does NOT consume any tokens beyond the else branch.
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing condition after 'if': reports error, returns placeholder node.
+// - Missing '{' after condition: reports error, returns placeholder node.
+// - Missing block after 'else' (if present): reports error.
+// - Type narrowing applies inside then‑branch when condition is an 'is' expression
+//   (enforced by semantic pass, not parser).
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   IfStmtAST {
+//       condition:  ExprPtr
+//       thenBranch: StmtPtr (always a BlockStmtAST)
+//       elseBranch: StmtPtr (nullptr, BlockStmtAST, or IfStmtAST)
+//   }
+// ─────────────────────────────────────────────────────────────────────────────
 ASTPtr<IfStmtAST> Parser::parseIfStmt() {
     LUC_LOG_STMT("parseIfStmt");
     SourceLocation loc = currentLoc();
@@ -452,15 +679,56 @@ ASTPtr<IfStmtAST> Parser::parseIfStmt() {
 // ─────────────────────────────────────────────────────────────────────────────
 // parseSwitchStmt
 //
+// Parses a 'switch' statement – statement‑oriented value dispatch.
+//
 // Grammar:
 //   switch_stmt := 'switch' expr '{' { case_clause } [ default_clause ] '}'
 //   case_clause := 'case' case_value { ',' case_value } ':' block
 //   case_value  := expr | range_expr
 //   default_clause := 'default' ':' block
 //
-// switch is statement-oriented (no value produced).
-// Multiple values and ranges per case; no fallthrough.
-// default is optional (unlike match where it is required).
+// Examples:
+//   switch code {
+//       case 200, 201: { io.printl("ok") }
+//       case 1..10:    { io.printl("light") }
+//       default:       { io.printl("unknown") }
+//   }
+//
+// ─── Comparison with MatchExprAST ───────────────────────────────────────────
+//   SwitchStmtAST (this)            | MatchExprAST (in ParserExpr.cpp)
+//   --------------------------------|------------------------------------------
+//   Statement (no value produced)   | Expression (produces a value)
+//   'default' optional              | 'default' required
+//   Body is a block (statements)    | Body is an expression
+//   No pattern matching             | Full pattern matching
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the 'switch' keyword.
+// - Parses the subject expression (struct literals disabled).
+// - Consumes the opening '{'.
+// - Repeatedly parses case clauses via parseSwitchCase() until '}' or 'default'.
+// - Optionally parses a default clause (at most one).
+// - Consumes the closing '}'.
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing subject after 'switch': reports error, returns nullptr.
+// - Missing '{' after subject: reports error, returns nullptr.
+// - Duplicate 'default' clause: reports error, second default is skipped.
+// - Unrecognised token inside switch block: reports error, calls synchronize().
+// - Missing closing '}': consume() reports error and recovers.
+//
+// ─── Loop Safety ────────────────────────────────────────────────────────────
+// - The case loop calls synchronize() on unrecognised tokens, which consumes
+//   tokens until a safe boundary (case, default, or '}').
+// - Each iteration either parses a valid case/default or advances past an error.
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   SwitchStmtAST {
+//       subject:     ExprPtr
+//       cases:       vector<SwitchCasePtr>
+//       defaultBody: BlockStmtPtr (nullptr if no default)
+//       defaultLoc:  optional<SourceLocation>
+//   }
 // ─────────────────────────────────────────────────────────────────────────────
 ASTPtr<SwitchStmtAST> Parser::parseSwitchStmt() {
     LUC_LOG_STMT("parseSwitchStmt");
@@ -525,13 +793,52 @@ ASTPtr<SwitchStmtAST> Parser::parseSwitchStmt() {
 // ─────────────────────────────────────────────────────────────────────────────
 // parseSwitchCase
 //
+// Parses a single case clause inside a switch statement.
+//
 // Grammar:
 //   case_clause := 'case' case_value { ',' case_value } ':' block
 //   case_value  := expr | range_expr
 //
-// Range detection: after parsing a primary expression, if '..' follows we
-// build a RangeExprAST from the already-parsed lo expression and the hi
-// expression that follows '..'.
+// Examples:
+//   case 200, 201: { io.printl("ok") }
+//   case 1..10:    { io.printl("light") }
+//   case 0x41, 0x30..0x39: { handleInput() }
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the 'case' keyword.
+// - Parses the first case value (expression or range) via parsePrattExpr(0).
+// - While the next token is ',':
+//     * Consumes ','
+//     * Parses the next case value
+// - Consumes ':' after all values.
+// - Consumes the case body block via parseBlock().
+// - Does NOT consume any tokens beyond the closing '}' of the block.
+//
+// ─── Range Detection ────────────────────────────────────────────────────────
+// - After parsing a primary expression, if the next token is '..' (RANGE),
+//   calls parseRangeExpr() to convert the expression into a RangeExprAST.
+// - Supports both inclusive '..' and exclusive '..<' ranges.
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Uses a consecutive error counter (MAX_CONSECUTIVE_ERRORS = 5) to prevent
+//   infinite loops on malformed case values.
+// - If the first value cannot be parsed:
+//     * If no progress (pos_ == savedPos): consumes one token, increments counter.
+//     * If progress but UnknownExprAST: increments counter, skips adding value.
+// - If consecutive errors reach the limit: skips tokens until ':'.
+// - Missing ':' after values: consume() reports error.
+// - Missing '{' for body: reports error.
+//
+// ─── Loop Safety ────────────────────────────────────────────────────────────
+// - The value loop increments consecutiveErrors on failures.
+// - When a value parses successfully, consecutiveErrors is reset to 0.
+// - If errors exceed the limit, the loop exits and skips to ':'.
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   SwitchCaseAST {
+//       values: vector<ExprPtr> (case values, may include RangeExprAST)
+//       body:   BlockStmtPtr
+//   }
 // ─────────────────────────────────────────────────────────────────────────────
 SwitchCasePtr Parser::parseSwitchCase() {
     LUC_LOG_STMT_VERBOSE("parseSwitchCase");
@@ -611,17 +918,60 @@ SwitchCasePtr Parser::parseSwitchCase() {
     return sc;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Loop Statements
+// ─────────────────────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────────────────────
 // parseForStmt
 //
-// Grammar:
-//   for_stmt := 'for' IDENTIFIER 'in' expr block
-//             | 'for' IDENTIFIER 'in' range_expr block
+// Parses a 'for' loop statement for iterating over collections or ranges.
 //
-// Both forms map to the same node. Range detection: if the iterable expression
-// is followed by '..' we convert it to a RangeExprAST.  The semantic pass
-// determines the iteration variable type from the iterable.
+// Grammar:
+//   for_stmt := 'for' IDENTIFIER [ type_ann ] 'in' ( range_expr | expr ) block
+//
+// Examples:
+//   for item in items { io.printl(item) }
+//   for i in 0..10 { io.printl(string(i)) }
+//   for i in 0..10..2 { io.printl(string(i)) }  (step)
+//   for i int in 0..10 { io.printl(string(i)) }  (explicit type)
+//
+// ─── Two Iteration Forms ────────────────────────────────────────────────────
+//   1. Range iteration: iterable is a RangeExprAST (lo..hi or lo..<hi)
+//      - Optional step after second '..'
+//      - Iteration variable type defaults to 'int' if not specified
+//   2. Collection iteration: iterable is any expression that produces a
+//      collection type (array, slice, dynamic array)
+//      - Iteration variable type is inferred from element type
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the 'for' keyword.
+// - Consumes the iteration variable name (IDENTIFIER).
+// - Optional explicit type annotation (if 'in' does not follow immediately).
+// - Consumes the 'in' keyword.
+// - Parses the iterable expression (struct literals disabled).
+// - If the iterable is followed by '..', converts it to a RangeExprAST.
+// - Optionally, if another '..' follows, parses a step expression.
+// - Consumes the loop body block via parseBlock().
+//
+// ─── Loop Depth Tracking ─────────────────────────────────────────────────────
+// - Increments loopDepth_ before parsing the body, decrements after.
+// - Used by parseBreakStmt() and parseContinueStmt() to validate loop context.
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing iteration variable: reports error, returns nullptr.
+// - Missing 'in' after variable/type: reports error, returns nullptr.
+// - Missing iterable expression: reports error, returns nullptr.
+// - Missing step expression after second '..': reports error, returns nullptr.
+// - Missing '{' for body: reports error, returns nullptr.
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   ForStmtAST {
+//       iterVar:  ParamPtr (name + optional type annotation)
+//       iterable: ExprPtr (collection or RangeExprAST)
+//       step:     ExprPtr (nullptr if no step)
+//       body:     StmtPtr (always a BlockStmtAST)
+//   }
 // ─────────────────────────────────────────────────────────────────────────────
 ASTPtr<ForStmtAST> Parser::parseForStmt() {
     LUC_LOG_STMT("parseForStmt");
@@ -703,7 +1053,41 @@ ASTPtr<ForStmtAST> Parser::parseForStmt() {
 // ─────────────────────────────────────────────────────────────────────────────
 // parseWhileStmt
 //
-// Grammar:  while_stmt := 'while' expr block
+// Parses a 'while' loop statement – condition tested before each iteration.
+//
+// Grammar:
+//   while_stmt := 'while' expr block
+//
+// Example:
+//   while n < 5 { n += 1 }
+//   while !queue.isEmpty() { process(queue.pop() ?? defaultItem) }
+//
+// ─── Semantics ──────────────────────────────────────────────────────────────
+// - The condition is evaluated before each iteration.
+// - If the condition evaluates to true, the loop body executes.
+// - The loop exits when the condition evaluates to false, or when a 'break'
+//   statement is reached.
+// - The loop body never executes if the condition is initially false.
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the 'while' keyword.
+// - Parses the condition expression (struct literals disabled).
+// - Consumes the loop body block via parseBlock().
+//
+// ─── Loop Depth Tracking ─────────────────────────────────────────────────────
+// - Increments loopDepth_ before parsing the body, decrements after.
+// - Used by parseBreakStmt() and parseContinueStmt() to validate loop context.
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing condition after 'while': reports error, returns nullptr.
+// - Missing '{' after condition: reports error, returns nullptr.
+// - Missing body block: reports error, returns nullptr.
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   WhileStmtAST {
+//       condition: ExprPtr (must resolve to bool)
+//       body:      StmtPtr (always a BlockStmtAST)
+//   }
 // ─────────────────────────────────────────────────────────────────────────────
 ASTPtr<WhileStmtAST> Parser::parseWhileStmt() {
     LUC_LOG_STMT("parseWhileStmt");
@@ -740,9 +1124,44 @@ ASTPtr<WhileStmtAST> Parser::parseWhileStmt() {
 // ─────────────────────────────────────────────────────────────────────────────
 // parseDoWhileStmt
 //
-// Grammar:  do_while_stmt := 'do' block 'while' expr
+// Parses a 'do-while' loop statement – body executed before condition test.
 //
-// The body executes unconditionally before the condition is first evaluated.
+// Grammar:
+//   do_while_stmt := 'do' block 'while' expr
+//
+// Example:
+//   do { retries += 1 } while retries < 3
+//   do { c = readChar() } while c != '\n'
+//
+// ─── Semantics ──────────────────────────────────────────────────────────────
+// - The loop body executes unconditionally at least once.
+// - After the body executes, the condition is evaluated.
+// - If the condition evaluates to true, the loop repeats.
+// - The loop exits when the condition evaluates to false, or when a 'break'
+//   statement is reached.
+// - Useful when the exit condition depends on a side effect of the body.
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the 'do' keyword.
+// - Consumes the loop body block via parseBlock().
+// - Consumes the 'while' keyword.
+// - Parses the condition expression (struct literals disabled).
+//
+// ─── Loop Depth Tracking ─────────────────────────────────────────────────────
+// - Increments loopDepth_ before parsing the body, decrements after.
+// - Used by parseBreakStmt() and parseContinueStmt() to validate loop context.
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing '{' after 'do': reports error, returns nullptr.
+// - Missing 'while' after body: reports error, returns nullptr.
+// - Missing condition after 'while': reports error, returns nullptr.
+// - Missing body block: reports error, returns nullptr.
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   DoWhileStmtAST {
+//       body:      StmtPtr (always a BlockStmtAST)
+//       condition: ExprPtr (must resolve to bool)
+//   }
 // ─────────────────────────────────────────────────────────────────────────────
 ASTPtr<DoWhileStmtAST> Parser::parseDoWhileStmt() {
     LUC_LOG_STMT("parseDoWhileStmt");
@@ -777,14 +1196,60 @@ ASTPtr<DoWhileStmtAST> Parser::parseDoWhileStmt() {
     return node;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Jump Statements
+// ─────────────────────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────────────────────
 // parseReturnStmt
 //
-// Grammar:  return_stmt := 'return' [ expr { ',' expr } ]
+// Parses a 'return' statement that exits the enclosing function.
 //
-// A bare 'return' (no expression) is valid in void functions.
-// Return inside a parallel body is a parse-time error.
+// Grammar:
+//   return_stmt := 'return' [ expr { ',' expr } ]
+//
+// Examples:
+//   return           – void return (no value)
+//   return 42        – single return value
+//   return a + b     – expression return
+//   return a, b, c   – multiple return values (comma‑separated)
+//
+// ─── Multiple Return Values ─────────────────────────────────────────────────
+// - Luc supports multiple return values from functions.
+// - The return statement can list multiple comma‑separated expressions.
+// - The number and types of return values must match the function's signature
+//   (enforced by the semantic pass).
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the 'return' keyword.
+// - If the next token is not '}', ';', or EOF, parses one or more comma‑separated
+//   expressions.
+// - Supports consecutive commas detection (empty expression) – reports error and skips.
+// - Trailing comma detection – reports error.
+// - Does NOT consume any tokens beyond the last expression (caller handles
+//   semicolons or closing braces).
+//
+// ─── Semantic Restrictions (Parser Checks) ──────────────────────────────────
+// - If parallelDepth_ > 0 (inside a parallel body), reports an error.
+// - All other restrictions (async context, type matching) are enforced by the
+//   semantic pass.
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - If an expression fails to parse (no progress), reports error, consumes one token,
+//   and breaks out of the expression loop.
+// - Consecutive commas: reports error, skips the extra comma, continues.
+// - Trailing comma: reports error, breaks out of loop.
+//
+// ─── Loop Safety ────────────────────────────────────────────────────────────
+// - The expression loop uses a progress guard: if parseExpr() makes no progress,
+//   consumes one token and breaks (prevents infinite loop).
+// - Each iteration either parses an expression or consumes a comma, guaranteeing
+//   forward progress.
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   ReturnStmtAST {
+//       values: vector<ExprPtr> (empty for bare 'return')
+//   }
 // ─────────────────────────────────────────────────────────────────────────────
 ASTPtr<ReturnStmtAST> Parser::parseReturnStmt() {
     LUC_LOG_STMT("parseReturnStmt");
@@ -844,7 +1309,34 @@ ASTPtr<ReturnStmtAST> Parser::parseReturnStmt() {
 // ─────────────────────────────────────────────────────────────────────────────
 // parseBreakStmt
 //
-// Grammar:  break_stmt := 'break'
+// Parses a 'break' statement that exits the nearest enclosing loop.
+//
+// Grammar:
+//   break_stmt := 'break'
+//
+// Example:
+//   break
+//
+// ─── Semantics ──────────────────────────────────────────────────────────────
+// - Exits the nearest enclosing loop (for, while, or do‑while).
+// - Control transfers to the first statement after the loop.
+// - Cannot be used outside of a loop body.
+// - Cannot be used inside a parallel body (parallel for, parallel block).
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the 'break' keyword.
+// - Does NOT consume any tokens beyond the keyword.
+//
+// ─── Parser‑Time Checks ─────────────────────────────────────────────────────
+// - If loopDepth_ == 0 (not inside any loop), reports an error.
+// - If parallelDepth_ > 0 (inside a parallel body), reports an error.
+//
+// ─── Error Handling ─────────────────────────────────────────────────────────
+// - Errors are reported but parsing continues (the node is still created).
+// - The semantic pass may also enforce restrictions on break targets.
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   BreakStmtAST (no fields)
 // ─────────────────────────────────────────────────────────────────────────────
 ASTPtr<BreakStmtAST> Parser::parseBreakStmt() {
     LUC_LOG_STMT("parseBreakStmt");
@@ -870,7 +1362,35 @@ ASTPtr<BreakStmtAST> Parser::parseBreakStmt() {
 // ─────────────────────────────────────────────────────────────────────────────
 // parseContinueStmt
 //
-// Grammar:  continue_stmt := 'continue'
+// Parses a 'continue' statement that skips to the next iteration of the
+// nearest enclosing loop.
+//
+// Grammar:
+//   continue_stmt := 'continue'
+//
+// Example:
+//   continue
+//
+// ─── Semantics ──────────────────────────────────────────────────────────────
+// - Skips the rest of the current loop iteration and jumps to the next iteration
+//   of the nearest enclosing loop (for, while, or do‑while).
+// - Cannot be used outside of a loop body.
+// - Cannot be used inside a parallel body (parallel for, parallel block).
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the 'continue' keyword.
+// - Does NOT consume any tokens beyond the keyword.
+//
+// ─── Parser‑Time Checks ─────────────────────────────────────────────────────
+// - If loopDepth_ == 0 (not inside any loop), reports an error.
+// - If parallelDepth_ > 0 (inside a parallel body), reports an error.
+//
+// ─── Error Handling ─────────────────────────────────────────────────────────
+// - Errors are reported but parsing continues (the node is still created).
+// - The semantic pass may also enforce restrictions on continue targets.
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   ContinueStmtAST (no fields)
 // ─────────────────────────────────────────────────────────────────────────────
 ASTPtr<ContinueStmtAST> Parser::parseContinueStmt() {
     LUC_LOG_STMT("parseContinueStmt");

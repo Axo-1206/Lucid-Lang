@@ -1,14 +1,113 @@
 /**
  * @file ParserExpr.cpp
  *
- * @responsibility Implements the Pratt Parser for all LUC expressions.
+ * @responsibility Implements the Pratt parser for all LUC expressions and pattern matching.
  *
- * @grammar_rules Literals, Binary Ops, Calls, Indexing, Match Expr, Pipelines, Composition.
+ * This file contains the heart of the expression parsing logic:
+ *   - Pratt parser with precedence climbing (parsePrattExpr)
+ *   - Prefix, infix, and postfix operator handling
+ *   - Literals, identifiers, array literals, struct literals
+ *   - Function calls, indexing, field access, behavior access
+ *   - Pipeline operator (|>) and composition operator (+>)
+ *   - Match expressions with pattern matching
+ *   - If expressions, await expressions, intrinsic calls
+ *   - Pattern parsing for match arms (bind, wildcard, type, struct patterns)
  *
- * @related src/diagnostics/DiagnosticEngine.hpp, DiagnosticCodes.hpp
+ * All expression parsers consume tokens from the parser's stream and build
+ * corresponding ExprAST nodes. The Pratt parser uses a precedence table
+ * defined in the anonymous namespace below.
  *
- * @note This is the "high-traffic" area for logic changes.
- *       Operator precedence is defined in `infixPrec()`.
+ * @related_files
+ *   - Parser.hpp – class declaration and shared utilities
+ *   - Parser.cpp – core token stream primitives
+ *   - ParserDecl.cpp – declaration parsing (called from expressions in some contexts)
+ *   - ParserStmt.cpp – statement parsing (expressions can appear in statements)
+ *   - ParserType.cpp – type parsing (used in type casts and is-expressions)
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * NAVIGATION – Functions in this file (in order of appearance)
+ * ─────────────────────────────────────────────────────────────────────────────
+ *
+ * ██ Precedence Helpers
+ *   infixPrec()                     – precedence of infix operators
+ *   tokenToBinaryOp()               – TokenType → BinaryOp
+ *   tokenToAssignOp()               – TokenType → AssignOp
+ *   isAssignOp()                    – true for assignment operators
+ *
+ * ██ Pratt Parser Core
+ *   parseExpr()                     – root entry point
+ *   parsePrattExpr()                – Pratt climbing main loop
+ *   parseInfixAssign()              – handles assignment operators
+ *   parseInfixIs()                  – handles 'is' type check
+ *   parseInfixNullCoalesce()        – handles '??' operator
+ *   parseInfixBinary()              – generic binary operator
+ *
+ * ██ Prefix & Primary Parsers
+ *   parsePrefixExpr()               – unary operators (-, not, ~, &)
+ *   parsePrimaryExpr()              – atoms: literals, identifiers, grouped, special forms
+ *
+ * ██ Postfix Parser
+ *   parsePostfixExpr()              – calls, indexing, field access, nullable chain
+ *
+ * ██ Literal & Value Parsers
+ *   parseLiteralExpr()              – scalar literals
+ *   parseArrayLiteralExpr()         – [ ... ] array literals
+ *   parseStructLiteralExpr()        – Type { field = value, ... }
+ *   parseAnonFuncExpr()             – (params) -> ret { ... }
+ *   parseAwaitExpr()                – await expr
+ *   parseTypeConvExpr()             – type(expr) or *type(expr)
+ *   parseRangeExpr()                – lo .. hi
+ *
+ * ██ Call & Index Parsers
+ *   parseCallExpr()                 – callee(args)
+ *   parseIndexExpr()                – target[idx] or target[start..end]
+ *   parseIntrinsicCallExpr()        – #name(args)
+ *   parseArgList()                  – comma‑separated argument list
+ *
+ * ██ Pipeline & Composition
+ *   parsePipelineExpr()             – seed |> step |> step
+ *   parsePipelineStep()             – one pipeline step (dispatcher)
+ *   parseAnonFuncPipelineStep()     – anonymous function as step
+ *   parseBehaviorPipelineStep()     – Type:method as step
+ *   parseFieldPipelineStep()        – obj.field as step
+ *   parseIndexPipelineStep()        – arr[idx] as step
+ *   parseArgPackPipelineStep()      – fn(args)! as step
+ *   parseComposeExpr()              – f +> g +> h
+ *   parseComposeOperand()           – one composition operand
+ *
+ * ██ Match Expression & Patterns
+ *   parseMatchExpr()                – match subject { arms }
+ *   parseMatchArm()                 – pattern [if guard] => expr [, expr]
+ *   parseDefaultArm()               – default => expr [, expr]
+ *   parsePattern()                  – dispatch to pattern sub‑parsers
+ *   parseLiteralOrRangePattern()    – literal or lo..hi range
+ *   parseBindPattern()              – identifier
+ *   parseTypePattern()              – identifier is type
+ *   parseWildcardPattern()          – _
+ *   parseStructPattern()            – Type { field, field: pattern, ... }
+ *   parseFieldPattern()             – field or field: pattern
+ *
+ * ██ Lvalue Parser (for multi‑assignment)
+ *   parseLvalue()                   – assignable left‑hand side
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * PRECEDENCE TABLE (from LUC_GRAMMAR.md)
+ *
+ *   PREC_ASSIGN   = 1   =  +=  -=  *=  /=  ^=  %=  &&=  ||=  ~^=  <<=  >>=
+ *   PREC_COMPOSE  = 2   +>
+ *   PREC_PIPELINE = 3   |>
+ *   PREC_NULLCOAL = 4   ??
+ *   PREC_OR       = 5   or
+ *   PREC_AND      = 6   and
+ *   PREC_CMP      = 7   == != < > <= >= is
+ *   PREC_BITWISE  = 8   && || ~^ << >>
+ *   PREC_ADD      = 10  + -
+ *   PREC_MUL      = 11  * / %
+ *   PREC_POW      = 12  ^ (right‑associative)
+ *
+ * Postfix operators (calls, indexing, '.', ':', '?.') bind tighter than any
+ * binary operator and are handled in parsePostfixExpr.
+ * ─────────────────────────────────────────────────────────────────────────────
  */
 
 #include "Parser.hpp"
@@ -20,37 +119,6 @@
 
 #include <cassert>
 #include <string>
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ParserExpr.cpp
-//
-// Implements the full expression parser (Pratt / top-down operator precedence)
-// and all pattern parsing (used exclusively inside match expressions).
-//
-// Precedence table (from LUC_GRAMMAR.md §Operator Precedence), encoded as
-// integer levels used by parsePrattExpr:
-//
-//   PREC_ASSIGN   = 1   =  +=  -=  *=  /=  ^=  %=  &&=  ||=  ~^=  <<=  >>=  (right-assoc)
-//   PREC_COMPOSE  = 2   +>                                   (left-assoc)
-//   PREC_PIPELINE = 3   |>                                   (left-assoc)
-//   PREC_NULLCOAL = 4   ??                                   (right-assoc)
-//   PREC_OR       = 5   or
-//   PREC_AND      = 6   and
-//   PREC_CMP      = 7   == != < > <= >=  is
-//   PREC_BITWISE  = 8   & | ~^ ~  <<  >>
-//   PREC_SHIFT    = 9   << >>              (sub-level of BITWISE)
-//   PREC_ADD      = 10  + -
-//   PREC_MUL      = 11  * / %
-//   PREC_POW      = 12  ^                                    (right-assoc)
-//
-// Levels are deliberately spaced so a "one higher than current" right-recursive
-// call for right-associative operators is just minPrec + 1.
-//
-// Postfix operations (call, index, '.', ':', '?.') are handled at the top of
-// parsePrattExpr via parsePostfixExpr rather than as infix operators in the
-// precedence table — they are always left-associative and bind tighter than
-// any binary op.
-// ─────────────────────────────────────────────────────────────────────────────
 
 namespace {
     // Precedence levels — private to this TU.
@@ -72,6 +140,37 @@ namespace {
 // Precedence helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+// infixPrec
+//
+// Returns the precedence level of an infix operator token, or PREC_NONE (0) if
+// the token is not an infix operator.
+//
+// Precedence levels (higher = binds tighter):
+//   PREC_ASSIGN   = 1   – assignment and compound assignment (right‑associative)
+//   PREC_COMPOSE  = 2   – composition '+>'
+//   PREC_PIPELINE = 3   – pipeline '|>'
+//   PREC_NULLCOAL = 4   – null coalesce '??' (right‑associative)
+//   PREC_OR       = 5   – logical OR
+//   PREC_AND      = 6   – logical AND
+//   PREC_CMP      = 7   – comparison: ==, !=, <, >, <=, >=, ===, is
+//   PREC_BITWISE  = 8   – bitwise: &&, ||, ~^, <<, >>
+//   PREC_ADD      = 10  – addition: +, -
+//   PREC_MUL      = 11  – multiplication: *, /, %
+//   PREC_POW      = 12  – exponentiation: ^ (right‑associative)
+//
+// Note: RANGE ('..') returns PREC_NONE – it is handled by parsePostfixExpr
+//       and specialised parsers (for loops, match patterns, slice indices).
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Does NOT consume any tokens; pure inspection via peek().
+// - The caller (parsePrattExpr) uses the returned precedence to decide whether
+//   to consume the operator and recurse.
+//
+// ─── Error Handling ──────────────────────────────────────────────────────────
+// - Returns PREC_NONE for any token that is not a recognised infix operator.
+// - No error reporting; the caller handles unexpected tokens.
+// ─────────────────────────────────────────────────────────────────────────────
 int Parser::infixPrec(TokenType t) const {
     switch (t) {
         // Assignment — lowest, right-associative, handled separately.
@@ -138,6 +237,41 @@ int Parser::infixPrec(TokenType t) const {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// tokenToBinaryOp
+//
+// Converts a TokenType to the corresponding BinaryOp enum value.
+//
+// Mapping:
+//   TokenType::PLUS          → BinaryOp::Add
+//   TokenType::MINUS         → BinaryOp::Sub
+//   TokenType::MUL           → BinaryOp::Mul
+//   TokenType::DIV           → BinaryOp::Div
+//   TokenType::POW           → BinaryOp::Pow
+//   TokenType::MOD           → BinaryOp::Mod
+//   TokenType::EQUAL_EQUAL   → BinaryOp::Eq        (value equality)
+//   TokenType::EQUAL_EQUAL_EQUAL → BinaryOp::RefEq (reference equality)
+//   TokenType::NOT_EQUAL     → BinaryOp::Ne
+//   TokenType::LESS          → BinaryOp::Lt
+//   TokenType::GREATER       → BinaryOp::Gt
+//   TokenType::LESS_EQUAL    → BinaryOp::Le
+//   TokenType::GREATER_EQUAL → BinaryOp::Ge
+//   TokenType::AND           → BinaryOp::And       (logical AND)
+//   TokenType::OR            → BinaryOp::Or        (logical OR)
+//   TokenType::BIT_AND       → BinaryOp::BitAnd    (bitwise AND, token '&&')
+//   TokenType::BIT_OR        → BinaryOp::BitOr     (bitwise OR,  token '||')
+//   TokenType::BIT_XOR       → BinaryOp::BitXor    (bitwise XOR, token '~^')
+//   TokenType::SHL           → BinaryOp::Shl       (left shift)
+//   TokenType::SHR           → BinaryOp::Shr       (right shift)
+//
+// ─── Preconditions ───────────────────────────────────────────────────────────
+// - The caller must ensure the TokenType is a valid binary operator.
+// - BIT_NOT ('~') and AMPERSAND ('&') are unary operators – never passed here.
+//
+// ─── Error Handling ──────────────────────────────────────────────────────────
+// - The default case returns BinaryOp::Add (should never be reached in correct
+//   parsing). This satisfies the compiler but is a logic error if triggered.
+// ─────────────────────────────────────────────────────────────────────────────
 BinaryOp Parser::tokenToBinaryOp(TokenType t) const {
     switch (t) {
         case TokenType::PLUS:                return BinaryOp::Add;
@@ -167,6 +301,33 @@ BinaryOp Parser::tokenToBinaryOp(TokenType t) const {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// tokenToAssignOp
+//
+// Converts a TokenType to the corresponding AssignOp enum value.
+//
+// Mapping:
+//   TokenType::ASSIGN         → AssignOp::Assign      (=)
+//   TokenType::PLUS_ASSIGN    → AssignOp::AddAssign   (+=)
+//   TokenType::MINUS_ASSIGN   → AssignOp::SubAssign   (-=)
+//   TokenType::MUL_ASSIGN     → AssignOp::MulAssign   (*=)
+//   TokenType::DIV_ASSIGN     → AssignOp::DivAssign   (/=)
+//   TokenType::POW_ASSIGN     → AssignOp::PowAssign   (^=)
+//   TokenType::MOD_ASSIGN     → AssignOp::ModAssign   (%=)
+//   TokenType::BIT_AND_ASSIGN → AssignOp::BitAndAssign (&&=)
+//   TokenType::BIT_OR_ASSIGN  → AssignOp::BitOrAssign  (||=)
+//   TokenType::BIT_XOR_ASSIGN → AssignOp::BitXorAssign (~^=)
+//   TokenType::SHL_ASSIGN     → AssignOp::ShlAssign    (<<=)
+//   TokenType::SHR_ASSIGN     → AssignOp::ShrAssign    (>>=)
+//
+// ─── Preconditions ───────────────────────────────────────────────────────────
+// - The caller must ensure the TokenType is a valid assignment operator.
+// - Typically called only after isAssignOp() returns true.
+//
+// ─── Error Handling ──────────────────────────────────────────────────────────
+// - The default case returns AssignOp::Assign (should never be reached in
+//   correct parsing). This satisfies the compiler but is a logic error if triggered.
+// ─────────────────────────────────────────────────────────────────────────────
 AssignOp Parser::tokenToAssignOp(TokenType t) const {
     switch (t) {
         case TokenType::ASSIGN:
@@ -198,6 +359,26 @@ AssignOp Parser::tokenToAssignOp(TokenType t) const {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// isAssignOp
+//
+// Returns true if the given TokenType is an assignment operator.
+//
+// Assignment operators include:
+//   =, +=, -=, *=, /=, ^=, %=, &&=, ||=, ~^=, <<=, >>=
+//
+// ─── Usage ───────────────────────────────────────────────────────────────────
+// - Used in parsePrattExpr to detect assignment operators before the generic
+//   binary operator path.
+// - Assignment operators have the lowest precedence (PREC_ASSIGN = 1) and are
+//   right‑associative.
+// - When an assignment operator is encountered, the Pratt loop breaks after
+//   parsing it (assignments are statement‑level expressions).
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Does NOT consume any tokens; pure inspection.
+// - The caller (parsePrattExpr) consumes the token after checking this predicate.
+// ─────────────────────────────────────────────────────────────────────────────
 bool Parser::isAssignOp(TokenType t) const {
     switch (t) {
         case TokenType::ASSIGN:
@@ -219,11 +400,40 @@ bool Parser::isAssignOp(TokenType t) const {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// parseExpr  — root entry point
+// Pratt Parser Core
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// parseExpr
 //
-// Parses a full expression including assignment operators (the lowest
-// precedence level).  Starts the Pratt loop at PREC_NONE so everything
-// binds.
+// Root entry point for expression parsing.
+//
+// Grammar:
+//   expr := assign_expr
+//
+// ─── Overview ────────────────────────────────────────────────────────────────
+// - Starts the Pratt parser at the lowest precedence level (PREC_NONE = 0),
+//   which ensures all operators (including assignment) are consumed.
+// - Delegates to parsePrattExpr() which handles the full precedence climbing.
+// - After parsing, the expression may be followed by a semicolon or another
+//   token – the caller is responsible for consuming separators.
+//
+// ─── Parameters ──────────────────────────────────────────────────────────────
+//   allowStructLiteral – When false, prevents an IDENTIFIER followed by '{'
+//                        from being parsed as a StructLiteralExprAST. This is
+//                        used in control‑flow headers (if, for, while) to avoid
+//                        greedily consuming the following block.
+//
+// ─── Return Value ───────────────────────────────────────────────────────────
+//   Returns an ExprPtr (never nullptr; on error returns UnknownExprAST).
+//   The caller should check the diagnostic engine for errors.
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes tokens until the expression is fully parsed (stops when the next
+//   token cannot be part of the expression, e.g., ';', ')', '}', or a statement
+//   keyword).
+// - Does NOT consume trailing semicolons or separators – that is the caller's
+//   responsibility.
 // ─────────────────────────────────────────────────────────────────────────────
 ExprPtr Parser::parseExpr(bool allowStructLiteral) {
     LUC_LOG_EXPR("=== parseExpr START (allowStructLiteral=" << allowStructLiteral << ") ===");
@@ -233,20 +443,47 @@ ExprPtr Parser::parseExpr(bool allowStructLiteral) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// parsePrattExpr  — Pratt / top-down operator precedence loop
+// parsePrattExpr
+//
+// Core Pratt parser (top‑down operator precedence) for expressions.
 //
 // Algorithm:
 //   1. Parse a prefix/primary expression as the initial lhs.
 //   2. Apply all postfix operations (calls, indexing, field/behavior access,
-//      nullable chains) to get the fully-decorated lhs.
+//      nullable chains) to get the fully‑decorated lhs.
 //   3. While the current token is an infix operator with precedence > minPrec:
-//        a. If it is an assignment op → build AssignExprAST (right-assoc).
-//        b. If it is 'is'            → build IsExprAST.
-//        c. If it is '->'            → build PipelineExprAST.
-//        d. If it is '+>'            → build ComposeExprAST.
-//        e. If it is '??'            → build NullableChainExprAST or wrap lhs.
-//        f. Otherwise                → build BinaryExprAST.
+//        a. If it is an assignment op → build AssignExprAST (right‑assoc), break.
+//        b. If it is 'is'            → build IsExprAST, continue.
+//        c. If it is '|>'            → build PipelineExprAST, continue.
+//        d. If it is '+>'            → build ComposeExprAST, continue.
+//        e. If it is '??'            → build NullCoalesceExprAST, break.
+//        f. Otherwise                → build BinaryExprAST, continue.
 //   4. Return lhs.
+//
+// ─── Parameters ──────────────────────────────────────────────────────────────
+//   minPrec            – Minimum precedence level to consume. The loop stops
+//                        when the current operator's precedence <= minPrec.
+//   allowStructLiteral – Passed down to parsePrefixExpr to control struct
+//                        literal detection in ambiguous contexts.
+//
+// ─── Right‑Associative Operators ────────────────────────────────────────────
+//   For right‑associative operators (assignment, '??', '^'), the recursion
+//   uses `minPrec` (or `minPrec - 1`) to allow the same operator to bind more
+//   tightly on the right side.
+//
+// ─── Loop Safety ─────────────────────────────────────────────────────────────
+// - Each iteration consumes at least one token (the infix operator).
+// - The loop terminates when the current operator's precedence <= minPrec,
+//   which is guaranteed at EOF (prec = PREC_NONE).
+// - No unbounded recursion; each recursive call reduces the precedence level
+//   or consumes an operator.
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the prefix/primary expression (via parsePrefixExpr).
+// - Then consumes postfix operators (via parsePostfixExpr).
+// - Then consumes infix operators (via the dispatch branches) and recurses.
+// - Returns the fully parsed expression, with pos_ positioned at the first
+//   token that is not part of the expression.
 // ─────────────────────────────────────────────────────────────────────────────
 ExprPtr Parser::parsePrattExpr(int minPrec, bool allowStructLiteral) {
     LUC_LOG_EXPR_VERBOSE("parsePrattExpr: minPrec=" << minPrec << ", token='" << peek().value << "'");
@@ -310,6 +547,48 @@ ExprPtr Parser::parsePrattExpr(int minPrec, bool allowStructLiteral) {
     return lhs;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// parseInfixAssign
+//
+// Parses an assignment expression (plain or compound) in the Pratt infix loop.
+//
+// Grammar:
+//   assign_expr := lhs assign_op rhs
+//   assign_op   := '=' | '+=' | '-=' | '*=' | '/=' | '^=' | '%='
+//                | '&&=' | '||=' | '~^=' | '<<=' | '>>='
+//
+// Examples:
+//   x = 5               → AssignOp::Assign
+//   x += 1              → AssignOp::AddAssign
+//   arr[i] *= 2         → AssignOp::MulAssign
+//
+// ─── Operator Precedence & Associativity ────────────────────────────────────
+// - Assignment operators have the lowest precedence (PREC_ASSIGN = 1).
+// - They are right‑associative: a = b = c  →  a = (b = c)
+// - This function recurses with `minPrec = PREC_ASSIGN - 1` to achieve
+//   right‑associative parsing.
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the assignment operator token.
+// - Recursively parses the right‑hand side expression (with precedence lower
+//   than PREC_ASSIGN).
+// - After returning, the caller (parsePrattExpr) breaks the infix loop because
+//   assignment is a statement‑level expression that cannot be followed by
+//   another operator at the same precedence.
+//
+// ─── Error Handling ─────────────────────────────────────────────────────────
+// - If the right‑hand side expression fails to parse, reports an error and
+//   returns the original lhs (the caller may continue parsing).
+// - The resulting AssignExprAST node is still constructed (with unknown RHS)
+//   to avoid returning nullptr and stalling the parser.
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   AssignExprAST {
+//       op:  AssignOp (from tokenToAssignOp)
+//       lhs: the left‑hand side expression (must be an assignable lvalue)
+//       rhs: the right‑hand side expression
+//   }
+// ─────────────────────────────────────────────────────────────────────────────
 ExprPtr Parser::parseInfixAssign(ExprPtr lhs, bool allowStructLiteral) {
     LUC_LOG_EXPR_VERBOSE("parseInfixAssign");
     TokenType opTok = advance().type;
@@ -331,6 +610,40 @@ ExprPtr Parser::parseInfixAssign(ExprPtr lhs, bool allowStructLiteral) {
     return node;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// parseInfixIs
+//
+// Parses an 'is' type check expression in the Pratt infix loop.
+//
+// Grammar:
+//   is_expr := lhs 'is' type
+//
+// Example:
+//   x is int          → returns IsExprAST with x as expr, int as checkType
+//   shape is Circle   → returns IsExprAST with shape as expr, Circle as checkType
+//
+// ─── Runtime Behaviour ───────────────────────────────────────────────────────
+// - Produces a boolean value: true if the runtime type of lhs matches the
+//   specified type (including nullability distinctions).
+// - Inside the then‑branch of an if statement, the type of lhs is narrowed
+//   to the checked type (semantic pass).
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the 'is' keyword.
+// - Parses the type annotation via parseType() (consumes the type tokens).
+// - Does NOT consume any tokens beyond the type.
+//
+// ─── Error Handling ─────────────────────────────────────────────────────────
+// - If parseType() fails or returns UnknownTypeAST, reports an error and returns
+//   the original lhs (the IsExprAST node is still constructed with a null
+//   checkType to avoid returning nullptr and stalling the parser).
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   IsExprAST {
+//       expr:      the left‑hand side expression
+//       checkType: the type being tested against
+//   }
+// ─────────────────────────────────────────────────────────────────────────────
 ExprPtr Parser::parseInfixIs(ExprPtr lhs) {
     LUC_LOG_EXPR_VERBOSE("parseInfixIs");
     advance(); // consume 'is'
@@ -348,6 +661,46 @@ ExprPtr Parser::parseInfixIs(ExprPtr lhs) {
     return node;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// parseInfixNullCoalesce
+//
+// Parses a null coalescing expression '??' in the Pratt infix loop.
+//
+// Grammar:
+//   null_coalesce_expr := lhs '??' rhs
+//
+// Example:
+//   getValue() ?? defaultValue
+//
+// ─── Semantics ───────────────────────────────────────────────────────────────
+// - If lhs evaluates to a non‑nil value (for nullable types) or non‑error
+//   (for Error types), the result is lhs.
+// - If lhs is nil or an Error, the result is rhs.
+// - The rhs is evaluated only when lhs is nil/Error (short‑circuit evaluation).
+//
+// ─── Operator Precedence & Associativity ────────────────────────────────────
+// - Precedence: PREC_NULLCOAL = 4
+// - Right‑associative: a ?? b ?? c  →  a ?? (b ?? c)
+// - This function recurses with `minPrec = PREC_NULLCOAL - 1` to achieve
+//   right‑associative parsing.
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the '??' token.
+// - Recursively parses the right‑hand side expression (with precedence lower
+//   than PREC_NULLCOAL).
+// - After parsing, the caller (parsePrattExpr) typically breaks the infix loop
+//   because '??' terminates the chain (cannot be followed by higher‑prec ops).
+//
+// ─── Error Handling ─────────────────────────────────────────────────────────
+// - If the right‑hand side expression fails to parse, reports an error and
+//   returns the original lhs (the node is still constructed with null fallback).
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   NullCoalesceExprAST {
+//       value:    the left‑hand side expression (nullable)
+//       fallback: the right‑hand side expression (evaluated if lhs is nil/Error)
+//   }
+// ─────────────────────────────────────────────────────────────────────────────
 ExprPtr Parser::parseInfixNullCoalesce(ExprPtr lhs, bool allowStructLiteral) {
     LUC_LOG_EXPR_VERBOSE("parseInfixNullCoalesce");
     advance(); // consume '??'
@@ -367,6 +720,55 @@ ExprPtr Parser::parseInfixNullCoalesce(ExprPtr lhs, bool allowStructLiteral) {
     return node;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// parseInfixBinary
+//
+// Parses a generic binary operator expression (arithmetic, comparison,
+// logical, bitwise) in the Pratt infix loop.
+//
+// Grammar:
+//   binary_expr := lhs operator rhs
+//
+// Operators covered (see tokenToBinaryOp for full list):
+//   Arithmetic:  +, -, *, /, %, ^
+//   Comparison:  ==, !=, ===, <, >, <=, >=
+//   Logical:     and, or
+//   Bitwise:     &&, ||, ~^, <<, >>
+//
+// ─── Operator Precedence & Associativity ────────────────────────────────────
+// - Left‑associative operators: most binary operators (+, -, *, /, %, and, or,
+//   comparison, bitwise). Recurses with `nextPrec = prec` (same precedence)
+//   which correctly handles left associativity because the loop condition
+//   checks `prec > minPrec` – the newly parsed RHS will not consume operators
+//   at the same precedence.
+// - Right‑associative operator: '^' (exponentiation). Uses `nextPrec = prec - 1`
+//   so that the right side binds more tightly.
+//
+// ─── Chained Comparison Detection ───────────────────────────────────────────
+// - Detects patterns like `a < b < c` and reports an error (chained comparisons
+//   are not allowed in Luc). The user must write `a < b and b < c`.
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the operator token.
+// - Recursively parses the right‑hand side expression with the appropriate
+//   next precedence level.
+// - After returning, the caller (parsePrattExpr) applies postfix operators
+//   again (e.g., `a + b.c`).
+//
+// ─── Error Handling ─────────────────────────────────────────────────────────
+// - If the right‑hand side expression fails to parse, reports an error and
+//   returns the original lhs (the BinaryExprAST node is still constructed
+//   with null RHS to avoid returning nullptr).
+// - Chained comparison detection reports an error but continues parsing to
+//   avoid crashing.
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   BinaryExprAST {
+//       op:    BinaryOp (from tokenToBinaryOp)
+//       left:  the left‑hand side expression
+//       right: the right‑hand side expression
+//   }
+// ─────────────────────────────────────────────────────────────────────────────
 ExprPtr Parser::parseInfixBinary(ExprPtr lhs, TokenType opTok, int prec, bool allowStructLiteral) {
     LUC_LOG_EXPR_VERBOSE("parseInfixBinary: " << LucDebug::tokenTypeToString(opTok));
     advance(); // consume the operator
@@ -412,10 +814,41 @@ ExprPtr Parser::parseInfixBinary(ExprPtr lhs, TokenType opTok, int prec, bool al
     return node;
 }
 
-
+// ─────────────────────────────────────────────────────────────────────────────
+// Prefix & Primary Parsers
+// ─────────────────────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────────────────────
-// parsePrefixExpr  — unary prefix operators and primary expressions
+// parsePrefixExpr
+//
+// Parses a unary prefix expression or dispatches to parsePrimaryExpr for atoms.
+//
+// Grammar:
+//   unary_expr := ( '-' | 'not' | '~~' | '&' ) unary_expr
+//               | primary_expr
+//
+// Operators:
+//   -    → UnaryOp::Neg      (arithmetic negation)
+//   not  → UnaryOp::Not      (logical negation, works on bool and nullable)
+//   ~~   → UnaryOp::BitNot   (bitwise NOT, integer types only)
+//   &    → UnaryOp::Ref      (take a reference)
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - If a unary operator is found: consumes the operator token, then recursively
+//   calls parsePrefixExpr() to parse the operand.
+// - If no unary operator: calls parsePrimaryExpr() to parse an atom.
+// - The operand is parsed with the same allowStructLiteral flag (passed down).
+//
+// ─── Error Handling ─────────────────────────────────────────────────────────
+// - If a unary operator is consumed but the operand fails to parse, reports an
+//   error and returns an UnknownExprAST (the node is still constructed with
+//   null operand to avoid returning nullptr).
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   UnaryExprAST {
+//       op:      UnaryOp (Neg, Not, BitNot, or Ref)
+//       operand: the inner expression
+//   }
 // ─────────────────────────────────────────────────────────────────────────────
 ExprPtr Parser::parsePrefixExpr(bool allowStructLiteral) {
     LUC_LOG_EXPR_VERBOSE("parsePrefixExpr: token='" << peek().value << "'");
@@ -482,7 +915,59 @@ ExprPtr Parser::parsePrefixExpr(bool allowStructLiteral) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// parsePrimaryExpr  — atoms: literals, identifiers, grouped, special forms
+// parsePrimaryExpr
+//
+// Parses an atomic (primary) expression – the leaves of the expression tree.
+//
+// Grammar (primary_expr):
+//   literal | IDENTIFIER | struct_literal | '(' expr ')' | anon_func
+//   | match_expr | if_expr | array_literal | await_expr
+//   | 'nil' | 'true' | 'false' | '#' intrinsic_call
+//   | '*' type '(' expr ')'          (unsafe bit reinterpret cast)
+//   | type_name '(' expr ')'         (safe type conversion cast)
+//
+// ─── Dispatch Order (priority from highest to lowest) ───────────────────────
+//   1. match_expr         – 'match' keyword
+//   2. if_expr            – 'if' keyword (expression form, requires '??' and 'else')
+//   3. #intrinsic_call    – '#' prefix (compiler builtins)
+//   4. await_expr         – 'await' keyword
+//   5. array_literal      – '[' ... ']'
+//   6. block recovery     – bare '{' (error, suggests struct literal or match)
+//   7. anonymous function – '(' followed by parameter pattern (lookahead)
+//   8. grouped expr       – '(' expr ')' (fallback when not an anonymous function)
+//   9. unsafe cast        – '*' type '(' expr ')'
+//   10. identifier        – IDENTIFIER (struct literal, behavior access, or plain name)
+//   11. type cast         – primitive_type '(' expr ')' (e.g., int(x))
+//   12. literal           – scalar literals, true, false, nil
+//
+// ─── Struct Literal Detection ───────────────────────────────────────────────
+// - When allowStructLiteral is true and looksLikeStructLiteral() returns true,
+//   an IDENTIFIER followed by '{' is parsed as a struct literal.
+// - When false (e.g., in if/for/while headers), struct literals are disabled
+//   to avoid ambiguity with the following block.
+//
+// ─── Behavior Access Detection ──────────────────────────────────────────────
+// - Pattern: IDENTIFIER [ '<' type_args '>' ] ':' IDENTIFIER
+// - Example: Vec2:normalize, Buffer<int>:create
+// - Uses a non‑destructive lookahead scan to verify the pattern before committing.
+//
+// ─── Anonymous Function vs Grouped Expression ───────────────────────────────
+// - Lookahead determines whether '(' starts an anonymous function or a grouped expr.
+// - Anonymous function requires: '(' param_list ')' [ '->' type ] '{' ... '}'
+// - Grouped expression: '(' expr ')'
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Bare '{' in expression position reports a helpful error and consumes the
+//   entire block to avoid cascading errors.
+// - Unknown tokens report "expected expression" and return UnknownExprAST.
+// - Most sub‑parsers have their own error recovery; this function ensures
+//   that at least one token is consumed on error paths.
+//
+// ─── Loop Safety ─────────────────────────────────────────────────────────────
+// - No long loops; each branch either consumes tokens and returns, or reports
+//   an error and returns.
+// - The behavior access lookahead uses a local index and does not modify pos_
+//   until the pattern is confirmed.
 // ─────────────────────────────────────────────────────────────────────────────
 ExprPtr Parser::parsePrimaryExpr(bool allowStructLiteral) {
     LUC_LOG_EXPR_VERBOSE("parsePrimaryExpr: allowStructLiteral=" << allowStructLiteral 
@@ -773,21 +1258,58 @@ ExprPtr Parser::parsePrimaryExpr(bool allowStructLiteral) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// parsePostfixExpr  — apply all postfix operators to an already-parsed lhs
+// Postfix Parser
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// parsePostfixExpr
 //
-// Postfix operators (highest precedence, left-associative):
-//   '(' args ')'        — function call
-//   '<' types '>' '(' ) — generic call
-//   '[' expr ']'        — element index
-//   '[' expr '..' expr ']' — slice index
-//   '.' IDENTIFIER      — field access (data)
-//   ':' IDENTIFIER      — NOT handled here (already parsed in parsePrimaryExpr
-//                          via BehaviorAccessExprAST when lhs is IDENTIFIER)
-//   '?.' IDENTIFIER     — nullable chain step
-//   '!!'                — not valid here (only inside pipeline steps)
+// Applies all postfix operators to an already‑parsed left‑hand side expression.
 //
-// IMPORTANT: Does NOT handle '|>' (pipeline) or '+>' (composition) - those
-// are handled at a higher precedence level in parsePrattExpr.
+// Postfix operators (highest precedence, left‑associative):
+//   '(' args ')'                    → function call
+//   '<' types '>' '(' args ')'      → generic function call
+//   '[' expr ']'                    → element index
+//   '[' expr '..' expr ']'          → slice index (inclusive/exclusive)
+//   '.' IDENTIFIER                  → field access (data member)
+//   '?.' IDENTIFIER                 → nullable chain step
+//
+// IMPORTANT: Does NOT handle:
+//   - '|>' (pipeline) – handled at a higher precedence level in parsePrattExpr
+//   - '+>' (composition) – handled at a higher precedence level in parsePrattExpr
+//   - ':' (behavior access) – handled in parsePrimaryExpr when lhs is IDENTIFIER
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes postfix operators one at a time, modifying the lhs expression.
+// - Returns after processing all consecutive postfix operators (stops when the
+//   next token is not a postfix operator).
+//
+// ─── Generic Call Detection ─────────────────────────────────────────────────
+// - When the lhs is an IdentifierExprAST or BehaviorAccessExprAST and the next
+//   token is '<', attempts to parse generic arguments.
+// - Uses lookahead to verify that a '(' follows the closing '>' before committing.
+// - If not a generic call (e.g., a '<' comparison operator), leaves '<' for the
+//   binary operator loop and returns.
+//
+// ─── Nullable Chain Processing ──────────────────────────────────────────────
+// - When '?.' is encountered:
+//     * If the current lhs is not already a NullableChainExprAST, creates a new
+//       chain node with the current lhs as the object.
+//     * Otherwise, appends the field name to the existing chain.
+//   The grammar requires that every '?.' chain is terminated by '??' (null
+//   coalesce), which is handled in parsePrattExpr.
+//
+// ─── Error Handling ─────────────────────────────────────────────────────────
+// - Missing field name after '.' or '?.': reports error and stops processing
+//   further postfix operators.
+// - Missing closing ']' in index/slice: reports error, returns current lhs.
+// - Missing closing ')' in call: consume() reports error and recovers.
+//
+// ─── Loop Safety ─────────────────────────────────────────────────────────────
+// - The loop consumes at least one token per iteration (the postfix operator).
+// - Terminates when no postfix operator is found or when a syntax error occurs.
+// - The generic call lookahead uses a local index and does not modify pos_
+//   until the pattern is confirmed.
 // ─────────────────────────────────────────────────────────────────────────────
 ExprPtr Parser::parsePostfixExpr(ExprPtr lhs) {
     LUC_LOG_EXPR_VERBOSE("parsePostfixExpr: lhs kind=" << LucDebug::kindToString(lhs->kind));
@@ -907,7 +1429,44 @@ ExprPtr Parser::parsePostfixExpr(ExprPtr lhs) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Literal & Value Parsers
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
 // parseLiteralExpr
+//
+// Parses a scalar literal expression.
+//
+// Grammar:
+//   literal := INT_LITERAL | FLOAT_LITERAL | STRING_LITERAL | RAW_STRING_LITERAL
+//            | CHAR_LITERAL | HEX_LITERAL | BINARY_LITERAL
+//            | 'true' | 'false' | 'nil'
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the literal token.
+// - Does NOT consume any tokens beyond the literal.
+//
+// ─── LiteralKind Mapping ────────────────────────────────────────────────────
+//   TokenType::INT_LITERAL        → LiteralKind::Int
+//   TokenType::FLOAT_LITERAL      → LiteralKind::Float
+//   TokenType::STRING_LITERAL     → LiteralKind::String
+//   TokenType::RAW_STRING_LITERAL → LiteralKind::RawString
+//   TokenType::CHAR_LITERAL       → LiteralKind::Char
+//   TokenType::HEX_LITERAL        → LiteralKind::Hex
+//   TokenType::BINARY_LITERAL     → LiteralKind::Binary
+//   TokenType::TRUE               → LiteralKind::True
+//   TokenType::FALSE              → LiteralKind::False
+//   TokenType::NIL                → LiteralKind::Nil
+//
+// ─── Error Handling ─────────────────────────────────────────────────────────
+// - If called on a non‑literal token, reports an internal error and returns
+//   an UnknownExprAST (should never happen in correct parsing).
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   LiteralExprAST {
+//       kind:  LiteralKind (Int, Float, String, etc.)
+//       value: InternedString of the raw token text
+//   }
 // ─────────────────────────────────────────────────────────────────────────────
 ExprPtr Parser::parseLiteralExpr() {
     LUC_LOG_EXPR_VERBOSE("parseLiteralExpr: token='" << peek().value << "'");
@@ -960,7 +1519,39 @@ ExprPtr Parser::parseLiteralExpr() {
 // ─────────────────────────────────────────────────────────────────────────────
 // parseArrayLiteralExpr
 //
-// Grammar:  '[' [ expr { ',' expr } ] ']'
+// Parses an array literal expression.
+//
+// Grammar:
+//   array_literal := '[' [ expr { ',' expr } ] ']'
+//
+// Examples:
+//   [1, 2, 3]
+//   ["hello", "world"]
+//   []   — empty array literal
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the opening '['.
+// - Repeatedly parses expressions (each element) until the closing ']'.
+// - Consumes optional commas between elements.
+// - Consumes the closing ']'.
+//
+// ─── Loop Safety ────────────────────────────────────────────────────────────
+// - Uses a progress guard: saves pos_ before each parseExpr() call.
+// - If parseExpr() makes no progress, reports an error, consumes one token,
+//   and breaks out of the loop (prevents infinite loop on malformed input).
+// - Optional commas are consumed without stalling.
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing closing ']': consume() reports error and recovers.
+// - Empty array literal `[]` is valid (produces an ArrayLiteralExprAST with
+//   an empty elements vector).
+// - Invalid element expressions are skipped; the loop continues to parse
+//   remaining elements if possible.
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   ArrayLiteralExprAST {
+//       elements: vector of ExprPtr (may be empty)
+//   }
 // ─────────────────────────────────────────────────────────────────────────────
 ExprPtr Parser::parseArrayLiteralExpr() {
     LUC_LOG_EXPR("parseArrayLiteralExpr: parsing array literal");
@@ -994,9 +1585,46 @@ ExprPtr Parser::parseArrayLiteralExpr() {
 // ─────────────────────────────────────────────────────────────────────────────
 // parseStructLiteralExpr
 //
-// Grammar:  IDENTIFIER [genericArgs] '{' { IDENTIFIER '=' expr } '}'
+// Parses a struct literal expression.
 //
-// Called after the type name (and optional generic args) have already been read.
+// Grammar:
+//   struct_literal := IDENTIFIER [ generic_args ] '{' { field_init } '}'
+//   field_init     := IDENTIFIER '=' expr
+//
+// Examples:
+//   Vec2 { x = 0.0, y = 0.0 }
+//   Color {}   (all fields take defaults)
+//   Pair<int, string> { first = 1, second = "one" }
+//
+// ─── Preconditions ──────────────────────────────────────────────────────────
+// - Called after the type name (and optional generic args) have already been
+//   consumed by parsePrimaryExpr().
+// - The caller has verified looksLikeStructLiteral() or equivalent.
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the opening '{'.
+// - Repeatedly parses field initialisers: IDENTIFIER '=' expr.
+// - Consumes optional commas/semicolons between field inits.
+// - Consumes the closing '}'.
+//
+// ─── Loop Safety ────────────────────────────────────────────────────────────
+// - Uses a progress guard: saves pos_ before each parseExpr() for the field value.
+// - If parseExpr() makes no progress, reports an error, consumes one token,
+//   and continues to the next field (prevents infinite loop).
+// - The outer loop consumes at least one token per field (the field name and '=').
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing field name: reports error, calls synchronize() to skip to next field.
+// - Missing '=' after field name: reports error, recovers.
+// - Missing expression after '=': reports error, continues to next field.
+// - Missing closing '}': consume() reports error and recovers.
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   StructLiteralExprAST {
+//       typeName:      InternedString (e.g., "Vec2", "Color")
+//       genericArgs:   vector of TypePtr (empty if non‑generic)
+//       inits:         vector of FieldInitPtr (field = expression pairs)
+//   }
 // ─────────────────────────────────────────────────────────────────────────────
 ExprPtr Parser::parseStructLiteralExpr(std::string typeName, std::vector<TypePtr> genericArgs) {
     LUC_LOG_EXPR("parseStructLiteralExpr: type='" << typeName << "', genericArgs=" << genericArgs.size());
@@ -1055,12 +1683,14 @@ ExprPtr Parser::parseStructLiteralExpr(std::string typeName, std::vector<TypePtr
 // ─────────────────────────────────────────────────────────────────────────────
 // parseAnonFuncExpr
 //
+// Parses an anonymous function expression (closure / lambda).
+//
 // Grammar:
 //   anon_func := param_group { param_group } [ '->' return_list ] block
 //
 // Notes:
-//   - Anonymous functions CANNOT have qualifiers (~async, ~nullable). They are
-//     plain values. Qualifiers belong on declarations or parameter types.
+//   - Anonymous functions CANNOT have qualifiers (~async, ~nullable, ~parallel).
+//     They are plain values. Qualifiers belong on declarations or parameter types.
 //   - Multiple parameter groups = curried anonymous function.
 //   - Return list after '->' can contain multiple types (comma separated).
 //   - No nullable suffix '?' – anonymous functions are never nil.
@@ -1068,7 +1698,32 @@ ExprPtr Parser::parseStructLiteralExpr(std::string typeName, std::vector<TypePtr
 // Examples:
 //   (x int) -> int { return x * 2 }
 //   (a int)(b int) -> int { return a + b }
-//   (src string) -> int, string { ... }
+//   (src string) -> (int, string) { ... }
+//   () -> int { return 42 }      — zero parameters
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Parses one or more parameter groups via parseParamGroup().
+// - Optionally consumes '->' and parses return list via parseReturnList().
+// - Consumes the body block (always a BlockStmtAST).
+// - Does NOT consume any tokens beyond the closing '}' of the block.
+//
+// ─── Rejecting Qualifiers ───────────────────────────────────────────────────
+// - If a '~' is found at the start, reports an error and consumes the qualifier
+//   token(s) to recover (the anonymous function is still parsed).
+// - Anonymous functions are always plain values; the caller's binding provides
+//   any necessary qualifiers.
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing '(' after optional qualifiers: reports error, returns UnknownExprAST.
+// - Missing return type after '->' (if present): reports error, continues.
+// - Missing body block: reports error, returns UnknownExprAST.
+// - All sub‑parsers handle their own internal error recovery.
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   AnonFuncExprAST {
+//       sig:    FuncSignature (paramGroups, returnTypes, qualifiers=0)
+//       body:   StmtPtr (always a BlockStmtAST)
+//   }
 // ─────────────────────────────────────────────────────────────────────────────
 ExprPtr Parser::parseAnonFuncExpr() {
     SourceLocation loc = currentLoc();
@@ -1130,98 +1785,43 @@ ExprPtr Parser::parseAnonFuncExpr() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// parseIntrinsicCallExpr
-//
-// Grammar:
-//   intrinsic_call := '#' IDENTIFIER '(' [ intrinsic_arg_list ] ')'
-//   intrinsic_arg_list := intrinsic_arg { ',' intrinsic_arg }
-//   intrinsic_arg  := type_name            -- for #sizeof(T), #alignof(T)
-//                   | expr                 -- for #sqrt(x), #memcpy(dst,src,n)
-//
-// The parser uses a simple disambiguation:
-//   If the first argument after '(' is a bare IDENTIFIER that looks like a
-//   named type (not followed by an infix operator), and the intrinsic is a
-//   type-parameter intrinsic (#sizeof / #alignof), we parse it as typeArg.
-//   Otherwise all arguments are parsed as regular expressions.
-//
-// Type-parameter intrinsics:  sizeof, alignof
-// Value-argument intrinsics:  sqrt, abs, min, max, memcpy, memset, ...
-// ─────────────────────────────────────────────────────────────────────────────
-ExprPtr Parser::parseIntrinsicCallExpr() {
-    LUC_LOG_EXPR("parseIntrinsicCallExpr: parsing # intrinsic");
-    SourceLocation loc = currentLoc();
-    consume(TokenType::HASH, "expected '#'");
-
-    if (!check(TokenType::IDENTIFIER)) {
-        errorAt(DiagCode::E2003, "expected intrinsic name after '#'");
-        if (!isAtEnd()) advance();
-        return arena_.make<UnknownExprAST>();
-    }
-
-    auto node = arena_.make<IntrinsicCallExprAST>();
-    node->loc = loc;
-    node->intrinsicName = pool_.intern(advance().value);
-
-    if (!check(TokenType::LPAREN)) {
-        errorAt(DiagCode::E2001, "expected '(' after intrinsic '#" + std::string(pool_.lookup(node->intrinsicName)) + "'");
-        return arena_.make<UnknownExprAST>();
-    }
-    LUC_LOG_EXPR("parseIntrinsicCallExpr: name='" << pool_.lookup(node->intrinsicName) << "'");
-    consume(TokenType::LPAREN, "expected '('");
-
-    std::string intrinsicStr = std::string(pool_.lookup(node->intrinsicName));
-    bool isTypeIntrinsic = (intrinsicStr == "sizeof" || intrinsicStr == "alignof");
-
-    if (isTypeIntrinsic) {
-        if (check(TokenType::RPAREN)) {
-            errorAt(DiagCode::E2005, "expected type argument");
-        } else {
-            TypePtr typeArg = parseType();
-            if (!typeArg) errorAt(DiagCode::E2005, "invalid type argument");
-            else node->typeArg = std::move(typeArg);
-        }
-        consume(TokenType::RPAREN, "expected ')' after type argument");
-    } else {
-        while (!check(TokenType::RPAREN) && !isAtEnd()) {
-            std::size_t savedPos = pos_;
-            ExprPtr arg = parseExpr();
-            if (pos_ == savedPos) {
-                errorAt(DiagCode::E2008, "expected argument expression in '#" + intrinsicStr + "'");
-                // Skip the offending token
-                if (!isAtEnd()) advance();
-                // Skip to the next comma or closing parenthesis
-                while (!isAtEnd() && !check(TokenType::COMMA) && !check(TokenType::RPAREN)) {
-                    advance();
-                }
-                if (check(TokenType::COMMA)) {
-                    advance(); // consume comma and continue
-                    continue;
-                }
-                break;
-            }
-            node->args.push_back(std::move(arg));
-            if (check(TokenType::RPAREN)) break;
-            if (!match(TokenType::COMMA)) {
-                errorAt(DiagCode::E2001, "expected ',' or ')' in intrinsic argument list");
-                // Skip to the closing parenthesis
-                while (!isAtEnd() && !check(TokenType::RPAREN)) advance();
-                break;
-            }
-        }
-        consume(TokenType::RPAREN, "expected ')' to close intrinsic call");
-    }
-
-    LUC_LOG_EXPR_VERBOSE("parseIntrinsicCallExpr: typeArg=" << (node->typeArg != nullptr) 
-                         << ", args=" << node->args.size());
-    return node;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // parseAwaitExpr
 //
-// await is only valid inside a function that has the ~async type qualifier.
-// The semantic pass will enforce this by checking the function's type.
-// The parser only performs basic syntax checks.
+// Parses an 'await' expression that suspends the current async function until
+// the awaited future resolves.
+//
+// Grammar:
+//   await_expr := 'await' expr
+//
+// Example:
+//   await httpGet(url)
+//   await fetchAll(items)
+//
+// ─── Semantic Restrictions (Enforced by Semantic Pass) ──────────────────────
+// - 'await' is only valid inside a function whose binding carries the '~async'
+//   qualifier.
+// - 'await' is not valid inside a '~parallel' body.
+// - The expression after 'await' must resolve to a call to a '~async'‑qualified
+//   function.
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the 'await' keyword.
+// - Parses the inner expression (any expression) using parsePrattExpr at the
+//   lowest precedence level (PREC_NONE).
+// - Does NOT consume any tokens beyond the inner expression.
+//
+// ─── Parse‑Time Checks ──────────────────────────────────────────────────────
+// - If parallelDepth_ > 0 (inside a parallel block), reports an error.
+// - The semantic pass performs the remaining restrictions.
+//
+// ─── Error Handling ─────────────────────────────────────────────────────────
+// - Missing inner expression after 'await': reports error, returns UnknownExprAST.
+// - Nested await is allowed (await await f()) – the semantic pass will validate.
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   AwaitExprAST {
+//       inner: ExprPtr (the expression being awaited)
+//   }
 // ─────────────────────────────────────────────────────────────────────────────
 ExprPtr Parser::parseAwaitExpr() {
     LUC_LOG_EXPR("parseAwaitExpr");
@@ -1247,8 +1847,61 @@ ExprPtr Parser::parseAwaitExpr() {
 // ─────────────────────────────────────────────────────────────────────────────
 // parseMatchExpr
 //
+// Parses a match expression – pattern matching that produces a value.
+//
 // Grammar:
 //   match_expr := 'match' expr '{' { match_arm } default_arm '}'
+//   match_arm  := pattern_list [ 'if' guard_expr ] '=>' arm_body
+//   default_arm := 'default' '=>' arm_body
+//   arm_body   := expr [ ',' expr ]
+//
+// Examples:
+//   match status {
+//       200      => "ok"
+//       404      => "not found"
+//       default  => "unknown"
+//   }
+//
+//   match point {
+//       Vec2 { x: 0.0, y: 0.0 } => "origin"
+//       Vec2 { x, y }            => "at " + string(x) + ", " + string(y)
+//       default                  => "unknown"
+//   }
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the 'match' keyword.
+// - Parses the subject expression (with struct literals disabled because '{'
+//   belongs to the match arms).
+// - Consumes the opening '{'.
+// - Repeatedly parses match arms (via parseMatchArm()) until 'default' or '}'.
+// - Parses the required default arm via parseDefaultArm().
+// - Consumes the closing '}'.
+//
+// ─── Default Arm Requirement ─────────────────────────────────────────────────
+// - The grammar requires a 'default' arm as the last arm. The semantic pass
+//   reports an error if default is missing.
+// - Duplicate 'default' arms are reported as an error.
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing subject after 'match': reports error, returns UnknownExprAST.
+// - Missing '{' after subject: reports error, returns UnknownExprAST.
+// - If parseMatchArm() makes no progress, calls synchronize() to skip to the
+//   next arm or closing brace.
+// - Missing closing '}': consume() reports error and recovers.
+//
+// ─── Loop Safety ────────────────────────────────────────────────────────────
+// - The arm loop uses a progress guard: saves pos_ before parseMatchArm().
+// - If no progress is made, synchronize() is called (which consumes tokens
+//   until a statement/declaration boundary), guaranteeing forward progress.
+// - The loop terminates when '}' or 'default' is found, or EOF is reached.
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   MatchExprAST {
+//       subject:     ExprPtr
+//       arms:        vector<MatchArmPtr> (non‑default arms)
+//       defaultBody: DefaultArmPtr (required)
+//       defaultLoc:  SourceLocation of the 'default' keyword
+//   }
 // ─────────────────────────────────────────────────────────────────────────────
 ExprPtr Parser::parseMatchExpr() {
     LUC_LOG_EXPR("parseMatchExpr");
@@ -1323,11 +1976,52 @@ ExprPtr Parser::parseMatchExpr() {
 // ─────────────────────────────────────────────────────────────────────────────
 // parseIfExpr
 //
+// Parses the expression form of 'if' – an inline conditional expression that
+// produces a value.
+//
 // Grammar:
 //   if_expr := 'if' expr '??' expr 'else' expr
 //
-// Expression form requires 'else'. Both branches must return the same type
-// (enforced by the semantic pass).
+// Example:
+//   let grade string = if score >= 60 ?? "pass" else "fail"
+//   let label string = if n < 0 ?? "negative" else if n == 0 ?? "zero" else "positive"
+//
+// ─── Comparison with IfStmtAST ──────────────────────────────────────────────
+//   IfExprAST (this function)          | IfStmtAST (in ParserStmt.cpp)
+//   -----------------------------------|--------------------------------------
+//   Expression context (after '=', etc) | Statement context (standalone)
+//   'else' required                     | 'else' optional
+//   Both branches produce a value       | No value produced (statements)
+//   Uses '??' as separator              | No '??' separator
+//
+// ─── Operator Precedence ─────────────────────────────────────────────────────
+// - The '??' here is a syntactic separator, not the null‑coalescing operator.
+// - The condition is parsed with precedence PREC_NULLCOAL (4) to stop at the
+//   first '??' that belongs to the if expression, not a nested null coalesce.
+// - The expression is right‑associative: `if a ?? b else if c ?? d else e`
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the 'if' keyword.
+// - Parses the condition (stops at '??').
+// - Consumes the '??' separator.
+// - Parses the then‑branch expression.
+// - Consumes the 'else' keyword.
+// - Parses the else‑branch expression.
+// - Does NOT consume any tokens beyond the else‑branch.
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing condition after 'if': reports error, returns UnknownExprAST.
+// - Missing '??' after condition: reports error, returns UnknownExprAST.
+// - Missing then‑branch after '??': reports error.
+// - Missing 'else' keyword: reports error, returns UnknownExprAST.
+// - Missing else‑branch after 'else': reports error.
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   IfExprAST {
+//       condition:  ExprPtr
+//       thenBranch: ExprPtr
+//       elseBranch: ExprPtr
+//   }
 // ─────────────────────────────────────────────────────────────────────────────
 ExprPtr Parser::parseIfExpr() {
     LUC_LOG_EXPR("parseIfExpr");
@@ -1377,11 +2071,50 @@ ExprPtr Parser::parseIfExpr() {
 // ─────────────────────────────────────────────────────────────────────────────
 // parseTypeConvExpr
 //
+// Parses an explicit type conversion (cast) expression.
+//
 // Grammar:
 //   type_conv := type_name '(' expr ')'     -- safe conversion
 //              | '*' type_name '(' expr ')' -- unsafe bit reinterpret
 //
-// Called after the target type has already been parsed.
+// Examples:
+//   float(x)          -- int → float (safe)
+//   string(n)         -- int → string formatting (safe)
+//   *uint32(bits)     -- reinterpret bits as uint32 (unsafe)
+//
+// ─── Safe vs Unsafe ─────────────────────────────────────────────────────────
+//   Safe (isUnsafe = false):  type_name '(' expr ')'
+//     - Supported casts: primitive widening (int→float), enum→int, int→string
+//     - Enforced by the semantic pass; invalid casts produce errors.
+//
+//   Unsafe (isUnsafe = true): '*' type_name '(' expr ')'
+//     - Bit reinterpretation: reinterprets the bits of expr as the target type.
+//     - Valid only inside @extern‑decorated functions or when --unsafe is enabled.
+//     - Target and source sizes must match – enforced by the semantic pass.
+//
+// ─── Preconditions ──────────────────────────────────────────────────────────
+// - For unsafe casts: The '*' and target type have already been consumed by
+//   parsePrimaryExpr() before this function is called.
+// - For safe casts: The target type has already been parsed (e.g., by
+//   parsePrimitiveType() when a type keyword is followed by '(').
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the '(' token.
+// - Parses the inner expression (the value being cast).
+// - Consumes the closing ')'.
+// - Does NOT consume any tokens beyond the ')'.
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing '(' after type: reports error, returns UnknownExprAST.
+// - Missing inner expression: reports error, returns UnknownExprAST.
+// - Missing closing ')': consume() reports error and recovers.
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   TypeConvExprAST {
+//       targetType: TypePtr (the type to convert to)
+//       expr:       ExprPtr (the value being converted)
+//       isUnsafe:   bool (true for '*T(expr)' reinterpret casts)
+//   }
 // ─────────────────────────────────────────────────────────────────────────────
 ExprPtr Parser::parseTypeConvExpr(bool isUnsafe, TypePtr targetType) {
     LUC_LOG_EXPR("parseTypeConvExpr: isUnsafe=" << (isUnsafe ? "true" : "false"));
@@ -1408,8 +2141,37 @@ ExprPtr Parser::parseTypeConvExpr(bool isUnsafe, TypePtr targetType) {
 // ─────────────────────────────────────────────────────────────────────────────
 // parseRangeExpr
 //
-// Called when '..' is found after lo has been parsed.
-// Grammar:  lo '..' hi
+// Parses a range expression: lo '..' hi or lo '..<' hi
+//
+// Grammar:
+//   range_expr := expr ( '..' | '..<' ) expr
+//
+// Examples:
+//   0..10     — inclusive range (0 through 10)
+//   1..<10    — exclusive range (1 through 9)
+//   start..end — generic bounds (used in for loops, match patterns, slice indices)
+//
+// ─── Preconditions ──────────────────────────────────────────────────────────
+// - Called when '..' or '..<' is found after the lo expression has been parsed.
+// - The lo expression is passed as a parameter (already consumed).
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the '..' token (RANGE).
+// - Optionally consumes a '<' token (makes the range exclusive).
+// - Parses the hi expression using parsePrattExpr with minPrec = PREC_ADD,
+//   which stops before low‑precedence operators like comparison or logical.
+// - Does NOT consume any tokens beyond the hi expression.
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing hi expression after '..' or '..<': reports error, returns UnknownExprAST.
+// - The hi expression is required; no default value is provided.
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   RangeExprAST {
+//       lo:         ExprPtr (start bound, inclusive)
+//       hi:         ExprPtr (end bound)
+//       isExclusive: bool (true for '..<', false for '..')
+//   }
 // ─────────────────────────────────────────────────────────────────────────────
 ExprPtr Parser::parseRangeExpr(ExprPtr lo) {
     LUC_LOG_EXPR("parseRangeExpr");
@@ -1437,9 +2199,55 @@ ExprPtr Parser::parseRangeExpr(ExprPtr lo) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Call & Index Parsers
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
 // parseCallExpr
 //
-// Grammar:  callee '(' [ arg_list ] ')'
+// Parses a function call: callee '(' [ arg_list ] ')' [ '!' ]
+//
+// Grammar:
+//   call_expr := callee '(' [ arg_list ] ')' [ '!' ]
+//
+// Examples:
+//   f()                     — no arguments
+//   add(10, 20)             — multiple arguments
+//   process<int>(42)        — generic arguments
+//   handle(args)!           — argument pack (for pipeline steps)
+//
+// ─── Generic Arguments ───────────────────────────────────────────────────────
+// - genericArgs may be non‑empty when the call is prefixed with '<' types '>'
+//   (parsed in parsePostfixExpr before calling parseCallExpr).
+// - Example: process<int>(42) → genericArgs = [Int]
+//
+// ─── Argument Pack '!' ──────────────────────────────────────────────────────
+// - The '!' suffix marks this call as an argument pack for a pipeline step.
+// - The upstream value will be injected as the first argument when the pipeline
+//   executes.
+// - Only valid inside a pipeline step – the semantic pass enforces this.
+// - Syntax: fn(args)!  (the '!' is parsed after the closing ')')
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes '('.
+// - If the next token is not ')', calls parseArgList() to parse arguments.
+// - Consumes the closing ')'.
+// - Optionally consumes a '!' token (argument pack suffix).
+// - Does NOT consume any tokens beyond the '!' (if present).
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing '(' after callee: reports error, returns UnknownExprAST.
+// - Argument list parsing errors are handled by parseArgList().
+// - Missing closing ')': consume() reports error and recovers.
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   CallExprAST {
+//       callee:      ExprPtr (the function being called)
+//       genericArgs: vector<TypePtr> (explicit type arguments, may be empty)
+//       args:        vector<ExprPtr> (call arguments in order)
+//       isArgPack:   bool (true if '!' suffix was present)
+//       isAsyncCall: bool (set by semantic pass, not parser)
+//   }
 // ─────────────────────────────────────────────────────────────────────────────
 ExprPtr Parser::parseCallExpr(ExprPtr callee, std::vector<TypePtr> genericArgs) {
     LUC_LOG_EXPR("parseCallExpr");
@@ -1477,10 +2285,47 @@ ExprPtr Parser::parseCallExpr(ExprPtr callee, std::vector<TypePtr> genericArgs) 
 // ─────────────────────────────────────────────────────────────────────────────
 // parseIndexExpr
 //
+// Parses an array/slice indexing or slicing expression.
+//
 // Grammar:
-//   '[' expr ']'          — element index
-//   '[' expr '..' expr ']' — inclusive slice
-//   '[' expr '..<' expr ']' — exclusive slice
+//   '[' expr ']'               — element index
+//   '[' expr '..' expr ']'     — inclusive slice
+//   '[' expr '..<' expr ']'    — exclusive slice
+//
+// Examples:
+//   nums[2]        → element access (IndexKind::Element)
+//   nums[1..3]     → slice (inclusive end, IndexKind::Slice)
+//   nums[1..<3]    → slice (exclusive end, IndexKind::Slice, isExclusive=true)
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the opening '['.
+// - Parses the start expression.
+// - If the next token is '..' (RANGE) or '..<' (RANGE followed by LESS):
+//     * Consumes the range operator.
+//     * Parses the end expression.
+//     * Sets kind = IndexKind::Slice.
+// - Otherwise:
+//     * Sets kind = IndexKind::Element.
+// - Consumes the closing ']'.
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing start expression after '[': reports error, returns UnknownExprAST.
+// - Missing end expression after '..' or '..<': reports error.
+// - Missing closing ']': consume() reports error and recovers.
+//
+// ─── Semantic Slice Type Handling ───────────────────────────────────────────
+// - The AST node has a mutable `sliceType` field that the semantic pass populates
+//   with a synthesized SliceTypeAST when kind == IndexKind::Slice.
+// - This allows codegen to know the result type without re‑parsing.
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   IndexExprAST {
+//       target:     ExprPtr (the array/slice being indexed)
+//       index:      ExprPtr (element index or slice start)
+//       sliceEnd:   ExprPtr (nullptr for Element, end expression for Slice)
+//       kind:       IndexKind (Element or Slice)
+//       isExclusive: bool (true for '..<', only meaningful when kind == Slice)
+//   }
 // ─────────────────────────────────────────────────────────────────────────────
 ExprPtr Parser::parseIndexExpr(ExprPtr target) {
     LUC_LOG_EXPR("parseIndexExpr");
@@ -1527,9 +2372,168 @@ ExprPtr Parser::parseIndexExpr(ExprPtr target) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// parseIntrinsicCallExpr
+//
+// Parses a compiler intrinsic call (prefixed with '#').
+//
+// Grammar:
+//   intrinsic_call := '#' IDENTIFIER '(' [ intrinsic_arg_list ] ')'
+//   intrinsic_arg_list := intrinsic_arg { ',' intrinsic_arg }
+//   intrinsic_arg  := type_name        -- for #sizeof(T), #alignof(T)
+//                   | expr             -- for #sqrt(x), #memcpy(dst,src,n)
+//
+// Examples:
+//   #sizeof(Vec2)          — type argument
+//   #alignof(Vertex)       — type argument
+//   #sqrt(x)               — value argument
+//   #memcpy(dst, src, len) — multiple value arguments
+//   #bitcast(float32, bits)— type + value arguments (special case)
+//
+// ─── Type‑Parameter Intrinsics ──────────────────────────────────────────────
+// - Intrinsics that take a type argument: sizeof, alignof
+// - These are parsed with typeArg (TypePtr) and no value args.
+// - The parser detects these by name (intrinsicStr == "sizeof" || "alignof").
+//
+// ─── Value‑Parameter Intrinsics ─────────────────────────────────────────────
+// - All other intrinsics (sqrt, abs, min, max, memcpy, memset, etc.)
+// - Arguments are parsed as expressions via parseExpr().
+// - The semantic pass validates argument counts and types.
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the '#' token.
+// - Consumes an IDENTIFIER (intrinsic name).
+// - Consumes '('.
+// - For type intrinsics: parses a single type argument.
+// - For value intrinsics: parses zero or more comma‑separated expressions.
+// - Consumes the closing ')'.
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing intrinsic name after '#': reports error, returns UnknownExprAST.
+// - Missing '(' after name: reports error, returns UnknownExprAST.
+// - For type intrinsics with no argument: reports error.
+// - For value intrinsics, if parseExpr() makes no progress, consumes one token,
+//   then skips to the next comma or closing parenthesis.
+// - Missing closing ')': consume() reports error and recovers.
+//
+// ─── Loop Safety ─────────────────────────────────────────────────────────────
+// - The value argument loop uses a progress guard; if parseExpr() makes no
+//   progress, consumes the offending token and continues.
+// - The loop terminates when ')' is reached or EOF is found.
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   IntrinsicCallExprAST {
+//       intrinsicName: InternedString (e.g., "sizeof", "sqrt")
+//       typeArg:       TypePtr (non‑null for sizeof/alignof)
+//       args:          vector<ExprPtr> (value arguments)
+//   }
+// ─────────────────────────────────────────────────────────────────────────────
+ExprPtr Parser::parseIntrinsicCallExpr() {
+    LUC_LOG_EXPR("parseIntrinsicCallExpr: parsing # intrinsic");
+    SourceLocation loc = currentLoc();
+    consume(TokenType::HASH, "expected '#'");
+
+    if (!check(TokenType::IDENTIFIER)) {
+        errorAt(DiagCode::E2003, "expected intrinsic name after '#'");
+        if (!isAtEnd()) advance();
+        return arena_.make<UnknownExprAST>();
+    }
+
+    auto node = arena_.make<IntrinsicCallExprAST>();
+    node->loc = loc;
+    node->intrinsicName = pool_.intern(advance().value);
+
+    if (!check(TokenType::LPAREN)) {
+        errorAt(DiagCode::E2001, "expected '(' after intrinsic '#" + std::string(pool_.lookup(node->intrinsicName)) + "'");
+        return arena_.make<UnknownExprAST>();
+    }
+    LUC_LOG_EXPR("parseIntrinsicCallExpr: name='" << pool_.lookup(node->intrinsicName) << "'");
+    consume(TokenType::LPAREN, "expected '('");
+
+    std::string intrinsicStr = std::string(pool_.lookup(node->intrinsicName));
+    bool isTypeIntrinsic = (intrinsicStr == "sizeof" || intrinsicStr == "alignof");
+
+    if (isTypeIntrinsic) {
+        if (check(TokenType::RPAREN)) {
+            errorAt(DiagCode::E2005, "expected type argument");
+        } else {
+            TypePtr typeArg = parseType();
+            if (!typeArg) errorAt(DiagCode::E2005, "invalid type argument");
+            else node->typeArg = std::move(typeArg);
+        }
+        consume(TokenType::RPAREN, "expected ')' after type argument");
+    } else {
+        while (!check(TokenType::RPAREN) && !isAtEnd()) {
+            std::size_t savedPos = pos_;
+            ExprPtr arg = parseExpr();
+            if (pos_ == savedPos) {
+                errorAt(DiagCode::E2008, "expected argument expression in '#" + intrinsicStr + "'");
+                // Skip the offending token
+                if (!isAtEnd()) advance();
+                // Skip to the next comma or closing parenthesis
+                while (!isAtEnd() && !check(TokenType::COMMA) && !check(TokenType::RPAREN)) {
+                    advance();
+                }
+                if (check(TokenType::COMMA)) {
+                    advance(); // consume comma and continue
+                    continue;
+                }
+                break;
+            }
+            node->args.push_back(std::move(arg));
+            if (check(TokenType::RPAREN)) break;
+            if (!match(TokenType::COMMA)) {
+                errorAt(DiagCode::E2001, "expected ',' or ')' in intrinsic argument list");
+                // Skip to the closing parenthesis
+                while (!isAtEnd() && !check(TokenType::RPAREN)) advance();
+                break;
+            }
+        }
+        consume(TokenType::RPAREN, "expected ')' to close intrinsic call");
+    }
+
+    LUC_LOG_EXPR_VERBOSE("parseIntrinsicCallExpr: typeArg=" << (node->typeArg != nullptr) 
+                         << ", args=" << node->args.size());
+    return node;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // parseArgList
 //
-// Parses comma-separated expressions until ')'. Does not consume the ')'.
+// Parses a comma‑separated list of argument expressions for a function call.
+//
+// Grammar:
+//   arg_list := expr { ',' expr }
+//
+// Does NOT consume the closing ')'. The caller is responsible for consuming it.
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Repeatedly parses expressions as arguments while the next token is not ')'.
+// - Consumes commas between arguments.
+// - Stops when ')' is encountered or EOF is reached.
+// - Does NOT consume the closing ')'.
+//
+// ─── Loop Safety ────────────────────────────────────────────────────────────
+// - Uses a consecutive error counter (MAX_CONSECUTIVE_ERRORS = 5).
+// - If parseExpr() makes no progress:
+//     * Reports an error.
+//     * Consumes one token (the offending token).
+//     * If a comma follows, consumes it to keep the loop moving.
+//     * Increments consecutiveErrors.
+// - If consecutiveErrors reaches the limit:
+//     * Reports "too many consecutive errors".
+//     * Skips all tokens until the closing ')' or EOF.
+//     * Breaks out of the loop.
+// - On success, resets consecutiveErrors to 0.
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing expression after comma: reports error, skips the comma, continues.
+// - Consecutive commas (empty argument): reports error, skips the extra comma.
+// - Missing comma between arguments: reports error, skips tokens until a comma
+//   or ')' is found, then continues if a comma was found.
+// - Returns a vector of parsed expressions (may contain UnknownExprAST on error).
+//
+// ─── Result ─────────────────────────────────────────────────────────────────
+//   std::vector<ExprPtr> – the parsed arguments in order.
 // ─────────────────────────────────────────────────────────────────────────────
 std::vector<ExprPtr> Parser::parseArgList() {
     LUC_LOG_EXPR_VERBOSE("parseArgList");
@@ -1604,13 +2608,51 @@ std::vector<ExprPtr> Parser::parseArgList() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Pipeline & Composition
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
 // parsePipelineExpr
+//
+// Parses a pipeline expression: seed |> step |> step |> ...
 //
 // Grammar:
 //   pipeline_expr := seed { '|>' pipeline_step }
+//   pipeline_step := IDENTIFIER | IDENTIFIER ':' IDENTIFIER | IDENTIFIER '.' IDENTIFIER
+//                  | IDENTIFIER '(' arg_list ')' '!' | anon_func
 //
-// Called from parsePrattExpr when '|>' is seen. lhs is already parsed as seed.
-// Consumes ALL '|>' steps greedily.
+// Examples:
+//   42 |> float |> sqrt
+//   getUser(id) |> validate |> save
+//   v |> Vec2:normalize |> scale(2.0)!
+//
+// ─── Operator Precedence ────────────────────────────────────────────────────
+// - Precedence: PREC_PIPELINE = 3 (higher than assignment, lower than comparison)
+// - Left‑associative: a |> b |> c  →  (a |> b) |> c
+// - Called from parsePrattExpr when '|>' is encountered.
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - The seed expression (lhs) is already parsed by the caller.
+// - While the current token is '|>', consumes it, then parses one pipeline step.
+// - After parsing all steps, returns a PipelineExprAST node.
+// - If no steps are parsed (e.g., '|>' with nothing after), reports an error
+//   and returns the original seed (no pipeline node).
+//
+// ─── Pipeline Step Parsing ──────────────────────────────────────────────────
+// - Delegates to parsePipelineStep() which handles the various step forms.
+// - Each step may consume generic arguments, parentheses, and the '!' suffix.
+// - Anonymous function steps are parsed via parseAnonFuncExpr().
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - If the seed is null (should not happen), reports error and returns UnknownExprAST.
+// - If parsePipelineStep() returns nullptr, breaks out of the loop.
+// - If no steps are parsed after at least one '|>', reports an error.
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   PipelineExprAST {
+//       seed:  ExprPtr (the initial value)
+//       steps: vector<PipelineStepPtr> (at least one step)
+//   }
 // ─────────────────────────────────────────────────────────────────────────────
 ExprPtr Parser::parsePipelineExpr(ExprPtr seed) {
     LUC_LOG_EXPR("parsePipelineExpr: building pipeline");
@@ -1652,6 +2694,65 @@ ExprPtr Parser::parsePipelineExpr(ExprPtr seed) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // parsePipelineStep
+//
+// Parses a single step in a pipeline expression (after '|>').
+//
+// Grammar:
+//   pipeline_step := anon_func
+//                  | IDENTIFIER [ generic_args ] [ step_suffix ]
+//
+//   step_suffix := ':' IDENTIFIER [ '(' arg_list ')' '!' ]   -- method reference
+//                | '.' IDENTIFIER [ '(' arg_list ')' '!' ]   -- field reference
+//                | '[' expr { '[' expr ']' } ']' [ '(' arg_list ')' '!' ] -- index
+//                | '(' arg_list ')' '!'                      -- argument pack
+//                | (nothing)                                 -- plain identifier
+//
+// ─── Step Kinds (PipelineStepKind) ──────────────────────────────────────────
+//   Ident            – Plain function name: fn
+//   BehaviorRef      – Method reference: Type:method
+//   FieldRef         – Field reference: obj.field
+//   IndexRef         – Array index: arr[idx]
+//   ArgPack          – Argument pack: fn(args)!
+//   BehaviorArgPack  – Method with argument pack: Type:method(args)!
+//   FieldArgPack     – Field with argument pack: obj.field(args)!
+//   IndexArgPack     – Index with argument pack: arr[idx](args)!
+//   AnonFunc         – Anonymous function as step: (x int) -> int { ... }
+//
+// ─── Dispatch Order ─────────────────────────────────────────────────────────
+//   1. looksLikeAnonFunc() → parseAnonFuncPipelineStep()
+//   2. IDENTIFIER or primitive type:
+//        a. Parse name and optional generic args
+//        b. If next is ':' → parseBehaviorPipelineStep()
+//        c. If next is '.' → parseFieldPipelineStep()
+//        d. If next is '[' → parseIndexPipelineStep()
+//        e. If next is '(' → parseArgPackPipelineStep()
+//        f. Otherwise → plain Ident step
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the step name (IDENTIFIER or primitive type keyword).
+// - Optionally consumes generic arguments (if '<' is present).
+// - Consumes the appropriate suffix tokens (':', '.', '[', '(') based on the
+//   step kind.
+// - For ArgPack steps, consumes '(' arg_list ')' followed by '!'.
+// - For anonymous function steps, parseAnonFuncExpr() consumes the entire
+//   function (including parameter groups, return type, and body block).
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - If no valid step form is matched (not anon func and not identifier),
+//   reports an error, creates an error Ident step with name "<error>", consumes
+//   one token, and returns the step (prevents infinite loop).
+// - Sub‑parsers (parseBehaviorPipelineStep, etc.) report their own errors.
+// - Generic arguments on step forms that don't support them (method ref, field ref)
+//   are rejected with an error.
+//
+// ─── Loop Safety ────────────────────────────────────────────────────────────
+// - No loops in the main dispatcher; each branch consumes tokens deterministically.
+// - The generic argument parser (parseGenericArgs) has its own progress guards.
+// - Anonymous function detection (looksLikeAnonFunc) is a pure lookahead.
+//
+// ─── Result ─────────────────────────────────────────────────────────────────
+//   PipelineStepPtr – always non‑null (on error, returns an error step with
+//                     kind = Ident and name = "<error>")
 // ─────────────────────────────────────────────────────────────────────────────
 PipelineStepPtr Parser::parsePipelineStep() {
     
@@ -1715,6 +2816,37 @@ PipelineStepPtr Parser::parsePipelineStep() {
     return step;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// parseAnonFuncPipelineStep
+//
+// Parses an anonymous function as a pipeline step.
+//
+// Grammar:
+//   anon_func_step := anon_func
+//
+// Example:
+//   42 |> (x int) -> int { return x * 2 }
+//
+// ─── Preconditions ──────────────────────────────────────────────────────────
+// - Called when looksLikeAnonFunc() returns true (the current token stream
+//   matches the anonymous function pattern).
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Delegates to parseAnonFuncExpr() which consumes the entire anonymous
+//   function (parameter groups, optional return type, and body block).
+// - Does NOT consume any tokens beyond the anonymous function's closing '}'.
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - If parseAnonFuncExpr() returns nullptr or an UnknownExprAST, reports an error.
+// - On error, skips tokens until the next pipeline operator, brace, or semicolon
+//   to recover, and returns an error step (kind = Ident, name = "<error>").
+//
+// ─── Resulting PipelineStep ─────────────────────────────────────────────────
+//   PipelineStepAST {
+//       kind:     PipelineStepKind::AnonFunc
+//       anonFunc: ExprPtr (the anonymous function expression)
+//   }
+// ─────────────────────────────────────────────────────────────────────────────s
 PipelineStepPtr Parser::parseAnonFuncPipelineStep() {
     LUC_LOG_EXPR_VERBOSE("parseAnonFuncPipelineStep");
     SourceLocation loc = currentLoc();
@@ -1737,6 +2869,64 @@ PipelineStepPtr Parser::parseAnonFuncPipelineStep() {
     return step;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// parseBehaviorPipelineStep
+//
+// Parses a method reference (behavior access) as a pipeline step.
+//
+// Grammar:
+//   behavior_step := IDENTIFIER [ generic_args ] ':' IDENTIFIER [ '(' arg_list ')' '!' ]
+//
+// Examples:
+//   Vec2:normalize           → BehaviorRef
+//   Vec2:scale(2.0)!         → BehaviorArgPack
+//
+// ─── Two Forms ──────────────────────────────────────────────────────────────
+//   1. BehaviorRef (plain method reference):
+//        Type:method
+//      - The method function is passed to the pipeline.
+//      - Upstream value becomes the first argument (receiver).
+//
+//   2. BehaviorArgPack (method with argument pack):
+//        Type:method(args)!
+//      - The '!' suffix marks that the argument list is intentionally incomplete.
+//      - Upstream value is injected as the first argument, followed by args.
+//      - Example: v |> Vec2:scale(2.0)!  →  Vec2:scale(v, 2.0)
+//
+// ─── Preconditions ──────────────────────────────────────────────────────────
+// - Called after the type name (and optional generic args) have been consumed.
+// - The current token is ':' (already checked by parsePipelineStep).
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the ':' token.
+// - Consumes the method name (IDENTIFIER).
+// - If '(' follows:
+//     * Consumes '('
+//     * Parses argument list via parseArgList()
+//     * Consumes ')'
+//     * Consumes '!' (required for argument pack form)
+//     * Sets kind = PipelineStepKind::BehaviorArgPack
+// - Otherwise:
+//     * Sets kind = PipelineStepKind::BehaviorRef
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing method name after ':': reports error, returns error step.
+// - If '(' is present but '!' is missing after ')': reports error, returns error step.
+// - Generic arguments are not allowed on method references; if present, reports
+//   an error and ignores them.
+//
+// ─── Resulting PipelineStep ─────────────────────────────────────────────────
+//   For BehaviorRef:
+//       kind:     PipelineStepKind::BehaviorRef
+//       typeName: InternedString (the struct/type name)
+//       method:   InternedString (the method name)
+//
+//   For BehaviorArgPack:
+//       kind:     PipelineStepKind::BehaviorArgPack
+//       typeName: InternedString
+//       method:   InternedString
+//       packArgs: vector<ExprPtr> (arguments to pass after upstream)
+// ─────────────────────────────────────────────────────────────────────────────
 PipelineStepPtr Parser::parseBehaviorPipelineStep(const std::string& typeName, std::vector<TypePtr> genericArgs) {
     LUC_LOG_EXPR_VERBOSE("parseBehaviorPipelineStep: " << typeName);
     SourceLocation loc = currentLoc();
@@ -1783,6 +2973,63 @@ PipelineStepPtr Parser::parseBehaviorPipelineStep(const std::string& typeName, s
     return step;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// parseFieldPipelineStep
+//
+// Parses a field access as a pipeline step (field must be of function type).
+//
+// Grammar:
+//   field_step := IDENTIFIER '.' IDENTIFIER [ '(' arg_list ')' '!' ]
+//
+// Examples:
+//   obj.transform           → FieldRef
+//   obj.process(2.0, 3.0)!  → FieldArgPack
+//
+// ─── Two Forms ──────────────────────────────────────────────────────────────
+//   1. FieldRef (plain field reference):
+//        obj.field
+//      - The field must be of function type (non‑nullable).
+//      - Upstream value is passed as the first argument to that function.
+//
+//   2. FieldArgPack (field with argument pack):
+//        obj.field(args)!
+//      - The '!' suffix marks that the argument list is intentionally incomplete.
+//      - Upstream value is injected as the first argument, followed by args.
+//
+// ─── Preconditions ──────────────────────────────────────────────────────────
+// - Called after the object name and optional generic args have been consumed.
+// - The current token is '.' (already checked by parsePipelineStep).
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the '.' token.
+// - Consumes the field name (IDENTIFIER).
+// - If '(' follows:
+//     * Consumes '('
+//     * Parses argument list via parseArgList()
+//     * Consumes ')'
+//     * Consumes '!' (required for argument pack form)
+//     * Sets kind = PipelineStepKind::FieldArgPack
+// - Otherwise:
+//     * Sets kind = PipelineStepKind::FieldRef
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing field name after '.': reports error, returns error step.
+// - If '(' is present but '!' is missing after ')': reports error, returns error step.
+// - Generic arguments are not allowed on field references; if present, reports
+//   an error and ignores them.
+//
+// ─── Resulting PipelineStep ─────────────────────────────────────────────────
+//   For FieldRef:
+//       kind:  PipelineStepKind::FieldRef
+//       ident: InternedString (the object name)
+//       field: InternedString (the field name)
+//
+//   For FieldArgPack:
+//       kind:     PipelineStepKind::FieldArgPack
+//       ident:    InternedString
+//       field:    InternedString
+//       packArgs: vector<ExprPtr> (arguments to pass after upstream)
+// ─────────────────────────────────────────────────────────────────────────────
 PipelineStepPtr Parser::parseFieldPipelineStep(const std::string& ident, std::vector<TypePtr> genericArgs) {
     LUC_LOG_EXPR_VERBOSE("parseFieldPipelineStep: " << ident);
     SourceLocation loc = currentLoc();
@@ -1829,6 +3076,69 @@ PipelineStepPtr Parser::parseFieldPipelineStep(const std::string& ident, std::ve
     return step;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// parseIndexPipelineStep
+//
+// Parses an array/slice index as a pipeline step (indexed element must be of
+// function type).
+//
+// Grammar:
+//   index_step := IDENTIFIER '[' expr { '[' expr ']' } ']' [ '(' arg_list ')' '!' ]
+//
+// Examples:
+//   handlers[0]                    → IndexRef
+//   callbacks[i](extra)!           → IndexArgPack
+//   matrix[row][col]               → IndexRef (nested indexing)
+//
+// ─── Two Forms ──────────────────────────────────────────────────────────────
+//   1. IndexRef (plain index reference):
+//        arr[idx]
+//      - The indexed element must be of function type (non‑nullable).
+//      - Upstream value is passed as the first argument to that function.
+//
+//   2. IndexArgPack (index with argument pack):
+//        arr[idx](args)!
+//      - The '!' suffix marks that the argument list is intentionally incomplete.
+//      - Upstream value is injected as the first argument, followed by args.
+//
+// ─── Nested Indexing Support ────────────────────────────────────────────────
+// - Multiple index brackets are supported: arr[i][j][k]
+// - Each nested index builds an IndexExprAST chain.
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the first '['.
+// - Parses the index expression.
+// - Consumes the matching ']'.
+// - Repeats for any additional index brackets (nested indexing).
+// - If '(' follows:
+//     * Consumes '('
+//     * Parses argument list via parseArgList()
+//     * Consumes ')'
+//     * Consumes '!' (required for argument pack form)
+//     * Sets kind = PipelineStepKind::IndexArgPack
+// - Otherwise:
+//     * Sets kind = PipelineStepKind::IndexRef
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing index expression after '[': reports error, consumes tokens until
+//   the matching ']' is found, returns error step.
+// - Missing closing ']': reports error, recovers by consuming tokens until
+//   a ']' or safe boundary is found.
+// - If '(' is present but '!' is missing after ')': reports error, returns error step.
+// - Generic arguments are not allowed on index steps; if present, reports error.
+//
+// ─── Resulting PipelineStep ─────────────────────────────────────────────────
+//   For IndexRef:
+//       kind:  PipelineStepKind::IndexRef
+//       ident: InternedString (the array name)
+//       index: ExprPtr (the index expression chain)
+//
+//   For IndexArgPack:
+//       kind:     PipelineStepKind::IndexArgPack
+//       ident:    InternedString
+//       index:    ExprPtr (the index expression chain)
+//       packArgs: vector<ExprPtr> (arguments to pass after upstream)
+// ─────────────────────────────────────────────────────────────────────────────
 PipelineStepPtr Parser::parseIndexPipelineStep(const std::string& ident, std::vector<TypePtr> genericArgs) {
     LUC_LOG_EXPR_VERBOSE("parseIndexPipelineStep: " << ident);
     SourceLocation loc = currentLoc();
@@ -1909,6 +3219,43 @@ PipelineStepPtr Parser::parseIndexPipelineStep(const std::string& ident, std::ve
     return step;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// parseArgPackPipelineStep
+//
+// Parses an argument pack step: fn(args)! where the function name appears
+// directly as a pipeline step with an argument pack.
+//
+// Grammar:
+//   arg_pack_step := IDENTIFIER [ generic_args ] '(' arg_list ')' '!'
+//
+// Example:
+//   42 |> scale(2.0)!   → scale(42, 2.0)
+//
+// ─── Preconditions ──────────────────────────────────────────────────────────
+// - Called after the function name (and optional generic args) have been consumed.
+// - The current token is '(' (already checked by parsePipelineStep).
+// - This is distinct from a regular function call because the '!' suffix is
+//   required, and the call is only valid inside a pipeline step.
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes '('.
+// - Parses the argument list via parseArgList().
+// - Consumes ')'.
+// - Consumes '!' (required).
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing '(': consume() reports error.
+// - Missing ')' after arguments: consume() reports error.
+// - Missing '!' after ')': reports error, returns error step.
+//
+// ─── Resulting PipelineStep ─────────────────────────────────────────────────
+//   PipelineStepAST {
+//       kind:       PipelineStepKind::ArgPack
+//       ident:      InternedString (the function name)
+//       genericArgs: vector<TypePtr> (optional generic arguments)
+//       packArgs:    vector<ExprPtr> (arguments to pass after upstream)
+//   }
+// ─────────────────────────────────────────────────────────────────────────────
 PipelineStepPtr Parser::parseArgPackPipelineStep(const std::string& ident, std::vector<TypePtr> genericArgs) {
     LUC_LOG_EXPR_VERBOSE("parseArgPackPipelineStep: " << ident);
     SourceLocation loc = currentLoc();
@@ -1937,10 +3284,44 @@ PipelineStepPtr Parser::parseArgPackPipelineStep(const std::string& ident, std::
 // ─────────────────────────────────────────────────────────────────────────────
 // parseComposeExpr
 //
+// Parses a function composition expression: lhs '+>' operand { '+>' operand }
+//
 // Grammar:
 //   compose_expr := lhs { '+>' compose_operand }
 //
-// Called from parsePrattExpr when '+>' is seen.
+// Examples:
+//   f +> g               → composes f then g
+//   validate +> transform +> render
+//   (a int -> string) +> (s string -> bool)
+//
+// ─── Operator Precedence ────────────────────────────────────────────────────
+// - Precedence: PREC_COMPOSE = 2 (higher than assignment, lower than pipeline)
+// - Left‑associative: a +> b +> c  →  (a +> b) +> c
+// - Called from parsePrattExpr when '+>' is encountered.
+//
+// ─── Semantics ──────────────────────────────────────────────────────────────
+// - Composition is compile‑time: the output type of the left must exactly match
+//   the input type of the right operand.
+// - The result is a plain function (no qualifiers). Qualifiers belong on the
+//   binding, not the composition result.
+// - Generics must be explicitly instantiated before composing; type inference
+//   across '+>' is not supported.
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - The left expression (lhs) is already parsed by the caller.
+// - While the current token is '+>', consumes it, then parses one compose operand.
+// - After parsing all operands, returns a ComposeExprAST node.
+// - If no operands are parsed, returns the original lhs (no composition).
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - If parseComposeOperand() returns nullptr, reports an error and breaks.
+// - Missing operand after '+>': error reported by parseComposeOperand.
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   ComposeExprAST {
+//       left:     ExprPtr (the left‑hand side expression)
+//       operands: vector<ComposeOperandPtr> (right‑hand operands in order)
+//   }
 // ─────────────────────────────────────────────────────────────────────────────
 ExprPtr Parser::parseComposeExpr(ExprPtr lhs) {
     LUC_LOG_EXPR("parseComposeExpr");
@@ -1977,10 +3358,52 @@ ExprPtr Parser::parseComposeExpr(ExprPtr lhs) {
 // ─────────────────────────────────────────────────────────────────────────────
 // parseComposeOperand
 //
-// Three forms (no AnonFunc, no ArgPack — compile-time only):
-//   Ident       fn (IDENTIFIER or PRIMITIVE_TYPE)
-//   BehaviorRef Type:method
-//   FieldRef    obj.field
+// Parses a single operand in a composition expression (after '+>').
+//
+// Grammar:
+//   compose_operand := IDENTIFIER
+//                    | IDENTIFIER ':' IDENTIFIER   (method reference)
+//                    | IDENTIFIER '.' IDENTIFIER   (field reference)
+//
+// Examples:
+//   validate                 → Ident
+//   Vec2:normalize           → BehaviorRef
+//   processor.transform      → FieldRef
+//
+// ─── Restrictions ────────────────────────────────────────────────────────────
+// - Anonymous functions are NOT allowed as compose operands (compile‑time only).
+// - Argument pack '!' is NOT allowed (no runtime injection).
+// - Only plain identifiers, method references, and field references are valid.
+// - Field references must be non‑nullable (semantic pass enforces this).
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the operand name (IDENTIFIER or primitive type keyword).
+// - If ':' follows, consumes ':' and the method name → BehaviorRef.
+// - If '.' follows, consumes '.' and the field name → FieldRef.
+// - Otherwise → Ident.
+// - Does NOT consume any tokens beyond the operand (stops after the name or
+//   after the method/field name).
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - If the current token is not an identifier or primitive type, reports error
+//   and returns nullptr.
+// - Missing method name after ':': reports error, returns nullptr.
+// - Missing field name after '.': reports error, returns nullptr.
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   For Ident:
+//       kind:  ComposeOperandKind::Ident
+//       ident: InternedString (function name)
+//
+//   For BehaviorRef:
+//       kind:     ComposeOperandKind::BehaviorRef
+//       typeName: InternedString
+//       method:   InternedString
+//
+//   For FieldRef:
+//       kind:  ComposeOperandKind::FieldRef
+//       ident: InternedString (object name)
+//       field: InternedString (field name)
 // ─────────────────────────────────────────────────────────────────────────────
 ComposeOperandPtr Parser::parseComposeOperand() {
     LUC_LOG_EXPR_VERBOSE("parseComposeOperand: token='" << peek().value << "'");
@@ -2034,15 +3457,73 @@ ComposeOperandPtr Parser::parseComposeOperand() {
     return op;
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// PATTERN PARSING
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
+// Match Expression & Patterns
+// ─────────────────────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────────────────────
 // parseMatchArm
 //
+// Parses a single non‑default arm in a match expression.
+//
 // Grammar:
 //   match_arm := pattern { ',' pattern } [ 'if' guard_expr ] '=>' arm_body
+//   arm_body  := expr [ ',' expr ]
+//
+// Examples:
+//   200 => "ok"
+//   200, 201, 202 => "success"
+//   1..10 => "light"
+//   n if n < 0 => "negative"
+//   Vec2 { x, y } => "at " + string(x) + ", " + string(y)
+//   200 => "ok", "request succeeded"
+//
+// ─── Pattern List ───────────────────────────────────────────────────────────
+// - One or more patterns, comma‑separated.
+// - Each pattern is parsed via parsePattern().
+// - All patterns in the list must bind the same set of names (semantic pass).
+// - The arm fires if any pattern matches.
+//
+// ─── Guard Expression ───────────────────────────────────────────────────────
+// - Optional 'if' followed by an expression.
+// - Only valid after a bind or wildcard pattern.
+// - The guard expression may reference names introduced by bind patterns.
+// - If the guard evaluates to false, the arm is skipped.
+//
+// ─── Arm Body (Result Expressions) ──────────────────────────────────────────
+// - One required expression, optionally followed by a comma and a second.
+// - At most two expressions per arm (primary and optional secondary).
+// - Secondary value rules:
+//     * If no arm supplies secondary → match produces one value
+//     * If every arm supplies secondary → second value is non‑nullable
+//     * If only some arms supply secondary → second value must be nullable
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Parses the pattern list (first pattern required, additional after commas).
+// - Optionally consumes 'if' and parses the guard expression.
+// - Consumes '=>' (FAT_ARROW).
+// - Parses the first result expression.
+// - If a comma follows, parses the second result expression.
+// - Does NOT consume any tokens beyond the second expression (stops before the
+//   next arm or the closing '}').
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - If no pattern can be parsed, returns nullptr.
+// - Missing pattern after comma: reports error, breaks out of pattern loop.
+// - Missing guard expression after 'if': reports error.
+// - Missing result expression after '=>': reports error.
+// - More than two expressions (extra commas): reports error, skips to next arm.
+//
+// ─── Loop Safety ────────────────────────────────────────────────────────────
+// - The pattern list loop checks the next token before consuming a comma to
+//   ensure a valid pattern follows, preventing stalls on malformed input.
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   MatchArmAST {
+//       patterns: vector<PatternPtr> (at least one)
+//       guard:    ExprPtr (nullptr if no guard)
+//       exprs:    vector<ExprPtr> (1 or 2 expressions)
+//   }
 // ─────────────────────────────────────────────────────────────────────────────
 MatchArmPtr Parser::parseMatchArm() {
     SourceLocation loc = currentLoc();
@@ -2163,7 +3644,49 @@ MatchArmPtr Parser::parseMatchArm() {
 // ─────────────────────────────────────────────────────────────────────────────
 // parseDefaultArm
 //
-// Grammar:  'default' '=>' arm_body
+// Parses the required default arm in a match expression.
+//
+// Grammar:
+//   default_arm := 'default' '=>' arm_body
+//   arm_body    := expr [ ',' expr ]
+//
+// Examples:
+//   default => "unknown"
+//   default => "unknown", "no detail available"
+//
+// ─── Position Requirement ───────────────────────────────────────────────────
+// - The default arm must be the last arm in the match expression.
+// - The semantic pass reports an error if default is not last or if multiple
+//   default arms exist.
+//
+// ─── Arm Body (Result Expressions) ──────────────────────────────────────────
+// - One required expression, optionally followed by a comma and a second.
+// - At most two expressions per arm.
+// - The secondary value presence must be consistent with all other arms:
+//     * If no arm supplies secondary → match produces one value
+//     * If every arm supplies secondary → second value is non‑nullable
+//     * If only some arms supply secondary → second value must be nullable
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the 'default' keyword.
+// - Consumes '=>' (FAT_ARROW).
+// - Parses the first result expression.
+// - If a comma follows, parses the second result expression.
+// - Does NOT consume any tokens beyond the second expression (stops before the
+//   closing '}').
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing '=>' after 'default': reports error (consume recovers).
+// - Missing result expression after '=>': reports error, returns arm with empty
+//   exprs (caller may still accept it).
+// - More than two expressions (extra commas): reports error, skips to closing
+//   brace or next arm.
+// - Consecutive commas in body: reports error, skips the extra comma.
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   DefaultArmAST {
+//       exprs: vector<ExprPtr> (1 or 2 expressions)
+//   }
 // ─────────────────────────────────────────────────────────────────────────────
 DefaultArmPtr Parser::parseDefaultArm() {
     SourceLocation loc = currentLoc();
@@ -2209,14 +3732,49 @@ DefaultArmPtr Parser::parseDefaultArm() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// parsePattern  — dispatch to the correct pattern sub-parser
+// parsePattern
+//
+// Dispatches to the appropriate pattern sub‑parser based on the current token.
+//
+// Grammar (pattern):
+//   pattern := wildcard_pattern
+//            | literal_pattern
+//            | range_pattern
+//            | bind_pattern
+//            | type_pattern
+//            | struct_pattern
+//            | qualified_constant_pattern
 //
 // Decision tree:
-//   WILDCARD                 → WildcardPatternAST
-//   literal tokens           → LiteralPatternAST (or RangePatternAST if '..' follows)
-//   IDENTIFIER 'is' type     → TypePatternAST
-//   IDENTIFIER '{'           → StructPatternAST
-//   IDENTIFIER               → BindPatternAST (or RangePatternAST if '..' follows)
+//   WILDCARD ('_')                    → WildcardPatternAST
+//   literal tokens (INT, FLOAT, etc.) → parseLiteralOrRangePattern()
+//   IDENTIFIER followed by 'is'       → TypePatternAST
+//   IDENTIFIER followed by '{'        → StructPatternAST
+//   IDENTIFIER followed by '.'        → Qualified constant pattern (wrapped in PatternExprAST)
+//   IDENTIFIER (alone)                → BindPatternAST
+//   (default)                         → error
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the pattern token(s) via the appropriate sub‑parser.
+// - Does NOT consume any tokens beyond the pattern (stops at the next comma,
+//   'if', '=>', or closing brace).
+//
+// ─── Qualified Constant Pattern ─────────────────────────────────────────────
+// - Example: Direction.North
+// - Parsed as a full expression (parseExpr()) then wrapped in PatternExprAST.
+// - The expression must evaluate to a constant value (enum variant, const, etc.)
+//   – enforced by the semantic pass.
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - If no pattern is recognised, reports "expected pattern" and returns nullptr.
+// - Range pattern detection inside bind pattern: if IDENTIFIER is followed by
+//   '..', reports an error (bind patterns cannot be used as range bounds) and
+//   recovers by consuming the range and calling parseLiteralOrRangePattern().
+//
+// ─── Result ─────────────────────────────────────────────────────────────────
+//   ASTPtr<PatternAST> – never nullptr on success; nullptr on error.
+//   Concrete pattern types: WildcardPatternAST, BindPatternAST, TypePatternAST,
+//   StructPatternAST, PatternExprAST (wrapping LiteralExprAST or RangeExprAST).
 // ─────────────────────────────────────────────────────────────────────────────
 ASTPtr<PatternAST> Parser::parsePattern() {
     LUC_LOG_EXPR_VERBOSE("parsePattern: token='" << peek().value << "'");
@@ -2290,8 +3848,45 @@ ASTPtr<PatternAST> Parser::parsePattern() {
 // ─────────────────────────────────────────────────────────────────────────────
 // parseLiteralOrRangePattern
 //
-// Parses a literal token (possibly prefixed with '-' for negatives) and
-// checks if '..' follows to build a RangePatternAST.
+// Parses a literal pattern or a range pattern (literal '..' literal).
+//
+// Grammar:
+//   literal_pattern := literal
+//   range_pattern   := literal '..' [ '<' ] literal
+//
+// Examples:
+//   42                 → literal pattern
+//   "ok"               → literal pattern
+//   1..10              → inclusive range pattern
+//   1..<10             → exclusive range pattern
+//   -5..5              → negative literal as lower bound
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Optionally consumes a '-' prefix (for negative literals).
+// - Consumes the first literal token (INT, FLOAT, STRING, etc.).
+// - If '..' (RANGE) follows:
+//     * Consumes '..'
+//     * Optionally consumes '<' (makes range exclusive)
+//     * Optionally consumes a '-' prefix for negative upper bound
+//     * Consumes the second literal token
+//     * Returns a RangeExprAST wrapped in PatternExprAST
+// - Otherwise:
+//     * Returns a LiteralExprAST wrapped in PatternExprAST
+//
+// ─── Supported Literal Types ────────────────────────────────────────────────
+//   INT_LITERAL, FLOAT_LITERAL, STRING_LITERAL, RAW_STRING_LITERAL,
+//   CHAR_LITERAL, HEX_LITERAL, BINARY_LITERAL, TRUE, FALSE, NIL
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - If the first token is not a valid literal, reports error, returns nullptr.
+// - If '..' is present but no second literal follows, reports error, returns nullptr.
+// - Invalid second literal type (e.g., string in a numeric range) is reported
+//   and recovery attempts to consume the token.
+//
+// ─── Result ─────────────────────────────────────────────────────────────────
+//   PatternExprAST wrapping either:
+//       - LiteralExprAST (single literal)
+//       - RangeExprAST (lo..hi or lo..<hi)
 // ─────────────────────────────────────────────────────────────────────────────
 ASTPtr<PatternAST> Parser::parseLiteralOrRangePattern() {
     SourceLocation loc = currentLoc();
@@ -2400,6 +3995,40 @@ ASTPtr<PatternAST> Parser::parseLiteralOrRangePattern() {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // parseBindPattern
+//
+// Parses a bind pattern: an identifier that binds the matched value to a name.
+//
+// Grammar:
+//   bind_pattern := IDENTIFIER
+//
+// Example:
+//   n     → binds the matched value to 'n'
+//   item  → binds the matched value to 'item'
+//   _     → not a bind pattern (handled by parseWildcardPattern)
+//
+// ─── Preconditions ──────────────────────────────────────────────────────────
+// - Called after the IDENTIFIER token has already been consumed.
+// - The name is passed as a parameter (already interned).
+//
+// ─── Scope Introduction ─────────────────────────────────────────────────────
+// - The bind pattern introduces a new variable in the arm's scope.
+// - The variable's type is the type of the matched value (narrowed by the
+//   pattern context).
+// - The variable is accessible in the guard expression and the arm body.
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes no additional tokens (the identifier was already consumed).
+// - The caller (parsePattern) consumes the identifier before calling this.
+//
+// ─── Error Handling ─────────────────────────────────────────────────────────
+// - This function does not report errors; it assumes the identifier is already
+//   validated by the caller.
+// - Always returns a valid BindPatternAST.
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   BindPatternAST {
+//       name: InternedString (the variable name to bind)
+//   }
 // ─────────────────────────────────────────────────────────────────────────────
 ASTPtr<BindPatternAST> Parser::parseBindPattern(InternedString name) {
     SourceLocation loc = currentLoc();
@@ -2411,8 +4040,41 @@ ASTPtr<BindPatternAST> Parser::parseBindPattern(InternedString name) {
 // ─────────────────────────────────────────────────────────────────────────────
 // parseTypePattern
 //
-// Grammar:  IDENTIFIER 'is' type
-// Called after the IDENTIFIER has been consumed.
+// Parses a type pattern: IDENTIFIER 'is' type
+//
+// Grammar:
+//   type_pattern := IDENTIFIER 'is' type
+//
+// Example:
+//   s is Circle   → matches if subject is a Circle, binds as 's' typed Circle
+//   v is Rect     → matches if subject is a Rect, binds as 'v' typed Rect
+//
+// ─── Semantics ──────────────────────────────────────────────────────────────
+// - Combines a runtime type check with a name binding.
+// - If the subject's runtime type matches checkType, the value is bound to
+//   bindName (with the narrowed type).
+// - After a successful match, the bindName's type is narrowed to checkType
+//   for the duration of the arm body.
+//
+// ─── Preconditions ──────────────────────────────────────────────────────────
+// - Called after the IDENTIFIER has been consumed by parsePattern().
+// - The bindName is passed as a parameter (already interned).
+// - The current token should be 'is'.
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the 'is' keyword.
+// - Parses the type annotation via parseType().
+// - Does NOT consume any tokens beyond the type.
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing 'is' after identifier: consume() reports error, returns nullptr.
+// - Missing or invalid type after 'is': parseType() reports error, returns nullptr.
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   TypePatternAST {
+//       bindName:  InternedString (the variable name to bind)
+//       checkType: TypePtr (the type to check against)
+//   }
 // ─────────────────────────────────────────────────────────────────────────────
 ASTPtr<TypePatternAST> Parser::parseTypePattern(InternedString bindName) {
     SourceLocation loc = currentLoc();
@@ -2433,6 +4095,37 @@ ASTPtr<TypePatternAST> Parser::parseTypePattern(InternedString bindName) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // parseWildcardPattern
+//
+// Parses a wildcard pattern: '_' which matches any value and discards it.
+//
+// Grammar:
+//   wildcard_pattern := '_'
+//
+// Example:
+//   _ => "anything"
+//
+// ─── Semantics ──────────────────────────────────────────────────────────────
+// - Matches any value (like a bind pattern) but does NOT introduce a variable
+//   name into the arm's scope.
+// - The matched value is discarded and cannot be referenced in the guard or body.
+// - May appear with a guard, but the guard cannot reference the matched value
+//   (since there's no name bound).
+//
+// ─── Distinction from 'default' ─────────────────────────────────────────────
+//   '_'      – pattern that matches anything; may appear in any arm position
+//   default  – required final fallback arm keyword (not a pattern)
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the '_' token (WILDCARD).
+// - Does NOT consume any tokens beyond the wildcard.
+//
+// ─── Error Handling ─────────────────────────────────────────────────────────
+// - This function does not report errors; it assumes the WILDCARD token is
+//   already validated by the caller (parsePattern).
+// - Always returns a valid WildcardPatternAST.
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   WildcardPatternAST (no fields)
 // ─────────────────────────────────────────────────────────────────────────────
 ASTPtr<WildcardPatternAST> Parser::parseWildcardPattern() {
     SourceLocation loc = currentLoc();
@@ -2445,8 +4138,55 @@ ASTPtr<WildcardPatternAST> Parser::parseWildcardPattern() {
 // ─────────────────────────────────────────────────────────────────────────────
 // parseStructPattern
 //
-// Grammar:  IDENTIFIER '{' { field_pattern } '}'
-// Called after the type name has been consumed.
+// Parses a struct destructuring pattern: IDENTIFIER '{' { field_pattern } '}'
+//
+// Grammar:
+//   struct_pattern := IDENTIFIER '{' { field_pattern } '}'
+//   field_pattern  := IDENTIFIER [ ':' pattern ]
+//
+// Examples:
+//   Vec2 { x, y }                     → shorthand: binds x and y from subject
+//   Vec2 { x: 0.0, y: 0.0 }          → exact match on field values
+//   Player { health: 0, name }       → mixed: exact match on health, bind name
+//   Vec2 { x: 0.0, y: v }            → nested: bind y's value to variable v
+//
+// ─── Semantics ──────────────────────────────────────────────────────────────
+// - Matches when the subject is a struct of the named type.
+// - Fields not listed in the pattern are ignored (match succeeds regardless).
+// - For each field pattern:
+//     * If only field name is given (no ':'): binds the field's value to a
+//       variable with the same name.
+//     * If ':' and a sub‑pattern are given: the field's value must match the
+//       sub‑pattern (which may be a literal, range, bind, type, or nested struct).
+//
+// ─── Preconditions ──────────────────────────────────────────────────────────
+// - Called after the type name has been consumed by parsePattern().
+// - The current token is '{' (already checked).
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the opening '{'.
+// - Repeatedly parses field patterns via parseFieldPattern() until '}'.
+// - Consumes optional commas between field patterns.
+// - Consumes the closing '}'.
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing '{' after type name: consume() reports error.
+// - If parseFieldPattern() returns nullptr and no progress was made, consumes
+//   one token and continues (prevents infinite loop).
+// - Missing closing '}': consume() reports error and recovers.
+//
+// ─── Loop Safety ────────────────────────────────────────────────────────────
+// - The field pattern loop uses a progress guard: saves pos_ before
+//   parseFieldPattern().
+// - If parseFieldPattern() returns nullptr and pos_ == savedPos, consumes one
+//   token to guarantee progress.
+// - Optional commas are consumed without stalling.
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   StructPatternAST {
+//       typeName: InternedString (the struct type name)
+//       fields:   vector<FieldPatternPtr> (field patterns in source order)
+//   }
 // ─────────────────────────────────────────────────────────────────────────────
 ASTPtr<StructPatternAST> Parser::parseStructPattern(InternedString typeName) {
     LUC_LOG_EXPR("parseStructPattern: type='" << pool_.lookup(typeName) << "'");
@@ -2483,9 +4223,40 @@ ASTPtr<StructPatternAST> Parser::parseStructPattern(InternedString typeName) {
 // ─────────────────────────────────────────────────────────────────────────────
 // parseFieldPattern
 //
+// Parses a single field entry inside a struct pattern.
+//
 // Grammar:
 //   field_pattern := IDENTIFIER
 //                  | IDENTIFIER ':' pattern
+//
+// Examples:
+//   x               → shorthand: bind field 'x' to variable 'x'
+//   x: 0.0          → full form: match field 'x' against literal 0.0
+//   pos: Vec2 { ... } → nested: match field 'pos' against a struct pattern
+//
+// ─── Semantics ──────────────────────────────────────────────────────────────
+// - Shorthand form (no ':'): equivalent to field_name: bind_pattern(field_name)
+//   The field's value is bound to a variable with the same name.
+// - Full form (with ':'): the field's value must match the given sub‑pattern.
+// - The sub‑pattern can be any valid pattern (literal, range, bind, type,
+//   wildcard, or nested struct pattern).
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the field name (IDENTIFIER).
+// - If ':' follows, consumes it and parses the sub‑pattern via parsePattern().
+// - Does NOT consume any tokens beyond the sub‑pattern (or beyond the field name
+//   if no sub‑pattern).
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing field name: reports error, returns nullptr.
+// - If ':' is present but sub‑pattern parsing fails: reports error, returns
+//   field node with null subPattern (the caller may still accept it).
+//
+// ─── Resulting AST ──────────────────────────────────────────────────────────
+//   FieldPatternAST {
+//       field:      InternedString (the struct field name)
+//       subPattern: PatternPtr (nullptr for shorthand form, sub‑pattern for full)
+//   }
 // ─────────────────────────────────────────────────────────────────────────────
 FieldPatternPtr Parser::parseFieldPattern() {
     SourceLocation loc = currentLoc();
@@ -2513,35 +4284,61 @@ FieldPatternPtr Parser::parseFieldPattern() {
     return fp;
 }
 
-/**
-* @brief Parses an assignable left‑hand side (lvalue) expression.
-*
-* Grammar of an lvalue:
-*   lvalue := IDENTIFIER { ( '.' IDENTIFIER ) | ( '[' expr ']' ) }
-*
-* Examples:
-*   x
-*   point.x
-*   arr[i]
-*   matrix[row][col]
-*   p.x.y
-*
-* This function stops at the first token that is not part of a valid lvalue
-* construct. It does NOT consume any operator that follows the lvalue,
-* such as '=', '+=', '?', ':', etc.
-*
-* Why not use parseExpr()?
-*   parseExpr() would treat '=' as a binary operator and prematurely consume
-*   the assignment token, breaking multi‑assignment parsing. This function
-*   is specifically for multi‑assignment left‑hand sides where the '=' is
-*   the separator between the LHS list and the RHS expression.
-*
-* @return An expression tree that represents an assignable location,
-*         or nullptr on error.
-*
-* @note The caller (parseMultiAssignStmt) uses this function to parse the
-*       comma‑separated list of lvalues before consuming the '=' token.
-*/
+// ─────────────────────────────────────────────────────────────────────────────
+// Lvalue Parser (for multi‑assignment)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// parseLvalue
+//
+// Parses an assignable left‑hand side (lvalue) expression for multi‑assignment.
+//
+// Grammar:
+//   lvalue := IDENTIFIER { ( '.' IDENTIFIER ) | ( '[' expr ']' ) }
+//
+// Examples:
+//   x
+//   point.x
+//   arr[i]
+//   matrix[row][col]
+//   p.x.y
+//
+// ─── Difference from parseExpr() ────────────────────────────────────────────
+//   parseExpr() would treat '=' as a binary operator and prematurely consume
+//   the assignment token, breaking multi‑assignment parsing.
+//   parseLvalue() stops at the first token that is not part of a valid lvalue,
+//   leaving the '=' for the caller (parseMultiAssignStmt) to consume.
+//
+// ─── Allowed Lvalue Suffixes ────────────────────────────────────────────────
+//   - '.' IDENTIFIER  – field access (e.g., point.x)
+//   - '[' expr ']'    – array/slice index (e.g., arr[i])
+//
+// ─── Not Allowed (stops before these) ───────────────────────────────────────
+//   - ':'             – behavior access (not assignable)
+//   - '()'            – function call (not assignable)
+//   - '??', '|>', '+>' – operators (not part of lvalue)
+//   - '='             – assignment operator (stopped before it)
+//
+// ─── Token Consumption ───────────────────────────────────────────────────────
+// - Consumes the first IDENTIFIER (required).
+// - While the next token is '.' or '[', consumes the suffix and builds the
+//   corresponding AST node (FieldAccessExprAST or IndexExprAST).
+// - Stops when a token that cannot be part of an lvalue is encountered.
+// - Does NOT consume the '=' token or any operator following the lvalue.
+//
+// ─── Error Handling & Recovery ──────────────────────────────────────────────
+// - Missing identifier at start: reports error, returns nullptr.
+// - Missing field name after '.': reports error, returns current expression.
+// - Missing index expression after '[': reports error, returns current expression.
+// - Missing closing ']' after index: consume() reports error.
+//
+// ─── Result ─────────────────────────────────────────────────────────────────
+//   ExprPtr – an expression tree representing an assignable location:
+//       - IdentifierExprAST (simple variable)
+//       - FieldAccessExprAST (field access chain)
+//       - IndexExprAST (array/slice index chain)
+//   Returns nullptr on error.
+// ─────────────────────────────────────────────────────────────────────────────
 ExprPtr Parser::parseLvalue() {
     // Start with an identifier (required)
     if (!check(TokenType::IDENTIFIER)) {
