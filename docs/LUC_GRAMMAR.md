@@ -900,6 +900,58 @@ run(() -> int { return await fetch() }) -- also valid: body uses await correctly
 > **Why no qualifiers on anonymous functions?**
 > A qualifier describes how the compiler treats a **call site**. When a function is called, the compiler looks up the **binding's declaration** (or the **parameter type**) to find qualifiers — it never inspects the value itself. Therefore a qualifier on an anonymous function value is unreachable and meaningless. Qualifiers on values are removed from the language to avoid confusion.
 
+### Generic Functions
+
+Generic functions allow code to operate on multiple types using type parameters.
+
+```
+generic_params  := '<' generic_param { [','] generic_param } '>'
+
+generic_param   := IDENTIFIER
+                 | IDENTIFIER ':' IDENTIFIER
+                 | IDENTIFIER ':' constraint_list
+
+constraint_list := IDENTIFIER { '+' IDENTIFIER }
+```
+
+#### Syntax
+
+Generic parameters come immediately after the function name, before any parameter groups or qualifiers.
+
+```luc
+let identity<T> (v T) -> T = { return v }
+
+let map<T, U> (items [*]T, f (item T) -> U) -> [*]U = { ... }
+```
+
+#### Type Constraints
+
+Type parameters can be constrained to traits using the `:` syntax. Multiple traits are joined with `+`.
+
+```luc
+let printSorted<T : Comparable + Printable> (items []T) = { ... }
+```
+
+#### Instantiation
+
+Generic functions can be called with explicit type arguments or have them inferred from the call site.
+
+```luc
+-- Explicit instantiation
+let x = identity<int>(42)
+
+-- Inferred instantiation
+let y = identity(3.14)    -- T inferred as float
+```
+
+#### Generic Qualifiers
+
+Qualifiers follow the generic parameter list:
+
+```luc
+let fetch<T> ~async (url string) -> T = { ... }
+```
+
 ### Complete Signature Reference
 
 ```luc

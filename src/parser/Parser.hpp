@@ -142,6 +142,18 @@ private:
     // Build a SourceLocation from an already-consumed token.
     SourceLocation locOf(const Token &tok) const;
 
+    // ── Non-allocating lookahead helpers ──────────────────────────────────────
+    //
+    // Used to detect multi-token constructs without allocating AST nodes in the
+    // arena (avoiding leaks during speculative parsing).
+    
+    // Increment i past any LINE_COMMENT or DOC_COMMENT tokens.
+    void skipComments(std::size_t& i) const;
+
+    // Increment i past a full type annotation. Returns true if a type-like
+    // structure was successfully skipped.
+    bool skipType(std::size_t& i) const;
+
     // ─────────────────────────────────────────────────────────────────────────
     // Error handling & recovery
     // ─────────────────────────────────────────────────────────────────────────
@@ -394,12 +406,26 @@ private:
     // is-expression: expr 'is' type — IsExprAST.
     ExprPtr parseIsExpr(ExprPtr lhs);
 
-    // Pipeline: lhs '->' step { '->' step }
+    // Pipeline: lhs '|>' step { '|>' step }
     // Consumes the entire chain starting from the first '->' after lhs.
     ExprPtr parsePipelineExpr(ExprPtr seed);
 
-    // Parse a single pipeline step (after '->' has been consumed).
+    // Parse a single pipeline step (after '|>' has been consumed).
+    // Infix helpers for parsePrattExpr (REFACTOR-2)
+    ExprPtr parseInfixAssign(ExprPtr lhs, bool allowStructLiteral);
+    ExprPtr parseInfixIs(ExprPtr lhs);
+    ExprPtr parseInfixNullCoalesce(ExprPtr lhs, bool allowStructLiteral);
+    ExprPtr parseInfixBinary(ExprPtr lhs, TokenType opTok, int prec, bool allowStructLiteral);
+
     PipelineStepPtr parsePipelineStep();
+    AttributeArgPtr parseAttributeArgLiteral();
+
+    // Decomposed pipeline step helpers
+    PipelineStepPtr parseAnonFuncPipelineStep();
+    PipelineStepPtr parseBehaviorPipelineStep(const std::string& typeName, std::vector<TypePtr> genericArgs);
+    PipelineStepPtr parseFieldPipelineStep(const std::string& ident, std::vector<TypePtr> genericArgs);
+    PipelineStepPtr parseIndexPipelineStep(const std::string& ident, std::vector<TypePtr> genericArgs);
+    PipelineStepPtr parseArgPackPipelineStep(const std::string& ident, std::vector<TypePtr> genericArgs);
 
     // Compose: lhs '+>' operand { '+>' operand }
     ExprPtr parseComposeExpr(ExprPtr lhs);

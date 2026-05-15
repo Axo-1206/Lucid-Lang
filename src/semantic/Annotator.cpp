@@ -525,7 +525,9 @@ private:
 
     void visit(ReturnStmtAST& node) override {
         LUC_LOG_SEMANTIC_EXTREME("visit(ReturnStmtAST)");
-        if (node.value) walk(node.value.get());
+        for (auto& val : node.values) {
+            walk(val.get());
+        }
     }
 
     void visit(BreakStmtAST& /*node*/) override {
@@ -534,18 +536,6 @@ private:
 
     void visit(ContinueStmtAST& /*node*/) override {
         LUC_LOG_SEMANTIC_EXTREME("visit(ContinueStmtAST)");
-    }
-
-    void visit(ParallelForStmtAST& node) override {
-        LUC_LOG_SEMANTIC_EXTREME("visit(ParallelForStmtAST): var=" << node.varName);
-        walk(node.iterable.get());
-        if (node.step) walk(node.step.get());
-        walk(node.body.get());
-    }
-
-    void visit(ParallelBlockStmtAST& node) override {
-        LUC_LOG_SEMANTIC_EXTREME("visit(ParallelBlockStmtAST): " << node.subBlocks.size() << " sub-blocks");
-        for (auto& sub : node.subBlocks) walk(sub.get());
     }
 
     // ── Root ──────────────────────────────────────────────────────────────────

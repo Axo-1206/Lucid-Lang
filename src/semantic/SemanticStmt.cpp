@@ -521,7 +521,7 @@ static void checkReturnStmt(ReturnStmtAST& node, SymbolTable& symbols,
         return;
     }
 
-    if (!node.value) {
+    if (node.values.empty()) {
         // Bare return — valid only when expected return is void (nullptr).
         LUC_LOG_SEMANTIC_EXTREME("\tvoid return");
         if (expectedReturn != nullptr) {
@@ -533,7 +533,8 @@ static void checkReturnStmt(ReturnStmtAST& node, SymbolTable& symbols,
     }
 
     LUC_LOG_SEMANTIC_EXTREME("\tchecking return value expression");
-    TypeAST* valType = checkExpr(node.value.get(), symbols, resolver, dc,
+    // TODO: Support multiple return types. For now, check the first value.
+    TypeAST* valType = checkExpr(node.values[0].get(), symbols, resolver, dc,
                                  loopDepth, parallelDepth, insideExtern);
 
     if (!expectedReturn) {

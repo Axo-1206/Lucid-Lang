@@ -1709,10 +1709,17 @@ static TypeAST* checkPipelineExpr(PipelineExprAST& node, SymbolTable& symbols,
                 }
                 break;
             }
+            case PipelineStepKind::BehaviorArgPack:
+                // Similar to BehaviorRef but with arguments; return type inference
+                // requires full method resolution.
+                break;
             case PipelineStepKind::ArgPack:
             case PipelineStepKind::FieldRef:
+            case PipelineStepKind::FieldArgPack:
+            case PipelineStepKind::IndexRef:
+            case PipelineStepKind::IndexArgPack:
             case PipelineStepKind::AnonFunc:
-                // For ArgPack and AnonFunc the return type cannot be easily inferred
+                // For complex steps the return type cannot be easily inferred
                 // without full function resolution; pass through current for now.
                 break;
         }

@@ -588,6 +588,8 @@ struct AttributeArgAST : BaseAST {
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
 
+using AttributeArgPtr = ASTPtr<AttributeArgAST>;
+
 struct AttributeAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::Attribute;
 

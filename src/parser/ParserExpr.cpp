@@ -90,7 +90,6 @@ int Parser::infixPrec(TokenType t) const {
             return PREC_ASSIGN;
 
         case TokenType::COMPOSE:            return PREC_COMPOSE;
-        case TokenType::ARROW:              return PREC_PIPE;   // for '->'
         case TokenType::PIPELINE:           return PREC_PIPE;   // for '|>'
         case TokenType::QUESTION_QUESTION:  return PREC_NULLCOAL;
         case TokenType::OR:                 return PREC_OR;
@@ -274,146 +273,146 @@ ExprPtr Parser::parsePrattExpr(int minPrec, bool allowStructLiteral) {
                              << LucDebug::tokenTypeToString(opTok) 
                              << "' with prec=" << prec);
 
-        // ── Assignment (right-associative) ────────────────────────────────────
+        // ── Infix operator dispatch (REFACTOR-2) ───────────────────────────────
         if (isAssignOp(opTok)) {
-            AssignOp op = tokenToAssignOp(opTok);
-            advance();
-            // Right-associative: recurse at the same precedence level.
-            ExprPtr rhs = parsePrattExpr(PREC_ASSIGN - 1, allowStructLiteral);
-            if (!rhs) {
-                errorAt(DiagCode::E2008, "expected expression after assignment operator");
-                break;
-            }
-
-            SourceLocation loc = lhs->loc;
-            auto node = arena_.make<AssignExprAST>();
-            node->loc = loc;
-            node->op = op;
-            node->lhs = std::move(lhs);
-            node->rhs = std::move(rhs);
-            lhs = std::move(node);
+            lhs = parseInfixAssign(std::move(lhs), allowStructLiteral);
             // Assignment is a statement-level expression — stop the loop.
-            LUC_LOG_EXPR_VERBOSE("parsePrattExpr: returning with kind=" << LucDebug::kindToString(lhs->kind));
             break;
         }
 
-        // ── 'is' type check ───────────────────────────────────────────────────
         if (opTok == TokenType::IS) {
-            advance(); // consume 'is'
-            TypePtr checkType = parseType();
-            if (!checkType) {
-                errorAt(DiagCode::E2005, "expected type after 'is'");
-                break;
-            }
-
-            SourceLocation loc = lhs->loc;
-            auto node = arena_.make<IsExprAST>();
-            node->loc = loc;
-            node->expr = std::move(lhs);
-            node->checkType = std::move(checkType);
-            lhs = std::move(node);
-            // 'is' is a comparison — continue at PREC_CMP level.
+            lhs = parseInfixIs(std::move(lhs));
             continue;
         }
 
-        // ── '|>' pipeline ─────────────────────────────────────────────────────
         if (opTok == TokenType::PIPELINE) {
             lhs = parsePipelineExpr(std::move(lhs));
-            // parsePipelineExpr consumed all '|>' steps; continue the outer loop.
             continue;
         }
 
-        // ── '+>' composition ──────────────────────────────────────────────────
         if (opTok == TokenType::COMPOSE) {
             lhs = parseComposeExpr(std::move(lhs));
             continue;
         }
 
-        // ── '??' null coalescing ──────────────────────────────────────────────
         if (opTok == TokenType::QUESTION_QUESTION) {
-            advance(); // consume '??'
-            // Right-associative.
-            ExprPtr fallback = parsePrattExpr(PREC_NULLCOAL - 1, allowStructLiteral);
-            if (!fallback) {
-                errorAt(DiagCode::E2008, "expected expression after '\?\?'");
-                break;
-            }
-
-            SourceLocation loc = lhs->loc;
-            auto node = arena_.make<NullCoalesceExprAST>();
-            node->loc = loc;
-            node->value = std::move(lhs);
-            node->fallback = std::move(fallback);
-            lhs = std::move(node);
-            
-            break; // '??' terminates the chain — nothing binds tighter
+            lhs = parseInfixNullCoalesce(std::move(lhs), allowStructLiteral);
+            break; // '??' terminates the chain
         }
 
-        // ── Standard binary operators ─────────────────────────────────────────
-        advance(); // consume the operator
-
-        // Right-associative: POW (^)
-        int nextPrec = (opTok == TokenType::POW) ? prec - 1 : prec;
-
-        ExprPtr rhs = parsePrattExpr(nextPrec, allowStructLiteral);
-        if (!rhs) {
-            errorAt(DiagCode::E2008, "expected right-hand side of binary expression");
-            break;
-        }
-
-        // ── Chained comparison detection ──────────────────────────────────────
-        // After building  lhs op rhs, if the next token is ALSO a comparison
-        // operator, this is a chained comparison: 0 < x < 10.
-        // In Luc this is always an error — the developer must use 'and':
-        //   if 0 < x and x < 10 { ... }
-        //
-        // We detect it here (parse time) so the error message is specific.
-        // The semantic pass would also catch it via bool-on-left-of-comparison,
-        // but a parser-level message is clearer.
-        //
-        // Comparison tokens: == === != < > <= >= is
-        auto isComparisonOp = [](TokenType tt) {
-            switch (tt) {
-                case TokenType::EQUAL_EQUAL:
-                case TokenType::EQUAL_EQUAL_EQUAL:
-                case TokenType::NOT_EQUAL:
-                case TokenType::LESS:
-                case TokenType::GREATER:
-                case TokenType::LESS_EQUAL:
-                case TokenType::GREATER_EQUAL:
-                case TokenType::IS:
-                    return true;
-                default:
-                    return false;
-            }
-        };
-
-        bool currentIsComparison = isComparisonOp(opTok);
-        bool nextIsComparison    = isComparisonOp(peek().type);
-
-        if (currentIsComparison && nextIsComparison) {
-            errorAt(DiagCode::E3014,
-                    "chained comparisons are not allowed; "
-                    "use 'and' explicitly, e.g. '0 < x and x < 10'");
-            // Continue parsing to surface any further errors, but the AST
-            // produced here is semantically invalid. The semantic pass will
-            // also catch this via type checking (bool on left of comparison).
-        }
-
-        SourceLocation loc = lhs->loc;
-        auto node = arena_.make<BinaryExprAST>();
-        node->loc = loc;
-        node->op = tokenToBinaryOp(opTok);
-        node->left = std::move(lhs);
-        node->right = std::move(rhs);
-        lhs = std::move(node);
-
-        // After a binary op, apply postfix again (e.g. a + b.x)
+        // Generic binary operator path
+        lhs = parseInfixBinary(std::move(lhs), opTok, prec, allowStructLiteral);
+        
+        // After any binary op, apply postfix again (e.g. a + b.x)
         lhs = parsePostfixExpr(std::move(lhs));
     }
 
     return lhs;
 }
+
+ExprPtr Parser::parseInfixAssign(ExprPtr lhs, bool allowStructLiteral) {
+    LUC_LOG_EXPR_VERBOSE("parseInfixAssign");
+    TokenType opTok = advance().type;
+    AssignOp op = tokenToAssignOp(opTok);
+    
+    // Right-associative: recurse at the same precedence level.
+    ExprPtr rhs = parsePrattExpr(PREC_ASSIGN - 1, allowStructLiteral);
+    if (!rhs) {
+        errorAt(DiagCode::E2008, "expected expression after assignment operator");
+        return lhs;
+    }
+
+    SourceLocation loc = lhs->loc;
+    auto node = arena_.make<AssignExprAST>();
+    node->loc = loc;
+    node->op = op;
+    node->lhs = std::move(lhs);
+    node->rhs = std::move(rhs);
+    return node;
+}
+
+ExprPtr Parser::parseInfixIs(ExprPtr lhs) {
+    LUC_LOG_EXPR_VERBOSE("parseInfixIs");
+    advance(); // consume 'is'
+    TypePtr checkType = parseType();
+    if (!checkType) {
+        errorAt(DiagCode::E2005, "expected type after 'is'");
+        return lhs;
+    }
+
+    SourceLocation loc = lhs->loc;
+    auto node = arena_.make<IsExprAST>();
+    node->loc = loc;
+    node->expr = std::move(lhs);
+    node->checkType = std::move(checkType);
+    return node;
+}
+
+ExprPtr Parser::parseInfixNullCoalesce(ExprPtr lhs, bool allowStructLiteral) {
+    LUC_LOG_EXPR_VERBOSE("parseInfixNullCoalesce");
+    advance(); // consume '??'
+    
+    // Right-associative.
+    ExprPtr fallback = parsePrattExpr(PREC_NULLCOAL - 1, allowStructLiteral);
+    if (!fallback) {
+        errorAt(DiagCode::E2008, "expected expression after '\?\?'");
+        return lhs;
+    }
+
+    SourceLocation loc = lhs->loc;
+    auto node = arena_.make<NullCoalesceExprAST>();
+    node->loc = loc;
+    node->value = std::move(lhs);
+    node->fallback = std::move(fallback);
+    return node;
+}
+
+ExprPtr Parser::parseInfixBinary(ExprPtr lhs, TokenType opTok, int prec, bool allowStructLiteral) {
+    LUC_LOG_EXPR_VERBOSE("parseInfixBinary: " << LucDebug::tokenTypeToString(opTok));
+    advance(); // consume the operator
+
+    // Right-associative: POW (^)
+    int nextPrec = (opTok == TokenType::POW) ? prec - 1 : prec;
+
+    ExprPtr rhs = parsePrattExpr(nextPrec, allowStructLiteral);
+    if (!rhs) {
+        errorAt(DiagCode::E2008, "expected right-hand side of binary expression");
+        return lhs;
+    }
+
+    // Chained comparison detection
+    auto isComparisonOp = [](TokenType tt) {
+        switch (tt) {
+            case TokenType::EQUAL_EQUAL:
+            case TokenType::EQUAL_EQUAL_EQUAL:
+            case TokenType::NOT_EQUAL:
+            case TokenType::LESS:
+            case TokenType::GREATER:
+            case TokenType::LESS_EQUAL:
+            case TokenType::GREATER_EQUAL:
+            case TokenType::IS:
+                return true;
+            default:
+                return false;
+        }
+    };
+
+    if (isComparisonOp(opTok) && isComparisonOp(peek().type)) {
+        errorAt(DiagCode::E3014,
+                "chained comparisons are not allowed; "
+                "use 'and' explicitly, e.g. '0 < x and x < 10'");
+    }
+
+    SourceLocation loc = lhs->loc;
+    auto node = arena_.make<BinaryExprAST>();
+    node->loc = loc;
+    node->op = tokenToBinaryOp(opTok);
+    node->left = std::move(lhs);
+    node->right = std::move(rhs);
+    return node;
+}
+
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // parsePrefixExpr  — unary prefix operators and primary expressions
@@ -657,9 +656,7 @@ ExprPtr Parser::parsePrimaryExpr(bool allowStructLiteral) {
         std::size_t scan = savedPos + 1; // position after the identifier
 
         // Skip any comments before checking for '<'
-        while (scan < tokens_.size() && (tokens_[scan].type == TokenType::LINE_COMMENT ||
-                                        tokens_[scan].type == TokenType::DOC_COMMENT))
-            ++scan;
+        skipComments(scan);
 
         // If the next token is '<', try to parse generic arguments.
         if (scan < tokens_.size() && tokens_[scan].type == TokenType::LESS) {
@@ -684,9 +681,7 @@ ExprPtr Parser::parsePrimaryExpr(bool allowStructLiteral) {
                     ++scan;
                 if (scan < tokens_.size() && tokens_[scan].type == TokenType::COLON) {
                     ++scan; // move past ':'
-                    while (scan < tokens_.size() && (tokens_[scan].type == TokenType::LINE_COMMENT ||
-                                                    tokens_[scan].type == TokenType::DOC_COMMENT))
-                        ++scan;
+                    skipComments(scan);
                     if (scan < tokens_.size() && tokens_[scan].type == TokenType::IDENTIFIER) {
                         isBehavior = true;
                         methodName = tokens_[scan].value;
@@ -806,7 +801,7 @@ ExprPtr Parser::parsePostfixExpr(ExprPtr lhs) {
 
 
         // Stop at pipeline or composition operators - they are handled by parsePrattExpr
-        if (check(TokenType::ARROW) || check(TokenType::COMPOSE)) {
+        if (check(TokenType::PIPELINE) || check(TokenType::COMPOSE)) {
             LUC_LOG_EXPR_VERBOSE("parsePostfixExpr: stopping at pipeline/compose operator");
             break;
         }
@@ -1539,21 +1534,43 @@ ExprPtr Parser::parseIndexExpr(ExprPtr target) {
 std::vector<ExprPtr> Parser::parseArgList() {
     LUC_LOG_EXPR_VERBOSE("parseArgList");
     std::vector<ExprPtr> args;
+    int consecutiveErrors = 0;
+    const int MAX_CONSECUTIVE_ERRORS = 5;
 
     while (!check(TokenType::RPAREN) && !isAtEnd()) {
+        // Safety: if we've hit too many errors in a row, force exit
+        if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+            errorAt(DiagCode::E2002, "too many consecutive errors in argument list; skipping to ')'");
+            // Skip everything until the closing parenthesis or end
+            while (!isAtEnd() && !check(TokenType::RPAREN)) {
+                advance();
+            }
+            break;
+        }
+
         std::size_t savedPos = pos_;
         ExprPtr arg = parseExpr();
 
         if (pos_ == savedPos) {
-            // No progress – skip the offending token
+            // parseExpr made zero progress → consume one token to avoid infinite loop
             errorAt(DiagCode::E2008, "expected argument expression");
-            if (!isAtEnd()) advance();
-            // If the next token is a comma, consume it and continue
-            if (check(TokenType::COMMA)) advance();
-            // Continue to try next argument (or exit)
+            if (!isAtEnd()) {
+                advance(); // consume the offending token
+            }
+            consecutiveErrors++;
+            // Do NOT push an argument
+            // If the next token is a comma, consume it to keep loop moving
+            if (check(TokenType::COMMA)) {
+                advance();
+            }
             continue;
         }
 
+        // Progress was made; reset error counter
+        consecutiveErrors = 0;
+
+        // Even if arg is an UnknownExprAST (error recovery node), we still push it
+        // because the parser produced a node and advanced.
         args.push_back(std::move(arg));
 
         if (check(TokenType::RPAREN)) break;
@@ -1565,8 +1582,7 @@ std::vector<ExprPtr> Parser::parseArgList() {
                 advance();
             }
             if (check(TokenType::COMMA)) {
-                advance(); // consume the comma
-                // After consuming a comma, continue to parse the next argument
+                advance(); // consume the comma and continue
                 continue;
             }
             // If we reached ')' or EOF, break out of the loop
@@ -1576,8 +1592,10 @@ std::vector<ExprPtr> Parser::parseArgList() {
         // Check for consecutive commas (empty argument)
         if (check(TokenType::COMMA)) {
             errorAt(DiagCode::E2008, "empty argument in call (consecutive commas)");
-            // Skip the extra comma
-            advance();
+            advance(); // skip the extra comma
+            consecutiveErrors++; // count this as an error
+            // Do not push an argument
+            continue;
         }
     }
 
@@ -1623,7 +1641,7 @@ ExprPtr Parser::parsePipelineExpr(ExprPtr seed) {
     }
 
     if (node->steps.empty()) {
-        errorAt(DiagCode::E2006, "pipeline '->' requires at least one step");
+        errorAt(DiagCode::E2006, "pipeline '|>' requires at least one step");
         // node->seed is still valid (was moved from seed, not null)
         return std::move(node->seed);
     }
@@ -1634,136 +1652,23 @@ ExprPtr Parser::parsePipelineExpr(ExprPtr seed) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // parsePipelineStep
-//
-// Five forms:
-//   Ident       fn (IDENTIFIER or PRIMITIVE_TYPE)
-//   BehaviorRef Type:method
-//   FieldRef    obj.field       (IDENTIFIER '.' IDENTIFIER)
-//   ArgPack     fn(args)!       (IDENTIFIER or PRIMITIVE_TYPE)
-//   AnonFunc    (params) { ... } or ~async (params) { ... }
 // ─────────────────────────────────────────────────────────────────────────────
 PipelineStepPtr Parser::parsePipelineStep() {
-    LUC_LOG_EXPR_VERBOSE("parsePipelineStep: token='" << peek().value << "', type=" << static_cast<int>(peek().type));
-    SourceLocation loc = currentLoc();
-    auto step = arena_.make<PipelineStepAST>();
-    step->loc = loc;
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // 1. ANONYMOUS FUNCTION DETECTION (lookahead)
-    // ═══════════════════════════════════════════════════════════════════════
-    std::size_t savedPos = pos_;
-    std::size_t testPos = savedPos;
-    bool isAnonFunc = false;
-
-    // Skip qualifiers (error if present)
-    if (testPos < tokens_.size() && tokens_[testPos].type == TokenType::TILDE) {
-        errorAt(DiagCode::E2002,
-                "anonymous function cannot have qualifiers (e.g., ~async, ~nullable). "
-                "Qualifiers belong on declarations, not values.");
-        while (testPos < tokens_.size() && tokens_[testPos].type == TokenType::TILDE) {
-            ++testPos;
-            if (testPos < tokens_.size() && tokens_[testPos].type == TokenType::IDENTIFIER)
-                ++testPos;
-            while (testPos < tokens_.size() && (tokens_[testPos].type == TokenType::LINE_COMMENT ||
-                                                tokens_[testPos].type == TokenType::DOC_COMMENT))
-                ++testPos;
-        }
+    
+    // 1. ANONYMOUS FUNCTION DETECTION
+    if (looksLikeAnonFunc()) {
+        return parseAnonFuncPipelineStep();
     }
 
-    // Parse parameter groups
-    if (testPos < tokens_.size() && tokens_[testPos].type == TokenType::LPAREN) {
-        auto skipParamGroup = [&](std::size_t& pos) -> bool {
-            if (pos >= tokens_.size() || tokens_[pos].type != TokenType::LPAREN) return false;
-            int parenDepth = 1;
-            ++pos;
-            while (pos < tokens_.size() && parenDepth > 0) {
-                while (pos < tokens_.size() && (tokens_[pos].type == TokenType::LINE_COMMENT ||
-                                                tokens_[pos].type == TokenType::DOC_COMMENT))
-                    ++pos;
-                if (pos >= tokens_.size()) break;
-                TokenType tt = tokens_[pos].type;
-                if (tt == TokenType::LPAREN) ++parenDepth;
-                else if (tt == TokenType::RPAREN) --parenDepth;
-                else if (tt == TokenType::TILDE) {
-                    ++pos;
-                    if (pos < tokens_.size() && tokens_[pos].type == TokenType::IDENTIFIER) ++pos;
-                    continue;
-                }
-                ++pos;
-            }
-            return true;
-        };
-
-        bool hasParamGroups = false;
-        while (testPos < tokens_.size() && tokens_[testPos].type == TokenType::LPAREN) {
-            hasParamGroups = true;
-            if (!skipParamGroup(testPos)) break;
-            while (testPos < tokens_.size() && (tokens_[testPos].type == TokenType::LINE_COMMENT ||
-                                                tokens_[testPos].type == TokenType::DOC_COMMENT))
-                ++testPos;
-        }
-
-        if (hasParamGroups) {
-            // Optional '->' and return type
-            if (testPos < tokens_.size() && tokens_[testPos].type == TokenType::ARROW) {
-                ++testPos;
-                while (testPos < tokens_.size() && (tokens_[testPos].type == TokenType::LINE_COMMENT ||
-                                                    tokens_[testPos].type == TokenType::DOC_COMMENT))
-                    ++testPos;
-                if (testPos < tokens_.size()) {
-                    TokenType retStart = tokens_[testPos].type;
-                    if (isPrimitiveTypeToken(retStart) || retStart == TokenType::IDENTIFIER) {
-                        ++testPos;
-                        if (testPos < tokens_.size() && tokens_[testPos].type == TokenType::LESS) {
-                            int depth = 1;
-                            ++testPos;
-                            while (testPos < tokens_.size() && depth > 0) {
-                                if (tokens_[testPos].type == TokenType::LESS) ++depth;
-                                else if (tokens_[testPos].type == TokenType::GREATER) --depth;
-                                ++testPos;
-                            }
-                        }
-                    }
-                }
-            }
-
-            while (testPos < tokens_.size() && (tokens_[testPos].type == TokenType::LINE_COMMENT ||
-                                                tokens_[testPos].type == TokenType::DOC_COMMENT))
-                ++testPos;
-
-            if (testPos < tokens_.size() && tokens_[testPos].type == TokenType::LBRACE)
-                isAnonFunc = true;
-        }
-    }
-
-    pos_ = savedPos;  // restore position
-
-    if (isAnonFunc) {
-        LUC_LOG_EXPR_VERBOSE("parsePipelineStep: parsing anonymous function");
-        ExprPtr anonFuncExpr = parseAnonFuncExpr();
-        if (!anonFuncExpr || anonFuncExpr->isa<UnknownExprAST>()) {
-            errorAt(DiagCode::E2002, "expected valid anonymous function as pipeline step");
-            // Recover: skip to next pipeline or brace
-            while (!isAtEnd() && !check(TokenType::PIPELINE) && !check(TokenType::RBRACE) &&
-                   !check(TokenType::SEMICOLON))
-                advance();
-            step->kind = PipelineStepKind::Ident;
-            step->ident = pool_.intern("<error>");
-            return step;
-        }
-        step->kind = PipelineStepKind::AnonFunc;
-        step->anonFunc = std::move(anonFuncExpr);
-        return step;
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // 2. OTHER STEP FORMS (identifier‑based)
-    // ═══════════════════════════════════════════════════════════════════════
+    // 2. OTHER STEP FORMS (identifier-based)
     bool isPrimitiveType = Parser::isPrimitiveTypeToken(peek().type);
     if (!check(TokenType::IDENTIFIER) && !isPrimitiveType) {
+        SourceLocation loc = currentLoc();
         errorAt(DiagCode::E2002,
                 "expected function name, method reference, array access, or anonymous function as pipeline step, got '" +
                 peek().value + "'");
+        auto step = arena_.make<PipelineStepAST>();
+        step->loc = loc;
         step->kind = PipelineStepKind::Ident;
         step->ident = pool_.intern("<error>");
         advance();
@@ -1778,203 +1683,254 @@ PipelineStepPtr Parser::parsePipelineStep() {
         name = advance().value;
     }
 
-    // ── Process possible generic arguments ─────────────────────────────────
+    // Process possible generic arguments
     std::vector<TypePtr> genericArgs;
     if (check(TokenType::LESS)) {
         genericArgs = parseGenericArgs();
     }
 
-    // ── Type:method [ (args)! ] ──────────────────────────────────────────
     if (check(TokenType::COLON)) {
-        if (peekNext().type != TokenType::IDENTIFIER) {
-            errorAt(DiagCode::E2003, "expected method name after ':'");
-            step->kind = PipelineStepKind::Ident;
-            step->ident = pool_.intern("<error>");
-            advance();
-            return step;
-        }
-        advance(); // consume ':'
-        std::string method = advance().value;
-
-        if (check(TokenType::LPAREN)) {
-            consume(TokenType::LPAREN, "expected '('");
-            std::vector<ExprPtr> packArgs;
-            if (!check(TokenType::RPAREN)) packArgs = parseArgList();
-            consume(TokenType::RPAREN, "expected ')'");
-            if (!match(TokenType::BANG)) {
-                errorAt(DiagCode::E2001, "expected '!' after arguments for method argument pack");
-                step->kind = PipelineStepKind::Ident;
-                step->ident = pool_.intern("<error>");
-                return step;
-            }
-            step->kind = PipelineStepKind::BehaviorArgPack;
-            step->typeName = pool_.intern(name);
-            step->method = pool_.intern(method);
-            step->packArgs = std::move(packArgs);
-            // genericArgs are not allowed on BehaviorRef – ignore if present
-            if (!genericArgs.empty()) {
-                errorAt(DiagCode::E2002, "generic arguments not allowed on method reference");
-            }
-            return step;
-        }
-
-        step->kind = PipelineStepKind::BehaviorRef;
-        step->typeName = pool_.intern(name);
-        step->method = pool_.intern(method);
-        if (!genericArgs.empty()) {
-            errorAt(DiagCode::E2002, "generic arguments not allowed on method reference");
-        }
-        return step;
+        return parseBehaviorPipelineStep(name, std::move(genericArgs));
     }
-
-    // ── obj.field or obj.field(args)! ────────────────────────────────────────
+    
     if (check(TokenType::DOT)) {
-        if (peekNext().type != TokenType::IDENTIFIER) {
-            errorAt(DiagCode::E2003, "expected field name after '.'");
-            step->kind = PipelineStepKind::Ident;
-            step->ident = pool_.intern("<error>");
-            advance(); // consume '.'
-            return step;
-        }
-        advance(); // consume '.'
-        std::string field = advance().value;
-
-        // Check for argument pack call: (args)!
-        if (check(TokenType::LPAREN)) {
-            consume(TokenType::LPAREN, "expected '('");
-            std::vector<ExprPtr> packArgs;
-            if (!check(TokenType::RPAREN)) {
-                packArgs = parseArgList();
-            }
-            consume(TokenType::RPAREN, "expected ')'");
-            if (!match(TokenType::BANG)) {
-                errorAt(DiagCode::E2001, "expected '!' after arguments for field argument pack");
-                step->kind = PipelineStepKind::Ident;
-                step->ident = pool_.intern("<error>");
-                return step;
-            }
-            step->kind = PipelineStepKind::FieldArgPack;
-            step->ident = pool_.intern(name);
-            step->field = pool_.intern(field);
-            step->packArgs = std::move(packArgs);
-            if (!genericArgs.empty()) {
-                errorAt(DiagCode::E2002, "generic arguments not allowed on field reference");
-            }
-            return step;
-        }
-
-        // Plain field reference (no call)
-        step->kind = PipelineStepKind::FieldRef;
-        step->ident = pool_.intern(name);
-        step->field = pool_.intern(field);
-        if (!genericArgs.empty()) {
-            errorAt(DiagCode::E2002, "generic arguments not allowed on field reference");
-        }
-        return step;
+        return parseFieldPipelineStep(name, std::move(genericArgs));
     }
 
-    // ── Array indexing: arr[0] or arr[0][1]... ────────────────────────────
     if (check(TokenType::LBRACKET)) {
-        auto addIndex = [&](ExprPtr target, ExprPtr idx) -> ExprPtr {
-            auto node = arena_.make<IndexExprAST>();
-            node->target = std::move(target);
-            node->index = std::move(idx);
-            node->kind = IndexKind::Element;
-            return node;
-        };
-
-        ExprPtr indexChain = nullptr;
-        // first bracket
-        advance();
-        ExprPtr idx = parseExpr();
-        if (!idx) {
-            errorAt(DiagCode::E2008, "expected index expression");
-            // skip to matching ']'
-            int bracketDepth = 1;
-            while (!isAtEnd() && bracketDepth > 0) {
-                if (check(TokenType::LBRACKET)) ++bracketDepth;
-                else if (check(TokenType::RBRACKET)) --bracketDepth;
-                advance();
-            }
-            step->kind = PipelineStepKind::Ident;
-            step->ident = pool_.intern("<error>");
-            return step;
-        }
-        consume(TokenType::RBRACKET, "expected ']' after index");
-        ExprPtr base = arena_.make<IdentifierExprAST>(pool_.intern(name));
-        base->loc = loc;
-        indexChain = addIndex(std::move(base), std::move(idx));
-
-        // additional brackets
-        while (check(TokenType::LBRACKET)) {
-            advance();
-            ExprPtr nextIdx = parseExpr();
-            if (!nextIdx) {
-                errorAt(DiagCode::E2008, "expected index expression");
-                int bracketDepth = 1;
-                while (!isAtEnd() && bracketDepth > 0) {
-                    if (check(TokenType::LBRACKET)) ++bracketDepth;
-                    else if (check(TokenType::RBRACKET)) --bracketDepth;
-                    advance();
-                }
-                break;
-            }
-            consume(TokenType::RBRACKET, "expected ']' after index");
-            indexChain = addIndex(std::move(indexChain), std::move(nextIdx));
-        }
-
-        // optional argument pack call
-        if (check(TokenType::LPAREN)) {
-            consume(TokenType::LPAREN, "expected '('");
-            std::vector<ExprPtr> packArgs;
-            if (!check(TokenType::RPAREN)) packArgs = parseArgList();
-            consume(TokenType::RPAREN, "expected ')'");
-            if (!match(TokenType::BANG)) {
-                errorAt(DiagCode::E2001, "expected '!' after arguments for array index argument pack");
-                step->kind = PipelineStepKind::Ident;
-                step->ident = pool_.intern("<error>");
-                return step;
-            }
-            step->kind = PipelineStepKind::IndexArgPack;
-            step->ident = pool_.intern(name);
-            step->index = std::move(indexChain);
-            step->packArgs = std::move(packArgs);
-            return step;
-        }
-
-        if (!genericArgs.empty()) {
-            errorAt(DiagCode::E2002, "generic arguments not allowed on array index step");
-        }
-
-        step->kind = PipelineStepKind::IndexRef;
-        step->ident = pool_.intern(name);
-        step->index = std::move(indexChain);
-        return step;
+        return parseIndexPipelineStep(name, std::move(genericArgs));
     }
 
-    // ── Function call with argument pack (or plain generic function name) ──
+    if (check(TokenType::LPAREN)) {
+        return parseArgPackPipelineStep(name, std::move(genericArgs));
+    }
+
+    // Plain identifier (function reference)
+    SourceLocation loc = currentLoc(); // approximate
+    auto step = arena_.make<PipelineStepAST>();
+    step->loc = loc;
+    step->kind = PipelineStepKind::Ident;
+    step->ident = pool_.intern(name);
+    step->genericArgs = std::move(genericArgs);
+    return step;
+}
+
+PipelineStepPtr Parser::parseAnonFuncPipelineStep() {
+    LUC_LOG_EXPR_VERBOSE("parseAnonFuncPipelineStep");
+    SourceLocation loc = currentLoc();
+    auto step = arena_.make<PipelineStepAST>();
+    step->loc = loc;
+    
+    ExprPtr anonFuncExpr = parseAnonFuncExpr();
+    if (!anonFuncExpr || anonFuncExpr->isa<UnknownExprAST>()) {
+        errorAt(DiagCode::E2002, "expected valid anonymous function as pipeline step");
+        // Recover: skip to next pipeline or brace
+        while (!isAtEnd() && !check(TokenType::PIPELINE) && !check(TokenType::RBRACE) &&
+               !check(TokenType::SEMICOLON))
+            advance();
+        step->kind = PipelineStepKind::Ident;
+        step->ident = pool_.intern("<error>");
+        return step;
+    }
+    step->kind = PipelineStepKind::AnonFunc;
+    step->anonFunc = std::move(anonFuncExpr);
+    return step;
+}
+
+PipelineStepPtr Parser::parseBehaviorPipelineStep(const std::string& typeName, std::vector<TypePtr> genericArgs) {
+    LUC_LOG_EXPR_VERBOSE("parseBehaviorPipelineStep: " << typeName);
+    SourceLocation loc = currentLoc();
+    auto step = arena_.make<PipelineStepAST>();
+    step->loc = loc;
+
+    if (peekNext().type != TokenType::IDENTIFIER) {
+        errorAt(DiagCode::E2003, "expected method name after ':'");
+        step->kind = PipelineStepKind::Ident;
+        step->ident = pool_.intern("<error>");
+        advance(); // consume ':'
+        return step;
+    }
+    advance(); // consume ':'
+    std::string method = advance().value;
+
     if (check(TokenType::LPAREN)) {
         consume(TokenType::LPAREN, "expected '('");
         std::vector<ExprPtr> packArgs;
         if (!check(TokenType::RPAREN)) packArgs = parseArgList();
         consume(TokenType::RPAREN, "expected ')'");
         if (!match(TokenType::BANG)) {
-            errorAt(DiagCode::E2001, "expected '!' after arguments for function argument pack");
+            errorAt(DiagCode::E2001, "expected '!' after arguments for method argument pack");
             step->kind = PipelineStepKind::Ident;
             step->ident = pool_.intern("<error>");
             return step;
         }
-        step->kind = PipelineStepKind::ArgPack;
-        step->ident = pool_.intern(name);
-        step->genericArgs = std::move(genericArgs);
+        step->kind = PipelineStepKind::BehaviorArgPack;
+        step->typeName = pool_.intern(typeName);
+        step->method = pool_.intern(method);
+        step->packArgs = std::move(packArgs);
+        if (!genericArgs.empty()) {
+            errorAt(DiagCode::E2002, "generic arguments not allowed on method reference");
+        }
+        return step;
+    }
+
+    step->kind = PipelineStepKind::BehaviorRef;
+    step->typeName = pool_.intern(typeName);
+    step->method = pool_.intern(method);
+    if (!genericArgs.empty()) {
+        errorAt(DiagCode::E2002, "generic arguments not allowed on method reference");
+    }
+    return step;
+}
+
+PipelineStepPtr Parser::parseFieldPipelineStep(const std::string& ident, std::vector<TypePtr> genericArgs) {
+    LUC_LOG_EXPR_VERBOSE("parseFieldPipelineStep: " << ident);
+    SourceLocation loc = currentLoc();
+    auto step = arena_.make<PipelineStepAST>();
+    step->loc = loc;
+
+    if (peekNext().type != TokenType::IDENTIFIER) {
+        errorAt(DiagCode::E2003, "expected field name after '.'");
+        step->kind = PipelineStepKind::Ident;
+        step->ident = pool_.intern("<error>");
+        advance(); // consume '.'
+        return step;
+    }
+    advance(); // consume '.'
+    std::string field = advance().value;
+
+    if (check(TokenType::LPAREN)) {
+        consume(TokenType::LPAREN, "expected '('");
+        std::vector<ExprPtr> packArgs;
+        if (!check(TokenType::RPAREN)) packArgs = parseArgList();
+        consume(TokenType::RPAREN, "expected ')'");
+        if (!match(TokenType::BANG)) {
+            errorAt(DiagCode::E2001, "expected '!' after arguments for field argument pack");
+            step->kind = PipelineStepKind::Ident;
+            step->ident = pool_.intern("<error>");
+            return step;
+        }
+        step->kind = PipelineStepKind::FieldArgPack;
+        step->ident = pool_.intern(ident);
+        step->field = pool_.intern(field);
+        step->packArgs = std::move(packArgs);
+        if (!genericArgs.empty()) {
+            errorAt(DiagCode::E2002, "generic arguments not allowed on field reference");
+        }
+        return step;
+    }
+
+    step->kind = PipelineStepKind::FieldRef;
+    step->ident = pool_.intern(ident);
+    step->field = pool_.intern(field);
+    if (!genericArgs.empty()) {
+        errorAt(DiagCode::E2002, "generic arguments not allowed on field reference");
+    }
+    return step;
+}
+
+PipelineStepPtr Parser::parseIndexPipelineStep(const std::string& ident, std::vector<TypePtr> genericArgs) {
+    LUC_LOG_EXPR_VERBOSE("parseIndexPipelineStep: " << ident);
+    SourceLocation loc = currentLoc();
+    auto step = arena_.make<PipelineStepAST>();
+    step->loc = loc;
+
+    auto addIndex = [&](ExprPtr target, ExprPtr idx) -> ExprPtr {
+        auto node = arena_.make<IndexExprAST>();
+        node->target = std::move(target);
+        node->index = std::move(idx);
+        node->kind = IndexKind::Element;
+        return node;
+    };
+
+    ExprPtr indexChain = nullptr;
+    advance(); // consume '['
+    ExprPtr idx = parseExpr();
+    if (!idx) {
+        errorAt(DiagCode::E2008, "expected index expression");
+        int bracketDepth = 1;
+        while (!isAtEnd() && bracketDepth > 0) {
+            if (check(TokenType::LBRACKET)) ++bracketDepth;
+            else if (check(TokenType::RBRACKET)) --bracketDepth;
+            advance();
+        }
+        step->kind = PipelineStepKind::Ident;
+        step->ident = pool_.intern("<error>");
+        return step;
+    }
+    consume(TokenType::RBRACKET, "expected ']' after index");
+    
+    auto baseIdent = arena_.make<IdentifierExprAST>(pool_.intern(ident));
+    baseIdent->loc = loc;
+    indexChain = addIndex(std::move(baseIdent), std::move(idx));
+
+    while (check(TokenType::LBRACKET)) {
+        advance();
+        ExprPtr nextIdx = parseExpr();
+        if (!nextIdx) {
+            errorAt(DiagCode::E2008, "expected index expression");
+            int bracketDepth = 1;
+            while (!isAtEnd() && bracketDepth > 0) {
+                if (check(TokenType::LBRACKET)) ++bracketDepth;
+                else if (check(TokenType::RBRACKET)) --bracketDepth;
+                advance();
+            }
+            break;
+        }
+        consume(TokenType::RBRACKET, "expected ']' after index");
+        indexChain = addIndex(std::move(indexChain), std::move(nextIdx));
+    }
+
+    if (check(TokenType::LPAREN)) {
+        consume(TokenType::LPAREN, "expected '('");
+        std::vector<ExprPtr> packArgs;
+        if (!check(TokenType::RPAREN)) packArgs = parseArgList();
+        consume(TokenType::RPAREN, "expected ')'");
+        if (!match(TokenType::BANG)) {
+            errorAt(DiagCode::E2001, "expected '!' after arguments for array index argument pack");
+            step->kind = PipelineStepKind::Ident;
+            step->ident = pool_.intern("<error>");
+            return step;
+        }
+        step->kind = PipelineStepKind::IndexArgPack;
+        step->ident = pool_.intern(ident);
+        step->index = std::move(indexChain);
         step->packArgs = std::move(packArgs);
         return step;
     }
 
-    // ── Plain identifier (function reference) with optional generic arguments ──
-    step->kind = PipelineStepKind::Ident;
-    step->ident = pool_.intern(name);
+    if (!genericArgs.empty()) {
+        errorAt(DiagCode::E2002, "generic arguments not allowed on array index step");
+    }
+
+    step->kind = PipelineStepKind::IndexRef;
+    step->ident = pool_.intern(ident);
+    step->index = std::move(indexChain);
+    return step;
+}
+
+PipelineStepPtr Parser::parseArgPackPipelineStep(const std::string& ident, std::vector<TypePtr> genericArgs) {
+    LUC_LOG_EXPR_VERBOSE("parseArgPackPipelineStep: " << ident);
+    SourceLocation loc = currentLoc();
+    auto step = arena_.make<PipelineStepAST>();
+    step->loc = loc;
+
+    consume(TokenType::LPAREN, "expected '('");
+    std::vector<ExprPtr> packArgs;
+    if (!check(TokenType::RPAREN)) packArgs = parseArgList();
+    consume(TokenType::RPAREN, "expected ')'");
+    
+    if (!match(TokenType::BANG)) {
+        errorAt(DiagCode::E2001, "expected '!' after arguments for function argument pack");
+        step->kind = PipelineStepKind::Ident;
+        step->ident = pool_.intern("<error>");
+        return step;
+    }
+    
+    step->kind = PipelineStepKind::ArgPack;
+    step->ident = pool_.intern(ident);
     step->genericArgs = std::move(genericArgs);
+    step->packArgs = std::move(packArgs);
     return step;
 }
 

@@ -180,75 +180,73 @@ AttributePtr Parser::parseAttribute() {
             if (check(TokenType::RPAREN)) break;
 
             std::size_t savedPos = pos_;
-            SourceLocation argLoc = currentLoc();
-
-            if (check(TokenType::STRING_LITERAL)) {
-                std::string raw = advance().value;
-                auto arg = arena_.make<AttributeArgAST>(
-                    AttributeArgKind::StringLit,
-                    pool_.intern(raw)
-                );
-                arg->loc = argLoc;
+            AttributeArgPtr arg = parseAttributeArgLiteral();
+            if (arg) {
                 attr->args.push_back(std::move(arg));
-            }
-            else if (checkAny({TokenType::INT_LITERAL, TokenType::HEX_LITERAL,
-                            TokenType::BINARY_LITERAL})) {
-                std::string raw = advance().value;
-                auto arg = arena_.make<AttributeArgAST>(
-                    AttributeArgKind::IntLit,
-                    pool_.intern(raw)
-                );
-                arg->loc = argLoc;
-                attr->args.push_back(std::move(arg));
-            }
-            else if (check(TokenType::TRUE)) {
-                advance();
-                auto arg = arena_.make<AttributeArgAST>(
-                    AttributeArgKind::BoolLit,
-                    pool_.intern("true")
-                );
-                arg->loc = argLoc;
-                attr->args.push_back(std::move(arg));
-            }
-            else if (check(TokenType::FALSE)) {
-                advance();
-                auto arg = arena_.make<AttributeArgAST>(
-                    AttributeArgKind::BoolLit,
-                    pool_.intern("false")
-                );
-                arg->loc = argLoc;
-                attr->args.push_back(std::move(arg));
-            }
-            else if (check(TokenType::IDENTIFIER)) {
-                // Type identifier: @sizeof(Vec2), @extern("sym", "C")
-                std::string raw = advance().value;
-                auto arg = arena_.make<AttributeArgAST>(
-                    AttributeArgKind::TypeIdent,
-                    pool_.intern(raw)
-                );
-                arg->loc = argLoc;
-                attr->args.push_back(std::move(arg));
-            }
-            else {
-                errorAt(DiagCode::E2009,
-                        "attribute argument must be a string, integer, boolean, or type name");
-                // Skip to closing parenthesis for recovery
-                while (!check(TokenType::RPAREN) && !isAtEnd()) advance();
-                break;
-            }
-
-            // Ensure progress was made
-            if (pos_ == savedPos) {
-                errorAt(DiagCode::E2009, "invalid attribute argument – no progress");
-                // consume the offending token to avoid infinite loop
-                if (!isAtEnd()) advance();
-                break;
+            } else {
+                if (pos_ == savedPos) {
+                    errorAt(DiagCode::E2002, "unexpected token in attribute arguments: '" + peek().value + "'");
+                    advance();
+                }
             }
         }
-        consume(TokenType::RPAREN, "expected ')' to close attribute argument list");
+        consume(TokenType::RPAREN, DiagCode::E2001, "expected ')' to close attribute argument list");
     }
 
     return attr;
+}
+
+AttributeArgPtr Parser::parseAttributeArgLiteral() {
+    SourceLocation loc = currentLoc();
+
+    if (check(TokenType::STRING_LITERAL)) {
+        auto arg = arena_.make<AttributeArgAST>(
+            AttributeArgKind::StringLit,
+            pool_.intern(advance().value)
+        );
+        arg->loc = loc;
+        return arg;
+    }
+
+    if (checkAny({TokenType::INT_LITERAL, TokenType::HEX_LITERAL, TokenType::BINARY_LITERAL})) {
+        auto arg = arena_.make<AttributeArgAST>(
+            AttributeArgKind::IntLit,
+            pool_.intern(advance().value)
+        );
+        arg->loc = loc;
+        return arg;
+    }
+
+    if (check(TokenType::TRUE)) {
+        advance();
+        auto arg = arena_.make<AttributeArgAST>(
+            AttributeArgKind::BoolLit,
+            pool_.intern("true")
+        );
+        arg->loc = loc;
+        return arg;
+    }
+
+    if (check(TokenType::FALSE)) {
+        advance();
+        auto arg = arena_.make<AttributeArgAST>(
+            AttributeArgKind::BoolLit,
+            pool_.intern("false")
+        );
+        arg->loc = loc;
+        return arg;
+    }
+
+    if (check(TokenType::IDENTIFIER)) {
+        auto arg = arena_.make<AttributeArgAST>(
+            AttributeArgKind::TypeIdent,
+            pool_.intern(advance().value)
+        );
+        arg->loc = loc;
+        return arg;
+    }
+
+    return nullptr;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -601,11 +599,19 @@ ASTPtr<StructDeclAST> Parser::parseStructDecl(Visibility vis) {
         // Harvest trailing/stacked doc comment for the field
         std::optional<DocComment> fdoc = harvestDocComment();
 
+        // Save position for error recovery
+        std::size_t savedPos = pos_;
+
         FieldDeclPtr field = parseFieldDecl();
         if (field) {
             attachDoc(*field, std::move(fdoc));
             node->fields.push_back(std::move(field));
         } else {
+            // If we didn't advance, manually advance to avoid infinite loop
+            if (pos_ == savedPos) {
+                LUC_LOG_PARSER("parseStructDecl: parser didn't advance, forcing advance");
+                advance();
+            }
             synchronize();
         }
     }
@@ -685,11 +691,17 @@ ASTPtr<EnumDeclAST> Parser::parseEnumDecl(Visibility vis) {
 
         std::optional<DocComment> vdoc = harvestDocComment();
 
+        std::size_t savedPos = pos_;
+
         EnumVariantPtr variant = parseEnumVariant();
         if (variant) {
             attachDoc(*variant, std::move(vdoc));
             node->variants.push_back(std::move(variant));
         } else {
+            if (pos_ == savedPos) {
+                LUC_LOG_PARSER("parseEnumDecl: parser didn't advance, forcing advance");
+                advance();
+            }
             synchronize();
         }
     }
@@ -786,11 +798,17 @@ ASTPtr<TraitDeclAST> Parser::parseTraitDecl(Visibility vis) {
 
         std::optional<DocComment> mdoc = harvestDocComment();
 
+        std::size_t savedPos = pos_;
+
         TraitMethodPtr method = parseTraitMethod();
         if (method) {
             attachDoc(*method, std::move(mdoc));
             node->methods.push_back(std::move(method));
         } else {
+            if (pos_ == savedPos) {
+                LUC_LOG_PARSER("parseTraitDecl: parser didn't advance, forcing advance");
+                advance();
+            }
             synchronize();
         }
     }
@@ -934,6 +952,7 @@ ASTPtr<ImplDeclAST> Parser::parseImplDecl(Visibility vis) {
             break;
 
         std::optional<DocComment> mdoc = harvestDocComment();
+        std::size_t savedPos = pos_;
 
         // method_decl — regular method body
         if (check(TokenType::IDENTIFIER)) {
@@ -942,6 +961,7 @@ ASTPtr<ImplDeclAST> Parser::parseImplDecl(Visibility vis) {
                 attachDoc(*md, std::move(mdoc));
                 node->methods.push_back(std::move(md));
             } else {
+                if (pos_ == savedPos) advance();
                 synchronize();
             }
             continue;
@@ -949,6 +969,7 @@ ASTPtr<ImplDeclAST> Parser::parseImplDecl(Visibility vis) {
 
         // Unrecognised token inside impl block
         errorAt(DiagCode::E2002, "expected method declaration inside impl block");
+        if (pos_ == savedPos) advance();
         synchronize();
     }
 
@@ -1159,9 +1180,12 @@ ASTPtr<FromDeclAST> Parser::parseFromDecl(Visibility vis) {
 
         SourceLocation entryLoc = currentLoc();
 
+        std::size_t entrySavedPos = pos_;
+
         // Parse one or more parameter groups
         if (!check(TokenType::LPAREN)) {
             errorAt(DiagCode::E2001, "expected '(' to start parameter list for conversion entry");
+            if (pos_ == entrySavedPos) advance();
             synchronize();
             if (looksLikeDeclStart() || check(TokenType::RBRACE))
                 break;
@@ -1172,7 +1196,9 @@ ASTPtr<FromDeclAST> Parser::parseFromDecl(Visibility vis) {
         entry->loc = entryLoc;
 
         while (check(TokenType::LPAREN)) {
+            std::size_t groupSavedPos = pos_;
             entry->sig.paramGroups.push_back(parseParamGroup());
+            if (pos_ == groupSavedPos) break; // emergency break
         }
 
         consume(TokenType::ARROW, "expected '->' before return type for conversion entry, found: " + peek().value);

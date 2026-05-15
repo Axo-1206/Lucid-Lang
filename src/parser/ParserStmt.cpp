@@ -42,21 +42,27 @@ StmtPtr Parser::parseStmt() {
         std::size_t savedPos = pos_;
         // Tentatively parse the first variable spec to check for a comma
         advance(); // consume keyword
+        skipComments(pos_);
         bool hasIdentifier = check(TokenType::IDENTIFIER);
         if (hasIdentifier) advance(); // consume identifier
-        bool hasType = looksLikeType();
-        TypePtr dummy = nullptr;
-        if (hasType) {
-            dummy = parseType();
-            if (!dummy) hasType = false;
+        
+        bool hasType = false;
+        if (looksLikeType()) {
+            std::size_t typePos = pos_;
+            if (skipType(typePos)) {
+                hasType = true;
+                // Move pos_ to after the type for the next check
+                std::size_t nextPos = typePos;
+                skipComments(nextPos);
+                bool nextIsComma = (nextPos < tokens_.size() && tokens_[nextPos].type == TokenType::COMMA);
+                
+                if (hasIdentifier && hasType && nextIsComma) {
+                    pos_ = savedPos; // restore for multi-var parser
+                    return parseMultiVarDecl();
+                }
+            }
         }
-        bool nextIsComma = check(TokenType::COMMA);
         pos_ = savedPos; // restore position
-
-        if (hasIdentifier && hasType && nextIsComma) {
-            // It's a multi‑variable declaration
-            return parseMultiVarDecl();   // already returns StmtPtr
-        }
         // Otherwise fall through to single declaration (handled below)
     }
 
@@ -336,27 +342,28 @@ ASTPtr<BlockStmtAST> Parser::parseBlock() {
     while (!check(TokenType::RBRACE) && !isAtEnd()) {
         if (match(TokenType::SEMICOLON)) continue;
 
-        // Save position for error recovery
         std::size_t savedPos = pos_;
-        
         StmtPtr stmt = parseStmt();
+
+        // If parseStmt made no progress, force consumption of one token
+        if (pos_ == savedPos) {
+            LUC_LOG_STMT("parseBlock: no progress, forcing advance");
+            if (!isAtEnd()) {
+                advance(); // consume the offending token
+            }
+            // Skip any subsequent semicolons that might cause another stall
+            while (match(TokenType::SEMICOLON)) {}
+            continue; // do not push a statement
+        }
+
+        // Progress was made; if the statement is valid, add it
         if (stmt) {
             block->stmts.push_back(std::move(stmt));
             stmtCount++;
-        } else {
-            // If we didn't advance, manually advance to avoid infinite loop
-            if (pos_ == savedPos) {
-                LUC_LOG_STMT("parseBlock: parser didn't advance, forcing advance");
-                advance();
-            }
-            
-            if (!check(TokenType::RBRACE) && !isAtEnd()) {
-                synchronize();
-            }
         }
+        // If stmt is nullptr, an error was already reported; skip it
     }
 
-    LUC_LOG_STMT_VERBOSE("parseBlock: consuming '}', current token='" << peek().value << "'");
     consume(TokenType::RBRACE, "expected '}' to close block");
     LUC_LOG_STMT("parseBlock: parsed " << stmtCount << " statements");
     return block;
@@ -529,48 +536,67 @@ ASTPtr<SwitchStmtAST> Parser::parseSwitchStmt() {
 SwitchCasePtr Parser::parseSwitchCase() {
     LUC_LOG_STMT_VERBOSE("parseSwitchCase");
     SourceLocation loc = currentLoc();
-    consume(TokenType::CASE, "expected 'case', found: " + peek().value);
+    consume(TokenType::CASE, "expected 'case'");
 
     auto sc = arena_.make<SwitchCaseAST>();
     sc->loc = loc;
 
-    // Parse the first value (required unless colon follows immediately)
+    int consecutiveErrors = 0;
+    const int MAX_CONSECUTIVE_ERRORS = 5;
+
+    // Parse the first value
     if (check(TokenType::COLON)) {
-        errorAt(DiagCode::E2001, "expected case value before ':', found: " + peek().value);
+        errorAt(DiagCode::E2001, "expected case value before ':'");
     } else {
         std::size_t savedPos = pos_;
         ExprPtr val = parsePrattExpr(0);
         if (pos_ == savedPos) {
-            errorAt(DiagCode::E2002, "expected case value, found: " + peek().value);
-            if (!isAtEnd()) advance(); // consume the offending token to avoid infinite loop
-        } else if (val) {  // val is always non-null, but keep the guard
+            errorAt(DiagCode::E2002, "expected case value");
+            if (!isAtEnd()) advance();
+            consecutiveErrors++;
+        } else if (val && !val->isa<UnknownExprAST>()) {
             if (check(TokenType::RANGE)) {
                 sc->values.push_back(parseRangeExpr(std::move(val)));
             } else {
                 sc->values.push_back(std::move(val));
             }
+            consecutiveErrors = 0;
+        } else {
+            // Invalid value but progress was made; skip it without adding
+            consecutiveErrors++;
         }
     }
 
     // Parse additional comma‑separated values
-    while (check(TokenType::COMMA)) {
+    while (check(TokenType::COMMA) && consecutiveErrors < MAX_CONSECUTIVE_ERRORS) {
         advance(); // consume ','
         if (check(TokenType::COLON)) break; // trailing comma allowed
 
         std::size_t savedPos = pos_;
         ExprPtr val = parsePrattExpr(0);
         if (pos_ == savedPos) {
-            // No progress – skip the token and break to avoid infinite loop
-            errorAt(DiagCode::E2002, "expected case value after comma, found: " + peek().value);
-            advance(); // consume the offending token to recover
-            break;
+            errorAt(DiagCode::E2002, "expected case value after comma");
+            if (!isAtEnd()) advance();
+            consecutiveErrors++;
+            break; // exit loop to avoid infinite repetition
         }
-        if (val) {
+        if (val && !val->isa<UnknownExprAST>()) {
             if (check(TokenType::RANGE)) {
                 sc->values.push_back(parseRangeExpr(std::move(val)));
             } else {
                 sc->values.push_back(std::move(val));
             }
+            consecutiveErrors = 0;
+        } else {
+            consecutiveErrors++;
+        }
+    }
+
+    // If we exited due to too many errors, skip to the colon
+    if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+        errorAt(DiagCode::E2002, "too many errors in case values; skipping to ':'");
+        while (!isAtEnd() && !check(TokenType::COLON)) {
+            advance();
         }
     }
 

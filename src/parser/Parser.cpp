@@ -158,6 +158,37 @@ SourceLocation Parser::locOf(const Token &tok) const {
     return sl;
 }
 
+bool Parser::isPrimitiveTypeToken(TokenType type) {
+    switch (type) {
+        case TokenType::TYPE_BOOL:
+        case TokenType::TYPE_BYTE:
+        case TokenType::TYPE_SHORT:
+        case TokenType::TYPE_INT:
+        case TokenType::TYPE_LONG:
+        case TokenType::TYPE_UBYTE:
+        case TokenType::TYPE_USHORT:
+        case TokenType::TYPE_UINT:
+        case TokenType::TYPE_ULONG:
+        case TokenType::TYPE_INT8:
+        case TokenType::TYPE_INT16:
+        case TokenType::TYPE_INT32:
+        case TokenType::TYPE_INT64:
+        case TokenType::TYPE_UINT8:
+        case TokenType::TYPE_UINT16:
+        case TokenType::TYPE_UINT32:
+        case TokenType::TYPE_UINT64:
+        case TokenType::TYPE_FLOAT:
+        case TokenType::TYPE_DOUBLE:
+        case TokenType::TYPE_DECIMAL:
+        case TokenType::TYPE_STRING:
+        case TokenType::TYPE_CHAR:
+        case TokenType::TYPE_ANY:
+            return true;
+        default:
+            return false;
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Error handling & recovery
 // ─────────────────────────────────────────────────────────────────────────────
@@ -305,78 +336,109 @@ std::vector<ASTPtr<ParamAST>> Parser::parseParamGroup() {
 // parseReturnList
 //
 // Grammar:
-//   return_list := '(' [ type { ',' type } ] ')'   -- multiple returns
-//                | type                            -- single return
+//   return_list := '(' [ return_type { ',' return_type } ] ')'   -- multiple returns
+//                | return_type                                    -- single return
+//
+//   return_type := type
+//                | param_group { param_group } [ '->' return_list ]   -- function type
 //
 // Called after encountering '->' in a function signature or anon‑func body.
-// Returns a vector of TypePtr, one per return value. Empty vector indicates
+// Returns a vector of TypePtr, one per return value. An empty vector indicates
 // a void function (no '->' present in the calling context).
 //
-// Note: When a single return type is a function type that begins with (, 
-// the parentheses are not interpreted as a multiple‑return list.
-// The parser distinguishes based on the content inside the parentheses.
-// For example, -> (x int) -> int is a single function type,
-// while -> (int, string) is a multiple return.
+// The parser distinguishes three cases:
+//
+// 1. Single return type without parentheses
+//    Example: -> int
+//    Directly parses the type and returns a vector with one element.
+//
+// 2. Function type (single return) – parentheses belong to the function type
+//    Examples:
+//      -> (x int) -> int          -- one parameter, returns int
+//      -> () -> int               -- zero parameters, returns int
+//      -> ()                      -- zero parameters, returns void
+//    Detection:
+//      - Empty parentheses "()" always indicate a function type (zero params).
+//      - Parentheses containing an identifier followed by a type start
+//        (primitive, identifier, '[', '&', '*', '(') indicate a function type.
+//    Action: calls parseFuncType() to consume the entire function type and
+//            returns a vector with the resulting FuncTypeAST.
+//
+// 3. Multi‑return list – parentheses group a comma‑separated list of return types
+//    Examples:
+//      -> (int)                   -- single element, still a multi‑return list
+//      -> (int, string)           -- two elements
+//      -> (T)                     -- T is a type alias (identifier not followed by type)
+//      -> ((x int) -> int, string) -- first element is a nested function type
+//    Detection: any parentheses that are not matched by case 2 fall here.
+//    Action: consumes the '(' then parses a comma‑separated sequence of types
+//            until the matching ')', pushing each type onto the result vector.
+//
+// Note: Empty parentheses without a following '->' are still a valid function
+//       type (zero‑parameter void function). The grammar does not allow an
+//       empty multi‑return list, so no ambiguity exists.
 // ─────────────────────────────────────────────────────────────────────────────
 std::vector<TypePtr> Parser::parseReturnList() {
+    // Lambda to check if a token type can start a type
+    auto isTypeStart = [](TokenType tt) -> bool {
+        return Parser::isPrimitiveTypeToken(tt) ||
+               tt == TokenType::IDENTIFIER ||
+               tt == TokenType::LBRACKET ||
+               tt == TokenType::AMPERSAND ||
+               tt == TokenType::MUL ||
+               tt == TokenType::LPAREN;
+    };
+
     std::vector<TypePtr> types;
 
-    // Single return that is a function type starting with '(' ?
-    if (check(TokenType::LPAREN)) {
-        TokenType next = peekNext().type;
-        // Case 1: '(' IDENTIFIER type... → function type parameter
-        if (next == TokenType::IDENTIFIER) {
-            TokenType next2 = peekAt(2).type;
-            if (isPrimitiveTypeToken(next2) || next2 == TokenType::IDENTIFIER ||
-                next2 == TokenType::LBRACKET || next2 == TokenType::AMPERSAND ||
-                next2 == TokenType::MUL || next2 == TokenType::LPAREN) {
-                // Looks like a parameter: IDENTIFIER type -> parse as function type
-                TypePtr funcType = parseFuncType();
-                if (funcType && !funcType->isa<UnknownTypeAST>()) {
-                    types.push_back(std::move(funcType));
-                    return types;
-                }
-            }
-        }
-        // Case 2: '(' ')' '->' → function type with no parameters
-        else if (next == TokenType::RPAREN) {
-            TokenType next2 = peekAt(2).type;
-            if (next2 == TokenType::ARROW) {
-                TypePtr funcType = parseFuncType();
-                if (funcType && !funcType->isa<UnknownTypeAST>()) {
-                    types.push_back(std::move(funcType));
-                    return types;
-                }
-            }
-        }
-
-        // Otherwise, parse as parenthesised multiple‑return list: ( type, type, ... )
-        advance(); // consume '('
-        while (!check(TokenType::RPAREN) && !isAtEnd()) {
-            match(TokenType::COMMA);
-            if (check(TokenType::RPAREN)) break;
-
-            std::size_t savedPos = pos_;
-            TypePtr t = parseType();
-            if (pos_ == savedPos) {
-                errorAt(DiagCode::E2005, "expected return type in parenthesised list");
-                while (!check(TokenType::RPAREN) && !isAtEnd()) advance();
-                break;
-            }
-            if (t) types.push_back(std::move(t));
-        }
-        consume(TokenType::RPAREN, DiagCode::E2001, "expected ')' to close return type list");
+    // No parentheses → single return type
+    if (!check(TokenType::LPAREN)) {
+        TypePtr t = parseType();
+        if (t && !t->isa<UnknownTypeAST>())
+            types.push_back(std::move(t));
         return types;
     }
 
-    // Single return (not starting with '(')
-    std::size_t savedPos = pos_;
-    TypePtr t = parseType();
-    if (pos_ == savedPos) {
-        errorAt(DiagCode::E2005, "expected return type after '->'");
-    } else if (t) {
-        types.push_back(std::move(t));
+    // Peek inside the parentheses without consuming them
+    std::size_t lookahead = pos_ + 1;
+    skipComments(lookahead);
+    if (lookahead >= tokens_.size()) {
+        errorAt(DiagCode::E2002, "unexpected end of file after '('");
+        return types;
     }
+
+    TokenType afterParen = tokens_[lookahead].type;
+
+    // Case: empty parentheses "()" → zero‑parameter function type
+    if (afterParen == TokenType::RPAREN) {
+        TypePtr funcType = parseFuncType();
+        if (funcType && !funcType->isa<UnknownTypeAST>())
+            types.push_back(std::move(funcType));
+        return types;
+    }
+
+    // Case: identifier followed by a type start → function type
+    if (afterParen == TokenType::IDENTIFIER) {
+        std::size_t afterIdent = lookahead + 1;
+        skipComments(afterIdent);
+        if (afterIdent < tokens_.size() && isTypeStart(tokens_[afterIdent].type)) {
+            TypePtr funcType = parseFuncType();
+            if (funcType && !funcType->isa<UnknownTypeAST>())
+                types.push_back(std::move(funcType));
+            return types;
+        }
+    }
+
+    // Otherwise: parenthesised multi‑return list
+    advance(); // consume '('
+    while (!check(TokenType::RPAREN) && !isAtEnd()) {
+        match(TokenType::COMMA);
+        if (check(TokenType::RPAREN)) break;
+        TypePtr t = parseType();
+        if (t && !t->isa<UnknownTypeAST>())
+            types.push_back(std::move(t));
+    }
+    consume(TokenType::RPAREN, DiagCode::E2001, "expected ')' to close return type list");
     return types;
 }
 
@@ -397,6 +459,8 @@ std::vector<TypePtr> Parser::parseReturnList() {
 std::vector<GenericParamPtr> Parser::parseGenericParams() {
     LUC_LOG_PARSER_VERBOSE("parseGenericParams: starting");
     std::vector<GenericParamPtr> params;
+    int consecutiveErrors = 0;
+    const int MAX_CONSECUTIVE_ERRORS = 5;
 
     consume(TokenType::LESS, "expected '<' to open generic parameters");
 
@@ -411,24 +475,40 @@ std::vector<GenericParamPtr> Parser::parseGenericParams() {
         if (check(TokenType::GREATER))
             break;
 
-        // Record position before parsing the generic parameter
+        // Safety: too many errors → skip to '>'
+        if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+            errorAt(DiagCode::E2002, "too many consecutive errors in generic parameters; skipping to '>'");
+            while (!isAtEnd() && !check(TokenType::GREATER)) {
+                advance();
+            }
+            stalled = true; // we will break after consuming '>'
+            break;
+        }
+
         std::size_t savedPos = pos_;
         GenericParamPtr gp = parseGenericParam();
 
         if (!gp) {
             if (pos_ == savedPos) {
+                // No progress: consume one token to avoid infinite loop
                 errorAt(DiagCode::E2002, "expected generic parameter, skipping token '" + peek().value + "'");
-                advance(); // consume the unexpected token to avoid infinite loop
+                if (!isAtEnd()) advance();
+                consecutiveErrors++;
                 stalled = true;
-                break;      // exit loop early to avoid cascading errors
+                break;
+            } else {
+                // Progress was made but parsing failed (e.g., invalid constraint)
+                consecutiveErrors++;
+                // Do not push anything; continue to next parameter
+                continue;
             }
-            // Continue to next iteration (loop condition will be re-evaluated)
-            continue;
         }
 
+        // Successfully parsed a generic parameter
         params.push_back(std::move(gp));
+        consecutiveErrors = 0; // reset error counter on success
 
-    } while (!check(TokenType::GREATER) && !isAtEnd());
+    } while (!check(TokenType::GREATER) && !isAtEnd() && !stalled);
 
     // If we stalled, we might not be at GREATER. Skip to it or to end.
     if (stalled) {
@@ -607,6 +687,115 @@ std::optional<DocComment> Parser::harvestDocComment() {
 // Disambiguation helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
+void Parser::skipComments(std::size_t& i) const {
+    while (i < tokens_.size() &&
+           (tokens_[i].type == TokenType::LINE_COMMENT ||
+            tokens_[i].type == TokenType::DOC_COMMENT)) {
+        ++i;
+    }
+}
+
+bool Parser::skipType(std::size_t& i) const {
+    skipComments(i);
+    if (i >= tokens_.size()) return false;
+
+    // Skip qualifiers: ~async, ~noinline, etc.
+    while (i < tokens_.size() && tokens_[i].type == TokenType::TILDE) {
+        ++i;
+        skipComments(i);
+        if (i < tokens_.size() && tokens_[i].type == TokenType::IDENTIFIER) {
+            ++i;
+            skipComments(i);
+        } else {
+            return false;
+        }
+    }
+
+    if (i >= tokens_.size()) return false;
+
+    TokenType tt = tokens_[i].type;
+    if (isPrimitiveTypeToken(tt)) {
+        ++i;
+    } else if (tt == TokenType::IDENTIFIER) {
+        ++i;
+        skipComments(i);
+        // Generic args? < T, U >
+        if (i < tokens_.size() && tokens_[i].type == TokenType::LESS) {
+            int depth = 1;
+            ++i;
+            while (i < tokens_.size() && depth > 0) {
+                TokenType innerT = tokens_[i].type;
+                if (innerT == TokenType::LESS) ++depth;
+                else if (innerT == TokenType::GREATER) --depth;
+                else if (innerT == TokenType::SEMICOLON || innerT == TokenType::RBRACE) return false;
+                ++i;
+            }
+            if (depth > 0) return false;
+        }
+    } else if (tt == TokenType::LBRACKET) {
+        ++i;
+        skipComments(i);
+        // [N] or [] or [*]
+        if (i < tokens_.size() && (tokens_[i].type == TokenType::INT_LITERAL || tokens_[i].type == TokenType::MUL)) {
+            ++i;
+            skipComments(i);
+        }
+        if (i < tokens_.size() && tokens_[i].type == TokenType::RBRACKET) {
+            ++i;
+            if (!skipType(i)) return false;
+        } else {
+            return false;
+        }
+    } else if (tt == TokenType::AMPERSAND || tt == TokenType::MUL) {
+        ++i;
+        if (!skipType(i)) return false;
+    } else if (tt == TokenType::LPAREN) {
+        // Function type: (params) -> ret
+        int parenDepth = 1;
+        ++i;
+        while (i < tokens_.size() && parenDepth > 0) {
+            TokenType innerT = tokens_[i].type;
+            if (innerT == TokenType::LPAREN) ++parenDepth;
+            else if (innerT == TokenType::RPAREN) --parenDepth;
+            else if (innerT == TokenType::SEMICOLON || innerT == TokenType::RBRACE) return false;
+            ++i;
+        }
+        if (parenDepth > 0) return false;
+        
+        skipComments(i);
+        // Optional return type
+        if (i < tokens_.size() && tokens_[i].type == TokenType::ARROW) {
+            ++i;
+            skipComments(i);
+            // return list can be (T, U) or T
+            if (i < tokens_.size() && tokens_[i].type == TokenType::LPAREN) {
+                int pDepth = 1;
+                ++i;
+                while (i < tokens_.size() && pDepth > 0) {
+                    TokenType innerT = tokens_[i].type;
+                    if (innerT == TokenType::LPAREN) ++pDepth;
+                    else if (innerT == TokenType::RPAREN) --pDepth;
+                    else if (innerT == TokenType::SEMICOLON || innerT == TokenType::RBRACE) return false;
+                    ++i;
+                }
+                if (pDepth > 0) return false;
+            } else {
+                if (!skipType(i)) return false;
+            }
+        }
+    } else {
+        return false;
+    }
+
+    // Optional nullable suffix
+    skipComments(i);
+    if (i < tokens_.size() && tokens_[i].type == TokenType::QUESTION) {
+        ++i;
+    }
+
+    return true;
+}
+
 bool Parser::looksLikeType() const {
     LUC_LOG_PARSER_EXTREME("looksLikeType: checking token '" << peek().value 
                            << "' type=" << static_cast<int>(peek().type));
@@ -674,37 +863,6 @@ bool Parser::looksLikeType() const {
     return result;
 }
 
-bool Parser::isPrimitiveTypeToken(TokenType type) {
-    switch (type) {
-        case TokenType::TYPE_BOOL:
-        case TokenType::TYPE_BYTE:
-        case TokenType::TYPE_SHORT:
-        case TokenType::TYPE_INT:
-        case TokenType::TYPE_LONG:
-        case TokenType::TYPE_UBYTE:
-        case TokenType::TYPE_USHORT:
-        case TokenType::TYPE_UINT:
-        case TokenType::TYPE_ULONG:
-        case TokenType::TYPE_INT8:
-        case TokenType::TYPE_INT16:
-        case TokenType::TYPE_INT32:
-        case TokenType::TYPE_INT64:
-        case TokenType::TYPE_UINT8:
-        case TokenType::TYPE_UINT16:
-        case TokenType::TYPE_UINT32:
-        case TokenType::TYPE_UINT64:
-        case TokenType::TYPE_FLOAT:
-        case TokenType::TYPE_DOUBLE:
-        case TokenType::TYPE_DECIMAL:
-        case TokenType::TYPE_STRING:
-        case TokenType::TYPE_CHAR:
-        case TokenType::TYPE_ANY:
-            return true;
-        default:
-            return false;
-    }
-}
-
 bool Parser::looksLikeFuncDecl() const {
     LUC_LOG_PARSER_VERBOSE("looksLikeFuncDecl: starting at pos=" << pos_ 
                            << ", token='" << peek().value << "'");
@@ -727,10 +885,7 @@ bool Parser::looksLikeFuncDecl() const {
         ++i;
         while (i < tokens_.size() && depth > 0) {
             // Skip comments before evaluating token type
-            while (i < tokens_.size() && (tokens_[i].type == TokenType::LINE_COMMENT ||
-                                          tokens_[i].type == TokenType::DOC_COMMENT)) {
-                ++i;
-            }
+            skipComments(i);
             if (i >= tokens_.size()) break;
             TokenType tt = tokens_[i].type;
             if (tt == TokenType::LESS) ++depth;
@@ -761,9 +916,7 @@ bool Parser::looksLikeFuncDecl() const {
             return false;
         }
         // Skip any comments between qualifiers
-        while (i < tokens_.size() && tokens_[i].type == TokenType::LINE_COMMENT) {
-            ++i;
-        }
+        skipComments(i);
     }
 
     // we need at least one parameter group '('
@@ -787,10 +940,7 @@ bool Parser::looksLikeAnonFunc() const {
         } else {
             return false;
         }
-        while (i < tokens_.size() && (tokens_[i].type == TokenType::LINE_COMMENT ||
-                                      tokens_[i].type == TokenType::DOC_COMMENT)) {
-            ++i;
-        }
+        skipComments(i);
     }
 
     // First parameter group is required
@@ -1029,9 +1179,7 @@ bool Parser::looksLikeMultiAssignStart() const {
     }
 
     // ── 4. After finishing the first lvalue, look for a comma ────────────────
-    while (i < tokens_.size() && (tokens_[i].type == TokenType::LINE_COMMENT ||
-                                  tokens_[i].type == TokenType::DOC_COMMENT))
-        ++i;
+    skipComments(i);
     if (i >= tokens_.size()) return false;
     if (tokens_[i].type != TokenType::COMMA) return false;
 
