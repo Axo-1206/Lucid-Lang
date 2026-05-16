@@ -9,6 +9,8 @@
 #include "ast/support/ASTArena.hpp"
 #include "registry/AttributeRegistry.hpp"
 #include "registry/IntrinsicRegistry.hpp"
+#include "registry/BuiltinMethodRegistry.hpp"
+#include "registry/QualifierRegistry.hpp"
 #include "semantic/header/SemanticAnalyzer.hpp"
 #include "diagnostics/DiagnosticEngine.hpp"
 #include "debug/DebugMacros.hpp"
@@ -88,6 +90,8 @@ int main(int argc, char* argv[]) {
     StringPool stringPool; 
     AttributeRegistry::instance().setStringPool(stringPool);
     IntrinsicRegistry::instance().setStringPool(stringPool);
+    BuiltinMethodRegistry::instance().setStringPool(stringPool);
+    QualifierRegistry::instance().setStringPool(stringPool);
     
     // Phase 1: Lexical Analysis
     std::cout << "[MAIN] Starting lexical analysis..." << std::endl;
@@ -153,25 +157,25 @@ int main(int argc, char* argv[]) {
     }
 
     // Phase 3: Semantic Analysis
-    // std::cout << "[MAIN] Starting semantic analysis..." << std::endl;
-    // std::vector<ProgramAST*> files = { program.get() };
-    // SemanticAnalyzer analyzer(dc);
+    std::cout << "[MAIN] Starting semantic analysis..." << std::endl;
+    std::vector<ProgramAST*> files = { program.get() };
+    SemanticAnalyzer analyzer(dc, stringPool, arena);
     
-    // bool success = analyzer.analyze(files);
-    // std::cout << "[MAIN] Semantic analysis complete: " << (success ? "SUCCESS" : "FAILED") << std::endl;
+    bool success = analyzer.analyze(files);
+    std::cout << "[MAIN] Semantic analysis complete: " << (success ? "SUCCESS" : "FAILED") << std::endl;
     
-    // if (dc.hasErrors()) {
-    //     std::cerr << "\n>>> Semantic Analysis FAILED:" << std::endl;
-    //     dc.dumpAll(std::cerr);
-    //     return 1;
-    // }
+    if (dc.hasErrors()) {
+        std::cerr << "\n>>> Semantic Analysis FAILED:" << std::endl;
+        dc.dumpAll(stringPool, std::cerr);
+        return 1;
+    }
 
-    // if (dc.hasWarnings()) {
-    //     std::cerr << "\n>>> Semantic Analysis SUCCESSFUL with warnings:" << std::endl;
-    //     dc.dumpAll(std::cerr);
-    // } else {
-    //     std::cout << "\n>>> Semantic Analysis SUCCESSFUL!" << std::endl;
-    // }
+    if (dc.hasWarnings()) {
+        std::cerr << "\n>>> Semantic Analysis SUCCESSFUL with warnings:" << std::endl;
+        dc.dumpAll(stringPool, std::cerr);
+    } else {
+        std::cout << "\n>>> Semantic Analysis SUCCESSFUL!" << std::endl;
+    }
 
     AttributeRegistry::instance().resetStringPool();
     IntrinsicRegistry::instance().resetStringPool();

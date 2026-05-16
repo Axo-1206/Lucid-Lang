@@ -934,15 +934,15 @@ let printSorted<T : Comparable + Printable> (items []T) = { ... }
 
 #### Instantiation
 
-Generic functions can be called with explicit type arguments or have them inferred from the call site.
+Generic functions can be called with explicit type arguments.
 
 ```luc
 -- Explicit instantiation
-let x = identity<int>(42)
-
--- Inferred instantiation
-let y = identity(3.14)    -- T inferred as float
+let x int = identity<int>(42)   -- [1]
 ```
+
+> [!NOTE]
+> No type inference for generic functions — type must always be specified.
 
 #### Generic Qualifiers
 

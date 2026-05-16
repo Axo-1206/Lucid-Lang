@@ -16,6 +16,7 @@
 #include "ast/BaseAST.hpp"
 #include "ast/DeclAST.hpp"
 #include "SymbolTable.hpp"
+#include "ast/support/StringPool.hpp"
 
 class DiagnosticEngine;
 
@@ -27,10 +28,17 @@ class DiagnosticEngine;
 // or type guarantees; it merely asserts that names are not duplicated in the
 // global scope, establishing the map necessary to support forward references
 // during Phase 2 (Type Resolution).
+//
+// ## String Pool Usage
+//
+// The SemanticCollector holds a reference to StringPool to convert InternedString
+// names to string_view when needed for diagnostics. However, the symbol table
+// itself stores names as InternedString IDs for efficiency.
 // ─────────────────────────────────────────────────────────────────────────────
 class SemanticCollector : public ASTVisitor {
 public:
-    explicit SemanticCollector(SymbolTable& symbols, DiagnosticEngine& dc);
+    explicit SemanticCollector(SymbolTable& symbols, DiagnosticEngine& dc, 
+                                StringPool& pool);
 
     // ─────────────────────────────────────────────────────────────────────────────
     // collectProgram  — Bootstraps the semantic collection phase
@@ -50,9 +58,15 @@ public:
     void visit(FromDeclAST& node) override;
     void visit(TypeAliasDeclAST& node) override;
 
+    // ── Helper to check if a name is already declared (for error recovery) ──
+    bool isDeclared(InternedString name) const {
+        return symbols_.lookup(name) != nullptr;
+    }
+
 private:
     SymbolTable& symbols_;
     DiagnosticEngine& dc_;
+    StringPool& pool_;  // For converting InternedString to readable names in diagnostics
 
     // ─────────────────────────────────────────────────────────────────────────────
     // declareSymbol  — Core logic to bind an AST node symbol
@@ -61,4 +75,12 @@ private:
     // logging a diagnostic error if the name already conflicts in the same scope.
     // ─────────────────────────────────────────────────────────────────────────────
     void declareSymbol(const Symbol& sym);
+    
+    // Helper to extract extern metadata from attributes
+    void extractExternMetadata(const std::vector<AttributePtr>& attrs, Symbol& sym);
+    
+    // Helper to get the string representation of an InternedString for diagnostics
+    std::string_view getNameString(InternedString name) const {
+        return pool_.lookup(name);
+    }
 };

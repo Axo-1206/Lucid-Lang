@@ -12,11 +12,79 @@
  * @related TypeChecker.hpp
  */
 
-#include "header/SemanticHelpers.hpp"
+#include "ast/ExprAST.hpp"
+#include "header/TypeChecker.hpp"
+#include "header/NameMangler.hpp"
+#include "debug/DebugUtils.hpp"
 
 #include <iostream>
 #include <cstdlib> 
 #include <cerrno>
+
+TypeChecker::TypeChecker(StringPool& pool, ASTArena& arena)
+    : pool_(pool), arena_(arena) {
+    LUC_LOG_SEMANTIC("TypeChecker constructed");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Local helper to print a TypeAST for debug logging (replaces SemanticHelpers::printTypeAST)
+// ─────────────────────────────────────────────────────────────────────────────
+static void printType(const std::string& label, TypeAST* t, const StringPool& pool, int indent = 0) {
+    if (!t) {
+        LUC_LOG_SEMANTIC_EXTREME(std::string(indent, ' ') << label << " = nullptr");
+        return;
+    }
+
+    std::string indentStr(indent, ' ');
+
+    switch (t->kind) {
+        case ASTKind::PrimitiveType: {
+            auto* p = t->as<PrimitiveTypeAST>();
+            std::string typeName;
+            switch (p->primitiveKind) {
+                case PrimitiveKind::Bool:   typeName = "bool"; break;
+                case PrimitiveKind::Int:    typeName = "int"; break;
+                case PrimitiveKind::Float:  typeName = "float"; break;
+                case PrimitiveKind::Double: typeName = "double"; break;
+                case PrimitiveKind::String: typeName = "string"; break;
+                case PrimitiveKind::Uint8:  typeName = "uint8"; break;
+                case PrimitiveKind::Uint64: typeName = "uint64"; break;
+                case PrimitiveKind::Any:    typeName = "any"; break;
+                default: typeName = "other(" + std::to_string(static_cast<int>(p->primitiveKind)) + ")";
+            }
+            LUC_LOG_SEMANTIC_EXTREME(indentStr << label << " = PrimitiveType(" << typeName << ")");
+            break;
+        }
+        case ASTKind::NamedType: {
+            auto* n = t->as<NamedTypeAST>();
+            std::string msg = indentStr + label + " = NamedType(" + std::string(pool.lookup(n->name)) + ")";
+            if (n->isGenericParam) msg += " [generic param]";
+            LUC_LOG_SEMANTIC_EXTREME(msg);
+            break;
+        }
+        case ASTKind::NullableType: {
+            LUC_LOG_SEMANTIC_EXTREME(indentStr << label << " = NullableType");
+            printType("  inner", t->as<NullableTypeAST>()->inner.get(), pool, indent + 2);
+            break;
+        }
+        case ASTKind::PtrType: {
+            LUC_LOG_SEMANTIC_EXTREME(indentStr << label << " = PtrType");
+            printType("  inner", t->as<PtrTypeAST>()->inner.get(), pool, indent + 2);
+            break;
+        }
+        case ASTKind::FuncType: {
+            auto* f = t->as<FuncTypeAST>();
+            LUC_LOG_SEMANTIC_EXTREME(indentStr << label << " = FuncType");
+            LUC_LOG_SEMANTIC_EXTREME(indentStr << "  async=" << f->sig.isAsync()
+                                    << ", parallel=" << f->sig.isParallel()
+                                    << ", nullable=" << f->sig.isNullable());
+            break;
+        }
+        default:
+            LUC_LOG_SEMANTIC_EXTREME(indentStr << label << " = " << LucDebug::kindToString(t->kind));
+            break;
+    }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // isEqual  — Verifies structural equality precisely, ignoring widening rules
@@ -49,7 +117,7 @@ bool TypeChecker::isEqual(TypeAST* a, TypeAST* b) {
         auto* na = a->as<NamedTypeAST>();
         auto* nb = b->as<NamedTypeAST>();
         if (na->name != nb->name) {
-            LUC_LOG_SEMANTIC_VERBOSE("\tNamedType name mismatch: " << na->name << " vs " << nb->name << " -> false");
+            LUC_LOG_SEMANTIC_VERBOSE("\tNamedType name mismatch: " << na->name.id << " vs " << nb->name.id << " -> false");
             return false;
         }
         if (na->genericArgs.size() != nb->genericArgs.size()) {
@@ -62,7 +130,7 @@ bool TypeChecker::isEqual(TypeAST* a, TypeAST* b) {
                 return false;
             }
         }
-        LUC_LOG_SEMANTIC_VERBOSE("\tNamedType " << na->name << " -> true");
+        LUC_LOG_SEMANTIC_VERBOSE("\tNamedType " << na->name.id << " -> true");
         return true;
     }
     if (a->isa<NullableTypeAST>()) {
@@ -105,27 +173,27 @@ bool TypeChecker::isEqual(TypeAST* a, TypeAST* b) {
         
         // Compare qualifiers that affect type equality
         uint32_t equalityMask = QualifierRegistry::instance().equalityMask();
-        if ((fa->qualifiers & equalityMask) != (fb->qualifiers & equalityMask)) {
+        if ((fa->sig.qualifiers & equalityMask) != (fb->sig.qualifiers & equalityMask)) {
             LUC_LOG_SEMANTIC_VERBOSE("\tFuncType qualifier mismatch -> false");
             return false;
         }
         
-        // Compare nullability (function itself nullable)
-        if (fa->isNullable != fb->isNullable) {
+        // Compare nullability (function itself nullable via qualifier)
+        if (fa->sig.isNullable() != fb->sig.isNullable()) {
             LUC_LOG_SEMANTIC_VERBOSE("\tFuncType nullability mismatch -> false");
             return false;
         }
         
         // Compare parameter group count (curry levels)
-        if (fa->paramGroups.size() != fb->paramGroups.size()) {
+        if (fa->sig.paramGroups.size() != fb->sig.paramGroups.size()) {
             LUC_LOG_SEMANTIC_VERBOSE("\tFuncType param group count mismatch -> false");
             return false;
         }
         
         // Compare each parameter group
-        for (size_t g = 0; g < fa->paramGroups.size(); ++g) {
-            const auto& groupA = fa->paramGroups[g];
-            const auto& groupB = fb->paramGroups[g];
+        for (size_t g = 0; g < fa->sig.paramGroups.size(); ++g) {
+            const auto& groupA = fa->sig.paramGroups[g];
+            const auto& groupB = fb->sig.paramGroups[g];
             
             if (groupA.size() != groupB.size()) {
                 LUC_LOG_SEMANTIC_VERBOSE("\tFuncType param group " << g << " size mismatch -> false");
@@ -134,7 +202,7 @@ bool TypeChecker::isEqual(TypeAST* a, TypeAST* b) {
             
             for (size_t i = 0; i < groupA.size(); ++i) {
                 // Compare parameter types (ignoring parameter names)
-                if (!isEqual(groupA[i].type.get(), groupB[i].type.get())) {
+                if (!isEqual(groupA[i]->type.get(), groupB[i]->type.get())) {
                     LUC_LOG_SEMANTIC_VERBOSE("\tFuncType param " << i << " in group " << g << " mismatch -> false");
                     return false;
                 }
@@ -142,9 +210,19 @@ bool TypeChecker::isEqual(TypeAST* a, TypeAST* b) {
         }
         
         // Compare return types
-        bool result = isEqual(fa->returnType.get(), fb->returnType.get());
-        LUC_LOG_SEMANTIC_VERBOSE("\tFuncType: " << (result ? "true" : "false"));
-        return result;
+        if (fa->sig.returnTypes.size() != fb->sig.returnTypes.size()) {
+            LUC_LOG_SEMANTIC_VERBOSE("\tFuncType return count mismatch -> false");
+            return false;
+        }
+        for (size_t i = 0; i < fa->sig.returnTypes.size(); ++i) {
+            if (!isEqual(fa->sig.returnTypes[i].get(), fb->sig.returnTypes[i].get())) {
+                LUC_LOG_SEMANTIC_VERBOSE("\tFuncType return " << i << " mismatch -> false");
+                return false;
+            }
+        }
+        
+        LUC_LOG_SEMANTIC_VERBOSE("\tFuncType: true");
+        return true;
     }
     
     LUC_LOG_SEMANTIC_VERBOSE("\tUnknown type kind -> false");
@@ -153,16 +231,10 @@ bool TypeChecker::isEqual(TypeAST* a, TypeAST* b) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // isAssignable  — Validates if one type can securely pipe into another configuration
-//
-// Checks constraints confirming `from` can safely transfer its active memory sizing
-// and capabilities securely into the `to` requirements. Assesses matching shapes,
-// automatic widening primitive escalations, and generic boundary consistencies.
-//
-// Uses ASTKind-based isa<>/as<> helpers instead of dynamic_cast — zero RTTI overhead.
 // ─────────────────────────────────────────────────────────────────────────────
 bool TypeChecker::isAssignable(TypeAST* from, TypeAST* to) {
-    SemanticHelpers::printTypeAST("from", from);
-    SemanticHelpers::printTypeAST("to", to);
+    printType("from", from, pool_);
+    printType("to", to, pool_);
 
     // 0.1 Handle nil assignment
     if (!from) {
@@ -224,7 +296,7 @@ bool TypeChecker::isAssignable(TypeAST* from, TypeAST* to) {
         auto* namedTo   = to->as<NamedTypeAST>();
         
         if (namedFrom->name != namedTo->name) {
-            LUC_LOG_SEMANTIC("\tNamedType name mismatch: " << namedFrom->name << " vs " << namedTo->name << " -> false");
+            LUC_LOG_SEMANTIC("\tNamedType name mismatch: " << namedFrom->name.id << " vs " << namedTo->name.id << " -> false");
             return false;
         }
 
@@ -240,7 +312,7 @@ bool TypeChecker::isAssignable(TypeAST* from, TypeAST* to) {
             }
         }
         
-        LUC_LOG_SEMANTIC("\tNamedType " << namedFrom->name << " -> true");
+        LUC_LOG_SEMANTIC("\tNamedType " << namedFrom->name.id << " -> true");
         return true;
     }
 
@@ -259,9 +331,6 @@ bool TypeChecker::isAssignable(TypeAST* from, TypeAST* to) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // isCallable  — Assesses if a Type inherently permits invocation executions
-//
-// Identifies if the raw bounded Type node carries the functional properties to map
-// back to underlying lambda or raw-function call architectures.
 // ─────────────────────────────────────────────────────────────────────────────
 bool TypeChecker::isCallable(TypeAST* type) {
     if (!type) {
@@ -275,17 +344,8 @@ bool TypeChecker::isCallable(TypeAST* type) {
     return result;
 }
 
-// Add after isBoolOrNullable or at the end of the file
-
 // ─────────────────────────────────────────────────────────────────────────────
 // isIntegerType — returns true when a type is any integer primitive.
-//
-// Valid integer types:
-//   Signed:   byte, short, int, long, int8, int16, int32, int64
-//   Unsigned: ubyte, ushort, uint, ulong, uint8, uint16, uint32, uint64
-//
-// Returns false for:
-//   float, double, decimal, bool, string, char, any, structs, arrays, etc.
 // ─────────────────────────────────────────────────────────────────────────────
 bool TypeChecker::isIntegerType(TypeAST* type) {
     if (!type) {
@@ -300,7 +360,6 @@ bool TypeChecker::isIntegerType(TypeAST* type) {
     
     auto* prim = type->as<PrimitiveTypeAST>();
     switch (prim->primitiveKind) {
-        // Signed integers
         case PrimitiveKind::Byte:
         case PrimitiveKind::Short:
         case PrimitiveKind::Int:
@@ -309,7 +368,6 @@ bool TypeChecker::isIntegerType(TypeAST* type) {
         case PrimitiveKind::Int16:
         case PrimitiveKind::Int32:
         case PrimitiveKind::Int64:
-        // Unsigned integers
         case PrimitiveKind::Ubyte:
         case PrimitiveKind::Ushort:
         case PrimitiveKind::Uint:
@@ -320,50 +378,35 @@ bool TypeChecker::isIntegerType(TypeAST* type) {
         case PrimitiveKind::Uint64:
             LUC_LOG_SEMANTIC_EXTREME("isIntegerType: true");
             return true;
-        
-        // Not integer types
-        case PrimitiveKind::Bool:
-        case PrimitiveKind::Float:
-        case PrimitiveKind::Double:
-        case PrimitiveKind::Decimal:
-        case PrimitiveKind::String:
-        case PrimitiveKind::Char:
-        case PrimitiveKind::Any:
+        default:
             LUC_LOG_SEMANTIC_EXTREME("isIntegerType: false");
             return false;
     }
-    
-    return false;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // getConstantIntValue — extracts integer value from compile-time constant
-//
-// Returns true and sets outValue if expr is a constant integer literal.
-// Returns false for variable expressions, function calls, etc.
-// Uses manual parsing without exceptions (exceptions disabled in build).
 // ─────────────────────────────────────────────────────────────────────────────
 bool TypeChecker::getConstantIntValue(ExprAST* expr, int64_t& outValue) {
     if (!expr) return false;
     
-    // Check if it's a literal integer expression
+    // Handle literal integers
     if (expr->isa<LiteralExprAST>()) {
         auto* lit = expr->as<LiteralExprAST>();
         if (lit->kind == LiteralKind::Int || lit->kind == LiteralKind::Hex || 
             lit->kind == LiteralKind::Binary) {
             
-            std::string val = lit->value;
-            const char* str = val.c_str();
+            std::string_view val = pool_.lookup(lit->value);
+            const char* str = val.data();
             char* endptr = nullptr;
             int64_t result = 0;
             
-            // Handle hex literals (0x or 0X)
+            // Hex literal: 0x... or 0X...
             if (val.find("0x") == 0 || val.find("0X") == 0) {
                 result = std::strtoll(str, &endptr, 16);
             }
-            // Handle binary literals (0b or 0B)
+            // Binary literal: 0b... or 0B...
             else if (val.find("0b") == 0 || val.find("0B") == 0) {
-                // strtoll doesn't support binary, parse manually
                 result = 0;
                 for (size_t i = 2; i < val.length(); ++i) {
                     char c = val[i];
@@ -383,9 +426,8 @@ bool TypeChecker::getConstantIntValue(ExprAST* expr, int64_t& outValue) {
                 result = std::strtoll(str, &endptr, 10);
             }
             
-            // Check if entire string was consumed (no invalid characters)
+            // If parsing stopped early (e.g., due to underscores), strip underscores and retry
             if (endptr != str + val.length()) {
-                // Strip underscores and try again (for numbers like 1_000_000)
                 std::string cleaned;
                 cleaned.reserve(val.length());
                 for (char c : val) {
@@ -395,7 +437,7 @@ bool TypeChecker::getConstantIntValue(ExprAST* expr, int64_t& outValue) {
                 char* cleanedEndptr = nullptr;
                 result = std::strtoll(cleanedStr, &cleanedEndptr, 10);
                 if (cleanedEndptr != cleanedStr + cleaned.length()) {
-                    return false;
+                    return false; // still has non-numeric characters
                 }
             }
             
@@ -404,7 +446,7 @@ bool TypeChecker::getConstantIntValue(ExprAST* expr, int64_t& outValue) {
         }
     }
     
-    // Check for unary negation of constant (e.g., -5)
+    // Handle unary negation of a constant: -5
     if (expr->isa<UnaryExprAST>()) {
         auto* unary = expr->as<UnaryExprAST>();
         if (unary->op == UnaryOp::Neg) {
@@ -416,7 +458,7 @@ bool TypeChecker::getConstantIntValue(ExprAST* expr, int64_t& outValue) {
         }
     }
     
-    // Check for binary arithmetic of constants (e.g., 5 + 3)
+    // Handle binary arithmetic of constants: 5 + 3, 10 - 2, etc.
     if (expr->isa<BinaryExprAST>()) {
         auto* binary = expr->as<BinaryExprAST>();
         int64_t leftVal, rightVal;
@@ -426,7 +468,7 @@ bool TypeChecker::getConstantIntValue(ExprAST* expr, int64_t& outValue) {
                 case BinaryOp::Add: outValue = leftVal + rightVal; return true;
                 case BinaryOp::Sub: outValue = leftVal - rightVal; return true;
                 case BinaryOp::Mul: outValue = leftVal * rightVal; return true;
-                case BinaryOp::Div: 
+                case BinaryOp::Div:
                     if (rightVal != 0) { outValue = leftVal / rightVal; return true; }
                     return false;
                 case BinaryOp::Mod:
@@ -442,14 +484,6 @@ bool TypeChecker::getConstantIntValue(ExprAST* expr, int64_t& outValue) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // isValidArrayIndex — validates array index expression
-//
-// Rules:
-//   1. Expression must be an integer type
-//   2. If constant expression, value must be >= 0 (compile-time error)
-//   3. If variable expression, type check only (runtime panic handles negative)
-//
-// Returns true if index is valid for array access.
-// Emits compile error for constant negative indices.
 // ─────────────────────────────────────────────────────────────────────────────
 bool TypeChecker::isValidArrayIndex(ExprAST* indexExpr, DiagnosticEngine& dc, 
                                      const SourceLocation& loc) {
@@ -459,7 +493,6 @@ bool TypeChecker::isValidArrayIndex(ExprAST* indexExpr, DiagnosticEngine& dc,
         return false;
     }
     
-    // Check type is integer
     TypeAST* indexType = static_cast<TypeAST*>(indexExpr->resolvedType);
     if (!isIntegerType(indexType)) {
         dc.error(DiagnosticCategory::Semantic, indexExpr->loc, DiagCode::E3002,
@@ -468,7 +501,6 @@ bool TypeChecker::isValidArrayIndex(ExprAST* indexExpr, DiagnosticEngine& dc,
         return false;
     }
     
-    // Check constant value for negative indices
     int64_t constValue;
     if (getConstantIntValue(indexExpr, constValue)) {
         if (constValue < 0) {
@@ -476,24 +508,12 @@ bool TypeChecker::isValidArrayIndex(ExprAST* indexExpr, DiagnosticEngine& dc,
                      "array index cannot be negative (got " + std::to_string(constValue) + ")");
             return false;
         }
-        // Positive constant is fine (bounds checking happens at runtime)
     }
-    
-    // Variable index - type is valid, runtime will check bounds
     return true;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // isValidSliceBound — validates slice bound expression (start or end)
-//
-// For slice expressions like arr[start..end], bounds are expected to be
-// compile-time constants. Enforces:
-//   1. Bound must be an integer type
-//   2. Bound must be a constant expression (compile-time known)
-//   3. Bound value must be >= 0
-//
-// boundName is "start" or "end" for error messages.
-// Returns true if bound is valid.
 // ─────────────────────────────────────────────────────────────────────────────
 bool TypeChecker::isValidSliceBound(ExprAST* boundExpr, const std::string& boundName,
                                      DiagnosticEngine& dc, const SourceLocation& loc) {
@@ -503,7 +523,6 @@ bool TypeChecker::isValidSliceBound(ExprAST* boundExpr, const std::string& bound
         return false;
     }
     
-    // Check type is integer
     TypeAST* boundType = static_cast<TypeAST*>(boundExpr->resolvedType);
     if (!isIntegerType(boundType)) {
         dc.error(DiagnosticCategory::Semantic, boundExpr->loc, DiagCode::E3002,
@@ -511,7 +530,6 @@ bool TypeChecker::isValidSliceBound(ExprAST* boundExpr, const std::string& bound
         return false;
     }
     
-    // Slice bounds must be compile-time constants
     int64_t constValue;
     if (!getConstantIntValue(boundExpr, constValue)) {
         dc.error(DiagnosticCategory::Semantic, boundExpr->loc, DiagCode::E3002,
@@ -519,22 +537,17 @@ bool TypeChecker::isValidSliceBound(ExprAST* boundExpr, const std::string& bound
         return false;
     }
     
-    // Check non-negative
     if (constValue < 0) {
         dc.error(DiagnosticCategory::Semantic, boundExpr->loc, DiagCode::E3002,
                  "slice " + boundName + " bound cannot be negative (got " + 
                  std::to_string(constValue) + ")");
         return false;
     }
-    
     return true;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // isBooleanCompatible  — Validates logical query compatibilities
-//
-// Often needed for verifying `if`, `while`, or looping constructs evaluating raw
-// boolean conditional branch decisions natively.
 // ─────────────────────────────────────────────────────────────────────────────
 bool TypeChecker::isBooleanCompatible(TypeAST* type) {
     if (!type) {
@@ -554,9 +567,6 @@ bool TypeChecker::isBooleanCompatible(TypeAST* type) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // isNullable  — Safely verifies the topmost nullable context rule constraints
-//
-// Checks entirely if the given raw outermost bounding Type specifically allows
-// `nil` initializations logically directly on its specific mapping.
 // ─────────────────────────────────────────────────────────────────────────────
 bool TypeChecker::isNullable(TypeAST* type) {
     if (!type) {
@@ -569,7 +579,7 @@ bool TypeChecker::isNullable(TypeAST* type) {
         return true;
     }
     if (type->isa<FuncTypeAST>()) {
-        bool result = type->as<FuncTypeAST>()->isNullable;
+        bool result = type->as<FuncTypeAST>()->sig.isNullable();
         LUC_LOG_SEMANTIC_EXTREME("isNullable: FuncType nullable=" << result);
         return result;
     }
@@ -580,14 +590,11 @@ bool TypeChecker::isNullable(TypeAST* type) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // unify  — Merges two Types discovering boundaries defining them safely together
-//
-// Commonly required securely balancing dual-branch architectures mapping out
-// combinations inside Match-Arms or If-Else statements where branches merge securely.
 // ─────────────────────────────────────────────────────────────────────────────
 TypeAST* TypeChecker::unify(TypeAST* a, TypeAST* b) {
     LUC_LOG_SEMANTIC_VERBOSE("unify: trying to unify types");
-    SemanticHelpers::printTypeAST("  a", a);
-    SemanticHelpers::printTypeAST("  b", b);
+    printType("  a", a, pool_);
+    printType("  b", b, pool_);
     
     if (!a && !b) {
         LUC_LOG_SEMANTIC_VERBOSE("unify: both null -> nullptr");
@@ -617,34 +624,17 @@ TypeAST* TypeChecker::unify(TypeAST* a, TypeAST* b) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // primitiveWidening  — Verifies standard safe primitive implicit conversion
-//
-// Determines whether an explicit type cast from one primitive to another is safe
-// (widening, not narrowing). Widening conversions maintain or increase precision
-// without loss of information. Examples:
-//   int → float      (int fits in float's exponent range, though precision may vary)
-//   int → double     (int fits completely in double)
-//   float → double   (all single-precision values are valid doubles)
-//   int8 → int16     (smaller signed fits in larger signed)
-//   uint8 → uint16   (smaller unsigned fits in larger unsigned)
-//   int8 → int32     (chain of widening: byte → short → int → long)
-//
-// Non-widening (blocked):
-//   int → int8       (narrowing — data loss)
-//   double → float   (narrowing — precision loss)
-//   unsigned → signed (unsigned range may not fit)
-//
 // ─────────────────────────────────────────────────────────────────────────────
 bool TypeChecker::primitiveWidening(PrimitiveKind from, PrimitiveKind to) {
     LUC_LOG_SEMANTIC_VERBOSE("primitiveWidening: from=" << static_cast<int>(from) 
                            << " to=" << static_cast<int>(to));
     
-    // Quick check: identical types are always acceptable.
     if (from == to) {
         LUC_LOG_SEMANTIC_VERBOSE("\tidentical types -> true");
         return true;
     }
 
-    // ── Signed integer widening ───────────────────────────────────────────────
+    // Signed integer widening
     if (from == PrimitiveKind::Byte || from == PrimitiveKind::Int8) {
         switch (to) {
             case PrimitiveKind::Short:
@@ -695,7 +685,7 @@ bool TypeChecker::primitiveWidening(PrimitiveKind from, PrimitiveKind to) {
         }
     }
 
-    // ── Unsigned integer widening ───────────────────────────────────────────
+    // Unsigned integer widening
     if (from == PrimitiveKind::Ubyte || from == PrimitiveKind::Uint8) {
         switch (to) {
             case PrimitiveKind::Ushort:
@@ -732,9 +722,7 @@ bool TypeChecker::primitiveWidening(PrimitiveKind from, PrimitiveKind to) {
         }
     }
 
-    // ── Signed integer to unsigned integer (ADD THIS SECTION) ─────────────────
-    // Allow int → uint64, int → uint32, etc. for positive integer literals
-    // The literal 1024 is positive, so it's safe to convert to unsigned
+    // Signed integer to unsigned integer (for positive literals)
     if (from == PrimitiveKind::Byte || from == PrimitiveKind::Int8 ||
         from == PrimitiveKind::Short || from == PrimitiveKind::Int16 ||
         from == PrimitiveKind::Int || from == PrimitiveKind::Int32 ||
@@ -754,7 +742,7 @@ bool TypeChecker::primitiveWidening(PrimitiveKind from, PrimitiveKind to) {
         }
     }
 
-    // ── Floating-point widening ───────────────────────────────────────────────
+    // Floating-point widening
     if (from == PrimitiveKind::Float) {
         switch (to) {
             case PrimitiveKind::Double:
@@ -772,7 +760,7 @@ bool TypeChecker::primitiveWidening(PrimitiveKind from, PrimitiveKind to) {
         }
     }
 
-    // ── Signed integer to floating-point ───────────────────────────────────────
+    // Signed integer to floating-point
     if (from == PrimitiveKind::Byte || from == PrimitiveKind::Int8 ||
         from == PrimitiveKind::Short || from == PrimitiveKind::Int16 ||
         from == PrimitiveKind::Int || from == PrimitiveKind::Int32 ||
@@ -787,7 +775,7 @@ bool TypeChecker::primitiveWidening(PrimitiveKind from, PrimitiveKind to) {
         }
     }
 
-    // ── Unsigned integer to floating-point ────────────────────────────────────
+    // Unsigned integer to floating-point
     if (from == PrimitiveKind::Ubyte || from == PrimitiveKind::Uint8 ||
         from == PrimitiveKind::Ushort || from == PrimitiveKind::Uint16 ||
         from == PrimitiveKind::Uint || from == PrimitiveKind::Uint32 ||
@@ -808,29 +796,6 @@ bool TypeChecker::primitiveWidening(PrimitiveKind from, PrimitiveKind to) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // isFromCastable  — Checks if a custom casting (from block) is available
-//
-// Searches the symbol table for a `from` entry that converts src -> target.
-//
-// How from-entries are registered (SemanticCollector::visit(FromDeclAST)):
-//   Each FromEntryAST gets a mangled symbol name:
-//     "TargetType.from.<pointer_address>"
-//   So for  from Minutes { (s Seconds) Minutes = { ... } }
-//   the symbol "Minutes.from.0x1234abcd" is registered with:
-//     sym->kind = SymbolKind::Casting
-//     sym->decl = FromEntryAST*
-//
-// Algorithm:
-//   1. Extract target type name (only NamedTypeAST can have from blocks).
-//   2. Build the prefix  "TargetType.from."
-//   3. Find all symbols with that prefix via findSymbolsByPrefix.
-//   4. For each, downcast decl to FromEntryAST and inspect its first param
-//      group's first parameter type.
-//   5. Return true if any entry's first param type is assignable from src.
-//
-// When integrated with codegen, a conversion like:
-//   let m Minutes = s              (s is Seconds, Minutes ≠ Seconds)
-// is desugared by the semantic pass into:
-//   let m Minutes = Minutes(s)     (TypeConvExprAST wrapping s)
 // ─────────────────────────────────────────────────────────────────────────────
 bool TypeChecker::isFromCastable(TypeAST* src, TypeAST* target, SymbolTable* symbols) {
     LUC_LOG_SEMANTIC("isFromCastable: checking if " << (src ? "src" : "null") 
@@ -849,12 +814,11 @@ bool TypeChecker::isFromCastable(TypeAST* src, TypeAST* target, SymbolTable* sym
         return false;
     }
 
-    const std::string targetName = target->as<NamedTypeAST>()->name;
-    const std::string prefix = targetName + ".from.";
+    std::string_view targetName = pool_.lookup(target->as<NamedTypeAST>()->name);
+    std::string prefix = NameMangler::getFromPrefix(targetName);
     LUC_LOG_SEMANTIC_VERBOSE("\tlooking for from-entries with prefix: " << prefix);
 
-    // Find all registered from-entry symbols for this target type.
-    std::vector<Symbol*> candidates = symbols->findSymbolsByPrefix(prefix);
+    std::vector<Symbol*> candidates = symbols->findSymbolsByPrefix(prefix, pool_);
     LUC_LOG_SEMANTIC_VERBOSE("\tfound " << candidates.size() << " candidate(s)");
 
     for (Symbol* sym : candidates) {
@@ -869,16 +833,17 @@ bool TypeChecker::isFromCastable(TypeAST* src, TypeAST* target, SymbolTable* sym
 
         auto* entry = sym->decl->as<FromEntryAST>();
         
-        if (entry->paramGroups.empty()) {
+        // Use sig for param groups
+        if (entry->sig.paramGroups.empty()) {
             LUC_LOG_SEMANTIC_EXTREME("\t\tentry has no param groups");
             continue;
         }
-        if (entry->paramGroups[0].empty()) {
+        if (entry->sig.paramGroups[0].empty()) {
             LUC_LOG_SEMANTIC_EXTREME("\t\tentry param group has no params");
             continue;
         }
 
-        TypeAST* firstParamType = entry->paramGroups[0][0].type.get();
+        TypeAST* firstParamType = entry->sig.paramGroups[0][0]->type.get();
         if (!firstParamType) {
             LUC_LOG_SEMANTIC_EXTREME("\t\tfirst param type is null");
             continue;
@@ -898,9 +863,6 @@ bool TypeChecker::isFromCastable(TypeAST* src, TypeAST* target, SymbolTable* sym
 
 // ─────────────────────────────────────────────────────────────────────────────
 // isValueComparable — returns true when == and != are valid on this type.
-//
-// Valid:    primitives, enums, nullable types
-// Invalid:  structs (use Equatable<T>), functions, arrays
 // ─────────────────────────────────────────────────────────────────────────────
 bool TypeChecker::isValueComparable(TypeAST* type, SymbolTable* symbols) {
     if (!type) {
@@ -908,23 +870,18 @@ bool TypeChecker::isValueComparable(TypeAST* type, SymbolTable* symbols) {
         return false;
     }
 
-    // Primitives are always value-comparable
     if (type->isa<PrimitiveTypeAST>()) {
         LUC_LOG_SEMANTIC_EXTREME("isValueComparable: primitive -> true");
         return true;
     }
 
-    // Nullable types: valid (compare the inner type)
     if (type->isa<NullableTypeAST>()) {
         LUC_LOG_SEMANTIC_EXTREME("isValueComparable: NullableType -> true");
         return true;
     }
 
-    // Named types: only enums are comparable via ==, structs are NOT
     if (type->isa<NamedTypeAST>()) {
         auto* named = type->as<NamedTypeAST>();
-        
-        // If we have a symbol table, check if this is an enum
         if (symbols) {
             Symbol* sym = symbols->lookup(named->name);
             if (sym && sym->kind == SymbolKind::Enum) {
@@ -936,25 +893,20 @@ bool TypeChecker::isValueComparable(TypeAST* type, SymbolTable* symbols) {
                 return false;
             }
         }
-        
-        // Without symbol table, be conservative: assume not comparable
         LUC_LOG_SEMANTIC_EXTREME("isValueComparable: NamedType (unknown) -> false");
         return false;
     }
 
-    // Function types: NOT comparable
     if (type->isa<FuncTypeAST>()) {
         LUC_LOG_SEMANTIC_EXTREME("isValueComparable: FuncType -> false");
         return false;
     }
 
-    // Array types: NOT comparable
     if (type->isa<FixedArrayTypeAST>() || type->isa<SliceTypeAST>() || type->isa<DynamicArrayTypeAST>()) {
         LUC_LOG_SEMANTIC_EXTREME("isValueComparable: array type -> false");
         return false;
     }
 
-    // Reference and pointer types: use ===, not ==
     if (type->isa<RefTypeAST>() || type->isa<PtrTypeAST>()) {
         LUC_LOG_SEMANTIC_EXTREME("isValueComparable: ref/ptr type -> false (use ===)");
         return false;
@@ -966,9 +918,6 @@ bool TypeChecker::isValueComparable(TypeAST* type, SymbolTable* symbols) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // isReferenceComparable — returns true when === is valid on this type.
-//
-// Valid:    &T references, structs (address comparison), nullable of above
-// Invalid:  primitives (value types, no stable address), functions, arrays
 // ─────────────────────────────────────────────────────────────────────────────
 bool TypeChecker::isReferenceComparable(TypeAST* type) {
     if (!type) {
@@ -976,32 +925,27 @@ bool TypeChecker::isReferenceComparable(TypeAST* type) {
         return false;
     }
 
-    // References are always reference-comparable
     if (type->isa<RefTypeAST>()) {
         LUC_LOG_SEMANTIC_EXTREME("isReferenceComparable: RefType -> true");
         return true;
     }
 
-    // Structs can be compared by address via ===
     if (type->isa<NamedTypeAST>()) {
         LUC_LOG_SEMANTIC_EXTREME("isReferenceComparable: NamedType -> true");
         return true;
     }
 
-    // Nullable types containing reference-comparable types
     if (type->isa<NullableTypeAST>()) {
         bool result = isReferenceComparable(type->as<NullableTypeAST>()->inner.get());
         LUC_LOG_SEMANTIC_EXTREME("isReferenceComparable: NullableType -> " << (result ? "true" : "false"));
         return result;
     }
 
-    // Primitives: not reference-comparable
     if (type->isa<PrimitiveTypeAST>()) {
         LUC_LOG_SEMANTIC_EXTREME("isReferenceComparable: primitive -> false");
         return false;
     }
 
-    // Functions, arrays, pointers: not reference-comparable
     if (type->isa<FuncTypeAST>() || type->isa<FixedArrayTypeAST>() ||
         type->isa<SliceTypeAST>() || type->isa<DynamicArrayTypeAST>() ||
         type->isa<PtrTypeAST>()) {
@@ -1015,13 +959,6 @@ bool TypeChecker::isReferenceComparable(TypeAST* type) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // isBoolOrNullable — returns true when a type is valid for 'not', 'and', 'or'.
-//
-// Valid:    bool, any nullable type T?
-// Invalid:  int, float, string, struct, function, array
-//
-// Nullable semantics:
-//   nil     → treated as false
-//   non-nil → treated as true
 // ─────────────────────────────────────────────────────────────────────────────
 bool TypeChecker::isBoolOrNullable(TypeAST* type) {
     if (!type) {
@@ -1029,14 +966,12 @@ bool TypeChecker::isBoolOrNullable(TypeAST* type) {
         return false;
     }
 
-    // Direct bool
     if (type->isa<PrimitiveTypeAST>()) {
         bool result = type->as<PrimitiveTypeAST>()->primitiveKind == PrimitiveKind::Bool;
         LUC_LOG_SEMANTIC_EXTREME("isBoolOrNullable: bool -> " << (result ? "true" : "false"));
         return result;
     }
 
-    // Any nullable type
     if (type->isa<NullableTypeAST>()) {
         LUC_LOG_SEMANTIC_EXTREME("isBoolOrNullable: NullableType -> true");
         return true;

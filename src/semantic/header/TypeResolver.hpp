@@ -16,12 +16,17 @@
 #include "ast/TypeAST.hpp"
 #include "ast/DeclAST.hpp"
 #include "SymbolTable.hpp"
+#include "ast/support/StringPool.hpp"
+#include "ast/support/ASTArena.hpp"
+
+#include <unordered_map>
+#include <string>
 
 class DiagnosticEngine;
 
 class TypeResolver : public ASTVisitor {
 public:
-    explicit TypeResolver(SymbolTable& symbols, DiagnosticEngine& dc);
+    explicit TypeResolver(SymbolTable& symbols, DiagnosticEngine& dc, StringPool& pool, ASTArena& arena);
 
     TypeAST* resolveType(TypeAST* typeNode);
 
@@ -36,48 +41,47 @@ public:
     void visit(PtrTypeAST& node)            override;
     void visit(FuncTypeAST& node)           override;
 
-    // ── Visit methods for declarations ──
+    // ── Declaration nodes Visitor Overrides ──
     void visit(FuncDeclAST& node)           override;
-    void visit(StructDeclAST& node)         override;
     void visit(VarDeclAST& node)            override;
+    void visit(StructDeclAST& node)         override;
     void visit(ImplDeclAST& node)           override;
+    void visit(MethodDeclAST& node)         override;
     void visit(FromDeclAST& node)           override;
     void visit(TypeAliasDeclAST& node)      override;
     void visit(TraitDeclAST& node)          override;
-    void visit(MethodDeclAST& node)         override;
     void visit(TraitMethodAST& node)        override;
+    void visit(TraitRefAST& node)           override;
 
+    // ── Helper methods for resolving composite structures ──
     void resolveStructFields(StructDeclAST& node);
-    void resolveImplMethods(ImplDeclAST& node);
+    void resolveFunctionType(FuncTypeAST& type);
+    std::vector<TypeAST*> getFunctionReturnTypes(FuncTypeAST& type);
+    TypeAST* getFunctionReturnType(FuncTypeAST& typeconst, const SourceLocation* loc = nullptr);
 
-    // Call this before resolving types in an @extern-decorated declaration
+    // Call this before resolving types in an @extern-declared declaration
     // so that *T raw pointer types are permitted in that context.
     void setInsideExtern(bool val) { insideExtern_ = val; }
-
-    // Set generic parameters context. Called when resolving types within generic declarations
-    // (trait<T>, struct<T>, impl Struct<T>, type<T>). Allows NamedTypeAST("T") to resolve as a
-    // valid generic type parameter instead of erroring "type 'T' is not declared".
-    // genericParams — list of GenericParamAST* from the containing declaration
-    // Should be called before resolving types in a generic context, cleared after.
-    void setGenericParams(const std::vector<GenericParamPtr>* params) { 
-        genericParams_ = params; 
-    }
-    const std::vector<GenericParamPtr>* getGenericParams() const {
-        return genericParams_;
-    }
-
-    // Set substitution map for generic parameters (e.g. { "T": int }).
-    // Used during struct literal checking and method checking to resolve abstract
-    // generic types (T) to concrete types (int).
-    void setSubstitutionMap(const std::unordered_map<std::string, TypeAST*>* map) {
-        substitutionMap_ = map;
-    }
 
 private:
     SymbolTable& symbols_;
     DiagnosticEngine& dc_;
+    StringPool& pool_;
+    ASTArena& arena_;
     TypeAST* resolved_ = nullptr;
     bool insideExtern_ = false;
-    const std::vector<GenericParamPtr>* genericParams_ = nullptr;
-    const std::unordered_map<std::string, TypeAST*>* substitutionMap_ = nullptr;
+
+    // Stack for nested generic parameters
+    std::vector<const std::vector<GenericParamPtr>*> genericParamsStack_;
+    
+    // Stack for nested substitution maps (concrete type arguments)
+    std::vector<const std::unordered_map<InternedString, TypeAST*>*> substitutionMapStack_;
+
+    void pushGenericParams(const std::vector<GenericParamPtr>* params);
+    void popGenericParams();
+    bool isGenericParam(InternedString name) const;
+
+    void pushSubstitutionMap(const std::unordered_map<InternedString, TypeAST*>* map);
+    void popSubstitutionMap();
+    TypeAST* lookupSubstitution(InternedString name) const;
 };

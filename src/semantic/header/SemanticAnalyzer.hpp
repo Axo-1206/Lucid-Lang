@@ -20,6 +20,8 @@
 #pragma once
 
 #include "ast/BaseAST.hpp"
+#include "ast/support/ASTArena.hpp"
+#include "ast/support/StringPool.hpp"
 #include "diagnostics/DiagnosticEngine.hpp"
 #include "SymbolTable.hpp"
 #include "TypeResolver.hpp"
@@ -45,7 +47,9 @@ enum class CompilationMode {
 
 class SemanticAnalyzer {
 public:
-    explicit SemanticAnalyzer(DiagnosticEngine& dc);
+    // Constructor now requires StringPool and ASTArena for interned string handling
+    // and arena-based type allocation during semantic analysis.
+    explicit SemanticAnalyzer(DiagnosticEngine& dc, StringPool& pool, ASTArena& arena);
     ~SemanticAnalyzer();
 
     // Run the full semantic pass over all files in a package.
@@ -71,6 +75,8 @@ private:
     std::unique_ptr<TypeChecker>   typeChecker_;
 
     DiagnosticEngine& dc_;
+    StringPool& pool_;      // For interned string lookups
+    ASTArena& arena_;       // For allocating temporary types during semantic passes
 
     // Compilation mode determined from @aot / @jit on main.
     // Set during Phase 3.5 entry point validation.
