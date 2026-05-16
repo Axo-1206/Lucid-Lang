@@ -1,15 +1,78 @@
 /**
  * @file TypeResolver.hpp
+ * @responsibility Phase 2a of semantic analysis: resolves type names to semantic type nodes.
  *
- * @nutshell The pipeline that asserts a typed name actually officially exists.
+ * TypeResolver is an ASTVisitor that walks type annotations (PrimitiveTypeAST,
+ * NamedTypeAST, FuncTypeAST, etc.) and validates that every name refers to a
+ * declared type (struct, enum, trait, type alias, or primitive). It also handles
+ * generic parameters: when a name matches a generic parameter of the enclosing
+ * declaration (e.g., `T` in `struct Box<T>`), it marks the NamedTypeAST as
+ * a generic parameter rather than performing a symbol lookup.
  *
- * @reason Serves as an independent step explicitly dedicated to resolving user-claimed string types into confirmed engine structures prior to usage in functions.
+ * The resolver uses a stack of generic parameter lists and a stack of substitution
+ * maps to correctly resolve types inside nested generic contexts (e.g., a generic
+ * struct inside a generic function).
  *
- * @responsibility Phase 2a of semantic analysis: validate that every parsed type name resolves to a valid symbol.
+ * @related
+ *   - SymbolTable.hpp – for looking up named types
+ *   - TypeChecker.hpp – for type compatibility checks (Phase 2b)
+ *   - SemanticAnalyzer.hpp – orchestrates the four phases
+ *   - TypeAST.hpp – the AST nodes being resolved
  *
- * @logic Takes a raw TypeAST* from the parser and returns the resolved TypeAST* or emits a diagnostic for invalid types.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Why a separate type resolution phase is necessary
+ * ─────────────────────────────────────────────────────────────────────────────
+ * - The parser builds raw TypeAST nodes using only syntax (e.g., `Vec2`, `int`,
+ *   `Buffer<int>`). These nodes contain unverified names and unresolved generics.
+ * - Resolving types requires symbol table lookups, generic parameter matching,
+ *   and substitution of concrete type arguments – all of which are semantic
+ *   concerns, not syntactic.
+ * - Factoring resolution into a dedicated pass keeps the parser simple and
+ *   allows forward references (types can be used before they are defined).
  *
- * @related TypeResolver.cpp, SemanticAnalyzer.hpp
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Design decisions
+ * ─────────────────────────────────────────────────────────────────────────────
+ * - **Visitor‑based** – TypeResolver inherits from ASTVisitor and dispatches to
+ *   specific visit methods for each type node kind. This keeps the logic
+ *   organised and extensible.
+ * - **Stack of generic parameters** – because generic declarations can nest,
+ *   a single pointer would be insufficient. The resolver maintains a stack
+ *   (`genericParamsStack_`) that is pushed when entering a generic declaration
+ *   and popped when leaving.
+ * - **Stack of substitution maps** – when instantiating a generic type with
+ *   concrete arguments (e.g., `Scene<Circle>`), the resolver pushes a map from
+ *   generic parameter names to concrete types. This allows recursive resolution
+ *   of nested generic types.
+ * - **Arena allocation** – temporary FuncTypeAST nodes and struct selfType are
+ *   allocated in the same ASTArena as the rest of the AST, ensuring consistent
+ *   lifetime and no memory leaks.
+ * - **Explicit StringPool dependency** – for diagnostics and name display,
+ *   the resolver holds a reference to StringPool to convert InternedString
+ *   names to readable strings.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Usage example
+ * ─────────────────────────────────────────────────────────────────────────────
+ * @code
+ * // During Phase 2 (resolveTypes)
+ * TypeResolver resolver(symbols, dc, pool, arena);
+ *
+ * for (auto* decl : program->decls) {
+ *     if (auto* typeAlias = decl->as<TypeAliasDeclAST>()) {
+ *         resolver.visit(*typeAlias);   // resolves the aliased type
+ *     }
+ *     if (auto* structDecl = decl->as<StructDeclAST>()) {
+ *         resolver.visit(*structDecl);  // resolves field types
+ *     }
+ * }
+ * @endcode
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * @note The resolver assumes that the symbol table already contains all
+ *       declarations (Phase 1 has completed). It does not declare new symbols;
+ *       it only reads existing ones and updates their `type` field.
+ * ─────────────────────────────────────────────────────────────────────────────
  */
 #pragma once
 

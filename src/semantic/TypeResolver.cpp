@@ -1,15 +1,80 @@
 /**
  * @file TypeResolver.cpp
+ * @responsibility Implements Phase 2a of semantic analysis: resolving type annotations.
  *
- * @nutshell Crawls through basic type strings and turns them into explicit system bindings.
+ * This file contains the TypeResolver class implementation, an ASTVisitor that
+ * walks type AST nodes and validates that every referenced type name exists
+ * in the symbol table. It handles:
+ *   - Primitive types (int, float, bool, etc.) – trivially resolved.
+ *   - Named types (structs, enums, traits, type aliases) – symbol table lookup.
+ *   - Nullable, array, reference, pointer, and function types – recursive resolution.
+ *   - Generic parameters – detection via a stack of generic parameter lists.
+ *   - Substitution of concrete types for generic parameters during instantiation.
  *
- * @reason A string parsing 'std.vector<int>' is useless until bound. This logic processes those strings structurally and maps them against the SymbolTable.
+ * The resolver maintains two stacks:
+ *   - genericParamsStack_ – lists of generic parameters from enclosing declarations.
+ *   - substitutionMapStack_ – maps from generic parameter names to concrete types.
  *
- * @responsibility Implementation of the Phase 2a semantic pass (resolving primitive and complex type ASTs).
+ * @related
+ *   - TypeResolver.hpp – class declaration
+ *   - SymbolTable.hpp – for name lookup
+ *   - SemanticAnalyzer.cpp – orchestrates the resolution phase
+ *   - NameMangler.hpp – for generating mangled names (for from‑entries)
  *
- * @logic Validates that named types exist, checks generics, validates nullable configurations, and enforces array semantics.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * NAVIGATION – Functions in this file (in order of appearance)
+ * ─────────────────────────────────────────────────────────────────────────────
  *
- * @related TypeResolver.hpp, SemanticAnalyzer.cpp
+ * ██ Constructor & Entry Point
+ *   TypeResolver::TypeResolver()      – initialises symbol table, diagnostic engine,
+ *                                       StringPool, and ASTArena.
+ *   resolveType()                     – main entry point for resolving a type node.
+ *
+ * ██ Generic Parameter & Substitution Stacks
+ *   pushGenericParams()               – pushes a generic parameter list onto the stack.
+ *   popGenericParams()                – pops the topmost generic parameter list.
+ *   isGenericParam()                  – checks if a name is a generic parameter.
+ *   pushSubstitutionMap()             – pushes a substitution map onto the stack.
+ *   popSubstitutionMap()              – pops the topmost substitution map.
+ *   lookupSubstitution()              – looks up a name in the substitution stack.
+ *
+ * ██ Helper Methods
+ *   resolveStructFields()             – resolves all field types in a struct.
+ *   resolveFunctionType()             – resolves all types inside a function signature.
+ *   getFunctionReturnTypes()          – returns a vector of resolved return types.
+ *   getFunctionReturnType()           – convenience for single return type.
+ *
+ * ██ Type Node Visitors
+ *   visit(PrimitiveTypeAST)           – resolves primitive types (no lookup).
+ *   visit(NamedTypeAST)               – resolves user‑defined types (struct, enum, etc.).
+ *   visit(NullableTypeAST)            – resolves inner type.
+ *   visit(FixedArrayTypeAST)          – resolves element type, checks size > 0.
+ *   visit(SliceTypeAST)               – resolves element type.
+ *   visit(DynamicArrayTypeAST)        – resolves element type.
+ *   visit(RefTypeAST)                 – resolves inner type.
+ *   visit(PtrTypeAST)                 – resolves inner type, checks @extern context.
+ *   visit(FuncTypeAST)                – resolves qualifiers, parameter and return types.
+ *
+ * ██ Declaration Node Visitors
+ *   visit(FuncDeclAST)                – resolves function signature, updates symbol.
+ *   visit(VarDeclAST)                 – resolves variable type annotation.
+ *   visit(StructDeclAST)              – resolves fields, creates selfType.
+ *   visit(ImplDeclAST)                – resolves methods, builds substitution map.
+ *   visit(MethodDeclAST)              – resolves method signature.
+ *   visit(FromDeclAST)                – resolves conversion entries, registers symbols.
+ *   visit(TypeAliasDeclAST)           – resolves aliased type.
+ *   visit(TraitDeclAST)               – resolves trait methods.
+ *   visit(TraitMethodAST)             – resolves trait method signature.
+ *   visit(TraitRefAST)                – resolves trait reference and its generic args.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * @note The resolver assumes that Phase 1 (SemanticCollector) has already
+ *       populated the symbol table with all declarations. If a type name is
+ *       not found, an error is reported and the resolution returns nullptr.
+ *       Generic parameters are resolved only when the current generic context
+ *       (via pushGenericParams) includes them; otherwise they are treated as
+ *       ordinary (and likely undeclared) names.
+ * ─────────────────────────────────────────────────────────────────────────────
  */
 
 #include "header/TypeResolver.hpp"
@@ -34,11 +99,50 @@ TypeResolver::TypeResolver(SymbolTable& symbols, DiagnosticEngine& dc, StringPoo
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// resolveType  — Main entry point to validate and bind a type node
+// resolveType  —  Main entry point for type resolution.
 //
-// Accepts a raw type node parsed from the AST, dispatches it to the correct 
-// visitor implementation, and returns the resolved node if successful. 
-// If resolution fails (e.g., undeclared identifier), it returns nullptr.
+// Accepts a raw TypeAST node (from the parser) and resolves it to a validated
+// TypeAST. Resolution includes:
+//   - Checking that named types exist in the symbol table.
+//   - Resolving generic arguments recursively.
+//   - Substituting generic parameters with concrete types when a substitution
+//     map is active.
+//   - Unwrapping type aliases to their underlying types.
+//
+// ─── Purpose ─────────────────────────────────────────────────────────────────
+// Called during Phase 2a (resolveTypes) for every type annotation in the AST.
+// Ensures that before type checking (Phase 3), every type node has been
+// verified and its resolvedType field is set (or the node itself is the
+// resolved type).
+//
+// ─── Algorithm ───────────────────────────────────────────────────────────────
+//   1. If typeNode is nullptr → return nullptr.
+//   2. Set resolved_ = nullptr.
+//   3. Invoke typeNode->accept(*this) to dispatch to the appropriate visitor.
+//   4. After visitation, resolved_ holds the resolved node (or nullptr on error).
+//   5. Log success/failure and return resolved_.
+//
+// ─── Cases Covered ───────────────────────────────────────────────────────────
+//   - Primitive types (int, float, bool, etc.) → returns the node unchanged.
+//   - Named types (struct, enum, trait, type alias) → resolves symbol,
+//     unwraps aliases, resolves generic arguments.
+//   - Nullable types → resolves inner type.
+//   - Array types (fixed, slice, dynamic) → resolves element type.
+//   - Reference (&T) and pointer (*T) → resolves inner type.
+//   - Function types → resolves parameter and return types.
+//   - All other TypeAST subclasses via their visit methods.
+//
+// ─── What is NOT covered ─────────────────────────────────────────────────────
+//   - Type checking (compatibility, assignability) – handled by TypeChecker.
+//   - Semantic restrictions on where a type can appear (e.g., raw pointers
+//     only in @extern) – enforced in Phase 3.
+//   - Generic parameter substitution for declarations (e.g., struct Box<T>
+//     where T is a generic param) – handled by marking isGenericParam.
+//
+// ─── Return Value ───────────────────────────────────────────────────────────
+//   Returns the resolved TypeAST (usually the same node, but may be a different
+//   node for type aliases or substitutions). Returns nullptr if resolution
+//   fails (error already reported via DiagnosticEngine).
 // ─────────────────────────────────────────────────────────────────────────────
 TypeAST* TypeResolver::resolveType(TypeAST* typeNode) {
     LUC_LOG_SEMANTIC_VERBOSE("resolveType: starting with kind=" 
@@ -59,15 +163,72 @@ TypeAST* TypeResolver::resolveType(TypeAST* typeNode) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Generic parameter stack helpers
+// Generic Parameter & Substitution Stacks
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+// pushGenericParams  —  Pushes a list of generic parameters onto the stack.
+//
+// Called when entering a generic declaration (struct, trait, impl, function,
+// or type alias) that introduces new type parameters. The resolver uses the
+// stack to determine whether a NamedTypeAST refers to a generic parameter
+// rather than a concrete type.
+//
+// ─── Purpose ─────────────────────────────────────────────────────────────────
+// Allows nested generic contexts (e.g., a generic struct inside a generic
+// function) to correctly resolve names like `T` that may refer to different
+// parameters at different nesting levels. The innermost (most recent) list
+// is searched first.
+//
+// ─── Parameters ─────────────────────────────────────────────────────────────
+//   params – Pointer to a vector of GenericParamAST owned by the AST node.
+//            Must remain valid for the duration the stack entry is active.
+//            May be nullptr (in which case a null entry is pushed, which
+//            is ignored during lookup).
+//
+// ─── Stack Behaviour ─────────────────────────────────────────────────────────
+//   - A new entry is added to the back of the vector (the "top" of the stack).
+//   - isGenericParam searches from the back (innermost) to front (outermost).
+//   - Each call to pushGenericParams must be matched with a call to
+//     popGenericParams when leaving the generic context.
+//
+// ─── Usage Pattern ───────────────────────────────────────────────────────────
+//   void visit(FuncDeclAST& node) {
+//       pushGenericParams(&node.genericParams);
+//       // ... resolve types inside the function ...
+//       popGenericParams();
+//   }
+//
+// ─── Error Handling ─────────────────────────────────────────────────────────
+//   No errors; the stack is unbounded (limited only by recursion depth of
+//   generic nesting).
+// ─────────────────────────────────────────────────────────────────────────────
 void TypeResolver::pushGenericParams(const std::vector<GenericParamPtr>* params) {
     genericParamsStack_.push_back(params);
     LUC_LOG_SEMANTIC_EXTREME("pushGenericParams: depth=" << genericParamsStack_.size()
                             << ", params=" << (params ? std::to_string(params->size()) : "null"));
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// popGenericParams  —  Removes the topmost generic parameter list from the stack.
+//
+// Called when exiting a generic declaration. Must be called exactly once for
+// each pushGenericParams. If the stack is empty, logs an error (developer bug).
+//
+// ─── Purpose ─────────────────────────────────────────────────────────────────
+// Maintains the correct stack depth for nested generic contexts. Forgetting
+// to pop would cause subsequent type resolution to incorrectly see stale
+// generic parameters.
+//
+// ─── Stack Behaviour ─────────────────────────────────────────────────────────
+//   - Removes the last element of genericParamsStack_.
+//   - Does not deallocate the pointed‑to vector (owned by the AST node).
+//
+// ─── Error Handling ─────────────────────────────────────────────────────────
+//   - If the stack is already empty, logs an error but does nothing else.
+//     This indicates a mismatch in push/pop calls, which is a programming
+//     error in the resolver.
+// ─────────────────────────────────────────────────────────────────────────────
 void TypeResolver::popGenericParams() {
     if (!genericParamsStack_.empty()) {
         genericParamsStack_.pop_back();
@@ -77,6 +238,43 @@ void TypeResolver::popGenericParams() {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// isGenericParam  —  Determines whether a name is a generic type parameter in
+//                    the current context.
+//
+// Searches the generic parameter stack (innermost first) for a parameter whose
+// name matches the given InternedString. Used by visit(NamedTypeAST) to decide
+// whether to treat the name as a generic parameter or to look it up in the
+// symbol table.
+//
+// ─── Purpose ─────────────────────────────────────────────────────────────────
+// Enables the resolver to distinguish between:
+//   - Generic type parameters (e.g., `T` in `struct Box<T>`)
+//   - Concrete type names (e.g., `int`, `Circle`, `Vec2`)
+//   - Type aliases (unwrapped after resolution)
+//
+// ─── Algorithm ───────────────────────────────────────────────────────────────
+//   1. Iterate over genericParamsStack_ from the back (innermost) to front.
+//   2. For each entry (a vector of GenericParamPtr), check each parameter.
+//   3. If a parameter with the given name exists, return true.
+//   4. If none found, return false.
+//
+// ─── Cases Covered (returns true) ────────────────────────────────────────────
+//   - The name matches a generic parameter declared in the current function.
+//   - The name matches a generic parameter declared in an enclosing generic
+//     declaration (e.g., outer struct when inside an inner generic function).
+//
+// ─── What is NOT covered (returns false) ─────────────────────────────────────
+//   - The name is a concrete type (struct, enum, primitive).
+//   - The name is a type alias (resolved by unwrapping, not as generic param).
+//   - No active generic context (stack is empty).
+//
+// ─── Relation with substitution ──────────────────────────────────────────────
+//   Even if isGenericParam returns true, the name may be replaced by a concrete
+//   type via lookupSubstitution (when the generic parameter is instantiated).
+//   The caller (visit(NamedTypeAST)) checks substitution first, then falls back
+//   to marking the node as a generic parameter.
+// ─────────────────────────────────────────────────────────────────────────────
 bool TypeResolver::isGenericParam(InternedString name) const {
     // Search from innermost (back) to outermost (front)
     for (auto it = genericParamsStack_.rbegin(); it != genericParamsStack_.rend(); ++it) {
@@ -94,15 +292,71 @@ bool TypeResolver::isGenericParam(InternedString name) const {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Substitution map stack helpers
+// pushSubstitutionMap  —  Pushes a substitution map onto the stack.
+//
+// When instantiating a generic type with concrete arguments (e.g., `Box<int>`),
+// the resolver builds a mapping from generic parameter names (e.g., `"T"`) to
+// the concrete types provided (e.g., `int`). This mapping is pushed onto a stack
+// so that while resolving the body of the generic declaration, any reference
+// to the parameter name is replaced by the concrete type.
+//
+// ─── Purpose ─────────────────────────────────────────────────────────────────
+// Enables nested generic instantiations (e.g., `Box<Pair<int, float>>`) by
+// maintaining a stack of substitution maps. The innermost map (most recent
+// push) takes precedence, allowing outer maps to be visible but overridden
+// by inner instantiations for the same parameter name if necessary.
+//
+// ─── Parameters ─────────────────────────────────────────────────────────────
+//   map – Pointer to an unordered_map from InternedString (generic param name)
+//         to the concrete TypeAST. The map is owned by the caller (usually a
+//         local variable in visit(ImplDeclAST) or similar). Must remain valid
+//         for the duration the stack entry is active.
+//
+// ─── Stack Behaviour ─────────────────────────────────────────────────────────
+//   - The map is added to the back of substitutionMapStack_ (the "top").
+//   - lookupSubstitution searches from back (innermost) to front (outermost).
+//   - Each pushSubstitutionMap must be matched with a call to popSubstitutionMap.
+//
+// ─── Usage Pattern ───────────────────────────────────────────────────────────
+//   void visit(ImplDeclAST& node) {
+//       std::unordered_map<InternedString, TypeAST*> localSubstitutionMap;
+//       // ... build map ...
+//       pushSubstitutionMap(&localSubstitutionMap);
+//       // ... resolve method signatures that may refer to T ...
+//       popSubstitutionMap();
+//   }
+//
+// ─── Error Handling ─────────────────────────────────────────────────────────
+//   No errors; the stack is unbounded (limited by nesting depth of generic
+//   instantiations). The caller is responsible for ensuring the map outlives
+//   the stack entry.
 // ─────────────────────────────────────────────────────────────────────────────
-
 void TypeResolver::pushSubstitutionMap(const std::unordered_map<InternedString, TypeAST*>* map) {
     substitutionMapStack_.push_back(map);
     LUC_LOG_SEMANTIC_EXTREME("pushSubstitutionMap: depth=" << substitutionMapStack_.size()
                             << ", map=" << (map ? std::to_string(map->size()) : "null"));
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// popSubstitutionMap  —  Removes the topmost substitution map from the stack.
+//
+// Called after finishing resolution of a generic instantiation context.
+// Must be called exactly once for each pushSubstitutionMap. If the stack is
+// empty, logs an error (developer bug).
+//
+// ─── Purpose ─────────────────────────────────────────────────────────────────
+// Restores the previous substitution context, ensuring that outer generic
+// parameters are visible again after exiting an inner instantiation.
+//
+// ─── Stack Behaviour ─────────────────────────────────────────────────────────
+//   - Removes the last element of substitutionMapStack_.
+//   - Does not deallocate the pointed‑to map (owned by the caller).
+//
+// ─── Error Handling ─────────────────────────────────────────────────────────
+//   - If the stack is already empty, logs an error but does nothing else.
+//     This indicates a mismatch in push/pop calls, which is a programming
+//     error in the resolver.
+// ─────────────────────────────────────────────────────────────────────────────
 void TypeResolver::popSubstitutionMap() {
     if (!substitutionMapStack_.empty()) {
         substitutionMapStack_.pop_back();
@@ -112,6 +366,41 @@ void TypeResolver::popSubstitutionMap() {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// lookupSubstitution  —  Looks up a name in the substitution map stack.
+//
+// Given a generic parameter name (e.g., `"T"`), searches the substitution map
+// stack from innermost to outermost for a concrete type binding. If found,
+// returns the concrete TypeAST; otherwise returns nullptr.
+//
+// ─── Purpose ─────────────────────────────────────────────────────────────────
+// Used during resolution of NamedTypeAST when the name is recognised as a
+// generic parameter (isGenericParam returns true). The concrete type from the
+// innermost matching substitution overrides the generic parameter, effectively
+// instantiating the generic with the provided type argument.
+//
+// ─── Algorithm ───────────────────────────────────────────────────────────────
+//   1. Iterate over substitutionMapStack_ from the back (innermost) to front.
+//   2. For each map entry, perform a lookup using the given name.
+//   3. If found, return the associated TypeAST*.
+//   4. If no map contains the name, return nullptr.
+//
+// ─── Cases Covered (returns non‑null) ────────────────────────────────────────
+//   - The name is a generic parameter of the current instantiation and a
+//     concrete type has been provided (e.g., `T` → `int` in `Box<int>`).
+//   - The name is a generic parameter of an outer instantiation and the inner
+//     instantiation does not override it.
+//
+// ─── What is NOT covered (returns nullptr) ───────────────────────────────────
+//   - No substitution map is active (stack empty).
+//   - The name is not found in any map on the stack.
+//   - The name is a generic parameter but no substitution was provided
+//     (e.g., inside the generic definition itself, where T remains abstract).
+//
+// ─── Return Value ───────────────────────────────────────────────────────────
+//   Returns a pointer to the concrete TypeAST (owned by the AST arena).
+//   The caller must not delete the returned node.
+// ─────────────────────────────────────────────────────────────────────────────
 TypeAST* TypeResolver::lookupSubstitution(InternedString name) const {
     // Search from innermost (back) to outermost (front)
     for (auto it = substitutionMapStack_.rbegin(); it != substitutionMapStack_.rend(); ++it) {
@@ -128,7 +417,51 @@ TypeAST* TypeResolver::lookupSubstitution(InternedString name) const {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// resolveStructFields  — Resolves each field's type
+// Helper Methods
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// resolveStructFields  —  Resolves all field types inside a struct declaration.
+//
+// Walks the list of fields of a StructDeclAST and resolves the type annotation
+// of each field. This must be done after the struct's generic parameters are
+// known, because field types may refer to those parameters (e.g., `value T`).
+//
+// ─── Purpose ─────────────────────────────────────────────────────────────────
+// Ensures that every field type in a struct is a valid, fully resolved type.
+// Called during Phase 2a from visit(StructDeclAST) before the struct's selfType
+// is registered in the symbol table. Also used when resolving struct fields
+// in other contexts (e.g., re‑resolution after generic substitution – though
+// currently only called once per struct).
+//
+// ─── Algorithm ───────────────────────────────────────────────────────────────
+//   1. Push the struct's own generic parameters onto the generic parameter stack
+//      (so that `T` inside field types is recognised as a generic param).
+//   2. For each field in node.fields:
+//        - If the field has a type annotation, call resolveType() on it.
+//        - If resolution fails, log an error (but continue resolving others).
+//   3. Pop the generic parameters stack to restore the previous context.
+//
+// ─── Cases Covered ───────────────────────────────────────────────────────────
+//   - Non‑generic struct: field types are resolved normally (no generic stack).
+//   - Generic struct: field types that refer to generic parameters (e.g., `T`)
+//     are marked as `isGenericParam = true` and not looked up in the symbol table.
+//   - Nested generic structs (struct inside generic function) – the generic
+//     parameters stack already contains outer parameters; this function pushes
+//     the struct's own parameters on top, allowing both to be visible.
+//   - Field types that are type aliases or other named types – resolved recursively.
+//
+// ─── What is NOT covered ─────────────────────────────────────────────────────
+//   - Default values of fields (expressions) – handled in Phase 3.
+//   - Semantic checks (duplicate field names, field visibility) – handled
+//     by the semantic pass (Phase 3), not by type resolution.
+//   - Substitution of concrete types for generic parameters during instantiation
+//     (handled by ImplDeclAST resolution with substitution maps).
+//
+// ─── Note ────────────────────────────────────────────────────────────────────
+//   This function does not resolve the struct's selfType; that is done by the
+//   caller (visit(StructDeclAST)) after field resolution, because selfType is
+//   a NamedTypeAST that refers to the struct itself, not to its generic parameters.
 // ─────────────────────────────────────────────────────────────────────────────
 void TypeResolver::resolveStructFields(StructDeclAST& node) {
     pushGenericParams(&node.genericParams);
@@ -147,6 +480,50 @@ void TypeResolver::resolveStructFields(StructDeclAST& node) {
     popGenericParams();
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// resolveFunctionType  —  Resolves all parameter and return types inside a
+//                         function type.
+//
+// Given a FuncTypeAST, walks its parameter groups and return types, resolving
+// each type annotation. This is the core routine for validating function
+// signatures, whether they appear in a declaration, a function type annotation,
+// a trait method, or an impl method.
+//
+// ─── Purpose ─────────────────────────────────────────────────────────────────
+// Ensures that every type within a function signature (parameter types and
+// return types) is a valid, fully resolved type. Called during Phase 2a from
+// visit(FuncTypeAST), and also used by helper functions when synthesising
+// temporary FuncTypeAST nodes.
+//
+// ─── Algorithm ───────────────────────────────────────────────────────────────
+//   1. For each parameter group (curry level):
+//        - For each parameter in the group:
+//            - If the parameter has a type annotation, call resolveType() on it.
+//   2. For each return type in the returnTypes vector:
+//        - If the return type is non‑null, call resolveType() on it.
+//
+// ─── Cases Covered ───────────────────────────────────────────────────────────
+//   - Regular function: one parameter group, optional return type.
+//   - Curried function: multiple parameter groups.
+//   - Void function: empty returnTypes vector.
+//   - Multiple return values: returnTypes vector with more than one element.
+//   - Parameters with generic types (e.g., `(x T)`) – resolved within the
+//     current generic context (genericParams stack already set by caller).
+//   - Function types nested inside other types (e.g., `let callback (int) string`).
+//
+// ─── What is NOT covered ─────────────────────────────────────────────────────
+//   - Qualifier resolution (~async, ~nullable, ~parallel) – handled by the
+//     visit(FuncTypeAST) method before calling this function.
+//   - Semantic checks (e.g., duplicate parameter names) – handled in Phase 3.
+//   - Default parameter values – Luc does not have them.
+//   - Variadic parameters – the type is already resolved; this function treats
+//     them like any other parameter type.
+//
+// ─── Note ────────────────────────────────────────────────────────────────────
+//   This function does not modify the generic parameter stack. The caller is
+//   responsible for ensuring the correct generic context is active before
+//   calling resolveFunctionType.
+// ─────────────────────────────────────────────────────────────────────────────
 void TypeResolver::resolveFunctionType(FuncTypeAST& type) {
     for (auto& group : type.sig.paramGroups) {
         for (auto& param : group) {
@@ -162,6 +539,51 @@ void TypeResolver::resolveFunctionType(FuncTypeAST& type) {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// getFunctionReturnTypes  —  Returns a vector of resolved return types for a
+//                            function type.
+//
+// Given a FuncTypeAST, resolves each return type (if not already resolved) and
+// returns a vector of the resulting TypeAST pointers. The order of the vector
+// matches the order in the signature.
+//
+// ─── Purpose ─────────────────────────────────────────────────────────────────
+// Provides a convenient way to obtain the fully resolved return types of a
+// function for use in semantic checking (e.g., matching return statements,
+// checking call expressions, unifying branches). The vector may be empty for
+// void functions.
+//
+// ─── Algorithm ───────────────────────────────────────────────────────────────
+//   1. Create an empty vector<TypeAST*>.
+//   2. For each return type in type.sig.returnTypes:
+//        - Call resolveType() on the return type node.
+//        - Push the resolved pointer onto the result vector.
+//   3. Return the vector.
+//
+// ─── Cases Covered ───────────────────────────────────────────────────────────
+//   - Void function → returns empty vector.
+//   - Single return type → vector with one element.
+//   - Multiple return types → vector with elements in source order.
+//   - Return types that are themselves function types or generic instantiations
+//     → resolved recursively.
+//
+// ─── What is NOT covered ─────────────────────────────────────────────────────
+//   - Returns a vector of pointers to the resolved TypeAST nodes; these nodes
+//     are owned by the AST arena (or the original node). The caller must not
+//     delete them.
+//   - Does not validate that the return types are valid in the current context
+//     (e.g., that a generic type is fully instantiated) – that is the caller's
+//     responsibility.
+//   - Does not handle the case where a return type is unresolved (resolveType
+//     returns nullptr); in that case the vector will contain a nullptr entry.
+//     The caller should check for null and report an error if needed.
+//
+// ─── Note ────────────────────────────────────────────────────────────────────
+//   This function is often used in conjunction with getFunctionReturnType
+//   (single return convenience wrapper). Use this function when you need to
+//   inspect all return types, e.g., for checking multi‑return assignments.
+// ─────────────────────────────────────────────────────────────────────────────
+
 std::vector<TypeAST*> TypeResolver::getFunctionReturnTypes(FuncTypeAST& type) {
     std::vector<TypeAST*> result;
     for (auto& retType : type.sig.returnTypes) {
@@ -171,7 +593,6 @@ std::vector<TypeAST*> TypeResolver::getFunctionReturnTypes(FuncTypeAST& type) {
     }
     return result;
 }
-
 TypeAST* TypeResolver::getFunctionReturnType(FuncTypeAST& type, const SourceLocation* loc) {
     if (type.sig.returnTypes.empty()) {
         return nullptr;
@@ -187,12 +608,15 @@ TypeAST* TypeResolver::getFunctionReturnType(FuncTypeAST& type, const SourceLoca
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Type Node Visitors
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
 // visit(PrimitiveTypeAST)  — Resolves primitive language types
 //
 // Primitives (int, float, bool) are inherently valid built-in language targets and 
 // do not require verification against a symbol map. They resolve immediately.
 // ─────────────────────────────────────────────────────────────────────────────
-
 void TypeResolver::visit(PrimitiveTypeAST& node) {
     LUC_LOG_SEMANTIC_VERBOSE("visit(PrimitiveTypeAST): kind=" 
                         << static_cast<int>(node.primitiveKind));
@@ -433,6 +857,10 @@ void TypeResolver::visit(FuncTypeAST& node) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Declaration Node Visitors
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
 // visit(FuncDeclAST)  — Resolves function parameter and return types
 // ─────────────────────────────────────────────────────────────────────────────
 void TypeResolver::visit(FuncDeclAST& node) {
@@ -480,7 +908,6 @@ void TypeResolver::visit(VarDeclAST& node) {
     
     resolved_ = resolvedType;
 }
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 // visit(StructDeclAST)  — Resolves struct field types

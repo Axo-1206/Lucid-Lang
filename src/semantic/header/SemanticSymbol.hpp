@@ -1,13 +1,68 @@
 /**
  * @file SemanticSymbol.hpp
+ * @responsibility Defines the semantic representation of resolved declarations.
  *
- * @nutshell Defines what a 'Symbol' actually represents semantically.
+ * The AST provides syntax; symbols provide semantics. A Symbol represents a
+ * resolved declaration (variable, function, struct, enum, trait, etc.) after
+ * name resolution. Each symbol holds a back‑pointer to its AST node, its
+ * resolved type, visibility, and other metadata needed for type checking
+ * and code generation.
  *
- * @reason Nodes in an AST don't inherently represent unique global entities across files; this provides the data definitions linking AST trees back to recognized global definitions.
+ * @related
+ *   - SymbolTable.hpp – scope stack for symbol lookup
+ *   - SemanticCollector.hpp – Phase 1 visitor that populates symbols
+ *   - SemanticAnalyzer.hpp – orchestrates the entire semantic pipeline
  *
- * @responsibility The symbol type itself, representing declared entities (variables, functions, types, etc.).
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Why symbols are necessary
+ * ─────────────────────────────────────────────────────────────────────────────
+ * - The AST only knows structure, not identity. Two different places may refer
+ *   to the same `Vec2` struct; symbols give those references a single canonical
+ *   representation.
+ * - Symbol tables resolve names to symbols, enabling cross‑reference and scope
+ *   management (handled by `SymbolTable`).
+ * - Many semantic rules (visibility, constness, @extern) are attached to
+ *   symbols, not to AST nodes directly.
  *
- * @related SymbolTable.hpp
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Design decisions
+ * ─────────────────────────────────────────────────────────────────────────────
+ * - **InternedString for names** – the `name` field is an `InternedString`
+ *   (a 32‑bit ID) instead of `std::string`. This reduces memory (4 bytes vs 32+),
+ *   makes comparisons O(1) integer equality, and works seamlessly with
+ *   arena‑allocated AST nodes because interned strings have no destructor.
+ * - **Non‑owning pointers** – `type` and `decl` are raw pointers that point
+ *   into the AST arena or the type system. The symbol table does not own the
+ *   underlying nodes; the arena does.
+ * - **Explicit StringPool dependency** – To display a symbol name (e.g., in
+ *   diagnostics), you must pass a `StringPool` reference. This makes the
+ *   dependency visible and avoids hidden global state.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Usage example
+ * ─────────────────────────────────────────────────────────────────────────────
+ * @code
+ * // During semantic collection (Phase 1)
+ * Symbol sym;
+ * sym.name = pool.intern("player");
+ * sym.kind = SymbolKind::Var;
+ * sym.declKw = DeclKeyword::Let;
+ * sym.visibility = Visibility::Private;
+ * sym.decl = &varDeclNode;
+ * sym.loc = varDeclNode.loc;
+ * symbols.declare(sym);
+ *
+ * // Later in type checking (Phase 3)
+ * Symbol* found = symbols.lookup(pool.intern("player"));
+ * if (found && found->kind == SymbolKind::Var) {
+ *     TypeAST* varType = found->type;   // already resolved
+ * }
+ * @endcode
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * @note The symbol table stores names as InternedString IDs. To convert an
+ *       InternedString to a readable string, use `pool.lookup(name)`.
+ * ─────────────────────────────────────────────────────────────────────────────
  */
 #pragma once
 
@@ -15,6 +70,7 @@
 #include "ast/DeclAST.hpp"
 #include "ast/support/InternedString.hpp"
 #include "ast/support/StringPool.hpp"
+
 #include <string>
 #include <string_view>
 

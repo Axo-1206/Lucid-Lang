@@ -15,7 +15,7 @@
  *       - Generic parameters (parseGenericParams, parseGenericParam)
  *       - Visibility modifiers (parseVisibility)
  *
- * @related_files
+ * @related
  *   - Parser.hpp – class declaration and interface
  *   - ParserDecl.cpp – top‑level and local declarations
  *   - ParserExpr.cpp – expressions, patterns, pipelines, composition
@@ -78,7 +78,7 @@
  *   parseDeclaration()                   – unified entry for top‑level & local decls
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * Note: Expression, statement, declaration, and type parsers are implemented
+ * @note: Expression, statement, declaration, and type parsers are implemented
  * in their respective translation units (see @related_files). This file
  * contains only the infrastructure and grammar rules that are not specific
  * to those categories.

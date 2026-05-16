@@ -19,7 +19,7 @@
  * corresponding TypeAST nodes. They include error recovery and progress
  * guarantees to prevent infinite loops.
  *
- * @related_files
+ * @related
  *   - Parser.hpp – class declaration and shared utilities
  *   - Parser.cpp – core token stream primitives
  *   - ParserDecl.cpp – declaration parsing (uses type parsers for annotations)

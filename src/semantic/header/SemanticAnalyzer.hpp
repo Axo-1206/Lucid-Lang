@@ -1,21 +1,76 @@
 /**
  * @file SemanticAnalyzer.hpp
+ * @responsibility Entry point orchestrating the four passes of semantic analysis.
  *
- * @nutshell Public interface dictating the sequence of semantic validation.
+ * SemanticAnalyzer drives the entire semantic pipeline for a package:
+ *   - Phase 0: resolveImports – detect circular `use` declarations.
+ *   - Phase 1: collectSymbols – run SemanticCollector to populate the symbol table.
+ *   - Phase 2: resolveTypes – run TypeResolver to validate and bind type annotations.
+ *   - Phase 3: checkDecls – run the full declaration/expression/statement checkers.
+ *   - Phase 4: annotate – write semantic properties (isConst, etc.) back to AST nodes.
  *
- * @responsibility Entry point orchestrating the four passes to enforce semantic rules.
+ * Phase 3 (checkDecls) is implemented using a "global function" pattern spread across
+ * SemanticDecl.cpp, SemanticStmt.cpp, and SemanticExpr.cpp. Forward declarations
+ * at the top of each .cpp file avoid circular header dependencies.
  *
- * @architecture Phase 3 (checkDecls) is implemented using a "Global Function" pattern.
- *   The recursive calls between Declarations, Statements, and Expressions are distributed
- *   across SemanticDecl.cpp, SemanticStmt.cpp, and SemanticExpr.cpp.
+ * @related
+ *   - SemanticCollector.hpp – Phase 1 visitor
+ *   - TypeResolver.hpp – Phase 2a type resolution
+ *   - TypeChecker.hpp – Phase 2b type compatibility
+ *   - SemanticDecl.cpp, SemanticStmt.cpp, SemanticExpr.cpp – Phase 3 implementation
  *
- * @note Why no headers for Phase 3? To avoid complex circular dependencies (e.g. Expr 
- *   needs Stmt, Stmt needs Expr), we use manual "Forward Declarations" at the top of 
- *   each .cpp file. The Linker connects these calls across files at build-time.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Why these four passes are necessary
+ * ─────────────────────────────────────────────────────────────────────────────
+ * - Phase 0 (imports): prevents cycles in the module graph early, before
+ *   expensive symbol collection and type resolution.
+ * - Phase 1 (symbols): collects all names in a file before type resolution,
+ *   enabling forward references (use a struct before its definition).
+ * - Phase 2 (types): resolves every type annotation so that subsequent checks
+ *   have concrete TypeAST nodes (no unresolved names).
+ * - Phase 3 (checking): enforces all semantic rules: assignment compatibility,
+ *   control‑flow correctness, generics instantiation, pattern exhaustiveness, etc.
+ * - Phase 4 (annotation): stamps isConst, isBehaviorMember, and other flags
+ *   on AST nodes, preparing them for code generation.
  *
- * @related 
- *   - SemanticAnalyzer.cpp, SemanticCollector.hpp, TypeResolver.hpp
- *   - SemanticDecl.cpp, SemanticStmt.cpp, SemanticExpr.cpp
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Design decisions
+ * ─────────────────────────────────────────────────────────────────────────────
+ * - **Global functions for Phase 3** – The checking phase recursively traverses
+ *   declarations, statements, and expressions, which would create circular
+ *   includes if placed in headers. Instead, each .cpp file declares the external
+ *   functions it needs, and the linker resolves them.
+ * - **Explicit StringPool and ASTArena dependencies** – The analyzer stores
+ *   references to the pool and arena, passing them to the sub‑components.
+ * - **CompilationMode detection** – The analyzer reads @aot/@jit attributes on
+ *   the `main` function and stores the mode for the driver and codegen.
+ * - **Context flags for Phase 3** – `insideExtern_`, `loopDepth_`, `parallelDepth_`
+ *   are shared across the recursive checking functions to enforce restrictions
+ *   (e.g., no `await` inside parallel blocks).
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Usage example
+ * ─────────────────────────────────────────────────────────────────────────────
+ * @code
+ * DiagnosticEngine dc;
+ * StringPool pool;
+ * ASTArena arena;
+ * SemanticAnalyzer analyzer(dc, pool, arena);
+ *
+ * std::vector<ProgramAST*> files = ...; // from parsing
+ * if (analyzer.analyze(files)) {
+ *     // Semantic analysis succeeded – ready for code generation
+ *     if (analyzer.getCompilationMode() == CompilationMode::JIT) {
+ *         // Run JIT compilation
+ *     }
+ * }
+ * @endcode
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * @note Phase 3 uses manual forward declarations to avoid circular includes.
+ *       Adding a new semantic check may require updating the forward declarations
+ *       at the top of SemanticDecl.cpp, SemanticStmt.cpp, or SemanticExpr.cpp.
+ * ─────────────────────────────────────────────────────────────────────────────
  */
 #pragma once
 

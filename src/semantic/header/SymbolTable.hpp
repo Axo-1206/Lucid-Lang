@@ -1,21 +1,68 @@
 /**
  * @file SymbolTable.hpp
+ * @responsibility Manages lexical scoping for symbols during semantic analysis.
  *
- * @nutshell The stack tracker guaranteeing variables respect their bounding boxes.
+ * SymbolTable maintains a stack of scopes (hash maps). Each scope maps an
+ * InternedString ID to a Symbol. Entering a block, function, or generic
+ * declaration pushes a new scope; leaving it pops. Lookups search from the
+ * innermost scope outward, implementing standard lexical scoping rules.
  *
- * @reason Serves as the state-machine memory during parsing and semantic analysis to verify names don't leak sideways into unrelated functions or files.
+ * @related
+ *   - SemanticSymbol.hpp – defines the Symbol structure
+ *   - SemanticCollector.hpp – populates the symbol table during Phase 1
+ *   - SemanticAnalyzer.hpp – uses the table for type resolution and checking
  *
- * @responsibility The scope stack to track variable and type declarations across blocks, functions, and impls.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Why a scope stack is necessary
+ * ─────────────────────────────────────────────────────────────────────────────
+ * - Nested blocks (if, for, while) and nested functions create inner scopes
+ *   that shadow outer declarations. The stack naturally models this.
+ * - Function parameters are declared in the function's own scope, separate
+ *   from the enclosing block.
+ * - Generic declarations introduce type parameters that are only visible
+ *   inside the declaration body.
  *
- * @logic Every block, function body, and impl block pushes a new scope. Variable lookups walk the stack outward.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Design decisions
+ * ─────────────────────────────────────────────────────────────────────────────
+ * - **InternedString keys** – scopes use uint32_t IDs (from InternedString)
+ *   directly as keys, avoiding string copies and giving O(1) comparisons.
+ * - **Non‑owning storage** – the table stores Symbols by value; they are not
+ *   owned by the table beyond the symbol's lifetime (the AST arena owns the
+ *   underlying declaration nodes).
+ * - **Stack of unordered_maps** – each scope is a hash map for O(1) average
+ *   lookup and insertion. The stack is implemented with std::deque for
+ *   efficient push/pop at both ends.
  *
- * @related SemanticSymbol.hpp, SemanticAnalyzer.hpp
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Usage example
+ * ─────────────────────────────────────────────────────────────────────────────
+ * @code
+ * SymbolTable symbols;
+ * symbols.pushScope();                // enter file scope
+ *
+ * Symbol sym;
+ * sym.name = pool.intern("x");
+ * sym.kind = SymbolKind::Var;
+ * symbols.declare(sym);               // declares 'x' in current scope
+ *
+ * symbols.pushScope();                // enter a block
+ * Symbol* found = symbols.lookup(pool.intern("x")); // finds outer 'x'
+ * symbols.popScope();                 // exit block, discarding inner symbols
+ * @endcode
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * @note The table does not own StringPool; the pool must outlive the table.
+ *       All lookup and declaration methods require InternedString arguments,
+ *       which are cheap to pass and compare.
+ * ─────────────────────────────────────────────────────────────────────────────
  */
 #pragma once
 
 #include "SemanticSymbol.hpp"
 #include "ast/support/InternedString.hpp"
 #include "ast/support/StringPool.hpp"
+
 #include <vector>
 #include <unordered_map>
 #include <string>

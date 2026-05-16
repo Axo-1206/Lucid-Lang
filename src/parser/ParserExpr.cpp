@@ -17,7 +17,7 @@
  * corresponding ExprAST nodes. The Pratt parser uses a precedence table
  * defined in the anonymous namespace below.
  *
- * @related_files
+ * @related
  *   - Parser.hpp – class declaration and shared utilities
  *   - Parser.cpp – core token stream primitives
  *   - ParserDecl.cpp – declaration parsing (called from expressions in some contexts)

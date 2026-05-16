@@ -158,7 +158,8 @@ nullable_suffix := '?'
 -- Reference (&T) — safe managed reference
 ref_type        := '&' type
 
--- Raw pointer (*T) — only valid on @extern declarations
+-- Raw pointer (*T) — allowed anywhere, but operations (dereference, indexing,
+-- arithmetic) are forbidden. Use only for storage, nil checks, and intrinsics.
 ptr_type        := '*' type
 
 -- Array types
@@ -2083,7 +2084,6 @@ type identifiers. Runtime expressions are not valid inside attribute arguments.
 
 - Requires `const`, not `let` — the linker resolves the symbol permanently
 - Functions must have no body
-- `*T` raw pointer is only valid on `@extern`-decorated declarations
 - `W3001` warning when `let` is used instead of `const`
 - `W3002` warning when an empty body `= {}` is supplied (body silently ignored)
 - `E3002` error when a non-empty body is supplied

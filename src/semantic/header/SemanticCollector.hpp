@@ -1,24 +1,73 @@
 /**
  * @file SemanticCollector.hpp
+ * @responsibility Phase 1 of semantic analysis: gathers top‑level declarations into the symbol table.
  *
- * @nutshell A quick first-pass AST visitor that gathers definitions.
+ * SemanticCollector is an ASTVisitor that walks the parse tree before type checking.
+ * It collects struct, enum, function, trait, impl, from, and type alias names,
+ * and declares them in the global symbol table. This enables forward references
+ * during later phases (type resolution and checking).
  *
- * @reason Modern language syntax requires types to be referenceable before they are fully checked. This establishes that baseline index mapping.
+ * @related
+ *   - SymbolTable.hpp – stores the collected symbols
+ *   - SemanticAnalyzer.hpp – orchestrates the four semantic phases
+ *   - TypeResolver.hpp – resolves type annotations using the collected symbols
+ *   - NameMangler.hpp – generates unique names for methods, variants, and conversions
  *
- * @responsibility Phase 1 of semantic analysis: collect all top-level names into the file-scope symbol table.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Why a separate collection phase is necessary
+ * ─────────────────────────────────────────────────────────────────────────────
+ * - Luc supports forward references: a type can be used before it is defined
+ *   (e.g., a struct field that points to another struct defined later).
+ * - Collecting all declarations first ensures that every name is already in
+ *   the symbol table when type resolution begins.
+ * - Without this phase, resolving a type like `Vec2` would fail because the
+ *   symbol wouldn't exist yet if `struct Vec2` appears later in the file.
  *
- * @logic First pass over the AST. Collects declarations (struct, enum, function, etc.) before type checking to enable forward references.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Design decisions
+ * ─────────────────────────────────────────────────────────────────────────────
+ * - **No type resolution** – the collector only records names and their kinds.
+ *   Type information (e.g., `sym->type`) is left nullptr; it is filled later
+ *   by TypeResolver.
+ * - **Mangled names for methods, variants, and conversions** – the collector
+ *   uses `NameMangler` to generate unique identifiers (e.g., `Struct::method`,
+ *   `Enum::variant`, `Target::from::ParamType`). This avoids collisions and
+ *   enables qualified lookup.
+ * - **Explicit StringPool dependency** – the collector holds a reference to
+ *   StringPool to convert InternedString names to readable strings for
+ *   diagnostics.
+ * - **Error on duplicate names** – if the same name is declared twice in the
+ *   same scope (e.g., two structs with the same name), the collector reports
+ *   an error immediately.
  *
- * @related SemanticAnalyzer.hpp, SymbolTable.hpp
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Usage example
+ * ─────────────────────────────────────────────────────────────────────────────
+ * @code
+ * SymbolTable symbols;
+ * SemanticCollector collector(symbols, dc, pool);
+ *
+ * for (ProgramAST* prog : files) {
+ *     collector.collectProgram(*prog);
+ * }
+ * // Now the symbol table contains all top‑level declarations.
+ * @endcode
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * @note The collector only processes top‑level declarations. Function bodies,
+ *       block scopes, and expressions are ignored – they are handled by later
+ *       phases. Only declarations that create symbols (struct, enum, func, etc.)
+ *       are visited.
+ * ─────────────────────────────────────────────────────────────────────────────
  */
+
 #pragma once
 
 #include "ast/BaseAST.hpp"
 #include "ast/DeclAST.hpp"
 #include "SymbolTable.hpp"
 #include "ast/support/StringPool.hpp"
-
-class DiagnosticEngine;
+#include "diagnostics/DiagnosticEngine.hpp"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SemanticCollector  — Phase 1 AST Visitor for symbol collection

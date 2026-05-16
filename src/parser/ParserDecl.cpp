@@ -12,7 +12,7 @@
  * All functions consume tokens from the parser’s stream and build corresponding
  * AST nodes. They include error recovery and infinite‑loop prevention mechanisms.
  *
- * @related_files
+ * @related
  *   - Parser.hpp – class declaration and shared utilities
  *   - Parser.cpp – core token stream primitives and top‑level dispatch
  *   - ParserExpr.cpp – expression parsing (used in initialisers and bodies)
@@ -53,7 +53,7 @@
  *   parseTypeAliasDecl()               – 'type' alias definition
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * Note: Each declaration parser assumes the leading keyword (or visibility
+ * @note: Each declaration parser assumes the leading keyword (or visibility
  * modifier) has already been consumed by parseDeclaration() in Parser.cpp.
  * The functions are responsible for consuming their entire syntactic domain
  * and reporting errors with recovery.

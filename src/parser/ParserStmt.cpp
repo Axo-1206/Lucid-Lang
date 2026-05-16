@@ -15,7 +15,7 @@
  * corresponding StmtAST nodes. They include error recovery and infinite‑loop
  * prevention mechanisms.
  *
- * @related_files
+ * @related
  *   - Parser.hpp – class declaration and shared utilities
  *   - Parser.cpp – core token stream primitives
  *   - ParserDecl.cpp – declaration parsing (called for local declarations inside blocks)
