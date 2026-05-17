@@ -1120,11 +1120,44 @@ void TypeResolver::visit(MethodDeclAST& node) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// visit(FromDeclAST)  — Resolves from-entry parameter and return types
+// visit(FromDeclAST)  —  Resolves from-entry parameter and return types.
+//
+// A `from` block defines implicit conversions from a source type (described by
+// the parameter groups) to a target struct type. This function:
+//   1. Resolves any generic parameters on the `from` block (e.g., `from Wrapper<T>`)
+//      by pushing them onto the generic parameter stack. This makes `T` inside
+//      entry signatures recognisable as a generic parameter.
+//   2. Resolves the target struct type (for type checking).
+//   3. For each entry, resolves all parameter and return types.
+//   4. Registers a symbol for the conversion (mangled name) so that `TypeChecker`
+//      can find it during implicit conversion lookup.
+//
+// ─── Generic Parameter Handling ──────────────────────────────────────────────
+//   Generic parameters on the `from` block (e.g., `from Wrapper<T>`) are pushed
+//   onto the stack so that references to `T` inside entry signatures are resolved
+//   as generic parameters (isGenericParam = true). This ensures that the types
+//   like `val T` are correctly recognised.
+//
+//   The actual substitution of concrete types for generic parameters during
+//   instantiation is deferred to Phase 3 (when the conversion is used). At that
+//   point, the TypeChecker will build a substitution map and instantiate the
+//   entry signature before generating a call.
+//
+// ─── Error Handling ─────────────────────────────────────────────────────────
+//   - Reports errors for unresolved target types or invalid parameter/return types.
+//   - Generic parameter constraint validation is performed via resolveGenericParamConstraints.
 // ─────────────────────────────────────────────────────────────────────────────
 void TypeResolver::visit(FromDeclAST& node) {
-    LUC_LOG_SEMANTIC("visit(FromDeclAST): targetType='" << std::string(_pool.lookup(node.targetTypeName ))
+    LUC_LOG_SEMANTIC("visit(FromDeclAST): targetType='" << std::string(_pool.lookup(node.targetTypeName))
                    << "', entries=" << node.entries.size());
+    
+    // Resolve generic parameter constraints (trait names) if any.
+    for (auto& gp : node.genericParams) {
+        if (gp) resolveGenericParamConstraints(*gp);
+    }
+    
+    // Push generic parameters onto stack so that T inside entries is recognised.
+    pushGenericParams(&node.genericParams);
     
     // Resolve the target type (NamedType) for type checking
     // Create a temporary NamedTypeAST to resolve
@@ -1170,6 +1203,7 @@ void TypeResolver::visit(FromDeclAST& node) {
         }
     }
     
+    popGenericParams();
     _resolved = nullptr;  // From blocks don't produce a type
 }
 

@@ -142,15 +142,7 @@ After a thorough review of the Luc grammar (`LUC_GRAMMAR.md`) and the current se
 - **Current**: `NullableChainExprAST` represents the chain, but the semantic pass does not enforce that the chain is immediately followed by a `NullCoalesceExprAST`.
 - **Action**:  
   - In `checkNullableChainExpr`, if the node appears as a standalone expression (not as the LHS of `??`), emit an error.  
-  - The grammar requires `??` after a `?.` chain; the parser already separates them, but the semantic pass must ensure that the chain is not used alone.
-
-#### 11. **Invalid `?` After Function Type Not Rejected** (Low)
-
-- **Grammar**: `?` is never valid directly on an inline function type. Use a type alias.
-- **Current**: `parseType` allows `NullableTypeAST` to wrap any type, including `FuncTypeAST`.
-- **Action**:  
-  - In `TypeResolver::visit(NullableTypeAST)`, if the inner type is a `FuncTypeAST`, report an error (unless the inner type is a named alias that resolves to a function type? Grammar says alias is allowed).  
-  - Better: reject `()`? as a type.
+  - The grammar requires `??` after a `?.` chain; the parser already separates them, but the semantic pass must ensure that the chain is not used alone
 
 #### 12. **`from` Block Generic Parameters Not Handled** (Low – advanced)
 
@@ -218,3 +210,86 @@ The semantic analyzer has a solid foundation for basic types, assignment, and eq
 Focusing on these will bring the semantic analyzer much closer to the grammar. The lower‑priority items can be addressed incrementally.
 
 If you need detailed implementation guidance for any of these items, please ask for specific sub‑tasks.
+
+
+
+
+
+---
+---
+---
+---
+
+
+
+
+
+
+Based on your `semantic_phase2_debug1.md` and the current focus on **Phase 1 (SemanticCollector)** and **Phase 2 (TypeResolver)**, the only gaps that belong to these phases are:
+
+---
+
+## ✅ Phase 1 & 2 Items (Priority for Implementation)
+
+| #   | Item                                                                                                                                | Phase                                                      | Status                                |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------- |
+| 1   | **Generic Constraints** – resolve trait names and check during instantiation                                                        | Phase 1 (collect struct→traits) + Phase 2 (resolve, check) | **Solution ready** (already provided) |
+| 2   | **`use` Declarations** – collect module symbols, handle aliases, prepare for import                                                 | Phase 1 (symbol collection)                                | **Solution ready** (provided earlier) |  |
+| 12  | **`from` Block Generic Parameters** – substitute generic parameters in `FromDeclAST` and generate mangled names with concrete types | Phase 2 (TypeResolver) + NameMangler                       | **Not yet implemented**               |
+
+All other gaps (3–10, 13) belong to **Phase 3 (checking)** and are excluded from this phase.
+
+---
+
+## Implementation Instructions for the Remaining Phase 2 Items
+
+> **Note:** If the inner type is a `NamedTypeAST` that resolves to a function type (via alias), it is allowed because the `?` is attached to the alias, not the inline type. This check must look at the **syntactic** node, not the resolved type.
+
+---
+
+### Item 12: `from` Block Generic Parameters
+
+**Grammar:** `from Wrapper<T> { (val T) -> Wrapper<T> = ... }`
+
+**Current:** `FromDeclAST` has `genericParams` but they are not used. The mangled name for the conversion does not incorporate the concrete type arguments.
+
+**Solution:** During `TypeResolver::visit(FromDeclAST)`, when a `from` block has generic parameters, you must:
+
+1. **Record the generic parameters** – already stored in `node.genericParams`.
+2. **When an implicit conversion is requested** (later during checking), the source type will provide concrete type arguments. The conversion symbol must be looked up with a mangled name that encodes those concrete arguments.
+3. **Modify `NameMangler::mangleFrom`** to include the concrete type arguments.
+
+**Implementation sketch (future, for Phase 3 integration):**
+
+In `TypeResolver`, you cannot yet substitute because instantiation happens at the use site (during Phase 3). For now, you can:
+- When visiting a `FromDeclAST` that is generic, do not create a single symbol; instead, prepare a **template** that can be instantiated later.
+- In `isFromCastable`, when the source and target types are concrete, instantiate the generic `from` block by substituting `T` with the concrete type, then generate the mangled name.
+
+This is more complex. For the immediate Phase 2, you can simply **validate** that the generic parameters are well‑formed (they already are) and defer the full implementation to Phase 3.
+
+**If you want a minimal Phase 2 change:**
+- Add a check that the generic parameters of the `from` block are not used in the return type in a way that would require substitution? Not necessary.
+
+**Recommendation for Phase 2:** Mark `from` block generic parameters as resolved (by calling `resolveGenericParamConstraints` on each) and push them onto the generic parameter stack when resolving the entry signatures. This ensures that the entry’s parameter and return types correctly refer to `T` as a generic parameter. The actual instantiation will be done in Phase 3 when the conversion is used.
+
+```cpp
+void TypeResolver::visit(FromDeclAST& node) {
+    pushGenericParams(&node.genericParams);
+    // ... resolve entries (as before) ...
+    popGenericParams();
+}
+```
+
+This is the same pattern as for structs and functions, and it will make the generic type parameter `T` visible inside the entry signatures.
+
+---
+
+## Summary of Phase 1 & 2 Actions
+
+| Item                  | Action                                                                                    | Files                                             |
+| --------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| Generic constraints   | Already implemented (map passing, constraint satisfaction check in `visit(NamedTypeAST)`) | `SemanticCollector`, `TypeResolver`               |
+| `use` declarations    | Add `visit(UseDeclAST)` to create `SymbolKind::Module` entries                            | `SemanticCollector.hpp/cpp`, `SemanticSymbol.hpp` |
+| `from` block generics | Push generic parameters when resolving entries (no full instantiation yet)                | `TypeResolver.cpp`                                |
+
+You can now implement items 11 and 12 as described, building on the existing infrastructure.

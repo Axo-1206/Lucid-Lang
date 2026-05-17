@@ -1355,18 +1355,22 @@ bool TypeChecker::isValidSliceBound(ExprAST* boundExpr, const std::string& bound
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────────────────────
-// isFromCastable  —  Checks if a custom `from` block conversion exists from
-//                    `src` to `target`.
+// isFromCastable  —  Returns the symbol of a matching `from` block conversion
+//                    from `src` to `target`, or nullptr if none exists.
 //
 // Searches the symbol table for a registered `from` conversion entry that
-// converts values of type `src` to the target named struct type. These
-// conversions are defined using `from` blocks in source code and are used
-// for implicit casts in assignments, argument passing, and return statements.
+// converts values of type `src` to the target named struct type. If found,
+// returns the Symbol pointer (which points to a FromEntryAST). Otherwise
+// returns nullptr.
+//
+// This is the core function for detecting implicit conversions defined by
+// `from` blocks. The caller can use the returned symbol to construct a call
+// to the conversion function.
 //
 // ─── Purpose ─────────────────────────────────────────────────────────────────
-// Allows the language to support user‑defined implicit conversions between
-// types, similar to `From` traits in Rust or conversion constructors in C++.
-// Used by assignment and function call checking when direct assignment fails.
+// Provides the conversion symbol needed for AST rewriting in assignments,
+// function arguments, and return statements. Also serves as a boolean test
+// (conversion exists) when the caller only needs to know existence.
 //
 // ─── Algorithm ───────────────────────────────────────────────────────────────
 //   1. Ensure `target` is a NamedTypeAST (conversions only target structs).
@@ -1376,48 +1380,28 @@ bool TypeChecker::isValidSliceBound(ExprAST* boundExpr, const std::string& bound
 //        - Must be SymbolKind::Casting.
 //        - Must point to a FromEntryAST.
 //        - Extract the type of the first parameter in the first parameter group.
-//        - If `src` is assignable to that parameter type, conversion exists.
-//   5. Return true if any candidate matches.
+//        - If `src` is assignable to that parameter type, return the symbol.
+//   5. Return nullptr if no candidate matches.
 //
-// ─── Cases Covered (returns true) ────────────────────────────────────────────
-//   - There is a `from` block entry whose first parameter type is assignable
-//     from `src` and whose return type matches `target`.
-//   - Example: `from Fahrenheit { (c Celsius) -> Fahrenheit = ... }` allows
-//     assignment `let f Fahrenheit = celsiusValue`.
-//
-// ─── What is NOT covered (returns false) ─────────────────────────────────────
-//   - `target` is not a NamedTypeAST (e.g., primitive, array, function type).
-//   - No registered from‑entry with a matching signature.
-//   - The source type is not assignable to the entry's parameter type.
-//   - The return type of the entry does not match `target` (should be checked
-//     during registration; not re‑checked here).
-//   - Multiple parameter groups (curried from‑entries) – only the first
-//     parameter of the first group is considered; curried forms may be
-//     unsupported or require additional rules.
-//   - Generic `from` blocks (e.g., `from Wrapper<T>`); the mangled name must
-//     encode the concrete type parameters, but the lookup uses a simple prefix
-//     which may not distinguish generic instantiations.
-//
-// ─── Dependencies ────────────────────────────────────────────────────────────
-//   - NameMangler::getFromPrefix to generate the search prefix.
-//   - SymbolTable::findSymbolsByPrefix to retrieve candidates.
-//   - isAssignable to compare source type with entry's parameter type.
+// ─── Return Value ───────────────────────────────────────────────────────────
+//   Symbol* – pointer to the symbol representing the FromEntryAST, or nullptr.
+//   The symbol is owned by the symbol table; the caller must not delete it.
 // ─────────────────────────────────────────────────────────────────────────────
-bool TypeChecker::isFromCastable(TypeAST* src, TypeAST* target, SymbolTable* symbols) {
+Symbol* TypeChecker::isFromCastable(TypeAST* src, TypeAST* target, SymbolTable* symbols) {
     LUC_LOG_SEMANTIC("isFromCastable: checking if " << (src ? "src" : "null") 
                 << " can be cast to " << (target ? "target" : "null"));
     
     if (!src || !target) {
         LUC_LOG_SEMANTIC("\tnull pointer -> false");
-        return false;
+        return nullptr;
     }
     if (!target->isa<NamedTypeAST>()) {
         LUC_LOG_SEMANTIC("\ttarget not NamedType -> false");
-        return false;
+        return nullptr;
     }
     if (!symbols) {
         LUC_LOG_SEMANTIC("\tno symbol table -> false");
-        return false;
+        return nullptr;
     }
 
     std::string_view targetName = pool_.lookup(target->as<NamedTypeAST>()->name);
@@ -1458,13 +1442,13 @@ bool TypeChecker::isFromCastable(TypeAST* src, TypeAST* target, SymbolTable* sym
         LUC_LOG_SEMANTIC_VERBOSE("\t\tchecking candidate: " << targetName << ".from");
         
         if (isAssignable(src, firstParamType)) {
-            LUC_LOG_SEMANTIC("\t-> found matching from-entry, returning true");
-            return true;
+            LUC_LOG_SEMANTIC("\t-> found matching from-entry, returning symbol");
+            return sym;
         }
     }
 
-    LUC_LOG_SEMANTIC("\t-> no matching from-entry found, returning false");
-    return false;
+    LUC_LOG_SEMANTIC("\t-> no matching from-entry found, returning nullptr");
+    return nullptr;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

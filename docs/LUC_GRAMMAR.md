@@ -212,7 +212,7 @@ let f  (a int) -> Vec2? = { ... }
 type Transform = (v Vec2) -> Vec2
 let f  (a int) -> Transform? = { ... }
 
--- ? is NEVER valid directly after an inline function type
+-- ? is NEVER valid directly after an inline function type as a whole (i.e., nullable function type). Use a type alias for that: type NullableFunc = (int) -> int?. However, (int) -> int? (nullable return type) is allowed. 
 -- let f (a int) -> ((b int) -> int)?   -- ERROR: use an alias
 ```
 

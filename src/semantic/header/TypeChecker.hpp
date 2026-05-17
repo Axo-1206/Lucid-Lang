@@ -95,7 +95,7 @@ public:
     bool primitiveWidening(PrimitiveKind from, PrimitiveKind to);
     
     // Requires StringPool to convert InternedString to string for prefix search
-    bool isFromCastable(TypeAST* src, TypeAST* target, SymbolTable* symbols);
+    Symbol* isFromCastable(TypeAST* src, TypeAST* target, SymbolTable* symbols);
 
     // ── Integer type validation ───────────────────────────────────────────────
     bool isIntegerType(TypeAST* type);
