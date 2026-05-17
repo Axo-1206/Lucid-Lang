@@ -328,6 +328,8 @@ void SemanticAnalyzer::collectSymbols(std::vector<ProgramAST*>& files) {
         LUC_LOG_SEMANTIC_EXTREME("\tcollecting symbols from file " << fileCount);
         collector.collectProgram(*prog);
     }
+    // Pass the struct‑traits map to the type resolver.
+    typeResolver_->setStructTraits(&collector.getStructTraits());
     LUC_LOG_SEMANTIC_VERBOSE("collectSymbols: symbol table built");
 }
 

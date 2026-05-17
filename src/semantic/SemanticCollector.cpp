@@ -63,7 +63,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 SemanticCollector::SemanticCollector(SymbolTable& symbols, DiagnosticEngine& dc,
                                       StringPool& pool)
-    : symbols_(symbols), dc_(dc), pool_(pool) {
+    : _symbols(symbols), _dc(dc), _pool(pool) {
     LUC_LOG_SEMANTIC("SemanticCollector constructed");
 }
 
@@ -109,11 +109,11 @@ SemanticCollector::SemanticCollector(SymbolTable& symbols, DiagnosticEngine& dc,
 // ─────────────────────────────────────────────────────────────────────────────
 void SemanticCollector::collectProgram(ProgramAST& program) {
     LUC_LOG_SEMANTIC("SemanticCollector::collectProgram: file=" 
-                     << pool_.lookup(program.filePath));
+                     << _pool.lookup(program.filePath));
     
     // Ensure global scope exists
-    if (symbols_.currentDepth() == 0) {
-        symbols_.pushScope();
+    if (_symbols.currentDepth() == 0) {
+        _symbols.pushScope();
     }
     
     // Collect all top-level declarations
@@ -172,20 +172,20 @@ void SemanticCollector::collectProgram(ProgramAST& program) {
 //   is permitted and is handled naturally by the symbol table's scope stack.
 // ─────────────────────────────────────────────────────────────────────────────
 void SemanticCollector::declareSymbol(const Symbol& sym) {
-    LUC_LOG_SEMANTIC_VERBOSE("declareSymbol: name=" << pool_.lookup(sym.name) 
+    LUC_LOG_SEMANTIC_VERBOSE("declareSymbol: name=" << _pool.lookup(sym.name) 
                              << " kind=" << SymbolUtils::kindToString(sym.kind));
     
     // Check for duplicate in current scope
-    if (symbols_.lookupLocal(sym.name)) {
-        std::string_view nameStr = pool_.lookup(sym.name);
-        dc_.error(DiagnosticCategory::Semantic, sym.loc, DiagCode::E3005,
+    if (_symbols.lookupLocal(sym.name)) {
+        std::string_view nameStr = _pool.lookup(sym.name);
+        _dc.error(DiagnosticCategory::Semantic, sym.loc, DiagCode::E3005,
                   "duplicate declaration of '" + std::string(nameStr) + "'");
         return;
     }
     
-    if (!symbols_.declare(sym)) {
-        std::string_view nameStr = pool_.lookup(sym.name);
-        dc_.error(DiagnosticCategory::Semantic, sym.loc, DiagCode::E3005,
+    if (!_symbols.declare(sym)) {
+        std::string_view nameStr = _pool.lookup(sym.name);
+        _dc.error(DiagnosticCategory::Semantic, sym.loc, DiagCode::E3005,
                   "failed to declare symbol '" + std::string(nameStr) + "'");
     }
 }
@@ -245,7 +245,7 @@ void SemanticCollector::extractExternMetadata(const std::vector<AttributePtr>& a
     for (const auto& attr : attrs) {
         if (!attr) continue;
         
-        std::string_view attrName = pool_.lookup(attr->name);
+        std::string_view attrName = _pool.lookup(attr->name);
         if (attrName == "extern") {
             sym.isExtern = true;
             
@@ -266,7 +266,7 @@ void SemanticCollector::extractExternMetadata(const std::vector<AttributePtr>& a
             }
             
             LUC_LOG_SEMANTIC_VERBOSE("extractExternMetadata: extern symbol=" 
-                                     << pool_.lookup(sym.externSymbol));
+                                     << _pool.lookup(sym.externSymbol));
         }
     }
 }
@@ -276,7 +276,7 @@ void SemanticCollector::extractExternMetadata(const std::vector<AttributePtr>& a
 // ─────────────────────────────────────────────────────────────────────────────
 void SemanticCollector::visit(VarDeclAST& node) {
     LUC_LOG_SEMANTIC("SemanticCollector::visit(VarDeclAST): name=" 
-                     << pool_.lookup(node.name));
+                     << _pool.lookup(node.name));
     
     Symbol sym;
     sym.name = node.name;
@@ -298,7 +298,7 @@ void SemanticCollector::visit(VarDeclAST& node) {
 // ─────────────────────────────────────────────────────────────────────────────
 void SemanticCollector::visit(FuncDeclAST& node) {
     LUC_LOG_SEMANTIC("SemanticCollector::visit(FuncDeclAST): name=" 
-                     << pool_.lookup(node.name));
+                     << _pool.lookup(node.name));
     
     Symbol sym;
     sym.name = node.name;
@@ -325,7 +325,7 @@ void SemanticCollector::visit(FuncDeclAST& node) {
 // ─────────────────────────────────────────────────────────────────────────────
 void SemanticCollector::visit(StructDeclAST& node) {
     LUC_LOG_SEMANTIC("SemanticCollector::visit(StructDeclAST): name=" 
-                     << pool_.lookup(node.name));
+                     << _pool.lookup(node.name));
     
     Symbol sym;
     sym.name = node.name;
@@ -347,7 +347,7 @@ void SemanticCollector::visit(StructDeclAST& node) {
 // ─────────────────────────────────────────────────────────────────────────────
 void SemanticCollector::visit(EnumDeclAST& node) {
     LUC_LOG_SEMANTIC("SemanticCollector::visit(EnumDeclAST): name=" 
-                     << pool_.lookup(node.name));
+                     << _pool.lookup(node.name));
     
     Symbol sym;
     sym.name = node.name;
@@ -366,8 +366,8 @@ void SemanticCollector::visit(EnumDeclAST& node) {
         if (!variant) continue;
         
         // Create mangled name for the variant
-        std::string mangledName = NameMangler::mangleEnumVariant(pool_.lookup(node.name), pool_.lookup(variant->name));
-        InternedString mangledInterned = pool_.intern(mangledName);
+        std::string mangledName = NameMangler::mangleEnumVariant(_pool.lookup(node.name), _pool.lookup(variant->name));
+        InternedString mangledInterned = _pool.intern(mangledName);
 
         Symbol variantSym;
         variantSym.name = mangledInterned;
@@ -387,7 +387,7 @@ void SemanticCollector::visit(EnumDeclAST& node) {
 // ─────────────────────────────────────────────────────────────────────────────
 void SemanticCollector::visit(TraitDeclAST& node) {
     LUC_LOG_SEMANTIC("SemanticCollector::visit(TraitDeclAST): name=" 
-                     << pool_.lookup(node.name));
+                     << _pool.lookup(node.name));
     
     Symbol sym;
     sym.name = node.name;
@@ -405,8 +405,8 @@ void SemanticCollector::visit(TraitDeclAST& node) {
         if (!method) continue;
         
         // Create mangled name for the trait method
-        std::string mangledName = NameMangler::mangleMethod(pool_.lookup(node.name), pool_.lookup(method->name));
-        InternedString mangledInterned = pool_.intern(mangledName);
+        std::string mangledName = NameMangler::mangleMethod(_pool.lookup(node.name), _pool.lookup(method->name));
+        InternedString mangledInterned = _pool.intern(mangledName);
         
         Symbol methodSym;
         methodSym.name = mangledInterned;
@@ -426,8 +426,12 @@ void SemanticCollector::visit(TraitDeclAST& node) {
 // ─────────────────────────────────────────────────────────────────────────────
 void SemanticCollector::visit(ImplDeclAST& node) {
     LUC_LOG_SEMANTIC("SemanticCollector::visit(ImplDeclAST): struct=" 
-                     << pool_.lookup(node.structName) 
+                     << _pool.lookup(node.structName) 
                      << ", methods=" << node.methods.size());
+
+    if (node.traitRef) {
+        _structTraits[node.structName].push_back(node.traitRef->name);
+    }
     
     // Impl blocks themselves don't create symbols, but their methods do.
     // Methods are stored with mangled names: StructName.methodName
@@ -436,8 +440,8 @@ void SemanticCollector::visit(ImplDeclAST& node) {
         
         // Create mangled name for the method
         // pool_.lookup returns a string_view; convert to std::string before concatenation
-        std::string mangledName = NameMangler::mangleMethod(pool_.lookup(node.structName), pool_.lookup(method->name));
-        InternedString mangledInterned = pool_.intern(mangledName);
+        std::string mangledName = NameMangler::mangleMethod(_pool.lookup(node.structName), _pool.lookup(method->name));
+        InternedString mangledInterned = _pool.intern(mangledName);
         
         Symbol methodSym;
         methodSym.name = mangledInterned;
@@ -457,7 +461,7 @@ void SemanticCollector::visit(ImplDeclAST& node) {
 // ─────────────────────────────────────────────────────────────────────────────
 void SemanticCollector::visit(FromDeclAST& node) {
     LUC_LOG_SEMANTIC("SemanticCollector::visit(FromDeclAST): target=" 
-                     << pool_.lookup(node.targetTypeName)
+                     << _pool.lookup(node.targetTypeName)
                      << ", entries=" << node.entries.size());
     
     // From blocks themselves don't create symbols, but their conversion entries do.
@@ -470,8 +474,8 @@ void SemanticCollector::visit(FromDeclAST& node) {
         if (!entry->sig.paramGroups.empty() && !entry->sig.paramGroups[0].empty() && entry->sig.paramGroups[0][0]) {
             firstParamType = entry->sig.paramGroups[0][0]->type.get();
         }
-        std::string mangledName = NameMangler::mangleFrom(pool_.lookup(node.targetTypeName), firstParamType, pool_);
-        InternedString mangledInterned = pool_.intern(mangledName);
+        std::string mangledName = NameMangler::mangleFrom(_pool.lookup(node.targetTypeName), firstParamType, _pool);
+        InternedString mangledInterned = _pool.intern(mangledName);
         
         Symbol entrySym;
         entrySym.name = mangledInterned;
@@ -491,7 +495,7 @@ void SemanticCollector::visit(FromDeclAST& node) {
 // ─────────────────────────────────────────────────────────────────────────────
 void SemanticCollector::visit(TypeAliasDeclAST& node) {
     LUC_LOG_SEMANTIC("SemanticCollector::visit(TypeAliasDeclAST): name=" 
-                     << pool_.lookup(node.name));
+                     << _pool.lookup(node.name));
     
     Symbol sym;
     sym.name = node.name;

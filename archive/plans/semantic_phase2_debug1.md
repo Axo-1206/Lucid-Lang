@@ -1,76 +1,220 @@
-I'll read the uploaded files and the relevant headers before giving you a thorough analysis.Good. Now I have everything I need for a comprehensive analysis. Let me write it up.Here's my full analysis across the three dimensions you asked for.
+## Final Review: Semantic Analyzer Alignment with Luc Grammar
+
+After a thorough review of the Luc grammar (`LUC_GRAMMAR.md`) and the current semantic analyzer implementation (TypeResolver, TypeChecker, SemanticCollector, AST definitions), here is the assessment of what is **correct**, what is **missing or incorrect**, and the recommended actions to bring the semantic analyzer into full compliance.
 
 ---
 
-## 1. Grammar conformance
+### ✅ What Works Correctly
 
-**TypeResolver — mostly aligned, with gaps**
-
-The resolver handles all the grammar's type forms correctly: primitives, named types with generics, nullable `?`, all three array forms (`[N]T`, `[]T`, `[*]T`), `&T`, `*T`, and function types with qualifiers/curry groups/multi-return. The qualifier resolution in `visit(FuncTypeAST)` correctly maps raw `~identifier` tokens to bitmask bits.
-
-However, there are two grammar-level gaps:
-
-First, `visit(PtrTypeAST)` silently removed the `@extern`-only restriction that the docstring still claims. The comment says raw pointers are "now allowed anywhere", but the grammar and the docstring on `PtrTypeAST` in `TypeAST.hpp` clearly state pointers are only valid in `@extern`-decorated declarations. This is a deliberate rule that got silently disabled — the enforcement needs to come from somewhere.
-
-Second, `getFunctionReturnType()` has a signature mismatch: the `const` qualifier on the parameter name is `FuncTypeAST& typeconst` (typo — `const` is fused to the parameter name), which is a compilation error in strict mode. Also this function accepts a `const SourceLocation*` hint but uses it only for the multi-return error case, not for the failed-resolution case.
-
-**TypeChecker — well aligned**
-
-The checker correctly models:
-- `nil` assignable to any nullable type
-- `any` as a universal target (boxing)
-- `T → T?` implicit wrapping
-- Primitive widening along the signed/unsigned/float chains
-- `===` only on structs, references, nullable of those
-- `==` only on primitives, enums, nullable types
-- `from`-block conversion lookup
-
-The one grammar gap: `isValueComparable` returns `false` for pointer types, but the language spec says nil-check equality (`ptr == nil`) must be allowed for `*T`. The checker doesn't distinguish that case.
-
----
-
-## 2. AST node alignment
-
-**TypeResolver — two structural issues**
-
-The biggest one is in `visit(FuncDeclAST)` and `visit(ImplDeclAST)`. They construct a temporary `FuncTypeAST` via `arena_.make<FuncTypeAST>()`, copy `node.sig` into it, then call `resolveType()` on the temporary. This means qualifier resolution (`rawQualifiers → qualifiers bitmask`) happens on the *copy*, not on `node.sig` itself. The `sig.rawQualifiers` are cleared on the copy but never on the declaration's own `sig`. The declaration's `node.sig.qualifiers` stays `0`, and `node.sig.rawQualifiers` is never cleared. Phase 3 would then re-encounter raw qualifiers and find them unresolved.
-
-The fix is to resolve qualifiers directly on `node.sig` (or copy back the bitmask from the temporary after resolution).
-
-The second issue: `visit(StructDeclAST)` lazily creates `node.selfType` using `arena_.make<NamedTypeAST>()`. This is correct design, but the field is declared `mutable ASTPtr<NamedTypeAST>` — an arena-backed unique_ptr with a no-op deleter. Since `ASTPtr` uses `ASTDeleter` (no-op), assigning into `node.selfType` from `arena_.make<>` is safe. However calling `resolveType(sym->type)` later in `visit(NamedTypeAST)` on a `NamedTypeAST` whose name is the struct itself would recurse infinitely if the struct is referenced from its own field. There's currently no cycle guard.
-
-**TypeChecker — two alignment gaps**
-
-`isValidArrayIndex` and `isValidSliceBound` cast `indexExpr->resolvedType` as `static_cast<TypeAST*>(resolvedType)` — this works because `resolvedType` is `void*` on `BaseAST`, but it bypasses the `isValid()` / `isKnown()` contract. If `resolvedType` is null (Phase 3 hasn't run yet, or the expression failed to type-check), this produces a null pointer that reaches `isIntegerType`, which does null-check it. But the error message would say "got 'Unknown'" rather than "expression type not resolved yet", which is confusing.
-
-`isFromCastable` searches using `SymbolTable::findSymbolsByPrefix` with a string prefix, but from-entries are registered with mangled names that encode the parameter type using `NameMangler::mangleType`. If a from-entry's parameter type is a generic parameter (`isGenericParam == true`), `mangleType` returns `"prim0"` or the generic name, which means the search finds it — but `isAssignable(src, firstParamType)` might return true for an abstract `T`. This could yield false positives in from-castability checks for generic from-entries.
+| Feature                                             | Implementation Status                                                                                                         |
+| --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| **Primitive types**                                 | TypeResolver recognises all primitive kinds, isIntegerType, primitiveWidening correct.                                        |
+| **Named types (struct, enum, trait, type alias)**   | Resolved via symbol table lookup; alias unwrapping works.                                                                     |
+| **Nullable types (`T?`)**                           | NullableTypeAST, isNullable, implicit T→T? wrapping in isAssignable.                                                          |
+| **Function types**                                  | FuncTypeAST with paramGroups, returnTypes, qualifiers. Resolved recursively.                                                  |
+| **Qualifiers (`~async`, `~nullable`, `~parallel`)** | Stored in FuncSignature::rawQualifiers, resolved to bits in TypeResolver. Equality ignores qualifiers (equalityMask).         |
+| **Anonymous functions**                             | Parsed without qualifiers (grammar compliant).                                                                                |
+| **Generics – parameter declaration**                | GenericParamAST stored on declarations, stack of generic parameters in TypeResolver.                                          |
+| **Substitution maps**                               | Stack of maps to resolve concrete type arguments (used in impl blocks).                                                       |
+| **Struct fields**                                   | Field types resolved with generic context.                                                                                    |
+| **Array types**                                     | Fixed [N]T, slice []T, dynamic [*]T all represented; element types resolved.                                                  |
+| **Reference types (`&T`)**                          | RefTypeAST resolved.                                                                                                          |
+| **Raw pointers (`*T`)**                             | PtrTypeAST allowed anywhere (storage), but operations restricted in semantic pass (planned).                                  |
+| **Assignment compatibility**                        | isAssignable handles: nil→nullable, T→T?, T?→T?, primitive widening, named type matching, function type exact match.          |
+| **Value equality (`==`, `!=`)**                     | isValueComparable returns true for primitives, enums, nullable types; false for structs, functions, arrays (grammar correct). |
+| **Reference equality (`===`)**                      | isReferenceComparable returns true for `&T`, structs, and nullable of those.                                                  |
+| **from‑block lookup**                               | isFromCastable searches symbol table for mangled `Target::from::ParamType` entries.                                           |
+| **Doc comments**                                    | Harvested by parser, attached to AST nodes (semantic pass ignores – fine).                                                    |
+| **Visibility modifiers**                            | Parser rejects `pub`/`export` inside blocks; semantic pass respects visibility on symbols.                                    |
+| **Constant integer evaluation**                     | getConstantIntValue handles decimal/hex/binary literals, underscores, unary negation, binary arithmetic.                      |
+| **Array index validation**                          | isValidArrayIndex checks integer type and non‑negative constant.                                                              |
+| **Slice bound validation**                          | isValidSliceBound requires constant, non‑negative integer bounds.                                                             |
 
 ---
 
-## 3. Bugs, warnings, and improvements
+### ❌ Gaps and Violations (Priority Order)
 
-**Bugs**
+#### 1. **Generic Constraints Not Resolved or Checked** (High)
 
-`getFunctionReturnType` has the `typeconst` typo — `FuncTypeAST& typeconst` makes `typeconst` the parameter name with `const` appearing to be part of it. This compiles only because `const` is a keyword and the parser reads it as trailing `const` on the reference (which is illegal on a non-member function parameter). This will fail to compile or silently misbehave depending on the compiler version.
+- **Grammar**: `generic_param := IDENTIFIER [ ':' IDENTIFIER { '+' IDENTIFIER } ]`. Constraints are trait names.
+- **Current**: Constraints stored as `std::vector<InternedString>` in `GenericParamAST`. No resolution or checking.
+- **Action**:  
+  - Extend `TypeResolver` to resolve each constraint name to a `TraitDeclAST` (symbol table lookup).  
+  - Store resolved trait pointers (or keep as symbols).  
+  - In `TypeChecker`, when instantiating a generic (e.g., `struct Box<T>` with `T: Drawable`), verify that the concrete type argument implements all required traits.  
+  - Report error if constraint not satisfied.
 
-`visit(FuncDeclAST)` creates a `FuncTypeAST` copy and resolves it, then sets `sym->type = resolvedType` — but `resolvedType` points to a temporary arena allocation whose `sig.rawQualifiers` was cleared. If anything later inspects `sym->type->as<FuncTypeAST>()->sig.rawQualifiers`, it sees an empty vector and concludes there are no qualifiers to resolve. The source-of-truth `node.sig` still has them.
+#### 2. **`use` Declarations – Not Processed at All** (High)
 
-In `primitiveWidening`, signed integers widen to unsigned integers (`int* → uint*`). The comment acknowledges this is "for positive literals", but the function is called for all assignments. A variable of type `int` holding `-1` would be considered assignable to `uint32`, which is wrong. This gate should only open at the literal level, not for general expressions.
+- **Grammar**: `use_decl` (local and top‑level), `export use` for re‑export.
+- **Current**: `SemanticCollector` has no `visit(UseDeclAST)`. No symbol table entries for imported modules, no scope injection.
+- **Action**:  
+  - Implement `visit(UseDeclAST)` in `SemanticCollector`.  
+  - For top‑level `use`, add the imported symbols (or a module symbol) to the global scope.  
+  - For `export use`, mark as re‑export (visible to external packages).  
+  - Support local `use` inside blocks (push scope, declare module alias).  
+  - Resolve module paths to file system (Phase 0 import resolution already exists but incomplete).
 
-**Warnings / design issues**
+#### 3. **Multi‑Return Assignment Not Checked** (High)
 
-`isAssignable(nullptr, to)` returns `isNullable(to)` — treating a null `from` as `nil`. This is convenient but can mask bugs where a type genuinely failed to resolve and `from` is null for the wrong reason. A debug-mode assertion or log would help distinguish the two cases.
+- **Grammar**: Functions can return multiple values (`-> (int, string)`). Multi‑variable declaration (`let a int, b string = f()`) and multi‑assignment (`a, b = g()`).
+- **Current**: `TypeChecker::isAssignable` only compares single types. No mechanism to match multiple return values against multiple lvalues.
+- **Action**:  
+  - Add `bool areAssignableMultiple(const std::vector<TypeAST*>& fromTypes, const std::vector<TypeAST*>& toTypes)` in `TypeChecker`.  
+  - Use it in `checkMultiVarDecl` and `checkMultiAssignStmt` (Phase 3).  
+  - Verify that the RHS expression’s resolved type is a `FuncTypeAST` with multiple return types, or that it returns a tuple (currently not supported).  
+  - For multi‑assignment, also check that each LHS is assignable.
 
-The `getConstantIntValue` function only handles `UnaryOp::Neg` and five binary operators. The grammar allows hex and binary literals with underscore separators, and the cleaning loop strips underscores for decimal — but for hex literals, `strtoll(..., nullptr, 16)` already handles `0x` prefix but the underscore-stripping retry loop uses base 10. A hex literal like `0xFF_FF` would fail the first parse (because `strtoll` stops at `_`) and then be retried with base 10 on the cleaned string `0xFFFF`, which would fail since `0x` is not valid in base 10. The result: constant hex literals with underscores return `false` from `getConstantIntValue`.
+#### 4. **`from` Block Implicit Conversion Not Applied** (High)
 
-`isFromCastable` takes `SymbolTable*` as a raw pointer (nullable) and checks `if (!symbols)`. But `TypeChecker` itself doesn't hold a symbol table — the caller must pass it on every call. This is inconsistent with the rest of the checker's design; it would be cleaner to either hold a `SymbolTable*` member or require a non-nullable reference via a separate method signature.
+- **Grammar**: `from` block defines implicit conversions used in assignments, arguments, returns, and initialisation.
+- **Current**: `isFromCastable` detects a conversion exists, but the semantic pass does **not** rewrite the AST. The assignment simply passes type checking without transforming the expression.
+- **Action**:  
+  - In assignment checking, when `isAssignable` fails but `isFromCastable` succeeds, replace the RHS with a call to the conversion function.  
+  - Create a `CallExprAST` where the callee is the mangled symbol of the `FromEntryAST`.  
+  - This desugaring must happen before final type resolution.  
+  - Also apply to function arguments and return statements.
 
-`unify` has asymmetric behavior: it returns `b` if `a` is assignable to `b`, and `a` if `b` is assignable to `a`. For the case where `int` widens to `float`, this returns the correct wider type (`float`). But for `T → T?` wrapping, it returns `T?` (correct). However the check order means that if both `a` is assignable to `b` and `b` is assignable to `a` (e.g., `int` and `int`), it always returns `b`, which is fine — but this means the "preferred" branch type in match arms is always the second arm encountered, which may be surprising when arm types are reordered by the programmer.
+#### 5. **`+>` Composition Type Checking Missing** (Medium)
 
-**Improvements**
+- **Grammar**: `+>` composes functions at compile time. Output type of left must exactly match input type of right.
+- **Current**: `ComposeExprAST` is built, but no semantic check.
+- **Action**:  
+  - In `checkComposeExpr` (Phase 3), recursively resolve the type of the left expression (which must be a function).  
+  - For each operand, the operand must be a function value. Verify that the output type of the previous function equals the input type of the next.  
+  - The result type is the output type of the last function, with **no qualifiers** (per grammar).  
+  - Generics must be instantiated before composition – check that no generic parameters remain in the composed type.
 
-`isEqual` could short-circuit for the `UnknownTypeAST` case — currently it falls to the default `return false`, but adding an early `if (a->isa<UnknownTypeAST>() || b->isa<UnknownTypeAST>()) return false` makes the intent explicit and avoids comparing unknown nodes structurally.
+#### 6. **`|>` Pipeline Type Checking Incomplete** (Medium)
 
-`TypeResolver::visit(FromDeclAST)` constructs a temporary `FuncTypeAST` inside the loop for each entry and adds `entry->returnType` to `sig.returnTypes` — but it does this by pushing `entry->returnType` (a `TypePtr`) into the copy's `returnTypes`. Since `TypePtr` is `unique_ptr` with arena deleter, this doesn't actually move ownership but it does duplicate the pointer in two `sig.returnTypes` vectors. If either vector outlives the other without the arena, the no-op deleter means no double-free, but it's a confusing ownership pattern. The `FuncTypeAST` copy should not need to carry the return types — the entry already has `entry->returnType` which is already resolved by the preceding `resolveType` call.
+- **Grammar**: Pipeline steps are callable. Step forms: `fn`, `Type:method`, `struct.field`, `fn(args)!`, `anon_func`. Upstream value injected as first argument for `!` steps.
+- **Current**: `PipelineExprAST` is built. No type checking.
+- **Action**:  
+  - In `checkPipelineExpr`, start with the seed type.  
+  - For each step, depending on its `PipelineStepKind`:  
+    - **Ident** / **BehaviorRef** / **FieldRef** / **IndexRef**: verify that the step resolves to a function type.  
+    - **ArgPack** / **BehaviorArgPack** / **FieldArgPack** / **IndexArgPack**: the step must be a function; the `!` marks that arguments are given. Upstream value is prepended.  
+    - **AnonFunc**: check that the anonymous function’s signature matches (input type = upstream type).  
+  - Propagate the result type through the chain.  
+  - For `!` steps, the argument count must be one less than the function’s parameter count (the upstream fills the missing first parameter).  
+  - Verify that nullable callables are guarded (if `~nullable`) – not required if step is `BehaviorRef` (methods are never nullable).
 
-`QualifierRegistry::instance().setStringPool()` has an early-return guard: `if (stringPool) return;` — meaning re-initialization is silently skipped. `AttributeRegistry` rebuilds even on re-init. This asymmetry could cause issues in test environments that reset the pool between tests.
+#### 7. **`await` and `~async` / `~parallel` Restrictions Not Enforced** (Medium)
+
+- **Grammar**:  
+  - `await` only inside `~async` function body.  
+  - `~parallel` body: no `return`, `break`, `continue`, `await`, writes to outer scope.
+- **Current**:  
+  - `FunctionContext` (SemanticHelpers) tracks current function and its `isAsync`. Not used in type checking of `await`.  
+  - No enforcement of `~parallel` restrictions.
+- **Action**:  
+  - In `checkAwaitExpr`, use `FunctionContext::instance().isInsideAsync()` to verify context.  
+  - If not inside `~async`, emit error.  
+  - In `checkParallelBody` (when entering a `~parallel` call), set a flag in the semantic context (e.g., `parallelDepth_` already used by parser but not in semantic).  
+  - While checking the body of the function passed to a `~parallel` binding, reject `return`, `break`, `continue`, `await`, and assignments to variables from outer scopes (by checking `scopeDepth` and declaration kind).
+
+#### 8. **Intrinsic Calls Not Validated** (Medium)
+
+- **Grammar**: List of intrinsics with type/value arguments.
+- **Current**: `IntrinsicCallExprAST` parsed; no semantic validation.
+- **Action**:  
+  - Create a table of intrinsic signatures (name, whether it takes a type argument, number/value types of arguments).  
+  - In `checkIntrinsicCallExpr`, verify:  
+    - Intrinsic name is known.  
+    - For `#sizeof`/`#alignof`: argument must be a type, not an expression.  
+    - For others: argument types match the expected types (e.g., `#sqrt` must be float/double).  
+    - Pointer intrinsics (`#ptrToRef`, `#ptrOffset`, etc.) only allowed inside `@extern` functions (or `--unsafe`).  
+    - `#bitcast` only allowed in `@extern`/`--unsafe`.  
+  - Emit errors for misuse.
+
+#### 9. **Raw Pointer Nil‑Check Not Allowed** (Low – easy fix)
+
+- **Grammar**: Raw pointers `*T` can be compared with `nil` (`ptr == nil`).
+- **Current**: `isValueComparable` returns `false` for `PtrTypeAST`, so `*T == nil` is rejected.
+- **Action**:  
+  - In the equality operator checking (where both operands are known), add a special case:  
+    - If one operand is a `nil` literal and the other is a `PtrTypeAST`, allow the comparison.  
+  - Do **not** change `isValueComparable` (it should still return false for general pointer comparisons).
+
+#### 10. **Nullable Chain Must Be Terminated by `??`** (Low)
+
+- **Grammar**: Every `?.` chain must be terminated by `??`.
+- **Current**: `NullableChainExprAST` represents the chain, but the semantic pass does not enforce that the chain is immediately followed by a `NullCoalesceExprAST`.
+- **Action**:  
+  - In `checkNullableChainExpr`, if the node appears as a standalone expression (not as the LHS of `??`), emit an error.  
+  - The grammar requires `??` after a `?.` chain; the parser already separates them, but the semantic pass must ensure that the chain is not used alone.
+
+#### 11. **Invalid `?` After Function Type Not Rejected** (Low)
+
+- **Grammar**: `?` is never valid directly on an inline function type. Use a type alias.
+- **Current**: `parseType` allows `NullableTypeAST` to wrap any type, including `FuncTypeAST`.
+- **Action**:  
+  - In `TypeResolver::visit(NullableTypeAST)`, if the inner type is a `FuncTypeAST`, report an error (unless the inner type is a named alias that resolves to a function type? Grammar says alias is allowed).  
+  - Better: reject `()`? as a type.
+
+#### 12. **`from` Block Generic Parameters Not Handled** (Low – advanced)
+
+- **Grammar**: `from Wrapper<T> { (val T) -> Wrapper<T> = ... }`.
+- **Current**: `FromDeclAST` has `genericParams`, but they are not used. The mangled name for the conversion does not incorporate the generic arguments.
+- **Action**:  
+  - When resolving a generic `from` block, substitute the generic parameters with concrete types during instantiation.  
+  - The mangled name should include the concrete type arguments (e.g., `From_Wrapper_int`).  
+  - The current `mangleFrom` only includes the first parameter type; extend to include all generic arguments.
+
+#### 13. **Trait Constraint Resolution on `impl` Block Missing** (Low – advanced)
+
+- **Grammar**: `impl Circle : Drawable` – trait conformance.
+- **Current**: `TraitRefAST` is stored but not checked. The methods of the trait are not automatically required.
+- **Action**:  
+  - In `checkImplDecl`, retrieve the trait declaration from the symbol table.  
+  - Verify that every method in the trait is implemented in the impl block (by name and signature).  
+  - Report missing methods as errors.
+
+#### 14. **Entry Point (`main`) Validation** (Already Mostly Implemented)
+
+- **Grammar**: `export const main () -> int` or `(args []string) -> int`. `@aot`/`@jit` attributes.
+- **Current**: SemanticAnalyzer validates main signature, visibility, const, return int, no async. Good. Missing validation that `@aot` and `@jit` are mutually exclusive and only on main.
+- **Action**: Add check that `@aot` and `@jit` are not both present.
+
+#### 15. **Pipeline `catch` Step Not Implemented** (Low – future)
+
+- **Grammar**: `upstream |> catch (err) { ... }` to handle `Error` type.
+- **Current**: No AST node, no parsing.
+- **Action**: Implement later as a separate feature.
+
+---
+
+### 📋 Summary of Required Code Additions/Modifications
+
+| Area                        | Files                                                              | Estimated Effort   |
+| --------------------------- | ------------------------------------------------------------------ | ------------------ |
+| Generic constraints         | `TypeResolver.hpp/cpp`, `TypeChecker.cpp`, `DeclAST.hpp`           | High               |
+| `use` declarations          | `SemanticCollector.cpp`, `SymbolTable.cpp`, `SemanticAnalyzer.cpp` | High               |
+| Multi‑return assignment     | `TypeChecker.cpp`, `SemanticExpr.cpp`, `SemanticStmt.cpp`          | High               |
+| `from` block application    | `SemanticExpr.cpp` (assignment, argument, return)                  | High               |
+| `+>` composition checking   | `SemanticExpr.cpp`                                                 | Medium             |
+| `                           | >` pipeline checking                                               | `SemanticExpr.cpp` | Medium |
+| Async/parallel restrictions | `SemanticExpr.cpp`, `SemanticStmt.cpp`, `SemanticHelpers.hpp`      | Medium             |
+| Intrinsic validation        | `SemanticExpr.cpp`                                                 | Medium             |
+| Raw pointer nil‑check       | `SemanticExpr.cpp` (equality checker)                              | Low                |
+| Nullable chain termination  | `SemanticExpr.cpp`                                                 | Low                |
+| `?` after function type     | `TypeResolver.cpp`                                                 | Low                |
+| Generic `from` blocks       | `TypeResolver.cpp`, `NameMangler.cpp`                              | Medium             |
+| Trait conformance checking  | `SemanticDecl.cpp`                                                 | Medium             |
+| `main` attribute validation | `SemanticAnalyzer.cpp`                                             | Low                |
+
+---
+
+### Conclusion
+
+The semantic analyzer has a solid foundation for basic types, assignment, and equality. However, several important grammar features are either missing or incomplete. The highest priority fixes are:
+
+1. **Generic constraints** – without them, generic code is unsound.
+2. **`use` declarations** – necessary for modular compilation.
+3. **Multi‑return assignment** – required for idiomatic Luc.
+4. **`from` block desugaring** – otherwise implicit conversions do not work.
+5. **Pipeline and composition type checking** – core to Luc’s dataflow style.
+
+Focusing on these will bring the semantic analyzer much closer to the grammar. The lower‑priority items can be addressed incrementally.
+
+If you need detailed implementation guidance for any of these items, please ask for specific sub‑tasks.

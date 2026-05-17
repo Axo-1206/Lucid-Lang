@@ -109,13 +109,29 @@ public:
 
     // ── Helper to check if a name is already declared (for error recovery) ──
     bool isDeclared(InternedString name) const {
-        return symbols_.lookup(name) != nullptr;
+        return _symbols.lookup(name) != nullptr;
+    }
+
+    // Called after collection to retrieve the trait implementation map.
+    const std::unordered_map<InternedString, std::vector<InternedString>>& getStructTraits() const {
+        return _structTraits;
     }
 
 private:
-    SymbolTable& symbols_;
-    DiagnosticEngine& dc_;
-    StringPool& pool_;  // For converting InternedString to readable names in diagnostics
+    SymbolTable& _symbols;
+    DiagnosticEngine& _dc;
+    StringPool& _pool;  // For converting InternedString to readable names in diagnostics
+
+    // The _structTraits map is populated in visit(ImplDeclAST) 
+    // because that's where trait conformance is declared. 
+    // In Luc, a struct implements a trait via an impl block with a : TraitName suffix, 
+    // not in the struct definition itself. For example
+    //
+    // struct Circle { radius float }
+    // impl Circle : Drawable {   // <-- trait conformance declared here
+    //      draw () = { ... }
+    // }
+    std::unordered_map<InternedString, std::vector<InternedString>> _structTraits;
 
     // ─────────────────────────────────────────────────────────────────────────────
     // declareSymbol  — Core logic to bind an AST node symbol
@@ -130,6 +146,6 @@ private:
     
     // Helper to get the string representation of an InternedString for diagnostics
     std::string_view getNameString(InternedString name) const {
-        return pool_.lookup(name);
+        return _pool.lookup(name);
     }
 };

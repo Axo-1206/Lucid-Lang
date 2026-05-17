@@ -118,21 +118,26 @@ public:
 
     // ── Helper methods for resolving composite structures ──
     void resolveStructFields(StructDeclAST& node);
-    void resolveFunctionType(FuncTypeAST& type);
-    std::vector<TypeAST*> getFunctionReturnTypes(FuncTypeAST& type);
-    TypeAST* getFunctionReturnType(FuncTypeAST& typeconst, const SourceLocation* loc = nullptr);
+    void resolveFunctionType(const FuncTypeAST& type);
+    std::vector<TypeAST*> getFunctionReturnTypes(const FuncTypeAST& type);
+    TypeAST* getFunctionReturnType(const FuncTypeAST& typeconst, const SourceLocation* loc = nullptr);
 
     // Call this before resolving types in an @extern-declared declaration
     // so that *T raw pointer types are permitted in that context.
-    void setInsideExtern(bool val) { insideExtern_ = val; }
+    void setInsideExtern(bool val) { _insideExtern = val; }
+
+    void setStructTraits(const std::unordered_map<InternedString, std::vector<InternedString>>* map) {
+        _structTraits = map;
+    }
 
 private:
-    SymbolTable& symbols_;
-    DiagnosticEngine& dc_;
-    StringPool& pool_;
-    ASTArena& arena_;
-    TypeAST* resolved_ = nullptr;
-    bool insideExtern_ = false;
+    SymbolTable& _symbols;
+    DiagnosticEngine& _dc;
+    StringPool& _pool;
+    ASTArena& _arena;
+    TypeAST* _resolved = nullptr;
+    bool _insideExtern = false;
+    const std::unordered_map<InternedString, std::vector<InternedString>>* _structTraits = nullptr;
 
     // Stack for nested generic parameters
     std::vector<const std::vector<GenericParamPtr>*> genericParamsStack_;
@@ -143,6 +148,9 @@ private:
     void pushGenericParams(const std::vector<GenericParamPtr>* params);
     void popGenericParams();
     bool isGenericParam(InternedString name) const;
+    
+    void resolveGenericParamConstraints(GenericParamAST& gp);
+    bool satisfiesConstraints(TypeAST* type, const std::vector<InternedString>& requiredTraits) const;
 
     void pushSubstitutionMap(const std::unordered_map<InternedString, TypeAST*>* map);
     void popSubstitutionMap();
