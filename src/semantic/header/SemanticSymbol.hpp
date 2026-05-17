@@ -82,6 +82,7 @@
 // a variable lookup actually returns a Variable, not a Struct).
 // ─────────────────────────────────────────────────────────────────────────────
 enum class SymbolKind {
+    Module,
     Var,
     Func,
     ExternFunc,   // function declared with @extern("sym") — resolved by the linker

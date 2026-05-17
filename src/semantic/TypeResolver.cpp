@@ -792,7 +792,7 @@ void TypeResolver::visit(NamedTypeAST& node) {
         resolveType(node.genericArgs[i].get());
     }
 
-    // --- Generic constraint checking (only for struct instantiations) ---
+    // Generic constraint checking (only for struct instantiations) 
     if (sym->kind == SymbolKind::Struct && !node.genericArgs.empty()) {
         auto* structDecl = sym->decl->as<StructDeclAST>();
         if (structDecl->genericParams.size() != node.genericArgs.size()) {

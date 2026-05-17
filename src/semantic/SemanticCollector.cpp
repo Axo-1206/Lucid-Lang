@@ -272,6 +272,32 @@ void SemanticCollector::extractExternMetadata(const std::vector<AttributePtr>& a
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// visit(UseDeclAST)
+// ─────────────────────────────────────────────────────────────────────────────
+void SemanticCollector::visit(UseDeclAST& node) {
+    // Build the full module path as a string (for mangling)
+    std::string fullPath;
+    for (size_t i = 0; i < node.path.size(); ++i) {
+        if (i > 0) fullPath += ".";
+        fullPath += _pool.lookup(node.path[i]);
+    }
+    InternedString pathStr = _pool.intern(fullPath);
+
+    // Determine the symbol name: alias if present, otherwise the last path segment
+    InternedString symName = node.alias.value_or(node.path.back());
+
+    Symbol sym;
+    sym.name = symName;
+    sym.kind = SymbolKind::Module;
+    sym.visibility = node.visibility;
+    sym.decl = &node;
+    sym.loc = node.loc;
+    sym.type = nullptr; // modules have no type
+
+    declareSymbol(sym);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // visit(VarDeclAST)
 // ─────────────────────────────────────────────────────────────────────────────
 void SemanticCollector::visit(VarDeclAST& node) {

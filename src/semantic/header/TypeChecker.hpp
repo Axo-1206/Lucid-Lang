@@ -86,6 +86,8 @@ public:
     // ── Type compatibility ───────────────────────────────────────────────────
     bool isEqual(TypeAST* a, TypeAST* b);
     bool isAssignable(TypeAST* from, TypeAST* to);
+    bool areAssignableMultiple(const std::vector<TypeAST*>& fromTypes,
+                                const std::vector<TypeAST*>& toTypes);
     bool isCallable(TypeAST* type);
     bool isBooleanCompatible(TypeAST* type);
     bool isNullable(TypeAST* type);

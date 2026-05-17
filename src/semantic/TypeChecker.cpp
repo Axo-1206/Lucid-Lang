@@ -477,6 +477,48 @@ bool TypeChecker::isAssignable(TypeAST* from, TypeAST* to) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// areAssignableMultiple  —  Checks if a list of source types can be assigned
+//                           to a list of target types element‑wise.
+//
+// This is the core helper for multi‑return assignment and multi‑variable
+// declaration. It verifies that the number of sources equals the number of
+// targets and that each individual source is assignable to its corresponding
+// target (using isAssignable). The vectors must be in the same order.
+//
+// ─── Purpose ─────────────────────────────────────────────────────────────────
+// Used during checking of:
+//   - Multi‑variable declaration (let a int, b string = f()) – where the RHS
+//     must return as many values as there are variables.
+//   - Multi‑assignment (a, b = g()) – where the RHS must return as many
+//     values as there are LHS expressions.
+//
+// ─── Algorithm ───────────────────────────────────────────────────────────────
+//   1. If the vector sizes differ → return false.
+//   2. For each index i:
+//        - If fromTypes[i] is not assignable to toTypes[i] → return false.
+//   3. Otherwise → return true.
+//
+// ─── Cases Covered (returns true) ────────────────────────────────────────────
+//   - Same length, each source assignable to corresponding target.
+//
+// ─── What is NOT covered (returns false) ─────────────────────────────────────
+//   - Different vector lengths.
+//   - Any individual source‑target pair fails isAssignable.
+//   - RHS not being a function call (caller must enforce that separately).
+//
+// ─── Dependencies ────────────────────────────────────────────────────────────
+//   Uses isAssignable for element‑wise compatibility.
+// ─────────────────────────────────────────────────────────────────────────────
+bool TypeChecker::areAssignableMultiple(const std::vector<TypeAST*>& fromTypes,
+                                        const std::vector<TypeAST*>& toTypes) {
+    if (fromTypes.size() != toTypes.size()) return false;
+    for (size_t i = 0; i < fromTypes.size(); ++i) {
+        if (!isAssignable(fromTypes[i], toTypes[i])) return false;
+    }
+    return true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // isCallable  —  Determines whether a type can be invoked as a function.
 //
 // Returns true if the type is a FuncTypeAST (function type). This includes

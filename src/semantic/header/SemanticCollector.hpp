@@ -98,6 +98,7 @@ public:
     void collectProgram(ProgramAST& program);
 
     // ── ASTVisitor overrides for top-level declarations ───────────────
+    void visit(UseDeclAST& node) override;
     void visit(VarDeclAST& node) override;
     void visit(FuncDeclAST& node) override;
     void visit(StructDeclAST& node) override;
