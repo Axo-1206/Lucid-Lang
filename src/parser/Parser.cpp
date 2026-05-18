@@ -517,7 +517,11 @@ std::vector<ASTPtr<ParamAST>> Parser::parseParamGroup() {
         // Parse parameter name
         if (!check(TokenType::IDENTIFIER)) { 
             errorAt(DiagCode::E2003, "expected parameter name, got '" + peek().value + "'");
-            break;
+            // Skip to next comma or closing parenthesis to recover
+            while (!isAtEnd() && !check(TokenType::COMMA) && !check(TokenType::RPAREN)) {
+                advance();
+            }
+            continue;
         }
         InternedString paramName = pool_.intern(advance().value);
         
@@ -531,14 +535,22 @@ std::vector<ASTPtr<ParamAST>> Parser::parseParamGroup() {
         // Case 1: No progress → infinite loop risk
         if (pos_ == savedPos) {
             errorAt(DiagCode::E2005, "expected parameter type, no token consumed");
-            if (!isAtEnd()) advance(); // consume offending token to avoid infinite loop
-            break;
+            if (!isAtEnd()) advance(); // consume the offending token
+            // Skip to next comma or closing parenthesis
+            while (!isAtEnd() && !check(TokenType::COMMA) && !check(TokenType::RPAREN)) {
+                advance();
+            }
+            continue;
         }
 
         // Case 2: parseType returned an unknown type (invalid syntax)
         if (paramType->isa<UnknownTypeAST>()) {
             errorAt(DiagCode::E2005, "invalid parameter type");
-            break;  // do NOT add this parameter
+            // Skip to next comma or closing parenthesis
+            while (!isAtEnd() && !check(TokenType::COMMA) && !check(TokenType::RPAREN)) {
+                advance();
+            }
+            continue;
         }
         
         auto paramNode = arena_.make<ParamAST>();
@@ -1114,8 +1126,17 @@ bool Parser::looksLikeFuncDecl() const {
                            << ", token='" << peek().value << "'");
     
     std::size_t i = pos_;
+    
+    // Helper to skip comments at index i
+    auto skipCommentsAt = [&](std::size_t& idx) {
+        while (idx < tokens_.size() && (tokens_[idx].type == TokenType::LINE_COMMENT ||
+                                        tokens_[idx].type == TokenType::DOC_COMMENT)) {
+            ++idx;
+        }
+    };
 
     // Skip the name IDENTIFIER
+    skipCommentsAt(i);
     if (i < tokens_.size() && tokens_[i].type == TokenType::IDENTIFIER) {
         LUC_LOG_PARSER_VERBOSE("\tfound IDENTIFIER: '" << tokens_[i].value << "'");
         ++i;
@@ -1125,13 +1146,14 @@ bool Parser::looksLikeFuncDecl() const {
     }
 
     // Skip generic params if present: < ... >
+    skipCommentsAt(i);
     if (i < tokens_.size() && tokens_[i].type == TokenType::LESS) {
         LUC_LOG_PARSER_VERBOSE("\tfound generic params start '<'");
         int depth = 1;
         ++i;
         while (i < tokens_.size() && depth > 0) {
             // Skip comments before evaluating token type
-            skipComments(i);
+            skipCommentsAt(i);
             if (i >= tokens_.size()) break;
             TokenType tt = tokens_[i].type;
             if (tt == TokenType::LESS) ++depth;
@@ -1150,8 +1172,10 @@ bool Parser::looksLikeFuncDecl() const {
 
     // Skip type qualifiers (~async, ~noinline, etc.) that appear after the name
     // These are part of the function's type, not the declaration syntax
+    skipCommentsAt(i);
     while (i < tokens_.size() && tokens_[i].type == TokenType::TILDE) {
         ++i; // skip '~'
+        skipCommentsAt(i);
         // Expect an identifier after '~'
         if (i < tokens_.size() && tokens_[i].type == TokenType::IDENTIFIER) {
             LUC_LOG_PARSER_VERBOSE("\tskipping qualifier '~" << tokens_[i].value << "'");
@@ -1161,11 +1185,11 @@ bool Parser::looksLikeFuncDecl() const {
             LUC_LOG_PARSER_VERBOSE("\t'~' without identifier, returning false");
             return false;
         }
-        // Skip any comments between qualifiers
-        skipComments(i);
+        skipCommentsAt(i);
     }
 
     // we need at least one parameter group '('
+    skipCommentsAt(i);
     if (!(i < tokens_.size() && tokens_[i].type == TokenType::LPAREN)) {
         LUC_LOG_PARSER_VERBOSE("\tno '(' found after name/generics/qualifiers, returning false");
         return false;
@@ -1217,18 +1241,30 @@ bool Parser::looksLikeFuncDecl() const {
 bool Parser::looksLikeAnonFunc() const {
     std::size_t i = pos_;
 
+    // Helper to skip comments at a given index
+    auto skipCommentsAt = [&](std::size_t& idx) {
+        while (idx < tokens_.size() && (tokens_[idx].type == TokenType::LINE_COMMENT ||
+                                        tokens_[idx].type == TokenType::DOC_COMMENT)) {
+            ++idx;
+        }
+    };
+
     // Skip type qualifiers (though anonymous functions should not have them)
-    while (i < tokens_.size() && tokens_[i].type == TokenType::TILDE) {
-        ++i;
+    while (i < tokens_.size()) {
+        skipCommentsAt(i);
+        if (i >= tokens_.size() || tokens_[i].type != TokenType::TILDE)
+            break;
+        ++i; // skip '~'
+        skipCommentsAt(i);
         if (i < tokens_.size() && tokens_[i].type == TokenType::IDENTIFIER) {
-            ++i;
+            ++i; // skip qualifier identifier
         } else {
             return false;
         }
-        skipComments(i);
     }
 
     // First parameter group is required
+    skipCommentsAt(i);
     if (i >= tokens_.size() || tokens_[i].type != TokenType::LPAREN)
         return false;
 
@@ -1239,15 +1275,19 @@ bool Parser::looksLikeAnonFunc() const {
         int parenDepth = 1;
         std::size_t j = start + 1;
         while (j < tokens_.size() && parenDepth > 0) {
+            // Skip comments inside the group
+            while (j < tokens_.size() && (tokens_[j].type == TokenType::LINE_COMMENT ||
+                                          tokens_[j].type == TokenType::DOC_COMMENT)) {
+                ++j;
+            }
+            if (j >= tokens_.size()) break;
             TokenType tt = tokens_[j].type;
             if (tt == TokenType::LPAREN) {
                 ++parenDepth;
             } else if (tt == TokenType::RPAREN) {
                 --parenDepth;
-            } else if (tt == TokenType::LINE_COMMENT || tt == TokenType::DOC_COMMENT) {
-                ++j;
-                continue;
             } else if (tt == TokenType::TILDE) {
+                // Skip qualifier inside the group (though unlikely)
                 ++j;
                 if (j < tokens_.size() && tokens_[j].type == TokenType::IDENTIFIER) ++j;
                 continue;
@@ -1262,16 +1302,17 @@ bool Parser::looksLikeAnonFunc() const {
     if (i == startPos) return false; // no progress
 
     // Parse additional curried parameter groups
-    while (i < tokens_.size() && tokens_[i].type == TokenType::LPAREN) {
+    while (i < tokens_.size()) {
+        skipCommentsAt(i);
+        if (i >= tokens_.size() || tokens_[i].type != TokenType::LPAREN)
+            break;
         startPos = i;
         i = parseOneGroup(i);
         if (i == startPos) return false;
     }
 
     // Skip comments after the last ')'
-    while (i < tokens_.size() && (tokens_[i].type == TokenType::LINE_COMMENT ||
-                                  tokens_[i].type == TokenType::DOC_COMMENT))
-        ++i;
+    skipCommentsAt(i);
     if (i >= tokens_.size()) return false;
 
     // Immediate '{' → void anonymous function
@@ -1282,11 +1323,9 @@ bool Parser::looksLikeAnonFunc() const {
     if (tokens_[i].type != TokenType::ARROW)
         return false;
 
-    // Consume '->' in the lookahead (i is a copy, pos_ unchanged)
+    // Consume '->' in the lookahead
     ++i;
-    while (i < tokens_.size() && (tokens_[i].type == TokenType::LINE_COMMENT ||
-                                  tokens_[i].type == TokenType::DOC_COMMENT))
-        ++i;
+    skipCommentsAt(i);
     if (i >= tokens_.size()) return false;
 
     // The token after '->' must start a type
@@ -1298,6 +1337,7 @@ bool Parser::looksLikeAnonFunc() const {
         case TokenType::AMPERSAND:
         case TokenType::MUL:
         case TokenType::LPAREN:
+        case TokenType::TILDE:   // qualifier can start a function type return
             return true;
         default:
             return false;
@@ -1338,25 +1378,32 @@ bool Parser::looksLikeAnonFunc() const {
 // - The function does not call any other parsing functions that might modify state.
 // ─────────────────────────────────────────────────────────────────────────────
 bool Parser::looksLikeStructLiteral() const {
-    if (!check(TokenType::IDENTIFIER)) {
+    // Helper to skip comments at a given index
+    auto skipCommentsAt = [&](std::size_t& idx) {
+        while (idx < tokens_.size() && (tokens_[idx].type == TokenType::LINE_COMMENT ||
+                                        tokens_[idx].type == TokenType::DOC_COMMENT)) {
+            ++idx;
+        }
+    };
+
+    std::size_t i = pos_;
+    skipCommentsAt(i);
+    if (i >= tokens_.size() || tokens_[i].type != TokenType::IDENTIFIER) {
         LUC_LOG_PARSER_EXTREME("looksLikeStructLiteral: not IDENTIFIER, false");
         return false;
     }
 
-    // Peek ahead: after optional generic args, must find '{'.
-    std::size_t i = pos_ + 1;
-    int depth = 0;   // Initialize to 0 (no open brackets yet)
+    // Move past the identifier
+    ++i;
+    skipCommentsAt(i);
+    if (i >= tokens_.size()) return false;
 
-    // Skip generic args: < ... >
-    if (i < tokens_.size() && tokens_[i].type == TokenType::LESS) {
-        depth = 1;   // We've seen the opening '<', start depth at 1
-        ++i;         // move past '<'
+    // Optional generic args: < ... >
+    if (tokens_[i].type == TokenType::LESS) {
+        int depth = 1;
+        ++i; // move past '<'
         while (i < tokens_.size() && depth > 0) {
-            // Skip comments
-            while (i < tokens_.size() && (tokens_[i].type == TokenType::LINE_COMMENT ||
-                                        tokens_[i].type == TokenType::DOC_COMMENT)) {
-                ++i;
-            }
+            skipCommentsAt(i);
             if (i >= tokens_.size()) break;
             TokenType tt = tokens_[i].type;
             if (tt == TokenType::LESS) ++depth;
@@ -1364,9 +1411,16 @@ bool Parser::looksLikeStructLiteral() const {
             else if (tt == TokenType::EOF_TOKEN) break;
             ++i;
         }
+        if (depth != 0) {
+            LUC_LOG_PARSER_EXTREME("looksLikeStructLiteral: unbalanced generic brackets, false");
+            return false;
+        }
+        // After the '>', skip comments and then require '{'
+        skipCommentsAt(i);
+        if (i >= tokens_.size()) return false;
     }
-    // After the loop, depth must be 0. For non-generic literals, depth is already 0.
-    bool result = (depth == 0 && i < tokens_.size() && tokens_[i].type == TokenType::LBRACE);
+
+    bool result = (i < tokens_.size() && tokens_[i].type == TokenType::LBRACE);
     LUC_LOG_PARSER_EXTREME("looksLikeStructLiteral: " << (result ? "true" : "false"));
     return result;
 }
@@ -1533,16 +1587,21 @@ bool Parser::looksLikeDeclStart() const {
 //   so no side effects occur.
 // ─────────────────────────────────────────────────────────────────────────────
 bool Parser::looksLikeMultiAssignStart() const {
-    std::size_t i = pos_;  // start from current parser position (without consuming)
+    std::size_t i = pos_;
+
+    // Helper to skip comments at a given index
+    auto skipCommentsAt = [&](std::size_t& idx) {
+        while (idx < tokens_.size() && (tokens_[idx].type == TokenType::LINE_COMMENT ||
+                                        tokens_[idx].type == TokenType::DOC_COMMENT)) {
+            ++idx;
+        }
+    };
 
     // ── 1. Skip leading comments ─────────────────────────────────────────────
-    while (i < tokens_.size() && (tokens_[i].type == TokenType::LINE_COMMENT ||
-                                  tokens_[i].type == TokenType::DOC_COMMENT))
-        ++i;
+    skipCommentsAt(i);
     if (i >= tokens_.size()) return false;
 
     // ── 2. The first token of the first lvalue must be an identifier ─────────
-    //    Example: "pair" in "pair.first, ..." or "arr" in "arr[0], ..."
     if (tokens_[i].type != TokenType::IDENTIFIER) return false;
     ++i;
 
@@ -1551,37 +1610,30 @@ bool Parser::looksLikeMultiAssignStart() const {
     //    We stop when we encounter a token that cannot be part of an lvalue.
     while (i < tokens_.size()) {
         // Skip comments before checking suffix
-        while (i < tokens_.size() && (tokens_[i].type == TokenType::LINE_COMMENT ||
-                                      tokens_[i].type == TokenType::DOC_COMMENT))
-            ++i;
+        skipCommentsAt(i);
         if (i >= tokens_.size()) break;
 
         // ── Field access: .identifier ────────────────────────────────────────
         if (tokens_[i].type == TokenType::DOT) {
             ++i;
-            // Skip comments after '.'
-            while (i < tokens_.size() && (tokens_[i].type == TokenType::LINE_COMMENT ||
-                                          tokens_[i].type == TokenType::DOC_COMMENT))
-                ++i;
+            skipCommentsAt(i);
             if (i >= tokens_.size()) return false;
             if (tokens_[i].type != TokenType::IDENTIFIER) return false;
-            ++i;  // consume the field name
+            ++i; // consume the field name
         }
         // ── Array / slice index: [ expr ] ────────────────────────────────────
-        //    Handles simple and nested brackets (e.g., arr[0] or matrix[2][3]).
-        //    We skip the whole expression inside brackets because we only need
-        //    to know that there is an index, not its content.
         else if (tokens_[i].type == TokenType::LBRACKET) {
             ++i;
             int bracketDepth = 1;
             while (i < tokens_.size() && bracketDepth > 0) {
+                // Skip comments inside brackets
+                skipCommentsAt(i);
+                if (i >= tokens_.size()) break;
                 if (tokens_[i].type == TokenType::LBRACKET)
                     ++bracketDepth;
                 else if (tokens_[i].type == TokenType::RBRACKET)
                     --bracketDepth;
-                ++i;  // move past this token
-                // Note: We do NOT check for comments inside brackets – they
-                // are already ignored because they are not LBRACKET/RBRACKET.
+                ++i; // move past this token
             }
             // If brackets are unbalanced, i may go out of bounds; treat as false.
             if (bracketDepth != 0) return false;
@@ -1592,13 +1644,15 @@ bool Parser::looksLikeMultiAssignStart() const {
     }
 
     // ── 4. After finishing the first lvalue, look for a comma ────────────────
-    skipComments(i);
+    skipCommentsAt(i);
     if (i >= tokens_.size()) return false;
     if (tokens_[i].type != TokenType::COMMA) return false;
 
     // ── 5. A comma means there are at least two lvalues. Now scan for '=' ─────
-    ++i;  // skip the comma
+    ++i; // skip the comma
     while (i < tokens_.size()) {
+        skipCommentsAt(i);
+        if (i >= tokens_.size()) break;
         TokenType tt = tokens_[i].type;
         if (tt == TokenType::ASSIGN) return true;          // found the '=' – it's a multi‑assign
         if (tt == TokenType::SEMICOLON || tt == TokenType::LBRACE ||

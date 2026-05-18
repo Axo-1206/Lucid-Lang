@@ -1170,7 +1170,7 @@ void TypeResolver::visit(FromDeclAST& node) {
     // Resolve each casting entry's parameter types and return types
     for (auto& entry : node.entries) {
         if (!entry) continue;
-        
+
         // Resolve all parameter types in all curry groups
         for (auto& group : entry->sig.paramGroups) {
             for (auto& param : group) {
@@ -1179,29 +1179,41 @@ void TypeResolver::visit(FromDeclAST& node) {
                 }
             }
         }
-        
+
         // Resolve return type
         if (entry->returnType) {
             resolveType(entry->returnType.get());
         }
 
-        // Update the symbol table so the type checker can find this conversion
-        TypeAST* firstParamType = nullptr;
-        if (!entry->sig.paramGroups.empty() && !entry->sig.paramGroups[0].empty() && entry->sig.paramGroups[0][0]) {
-            firstParamType = entry->sig.paramGroups[0][0]->type.get();
-        }
-        std::string mangledName = NameMangler::mangleFrom(_pool.lookup(node.targetTypeName), firstParamType, _pool);
-        Symbol* sym = _symbols.lookup(_pool.intern(mangledName));
-        
-        if (sym) {
-            auto funcType = _arena.make<FuncTypeAST>();
-            funcType->sig = entry->sig;
-            funcType->loc = entry->loc;
-            if (entry->returnType) {
-                funcType->sig.returnTypes.push_back(entry->returnType);
+        // Build a FuncTypeAST for the entry signature and resolve it
+        auto funcType = _arena.make<FuncTypeAST>();
+        funcType->sig = entry->sig;
+        funcType->loc = entry->loc;
+        TypeAST* resolvedType = resolveType(funcType.get());
+
+        // ── SAFETY: From entries must not have qualifiers ───────────────────
+        bool hasQualifiers = false;
+        if (resolvedType && resolvedType->isa<FuncTypeAST>()) {
+            auto* ft = resolvedType->as<FuncTypeAST>();
+            if (ft->sig.qualifiers != 0) {
+                _dc.error(DiagnosticCategory::Semantic, entry->loc, DiagCode::E2010,
+                        "from entries cannot have qualifiers (~async, ~nullable, ~parallel)");
+                hasQualifiers = true;
             }
-            sym->type = resolveType(funcType.get());
-            LUC_LOG_SEMANTIC_VERBOSE("\tupdated symbol '" << mangledName << "' type");
+        }
+
+        // Update the symbol table only if no qualifiers and a symbol exists
+        if (!hasQualifiers) {
+            TypeAST* firstParamType = nullptr;
+            if (!entry->sig.paramGroups.empty() && !entry->sig.paramGroups[0].empty() && entry->sig.paramGroups[0][0]) {
+                firstParamType = entry->sig.paramGroups[0][0]->type.get();
+            }
+            std::string mangledName = NameMangler::mangleFrom(_pool.lookup(node.targetTypeName), firstParamType, _pool);
+            Symbol* sym = _symbols.lookup(_pool.intern(mangledName));
+            if (sym) {
+                sym->type = resolvedType;
+                LUC_LOG_SEMANTIC_VERBOSE("\tupdated symbol '" << mangledName << "' type");
+            }
         }
     }
     
