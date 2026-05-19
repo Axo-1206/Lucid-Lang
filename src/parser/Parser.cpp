@@ -1889,22 +1889,22 @@ DeclPtr Parser::parseDeclaration(DeclContext ctx) {
     DeclPtr decl;
 
     if (check(TokenType::USE)) {
-        if (!attrs.empty())
-            errorAt(DiagCode::E2002, "attributes are not valid on 'use' declarations");
-        decl = parseUseDecl(vis);
+        if (ctx == DeclContext::TopLevel) {
+            if (!attrs.empty())
+                errorAt(DiagCode::E2002, "attributes are not valid on 'use' declarations");
+            decl = parseUseDecl(vis);
+        }
     }
     else if (check(TokenType::STRUCT)) {
         decl = parseStructDecl(vis);
     }
     else if (check(TokenType::ENUM)) {
-        if (ctx == DeclContext::TopLevel && !attrs.empty())
-            errorAt(DiagCode::E2002, "attributes are not valid on 'enum' declarations");
-        decl = parseEnumDecl(vis);
+        if (ctx == DeclContext::TopLevel)
+            decl = parseEnumDecl(vis);
     }
     else if (check(TokenType::TRAIT)) {
-        if (ctx == DeclContext::TopLevel && !attrs.empty())
-            errorAt(DiagCode::E2002, "attributes are not valid on 'trait' declarations");
-        decl = parseTraitDecl(vis);
+        if (ctx == DeclContext::TopLevel)
+            decl = parseTraitDecl(vis);
     }
     else if (check(TokenType::IMPL)) {
         decl = parseImplDecl(vis);

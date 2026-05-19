@@ -52,8 +52,10 @@ namespace {
         { "packed",   AttributeContext::Struct,                        false, 0, 0, AttrArgKind::None, false, "" },
         { "inline",   AttributeContext::Func,                          false, 0, 0, AttrArgKind::None, false, "" },
         { "noinline", AttributeContext::Func,                          false, 0, 0, AttrArgKind::None, false, "" },
-        { "deprecated", AttributeContext::Func | AttributeContext::Var | AttributeContext::Struct | AttributeContext::Impl,
-          true, 0, 1, AttrArgKind::String, false, "" },
+        { "deprecated", AttributeContext::Func | AttributeContext::Var | 
+                        AttributeContext::Struct | AttributeContext::Impl | 
+                        AttributeContext::Enum | AttributeContext::Trait |
+                        AttributeContext::From, true, 0, 1, AttrArgKind::String, false, "" },
     };
     const size_t kNumBuiltinAttrs = sizeof(kBuiltinAttrs) / sizeof(kBuiltinAttrs[0]);
 }

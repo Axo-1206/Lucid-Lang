@@ -27,6 +27,9 @@ enum class AttributeContext : uint32_t {
     Struct  = 1 << 2,
     Impl    = 1 << 3,
     Main    = 1 << 4,
+    Enum    = 1 << 5,
+    Trait   = 1 << 6,
+    From    = 1 << 7,
 };
 
 inline AttributeContext operator|(AttributeContext a, AttributeContext b) {

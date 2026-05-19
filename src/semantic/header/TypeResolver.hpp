@@ -130,6 +130,13 @@ public:
         _structTraits = map;
     }
 
+    StringPool& getPool() const { return _pool; }
+    ASTArena& getArena() const { return _arena; }
+
+    void pushGenericParams(const std::vector<GenericParamPtr>* params);
+    void popGenericParams();
+    bool isGenericParam(InternedString name) const;
+
 private:
     SymbolTable& _symbols;
     DiagnosticEngine& _dc;
@@ -144,10 +151,6 @@ private:
     
     // Stack for nested substitution maps (concrete type arguments)
     std::vector<const std::unordered_map<InternedString, TypeAST*>*> substitutionMapStack_;
-
-    void pushGenericParams(const std::vector<GenericParamPtr>* params);
-    void popGenericParams();
-    bool isGenericParam(InternedString name) const;
     
     void resolveGenericParamConstraints(GenericParamAST& gp);
     bool satisfiesConstraints(TypeAST* type, const std::vector<InternedString>& requiredTraits) const;

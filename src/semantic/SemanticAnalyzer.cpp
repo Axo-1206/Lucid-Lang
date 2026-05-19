@@ -20,6 +20,7 @@
 #include "header/TypeResolver.hpp"
 #include "header/TypeChecker.hpp"
 #include "header/SymbolTable.hpp"
+#include "header/SemanticContext.hpp"
 #include "diagnostics/DiagnosticEngine.hpp"
 #include "diagnostics/DiagnosticCodes.hpp"
 #include "ast/BaseAST.hpp"
@@ -35,8 +36,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Forward declaration of Phase 3 dispatcher (defined in SemanticDecl.cpp)
 // ─────────────────────────────────────────────────────────────────────────────
-void checkTopLevelDecl(DeclAST* decl, SymbolTable& symbols, TypeResolver& resolver,
-                       DiagnosticEngine& dc, int& loopDepth, int& parallelDepth, bool insideExtern);
+void checkTopLevelDecl(DeclAST* decl, SemanticContext& ctx);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Forward declaration of Phase 4 dispatcher (defined in Annotator.cpp)
@@ -420,16 +420,19 @@ void SemanticAnalyzer::resolveTypes(std::vector<ProgramAST*>& files) {
 // ─────────────────────────────────────────────────────────────────────────────
 void SemanticAnalyzer::checkDecls(std::vector<ProgramAST*>& files) {
     LUC_LOG_SEMANTIC_VERBOSE("checkDecls: checking all declarations");
-    
+
+    // Create a SemanticContext that references the analyzer's depth counters.
+    SemanticContext ctx(*_symbols, *_typeResolver, *_typeChecker, _dc, _pool, _arena);
+
     int declCount = 0;
     for (auto* prog : files) {
         for (auto& decl : prog->decls) {
             declCount++;
-            LUC_LOG_SEMANTIC_EXTREME("\tchecking declaration #" << declCount 
+            LUC_LOG_SEMANTIC_EXTREME("\tchecking declaration #" << declCount
                                    << " kind=" << LucDebug::kindToString(decl->kind));
-            
-            checkTopLevelDecl(decl.get(), *_symbols, *_typeResolver, _dc,
-                              _loopDepth, _parallelDepth, _insideExtern);
+
+            // Pass the context instead of a dozen separate arguments
+            checkTopLevelDecl(decl.get(), ctx);
         }
     }
     LUC_LOG_SEMANTIC_VERBOSE("checkDecls: checked " << declCount << " declarations");

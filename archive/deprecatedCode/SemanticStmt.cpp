@@ -24,10 +24,7 @@
  * @related SemanticAnalyzer.cpp, SemanticDecl.cpp, SemanticExpr.cpp
  */
 
-#include "ast/BaseAST.hpp"
 #include "header/SemanticHelpers.hpp"
-#include "header/SymbolTable.hpp"
-#include "header/TypeResolver.hpp"
 
 #include <iostream>
 #include <iterator>
@@ -801,45 +798,6 @@ void checkStmt(StmtAST* node, SymbolTable& symbols, TypeResolver& resolver,
         default:
             LUC_LOG_SEMANTIC("\tWARNING: Unknown statement kind: " 
                            << static_cast<int>(node->kind));
-            break;
-    }
-}
-
-void checkStmt(StmtAST* node, SemanticContext& ctx, TypeAST* expectedReturn) {
-    if (!node) return;
-
-    switch (node->kind) {
-        case ASTKind::BlockStmt:
-            checkBlockStmt(*node->as<BlockStmtAST>(), ctx, expectedReturn);
-            break;
-        case ASTKind::ExprStmt:
-            checkExprStmt(*node->as<ExprStmtAST>(), ctx);
-            break;
-        case ASTKind::DeclStmt:
-            checkDeclStmt(*node->as<DeclStmtAST>(), ctx);
-            break;
-        case ASTKind::IfStmt:
-            checkIfStmt(*node->as<IfStmtAST>(), ctx, expectedReturn);
-            break;
-        case ASTKind::WhileStmt:
-            checkWhileStmt(*node->as<WhileStmtAST>(), ctx, expectedReturn);
-            break;
-        case ASTKind::ForStmt:
-            checkForStmt(*node->as<ForStmtAST>(), ctx, expectedReturn);
-            break;
-        case ASTKind::ReturnStmt:
-            checkReturnStmt(*node->as<ReturnStmtAST>(), ctx, expectedReturn);
-            break;
-        case ASTKind::BreakStmt:
-            checkBreakStmt(*node->as<BreakStmtAST>(), ctx);
-            break;
-        case ASTKind::ContinueStmt:
-            checkContinueStmt(*node->as<ContinueStmtAST>(), ctx);
-            break;
-        // ... add SwitchStmt, DoWhileStmt, etc.
-        default:
-            ctx.dc.error(DiagnosticCategory::Semantic, node->loc, DiagCode::E3002,
-                         "unsupported statement kind");
             break;
     }
 }
