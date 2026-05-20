@@ -18,793 +18,411 @@
  *   checkReturnStmt     — validate return type matches expected
  *   checkBreakStmt      — error if not inside a loop or inside parallel
  *   checkContinueStmt   — same as break
- *   checkParallelForStmt— parallelDepth++, check iterable + body
- *   checkParallelBlock  — parallelDepth++, check sub-blocks
+ *   checkMultiVarDecl   — multiple variable declaration
+ *   checkMultiAssignStmt— multiple assignment
  *
  * @related SemanticAnalyzer.cpp, SemanticDecl.cpp, SemanticExpr.cpp
  */
 
 #include "ast/BaseAST.hpp"
-#include "header/SemanticHelpers.hpp"
 #include "header/SymbolTable.hpp"
 #include "header/TypeResolver.hpp"
+#include "header/SemanticContext.hpp"
+#include "header/SemanticChecker.hpp"
+#include "ast/StmtAST.hpp"
+#include "ast/ExprAST.hpp"
+#include "ast/DeclAST.hpp"
+#include "debug/DebugUtils.hpp"
+#include "diagnostics/DiagnosticCodes.hpp"
 
 #include <iostream>
 #include <iterator>
+#include <vector>
+#include <string>
 
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Forward declarations 
-// NOTE: These are required because Declarations, Statements, and Expressions
-// cross-call each other recursively. We use manual forward declarations here
-// instead of a header to avoid complex circular dependency loops.
-// ─────────────────────────────────────────────────────────────────────────────
-TypeAST* checkExpr(ExprAST* node, SymbolTable& symbols, TypeResolver& resolver,
-                   DiagnosticEngine& dc, int& loopDepth,
-                   int& parallelDepth, bool insideExtern);
-
-void checkVarDecl(VarDeclAST& node, SymbolTable& symbols, TypeResolver& resolver,
-                  DiagnosticEngine& dc, int& loopDepth, int& parallelDepth, bool insideExtern);
-
-void checkFuncDecl(FuncDeclAST& node, SymbolTable& symbols, TypeResolver& resolver,
-                   DiagnosticEngine& dc, int& loopDepth, int& parallelDepth, bool insideExtern);
+// Forward declarations from SemanticExpr.cpp and SemanticDecl.cpp
+TypeAST* checkExpr(ExprAST* node, SemanticContext& ctx);
+void checkVarDecl(VarDeclAST& node, SemanticContext& ctx, bool isLocal);
+void checkFuncDecl(FuncDeclAST& node, SemanticContext& ctx, bool isLocal);
+void checkTopLevelDecl(DeclAST* decl, SemanticContext& ctx); // for local decls inside blocks
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Convenience: make a primitive type pointer without allocation.
+// BlockStmt – opens a new scope, checks statements, then pops scope
 // ─────────────────────────────────────────────────────────────────────────────
-static PrimitiveTypeAST* stmtPrimType(PrimitiveKind k) {
-    static PrimitiveTypeAST singletons[] = {
-        PrimitiveTypeAST(PrimitiveKind::Bool),
-        PrimitiveTypeAST(PrimitiveKind::Byte),
-        PrimitiveTypeAST(PrimitiveKind::Short),
-        PrimitiveTypeAST(PrimitiveKind::Int),
-        PrimitiveTypeAST(PrimitiveKind::Long),
-        PrimitiveTypeAST(PrimitiveKind::Ubyte),
-        PrimitiveTypeAST(PrimitiveKind::Ushort),
-        PrimitiveTypeAST(PrimitiveKind::Uint),
-        PrimitiveTypeAST(PrimitiveKind::Ulong),
-        PrimitiveTypeAST(PrimitiveKind::Int8),
-        PrimitiveTypeAST(PrimitiveKind::Int16),
-        PrimitiveTypeAST(PrimitiveKind::Int32),
-        PrimitiveTypeAST(PrimitiveKind::Int64),
-        PrimitiveTypeAST(PrimitiveKind::Uint8),
-        PrimitiveTypeAST(PrimitiveKind::Uint16),
-        PrimitiveTypeAST(PrimitiveKind::Uint32),
-        PrimitiveTypeAST(PrimitiveKind::Uint64),
-        PrimitiveTypeAST(PrimitiveKind::Float),
-        PrimitiveTypeAST(PrimitiveKind::Double),
-        PrimitiveTypeAST(PrimitiveKind::Decimal),
-        PrimitiveTypeAST(PrimitiveKind::String),
-        PrimitiveTypeAST(PrimitiveKind::Char),
-        PrimitiveTypeAST(PrimitiveKind::Any),
-    };
-    return &singletons[static_cast<int>(k)];
-}
-
-// Build a function signature for local function declarations in statement scope.
-// This mirrors SemanticCollector's curry-chain shape so local calls type-check
-// the same way as top-level functions.
-static FuncTypeAST buildLocalFuncSignature(FuncDeclAST& node) {
-    LUC_LOG_SEMANTIC_VERBOSE("buildLocalFuncSignature: for function '" << node.name 
-                           << "', paramGroups=" << node.type.paramGroups.size());
-    
-    FuncTypeAST result;
-    result.loc = node.loc;
-    result.rawQualifiers = node.type.rawQualifiers;
-    result.qualifiers = node.type.qualifiers;
-    result.isNullable = node.type.isNullable;
-    
-    TypePtr sig = nullptr;
-    // Build from the LAST parameter group to the FIRST (creates curry chain)
-    for (int i = static_cast<int>(node.type.paramGroups.size()) - 1; i >= 0; --i) {
-        auto ft = std::make_unique<FuncTypeAST>();
-        ft->loc = node.loc;
-        LUC_LOG_SEMANTIC_EXTREME("\tbuilding param group " << i 
-                               << " with " << node.type.paramGroups[i].size() << " params");
-        
-        // Build a ParamGroup for this function level (for curry chain)
-        ParamGroup group;
-        for (const auto& param : node.type.paramGroups[i]) {
-            // ParamInfo needs name, type, isVariadic, loc
-            group.emplace_back(param.name, 
-                               SemanticHelpers::cloneType(param.type.get()),
-                               param.isVariadic,
-                               param.loc);
-        }
-        ft->paramGroups.push_back(std::move(group));
-
-        if (sig) {
-            ft->returnType = std::move(sig);
-        } else if (node.type.returnType) {
-            ft->returnType = SemanticHelpers::cloneType(node.type.returnType.get());
-        }
-        sig = std::move(ft);
-    }
-    
-    if (sig) {
-        // Copy the built signature into result
-        if (sig->isa<FuncTypeAST>()) {
-            auto* builtSig = sig->as<FuncTypeAST>();
-            result.paramGroups = std::move(builtSig->paramGroups);
-            result.returnType = SemanticHelpers::cloneType(builtSig->returnType.get());
-            result.qualifiers = builtSig->qualifiers;
-            result.isNullable = builtSig->isNullable;
-        }
-    }
-    
-    LUC_LOG_SEMANTIC_EXTREME("\tsignature built");
-    return result;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// checkStmt — main dispatcher (defined after all helpers)
-// ─────────────────────────────────────────────────────────────────────────────
-void checkStmt(StmtAST* node, SymbolTable& symbols, TypeResolver& resolver,
-               DiagnosticEngine& dc, TypeAST* expectedReturn,
-               int& loopDepth, int& parallelDepth, bool insideExtern);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// checkBlock
-// Opens a new scope, checks each statement, closes scope.
-// Records the depth on the node for the Annotator.
-// ─────────────────────────────────────────────────────────────────────────────
-static void checkBlock(BlockStmtAST& node, SymbolTable& symbols, TypeResolver& resolver,
-                       DiagnosticEngine& dc, TypeAST* expectedReturn,
-                       int& loopDepth, int& parallelDepth, bool insideExtern) {
-    LUC_LOG_SEMANTIC_VERBOSE("checkBlock: entering block, depth=" << symbols.currentDepth());
-    
-    symbols.pushScope();
-    node.scopeDepth = symbols.currentDepth();
-    LUC_LOG_SEMANTIC_EXTREME("\tblock depth set to " << node.scopeDepth);
-
-    int stmtCount = 0;
+static void checkBlockStmt(BlockStmtAST& node, SemanticContext& ctx, TypeAST* expectedReturn) {
+    ctx.symbols.pushScope();
     for (auto& stmt : node.stmts) {
-        stmtCount++;
-        LUC_LOG_SEMANTIC_EXTREME("\tchecking stmt #" << stmtCount);
-        checkStmt(stmt.get(), symbols, resolver, dc, expectedReturn,
-                  loopDepth, parallelDepth, insideExtern);
+        checkStmt(stmt.get(), ctx, expectedReturn);
+        // If a fatal error occurred, we might stop, but we continue for better diagnostics
     }
-
-    symbols.popScope();
-    LUC_LOG_SEMANTIC_VERBOSE("checkBlock: exited block, checked " << stmtCount << " statements");
+    ctx.symbols.popScope();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// checkExprStmt
-// Checks the expression for type correctness. Discarding an Expect<T> / Result
-// without handling it generates a runtime panic per the language spec — we emit
-// a note here (a full warning requires knowledge of the error library, deferred
-// until the error library is integrated).
+// ExprStmt – expression used as a statement; warn if non-void result discarded
 // ─────────────────────────────────────────────────────────────────────────────
-static void checkExprStmt(ExprStmtAST& node, SymbolTable& symbols, TypeResolver& resolver,
-                           DiagnosticEngine& dc, int& loopDepth, int& parallelDepth, bool insideExtern) {
-    LUC_LOG_SEMANTIC_EXTREME("checkExprStmt");
-    
-    // Optional: Log the expression kind being checked
-    if (node.expr) {
-        LUC_LOG_SEMANTIC_EXTREME("\tchecking expression kind: " << LucDebug::kindToString(node.expr->kind));
-    }
-    
-    checkExpr(node.expr.get(), symbols, resolver, dc,loopDepth, parallelDepth, insideExtern);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// checkDeclStmt
-// Dispatches to checkVarDecl or checkFuncDecl then declares the symbol locally.
-// ─────────────────────────────────────────────────────────────────────────────
-static void checkDeclStmt(DeclStmtAST& node, SymbolTable& symbols, TypeResolver& resolver,
-                           DiagnosticEngine& dc, int& loopDepth, int& parallelDepth, bool insideExtern) {
-    LUC_LOG_SEMANTIC_VERBOSE("checkDeclStmt: " << (node.isVar() ? "var" : "func"));
-    
-    if (node.isVar()) {
-        VarDeclAST* vd = node.asVar();
-        LUC_LOG_SEMANTIC_EXTREME("\tchecking var: " << vd->name);
-        checkVarDecl(*vd, symbols, resolver, dc,
-                     loopDepth, parallelDepth, insideExtern);
-
-        // Declare the variable in the current (block) scope.
-        TypeAST* resolvedTy = vd->resolvedType ? (TypeAST*)vd->resolvedType : resolver.resolveType(vd->type.get());
-        Symbol sym;
-        sym.name       = vd->name;
-        sym.kind       = SymbolKind::Var;
-        sym.declKw     = vd->keyword;
-        sym.visibility = Visibility::Private;
-        sym.type       = resolvedTy;
-        sym.decl       = vd;
-        sym.loc        = vd->loc;
-        
-        if (!symbols.declare(sym)) {
-            LUC_LOG_SEMANTIC("\tERROR: variable '" << vd->name << "' already declared in this scope");
-            dc.error(DiagnosticCategory::Semantic, vd->loc, DiagCode::E3005,
-                     "symbol '" + vd->name + "' is already declared in this scope");
-        } else {
-            LUC_LOG_SEMANTIC_EXTREME("\tvariable declared successfully");
-        }
-    } else if (node.isFunc()) {
-        FuncDeclAST* fd = node.asFunc();
-        LUC_LOG_SEMANTIC_EXTREME("\tchecking func: " << fd->name);
-        checkFuncDecl(*fd, symbols, resolver, dc, loopDepth, parallelDepth, insideExtern);
-
-        // Ensure local function symbols carry a callable FuncType signature.
-        // The signature is now fd->type (unified FuncTypeAST)
-        // No need to build a separate signature unless it's missing
-        if (fd->type.paramGroups.empty() && !fd->type.returnType) {
-            // If the type is empty, build a signature from the declaration
-            // This should not happen normally, but as a fallback
-            fd->type = buildLocalFuncSignature(*fd);
-        }
-
-        Symbol sym;
-        sym.name       = fd->name;
-        sym.kind       = SymbolKind::Func;
-        sym.declKw     = fd->keyword;
-        sym.visibility = Visibility::Private;
-        sym.type       = &fd->type;  // Point to the unified FuncTypeAST
-        sym.decl       = fd;
-        sym.loc        = fd->loc;
-        
-        if (!symbols.declare(sym)) {
-            LUC_LOG_SEMANTIC("\tERROR: function '" << fd->name << "' already declared in this scope");
-            dc.error(DiagnosticCategory::Semantic, fd->loc, DiagCode::E3005,
-                     "symbol '" + fd->name + "' is already declared in this scope");
-        } else {
-            LUC_LOG_SEMANTIC_EXTREME("\tfunction declared successfully");
-        }
+static void checkExprStmt(ExprStmtAST& node, SemanticContext& ctx) {
+    TypeAST* exprType = checkExpr(node.expr.get(), ctx);
+    if (exprType && !exprType->isa<PrimitiveTypeAST>()) {
+        // If it's a function call that returns a non-void type, warn about unused result
+        // Only warn if the expression is a call to a function that returns something.
+        // For simplicity, we check if the expression is a CallExprAST or has side effects.
+        // We'll emit a warning for any non-void expression that isn't a call to a void function.
+        // Actually, the language rule: discarding a non-void result is a warning.
+        ctx.dc.warning(DiagnosticCategory::Semantic, node.loc, DiagCode::W3003,
+                       "unused result of expression; value discarded");
     }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// checkIfStmt
+// DeclStmt – local declaration (var, func, type alias, etc.)
 // ─────────────────────────────────────────────────────────────────────────────
-static void checkIfStmt(IfStmtAST& node, SymbolTable& symbols, TypeResolver& resolver,
-                         DiagnosticEngine& dc, TypeAST* expectedReturn,
-                         int& loopDepth, int& parallelDepth, bool insideExtern) {
-    LUC_LOG_SEMANTIC_VERBOSE("checkIfStmt");
-    
-    TypeAST* condType = checkExpr(node.condition.get(), symbols, resolver, dc, loopDepth, parallelDepth, insideExtern);
-    if (condType && !TypeChecker::isBooleanCompatible(condType)) {
-        LUC_LOG_SEMANTIC("\tERROR: condition is not bool-compatible");
-        dc.error(DiagnosticCategory::Semantic, node.condition->loc, DiagCode::E3002,
-                 "if condition must be bool");
+static void checkDeclStmt(DeclStmtAST& node, SemanticContext& ctx) {
+    if (!node.decl) return;
+
+    // Dispatch to the appropriate declaration checker with isLocal = true
+    if (auto* varDecl = node.decl->as<VarDeclAST>()) {
+        checkVarDecl(*varDecl, ctx, true);
+    } else if (auto* funcDecl = node.decl->as<FuncDeclAST>()) {
+        checkFuncDecl(*funcDecl, ctx, true);
     } else {
-        LUC_LOG_SEMANTIC_EXTREME("\tcondition type is bool-compatible");
+        // For other declarations (type alias, struct, enum, etc.) we use the top-level
+        // checker but with local context. However, those may not be allowed locally.
+        // The parser should already reject them, but we handle gracefully.
+        checkTopLevelDecl(node.decl.get(), ctx);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IfStmt – conditional branch; condition must be boolean
+// ─────────────────────────────────────────────────────────────────────────────
+static void checkIfStmt(IfStmtAST& node, SemanticContext& ctx, TypeAST* expectedReturn) {
+    TypeAST* condType = checkExpr(node.condition.get(), ctx);
+    if (!condType) return;
+
+    if (!ctx.checker.isBooleanCompatible(condType)) {
+        ctx.dc.error(DiagnosticCategory::Semantic, node.condition->loc, DiagCode::E3002,
+                     "if condition must be boolean");
+        return;
     }
 
+    // Check then branch
     if (node.thenBranch) {
-        // If the condition is 'x is T', narrow 'x' to 'T' inside the then-branch.
-        bool narrowed = false;
-        if (node.condition->kind == ASTKind::IsExpr) {
-            auto* isExpr = static_cast<IsExprAST*>(node.condition.get());
-            if (isExpr->expr->kind == ASTKind::IdentifierExpr) {
-                auto* ident = static_cast<IdentifierExprAST*>(isExpr->expr.get());
-                Symbol* originalSym = symbols.lookup(ident->name);
-                if (originalSym) {
-                    LUC_LOG_SEMANTIC_EXTREME("\ttype narrowing: " << ident->name);
-                    symbols.pushScope();
-                    narrowed = true;
-                    Symbol narrowedSym = *originalSym;
-                    narrowedSym.type = isExpr->checkType.get();
-                    symbols.declare(narrowedSym);
-                }
-            }
-        }
-
-        LUC_LOG_SEMANTIC_EXTREME("\tchecking then branch");
-        checkStmt(node.thenBranch.get(), symbols, resolver, dc, expectedReturn,
-                  loopDepth, parallelDepth, insideExtern);
-
-        if (narrowed) {
-            symbols.popScope();
-            LUC_LOG_SEMANTIC_EXTREME("\ttype narrow scope popped");
-        }
+        checkStmt(node.thenBranch.get(), ctx, expectedReturn);
     }
-    
+
+    // Check else branch (if present)
     if (node.elseBranch) {
-        LUC_LOG_SEMANTIC_EXTREME("\tchecking else branch");
-        checkStmt(node.elseBranch.get(), symbols, resolver, dc, expectedReturn,
-                  loopDepth, parallelDepth, insideExtern);
+        // Else branch can be a BlockStmtAST or another IfStmtAST
+        checkStmt(node.elseBranch.get(), ctx, expectedReturn);
     }
-    
-    LUC_LOG_SEMANTIC_VERBOSE("checkIfStmt: complete");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// checkSwitchStmt
-// The subject type is checked; each case value must be assignable to it.
+// WhileStmt – condition loop; condition must be boolean
 // ─────────────────────────────────────────────────────────────────────────────
-static void checkSwitchStmt(SwitchStmtAST& node, SymbolTable& symbols,
-                              TypeResolver& resolver, DiagnosticEngine& dc,
-                              TypeAST* expectedReturn, int& loopDepth, 
-                              int& parallelDepth, bool insideExtern) {
-    LUC_LOG_SEMANTIC_VERBOSE("checkSwitchStmt: " << node.cases.size() << " cases");
-    
-    TypeAST* subjectType = checkExpr(node.subject.get(), symbols, resolver, dc,
-                                     loopDepth, parallelDepth, insideExtern);
-    LUC_LOG_SEMANTIC_EXTREME("\tsubject type checked");
+static void checkWhileStmt(WhileStmtAST& node, SemanticContext& ctx, TypeAST* expectedReturn) {
+    TypeAST* condType = checkExpr(node.condition.get(), ctx);
+    if (!condType) return;
 
-    int caseCount = 0;
-    for (auto& cas : node.cases) {
-        caseCount++;
-        LUC_LOG_SEMANTIC_EXTREME("\tchecking case " << caseCount << " with " 
-                               << cas->values.size() << " values");
-        
-        for (auto& val : cas->values) {
-            TypeAST* vt = checkExpr(val.get(), symbols, resolver, dc,
-                                    loopDepth, parallelDepth, insideExtern);
-            if (subjectType && vt && !TypeChecker::isAssignable(vt, subjectType)) {
-                LUC_LOG_SEMANTIC("\tERROR: case value type not assignable to subject");
-                dc.error(DiagnosticCategory::Semantic, val->loc, DiagCode::E3002,
-                         "switch case value type does not match subject type");
-            }
-        }
-        if (cas->body) {
-            LUC_LOG_SEMANTIC_EXTREME("\tchecking case body");
-            checkBlock(*cas->body, symbols, resolver, dc, expectedReturn,
-                       loopDepth, parallelDepth, insideExtern);
-        }
-    }
-
-    if (node.defaultBody) {
-        LUC_LOG_SEMANTIC_EXTREME("\tchecking default body");
-        checkBlock(*node.defaultBody, symbols, resolver, dc, expectedReturn,
-                   loopDepth, parallelDepth, insideExtern);
-    }
-    
-    LUC_LOG_SEMANTIC_VERBOSE("checkSwitchStmt: complete");
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// checkForStmt
-// Validates the iterable (collection or range), declares the loop variable,
-// checks the body.
-// ─────────────────────────────────────────────────────────────────────────────
-static void checkForStmt(ForStmtAST& node, SymbolTable& symbols, TypeResolver& resolver,
-                          DiagnosticEngine& dc, TypeAST* expectedReturn,
-                          int& loopDepth, int& parallelDepth, bool insideExtern) {
-    LUC_LOG_SEMANTIC_VERBOSE("checkForStmt: varName='" << node.varName 
-                           << "', loopDepth=" << loopDepth);
-    
-    TypeAST* iterType = checkExpr(node.iterable.get(), symbols, resolver, dc,
-                                  loopDepth, parallelDepth, insideExtern);
-    LUC_LOG_SEMANTIC_EXTREME("\titerable type checked");
-
-    // Infer element type from the iterable.
-    TypeAST* elemType = SemanticHelpers::getPrimitiveType(PrimitiveKind::Int); // default for range
-    if (iterType) {
-        if (iterType->isa<FixedArrayTypeAST>()) {
-            elemType = iterType->as<FixedArrayTypeAST>()->element.get();
-            LUC_LOG_SEMANTIC_EXTREME("\titerable is FixedArray, element type inferred");
-        } else if (iterType->isa<SliceTypeAST>()) {
-            elemType = iterType->as<SliceTypeAST>()->element.get();
-            LUC_LOG_SEMANTIC_EXTREME("\titerable is Slice, element type inferred");
-        } else if (iterType->isa<DynamicArrayTypeAST>()) {
-            elemType = iterType->as<DynamicArrayTypeAST>()->element.get();
-            LUC_LOG_SEMANTIC_EXTREME("\titerable is DynamicArray, element type inferred");
-        } else if (iterType->isa<RangeExprAST>()) {
-            LUC_LOG_SEMANTIC_EXTREME("\titerable is Range, element type = int");
-        } else {
-            LUC_LOG_SEMANTIC_EXTREME("\titerable is other type, using default int");
-        }
-    }
-
-    // Explicit type annotation overrides inferred element type.
-    if (node.varType) {
-        TypeAST* explicit_t = resolver.resolveType(node.varType.get());
-        if (explicit_t) {
-            elemType = explicit_t;
-            LUC_LOG_SEMANTIC_EXTREME("\texplicit var type overrides: " 
-                                   << LucDebug::kindToString(elemType->kind));
-        }
-    }
-
-    LUC_LOG_SEMANTIC_EXTREME("\tloop var type: " << (elemType ? LucDebug::kindToString(elemType->kind) : "null"));
-    
-    loopDepth++;
-    LUC_LOG_SEMANTIC_EXTREME("\tloopDepth incremented to " << loopDepth);
-    
-    symbols.pushScope();
-
-    // Declare the loop variable in the body scope.
-    Symbol loopVar;
-    loopVar.name       = node.varName;
-    loopVar.kind       = SymbolKind::Var;
-    loopVar.declKw     = DeclKeyword::Let;
-    loopVar.visibility = Visibility::Private;
-    loopVar.type       = elemType;
-    loopVar.decl       = nullptr;
-    loopVar.loc        = node.loc;
-    
-    if (!symbols.declare(loopVar)) {
-        LUC_LOG_SEMANTIC("\tERROR: loop variable '" << node.varName << "' already declared");
-        dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3005,
-                 "loop variable '" + node.varName + "' already declared in this scope");
-    } else {
-        LUC_LOG_SEMANTIC_EXTREME("\tloop variable declared: " << node.varName);
-    }
-
-    if (node.body) {
-        LUC_LOG_SEMANTIC_EXTREME("\tchecking loop body");
-        checkStmt(node.body.get(), symbols, resolver, dc, expectedReturn,
-                  loopDepth, parallelDepth, insideExtern);
-    }
-
-    symbols.popScope();
-    loopDepth--;
-    LUC_LOG_SEMANTIC_EXTREME("\tloopDepth decremented to " << loopDepth);
-    
-    LUC_LOG_SEMANTIC_VERBOSE("checkForStmt: complete");
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// checkWhileStmt
-// ─────────────────────────────────────────────────────────────────────────────
-static void checkWhileStmt(WhileStmtAST& node, SymbolTable& symbols,
-                             TypeResolver& resolver, DiagnosticEngine& dc,
-                             TypeAST* expectedReturn, int& loopDepth, 
-                             int& parallelDepth, bool insideExtern) {
-    LUC_LOG_SEMANTIC_VERBOSE("checkWhileStmt: loopDepth=" << loopDepth);
-    
-    TypeAST* condType = checkExpr(node.condition.get(), symbols, resolver, dc,
-                                  loopDepth, parallelDepth, insideExtern);
-    if (condType && !TypeChecker::isBooleanCompatible(condType)) {
-        LUC_LOG_SEMANTIC("\tERROR: condition is not bool-compatible");
-        dc.error(DiagnosticCategory::Semantic, node.condition->loc, DiagCode::E3002,
-                 "while condition must be bool");
-    } else {
-        LUC_LOG_SEMANTIC_EXTREME("\tcondition type is bool-compatible");
-    }
-
-    loopDepth++;
-    LUC_LOG_SEMANTIC_EXTREME("\tloopDepth incremented to " << loopDepth);
-    
-    if (node.body) {
-        LUC_LOG_SEMANTIC_EXTREME("\tchecking loop body");
-        checkStmt(node.body.get(), symbols, resolver, dc, expectedReturn,
-                  loopDepth, parallelDepth, insideExtern);
-    }
-    
-    loopDepth--;
-    LUC_LOG_SEMANTIC_EXTREME("\tloopDepth decremented to " << loopDepth);
-    LUC_LOG_SEMANTIC_VERBOSE("checkWhileStmt: complete");
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// checkDoWhileStmt
-// Body executes first, then condition is checked.
-// ─────────────────────────────────────────────────────────────────────────────
-static void checkDoWhileStmt(DoWhileStmtAST& node, SymbolTable& symbols,
-                               TypeResolver& resolver, DiagnosticEngine& dc,
-                               TypeAST* expectedReturn, int& loopDepth, 
-                               int& parallelDepth, bool insideExtern) {
-    LUC_LOG_SEMANTIC_VERBOSE("checkDoWhileStmt: loopDepth=" << loopDepth);
-    
-    loopDepth++;
-    LUC_LOG_SEMANTIC_EXTREME("\tloopDepth incremented to " << loopDepth);
-    
-    if (node.body) {
-        LUC_LOG_SEMANTIC_EXTREME("\tchecking body (executes before condition)");
-        checkStmt(node.body.get(), symbols, resolver, dc, expectedReturn,
-                  loopDepth, parallelDepth, insideExtern);
-    }
-    
-    loopDepth--;
-    LUC_LOG_SEMANTIC_EXTREME("\tloopDepth decremented to " << loopDepth);
-
-    TypeAST* condType = checkExpr(node.condition.get(), symbols, resolver, dc,
-                                  loopDepth, parallelDepth, insideExtern);
-    if (condType && !TypeChecker::isBooleanCompatible(condType)) {
-        LUC_LOG_SEMANTIC("\tERROR: condition is not bool-compatible");
-        dc.error(DiagnosticCategory::Semantic, node.condition->loc, DiagCode::E3002,
-                 "do-while condition must be bool");
-    } else {
-        LUC_LOG_SEMANTIC_EXTREME("\tcondition type is bool-compatible");
-    }
-    
-    LUC_LOG_SEMANTIC_VERBOSE("checkDoWhileStmt: complete");
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// checkReturnStmt
-//
-// Rules enforced:
-//   - Cannot appear inside a parallel scope.
-//   - A void return (nullptr value) is only valid in a void function.
-//   - A value return must be assignable to the enclosing function's return type.
-// ─────────────────────────────────────────────────────────────────────────────
-static void checkReturnStmt(ReturnStmtAST& node, SymbolTable& symbols,
-                              TypeResolver& resolver, DiagnosticEngine& dc,
-                              TypeAST* expectedReturn, int& loopDepth, 
-                              int& parallelDepth, bool insideExtern) {
-    LUC_LOG_SEMANTIC_VERBOSE("checkReturnStmt: parallelDepth=" << parallelDepth);
-    
-    if (parallelDepth > 0) {
-        LUC_LOG_SEMANTIC("\tERROR: return inside parallel scope");
-        dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                 "'return' is not allowed inside a parallel scope");
+    if (!ctx.checker.isBooleanCompatible(condType)) {
+        ctx.dc.error(DiagnosticCategory::Semantic, node.condition->loc, DiagCode::E3002,
+                     "while condition must be boolean");
         return;
     }
 
+    ctx.enterLoop();
+    if (node.body) {
+        checkStmt(node.body.get(), ctx, expectedReturn);
+    }
+    ctx.exitLoop();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ForStmt – iteration over a collection or range
+// ─────────────────────────────────────────────────────────────────────────────
+static void checkForStmt(ForStmtAST& node, SemanticContext& ctx, TypeAST* expectedReturn) {
+    // First, check the iterable expression
+    TypeAST* iterableType = checkExpr(node.iterable.get(), ctx);
+    if (!iterableType) return;
+
+    // Determine the element type of the iterable
+    TypeAST* elementType = nullptr;
+    if (iterableType->isa<FixedArrayTypeAST>()) {
+        elementType = iterableType->as<FixedArrayTypeAST>()->element.get();
+    } else if (iterableType->isa<SliceTypeAST>()) {
+        elementType = iterableType->as<SliceTypeAST>()->element.get();
+    } else if (iterableType->isa<DynamicArrayTypeAST>()) {
+        elementType = iterableType->as<DynamicArrayTypeAST>()->element.get();
+    } else if (iterableType->isa<RangeExprAST>() || (iterableType && iterableType->kind == ASTKind::RangeExpr)) {
+        // Range expression yields integer
+        elementType = ctx.arena.make<PrimitiveTypeAST>(PrimitiveKind::Int).get();
+    } else if (iterableType->isa<NullableTypeAST>()) {
+        // Nullable iterable not allowed
+        ctx.dc.error(DiagnosticCategory::Semantic, node.iterable->loc, DiagCode::E3002,
+                     "for loop iterable cannot be nullable");
+        return;
+    } else {
+        ctx.dc.error(DiagnosticCategory::Semantic, node.iterable->loc, DiagCode::E3002,
+                     "for loop iterable must be an array, slice, dynamic array, or range");
+        return;
+    }
+
+    // Determine the iteration variable type (may be explicitly annotated)
+    TypeAST* varType = nullptr;
+    if (node.iterVar && node.iterVar->type) {
+        varType = ctx.resolver.resolveType(node.iterVar->type.get());
+        if (!varType) return;
+        if (!ctx.checker.isAssignable(elementType, varType)) {
+            ctx.dc.error(DiagnosticCategory::Semantic, node.iterVar->loc, DiagCode::E3002,
+                         "iteration variable type mismatch: expected " +
+                         LucDebug::kindToString(elementType->kind) + ", got " +
+                         LucDebug::kindToString(varType->kind));
+            return;
+        }
+    } else {
+        varType = elementType;
+    }
+
+    // Push a new scope for the loop variable
+    ctx.symbols.pushScope();
+
+    // Declare the iteration variable
+    if (node.iterVar) {
+        Symbol varSym;
+        varSym.name = node.iterVar->name;
+        varSym.kind = SymbolKind::Var;
+        varSym.declKw = DeclKeyword::Let; // iteration variable is mutable inside loop
+        varSym.visibility = Visibility::Private;
+        varSym.type = varType;
+        varSym.decl = node.iterVar.get();
+        varSym.loc = node.iterVar->loc;
+        if (!ctx.symbols.declare(varSym)) {
+            ctx.dc.error(DiagnosticCategory::Semantic, node.iterVar->loc, DiagCode::E3005,
+                         "duplicate declaration of loop variable '" +
+                         std::string(ctx.pool.lookup(node.iterVar->name)) + "'");
+        }
+    }
+
+    // Optional step expression (only for range loops)
+    if (node.step) {
+        TypeAST* stepType = checkExpr(node.step.get(), ctx);
+        if (!stepType) {
+            // error already reported
+        } else if (!ctx.checker.isIntegerType(stepType)) {
+            ctx.dc.error(DiagnosticCategory::Semantic, node.step->loc, DiagCode::E3002,
+                         "step expression must be integer");
+        }
+    }
+
+    ctx.enterLoop();
+    if (node.body) {
+        checkStmt(node.body.get(), ctx, expectedReturn);
+    }
+    ctx.exitLoop();
+
+    ctx.symbols.popScope();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ReturnStmt – exits function with optional value(s)
+// ─────────────────────────────────────────────────────────────────────────────
+static void checkReturnStmt(ReturnStmtAST& node, SemanticContext& ctx, TypeAST* expectedReturn) {
+    // expectedReturn may be nullptr for void functions
     if (node.values.empty()) {
-        // Bare return — valid only when expected return is void (nullptr).
-        LUC_LOG_SEMANTIC_EXTREME("\tvoid return");
+        // Bare return
         if (expectedReturn != nullptr) {
-            LUC_LOG_SEMANTIC("\tERROR: non-void function cannot use bare return");
-            dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                     "non-void function must return a value");
+            ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
+                         "bare return in non-void function");
         }
         return;
     }
 
-    LUC_LOG_SEMANTIC_EXTREME("\tchecking return value expression");
-    // TODO: Support multiple return types. For now, check the first value.
-    TypeAST* valType = checkExpr(node.values[0].get(), symbols, resolver, dc,
-                                 loopDepth, parallelDepth, insideExtern);
+    // Currently we only support single return value (simplified)
+    // Multi-return would require checking each value against multiple return types
+    if (node.values.size() == 1) {
+        TypeAST* retType = checkExpr(node.values[0].get(), ctx);
+        if (!retType) return;
+        if (expectedReturn == nullptr) {
+            ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
+                         "return value in void function");
+            return;
+        }
+        if (!ctx.checker.isAssignable(retType, expectedReturn)) {
+            ctx.dc.error(DiagnosticCategory::Semantic, node.values[0]->loc, DiagCode::E3002,
+                         "return type mismatch: expected " +
+                         LucDebug::kindToString(expectedReturn->kind) + ", got " +
+                         LucDebug::kindToString(retType->kind));
+        }
+    } else {
+        // Multi-return – need to compare with function's multiple return types
+        // For simplicity, we'll just check that the number matches, but proper
+        // implementation would require the function signature's returnTypes vector.
+        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
+                     "multiple return values not yet fully supported");
+    }
+}
 
-    if (!expectedReturn) {
-        LUC_LOG_SEMANTIC("\tERROR: void function returning a value");
-        dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                 "void function cannot return a value");
+// ─────────────────────────────────────────────────────────────────────────────
+// BreakStmt – exit nearest enclosing loop
+// ─────────────────────────────────────────────────────────────────────────────
+static void checkBreakStmt(BreakStmtAST& node, SemanticContext& ctx) {
+    if (ctx.loopDepth == 0) {
+        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
+                     "break statement outside loop");
+    }
+    if (ctx.parallelDepth > 0) {
+        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
+                     "break not allowed inside parallel block or parallel for");
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ContinueStmt – skip to next iteration of nearest enclosing loop
+// ─────────────────────────────────────────────────────────────────────────────
+static void checkContinueStmt(ContinueStmtAST& node, SemanticContext& ctx) {
+    if (ctx.loopDepth == 0) {
+        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
+                     "continue statement outside loop");
+    }
+    if (ctx.parallelDepth > 0) {
+        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
+                     "continue not allowed inside parallel block or parallel for");
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SwitchStmt – value dispatch (statement version, no fallthrough)
+// ─────────────────────────────────────────────────────────────────────────────
+static void checkSwitchStmt(SwitchStmtAST& node, SemanticContext& ctx, TypeAST* expectedReturn) {
+    TypeAST* subjectType = checkExpr(node.subject.get(), ctx);
+    if (!subjectType) return;
+
+    // Value comparability required for case values
+    if (!ctx.checker.isValueComparable(subjectType, &ctx.symbols)) {
+        ctx.dc.error(DiagnosticCategory::Semantic, node.subject->loc, DiagCode::E3002,
+                     "switch subject type does not support value equality");
         return;
     }
 
-    if (valType && !TypeChecker::isAssignable(valType, expectedReturn)) {
-        LUC_LOG_SEMANTIC("\tERROR: return type mismatch");
-        dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                 "return type mismatch");
-    } else {
-        LUC_LOG_SEMANTIC_EXTREME("\treturn type matches expected");
-    }
-    
-    LUC_LOG_SEMANTIC_VERBOSE("checkReturnStmt: complete");
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// checkBreakStmt
-// ─────────────────────────────────────────────────────────────────────────────
-static void checkBreakStmt(BreakStmtAST& node, DiagnosticEngine& dc,
-                             int loopDepth, int parallelDepth) {
-    LUC_LOG_SEMANTIC_VERBOSE("checkBreakStmt: loopDepth=" << loopDepth 
-                           << ", parallelDepth=" << parallelDepth);
-    
-    if (parallelDepth > 0) {
-        LUC_LOG_SEMANTIC("\tERROR: break inside parallel scope");
-        dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                 "'break' is not allowed inside a parallel scope");
-    } else if (loopDepth <= 0) {
-        LUC_LOG_SEMANTIC("\tERROR: break outside loop");
-        dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                 "'break' must be inside a loop");
-    } else {
-        LUC_LOG_SEMANTIC_EXTREME("\tbreak is valid");
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// checkContinueStmt
-// ─────────────────────────────────────────────────────────────────────────────
-static void checkContinueStmt(ContinueStmtAST& node, DiagnosticEngine& dc,
-                                int loopDepth, int parallelDepth) {
-    LUC_LOG_SEMANTIC_VERBOSE("checkContinueStmt: loopDepth=" << loopDepth 
-                           << ", parallelDepth=" << parallelDepth);
-    
-    if (parallelDepth > 0) {
-        LUC_LOG_SEMANTIC("\tERROR: continue inside parallel scope");
-        dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                 "'continue' is not allowed inside a parallel scope");
-    } else if (loopDepth <= 0) {
-        LUC_LOG_SEMANTIC("\tERROR: continue outside loop");
-        dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                 "'continue' must be inside a loop");
-    } else {
-        LUC_LOG_SEMANTIC_EXTREME("\tcontinue is valid");
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// checkParallelForStmt
-//
-// Rules enforced:
-//   - Iterable must be a collection type.
-//   - Loop variable is bound per-iteration.
-//   - Inside body: no await, no return, no break/continue, no outer writes.
-//     (The no-outer-write check is enforced at assignment time via parallelDepth.)
-// ─────────────────────────────────────────────────────────────────────────────
-static void checkParallelForStmt(ParallelForStmtAST& node, SymbolTable& symbols,
-                                   TypeResolver& resolver, DiagnosticEngine& dc,
-                                   TypeAST* expectedReturn, int& loopDepth, 
-                                   int& parallelDepth, bool insideExtern) {
-    LUC_LOG_SEMANTIC_VERBOSE("checkParallelForStmt: varName='" << node.varName 
-                           << "', parallelDepth=" << parallelDepth);
-    
-    TypeAST* iterType = checkExpr(node.iterable.get(), symbols, resolver, dc,
-                                  loopDepth, parallelDepth, insideExtern);
-    LUC_LOG_SEMANTIC_EXTREME("\titerable type checked");
-
-    TypeAST* elemType = SemanticHelpers::getPrimitiveType(PrimitiveKind::Int);
-    if (iterType) {
-        if (iterType->isa<FixedArrayTypeAST>()) {
-            elemType = iterType->as<FixedArrayTypeAST>()->element.get();
-            LUC_LOG_SEMANTIC_EXTREME("\titerable is FixedArray");
-        } else if (iterType->isa<SliceTypeAST>()) {
-            elemType = iterType->as<SliceTypeAST>()->element.get();
-            LUC_LOG_SEMANTIC_EXTREME("\titerable is Slice");
-        } else if (iterType->isa<DynamicArrayTypeAST>()) {
-            elemType = iterType->as<DynamicArrayTypeAST>()->element.get();
-            LUC_LOG_SEMANTIC_EXTREME("\titerable is DynamicArray");
-        } else {
-            LUC_LOG_SEMANTIC_EXTREME("\titerable is other type");
+    // Check each case
+    for (auto& caseNode : node.cases) {
+        if (!caseNode) continue;
+        // Check each case value (must be constant and comparable)
+        for (auto& valExpr : caseNode->values) {
+            TypeAST* valType = checkExpr(valExpr.get(), ctx);
+            if (!valType) continue;
+            if (!ctx.checker.isAssignable(valType, subjectType)) {
+                ctx.dc.error(DiagnosticCategory::Semantic, valExpr->loc, DiagCode::E3002,
+                             "case value type mismatch");
+            }
+            // Verify that the case value is a constant (if it's a literal, it's fine)
+            // We could also check for duplicate values, but that's more complex.
+        }
+        // Check the case body
+        if (caseNode->body) {
+            checkStmt(caseNode->body.get(), ctx, expectedReturn);
         }
     }
 
-    if (node.varType) {
-        TypeAST* explicit_t = resolver.resolveType(node.varType.get());
-        if (explicit_t) {
-            elemType = explicit_t;
-            LUC_LOG_SEMANTIC_EXTREME("\texplicit var type overrides");
-        }
+    // Check default body if present
+    if (node.defaultBody) {
+        checkStmt(node.defaultBody.get(), ctx, expectedReturn);
     }
+}
 
-    LUC_LOG_SEMANTIC_EXTREME("\tparallelDepth incremented to " << (parallelDepth + 1));
-    parallelDepth++;
-    symbols.pushScope();
-
-    Symbol loopVar;
-    loopVar.name = node.varName;
-    loopVar.kind = SymbolKind::Var;
-    loopVar.declKw = DeclKeyword::Let;
-    loopVar.visibility = Visibility::Private;
-    loopVar.type = elemType;
-    loopVar.decl = nullptr;
-    loopVar.loc = node.loc;
-    
-    if (!symbols.declare(loopVar)) {
-        LUC_LOG_SEMANTIC("\tERROR: parallel loop variable already declared");
-        dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3005,
-                 "parallel loop variable '" + node.varName + "' already declared");
-    } else {
-        LUC_LOG_SEMANTIC_EXTREME("\tparallel loop variable declared: " << node.varName);
-    }
-
+// ─────────────────────────────────────────────────────────────────────────────
+// DoWhileStmt – body-first loop
+// ─────────────────────────────────────────────────────────────────────────────
+static void checkDoWhileStmt(DoWhileStmtAST& node, SemanticContext& ctx, TypeAST* expectedReturn) {
+    ctx.enterLoop();
     if (node.body) {
-        LUC_LOG_SEMANTIC_EXTREME("\tchecking parallel body");
-        checkStmt(node.body.get(), symbols, resolver, dc, expectedReturn,
-                  loopDepth, parallelDepth, insideExtern);
+        checkStmt(node.body.get(), ctx, expectedReturn);
     }
-
-    symbols.popScope();
-    parallelDepth--;
-    LUC_LOG_SEMANTIC_EXTREME("\tparallelDepth decremented to " << parallelDepth);
-    LUC_LOG_SEMANTIC_VERBOSE("checkParallelForStmt: complete");
+    TypeAST* condType = checkExpr(node.condition.get(), ctx);
+    if (condType && !ctx.checker.isBooleanCompatible(condType)) {
+        ctx.dc.error(DiagnosticCategory::Semantic, node.condition->loc, DiagCode::E3002,
+                     "do-while condition must be boolean");
+    }
+    ctx.exitLoop();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// checkParallelBlockStmt
-// Each sub-block is an independent task — they all run concurrently.
+// MultiVarDeclAST – multiple variable declaration (let a int, b int = f())
 // ─────────────────────────────────────────────────────────────────────────────
-static void checkParallelBlockStmt(ParallelBlockStmtAST& node, SymbolTable& symbols,
-                                    TypeResolver& resolver, DiagnosticEngine& dc,
-                                    TypeAST* expectedReturn, int& loopDepth, 
-                                    int& parallelDepth, bool insideExtern) {
-    LUC_LOG_SEMANTIC_VERBOSE("checkParallelBlockStmt: " << node.subBlocks.size() 
-                           << " sub-blocks, parallelDepth=" << parallelDepth);
-    
-    LUC_LOG_SEMANTIC_EXTREME("\tparallelDepth incremented to " << (parallelDepth + 1));
-    parallelDepth++;
-    
-    int subBlockCount = 0;
-    for (auto& sub : node.subBlocks) {
-        subBlockCount++;
-        LUC_LOG_SEMANTIC_EXTREME("\tchecking sub-block " << subBlockCount);
-        checkBlock(*sub, symbols, resolver, dc, expectedReturn,
-                   loopDepth, parallelDepth, insideExtern);
+static void checkMultiVarDecl(MultiVarDeclAST& node, SemanticContext& ctx) {
+    // Check the RHS expression
+    TypeAST* rhsType = checkExpr(node.rhs.get(), ctx);
+    if (!rhsType) return;
+
+    // For multi-return, the RHS must be a call that returns as many values as variables
+    // We'll assume the RHS is a call expression and we can get its return types.
+    // For simplicity, we'll just check that the number of variables matches the number
+    // of return values (if we can determine that). Here we'll only check type compatibility
+    // for single return case.
+    if (node.vars.size() == 1) {
+        // Single variable: check assignability from RHS type to the declared type
+        TypeAST* varType = ctx.resolver.resolveType(node.vars[0].second.get());
+        if (!varType) return;
+        if (!ctx.checker.isAssignable(rhsType, varType)) {
+            ctx.dc.error(DiagnosticCategory::Semantic, node.rhs->loc, DiagCode::E3002,
+                         "initializer type mismatch for variable '" +
+                         std::string(ctx.pool.lookup(node.vars[0].first)) + "'");
+            return;
+        }
+        // Declare the variable
+        Symbol varSym;
+        varSym.name = node.vars[0].first;
+        varSym.kind = SymbolKind::Var;
+        varSym.declKw = node.keyword;
+        varSym.visibility = Visibility::Private;
+        varSym.type = varType;
+        varSym.decl = &node;
+        varSym.loc = node.loc;
+        if (!ctx.symbols.declare(varSym)) {
+            ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3005,
+                         "duplicate declaration of variable '" +
+                         std::string(ctx.pool.lookup(node.vars[0].first)) + "'");
+        }
+    } else {
+        // Multi-variable declaration: need to get multiple return types from RHS
+        // For now, we report not fully supported
+        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
+                     "multi-variable declaration with more than one variable not fully supported");
     }
-    
-    parallelDepth--;
-    LUC_LOG_SEMANTIC_EXTREME("\tparallelDepth decremented to " << parallelDepth);
-    LUC_LOG_SEMANTIC_VERBOSE("checkParallelBlockStmt: complete, checked " 
-                           << subBlockCount << " sub-blocks");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// checkStmt — main dispatcher
+// MultiAssignStmtAST – multiple assignment (a, b = g())
 // ─────────────────────────────────────────────────────────────────────────────
-void checkStmt(StmtAST* node, SymbolTable& symbols, TypeResolver& resolver,
-               DiagnosticEngine& dc, TypeAST* expectedReturn,
-               int& loopDepth, int& parallelDepth, bool insideExtern) {
-    if (!node) {
-        LUC_LOG_SEMANTIC_EXTREME("checkStmt: null node");
+static void checkMultiAssignStmt(MultiAssignStmtAST& node, SemanticContext& ctx) {
+    // Similar to multi-var decl but without declaration
+    if (node.lhs.empty()) {
+        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
+                     "multi-assignment with no left-hand side");
         return;
     }
 
-    LUC_LOG_SEMANTIC_EXTREME("checkStmt: kind=" << LucDebug::kindToString(node->kind));
+    TypeAST* rhsType = checkExpr(node.rhs.get(), ctx);
+    if (!rhsType) return;
 
-    switch (node->kind) {
-        case ASTKind::BlockStmt:
-            LUC_LOG_SEMANTIC_EXTREME("\t-> BlockStmt");
-            checkBlock(*node->as<BlockStmtAST>(), symbols, resolver, dc, expectedReturn,
-                       loopDepth, parallelDepth, insideExtern);
-            break;
-
-        case ASTKind::ExprStmt:
-            LUC_LOG_SEMANTIC_EXTREME("\t-> ExprStmt");
-            checkExprStmt(*node->as<ExprStmtAST>(), symbols, resolver, dc,
-                          loopDepth, parallelDepth, insideExtern);
-            break;
-
-        case ASTKind::DeclStmt:
-            LUC_LOG_SEMANTIC_EXTREME("\t-> DeclStmt");
-            checkDeclStmt(*node->as<DeclStmtAST>(), symbols, resolver, dc,
-                          loopDepth, parallelDepth, insideExtern);
-            break;
-
-        case ASTKind::IfStmt:
-            LUC_LOG_SEMANTIC_EXTREME("\t-> IfStmt");
-            checkIfStmt(*node->as<IfStmtAST>(), symbols, resolver, dc, expectedReturn,
-                        loopDepth, parallelDepth, insideExtern);
-            break;
-
-        case ASTKind::SwitchStmt:
-            LUC_LOG_SEMANTIC_EXTREME("\t-> SwitchStmt");
-            checkSwitchStmt(*node->as<SwitchStmtAST>(), symbols, resolver, dc,
-                            expectedReturn, loopDepth, parallelDepth,
-                            insideExtern);
-            break;
-
-        case ASTKind::ForStmt:
-            LUC_LOG_SEMANTIC_EXTREME("\t-> ForStmt");
-            checkForStmt(*node->as<ForStmtAST>(), symbols, resolver, dc, expectedReturn,
-                         loopDepth, parallelDepth, insideExtern);
-            break;
-
-        case ASTKind::WhileStmt:
-            LUC_LOG_SEMANTIC_EXTREME("\t-> WhileStmt");
-            checkWhileStmt(*node->as<WhileStmtAST>(), symbols, resolver, dc, expectedReturn,
-                           loopDepth, parallelDepth, insideExtern);
-            break;
-
-        case ASTKind::DoWhileStmt:
-            LUC_LOG_SEMANTIC_EXTREME("\t-> DoWhileStmt");
-            checkDoWhileStmt(*node->as<DoWhileStmtAST>(), symbols, resolver, dc,
-                             expectedReturn, loopDepth, parallelDepth, insideExtern);
-            break;
-
-        case ASTKind::ReturnStmt:
-            LUC_LOG_SEMANTIC_EXTREME("\t-> ReturnStmt");
-            checkReturnStmt(*node->as<ReturnStmtAST>(), symbols, resolver, dc,
-                            expectedReturn, loopDepth, parallelDepth, insideExtern);
-            break;
-
-        case ASTKind::BreakStmt:
-            LUC_LOG_SEMANTIC_EXTREME("\t-> BreakStmt");
-            checkBreakStmt(*node->as<BreakStmtAST>(), dc, loopDepth, parallelDepth);
-            break;
-
-        case ASTKind::ContinueStmt:
-            LUC_LOG_SEMANTIC_EXTREME("\t-> ContinueStmt");
-            checkContinueStmt(*node->as<ContinueStmtAST>(), dc, loopDepth, parallelDepth);
-            break;
-
-        case ASTKind::ParallelForStmt:
-            LUC_LOG_SEMANTIC_EXTREME("\t-> ParallelForStmt");
-            checkParallelForStmt(*node->as<ParallelForStmtAST>(), symbols, resolver, dc,
-                                 expectedReturn, loopDepth, parallelDepth,
-                                 insideExtern);
-            break;
-
-        case ASTKind::ParallelBlockStmt:
-            LUC_LOG_SEMANTIC_EXTREME("\t-> ParallelBlockStmt");
-            checkParallelBlockStmt(*node->as<ParallelBlockStmtAST>(), symbols, resolver,
-                                   dc, expectedReturn, loopDepth,
-                                   parallelDepth, insideExtern);
-            break;
-
-        default:
-            LUC_LOG_SEMANTIC("\tWARNING: Unknown statement kind: " 
-                           << static_cast<int>(node->kind));
-            break;
+    if (node.lhs.size() == 1) {
+        // Single assignment: check assignability from RHS type to LHS type
+        TypeAST* lhsType = checkExpr(node.lhs[0].get(), ctx);
+        if (!lhsType) return;
+        if (!ctx.checker.isAssignable(rhsType, lhsType)) {
+            ctx.dc.error(DiagnosticCategory::Semantic, node.rhs->loc, DiagCode::E3002,
+                         "assignment type mismatch");
+        }
+    } else {
+        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
+                     "multi-assignment with more than one left-hand side not fully supported");
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// The main entry point: checkStmt (dispatcher)
+// ─────────────────────────────────────────────────────────────────────────────
 void checkStmt(StmtAST* node, SemanticContext& ctx, TypeAST* expectedReturn) {
     if (!node) return;
 
@@ -836,10 +454,21 @@ void checkStmt(StmtAST* node, SemanticContext& ctx, TypeAST* expectedReturn) {
         case ASTKind::ContinueStmt:
             checkContinueStmt(*node->as<ContinueStmtAST>(), ctx);
             break;
-        // ... add SwitchStmt, DoWhileStmt, etc.
+        case ASTKind::SwitchStmt:
+            checkSwitchStmt(*node->as<SwitchStmtAST>(), ctx, expectedReturn);
+            break;
+        case ASTKind::DoWhileStmt:
+            checkDoWhileStmt(*node->as<DoWhileStmtAST>(), ctx, expectedReturn);
+            break;
+        case ASTKind::MultiVarDecl:
+            checkMultiVarDecl(*node->as<MultiVarDeclAST>(), ctx);
+            break;
+        case ASTKind::MultiAssignStmt:
+            checkMultiAssignStmt(*node->as<MultiAssignStmtAST>(), ctx);
+            break;
         default:
             ctx.dc.error(DiagnosticCategory::Semantic, node->loc, DiagCode::E3002,
-                         "unsupported statement kind");
+                         "unsupported statement kind: " + LucDebug::kindToString(node->kind));
             break;
     }
 }

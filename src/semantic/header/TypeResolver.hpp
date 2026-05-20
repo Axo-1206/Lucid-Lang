@@ -117,6 +117,8 @@ public:
     void visit(TraitRefAST& node)           override;
 
     // ── Helper methods for resolving composite structures ──
+    TypeAST* cloneType(const TypeAST* type);
+    FuncTypeAST* cloneFuncSignature(const FuncSignature& sig, const SourceLocation& loc);
     void resolveStructFields(StructDeclAST& node);
     void resolveFunctionType(const FuncTypeAST& type);
     std::vector<TypeAST*> getFunctionReturnTypes(const FuncTypeAST& type);
@@ -137,6 +139,10 @@ public:
     void popGenericParams();
     bool isGenericParam(InternedString name) const;
 
+    void pushSubstitutionMap(const std::unordered_map<InternedString, TypeAST*>* map);
+    void popSubstitutionMap();
+    TypeAST* lookupSubstitution(InternedString name) const;
+
 private:
     SymbolTable& _symbols;
     DiagnosticEngine& _dc;
@@ -154,8 +160,4 @@ private:
     
     void resolveGenericParamConstraints(GenericParamAST& gp);
     bool satisfiesConstraints(TypeAST* type, const std::vector<InternedString>& requiredTraits) const;
-
-    void pushSubstitutionMap(const std::unordered_map<InternedString, TypeAST*>* map);
-    void popSubstitutionMap();
-    TypeAST* lookupSubstitution(InternedString name) const;
 };

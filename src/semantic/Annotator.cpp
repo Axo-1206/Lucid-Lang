@@ -21,7 +21,7 @@
  *     • enum declarations and their variants (integer-backed, fixed at compile time)
  *     • BinaryExprAST / UnaryExprAST / RangeExprAST / FieldAccessExprAST whose
  *       sub-expressions are all const  (constant-folding marker, not folded here)
- *     • TypeConvExprAST when its operand is const
+ *     • TypeConvExprAST when its operand is const and conversion is safe
  *     • ArrayLiteralExprAST / StructLiteralExprAST when all elements/inits are const
  *
  *   isBehaviorMember — reinforced on BehaviorAccessExprAST (already written inline
@@ -43,6 +43,7 @@
 #include "ast/TypeAST.hpp"
 #include "ast/support/StringPool.hpp"
 #include "debug/DebugMacros.hpp"
+#include "debug/DebugUtils.hpp"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Annotator  — Phase 4 ASTVisitor
@@ -71,58 +72,65 @@ private:
     SymbolTable& symbols_;
     StringPool& pool_;
 
-    // Helper to log const status changes
     void logConst(const std::string& nodeType, const std::string& name, bool isConst) {
         LUC_LOG_SEMANTIC_EXTREME("\t" << nodeType << " '" << name << "' isConst=" << (isConst ? "true" : "false"));
     }
 
-    // Convenience: dispatch accept() on any non-null BaseAST node.
+    // Walk any BaseAST node if non-null.
     void walk(BaseAST* node) {
         if (node) node->accept(*this);
     }
 
     // ── Declaration nodes ─────────────────────────────────────────────────────
 
-    void visit(PackageDeclAST& /*node*/) override {
-        LUC_LOG_SEMANTIC_EXTREME("visit(PackageDeclAST)");
+    void visit(PackageDeclAST& node) override {
+        LUC_LOG_SEMANTIC_EXTREME("visit(PackageDeclAST): name=" << pool_.lookup(node.name));
     }
 
-    void visit(UseDeclAST& /*node*/) override {
+    void visit(UseDeclAST& node) override {
         LUC_LOG_SEMANTIC_EXTREME("visit(UseDeclAST)");
+        // No walkable children (path and alias are InternedString)
     }
 
     void visit(VarDeclAST& node) override {
         LUC_LOG_SEMANTIC_VERBOSE("visit(VarDeclAST): name=" << pool_.lookup(node.name));
-
         for (auto& attr : node.attributes) walk(attr.get());
-        if (node.init) walk(node.init.get());
-
+        walk(node.init.get());
         node.isConst = (node.keyword == DeclKeyword::Const);
         logConst("VarDecl", std::string(pool_.lookup(node.name)), node.isConst);
     }
 
-    void visit(GenericParamAST& /*node*/) override {
-        LUC_LOG_SEMANTIC_EXTREME("visit(GenericParamAST)");
+    void visit(GenericParamAST& node) override {
+        LUC_LOG_SEMANTIC_EXTREME("visit(GenericParamAST): name=" << pool_.lookup(node.name));
+        // Generic parameters are not runtime values.
+    }
+
+    void visit(ParamAST& node) override {
+        LUC_LOG_SEMANTIC_EXTREME("visit(ParamAST): name=" << pool_.lookup(node.name));
+        // Parameters are never const (they are runtime values).
+        node.isConst = false;
     }
 
     void visit(FuncDeclAST& node) override {
         LUC_LOG_SEMANTIC_VERBOSE("visit(FuncDeclAST): name=" << pool_.lookup(node.name)
                             << ", keyword=" << (node.keyword == DeclKeyword::Const ? "const" : "let"));
-
         for (auto& attr : node.attributes) walk(attr.get());
-
-        // Parameters are in node.sig (FuncSignature), not BaseAST, so no walking.
-        // The body is a BlockStmtAST (BaseAST) – walk it.
+        for (auto& gp : node.genericParams) walk(gp.get());
+        // Parameters are in node.sig.paramGroups – they are ParamAST (BaseAST).
+        for (const auto& group : node.sig.paramGroups) {
+            for (const auto& param : group) {
+                walk(param.get());
+            }
+        }
         walk(node.body.get());
-
         node.isConst = (node.keyword == DeclKeyword::Const);
         logConst("FuncDecl", std::string(pool_.lookup(node.name)), node.isConst);
     }
 
     void visit(StructDeclAST& node) override {
         LUC_LOG_SEMANTIC_VERBOSE("visit(StructDeclAST): name=" << pool_.lookup(node.name));
-
         for (auto& attr : node.attributes) walk(attr.get());
+        for (auto& gp : node.genericParams) walk(gp.get());
         for (auto& field : node.fields) walk(field.get());
         // Struct declarations are not runtime values.
     }
@@ -130,11 +138,11 @@ private:
     void visit(FieldDeclAST& node) override {
         LUC_LOG_SEMANTIC_EXTREME("visit(FieldDeclAST): name=" << pool_.lookup(node.name));
         if (node.defaultVal) walk(node.defaultVal.get());
+        // Fields are not runtime values by themselves; default values may be const.
     }
 
     void visit(EnumDeclAST& node) override {
         LUC_LOG_SEMANTIC_VERBOSE("visit(EnumDeclAST): name=" << pool_.lookup(node.name));
-
         for (auto& variant : node.variants) walk(variant.get());
         node.isConst = true;
         logConst("EnumDecl", std::string(pool_.lookup(node.name)), node.isConst);
@@ -145,43 +153,73 @@ private:
         node.isConst = true;
     }
 
-    void visit(TraitMethodAST& /*node*/) override {
-        LUC_LOG_SEMANTIC_EXTREME("visit(TraitMethodAST)");
+    void visit(TraitMethodAST& node) override {
+        LUC_LOG_SEMANTIC_EXTREME("visit(TraitMethodAST): name=" << pool_.lookup(node.name));
+        // Trait methods have no bodies; parameters are in node.sig.
+        for (const auto& group : node.sig.paramGroups) {
+            for (const auto& param : group) walk(param.get());
+        }
+        // No const for trait methods (they are just signatures)
     }
 
-    void visit(TraitDeclAST& /*node*/) override {
-        LUC_LOG_SEMANTIC_VERBOSE("visit(TraitDeclAST)");
+    void visit(TraitDeclAST& node) override {
+        LUC_LOG_SEMANTIC_VERBOSE("visit(TraitDeclAST): name=" << pool_.lookup(node.name));
+        for (auto& gp : node.genericParams) walk(gp.get());
+        for (auto& method : node.methods) walk(method.get());
     }
 
     void visit(ImplDeclAST& node) override {
-        LUC_LOG_SEMANTIC_VERBOSE("visit(ImplDeclAST): structName=" << pool_.lookup(node.structName));
-
+        LUC_LOG_SEMANTIC_VERBOSE("visit(ImplDeclAST): targetType="
+            << (node.targetType ? LucDebug::kindToString(node.targetType->kind) : "<null>"));
+        for (auto& attr : node.attributes) walk(attr.get());
+        for (auto& gp : node.genericParams) walk(gp.get());
+        if (node.targetType) walk(node.targetType.get()); // targetType is a TypeAST
+        if (node.traitRef) walk(node.traitRef.get());
         for (auto& method : node.methods) walk(method.get());
     }
 
     void visit(MethodDeclAST& node) override {
         LUC_LOG_SEMANTIC_EXTREME("visit(MethodDeclAST): name=" << pool_.lookup(node.name));
-
-        // Parameters are in node.sig, not BaseAST – skip walking.
+        for (const auto& group : node.sig.paramGroups) {
+            for (const auto& param : group) walk(param.get());
+        }
         walk(node.body.get());
-        node.isConst = false;
+        node.isConst = false; // Methods are never compile-time constants.
     }
 
     void visit(FromDeclAST& node) override {
-        LUC_LOG_SEMANTIC_VERBOSE("visit(FromDeclAST): targetType=" << pool_.lookup(node.targetTypeName));
-
+        LUC_LOG_SEMANTIC_VERBOSE("visit(FromDeclAST): targetType="
+            << (node.targetType ? LucDebug::kindToString(node.targetType->kind) : "<null>"));
+        for (auto& attr : node.attributes) walk(attr.get());
+        for (auto& gp : node.genericParams) walk(gp.get());
+        if (node.targetType) walk(node.targetType.get());
         for (auto& entry : node.entries) walk(entry.get());
         node.isConst = false;
     }
 
     void visit(FromEntryAST& node) override {
         LUC_LOG_SEMANTIC_EXTREME("visit(FromEntryAST)");
+        for (const auto& group : node.sig.paramGroups) {
+            for (const auto& param : group) walk(param.get());
+        }
+        if (node.returnType) walk(node.returnType.get());
         walk(node.body.get());
         node.isConst = false;
     }
 
-    void visit(TypeAliasDeclAST& /*node*/) override {
-        LUC_LOG_SEMANTIC_EXTREME("visit(TypeAliasDeclAST)");
+    void visit(ExtensionDeclAST& node) override {
+        LUC_LOG_SEMANTIC_VERBOSE("visit(ExtensionDeclAST): namespace=" << pool_.lookup(node.namespaceName));
+        for (auto& attr : node.attributes) walk(attr.get());
+        for (auto& gp : node.genericParams) walk(gp.get());
+        if (node.targetType) walk(node.targetType.get());
+        for (auto& method : node.methods) walk(method.get());
+    }
+
+    void visit(TypeAliasDeclAST& node) override {
+        LUC_LOG_SEMANTIC_EXTREME("visit(TypeAliasDeclAST): name=" << pool_.lookup(node.name));
+        for (auto& gp : node.genericParams) walk(gp.get());
+        if (node.aliasedType) walk(node.aliasedType.get());
+        // Type aliases are not runtime values.
     }
 
     // ── Expression nodes ──────────────────────────────────────────────────────
@@ -206,8 +244,7 @@ private:
 
     void visit(ArrayLiteralExprAST& node) override {
         LUC_LOG_SEMANTIC_EXTREME("visit(ArrayLiteralExprAST)");
-
-        bool allConst = !node.elements.empty();
+        bool allConst = true;
         for (auto& elem : node.elements) {
             walk(elem.get());
             if (!elem || !elem->isConst) allConst = false;
@@ -219,25 +256,26 @@ private:
 
     void visit(StructLiteralExprAST& node) override {
         LUC_LOG_SEMANTIC_EXTREME("visit(StructLiteralExprAST): type=" << pool_.lookup(node.typeName));
-
-        bool allConst = !node.inits.empty();
+        bool allConst = true;
         for (auto& init : node.inits) {
-            if (init->value) {
-                walk(init->value.get());
-                if (!init->value->isConst) allConst = false;
-            } else {
-                allConst = false;
-            }
+            walk(init.get());
+            if (init && init->value && !init->value->isConst) allConst = false;
+            if (!init || !init->value) allConst = false;
         }
         node.isConst = allConst;
         LUC_LOG_SEMANTIC_EXTREME("\tinits=" << node.inits.size()
                                << ", allConst=" << (allConst ? "true" : "false"));
     }
 
+    void visit(FieldInitAST& node) override {
+        LUC_LOG_SEMANTIC_EXTREME("visit(FieldInitAST): field=" << pool_.lookup(node.name));
+        walk(node.value.get());
+    }
+
     void visit(FieldAccessExprAST& node) override {
         LUC_LOG_SEMANTIC_EXTREME("visit(FieldAccessExprAST)");
         walk(node.object.get());
-        node.isConst = node.object && node.object->isConst;
+        node.isConst = (node.object && node.object->isConst);
     }
 
     void visit(BehaviorAccessExprAST& node) override {
@@ -246,11 +284,17 @@ private:
         node.isConst = false;
     }
 
+    void visit(StaticAccessExprAST& node) override {
+        LUC_LOG_SEMANTIC_EXTREME("visit(StaticAccessExprAST)");
+        if (node.targetType) walk(node.targetType.get());
+        node.isConst = false;
+    }
+
     void visit(BinaryExprAST& node) override {
         LUC_LOG_SEMANTIC_EXTREME("visit(BinaryExprAST)");
         walk(node.left.get());
         walk(node.right.get());
-        bool lc = node.left  && node.left->isConst;
+        bool lc = node.left && node.left->isConst;
         bool rc = node.right && node.right->isConst;
         node.isConst = lc && rc;
         LUC_LOG_SEMANTIC_EXTREME("\tleftConst=" << lc << ", rightConst=" << rc
@@ -260,7 +304,7 @@ private:
     void visit(UnaryExprAST& node) override {
         LUC_LOG_SEMANTIC_EXTREME("visit(UnaryExprAST)");
         walk(node.operand.get());
-        node.isConst = node.operand && node.operand->isConst;
+        node.isConst = (node.operand && node.operand->isConst);
     }
 
     void visit(AssignExprAST& node) override {
@@ -294,8 +338,6 @@ private:
     void visit(NullableChainExprAST& node) override {
         LUC_LOG_SEMANTIC_EXTREME("visit(NullableChainExprAST)");
         walk(node.object.get());
-        // steps are InternedString, not BaseAST – no walking.
-        // Note: NullableChainExprAST has no `fallback` member; that belongs to NullCoalesceExprAST.
         node.isConst = false;
     }
 
@@ -313,6 +355,14 @@ private:
         node.isConst = false;
     }
 
+    void visit(PipelineStepAST& node) override {
+        LUC_LOG_SEMANTIC_EXTREME("visit(PipelineStepAST)");
+        for (auto& arg : node.packArgs) walk(arg.get());
+        if (node.index) walk(node.index.get());
+        if (node.anonFunc) walk(node.anonFunc.get());
+        // Steps themselves are not const.
+    }
+
     void visit(ComposeExprAST& node) override {
         LUC_LOG_SEMANTIC_EXTREME("visit(ComposeExprAST)");
         walk(node.left.get());
@@ -320,8 +370,16 @@ private:
         node.isConst = false;
     }
 
+    void visit(ComposeOperandAST& node) override {
+        LUC_LOG_SEMANTIC_EXTREME("visit(ComposeOperandAST)");
+        // No walkable children (ident, typeName, method, field are InternedString)
+    }
+
     void visit(AnonFuncExprAST& node) override {
         LUC_LOG_SEMANTIC_EXTREME("visit(AnonFuncExprAST)");
+        for (const auto& group : node.sig.paramGroups) {
+            for (const auto& param : group) walk(param.get());
+        }
         walk(node.body.get());
         node.isConst = false;
     }
@@ -363,15 +421,6 @@ private:
         node.isConst = !node.isUnsafe && node.expr && node.expr->isConst;
     }
 
-    void visit(AttributeAST& /*node*/) override {
-        LUC_LOG_SEMANTIC_EXTREME("visit(AttributeAST)");
-    }
-
-    void visit(AttributeArgAST& node) override {
-        LUC_LOG_SEMANTIC_EXTREME("visit(AttributeArgAST)");
-        // Attribute arguments are literals; no further walking needed.
-    }
-
     void visit(IntrinsicCallExprAST& node) override {
         LUC_LOG_SEMANTIC_EXTREME("visit(IntrinsicCallExprAST): name=" << pool_.lookup(node.intrinsicName));
         for (auto& arg : node.args) walk(arg.get());
@@ -383,23 +432,23 @@ private:
 
     // ── Pattern nodes ─────────────────────────────────────────────────────────
 
-    void visit(BindPatternAST& /*node*/) override {
-        LUC_LOG_SEMANTIC_EXTREME("visit(BindPatternAST)");
+    void visit(BindPatternAST& node) override {
+        LUC_LOG_SEMANTIC_EXTREME("visit(BindPatternAST): name=" << pool_.lookup(node.name));
+        // Patterns are not runtime values; no const flag needed.
     }
 
-    void visit(WildcardPatternAST& /*node*/) override {
+    void visit(WildcardPatternAST& node) override {
         LUC_LOG_SEMANTIC_EXTREME("visit(WildcardPatternAST)");
     }
 
-    void visit(TypePatternAST& /*node*/) override {
+    void visit(TypePatternAST& node) override {
         LUC_LOG_SEMANTIC_EXTREME("visit(TypePatternAST)");
+        if (node.checkType) walk(node.checkType.get());
     }
 
     void visit(StructPatternAST& node) override {
         LUC_LOG_SEMANTIC_EXTREME("visit(StructPatternAST): type=" << pool_.lookup(node.typeName));
-        for (auto& fp : node.fields) {
-            if (fp && fp->subPattern) walk(fp->subPattern.get());
-        }
+        for (auto& fp : node.fields) walk(fp.get());
     }
 
     void visit(FieldPatternAST& node) override {
@@ -438,7 +487,6 @@ private:
 
     void visit(DeclStmtAST& node) override {
         LUC_LOG_SEMANTIC_EXTREME("visit(DeclStmtAST)");
-        // Walk the contained declaration directly (it's a BaseAST).
         walk(node.decl.get());
     }
 
@@ -447,6 +495,12 @@ private:
         walk(node.condition.get());
         walk(node.thenBranch.get());
         if (node.elseBranch) walk(node.elseBranch.get());
+    }
+
+    void visit(SwitchCaseAST& node) override {
+        LUC_LOG_SEMANTIC_EXTREME("visit(SwitchCaseAST)");
+        for (auto& val : node.values) walk(val.get());
+        if (node.body) walk(node.body.get());
     }
 
     void visit(SwitchStmtAST& node) override {
@@ -461,6 +515,7 @@ private:
 
     void visit(ForStmtAST& node) override {
         LUC_LOG_SEMANTIC_EXTREME("visit(ForStmtAST): var=" << (node.iterVar ? pool_.lookup(node.iterVar->name) : "<unnamed>"));
+        if (node.iterVar) walk(node.iterVar.get());
         walk(node.iterable.get());
         if (node.step) walk(node.step.get());
         walk(node.body.get());
@@ -483,18 +538,19 @@ private:
         for (auto& val : node.values) walk(val.get());
     }
 
-    void visit(BreakStmtAST& /*node*/) override {
+    void visit(BreakStmtAST& node) override {
         LUC_LOG_SEMANTIC_EXTREME("visit(BreakStmtAST)");
     }
 
-    void visit(ContinueStmtAST& /*node*/) override {
+    void visit(ContinueStmtAST& node) override {
         LUC_LOG_SEMANTIC_EXTREME("visit(ContinueStmtAST)");
     }
 
     void visit(MultiVarDeclAST& node) override {
         LUC_LOG_SEMANTIC_EXTREME("visit(MultiVarDeclAST)");
         walk(node.rhs.get());
-        // Variables themselves are not walked as BaseAST; they are pairs of (name, type).
+        // Variables themselves are not BaseAST; no walking.
+        node.isConst = (node.keyword == DeclKeyword::Const);
     }
 
     void visit(MultiAssignStmtAST& node) override {
@@ -509,14 +565,41 @@ private:
         LUC_LOG_SEMANTIC_VERBOSE("visit(ProgramAST): file=" << pool_.lookup(node.filePath));
         for (auto& decl : node.decls) walk(decl.get());
     }
+
+    // ── Type nodes (these are visited only when they appear as part of declarations) ──
+    // We don't set isConst on type nodes; they are not runtime values.
+    void visit(PrimitiveTypeAST&) override {}
+    void visit(NamedTypeAST&) override {}
+    void visit(NullableTypeAST& node) override { if (node.inner) walk(node.inner.get()); }
+    void visit(FixedArrayTypeAST& node) override { if (node.element) walk(node.element.get()); }
+    void visit(SliceTypeAST& node) override { if (node.element) walk(node.element.get()); }
+    void visit(DynamicArrayTypeAST& node) override { if (node.element) walk(node.element.get()); }
+    void visit(RefTypeAST& node) override { if (node.inner) walk(node.inner.get()); }
+    void visit(PtrTypeAST& node) override { if (node.inner) walk(node.inner.get()); }
+    void visit(FuncTypeAST& node) override {
+        for (const auto& group : node.sig.paramGroups) {
+            for (const auto& param : group) walk(param.get());
+        }
+        for (auto& ret : node.sig.returnTypes) {
+            if (ret) walk(ret.get());
+        }
+    }
+
+    // ── Attribute nodes ───────────────────────────────────────────────────────
+    void visit(AttributeAST& node) override {
+        for (auto& arg : node.args) walk(arg.get());
+    }
+    void visit(AttributeArgAST&) override {}
+
+    // ── Unknown nodes (ignore) ────────────────────────────────────────────────
+    void visit(UnknownDeclAST&) override {}
+    void visit(UnknownExprAST&) override {}
+    void visit(UnknownStmtAST&) override {}
+    void visit(UnknownTypeAST&) override {}
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // annotateAll  — public entry point called by SemanticAnalyzer::annotate()
-//
-// Creates one Annotator instance shared across all files in the package
-// (so the symbol table lookup in visitIdentifierExprAST resolves correctly
-// for cross-file references that were collected in Phase 1).
 // ─────────────────────────────────────────────────────────────────────────────
 void annotateAll(std::vector<ProgramAST*>& files, SymbolTable& symbols, StringPool& pool) {
     LUC_LOG_SEMANTIC_VERBOSE("annotateAll: starting annotation pass on " << files.size() << " files");

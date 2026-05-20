@@ -452,24 +452,35 @@ void SemanticCollector::visit(TraitDeclAST& node) {
 // visit(ImplDeclAST)
 // ─────────────────────────────────────────────────────────────────────────────
 void SemanticCollector::visit(ImplDeclAST& node) {
+    // Extract the struct name from the target type (must be a NamedTypeAST)
+    InternedString structName;
+    if (node.targetType && node.targetType->isa<NamedTypeAST>()) {
+        structName = node.targetType->as<NamedTypeAST>()->name;
+    } else {
+        _dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
+                  "impl target must be a named type (struct, enum, or type alias)");
+        return;
+    }
+
     LUC_LOG_SEMANTIC("SemanticCollector::visit(ImplDeclAST): struct=" 
-                     << _pool.lookup(node.structName) 
+                     << _pool.lookup(structName)
                      << ", methods=" << node.methods.size());
 
     if (node.traitRef) {
-        _structTraits[node.structName].push_back(node.traitRef->name);
+        _structTraits[structName].push_back(node.traitRef->name);
     }
-    
+
     // Impl blocks themselves don't create symbols, but their methods do.
     // Methods are stored with mangled names: StructName.methodName
     for (const auto& method : node.methods) {
         if (!method) continue;
-        
-        // Create mangled name for the method
-        // pool_.lookup returns a string_view; convert to std::string before concatenation
-        std::string mangledName = NameMangler::mangleMethod(_pool.lookup(node.structName), _pool.lookup(method->name));
+
+        std::string mangledName = NameMangler::mangleMethod(
+            _pool.lookup(structName), 
+            _pool.lookup(method->name)
+        );
         InternedString mangledInterned = _pool.intern(mangledName);
-        
+
         Symbol methodSym;
         methodSym.name = mangledInterned;
         methodSym.kind = SymbolKind::Method;
@@ -478,7 +489,7 @@ void SemanticCollector::visit(ImplDeclAST& node) {
         methodSym.type = nullptr;  // Will be set during type resolution
         methodSym.decl = method.get();
         methodSym.loc = method->loc;
-        
+
         declareSymbol(methodSym);
     }
 }
@@ -487,23 +498,39 @@ void SemanticCollector::visit(ImplDeclAST& node) {
 // visit(FromDeclAST)
 // ─────────────────────────────────────────────────────────────────────────────
 void SemanticCollector::visit(FromDeclAST& node) {
+    // Extract the target type name from the target type (must be a NamedTypeAST)
+    InternedString targetTypeName;
+    if (node.targetType && node.targetType->isa<NamedTypeAST>()) {
+        targetTypeName = node.targetType->as<NamedTypeAST>()->name;
+    } else {
+        _dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
+                  "from target must be a named type (struct, enum, or type alias)");
+        return;
+    }
+
     LUC_LOG_SEMANTIC("SemanticCollector::visit(FromDeclAST): target=" 
-                     << _pool.lookup(node.targetTypeName)
+                     << _pool.lookup(targetTypeName)
                      << ", entries=" << node.entries.size());
-    
+
     // From blocks themselves don't create symbols, but their conversion entries do.
-    // Conversion entries are stored with mangled names: From_<targetType>_<paramTypes>
+    // Conversion entries are stored with mangled names: TargetType::from::ParamType
     for (const auto& entry : node.entries) {
         if (!entry) continue;
-        
+
         // Build a mangled name for the conversion
         TypeAST* firstParamType = nullptr;
-        if (!entry->sig.paramGroups.empty() && !entry->sig.paramGroups[0].empty() && entry->sig.paramGroups[0][0]) {
+        if (!entry->sig.paramGroups.empty() &&
+            !entry->sig.paramGroups[0].empty() &&
+            entry->sig.paramGroups[0][0]) {
             firstParamType = entry->sig.paramGroups[0][0]->type.get();
         }
-        std::string mangledName = NameMangler::mangleFrom(_pool.lookup(node.targetTypeName), firstParamType, _pool);
+        std::string mangledName = NameMangler::mangleFrom(
+            _pool.lookup(targetTypeName), 
+            firstParamType, 
+            _pool
+        );
         InternedString mangledInterned = _pool.intern(mangledName);
-        
+
         Symbol entrySym;
         entrySym.name = mangledInterned;
         entrySym.kind = SymbolKind::Casting;
@@ -512,7 +539,7 @@ void SemanticCollector::visit(FromDeclAST& node) {
         entrySym.type = nullptr;
         entrySym.decl = entry.get();
         entrySym.loc = entry->loc;
-        
+
         declareSymbol(entrySym);
     }
 }

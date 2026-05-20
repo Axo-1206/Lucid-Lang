@@ -41,7 +41,7 @@ void checkTopLevelDecl(DeclAST* decl, SemanticContext& ctx);
 // ─────────────────────────────────────────────────────────────────────────────
 // Forward declaration of Phase 4 dispatcher (defined in Annotator.cpp)
 // ─────────────────────────────────────────────────────────────────────────────
-void annotateAll(std::vector<ProgramAST*>& files, SymbolTable& symbols);
+void annotateAll(std::vector<ProgramAST*>& files, SymbolTable& symbols, StringPool& pool);
  
 // ─────────────────────────────────────────────────────────────────────────────
 // Constructor
@@ -362,7 +362,8 @@ void SemanticAnalyzer::resolveTypes(std::vector<ProgramAST*>& files) {
             if (decl->isa<StructDeclAST>()) {
                 _typeResolver->visit(*decl->as<StructDeclAST>());
                 resolvedCount++;
-                LUC_LOG_SEMANTIC_EXTREME("\tresolved struct: " << _pool.lookup(decl->as<StructDeclAST>()->name));
+                LUC_LOG_SEMANTIC_EXTREME("\tresolved struct: " 
+                                         << _pool.lookup(decl->as<StructDeclAST>()->name));
             }
         }
     }
@@ -373,7 +374,8 @@ void SemanticAnalyzer::resolveTypes(std::vector<ProgramAST*>& files) {
             if (decl->isa<FuncDeclAST>()) {
                 _typeResolver->visit(*decl->as<FuncDeclAST>());
                 resolvedCount++;
-                LUC_LOG_SEMANTIC_EXTREME("\tresolved function: " << _pool.lookup(decl->as<FuncDeclAST>()->name));
+                LUC_LOG_SEMANTIC_EXTREME("\tresolved function: " 
+                                         << _pool.lookup(decl->as<FuncDeclAST>()->name));
             }
         }
     }
@@ -384,7 +386,9 @@ void SemanticAnalyzer::resolveTypes(std::vector<ProgramAST*>& files) {
             if (decl->isa<ImplDeclAST>()) {
                 _typeResolver->visit(*decl->as<ImplDeclAST>());
                 resolvedCount++;
-                LUC_LOG_SEMANTIC_EXTREME("\tresolved impl for: " << _pool.lookup(decl->as<ImplDeclAST>()->structName));
+                // Logging: the struct name is inside targetType (a NamedTypeAST)
+                // For brevity, we just log that an impl block was resolved.
+                LUC_LOG_SEMANTIC_EXTREME("\tresolved impl block");
             }
         }
     }
@@ -395,7 +399,8 @@ void SemanticAnalyzer::resolveTypes(std::vector<ProgramAST*>& files) {
             if (decl->isa<FromDeclAST>()) {
                 _typeResolver->visit(*decl->as<FromDeclAST>());
                 resolvedCount++;
-                LUC_LOG_SEMANTIC_EXTREME("\tresolved from block for: " << _pool.lookup(decl->as<FromDeclAST>()->targetTypeName));
+                // Logging: target type is inside targetType
+                LUC_LOG_SEMANTIC_EXTREME("\tresolved from block");
             }
         }
     }
@@ -406,7 +411,8 @@ void SemanticAnalyzer::resolveTypes(std::vector<ProgramAST*>& files) {
             if (decl->isa<VarDeclAST>()) {
                 _typeResolver->visit(*decl->as<VarDeclAST>());
                 resolvedCount++;
-                LUC_LOG_SEMANTIC_EXTREME("\tresolved variable: " << _pool.lookup(decl->as<VarDeclAST>()->name));
+                LUC_LOG_SEMANTIC_EXTREME("\tresolved variable: " 
+                                         << _pool.lookup(decl->as<VarDeclAST>()->name));
             }
         }
     }
@@ -449,7 +455,7 @@ void SemanticAnalyzer::checkDecls(std::vector<ProgramAST*>& files) {
 // ─────────────────────────────────────────────────────────────────────────────
 void SemanticAnalyzer::annotate(std::vector<ProgramAST*>& files) {
     LUC_LOG_SEMANTIC_VERBOSE("annotate: running annotation pass");
-    annotateAll(files, *_symbols);
+    annotateAll(files, *_symbols, _pool);
     LUC_LOG_SEMANTIC_VERBOSE("annotate: annotation complete");
 }
 

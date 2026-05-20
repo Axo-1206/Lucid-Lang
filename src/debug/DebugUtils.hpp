@@ -45,6 +45,7 @@ namespace LucDebug {
             case ASTKind::IdentifierExpr:    return "IdentifierExpr";
             case ASTKind::FieldAccessExpr:   return "FieldAccessExpr";
             case ASTKind::BehaviorAccessExpr: return "BehaviorAccessExpr";
+            case ASTKind::StaticAccessExpr:  return "StaticAccessExpr";
             case ASTKind::CallExpr:          return "CallExpr";
             case ASTKind::IndexExpr:         return "IndexExpr";
             case ASTKind::BinaryExpr:        return "BinaryExpr";

@@ -551,6 +551,11 @@ struct ImplDeclAST : DeclAST {
     TraitRefPtr traitRef;                       // nullptr if no conformance
     std::vector<MethodDeclPtr> methods;
 
+    // ── Phase 2a cache (filled by TypeResolver) ──────────────────────────────
+    mutable TypeAST* resolvedSelfType = nullptr;                     // the type of 'self'
+    mutable const std::vector<GenericParamPtr>* resolvedTargetGenericParams = nullptr;
+    mutable std::unordered_map<InternedString, TypeAST*> resolvedSubstitutionMap;
+
     ImplDeclAST() : DeclAST(ASTKind::ImplDecl) {}
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };

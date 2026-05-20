@@ -176,8 +176,8 @@ pub extension StringHelper text {
 -- let result abc = [] 
 -- let result []abc = []
 -- let result [*]int = []
--- let result [*]string = []
--- let result []char = []  -- failed
+-- let ABCXYZ [*]string = []
+let XYZABC []char = []  -- failed
 
 -- let empty bool = StringHelper::text.isEmpty("")   -- true
 -- let rep string = StringHelper::text.repeat("hi", 3)   -- "hihihi"

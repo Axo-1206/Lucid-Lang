@@ -1966,7 +1966,7 @@ ASTPtr<ExtensionDeclAST> Parser::parseExtensionDecl(Visibility vis) {
         return nullptr;
     }
     node->namespaceName = pool_.intern(advance().value);
-    LUC_LOG_PARSER("\textension for type: " << node->targetType.get()
+    LUC_LOG_PARSER("\textension for type: " // << node->targetType.get()
                    << ", namespace: '" << pool_.lookup(node->namespaceName) << "'");
 
     // ── Consume opening brace ────────────────────────────────────────────────

@@ -745,6 +745,131 @@ void checkTraitDecl(TraitDeclAST& node, SemanticContext& ctx, bool isLocal) {
                              << " with " << seenMethodNames.size() << " methods");
 }
 
+
+// ============================================================================
+// Helpers for impl block checking
+// ============================================================================
+
+// Helper: inject receiver symbol into the current scope
+static void injectReceiverSymbol(const ImplDeclAST& node, SemanticContext& ctx) {
+    InternedString recName = node.receiverAlias.isValid() ? node.receiverAlias
+                           : ctx.pool.intern("self");
+    Symbol rec;
+    rec.name = recName;
+    rec.kind = SymbolKind::Param;   // read‑only reference to the instance
+    rec.declKw = DeclKeyword::Let;
+    rec.visibility = Visibility::Private;
+    rec.type = node.resolvedSelfType;
+    rec.decl = nullptr;
+    rec.loc = node.loc;
+    if (!ctx.symbols.declare(rec)) {
+        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3005,
+                     "receiver name '" + std::string(ctx.pool.lookup(recName)) +
+                     "' conflicts with existing symbol");
+    }
+}
+
+// Helper: check that impl generic parameters match target's generic parameters
+static void checkImplGenericParams(const ImplDeclAST& node,
+                                   const std::vector<GenericParamPtr>* targetParams,
+                                   SemanticContext& ctx) {
+    const auto& implParams = node.genericParams;
+
+    if (targetParams == nullptr) {
+        // Target is non‑generic (e.g., enum, non‑generic struct, or alias to such)
+        if (!implParams.empty()) {
+            ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3017,
+                         "impl target is not generic, so impl cannot have generic parameters");
+        }
+        return;
+    }
+
+    // Target is generic – compare counts and names
+    if (implParams.size() != targetParams->size()) {
+        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3017,
+                     "generic parameter count mismatch: impl has " +
+                     std::to_string(implParams.size()) +
+                     ", target has " + std::to_string(targetParams->size()));
+        return;
+    }
+    for (size_t i = 0; i < implParams.size(); ++i) {
+        auto* ip = implParams[i].get();
+        auto* tp = (*targetParams)[i].get();
+        if (!ip || !tp) continue;
+        if (ip->name != tp->name) {
+            ctx.dc.error(DiagnosticCategory::Semantic, ip->loc, DiagCode::E3017,
+                         "generic parameter name mismatch: expected '" +
+                         std::string(ctx.pool.lookup(tp->name)) +
+                         "', got '" + std::string(ctx.pool.lookup(ip->name)) + "'");
+        }
+        // Optionally compare constraints (same order, same names)
+        if (ip->constraints.size() != tp->constraints.size()) {
+            ctx.dc.error(DiagnosticCategory::Semantic, ip->loc, DiagCode::E3017,
+                         "constraint count mismatch for parameter '" +
+                         std::string(ctx.pool.lookup(ip->name)) + "'");
+        } else {
+            for (size_t j = 0; j < ip->constraints.size(); ++j) {
+                if (ip->constraints[j] != tp->constraints[j]) {
+                    ctx.dc.error(DiagnosticCategory::Semantic, ip->loc, DiagCode::E3017,
+                                 "constraint mismatch: expected '" +
+                                 std::string(ctx.pool.lookup(tp->constraints[j])) +
+                                 "', got '" +
+                                 std::string(ctx.pool.lookup(ip->constraints[j])) + "'");
+                }
+            }
+        }
+    }
+}
+
+// Helper: check a single method inside the impl block
+static void checkImplMethod(const ImplDeclAST& node, MethodDeclAST& method,
+                            TypeAST* expectedReturn, SemanticContext& ctx) {
+    ctx.symbols.pushScope();
+
+    // 1. Inject receiver
+    injectReceiverSymbol(node, ctx);
+
+    // 2. Declare parameters
+    for (const auto& group : method.sig.paramGroups) {
+        for (const auto& param : group) {
+            if (!param) continue;
+            TypeAST* paramType = param->type.get();
+            if (!paramType) {
+                paramType = ctx.resolver.resolveType(param->type.get());
+                if (!paramType) {
+                    ctx.dc.error(DiagnosticCategory::Semantic, param->loc, DiagCode::E3001,
+                                 "cannot resolve parameter type for '" +
+                                 std::string(ctx.pool.lookup(param->name)) + "'");
+                    continue;
+                }
+            }
+            Symbol ps;
+            ps.name = param->name;
+            ps.kind = SymbolKind::Param;
+            ps.declKw = DeclKeyword::Let;
+            ps.type = paramType;
+            ps.decl = param.get();
+            ps.loc = param->loc;
+            if (!ctx.symbols.declare(ps)) {
+                ctx.dc.error(DiagnosticCategory::Semantic, param->loc, DiagCode::E3005,
+                             "duplicate parameter name '" +
+                             std::string(ctx.pool.lookup(param->name)) + "'");
+            }
+        }
+    }
+
+    // 3. Check body
+    if (method.body) {
+        checkStmt(method.body.get(), ctx, expectedReturn);
+    } else {
+        ctx.dc.error(DiagnosticCategory::Semantic, method.loc, DiagCode::E3002,
+                     "impl method '" + std::string(ctx.pool.lookup(method.name)) +
+                     "' must have a body");
+    }
+
+    ctx.symbols.popScope();
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // checkImplDecl
 //
@@ -761,245 +886,59 @@ void checkTraitDecl(TraitDeclAST& node, SemanticContext& ctx, bool isLocal) {
 //     any nested scope (standard lexical scoping).
 // ─────────────────────────────────────────────────────────────────────────────
 void checkImplDecl(ImplDeclAST& node, SemanticContext& ctx, bool isLocal) {
-    LUC_LOG_SEMANTIC("checkImplDecl: structName=" << ctx.pool.lookup(node.structName)
-                     << ", methods=" << node.methods.size()
-                     << ", isLocal=" << isLocal);
+    LUC_LOG_SEMANTIC("checkImplDecl: isLocal=" << isLocal);
 
-    // ── Local impls cannot have visibility modifiers ─────────────────────────
     if (isLocal && node.visibility != Visibility::Private) {
         ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3005,
                      "local impl cannot have visibility modifier (pub/export)");
     }
 
-    // ── Validate @attributes (deprecated, etc.) ──────────────────────────────
-    bool attrIsExtern = false;
-    std::string attrExternSym, attrCallingConv;
-    checkAttributes(node.attributes, AttributeContext::Impl,
-                    std::string(ctx.pool.lookup(node.structName)), DeclKeyword::Let,
-                    ctx, attrIsExtern, attrExternSym, attrCallingConv);
-
-    // ── Verify target struct exists (lookup in symbol table, any scope) ──────
-    Symbol* structSym = ctx.symbols.lookup(node.structName);
-    if (!structSym || structSym->kind != SymbolKind::Struct) {
+    // Ensure the target was resolved
+    if (!node.resolvedSelfType) {
         ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
-                     "impl target '" + std::string(ctx.pool.lookup(node.structName)) +
-                     "' is not a declared struct");
+                     "impl target could not be resolved");
         return;
     }
-    auto* structDecl = structSym->decl->as<StructDeclAST>();
 
-    // ── Check generic signature match ────────────────────────────────────────
-    if (node.genericParams.size() != structDecl->genericParams.size()) {
+    // Validate generic parameters against the target
+    if (node.resolvedTargetGenericParams) {
+        checkImplGenericParams(node, node.resolvedTargetGenericParams, ctx);
+    } else if (!node.genericParams.empty()) {
         ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3017,
-                     "generic signature mismatch: impl for '" +
-                     std::string(ctx.pool.lookup(node.structName)) +
-                     "' has " + std::to_string(node.genericParams.size()) +
-                     " parameters, but struct was declared with " +
-                     std::to_string(structDecl->genericParams.size()));
-    } else {
-        for (size_t i = 0; i < node.genericParams.size(); ++i) {
-            auto& implParam = node.genericParams[i];
-            auto& structParam = structDecl->genericParams[i];
-            if (!implParam || !structParam) continue;
-
-            if (implParam->name != structParam->name) {
-                ctx.dc.error(DiagnosticCategory::Semantic, implParam->loc, DiagCode::E3017,
-                             "generic parameter name mismatch: expected '" +
-                             std::string(ctx.pool.lookup(structParam->name)) +
-                             "', found '" + std::string(ctx.pool.lookup(implParam->name)) + "'");
-            }
-
-            // Check constraint counts (actual trait names must match)
-            if (implParam->constraints.size() != structParam->constraints.size()) {
-                ctx.dc.error(DiagnosticCategory::Semantic, implParam->loc, DiagCode::E3017,
-                             "generic constraint count mismatch for '" +
-                             std::string(ctx.pool.lookup(implParam->name)) +
-                             "': expected " + std::to_string(structParam->constraints.size()) +
-                             " traits, found " + std::to_string(implParam->constraints.size()));
-            } else {
-                for (size_t j = 0; j < implParam->constraints.size(); ++j) {
-                    if (implParam->constraints[j] != structParam->constraints[j]) {
-                        ctx.dc.error(DiagnosticCategory::Semantic, implParam->loc, DiagCode::E3017,
-                                     "generic constraint mismatch for '" +
-                                     std::string(ctx.pool.lookup(implParam->name)) +
-                                     "': expected trait '" +
-                                     std::string(ctx.pool.lookup(structParam->constraints[j])) +
-                                     "', found '" +
-                                     std::string(ctx.pool.lookup(implParam->constraints[j])) + "'");
-                    }
-                }
-            }
-        }
+                     "non‑generic target cannot have generic parameters");
     }
 
-    // ── Push generic parameters (impl-level) ─────────────────────────────────
-    if (!node.genericParams.empty()) {
-        ctx.resolver.pushGenericParams(&node.genericParams);
+    // Push substitution map (if any) so that generic parameters inside method bodies are replaced
+    if (!node.resolvedSubstitutionMap.empty()) {
+        ctx.resolver.pushSubstitutionMap(&node.resolvedSubstitutionMap);
     }
 
-    // ── Pre-resolve struct field types for injection (fields are always accessible) ──
-    std::vector<std::pair<InternedString, TypeAST*>> fieldTypes;
-    for (auto& field : structDecl->fields) {
-        if (!field) continue;
-        TypeAST* ft = field->type.get();
-        if (!ft) {
-            ft = ctx.resolver.resolveType(field->type.get());
-        }
-        if (ft) {
-            fieldTypes.emplace_back(field->name, ft);
-        }
-    }
-
-    // ── Check each method ────────────────────────────────────────────────────
+    // Check each method
     std::unordered_set<std::string> seenMethods;
-
     for (auto& method : node.methods) {
         if (!method) continue;
-
-        std::string methodName = std::string(ctx.pool.lookup(method->name));
-
-        // Check for duplicate method names within this impl block
-        if (!seenMethods.insert(methodName).second) {
+        std::string mname = std::string(ctx.pool.lookup(method->name));
+        if (!seenMethods.insert(mname).second) {
             ctx.dc.error(DiagnosticCategory::Semantic, method->loc, DiagCode::E3005,
-                         "duplicate method '" + methodName + "' in impl for '" +
-                         std::string(ctx.pool.lookup(node.structName)) + "'");
+                         "duplicate method '" + mname + "' in impl");
             continue;
         }
-
-        // Get expected return type (single return for now)
         TypeAST* expectedReturn = method->sig.returnTypes.empty()
                                   ? nullptr
                                   : method->sig.returnTypes[0].get();
-
-        // Track qualifiers for depth counters
-        bool isAsync = method->sig.isAsync();
-        bool isParallel = method->sig.isParallel();
-
-        if (isParallel) {
-            ctx.enterParallel();
-        }
-
-        // Push a new scope for the method
-        ctx.symbols.pushScope();
-
-        // Inject struct fields into the method scope (fields are always accessible)
-        for (const auto& ft : fieldTypes) {
-            Symbol fs;
-            fs.name = ft.first;
-            fs.kind = SymbolKind::Field;
-            fs.declKw = DeclKeyword::Let;
-            fs.visibility = Visibility::Private;
-            fs.type = ft.second;
-            fs.decl = nullptr;
-            fs.loc = node.loc;
-            ctx.symbols.declare(fs);
-        }
-
-        // Declare method parameters
-        for (const auto& group : method->sig.paramGroups) {
-            for (const auto& param : group) {
-                if (!param) continue;
-
-                TypeAST* paramType = param->type.get();
-                if (!paramType) {
-                    paramType = ctx.resolver.resolveType(param->type.get());
-                    if (!paramType) {
-                        ctx.dc.error(DiagnosticCategory::Semantic, param->loc, DiagCode::E3001,
-                                     "cannot resolve type for parameter '" +
-                                     std::string(ctx.pool.lookup(param->name)) + "'");
-                        continue;
-                    }
-                }
-
-                Symbol ps;
-                ps.name = param->name;
-                ps.kind = SymbolKind::Param;
-                ps.declKw = DeclKeyword::Let;
-                ps.visibility = Visibility::Private;
-                ps.type = paramType;
-                ps.decl = param.get();
-                ps.loc = param->loc;
-                if (!ctx.symbols.declare(ps)) {
-                    ctx.dc.error(DiagnosticCategory::Semantic, param->loc, DiagCode::E3005,
-                                 "duplicate parameter name '" +
-                                 std::string(ctx.pool.lookup(param->name)) + "'");
-                }
-            }
-        }
-
-        // Check method body
-        if (method->body) {
-            checkStmt(method->body.get(), ctx, expectedReturn);
-        } else {
-            ctx.dc.error(DiagnosticCategory::Semantic, method->loc, DiagCode::E3002,
-                         "method '" + methodName + "' in impl must have a body");
-        }
-
-        // Pop method scope
-        ctx.symbols.popScope();
-
-        if (isParallel) {
-            ctx.exitParallel();
-        }
+        bool wasParallel = method->sig.isParallel();
+        if (wasParallel) ctx.enterParallel();
+        checkImplMethod(node, *method, expectedReturn, ctx);
+        if (wasParallel) ctx.exitParallel();
     }
 
-    // ── Trait conformance check (if traitRef present) ────────────────────────
-    // NOTE: The trait conformance is now scope‑based. The impl block can be in
-    // any scope as long as the struct implements the trait in that scope.
-    // Multiple impl blocks for the same trait in different scopes are allowed.
-    if (node.traitRef) {
-        Symbol* traitSym = ctx.symbols.lookup(node.traitRef->name);
-        if (!traitSym || traitSym->kind != SymbolKind::Trait) {
-            ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
-                         "trait '" + std::string(ctx.pool.lookup(node.traitRef->name)) +
-                         "' is not declared in the current scope");
-        } else {
-            auto* traitDecl = traitSym->decl->as<TraitDeclAST>();
-            bool allMethodsFound = true;
-
-            for (auto& requiredMethod : traitDecl->methods) {
-                if (!requiredMethod) continue;
-
-                std::string requiredName = std::string(ctx.pool.lookup(requiredMethod->name));
-                bool found = false;
-
-                // Find matching method in impl
-                for (auto& implMethod : node.methods) {
-                    if (!implMethod) continue;
-                    if (implMethod->name == requiredMethod->name) {
-                        found = true;
-                        // TODO: Compare full signatures (parameter and return types)
-                        // Full signature comparison would use TypeChecker::isEqual
-                        // on the resolved function types.
-                        break;
-                    }
-                }
-
-                if (!found) {
-                    ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                                 "impl of '" + std::string(ctx.pool.lookup(node.structName)) +
-                                 "' for trait '" + std::string(ctx.pool.lookup(node.traitRef->name)) +
-                                 "' is missing method '" + requiredName + "'");
-                    allMethodsFound = false;
-                }
-            }
-
-            if (allMethodsFound && !node.methods.empty()) {
-                LUC_LOG_SEMANTIC_VERBOSE("\ttrait conformance check passed for '"
-                                         << ctx.pool.lookup(node.structName) << " : "
-                                         << ctx.pool.lookup(node.traitRef->name) << "'");
-            }
-        }
+    // Pop substitution map
+    if (!node.resolvedSubstitutionMap.empty()) {
+        ctx.resolver.popSubstitutionMap();
     }
 
-    // ── Pop generic parameters ───────────────────────────────────────────────
-    if (!node.genericParams.empty()) {
-        ctx.resolver.popGenericParams();
-    }
-
-    LUC_LOG_SEMANTIC_VERBOSE("checkImplDecl: complete for "
-                             << ctx.pool.lookup(node.structName)
-                             << " with " << seenMethods.size() << " methods");
+    // Trait conformance (optional, can be added later)
+    // if (node.traitRef) { ... }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1019,7 +958,17 @@ void checkImplDecl(ImplDeclAST& node, SemanticContext& ctx, bool isLocal) {
 //     any nested scope (standard lexical scoping).
 // ─────────────────────────────────────────────────────────────────────────────
 void checkFromDecl(FromDeclAST& node, SemanticContext& ctx, bool isLocal) {
-    LUC_LOG_SEMANTIC("checkFromDecl: target=" << ctx.pool.lookup(node.targetTypeName)
+    // Extract target type name from targetType (must be NamedTypeAST)
+    InternedString targetTypeName;
+    if (node.targetType && node.targetType->isa<NamedTypeAST>()) {
+        targetTypeName = node.targetType->as<NamedTypeAST>()->name;
+    } else {
+        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
+                     "from block target must be a named type (struct)");
+        return;
+    }
+
+    LUC_LOG_SEMANTIC("checkFromDecl: target=" << ctx.pool.lookup(targetTypeName)
                      << ", entries=" << node.entries.size()
                      << ", isLocal=" << isLocal);
 
@@ -1030,19 +979,17 @@ void checkFromDecl(FromDeclAST& node, SemanticContext& ctx, bool isLocal) {
     }
 
     // ── Validate @attributes (deprecated, etc.) ──────────────────────────────
-    // From blocks are not in AttributeContext yet; we pass None for now.
-    // If from blocks should support @deprecated, add AttributeContext::From.
     bool attrIsExtern = false;
     std::string attrExternSym, attrCallingConv;
     checkAttributes(node.attributes, AttributeContext::None,
-                    std::string(ctx.pool.lookup(node.targetTypeName)), DeclKeyword::Let,
+                    std::string(ctx.pool.lookup(targetTypeName)), DeclKeyword::Let,
                     ctx, attrIsExtern, attrExternSym, attrCallingConv);
 
-    // ── Verify target struct exists (lookup in symbol table, any scope) ──────
-    Symbol* targetSym = ctx.symbols.lookup(node.targetTypeName);
+    // ── Verify target struct exists (lookup in symbol table) ─────────────────
+    Symbol* targetSym = ctx.symbols.lookup(targetTypeName);
     if (!targetSym || targetSym->kind != SymbolKind::Struct) {
         ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
-                     "from block target '" + std::string(ctx.pool.lookup(node.targetTypeName)) +
+                     "from block target '" + std::string(ctx.pool.lookup(targetTypeName)) +
                      "' is not a declared struct in the current scope");
         return;
     }
@@ -1060,7 +1007,7 @@ void checkFromDecl(FromDeclAST& node, SemanticContext& ctx, bool isLocal) {
     }
 
     // ── Check each from entry ────────────────────────────────────────────────
-    std::vector<FromEntryAST*> verifiedEntries;  // For duplicate signature detection
+    std::vector<FromEntryAST*> verifiedEntries;
 
     for (auto& entry : node.entries) {
         if (!entry) continue;
@@ -1082,7 +1029,7 @@ void checkFromDecl(FromDeclAST& node, SemanticContext& ctx, bool isLocal) {
         if (!ctx.checker.isEqual(entryReturnType, targetType)) {
             ctx.dc.error(DiagnosticCategory::Semantic, entry->loc, DiagCode::E3002,
                          "from entry return type must be '" +
-                         std::string(ctx.pool.lookup(node.targetTypeName)) +
+                         std::string(ctx.pool.lookup(targetTypeName)) +
                          "', got '" + LucDebug::kindToString(entryReturnType->kind) + "'");
             continue;
         }
@@ -1160,7 +1107,6 @@ void checkFromDecl(FromDeclAST& node, SemanticContext& ctx, bool isLocal) {
         ctx.symbols.popScope();
 
         // Check for duplicate signature within this from block only
-        // Different from blocks in different scopes can have the same signature
         bool isDuplicate = false;
         for (auto* seen : verifiedEntries) {
             if (entry->sig.paramGroups.size() != seen->sig.paramGroups.size())
@@ -1204,7 +1150,7 @@ void checkFromDecl(FromDeclAST& node, SemanticContext& ctx, bool isLocal) {
     }
 
     LUC_LOG_SEMANTIC_VERBOSE("checkFromDecl: complete for "
-                             << ctx.pool.lookup(node.targetTypeName)
+                             << ctx.pool.lookup(targetTypeName)
                              << " with " << verifiedEntries.size() << " valid entries");
 }
 

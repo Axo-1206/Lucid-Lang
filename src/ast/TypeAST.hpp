@@ -314,11 +314,18 @@ struct PtrTypeAST : TypeAST {
 // ─────────────────────────────────────────────────────────────────────────────
 struct FuncSignature {
     std::vector<std::vector<ASTPtr<ParamAST>>> paramGroups;
-    std::vector<TypePtr>                       returnTypes;
-    uint32_t                                   qualifiers   = 0;
-    std::vector<InternedString>                rawQualifiers;  // only needed during parsing
+    std::vector<TypePtr> returnTypes;
+    uint32_t qualifiers = 0;
+    std::vector<InternedString> rawQualifiers;
 
-    // Zero‑cost helpers — direct bitmask test
+    FuncSignature() = default;
+    // Delete copy operations (unique_ptr cannot be copied)
+    FuncSignature(const FuncSignature&) = delete;
+    FuncSignature& operator=(const FuncSignature&) = delete;
+    // Allow move operations (they will move the vectors)
+    FuncSignature(FuncSignature&&) = default;
+    FuncSignature& operator=(FuncSignature&&) = default;
+
     bool hasQualifier(uint32_t bit) const { return (qualifiers & bit) != 0; }
     bool isAsync()    const { return hasQualifier(QualifierBits::Async); }
     bool isParallel() const { return hasQualifier(QualifierBits::Parallel); }
