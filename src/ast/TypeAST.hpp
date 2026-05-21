@@ -1,21 +1,34 @@
 /**
  * @file TypeAST.hpp
  *
- * @responsibility Defines the syntactic representation of types (Primitive, Array, Pointer).
- * 
- * @hierarchy BaseAST -> TypeAST -> [Concrete Nodes]
+ * @responsibility Defines the syntactic representation of types (Primitive, Array, Pointer, Function).
  *
- * @related_files 
- *   - src/parser/ParserType.cpp (The primary producer)
- * 
- * @note These represent types AS WRITTEN in source. The semantic pass later resolves 
- *       these into actual Type objects.
+ * @hierarchy BaseAST → TypeAST → [Concrete Nodes]
+ *
+ * @related_files
+ *   - src/parser/ParserType.cpp – primary producer of these nodes
+ *   - src/semantic/TypeResolver.cpp – resolves types to semantic representations
+ *
+ * @note These represent types **as written** in source. The semantic pass later
+ *       resolves these into actual resolved Type objects.
+ *
+ * @grammar (from LUC_GRAMMAR.md)
+ *   type            := base_type [ generic_args ] [ '?' ]
+ *                    | ref_type | ptr_type | array_type | func_type
+ *   base_type       := primitive_type | IDENTIFIER
+ *   primitive_type  := 'bool' | 'byte' | 'short' | 'int' | 'long'
+ *                    | 'ubyte' | 'ushort' | 'uint' | 'ulong'
+ *                    | 'int8' | 'int16' | 'int32' | 'int64'
+ *                    | 'uint8' | 'uint16' | 'uint32' | 'uint64'
+ *                    | 'float' | 'double' | 'decimal'
+ *                    | 'string' | 'char' | 'any'
  */
 
 #pragma once
 
 #include "BaseAST.hpp"
 #include "registry/QualifierRegistry.hpp"
+#include "support/ArenaSpan.hpp"
 
 #include <string>
 #include <vector>
@@ -23,31 +36,35 @@
 #include <cstdint>
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PrimitiveKind — mirrors the TYPE_* tokens from Tokens.hpp but as a
-// self-contained enum so the rest of the AST doesn't need to include
-// Tokens.hpp just to inspect a primitive type node.
-//
-// The parser maps TYPE_INT → PrimitiveKind::Int, etc.
-// The semantic pass and codegen read PrimitiveKind directly.
+// PrimitiveKind – all built‑in primitive types.
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * @brief Identifies a primitive type in the type system.
+ *
+ * The parser maps token types (e.g., `TYPE_INT`) to this enum.
+ * The semantic pass and codegen read `PrimitiveKind` directly.
+ *
+ * @note Fixed‑width types (`int8`, `uint32`, etc.) are critical for
+ *       Vulkan struct layouts and FFI compatibility.
+ */
 enum class PrimitiveKind {
     // Boolean
     Bool,
 
-    // Signed integers
+    // Signed integers (machine‑dependent sizes)
     Byte,     // int8,  -128..127
     Short,    // int16
     Int,      // int32
     Long,     // int64
 
-    // Unsigned integers
+    // Unsigned integers (machine‑dependent sizes)
     Ubyte,    // uint8,  0..255
     Ushort,   // uint16
     Uint,     // uint32
     Ulong,    // uint64
 
-    // Fixed-width aliases — critical for Vulkan struct layouts
+    // Fixed‑width aliases – critical for Vulkan struct layouts
     Int8,
     Int16,
     Int32,
@@ -58,31 +75,34 @@ enum class PrimitiveKind {
     Uint64,
 
     // Floating point
-    Float,    // 32-bit
-    Double,   // 64-bit
-    Decimal,  // 128-bit, high precision
+    Float,    // 32‑bit
+    Double,   // 64‑bit
+    Decimal,  // 128‑bit, high precision
 
     // Text
     String,
     Char,
 
-    // Dynamic type — accepts any value, resolved at runtime
+    // Dynamic type – accepts any value, resolved at runtime
     Any,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PrimitiveTypeAST
-//
-// Represents any built-in primitive keyword used as a type.
-//
-//   let x int    = 5       →  PrimitiveTypeAST { kind = Int }
-//   let s string = "hi"    →  PrimitiveTypeAST { kind = String }
-//   let v any    = getData()→  PrimitiveTypeAST { kind = Any }
+// PrimitiveTypeAST – a built‑in primitive keyword used as a type.
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @brief Represents a primitive type keyword.
+ *
+ * @example
+ *   let x int    = 5       → PrimitiveKind::Int
+ *   let s string = "hi"    → PrimitiveKind::String
+ *   let v any    = getData() → PrimitiveKind::Any
+ */
 struct PrimitiveTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::PrimitiveType;
 
-    PrimitiveKind primitiveKind;  // renamed from 'kind' to avoid clash with BaseAST::kind
+    PrimitiveKind primitiveKind;   ///< Which primitive type
 
     explicit PrimitiveTypeAST(PrimitiveKind k)
         : TypeAST(ASTKind::PrimitiveType), primitiveKind(k) {}
@@ -91,41 +111,39 @@ struct PrimitiveTypeAST : TypeAST {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// NamedTypeAST
-//
-// A user-defined type referenced by name, with optional generic arguments.
-//
-//   Vec2               →  NamedTypeAST { name = "Vec2",    genericArgs = {} }
-//   Buffer<int>        →  NamedTypeAST { name = "Buffer",  genericArgs = [Int] }
-//   Map<string, Vec2>  →  NamedTypeAST { name = "Map",     genericArgs = [String, Vec2] }
-//
-// genericArgs holds the concrete types supplied at the use site — e.g. the
-// <int> in Buffer<int>. These are TypeAST nodes, not GenericParamAST nodes
-// (which are on declarations). The semantic pass resolves the name against
-// the symbol table and verifies the arg count matches the declaration.
-//
-// isGenericParam (Semantic Phase):
-//   Set to true by TypeResolver::visit(NamedTypeAST) when the name matches a
-//   generic type parameter declared on the enclosing declaration (e.g. T in
-//   struct Box<T> or let process<T>). This distinguishes abstract parameters
-//   like T from concrete types like Circle or int.
-//
-//   Codegen uses this flag in Pass 0 to skip instantiation collection for
-//   abstract uses — InstKey{"Box", ["T"]} is meaningless and must not be
-//   recorded. Only NamedTypeASTs with isGenericParam == false represent
-//   concrete types suitable for monomorphization.
+// NamedTypeAST – a user‑defined type referenced by name.
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @brief References a user‑defined type by name, with optional generic arguments.
+ *
+ * @example
+ *   Vec2               → name = "Vec2",    genericArgs = {}
+ *   Buffer<int>        → name = "Buffer",  genericArgs = [Int]
+ *   Map<string, Vec2>  → name = "Map",     genericArgs = [String, Vec2]
+ *
+ * `genericArgs` holds the concrete types supplied at the use site (e.g., the
+ * `<int>` in `Buffer<int>`). These are `TypeAST` nodes, not `GenericParamAST`.
+ * The semantic pass resolves the name against the symbol table and verifies
+ * the argument count matches the declaration.
+ *
+ * ## Semantic Annotation: `isGenericParam`
+ *
+ * Set to `true` by `TypeResolver` when the name matches a generic type parameter
+ * declared on the enclosing declaration (e.g., `T` in `struct Box<T>` or `let process<T>`).
+ * This distinguishes abstract parameters like `T` from concrete types like `Circle`.
+ *
+ * Codegen uses this flag to skip instantiation collection for abstract uses –
+ * `InstKey{"Box", ["T"]}` is meaningless and must not be recorded.
+ */
 struct NamedTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::NamedType;
 
-    InternedString         name;              // "Vec2", "Buffer", "Map", ...
-    std::vector<TypePtr>   genericArgs;       // concrete type args — empty if non-generic
+    InternedString name;                     ///< Type name (e.g., "Vec2", "Buffer")
+    ArenaSpan<TypePtr> genericArgs;          ///< Concrete type arguments (empty if non‑generic)
 
-    // ── Semantic annotation (written by TypeResolver, read by codegen) ────────
-    // True when this name refers to a generic type parameter (e.g. T, K, V)
-    // rather than a declared struct, enum, or type alias. Set during Phase 2a
-    // (TypeResolver::visit). Never true after TypeAlias unwrapping.
-    bool isGenericParam = false;
+    // Semantic annotation (written by TypeResolver, read by codegen)
+    bool isGenericParam = false;             ///< True if this is a generic parameter (T, K, V)
 
     explicit NamedTypeAST(InternedString n)
         : TypeAST(ASTKind::NamedType), name(n) {}
@@ -134,23 +152,27 @@ struct NamedTypeAST : TypeAST {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// NullableTypeAST
-//
-// Wraps an inner type with the nullable suffix `?`.
-//
-//   int?            →  NullableTypeAST { inner = PrimitiveTypeAST(Int) }
-//   Vec2?           →  NullableTypeAST { inner = NamedTypeAST("Vec2") }
-//   ((int) string)? →  NullableTypeAST { inner = FuncTypeAST(...) }
-//
-// Grammar rules enforced by the semantic pass:
-//   - val declarations forbid ? anywhere in the entire type tree
-//   - ?. chain operator is only valid on NullableTypeAST targets
-//   - every ?. chain must be terminated by ??
+// NullableTypeAST – the `?` suffix for nullable value types.
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @brief Wraps an inner type with the nullable suffix `?`.
+ *
+ * @example
+ *   int?                       → inner = PrimitiveTypeAST(Int)
+ *   Vec2?                      → inner = NamedTypeAST("Vec2")
+ *   ~nullable (int) -> string? → inner = FuncTypeAST(...)
+ *
+ * Grammar rules enforced by the semantic pass:
+ *   - `?` attaches to value types only (primitives, structs, arrays, named aliases)
+ *   - `?.` chain operator is only valid on nullable targets(a non-nullable type can be used but will result a warning)
+ *   - Every `?.` chain must be terminated by `??`
+ *   - `?` is **not** valid on inline function types – use a type alias
+ */
 struct NullableTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::NullableType;
 
-    TypePtr inner;  // the type being made nullable
+    TypePtr inner;   ///< The type being made nullable
 
     explicit NullableTypeAST(TypePtr t)
         : TypeAST(ASTKind::NullableType), inner(std::move(t)) {}
@@ -159,25 +181,26 @@ struct NullableTypeAST : TypeAST {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FixedArrayTypeAST
-//
-// An array with a compile-time constant size. Allocated inline (stack or
-// struct field). Size is part of the type — [4]float and [16]float are
-// different types.
-//
-//   [4]float    →  FixedArrayTypeAST { size = 4,  element = Float }
-//   [16]float   →  FixedArrayTypeAST { size = 16, element = Float }
-//   [4][4]float →  FixedArrayTypeAST { size = 4,
-//                      element = FixedArrayTypeAST { size = 4, element = Float } }
-//
-// size is stored as uint64_t — INT_LITERAL from the lexer, always non-negative.
-// The semantic pass checks that size > 0 and fits the target platform's limits.
+// FixedArrayTypeAST – compile‑time fixed‑size array `[N]T`.
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @brief An array with a compile‑time constant size. Size is part of the type.
+ *
+ * @example
+ *   [4]float    → size = 4, element = Float
+ *   [16]float   → size = 16, element = Float
+ *   [4][4]float → size = 4, element = FixedArrayTypeAST(4, Float)
+ *
+ * The size is stored as `uint64_t` from `INT_LITERAL`, always non‑negative.
+ * The semantic pass checks that `size > 0` and fits platform limits.
+ * Memory is allocated inline (stack or struct field).
+ */
 struct FixedArrayTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::FixedArrayType;
 
-    std::uint64_t size;     // compile-time constant from INT_LITERAL
-    TypePtr       element;  // element type — may itself be an array type
+    std::uint64_t size;      ///< Compile‑time constant from `INT_LITERAL`
+    TypePtr       element;   ///< Element type (may itself be an array)
 
     FixedArrayTypeAST(std::uint64_t sz, TypePtr elem)
         : TypeAST(ASTKind::FixedArrayType), size(sz), element(std::move(elem)) {}
@@ -186,24 +209,25 @@ struct FixedArrayTypeAST : TypeAST {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SliceTypeAST
-//
-// A non-owning view into an existing array (fixed or dynamic). Internally a
-// fat pointer: { ptr, len, cap }. Cannot grow, does not own memory.
-//
-//   []int        →  SliceTypeAST { element = Int }
-//   []Vec2       →  SliceTypeAST { element = NamedTypeAST("Vec2") }
-//   [][*]float   →  SliceTypeAST { element = DynamicArrayTypeAST { element = Float } }
-//
-// Slice expressions (nums[1..3]) produce a SliceTypeAST as their resolved type.
-// The semantic pass enforces that slices cannot be used as assignment targets
-// (they share memory with the original — writing through the slice is valid,
-// but rebinding the slice variable to a new array is not if declared imt/val).
+// SliceTypeAST – non‑owning view `[]T`.
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @brief A non‑owning view into an existing array. Internally a fat pointer.
+ *
+ * @example
+ *   []int        → element = Int
+ *   []Vec2       → element = NamedTypeAST("Vec2")
+ *   [][*]float   → element = DynamicArrayTypeAST(element = Float)
+ *
+ * Slice expressions (`nums[1..3]`) produce a `SliceTypeAST` as their resolved type.
+ * The slice shares memory with the original array – writing through the slice
+ * affects the original, but reassigning the slice variable does not.
+ */
 struct SliceTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::SliceType;
 
-    TypePtr element;  // element type
+    TypePtr element;   ///< Element type
 
     explicit SliceTypeAST(TypePtr elem)
         : TypeAST(ASTKind::SliceType), element(std::move(elem)) {}
@@ -212,24 +236,26 @@ struct SliceTypeAST : TypeAST {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DynamicArrayTypeAST
-//
-// A heap-owned, growable array. Tracks length and capacity. Supports push,
-// pop, insert, remove, and all other mutating built-in methods.
-//
-//   [*]int      →  DynamicArrayTypeAST { element = Int }
-//   [*]Vec2     →  DynamicArrayTypeAST { element = NamedTypeAST("Vec2") }
-//   [*][*]float →  DynamicArrayTypeAST { element = DynamicArrayTypeAST { element = Float } }
-//
-// Semantic rules:
-//   - Mutating methods (.push, .pop, .insert, .remove, .clear, .reserve) are
-//     only valid when the variable is declared with 'let'
-//   - Concatenation with + produces a new [*]T
+// DynamicArrayTypeAST – heap‑owned, growable array `[*]T`.
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @brief A heap‑owned, growable array.
+ *
+ * @example
+ *   [*]int      → element = Int
+ *   [*]Vec2     → element = NamedTypeAST("Vec2")
+ *   [*][*]float → element = DynamicArrayTypeAST(element = Float)
+ *
+ * Semantic rules:
+ *   - Mutating methods (`.push()`, `.pop()`, `.insert()`, `.remove()`, `.clear()`, `.reserve()`)
+ *     are only valid when the variable is declared with `let`
+ *   - Concatenation with `+` produces a new `[*]T`
+ */
 struct DynamicArrayTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::DynamicArrayType;
 
-    TypePtr element;  // element type
+    TypePtr element;   ///< Element type
 
     explicit DynamicArrayTypeAST(TypePtr elem)
         : TypeAST(ASTKind::DynamicArrayType), element(std::move(elem)) {}
@@ -238,22 +264,26 @@ struct DynamicArrayTypeAST : TypeAST {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// RefTypeAST
-//
-// A safe managed reference to another value. Used for struct fields that
-// point to other structs (linked lists, trees) and for passing large values
-// by reference without copying.
-//
-//   &int    →  RefTypeAST { inner = PrimitiveTypeAST(Int) }
-//   &Vec2   →  RefTypeAST { inner = NamedTypeAST("Vec2") }
-//
-// References are always valid (non-nullable by default). To express a
-// nullable reference, wrap in NullableTypeAST: &Vec2?
+// RefTypeAST – safe managed reference `&T`.
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @brief A safe managed reference to another value.
+ *
+ * @example
+ *   &int    → inner = PrimitiveTypeAST(Int)
+ *   &Vec2   → inner = NamedTypeAST("Vec2")
+ *
+ * References are always valid (non‑nullable by default). To express a nullable
+ * reference, wrap in `NullableTypeAST`: `&Vec2?`.
+ *
+ * Used for struct fields that point to other structs (linked lists, trees)
+ * and for passing large values by reference without copying.
+ */
 struct RefTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::RefType;
 
-    TypePtr inner;  // the referenced type
+    TypePtr inner;   ///< The referenced type
 
     explicit RefTypeAST(TypePtr t)
         : TypeAST(ASTKind::RefType), inner(std::move(t)) {}
@@ -262,43 +292,46 @@ struct RefTypeAST : TypeAST {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PtrTypeAST
-//
-// A raw, unmanaged pointer.
-//
-// THE SEALED CONDUIT MODEL:
-// Raw pointers (*T) are treated as "sealed conduits". You can carry them,
-// pass them to @extern functions, and check if they are nil.
-// To work with the memory they point to, you must explicitly "unseal" them
-// by crossing the safety boundary using the @ptrToRef intrinsic.
-//
-// Allowed Operations (Zero unsafe surface):
-//   1. Store the pointer in a variable (const buf *uint8 = malloc(1024))
-//   2. Pass to @extern functions (free(buf))
-//   3. Nil check (if buf == nil { ... })
-//   4. Print the pointer (for debugging/experimenting with memory addresses)
-//
-// Forbidden Operations (Compiler Error):
-//   - Dereference (*ptr)     — Syntax not supported for pointers
-//   - Field access (ptr.f)   — Must cross to reference first
-//   - Indexing (ptr[i])      — Must cross to slice or reference
-//   - Arithmetic (ptr + 4)   — Use @ptrOffset intrinsic instead
-//   - Assignment (*ptr = x)  — Must cross to reference first
-//
-// Boundary Crossing:
-//   @ptrToRef(T, ptr) -> &T   (Explicit assertion of validity)
-//   @refToPtr(ref)    -> *T   (Convert safe reference back to raw pointer)
-//   @ptrOffset(ptr, n)-> *T   (Pointer arithmetic)
-//
-// PtrTypeAST is only valid in:
-//   - @extern-decorated declarations
-//   - Input/output types of pointer-related intrinsics (@ptrToRef, etc.)
-//   - Variables/parameters holding values returned by @extern / intrinsics
+// PtrTypeAST – raw, unmanaged pointer `*T` (sealed conduit).
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @brief A raw, unmanaged pointer – the **sealed conduit**.
+ *
+ * ## The Sealed Conduit Model
+ *
+ * Raw pointers (`*T`) are sealed conduits. You can carry them, pass them to
+ * `@extern` functions, check for nil, but never dereference directly.
+ *
+ * **Allowed operations:**
+ * 1. Store in a variable, struct field, or parameter
+ * 2. Pass to an `@extern` function
+ * 3. Nil check (`== nil`, `!= nil`)
+ * 4. Pass to pointer intrinsics (`#ptrToRef`, `#ptrOffset`, etc.)
+ * 5. Print the address for debugging
+ *
+ * **Forbidden operations (compiler error):**
+ *   - Dereference: `*ptr`
+ *   - Field access: `ptr.field`
+ *   - Indexing: `ptr[i]`
+ *   - Arithmetic: `ptr + 4` – use `#ptrOffset` instead
+ *   - Assignment: `*ptr = value`
+ *
+ * **Boundary crossing (intrinsics):**
+ *   - `#ptrToRef(ptr) -> &T`   (cross to safe reference)
+ *   - `#refToPtr(ref) -> *T`   (convert back to raw pointer)
+ *   - `#ptrOffset(ptr, n) -> *T` (pointer arithmetic)
+ *   - `#ptrDiff(p1, p2) -> int64` (distance in elements)
+ *
+ * **Valid contexts for `PtrTypeAST`:**
+ *   - `@extern`-decorated declarations
+ *   - Input/output types of pointer‑related intrinsics
+ *   - Variables/parameters holding values returned by `@extern` / intrinsics
+ */
 struct PtrTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::PtrType;
 
-    TypePtr inner;  // the pointed-to type
+    TypePtr inner;   ///< The pointed‑to type
 
     explicit PtrTypeAST(TypePtr t)
         : TypeAST(ASTKind::PtrType), inner(std::move(t)) {}
@@ -306,60 +339,105 @@ struct PtrTypeAST : TypeAST {
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// FuncSignature
-//
-// Plain data — not a BaseAST, not visited.
-// Holds the signature data shared by FuncTypeAST and declarations.
-// ─────────────────────────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+// FUNCTION SIGNATURE
+// ═════════════════════════════════════════════════════════════════════════════
+
+/**
+ * @brief Stores function signature data using flat arrays for cache efficiency.
+ *
+ * Parameter groups (currying) are stored as flattened arrays:
+ *   - `allParams`  – flattened list of all parameters across all groups
+ *   - `groupSizes` – size of each group (sum equals `allParams.size()`)
+ *
+ * @example
+ *   (a int)(b int)(c int) → allParams = [a, b, c], groupSizes = [1, 1, 1]
+ *   (x int, y int)        → allParams = [x, y],    groupSizes = [2]
+ *
+ * Qualifiers (`~async`, `~nullable`, `~parallel`) are part of the function
+ * type for `~async` and `~nullable` – they affect type identity.
+ * `~parallel` does not affect type identity.
+ */
 struct FuncSignature {
-    std::vector<std::vector<ASTPtr<ParamAST>>> paramGroups;
-    std::vector<TypePtr> returnTypes;
-    uint32_t qualifiers = 0;
-    std::vector<InternedString> rawQualifiers;
+    ArenaSpan<ParamPtr> allParams;          ///< Flattened parameters across all groups
+    ArenaSpan<size_t>   groupSizes;         ///< Size of each curry group
+
+    ArenaSpan<TypePtr>  returnTypes;        ///< Return types (empty = void)
+
+    uint32_t qualifiers = 0;                ///< `QualifierBits` flags
+    ArenaSpan<InternedString> rawQualifiers; ///< Source qualifier strings (for error messages)
 
     FuncSignature() = default;
-    // Delete copy operations (unique_ptr cannot be copied)
+
+    // Copy disabled (ArenaSpan is trivially copyable, but ownership semantics are explicit)
     FuncSignature(const FuncSignature&) = delete;
     FuncSignature& operator=(const FuncSignature&) = delete;
-    // Allow move operations (they will move the vectors)
+
+    // Move enabled
     FuncSignature(FuncSignature&&) = default;
     FuncSignature& operator=(FuncSignature&&) = default;
 
+    /// Check if a specific qualifier bit is set
     bool hasQualifier(uint32_t bit) const { return (qualifiers & bit) != 0; }
+
+    /// True if the function is marked `~async`
     bool isAsync()    const { return hasQualifier(QualifierBits::Async); }
+
+    /// True if the function is marked `~parallel` (implementation attribute)
     bool isParallel() const { return hasQualifier(QualifierBits::Parallel); }
+
+    /// True if the function binding is `~nullable`
     bool isNullable() const { return hasQualifier(QualifierBits::Nullable); }
 
-    bool hasParams()  const {
-        for (const auto& group : paramGroups) {
-            if (!group.empty()) return true;
+    /// True if the function has any parameters (across all groups)
+    bool hasParams() const { return !allParams.empty(); }
+
+    /// Total number of parameters across all groups
+    size_t totalParamCount() const { return allParams.size(); }
+
+    /// Number of curry groups
+    size_t groupCount() const { return groupSizes.size(); }
+
+    /**
+     * @brief Get a specific parameter group as a span.
+     * @param idx Group index (0‑based)
+     * @return ArenaSpan containing the parameters in that group, or empty if index is out of range
+     */
+    ArenaSpan<ParamPtr> getGroup(size_t idx) const {
+        if (idx >= groupSizes.size()) return {};
+
+        size_t offset = 0;
+        for (size_t i = 0; i < idx; ++i) {
+            offset += groupSizes[i];
         }
-        return false;
-    }
-    size_t totalParamCount() const {
-        size_t count = 0;
-        for (const auto& group : paramGroups) {
-            count += group.size();
-        }
-        return count;
+        return ArenaSpan<ParamPtr>(allParams.data() + offset, groupSizes[idx]);
     }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// FuncTypeAST
-//
-// THE UNIFIED FUNCTION TYPE NODE
-//
-// Used for function TYPES in annotations (e.g., let callback (int) string).
-// Declarations now embed FuncSignature directly to avoid the "embedded node" problem.
-// ─────────────────────────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+// FUNCTION TYPE
+// ═════════════════════════════════════════════════════════════════════════════
+
+/**
+ * @brief Represents a function type (e.g., in a type annotation).
+ *
+ * @example
+ *   let callback (int) -> string = ...
+ *
+ * This node is used for function **types** in annotations. Declarations
+ * (`FuncDeclAST`, `MethodDeclAST`, etc.) embed `FuncSignature` directly
+ * to avoid an extra level of indirection.
+ *
+ * Function types include qualifiers (`~async`, `~nullable`) as part of the
+ * type identity. `~parallel` is an implementation attribute and does not
+ * affect type identity.
+ */
 struct FuncTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::FuncType;
-    
-    FuncSignature sig;
-    
+
+    FuncSignature sig;   ///< The function signature (params, returns, qualifiers)
+
     explicit FuncTypeAST() : TypeAST(ASTKind::FuncType) {}
-    
+
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };

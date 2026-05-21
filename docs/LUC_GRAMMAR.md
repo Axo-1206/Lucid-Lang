@@ -999,6 +999,10 @@ let f (a int) -> Transform? = { ... }
 let f (a int) -> ~nullable (b int) -> int
 ```
 
+> [!NOTE]
+> The left‑hand side of `:` can be **any expression** – a literal, variable, function call,
+> parenthesized expression, etc. The method is looked up on the static type of that expression.
+
 ---
 
 ## Struct Declaration
@@ -1074,8 +1078,8 @@ origin.x = 5.0               -- write (only valid if origin is 'let')
 ## Member Access
 
 ```
-member_access   := expr '.' IDENTIFIER        -- data member
-                 | IDENTIFIER ':' IDENTIFIER  -- behavior member (impl)
+member_access   := expr '.' IDENTIFIER        -- data field
+                 | expr ':' IDENTIFIER        -- method call (impl)
 ```
 
 - `.` — data field access. Reassignable if the containing variable is `let`.
@@ -1084,9 +1088,9 @@ member_access   := expr '.' IDENTIFIER        -- data member
 ```luc
 v.x                 -- read field
 v.x = 5.0           -- write field (let only)
-Vec2:normalize      -- function reference to normalize from Vec2's impl
-Vec2:length         -- function reference to length from Vec2's impl
-Vec2:length = ..    -- ERROR: impl methods cannot be reassigned
+v:normalize         -- function reference to normalize from Vec2's impl
+v:length            -- function reference to length from Vec2's impl
+v:length = ..       -- ERROR: impl methods cannot be reassigned
 ```
 
 ---
@@ -1172,7 +1176,7 @@ Rules:
 - No field declarations — method signatures only
 - No default implementations
 - A struct satisfies a trait by declaring `impl StructName : TraitName { ... }`
-- The impl block must provide every method in the trait
+- The impl declaration must provide every method in the trait
 - No function overloading — each method name must be unique
 
 ```luc
@@ -1197,14 +1201,21 @@ pub trait AsyncFetcher {
 
 ---
 
-## Impl Block
+## Impl Declaration
 
 ```
-impl_decl       := [ visibility_mod ] 'impl' type_name
-                    [ 'as' IDENTIFIER ]                -- optional alias (default = 'self')
-                    [ generic_params ] [ ':' trait_ref ] '{' { method_decl } '}'
+impl_decl       := [ visibility_mod ] 'impl' impl_target
+                    [ impl_generic_params ]
+                    [ 'as' IDENTIFIER ]
+                    [ ':' trait_ref ]
+                    '{' { method_decl } '}'
 
-visibility_mod  := 'pub' | 'export'
+impl_target     := type_name
+                 | primitive_type
+
+impl_generic_params ::= '<' impl_generic_param { ',' impl_generic_param } '>'
+
+impl_generic_param ::= IDENTIFIER [ ':' constraint_list ]
 
 trait_ref       := IDENTIFIER [ generic_args ]
 
@@ -1213,90 +1224,113 @@ method_decl     := IDENTIFIER [ qualifier_list ] param_group { param_group }
 ```
 
 
-| Type            | Can we impl directly? | Should we allow via alias?  | Notes                                     |
-| --------------- | --------------------- | --------------------------- | ----------------------------------------- |
-| Primitive (int) | ❌ No                  | ✅ Yes via type IntOps = int | Primitives have no methods natively       |
-| Struct          | ✅ Yes (direct)        | ✅ Yes (via alias)           | Already works                             |
-| Enum            | ✅ Yes (direct)        | ✅ Yes (via alias)           | Already works                             |
-| Trait           | ❌ No                  | ❌ No                        | Traits are contracts, not implementations |
-| Function type   | ❌ No (no name)        | ✅ Yes via alias             | Structural types need naming              |
-| Array type      | ❌ No (structural)     | ✅ Yes via alias             | type IntArray = []int                     |
-Type alias itself	✅ Yes (direct)	N/A	Alias is the named target
+## Impl Target Rules
 
-Rules:
-- `impl` can be attached to **any named type**:
-  - Structs (direct or via alias)
-  - Enums (direct or via alias)
-  - Type aliases (including those aliasing primitives, function types, arrays)
-- The type must be declared in the current scope (or an outer scope).
-- The impl block can only be written after the type declaration.
-- For function types and other structural types, a type alias **must** be used as the target.
-- Multiple impl blocks for the same named type merge at semantic time.
-- `export impl` — methods callable externally
-- `pub impl` — methods callable within the package
-- `impl` — methods callable only within the file
-- If the `as IDENTIFIER` clause is omitted, the receiver is implicitly named `self` inside the block.
-- `self` is not a reserved keyword in general Luc; it is only treated specially inside `impl` method bodies (like `self.x` refers to the receiver's field `x`). Outside of an `impl` block, `self` can be used as a normal identifier.
-- The receiver alias (explicit or implicit) is in scope for every method body inside the `impl` block. It is a read‑only reference to the instance on which the method was called.
-- Generic parameters follow the type name, not the alias.
+| Target type                                              | Allowed directly? | Example                                         |
+| -------------------------------------------------------- | ----------------- | ----------------------------------------------- |
+| **Primitive** (`int`, `float`, `string`, `bool`, `char`) | ✅ Yes             | `impl int { isEven () -> bool = { … } }`        |
+| **Struct**                                               | ✅ Yes             | `impl Vec2 { length () -> float = { … } }`      |
+| **Enum**                                                 | ✅ Yes             | `impl Direction { isNorth () -> bool = { … } }` |
+| **Type alias**                                           | ✅ Yes             | `type IntArray = []int; impl IntArray { … }`    |
+| **Array type** (`[]T`, `[*]T`, `[N]T`)                   | ❌ No              | Must be wrapped in a type alias first           |
+| **Function type**                                        | ❌ No              | Must be wrapped in a type alias first           |
+| **Trait**                                                | ❌ No              | Traits are contracts, not implementations       |
 
-### Examples
+### Generic Parameters on Impl Declarations
+
+An `impl` block may declare generic parameters **only when the target type is generic** (a generic struct or a generic type alias). The number of generic parameters **must match** the arity of the target type. The parameter names are independent; they bind to the target’s type parameters positionally.
+
+| Type                     | Can we impl directly? | Generic impl allowed?   | Notes                                         |
+| ------------------------ | --------------------- | ----------------------- | --------------------------------------------- |
+| Primitive (`int`, …)     | ✅ Yes                 | ❌ No                    | No generics on primitives                     |
+| Enum                     | ✅ Yes                 | ❌ No                    | Enums are not generic in Luc                  |
+| Struct (non‑generic)     | ✅ Yes                 | ❌ No                    |                                               |
+| Struct (generic)         | ✅ Yes                 | ✅ Yes, arity must match | `struct Box<T>` → `impl Box<T>`               |
+| Type alias (non‑generic) | ✅ Yes                 | ❌ No                    |                                               |
+| Type alias (generic)     | ✅ Yes                 | ✅ Yes, arity must match | `type Pair<K,V>` → `impl Pair<K,V>`           |
+| Array type               | ❌ No (needs alias)    | N/A                     | Use `type IntArray = []int` then impl         |
+| Function type            | ❌ No (needs alias)    | N/A                     | Use `type Callback = (int) -> bool` then impl |
+| Trait                    | ❌ No                  | N/A                     | Traits are contracts, not implementations     |
+
+#### Examples
 
 ```luc
--- Direct impl on struct
-pub impl Vec2 {
-    length () -> float = { return #sqrt(x*x + y*y) }
+-- Valid: generic struct with matching generic impl
+struct Box<T> { value T }
+
+impl Box<T> {
+    get () -> T = { return self.value }
 }
 
--- Direct impl on enum
-impl Direction {
-    isNorth () -> bool = { return self == Direction.North }
+-- Valid: generic type alias with matching generic impl
+type Result<T, E> = struct { ok T?, err E? }
+
+impl Result<T, E> {
+    isOk () -> bool = { return self.ok != nil }
 }
 
--- Impl on primitive via type alias
-type IntOps = int
-impl IntOps {
-    isEven () -> bool = { return self % 2 == 0 }
-}
+-- Invalid: primitive cannot have generics
+impl int<T> { ... }   -- ERROR
 
--- Impl on function type via alias
-type Callback = (event Event) -> bool
-impl Callback {
-    andThen (next Callback) -> Callback = { ... }
-}
+-- Invalid: enum cannot have generics
+impl Enum<T> { ... }   -- ERROR
 
--- Impl on array type via alias
-type IntSlice = []int
-impl IntSlice {
-    sum () -> int = {
-        let s int = 0
-        for v in self { s += v }
-        return s
-    }
-}
+-- Invalid: non‑generic struct cannot have generics
+struct Vec2 { x float, y float }
+impl Vec2<T> { ... }  -- ERROR
 
--- Implicit self (default)
+-- Invalid: arity mismatch
+struct Pair<A, B> { first A, second B }
+impl Pair<X> { ... }  -- ERROR: needs 2 parameters, got 1
+
+
+-- example with custom name alias
+
+-- No alias, no generics, no trait
 impl Vec2 {
     length () -> float = { return #sqrt(self.x*self.x + self.y*self.y) }
 }
 
--- Explicit receiver alias 'v'
-impl Vec2 as v {
-    length () -> float = { return #sqrt(v.x*v.x + v.y*v.y) }
+-- With generics, no alias
+impl Box<T> {
+    get () -> T = { return self.value }
 }
 
--- With generic parameters
-impl Wrapper<T> as w {
-    get () -> T = { return w.value }
+-- With generics and alias
+impl Box<T> as b {
+    get () -> T = { return b.value }
+}
+
+-- With alias and trait conformance
+impl Circle as c : Drawable {
+    draw () { c:render() }
+}
+
+-- Primitive with alias
+impl int as i {
+    isEven () -> bool = { return i % 2 == 0 }
 }
 ```
 
----
+When the target type is generic but the impl declaration omits generic parameters, the impl declaration applies to all instantiations of that generic type (monomorphization will generate code per instantiation).
+
+```luc
+-- Impl applies to Box<T> for any T
+impl Box {
+    get () -> T = { return self.value }   -- ERROR: T unknown
+}-- Invalid: primitive cannot have generics
+impl int<T> { ... }   -- ERROR
+
+-- Must declare generic parameters to use them in method signatures
+impl Box<T> {
+    get () -> T = { return self.value }   -- OK
+}
+```
 
 ## From Declaration
 
 ```
-from_block      := [ visibility_mod ] 'from' type_name [ generic_params ] '{' { from_entry } '}'
+from_decl       := [ visibility_mod ] 'from' type_name [ generic_params ] '{' { from_entry } '}'
 
 from_entry := param_group { param_group } '->' type '=' func_body
 -- source param(s), target type name, body
@@ -1304,7 +1338,7 @@ from_entry := param_group { param_group } '->' type '=' func_body
 ```
 
 > [!NOTE]
-> Local usage: From blocks can be declared inside any block. When local, visibility_mod must be omitted.
+> Local usage: from declarations can be declared inside any block. When local, visibility_mod must be omitted.
 
 
 A `from` block defines implicit conversions from a source type (described by the parameter groups) to a target type. The target type can be **any type** (primitive, struct, enum, or named type alias), not just structs.
@@ -1322,7 +1356,7 @@ The target type in a `from` block can be:
 
 ### Rules
 
-A from block defines implicit conversions from a source type (described by the parameter groups) to a target type. Each entry contains:
+A from declaration defines implicit conversions from a source type (described by the parameter groups) to a target type. Each entry contains:
 - One or more parameter groups (currying allowed) – the source value(s).
 - The arrow `->` (mandatory).
 - A single return type – must be the type named in the enclosing from declaration.
@@ -1337,15 +1371,15 @@ A from block defines implicit conversions from a source type (described by the p
   - Array type (via alias)
 - For structural types (functions, arrays, slices), a type alias **must** be used.
 - The conversion body must return a value of the target type.
-- From blocks can appear in any scope (standard lexical scoping)
+- From declarations can appear in any scope (standard lexical scoping)
 
 The body must return a value of the target type, typically via a literal, struct literal, or a call to another conversion.
 
 ### Scope and Visibility
 
-From blocks can appear in **any scope** (top-level or local) and are visible following standard lexical scoping rules:
-- A from block is visible in the scope where it is declared and all nested scopes.
-- Multiple from blocks for the same target type are allowed in different scopes.
+From declarations can appear in **any scope** (top-level or local) and are visible following standard lexical scoping rules:
+- A from declaration is visible in the scope where it is declared and all nested scopes.
+- Multiple from declarations for the same target type are allowed in different scopes.
 - When looking for a conversion, the compiler searches from the innermost scope outward, using the first matching conversion found.
 
 ### Implicit casting contexts
@@ -1398,7 +1432,7 @@ from Direction {
     }
 }
 
--- Generic from block (target is a generic struct)
+-- Generic from declaration (target is a generic struct)
 struct Wrapper<T> { value T }
 
 from Wrapper<T> {
@@ -1407,7 +1441,7 @@ from Wrapper<T> {
     }
 }
 
--- Local from block (only visible inside this function)
+-- Local from declaration (only visible inside this function)
 let process () -> int = {
     from string {
         (s string) -> int = {
@@ -1415,16 +1449,16 @@ let process () -> int = {
         }
     }
     
-    let x int = "42"  -- Uses the local from block
+    let x int = "42"  -- Uses the local from declaration
     return x
 }
 
 -- Call site examples
 let boiling Celsius    = Celsius { value = 100.0 }
-let hot     Fahrenheit = Fahrenheit(boiling)      -- Uses from block
+let hot     Fahrenheit = Fahrenheit(boiling)      -- Uses from declaration
 let temp    int        = int("123")               -- Uses from int block
 let dir     Direction  = Direction("north")       -- Uses from Direction block
-let wrapped Wrapper<int> = Wrapper<int>(42)       -- Uses generic from block
+let wrapped Wrapper<int> = Wrapper<int>(42)       -- Uses generic from declaration
 
 -- Direct from on struct
 export from Fahrenheit {
@@ -1452,10 +1486,10 @@ from IntSlice {
 ```
 
 > [!NOTE]
-> - From blocks are scope‑based – they are only considered for conversions if they are visible in the current scope.
+> - From declarations are scope‑based – they are only considered for conversions if they are visible in the current scope.
 > - The compiler does not chain conversions (e.g., A → B → C). Only a single direct conversion is applied.
-> - Explicit casts using `T(value)` syntax will also use the same from block lookup.
-> - If multiple visible from blocks provide a conversion from the same source to the same target with the same signature, the nearest (innermost scope) wins; ambiguous conversions produce a compile error.
+> - Explicit casts using `T(value)` syntax will also use the same from declaration lookup.
+> - If multiple visible from declarations provide a conversion from the same source to the same target with the same signature, the nearest (innermost scope) wins; ambiguous conversions produce a compile error.
 
 ---
 
@@ -1469,8 +1503,8 @@ pipeline_expr   := pipeline_seed { '|>' pipeline_step }
 pipeline_seed   := expr
 
 pipeline_step   := IDENTIFIER
-                 | IDENTIFIER ':' IDENTIFIER           -- impl method: Vec2:normalize
-                 | IDENTIFIER '.' IDENTIFIER           -- non-nullable data field
+                 | expr ':' IDENTIFIER                 -- method call on value
+                 | IDENTIFIER '.' IDENTIFIER           -- non‑nullable data field
                  | IDENTIFIER '(' arg_list ')' '!'     -- argument pack
                  | anon_func
 ```
@@ -1550,8 +1584,8 @@ type of the left must exactly match the input type of the right.
 compose_expr    := pipeline_expr { '+>' compose_operand }
 
 compose_operand := IDENTIFIER
-                 | IDENTIFIER ':' IDENTIFIER    -- impl method
-                 | IDENTIFIER '.' IDENTIFIER    -- non-nullable data field only
+                 | expr ':' IDENTIFIER          -- method reference on a value
+                 | expr '.' IDENTIFIER          -- non‑nullable data field only
 ```
 
 ```luc

@@ -1,14 +1,26 @@
 /**
  * @file DeclAST.hpp
  *
- * @responsibility Defines nodes that create new entities (Functions, Structs, Variables).
+ * @responsibility Defines AST nodes for declarations – entities that introduce
+ *                 new names into a scope (functions, structs, variables, etc.).
  *
- * @hierarchy BaseAST -> DeclAST -> [Concrete Nodes]
+ * @hierarchy BaseAST → DeclAST → [Concrete Decl Nodes]
  *
  * @related_files
+ *   - src/parser/ParserDecl.cpp – primary producer of these nodes
+ *   - src/semantic/SemanticCollector.cpp – consumes for symbol table population
+ *   - src/semantic/TypeResolver.cpp – resolves types and generic parameters
  *
- *   - src/parser/ParserDecl.cpp (The primary producer)
- *   - src/semantic/ (The primary consumer for symbol table population)
+ * @note Doc comments and attributes are stored in the DeclAST base class,
+ *       not in every BaseAST node. This matches the grammar and reduces
+ *       memory footprint for non‑declaration nodes.
+ *
+ * @grammar (from LUC_GRAMMAR.md)
+ *   from_decl    := visibility? 'from' type_path generic_params?
+ *                    '{' from_entry* '}'
+ *   from_entry   := param_group+ '->' type_path '=' func_body
+ *   impl_decl    := visibility? 'impl' type_path generic_params?
+ *                    (':' type_path)? '{' (method_decl)* '}'
  */
 
 #pragma once
@@ -18,68 +30,86 @@
 
 #include <memory>
 #include <optional>
-#include <string>
-#include <vector>
+#include <unordered_map>
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Visibility — the three visibility tiers for declarations.
-//   Private — visible only within the file (default)
-//   Package — visible to the entire package (Visibility)
-//   Export  — visible to external consumers (export)
+// Visibility – three visibility tiers for declarations.
 // ─────────────────────────────────────────────────────────────────────────────
 
-enum class Visibility { 
+/**
+ * @brief Controls the visibility of a declaration across file/package boundaries.
+ *
+ * - Private: visible only within the current file (default).
+ * - Package: visible to the entire package (module).
+ * - Export:  visible to external consumers (public API).
+ */
+enum class Visibility {
     Private,
     Package,
-    Export 
+    Export
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DeclKeyword — the three variable / function declaration keywords.
-// Stored on VarDeclAST and FuncDeclAST so the semantic pass can enforce
-// reassignability and nil rules without touching TokenType.
+// DeclKeyword – declaration keyword for variables and functions.
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * @brief Distinguishes `let` (mutable) from `const` (immutable) declarations.
+ *
+ * Stored on VarDeclAST and FuncDeclAST so the semantic pass can enforce
+ * reassignability and nil rules without inspecting token types.
+ */
 enum class DeclKeyword {
     Let,   // reassignable, mutable in place, nil allowed
     Const, // not reassignable, not mutable in place, nil allowed
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PackageDeclAST
-//
-// The first non-comment line of every .luc file.
-//   package math
-//
-// Exactly one per file — the parser enforces this. ProgramAST stores the
-// package name as a plain string; this node carries the source location for
-// error reporting when the name mismatches the directory.
+// PackageDeclAST – the `package` declaration at the start of every file.
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @brief Represents `package name` – the first non‑comment line of every .luc file.
+ *
+ * Exactly one per file; the parser enforces this. ProgramAST also stores the
+ * package name, but this node provides source location for error reporting
+ * when the name mismatches the directory structure.
+ *
+ * @example
+ *   package math
+ */
 struct PackageDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::PackageDecl;
 
-    InternedString name; // "math", "renderer", "app", ...
+    InternedString name;   // "math", "renderer", "app", etc.
 
-    explicit PackageDeclAST(InternedString n) : DeclAST(ASTKind::PackageDecl), name(n) {}
+    explicit PackageDeclAST(InternedString n)
+        : DeclAST(ASTKind::PackageDecl), name(n) {}
+
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// UseDeclAST
-//
-// Imports a module path into the current file, with an optional local alias.
-//   use math.vec2           →  path = ["math","vec2"],  alias = nullopt
-//   use math as m           →  path = ["math"],         alias = "m"
-//   use renderer.types      →  path = ["renderer","types"]
-//
-// path stores the segments split on '.'. The semantic pass joins them back
-// when resolving against the package root.
+// UseDeclAST – imports a module path with optional alias.
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @brief Represents a `use` declaration – imports symbols from another module.
+ *
+ * @example
+ *   use math.vec2           → path = ["math","vec2"], alias = nullopt
+ *   use math as m           → path = ["math"],        alias = "m"
+ *   use renderer.types      → path = ["renderer","types"]
+ *
+ * Path segments are split on '.'. The semantic pass joins them back when
+ * resolving against the package root. The alias, if present, becomes the
+ * name by which the imported module is referenced.
+ */
 struct UseDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::UseDecl;
 
-    std::vector<InternedString> path;    // e.g. ["math", "vec2"]
-    std::optional<InternedString> alias; // present when `as IDENTIFIER` was written
+    ArenaSpan<InternedString> path;              // e.g., ["math", "vec2"]
+    std::optional<InternedString> alias;         // present when `as IDENT` was written
     Visibility visibility = Visibility::Private;
 
     UseDeclAST() : DeclAST(ASTKind::UseDecl) {}
@@ -87,26 +117,28 @@ struct UseDeclAST : DeclAST {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// VarDeclAST
-//
-// A variable declaration — let or const.
-//   let   count int     = 0
-//   const PI    float   = 3.14159
-//   const MAX   int     = 65536
-//   let   name  string? = nil
-//
-// Type annotation is always required in Luc — type is never null here.
-// init is null when no initialiser was written (valid for let, invalid for
-// const — the semantic pass enforces that const always has an initialiser).
-// visibility tracks the visibility modifier when used at top level.
+// VarDeclAST – variable declaration (let or const).
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @brief Represents a variable declaration with an explicit type annotation.
+ *
+ * @example
+ *   let   count int     = 0
+ *   const PI    float   = 3.14159
+ *   let   name  string? = nil
+ *
+ * Type annotation is always required in Luc – `type` is never null.
+ * `init` is null when no initialiser was written (valid for `let` only;
+ * `const` must always have an initialiser – enforced by semantic pass).
+ */
 struct VarDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::VarDecl;
 
-    DeclKeyword keyword; // Let / Const
+    DeclKeyword keyword;           // Let or Const
     InternedString name;
-    TypePtr type;        // always present — annotation is required
-    ExprPtr init;        // nullptr if no initialiser was written
+    TypePtr type;                  // always present
+    ExprPtr init;                  // nullptr if no initialiser
     Visibility visibility = Visibility::Private;
 
     VarDeclAST() : DeclAST(ASTKind::VarDecl) {}
@@ -114,77 +146,37 @@ struct VarDeclAST : DeclAST {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GenericParamAST
-//
-// A single generic type parameter on a declaration.
-//   T                              →  unconstrained
-//   T : Drawable                   →  single constraint
-//   T : Drawable + Hashable        →  multiple constraints (stored as a list)
-//   K : Hashable + Comparable, V   →  two separate GenericParamASTs
-//
-// constraints stores the trait names as plain strings — the semantic pass
-// resolves each name to a TraitDeclAST in the symbol table.
+// FuncDeclAST – function declaration (top‑level or local).
 // ─────────────────────────────────────────────────────────────────────────────
-struct GenericParamAST : BaseAST {
-    static constexpr ASTKind staticKind = ASTKind::GenericParam;
 
-    InternedString name;                     // "T", "K", "V"
-    std::vector<InternedString> constraints; // trait names — empty if unconstrained
-
-    explicit GenericParamAST(InternedString n) : BaseAST(ASTKind::GenericParam), name(n) {}
-    void accept(ASTVisitor& v) override { v.visit(*this); }
-};
-
-struct ParamAST : BaseAST {
-    static constexpr ASTKind staticKind = ASTKind::Param;
-
-    InternedString name;
-    TypePtr     type;
-    bool        isVariadic = false;
-
-    ParamAST() : BaseAST(ASTKind::Param) {}
-    void accept(ASTVisitor& v) override { v.visit(*this); }
-};
-
-using ParamPtr   = ASTPtr<ParamAST>;
-using ParamGroup = std::vector<ParamPtr>;
-
-using GenericParamPtr = ASTPtr<GenericParamAST>;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// FuncDeclAST
-//
-// A function declaration — may appear at top‑level or inside any block.
-//   let add (a int) (b int) int = { return a + b }
-//   let fetch ~async (url string) -> string = { return await httpGet(url) }
-//   @extern("printf") const printf (fmt *uint8, args ...any) -> int   // no body
-//
-// The function's complete signature (parameters, return types, qualifiers)
-// is stored in the `sig` field (FuncSignature). The body is always a
-// BlockStmtAST (the parser desugars expression bodies into `return expr`).
-//
-// Visibility (pub/export) is only meaningful at top‑level; inside blocks,
-// the parser forces Visibility::Private.
-//
-// Attributes (e.g., @extern, @inline) are stored in BaseAST::attributes.
-//
-// For local function declarations (inside a block), the function is scoped
-// to that block and cannot be accessed outside.
-// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * @brief Represents a function declaration.
+ *
+ * @example
+ *   let add (a int) (b int) int = { return a + b }
+ *   let fetch ~async (url string) -> string = { return await httpGet(url) }
+ *   @extern("printf") const printf (fmt *uint8, args ...any) -> int
+ *
+ * The function signature (parameter groups, return types, qualifiers) is
+ * stored in the `sig` field (FuncSignature). The body is always a BlockStmtAST
+ * (the parser desugars expression bodies into `return expr`).
+ *
+ * Visibility is only meaningful at top‑level; inside blocks, the parser forces
+ * Private. Attributes (e.g., @extern, @inline) are stored in DeclAST::attributes.
+ */
 struct FuncDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::FuncDecl;
 
     DeclKeyword keyword;
     InternedString name;
-    std::vector<GenericParamPtr> genericParams;
-    FuncSignature sig;
-    StmtPtr body;                                   // always BlockStmtAST
+    ArenaSpan<GenericParamPtr> genericParams;   // empty if non‑generic
+    FuncSignature sig;                          // parameters, returns, qualifiers
+    StmtPtr body;                               // always BlockStmtAST
     Visibility visibility = Visibility::Private;
 
-    // Convenience helpers
-    bool isAsync() const { return sig.isAsync(); }
+    bool isAsync()   const { return sig.isAsync(); }
     bool hasParams() const { return sig.hasParams(); }
-    
+
     FuncDeclAST() : DeclAST(ASTKind::FuncDecl) {}
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
@@ -192,22 +184,26 @@ struct FuncDeclAST : DeclAST {
 using FuncDeclPtr = ASTPtr<FuncDeclAST>;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FieldDeclAST
-//
-// A single field inside a struct body.
-//   x     float           →  name="x",  type=Float,  defaultVal=nullptr
-//   r     float = 1.0     →  name="r",  type=Float, defaultVal=LiteralExpr(1.0)
-//   items [*]string       →  name="items", type=DynamicArray(String)
-//
-// defaultVal is null when no default was written. The semantic pass enforces
-// that struct literals must supply every field without a default.
+// FieldDeclAST – a single field inside a struct body.
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @brief Represents a struct field, optionally with a default value.
+ *
+ * @example
+ *   x     float           → defaultVal = nullptr
+ *   r     float = 1.0     → defaultVal = literal 1.0
+ *   items [*]string       → type = DynamicArray(String)
+ *
+ * The semantic pass enforces that struct literals must supply every field
+ * that lacks a default value.
+ */
 struct FieldDeclAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::FieldDecl;
 
     InternedString name;
     TypePtr type;
-    ExprPtr defaultVal; // nullptr if no default
+    ExprPtr defaultVal;   // nullptr if no default was written
 
     FieldDeclAST() : BaseAST(ASTKind::FieldDecl) {}
     void accept(ASTVisitor& v) override { v.visit(*this); }
@@ -216,63 +212,40 @@ struct FieldDeclAST : BaseAST {
 using FieldDeclPtr = ASTPtr<FieldDeclAST>;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// StructDeclAST
-//
-// A struct type declaration.
-//   Visibility struct Vec2 { x float  y float }
-//   struct Scene<T : Drawable> { objects []T }
-//   struct Cache<K : Hashable + Comparable, V> { keys []K  values []V }
-//
-// Impl blocks are separate top-level declarations (ImplDeclAST) — the struct
-// itself only holds its fields and generic params.
-//
+// StructDeclAST – a struct type declaration.
 // ─────────────────────────────────────────────────────────────────────────────
-// !!! read this, this bug is very hard to fix !!!
-// selfType field (Semantic Phase):
-//   During Phase 1 (SemanticCollector), each struct declaration needs a type
-//   representation in the symbol table so that:
-//   (1) Struct literal expressions can return a type: `Point { x = 1 y = 2 }`
-//   (2) Variable assignments can match the struct type: `let p Point = ...`
-//   (3) Type checkers can compare struct types for compatibility
-//
-//   The selfType is a NamedTypeAST synthesized on-demand that represents
-//   the struct itself as a type (e.g., struct name "Point" becomes a type).
-//
-// Why 'mutable' and 'unique_ptr':
-//   - mutable: Allows lazy initialization from within const contexts
-//     (e.g., during visitor traversal where the AST is const).
-//     The field is logically part of semantic-phase bookkeeping, not the
-//     declaration itself, so mutability is appropriate.
-//
-//   - unique_ptr: Provides stable ownership of the synthesized NamedTypeAST.
-//     The Symbol table stores a raw pointer to selfType.get(), which remains
-//     valid for the lifetime of this StructDeclAST. Using unique_ptr ensures
-//     the allocation is cleaned up when the struct declaration is destroyed.
-//
-// Initialization:
-//   - Created lazily in SemanticCollector::visit(StructDeclAST&)
-//   - Once created, remains constant for the semantic pass
-//   - Stored in Symbol::type when declaring the struct symbol
-// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @brief Represents a struct definition with fields and optional generic parameters.
+ *
+ * @example
+ *   struct Vec2 { x float, y float }
+ *   struct Scene<T : Drawable> { objects []T }
+ *
+ * Impl blocks are separate top‑level declarations (ImplDeclAST). The struct
+ * itself only holds its fields and generic params.
+ *
+ * ## Self‑Type (Semantic Cache)
+ *
+ * During semantic analysis, each struct needs a NamedTypeAST representing
+ * itself as a type (e.g., "Point" as a type). This is stored in `selfType`
+ * and initialized lazily by SemanticCollector.
+ *
+ * Why mutable and ASTPtr:
+ *   - `mutable`: allows lazy initialisation from const contexts (visitors)
+ *   - `ASTPtr`: provides stable ownership; the symbol table stores a raw
+ *               pointer to selfType.get(), valid for the struct's lifetime
+ */
 struct StructDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::StructDecl;
 
     InternedString name;
-    std::vector<GenericParamPtr> genericParams; // empty if non-generic
-    std::vector<FieldDeclPtr> fields;
+    ArenaSpan<GenericParamPtr> genericParams;   // empty if non‑generic
+    ArenaSpan<FieldDeclPtr> fields;
     Visibility visibility = Visibility::Private;
-    
-    // SEMANTIC PHASE (Phase 1+): A synthesized NamedTypeAST representing
-    // the struct as a type. Initialized by SemanticCollector, then stored
-    // as the symbol's type in the symbol table. Enables:
-    //   - struct literal type resolution (checkStructLiteralExpr returns this)
-    //   - variable-to-struct type assignments (checkVarDecl type matching)
-    //   - struct type identity in the type system
-    //
-    // Why NOT initialized in constructor:
-    //   - Would require TypeAST allocation on every struct, even in early parse phases
-    //   - The name is a string, not known until after parsing
-    //   - Lazy initialization (first access by SemanticCollector) is efficient
+
+    // Semantic cache: self‑type representing this struct as a type.
+    // Initialized lazily by SemanticCollector.
     mutable ASTPtr<NamedTypeAST> selfType;
 
     StructDeclAST() : DeclAST(ASTKind::StructDecl) {}
@@ -280,47 +253,57 @@ struct StructDeclAST : DeclAST {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// EnumVariantAST
-//
-// A single named constant inside an enum.
-//   North         →  name="North",  explicitValue=nullopt   (auto-assigned)
-//   Vertex = 0x01 →  name="Vertex", explicitValue=1
-//
-// explicitValue is nullopt when nothing was written after the name.
-// The semantic pass computes the final integer value for every variant:
-//   - auto starts at 0, increments by 1 from the previous variant
-//   - explicit value resets the counter from that point
-// Duplicate values within the same enum are a semantic error.
+// EnumVariantAST – a single named constant inside an enum.
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @brief Represents one variant of an enum, optionally with an explicit value.
+ *
+ * @example
+ *   North         → explicitValue = nullopt (auto‑assigned)
+ *   Vertex = 0x01 → explicitValue = 1
+ *
+ * The semantic pass computes final integer values:
+ *   - Auto variants start at 0, increment by 1
+ *   - Explicit values reset the counter
+ * Duplicate values within the same enum are a semantic error.
+ */
 struct EnumVariantAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::EnumVariant;
 
     InternedString name;
-    std::optional<int64_t> explicitValue; 
+    std::optional<int64_t> explicitValue;
 
-    explicit EnumVariantAST(InternedString n) : BaseAST(ASTKind::EnumVariant), name(n) {}
+    explicit EnumVariantAST(InternedString n)
+        : BaseAST(ASTKind::EnumVariant), name(n) {}
+
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
 
 using EnumVariantPtr = ASTPtr<EnumVariantAST>;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// EnumDeclAST
-//
-// A named, closed set of integer-backed constants.
-//   Visibility enum Direction { North  South  East  West }
-//   Visibility enum ShaderStage { Vertex = 0x01  Fragment = 0x02  Compute = 0x04 }
-//
-// The semantic pass chooses the backing integer type:
-//   - byte  (int8)  for ≤ 255 variants
-//   - short (int16) for more
-// Variants are accessed via EnumName.Variant dot syntax — never bare names.
+// EnumDeclAST – a named, closed set of integer‑backed constants.
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @brief Represents an enum definition.
+ *
+ * @example
+ *   enum Direction { North, South, East, West }
+ *   enum ShaderStage { Vertex = 0x01, Fragment = 0x02, Compute = 0x04 }
+ *
+ * The semantic pass chooses the backing integer type:
+ *   - `byte`  (int8)  for ≤ 255 variants
+ *   - `short` (int16) for more
+ *
+ * Variants are accessed via `EnumName.Variant` dot syntax – never bare names.
+ */
 struct EnumDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::EnumDecl;
 
     InternedString name;
-    std::vector<EnumVariantPtr> variants;
+    ArenaSpan<EnumVariantPtr> variants;
     Visibility visibility = Visibility::Private;
 
     EnumDeclAST() : DeclAST(ASTKind::EnumDecl) {}
@@ -328,33 +311,29 @@ struct EnumDeclAST : DeclAST {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TraitMethodAST
-//
-// A single method signature inside a trait – no body, no `=`.
-//   draw   ()
-//   bounds () -> Rect
-//   compareTo (other T) -> int
-//   clamp (min int)(max int)(value int) -> int    -- curried method signature
-//
-// paramGroups mirrors FuncSignature: outer vector = curry groups, inner vector = params.
-// Single group = normal method; multiple groups = curried method signature.
-// This node is **not** a MethodDeclAST because it has no body.
-//
-// The semantic pass uses this node when checking that an ImplDeclAST provides
-// every method required by the trait. ReturnTypes may be empty for void methods.
-// Qualifiers (~async, ~nullable, ~parallel) are stored in sig.qualifiers/rawQualifiers.
-//
-// Traits themselves are top‑level only – they cannot be declared locally.
+// TraitMethodAST – a method signature inside a trait (no body).
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @brief Represents a single method signature in a trait declaration.
+ *
+ * @example
+ *   draw ()
+ *   bounds () -> Rect
+ *   compareTo (other T) -> int
+ *   clamp (min int)(max int)(value int) -> int    -- curried
+ *
+ * This node is **not** a MethodDeclAST because it has no body.
+ * The semantic pass uses it to verify that impl provides every required method.
+ */
 struct TraitMethodAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::TraitMethod;
 
     InternedString name;
     FuncSignature sig;
 
-    // Convenience helpers
     bool isAsync() const { return sig.isAsync(); }
-    
+
     TraitMethodAST() : BaseAST(ASTKind::TraitMethod) {}
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
@@ -362,50 +341,55 @@ struct TraitMethodAST : BaseAST {
 using TraitMethodPtr = ASTPtr<TraitMethodAST>;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TraitDeclAST
-//
-// A named method contract – signatures only, no bodies, no fields.
-//   Visibility trait Drawable { draw ()  bounds () -> Rect }
-//   Visibility trait Comparable<T> { compareTo (other T) -> int }
-//
-// Used by the semantic pass to:
-//   - Verify that `impl StructName : TraitName` provides every method.
-//   - Serve as constraints in generic parameter declarations (`T : Drawable`).
-//
-// Traits are **top‑level only** – they cannot be declared inside blocks.
-// This restriction is enforced by the parser (parseDeclaration with
-// DeclContext::Local rejects TRAIT tokens).
+// TraitDeclAST – a named method contract (signatures only).
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @brief Represents a trait – a set of method signatures that types can implement.
+ *
+ * @example
+ *   trait Drawable { draw (), bounds () -> Rect }
+ *   trait Comparable<T> { compareTo (other T) -> int }
+ *
+ * Used by the semantic pass to:
+ *   - Verify that `impl StructName : TraitName` provides every method
+ *   - Serve as constraints in generic parameter declarations (`T : Drawable`)
+ *
+ * Traits are **top‑level only** – cannot be declared inside blocks.
+ */
 struct TraitDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::TraitDecl;
 
     InternedString name;
-    std::vector<GenericParamPtr> genericParams; // empty if non-generic
-    std::vector<TraitMethodPtr> methods;
+    ArenaSpan<GenericParamPtr> genericParams;   // empty if non‑generic
+    ArenaSpan<TraitMethodPtr> methods;
     Visibility visibility = Visibility::Private;
 
     TraitDeclAST() : DeclAST(ASTKind::TraitDecl) {}
-
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TraitRefAST
-//
-// The trait reference in an impl conformance declaration — the ": Drawable"
-// or ": Comparable<int>" part.
-//   : Drawable          →  name="Drawable",    genericArgs={}
-//   : Comparable<int>   →  name="Comparable",  genericArgs=[Int]
-//
-// Now a full BaseAST node with visitor support, allowing the semantic pass
-// to walk impl conformance declarations uniformly.
-// The semantic pass resolves name to a TraitDeclAST and checks that
-// genericArgs count matches the trait's generic params.
+// TraitRefAST – a reference to a trait (with optional generic arguments).
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @brief Represents a trait reference in an impl conformance declaration.
+ *
+ * Grammar: ':' type_path
+ *
+ * @example
+ *   : Drawable          → name="Drawable",    genericArgs={}
+ *   : Comparable<int>   → name="Comparable",  genericArgs=[Int]
+ *
+ * The semantic pass resolves name to a TraitDeclAST and checks that
+ * genericArgs count matches the trait's generic parameters.
+ */
 struct TraitRefAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::TraitRef;
-    InternedString name;                    // trait name, e.g. "Comparable"
-    std::vector<TypePtr> genericArgs;       // concrete args, e.g. [Int] for Comparable<int>
+
+    InternedString name;
+    ArenaSpan<TypePtr> genericArgs;   // concrete type arguments
 
     TraitRefAST() : BaseAST(ASTKind::TraitRef) {}
     void accept(ASTVisitor& v) override { v.visit(*this); }
@@ -414,32 +398,38 @@ struct TraitRefAST : BaseAST {
 using TraitRefPtr = ASTPtr<TraitRefAST>;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MethodDeclAST
-//
-// A method body inside an impl block (top‑level or local impl).
-//   length () -> float = { return #sqrt(x*x + y*y) }
-//   offset ~async (dx float)(dy float) -> Point = { ... }
-//
-// No per‑method visibility prefix – visibility is set at the ImplDeclAST level.
-// The method name is separate from the signature; qualifiers belong to the
-// method binding (e.g., ~async, ~nullable, ~parallel) and are stored in `sig`.
-//
-// The body is always a BlockStmtAST (the parser desugars expression bodies).
-//
-// Methods can appear in impl blocks that are local (inside a function) as well
-// as top‑level impl blocks. The semantic pass resolves the method name against
-// the struct type and checks signature compatibility.
+// MethodDeclAST – a method body inside an impl block.
 // ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MethodDeclAST – a method body inside an impl block.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @brief Represents a method implementation inside an impl block.
+ *
+ * Grammar: func_signature '=' func_body
+ *
+ * @example
+ *   length () -> float = { return #sqrt(self.x*self.x + self.y*self.y) }
+ *   offset ~async (dx float)(dy float) -> Point = { ... }
+ *
+ * Methods are called on values using the colon operator: `value:method(args)`.
+ * Inside the method body, the receiver is accessible via the name `self`
+ * (or a custom alias if `receiverAlias` was specified in the impl block).
+ *
+ * No per‑method visibility – visibility is set at the ImplDeclAST level.
+ * The body is always a BlockStmtAST (the parser desugars expression bodies).
+ */
 struct MethodDeclAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::MethodDecl;
 
     InternedString name;
     FuncSignature sig;
-    StmtPtr body;                                   // always BlockStmtAST
+    StmtPtr body;   // always BlockStmtAST
 
-    // Convenience helpers
     bool isAsync() const { return sig.isAsync(); }
-    
+
     MethodDeclAST() : BaseAST(ASTKind::MethodDecl) {}
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
@@ -447,30 +437,34 @@ struct MethodDeclAST : BaseAST {
 using MethodDeclPtr = ASTPtr<MethodDeclAST>;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FromEntryAST
-//
-// A single conversion entry inside a from block (top‑level or local from).
-//   (c Celsius) -> Fahrenheit = { return Fahrenheit { value = c.value * 9/5 + 32 } }
-//   (c Celsius)(scale float) -> Fahrenheit = { ... }   -- curried
-//
-// Grammar: param_group { param_group } '->' type '=' func_body
-//
-// The parameter groups define the source value(s). The return type (stored in
-// `returnType`) must match the target struct name of the enclosing FromDeclAST.
-// The `->` arrow is mandatory and is consumed by the parser before parsing the
-// return type.
-//
-// From entries can appear in local from blocks (inside a function) as well as
-// top‑level. The semantic pass registers the conversion in the current scope
-// (file or block) and uses it for implicit casting in variable initialisation,
-// function arguments, returns, and assignments.
+// FromEntryAST – a single conversion entry inside a from block.
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @brief Represents one implicit conversion definition in a `from` block.
+ *
+ * Grammar: param_group { param_group } '->' type_path '=' func_body
+ *
+ * @example
+ *   (c Celsius) -> Fahrenheit = { return Fahrenheit { value = c.value * 9/5 + 32 } }
+ *   (c Celsius)(scale float) -> Fahrenheit = { ... }   -- curried form
+ *
+ * The parameter groups define the source type(s). The return type must match
+ * the target type name of the enclosing FromDeclAST.
+ *
+ * The semantic pass registers this conversion in the current scope and uses
+ * it for implicit casting in:
+ *   - variable initialisation
+ *   - function arguments
+ *   - return statements
+ *   - assignments
+ */
 struct FromEntryAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::FromEntry;
 
-    FuncSignature   sig;
-    TypePtr         returnType;                   
-    StmtPtr         body;                               // always BlockStmtAST
+    FuncSignature sig;        // parameter groups (source type shape)
+    TypePtr returnType;       // must match the target type of FromDeclAST
+    StmtPtr body;             // always BlockStmtAST – the conversion logic
 
     FromEntryAST() : BaseAST(ASTKind::FromEntry) {}
     void accept(ASTVisitor& v) override { v.visit(*this); }
@@ -479,81 +473,220 @@ struct FromEntryAST : BaseAST {
 using FromEntryPtr = ASTPtr<FromEntryAST>;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FromDeclAST
-//
-// A type conversion block – defines implicit conversions from a source type
-// to a target struct type. May appear at top‑level or inside any block.
-//
-//   export from Fahrenheit {
-//       (c Celsius) -> Fahrenheit = { return Fahrenheit { value = c.value * 9/5 + 32 } }
-//       (k Kelvin)  -> Fahrenheit = { return Fahrenheit { value = (k.value - 273.15) * 9/5 + 32 } }
-//   }
-//
-//   from Wrapper<T> { (val T) -> Wrapper<T> = { return Wrapper<T> { value = val } } }
-//
-// The target struct type is named by `targetTypeName`. Generic parameters
-// (e.g., <T>) are stored in `genericParams` and are used to instantiate the
-// target type when the conversion is invoked.
-//
-// Visibility (`pub`/`export`) is only meaningful at top‑level; when used
-// locally, the parser forces Visibility::Private and rejects visibility
-// modifiers. Attributes are allowed on from blocks in any context.
-//
-// Multiple from declarations for the same target struct are allowed if they
-// accept different source parameter types.
+// FromDeclAST – defines implicit conversions from one or more source types
+//               to a target type.
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @brief Represents a `from` block – defines implicit conversions to a type.
+ *
+ * Grammar: visibility? 'from' type_path [ generic_params ] '{' from_entry* '}'
+ *
+ * @example
+ *   export from Fahrenheit {
+ *       (c Celsius) -> Fahrenheit = { return Fahrenheit { value = c.value * 9/5 + 32 } }
+ *   }
+ *   from Wrapper<T> {
+ *       (val T) -> Wrapper<T> = { return Wrapper<T> { value = val } }
+ *   }
+ *
+ * The target type is named by `targetType`. Generic parameters (e.g., <T>)
+ * are stored in `genericParams` and are used to instantiate the target type
+ * when the conversion is invoked.
+ *
+ * ## Important Semantic Rules
+ *
+ * 1. **Target Type**: `targetType` must be a struct type (or a type alias
+ *    that resolves to a struct). It cannot be a primitive, trait, or function type.
+ *
+ * 2. **Generic Consistency**: The number of generic parameters on the
+ *    `from` declaration must match the generic arity of the target struct.
+ *    Each generic parameter is a fresh binding, not necessarily the same
+ *    name used in the struct definition (though convention suggests
+ *    consistency).
+ *
+ * 3. **Overload Resolution**: Multiple `from` declarations for the same
+ *    target type are allowed if they accept different source parameter types.
+ *    The semantic pass selects the best match based on argument types.
+ *
+ * 4. **Scoping**: `from` declarations can appear at top‑level (file scope)
+ *    or inside any block (local scope). Local `from` declarations are only
+ *    visible within that block.
+ *
+ * 5. **Visibility**: `pub`/`export` modifiers are only allowed at top‑level.
+ *    The parser rejects visibility modifiers inside blocks.
+ *
+ * 6. **Return Type Matching**: Each `FromEntryAST::returnType` must exactly
+ *    match the `targetType` of the enclosing `FromDeclAST` after substitution
+ *    of generic parameters.
+ *
+ * 7. **One‑way Conversion**: Conversions are **from** the source type **to**
+ *    the target type. There is no automatic reverse conversion – that must
+ *    be defined separately with another `from` block.
+ */
 struct FromDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::FromDecl;
 
     Visibility visibility = Visibility::Private;
-    TypePtr targetType; // e.g., NamedTypeAST("Wrapper") with genericArgs = [ NamedTypeAST("T") ]
-    std::vector<GenericParamPtr> genericParams;  // e.g. <T> in from Unwrapped<T>
-    std::vector<FromEntryPtr> entries;
+    TypePtr targetType;                           // the type being converted to
+    ArenaSpan<GenericParamPtr> genericParams;     // e.g., <T> in from Wrapper<T>
+    ArenaSpan<FromEntryPtr> entries;              // conversion definitions
 
     FromDeclAST() : DeclAST(ASTKind::FromDecl) {}
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ImplDeclAST
-//
-// Binds methods (and from conversions) to a struct type.
-//   Visibility impl Vec2 { ... }
-//   Visibility impl Circle : Drawable { ... }
-//   Visibility impl Scene<T : Drawable> { ... }
-//   impl Vec2 { ... }   -- package-private methods
-//
-// isVisibility — true = methods callable by anyone holding the value
-//         false = methods callable only within the package
-//
-// genericParams — type params on the impl itself, e.g. <T : Drawable>
-//
-// structName — the name of the type being implemented ("Vec2", "Scene")
-//
-// structGenericArgs — the type args supplied to the struct name, e.g. the
-//   <T> in  impl Scene<T : Drawable>. These bind the generic param T
-//   declared above to the struct's type parameter.
-//
-// traitRef — present when ": TraitName" was written; nullptr otherwise.
-//   The semantic pass uses this to verify full trait conformance.
-//
-// methods — regular method bodies
-//
-// Multiple impl blocks for the same struct merge at semantic time.
+// ImplDeclAST – binds method implementations to a type.
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @brief Represents an **impl declaration** – method implementations for a type.
+ *
+ * Grammar: visibility? 'impl' impl_target
+ *          [ impl_generic_params ]
+ *          [ 'as' IDENTIFIER ]
+ *          [ ':' trait_ref ]
+ *          '{' method_decl* '}'
+ *
+ * impl_target     := type_name | primitive_type
+ * impl_generic_params ::= '<' impl_generic_param { ',' impl_generic_param } '>'
+ * trait_ref       := IDENTIFIER [ generic_args ]
+ *
+ * @example
+ *   // No alias, no generics, no trait
+ *   impl Vec2 {
+ *       length () -> float = { return #sqrt(self.x*self.x + self.y*self.y) }
+ *   }
+ *   // Usage: let v = Vec2 { x = 3, y = 4 }; let len = v:length()
+ *
+ *   // With generics and implicit `self` alias
+ *   impl Box<T> {
+ *       get () -> T = { return self.value }
+ *   }
+ *
+ *   // With generics and explicit alias `b`
+ *   impl Box<T> as b {
+ *       get () -> T = { return b.value }
+ *   }
+ *
+ *   // Trait conformance with alias
+ *   impl Circle as c : Drawable {
+ *       draw () { c:render() }
+ *   }
+ *
+ *   // Primitive type impl with alias
+ *   impl int as i {
+ *       isEven () -> bool = { return i % 2 == 0 }
+ *   }
+ *   // Usage: 42:isEven()
+ *
+ *   // Array or function types – must use a type alias first
+ *   type IntArray = []int
+ *   impl IntArray {
+ *       sum () -> int = { ... }
+ *   }
+ *
+ * ## Important Semantic Rules
+ *
+ * 1. **Call Syntax – Value‑oriented**: Methods are called on a **value**
+ *    using the colon operator: `value:method(args)`. The receiver is the value
+ *    itself, not the type name. The type of the receiver determines which
+ *    `impl` block is consulted.
+ *
+ * 2. **Target Type**: `targetType` can be any type:
+ *    - Struct types (most common)
+ *    - Primitive types (`int`, `string`, `bool`, `float`, etc.)
+ *    - Enum types
+ *    - Type aliases that resolve to a primitive/struct/enum
+ *
+ *    **Not allowed directly**: array types (`[]T`, `[*]T`, `[N]T`) or
+ *    function types. To add methods to an array or a function, first create
+ *    a type alias, then impl that alias.
+ *
+ * 3. **Generic Parameters**: An impl declaration may declare generic parameters
+ *    **only when the target type is generic** (generic struct or generic type alias).
+ *    The number of generic parameters **must exactly match the arity of the target type**.
+ *    The parameter names are fresh bindings (positional correspondence).
+ *
+ *    @code
+ *    struct Box<T> { value T }
+ *    impl Box<T> { ... }           // OK: arity 1 matches Box<T>
+ *    impl Box<K> { ... }           // OK: different name, same arity
+ *    impl Box { ... }              // Error: missing generic parameter
+ *    impl Box<T, U> { ... }        // Error: too many parameters
+ *    @endcode
+ *
+ * 4. **Receiver Alias (`as IDENTIFIER`)**: Optional. If omitted, the receiver
+ *    is named `self` inside the method bodies. If provided, the given identifier
+ *    replaces `self` as the name for the receiver value. The alias is in scope
+ *    for all method declarations inside the impl block. It must appear **after**
+ *    any generic parameters and **before** an optional trait conformance.
+ *
+ * 5. **Trait Conformance**: When `traitRef` is present, the impl block
+ *    promises to implement every method declared in that trait. The semantic
+ *    pass verifies:
+ *    - All trait methods are present in `methods`
+ *    - Each method signature matches exactly (parameters, return types,
+ *      qualifiers like `~async`, `~nullable`, `~parallel`)
+ *    - Extra methods are allowed (they are not part of the trait contract)
+ *
+ * 6. **Method Resolution**: When a method call `value:method()` is encountered,
+ *    the semantic pass:
+ *    - Determines the static type of `value`
+ *    - Looks for an `impl` block whose `targetType` matches that type
+ *      (after substituting any generic parameters)
+ *    - Finds the method with the given name inside that impl block
+ *    - If no matching impl or method is found, emits an error
+ *
+ * 7. **Self Parameter**: Within method bodies, the receiver value is available
+ *    via `self` (or `receiverAlias` if specified). The type of `self` is the
+ *    resolved target type (including any generic arguments). The field
+ *    `resolvedSelfType` caches this for the semantic pass.
+ *
+ * 8. **Visibility**: The visibility of the impl block applies to all methods
+ *    within it. Individual methods cannot have separate visibility.
+ *    `pub`/`export` on an impl block means all its methods are visible
+ *    according to that level.
+ *
+ * 9. **Merging**: Multiple impl blocks for the same target type are allowed
+ *    and are merged at semantic time. They can be in different files within
+ *    the same package. Method names must be unique across all impl blocks
+ *    for a given type (no overloading).
+ *
+ * 10. **Primitive Methods**: Built‑in primitive types (`int`, `string`, etc.)
+ *     can have impl blocks defined by the user. The compiler also provides
+ *     a standard set of primitive methods. User‑defined methods cannot
+ *     override built‑ins; duplicates cause a semantic error.
+ *
+ * 11. **Array / Function Types**: Because arrays and function types are
+ *     structural (not nominal), they cannot be the target of an impl block
+ *     directly. Instead, the programmer must create a type alias:
+ *     @code
+ *       type IntArray = []int
+ *       impl IntArray { ... }
+ *     @endcode
+ *
+ * ## Semantic Caches (filled by TypeResolver)
+ *
+ * - `resolvedSelfType`: The resolved type of `self` inside method bodies
+ * - `resolvedTargetGenericParams`: Generic parameters of the target type
+ * - `resolvedSubstitutionMap`: Maps generic param names to concrete types
+ *   when the impl is instantiated
+ */
 struct ImplDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::ImplDecl;
 
-    InternedString receiverAlias;   // empty = default "self"
+    InternedString receiverAlias;                     // empty = default "self"
     Visibility visibility = Visibility::Private;
-    std::vector<GenericParamPtr> genericParams; // impl-level type params
-    TypePtr targetType;
-    TraitRefPtr traitRef;                       // nullptr if no conformance
-    std::vector<MethodDeclPtr> methods;
+    ArenaSpan<GenericParamPtr> genericParams;         // impl‑level type params
+    TypePtr targetType;                               // the type being implemented
+    TraitRefPtr traitRef;                             // nullptr if no trait conformance
+    ArenaSpan<MethodDeclPtr> methods;                 // method bodies
 
-    // ── Phase 2a cache (filled by TypeResolver) ──────────────────────────────
-    mutable TypeAST* resolvedSelfType = nullptr;                     // the type of 'self'
-    mutable const std::vector<GenericParamPtr>* resolvedTargetGenericParams = nullptr;
+    // Semantic caches (filled by TypeResolver, Phase 2a)
+    mutable TypeAST* resolvedSelfType = nullptr;      // type of 'self' receiver
+    mutable const ArenaSpan<GenericParamPtr>* resolvedTargetGenericParams = nullptr;
     mutable std::unordered_map<InternedString, TypeAST*> resolvedSubstitutionMap;
 
     ImplDeclAST() : DeclAST(ASTKind::ImplDecl) {}
@@ -561,37 +694,32 @@ struct ImplDeclAST : DeclAST {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TypeAliasDeclAST
-//
-// A named alias for an existing type shape. May appear at top‑level or inside
-// any block (local type alias).
-//
-//   type ID          = int
-//   type Callback    = (event Event) -> bool
-//   type Transform<T> = (value T) -> T
-//   type Vec2        = struct { x float, y float }   -- local struct alias
-//
-// Does **not** create a new nominal type – `ID` and `int` are interchangeable
-// at the semantic level. Use `struct` for a distinct nominal type.
-//
-// `aliasedType` holds the full TypeAST on the right‑hand side of the `=`.
-// Generic parameters (stored in `genericParams`) allow the alias to be
-// generic, e.g., `type Option<T> = struct { value T? }`.
-//
-// Visibility (`pub`/`export`) is only meaningful at top‑level; when used
-// locally, the parser forces Visibility::Private and rejects visibility
-// modifiers. Attributes are allowed on type aliases in any context.
-//
-// Local type aliases are scoped to the block in which they are defined and
-// are not visible outside that block. The semantic pass resolves the alias
-// by substituting the aliased type during type checking.
+// TypeAliasDeclAST – a named alias for an existing type.
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @brief Represents a type alias – does **not** create a new nominal type.
+ *
+ * @example
+ *   type ID          = int
+ *   type Callback    = (event Event) -> bool
+ *   type Transform<T> = (value T) -> T
+ *   type Vec2        = struct { x float, y float }   -- local struct alias
+ *
+ * `ID` and `int` are interchangeable at the semantic level.
+ * For a distinct nominal type, use `struct` instead.
+ *
+ * Generic parameters allow the alias to be generic:
+ *   type Option<T> = struct { value T? }
+ *
+ * Local type aliases are scoped to the block where they are defined.
+ */
 struct TypeAliasDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::TypeAliasDecl;
 
     InternedString name;
-    std::vector<GenericParamPtr> genericParams; // empty if non-generic
-    TypePtr aliasedType;                        // the right-hand side
+    ArenaSpan<GenericParamPtr> genericParams;   // empty if non‑generic
+    TypePtr aliasedType;                        // the right‑hand side type
     Visibility visibility = Visibility::Private;
 
     TypeAliasDeclAST() : DeclAST(ASTKind::TypeAliasDecl) {}
