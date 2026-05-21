@@ -1,68 +1,158 @@
 #include "AttributeRegistry.hpp"
 #include "ast/DeclAST.hpp"
 #include "diagnostics/DiagnosticEngine.hpp"
-#include "diagnostics/DiagnosticCodes.hpp"
 
 #include <sstream>
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Built‑in attribute definitions
+//
+// Each attribute is defined with its metadata. The registry is initialised
+// from this static array when setStringPool() is called.
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+struct BuiltinAttribute {
+    std::string_view name;
+    AttributeContext contexts;
+    bool takesArgs;
+    int minArgs;
+    int maxArgs;
+    AttrArgKind argKinds;
+    bool requiresConst;
+    std::string_view exclusiveWith;   // empty if none
+    DiagCode errorCode;               // primary error code for this attribute
+};
+
+// Validator for @extern attribute
+bool validateExtern(const ArenaSpan<AttributeArgPtr>& args,
+                    const AttributeValidationContext& ctx) {
+    if (args.size() >= 2) {
+        if (args[1]->kind != AttributeArgKind::StringLit) {
+            ctx.dc.error(DiagnosticCategory::Syntax, InternedString(), ctx.loc,
+                         DiagCode::E2011, {"second argument to @extern must be a calling convention string"});
+            return false;
+        }
+    }
+    return true;
+}
+
+// Validator for @deprecated attribute
+bool validateDeprecated(const ArenaSpan<AttributeArgPtr>& args,
+                        const AttributeValidationContext& ctx) {
+    if (args.size() >= 1) {
+        if (args[0]->kind != AttributeArgKind::StringLit) {
+            ctx.dc.error(DiagnosticCategory::Syntax, InternedString(), ctx.loc,
+                         DiagCode::E2011, {"@deprecated argument must be a string literal"});
+            return false;
+        }
+    }
+    return true;
+}
+
+const BuiltinAttribute kBuiltinAttrs[] = {
+    {
+        .name = "extern",
+        .contexts = AttributeContext::Func | AttributeContext::Var,
+        .takesArgs = true,
+        .minArgs = 0,
+        .maxArgs = 2,
+        .argKinds = AttrArgKind::String,
+        .requiresConst = true,
+        .exclusiveWith = "",
+        .errorCode = DiagCode::E2010
+    },
+    {
+        .name = "packed",
+        .contexts = AttributeContext::Struct,
+        .takesArgs = false,
+        .minArgs = 0,
+        .maxArgs = 0,
+        .argKinds = AttrArgKind::None,
+        .requiresConst = false,
+        .exclusiveWith = "",
+        .errorCode = DiagCode::E2010
+    },
+    {
+        .name = "inline",
+        .contexts = AttributeContext::Func,
+        .takesArgs = false,
+        .minArgs = 0,
+        .maxArgs = 0,
+        .argKinds = AttrArgKind::None,
+        .requiresConst = false,
+        .exclusiveWith = "noinline",
+        .errorCode = DiagCode::E2010
+    },
+    {
+        .name = "noinline",
+        .contexts = AttributeContext::Func,
+        .takesArgs = false,
+        .minArgs = 0,
+        .maxArgs = 0,
+        .argKinds = AttrArgKind::None,
+        .requiresConst = false,
+        .exclusiveWith = "inline",
+        .errorCode = DiagCode::E2010
+    },
+    {
+        .name = "deprecated",
+        .contexts = AttributeContext::Func | AttributeContext::Var | 
+                    AttributeContext::Struct | AttributeContext::Impl | 
+                    AttributeContext::Enum | AttributeContext::Trait |
+                    AttributeContext::From | AttributeContext::Package |
+                    AttributeContext::TypeAlias,
+        .takesArgs = true,
+        .minArgs = 0,
+        .maxArgs = 1,
+        .argKinds = AttrArgKind::String,
+        .requiresConst = false,
+        .exclusiveWith = "",
+        .errorCode = DiagCode::E2010
+    },
+    {
+        .name = "aot",
+        .contexts = AttributeContext::Main,
+        .takesArgs = false,
+        .minArgs = 0,
+        .maxArgs = 0,
+        .argKinds = AttrArgKind::None,
+        .requiresConst = false,
+        .exclusiveWith = "jit",
+        .errorCode = DiagCode::E3015
+    },
+    {
+        .name = "jit",
+        .contexts = AttributeContext::Main,
+        .takesArgs = false,
+        .minArgs = 0,
+        .maxArgs = 0,
+        .argKinds = AttrArgKind::None,
+        .requiresConst = false,
+        .exclusiveWith = "aot",
+        .errorCode = DiagCode::E3015
+    },
+};
+
+const size_t kNumBuiltinAttrs = sizeof(kBuiltinAttrs) / sizeof(kBuiltinAttrs[0]);
+
+} // unnamed namespace
 
 AttributeRegistry& AttributeRegistry::instance() {
     static AttributeRegistry registry;
     return registry;
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-    // Built-in attribute registration
-    //
-    // The registry is a singleton that must know about every built-in attribute
-    // before any source file is parsed. Registration happens here, in the
-    // constructor, because:
-    //
-    //   1. The singleton instance is created on first call to instance().
-    //   2. That call typically happens after the StringPool is available,
-    //      but before any attribute lookup is performed.
-    //
-    // Parameters for registerAttribute():
-    //   - name:        string literal of the attribute (without '@')
-    //   - contexts:    OR-ed AttributeContext flags where this attribute is allowed
-    //   - takesArgs:   true if the attribute accepts arguments
-    //   - minArgs:     minimum number of arguments (0 if takesArgs == false)
-    //   - maxArgs:     maximum number of arguments (-1 for unlimited)
-    //   - argKinds:    OR-ed AttrArgKind flags (String, Int, Bool, Type, Any)
-    //   - requiresConst: true if the attribute must be on a 'const' declaration
-    //   - exclusiveWith: name of another attribute that cannot be used together
-    //   - validator:   optional custom validation function
-    // ─────────────────────────────────────────────────────────────────────────
-AttributeRegistry::AttributeRegistry() {
-}
+AttributeRegistry::AttributeRegistry() = default;
 
-namespace {
-    struct BuiltinAttribute {
-        std::string_view name;
-        AttributeContext contexts;
-        bool takesArgs;
-        int minArgs;
-        int maxArgs;
-        AttrArgKind argKinds;
-        bool requiresConst;
-        std::string_view exclusiveWith;   // empty if none
-    };
-
-    const BuiltinAttribute kBuiltinAttrs[] = {
-        { "extern",   AttributeContext::Func | AttributeContext::Var, true, 0, 1, AttrArgKind::String, false, "" },
-        { "packed",   AttributeContext::Struct,                        false, 0, 0, AttrArgKind::None, false, "" },
-        { "inline",   AttributeContext::Func,                          false, 0, 0, AttrArgKind::None, false, "" },
-        { "noinline", AttributeContext::Func,                          false, 0, 0, AttrArgKind::None, false, "" },
-        { "deprecated", AttributeContext::Func | AttributeContext::Var | 
-                        AttributeContext::Struct | AttributeContext::Impl | 
-                        AttributeContext::Enum | AttributeContext::Trait |
-                        AttributeContext::From | AttributeContext::Extension, 
-                        true, 0, 1, AttrArgKind::String, false, "" },
-    };
-    const size_t kNumBuiltinAttrs = sizeof(kBuiltinAttrs) / sizeof(kBuiltinAttrs[0]);
+void AttributeRegistry::reportAttrError(DiagnosticEngine& dc, const SourceLocation& loc,
+                                        DiagCode code, std::initializer_list<std::string> args) const {
+    // Note: file is not set here – the caller should provide it. For now, use empty InternedString.
+    dc.error(DiagnosticCategory::Syntax, InternedString(), loc, code, args);
 }
 
 void AttributeRegistry::setStringPool(StringPool& pool) {
-    // Always rebuild from the static array (even if already set, to allow re‑init).
     stringPool = &pool;
 
     // Clear existing maps
@@ -71,6 +161,7 @@ void AttributeRegistry::setStringPool(StringPool& pool) {
 
     for (const auto& builtin : kBuiltinAttrs) {
         InternedString id = pool.intern(std::string(builtin.name));
+        
         AttributeInfo info;
         info.id = id;
         info.name = id;
@@ -81,24 +172,31 @@ void AttributeRegistry::setStringPool(StringPool& pool) {
         info.allowedArgKinds = builtin.argKinds;
         info.requiresConst = builtin.requiresConst;
         info.exclusiveWith = builtin.exclusiveWith.empty() ? InternedString() : pool.intern(std::string(builtin.exclusiveWith));
-        // validator remains nullptr for now – add later if needed
+        info.errorCode = builtin.errorCode;
+
+        // Attach validators
+        if (builtin.name == "extern") {
+            info.validator = validateExtern;
+        } else if (builtin.name == "deprecated") {
+            info.validator = validateDeprecated;
+        }
 
         byId[id] = info;
         nameToId[std::string(builtin.name)] = id;
     }
 
-    // Pre‑intern well‑known IDs (still needed for fast access)
+    // Pre‑intern well‑known IDs for fast access
     externId     = pool.intern("extern");
     packedId     = pool.intern("packed");
     inlineId     = pool.intern("inline");
     noinlineId   = pool.intern("noinline");
     deprecatedId = pool.intern("deprecated");
+    aotId        = pool.intern("aot");
+    jitId        = pool.intern("jit");
 }
 
 void AttributeRegistry::resetStringPool() {
     stringPool = nullptr;
-    // Optionally clear interned caches (byId, nameToId) if they depend on pool strings.
-    // For safety, clear everything to prevent dangling string_views.
     byId.clear();
     nameToId.clear();
     externId = InternedString();
@@ -106,6 +204,8 @@ void AttributeRegistry::resetStringPool() {
     inlineId = InternedString();
     noinlineId = InternedString();
     deprecatedId = InternedString();
+    aotId = InternedString();
+    jitId = InternedString();
 }
 
 const AttributeInfo* AttributeRegistry::lookup(InternedString id) const {
@@ -152,9 +252,8 @@ bool AttributeRegistry::validateAttribute(const AttributeAST& attr,
     const AttributeInfo* info = lookup(attr.name);
     if (!info) {
         std::string_view name = stringPool->lookup(attr.name);
-        dc.report(DiagnosticSeverity::Error, DiagnosticCategory::Syntax,
-                  attr.loc, DiagCode::E2003,
-                  "unknown attribute '@" + std::string(name) + "'");
+        dc.error(DiagnosticCategory::Syntax, InternedString(), attr.loc,
+                 DiagCode::E2010, {std::string(name)});
         return false;
     }
 
@@ -162,9 +261,9 @@ bool AttributeRegistry::validateAttribute(const AttributeAST& attr,
 
     // Context check
     if (!hasFlag(info->validContexts, ctx)) {
-        dc.report(DiagnosticSeverity::Error, DiagnosticCategory::Syntax,
-                  attr.loc, DiagCode::E2010,
-                  "@" + std::string(stringPool->lookup(info->name)) + " cannot be used on this declaration");
+        std::string_view name = stringPool->lookup(info->name);
+        dc.error(DiagnosticCategory::Syntax, InternedString(), attr.loc,
+                 info->errorCode, {std::string("@") + std::string(name)});
         valid = false;
     }
 
@@ -172,23 +271,21 @@ bool AttributeRegistry::validateAttribute(const AttributeAST& attr,
     int argCount = static_cast<int>(attr.args.size());
     if (info->takesArgs) {
         if (argCount < info->minArgs) {
-            dc.report(DiagnosticSeverity::Error, DiagnosticCategory::Syntax,
-                      attr.loc, DiagCode::E2009,
-                      "@" + std::string(stringPool->lookup(info->name)) + " requires at least " +
-                      std::to_string(info->minArgs) + " argument(s)");
+            std::string_view name = stringPool->lookup(info->name);
+            dc.error(DiagnosticCategory::Syntax, InternedString(), attr.loc,
+                     DiagCode::E2011, {std::string("@") + std::string(name)});
             valid = false;
         }
         if (info->maxArgs != -1 && argCount > info->maxArgs) {
-            dc.report(DiagnosticSeverity::Error, DiagnosticCategory::Syntax,
-                      attr.loc, DiagCode::E2009,
-                      "@" + std::string(stringPool->lookup(info->name)) + " takes at most " +
-                      std::to_string(info->maxArgs) + " argument(s)");
+            std::string_view name = stringPool->lookup(info->name);
+            dc.error(DiagnosticCategory::Syntax, InternedString(), attr.loc,
+                     DiagCode::E2011, {std::string("@") + std::string(name)});
             valid = false;
         }
     } else if (argCount > 0) {
-        dc.report(DiagnosticSeverity::Error, DiagnosticCategory::Syntax,
-                  attr.loc, DiagCode::E2009,
-                  "@" + std::string(stringPool->lookup(info->name)) + " does not take arguments");
+        std::string_view name = stringPool->lookup(info->name);
+        dc.error(DiagnosticCategory::Syntax, InternedString(), attr.loc,
+                 DiagCode::E2011, {std::string("@") + std::string(name)});
         valid = false;
     }
 
@@ -201,45 +298,30 @@ bool AttributeRegistry::validateAttribute(const AttributeAST& attr,
         if (hasFlag(needed, AttrArgKind::Bool) && arg->kind == AttributeArgKind::BoolLit) ok = true;
         if (hasFlag(needed, AttrArgKind::Type) && arg->kind == AttributeArgKind::TypeIdent) ok = true;
         if (!ok) {
-            dc.report(DiagnosticSeverity::Error, DiagnosticCategory::Syntax,
-                      arg->loc, DiagCode::E2009,
-                      "invalid argument type for @" + std::string(stringPool->lookup(info->name)));
+            std::string_view name = stringPool->lookup(info->name);
+            dc.error(DiagnosticCategory::Syntax, InternedString(), arg->loc,
+                     DiagCode::E2011, {std::string("@") + std::string(name)});
             valid = false;
         }
     }
 
     // requiresConst
     if (info->requiresConst && declKw != DeclKeyword::Const) {
-        dc.report(DiagnosticSeverity::Error, DiagnosticCategory::Syntax,
-                  attr.loc, DiagCode::E3002,
-                  "@" + std::string(stringPool->lookup(info->name)) + " requires 'const', not 'let'");
-        valid = false;
+        std::string_view name = stringPool->lookup(info->name);
+        dc.warning(DiagnosticCategory::Semantic, InternedString(), attr.loc,
+                   DiagCode::W3001, {std::string("@") + std::string(name)});
+        // Not an error, just a warning – still valid to use 'let' but discouraged
     }
 
     // Custom validator
-    if (info->validator && !info->validator(attr.args, declName, dc, attr.loc)) {
-        valid = false;
+    if (info->validator) {
+        AttributeValidationContext vctx(declName, declKw, dc, attr.loc);
+        if (!info->validator(attr.args, vctx)) {
+            valid = false;
+        }
     }
 
     return valid;
-}
-
-bool AttributeRegistry::isExternAttribute(InternedString id) const {
-    return id == externId;
-}
-
-bool AttributeRegistry::isExternAttribute(const std::string& name) const {
-    auto it = nameToId.find(name);
-    return it != nameToId.end() && it->second == externId;
-}
-
-bool AttributeRegistry::isMainOnlyAttribute(InternedString id) const {
-    // none currently
-    return false;
-}
-
-bool AttributeRegistry::isMainOnlyAttribute(const std::string& name) const {
-    return false;
 }
 
 bool AttributeRegistry::checkMutualExclusion(InternedString id1, InternedString id2,
@@ -250,17 +332,17 @@ bool AttributeRegistry::checkMutualExclusion(InternedString id1, InternedString 
     if (!a || !b) return true; // already reported elsewhere
 
     if (a->exclusiveWith.isValid() && a->exclusiveWith == id2) {
-        dc.report(DiagnosticSeverity::Error, DiagnosticCategory::Syntax,
-                  loc, DiagCode::E2007,
-                  "@" + std::string(stringPool->lookup(a->name)) + " and @" + std::string(stringPool->lookup(b->name)) +
-                  " cannot be used together");
+        std::string_view name1 = stringPool->lookup(a->name);
+        std::string_view name2 = stringPool->lookup(b->name);
+        dc.error(DiagnosticCategory::Syntax, InternedString(), loc,
+                 DiagCode::E3015, {std::string("@") + std::string(name1), std::string("@") + std::string(name2)});
         return false;
     }
     if (b->exclusiveWith.isValid() && b->exclusiveWith == id1) {
-        dc.report(DiagnosticSeverity::Error, DiagnosticCategory::Syntax,
-                  loc, DiagCode::E2007,
-                  "@" + std::string(stringPool->lookup(a->name)) + " and @" + std::string(stringPool->lookup(b->name)) +
-                  " cannot be used together");
+        std::string_view name1 = stringPool->lookup(a->name);
+        std::string_view name2 = stringPool->lookup(b->name);
+        dc.error(DiagnosticCategory::Syntax, InternedString(), loc,
+                 DiagCode::E3015, {std::string("@") + std::string(name1), std::string("@") + std::string(name2)});
         return false;
     }
     return true;

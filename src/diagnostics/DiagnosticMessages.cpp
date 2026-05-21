@@ -40,7 +40,7 @@ std::string_view getMessage(DiagCode code) {
         case DiagCode::E2018: return "Missing '->' arrow in from entry.";
         case DiagCode::E2019: return "Missing '=' before function body.";
         case DiagCode::E2020: return "'!' argument pack annotation only allowed in pipeline step.";
-        case DiagCode::E2021: return "Nullable chain '?.' must be terminated by '??'.";
+        case DiagCode::E2021: return "Nullable chain '?.' must be terminated by '\?\?'.";
         case DiagCode::E2022: return "'default' arm must be last in match expression.";
         case DiagCode::E2024: return "Method '%s' not found on type '%s'.";
         case DiagCode::E2025: return "Cannot access field '%s' on non-struct/enum type.";
