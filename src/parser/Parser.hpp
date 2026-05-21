@@ -333,9 +333,6 @@ private:
     // [vis] from '(' IDENTIFIER type ')' IDENTIFIER '=' body
     ASTPtr<FromDeclAST> parseFromDecl(Visibility vis);
 
-    // [vis] extension type_path IDENTIFIER '{' { func_decl } '}'
-    ASTPtr<ExtensionDeclAST> parseExtensionDecl(Visibility vis);
-
     // [vis] type IDENTIFIER [<generics>] '=' type
     ASTPtr<TypeAliasDeclAST> parseTypeAliasDecl(Visibility vis);
 

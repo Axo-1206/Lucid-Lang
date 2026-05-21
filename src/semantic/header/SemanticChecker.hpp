@@ -35,7 +35,6 @@ void checkEnumDecl(EnumDeclAST& node, SemanticContext& ctx, bool isLocal = false
 void checkTraitDecl(TraitDeclAST& node, SemanticContext& ctx, bool isLocal = false);
 void checkImplDecl(ImplDeclAST& node, SemanticContext& ctx, bool isLocal = false);
 void checkFromDecl(FromDeclAST& node, SemanticContext& ctx, bool isLocal = false);
-void checkExtensionDecl(ExtensionDeclAST& node, SemanticContext& ctx, bool isLocal = false);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Expression Checker

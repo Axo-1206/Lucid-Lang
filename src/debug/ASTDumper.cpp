@@ -67,11 +67,32 @@ static const std::string primitiveKindStrings[] = {
 };
 
 static std::string primitiveKindToString(PrimitiveKind k) {
-    int idx = static_cast<int>(k);
-    if (idx >= 0 && idx <= static_cast<int>(PrimitiveKind::Any)) {
-        return primitiveKindStrings[idx];
+    switch (k) {
+        case PrimitiveKind::Bool:    return "bool";
+        case PrimitiveKind::Byte:    return "byte";
+        case PrimitiveKind::Short:   return "short";
+        case PrimitiveKind::Int:     return "int";
+        case PrimitiveKind::Long:    return "long";
+        case PrimitiveKind::Ubyte:   return "ubyte";
+        case PrimitiveKind::Ushort:  return "ushort";
+        case PrimitiveKind::Uint:    return "uint";
+        case PrimitiveKind::Ulong:   return "ulong";
+        case PrimitiveKind::Int8:    return "int8";
+        case PrimitiveKind::Int16:   return "int16";
+        case PrimitiveKind::Int32:   return "int32";
+        case PrimitiveKind::Int64:   return "int64";
+        case PrimitiveKind::Uint8:   return "uint8";
+        case PrimitiveKind::Uint16:  return "uint16";
+        case PrimitiveKind::Uint32:  return "uint32";
+        case PrimitiveKind::Uint64:  return "uint64";
+        case PrimitiveKind::Float:   return "float";
+        case PrimitiveKind::Double:  return "double";
+        case PrimitiveKind::Decimal: return "decimal";
+        case PrimitiveKind::String:  return "string";
+        case PrimitiveKind::Char:    return "char";
+        case PrimitiveKind::Any:     return "any";
+        default:                     return "primitive";
     }
-    return "primitive";
 }
 
 std::string ASTDumper::formatType(TypeAST* type) {
@@ -496,50 +517,6 @@ void ASTDumper::visit(FromEntryAST& node) {
     if (node.body) visitChild(node.body.get());
 }
 
-void ASTDumper::visit(ExtensionDeclAST& node) {
-    std::string header = "ExtensionDeclAST";
-    
-    // Add visibility if not private
-    if (node.visibility == Visibility::Package) {
-        header = "pub " + header;
-    } else if (node.visibility == Visibility::Export) {
-        header = "export " + header;
-    }
-    
-    // Add target type
-    if (node.targetType) {
-        header += " for " + formatType(node.targetType.get());
-    } else {
-        header += " for <unknown>";
-    }
-    
-    // Add namespace
-    if (node.namespaceName.isValid()) {
-        header += " as " + toStr(pool, node.namespaceName);
-    }
-    
-    printNodeHeader(node, header);
-    
-    indentLevel++;
-    
-    // Print generic parameters if any
-    for (const auto& gp : node.genericParams) {
-        if (gp) visitChild(gp.get());
-    }
-    
-    // Print methods
-    for (const auto& method : node.methods) {
-        if (method) visitChild(method.get());
-    }
-    
-    // Print attributes
-    for (const auto& attr : node.attributes) {
-        if (attr) visitChild(attr.get());
-    }
-    
-    indentLevel--;
-}
-
 void ASTDumper::visit(TypeAliasDeclAST& node) {
     std::string header = "TypeAliasDeclAST '" + toStr(pool, node.name) + "'";
     if (node.aliasedType) header += " = " + formatType(node.aliasedType.get());
@@ -617,27 +594,6 @@ void ASTDumper::visit(FieldAccessExprAST& node) {
 
 void ASTDumper::visit(BehaviorAccessExprAST& node) {
     printNodeHeader(node, "BehaviorAccessExprAST " + toStr(pool, node.typeName) + ":" + toStr(pool, node.method));
-}
-
-void ASTDumper::visit(StaticAccessExprAST& node) {
-    std::string header = "StaticAccessExprAST";
-    
-    if (node.targetType) {
-        header += " " + formatType(node.targetType.get());
-    } else {
-        header += " <unknown-type>";
-    }
-    
-    header += "::" + toStr(pool, node.namespaceName) + "." + toStr(pool, node.method);
-    
-    printNodeHeader(node, header);
-    
-    // Optionally dump the resolved mangled name if present
-    if (!node.resolvedMangledName.empty()) {
-        indentLevel++;
-        indent(); out += "\tresolvedMangledName: " + node.resolvedMangledName + "\n";
-        indentLevel--;
-    }
 }
 
 void ASTDumper::visit(NullableChainExprAST& node) {

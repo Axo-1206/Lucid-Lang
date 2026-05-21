@@ -132,7 +132,6 @@ enum class PipelineStepKind {
     BehaviorArgPack, // Type:method(args)!   (method with argument pack)
     ArgPack,      // fn(args)!   — argument pack, upstream injected as first arg
     AnonFunc,     // (x T) R { } — inline anonymous function
-    StaticAccess, // Int::Math.min(x, y)
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -372,37 +371,6 @@ struct BehaviorAccessExprAST : ExprAST {
     std::vector<TypePtr> genericArgs;
 
     BehaviorAccessExprAST() : ExprAST(ASTKind::BehaviorAccessExpr) {}
-
-    void accept(ASTVisitor& v) override { v.visit(*this); }
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// StaticAccessExprAST
-//
-// Represents a static method call via the '::' operator.
-//   Int::std.abs(-5)
-//   Vec2::math.normalize(point)
-//   Wrapper<int>::container.unwrap(wrapped)
-//
-// Grammar: type_name '::' IDENTIFIER '.' IDENTIFIER
-//   - targetType: the named type (struct, enum, or type alias)
-//   - namespaceName: the extension namespace (e.g., "std", "math", "container")
-//   - method: the static method name
-//
-// The expression evaluates to a function reference (FuncTypeAST).
-// Semantic pass resolves the method by looking up the mangled symbol
-// "Type::namespace.method" in the symbol table.
-// Codegen may store the resolved function address in resolvedMangledName.
-// ─────────────────────────────────────────────────────────────────────────────
-struct StaticAccessExprAST : ExprAST {
-    static constexpr ASTKind staticKind = ASTKind::StaticAccessExpr;
-
-    TypePtr targetType;
-    InternedString namespaceName;
-    InternedString method;
-    std::string resolvedMangledName; // optional for codegen
-
-    StaticAccessExprAST() : ExprAST(ASTKind::StaticAccessExpr) {}
 
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };
@@ -662,7 +630,6 @@ struct PipelineStepAST : BaseAST {
     std::vector<TypePtr>    genericArgs;  // optional explicit generic arguments
     InternedString          typeName;     // for BehaviorRef / BehaviorArgPack
     InternedString          method;       // for BehaviorRef / BehaviorArgPack
-    InternedString          namespaceName;// field for StaticAccess
     InternedString          field;        // for FieldRef / FieldArgPack
     ExprPtr                 index;        // for IndexRef / IndexArgPack
     std::vector<ExprPtr>    packArgs;     // for ArgPack, BehaviorArgPack, FieldArgPack, IndexArgPack

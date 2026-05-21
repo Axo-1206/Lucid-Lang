@@ -74,48 +74,4 @@ namespace NameMangler {
         return std::string(target) + "::from::";
     }
 
-    // ─────────────────────────────────────────────────────────────────────────────
-    // Extension methods (static methods with namespace)
-    // Format: "Type::namespace.method"
-    // ─────────────────────────────────────────────────────────────────────────────
-
-    // Mangle a static extension method: Type + namespace + method name
-    inline std::string mangleExtension(std::string_view typeName, 
-                                        std::string_view namespaceName, 
-                                        std::string_view methodName) {
-        return std::string(typeName) + "::" + std::string(namespaceName) + "." + std::string(methodName);
-    }
-
-    // Mangle a static extension method with generic arguments
-    // Example: Wrapper<int>::container.unwrap
-    inline std::string mangleExtension(std::string_view typeName,
-                                        const std::vector<std::string>& concreteTypeArgs,
-                                        std::string_view namespaceName,
-                                        std::string_view methodName) {
-        std::string result = std::string(typeName);
-        if (!concreteTypeArgs.empty()) {
-            result += "<";
-            for (size_t i = 0; i < concreteTypeArgs.size(); ++i) {
-                if (i > 0) result += ", ";
-                result += concreteTypeArgs[i];
-            }
-            result += ">";
-        }
-        result += "::" + std::string(namespaceName) + "." + std::string(methodName);
-        return result;
-    }
-
-    // Helper to get the prefix for finding all extension methods of a type
-    // Used by semantic checker to collect candidates: "Type::"
-    inline std::string getExtensionPrefix(std::string_view typeName) {
-        return std::string(typeName) + "::";
-    }
-
-    // Helper to get the full prefix for a specific namespace on a type
-    // Used by semantic checker: "Type::namespace."
-    inline std::string getExtensionNamespacePrefix(std::string_view typeName, 
-                                                    std::string_view namespaceName) {
-        return std::string(typeName) + "::" + std::string(namespaceName) + ".";
-    }
-
 } // namespace NameMangler

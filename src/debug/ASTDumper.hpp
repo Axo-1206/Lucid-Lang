@@ -58,7 +58,6 @@ public:
     void visit(MethodDeclAST& node) override;
     void visit(FromDeclAST& node) override;
     void visit(FromEntryAST& node) override;
-    void visit(ExtensionDeclAST& node) override;
     void visit(TypeAliasDeclAST& node) override;
     void visit(GenericParamAST& node) override;
     void visit(ParamAST& node) override;
@@ -74,7 +73,6 @@ public:
     void visit(IndexExprAST& node) override;
     void visit(FieldAccessExprAST& node) override;
     void visit(BehaviorAccessExprAST& node) override;
-    void visit(StaticAccessExprAST& node) override;
     void visit(NullableChainExprAST& node) override;
     void visit(NullCoalesceExprAST& node) override;
     void visit(AssignExprAST& node) override;

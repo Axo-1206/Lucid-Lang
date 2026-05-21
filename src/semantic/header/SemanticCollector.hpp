@@ -106,7 +106,6 @@ public:
     void visit(TraitDeclAST& node) override;
     void visit(ImplDeclAST& node) override;
     void visit(FromDeclAST& node) override;
-    void visit(ExtensionDeclAST& node) override;
     void visit(TypeAliasDeclAST& node) override;
 
     // ── Helper to check if a name is already declared (for error recovery) ──

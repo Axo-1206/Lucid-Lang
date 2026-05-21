@@ -26,7 +26,6 @@ enum class TokenType {
     ENUM,    // enum      - named constant set: enum Direction { North, South, East, West }
     TRAIT,   // trait     - method contract / generic constraint: trait Drawable { draw () }
     FROM,    // from      - type conversion entry point: from (c Celsius) Fahrenheit = { ... }
-    EXTENSION, // extension - static method namespace block: extension int std { ... }
 
     // ─── Declarations ─────────────────────────────────────────────────────────
     LET,     // let       - reassignable, mutable in place, nil allowed
@@ -119,7 +118,7 @@ enum class TokenType {
     // ─── Access ───────────────────────────────────────────────────────────────
     DOT,              // .         - field access: mesh.vertices | module path: std.io
     COLON,            // :         - generic constraint: T : Drawable | switch case: case 1: | match field pattern: Vec2 { x: 0 }
-    DOUBLE_COLON,     // ::        - static method access: int::std.abs(-5)
+    // DOUBLE_COLON,     // ::     - reserved for future features
     
     // ─── Math ─────────────────────────────────────────────────────────────────
     PLUS,               // +

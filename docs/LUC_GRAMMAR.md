@@ -44,7 +44,6 @@ actual_decl     := use_decl
                  | from_decl
                  | var_decl
                  | func_decl
-                 | extension_decl
 ```
 
 ### Entry Point (main)
@@ -1077,13 +1076,10 @@ origin.x = 5.0               -- write (only valid if origin is 'let')
 ```
 member_access   := expr '.' IDENTIFIER        -- data member
                  | IDENTIFIER ':' IDENTIFIER  -- behavior member (impl)
-                 | type_name '::' IDENTIFIER '.' IDENTIFIER   -- static extension
 ```
 
 - `.` — data field access. Reassignable if the containing variable is `let`.
 - `:` — impl method access. Never reassignable. Behavior members are plain function references and can be passed as values, stored in typed variables, or used as pipeline steps.
-- `::` – static method access. The left side is a type name (not an expression).  
-  This calls an `extension` method.
 
 ```luc
 v.x                 -- read field
@@ -1091,8 +1087,6 @@ v.x = 5.0           -- write field (let only)
 Vec2:normalize      -- function reference to normalize from Vec2's impl
 Vec2:length         -- function reference to length from Vec2's impl
 Vec2:length = ..    -- ERROR: impl methods cannot be reassigned
-int::math.abs(-5)   -- method in the `math` namespace
-int::math.abs = ..       -- ERROR: extension methods cannot be reassigned
 ```
 
 ---
@@ -1156,7 +1150,7 @@ type Transform    = (v Vec2) -> Vec2
 ```
 
 ### Consistency Rule
-Consistent rule: Any named type can have `impl`, `from`, and `extension` blocks.
+Consistent rule: Any named type can have `impl` and `from` blocks.
 - This includes structs, enums, and type aliases.
 - Type aliases can name any type – primitives, function types, arrays, etc.
 
@@ -1245,7 +1239,6 @@ Rules:
 - `self` is not a reserved keyword in general Luc; it is only treated specially inside `impl` method bodies (like `self.x` refers to the receiver's field `x`). Outside of an `impl` block, `self` can be used as a normal identifier.
 - The receiver alias (explicit or implicit) is in scope for every method body inside the `impl` block. It is a read‑only reference to the instance on which the method was called.
 - Generic parameters follow the type name, not the alias.
-
 
 ### Examples
 
@@ -1465,129 +1458,6 @@ from IntSlice {
 > - If multiple visible from blocks provide a conversion from the same source to the same target with the same signature, the nearest (innermost scope) wins; ambiguous conversions produce a compile error.
 
 ---
-
-## Extension Declaration
-
-```
-extension_decl  := [ visibility_mod ] 'extension' type_name IDENTIFIER '{' {     func_decl } '}'
-```
-
-### Calling convention
-
-All extension methods are plain functions – they are called as `Type::namespace.method(args)`. The call syntax is resolved at compile time; no dynamic dispatch occurs.
-
-An `extension` block adds **static methods** (namespaced functions) to an existing **named type**.  
-These methods are called using the `::` operator and are resolved at compile time.
-
-| Target Type                | Can we extend directly? | How to extend                           |
-| -------------------------- | ----------------------- | --------------------------------------- |
-| **Struct**                 | ✅ Yes                   | `extension Vec2 math { ... }`           |
-| **Enum**                   | ✅ Yes                   | `extension Direction helpers { ... }`   |
-| **Type alias**             | ✅ Yes                   | `extension IntOps std { ... }`          |
-| **Primitive (int, float)** | ❌ No                    | Use type alias: `type IntOps = int`     |
-| **Function type**          | ❌ No (no name)          | Use type alias: `type Callback = ...`   |
-| **Array type**             | ❌ No (structural)       | Use type alias: `type IntSlice = []int` |
-
-> [!NOTE]
-> Static extension methods always require an explicit namespace.  
-> Example: `int::std.abs(-5)`.  
-> The namespace `std` is conventional for the standard library, but any identifier is allowed.  
-> There is no bare `Type::method` form – you must always write the namespace.
-
-### Rules
-
-- `extension` can only be attached to **named types**:
-  - Structs (direct)
-  - Enums (direct)
-  - Type aliases (including those aliasing primitives, function types, arrays)
-- Primitive types (`int`, `float`, `string`, `bool`, etc.) **cannot** be extended directly – you must create a type alias first.
-- Methods are **static** – they do not receive a `self` parameter.
-- The first parameter of each method is the first argument, not the receiver.
-- Duplicate method signatures (same name, same parameter types) are forbidden within the same extension block.
-- Overloading across different extension blocks or different namespaces is allowed.
-- The compiler resolves `Type::namespace.method` by looking up the mangled symbol `Type::namespace.method` in the symbol table.
-- Extension blocks can be generic: `extension Wrapper<T> container { … }` – the type parameter T is in scope inside the method bodies.
-
-### Examples
-
-```luc
--- Direct extension on struct
-extension Vec2 math {
-    length (v Vec2) -> float = { return #sqrt(v.x*v.x + v.y*v.y) }
-}
-
--- Direct extension on enum
-extension Direction helpers {
-    isNorth (d Direction) -> bool = { return d == Direction.North }
-}
-
--- Extend primitive via type alias
-type IntOps = int
-extension IntOps std {
-    abs (x int) -> int = { return #abs(x) }
-    clamp (x int, lo int, hi int) -> int = {
-        return #min(#max(x, lo), hi)
-    }
-}
-
--- Extend function type via alias
-type Callback = (event Event) -> bool
-extension Callback combinators {
-    andThen (c Callback, next Callback) -> Callback = {
-        return (e Event) -> bool { return c(e) and next(e) }
-    }
-}
-
--- Extend array type via alias
-type IntSlice = []int
-extension IntSlice utils {
-    sum (arr []int) -> int = {
-        let s int = 0
-        for v in arr { s += v }
-        return s
-    }
-}
-
--- Call site examples
-let result float = Vec2::math.length(Vec2 { x = 3.0, y = 4.0 })
-let isNorth bool = Direction::helpers.isNorth(Direction.North)
-let absVal int = IntOps::std.abs(-5)           -- IntOps is aliased to int
-let clamped int = IntOps::std.clamp(42, 0, 100)
-let total int = []IntOps::utils.sum([1, 2, 3])  -- IntSlice is aliased to []int
-
--- Generic extension
-struct Wrapper<T> { value T }
-
-extension Wrapper<T> container {
-    unwrap (w Wrapper<T>) -> T = {
-        return w.value
-    }
-
-    map (w Wrapper<T>, f (T) -> U) -> Wrapper<U> = {
-        return Wrapper<U> { value = f(w.value) }
-    }
-}
-
-let wrapped = Wrapper<int> { value = 42 }
-let value int = Wrapper<int>::container.unwrap(wrapped)
-```
-
-### Generic extension
-
-```luc 
-extension Wrapper<T> container {
-    unwrap (w Wrapper<T>) -> T = {
-        return w.value
-    }
-
-    map (w Wrapper<T>, f (T) -> U) -> Wrapper<U> = {
-        return Wrapper<U> { value = f(w.value) }
-    }
-}
-
-let wrapped = Wrapper<int> { value = 42 }
-let value int = Wrapper<int>::container.unwrap(wrapped)
-```
 
 ## Pipeline Operator `|>`
 
@@ -2634,7 +2504,7 @@ pub impl Vec2 {
 
 ```
 pub export package use as impl trait type from
-let const struct enum extension await
+let const struct enum await
 bool byte short int long ubyte ushort uint ulong
 int8 int16 int32 int64 uint8 uint16 uint32 uint64
 float double decimal string char any nil

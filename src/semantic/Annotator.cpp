@@ -207,14 +207,6 @@ private:
         node.isConst = false;
     }
 
-    void visit(ExtensionDeclAST& node) override {
-        LUC_LOG_SEMANTIC_VERBOSE("visit(ExtensionDeclAST): namespace=" << pool_.lookup(node.namespaceName));
-        for (auto& attr : node.attributes) walk(attr.get());
-        for (auto& gp : node.genericParams) walk(gp.get());
-        if (node.targetType) walk(node.targetType.get());
-        for (auto& method : node.methods) walk(method.get());
-    }
-
     void visit(TypeAliasDeclAST& node) override {
         LUC_LOG_SEMANTIC_EXTREME("visit(TypeAliasDeclAST): name=" << pool_.lookup(node.name));
         for (auto& gp : node.genericParams) walk(gp.get());
@@ -281,12 +273,6 @@ private:
     void visit(BehaviorAccessExprAST& node) override {
         LUC_LOG_SEMANTIC_EXTREME("visit(BehaviorAccessExprAST): " << pool_.lookup(node.typeName) << ":" << pool_.lookup(node.method));
         node.isBehaviorMember = true;
-        node.isConst = false;
-    }
-
-    void visit(StaticAccessExprAST& node) override {
-        LUC_LOG_SEMANTIC_EXTREME("visit(StaticAccessExprAST)");
-        if (node.targetType) walk(node.targetType.get());
         node.isConst = false;
     }
 

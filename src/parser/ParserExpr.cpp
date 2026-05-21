@@ -1152,36 +1152,6 @@ ExprPtr Parser::parsePrimaryExpr(bool allowStructLiteral) {
             return node;
         }
 
-        if (looksLikeStaticAccess()) {
-            // Parse static access: type_name [<generic_args>] :: namespace . method
-            std::string typeName = advance().value;
-            std::vector<TypePtr> genericArgs;
-            if (check(TokenType::LESS)) {
-                genericArgs = parseGenericArgs();
-            }
-            consume(TokenType::DOUBLE_COLON, "expected '::' after type name");
-            if (!check(TokenType::IDENTIFIER)) {
-                errorAt(DiagCode::E2003, "expected namespace name after '::'");
-                return arena_.make<UnknownExprAST>();
-            }
-            std::string namespaceName = advance().value;
-            consume(TokenType::DOT, "expected '.' after namespace name");
-            if (!check(TokenType::IDENTIFIER)) {
-                errorAt(DiagCode::E2003, "expected method name after '.'");
-                return arena_.make<UnknownExprAST>();
-            }
-            std::string method = advance().value;
-
-            auto node = arena_.make<StaticAccessExprAST>();
-            node->loc = loc;
-            auto targetType = arena_.make<NamedTypeAST>(pool_.intern(typeName));
-            targetType->genericArgs = std::move(genericArgs);
-            node->targetType = std::move(targetType);
-            node->namespaceName = pool_.intern(namespaceName);
-            node->method = pool_.intern(method);
-            return node;
-        }
-
         // ── Fallback: plain identifier ──────────────────────────────────────
         advance();
         auto node = arena_.make<IdentifierExprAST>(pool_.intern(name));

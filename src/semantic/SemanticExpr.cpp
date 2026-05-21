@@ -658,36 +658,6 @@ static TypeAST* checkBehaviorAccessExpr(BehaviorAccessExprAST& node, SemanticCon
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// StaticAccessExprAST – Type::namespace.method
-// ─────────────────────────────────────────────────────────────────────────────
-static TypeAST* checkStaticAccessExpr(StaticAccessExprAST& node, SemanticContext& ctx) {
-    TypeAST* targetType = ctx.resolver.resolveType(node.targetType.get());
-    if (!targetType || !targetType->isa<NamedTypeAST>()) {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
-                     "static access target must be a named type");
-        return nullptr;
-    }
-
-    std::string mangled = NameMangler::mangleExtension(
-        std::string(ctx.pool.lookup(targetType->as<NamedTypeAST>()->name)),
-        std::string(ctx.pool.lookup(node.namespaceName)),
-        std::string(ctx.pool.lookup(node.method))
-    );
-    Symbol* sym = ctx.symbols.lookup(ctx.pool.intern(mangled));
-    if (!sym || sym->kind != SymbolKind::Func) {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
-                     "static method '" + std::string(ctx.pool.lookup(node.method)) +
-                     "' not found in namespace '" +
-                     std::string(ctx.pool.lookup(node.namespaceName)) + "' for type '" +
-                     std::string(ctx.pool.lookup(targetType->as<NamedTypeAST>()->name)) + "'");
-        return nullptr;
-    }
-
-    node.resolvedType = sym->type;
-    return sym->type;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // NullableChainExprAST – ?. chain (terminated by ?? elsewhere)
 // ─────────────────────────────────────────────────────────────────────────────
 static TypeAST* checkNullableChainExpr(NullableChainExprAST& node, SemanticContext& ctx) {
@@ -1154,9 +1124,6 @@ TypeAST* checkExpr(ExprAST* node, SemanticContext& ctx) {
             break;
         case ASTKind::BehaviorAccessExpr:
             result = checkBehaviorAccessExpr(*node->as<BehaviorAccessExprAST>(), ctx);
-            break;
-        case ASTKind::StaticAccessExpr:
-            result = checkStaticAccessExpr(*node->as<StaticAccessExprAST>(), ctx);
             break;
         case ASTKind::NullableChainExpr:
             result = checkNullableChainExpr(*node->as<NullableChainExprAST>(), ctx);

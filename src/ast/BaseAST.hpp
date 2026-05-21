@@ -93,7 +93,6 @@ enum class ASTKind : uint16_t {
     FromDecl,
     FromEntry,
     ImplDecl,
-    ExtensionDecl,
     TypeAliasDecl,
 
     // ── Expression nodes ──────────────────────────────────────────────────────
@@ -104,7 +103,6 @@ enum class ASTKind : uint16_t {
     IdentifierExpr,
     FieldAccessExpr,
     BehaviorAccessExpr,
-    StaticAccessExpr,
     CallExpr,
     IndexExpr,
     BinaryExpr,
@@ -188,7 +186,6 @@ struct MethodDeclAST;
 struct FromDeclAST;         // from [method definition] - use for type casting
 struct FromEntryAST;        // entry inside the from block
 struct ImplDeclAST;
-struct ExtensionDeclAST;
 struct TypeAliasDeclAST;
 
 // ExprAST.hpp
@@ -365,7 +362,6 @@ struct ASTVisitor {
     virtual void visit(MethodDeclAST&)      {}
     virtual void visit(FromDeclAST&)        {}
     virtual void visit(FromEntryAST&)       {}
-    virtual void visit(ExtensionDeclAST&)   {}
     virtual void visit(TypeAliasDeclAST&)   {}
     virtual void visit(ParamAST&)           {}
     virtual void visit(GenericParamAST&)    {}
