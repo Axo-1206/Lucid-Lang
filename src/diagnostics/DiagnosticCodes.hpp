@@ -1,83 +1,122 @@
 /**
  * @file DiagnosticCodes.hpp
- * 
- * @responsibility Numeric error codes grouped by compilation phase (1000+).
- * 
- * @usecase Bridges the human-readable errors to unique numeric identifiers.
+ * @brief Unique numeric error codes grouped by compilation phase.
  *
- * @note This file MUST be synchronized with docs/LUC_DIAGNOSTIC_CODES.md.
- *       New codes should be documented in the registry before being added here.
+ * Codes are sequential within each group (starting at a base). The numeric
+ * value is used as an index into a static message table.
+ *
+ * @see DiagnosticMessages.cpp
  */
 
 #pragma once
-
 #include <cstdint>
 
-// ─────────────────────────────────────────────────────────────────────────────
-// DiagCode  — Unique numeric identifier for every possible compiler issue
-//
-// The codes are grouped into logical ranges to make identification easier:
-//   - 0xxx: System / Environment / Driver
-//   - 1xxx: Lexical Analysis (Scanner)
-//   - 2xxx: Syntax Analysis (Parser)
-//   - 3xxx: Semantic Analysis (Type Checker)
-//   - 4xxx: Code Generation (Backend)
-// ─────────────────────────────────────────────────────────────────────────────
 enum class DiagCode : uint32_t {
-    // ── 0000-0999: System / Driver ───────────────────────────────────────────
-    E0001 = 0001, ///< File not found or inaccessible.
+    // ========== 0000–0999: System / Driver ==========
+    E0001 = 0,   ///< File not found or inaccessible.
 
-    // ── 1000-1999: Lexical ───────────────────────────────────────────────────
-    E1001 = 1001, ///< Invalid character encountered in source.
-    E1002 = 1002, ///< String literal was not terminated before EOF.
+    // ========== 1000–1999: Lexical ==========
+    E1001 = 1000,  ///< Invalid character encountered.
+    E1002,         ///< Unterminated string literal.
+    E1003,         ///< Unterminated raw string literal.
+    E1004,         ///< Mismatched '#' count in raw string literal.
+    E1005,         ///< Invalid escape sequence.
+    E1006,         ///< Unterminated block comment.
 
-    // ── 2000-2999: Syntax ────────────────────────────────────────────────────
-    E2001 = 2001, ///< Expected a specific token but found another.
-    E2002 = 2002, ///< Token found in a context where it is not allowed.
-    E2003 = 2003, ///< Expected an IDENTIFIER (e.g., name of a struct or enum).
-    E2004 = 2004, ///< Expected the 'in' keyword in a for-loop.
-    E2005 = 2005, ///< Expected a type annotation (e.g., int, bool, or custom).
-    E2006 = 2006, ///< Invalid context for a statement or expression.
-    E2007 = 2007, ///< Duplicate clause in switch or match.
-    E2008 = 2008, ///< Expected an expression but found none.
-    E2009 = 2009, ///< Literal value is malformed (e.g., invalid hex sequence).
-    E2010 = 2010, ///< Unknown or unsupported '@' attribute name.
-    E2011 = 2011, ///< Wrong number of arguments for '@' attribute.
-    E2012 = 2012, ///< Unexpected keyword found in a position where an identifier or type was expected.
-    E2999 = 2999, ///< Generic fallback for syntax errors.
+    // ========== 2000–2999: Syntax ==========
+    E2001 = 2000,  ///< Expected token X but found Y.
+    E2002,         ///< Token not allowed in this context.
+    E2003,         ///< Expected an identifier.
+    E2004,         ///< Expected 'in' in for‑loop.
+    E2005,         ///< Expected a type annotation.
+    E2006,         ///< Invalid statement/expression context.
+    E2007,         ///< Duplicate switch/match clause.
+    E2008,         ///< Expected an expression.
+    E2009,         ///< Malformed literal.
+    E2010,         ///< Unknown '@' attribute.
+    E2011,         ///< Wrong argument count for '@' attribute.
+    E2012,         ///< Unexpected keyword.
+    E2014,         ///< Invalid visibility modifier in local declaration.
+    E2015,         ///< '~' qualifier on anonymous function.
+    E2016,         ///< '?' on inline function type – use alias.
+    E2017,         ///< Multiple parameter groups after '->'.
+    E2018,         ///< Missing '->' in from entry.
+    E2019,         ///< Missing '=' before function body.
+    E2020,         ///< '!' only allowed in pipeline step.
+    E2021,         ///< Nullable chain '?.' missing '??'.
+    E2022,         ///< 'default' arm not last in match.
+    E2024,         ///< Method not found on receiver.
+    E2025,         ///< Field access on non‑struct/enum.
+    E2026,         ///< Chained comparison without 'and'.
 
-    // ── 3000-3999: Semantic ──────────────────────────────────────────────────
-    E3001 = 3001, ///< Identifier used before it was declared.
-    E3002 = 3002, ///< Type mismatch between expected and actual expression.
-    E3003 = 3003, ///< Mismatch between function parameters and call arguments.
-    E3004 = 3004, ///< Attempted to assign to an immutable value.
-    E3005 = 3005, ///< Symbol already declared in this scope.
-    E3006 = 3006, ///< Missing 'main' entry point.
-    E3007 = 3007, ///< Invalid signature for the 'main' function.
-    E3008 = 3008, ///< Implicit type conversion not allowed; suggest explicit casting.
-    E3009 = 3009, ///< Unknown '@' intrinsic name.
-    E3010 = 3010, ///< Wrong argument count or type for '@' intrinsic.
-    E3011 = 3011, ///< Cannot use '==' on struct type; implement Equatable<T> and use :equals() instead.
-    E3012 = 3012, ///< Cannot use '==' on function type; function bodies are incomparable.
-    E3013 = 3013, ///< Cannot use '==' on array type; use collection library comparison function.
-    E3014 = 3014, ///< Chained comparison not allowed; use 'and' explicitly: 0 < x and x < 10.
-    E3015 = 3015, ///< '@aot' and '@jit' are mutually exclusive on the same declaration.
-    E3016 = 3016, ///< '@aot' / '@jit' are only valid on the 'main' entry point.
-    E3017 = 3017, ///< Generic signature mismatch in 'impl' block.
+    // ========== 3000–3999: Semantic ==========
+    E3001 = 3000,  ///< Undeclared identifier.
+    E3002,         ///< Type mismatch.
+    E3003,         ///< Parameter/argument count mismatch.
+    E3004,         ///< Assignment to immutable value.
+    E3005,         ///< Symbol already declared.
+    E3006,         ///< Missing 'main' entry point.
+    E3007,         ///< Invalid 'main' signature.
+    E3008,         ///< Implicit conversion disallowed.
+    E3009,         ///< Unknown '#...' intrinsic.
+    E3010,         ///< Wrong argument count/type for intrinsic.
+    E3011,         ///< '==' on struct – use :equals().
+    E3012,         ///< '==' on function type.
+    E3013,         ///< '==' on array type.
+    E3014,         ///< Chained comparison.
+    E3015,         ///< '@aot' and '@jit' together.
+    E3016,         ///< '@aot'/'@jit' not on 'main'.
+    E3017,         ///< Generic signature mismatch in impl.
+    E3018,         ///< Impl target must be named type.
+    E3019,         ///< Generic arity mismatch in impl.
+    E3020,         ///< Impl on primitive/enum cannot have generics.
+    E3021,         ///< From target must be named type.
+    E3022,         ///< From entry return type mismatch.
+    E3023,         ///< Method not found for receiver.
+    E3024,         ///< Trait conformance missing method(s).
+    E3025,         ///< Method signature mismatch with trait.
+    E3026,         ///< Duplicate method name in impls.
+    E3027,         ///< 'await' outside ~async.
+    E3028,         ///< ~async call without await.
+    E3029,         ///< 'return' in ~parallel body.
+    E3030,         ///< Write to outer variable in ~parallel.
+    E3031,         ///< break/continue outside loop.
+    E3032,         ///< Multi‑assign RHS value count mismatch.
+    E3033,         ///< Assigning to non‑lvalue.
+    E3034,         ///< 'const' missing initialiser.
+    E3035,         ///< 'const' initialiser not compile‑time constant.
+    E3036,         ///< 'nil' assigned to non‑nullable type.
+    E3037,         ///< Double nullable (e.g., int??).
+    E3038,         ///< ~nullable call without nil guard.
+    E3039,         ///< Generic call missing type arguments.
+    E3040,         ///< Type argument count mismatch.
+    E3041,         ///< 'is' expression outside conditional.
+    E3042,         ///< Pattern bind name conflicts.
+    E3043,         ///< Unconditional bind after specific patterns.
 
-    // ── 4000-4999: Code Generation ───────────────────────────────────────────
-    E4001 = 4001, ///< Target machine initialisation failed (unknown target triple).
-    E4002 = 4002, ///< Failed to open output file for AOT object/assembly emission.
-    E4003 = 4003, ///< AOT object file emission failed (LLVM pass pipeline error).
-    E4004 = 4004, ///< Linker invocation failed (non-zero exit code).
-    E4005 = 4005, ///< JIT symbol lookup failed (symbol not found after compilation).
-    E4006 = 4006, ///< Module verification failed (malformed LLVM IR).
-    E4007 = 4007, ///< Generic instantiation error (type arg count mismatch vs declaration).
+    // ========== 4000–4999: Backend / Codegen ==========
+    E4001 = 4000,  ///< Target machine init failed.
+    E4002,         ///< Cannot open output file.
+    E4003,         ///< AOT emission failed.
+    E4004,         ///< Linker invocation failed.
+    E4005,         ///< JIT symbol lookup failed.
+    E4006,         ///< Module verification failed.
+    E4007,         ///< Generic instantiation error.
+    E4008,         ///< Unresolved generic type.
+    E4009,         ///< Unimplemented intrinsic.
 
-    // ── W5000-W5999: Semantic Warnings ──────────────────────────────────────
-    // Warning codes occupy the 5000+ range to avoid collision with error codes.
-    // Displayed as W3001, W3002, etc. in diagnostic output.
-    W3001 = 5001, ///< '@extern' function declared with 'let' — should be 'const'.
-    W3002 = 5002, ///< '@extern' function has an empty body '= {}' that will be ignored.
-    W3003 = 5003, ///< Performing operation on nullable type; value may be nil at runtime.
+    // ========== 5000–5999: Warnings ==========
+    // Warning codes occupy the 5000+ range; they are displayed as W3xxx.
+    W3001 = 5000,  ///< @extern with 'let' (should be 'const').
+    W3002,         ///< @extern has empty body.
+    W3003,         ///< Operation on nullable may be nil.
+    W3004,         ///< Unreachable code after unconditional bind.
+    W3005,         ///< 'default' arm unreachable.
+    W3006,         ///< Non‑void result discarded.
+    W3007,         ///< Method call on literal.
+    W3008,         ///< Primitive impl shadows built‑in.
 };
+
+// Ensure no overflow (last code is below 65535)
+static_assert(static_cast<uint32_t>(DiagCode::W3008) < 6000,
+              "DiagCode out of expected range");

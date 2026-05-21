@@ -10,13 +10,13 @@
 
 #include "Tokens.hpp"
 #include "ast/BaseAST.hpp"
+#include "ast/support/InternedString.hpp"
+#include "DiagnosticCodes.hpp"
 #include <string>
+#include <vector>
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DiagnosticSeverity  — Categorizes the impact of the diagnostic
-//
-// Defines the severity level of an issue, from informational notes up to fatal 
-// errors that will halt compilation immediately.
 // ─────────────────────────────────────────────────────────────────────────────
 enum class DiagnosticSeverity {
     Note,    ///< Informational message or a hint.
@@ -27,9 +27,6 @@ enum class DiagnosticSeverity {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DiagnosticCategory  — Identifies which compiler sub-system emitted the diagnostic
-//
-// Maps the error to the logical phase of the compiler (e.g. Lexer, Parser, 
-// Semantic, or Backend errors).
 // ─────────────────────────────────────────────────────────────────────────────
 enum class DiagnosticCategory {
     General,  ///< Misc or driver errors.
@@ -43,12 +40,14 @@ enum class DiagnosticCategory {
 // Diagnostic  — The data packet for a single reporter issue
 //
 // Carries all necessary information to present a compiler error or warning to 
-// the user, including severity, phase, location, error code, and message.
+// the user, including severity, phase, location, file path, error code, and
+// format arguments for the message template.
 // ─────────────────────────────────────────────────────────────────────────────
 struct Diagnostic {
-    DiagnosticSeverity severity; ///< Impact level (Error, Warning, etc.).
-    DiagnosticCategory category; ///< Compiler phase (Lexical, Syntax, etc.).
-    SourceLocation location;     ///< Where in the source the issue was found.
-    uint32_t code;               ///< Unique numeric error code (see DiagnosticCodes.hpp).
-    std::string message;         ///< Human-readable description of the issue.
+    DiagnosticSeverity severity;          ///< Impact level (Error, Warning, etc.).
+    DiagnosticCategory category;          ///< Compiler phase (Lexical, Syntax, etc.).
+    InternedString file;                  ///< Source file path (interned).
+    SourceLocation location;              ///< Line/column within the file.
+    DiagCode code;                        ///< Unique numeric error code.
+    std::vector<std::string> args;        ///< Format arguments for %s placeholders.
 };

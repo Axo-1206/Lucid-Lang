@@ -33,6 +33,7 @@ add_executable(luc-comp
     src/main.cpp 
     src/lexer/Lexer.cpp
     src/diagnostics/DiagnosticEngine.cpp
+    src/diagnostics/DiagnosticMessages.cpp
     src/parser/Parser.cpp
     src/parser/ParserExpr.cpp
     src/parser/ParserDecl.cpp

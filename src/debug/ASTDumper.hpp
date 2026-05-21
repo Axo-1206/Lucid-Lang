@@ -17,6 +17,9 @@ class ASTDumper : public ASTVisitor {
     void visitChild(BaseAST* child, const std::string& label = "");
     std::string formatType(struct TypeAST* type);
 
+    // Helper to format a single parameter group (uses formatType)
+    std::string formatParamGroup(const ArenaSpan<ParamPtr>& params);
+
 private:
     void printLine(const std::string& text);
     void printKV(const std::string& key, const std::string& value);
@@ -54,6 +57,7 @@ public:
     void visit(EnumVariantAST& node) override;
     void visit(TraitMethodAST& node) override;
     void visit(TraitDeclAST& node) override;
+    void visit(TraitRefAST& node) override;
     void visit(ImplDeclAST& node) override;
     void visit(MethodDeclAST& node) override;
     void visit(FromDeclAST& node) override;
@@ -123,6 +127,7 @@ public:
 
     // ── Compiler Directive nodes (@) ──────────────────────────────────────────
     void visit(AttributeAST& node) override;
+    void visit(AttributeArgAST& node) override;
     void visit(IntrinsicCallExprAST& node) override;
 };
 
