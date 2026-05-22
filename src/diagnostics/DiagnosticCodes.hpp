@@ -48,6 +48,7 @@ enum class DiagCode : uint32_t {
     E2024,         ///< Method not found on receiver.
     E2025,         ///< Field access on non‑struct/enum.
     E2026,         ///< Chained comparison without 'and'.
+    E2027,         ///< Attributes not allowed on multi-variable declaration.
 
     // ========== 3000–3999: Semantic ==========
     E3001 = 3000,  ///< Undeclared identifier.

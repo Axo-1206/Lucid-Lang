@@ -602,7 +602,7 @@ struct ParamAST : BaseAST {
 };
 
 using ParamPtr      = ASTPtr<ParamAST>;
-using ParamGroup    = ArenaSpan<ParamPtr>;
+using ParamGroup = std::vector<ParamPtr>;
 using GenericParamPtr = ASTPtr<GenericParamAST>;
 
 // ─────────────────────────────────────────────────────────────────────────────

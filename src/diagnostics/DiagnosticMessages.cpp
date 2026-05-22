@@ -45,6 +45,7 @@ std::string_view getMessage(DiagCode code) {
         case DiagCode::E2024: return "Method '%s' not found on type '%s'.";
         case DiagCode::E2025: return "Cannot access field '%s' on non-struct/enum type.";
         case DiagCode::E2026: return "Chained comparison not allowed; use 'and' explicitly: 0 < x and x < 10.";
+        case DiagCode::E2027: return "Attributes cannot be used on multi‑variable declarations.";
 
         // Semantic
         case DiagCode::E3001: return "Identifier '%s' used before it was declared.";

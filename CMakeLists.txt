@@ -39,6 +39,8 @@ add_executable(luc-comp
     src/parser/ParserDecl.cpp
     src/parser/ParserType.cpp
     src/parser/ParserStmt.cpp
+    src/parser/ParserLookahead.cpp
+    src/parser/ParserPattern.cpp
     src/semantic/SymbolTable.cpp
     src/semantic/SemanticAnalyzer.cpp
     src/semantic/TypeResolver.cpp
