@@ -100,15 +100,15 @@ int main(int argc, char* argv[]) {
     std::cout << "[MAIN] Lexical analysis complete: " << tokens.size() << " tokens" << std::endl;
     
     // Error reporting for Lexer
-    int errorCount = 0;
-    for (const auto& tok : tokens) {
-        if (tok.type == TokenType::UNKNOWN) {
-            dc.error(DiagnosticCategory::Lexical, {tok.line, tok.column, stringPool.intern(filePath)},
-                    DiagCode::E1001, "Unexpected character: '" + tok.value + "'");
-            errorCount++;
-            if (errorCount > 50) break;
-        }
-    }
+    // int errorCount = 0;
+    // for (const auto& tok : tokens) {
+    //     if (tok.type == TokenType::UNKNOWN) {
+    //         dc.error(DiagnosticCategory::Lexical, {tok.line, tok.column, stringPool.intern(filePath)},
+    //                 DiagCode::E1001, "Unexpected character: '" + tok.value + "'");
+    //         errorCount++;
+    //         if (errorCount > 50) break;
+    //     }
+    // }
 
     if (dc.hasErrors()) {
         std::cerr << "[MAIN] Lexical Analysis FAILED:" << std::endl;

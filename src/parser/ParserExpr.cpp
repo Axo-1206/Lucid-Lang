@@ -866,8 +866,8 @@ ExprPtr Parser::parseAnonFuncExpr() {
     while (ts_.check(TokenType::LPAREN)) {
         ParamGroup group = parseParamGroup();
         groupSizes.push_back(group.size());
-        for (size_t i = 0; i < group.size(); ++i) {
-            allParams.push_back(group[i]);
+        for (auto& p : group) {
+            allParams.push_back(std::move(p));
         }
     }
     auto paramsBuilder = arena_.makeBuilder<ParamPtr>();

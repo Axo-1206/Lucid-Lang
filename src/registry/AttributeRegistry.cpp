@@ -52,87 +52,38 @@ bool validateDeprecated(const ArenaSpan<AttributeArgPtr>& args,
 }
 
 const BuiltinAttribute kBuiltinAttrs[] = {
-    {
-        .name = "extern",
-        .contexts = AttributeContext::Func | AttributeContext::Var,
-        .takesArgs = true,
-        .minArgs = 0,
-        .maxArgs = 2,
-        .argKinds = AttrArgKind::String,
-        .requiresConst = true,
-        .exclusiveWith = "",
-        .errorCode = DiagCode::E2010
-    },
-    {
-        .name = "packed",
-        .contexts = AttributeContext::Struct,
-        .takesArgs = false,
-        .minArgs = 0,
-        .maxArgs = 0,
-        .argKinds = AttrArgKind::None,
-        .requiresConst = false,
-        .exclusiveWith = "",
-        .errorCode = DiagCode::E2010
-    },
-    {
-        .name = "inline",
-        .contexts = AttributeContext::Func,
-        .takesArgs = false,
-        .minArgs = 0,
-        .maxArgs = 0,
-        .argKinds = AttrArgKind::None,
-        .requiresConst = false,
-        .exclusiveWith = "noinline",
-        .errorCode = DiagCode::E2010
-    },
-    {
-        .name = "noinline",
-        .contexts = AttributeContext::Func,
-        .takesArgs = false,
-        .minArgs = 0,
-        .maxArgs = 0,
-        .argKinds = AttrArgKind::None,
-        .requiresConst = false,
-        .exclusiveWith = "inline",
-        .errorCode = DiagCode::E2010
-    },
-    {
-        .name = "deprecated",
-        .contexts = AttributeContext::Func | AttributeContext::Var | 
-                    AttributeContext::Struct | AttributeContext::Impl | 
-                    AttributeContext::Enum | AttributeContext::Trait |
-                    AttributeContext::From | AttributeContext::Package |
-                    AttributeContext::TypeAlias,
-        .takesArgs = true,
-        .minArgs = 0,
-        .maxArgs = 1,
-        .argKinds = AttrArgKind::String,
-        .requiresConst = false,
-        .exclusiveWith = "",
-        .errorCode = DiagCode::E2010
-    },
-    {
-        .name = "aot",
-        .contexts = AttributeContext::Main,
-        .takesArgs = false,
-        .minArgs = 0,
-        .maxArgs = 0,
-        .argKinds = AttrArgKind::None,
-        .requiresConst = false,
-        .exclusiveWith = "jit",
-        .errorCode = DiagCode::E3015
-    },
-    {
-        .name = "jit",
-        .contexts = AttributeContext::Main,
-        .takesArgs = false,
-        .minArgs = 0,
-        .maxArgs = 0,
-        .argKinds = AttrArgKind::None,
-        .requiresConst = false,
-        .exclusiveWith = "aot",
-        .errorCode = DiagCode::E3015
-    },
+    // @extern
+    { "extern", 
+      AttributeContext::Func | AttributeContext::Var,
+      true, 0, 2, AttrArgKind::String, true, "", DiagCode::E2010 },
+    // @packed
+    { "packed",
+      AttributeContext::Struct,
+      false, 0, 0, AttrArgKind::None, false, "", DiagCode::E2010 },
+    // @inline
+    { "inline",
+      AttributeContext::Func,
+      false, 0, 0, AttrArgKind::None, false, "noinline", DiagCode::E2010 },
+    // @noinline
+    { "noinline",
+      AttributeContext::Func,
+      false, 0, 0, AttrArgKind::None, false, "inline", DiagCode::E2010 },
+    // @deprecated
+    { "deprecated",
+      AttributeContext::Func | AttributeContext::Var | 
+      AttributeContext::Struct | AttributeContext::Impl | 
+      AttributeContext::Enum | AttributeContext::Trait |
+      AttributeContext::From | AttributeContext::Package |
+      AttributeContext::TypeAlias,
+      true, 0, 1, AttrArgKind::String, false, "", DiagCode::E2010 },
+    // @aot
+    { "aot",
+      AttributeContext::Main,
+      false, 0, 0, AttrArgKind::None, false, "jit", DiagCode::E3015 },
+    // @jit
+    { "jit",
+      AttributeContext::Main,
+      false, 0, 0, AttrArgKind::None, false, "aot", DiagCode::E3015 },
 };
 
 const size_t kNumBuiltinAttrs = sizeof(kBuiltinAttrs) / sizeof(kBuiltinAttrs[0]);
@@ -159,7 +110,8 @@ void AttributeRegistry::setStringPool(StringPool& pool) {
     byId.clear();
     nameToId.clear();
 
-    for (const auto& builtin : kBuiltinAttrs) {
+    for (size_t i = 0; i < kNumBuiltinAttrs; ++i) {
+        const auto& builtin = kBuiltinAttrs[i];
         InternedString id = pool.intern(std::string(builtin.name));
         
         AttributeInfo info;
