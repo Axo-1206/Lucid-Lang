@@ -41,15 +41,15 @@ add_executable(luc-comp
     src/parser/ParserStmt.cpp
     src/parser/ParserLookahead.cpp
     src/parser/ParserPattern.cpp
-    # src/semantic/SymbolTable.cpp
-    # src/semantic/SemanticAnalyzer.cpp
-    # src/semantic/TypeResolver.cpp
-    # src/semantic/SemanticCollector.cpp
-    # src/semantic/SemanticDecl.cpp
-    # src/semantic/SemanticExpr.cpp
-    # src/semantic/SemanticStmt.cpp
-    # src/semantic/TypeChecker.cpp
-    # src/semantic/Annotator.cpp
+    src/semantic/SymbolTable.cpp
+    src/semantic/SemanticAnalyzer.cpp
+    src/semantic/TypeResolver.cpp
+    src/semantic/SemanticCollector.cpp
+    src/semantic/SemanticDecl.cpp
+    src/semantic/SemanticExpr.cpp
+    src/semantic/SemanticStmt.cpp
+    src/semantic/TypeChecker.cpp
+    src/semantic/Annotator.cpp
     src/debug/ASTDumper.cpp
     src/registry/BuiltinMethodRegistry.cpp
     src/registry/QualifierRegistry.cpp

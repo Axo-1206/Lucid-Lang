@@ -69,8 +69,7 @@ static void checkExprStmt(ExprStmtAST& node, SemanticContext& ctx) {
         // For simplicity, we check if the expression is a CallExprAST or has side effects.
         // We'll emit a warning for any non-void expression that isn't a call to a void function.
         // Actually, the language rule: discarding a non-void result is a warning.
-        ctx.dc.warning(DiagnosticCategory::Semantic, node.loc, DiagCode::W3003,
-                       "unused result of expression; value discarded");
+        ctx.warning(node.loc, DiagCode::W3003, {"unused result of expression; value discarded"});
     }
 }
 
@@ -101,8 +100,7 @@ static void checkIfStmt(IfStmtAST& node, SemanticContext& ctx, TypeAST* expected
     if (!condType) return;
 
     if (!ctx.checker.isBooleanCompatible(condType)) {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.condition->loc, DiagCode::E3002,
-                     "if condition must be boolean");
+        ctx.error(node.condition->loc, DiagCode::E3002, {"if condition must be boolean"});
         return;
     }
 
@@ -126,8 +124,7 @@ static void checkWhileStmt(WhileStmtAST& node, SemanticContext& ctx, TypeAST* ex
     if (!condType) return;
 
     if (!ctx.checker.isBooleanCompatible(condType)) {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.condition->loc, DiagCode::E3002,
-                     "while condition must be boolean");
+        ctx.error(node.condition->loc, DiagCode::E3002, {"while condition must be boolean"});
         return;
     }
 
@@ -159,12 +156,11 @@ static void checkForStmt(ForStmtAST& node, SemanticContext& ctx, TypeAST* expect
         elementType = ctx.arena.make<PrimitiveTypeAST>(PrimitiveKind::Int).get();
     } else if (iterableType->isa<NullableTypeAST>()) {
         // Nullable iterable not allowed
-        ctx.dc.error(DiagnosticCategory::Semantic, node.iterable->loc, DiagCode::E3002,
-                     "for loop iterable cannot be nullable");
+        ctx.error(node.iterable->loc, DiagCode::E3002, {"for loop iterable cannot be nullable"});
         return;
     } else {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.iterable->loc, DiagCode::E3002,
-                     "for loop iterable must be an array, slice, dynamic array, or range");
+        ctx.error(node.iterable->loc, DiagCode::E3002,
+            {"for loop iterable must be an array, slice, dynamic array, or range"});
         return;
     }
 
@@ -174,10 +170,10 @@ static void checkForStmt(ForStmtAST& node, SemanticContext& ctx, TypeAST* expect
         varType = ctx.resolver.resolveType(node.iterVar->type.get());
         if (!varType) return;
         if (!ctx.checker.isAssignable(elementType, varType)) {
-            ctx.dc.error(DiagnosticCategory::Semantic, node.iterVar->loc, DiagCode::E3002,
-                         "iteration variable type mismatch: expected " +
+            ctx.error(node.iterVar->loc, DiagCode::E3002,
+                {"iteration variable type mismatch: expected " +
                          LucDebug::kindToString(elementType->kind) + ", got " +
-                         LucDebug::kindToString(varType->kind));
+                         LucDebug::kindToString(varType->kind)});
             return;
         }
     } else {
@@ -198,9 +194,9 @@ static void checkForStmt(ForStmtAST& node, SemanticContext& ctx, TypeAST* expect
         varSym.decl = node.iterVar.get();
         varSym.loc = node.iterVar->loc;
         if (!ctx.symbols.declare(varSym)) {
-            ctx.dc.error(DiagnosticCategory::Semantic, node.iterVar->loc, DiagCode::E3005,
-                         "duplicate declaration of loop variable '" +
-                         std::string(ctx.pool.lookup(node.iterVar->name)) + "'");
+            ctx.error(node.iterVar->loc, DiagCode::E3005,
+                {"duplicate declaration of loop variable '" +
+                         std::string(ctx.pool.lookup(node.iterVar->name)) + "'"});
         }
     }
 
@@ -210,8 +206,7 @@ static void checkForStmt(ForStmtAST& node, SemanticContext& ctx, TypeAST* expect
         if (!stepType) {
             // error already reported
         } else if (!ctx.checker.isIntegerType(stepType)) {
-            ctx.dc.error(DiagnosticCategory::Semantic, node.step->loc, DiagCode::E3002,
-                         "step expression must be integer");
+            ctx.error(node.step->loc, DiagCode::E3002, {"step expression must be integer"});
         }
     }
 
@@ -232,8 +227,7 @@ static void checkReturnStmt(ReturnStmtAST& node, SemanticContext& ctx, TypeAST* 
     if (node.values.empty()) {
         // Bare return
         if (expectedReturn != nullptr) {
-            ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                         "bare return in non-void function");
+            ctx.error(node.loc, DiagCode::E3002, {"bare return in non-void function"});
         }
         return;
     }
@@ -244,22 +238,20 @@ static void checkReturnStmt(ReturnStmtAST& node, SemanticContext& ctx, TypeAST* 
         TypeAST* retType = checkExpr(node.values[0].get(), ctx);
         if (!retType) return;
         if (expectedReturn == nullptr) {
-            ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                         "return value in void function");
+            ctx.error(node.loc, DiagCode::E3002, {"return value in void function"});
             return;
         }
         if (!ctx.checker.isAssignable(retType, expectedReturn)) {
-            ctx.dc.error(DiagnosticCategory::Semantic, node.values[0]->loc, DiagCode::E3002,
-                         "return type mismatch: expected " +
+            ctx.error(node.values[0]->loc, DiagCode::E3002,
+                {"return type mismatch: expected " +
                          LucDebug::kindToString(expectedReturn->kind) + ", got " +
-                         LucDebug::kindToString(retType->kind));
+                         LucDebug::kindToString(retType->kind)});
         }
     } else {
         // Multi-return – need to compare with function's multiple return types
         // For simplicity, we'll just check that the number matches, but proper
         // implementation would require the function signature's returnTypes vector.
-        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                     "multiple return values not yet fully supported");
+        ctx.error(node.loc, DiagCode::E3002, {"multiple return values not yet fully supported"});
     }
 }
 
@@ -268,12 +260,10 @@ static void checkReturnStmt(ReturnStmtAST& node, SemanticContext& ctx, TypeAST* 
 // ─────────────────────────────────────────────────────────────────────────────
 static void checkBreakStmt(BreakStmtAST& node, SemanticContext& ctx) {
     if (ctx.loopDepth == 0) {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                     "break statement outside loop");
+        ctx.error(node.loc, DiagCode::E3002, {"break statement outside loop"});
     }
     if (ctx.parallelDepth > 0) {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                     "break not allowed inside parallel block or parallel for");
+        ctx.error(node.loc, DiagCode::E3002, {"break not allowed inside parallel block or parallel for"});
     }
 }
 
@@ -282,12 +272,10 @@ static void checkBreakStmt(BreakStmtAST& node, SemanticContext& ctx) {
 // ─────────────────────────────────────────────────────────────────────────────
 static void checkContinueStmt(ContinueStmtAST& node, SemanticContext& ctx) {
     if (ctx.loopDepth == 0) {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                     "continue statement outside loop");
+        ctx.error(node.loc, DiagCode::E3002, {"continue statement outside loop"});
     }
     if (ctx.parallelDepth > 0) {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                     "continue not allowed inside parallel block or parallel for");
+        ctx.error(node.loc, DiagCode::E3002, {"continue not allowed inside parallel block or parallel for"});
     }
 }
 
@@ -300,8 +288,7 @@ static void checkSwitchStmt(SwitchStmtAST& node, SemanticContext& ctx, TypeAST* 
 
     // Value comparability required for case values
     if (!ctx.checker.isValueComparable(subjectType, &ctx.symbols)) {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.subject->loc, DiagCode::E3002,
-                     "switch subject type does not support value equality");
+        ctx.error(node.subject->loc, DiagCode::E3002, {"switch subject type does not support value equality"});
         return;
     }
 
@@ -313,8 +300,7 @@ static void checkSwitchStmt(SwitchStmtAST& node, SemanticContext& ctx, TypeAST* 
             TypeAST* valType = checkExpr(valExpr.get(), ctx);
             if (!valType) continue;
             if (!ctx.checker.isAssignable(valType, subjectType)) {
-                ctx.dc.error(DiagnosticCategory::Semantic, valExpr->loc, DiagCode::E3002,
-                             "case value type mismatch");
+                ctx.error(valExpr->loc, DiagCode::E3002, {"case value type mismatch"});
             }
             // Verify that the case value is a constant (if it's a literal, it's fine)
             // We could also check for duplicate values, but that's more complex.
@@ -341,8 +327,7 @@ static void checkDoWhileStmt(DoWhileStmtAST& node, SemanticContext& ctx, TypeAST
     }
     TypeAST* condType = checkExpr(node.condition.get(), ctx);
     if (condType && !ctx.checker.isBooleanCompatible(condType)) {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.condition->loc, DiagCode::E3002,
-                     "do-while condition must be boolean");
+        ctx.error(node.condition->loc, DiagCode::E3002, {"do-while condition must be boolean"});
     }
     ctx.exitLoop();
 }
@@ -365,9 +350,9 @@ static void checkMultiVarDecl(MultiVarDeclAST& node, SemanticContext& ctx) {
         TypeAST* varType = ctx.resolver.resolveType(node.vars[0].second.get());
         if (!varType) return;
         if (!ctx.checker.isAssignable(rhsType, varType)) {
-            ctx.dc.error(DiagnosticCategory::Semantic, node.rhs->loc, DiagCode::E3002,
-                         "initializer type mismatch for variable '" +
-                         std::string(ctx.pool.lookup(node.vars[0].first)) + "'");
+            ctx.error(node.rhs->loc, DiagCode::E3002,
+                {"initializer type mismatch for variable '" +
+                         std::string(ctx.pool.lookup(node.vars[0].first)) + "'"});
             return;
         }
         // Declare the variable
@@ -380,15 +365,15 @@ static void checkMultiVarDecl(MultiVarDeclAST& node, SemanticContext& ctx) {
         varSym.decl = &node;
         varSym.loc = node.loc;
         if (!ctx.symbols.declare(varSym)) {
-            ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3005,
-                         "duplicate declaration of variable '" +
-                         std::string(ctx.pool.lookup(node.vars[0].first)) + "'");
+            ctx.error(node.loc, DiagCode::E3005,
+                {"duplicate declaration of variable '" +
+                         std::string(ctx.pool.lookup(node.vars[0].first)) + "'"});
         }
     } else {
         // Multi-variable declaration: need to get multiple return types from RHS
         // For now, we report not fully supported
-        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                     "multi-variable declaration with more than one variable not fully supported");
+        ctx.error(node.loc, DiagCode::E3002,
+            {"multi-variable declaration with more than one variable not fully supported"});
     }
 }
 
@@ -398,8 +383,7 @@ static void checkMultiVarDecl(MultiVarDeclAST& node, SemanticContext& ctx) {
 static void checkMultiAssignStmt(MultiAssignStmtAST& node, SemanticContext& ctx) {
     // Similar to multi-var decl but without declaration
     if (node.lhs.empty()) {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                     "multi-assignment with no left-hand side");
+        ctx.error(node.loc, DiagCode::E3002, {"multi-assignment with no left-hand side"});
         return;
     }
 
@@ -411,12 +395,10 @@ static void checkMultiAssignStmt(MultiAssignStmtAST& node, SemanticContext& ctx)
         TypeAST* lhsType = checkExpr(node.lhs[0].get(), ctx);
         if (!lhsType) return;
         if (!ctx.checker.isAssignable(rhsType, lhsType)) {
-            ctx.dc.error(DiagnosticCategory::Semantic, node.rhs->loc, DiagCode::E3002,
-                         "assignment type mismatch");
+            ctx.error(node.rhs->loc, DiagCode::E3002, {"assignment type mismatch"});
         }
     } else {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                     "multi-assignment with more than one left-hand side not fully supported");
+        ctx.error(node.loc, DiagCode::E3002, {"multi-assignment with more than one left-hand side not fully supported"});
     }
 }
 
@@ -467,8 +449,8 @@ void checkStmt(StmtAST* node, SemanticContext& ctx, TypeAST* expectedReturn) {
             checkMultiAssignStmt(*node->as<MultiAssignStmtAST>(), ctx);
             break;
         default:
-            ctx.dc.error(DiagnosticCategory::Semantic, node->loc, DiagCode::E3002,
-                         "unsupported statement kind: " + LucDebug::kindToString(node->kind));
+            ctx.error(node->loc, DiagCode::E3002,
+                {"unsupported statement kind: " + LucDebug::kindToString(node->kind)});
             break;
     }
 }

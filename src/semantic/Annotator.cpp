@@ -117,11 +117,7 @@ private:
         for (auto& attr : node.attributes) walk(attr.get());
         for (auto& gp : node.genericParams) walk(gp.get());
         // Parameters are in node.sig.paramGroups – they are ParamAST (BaseAST).
-        for (const auto& group : node.sig.paramGroups) {
-            for (const auto& param : group) {
-                walk(param.get());
-            }
-        }
+        for (const auto& param : node.sig.allParams) walk(param.get());
         walk(node.body.get());
         node.isConst = (node.keyword == DeclKeyword::Const);
         logConst("FuncDecl", std::string(pool_.lookup(node.name)), node.isConst);
@@ -156,9 +152,7 @@ private:
     void visit(TraitMethodAST& node) override {
         LUC_LOG_SEMANTIC_EXTREME("visit(TraitMethodAST): name=" << pool_.lookup(node.name));
         // Trait methods have no bodies; parameters are in node.sig.
-        for (const auto& group : node.sig.paramGroups) {
-            for (const auto& param : group) walk(param.get());
-        }
+        for (const auto& param : node.sig.allParams) walk(param.get());
         // No const for trait methods (they are just signatures)
     }
 
@@ -180,9 +174,7 @@ private:
 
     void visit(MethodDeclAST& node) override {
         LUC_LOG_SEMANTIC_EXTREME("visit(MethodDeclAST): name=" << pool_.lookup(node.name));
-        for (const auto& group : node.sig.paramGroups) {
-            for (const auto& param : group) walk(param.get());
-        }
+        for (const auto& param : node.sig.allParams) walk(param.get());
         walk(node.body.get());
         node.isConst = false; // Methods are never compile-time constants.
     }
@@ -199,9 +191,7 @@ private:
 
     void visit(FromEntryAST& node) override {
         LUC_LOG_SEMANTIC_EXTREME("visit(FromEntryAST)");
-        for (const auto& group : node.sig.paramGroups) {
-            for (const auto& param : group) walk(param.get());
-        }
+        for (const auto& param : node.sig.allParams) walk(param.get());
         if (node.returnType) walk(node.returnType.get());
         walk(node.body.get());
         node.isConst = false;
@@ -363,9 +353,7 @@ private:
 
     void visit(AnonFuncExprAST& node) override {
         LUC_LOG_SEMANTIC_EXTREME("visit(AnonFuncExprAST)");
-        for (const auto& group : node.sig.paramGroups) {
-            for (const auto& param : group) walk(param.get());
-        }
+        for (const auto& param : node.sig.allParams) walk(param.get());
         walk(node.body.get());
         node.isConst = false;
     }
@@ -563,9 +551,7 @@ private:
     void visit(RefTypeAST& node) override { if (node.inner) walk(node.inner.get()); }
     void visit(PtrTypeAST& node) override { if (node.inner) walk(node.inner.get()); }
     void visit(FuncTypeAST& node) override {
-        for (const auto& group : node.sig.paramGroups) {
-            for (const auto& param : group) walk(param.get());
-        }
+        for (const auto& param : node.sig.allParams) walk(param.get());
         for (auto& ret : node.sig.returnTypes) {
             if (ret) walk(ret.get());
         }

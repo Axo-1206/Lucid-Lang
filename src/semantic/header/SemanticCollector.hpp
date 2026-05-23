@@ -122,6 +122,7 @@ private:
     SymbolTable& symbols_;
     DiagnosticEngine& dc_;
     StringPool& pool_;  // For converting InternedString to readable names in diagnostics
+    InternedString currentFile_;
 
     // The _structTraits map is populated in visit(ImplDeclAST) 
     // because that's where trait conformance is declared. 
@@ -143,7 +144,7 @@ private:
     void declareSymbol(const Symbol& sym);
     
     // Helper to extract extern metadata from attributes
-    void extractExternMetadata(const std::vector<AttributePtr>& attrs, Symbol& sym);
+    void extractExternMetadata(const ArenaSpan<AttributePtr>& attrs, Symbol& sym);
     
     // Helper to get the string representation of an InternedString for diagnostics
     std::string_view getNameString(InternedString name) const {

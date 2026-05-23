@@ -134,12 +134,13 @@ enum class SymbolKind {
 // ```
 // ─────────────────────────────────────────────────────────────────────────────
 struct Symbol {
-    InternedString name;        // interned symbol name (e.g., "player", "Vec2")
+    InternedString name;                // interned symbol name (e.g., "player", "Vec2")
+    InternedString file;                // source file where this symbol is declared
     SymbolKind kind = SymbolKind::Var;
-    DeclKeyword declKw = DeclKeyword::Let;         // Let / Const (for Var/Func)
+    DeclKeyword declKw = DeclKeyword::Let; // Let / Const (for Var/Func)
     Visibility visibility = Visibility::Private;
-    TypeAST *type = nullptr;              // resolved type (non-owning)
-    BaseAST *decl = nullptr;              // back-pointer to the AST node
+    TypeAST *type = nullptr;            // resolved type (non-owning)
+    BaseAST *decl = nullptr;            // back-pointer to the AST node
     SourceLocation loc;
 
     // ── @extern metadata ──────────────────────────────────────────────────────

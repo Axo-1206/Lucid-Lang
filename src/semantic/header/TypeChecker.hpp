@@ -100,11 +100,12 @@ public:
     // ── Integer type validation ───────────────────────────────────────────────
     bool isIntegerType(TypeAST* type);
     
-    bool isValidArrayIndex(ExprAST* indexExpr, DiagnosticEngine& dc, 
-                           const SourceLocation& loc);
-    
+    bool isValidArrayIndex(ExprAST* indexExpr, InternedString file,
+                       DiagnosticEngine& dc, const SourceLocation& loc);
+
     bool isValidSliceBound(ExprAST* boundExpr, const std::string& boundName,
-                           DiagnosticEngine& dc, const SourceLocation& loc);
+                        InternedString file, DiagnosticEngine& dc,
+                        const SourceLocation& loc);
     
     bool getConstantIntValue(ExprAST* expr, int64_t& outValue);
 

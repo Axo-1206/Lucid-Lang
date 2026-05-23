@@ -63,20 +63,27 @@ SemanticAnalyzer::~SemanticAnalyzer() = default;
 void SemanticAnalyzer::validateNoDuplicateSymbols() {
     LUC_LOG_SEMANTIC("\n--- Phase 1.5: Validate No Duplicate Symbols ---");
     
-    std::unordered_map<std::string, SourceLocation> firstDecl;
-    
-    // Need to iterate global scope - add this method to SymbolTable
+    struct FirstDecl {
+        InternedString file;
+        SourceLocation loc;
+    };
+    std::unordered_map<uint32_t, FirstDecl> firstDecl; // key = InternedString id
+
     const auto& globalScope = symbols_->getGlobalScope();
-    
     for (const auto& [id, sym] : globalScope) {
-        std::string_view name = pool_.lookup(InternedString(id));
-        auto it = firstDecl.find(std::string(name));
+        auto it = firstDecl.find(id);
         if (it != firstDecl.end()) {
+            std::string_view name = pool_.lookup(InternedString(id));
             LUC_LOG_SEMANTIC("\tDuplicate symbol: " << name);
-            dc_.error(DiagnosticCategory::Semantic, sym.loc, DiagCode::E3005,
-                      "symbol '" + std::string(name) + "' is already declared");
+            
+            std::string firstFileStr = std::string(pool_.lookup(it->second.file));
+            std::string firstLocStr = std::to_string(it->second.loc.line()) + ":" + std::to_string(it->second.loc.column());
+            
+            dc_.error(DiagnosticCategory::Semantic, sym.file, sym.loc,
+                      DiagCode::E3005,
+                      {"symbol '" + std::string(name) + "' already declared in " + firstFileStr + " at " + firstLocStr});
         } else {
-            firstDecl[std::string(name)] = sym.loc;
+            firstDecl[id] = {sym.file, sym.loc};
         }
     }
     
@@ -134,8 +141,9 @@ bool SemanticAnalyzer::analyze(std::vector<ProgramAST*>& files) {
     if (!mainSym) {
         LUC_LOG_SEMANTIC("\tNo 'main' function found");
         SourceLocation loc = files.empty() ? SourceLocation() : files[0]->loc;
-        dc_.error(DiagnosticCategory::Semantic, loc, DiagCode::E3006, 
-                "program is missing a 'main' entry point");
+        InternedString firstFile = files.empty() ? InternedString() : files[0]->filePath;
+        dc_.error(DiagnosticCategory::Semantic, firstFile, loc, DiagCode::E3006, 
+                  {"program is missing a 'main' entry point"});
     } else {
         LUC_LOG_SEMANTIC("\tFound 'main' function, validating signature...");
         if (mainSym->kind != SymbolKind::Func) {
@@ -143,8 +151,8 @@ bool SemanticAnalyzer::analyze(std::vector<ProgramAST*>& files) {
                 ? " ('@extern' functions cannot be entry points)"
                 : "";
             LUC_LOG_SEMANTIC("\tERROR: 'main' is not a regular function");
-            dc_.error(DiagnosticCategory::Semantic, mainSym->loc, DiagCode::E3007, 
-                    "'main' must be a regular function" + kindNote);
+            dc_.error(DiagnosticCategory::Semantic, mainSym->file, mainSym->loc, DiagCode::E3007, 
+                      {"'main' must be a regular function" + kindNote});
         } else {
             auto* func = static_cast<FuncDeclAST*>(mainSym->decl);
             LUC_LOG_SEMANTIC_VERBOSE("\tFunction: " << pool_.lookup(func->name));
@@ -152,30 +160,30 @@ bool SemanticAnalyzer::analyze(std::vector<ProgramAST*>& files) {
             // 1. MUST be exported: export const main ...
             if (func->visibility != Visibility::Export) {
                 LUC_LOG_SEMANTIC("\tERROR: main not exported");
-                dc_.error(DiagnosticCategory::Semantic, func->loc, DiagCode::E3007,
-                        "'main' function must be exported (use 'export const main')");
+                dc_.error(DiagnosticCategory::Semantic, mainSym->file, func->loc, DiagCode::E3007,
+                        {"'main' function must be exported (use 'export const main')"});
             }
             
             // 2. MUST be const: const main ...
             if (func->keyword != DeclKeyword::Const) {
                 LUC_LOG_SEMANTIC("\tERROR: main not const");
-                dc_.error(DiagnosticCategory::Semantic, func->loc, DiagCode::E3007,
-                        "'main' function must use 'const' keyword");
+                dc_.error(DiagnosticCategory::Semantic, mainSym->file, func->loc, DiagCode::E3007,
+                        {"'main' function must use 'const' keyword"});
             }
             
             // 3. MUST have zero parameters or a single []string parameter
-            // Use func->sig instead of func->type
             bool hasParams = false;
             bool isValidArgsParam = false;
             
-            if (func->sig.paramGroups.empty()) {
+            if (func->sig.totalParamCount() == 0) {
                 hasParams = false;
-            } else if (func->sig.paramGroups.size() == 1) {
-                const auto& group = func->sig.paramGroups[0];
-                if (!group.empty()) {
+            } else if (func->sig.groupCount() == 1) {
+                auto group = func->sig.getGroup(0);  // ArenaSpan<ParamPtr>
+                if (group.size() == 1) {
                     hasParams = true;
-                    if (group.size() == 1 && group[0]->type) {
-                        TypeAST* paramType = group[0]->type.get();
+                    ParamAST* param = group[0].get();
+                    if (param->type) {
+                        TypeAST* paramType = param->type.get();
                         if (paramType->kind == ASTKind::SliceType) {
                             auto* slice = static_cast<SliceTypeAST*>(paramType);
                             if (slice->element && slice->element->kind == ASTKind::PrimitiveType) {
@@ -189,14 +197,14 @@ bool SemanticAnalyzer::analyze(std::vector<ProgramAST*>& files) {
                     }
                 }
             } else {
-                // Multiple parameter groups are not allowed for main
+                // Multiple parameter groups (currying) – not allowed for main
                 hasParams = true;
             }
 
             if (hasParams && !isValidArgsParam) {
                 LUC_LOG_SEMANTIC("\tERROR: invalid parameter signature for main");
-                dc_.error(DiagnosticCategory::Semantic, func->loc, DiagCode::E3007,
-                        "'main' function must have no parameters or take a string slice: (args []string)");
+                dc_.error(DiagnosticCategory::Semantic, mainSym->file, func->loc, DiagCode::E3007,
+                        {"'main' function must have no parameters or take a string slice: (args []string)"});
             }
             
             // 4. MUST return int (single return type)
@@ -213,15 +221,15 @@ bool SemanticAnalyzer::analyze(std::vector<ProgramAST*>& files) {
             }
             if (!returnsInt) {
                 LUC_LOG_SEMANTIC("\tERROR: main does not return int");
-                dc_.error(DiagnosticCategory::Semantic, func->loc, DiagCode::E3007,
-                        "'main' function must return 'int'");
+                dc_.error(DiagnosticCategory::Semantic, mainSym->file, func->loc, DiagCode::E3007,
+                        {"'main' function must return 'int'"});
             }   
 
-            // 5. MUST NOT be async (check via func->sig)
+            // 5. MUST NOT be async
             if (func->sig.isAsync()) {
                 LUC_LOG_SEMANTIC("\tERROR: main is async");
-                dc_.error(DiagnosticCategory::Semantic, func->loc, DiagCode::E3007,
-                        "'main' function cannot be async (remove '~async' qualifier)");
+                dc_.error(DiagnosticCategory::Semantic, mainSym->file, func->loc, DiagCode::E3007,
+                        {"'main' function cannot be async (remove '~async' qualifier)"});
             }
 
             // 6. @aot and @jit validation on main
@@ -232,7 +240,11 @@ bool SemanticAnalyzer::analyze(std::vector<ProgramAST*>& files) {
                 if (pool_.lookup(attr->name) == "jit") hasJit = true;
             }
             
-            if (hasAot) {
+            if (hasAot && hasJit) {
+                LUC_LOG_SEMANTIC("\tERROR: both @aot and @jit on main");
+                dc_.error(DiagnosticCategory::Semantic, mainSym->file, func->loc, DiagCode::E3015,
+                        {"'@aot' and '@jit' cannot both be specified on the same declaration"});
+            } else if (hasAot) {
                 LUC_LOG_SEMANTIC("\tCompilation mode: AOT");
                 compilationMode_ = CompilationMode::AOT;
             } else if (hasJit) {
@@ -262,10 +274,8 @@ bool SemanticAnalyzer::analyze(std::vector<ProgramAST*>& files) {
                     std::string_view attrStr = pool_.lookup(attr->name);
                     std::string_view funcName = pool_.lookup(func->name);
                     LUC_LOG_SEMANTIC("\tERROR: '@" << attrStr << "' on non-main function '" << funcName << "'");
-                    dc_.error(DiagnosticCategory::Semantic, attr->loc,
-                              DiagCode::E3016,
-                              "'@" + std::string(attrStr) + "' is only valid on the 'main' "
-                              "entry point; remove it from '" + std::string(funcName) + "'");
+                    dc_.error(DiagnosticCategory::Semantic, prog->filePath, attr->loc,
+                        DiagCode::E3016, {std::string(attrStr), std::string(funcName)});
                 }
             }
         }
@@ -287,8 +297,6 @@ bool SemanticAnalyzer::analyze(std::vector<ProgramAST*>& files) {
 void SemanticAnalyzer::resolveImports(std::vector<ProgramAST*>& files) {
     LUC_LOG_SEMANTIC_VERBOSE("resolveImports: processing " << files.size() << " files");
     
-    // Build a map from package+file path to its use declarations.
-    // For now we do a simple duplicate-use check within each file.
     int totalUses = 0;
     for (auto* prog : files) {
         std::unordered_set<std::string> seen;
@@ -302,8 +310,8 @@ void SemanticAnalyzer::resolveImports(std::vector<ProgramAST*>& files) {
             }
             if (!seen.insert(path).second) {
                 LUC_LOG_SEMANTIC("\tduplicate import of '" << path << "'");
-                dc_.error(DiagnosticCategory::Semantic, use->loc, DiagCode::E3005,
-                          "duplicate import of '" + path + "'");
+                dc_.error(DiagnosticCategory::Semantic, prog->filePath, use->loc, DiagCode::E3005,
+                          {"duplicate import of '" + path + "'"});
             } else {
                 totalUses++;
                 LUC_LOG_SEMANTIC_EXTREME("\tregistered import: " << path);
@@ -347,6 +355,7 @@ void SemanticAnalyzer::resolveTypes(std::vector<ProgramAST*>& files) {
     
     // Pass 1: Resolve Type Aliases (they may be referenced by others)
     for (auto* prog : files) {
+        typeResolver_->setCurrentFile(prog->filePath);
         for (auto& decl : prog->decls) {
             if (decl->isa<TypeAliasDeclAST>()) {
                 typeResolver_->visit(*decl->as<TypeAliasDeclAST>());
@@ -358,6 +367,7 @@ void SemanticAnalyzer::resolveTypes(std::vector<ProgramAST*>& files) {
     
     // Pass 2: Resolve Struct Field Types
     for (auto* prog : files) {
+        typeResolver_->setCurrentFile(prog->filePath);
         for (auto& decl : prog->decls) {
             if (decl->isa<StructDeclAST>()) {
                 typeResolver_->visit(*decl->as<StructDeclAST>());
@@ -370,6 +380,7 @@ void SemanticAnalyzer::resolveTypes(std::vector<ProgramAST*>& files) {
     
     // Pass 3: Resolve Function Signatures (top-level)
     for (auto* prog : files) {
+        typeResolver_->setCurrentFile(prog->filePath);
         for (auto& decl : prog->decls) {
             if (decl->isa<FuncDeclAST>()) {
                 typeResolver_->visit(*decl->as<FuncDeclAST>());
@@ -382,12 +393,11 @@ void SemanticAnalyzer::resolveTypes(std::vector<ProgramAST*>& files) {
     
     // Pass 4: Resolve Impl Block Methods
     for (auto* prog : files) {
+        typeResolver_->setCurrentFile(prog->filePath);
         for (auto& decl : prog->decls) {
             if (decl->isa<ImplDeclAST>()) {
                 typeResolver_->visit(*decl->as<ImplDeclAST>());
                 resolvedCount++;
-                // Logging: the struct name is inside targetType (a NamedTypeAST)
-                // For brevity, we just log that an impl block was resolved.
                 LUC_LOG_SEMANTIC_EXTREME("\tresolved impl block");
             }
         }
@@ -395,11 +405,11 @@ void SemanticAnalyzer::resolveTypes(std::vector<ProgramAST*>& files) {
     
     // Pass 5: Resolve From Block Entries
     for (auto* prog : files) {
+        typeResolver_->setCurrentFile(prog->filePath);
         for (auto& decl : prog->decls) {
             if (decl->isa<FromDeclAST>()) {
                 typeResolver_->visit(*decl->as<FromDeclAST>());
                 resolvedCount++;
-                // Logging: target type is inside targetType
                 LUC_LOG_SEMANTIC_EXTREME("\tresolved from block");
             }
         }
@@ -407,6 +417,7 @@ void SemanticAnalyzer::resolveTypes(std::vector<ProgramAST*>& files) {
     
     // Pass 6: Resolve Variable Types
     for (auto* prog : files) {
+        typeResolver_->setCurrentFile(prog->filePath);
         for (auto& decl : prog->decls) {
             if (decl->isa<VarDeclAST>()) {
                 typeResolver_->visit(*decl->as<VarDeclAST>());
@@ -427,17 +438,15 @@ void SemanticAnalyzer::resolveTypes(std::vector<ProgramAST*>& files) {
 void SemanticAnalyzer::checkDecls(std::vector<ProgramAST*>& files) {
     LUC_LOG_SEMANTIC_VERBOSE("checkDecls: checking all declarations");
 
-    // Create a SemanticContext that references the analyzer's depth counters.
-    SemanticContext ctx(*symbols_, *typeResolver_, *typeChecker_, dc_, pool_, arena_);
-
     int declCount = 0;
     for (auto* prog : files) {
+        // Create a fresh context for each file, passing the file path
+        SemanticContext ctx(*symbols_, *typeResolver_, *typeChecker_, dc_, pool_, arena_, prog->filePath);
+        
         for (auto& decl : prog->decls) {
             declCount++;
             LUC_LOG_SEMANTIC_EXTREME("\tchecking declaration #" << declCount
                                    << " kind=" << LucDebug::kindToString(decl->kind));
-
-            // Pass the context instead of a dozen separate arguments
             checkTopLevelDecl(decl.get(), ctx);
         }
     }

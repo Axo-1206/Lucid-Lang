@@ -276,15 +276,16 @@ bool TypeChecker::isEqual(TypeAST* a, TypeAST* b) {
         }
         
         // Compare parameter group count (curry levels)
-        if (fa->sig.paramGroups.size() != fb->sig.paramGroups.size()) {
+        if (fa->sig.groupCount() != fb->sig.groupCount()) {
             LUC_LOG_SEMANTIC_VERBOSE("\tFuncType param group count mismatch -> false");
             return false;
         }
         
         // Compare each parameter group
-        for (size_t g = 0; g < fa->sig.paramGroups.size(); ++g) {
-            const auto& groupA = fa->sig.paramGroups[g];
-            const auto& groupB = fb->sig.paramGroups[g];
+        size_t paramIdx = 0;
+        for (size_t g = 0; g < fa->sig.groupCount(); ++g) {
+            auto groupA = fa->sig.getGroup(g);
+            auto groupB = fb->sig.getGroup(g);
             
             if (groupA.size() != groupB.size()) {
                 LUC_LOG_SEMANTIC_VERBOSE("\tFuncType param group " << g << " size mismatch -> false");
@@ -292,11 +293,11 @@ bool TypeChecker::isEqual(TypeAST* a, TypeAST* b) {
             }
             
             for (size_t i = 0; i < groupA.size(); ++i) {
-                // Compare parameter types (ignoring parameter names)
                 if (!isEqual(groupA[i]->type.get(), groupB[i]->type.get())) {
-                    LUC_LOG_SEMANTIC_VERBOSE("\tFuncType param " << i << " in group " << g << " mismatch -> false");
+                    LUC_LOG_SEMANTIC_VERBOSE("\tFuncType param " << paramIdx << " mismatch -> false");
                     return false;
                 }
+                ++paramIdx;
             }
         }
         
@@ -486,14 +487,15 @@ bool TypeChecker::isAssignable(TypeAST* from, TypeAST* to) {
         }
         
         // Compare parameter groups and return types (structural equality).
-        if (fFrom->sig.paramGroups.size() != fTo->sig.paramGroups.size())
+        if (fFrom->sig.groupCount() != fTo->sig.groupCount())
             return false;
-        for (size_t g = 0; g < fFrom->sig.paramGroups.size(); ++g) {
-            if (fFrom->sig.paramGroups[g].size() != fTo->sig.paramGroups[g].size())
+        for (size_t g = 0; g < fFrom->sig.groupCount(); ++g) {
+            auto groupFrom = fFrom->sig.getGroup(g);
+            auto groupTo   = fTo->sig.getGroup(g);
+            if (groupFrom.size() != groupTo.size())
                 return false;
-            for (size_t i = 0; i < fFrom->sig.paramGroups[g].size(); ++i) {
-                if (!isEqual(fFrom->sig.paramGroups[g][i]->type.get(),
-                             fTo->sig.paramGroups[g][i]->type.get()))
+            for (size_t i = 0; i < groupFrom.size(); ++i) {
+                if (!isEqual(groupFrom[i]->type.get(), groupTo[i]->type.get()))
                     return false;
             }
         }
@@ -1309,27 +1311,28 @@ bool TypeChecker::getConstantIntValue(ExprAST* expr, int64_t& outValue) {
 //   Emits diagnostic via DiagnosticEngine for type mismatches and negative
 //   constant indices. Returns false on error; caller should propagate.
 // ─────────────────────────────────────────────────────────────────────────────
-bool TypeChecker::isValidArrayIndex(ExprAST* indexExpr, DiagnosticEngine& dc, 
+bool TypeChecker::isValidArrayIndex(ExprAST* indexExpr, InternedString file,
+                                     DiagnosticEngine& dc, 
                                      const SourceLocation& loc) {
     if (!indexExpr) {
-        dc.error(DiagnosticCategory::Semantic, loc, DiagCode::E3002,
-                 "array index expression is null");
+        dc.error(DiagnosticCategory::Semantic, file, loc, DiagCode::E3002,
+                 {"array index expression is null"});
         return false;
     }
     
     TypeAST* indexType = static_cast<TypeAST*>(indexExpr->resolvedType);
     if (!isIntegerType(indexType)) {
-        dc.error(DiagnosticCategory::Semantic, indexExpr->loc, DiagCode::E3002,
-                 "array index must be an integer type (got '" +
-                 LucDebug::kindToString(indexType ? indexType->kind : ASTKind::Unknown) + "')");
+        dc.error(DiagnosticCategory::Semantic, file, indexExpr->loc, DiagCode::E3002,
+                 {"array index must be an integer type (got '" +
+                  LucDebug::kindToString(indexType ? indexType->kind : ASTKind::Unknown) + "')"});
         return false;
     }
     
     int64_t constValue;
     if (getConstantIntValue(indexExpr, constValue)) {
         if (constValue < 0) {
-            dc.error(DiagnosticCategory::Semantic, indexExpr->loc, DiagCode::E3002,
-                     "array index cannot be negative (got " + std::to_string(constValue) + ")");
+            dc.error(DiagnosticCategory::Semantic, file, indexExpr->loc, DiagCode::E3002,
+                     {"array index cannot be negative (got " + std::to_string(constValue) + ")"});
             return false;
         }
     }
@@ -1371,31 +1374,32 @@ bool TypeChecker::isValidArrayIndex(ExprAST* indexExpr, DiagnosticEngine& dc,
 //   constant values. Returns false on error.
 // ─────────────────────────────────────────────────────────────────────────────
 bool TypeChecker::isValidSliceBound(ExprAST* boundExpr, const std::string& boundName,
-                                     DiagnosticEngine& dc, const SourceLocation& loc) {
+                                     InternedString file, DiagnosticEngine& dc,
+                                     const SourceLocation& loc) {
     if (!boundExpr) {
-        dc.error(DiagnosticCategory::Semantic, loc, DiagCode::E3002,
-                 "slice " + boundName + " bound expression is null");
+        dc.error(DiagnosticCategory::Semantic, file, loc, DiagCode::E3002,
+                 {"slice " + boundName + " bound expression is null"});
         return false;
     }
     
     TypeAST* boundType = static_cast<TypeAST*>(boundExpr->resolvedType);
     if (!isIntegerType(boundType)) {
-        dc.error(DiagnosticCategory::Semantic, boundExpr->loc, DiagCode::E3002,
-                 "slice " + boundName + " bound must be an integer type");
+        dc.error(DiagnosticCategory::Semantic, file, boundExpr->loc, DiagCode::E3002,
+                 {"slice " + boundName + " bound must be an integer type"});
         return false;
     }
     
     int64_t constValue;
     if (!getConstantIntValue(boundExpr, constValue)) {
-        dc.error(DiagnosticCategory::Semantic, boundExpr->loc, DiagCode::E3002,
-                 "slice " + boundName + " bound must be a constant expression");
+        dc.error(DiagnosticCategory::Semantic, file, boundExpr->loc, DiagCode::E3002,
+                 {"slice " + boundName + " bound must be a constant expression"});
         return false;
     }
     
     if (constValue < 0) {
-        dc.error(DiagnosticCategory::Semantic, boundExpr->loc, DiagCode::E3002,
-                 "slice " + boundName + " bound cannot be negative (got " + 
-                 std::to_string(constValue) + ")");
+        dc.error(DiagnosticCategory::Semantic, file, boundExpr->loc, DiagCode::E3002,
+                 {"slice " + boundName + " bound cannot be negative (got " + 
+                  std::to_string(constValue) + ")"});
         return false;
     }
     return true;
@@ -1475,16 +1479,16 @@ Symbol* TypeChecker::isFromCastable(TypeAST* src, TypeAST* target, SymbolTable* 
         auto* entry = sym->decl->as<FromEntryAST>();
         
         // Use sig for param groups
-        if (entry->sig.paramGroups.empty()) {
+        if (entry->sig.groupCount() == 0) {
             LUC_LOG_SEMANTIC_EXTREME("\t\tentry has no param groups");
             continue;
         }
-        if (entry->sig.paramGroups[0].empty()) {
+        auto firstGroup = entry->sig.getGroup(0);
+        if (firstGroup.empty()) {
             LUC_LOG_SEMANTIC_EXTREME("\t\tentry param group has no params");
             continue;
         }
-
-        TypeAST* firstParamType = entry->sig.paramGroups[0][0]->type.get();
+        TypeAST* firstParamType = firstGroup[0]->type.get();
         if (!firstParamType) {
             LUC_LOG_SEMANTIC_EXTREME("\t\tfirst param type is null");
             continue;

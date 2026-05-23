@@ -1102,7 +1102,7 @@ MethodDeclPtr Parser::parseMethodDecl() {
 /**
  * @brief Parses a `from` block defining implicit conversions.
  * 
- * Grammar: `from` type_name [ `<` generic_params `>` ] `{` from_entry* `}`
+ * Grammar: `from` type [ `<` generic_params `>` ] `{` from_entry* `}`
  * 
  * Example: `export from Fahrenheit { (c Celsius) -> Fahrenheit = { ... } }`
  * 
@@ -1116,8 +1116,9 @@ MethodDeclPtr Parser::parseMethodDecl() {
  *   - `=` followed by conversion body (block or expression)
  * 
  * ─── Important Notes ───────────────────────────────────────────────────────
+ *   - Target type can be ANY type (primitive, struct, enum, array, function, etc.)
+ *   - Generic parameters are optional and only allowed when target is generic
  *   - Can be top‑level or local
- *   - Target type must be a named type (struct, enum, or type alias)
  *   - Multiple from blocks for same target allowed in different scopes
  * 
  * ─── Loop Safety ──────────────────────────────────────────────────────────
@@ -1137,35 +1138,22 @@ ASTPtr<FromDeclAST> Parser::parseFromDecl(Visibility vis) {
     node->loc = loc;
     node->visibility = vis;
 
-    if (!ts_.check(TokenType::IDENTIFIER)) {
-        errorAt(DiagCode::E2003, "expected target type name after 'from'");
-        return nullptr;
-    }
-
-    TypePtr targetType = parseNamedType();
+    // Parse the target type (ANY type, not just named type)
+    // Save position in case we need to roll back for generic params detection
+    size_t beforeTypePos = ts_.getPos();
+    TypePtr targetType = parseType();
+    
     if (!targetType || targetType->isa<UnknownTypeAST>()) {
         errorAt(DiagCode::E2005, "invalid target type in from block");
         return nullptr;
     }
+    
     node->targetType = std::move(targetType);
 
-    // Generic parameters from target type (simplified)
-    if (node->targetType->isa<NamedTypeAST>()) {
-        auto* named = node->targetType->as<NamedTypeAST>();
-        std::vector<GenericParamPtr> genericParams;
-        for (auto& arg : named->genericArgs) {
-            if (arg && arg->isa<NamedTypeAST>()) {
-                auto* argNamed = arg->as<NamedTypeAST>();
-                if (argNamed->isGenericParam || argNamed->genericArgs.empty()) {
-                    auto gp = arena_.make<GenericParamAST>(argNamed->name);
-                    gp->loc = argNamed->loc;
-                    genericParams.push_back(std::move(gp));
-                }
-            }
-        }
-        auto builder = arena_.makeBuilder<GenericParamPtr>();
-        for (auto& gp : genericParams) builder.push_back(std::move(gp));
-        node->genericParams = builder.build();
+    // Check for generic parameters on the from block
+    // Generic parameters are only allowed if the target type is generic
+    if (ts_.check(TokenType::LESS)) {
+        node->genericParams = parseGenericParams();
     }
 
     ts_.consume(TokenType::LBRACE, "expected '{' to open from block");

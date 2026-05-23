@@ -37,6 +37,7 @@ struct SemanticContext {
     DiagnosticEngine& dc;         // Error/warning reporting
     StringPool&       pool;       // Name demangling for diagnostics
     ASTArena&         arena;      // Arena for temporary type synthesis
+    InternedString currentFile;   // Current file path (set before processing each file)
 
     // ── Mutable context flags ────────────────────────────────────────────────
     int  loopDepth     = 0;       // Current nesting depth of loops (for break/continue)
@@ -53,14 +54,31 @@ struct SemanticContext {
      * @param arn    AST arena
      */
     SemanticContext(SymbolTable& syms, TypeResolver& res, TypeChecker& chk,
-                    DiagnosticEngine& diag, StringPool& str, ASTArena& arn) noexcept
-        : symbols(syms), resolver(res), checker(chk), dc(diag), pool(str), arena(arn) {}
+                        DiagnosticEngine& diag, StringPool& str, ASTArena& arn,
+                        InternedString file) noexcept
+            : symbols(syms), resolver(res), checker(chk), dc(diag),
+            pool(str), arena(arn), currentFile(file) {}
 
     // Disable copy/move – the context is owned by SemanticAnalyzer.
     SemanticContext(const SemanticContext&) = delete;
     SemanticContext& operator=(const SemanticContext&) = delete;
 
-    // ── Convenience accessors for depth counters (optional) ───────────────────
+    // Error helpers – automatically use currentFile
+    void error(SourceLocation loc, DiagCode code,
+               std::initializer_list<std::string> args = {}) const {
+        dc.error(DiagnosticCategory::Semantic, currentFile, loc, code, args);
+    }
+
+    void warning(SourceLocation loc, DiagCode code,
+                 std::initializer_list<std::string> args = {}) const {
+        dc.warning(DiagnosticCategory::Semantic, currentFile, loc, code, args);
+    }
+
+    void note(SourceLocation loc, const std::string& msg) const {
+        dc.note(currentFile, loc, msg);
+    }
+
+    // ── Convenience accessors for depth counters ────────────────────────────
     void enterLoop()   { ++loopDepth; }
     void exitLoop()    { --loopDepth; }
     void enterParallel(){ ++parallelDepth; }

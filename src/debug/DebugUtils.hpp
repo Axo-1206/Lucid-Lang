@@ -1,6 +1,8 @@
 #pragma once
 
 #include "ast/BaseAST.hpp"
+#include "ast/TypeAST.hpp"
+
 #include "Tokens.hpp"
 #include <string>
 
@@ -123,5 +125,41 @@ namespace LucDebug {
             case TokenType::ASSIGN:     return "ASSIGN (=)";
             default:                    return "Token(" + std::to_string(static_cast<int>(type)) + ")";
         }
+    }
+
+    // Helper: format primitive kind
+    inline std::string primitiveKindToString(PrimitiveKind k) {
+        switch (k) {
+            case PrimitiveKind::Bool:    return "bool";
+            case PrimitiveKind::Byte:    return "byte";
+            case PrimitiveKind::Short:   return "short";
+            case PrimitiveKind::Int:     return "int";
+            case PrimitiveKind::Long:    return "long";
+            case PrimitiveKind::Ubyte:   return "ubyte";
+            case PrimitiveKind::Ushort:  return "ushort";
+            case PrimitiveKind::Uint:    return "uint";
+            case PrimitiveKind::Ulong:   return "ulong";
+            case PrimitiveKind::Int8:    return "int8";
+            case PrimitiveKind::Int16:   return "int16";
+            case PrimitiveKind::Int32:   return "int32";
+            case PrimitiveKind::Int64:   return "int64";
+            case PrimitiveKind::Uint8:   return "uint8";
+            case PrimitiveKind::Uint16:  return "uint16";
+            case PrimitiveKind::Uint32:  return "uint32";
+            case PrimitiveKind::Uint64:  return "uint64";
+            case PrimitiveKind::Float:   return "float";
+            case PrimitiveKind::Double:  return "double";
+            case PrimitiveKind::Decimal: return "decimal";
+            case PrimitiveKind::String:  return "string";
+            case PrimitiveKind::Char:    return "char";
+            case PrimitiveKind::Any:     return "any";
+            default:                     return "primitive";
+        }
+    }
+
+    // Helper: convert InternedString to display string
+    inline std::string toStr(const StringPool* pool, const InternedString& s) {
+        if (!s.isValid()) return "";
+        return std::string(pool->lookup(s));
     }
 }

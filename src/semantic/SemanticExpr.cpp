@@ -77,8 +77,7 @@ static TypeAST* checkLiteralExpr(LiteralExprAST& node, SemanticContext& ctx) {
             result = nullptr;
             break;
         default:
-            ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                         "invalid literal kind");
+            ctx.error(node.loc, DiagCode::E3002, {"invalid literal kind"});
             return nullptr;
     }
     node.resolvedType = result;
@@ -91,8 +90,7 @@ static TypeAST* checkLiteralExpr(LiteralExprAST& node, SemanticContext& ctx) {
 static TypeAST* checkIdentifierExpr(IdentifierExprAST& node, SemanticContext& ctx) {
     Symbol* sym = ctx.symbols.lookup(node.name);
     if (!sym) {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
-                     "undefined identifier '" + std::string(ctx.pool.lookup(node.name)) + "'");
+        ctx.error(node.loc, DiagCode::E3001, {"undefined identifier '" + std::string(ctx.pool.lookup(node.name)) + "'"});
         return nullptr;
     }
 
@@ -110,9 +108,9 @@ static TypeAST* checkIdentifierExpr(IdentifierExprAST& node, SemanticContext& ct
             }
         }
         if (!type) {
-            ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
-                         "identifier '" + std::string(ctx.pool.lookup(node.name)) +
-                         "' has no known type");
+            ctx.error(node.loc, DiagCode::E3001,
+                {"identifier '" + std::string(ctx.pool.lookup(node.name)) +
+                         "' has no known type"});
             return nullptr;
         }
     }
@@ -148,14 +146,12 @@ static TypeAST* checkBinaryExpr(BinaryExprAST& node, SemanticContext& ctx) {
         node.op == BinaryOp::Mul || node.op == BinaryOp::Div ||
         node.op == BinaryOp::Pow || node.op == BinaryOp::Mod) {
         if (!bothNumeric()) {
-            ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                         "arithmetic operator requires numeric operands");
+            ctx.error(node.loc, DiagCode::E3002, {"arithmetic operator requires numeric operands"});
             return nullptr;
         }
         TypeAST* unified = ctx.checker.unify(leftType, rightType);
         if (!unified) {
-            ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                         "incompatible numeric types for arithmetic operation");
+            ctx.error(node.loc, DiagCode::E3002, {"incompatible numeric types for arithmetic operation"});
             return nullptr;
         }
         node.resolvedType = unified;
@@ -168,14 +164,12 @@ static TypeAST* checkBinaryExpr(BinaryExprAST& node, SemanticContext& ctx) {
         node.op == BinaryOp::Le || node.op == BinaryOp::Ge) {
         if (!ctx.checker.isValueComparable(leftType, &ctx.symbols) ||
             !ctx.checker.isValueComparable(rightType, &ctx.symbols)) {
-            ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3011,
-                         "value comparison not allowed on this type");
+            ctx.error(node.loc, DiagCode::E3011, {"value comparison not allowed on this type"});
             return nullptr;
         }
         if (!ctx.checker.isAssignable(leftType, rightType) &&
             !ctx.checker.isAssignable(rightType, leftType)) {
-            ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                         "operands of comparison must be compatible types");
+            ctx.error(node.loc, DiagCode::E3002, {"operands of comparison must be compatible types"});
             return nullptr;
         }
         TypeAST* boolType = ctx.arena.make<PrimitiveTypeAST>(PrimitiveKind::Bool).get();
@@ -187,8 +181,7 @@ static TypeAST* checkBinaryExpr(BinaryExprAST& node, SemanticContext& ctx) {
     if (node.op == BinaryOp::RefEq) {
         if (!ctx.checker.isReferenceComparable(leftType) ||
             !ctx.checker.isReferenceComparable(rightType)) {
-            ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                         "reference equality (===) only allowed on structs and references");
+            ctx.error(node.loc, DiagCode::E3002, {"reference equality (===) only allowed on structs and references"});
             return nullptr;
         }
         TypeAST* boolType = ctx.arena.make<PrimitiveTypeAST>(PrimitiveKind::Bool).get();
@@ -196,12 +189,11 @@ static TypeAST* checkBinaryExpr(BinaryExprAST& node, SemanticContext& ctx) {
         return boolType;
     }
 
-    // Logical operators (and, or)
+    // Logical operators (
     if (node.op == BinaryOp::And || node.op == BinaryOp::Or) {
         if (!ctx.checker.isBoolOrNullable(leftType) ||
             !ctx.checker.isBoolOrNullable(rightType)) {
-            ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                         "logical operators require bool or nullable operands");
+            ctx.error(node.loc, DiagCode::E3002, {"logical operators require bool or nullable operands"});
             return nullptr;
         }
         TypeAST* boolType = ctx.arena.make<PrimitiveTypeAST>(PrimitiveKind::Bool).get();
@@ -214,16 +206,14 @@ static TypeAST* checkBinaryExpr(BinaryExprAST& node, SemanticContext& ctx) {
         node.op == BinaryOp::BitXor || node.op == BinaryOp::Shl ||
         node.op == BinaryOp::Shr) {
         if (!ctx.checker.isIntegerType(leftType) || !ctx.checker.isIntegerType(rightType)) {
-            ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                         "bitwise operators require integer operands");
+            ctx.error(node.loc, DiagCode::E3002, {"bitwise operators require integer operands"});
             return nullptr;
         }
         node.resolvedType = leftType;
         return leftType;
     }
 
-    ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                 "unsupported binary operator");
+    ctx.error(node.loc, DiagCode::E3002, {"unsupported binary operator"});
     return nullptr;
 }
 
@@ -241,8 +231,7 @@ static TypeAST* checkUnaryExpr(UnaryExprAST& node, SemanticContext& ctx) {
                  operandType->as<PrimitiveTypeAST>()->primitiveKind != PrimitiveKind::Float &&
                  operandType->as<PrimitiveTypeAST>()->primitiveKind != PrimitiveKind::Double &&
                  operandType->as<PrimitiveTypeAST>()->primitiveKind != PrimitiveKind::Decimal)) {
-                ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                             "negation (-) requires numeric operand");
+                ctx.error(node.loc, DiagCode::E3002, {"negation (-) requires numeric operand"});
                 return nullptr;
             }
             node.resolvedType = operandType;
@@ -250,8 +239,7 @@ static TypeAST* checkUnaryExpr(UnaryExprAST& node, SemanticContext& ctx) {
 
         case UnaryOp::Not:
             if (!ctx.checker.isBoolOrNullable(operandType)) {
-                ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                             "logical not requires bool or nullable operand");
+                ctx.error(node.loc, DiagCode::E3002, {"logical not requires bool or nullable operand"});
                 return nullptr;
             }
             {
@@ -262,8 +250,7 @@ static TypeAST* checkUnaryExpr(UnaryExprAST& node, SemanticContext& ctx) {
 
         case UnaryOp::BitNot:
             if (!ctx.checker.isIntegerType(operandType)) {
-                ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                             "bitwise not (~) requires integer operand");
+                ctx.error(node.loc, DiagCode::E3002, {"bitwise not (~) requires integer operand"});
                 return nullptr;
             }
             node.resolvedType = operandType;
@@ -277,8 +264,7 @@ static TypeAST* checkUnaryExpr(UnaryExprAST& node, SemanticContext& ctx) {
             }
 
         default:
-            ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                         "unsupported unary operator");
+            ctx.error(node.loc, DiagCode::E3002, {"unsupported unary operator"});
             return nullptr;
     }
 }
@@ -291,8 +277,7 @@ static TypeAST* checkCallExpr(CallExprAST& node, SemanticContext& ctx) {
     if (!calleeType) return nullptr;
 
     if (!ctx.checker.isCallable(calleeType)) {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                     "callee is not a function");
+        ctx.error(node.loc, DiagCode::E3002, {"callee is not a function"});
         return nullptr;
     }
 
@@ -303,39 +288,36 @@ static TypeAST* checkCallExpr(CallExprAST& node, SemanticContext& ctx) {
         auto* nullable = calleeType->as<NullableTypeAST>();
         if (nullable->inner->isa<FuncTypeAST>()) {
             funcType = nullable->inner->as<FuncTypeAST>();
-            ctx.dc.warning(DiagnosticCategory::Semantic, node.loc, DiagCode::W3003,
-                           "calling nullable function; will panic if nil");
+            ctx.warning(node.loc, DiagCode::W3003, {"calling nullable function; will panic if nil"});
         } else {
-            ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                         "nullable value is not a function");
+            ctx.error(node.loc, DiagCode::E3002, {"nullable value is not a function"});
             return nullptr;
         }
     } else {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                     "callee is not a function type");
+        ctx.error(node.loc, DiagCode::E3002, {"callee is not a function type"});
         return nullptr;
     }
 
-    if (funcType->sig.paramGroups.empty()) {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                     "function has no parameters (internal error)");
+    // Get the first parameter group (Luc functions have at least one group)
+    if (funcType->sig.groupCount() == 0) {
+        ctx.error(node.loc, DiagCode::E3002, {"function has no parameter groups"});
         return nullptr;
     }
-    const auto& params = funcType->sig.paramGroups[0];
-    if (params.size() != node.args.size()) {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3003,
-                     "argument count mismatch: expected " + std::to_string(params.size()) +
-                     ", got " + std::to_string(node.args.size()));
+    auto firstGroup = funcType->sig.getGroup(0);
+    if (firstGroup.size() != node.args.size()) {
+        ctx.error(node.loc, DiagCode::E3003,
+                {"argument count mismatch: expected " + std::to_string(firstGroup.size()) +
+                 ", got " + std::to_string(node.args.size())});
         return nullptr;
     }
 
-    for (size_t i = 0; i < params.size(); ++i) {
+    for (size_t i = 0; i < firstGroup.size(); ++i) {
         TypeAST* argType = checkExpr(node.args[i].get(), ctx);
         if (!argType) return nullptr;
-        TypeAST* paramType = params[i]->type.get();
+        TypeAST* paramType = firstGroup[i]->type.get();
         if (!ctx.checker.isAssignable(argType, paramType)) {
-            ctx.dc.error(DiagnosticCategory::Semantic, node.args[i]->loc, DiagCode::E3002,
-                         "argument " + std::to_string(i + 1) + " type mismatch");
+            ctx.error(node.args[i]->loc, DiagCode::E3002,
+                      {"argument " + std::to_string(i + 1) + " type mismatch"});
             return nullptr;
         }
     }
@@ -364,23 +346,21 @@ static TypeAST* checkIndexExpr(IndexExprAST& node, SemanticContext& ctx) {
     } else if (targetType->isa<DynamicArrayTypeAST>()) {
         elementType = targetType->as<DynamicArrayTypeAST>()->element.get();
     } else if (targetType->isa<NullableTypeAST>()) {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                     "cannot index nullable value");
+        ctx.error(node.loc, DiagCode::E3002, {"cannot index nullable value"});
         return nullptr;
     } else {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                     "index operator only allowed on array types");
+        ctx.error(node.loc, DiagCode::E3002, {"index operator only allowed on array types"});
         return nullptr;
     }
 
     if (node.kind == IndexKind::Element) {
-        if (!ctx.checker.isValidArrayIndex(node.index.get(), ctx.dc, node.loc))
+        if (!ctx.checker.isValidArrayIndex(node.index.get(), ctx.currentFile, ctx.dc, node.loc))
             return nullptr;
         node.resolvedType = elementType;
         return elementType;
     } else if (node.kind == IndexKind::Slice) {
-        if (!ctx.checker.isValidSliceBound(node.index.get(), "start", ctx.dc, node.loc) ||
-            !ctx.checker.isValidSliceBound(node.sliceEnd.get(), "end", ctx.dc, node.loc))
+        if (!ctx.checker.isValidSliceBound(node.index.get(), "start", ctx.currentFile, ctx.dc, node.loc) ||
+            !ctx.checker.isValidSliceBound(node.sliceEnd.get(), "end", ctx.currentFile, ctx.dc, node.loc))
             return nullptr;
         if (!node.sliceType) {
             node.sliceType = ctx.arena.make<SliceTypeAST>(TypePtr(elementType));
@@ -401,21 +381,18 @@ static TypeAST* checkFieldAccessExpr(FieldAccessExprAST& node, SemanticContext& 
     if (!objectType) return nullptr;
 
     if (objectType->isa<NullableTypeAST>()) {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                     "cannot access field on nullable value; use ?. chain");
+        ctx.error(node.loc, DiagCode::E3002, {"cannot access field on nullable value; use ?. chain"});
         return nullptr;
     }
     if (!objectType->isa<NamedTypeAST>()) {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                     "field access only allowed on structs and enums");
+        ctx.error(node.loc, DiagCode::E3002, {"field access only allowed on structs and enums"});
         return nullptr;
     }
 
     InternedString typeName = objectType->as<NamedTypeAST>()->name;
     Symbol* sym = ctx.symbols.lookup(typeName);
     if (!sym) {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
-                     "type '" + std::string(ctx.pool.lookup(typeName)) + "' not found");
+        ctx.error(node.loc, DiagCode::E3001, {"type '" + std::string(ctx.pool.lookup(typeName)) + "' not found"});
         return nullptr;
     }
 
@@ -425,9 +402,9 @@ static TypeAST* checkFieldAccessExpr(FieldAccessExprAST& node, SemanticContext& 
                                                              ctx.pool.lookup(node.field));
         Symbol* variantSym = ctx.symbols.lookup(ctx.pool.intern(mangled));
         if (!variantSym) {
-            ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
-                         "enum '" + std::string(ctx.pool.lookup(typeName)) +
-                         "' has no variant '" + std::string(ctx.pool.lookup(node.field)) + "'");
+            ctx.error(node.loc, DiagCode::E3001,
+                {"enum '" + std::string(ctx.pool.lookup(typeName)) +
+                         "' has no variant '" + std::string(ctx.pool.lookup(node.field)) + "'"});
             return nullptr;
         }
         TypeAST* variantType = variantSym->type;
@@ -445,8 +422,7 @@ static TypeAST* checkFieldAccessExpr(FieldAccessExprAST& node, SemanticContext& 
         for (auto& field : structDecl->fields) {
             if (field->name == node.field) {
                 if (!field->type) {
-                    ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                                "field has no type");
+                    ctx.error(node.loc, DiagCode::E3002, {"field has no type"});
                     return nullptr;
                 }
                 TypeAST* fieldType = field->type.get();
@@ -454,14 +430,13 @@ static TypeAST* checkFieldAccessExpr(FieldAccessExprAST& node, SemanticContext& 
                 return fieldType;
             }
         }
-        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
-                    "struct '" + std::string(ctx.pool.lookup(typeName)) +
-                    "' has no field '" + std::string(ctx.pool.lookup(node.field)) + "'");
+        ctx.error(node.loc, DiagCode::E3001,
+            {"struct '" + std::string(ctx.pool.lookup(typeName)) +
+                    "' has no field '" + std::string(ctx.pool.lookup(node.field)) + "'"});
         return nullptr;
     }
 
-    ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                 "field access only allowed on structs and enums");
+    ctx.error(node.loc, DiagCode::E3002, {"field access only allowed on structs and enums"});
     return nullptr;
 }
 
@@ -471,8 +446,8 @@ static TypeAST* checkFieldAccessExpr(FieldAccessExprAST& node, SemanticContext& 
 static TypeAST* checkStructLiteralExpr(StructLiteralExprAST& node, SemanticContext& ctx) {
     Symbol* sym = ctx.symbols.lookup(node.typeName);
     if (!sym || sym->kind != SymbolKind::Struct) {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
-                     "unknown struct type '" + std::string(ctx.pool.lookup(node.typeName)) + "'");
+        ctx.error(node.loc, DiagCode::E3001,
+                {"unknown struct type '" + std::string(ctx.pool.lookup(node.typeName)) + "'"});
         return nullptr;
     }
 
@@ -489,8 +464,7 @@ static TypeAST* checkStructLiteralExpr(StructLiteralExprAST& node, SemanticConte
     TypeAST* structType = node.instantiatedType ? node.instantiatedType.get()
                          : structDecl->selfType.get();
     if (!structType) {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                     "struct type not resolved");
+        ctx.error(node.loc, DiagCode::E3002, {"struct type not resolved"});
         return nullptr;
     }
 
@@ -504,9 +478,9 @@ static TypeAST* checkStructLiteralExpr(StructLiteralExprAST& node, SemanticConte
                 TypeAST* initType = checkExpr(init->value.get(), ctx);
                 if (!initType) return nullptr;
                 if (!ctx.checker.isAssignable(initType, field->type.get())) {
-                    ctx.dc.error(DiagnosticCategory::Semantic, init->value->loc, DiagCode::E3002,
-                                 "initialiser type mismatch for field '" +
-                                 std::string(ctx.pool.lookup(init->name)) + "'");
+                    ctx.error(init->value->loc, DiagCode::E3002,
+                        {"initialiser type mismatch for field '" +
+                                 std::string(ctx.pool.lookup(init->name)) + "'"});
                     return nullptr;
                 }
                 fieldSeen[init->name] = true;
@@ -514,18 +488,18 @@ static TypeAST* checkStructLiteralExpr(StructLiteralExprAST& node, SemanticConte
             }
         }
         if (!found) {
-            ctx.dc.error(DiagnosticCategory::Semantic, init->loc, DiagCode::E3001,
-                         "struct '" + std::string(ctx.pool.lookup(node.typeName)) +
-                         "' has no field '" + std::string(ctx.pool.lookup(init->name)) + "'");
+            ctx.error(init->loc, DiagCode::E3001,
+                {"struct '" + std::string(ctx.pool.lookup(node.typeName)) +
+                         "' has no field '" + std::string(ctx.pool.lookup(init->name)) + "'"});
             return nullptr;
         }
     }
 
     for (auto& field : structDecl->fields) {
         if (!fieldSeen[field->name] && !field->defaultVal) {
-            ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
-                         "missing initialiser for field '" +
-                         std::string(ctx.pool.lookup(field->name)) + "'");
+            ctx.error(node.loc, DiagCode::E3001,
+                {"missing initialiser for field '" +
+                         std::string(ctx.pool.lookup(field->name)) + "'"});
             return nullptr;
         }
     }
@@ -550,8 +524,7 @@ static TypeAST* checkArrayLiteralExpr(ArrayLiteralExprAST& node, SemanticContext
         if (!elemType) return nullptr;
         TypeAST* unified = ctx.checker.unify(firstType, elemType);
         if (!unified) {
-            ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                         "array elements have incompatible types");
+            ctx.error(node.loc, DiagCode::E3002, {"array elements have incompatible types"});
             return nullptr;
         }
         firstType = unified;
@@ -569,15 +542,13 @@ static TypeAST* checkTypeConvExpr(TypeConvExprAST& node, SemanticContext& ctx) {
 
     TypeAST* targetType = ctx.resolver.resolveType(node.targetType.get());
     if (!targetType) {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                     "cannot resolve target type for conversion");
+        ctx.error(node.loc, DiagCode::E3002, {"cannot resolve target type for conversion"});
         return nullptr;
     }
 
     if (node.isUnsafe) {
         if (!ctx.insideExtern) {
-            ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                         "unsafe type conversion (*T(...)) only allowed in @extern functions");
+            ctx.error(node.loc, DiagCode::E3002, {"unsafe type conversion (*T(...)) only allowed in @extern functions"});
             return nullptr;
         }
         node.resolvedType = targetType;
@@ -591,8 +562,7 @@ static TypeAST* checkTypeConvExpr(TypeConvExprAST& node, SemanticContext& ctx) {
             node.resolvedType = targetType;
             return targetType;
         }
-        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3008,
-                     "cannot safely convert between these primitive types");
+        ctx.error(node.loc, DiagCode::E3008, {"cannot safely convert between these primitive types"});
         return nullptr;
     }
 
@@ -610,8 +580,7 @@ static TypeAST* checkTypeConvExpr(TypeConvExprAST& node, SemanticContext& ctx) {
         return targetType;
     }
 
-    ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3008,
-                 "no valid conversion from source type to target type");
+    ctx.error(node.loc, DiagCode::E3008, {"no valid conversion from source type to target type"});
     return nullptr;
 }
 
@@ -621,9 +590,9 @@ static TypeAST* checkTypeConvExpr(TypeConvExprAST& node, SemanticContext& ctx) {
 static TypeAST* checkBehaviorAccessExpr(BehaviorAccessExprAST& node, SemanticContext& ctx) {
     Symbol* sym = ctx.symbols.lookup(node.typeName);
     if (!sym || sym->kind != SymbolKind::Struct) {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
-                     "unknown type '" + std::string(ctx.pool.lookup(node.typeName)) +
-                     "' for method access");
+        ctx.error(node.loc, DiagCode::E3001,
+            {"unknown type '" + std::string(ctx.pool.lookup(node.typeName)) +
+                     "' for method access"});
         return nullptr;
     }
 
@@ -631,9 +600,9 @@ static TypeAST* checkBehaviorAccessExpr(BehaviorAccessExprAST& node, SemanticCon
                                                     ctx.pool.lookup(node.method));
     Symbol* methodSym = ctx.symbols.lookup(ctx.pool.intern(mangled));
     if (!methodSym || (methodSym->kind != SymbolKind::Method && methodSym->kind != SymbolKind::Func)) {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
-                     "type '" + std::string(ctx.pool.lookup(node.typeName)) +
-                     "' has no method '" + std::string(ctx.pool.lookup(node.method)) + "'");
+        ctx.error(node.loc, DiagCode::E3001,
+            {"type '" + std::string(ctx.pool.lookup(node.typeName)) +
+                     "' has no method '" + std::string(ctx.pool.lookup(node.method)) + "'"});
         return nullptr;
     }
 
@@ -647,8 +616,7 @@ static TypeAST* checkBehaviorAccessExpr(BehaviorAccessExprAST& node, SemanticCon
     }
 
     if (!methodType) {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                     "method type could not be resolved");
+        ctx.error(node.loc, DiagCode::E3002, {"method type could not be resolved"});
         return nullptr;
     }
 
@@ -664,28 +632,24 @@ static TypeAST* checkNullableChainExpr(NullableChainExprAST& node, SemanticConte
     TypeAST* rootType = checkExpr(node.object.get(), ctx);
     if (!rootType) return nullptr;
     if (!ctx.checker.isNullable(rootType)) {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                     "nullable chain (?.) requires nullable left‑hand side");
+        ctx.error(node.loc, DiagCode::E3002, {"nullable chain (?.) requires nullable left‑hand side"});
         return nullptr;
     }
 
     TypeAST* current = rootType;
     for (auto& fieldName : node.steps) {
         if (!current->isa<NullableTypeAST>()) {
-            ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                         "internal error: nullable chain expected nullable type");
+            ctx.error(node.loc, DiagCode::E3002, {"internal error: nullable chain expected nullable type"});
             return nullptr;
         }
         TypeAST* inner = current->as<NullableTypeAST>()->inner.get();
         if (!inner->isa<NamedTypeAST>()) {
-            ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                         "nullable chain only supports struct fields");
+            ctx.error(node.loc, DiagCode::E3002, {"nullable chain only supports struct fields"});
             return nullptr;
         }
         Symbol* structSym = ctx.symbols.lookup(inner->as<NamedTypeAST>()->name);
         if (!structSym || structSym->kind != SymbolKind::Struct) {
-            ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
-                         "type not found for nullable chain");
+            ctx.error(node.loc, DiagCode::E3001, {"type not found for nullable chain"});
             return nullptr;
         }
         auto* structDecl = structSym->decl->as<StructDeclAST>();
@@ -697,8 +661,7 @@ static TypeAST* checkNullableChainExpr(NullableChainExprAST& node, SemanticConte
             }
         }
         if (!fieldType) {
-            ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
-                         "field '" + std::string(ctx.pool.lookup(fieldName)) + "' not found");
+            ctx.error(node.loc, DiagCode::E3001, {"field '" + std::string(ctx.pool.lookup(fieldName)) + "' not found"});
             return nullptr;
         }
         current = ctx.arena.make<NullableTypeAST>(TypePtr(fieldType)).get();
@@ -718,8 +681,7 @@ static TypeAST* checkNullCoalesceExpr(NullCoalesceExprAST& node, SemanticContext
     if (!rightType) return nullptr;
 
     if (!ctx.checker.isNullable(leftType)) {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                     "left side of ?? must be nullable");
+        ctx.error(node.loc, DiagCode::E3002, {"left side of ?? must be nullable"});
         return nullptr;
     }
 
@@ -728,8 +690,7 @@ static TypeAST* checkNullCoalesceExpr(NullCoalesceExprAST& node, SemanticContext
                          : leftType;
     if (!ctx.checker.isAssignable(innerLeft, rightType) &&
         !ctx.checker.isAssignable(rightType, innerLeft)) {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                     "fallback type incompatible with nullable inner type");
+        ctx.error(node.loc, DiagCode::E3002, {"fallback type incompatible with nullable inner type"});
         return nullptr;
     }
 
@@ -749,8 +710,7 @@ static TypeAST* checkAssignExpr(AssignExprAST& node, SemanticContext& ctx) {
     if (!rhsType) return nullptr;
 
     if (!ctx.checker.isAssignable(rhsType, lhsType)) {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                     "cannot assign expression to left‑hand side");
+        ctx.error(node.loc, DiagCode::E3002, {"cannot assign expression to left‑hand side"});
         return nullptr;
     }
 
@@ -766,8 +726,7 @@ static TypeAST* checkIsExpr(IsExprAST& node, SemanticContext& ctx) {
     if (!exprType) return nullptr;
     TypeAST* checkType = ctx.resolver.resolveType(node.checkType.get());
     if (!checkType) {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
-                     "cannot resolve type in 'is' expression");
+        ctx.error(node.loc, DiagCode::E3001, {"cannot resolve type in 'is' expression"});
         return nullptr;
     }
 
@@ -785,24 +744,26 @@ static TypeAST* checkPipelineExpr(PipelineExprAST& node, SemanticContext& ctx) {
 
     for (auto& step : node.steps) {
         if (!step) continue;
-        // Simple ident step
         if (step->kind == PipelineStepKind::Ident && step->ident.isValid()) {
             Symbol* sym = ctx.symbols.lookup(step->ident);
             if (!sym || !sym->type || !sym->type->isa<FuncTypeAST>()) {
-                ctx.dc.error(DiagnosticCategory::Semantic, step->loc, DiagCode::E3002,
-                             "pipeline step is not a function");
+                ctx.error(step->loc, DiagCode::E3002, {"pipeline step is not a function"});
                 return nullptr;
             }
             FuncTypeAST* func = sym->type->as<FuncTypeAST>();
-            if (func->sig.paramGroups.empty() || func->sig.paramGroups[0].empty()) {
-                ctx.dc.error(DiagnosticCategory::Semantic, step->loc, DiagCode::E3003,
-                             "pipeline step function expects at least one parameter");
+            if (func->sig.groupCount() == 0) {
+                ctx.error(step->loc, DiagCode::E3002, {"pipeline step function has no parameters"});
                 return nullptr;
             }
-            TypeAST* firstParamType = func->sig.paramGroups[0][0]->type.get();
+            auto firstGroup = func->sig.getGroup(0);
+            if (firstGroup.empty()) {
+                ctx.error(step->loc, DiagCode::E3002, {"pipeline step function has no parameters"});
+                return nullptr;
+            }
+            TypeAST* firstParamType = firstGroup[0]->type.get();
             if (!ctx.checker.isAssignable(currentType, firstParamType)) {
-                ctx.dc.error(DiagnosticCategory::Semantic, step->loc, DiagCode::E3002,
-                             "pipeline seed/result type does not match step's first parameter");
+                ctx.error(step->loc, DiagCode::E3002,
+                          {"pipeline seed/result type does not match step's first parameter"});
                 return nullptr;
             }
             if (func->sig.returnTypes.empty()) {
@@ -811,8 +772,7 @@ static TypeAST* checkPipelineExpr(PipelineExprAST& node, SemanticContext& ctx) {
                 currentType = func->sig.returnTypes[0].get();
             }
         } else {
-            ctx.dc.error(DiagnosticCategory::Semantic, step->loc, DiagCode::E3002,
-                         "unsupported pipeline step kind");
+            ctx.error(step->loc, DiagCode::E3002, {"unsupported pipeline step kind"});
             return nullptr;
         }
     }
@@ -828,8 +788,7 @@ static TypeAST* checkComposeExpr(ComposeExprAST& node, SemanticContext& ctx) {
     TypeAST* leftType = checkExpr(node.left.get(), ctx);
     if (!leftType) return nullptr;
     if (!leftType->isa<FuncTypeAST>()) {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.left->loc, DiagCode::E3002,
-                     "left side of composition must be a function");
+        ctx.error(node.left->loc, DiagCode::E3002, {"left side of composition must be a function"});
         return nullptr;
     }
 
@@ -840,30 +799,35 @@ static TypeAST* checkComposeExpr(ComposeExprAST& node, SemanticContext& ctx) {
         if (operand->kind == ComposeOperandKind::Ident && operand->ident.isValid()) {
             Symbol* sym = ctx.symbols.lookup(operand->ident);
             if (!sym || !sym->type || !sym->type->isa<FuncTypeAST>()) {
-                ctx.dc.error(DiagnosticCategory::Semantic, operand->loc, DiagCode::E3002,
-                             "compose operand is not a function");
+                ctx.error(operand->loc, DiagCode::E3002, {"compose operand is not a function"});
                 return nullptr;
             }
             funcType = sym->type;
         } else {
-            ctx.dc.error(DiagnosticCategory::Semantic, operand->loc, DiagCode::E3002,
-                         "unsupported compose operand");
+            ctx.error(operand->loc, DiagCode::E3002, {"unsupported compose operand"});
             return nullptr;
         }
 
         FuncTypeAST* curFunc = current->as<FuncTypeAST>();
         FuncTypeAST* nextFunc = funcType->as<FuncTypeAST>();
-        if (curFunc->sig.returnTypes.empty() || nextFunc->sig.paramGroups.empty() ||
-            nextFunc->sig.paramGroups[0].empty()) {
-            ctx.dc.error(DiagnosticCategory::Semantic, operand->loc, DiagCode::E3002,
-                         "incompatible function signatures for composition");
+        if (curFunc->sig.returnTypes.empty()) {
+            ctx.error(operand->loc, DiagCode::E3002, {"left function has no return type"});
+            return nullptr;
+        }
+        if (nextFunc->sig.groupCount() == 0) {
+            ctx.error(operand->loc, DiagCode::E3002, {"right function has no parameter groups"});
+            return nullptr;
+        }
+        auto nextFirstGroup = nextFunc->sig.getGroup(0);
+        if (nextFirstGroup.empty()) {
+            ctx.error(operand->loc, DiagCode::E3002, {"right function has no parameters"});
             return nullptr;
         }
         TypeAST* curRet = curFunc->sig.returnTypes[0].get();
-        TypeAST* nextFirstParam = nextFunc->sig.paramGroups[0][0]->type.get();
+        TypeAST* nextFirstParam = nextFirstGroup[0]->type.get();
         if (!ctx.checker.isEqual(curRet, nextFirstParam)) {
-            ctx.dc.error(DiagnosticCategory::Semantic, operand->loc, DiagCode::E3002,
-                         "composition type mismatch: output of left does not match input of right");
+            ctx.error(operand->loc, DiagCode::E3002,
+                      {"composition type mismatch: output of left does not match input of right"});
             return nullptr;
         }
         current = funcType;
@@ -880,31 +844,28 @@ static TypeAST* checkAnonFuncExpr(AnonFuncExprAST& node, SemanticContext& ctx) {
     auto* funcType = ctx.resolver.cloneFuncSignature(node.sig, node.loc);
     TypeAST* resolvedType = ctx.resolver.resolveType(funcType);
     if (!resolvedType) {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                     "invalid anonymous function signature");
+        ctx.error(node.loc, DiagCode::E3002, {"invalid anonymous function signature"});
         return nullptr;
     }
 
     ctx.symbols.pushScope();
-    for (const auto& group : node.sig.paramGroups) {
-        for (const auto& param : group) {
-            if (param) {
-                Symbol paramSym;
-                paramSym.name = param->name;
-                paramSym.kind = SymbolKind::Param;
-                paramSym.declKw = DeclKeyword::Let;
-                paramSym.visibility = Visibility::Private;
-                paramSym.type = param->type.get();
-                paramSym.decl = param.get();
-                paramSym.loc = param->loc;
-                if (!ctx.symbols.declare(paramSym)) {
-                    ctx.dc.error(DiagnosticCategory::Semantic, param->loc, DiagCode::E3005,
-                                 "duplicate parameter name '" +
-                                 std::string(ctx.pool.lookup(param->name)) + "'");
-                }
-            }
+    // Declare parameters from flattened allParams
+    for (const auto& param : node.sig.allParams) {
+        if (!param) continue;
+        Symbol paramSym;
+        paramSym.name = param->name;
+        paramSym.kind = SymbolKind::Param;
+        paramSym.declKw = DeclKeyword::Let;
+        paramSym.visibility = Visibility::Private;
+        paramSym.type = param->type.get();
+        paramSym.decl = param.get();
+        paramSym.loc = param->loc;
+        if (!ctx.symbols.declare(paramSym)) {
+            ctx.error(param->loc, DiagCode::E3005,
+                      {"duplicate parameter name '" + std::string(ctx.pool.lookup(param->name)) + "'"});
         }
     }
+
     TypeAST* expectedReturn = nullptr;
     if (!funcType->sig.returnTypes.empty())
         expectedReturn = funcType->sig.returnTypes[0].get();
@@ -942,8 +903,7 @@ static TypeAST* checkMatchExpr(MatchExprAST& node, SemanticContext& ctx) {
             if (!unifiedType) unifiedType = exprType;
             else unifiedType = ctx.checker.unify(unifiedType, exprType);
             if (!unifiedType) {
-                ctx.dc.error(DiagnosticCategory::Semantic, expr->loc, DiagCode::E3002,
-                             "match arms have incompatible types");
+                ctx.error(expr->loc, DiagCode::E3002, {"match arms have incompatible types"});
                 return nullptr;
             }
         }
@@ -954,8 +914,7 @@ static TypeAST* checkMatchExpr(MatchExprAST& node, SemanticContext& ctx) {
         if (!unifiedType) unifiedType = exprType;
         else unifiedType = ctx.checker.unify(unifiedType, exprType);
         if (!unifiedType) {
-            ctx.dc.error(DiagnosticCategory::Semantic, expr->loc, DiagCode::E3002,
-                         "default arm type does not match other arms");
+            ctx.error(expr->loc, DiagCode::E3002, {"default arm type does not match other arms"});
             return nullptr;
         }
     }
@@ -971,8 +930,7 @@ static TypeAST* checkIfExpr(IfExprAST& node, SemanticContext& ctx) {
     TypeAST* condType = checkExpr(node.condition.get(), ctx);
     if (!condType) return nullptr;
     if (!ctx.checker.isBooleanCompatible(condType)) {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.condition->loc, DiagCode::E3002,
-                     "if condition must be boolean");
+        ctx.error(node.condition->loc, DiagCode::E3002, {"if condition must be boolean"});
         return nullptr;
     }
 
@@ -983,8 +941,7 @@ static TypeAST* checkIfExpr(IfExprAST& node, SemanticContext& ctx) {
 
     TypeAST* unified = ctx.checker.unify(thenType, elseType);
     if (!unified) {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                     "then and else branches must have compatible types");
+        ctx.error(node.loc, DiagCode::E3002, {"then and else branches must have compatible types"});
         return nullptr;
     }
 
@@ -1002,8 +959,7 @@ static TypeAST* checkRangeExpr(RangeExprAST& node, SemanticContext& ctx) {
     if (!hiType) return nullptr;
 
     if (!ctx.checker.isIntegerType(loType) || !ctx.checker.isIntegerType(hiType)) {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                     "range bounds must be integers");
+        ctx.error(node.loc, DiagCode::E3002, {"range bounds must be integers"});
         return nullptr;
     }
 
@@ -1018,20 +974,18 @@ static TypeAST* checkRangeExpr(RangeExprAST& node, SemanticContext& ctx) {
 static TypeAST* checkIntrinsicCallExpr(IntrinsicCallExprAST& node, SemanticContext& ctx) {
     const IntrinsicEntry* entry = IntrinsicRegistry::instance().lookup(node.intrinsicName);
     if (!entry) {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3009,
-                     "unknown intrinsic '#" + std::string(ctx.pool.lookup(node.intrinsicName)) + "'");
+        ctx.error(node.loc, DiagCode::E3009,
+            {"unknown intrinsic '#" + std::string(ctx.pool.lookup(node.intrinsicName)) + "'"});
         return nullptr;
     }
 
     if (entry->argKinds.size() > 0 && entry->argKinds[0] == IntrinsicArgKind::TypeArg) {
         if (!node.typeArg) {
-            ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3010,
-                         "intrinsic requires a type argument");
+            ctx.error(node.loc, DiagCode::E3010, {"intrinsic requires a type argument"});
             return nullptr;
         }
         if (!ctx.resolver.resolveType(node.typeArg.get())) {
-            ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3002,
-                         "invalid type argument for intrinsic");
+            ctx.error(node.loc, DiagCode::E3002, {"invalid type argument for intrinsic"});
             return nullptr;
         }
     }
@@ -1039,10 +993,10 @@ static TypeAST* checkIntrinsicCallExpr(IntrinsicCallExprAST& node, SemanticConte
     size_t expectedMin = entry->minArgs;
     size_t expectedMax = entry->maxArgs;
     if (node.args.size() < expectedMin || node.args.size() > expectedMax) {
-        ctx.dc.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3010,
-                     "intrinsic expects " + std::to_string(expectedMin) + " to " +
+        ctx.error(node.loc, DiagCode::E3010,
+            {"intrinsic expects " + std::to_string(expectedMin) + " to " +
                      std::to_string(expectedMax) + " arguments, got " +
-                     std::to_string(node.args.size()));
+                     std::to_string(node.args.size())});
         return nullptr;
     }
 
@@ -1162,8 +1116,8 @@ TypeAST* checkExpr(ExprAST* node, SemanticContext& ctx) {
             result = checkIntrinsicCallExpr(*node->as<IntrinsicCallExprAST>(), ctx);
             break;
         default:
-            ctx.dc.error(DiagnosticCategory::Semantic, node->loc, DiagCode::E3002,
-                         "unsupported expression kind: " + LucDebug::kindToString(node->kind));
+            ctx.error(node->loc, DiagCode::E3002,
+            {"unsupported expression kind: " + LucDebug::kindToString(node->kind)});
             return nullptr;
     }
 

@@ -112,6 +112,8 @@ void SemanticCollector::collectProgram(ProgramAST& program) {
     LUC_LOG_SEMANTIC("SemanticCollector::collectProgram: file=" 
                      << pool_.lookup(program.filePath));
     
+    currentFile_ = program.filePath;
+
     // Ensure global scope exists
     if (symbols_.currentDepth() == 0) {
         symbols_.pushScope();
@@ -176,18 +178,17 @@ void SemanticCollector::declareSymbol(const Symbol& sym) {
     LUC_LOG_SEMANTIC_VERBOSE("declareSymbol: name=" << pool_.lookup(sym.name) 
                              << " kind=" << SymbolUtils::kindToString(sym.kind));
     
-    // Check for duplicate in current scope
     if (symbols_.lookupLocal(sym.name)) {
         std::string_view nameStr = pool_.lookup(sym.name);
-        dc_.error(DiagnosticCategory::Semantic, sym.loc, DiagCode::E3005,
-                  "duplicate declaration of '" + std::string(nameStr) + "'");
+        dc_.error(DiagnosticCategory::Semantic, currentFile_, sym.loc, DiagCode::E3005,
+                  {"duplicate declaration of '" + std::string(nameStr) + "'"});
         return;
     }
     
     if (!symbols_.declare(sym)) {
         std::string_view nameStr = pool_.lookup(sym.name);
-        dc_.error(DiagnosticCategory::Semantic, sym.loc, DiagCode::E3005,
-                  "failed to declare symbol '" + std::string(nameStr) + "'");
+        dc_.error(DiagnosticCategory::Semantic, currentFile_, sym.loc, DiagCode::E3005,
+                  {"failed to declare symbol '" + std::string(nameStr) + "'"});
     }
 }
 
@@ -241,8 +242,7 @@ void SemanticCollector::declareSymbol(const Symbol& sym) {
 //   This function is called from visit(FuncDeclAST) and visit(VarDeclAST) before
 //   declareSymbol(), so the extern metadata is part of the symbol from the start.
 // ─────────────────────────────────────────────────────────────────────────────
-void SemanticCollector::extractExternMetadata(const std::vector<AttributePtr>& attrs, 
-                                               Symbol& sym) {
+void SemanticCollector::extractExternMetadata(const ArenaSpan<AttributePtr>& attrs, Symbol& sym) {
     for (const auto& attr : attrs) {
         if (!attr) continue;
         
@@ -457,8 +457,8 @@ void SemanticCollector::visit(ImplDeclAST& node) {
     if (node.targetType && node.targetType->isa<NamedTypeAST>()) {
         structName = node.targetType->as<NamedTypeAST>()->name;
     } else {
-        dc_.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
-                  "impl target must be a named type (struct, enum, or type alias)");
+        dc_.error(DiagnosticCategory::Semantic, currentFile_, node.loc, DiagCode::E3001,
+                {"impl target must be a named type (struct, enum, or type alias)"});
         return;
     }
 
@@ -503,8 +503,8 @@ void SemanticCollector::visit(FromDeclAST& node) {
     if (node.targetType && node.targetType->isa<NamedTypeAST>()) {
         targetTypeName = node.targetType->as<NamedTypeAST>()->name;
     } else {
-        dc_.error(DiagnosticCategory::Semantic, node.loc, DiagCode::E3001,
-                  "from target must be a named type (struct, enum, or type alias)");
+        dc_.error(DiagnosticCategory::Semantic, currentFile_, node.loc, DiagCode::E3001,
+                {"from target must be a named type (struct, enum, or type alias)"});
         return;
     }
 
@@ -519,10 +519,11 @@ void SemanticCollector::visit(FromDeclAST& node) {
 
         // Build a mangled name for the conversion
         TypeAST* firstParamType = nullptr;
-        if (!entry->sig.paramGroups.empty() &&
-            !entry->sig.paramGroups[0].empty() &&
-            entry->sig.paramGroups[0][0]) {
-            firstParamType = entry->sig.paramGroups[0][0]->type.get();
+        if (entry->sig.totalParamCount() > 0 && entry->sig.groupCount() > 0) {
+            auto group = entry->sig.getGroup(0);
+            if (!group.empty() && group[0]) {
+                firstParamType = group[0]->type.get();
+            }
         }
         std::string mangledName = NameMangler::mangleFrom(
             pool_.lookup(targetTypeName), 

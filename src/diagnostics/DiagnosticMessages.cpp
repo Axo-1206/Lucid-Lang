@@ -54,7 +54,7 @@ std::string_view getMessage(DiagCode code) {
         case DiagCode::E3004: return "Attempted to assign to an immutable value.";
         case DiagCode::E3005: return "Symbol '%s' already declared in this scope.";
         case DiagCode::E3006: return "Missing 'main' entry point.";
-        case DiagCode::E3007: return "Invalid signature for the 'main' function.";
+        case DiagCode::E3007: return "Invalid signature for the 'main' function: %s";
         case DiagCode::E3008: return "Implicit type conversion not allowed; suggest explicit casting.";
         case DiagCode::E3009: return "Unknown '#...' intrinsic name.";
         case DiagCode::E3010: return "Wrong argument count or type for '#...' intrinsic.";
@@ -63,7 +63,7 @@ std::string_view getMessage(DiagCode code) {
         case DiagCode::E3013: return "Cannot use '==' on array type; use collection library comparison function.";
         case DiagCode::E3014: return "Chained comparison not allowed; use 'and' explicitly.";
         case DiagCode::E3015: return "'@aot' and '@jit' are mutually exclusive on the same declaration.";
-        case DiagCode::E3016: return "'@aot' / '@jit' are only valid on the 'main' entry point.";
+        case DiagCode::E3016: return "'@%s' is only valid on the 'main' entry point; remove it from '%s'";
         case DiagCode::E3017: return "Generic signature mismatch: 'impl' must match struct declaration exactly.";
         case DiagCode::E3018: return "'impl' target must be a named type (not a structural type without alias).";
         case DiagCode::E3019: return "Generic arity mismatch in 'impl' declaration (parameter count does not match target).";

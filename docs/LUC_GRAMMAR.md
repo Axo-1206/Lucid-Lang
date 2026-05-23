@@ -1330,7 +1330,7 @@ impl Box<T> {
 ## From Declaration
 
 ```
-from_decl       := [ visibility_mod ] 'from' type_name [ generic_params ] '{' { from_entry } '}'
+from_decl       := [ visibility_mod ] 'from' type [ generic_params ] '{' { from_entry } '}'
 
 from_entry := param_group { param_group } '->' type '=' func_body
 -- source param(s), target type name, body
