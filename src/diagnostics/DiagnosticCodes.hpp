@@ -49,6 +49,8 @@ enum class DiagCode : uint32_t {
     E2025,         ///< Field access on non‑struct/enum.
     E2026,         ///< Chained comparison without 'and'.
     E2027,         ///< Attributes not allowed on multi-variable declaration.
+    E2028,         ///< Invalid type in result suffix (must be primitive or identifier).
+    E2029,         ///< Nested '!' not allowed – use a type alias.
 
     // ========== 3000–3999: Semantic ==========
     E3001 = 3000,  ///< Undeclared identifier.
@@ -94,7 +96,8 @@ enum class DiagCode : uint32_t {
     E3041,         ///< 'is' expression outside conditional.
     E3042,         ///< Pattern bind name conflicts.
     E3043,         ///< Unconditional bind after specific patterns.
-    E3044,         ///< Missing usage of generic params on RHS of type alias.
+    E3044,         ///< Generic parameter unused in type alias – add '@phantom'.
+    E3045,         ///< Operation on unresolved '!' type.   
 
     // ========== 4000–4999: Backend / Codegen ==========
     E4001 = 4000,  ///< Target machine init failed.
@@ -119,6 +122,6 @@ enum class DiagCode : uint32_t {
     W3008,         ///< Primitive impl shadows built‑in.
 };
 
-// Ensure no overflow (last code is below 65535)
+// Ensure no overflow (last code is below 6000)
 static_assert(static_cast<uint32_t>(DiagCode::W3008) < 6000,
               "DiagCode out of expected range");

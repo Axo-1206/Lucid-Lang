@@ -147,7 +147,7 @@ enum class TokenType {
     EQUAL_EQUAL,         // ==        - value equality
     EQUAL_EQUAL_EQUAL,   // ===       - reference equality: same memory address
     NOT_EQUAL,           // !=
-    BANG,                // !    - pipeline argument pack: scale(2.0)! means upstream injected as first arg
+    BANG,                // !    - pipeline argument pack: scale(2.0)! means upstream injected as first arg or error type
 
     // ─── Bitwise ──────────────────────────────────────────────────────────────
     BIT_AND,  // &&        - bitwise AND  (integer types only)
@@ -184,6 +184,9 @@ enum class TokenType {
     TILDE,     // ~    - type qualifier prefix: ~async, ~cdecl
 
     AMPERSAND, // &         - reference type: &T  (safe, managed)
+
+    // ─── Error Handling ───────────────────────────────────────────────────────
+    RESOLVE,   // resolve TypeA!TypeB, if succeed return TypeA else return TypeB
 
     // ─── Meta ─────────────────────────────────────────────────────────────────
     DOC_COMMENT,  // /-- ... --/  - block documentation comment, attached to next declaration

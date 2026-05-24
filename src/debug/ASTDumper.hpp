@@ -45,6 +45,7 @@ public:
     void visit(RefTypeAST& node) override;
     void visit(PtrTypeAST& node) override;
     void visit(FuncTypeAST& node) override;
+    void visit(ResultTypeAST& node) override;
 
     // ── Declaration nodes ─────────────────────────────────────────────────────
     void visit(PackageDeclAST& node) override;
@@ -91,6 +92,9 @@ public:
     void visit(IfExprAST& node) override;
     void visit(RangeExprAST& node) override;
     void visit(TypeConvExprAST& node) override;
+    void visit(ResolveExprAST& node) override;
+    void visit(OkArmAST& node) override;
+    void visit(ErrArmAST& node) override;
 
     // ── Pattern nodes ─────────────────────────────────────────────────────────
     void visit(BindPatternAST& node) override;

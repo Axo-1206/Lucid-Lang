@@ -676,6 +676,96 @@ struct AwaitExprAST : ExprAST {
 };
 
 // ═════════════════════════════════════════════════════════════════════════════
+// RESOLVE NODES — structured error unwrapping
+// ═════════════════════════════════════════════════════════════════════════════
+
+/**
+ * @brief The `ok` arm of a resolve expression.
+ *
+ * @example
+ *   ok (v int)    { return v }
+ *   ok (v int?)   { return v ?? 0 }
+ *
+ * Grammar: 'ok' '(' IDENTIFIER type ')' block
+ *
+ * `bindType` is always plain T — never T!E. The `!` is consumed at the
+ * resolve boundary; the ok arm receives the already-unwrapped success value.
+ *
+ * Extends BaseAST (not StmtAST) — mirrors MatchArmAST / DefaultArmAST.
+ */
+struct OkArmAST : BaseAST {
+    static constexpr ASTKind staticKind = ASTKind::OkArm;
+
+    InternedString bindName;   ///< Name of the success variable (e.g. "v")
+    TypePtr        bindType;   ///< Plain T (never T!E — ! is consumed by resolve)
+    StmtPtr        body;       ///< Always BlockStmtAST
+
+    OkArmAST() : BaseAST(ASTKind::OkArm) {}
+    void accept(ASTVisitor& v) override { v.visit(*this); }
+};
+
+using OkArmPtr = ASTPtr<OkArmAST>;
+
+/**
+ * @brief The `err` arm of a resolve expression.
+ *
+ * @example
+ *   err (e string) { return -1 }    -- typed error: E = string
+ *   err ()         { return 0  }    -- bare '!': no error payload
+ *
+ * Grammar: 'err' '(' [ IDENTIFIER type ] ')' block
+ *
+ * When the result type used bare `!` (no error type), the parens are empty:
+ *   `bindName` is empty string, `bindType` is nullptr.
+ *
+ * Extends BaseAST (not StmtAST) — mirrors MatchArmAST / DefaultArmAST.
+ */
+struct ErrArmAST : BaseAST {
+    static constexpr ASTKind staticKind = ASTKind::ErrArm;
+
+    InternedString bindName;   ///< Error variable name; empty string when bare '!'
+    TypePtr        bindType;   ///< Error type E; nullptr when bare '!' (no error value)
+    StmtPtr        body;       ///< Always BlockStmtAST
+
+    /// True when the enclosing result type was bare '!' (no error payload)
+    bool isBareError() const { return bindType == nullptr; }
+
+    ErrArmAST() : BaseAST(ASTKind::ErrArm) {}
+    void accept(ASTVisitor& v) override { v.visit(*this); }
+};
+
+using ErrArmPtr = ASTPtr<ErrArmAST>;
+
+/**
+ * @brief Structured resolution of a T!E value — forces handling of both outcomes.
+ *
+ * @example
+ *   resolve divide(10, 0) {
+ *       ok  (v int)    { return v  }
+ *       err (e string) { return -1 }
+ *   }
+ *
+ * Grammar: 'resolve' expr '{' ok_arm err_arm '}'
+ *
+ * The `subject` must resolve to a T!E type. After the resolve block, the `!`
+ * is consumed and the result is plain T (the type returned by the ok arm).
+ * Both arms are required; both must return the same type.
+ *
+ * Listed in `primary_expr` in the grammar — this is an expression, not a
+ * statement, exactly like MatchExprAST.
+ */
+struct ResolveExprAST : ExprAST {
+    static constexpr ASTKind staticKind = ASTKind::ResolveExpr;
+
+    ExprPtr    subject;   ///< The T!E expression being resolved
+    OkArmPtr   okArm;     ///< Required ok arm
+    ErrArmPtr  errArm;    ///< Required err arm
+
+    ResolveExprAST() : ExprAST(ASTKind::ResolveExpr) {}
+    void accept(ASTVisitor& v) override { v.visit(*this); }
+};
+
+// ═════════════════════════════════════════════════════════════════════════════
 // CONTROL FLOW EXPRESSION NODES
 // ═════════════════════════════════════════════════════════════════════════════
 

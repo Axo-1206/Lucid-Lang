@@ -165,7 +165,7 @@ struct NamedTypeAST : TypeAST {
  *
  * Grammar rules enforced by the semantic pass:
  *   - `?` attaches to value types only (primitives, structs, arrays, named aliases)
- *   - `?.` chain operator is only valid on nullable targets(a non-nullable type can be used but will result a warning)
+ *   - `?.` chain operator is only valid on nullable targets (a non-nullable type can be used but will result in a warning)
  *   - Every `?.` chain must be terminated by `??`
  *   - `?` is **not** valid on inline function types – use a type alias
  */
@@ -176,6 +176,42 @@ struct NullableTypeAST : TypeAST {
 
     explicit NullableTypeAST(TypePtr t)
         : TypeAST(ASTKind::NullableType), inner(std::move(t)) {}
+
+    void accept(ASTVisitor& v) override { v.visit(*this); }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ResultTypeAST – the `!` suffix: success type T paired with error type E.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @brief Wraps a success type with an optional error type using the `!` suffix.
+ *
+ * @example
+ *   int!string   → inner = PrimitiveTypeAST(Int),  errorType = PrimitiveTypeAST(String)
+ *   int!         → inner = PrimitiveTypeAST(Int),  errorType = nullptr  (bare '!')
+ *   int?!string  → inner = NullableTypeAST(Int),   errorType = PrimitiveTypeAST(String)
+ *   int?!        → inner = NullableTypeAST(Int),   errorType = nullptr
+ *
+ * Grammar rules enforced by the semantic pass:
+ *   - Neither `inner` nor `errorType` may itself be a ResultTypeAST
+ *     (nesting '!' is forbidden — see §Nesting `!` is Forbidden in grammar)
+ *   - `?` always comes before `!` when both are present (inner is NullableTypeAST)
+ *   - `!` is NEVER valid directly after an array type or inline function type —
+ *     use a named alias first (same rule as `?`)
+ */
+struct ResultTypeAST : TypeAST {
+    static constexpr ASTKind staticKind = ASTKind::ResultType;
+
+    TypePtr inner;       ///< The success type (T in T!E or T?!E)
+    TypePtr errorType;   ///< The error type E; nullptr means bare '!' (fails with nil)
+
+    ResultTypeAST(TypePtr t, TypePtr err)
+        : TypeAST(ASTKind::ResultType),
+          inner(std::move(t)), errorType(std::move(err)) {}
+
+    /// Convenience: true when this is a bare '!' with no error payload
+    bool hasErrorType() const { return errorType != nullptr; }
 
     void accept(ASTVisitor& v) override { v.visit(*this); }
 };

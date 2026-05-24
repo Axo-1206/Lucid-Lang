@@ -21,6 +21,7 @@ namespace LucDebug {
             case ASTKind::PrimitiveType:     return "PrimitiveType";
             case ASTKind::NamedType:         return "NamedType";
             case ASTKind::NullableType:      return "NullableType";
+            case ASTKind::ResultType:        return "ResultType";
             case ASTKind::FixedArrayType:    return "FixedArrayType";
             case ASTKind::SliceType:         return "SliceType";
             case ASTKind::DynamicArrayType:  return "DynamicArrayType";
@@ -74,6 +75,9 @@ namespace LucDebug {
             case ASTKind::IfExpr:             return "IfExpr";
             case ASTKind::RangeExpr:          return "RangeExpr";
             case ASTKind::TypeConvExpr:       return "TypeConvExpr";
+            case ASTKind::ResolveExpr:        return "ResolveExpr";
+            case ASTKind::OkArm:              return "OkArm";
+            case ASTKind::ErrArm:             return "ErrArm";
 
             // Statement nodes
             case ASTKind::BlockStmt:          return "BlockStmt";

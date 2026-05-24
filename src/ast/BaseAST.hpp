@@ -42,6 +42,7 @@
 struct PrimitiveTypeAST;
 struct NamedTypeAST;
 struct NullableTypeAST;
+struct ResultTypeAST;        // T!E / T! — result type
 struct FixedArrayTypeAST;
 struct SliceTypeAST;
 struct DynamicArrayTypeAST;
@@ -81,7 +82,6 @@ struct CallExprAST;
 struct IndexExprAST;
 struct FieldAccessExprAST;
 struct BehaviorAccessExprAST;
-struct StaticAccessExprAST;
 struct NullableChainExprAST;
 struct NullCoalesceExprAST;
 struct AssignExprAST;
@@ -92,6 +92,9 @@ struct ComposeExprAST;
 struct ComposeOperandAST;
 struct AnonFuncExprAST;
 struct AwaitExprAST;
+struct ResolveExprAST;       // resolve expr { ok ... err ... }
+struct OkArmAST;             // ok (v T) { ... }
+struct ErrArmAST;            // err (e E) { ... }
 struct MatchExprAST;
 struct IfExprAST;
 struct RangeExprAST;
@@ -164,6 +167,7 @@ enum class ASTKind : uint16_t {
     PrimitiveType,
     NamedType,
     NullableType,
+    ResultType,      // T!E / T! — result type
     FixedArrayType,
     SliceType,
     DynamicArrayType,
@@ -213,6 +217,9 @@ enum class ASTKind : uint16_t {
     ComposeOperand,
     AnonFuncExpr,
     AwaitExpr,
+    ResolveExpr,     // resolve expr { ok ... err ... }
+    OkArm,           // ok (v T) { ... }
+    ErrArm,          // err (e E) { ... }
     MatchExpr,
     IfExpr,
     RangeExpr,
@@ -308,6 +315,7 @@ struct ASTVisitor {
     virtual void visit(PrimitiveTypeAST&)      {}
     virtual void visit(NamedTypeAST&)          {}
     virtual void visit(NullableTypeAST&)       {}
+    virtual void visit(ResultTypeAST&)         {}
     virtual void visit(FixedArrayTypeAST&)     {}
     virtual void visit(SliceTypeAST&)          {}
     virtual void visit(DynamicArrayTypeAST&)   {}
@@ -347,7 +355,6 @@ struct ASTVisitor {
     virtual void visit(IndexExprAST&)           {}
     virtual void visit(FieldAccessExprAST&)     {}
     virtual void visit(BehaviorAccessExprAST&)  {}
-    virtual void visit(StaticAccessExprAST&)    {}
     virtual void visit(NullableChainExprAST&)   {}
     virtual void visit(NullCoalesceExprAST&)    {}
     virtual void visit(AssignExprAST&)          {}
@@ -358,6 +365,9 @@ struct ASTVisitor {
     virtual void visit(ComposeOperandAST&)      {}
     virtual void visit(AnonFuncExprAST&)        {}
     virtual void visit(AwaitExprAST&)           {}
+    virtual void visit(ResolveExprAST&)         {}
+    virtual void visit(OkArmAST&)               {}
+    virtual void visit(ErrArmAST&)              {}
     virtual void visit(MatchExprAST&)           {}
     virtual void visit(IfExprAST&)              {}
     virtual void visit(RangeExprAST&)           {}

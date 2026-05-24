@@ -1,123 +1,331 @@
-# ASTNode Design Refactoring Plan
+# AST Nodes for `!` Error Handling — Finalized Plan
 
-We will refactor the ASTNode design in `src/ast/` to optimize memory management (reducing base node bloat, packing source locations) and introduce `ArenaSpan` to replace `std::vector` for arena-allocated contiguous child nodes.
+## Background
 
-## User Review Required
+The grammar was updated with a full error-handling system centred on `!`. The `!` operator appears in **three distinct syntactic contexts**, each with a different semantic role. This plan documents what is already covered by existing AST nodes, what new nodes are needed, and what stale code to remove.
 
-> [!WARNING]
-> **Compilation Breakage Warning:**
-> Implementing these changes exclusively inside `src/ast/` (per the instruction *"don't touch other files, only modify what are currently inside the src/ast"*) **will break compilation** of the parser (`src/parser/`), semantic analyser (`src/sem/`), and other compiler phases.
-> 
-> This is because:
-> 1. Changing `std::vector` to `ArenaSpan` removes standard mutating methods like `.push_back()`, `.clear()`, etc.
-> 2. Moving `doc`, `attributes`, and `resolvedType` down from `BaseAST` means other phases accessing `node->attributes` or `node->resolvedType` on raw `BaseAST*` or incorrect node categories will fail.
-> 3. `SourceLocation` line and column are now accessed via getter methods `.line()` and `.column()` instead of fields `.line` and `.column`.
-> 
-> We will proceed with the modifications inside `src/ast/` exactly as requested. After you approve, you (or we, in a subsequent instruction) will need to update the parser and semantic phases to align with the new AST contract.
+---
+
+## Summary of `!` Usages in the Grammar
+
+### 1. `!` as a type suffix — `result_suffix`
+
+```
+result_suffix   := '!' type     -- success T, failure E
+                 | '!'          -- success T, failure nil
+```
+
+Examples: `int!string`, `int!`, `int?!string`, `int?!`
+
+**Status: MISSING → add `ResultTypeAST`**
+
+---
+
+### 2. `!` as an argument pack annotation — pipeline step
+
+```
+pipeline_step   := IDENTIFIER '(' arg_list ')' '!'
+postfix_op      := '(' [ arg_list ] ')' '!'
+```
+
+Example: `v |> scale(2.0)!`
+
+**Status: ✅ COVERED** — `PipelineStepKind::ArgPack` (and variants) + `CallExprAST::isArgPack` already exist.
+
+---
+
+### 3. `resolve` expression — structured error unwrapping
+
+```
+resolve_expr    := 'resolve' expr '{' ok_arm err_arm '}'
+ok_arm          := 'ok'  '(' IDENTIFIER type ')' block
+err_arm         := 'err' '(' [ IDENTIFIER type ] ')' block
+```
+
+Example: `resolve f() { ok (v int) { return v } err (e string) { return -1 } }`
+
+**Status: MISSING → add `ResolveExprAST`, `OkArmAST`, `ErrArmAST`**
+
+---
+
+### 4. `??` fallback on `T!E`
+
+**Status: ✅ COVERED** — `NullCoalesceExprAST` already handles both nil and unresolved `!` fallback uniformly.
+
+---
+
+## Gap & Cleanup Summary
+
+| Item | Action | File |
+|---|---|---|
+| `T!E` / `T!` result type | **Add** `ResultTypeAST` | `TypeAST.hpp` |
+| `resolve` expression | **Add** `ResolveExprAST` | `ExprAST.hpp` |
+| `ok` arm | **Add** `OkArmAST` | `ExprAST.hpp` |
+| `err` arm | **Add** `ErrArmAST` | `ExprAST.hpp` |
+| `StaticAccessExprAST` | **Remove** forward decl, visitor overload | `BaseAST.hpp` |
+| Argument pack `fn(args)!` | No change needed | — |
+| `??` fallback | No change needed | — |
+
+---
 
 ## Proposed Changes
 
-### [AST Support Library]
+---
 
-#### [NEW] [ArenaSpan.hpp](file:///c:/Users/TaiAx/Desktop/luc/src/ast/support/ArenaSpan.hpp)
-Create a new header for the lightweight, non-owning `ArenaSpan` template:
+### Component 1 — Remove `StaticAccessExprAST`
+
+#### [MODIFY] [BaseAST.hpp](file:///c:/Users/TaiAx/Desktop/luc/src/ast/BaseAST.hpp)
+
+**Remove** the forward declaration on line 84:
+```diff
+- struct StaticAccessExprAST;
+```
+
+**Remove** the visitor overload from `ASTVisitor`:
+```diff
+- virtual void visit(StaticAccessExprAST&)    {}
+```
+
+> [!NOTE]
+> No `ASTKind::StaticAccess` exists, so the enum needs no change. Check `ExprAST.hpp` to confirm no partial definition was accidentally left in — the grep shows it's forward-decl-only.
+
+---
+
+### Component 2 — `ResultTypeAST` in TypeAST.hpp
+
+#### [MODIFY] [TypeAST.hpp](file:///c:/Users/TaiAx/Desktop/luc/src/ast/TypeAST.hpp)
+
+Add `ResultTypeAST` after `NullableTypeAST` (around line 181):
+
 ```cpp
-#pragma once
-#include <cstddef>
+// ─────────────────────────────────────────────────────────────────────────────
+// ResultTypeAST – the `!` suffix: success type T paired with error type E.
+// ─────────────────────────────────────────────────────────────────────────────
 
-template <typename T>
-class ArenaSpan {
-    T*     data_ = nullptr;
-    size_t size_ = 0;
+/**
+ * @brief Wraps a success type with an optional error type using the `!` suffix.
+ *
+ * @example
+ *   int!string   → inner = PrimitiveTypeAST(Int),  errorType = PrimitiveTypeAST(String)
+ *   int!         → inner = PrimitiveTypeAST(Int),  errorType = nullptr  (bare '!')
+ *   int?!string  → inner = NullableTypeAST(Int),   errorType = PrimitiveTypeAST(String)
+ *   int?!        → inner = NullableTypeAST(Int),   errorType = nullptr
+ *
+ * Grammar rules enforced by the semantic pass:
+ *   - Neither `inner` nor `errorType` may itself be a ResultTypeAST
+ *     (nesting '!' is forbidden — see §Nesting `!` is Forbidden in grammar)
+ *   - `?` always comes before `!` when both are present (inner is NullableTypeAST)
+ *   - `!` is NEVER valid directly after an array type or inline function type —
+ *     use a named alias first (same rule as `?`)
+ */
+struct ResultTypeAST : TypeAST {
+    static constexpr ASTKind staticKind = ASTKind::ResultType;
 
-public:
-    ArenaSpan() = default;
-    ArenaSpan(T* data, size_t size) : data_(data), size_(size) {}
+    TypePtr inner;       ///< The success type (T in T!E or T?!E)
+    TypePtr errorType;   ///< The error type E; nullptr means bare '!' (fails with nil)
 
-    T* data() { return data_; }
-    const T* data() const { return data_; }
-    size_t size() const { return size_; }
-    bool empty() const { return size_ == 0; }
+    ResultTypeAST(TypePtr t, TypePtr err)
+        : TypeAST(ASTKind::ResultType),
+          inner(std::move(t)), errorType(std::move(err)) {}
 
-    T& operator[](size_t idx) { return data_[idx]; }
-    const T& operator[](size_t idx) const { return data_[idx]; }
+    /// Convenience: true when this is a bare '!' with no error payload
+    bool hasErrorType() const { return errorType != nullptr; }
 
-    T* begin() { return data_; }
-    T* end()   { return data_ + size_; }
-    const T* begin() const { return data_; }
-    const T* end()   const { return data_ + size_; }
+    void accept(ASTVisitor& v) override { v.visit(*this); }
 };
 ```
 
-#### [MODIFY] [ASTArena.hpp](file:///c:/Users/TaiAx/Desktop/luc/src/ast/support/ASTArena.hpp)
-- Refactor the allocation logic inside `ASTArena::alloc` to a private helper `allocRaw(size_t size, size_t align)`.
-- Implement `allocArray<T>(size_t size)` using `allocRaw`.
-- Add `#include "ArenaSpan.hpp"`.
+Also update the `@grammar` block at the top of the file to reflect `result_suffix`.
 
-### [AST Node Families]
+---
 
-#### [MODIFY] [BaseAST.hpp](file:///c:/Users/TaiAx/Desktop/luc/src/ast/BaseAST.hpp)
-1. **Optimize `SourceLocation`:**
-   - Remove `InternedString file;` field.
-   - Pack `line` and `column` into a single `uint32_t value;` (20 bits for line, 12 bits for column).
-   - Change `line` and `column` accesses to getter functions `.line()` and `.column()`.
-2. **Optimize `BaseAST`:**
-   - Remove `std::vector<AttributePtr> attributes;` (move to `DeclAST`).
-   - Remove `std::optional<DocComment> doc;` (move to `DeclAST`).
-   - Change `void* resolvedType` from `BaseAST` (move to `ExprAST` and `PatternAST` as `TypeAST*`).
-3. **Change type aliases:**
-   - Replace `std::unique_ptr` container aliases with `ArenaSpan` aliases where appropriate, or use `ArenaSpan` inside the node classes.
-4. **Update `ProgramAST`:**
-   - Change `decls` from `std::vector<DeclPtr>` to `ArenaSpan<DeclPtr>`.
-   - Add `InternedString filePath;` to `ProgramAST` (which acts as the single source of truth for the file path).
-5. **Update `AttributeAST`:**
-   - Change `args` from `std::vector<ASTPtr<AttributeArgAST>>` to `ArenaSpan<ASTPtr<AttributeArgAST>>`.
-
-#### [MODIFY] [DeclAST.hpp](file:///c:/Users/TaiAx/Desktop/luc/src/ast/DeclAST.hpp)
-- Add `std::optional<DocComment> doc;` and `ArenaSpan<AttributePtr> attributes;` to `DeclAST` base struct.
-- Convert all `std::vector` properties to `ArenaSpan`:
-  - `ImportDeclAST::path`
-  - `FuncDeclAST::genericParams`, `paramGroups`
-  - `StructDeclAST::genericParams`, `fields`
-  - `EnumDeclAST::variants`
-  - `TraitDeclAST::genericParams`, `methods`
-  - `ImplDeclAST::genericParams`, `methods`
-  - `FromDeclAST::genericParams`, `entries`
+### Component 3 — `OkArmAST`, `ErrArmAST`, `ResolveExprAST` in ExprAST.hpp
 
 #### [MODIFY] [ExprAST.hpp](file:///c:/Users/TaiAx/Desktop/luc/src/ast/ExprAST.hpp)
-- Add `TypeAST* resolvedType = nullptr;` to `ExprAST` base struct.
-- Convert all `std::vector` properties to `ArenaSpan`:
-  - `ArrayLiteralExprAST::elements`
-  - `StructLiteralExprAST::genericArgs`, `inits`
-  - `BehaviorAccessExprAST::concreteTypeArgs`, `genericArgs`
-  - `CallExprAST::genericArgs`, `args`
-  - `NullableChainExprAST::steps`
-  - `PipelineStepAST::genericArgs`, `packArgs`
-  - `PipelineExprAST::steps`
-  - `ComposeOperandAST` references
-  - `ComposeExprAST::operands`
-  - `MatchArmAST::patterns`, `exprs`
-  - `MatchExprAST::arms`
-  - `StructPatternAST::fields`
 
-#### [MODIFY] [StmtAST.hpp](file:///c:/Users/TaiAx/Desktop/luc/src/ast/StmtAST.hpp)
-- Convert all `std::vector` properties to `ArenaSpan`:
-  - `BlockStmtAST::stmts`
-  - `SwitchCaseAST::values`
-  - `SwitchStmtAST::cases`
-  - `ReturnStmtAST::values`
-  - `MultiVarDeclAST::vars`
-  - `MultiAssignStmtAST::lhs`
+Add the three new nodes after `AwaitExprAST` (around line 676), before the control-flow expression section:
 
-#### [MODIFY] [TypeAST.hpp](file:///c:/Users/TaiAx/Desktop/luc/src/ast/TypeAST.hpp)
-- Convert all `std::vector` properties to `ArenaSpan`:
-  - `NamedTypeAST::genericArgs`
-  - `FuncSignature::paramGroups`, `returnTypes`, `rawQualifiers`
+```cpp
+// ═════════════════════════════════════════════════════════════════════════════
+// RESOLVE NODES — structured error unwrapping
+// ═════════════════════════════════════════════════════════════════════════════
+
+/**
+ * @brief The `ok` arm of a resolve expression.
+ *
+ * @example
+ *   ok (v int)    { return v }
+ *   ok (v int?)   { return v ?? 0 }
+ *
+ * Grammar: 'ok' '(' IDENTIFIER type ')' block
+ *
+ * `bindType` is always plain T — never T!E. The `!` is consumed at the
+ * resolve boundary; the ok arm receives the already-unwrapped success value.
+ *
+ * Extends BaseAST (not StmtAST) — mirrors MatchArmAST / DefaultArmAST.
+ */
+struct OkArmAST : BaseAST {
+    static constexpr ASTKind staticKind = ASTKind::OkArm;
+
+    InternedString bindName;   ///< Name of the success variable (e.g. "v")
+    TypePtr        bindType;   ///< Plain T (never T!E — ! is consumed by resolve)
+    StmtPtr        body;       ///< Always BlockStmtAST
+
+    OkArmAST() : BaseAST(ASTKind::OkArm) {}
+    void accept(ASTVisitor& v) override { v.visit(*this); }
+};
+
+using OkArmPtr = ASTPtr<OkArmAST>;
+
+/**
+ * @brief The `err` arm of a resolve expression.
+ *
+ * @example
+ *   err (e string) { return -1 }    -- typed error: E = string
+ *   err ()         { return 0  }    -- bare '!': no error payload
+ *
+ * Grammar: 'err' '(' [ IDENTIFIER type ] ')' block
+ *
+ * When the result type used bare `!` (no error type), the parens are empty:
+ *   `bindName` is empty string, `bindType` is nullptr.
+ *
+ * Extends BaseAST (not StmtAST) — mirrors MatchArmAST / DefaultArmAST.
+ */
+struct ErrArmAST : BaseAST {
+    static constexpr ASTKind staticKind = ASTKind::ErrArm;
+
+    InternedString bindName;   ///< Error variable name; empty string when bare '!'
+    TypePtr        bindType;   ///< Error type E; nullptr when bare '!' (no error value)
+    StmtPtr        body;       ///< Always BlockStmtAST
+
+    /// True when the enclosing result type was bare '!' (no error payload)
+    bool isBareError() const { return bindType == nullptr; }
+
+    ErrArmAST() : BaseAST(ASTKind::ErrArm) {}
+    void accept(ASTVisitor& v) override { v.visit(*this); }
+};
+
+using ErrArmPtr = ASTPtr<ErrArmAST>;
+
+/**
+ * @brief Structured resolution of a T!E value — forces handling of both outcomes.
+ *
+ * @example
+ *   resolve divide(10, 0) {
+ *       ok  (v int)    { return v  }
+ *       err (e string) { return -1 }
+ *   }
+ *
+ * Grammar: 'resolve' expr '{' ok_arm err_arm '}'
+ *
+ * The `subject` must resolve to a T!E type. After the resolve block, the `!`
+ * is consumed and the result is plain T (the type returned by the ok arm).
+ * Both arms are required; both must return the same type.
+ *
+ * Listed in `primary_expr` in the grammar — this is an expression, not a
+ * statement, exactly like MatchExprAST.
+ */
+struct ResolveExprAST : ExprAST {
+    static constexpr ASTKind staticKind = ASTKind::ResolveExpr;
+
+    ExprPtr    subject;   ///< The T!E expression being resolved
+    OkArmPtr   okArm;     ///< Required ok arm
+    ErrArmPtr  errArm;    ///< Required err arm
+
+    ResolveExprAST() : ExprAST(ASTKind::ResolveExpr) {}
+    void accept(ASTVisitor& v) override { v.visit(*this); }
+};
+```
+
+---
+
+### Component 4 — `ASTKind`, forward declarations, and `ASTVisitor` in BaseAST.hpp
+
+#### [MODIFY] [BaseAST.hpp](file:///c:/Users/TaiAx/Desktop/luc/src/ast/BaseAST.hpp)
+
+**Forward declarations — add:**
+```cpp
+// TypeAST.hpp
+struct ResultTypeAST;   // NEW
+
+// ExprAST.hpp
+struct ResolveExprAST;  // NEW
+struct OkArmAST;        // NEW
+struct ErrArmAST;       // NEW
+```
+
+**Forward declarations — remove:**
+```diff
+- struct StaticAccessExprAST;
+```
+
+**`ASTKind` enum — add to type nodes section:**
+```diff
+  // Type nodes
+  PrimitiveType,
+  NamedType,
+  NullableType,
++ ResultType,       // NEW — T!E / T!
+  FixedArrayType,
+  ...
+```
+
+**`ASTKind` enum — add to expression nodes section:**
+```diff
+  // Expression nodes
+  ...
+  AwaitExpr,
++ ResolveExpr,      // NEW — resolve expr { ok ... err ... }
++ OkArm,            // NEW — ok (v T) { ... }
++ ErrArm,           // NEW — err (e E) { ... }
+  MatchExpr,
+  ...
+```
+
+**`ASTVisitor` — add:**
+```cpp
+// Type nodes
+virtual void visit(ResultTypeAST&)     {}   // NEW
+
+// Expression nodes
+virtual void visit(ResolveExprAST&)    {}   // NEW
+virtual void visit(OkArmAST&)          {}   // NEW
+virtual void visit(ErrArmAST&)         {}   // NEW
+```
+
+**`ASTVisitor` — remove:**
+```diff
+- virtual void visit(StaticAccessExprAST&)    {}
+```
+
+---
+
+## Design Rationale
+
+### `OkArmAST` / `ErrArmAST` extend `BaseAST` (not `StmtAST`)
+Confirmed. Mirrors `MatchArmAST` and `DefaultArmAST` — arm nodes are structural containers owned by their parent expression, not independently executable statements.
+
+### `ResultTypeAST` keeps `inner` + `errorType` separate
+The nesting prohibition (`T!E` where T or E themselves are `T!E`) is a **semantic** constraint, not a parser constraint. The parser builds `ResultTypeAST` freely; the semantic pass walks both `inner` and `errorType` and emits an error if either is `ASTKind::ResultType`. This keeps the parser simple and puts the rule where it belongs — in `TypeResolver`.
+
+### `??` unchanged
+`NullCoalesceExprAST` already handles both `nil` fallback and `T!E` fallback uniformly per the grammar spec. No structural change needed — the semantic pass will annotate which case applies.
+
+### `StaticAccessExprAST` removed
+Leftover from old code. Forward declaration in `BaseAST.hpp` and visitor stub removed. No `ASTKind` or definition exists, so removal is contained to those two sites.
 
 ---
 
 ## Verification Plan
 
-### Manual Verification
-1. We will verify that the compilation of files under `src/ast/` succeeds when compiling them individually (or header checks).
-2. We will analyze the sizes of `sizeof(BaseAST)` and `sizeof(ExprAST)` before/after using a diagnostic scratch test if possible to ensure we successfully shrunk the memory footprints.
+### Build Check
+- `cmake --build` must succeed with zero errors and zero new warnings after changes.
+- Grep for `StaticAccessExprAST` across `src/` — must return zero results after removal.
+
+### Node Completeness Check
+- Every new `ASTKind` entry must appear in: the enum, a forward declaration, the visitor, and the node definition.
+- `ResultTypeAST` must appear in `TypeAST.hpp` and be included wherever type nodes are consumed.
+
+### Semantic Notes (for later — not part of this AST-only change)
+- `TypeResolver` must reject `ResultTypeAST` where `inner` or `errorType` is itself `ASTKind::ResultType`.
+- `TypeResolver` must reject `ResultTypeAST` where `inner` is `ASTKind::FuncType` or any array type without an alias.

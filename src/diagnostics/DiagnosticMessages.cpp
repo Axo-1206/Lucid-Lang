@@ -46,6 +46,8 @@ std::string_view getMessage(DiagCode code) {
         case DiagCode::E2025: return "Cannot access field '%s' on non-struct/enum type.";
         case DiagCode::E2026: return "Chained comparison not allowed; use 'and' explicitly: 0 < x and x < 10.";
         case DiagCode::E2027: return "Attributes cannot be used on multi‑variable declarations.";
+        case DiagCode::E2028: return "Invalid type in result suffix: expected primitive or identifier, found '%s'.";
+        case DiagCode::E2029: return "Nested '!' not allowed in type; use a type alias (e.g., 'type Alias = T!E; Alias!F').";
 
         // Semantic
         case DiagCode::E3001: return "Identifier '%s' used before it was declared.";
@@ -91,7 +93,8 @@ std::string_view getMessage(DiagCode code) {
         case DiagCode::E3041: return "'is' expression used outside conditional (statement context only).";
         case DiagCode::E3042: return "Pattern bind name '%s' conflicts with existing variable in scope.";
         case DiagCode::E3043: return "Unconditional bind pattern appears before more specific patterns in match arm.";
-        case DiagCode::E3044: return "Every generic parameter declared on a type alias must appear at least once in the right-hand side.";
+        case DiagCode::E3044: return "Every generic parameter declared on a type alias must appear at least once in the right-hand side. Use '@phantom' if this is intentional.";
+        case DiagCode::E3045: return "Operation on unresolved '!' type is not allowed. Use 'resolve' or '\?\?' first.";
 
         // Backend / Codegen
         case DiagCode::E4001: return "Target machine initialisation failed (unknown target triple).";

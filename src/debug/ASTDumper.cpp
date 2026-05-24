@@ -84,6 +84,16 @@ std::string ASTDumper::formatType(TypeAST* type) {
         case ASTKind::NullableType:
             return formatType(static_cast<NullableTypeAST*>(type)->inner.get()) + "?";
 
+        case ASTKind::ResultType: {
+            auto* r = static_cast<ResultTypeAST*>(type);
+            std::string innerStr = formatType(r->inner.get());
+            if (r->hasErrorType()) {
+                return innerStr + "!" + formatType(r->errorType.get());
+            } else {
+                return innerStr + "!";
+            }
+        }
+
         case ASTKind::RefType:
             return "&" + formatType(static_cast<RefTypeAST*>(type)->inner.get());
 
@@ -185,6 +195,20 @@ void ASTDumper::visit(NamedTypeAST& node) {
 void ASTDumper::visit(NullableTypeAST& node) {
     printNodeHeader(node, "NullableTypeAST");
     if (node.inner) visitChild(node.inner.get());
+}
+
+void ASTDumper::visit(ResultTypeAST& node) {
+    std::string header = "ResultTypeAST ";
+    if (node.hasErrorType()) {
+        header += formatType(node.inner.get()) + "!" + formatType(node.errorType.get());
+    } else {
+        header += formatType(node.inner.get()) + "!";
+    }
+    printNodeHeader(node, header);
+    indentLevel++;
+    visitChild(node.inner.get(), "inner");
+    if (node.errorType) visitChild(node.errorType.get(), "errorType");
+    indentLevel--;
 }
 
 void ASTDumper::visit(FixedArrayTypeAST& node) {
@@ -755,6 +779,34 @@ void ASTDumper::visit(TypeConvExprAST& node) {
     if (node.targetType) header += " -> " + formatType(node.targetType.get());
     printNodeHeader(node, header);
     if (node.expr) visitChild(node.expr.get());
+}
+
+void ASTDumper::visit(ResolveExprAST& node) {
+    printNodeHeader(node, "ResolveExprAST");
+    indentLevel++;
+    if (node.subject) visitChild(node.subject.get(), "subject");
+    if (node.okArm) visitChild(node.okArm.get(), "okArm");
+    if (node.errArm) visitChild(node.errArm.get(), "errArm");
+    indentLevel--;
+}
+
+void ASTDumper::visit(OkArmAST& node) {
+    std::string header = "OkArmAST '" + toStr(pool, node.bindName) + "'";
+    if (node.bindType) header += " : " + formatType(node.bindType.get());
+    printNodeHeader(node, header);
+    if (node.body) visitChild(node.body.get(), "body");
+}
+
+void ASTDumper::visit(ErrArmAST& node) {
+    std::string header = "ErrArmAST";
+    if (!node.bindName.isValid() && !node.bindType) {
+        header += " (bare)";
+    } else {
+        header += " '" + toStr(pool, node.bindName) + "'";
+        if (node.bindType) header += " : " + formatType(node.bindType.get());
+    }
+    printNodeHeader(node, header);
+    if (node.body) visitChild(node.body.get(), "body");
 }
 
 // ── Pattern nodes ─────────────────────────────────────────────────────────

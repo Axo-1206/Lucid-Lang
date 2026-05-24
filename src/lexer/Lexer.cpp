@@ -1,4 +1,5 @@
 #include "Lexer.hpp"
+#include "Tokens.hpp"
 #include "debug/DebugMacros.hpp" 
 #include <cctype>
 
@@ -11,89 +12,93 @@ Lexer::Lexer(const std::string &source)
     LUC_LOG_LEXER("Lexer constructed, source size: " << source.size() << " bytes");
     
     // ── Modifiers ──────────────────────────────────────────────────────────────
-    keywords["pub"] = TokenType::PUB;
-    keywords["export"] = TokenType::EXPORT;
+    keywords["pub"]     = TokenType::PUB;
+    keywords["export"]  = TokenType::EXPORT;
 
     // ── Top Level ──────────────────────────────────────────────────────────────
     keywords["package"] = TokenType::PACKAGE;
-    keywords["use"] = TokenType::USE;
-    keywords["as"] = TokenType::AS;
-    keywords["impl"] = TokenType::IMPL;
-    keywords["type"] = TokenType::TYPE;
-    keywords["struct"] = TokenType::STRUCT;
-    keywords["enum"] = TokenType::ENUM;
-    keywords["trait"] = TokenType::TRAIT;
-    keywords["from"] = TokenType::FROM;
+    keywords["use"]     = TokenType::USE;
+    keywords["as"]      = TokenType::AS;
+    keywords["impl"]    = TokenType::IMPL;
+    keywords["type"]    = TokenType::TYPE;
+    keywords["struct"]  = TokenType::STRUCT;
+    keywords["enum"]    = TokenType::ENUM;
+    keywords["trait"]   = TokenType::TRAIT;
+    keywords["from"]    = TokenType::FROM;
 
     // ── Declarations ───────────────────────────────────────────────────────────
-    keywords["let"] = TokenType::LET;
-    keywords["const"] = TokenType::CONST;
+    keywords["let"]     = TokenType::LET;
+    keywords["const"]   = TokenType::CONST;
 
     // ── Concurrency ────────────────────────────────────────────────────────────
-    keywords["await"] = TokenType::AWAIT;
+    keywords["await"]   = TokenType::AWAIT;
     // keywords["async"] = TokenType::ASYNC; deprecated use ~async instead
     // keywords["parallel"] = TokenType::PARALLEL; deprecated use ~parallel instead
 
     // ── Primary Types ──────────────────────────────────────────────────────────
-    keywords["bool"] = TokenType::TYPE_BOOL;
+    keywords["bool"]    = TokenType::TYPE_BOOL;
 
     // Signed integers
-    keywords["byte"] = TokenType::TYPE_BYTE;
-    keywords["short"] = TokenType::TYPE_SHORT;
-    keywords["int"] = TokenType::TYPE_INT;
-    keywords["long"] = TokenType::TYPE_LONG;
+    keywords["byte"]    = TokenType::TYPE_BYTE;
+    keywords["short"]   = TokenType::TYPE_SHORT;
+    keywords["int"]     = TokenType::TYPE_INT;
+    keywords["long"]    = TokenType::TYPE_LONG;
 
     // Unsigned integers
-    keywords["ubyte"] = TokenType::TYPE_UBYTE;
-    keywords["ushort"] = TokenType::TYPE_USHORT;
-    keywords["uint"] = TokenType::TYPE_UINT;
-    keywords["ulong"] = TokenType::TYPE_ULONG;
+    keywords["ubyte"]   = TokenType::TYPE_UBYTE;
+    keywords["ushort"]  = TokenType::TYPE_USHORT;
+    keywords["uint"]    = TokenType::TYPE_UINT;
+    keywords["ulong"]   = TokenType::TYPE_ULONG;
 
     // Fixed-width (critical for Vulkan struct layouts)
-    keywords["int8"] = TokenType::TYPE_INT8;
-    keywords["int16"] = TokenType::TYPE_INT16;
-    keywords["int32"] = TokenType::TYPE_INT32;
-    keywords["int64"] = TokenType::TYPE_INT64;
-    keywords["uint8"] = TokenType::TYPE_UINT8;
-    keywords["uint16"] = TokenType::TYPE_UINT16;
-    keywords["uint32"] = TokenType::TYPE_UINT32;
-    keywords["uint64"] = TokenType::TYPE_UINT64;
+    keywords["int8"]    = TokenType::TYPE_INT8;
+    keywords["int16"]   = TokenType::TYPE_INT16;
+    keywords["int32"]   = TokenType::TYPE_INT32;
+    keywords["int64"]   = TokenType::TYPE_INT64;
+    keywords["uint8"]   = TokenType::TYPE_UINT8;
+    keywords["uint16"]  = TokenType::TYPE_UINT16;
+    keywords["uint32"]  = TokenType::TYPE_UINT32;
+    keywords["uint64"]  = TokenType::TYPE_UINT64;
 
     // Floating point
-    keywords["float"] = TokenType::TYPE_FLOAT;
-    keywords["double"] = TokenType::TYPE_DOUBLE;
+    keywords["float"]   = TokenType::TYPE_FLOAT;
+    keywords["double"]  = TokenType::TYPE_DOUBLE;
     keywords["decimal"] = TokenType::TYPE_DECIMAL;
 
     // Text
-    keywords["string"] = TokenType::TYPE_STRING;
-    keywords["char"] = TokenType::TYPE_CHAR;
+    keywords["string"]  = TokenType::TYPE_STRING;
+    keywords["char"]    = TokenType::TYPE_CHAR;
 
     // Special
     keywords["any"] = TokenType::TYPE_ANY;
     keywords["nil"] = TokenType::NIL;
 
     // ── Control Flow ───────────────────────────────────────────────────────────
-    keywords["if"] = TokenType::IF;
-    keywords["else"] = TokenType::ELSE;
-    keywords["match"] = TokenType::MATCH;
-    keywords["switch"] = TokenType::SWITCH;
-    keywords["case"] = TokenType::CASE;
+    keywords["if"]      = TokenType::IF;
+    keywords["else"]    = TokenType::ELSE;
+    keywords["match"]   = TokenType::MATCH;
+    keywords["switch"]  = TokenType::SWITCH;
+    keywords["case"]    = TokenType::CASE;
     keywords["default"] = TokenType::DEFAULT;
-    keywords["is"] = TokenType::IS;
-    keywords["while"] = TokenType::WHILE;
-    keywords["for"] = TokenType::FOR;
-    keywords["in"] = TokenType::IN;
-    keywords["do"] = TokenType::DO;
-    keywords["return"] = TokenType::RETURN;
-    keywords["break"] = TokenType::BREAK;
+    keywords["is"]      = TokenType::IS;
+    keywords["while"]   = TokenType::WHILE;
+    keywords["for"]     = TokenType::FOR;
+    keywords["in"]      = TokenType::IN;
+    keywords["do"]      = TokenType::DO;
+    keywords["return"]  = TokenType::RETURN;
+    keywords["break"]   = TokenType::BREAK;
     keywords["continue"] = TokenType::CONTINUE;
 
     // ── Logical ────────────────────────────────────────────────────────────────
-    keywords["and"] = TokenType::AND;
-    keywords["or"] = TokenType::OR;
-    keywords["not"] = TokenType::NOT;
-    keywords["true"] = TokenType::TRUE;
-    keywords["false"] = TokenType::FALSE;
+    keywords["and"]     = TokenType::AND;
+    keywords["or"]      = TokenType::OR;
+    keywords["not"]     = TokenType::NOT;
+    keywords["true"]    = TokenType::TRUE;
+    keywords["false"]   = TokenType::FALSE;
+
+    // ─── Error Handling ───────────────────────────────────────────────────────
+    keywords["resolve"] = TokenType::RESOLVE;
+
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -281,6 +281,32 @@ let g  (a int) -> ~nullable (v Vec2) -> Vec2? = { ... }
 -- let f (a int) -> (b int) -> int? ?   -- ERROR: use an alias
 ```
 
+### `?` Binding on Array Types
+
+`?` follows the same binding rule as `!` — it binds to the immediately preceding named or primitive type token. When applied after an array type, `?` binds to the element type, not to the array as a whole:
+
+```luc
+[]int?      -- [](int?)  — array of nullable int
+[]int       -- array of non-nullable int
+```
+
+To make the array itself nullable, alias the array type first:
+
+```luc
+type IntList     = []int
+type UserList    = [*]User
+
+let arr  IntList?  = nil    -- nullable array — the array itself may be absent
+let list UserList? = nil    -- nullable dynamic array
+
+-- nullable array of nullable int — two aliases compose clearly
+type MaybeIntList = []int?       -- array of nullable int
+let arr MaybeIntList? = nil      -- nullable array of nullable int
+```
+
+> [!NOTE]
+> Nullable arrays are rare. If a function might return nothing, prefer returning an empty array over a nullable array. Reserve `T?` on an array alias only for cases where the absence of the array is semantically distinct from an empty array — for example, a field that has never been loaded vs a field that was loaded and found to be empty.
+
 ---
 
 ## Value and Reference Semantics
