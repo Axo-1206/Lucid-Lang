@@ -30,7 +30,7 @@ Commas `,` and semicolons `;` are **optional** throughout — Luc uses newlines 
 
 ```
 pub export package use as impl trait type from
-let const struct enum await
+let const struct enum await resolve
 bool byte short int long ubyte ushort uint ulong
 int8 int16 int32 int64 uint8 uint16 uint32 uint64
 float double decimal string char any nil
@@ -144,7 +144,7 @@ export use math.matrix.Mat2    -- granular re-export of a single type
 ## Types
 
 ```
-type            := base_type [ generic_args ] [ '?' ]
+type            := base_type [ generic_args ] [ '?' ] [ result_suffix ]
                  | ref_type
                  | ptr_type
                  | array_type
@@ -166,6 +166,12 @@ primitive_type  := 'bool'
 -- Generic arguments always come before '?'.
 -- '?' is NEVER valid directly on an inline function type — use a named alias.
 nullable_suffix := '?'
+
+-- Result suffix: marks a type as potentially failed.
+-- '?' always comes before '!' when both are present.
+-- The error type after '!' is required — bare '!' with no error type means failure carries nil.
+result_suffix   := '!' type     -- success T, failure E
+                 | '!'          -- success T, failure nil
 
 -- Reference (&T) — safe managed reference
 ref_type        := '&' type
@@ -196,43 +202,45 @@ return_type     := type
                  | param_group { param_group } '->' return_list
 ```
 
-[!WARNING] No union types
-Luc does not have union types (T | U). The idiomatic replacement depends on what you actually need:
-For dynamic dispatch — use any with is checks or match for type narrowing:
-
-```luc
-let x any = 5
-if x is int    { ... }
-if x is string { ... }
-
-let label string = match x {
-    n is int    => "int: "    + string(n)
-    s is string => "string: " + s
-    default     => "unknown"
-}
-```
-
-For static safety — model it explicitly with a tagged struct:
-
-```luc
-enum PayloadKind { Int  Str }
-
-struct Payload {
-    kind  PayloadKind
-    asInt int?
-    asStr string?
-}
-```
-The phantom alias trick does not work. It may be tempting to use @phantom to simulate a union:
-
-```luc
-@phantom
-type Union<T> = any
-
-let x Union<int> = 5    -- looks constrained, but T is erased at runtime
-```
-
-This is not a real union — T carries no runtime information and the compiler cannot enforce that the value inside actually conforms to it. Union<int> and Union<string> are distinct types at the type-checking level but both resolve to plain any at runtime. You get the appearance of a constraint with none of the safety, and you mislead anyone reading the code into thinking the type is enforced. Use any directly and be honest about it.
+> [!WARNING] No union types
+> Luc does **not** have union types (`T | U`). The idiomatic replacement depends on what you actually need:
+>
+> **For dynamic dispatch** — use `any` with `is` checks or `match` for type narrowing:
+>
+> ```luc
+> let x any = 5
+> if x is int    { ... }
+> if x is string { ... }
+>
+> let label string = match x {
+>     n is int    => "int: "    + string(n)
+>     s is string => "string: " + s
+>     default     => "unknown"
+> }
+> ```
+>
+> **For static safety** — model it explicitly with a tagged struct:
+>
+> ```luc
+> enum PayloadKind { Int  Str }
+>
+> struct Payload {
+>     kind  PayloadKind
+>     asInt int?
+>     asStr string?
+> }
+> ```
+>
+> **The phantom alias trick does not work.** It may be tempting to use `@phantom` to simulate a union:
+>
+> ```luc
+> @phantom
+> type Union<T> = any
+>
+> let x Union<int> = 5    -- looks constrained, but T is erased at runtime
+> ```
+>
+> This is **not a real union** — `T` carries no runtime information and the compiler cannot enforce that the value inside actually conforms to it. `Union<int>` and `Union<string>` are distinct types at the type-checking level but both resolve to plain `any` at runtime. You get the appearance of a constraint with none of the safety. Use `any` directly and be honest about it.
 
 ### Nullable Rules
 
@@ -1164,6 +1172,27 @@ type ParallelBody = ~parallel (item int)
 type AsyncMaybeOp = ~async ~nullable (a int) -> int
 ```
 
+### Naming Conventions
+
+Type alias names should reflect their kind at a glance. The following conventions are recommended:
+
+| Kind                   | Convention              | Example                        |
+| ---------------------- | ----------------------- | ------------------------------ |
+| Slice (`[]T`)          | `...List` suffix        | `IntList`, `UserList`          |
+| Dynamic array (`[*]T`) | `...Array` suffix       | `IntArray`, `UserArray`        |
+| Fixed array (`[N]T`)   | `...Buffer` suffix      | `ByteBuffer`, `FloatBuffer`    |
+| Nullable (`T?`)        | `Maybe...` prefix       | `MaybeInt`, `MaybeUser`        |
+| Result (`T!E`)         | `...Or...` — both sides | `IntOrString`, `UserOrDbError` |
+| Function type          | `...Fn` suffix          | `ParserFn`, `HandlerFn`        |
+| Nullable function      | `Maybe...Fn`            | `MaybeParserFn`                |
+| Async function         | `...AsyncFn` suffix     | `FetchAsyncFn`                 |
+| Parallel function      | `...ParallelFn` suffix  | `TransformParallelFn`          |
+
+The `Or` convention for result types surfaces both the success and error type explicitly — `IntOrString` immediately tells you success is `int` and failure is `string` without opening the definition. Generic aliases need no convention — `<>` already signals the kind clearly.
+
+> [!TIP]
+> These are conventions only — the compiler does not enforce them. Combinations chain naturally: `MaybeUserOrDbError` (nullable success, can fail), `UserListOrDbError` (array that can fail).
+
 ### Examples
 
 ```luc
@@ -1171,19 +1200,37 @@ type AsyncMaybeOp = ~async ~nullable (a int) -> int
 type ID = int
 
 -- nullable alias
-type IntOrNil = int?
+type MaybeInt  = int?
+type MaybeUser = User?
 
--- generic alias
-type Transform<T> = (v T) -> T
+-- result aliases — both sides named
+type IntOrString    = int!string
+type UserOrDbError  = User!DbError
+
+-- array aliases
+type UserList   = [*]User
+type ByteBuffer = [256]byte
+
+-- array result — alias the array first, then apply Or convention
+type UserListOrDbError = UserList!DbError
+
+-- function aliases
+type ParserFn          = (src string) -> int
+type FetchAsyncFn      = ~async    (url string) -> string
+type TransformParallelFn = ~parallel (item Vec2) -> Vec2
+
+-- function result — alias the function first, then apply Or convention
+type FetchAsyncFnOrNetError = FetchAsyncFn!NetworkError
 
 -- nullable function alias
-type MaybeTransform = ~nullable (v Vec2) -> Vec2
+type MaybeParserFn = ~nullable (src string) -> int
 
--- generic struct alias
-type Pair<K, V> = struct { first K, second V }
+-- generic alias — no convention needed
+type Transform<T>  = (v T) -> T
+type Pair<K, V>    = struct { first K  second V }
 
 -- constrained generic alias
-type SortedPair<T : Comparable> = struct { first T, second T }
+type SortedPair<T : Comparable> = struct { first T  second T }
 ```
 
 ### Consistency Rule
@@ -1506,10 +1553,13 @@ pipeline_step   := IDENTIFIER
 | Step form      | What `\|>` does                 | Nullability                |
 | -------------- | ------------------------------- | -------------------------- |
 | `fn`           | calls `fn(upstream)`            | must be non-nullable       |
-| `Type:method`  | calls `method(upstream)`        | always safe                |
+| `var:method`   | calls `method(upstream)`        | always safe                |
 | `struct.field` | calls function stored in field  | field must be non-nullable |
 | `fn(args)!`    | calls `fn(upstream, args...)`   | must be non-nullable       |
 | `anon_func`    | calls with upstream as argument | always safe                |
+
+> [!NOTE]
+> `var:method` — `var` is the variable the method is dispatched on, not a type name. `:` is the method call operator in Luc (see Member Access). The upstream value is passed as the argument to the method, not as the receiver. For example, `v |> list:push` passes `v` as the argument to `push` on `list`.
 
 ### The `!` Argument Pack Annotation
 
@@ -1532,6 +1582,27 @@ v |> scale(2.0)      -- ERROR: looks like a complete call, no place for upstream
 - Steps with `~async` are allowed. The pipeline expression becomes `~async` (its type includes `~async`). The caller must `await` the entire pipeline result.
 - Steps with `~nullable` are forbidden.
 - Steps with `~parallel` are forbidden — pipeline execution is synchronous.
+
+> [!WARNING] Alias bypass is not allowed
+> The qualifier check is enforced on the **resolved underlying type**, not the surface syntax. A variable whose type alias wraps a `~nullable` or `~parallel` function does not bypass the restriction — the compiler looks through the alias chain before accepting a step.
+>
+> ```luc
+> type MaybeParserFn       = ~nullable (src string) -> int
+> type TransformParallelFn = ~parallel (item Vec2)  -> Vec2
+>
+> -- f and g are concrete function variables
+> let f MaybeParserFn       = nil
+> let g TransformParallelFn = (item Vec2) -> Vec2 { return item }
+>
+> -- both ERROR: underlying qualifier is forbidden as a pipeline step
+> "hello" |> f
+> origin  |> g
+>
+> -- guard first, then call directly — never as a pipeline step
+> if f != nil {
+>     let result int = f("hello")    -- OK: guarded, called directly
+> }
+> ```
 
 **Data fields as pipeline steps:**
 
@@ -1605,6 +1676,24 @@ let intToString (x int) -> string = { ... }
 let process = doubleInt +> intToString    -- valid: both concrete
 ```
 
+> [!WARNING] Alias bypass is not allowed
+> The qualifier check for `+>` is enforced on the **resolved underlying type**. A variable whose type alias wraps a `~nullable` function is still forbidden as a composition operand — the compiler looks through the alias chain.
+>
+> ```luc
+> type MaybeTransformFn = ~nullable (v Vec2) -> Vec2
+>
+> -- f is a concrete nullable function variable
+> let f MaybeTransformFn = nil
+>
+> -- ERROR: f's underlying type is ~nullable, forbidden in +>
+> let pipeline (v Vec2) -> Vec2 = normalize +> f
+>
+> -- guard first to narrow the type, then compose
+> if f != nil {
+>     let pipeline (v Vec2) -> Vec2 = normalize +> f    -- OK: guarded, known non-nullable
+> }
+> ```
+
 ---
 
 ## Async / Await
@@ -1677,7 +1766,7 @@ postfix_op      := '.' IDENTIFIER
                  | ':' IDENTIFIER
                  | '::' IDENTIFIER '.' IDENTIFIER
                  | '?.' IDENTIFIER
-                 | '??' expr
+                 | '??' expr                  -- lhs is nil or T!E: result is rhs
                  | '[' expr ']'
                  | '[' expr '..'  expr ']'
                  | '[' expr '..<' expr ']'
@@ -1696,6 +1785,13 @@ primary_expr    := literal
                  | 'nil' | 'true' | 'false'
                  | await_expr
                  | range_expr
+                 | resolve_expr
+
+resolve_expr    := 'resolve' expr '{' ok_arm err_arm '}'
+
+ok_arm          := 'ok'  '(' IDENTIFIER type ')' block
+
+err_arm         := 'err' '(' [ IDENTIFIER type ] ')' block
 
 await_expr      := 'await' expr
                    -- expr must be a call to a ~async-qualified function
@@ -2153,16 +2249,263 @@ let shifted uint32 = 1 << 4           -- 16
 
 ---
 
-## Choice and Fallback Operators
+## Error Handling
+
+Luc treats errors as values. There are no exceptions, no stack unwinding, and no hidden control flow. Every function that can fail declares this in its return type using the `!` suffix, and every `T!E` value is **inert** until explicitly resolved — the compiler forbids using it as a plain `T`.
+
+### Result Types
+
+`!` is a suffix on the return type that separates the success type from the error type:
+
+```
+result_type     := type '!' type    -- succeeds with T, fails with E
+                 | type '?' '!' type -- succeeds with T? (nullable), fails with E
+                 | type '!'          -- succeeds with T, fails with nil
+                 | type '?' '!'      -- succeeds with T? (nullable), fails with nil
+```
+
+The four combinations:
+
+```luc
+int!string      -- succeeds with int,  fails with string
+int?!string     -- succeeds with int?, fails with string
+int!            -- succeeds with int,  fails with nil
+int?!           -- succeeds with int?, fails with nil
+```
+
+The error type is always explicit — no built-in `Error` type. The programmer owns what an error looks like entirely. Bare `!` with no error type means the failure carries nil — the caller knows it failed but receives no detail.
+
+### `!` Binding Rules
+
+`!` binds to the immediately preceding **named or primitive** type token only. It is never valid directly after an array type or inline function type as a whole — the parser cannot determine whether `!` belongs to the composite type or to its element/return type.
+
+```luc
+-- AMBIGUOUS: does ! attach to []int as a whole, or to int (making it an array of int!string)?
+[]int!string
+
+-- AMBIGUOUS: does ! attach to the function type as a whole, or to its return type int?
+(src string) -> int!string
+```
+
+In both cases the parser reads `!` as binding to the innermost preceding type — so `[]int!string` is always `[](int!string)` (array of `int!string` elements) and `(src string) -> int!string` is always `(src string) -> (int!string)` (function returning `int!string`). If you want the composite type itself to be the success value, alias it first:
+
+```luc
+-- array: alias first, then apply !
+type UserList          = [*]User
+type UserListOrDbError = UserList!DbError    -- ([*]User)!DbError — unambiguous
+
+-- function: alias first, then apply !
+type FetchAsyncFn           = ~async (url string) -> string
+type FetchAsyncFnOrNetError = FetchAsyncFn!NetworkError    -- (FetchAsyncFn)!NetworkError
+
+-- element-level result: alias the element type
+type IntOrString = int!string
+let f () -> []IntOrString = { ... }    -- array of (int!string) elements — unambiguous
+```
+
+> [!NOTE]
+> The rule is consistent across `?` and `!` — neither suffix can attach to an array type or inline function type as a whole. The solution is always the same: alias the composite type first, then apply the suffix to the alias.
+
+Valid without alias — primitives, structs, enums, and named aliases only:
+
+```luc
+int!string          -- OK: primitive success, primitive error
+Vec2!string         -- OK: struct success, primitive error
+Direction!string    -- OK: enum success, primitive error
+UserList!DbError    -- OK: named alias success, struct error
+```
+
+### Forbidden Operations on `T!E`
+
+A `T!E` value is completely inert until resolved. The following are all compile errors:
+
+```luc
+let x int!string = riskyOp()
+
+x + 1                   -- ERROR: cannot apply '+' to unresolved int!string
+x * 2                   -- ERROR: cannot apply '*' to unresolved int!string
+let y = x               -- ERROR: cannot assign unresolved int!string
+io.printl(x)            -- ERROR: cannot pass unresolved int!string as argument
+string(x)               -- ERROR: cannot convert unresolved int!string
+x.field                 -- ERROR: cannot access field on unresolved int!string
+x:method()              -- ERROR: cannot call method on unresolved int!string
+x |> double             -- ERROR: cannot pipe unresolved int!string
+x == 5                  -- ERROR: cannot compare unresolved int!string
+```
+
+The only legal operations on a `T!E` value are the two resolution strategies below.
+
+### Resolution Strategy 1 — `resolve` Block
+
+`resolve` is a keyword that forces you to handle both outcomes before the value is usable. The `ok` arm receives the plain unwrapped `T`, the `err` arm receives the error value of type `E`. Both arms are required. Both must return the same type. After the block, the result is plain `T` — the `!` is consumed.
+
+```
+resolve_expr    := 'resolve' expr '{' ok_arm err_arm '}'
+
+ok_arm          := 'ok'  '(' IDENTIFIER type ')' block
+                   -- type is plain T, never T!E — ! is consumed here
+
+err_arm         := 'err' '(' [ IDENTIFIER type ] ')' block
+                   -- type matches the error type declared after !
+                   -- parens are empty when error type is nil (bare !)
+```
+
+```luc
+-- int!string: ok receives int, err receives string
+let result int = resolve divide(10, 0) {
+    ok  (v int)    { return v }
+    err (e string) { return -1 }
+}
+
+-- int!: ok receives int, err receives nothing (bare ! = nil error)
+let result int = resolve validate(id) {
+    ok  (v int) { return v }
+    err ()      { return 0 }    -- empty parens: no error value to receive
+}
+
+-- int?!string: ok receives int? (still nullable after resolve), ?? handles nil
+let result int = resolve findUser(id) {
+    ok  (v int?)   { return v }    -- v is int?, pass through
+    err (e string) { return nil }
+} ?? 0                             -- ?? handles the nil case after ! is consumed
+```
+
+Explicit propagation — if the current function also returns `T!E`, return the error directly from the `err` arm:
+
+```luc
+let process (url string) -> string!DbError = {
+    let raw string = resolve fetchData(url) {
+        ok  (v string)   { return v }
+        err (e DbError)  { return e }    -- propagates: process returns DbError here
+    }
+
+    let parsed string = resolve parseJson(raw) {
+        ok  (v string)   { return v }
+        err (e DbError)  { return e }
+    }
+
+    return formatOutput(parsed)
+}
+```
+
+### Resolution Strategy 2 — `??` Fallback
+
+`??` is the shorthand resolution strategy. It triggers the right-hand side when the left-hand side is **either** `nil` **or** an unresolved `!`. After `??`, the result is always plain `T`.
 
 ```
 fallback_expr   := expr '??' expr
-                   -- LHS is T (non-nil): result is T
-                   -- LHS is nil or Error: result is RHS
+                   -- LHS is plain T (non-nil, non-!): result is T, RHS never evaluated
+                   -- LHS is nil: result is RHS
+                   -- LHS is T!E (unresolved): error is discarded, result is RHS
+```
 
-catch_step      := expr '|>' 'catch' '(' identifier ')' block
-                   -- upstream is T: block skipped, T passed along
-                   -- upstream is Error: identifier bound to Error, block executes
+```luc
+-- triggers: lhs is nil
+let a int? = nil
+let b int  = a ?? 0
+
+-- triggers: lhs is unresolved !
+let c int!string = riskyOp()
+let d int        = c ?? 0    -- error discarded, d = 0
+
+-- never triggers: lhs is plain int
+let e int = getValue()
+let f int = e ?? 0    -- always e
+
+-- ??  chains naturally after resolve when T is nullable
+let result int = resolve findUser(id) {
+    ok  (v int?)   { return v }
+    err (e string) { return nil }
+} ?? 0
+```
+
+> [!NOTE]
+> Use `??` when you have a sensible default and do not need to inspect the error. Use `resolve` when you need to log, handle, or propagate the error detail.
+
+### Error Handling in Pipelines
+
+`T!E` cannot be a pipeline step directly — every step must be a function, and `resolve` is an expression, not a function. To resolve inside a pipeline, use an anonymous function as the final step:
+
+```luc
+-- anonymous function receives T!E, resolves it, returns plain T
+type StringOrString = string!string    -- alias following Or convention
+
+let result string = dbFindUser(id)
+    |> formatUser!                              -- User -> StringOrString, can fail
+    |> (v StringOrString) -> string {           -- anonymous function receives T!E
+        return resolve v {
+            ok  (s string) { return s }
+            err (e string) { return "unnamed" }
+        }
+    }
+```
+
+`??` can also appear at the end of a pipeline directly when no error detail is needed:
+
+```luc
+let result string = fetchData(url)
+    |> parseJson
+    |> formatOutput
+    ?? ""    -- any step that failed: discard error, use ""
+```
+
+### Complete Example
+
+```luc
+struct User {
+    id    int
+    name  string
+    email string
+}
+
+struct DbError {
+    code    int
+    message string
+}
+
+-- result type aliases following the Or convention
+type MaybeUserOrDbError  = User?!DbError
+type StringOrString      = string!string
+
+let dbFindUser (id int) -> MaybeUserOrDbError = {
+    if id < 0 {
+        return DbError { code = 2  message = "invalid id" }
+    }
+    return db:query(id)    -- returns User?, nil if not found
+}
+
+let formatUser (user User) -> StringOrString = {
+    if user.name == "" { return "user has no name" }
+    return user.name + " <" + user.email + ">"
+}
+
+let getFormattedUser (id int) -> string = {
+
+    -- resolve with full error handling
+    -- ok receives User? (still nullable), ?? handles nil after
+    let user User = resolve dbFindUser(id) {
+        ok  (v User?)   { return v }
+        err (e DbError) {
+            system.logError(e.code, e.message)
+            return nil
+        }
+    } ?? User { id = 0  name = "guest"  email = "" }
+
+    -- pipeline with anonymous function to resolve mid-chain
+    let result string = user
+        |> formatUser
+        |> (v StringOrString) -> string {
+            return resolve v {
+                ok  (s string) { return s }
+                err (e string) {
+                    io.printl("format failed: " + e)
+                    return user.name
+                }
+            }
+        }
+
+    return result
+}
 ```
 
 ---
@@ -2388,10 +2731,10 @@ const stackTop *uint8
 
 #### `@phantom` Rules
 
-- Only valid on type alias declarations that have generic parameters.
-- Without @phantom, a type parameter that does not appear in the alias body is a compile error.
-- With @phantom, unused parameters are permitted — the compiler treats them as phantom tags that exist only at the type-checking level and are erased at runtime.
-- Phantom parameters still participate in type identity: Tagged<int> and Tagged<string> are distinct types even though both resolve to int at runtime.
+- Only valid on `type` alias declarations that have generic parameters.
+- Without `@phantom`, a type parameter that does not appear in the alias body is a **compile error**.
+- With `@phantom`, unused parameters are permitted — the compiler treats them as phantom tags that exist only at the type-checking level and are erased at runtime.
+- Phantom parameters still participate in type identity: `Tagged<int>` and `Tagged<string>` are distinct types even though both resolve to `int` at runtime.
 
 ```luc
 @phantom
