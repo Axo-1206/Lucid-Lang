@@ -171,7 +171,10 @@ nullable_suffix := '?'
 -- Result suffix: marks a type as potentially failed.
 -- '?' always comes before '!' when both are present.
 -- The error type after '!' is required — bare '!' with no error type means failure carries nil.
-result_suffix   := '!' type     -- success T, failure E
+-- '!' always binds to the immediately preceding named or primitive type token only.
+-- Inline array types and inline function types require a named alias before '!' can be applied.
+-- Nesting '!' is forbidden — neither the success type nor the error type may itself carry '!'.
+result_suffix   := '!' type     -- success T, failure E  (T and E must be plain, non-! types)
                  | '!'          -- success T, failure nil
 
 -- Reference (&T) — safe managed reference
@@ -2319,6 +2322,32 @@ int!string          -- OK: primitive success, primitive error
 Vec2!string         -- OK: struct success, primitive error
 Direction!string    -- OK: enum success, primitive error
 UserList!DbError    -- OK: named alias success, struct error
+```
+
+### Nesting `!` is Forbidden
+
+Neither the success type nor the error type in `T!E` may itself carry `!`. The compiler rejects any nested result type.
+
+```luc
+int!string           -- OK
+int!(string!int)     -- ERROR: error type cannot itself be a result type
+(int!string)!int     -- ERROR: success type cannot itself be a result type
+```
+
+Both readings are nonsensical. A success type carrying `!` means you receive an inert unresolved value on success — defeating the purpose of resolving the outer `!`. An error type carrying `!` means the error itself can fail, which has no meaningful interpretation.
+
+If a function can fail in multiple distinct ways, model the failure explicitly with a struct or enum rather than nesting result types:
+
+```luc
+enum FetchError { Network  Parse  Timeout }
+
+struct FetchFailure {
+    kind    FetchError
+    message string
+}
+
+-- single ! with a rich error type — clear, exhaustive, no nesting needed
+let fetch (url string) -> string!FetchFailure = { ... }
 ```
 
 ### Forbidden Operations on `T!E`
