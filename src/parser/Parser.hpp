@@ -105,6 +105,7 @@
 #include "debug/DebugUtils.hpp"
 
 #include <optional>
+#include <utility>
 #include <vector>
 #include <string>
 
@@ -147,7 +148,8 @@
  */
 class TokenStream {
 public:
-    TokenStream(std::vector<Token> tokens) : tokens_(std::move(tokens)) {}
+    TokenStream(std::vector<Token> tokens, DiagnosticEngine dc) 
+                    : tokens_(std::move(tokens)), dc_(std::move(dc)) {}
 
     // ─────────────────────────────────────────────────────────────────────────
     // Position access
@@ -195,8 +197,28 @@ public:
     size_t getTokenCount() const { return tokens_.size(); }
     const Token& getTokenAt(size_t idx) const { return tokens_[idx]; }
 
+    /**
+     * @brief Returns the next non‑comment token index from a given position.
+     * 
+     * Pure inspection – does NOT modify the stream's current position.
+     * Useful for lookahead that needs to peek ahead without consuming tokens.
+     * 
+     * @param start_idx Index to start scanning from
+     * @return Index of next non‑comment token, or getTokenCount() if none
+     */
+    size_t skipCommentsFrom(size_t start_idx) const {
+        size_t i = start_idx;
+        while (i < tokens_.size() && 
+               (tokens_[i].type == TokenType::LINE_COMMENT ||
+                tokens_[i].type == TokenType::DOC_COMMENT)) {
+            ++i;
+        }
+        return i;
+    }
+
 private:
     std::vector<Token> tokens_;
+    DiagnosticEngine dc_;
     size_t pos_ = 0;
 };
 
@@ -484,6 +506,11 @@ private:
     PipelineStepPtr parseFieldPipelineStep(const std::string& ident, ArenaSpan<TypePtr> genericArgs);
     PipelineStepPtr parseIndexPipelineStep(const std::string& ident, ArenaSpan<TypePtr> genericArgs);
     PipelineStepPtr parseArgPackPipelineStep(const std::string& ident, ArenaSpan<TypePtr> genericArgs);
+
+    // ---- Error handler ----
+    OkArmPtr parseOkArm();
+    ErrArmPtr parseErrArm();
+    ExprPtr parseResolveExpr();
 
     // ========================================================================
     // Pattern parsing (for match expressions)

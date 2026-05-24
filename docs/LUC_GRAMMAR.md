@@ -174,6 +174,7 @@ nullable_suffix := '?'
 -- '!' always binds to the immediately preceding named or primitive type token only.
 -- Inline array types and inline function types require a named alias before '!' can be applied.
 -- Nesting '!' is forbidden — neither the success type nor the error type may itself carry '!'.
+-- '?' after '!E' binds to E, not to the whole T!E — to make the whole result nullable, alias first.
 result_suffix   := '!' type     -- success T, failure E  (T and E must be plain, non-! types)
                  | '!'          -- success T, failure nil
 
@@ -2348,6 +2349,22 @@ int!string          -- OK: primitive success, primitive error
 Vec2!string         -- OK: struct success, primitive error
 Direction!string    -- OK: enum success, primitive error
 UserList!DbError    -- OK: named alias success, struct error
+```
+
+### `?` on a Result Type
+
+`?` after `!E` binds to `E`, not to the whole `T!E` — the same binding rule applied consistently:
+
+```luc
+int!string?     -- int!(string?)  — error type is nullable string
+                -- ? binds to string, not to the whole int!string
+```
+
+To make the whole result type nullable, alias first:
+
+```luc
+type IntOrString   = int!string
+let x IntOrString? = nil    -- nullable result — the whole T!E may be absent
 ```
 
 ### Nesting `!` is Forbidden

@@ -120,30 +120,21 @@ bool Parser::looksLikeFuncDecl() const {
     const auto& tokens = ts_.getTokens();
     size_t tokenCount = ts_.getTokenCount();
     size_t i = ts_.getPos();
-    
-    // Helper to skip comments
-    auto skipComments = [&](size_t& idx) {
-        while (idx < tokenCount && 
-               (tokens[idx].type == TokenType::LINE_COMMENT ||
-                tokens[idx].type == TokenType::DOC_COMMENT)) {
-            ++idx;
-        }
-    };
 
     // Skip the name IDENTIFIER
-    skipComments(i);
+    i = ts_.skipCommentsFrom(i);
     if (i >= tokenCount || tokens[i].type != TokenType::IDENTIFIER) {
         return false;
     }
     ++i;
 
     // Skip generic params if present: < ... >
-    skipComments(i);
+    i = ts_.skipCommentsFrom(i);
     if (i < tokenCount && tokens[i].type == TokenType::LESS) {
         int depth = 1;
         ++i;
         while (i < tokenCount && depth > 0) {
-            skipComments(i);
+            i = ts_.skipCommentsFrom(i);
             if (i >= tokenCount) break;
             TokenType tt = tokens[i].type;
             if (tt == TokenType::LESS) ++depth;
@@ -156,20 +147,20 @@ bool Parser::looksLikeFuncDecl() const {
     }
 
     // Skip type qualifiers (~async, ~noinline, etc.)
-    skipComments(i);
+    i = ts_.skipCommentsFrom(i);
     while (i < tokenCount && tokens[i].type == TokenType::TILDE) {
         ++i;
-        skipComments(i);
+        i = ts_.skipCommentsFrom(i);
         if (i < tokenCount && tokens[i].type == TokenType::IDENTIFIER) {
             ++i;
         } else {
             return false;
         }
-        skipComments(i);
+        i = ts_.skipCommentsFrom(i);
     }
 
     // Need at least one parameter group '('
-    skipComments(i);
+    i = ts_.skipCommentsFrom(i);
     if (i >= tokenCount || tokens[i].type != TokenType::LPAREN) {
         return false;
     }
@@ -213,23 +204,14 @@ bool Parser::looksLikeAnonFunc() const {
     const auto& tokens = ts_.getTokens();
     size_t tokenCount = ts_.getTokenCount();
     size_t i = ts_.getPos();
-    
-    // Helper to skip comments
-    auto skipComments = [&](size_t& idx) {
-        while (idx < tokenCount && 
-               (tokens[idx].type == TokenType::LINE_COMMENT ||
-                tokens[idx].type == TokenType::DOC_COMMENT)) {
-            ++idx;
-        }
-    };
 
     // Skip type qualifiers (though anonymous functions shouldn't have them)
     while (i < tokenCount) {
-        skipComments(i);
+        i = ts_.skipCommentsFrom(i);
         if (i >= tokenCount || tokens[i].type != TokenType::TILDE)
             break;
         ++i;
-        skipComments(i);
+        i = ts_.skipCommentsFrom(i);
         if (i < tokenCount && tokens[i].type == TokenType::IDENTIFIER) {
             ++i;
         } else {
@@ -238,7 +220,7 @@ bool Parser::looksLikeAnonFunc() const {
     }
 
     // First parameter group is required
-    skipComments(i);
+    i = ts_.skipCommentsFrom(i);
     if (i >= tokenCount || tokens[i].type != TokenType::LPAREN)
         return false;
 
@@ -276,7 +258,7 @@ bool Parser::looksLikeAnonFunc() const {
 
     // Parse additional curried parameter groups
     while (i < tokenCount) {
-        skipComments(i);
+        i = ts_.skipCommentsFrom(i);
         if (i >= tokenCount || tokens[i].type != TokenType::LPAREN)
             break;
         startPos = i;
@@ -285,7 +267,7 @@ bool Parser::looksLikeAnonFunc() const {
     }
 
     // Skip comments after the last ')'
-    skipComments(i);
+    i = ts_.skipCommentsFrom(i);
     if (i >= tokenCount) return false;
 
     // Immediate '{' → void anonymous function
@@ -297,7 +279,7 @@ bool Parser::looksLikeAnonFunc() const {
         return false;
 
     ++i;
-    skipComments(i);
+    i = ts_.skipCommentsFrom(i);
     if (i >= tokenCount) return false;
 
     // The token after '->' must start a type
@@ -350,22 +332,14 @@ bool Parser::looksLikeStructLiteral() const {
     const auto& tokens = ts_.getTokens();
     size_t tokenCount = ts_.getTokenCount();
     size_t i = ts_.getPos();
-    
-    auto skipComments = [&](size_t& idx) {
-        while (idx < tokenCount && 
-               (tokens[idx].type == TokenType::LINE_COMMENT ||
-                tokens[idx].type == TokenType::DOC_COMMENT)) {
-            ++idx;
-        }
-    };
 
-    skipComments(i);
+    i = ts_.skipCommentsFrom(i);
     if (i >= tokenCount || tokens[i].type != TokenType::IDENTIFIER) {
         return false;
     }
 
     ++i;
-    skipComments(i);
+    i = ts_.skipCommentsFrom(i);
     if (i >= tokenCount) return false;
 
     // Optional generic args: < ... >
@@ -373,7 +347,7 @@ bool Parser::looksLikeStructLiteral() const {
         int depth = 1;
         ++i;
         while (i < tokenCount && depth > 0) {
-            skipComments(i);
+            i = ts_.skipCommentsFrom(i);
             if (i >= tokenCount) break;
             TokenType tt = tokens[i].type;
             if (tt == TokenType::LESS) ++depth;
@@ -382,7 +356,7 @@ bool Parser::looksLikeStructLiteral() const {
             ++i;
         }
         if (depth != 0) return false;
-        skipComments(i);
+        i = ts_.skipCommentsFrom(i);
         if (i >= tokenCount) return false;
     }
 
@@ -522,17 +496,9 @@ bool Parser::looksLikeMultiAssignStart() const {
     const auto& tokens = ts_.getTokens();
     size_t tokenCount = ts_.getTokenCount();
     size_t i = ts_.getPos();
-    
-    auto skipComments = [&](size_t& idx) {
-        while (idx < tokenCount && 
-               (tokens[idx].type == TokenType::LINE_COMMENT ||
-                tokens[idx].type == TokenType::DOC_COMMENT)) {
-            ++idx;
-        }
-    };
 
     // Skip leading comments
-    skipComments(i);
+    i = ts_.skipCommentsFrom(i);
     if (i >= tokenCount) return false;
 
     // First token must be an identifier
@@ -541,13 +507,13 @@ bool Parser::looksLikeMultiAssignStart() const {
 
     // Parse optional suffixes for the first lvalue
     while (i < tokenCount) {
-        skipComments(i);
+        i = ts_.skipCommentsFrom(i);
         if (i >= tokenCount) break;
 
         // Field access: .identifier
         if (tokens[i].type == TokenType::DOT) {
             ++i;
-            skipComments(i);
+            i = ts_.skipCommentsFrom(i);
             if (i >= tokenCount || tokens[i].type != TokenType::IDENTIFIER) {
                 return false;
             }
@@ -558,7 +524,7 @@ bool Parser::looksLikeMultiAssignStart() const {
             ++i;
             int bracketDepth = 1;
             while (i < tokenCount && bracketDepth > 0) {
-                skipComments(i);
+                i = ts_.skipCommentsFrom(i);
                 if (i >= tokenCount) break;
                 if (tokens[i].type == TokenType::LBRACKET)
                     ++bracketDepth;
@@ -573,13 +539,13 @@ bool Parser::looksLikeMultiAssignStart() const {
     }
 
     // After the first lvalue, look for a comma
-    skipComments(i);
+    i = ts_.skipCommentsFrom(i);
     if (i >= tokenCount || tokens[i].type != TokenType::COMMA) return false;
 
     // Found a comma, now scan for '='
     ++i;
     while (i < tokenCount) {
-        skipComments(i);
+        i = ts_.skipCommentsFrom(i);
         if (i >= tokenCount) break;
         TokenType tt = tokens[i].type;
         if (tt == TokenType::ASSIGN) return true;
@@ -627,16 +593,8 @@ bool Parser::looksLikeBehaviorAccess() const {
     const auto& tokens = ts_.getTokens();
     size_t tokenCount = ts_.getTokenCount();
     size_t i = ts_.getPos();
-    
-    auto skipComments = [&](size_t& idx) {
-        while (idx < tokenCount && 
-               (tokens[idx].type == TokenType::LINE_COMMENT ||
-                tokens[idx].type == TokenType::DOC_COMMENT)) {
-            ++idx;
-        }
-    };
 
-    skipComments(i);
+    i = ts_.skipCommentsFrom(i);
     
     if (i >= tokenCount || tokens[i].type != TokenType::IDENTIFIER) {
         return false;
@@ -648,7 +606,7 @@ bool Parser::looksLikeBehaviorAccess() const {
         int depth = 1;
         ++i;
         while (i < tokenCount && depth > 0) {
-            skipComments(i);
+            i = ts_.skipCommentsFrom(i);
             if (i >= tokenCount) break;
             TokenType tt = tokens[i].type;
             if (tt == TokenType::LESS) ++depth;
@@ -659,13 +617,13 @@ bool Parser::looksLikeBehaviorAccess() const {
         if (depth != 0) return false;
     }
 
-    skipComments(i);
+    i = ts_.skipCommentsFrom(i);
     if (i >= tokenCount || tokens[i].type != TokenType::COLON) {
         return false;
     }
     ++i;
 
-    skipComments(i);
+    i = ts_.skipCommentsFrom(i);
     if (i >= tokenCount || tokens[i].type != TokenType::IDENTIFIER) {
         return false;
     }

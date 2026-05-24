@@ -878,29 +878,114 @@ GenericParamPtr Parser::parseGenericParam() {
 /**
  * @brief Parses an impl block that binds methods to a type.
  * 
- * Grammar: `impl` type_name [ `<` generic_params `>` ] [ `as` IDENTIFIER ]
- *          [ `:` trait_ref ] `{` method_decl* `}`
+ * Grammar:
+ *   impl_decl := [ visibility_mod ] 'impl' impl_target [ impl_generic_params ]
+ *                [ 'as' IDENTIFIER ] [ ':' trait_ref ] '{' method_decl* '}'
  * 
- * Example: `impl Circle as c : Drawable { draw () { c:render() } }`
+ *   impl_target     := type_name | primitive_type
+ *   impl_generic_params := '<' impl_generic_param { ',' impl_generic_param } '>'
+ *   trait_ref       := IDENTIFIER [ '<' type_args '>' ]
+ * 
+ * Examples:
+ *   impl Vec2 {
+ *       length () -> float = { return #sqrt(self.x*self.x + self.y*self.y) }
+ *   }
+ * 
+ *   impl Box<T> as b {
+ *       get () -> T = { return b.value }
+ *   }
+ * 
+ *   impl Circle as c : Drawable {
+ *       draw () { c:render() }
+ *   }
+ * 
+ *   impl int as i {
+ *       isEven () -> bool = { return i % 2 == 0 }
+ *   }
+ * 
+ *   impl string {
+ *       length () -> int = { return #strlen(self) }
+ *   }
+ * 
+ * ─── Parsing Order ─────────────────────────────────────────────────────────
+ *   1. 'impl' keyword
+ *   2. Target type (primitive OR named type, may include generic arguments)
+ *   3. Optional impl-level generic parameters (if target is generic struct)
+ *   4. Optional 'as' alias (replaces 'self' as receiver name)
+ *   5. Optional ':' trait conformance
+ *   6. '{' method_decl* '}'
+ * 
+ * ─── Important Notes ───────────────────────────────────────────────────────
+ * 
+ * **Target Type Support:**
+ *   - Primitive types: int, float, string, bool, char, etc.
+ *   - Named types: user-defined structs, enums, and type aliases
+ *   - Array types: NOT allowed directly (requires type alias)
+ *   - Function types: NOT allowed directly (requires type alias)
+ * 
+ * **Generic Parameters on Impl:**
+ *   - Impl blocks MAY declare generic parameters ONLY when the target type
+ *     is generic (a generic struct or generic type alias)
+ *   - The number of generic parameters MUST match the target's arity
+ *   - Parameter names are independent; they bind positionally
+ *   - Example: `struct Box<T>` → `impl Box<T>` (arity 1)
+ * 
+ * **Receiver Alias (`as IDENTIFIER`):**
+ *   - If omitted, the receiver is named `self` inside method bodies
+ *   - If provided, the given identifier replaces `self` as the receiver name
+ *   - The alias must appear AFTER the target type and its generics
+ *   - Must appear BEFORE an optional trait conformance
+ * 
+ * **Trait Conformance (`: trait_ref`):**
+ *   - Optional. When present, the impl block must implement every method
+ *     declared in that trait
+ *   - Extra methods (not in the trait) are allowed
+ * 
+ * **Visibility:**
+ *   - `pub` makes all methods visible within the package
+ *   - `export` makes all methods visible to external consumers
+ *   - Individual methods cannot have separate visibility modifiers
+ * 
+ * **Primitive Impl Restrictions (Semantic Pass):**
+ *   - Primitive types (int, float, string, etc.) cannot have generic parameters
+ *   - User-defined methods cannot override built-in methods (E3020)
+ * 
+ * **Array/Function Type Impl:**
+ *   - NOT allowed directly: `impl []int { ... }` is a parse error
+ *   - Must use a type alias: `type IntList = []int; impl IntList { ... }`
  * 
  * ─── Token Consumption ─────────────────────────────────────────────────────
  * On entry: positioned at 'impl' keyword
- * On exit:  positioned after the closing '}'
- * 
- * ─── Important Notes ───────────────────────────────────────────────────────
- *   - `as IDENTIFIER` replaces `self` as the receiver name
- *   - `: trait_ref` indicates conformance to a trait
- *   - Generic parameters on impl must match target type's arity
+ * On exit:  positioned after the closing '}' of the impl body
  * 
  * ─── Loop Safety ──────────────────────────────────────────────────────────
- * Uses saved position pattern with parseMethodDecl()
+ * Uses saved position pattern when parsing methods. If parseMethodDecl()
+ * makes no progress:
+ *   - Consumes one token (advance)
+ *   - Skips to next identifier or closing brace
+ *   - Continues (does NOT push a method)
  * 
  * ─── Error Recovery ───────────────────────────────────────────────────────
- * - Missing target type: returns nullptr
+ * - Missing target type: reports error, returns nullptr
+ * - Invalid target type (neither primitive nor identifier): reports error,
+ *   returns nullptr
  * - Missing '{' after header: reports error, returns nullptr
- * - Invalid method: skips method, continues
- * - Unrecognised token inside impl: calls synchronize()
+ * - Invalid method: skips method, continues parsing remaining methods
+ * - Unrecognised token inside impl: reports error, calls synchronize()
  * - Missing '}': consume() reports error
+ * 
+ * ─── Semantic Pass Validation (Not Parser Responsibility) ──────────────────
+ * - Generic arity matches target type (E3019)
+ * - Primitive impl has no generic parameters (E3020)
+ * - Trait methods all implemented (E3024)
+ * - Method signatures match trait (E3025)
+ * - No duplicate method names across merged impl blocks (E3026)
+ * - `self` type resolved correctly
+ * 
+ * @param vis Visibility modifier (Private, Package, or Export)
+ *        determined by caller from 'pub'/'export' keywords
+ * 
+ * @return ASTPtr<ImplDeclAST> – impl node on success, nullptr on error
  */
 ASTPtr<ImplDeclAST> Parser::parseImplDecl(Visibility vis) {
     SourceLocation loc = ts_.currentLoc();
@@ -910,11 +995,38 @@ ASTPtr<ImplDeclAST> Parser::parseImplDecl(Visibility vis) {
     node->loc = loc;
     node->visibility = vis;
 
-    if (!ts_.check(TokenType::IDENTIFIER)) {
-        errorAt(DiagCode::E2003, "expected target type after 'impl'");
+    // Parse target type (supports BOTH named types AND primitive types)
+    
+    // Check if we have a primitive type keyword OR an identifier
+    bool isPrimitive = isPrimitiveTypeToken(ts_.peekType());
+    bool isIdentifier = ts_.check(TokenType::IDENTIFIER);
+    
+    if (!isPrimitive && !isIdentifier) {
+        errorAt(DiagCode::E2003, "expected target type after 'impl' (primitive or identifier)");
         return nullptr;
     }
+    
+    TypePtr targetType;
+    if (isPrimitive) {
+        targetType = parsePrimitiveType();  // Handles int, float, string, etc.
+    } else {
+        targetType = parseNamedType();       // Handles user-defined types
+    }
+    
+    if (!targetType || targetType->isa<UnknownTypeAST>()) {
+        errorAt(DiagCode::E2005, "invalid target type in impl block");
+        return nullptr;
+    }
+    node->targetType = std::move(targetType);
 
+    // Parse impl-level generic parameters (if any)
+    // Note: For primitive types, generic parameters are NOT allowed
+    // (semantic pass will enforce E3020)
+    if (ts_.check(TokenType::LESS)) {
+        node->genericParams = parseGenericParams();
+    }
+
+    // Parse 'as' alias (optional)
     if (ts_.match(TokenType::AS)) {
         if (!ts_.check(TokenType::IDENTIFIER)) {
             errorAt(DiagCode::E2003, "expected identifier after 'as' for receiver alias");
@@ -923,21 +1035,12 @@ ASTPtr<ImplDeclAST> Parser::parseImplDecl(Visibility vis) {
         }
     }
 
-    TypePtr targetType = parseNamedType();
-    if (!targetType || targetType->isa<UnknownTypeAST>()) {
-        errorAt(DiagCode::E2005, "invalid target type in impl block");
-        return nullptr;
-    }
-    node->targetType = std::move(targetType);
-
-    if (ts_.check(TokenType::LESS)) {
-        node->genericParams = parseGenericParams();
-    }
-
+    // Parse trait conformance (optional)
     if (ts_.check(TokenType::COLON)) {
         node->traitRef = parseTraitRef();
     }
 
+    // Parse impl body
     ts_.consume(TokenType::LBRACE, "expected '{' to open impl body");
 
     std::vector<MethodDeclPtr> methods;
@@ -1100,35 +1203,83 @@ MethodDeclPtr Parser::parseMethodDecl() {
 }
 
 /**
- * @brief Parses a `from` block defining implicit conversions.
+ * @brief Parses a `from` block defining implicit conversions to a type.
  * 
- * Grammar: `from` type [ `<` generic_params `>` ] `{` from_entry* `}`
+ * Grammar:
+ *   from_decl := [ visibility_mod ] 'from' type [ generic_params ] '{' from_entry* '}'
  * 
- * Example: `export from Fahrenheit { (c Celsius) -> Fahrenheit = { ... } }`
+ *   from_entry := param_group { param_group } '->' type '=' func_body
+ * 
+ * Examples:
+ *   export from Fahrenheit {
+ *       (c Celsius) -> Fahrenheit = { return Fahrenheit { value = c.value * 9/5 + 32 } }
+ *   }
+ * 
+ *   from Wrapper<T> {
+ *       (val T) -> Wrapper<T> = { return Wrapper<T> { value = val } }
+ *   }
+ * 
+ *   from int {
+ *       (s string) -> int = { return #parseInt(s) }
+ *   }
+ * 
+ * ─── Parsing Strategy ──────────────────────────────────────────────────────
+ *   1. Parse 'from' keyword and visibility
+ *   2. Parse target type:
+ *      a. If target is generic (IDENTIFIER '<'), parse generic parameters
+ *         as declarations (GenericParamAST) and store on FromDeclAST
+ *      b. Otherwise, parse as normal type (primitive or named)
+ *   3. Parse '{' and zero or more from entries
+ *   4. Parse '}' to close block
+ * 
+ * ─── Generic Parameters on From ────────────────────────────────────────────
+ *   - Generic parameters are parsed as declarations (GenericParamAST)
+ *   - They are stored in `node->genericParams`, NOT as arguments on the type
+ *   - The target type's `NamedTypeAST` has empty `genericArgs`
+ *   - Generic parameters are bound in the from entry bodies
+ * 
+ * ─── From Entry Format ────────────────────────────────────────────────────
+ *   - Parameter groups define the source type(s) (may be curried)
+ *   - '->' followed by return type (must match target type after substitution)
+ *   - '=' followed by conversion body (block or expression)
+ *   - No qualifiers (~async, ~nullable, ~parallel) allowed
+ * 
+ * ─── Target Type Rules (Semantic Pass) ─────────────────────────────────────
+ *   - Target type can be ANY type (primitive, struct, enum, alias)
+ *   - For generic structs, generic parameters must be declared on the from
+ *   - Return types of entries must match the target type after substitution
+ *   - Array and function types must be wrapped in a type alias first
  * 
  * ─── Token Consumption ─────────────────────────────────────────────────────
  * On entry: positioned at 'from' keyword
  * On exit:  positioned after the closing '}'
  * 
- * ─── From Entry Format ────────────────────────────────────────────────────
- *   - Parameter groups define the source type(s)
- *   - `->` followed by return type (must match target type)
- *   - `=` followed by conversion body (block or expression)
- * 
- * ─── Important Notes ───────────────────────────────────────────────────────
- *   - Target type can be ANY type (primitive, struct, enum, array, function, etc.)
- *   - Generic parameters are optional and only allowed when target is generic
- *   - Can be top‑level or local
- *   - Multiple from blocks for same target allowed in different scopes
- * 
  * ─── Loop Safety ──────────────────────────────────────────────────────────
- * Uses saved position pattern with from entry parsing
+ * Uses saved position pattern when parsing from entries. If parseFromEntry()
+ * makes no progress:
+ *   - Consumes one token (advance)
+ *   - Skips to next '(' or closing brace
+ *   - Continues (does NOT push an entry)
  * 
  * ─── Error Recovery ───────────────────────────────────────────────────────
  * - Missing target type: returns nullptr
  * - Missing '{' after target: reports error, returns nullptr
  * - Invalid entry: skips entry, continues
+ * - Missing '->' in entry: reports error, skips entry
+ * - Missing return type after '->': reports error, skips entry
+ * - Missing '=' before body: reports error, skips entry
  * - Missing '}': consume() reports error
+ * 
+ * ─── Semantic Pass Validation (Not Parser Responsibility) ──────────────────
+ * - Target type resolution (E3021)
+ * - Return type matches target (E3022)
+ * - Generic parameter usage correctness
+ * - Conversion uniqueness in scope
+ * 
+ * @param vis Visibility modifier (Private, Package, or Export)
+ *        determined by caller from 'pub'/'export' keywords
+ * 
+ * @return ASTPtr<FromDeclAST> – from node on success, nullptr on error
  */
 ASTPtr<FromDeclAST> Parser::parseFromDecl(Visibility vis) {
     SourceLocation loc = ts_.currentLoc();
@@ -1138,24 +1289,86 @@ ASTPtr<FromDeclAST> Parser::parseFromDecl(Visibility vis) {
     node->loc = loc;
     node->visibility = vis;
 
-    // Parse the target type (ANY type, not just named type)
-    // Save position in case we need to roll back for generic params detection
-    size_t beforeTypePos = ts_.getPos();
-    TypePtr targetType = parseType();
+    // Parse target type: supports ANY type (primitive, struct, enum, alias)
+    // But generic parameters are parsed separately for FromDeclAST
     
-    if (!targetType || targetType->isa<UnknownTypeAST>()) {
-        errorAt(DiagCode::E2005, "invalid target type in from block");
+    // Check if we have a primitive type, identifier, or other type start
+    if (!looksLikeType()) {
+        errorAt(DiagCode::E2005, "expected target type in from block");
         return nullptr;
     }
     
-    node->targetType = std::move(targetType);
-
-    // Check for generic parameters on the from block
-    // Generic parameters are only allowed if the target type is generic
-    if (ts_.check(TokenType::LESS)) {
-        node->genericParams = parseGenericParams();
+    // Peek ahead to see if this is a generic type with '<' 
+    // We need to parse the base type name separately from generic parameters
+    bool isGenericType = false;
+    size_t beforeTypePos = ts_.getPos();
+    
+    // Check if current token is an identifier followed by '<' (generic type)
+    if (ts_.check(TokenType::IDENTIFIER)) {
+        size_t lookahead = ts_.getPos() + 1;
+        const auto& tokens = ts_.getTokens();
+        size_t tokenCount = ts_.getTokenCount();
+        
+        // Skip comments
+        while (lookahead < tokenCount && 
+               (tokens[lookahead].type == TokenType::LINE_COMMENT ||
+                tokens[lookahead].type == TokenType::DOC_COMMENT)) {
+            ++lookahead;
+        }
+        
+        if (lookahead < tokenCount && tokens[lookahead].type == TokenType::LESS) {
+            isGenericType = true;
+        }
+    }
+    
+    TypePtr targetType;
+    
+    if (isGenericType) {
+        // Parse as named type with generic parameters as PART OF the type
+        // For FromDeclAST, these become generic parameters, not arguments
+        if (!ts_.check(TokenType::IDENTIFIER)) {
+            errorAt(DiagCode::E2003, "expected type name");
+            return nullptr;
+        }
+        
+        InternedString typeName = pool_.intern(ts_.advance().value);
+        
+        // Parse generic parameters (these are declarations, not arguments)
+        ArenaSpan<GenericParamPtr> genericParams = parseGenericParams();
+        
+        // Store generic parameters on the node
+        node->genericParams = genericParams;
+        
+        // Build the target type as a NamedTypeAST with NO generic arguments
+        // (generic parameters are stored separately on FromDeclAST)
+        auto namedType = arena_.make<NamedTypeAST>(typeName);
+        namedType->loc = loc;
+        // Intentionally leave genericArgs empty - the type is generic but
+        // the parameters are stored at the from declaration level
+        targetType = std::move(namedType);
+    } else {
+        // Non-generic type: parse normally
+        targetType = parseType();
+        if (!targetType || targetType->isa<UnknownTypeAST>()) {
+            errorAt(DiagCode::E2005, "invalid target type in from block");
+            return nullptr;
+        }
+        
+        // Check if the parsed type already contains generic arguments
+        // (e.g., from Wrapper<int> where int is a concrete type argument)
+        // In this case, genericParams should remain empty
+        if (targetType->isa<NamedTypeAST>()) {
+            auto namedType = static_cast<NamedTypeAST*>(targetType.get());
+            if (!namedType->genericArgs.empty()) {
+                // This is a concrete instantiation, not a generic declaration
+                // No generic parameters to store
+            }
+        }
     }
 
+    node->targetType = std::move(targetType);
+
+    // Parse from block body
     ts_.consume(TokenType::LBRACE, "expected '{' to open from block");
 
     std::vector<FromEntryPtr> entries;

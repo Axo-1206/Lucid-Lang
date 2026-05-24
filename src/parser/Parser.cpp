@@ -110,6 +110,8 @@ std::optional<Token> TokenStream::consumeIf(TokenType type) {
 
 Token TokenStream::consume(TokenType type, DiagCode code, const std::string& msg) {
     if (check(type)) return advance();
+    // report the error using the parser's engine, then return dummy
+    dc_.error(DiagnosticCategory::Syntax, filePath_, currentLoc(), code, {msg});
     return {type, "", 0, 0};
 }
 
@@ -323,54 +325,66 @@ ParamGroup Parser::parseParamGroup() {
     return params;
 }
 
-// ============================================================================
-// Return List Parsing
-// ============================================================================
-// 
-// parseReturnList() is called after '->' in function types and declarations.
-// 
-// Grammar:
-//   return_list := '(' [ return_type { ',' return_type } ] ')'   (multiple)
-//                | return_type                                    (single)
-// 
-// Examples:
-//   -> int
-//   -> (int, string)
-//   -> (x int) -> int                    (function type)
-//   -> ~async (url string) -> string     (async function type)
-//   -> ()
-// 
-// ─── Detection Strategy ────────────────────────────────────────────────────
-//   1. If no '(' → single return type → parseType()
-//   2. If '(' followed by ')' → empty parentheses → function type with zero params
-//   3. If '(' followed by IDENTIFIER and then a type start → function type
-//   4. If '(' followed by '~' → function type with qualifier
-//   5. Otherwise → multi-return list: parse comma‑separated types inside '(' ')'
-// 
-// ─── Token Consumption ─────────────────────────────────────────────────────
-// On entry: positioned at the token after '->' (may be '(' or type start)
-// On exit:  positioned after the return list
-// 
-// ─── Return Value ─────────────────────────────────────────────────────────
-// Returns ArenaSpan<TypePtr> – empty span indicates void function.
-// 
-// ─── Loop Safety ──────────────────────────────────────────────────────────
-// Uses parseType() which guarantees progress.
-// 
-// ─── Error Recovery ───────────────────────────────────────────────────────
-// - Missing return type: reports error, returns empty span
-// - Missing ')': consume() reports error
-// ============================================================================
-
+/**
+ * @brief Parses the return list after '->' in function signatures.
+ * 
+ * Grammar:
+ *   return_list := '(' [ return_type { ',' return_type } ] ')'   -- multiple
+ *                | return_type                                    -- single
+ * 
+ * where `return_type` can itself be a function type with its own '->'.
+ * 
+ * Examples:
+ *   -> int                                    -- single return
+ *   -> (int, string)                          -- multi-return
+ *   -> (x int) -> int                         -- function type
+ *   -> (Result, int)                          -- multi-return with named type
+ *   -> ((x int) -> int, string)               -- multi-return with function type
+ *   -> () -> int                              -- zero-parameter function type
+ * 
+ * ─── Detection Strategy ─────────────────────────────────────────────────────
+ *   To distinguish between multi-return `(Type, Type)` and function type
+ *   `(param Type) -> Ret`, the parser:
+ * 
+ *   1. Looks inside the parentheses
+ *   2. If it sees `IDENTIFIER` followed by a type start (parameter pattern)
+ *      and later finds `->` after a complete parameter group, it parses as
+ *      a function type
+ *   3. Otherwise, it parses as a multi-return list
+ * 
+ *   This correctly handles ambiguous cases like `(Result, int)` where `Result`
+ *   is a named type, not a parameter name.
+ * 
+ * ─── Function Type Detection Details ───────────────────────────────────────
+ *   - Empty parentheses `()` are treated as a function type (zero parameters)
+ *   - Single identifier without following type is NOT a function type
+ *   - The presence of `->` after parameter group(s) confirms function type
+ *   - Uses temporary parsing to test hypothesis without consuming tokens
+ * 
+ * ─── Token Consumption ─────────────────────────────────────────────────────
+ * On entry: positioned at the token after '->' (may be '(' or type start)
+ * On exit:  positioned after the return list
+ * 
+ * ─── Return Value ─────────────────────────────────────────────────────────
+ *   Returns ArenaSpan<TypePtr> – empty span indicates void function.
+ * 
+ * ─── Error Recovery ───────────────────────────────────────────────────────
+ * - Missing return type: reports error, returns empty span
+ * - Missing ')' in multi-return: consume() reports error
+ * - Invalid type in list: skips type, continues
+ * 
+ * @return ArenaSpan<TypePtr> – span of return types (empty = void)
+ */
 ArenaSpan<TypePtr> Parser::parseReturnList() {
     // Helper to check if a token type can start a type
-    auto isTypeStart = [](TokenType tt) -> bool {
+    auto isTypeStart = [this](TokenType tt) -> bool {
         return isPrimitiveTypeToken(tt) ||
                tt == TokenType::IDENTIFIER ||
                tt == TokenType::LBRACKET ||
                tt == TokenType::AMPERSAND ||
                tt == TokenType::MUL ||
-               tt == TokenType::LPAREN;
+               tt == TokenType::LPAREN ||
+               tt == TokenType::TILDE;
     };
 
     // Case 1: No parentheses → single return type
@@ -385,73 +399,121 @@ ArenaSpan<TypePtr> Parser::parseReturnList() {
         return builder.build();
     }
 
-    // Peek inside the parentheses without consuming them
-    size_t lookahead = ts_.getPos() + 1;
+    // We have '(' - need to determine if it's a function type or multi-return
+    // Strategy: Peek inside and look for '->' after a complete parameter group
+    
+    size_t savedPos = ts_.getPos();
     const auto& tokens = ts_.getTokens();
     size_t tokenCount = ts_.getTokenCount();
     
-    // Skip comments
-    while (lookahead < tokenCount && 
-           (tokens[lookahead].type == TokenType::LINE_COMMENT ||
-            tokens[lookahead].type == TokenType::DOC_COMMENT)) {
-        ++lookahead;
+    // Try to parse as a function type first
+    // We'll attempt to parse a complete function type and see if it succeeds
+    // without consuming tokens permanently
+    
+    // Create a temporary copy of the parser position
+    size_t testPos = savedPos;
+    
+    // Skip comments at the start
+    testPos = ts_.skipCommentsFrom(testPos);
+    
+    // Check if the '(' is followed by something that looks like a parameter group
+    if (testPos < tokenCount && tokens[testPos].type == TokenType::LPAREN) {
+        ++testPos; // consume '('
+        testPos = ts_.skipCommentsFrom(testPos);
+        
+        // If we see a closing ')' immediately, this could be empty function type
+        bool isEmptyParen = (testPos < tokenCount && tokens[testPos].type == TokenType::RPAREN);
+        
+        if (!isEmptyParen) {
+            // Need to see if this looks like a parameter: IDENTIFIER followed by type start
+            // vs just a type name (multi-return case)
+            
+            // Check if the next token is an identifier AND the token after that starts a type
+            bool looksLikeParameter = false;
+            if (testPos < tokenCount && tokens[testPos].type == TokenType::IDENTIFIER) {
+                size_t afterIdent = testPos + 1;
+                afterIdent = ts_.skipCommentsFrom(afterIdent);
+                if (afterIdent < tokenCount && isTypeStart(tokens[afterIdent].type)) {
+                    // This looks like a parameter: "name Type"
+                    looksLikeParameter = true;
+                }
+            }
+            
+            if (looksLikeParameter) {
+                // Try to parse a complete function type
+                // We need to see if there's a '->' after the parameter group(s)
+                
+                // Simulate parsing up to the closing ')' of the first parameter group
+                int parenDepth = 1;
+                size_t paramEnd = testPos;
+                while (paramEnd < tokenCount && parenDepth > 0) {
+                    paramEnd = ts_.skipCommentsFrom(paramEnd);
+                    if (paramEnd >= tokenCount) break;
+                    TokenType tt = tokens[paramEnd].type;
+                    if (tt == TokenType::LPAREN) ++parenDepth;
+                    else if (tt == TokenType::RPAREN) --parenDepth;
+                    ++paramEnd;
+                }
+                
+                // Check after the closing ')' for '->' or more parameter groups
+                size_t afterParams = paramEnd;
+                afterParams = ts_.skipCommentsFrom(afterParams);
+                
+                // Look for additional parameter groups or '->'
+                bool hasArrow = false;
+                while (afterParams < tokenCount) {
+                    afterParams = ts_.skipCommentsFrom(afterParams);
+                    if (afterParams >= tokenCount) break;
+                    TokenType tt = tokens[afterParams].type;
+                    if (tt == TokenType::ARROW) {
+                        hasArrow = true;
+                        break;
+                    }
+                    if (tt == TokenType::LPAREN) {
+                        // More parameter groups - continue scanning
+                        ++afterParams;
+                        continue;
+                    }
+                    break;
+                }
+                
+                if (hasArrow) {
+                    // This is definitely a function type
+                    TypePtr funcType = parseFuncType();
+                    if (!funcType || funcType->isa<UnknownTypeAST>()) {
+                        errorAt(DiagCode::E2005, "expected function type");
+                        return ArenaSpan<TypePtr>();
+                    }
+                    auto builder = arena_.makeBuilder<TypePtr>();
+                    builder.push_back(std::move(funcType));
+                    return builder.build();
+                }
+            }
+        } else {
+            // Empty parentheses - this is a function type with zero parameters
+            // Check if there's a '->' after the closing ')'
+            size_t afterParen = testPos + 1; // skip the ')'
+            afterParen = ts_.skipCommentsFrom(afterParen);
+            if (afterParen < tokenCount && tokens[afterParen].type == TokenType::ARROW) {
+                TypePtr funcType = parseFuncType();
+                if (!funcType || funcType->isa<UnknownTypeAST>()) {
+                    errorAt(DiagCode::E2005, "expected function type");
+                    return ArenaSpan<TypePtr>();
+                }
+                auto builder = arena_.makeBuilder<TypePtr>();
+                builder.push_back(std::move(funcType));
+                return builder.build();
+            }
+        }
     }
     
-    if (lookahead >= tokenCount) {
-        errorAt(DiagCode::E2002, "unexpected end of file after '('");
-        return ArenaSpan<TypePtr>();
-    }
-
-    TokenType afterParen = tokens[lookahead].type;
-
-    // Case 2: Empty parentheses "()" → zero‑parameter function type
-    if (afterParen == TokenType::RPAREN) {
-        TypePtr funcType = parseFuncType();
-        if (!funcType || funcType->isa<UnknownTypeAST>()) {
-            errorAt(DiagCode::E2005, "expected function type");
-            return ArenaSpan<TypePtr>();
-        }
-        auto builder = arena_.makeBuilder<TypePtr>();
-        builder.push_back(std::move(funcType));
-        return builder.build();
-    }
-
-    // Case 3: Identifier followed by a type start → function type
-    if (afterParen == TokenType::IDENTIFIER) {
-        size_t afterIdent = lookahead + 1;
-        while (afterIdent < tokenCount && 
-               (tokens[afterIdent].type == TokenType::LINE_COMMENT ||
-                tokens[afterIdent].type == TokenType::DOC_COMMENT)) {
-            ++afterIdent;
-        }
-        if (afterIdent < tokenCount && isTypeStart(tokens[afterIdent].type)) {
-            TypePtr funcType = parseFuncType();
-            if (!funcType || funcType->isa<UnknownTypeAST>()) {
-                errorAt(DiagCode::E2005, "expected function type");
-                return ArenaSpan<TypePtr>();
-            }
-            auto builder = arena_.makeBuilder<TypePtr>();
-            builder.push_back(std::move(funcType));
-            return builder.build();
-        }
-    }
-
-    // Case 4: Qualifier starts a function type
-    if (afterParen == TokenType::TILDE) {
-        TypePtr funcType = parseFuncType();
-        if (!funcType || funcType->isa<UnknownTypeAST>()) {
-            errorAt(DiagCode::E2005, "expected function type");
-            return ArenaSpan<TypePtr>();
-        }
-        auto builder = arena_.makeBuilder<TypePtr>();
-        builder.push_back(std::move(funcType));
-        return builder.build();
-    }
-
-    // Case 5: Multi‑return list: '(' type { ',' type } ')'
+    // Not a function type (or detection inconclusive) → parse as multi-return list
+    // Restore position and parse as multi-return
+    ts_.setPos(savedPos);
     ts_.advance(); // consume '('
     
     std::vector<TypePtr> types;
+    
     while (!ts_.check(TokenType::RPAREN) && !ts_.isAtEnd()) {
         if (!types.empty() && !ts_.match(TokenType::COMMA)) {
             // Missing comma - try to continue
@@ -466,9 +528,9 @@ ArenaSpan<TypePtr> Parser::parseReturnList() {
         
         if (ts_.check(TokenType::RPAREN)) break;
         
-        size_t savedPos = ts_.getPos();
+        size_t typeSavedPos = ts_.getPos();
         TypePtr t = parseType();
-        if (ts_.getPos() == savedPos) {
+        if (ts_.getPos() == typeSavedPos) {
             errorAt(DiagCode::E2005, "expected return type");
             // Skip to closing parenthesis
             while (!ts_.isAtEnd() && !ts_.check(TokenType::RPAREN)) {
@@ -739,29 +801,29 @@ DeclPtr Parser::parseTopLevelDecl() {
     return parseDeclaration(DeclContext::TopLevel);
 }
 
-// ============================================================================
-// Declaration Dispatch
-// ============================================================================
-// 
-// parseDeclaration() is the unified entry point for parsing declarations.
-// It handles:
-//   1. Attribute collection (zero or more @... tokens)
-//   2. Visibility parsing (pub/export) – top-level only
-//   3. Dispatch based on the next token
-// 
-// ─── Dispatch Order ────────────────────────────────────────────────────────
-//   USE → STRUCT → ENUM → TRAIT → IMPL → FROM → TYPE → LET/CONST
-// 
-// ─── Distinguishing Variable vs Function ───────────────────────────────────
-//   For LET/CONST, looksLikeFuncDecl() determines whether to parse as
-//   function or variable declaration. This lookahead inspects the token
-//   stream without consuming tokens.
-// 
-// ─── Attribute Attachment ──────────────────────────────────────────────────
-//   Attributes are collected as std::vector<AttributePtr> and converted
-//   to ArenaSpan<AttributePtr> after the declaration is successfully parsed.
-// ============================================================================
-
+/**
+ * @brief Parses any declaration (top-level or local).
+ * 
+ * Grammar (simplified):
+ *   declaration := [ '@' attribute ]* [ 'pub' | 'export' ]? actual_decl
+ * 
+ *   actual_decl := use_decl | struct_decl | enum_decl | trait_decl
+ *                | impl_decl | from_decl | type_decl | var_decl | func_decl
+ * 
+ * ─── Context Rules ─────────────────────────────────────────────────────────
+ *   TopLevel: All declaration types allowed, visibility modifiers allowed
+ *   Local:    Only struct, enum, trait, impl, from, type, let, const allowed
+ *             Visibility modifiers (pub/export) are FORBIDDEN (E2014)
+ *             'use' declarations are FORBIDDEN (E2006)
+ * 
+ * ─── Error Recovery ───────────────────────────────────────────────────────
+ * - Invalid use in local context: reports error, skips entire use declaration
+ * - Visibility in local context: reports error, continues
+ * - Unknown declaration: reports error, returns nullptr (caller synchronizes)
+ * 
+ * @param ctx Whether this declaration appears at top level or inside a block
+ * @return DeclPtr – parsed declaration node, or nullptr on error
+ */
 DeclPtr Parser::parseDeclaration(DeclContext ctx) {
     // Parse attributes (temporary vector)
     std::vector<AttributePtr> attrs = parseAttributes();
@@ -781,6 +843,21 @@ DeclPtr Parser::parseDeclaration(DeclContext ctx) {
     DeclPtr decl;
     
     if (ts_.check(TokenType::USE)) {
+        // REJECT 'use' inside local contexts
+        if (ctx == DeclContext::Local) {
+            errorAt(DiagCode::E2006, "'use' declaration is not allowed inside a block; use declarations must be at top level");
+            // Skip the 'use' declaration to recover
+            ts_.advance(); // consume 'use'
+            
+            // Skip the rest of the use declaration to avoid cascading errors
+            while (!ts_.isAtEnd() && 
+                   !ts_.checkAny({TokenType::SEMICOLON, TokenType::RBRACE, 
+                                  TokenType::LET, TokenType::CONST, TokenType::IF,
+                                  TokenType::FOR, TokenType::WHILE, TokenType::RETURN})) {
+                ts_.advance();
+            }
+            return nullptr;
+        }
         decl = parseUseDecl(vis);
     } else if (ts_.check(TokenType::STRUCT)) {
         decl = parseStructDecl(vis);

@@ -725,46 +725,63 @@ SwitchCasePtr Parser::parseSwitchCase() {
     return sc;
 }
 
-// ============================================================================
-// For Loop
-// ============================================================================
-// 
-// parseForStmt() parses `for` loops over ranges or collections.
-// 
-// Grammar: `for` IDENTIFIER type_ann `in` ( range_expr | expr ) [ `..` step ] block
-// 
-// Examples:
-//   for i int in 0..10 { ... }       -- range iteration (0 to 10 inclusive)
-//   for i int in 0..<10 { ... }      -- exclusive end
-//   for i int in 0..10..2 { ... }    -- with step
-//   for item in items { ... }        -- collection iteration
-// 
-// ─── Range Iteration ───────────────────────────────────────────────────────
-//   - Lo expression: start (inclusive)
-//   - Hi expression: end (inclusive for `..`, exclusive for `..<`)
-//   - Optional step: third expression after second `..`
-//   - Iteration variable type defaults to `int` if not specified
-// 
-// ─── Collection Iteration ──────────────────────────────────────────────────
-//   - Iterable must be a collection (array, slice, dynamic array)
-//   - Iteration variable type is inferred from element type
-// 
-// ─── Loop Depth Tracking ───────────────────────────────────────────────────
-//   - `loopDepth_` is incremented before parsing the body
-//   - Used by `break`/`continue` to validate loop context
-// 
-// ─── Token Consumption ─────────────────────────────────────────────────────
-// On entry: positioned at 'for'
-// On exit:  positioned after the loop body
-// 
-// ─── Error Recovery ───────────────────────────────────────────────────────
-//   - Missing variable name: returns nullptr
-//   - Missing type annotation: reports error, returns nullptr
-//   - Missing 'in': reports error, returns nullptr
-//   - Missing iterable: reports error, returns nullptr
-//   - Missing '{' for body: reports error, returns nullptr
-// ============================================================================
-
+/**
+ * @brief Parses `for` loops over ranges or collections.
+ * 
+ * Grammar:
+ *   for_stmt := 'for' IDENTIFIER type_ann 'in' ( range_expr | expr ) [ '..' expr ] block
+ * 
+ *   range_expr := expr range_op expr
+ *   range_op   := '..' | '..<'
+ * 
+ * Examples:
+ *   for i int in 0..10 { ... }          -- range iteration (0 to 10 inclusive)
+ *   for i int in 0..<10 { ... }         -- exclusive end (0 to 9)
+ *   for i int in 0..10..2 { ... }       -- with step (0, 2, 4, 6, 8, 10)
+ *   for i int in 0..<10..2 { ... }      -- exclusive range with step
+ *   for item string in items { ... }    -- collection iteration
+ * 
+ * ─── Parsing Strategy ──────────────────────────────────────────────────────
+ *   1. Parse 'for' keyword
+ *   2. Parse iteration variable name and required type annotation
+ *   3. Parse 'in' keyword
+ *   4. Try to parse as range: lo '..' [ '<' ] hi [ '..' step ]
+ *      - If '..' is found after lo, this is a range iteration
+ *      - Build RangeExprAST with lo, hi, and isExclusive flag
+ *      - If second '..' is found, parse step expression
+ *   5. If no '..' found, parse as collection iteration (restore position)
+ *   6. Parse loop body (must be a block)
+ * 
+ * ─── Range Iteration ───────────────────────────────────────────────────────
+ *   - Lo expression: start (inclusive)
+ *   - Hi expression: end (inclusive for '..', exclusive for '..<')
+ *   - Optional step: third expression after second '..'
+ *   - Iteration variable type is specified explicitly (no inference)
+ * 
+ * ─── Collection Iteration ──────────────────────────────────────────────────
+ *   - Iterable must be a collection (array, slice, dynamic array)
+ *   - Iteration variable type must match element type
+ *   - No step allowed
+ * 
+ * ─── Loop Depth Tracking ───────────────────────────────────────────────────
+ *   - `loopDepth_` is incremented before parsing the body
+ *   - Used by `break`/`continue` to validate loop context
+ * 
+ * ─── Token Consumption ─────────────────────────────────────────────────────
+ * On entry: positioned at 'for' keyword
+ * On exit:  positioned after the loop body block
+ * 
+ * ─── Error Recovery ───────────────────────────────────────────────────────
+ * - Missing variable name: returns nullptr
+ * - Missing type annotation: reports error, returns nullptr
+ * - Missing 'in': reports error, returns nullptr
+ * - Missing hi after '..' in range: reports error, returns nullptr
+ * - Missing expression after second '..': reports error, returns nullptr
+ * - Missing iterable for collection: reports error, returns nullptr
+ * - Missing '{' for body: reports error, returns nullptr
+ * 
+ * @return ASTPtr<ForStmtAST> – for loop node on success, nullptr on error
+ */
 ASTPtr<ForStmtAST> Parser::parseForStmt() {
     SourceLocation loc = ts_.currentLoc();
     ts_.consume(TokenType::FOR, "expected 'for'");
@@ -790,26 +807,52 @@ ASTPtr<ForStmtAST> Parser::parseForStmt() {
     // Consume 'in' keyword
     ts_.consume(TokenType::IN, "expected 'in'");
 
-    // Parse iterable expression
-    ExprPtr iterable = parseExpr(false);
-    if (!iterable) {
-        errorAt(DiagCode::E2008, "expected iterable expression after 'in'");
-        return nullptr;
-    }
-
-    // Optional step (only valid for range iteration)
+    // Parse the iterable expression
+    ExprPtr iterable;
     ExprPtr step = nullptr;
-    if (ts_.check(TokenType::RANGE)) {
-        // This is already a range expression (lo..hi or lo..<hi)
-        // The step is a second '..' after the range
-        iterable = parseRangeExpr(std::move(iterable), false);
+    
+    // Check if this is a range iteration (starts with a literal or expression that could be a range bound)
+    // We need to peek ahead to see if there's a '..' after the first expression
+    size_t savedPos = ts_.getPos();
+    
+    // Try to parse as range: lo '..' [ '<' ] hi [ '..' step ]
+    ExprPtr lo = parseExpr(false);
+    if (lo && ts_.check(TokenType::RANGE)) {
+        // This IS a range iteration
+        ts_.advance(); // consume '..'
         
+        bool isExclusive = ts_.match(TokenType::LESS);
+        
+        ExprPtr hi = parseExpr(false);
+        if (!hi) {
+            errorAt(DiagCode::E2008, "expected upper bound after '..' in range iteration");
+            return nullptr;
+        }
+        
+        // Build the range expression
+        auto range = arena_.make<RangeExprAST>();
+        range->loc = lo->loc;
+        range->lo = std::move(lo);
+        range->hi = std::move(hi);
+        range->isExclusive = isExclusive;
+        iterable = std::move(range);
+        
+        // Check for optional step: '..' step
         if (ts_.match(TokenType::RANGE)) {
-            step = parseExpr();
+            step = parseExpr(false);
             if (!step) {
                 errorAt(DiagCode::E2008, "expected step expression after '..'");
                 return nullptr;
             }
+        }
+    } else {
+        // Not a range iteration - treat as collection iteration
+        // Restore position and parse normally
+        ts_.setPos(savedPos);
+        iterable = parseExpr(false);
+        if (!iterable) {
+            errorAt(DiagCode::E2008, "expected iterable expression after 'in'");
+            return nullptr;
         }
     }
 

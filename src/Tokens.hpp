@@ -187,6 +187,8 @@ enum class TokenType {
 
     // ─── Error Handling ───────────────────────────────────────────────────────
     RESOLVE,   // resolve TypeA!TypeB, if succeed return TypeA else return TypeB
+    OK,        // ok() arm
+    ERR,       // err() arm 
 
     // ─── Meta ─────────────────────────────────────────────────────────────────
     DOC_COMMENT,  // /-- ... --/  - block documentation comment, attached to next declaration

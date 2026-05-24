@@ -98,6 +98,8 @@ Lexer::Lexer(const std::string &source)
 
     // ─── Error Handling ───────────────────────────────────────────────────────
     keywords["resolve"] = TokenType::RESOLVE;
+    keywords["ok"]      = TokenType::OK;
+    keywords["err"]     = TokenType::ERR;
 
 }
 

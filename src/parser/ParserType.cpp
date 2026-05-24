@@ -85,10 +85,54 @@ TypePtr Parser::parseType() {
     return parseTypeWithNullable();
 }
 
+/**
+ * @brief Parses a type annotation with optional `?` and `!` suffixes.
+ * 
+ * Grammar:
+ *   type_with_suffix := base_type [ '?' ] [ result_suffix ]
+ *   result_suffix    := '!' type
+ *                    | '!'
+ * 
+ * The `?` suffix attaches to the base type (making it nullable).
+ * The `!` suffix attaches after `?` (if present) and creates a result type.
+ * 
+ * Examples:
+ *   int           → PrimitiveTypeAST(Int)
+ *   int?          → NullableTypeAST(PrimitiveTypeAST(Int))
+ *   int!string    → ResultTypeAST(PrimitiveTypeAST(Int), PrimitiveTypeAST(String))
+ *   int?!string   → ResultTypeAST(NullableTypeAST(Int), PrimitiveTypeAST(String))
+ *   int!          → ResultTypeAST(PrimitiveTypeAST(Int), nullptr)  -- bare '!'
+ * 
+ * ─── Important Grammar Rules (enforced by semantic pass) ───────────────────
+ *   - `?` always comes before `!` when both are present
+ *   - Neither `inner` nor `errorType` in ResultTypeAST may themselves carry `!`
+ *   - `!` is NOT valid directly on an array type or inline function type
+ *   - Bare `!` (no error type) means failure carries nil
+ * 
+ * ─── Token Consumption ─────────────────────────────────────────────────────
+ * On entry: positioned at the first token of a base type
+ * On exit:  positioned after all suffixes ('?' and/or '!')
+ * 
+ * ─── Error Recovery ───────────────────────────────────────────────────────
+ * - If '!' is present but the error type cannot be parsed, errorType remains
+ *   nullptr (treated as bare '!' for recovery)
+ * - Malformed error type is reported via errorAt()
+ * 
+ * @return TypePtr – never nullptr; returns UnknownTypeAST on unrecoverable error
+ */
 TypePtr Parser::parseTypeWithNullable() {
     TypePtr ty = parseBaseType();
     if (ty && ts_.match(TokenType::QUESTION)) {
         ty = arena_.make<NullableTypeAST>(std::move(ty));
+    }
+    // Result suffix (T!E)
+    if (ty && ts_.match(TokenType::BANG)) {
+        TypePtr errorType = nullptr;
+        if (looksLikeType()) {
+            errorType = parseType();
+        }
+        // errorType may be nullptr for bare '!'
+        ty = arena_.make<ResultTypeAST>(std::move(ty), std::move(errorType));
     }
     return ty;
 }

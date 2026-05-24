@@ -33,8 +33,6 @@ enum class DiagCode : uint32_t {
     E2007,         ///< Duplicate switch/match clause.
     E2008,         ///< Expected an expression.
     E2009,         ///< Malformed literal.
-    E2010,         ///< Unknown '@' attribute.
-    E2011,         ///< Wrong argument count for '@' attribute.
     E2012,         ///< Unexpected keyword.
     E2014,         ///< Invalid visibility modifier in local declaration.
     E2015,         ///< '~' qualifier on anonymous function.
@@ -98,6 +96,8 @@ enum class DiagCode : uint32_t {
     E3043,         ///< Unconditional bind after specific patterns.
     E3044,         ///< Generic parameter unused in type alias – add '@phantom'.
     E3045,         ///< Operation on unresolved '!' type.   
+    E3046,         ///< Unknown '@' attribute.
+    E3047,         ///< Wrong argument count for '@' attribute.
 
     // ========== 4000–4999: Backend / Codegen ==========
     E4001 = 4000,  ///< Target machine init failed.
