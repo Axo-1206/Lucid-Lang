@@ -1305,18 +1305,9 @@ ASTPtr<FromDeclAST> Parser::parseFromDecl(Visibility vis) {
     
     // Check if current token is an identifier followed by '<' (generic type)
     if (ts_.check(TokenType::IDENTIFIER)) {
-        size_t lookahead = ts_.getPos() + 1;
-        const auto& tokens = ts_.getTokens();
-        size_t tokenCount = ts_.getTokenCount();
-        
-        // Skip comments
-        while (lookahead < tokenCount && 
-               (tokens[lookahead].type == TokenType::LINE_COMMENT ||
-                tokens[lookahead].type == TokenType::DOC_COMMENT)) {
-            ++lookahead;
-        }
-        
-        if (lookahead < tokenCount && tokens[lookahead].type == TokenType::LESS) {
+        size_t lookahead = ts_.skipCommentsFrom(ts_.getPos() + 1);
+
+        if (lookahead < ts_.getTokenCount() && ts_.getTokenAt(lookahead).type == TokenType::LESS) {
             isGenericType = true;
         }
     }

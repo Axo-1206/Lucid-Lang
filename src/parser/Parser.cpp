@@ -70,20 +70,46 @@
 // ============================================================================
 // TokenStream Implementation
 // ============================================================================
-// 
-// The TokenStream methods provide safe token consumption with automatic
-// comment skipping. LINE_COMMENT and DOC_COMMENT tokens are invisible to
-// the grammar - they are only accessible via getTokens() for doc comment
-// harvesting.
-// 
-// Key methods:
-//   - peek() / advance() / match() - consume tokens
-//   - check() - test current token type without consuming
-//   - consume() - require a token type, report error if missing
-//   - getPos() / setPos() - for lookahead and error recovery
-// 
-// All peek*() and advance() methods skip comments automatically.
-// ============================================================================
+
+const Token TokenStream::eofToken = {TokenType::EOF_TOKEN, "", 0, 0};
+
+TokenStream::TokenStream(std::vector<Token> tokens, DiagnosticEngine& dc, InternedString filePath)
+    : tokens_(std::move(tokens)), dc_(dc), filePath_(filePath) {}
+
+size_t TokenStream::skipCommentsFrom(size_t start) const {
+    size_t i = start;
+    while (i < tokens_.size() &&
+           (tokens_[i].type == TokenType::LINE_COMMENT ||
+            tokens_[i].type == TokenType::DOC_COMMENT)) {
+        ++i;
+    }
+    return i;
+}
+
+bool TokenStream::isAtEnd() const {
+    return skipCommentsFrom(pos_) >= tokens_.size();
+}
+
+const Token& TokenStream::peek() const {
+    size_t idx = skipCommentsFrom(pos_);
+    if (idx >= tokens_.size()) return eofToken;
+    return tokens_[idx];
+}
+
+Token TokenStream::advance() {
+    size_t idx = skipCommentsFrom(pos_);
+    if (idx >= tokens_.size()) {
+        ++pos_;
+        return eofToken;
+    }
+    const Token& tok = tokens_[idx];
+    pos_ = idx + 1;
+    return tok;
+}
+
+bool TokenStream::check(TokenType type) const {
+    return !isAtEnd() && peek().type == type;
+}
 
 bool TokenStream::checkAny(std::initializer_list<TokenType> types) const {
     for (TokenType t : types)
@@ -110,8 +136,9 @@ std::optional<Token> TokenStream::consumeIf(TokenType type) {
 
 Token TokenStream::consume(TokenType type, DiagCode code, const std::string& msg) {
     if (check(type)) return advance();
-    // report the error using the parser's engine, then return dummy
-    dc_.error(DiagnosticCategory::Syntax, filePath_, currentLoc(), code, {msg});
+    SourceLocation loc = currentLoc();
+    dc_.error(DiagnosticCategory::Syntax, filePath_, loc, code, {msg});
+    // Return a dummy token for recovery
     return {type, "", 0, 0};
 }
 
@@ -128,13 +155,34 @@ SourceLocation TokenStream::locOf(const Token& tok) const {
                           static_cast<uint32_t>(tok.column));
 }
 
+TokenType TokenStream::peekNextType() const {
+    return peekNext().type;
+}
+
+const Token& TokenStream::peekNext() const {
+    size_t idx = skipCommentsFrom(pos_);
+    if (idx >= tokens_.size()) return eofToken;
+    // Move one step forward (skip the current non‑comment token)
+    size_t nextIdx = skipCommentsFrom(idx + 1);
+    if (nextIdx >= tokens_.size()) return eofToken;
+    return tokens_[nextIdx];
+}
+
+const Token& TokenStream::peekAt(size_t offset) const {
+    // Raw access – caller must handle comments manually if needed.
+    // This is used only in lookahead that already uses skipCommentsFrom.
+    if (offset >= tokens_.size()) return eofToken;
+    return tokens_[offset];
+}
+
 // ============================================================================
 // Parser construction
 // ============================================================================
 
 Parser::Parser(std::vector<Token> tokens, DiagnosticEngine& dc,
                InternedString filePath, StringPool& pool, ASTArena& arena)
-    : ts_(std::move(tokens)), filePath_(std::move(filePath)),
+    : ts_(std::move(tokens), dc, filePath),
+      filePath_(std::move(filePath)),
       pool_(pool), arena_(arena), dc_(dc) {}
 
 // ============================================================================
@@ -199,12 +247,12 @@ QualifierSet Parser::parseQualifiers() {
         InternedString name = pool_.intern(ts_.advance().value);
         
         const QualifierInfo* info = registry.lookup(name);
-        if (!info) {
-            error(loc, DiagCode::E2010, 
-                  "unknown qualifier '~" + std::string(pool_.lookup(name)) + 
-                  "'; known qualifiers: " + registry.allNames());
-            continue;
-        }
+        // if (!info) {
+        //     error(loc, DiagCode::E2010, 
+        //           "unknown qualifier '~" + std::string(pool_.lookup(name)) + 
+        //           "'; known qualifiers: " + registry.allNames());
+        //     continue;
+        // }
         
         qs.raw.push_back(name);
         qs.bitmask |= info->bit;
@@ -547,6 +595,103 @@ ArenaSpan<TypePtr> Parser::parseReturnList() {
     
     auto builder = arena_.makeBuilder<TypePtr>();
     for (auto& t : types) builder.push_back(std::move(t));
+    return builder.build();
+}
+
+// ============================================================================
+// Generic Parameters and Arguments Helpers
+// ============================================================================
+
+ArenaSpan<GenericParamPtr> Parser::parseGenericParams() {
+    if (!ts_.match(TokenType::LESS)) return ArenaSpan<GenericParamPtr>();
+    
+    if (ts_.check(TokenType::GREATER)) {
+        ts_.advance();
+        return ArenaSpan<GenericParamPtr>();
+    }
+    
+    std::vector<GenericParamPtr> params;
+    do {
+        if (ts_.match(TokenType::COMMA)) continue;
+        GenericParamPtr gp = parseGenericParam();
+        if (gp) params.push_back(std::move(gp));
+    } while (!ts_.check(TokenType::GREATER) && !ts_.isAtEnd());
+    
+    ts_.consume(TokenType::GREATER, "expected '>' after generic parameters");
+    
+    auto builder = arena_.makeBuilder<GenericParamPtr>();
+    for (auto& p : params) builder.push_back(std::move(p));
+    return builder.build();
+}
+
+ArenaSpan<TypePtr> Parser::parseGenericArgs() {
+    if (!ts_.match(TokenType::LESS)) return ArenaSpan<TypePtr>();
+    
+    if (ts_.check(TokenType::GREATER)) {
+        ts_.advance();
+        return ArenaSpan<TypePtr>();
+    }
+    
+    std::vector<TypePtr> args;
+    do {
+        if (ts_.match(TokenType::COMMA)) continue;
+        
+        size_t savedPos = ts_.getPos();
+        TypePtr arg = parseType();
+        if (ts_.getPos() == savedPos) {
+            errorAt(DiagCode::E2005, "expected type in generic argument list");
+            if (!ts_.isAtEnd()) ts_.advance();
+            break;
+        }
+        args.push_back(std::move(arg));
+    } while (!ts_.check(TokenType::GREATER) && !ts_.isAtEnd());
+    
+    ts_.consume(TokenType::GREATER, "expected '>' to close generic arguments");
+    
+    auto builder = arena_.makeBuilder<TypePtr>();
+    for (auto& a : args) builder.push_back(std::move(a));
+    return builder.build();
+}
+
+ArenaSpan<ExprPtr> Parser::parseArgList() {
+    std::vector<ExprPtr> args;
+    int consecutiveErrors = 0;
+    const int MAX_CONSECUTIVE_ERRORS = 5;
+
+    while (!ts_.check(TokenType::RPAREN) && !ts_.isAtEnd()) {
+        if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+            errorAt(DiagCode::E2002, "too many consecutive errors in argument list; skipping to ')'");
+            while (!ts_.isAtEnd() && !ts_.check(TokenType::RPAREN)) ts_.advance();
+            break;
+        }
+
+        size_t savedPos = ts_.getPos();
+        ExprPtr arg = parseExpr();
+
+        if (ts_.getPos() == savedPos) {
+            errorAt(DiagCode::E2008, "expected argument expression");
+            if (!ts_.isAtEnd()) ts_.advance();
+            consecutiveErrors++;
+            if (ts_.check(TokenType::COMMA)) ts_.advance();
+            continue;
+        }
+
+        consecutiveErrors = 0;
+        args.push_back(std::move(arg));
+
+        if (ts_.check(TokenType::RPAREN)) break;
+        if (!ts_.match(TokenType::COMMA)) {
+            errorAt(DiagCode::E2001, "expected ',' after argument");
+            while (!ts_.isAtEnd() && !ts_.check(TokenType::COMMA) && !ts_.check(TokenType::RPAREN)) {
+                ts_.advance();
+            }
+            if (ts_.check(TokenType::COMMA)) ts_.advance();
+            break;
+        }
+    }
+    
+    auto builder = arena_.makeBuilder<ExprPtr>();
+    for (auto& a : args) builder.push_back(std::move(a));
     return builder.build();
 }
 

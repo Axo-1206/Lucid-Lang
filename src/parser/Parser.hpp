@@ -148,78 +148,53 @@
  */
 class TokenStream {
 public:
-    TokenStream(std::vector<Token> tokens, DiagnosticEngine dc) 
-                    : tokens_(std::move(tokens)), dc_(std::move(dc)) {}
+    TokenStream(std::vector<Token> tokens, DiagnosticEngine& dc, InternedString filePath);
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Position access
-    // ─────────────────────────────────────────────────────────────────────────
-    size_t getPos() const { return pos_; }
-    void setPos(size_t pos) { pos_ = pos; }
-    bool isAtEnd() const { return pos_ >= tokens_.size(); }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Token inspection (non‑consuming, skips comments)
-    // ─────────────────────────────────────────────────────────────────────────
-    const Token& peek() const { return tokens_[pos_]; }
-    const Token& peekNext() const { return tokens_[pos_ + 1]; }
-    const Token& peekAt(size_t offset) const { return tokens_[pos_ + offset]; }
-    
-    TokenType peekType() const { return peek().type; }
-    TokenType peekNextType() const { return peekNext().type; }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Token consumption (advances position, skips comments)
-    // ─────────────────────────────────────────────────────────────────────────
-    Token advance() { return tokens_[pos_++]; }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Token matching (check + conditional consume)
-    // ─────────────────────────────────────────────────────────────────────────
-    bool check(TokenType type) const { return !isAtEnd() && peekType() == type; }
-    bool checkAny(std::initializer_list<TokenType> types) const;
+    // ------------------------------------------------------------------------
+    // Grammar interface (skips comments automatically)
+    // ------------------------------------------------------------------------
+    const Token& peek() const;
+    Token advance();
+    bool check(TokenType type) const;
+    bool checkAny(std::initializer_list<TokenType> types) const;   // ← ADD
     bool match(TokenType type);
-    bool matchAny(std::initializer_list<TokenType> types);
+    bool matchAny(std::initializer_list<TokenType> types);         // ← ADD
     std::optional<Token> consumeIf(TokenType type);
     Token consume(TokenType type, DiagCode code, const std::string& msg);
     Token consume(TokenType type, const std::string& msg);
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Source location helpers
-    // ─────────────────────────────────────────────────────────────────────────
+    bool isAtEnd() const;
     SourceLocation currentLoc() const;
-    SourceLocation locOf(const Token& tok) const;
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Raw token access (for doc comment harvesting)
-    // ─────────────────────────────────────────────────────────────────────────
+    // ------------------------------------------------------------------------
+    // Lookahead helpers (non‑consuming, skip comments)
+    // ------------------------------------------------------------------------
+    TokenType peekType() const { return peek().type; }
+    TokenType peekNextType() const;                                 // ← ADD
+    const Token& peekNext() const;                                  // ← ADD
+    const Token& peekAt(size_t offset) const;                       // ← ADD
+
+    // ------------------------------------------------------------------------
+    // Raw inspection (keeps comments, for doc harvesting & lookahead)
+    // ------------------------------------------------------------------------
     const std::vector<Token>& getTokens() const { return tokens_; }
     size_t getTokenCount() const { return tokens_.size(); }
     const Token& getTokenAt(size_t idx) const { return tokens_[idx]; }
+    size_t getPos() const { return pos_; }
+    void setPos(size_t pos) { pos_ = pos; }
 
-    /**
-     * @brief Returns the next non‑comment token index from a given position.
-     * 
-     * Pure inspection – does NOT modify the stream's current position.
-     * Useful for lookahead that needs to peek ahead without consuming tokens.
-     * 
-     * @param start_idx Index to start scanning from
-     * @return Index of next non‑comment token, or getTokenCount() if none
-     */
-    size_t skipCommentsFrom(size_t start_idx) const {
-        size_t i = start_idx;
-        while (i < tokens_.size() && 
-               (tokens_[i].type == TokenType::LINE_COMMENT ||
-                tokens_[i].type == TokenType::DOC_COMMENT)) {
-            ++i;
-        }
-        return i;
-    }
+    // Helper for raw lookahead (exposed)
+    size_t skipCommentsFrom(size_t start) const;
+
+    // Convert a token to SourceLocation
+    SourceLocation locOf(const Token& tok) const;                   // ← ADD
 
 private:
     std::vector<Token> tokens_;
-    DiagnosticEngine dc_;
     size_t pos_ = 0;
+    DiagnosticEngine& dc_;
+    InternedString filePath_;
+
+    static const Token eofToken;
 };
 
 // ============================================================================

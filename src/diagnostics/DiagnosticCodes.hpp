@@ -33,11 +33,11 @@ enum class DiagCode : uint32_t {
     E2007,         ///< Duplicate switch/match clause.
     E2008,         ///< Expected an expression.
     E2009,         ///< Malformed literal.
+    E2010,         ///< unknown qualifier
     E2012,         ///< Unexpected keyword.
     E2014,         ///< Invalid visibility modifier in local declaration.
     E2015,         ///< '~' qualifier on anonymous function.
     E2016,         ///< '?' on inline function type – use alias.
-    E2017,         ///< Multiple parameter groups after '->'.
     E2018,         ///< Missing '->' in from entry.
     E2019,         ///< Missing '=' before function body.
     E2020,         ///< '!' only allowed in pipeline step.

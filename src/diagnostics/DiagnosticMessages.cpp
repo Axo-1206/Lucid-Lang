@@ -30,13 +30,11 @@ std::string_view getMessage(DiagCode code) {
         case DiagCode::E2007: return "Duplicate clause in switch or match.";
         case DiagCode::E2008: return "Expected an expression but found none.";
         case DiagCode::E2009: return "Literal value is malformed.";
-        case DiagCode::E2010: return "Unknown or unsupported '@' attribute name.";
-        case DiagCode::E2011: return "Wrong number of arguments for '@' attribute.";
+        case DiagCode::E2010: return "Unknown qualifier '%s'.";
         case DiagCode::E2012: return "Unexpected keyword found in a position where an identifier or type was expected.";
         case DiagCode::E2014: return "Invalid visibility modifier in local declaration.";
         case DiagCode::E2015: return "'~' qualifier used on anonymous function (not allowed).";
         case DiagCode::E2016: return "'?' used directly on inline function type; use a type alias.";
-        case DiagCode::E2017: return "Multiple parameter groups after return boundary '->' in function type.";
         case DiagCode::E2018: return "Missing '->' arrow in from entry.";
         case DiagCode::E2019: return "Missing '=' before function body.";
         case DiagCode::E2020: return "'!' argument pack annotation only allowed in pipeline step.";
@@ -95,6 +93,8 @@ std::string_view getMessage(DiagCode code) {
         case DiagCode::E3043: return "Unconditional bind pattern appears before more specific patterns in match arm.";
         case DiagCode::E3044: return "Every generic parameter declared on a type alias must appear at least once in the right-hand side. Use '@phantom' if this is intentional.";
         case DiagCode::E3045: return "Operation on unresolved '!' type is not allowed. Use 'resolve' or '\?\?' first.";
+        case DiagCode::E3046: return "Unknown or unsupported '@' attribute name.";
+        case DiagCode::E3047: return "Wrong number of arguments for '@' attribute.";
 
         // Backend / Codegen
         case DiagCode::E4001: return "Target machine initialisation failed (unknown target triple).";
