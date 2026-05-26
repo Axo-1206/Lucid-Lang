@@ -72,7 +72,7 @@ export const main () -> int = {
 }
 
 -- with command-line arguments
-export const main (args []string) -> int = {
+export const main (args string[]) -> int = {
     return 0
 }
 ```
@@ -165,14 +165,15 @@ primitive_type  := 'bool'
 
 -- Nullable suffix: attaches to value types only.
 -- Generic arguments always come before '?'.
--- '?' is NEVER valid directly on an inline function type — use a named alias.
+-- With postfix array syntax, '?' after an array type attaches to the whole array unambiguously.
+-- '?' is NEVER valid directly on an inline function type — use a named alias or ~nullable qualifier.
 nullable_suffix := '?'
 
 -- Result suffix: marks a type as potentially failed.
 -- '?' always comes before '!' when both are present.
 -- The error type after '!' is required — bare '!' with no error type means failure carries nil.
--- '!' always binds to the immediately preceding named or primitive type token only.
--- Inline array types and inline function types require a named alias before '!' can be applied.
+-- '!' binds to the immediately preceding type token — unambiguous for primitives, structs,
+-- enums, named aliases, and postfix array types. Inline function types require a named alias.
 -- Nesting '!' is forbidden — neither the success type nor the error type may itself carry '!'.
 -- '?' after '!E' binds to E, not to the whole T!E — to make the whole result nullable, alias first.
 result_suffix   := '!' type     -- success T, failure E  (T and E must be plain, non-! types)
@@ -185,11 +186,13 @@ ref_type        := '&' type
 -- arithmetic) are forbidden. Use only for storage, nil checks, and intrinsics.
 ptr_type        := '*' type
 
--- Array types
-array_type      := '[' INT_LITERAL ']' type   -- fixed:   [100]int
-                 | '[' ']' type               -- slice:   []int
-                 | '[' '*' ']' type           -- dynamic: [*]int
-                 | array_type array_type       -- nested:  [][*]float
+-- Array types — bracket-prefix notation: kind and element type are enclosed together.
+-- This eliminates all suffix ambiguity: '?' and '!' always attach to the whole array type.
+-- Inline function types ARE allowed as array element types — the closing ']' unambiguously
+-- marks the end of the element type.
+array_type      := '[' '_' ',' type ']'         -- slice:   [_, T]  (fat pointer view)
+                 | '[' '*' ',' type ']'         -- dynamic: [*, T]  (heap-owned, growable)
+                 | '[' INT_LITERAL ',' type ']' -- fixed:   [N, T]  (stack, compile-time size)
 
 -- Generic arguments — always before '?'
 generic_args    := '<' type { [','] type } '>'
@@ -284,25 +287,27 @@ let g  (a int) -> ~nullable (v Vec2) -> Vec2? = { ... }
 
 ### `?` Binding on Array Types
 
-`?` follows the same binding rule as `!` — it binds to the immediately preceding named or primitive type token. When applied after an array type, `?` binds to the element type, not to the array as a whole:
+With bracket-enclosed array syntax, `?` after an array type attaches to the whole array unambiguously — the `]` closes the type before `?` is encountered:
 
 ```luc
-[]int?      -- [](int?)  — array of nullable int
-[]int       -- array of non-nullable int
+[_, int]?     -- ([_, int])?  — nullable slice of int
+[*, int]?     -- ([*, int])?  — nullable dynamic array
+[_, int?]     -- [_, (int?)]  — slice of nullable int
+[*, int?]     -- [*, (int?)]  — dynamic array of nullable int
 ```
 
-To make the array itself nullable, alias the array type first:
+An alias is still recommended when the name adds meaning:
 
 ```luc
-type IntList     = []int
-type UserList    = [*]User
+type IntList   = [_, int]
+type UserArray = [*, User]
 
-let arr  IntList?  = nil    -- nullable array — the array itself may be absent
-let list UserList? = nil    -- nullable dynamic array
+let arr  IntList?   = nil    -- nullable slice — the array itself may be absent
+let list UserArray? = nil    -- nullable dynamic array
 
--- nullable array of nullable int — two aliases compose clearly
-type MaybeIntList = []int?       -- array of nullable int
-let arr MaybeIntList? = nil      -- nullable array of nullable int
+-- nullable array of nullable int
+type MaybeIntList = [_, int?]       -- slice of nullable int
+let arr MaybeIntList? = nil         -- nullable slice of nullable int
 ```
 
 > [!NOTE]
@@ -320,9 +325,9 @@ Every type is either **owned** or **borrowed**. Bare `T` = owned, `&T` = borrowe
 | -------------- | -------------------------------- | ------------------------------- | ---------------------------------- |
 | Primitives     | `bool` `int` `float` `char` …    | stack / inline                  | full copy                          |
 | Enum           | `Direction.North`                | integer (`byte`/`short`)        | full copy                          |
-| Fixed array    | `[N]T`                           | stack / inline                  | full element copy                  |
-| Slice          | `[]T`                            | fat pointer (`ptr + len + cap`) | copies view header — shares buffer |
-| Dynamic array  | `[*]T`                           | heap-owned buffer               | full deep copy                     |
+| Fixed array    | `T[*N]`                          | stack / inline                  | full element copy                  |
+| Slice          | `T[]`                            | fat pointer (`ptr + len + cap`) | copies view header — shares buffer |
+| Dynamic array  | `T[*]`                           | heap-owned buffer               | full deep copy                     |
 | String         | `string`                         | heap-owned sequence             | full deep copy                     |
 | Struct         | `Vec2` `Player` …                | inline / stack                  | full deep copy                     |
 | Named function | `add` `myVector:normalize`       | function pointer                | pointer copy                       |
@@ -335,7 +340,7 @@ Struct assignment always produces a fully independent value. Owned fields are cl
 ```luc
 struct Player {
     score  int        -- owned: cloned
-    items  [*]string  -- owned: buffer deep-copied
+    items  string[*]  -- owned: buffer deep-copied
     world  &World     -- borrowed: reference copied, World not cloned
 }
 
@@ -467,10 +472,21 @@ const v Vec2 = Vec2 { x = 0.0 }  -- ERROR: struct literal is not compile-time
 A non-nullable variable (e.g. `int`, `Vec2`, `string`) **can never be set to nil**. This eliminates null pointer exceptions for these types. The compiler guarantees that if a non-nullable variable exists it holds a valid value.
 
 - **Primitive types** (`int`, `float`, `bool`, `char`) live on the stack. When the scope ends they are gone automatically — no manual release needed.
-- **Heap-allocated types** (`string`, `[*]T`) are cleaned up when the variable goes out of scope. To free the buffer **early** while the scope is still live, call `.clear()` — the variable remains valid as an empty collection, never nil.
+- **Heap-allocated types** (`string`, `[*, T]`, **closures**) are cleaned up when the variable goes out of scope. To free a dynamic array buffer **early** while the scope is still live, call `.clear()` from the standard library — the variable remains valid as an empty collection, never nil.
+
+A plain named function declared inside a scope is just a function pointer — no heap allocation. A **closure** (an anonymous function that captures variables from the enclosing scope) allocates its captured environment on the heap. That environment is released when the closure variable goes out of scope:
 
 ```luc
-let bigData [*]byte = loadFile("huge.bin")
+let factor int = 3
+
+-- plain function — just a pointer, no heap allocation
+let double (x int) -> int = { return x * 2 }
+
+-- closure — captures 'factor', heap-allocates the environment
+let triple (x int) -> int = { return x * factor }
+-- triple's captured environment is released when triple goes out of scope
+
+let bigData byte[*] = loadFile("huge.bin")
 -- ... use bigData ...
 bigData.clear()    -- free heap buffer early; bigData is now empty but valid
 ```
@@ -597,7 +613,7 @@ let f ~nullable ~async (a int) -> int = nil
 **Generics belong to the identifier, before qualifiers:**
 
 ```luc
-let parallelFor<T> ~parallel (items [*]T, body (item T)) = { ... }
+let parallelFor<T> ~parallel (items T[*], body (item T)) = { ... }
 let fetch<T>       ~async    (url string) -> T = { ... }
 ```
 
@@ -672,7 +688,7 @@ When a function is called through a `~parallel`-qualified binding, the compiler 
 - No writes to variables declared outside the body scope
 
 ```luc
-let parallelFor<T> ~parallel (items [*]T, body (item T)) = { ... }
+let parallelFor<T> ~parallel (items T[*], body (item T)) = { ... }
 
 parallelFor(mesh.vertices, (vertex Vertex) {
     vertex.pos = vertex.pos |> transform    -- OK: local to this iteration
@@ -956,13 +972,13 @@ Generic parameters come immediately after the function name, before any paramete
 ```luc
 let identity<T> (v T) -> T = { return v }
 
-let map<T, U> (items [*]T, f (item T) -> U) -> [*]U = { ... }
+let map<T, U> (items T[*], f (item T) -> U) -> U[*] = { ... }
 ```
 
 **Type constraints** — constrain type parameters to traits using `:`. Multiple traits are joined with `+`:
 
 ```luc
-let printSorted<T : Comparable + Printable> (items []T) = { ... }
+let printSorted<T : Comparable + Printable> (items T[]) = { ... }
 ```
 
 **Instantiation** — generic functions can be called with explicit type arguments:
@@ -1009,10 +1025,10 @@ let f (a int)(b string) -> (int, string) = { ... }
 
 -- qualifiers
 let fetch ~async    (url string) -> string = { ... }
-let find  ~nullable (items [*]int, pred (item int) -> bool) -> int = { ... }
+let find  ~nullable (items int[*], pred (item int) -> bool) -> int = { ... }
 
 -- generic (generic before qualifiers, always)
-let map<T, U> (items [*]T, f (item T) -> U) -> [*]U = { ... }
+let map<T, U> (items T[*], f (item T) -> U) -> U[*] = { ... }
 
 -- returned curry function, formatted
 let f (a int) -> (
@@ -1088,7 +1104,7 @@ struct Color {
 }
 
 struct Scene<T : Drawable> {
-    objects []T
+    objects T[]
 }
 
 struct Cache<K : Hashable + Comparable, V> {
@@ -1181,7 +1197,7 @@ Every generic parameter declared on a type alias **must appear at least once in 
 
 ```luc
 type Pair<T>  = struct { first T, second T }   -- OK: T is used
-type Wrap<T>  = []T                             -- OK: T is used
+type Wrap<T>  = T[]                             -- OK: T is used
 type Gen<T>   = int                             -- ERROR: T is unused
 type Odd<T>   = string                          -- ERROR: T is unused
 ```
@@ -1212,9 +1228,9 @@ Type alias names should reflect their kind at a glance. The following convention
 
 | Kind                   | Convention              | Example                        |
 | ---------------------- | ----------------------- | ------------------------------ |
-| Slice (`[]T`)          | `...List` suffix        | `IntList`, `UserList`          |
-| Dynamic array (`[*]T`) | `...Array` suffix       | `IntArray`, `UserArray`        |
-| Fixed array (`[N]T`)   | `...Buffer` suffix      | `ByteBuffer`, `FloatBuffer`    |
+| Slice (`T[]`)          | `...List` suffix        | `IntList`, `UserList`          |
+| Dynamic array (`T[*]`) | `...Array` suffix       | `IntArray`, `UserArray`        |
+| Fixed array (`T[*N]`)  | `...Buffer` suffix      | `ByteBuffer`, `FloatBuffer`    |
 | Nullable (`T?`)        | `Maybe...` prefix       | `MaybeInt`, `MaybeUser`        |
 | Result (`T!E`)         | `...Or...` — both sides | `IntOrString`, `UserOrDbError` |
 | Function type          | `...Fn` suffix          | `ParserFn`, `HandlerFn`        |
@@ -1238,20 +1254,21 @@ type MaybeInt  = int?
 type MaybeUser = User?
 
 -- result aliases — both sides named
-type IntOrString    = int!string
-type UserOrDbError  = User!DbError
+type IntOrString   = int!string
+type UserOrDbError = User!DbError
 
--- array aliases
-type UserList   = [*]User
-type ByteBuffer = [256]byte
+-- array aliases (postfix syntax)
+type UserArray  = User[*]
+type UserList   = User[]
+type ByteBuffer = byte[*256]
 
 -- array result — alias the array first, then apply Or convention
-type UserListOrDbError = UserList!DbError
+type UserArrayOrDbError = UserArray!DbError
 
 -- function aliases
-type ParserFn          = (src string) -> int
-type FetchAsyncFn      = ~async    (url string) -> string
-type TransformParallelFn = ~parallel (item Vec2) -> Vec2
+type ParserFn            = (src string) -> int
+type FetchAsyncFn        = ~async    (url string) -> string
+type TransformParallelFn = ~parallel (item Vec2)  -> Vec2
 
 -- function result — alias the function first, then apply Or convention
 type FetchAsyncFnOrNetError = FetchAsyncFn!NetworkError
@@ -1259,9 +1276,14 @@ type FetchAsyncFnOrNetError = FetchAsyncFn!NetworkError
 -- nullable function alias
 type MaybeParserFn = ~nullable (src string) -> int
 
+-- array of function type — alias the function first, then array
+type HandlerFn     = (event Event) -> bool
+type HandlerFnList = HandlerFn[]       -- slice of handlers
+type HandlerFnArray = HandlerFn[*]     -- dynamic array of handlers
+
 -- generic alias — no convention needed
-type Transform<T>  = (v T) -> T
-type Pair<K, V>    = struct { first K  second V }
+type Transform<T> = (v T) -> T
+type Pair<K, V>   = struct { first K  second V }
 
 -- constrained generic alias
 type SortedPair<T : Comparable> = struct { first T  second T }
@@ -1341,31 +1363,49 @@ method_decl     := IDENTIFIER [ qualifier_list ] param_group { param_group }
 
 ### Impl Target Rules
 
-| Target type                                              | Allowed directly? | Example                                         |
-| -------------------------------------------------------- | ----------------- | ----------------------------------------------- |
-| **Primitive** (`int`, `float`, `string`, `bool`, `char`) | ✅ Yes             | `impl int { isEven () -> bool = { … } }`        |
-| **Struct**                                               | ✅ Yes             | `impl Vec2 { length () -> float = { … } }`      |
-| **Enum**                                                 | ✅ Yes             | `impl Direction { isNorth () -> bool = { … } }` |
-| **Type alias**                                           | ✅ Yes             | `type IntArray = []int; impl IntArray { … }`    |
-| **Array type** (`[]T`, `[*]T`, `[N]T`)                   | ❌ No              | Must be wrapped in a type alias first           |
-| **Function type**                                        | ❌ No              | Must be wrapped in a type alias first           |
-| **Trait**                                                | ❌ No              | Traits are contracts, not implementations       |
+| Target type                                              | Allowed directly? | Example                                               |
+| -------------------------------------------------------- | ----------------- | ----------------------------------------------------- |
+| **Primitive** (`int`, `float`, `string`, `bool`, `char`) | ✅ Yes             | `impl int { isEven () -> bool = { … } }`              |
+| **Struct**                                               | ✅ Yes             | `impl Vec2 { length () -> float = { … } }`            |
+| **Enum**                                                 | ✅ Yes             | `impl Direction { isNorth () -> bool = { … } }`       |
+| **Type alias**                                           | ✅ Yes             | `impl IntList { sum () -> int = { … } }`              |
+| **Array type** (`[_, T]`, `[*, T]`, `[N, T]`)            | ✅ Yes             | `impl [_, int] { sum () -> int = { … } }`             |
+| **Function type**                                        | ✅ Yes             | `impl (int) -> bool { negate () -> (int) -> bool … }` |
+| **Trait**                                                | ❌ No              | Traits are contracts, not implementations             |
+
+> [!WARNING] `impl` on array and function types
+>
+> **Array types** — methods defined on `[_, int]` apply to every slice of `int` in the visible scope. Use with care or prefer a named alias for clarity and narrower scope. There are no built-in array methods to shadow — the compiler only knows indexing and slicing.
+>
+> **Function types** — methods defined on a function type apply to every value of that exact signature in scope. Qualifiers are part of type identity: `impl (int) -> bool` does not cover `~async (int) -> bool`.
+>
+> **Array of function types** — both rules apply together. The element function type must be an exact signature match including qualifiers:
+>
+> ```luc
+> impl [_, (int) -> bool] {
+>     applyAll (value int) -> [_, bool] = {
+>         let results [*, bool] = []
+>         for f (int) -> bool in self { results:push(f(value)) }
+>         return results
+>     }
+> }
+> ```
 
 ### Generic Parameters on Impl Declarations
 
 An `impl` block may declare generic parameters **only when the target type is generic** (a generic struct or a generic type alias). The number of generic parameters **must match** the arity of the target type. The parameter names are independent; they bind to the target's type parameters positionally.
 
-| Type                     | Can we impl directly? | Generic impl allowed?   | Notes                                         |
-| ------------------------ | --------------------- | ----------------------- | --------------------------------------------- |
-| Primitive (`int`, …)     | ✅ Yes                 | ❌ No                    | No generics on primitives                     |
-| Enum                     | ✅ Yes                 | ❌ No                    | Enums are not generic in Luc                  |
-| Struct (non-generic)     | ✅ Yes                 | ❌ No                    |                                               |
-| Struct (generic)         | ✅ Yes                 | ✅ Yes, arity must match | `struct Box<T>` → `impl Box<T>`               |
-| Type alias (non-generic) | ✅ Yes                 | ❌ No                    |                                               |
-| Type alias (generic)     | ✅ Yes                 | ✅ Yes, arity must match | `type Pair<K,V>` → `impl Pair<K,V>`           |
-| Array type               | ❌ No (needs alias)    | N/A                     | Use `type IntArray = []int` then impl         |
-| Function type            | ❌ No (needs alias)    | N/A                     | Use `type Callback = (int) -> bool` then impl |
-| Trait                    | ❌ No                  | N/A                     | Traits are contracts, not implementations     |
+| Type                     | Can we impl directly? | Generic impl allowed?   | Notes                                                     |
+| ------------------------ | --------------------- | ----------------------- | --------------------------------------------------------- |
+| Primitive (`int`, …)     | ✅ Yes                 | ❌ No                    | No generics on primitives                                 |
+| Enum                     | ✅ Yes                 | ❌ No                    | Enums are not generic in Luc                              |
+| Struct (non-generic)     | ✅ Yes                 | ❌ No                    |                                                           |
+| Struct (generic)         | ✅ Yes                 | ✅ Yes, arity must match | `struct Box<T>` → `impl Box<T>`                           |
+| Type alias (non-generic) | ✅ Yes                 | ❌ No                    |                                                           |
+| Type alias (generic)     | ✅ Yes                 | ✅ Yes, arity must match | `type Pair<K,V>` → `impl Pair<K,V>`                       |
+| Array type               | ✅ Yes                 | ❌ No                    | Methods apply to all arrays of that element type in scope |
+| Function type            | ✅ Yes                 | ❌ No                    | Qualifier is part of identity — exact match only          |
+| Trait                    | ❌ No                  | N/A                     | Traits are contracts, not implementations                 |
 
 When the target type is generic but the impl declaration omits generic parameters, the compiler requires them in method signatures — you must declare the type parameters to use them.
 
@@ -1444,16 +1484,18 @@ from_entry  := param_group { param_group } '->' type '=' func_body
                -- target type name must match the enclosing from target
 ```
 
-A `from` block defines implicit and explicit conversions from a source type (described by the parameter groups) to a target type. The target type can be **any type** (primitive, struct, enum, or named type alias), not just structs.
+A `from` block defines implicit and explicit conversions from a source type (described by the parameter groups) to a target type. The target type can be **any type** — primitive, struct, enum, type alias, array type, or function type.
 
 ### Target Types
 
-| Target Type    | Example                                                   | Notes                        |
-| -------------- | --------------------------------------------------------- | ---------------------------- |
-| **Primitive**  | `from int { (x string) -> int = { ... } }`                | Convert from string to int   |
-| **Struct**     | `from Fahrenheit { (c Celsius) -> Fahrenheit = { ... } }` | Convert between structs      |
-| **Enum**       | `from Direction { (s string) -> Direction = { ... } }`    | Parse string to enum variant |
-| **Type alias** | `from ID { (x int) -> ID = { ... } }`                     | Convert to aliased type      |
+| Target Type       | Example                                                       | Notes                            |
+| ----------------- | ------------------------------------------------------------- | -------------------------------- |
+| **Primitive**     | `from int { (x string) -> int = { ... } }`                    | Convert from string to int       |
+| **Struct**        | `from Fahrenheit { (c Celsius) -> Fahrenheit = { ... } }`     | Convert between structs          |
+| **Enum**          | `from Direction { (s string) -> Direction = { ... } }`        | Parse string to enum variant     |
+| **Type alias**    | `from ID { (x int) -> ID = { ... } }`                         | Convert to aliased type          |
+| **Array type**    | `from [_, int] { (r Range) -> [_, int] = { ... } }`           | Convert to a slice of int        |
+| **Function type** | `from (int) -> bool { (fn ~nullable ...) -> (int) -> bool… }` | Convert to a plain function type |
 
 ### Rules
 
@@ -1465,7 +1507,23 @@ Each `from` entry contains:
 - `=` followed by the conversion body (a block or expression).
 - No qualifiers (`~async`, `~nullable`, `~parallel`) — `from` entries are plain functions.
 
-For structural types (functions, arrays, slices), a type alias **must** be used. The compiler does not chain conversions (e.g., A → B → C) — only a single direct conversion is applied.
+The compiler does not chain conversions (e.g., A → B → C) — only a single direct conversion is applied.
+
+> [!NOTE] `from` on array and function types
+>
+> **Array types** — the `from` target is the specific array kind and element type. `from [_, int]` only applies when the target type is exactly `[_, int]` (a slice of int). A `from [*, int]` is a separate declaration for dynamic arrays of int.
+>
+> **Function types** — qualifiers are part of type identity. `from (int) -> bool` does not cover `from ~async (int) -> bool`. This is useful for stripping or adding qualifiers during conversion:
+>
+> ```luc
+> -- convert a nullable function to a plain one with a fallback
+> from (int) -> bool {
+>     (f ~nullable (int) -> bool) -> (int) -> bool = {
+>         if f == nil { return (x int) -> bool { return false } }
+>         return f
+>     }
+> }
+> ```
 
 ### Scope and Visibility
 
@@ -1546,24 +1604,39 @@ let process () -> int = {
     return x
 }
 
--- From on function type via alias
-type Callback = (event Event) -> bool
-from Callback {
-    (fn (Event) -> bool) -> Callback = { return fn }
+-- From on array type directly (no alias required)
+from [_, int] {
+    (r Range) -> [_, int] = {
+        let result int[*] = []
+        for i int in r { result:push(i) }
+        return result
+    }
 }
 
--- From on array type via alias
-type IntSlice = []int
-from IntSlice {
-    (arr [3]int) -> []int = { return arr[:] }
+from [*, int] {
+    (arr [_, int]) -> [*, int] = {
+        let result int[*] = []
+        for v int in arr { result:push(v) }
+        return result
+    }
+}
+
+-- From on function type directly (no alias required)
+-- strips ~nullable qualifier by providing a plain fallback
+from (int) -> bool {
+    (f ~nullable (int) -> bool) -> (int) -> bool = {
+        if f == nil { return (x int) -> bool { return false } }
+        return f
+    }
 }
 
 -- Call site examples
 let boiling Celsius      = Celsius { value = 100.0 }
-let hot     Fahrenheit   = Fahrenheit(boiling)       -- uses from declaration
-let temp    int          = int("123")                -- uses from int block
-let dir     Direction    = Direction("north")        -- uses from Direction block
-let wrapped Wrapper<int> = Wrapper<int>(42)          -- uses generic from declaration
+let hot     Fahrenheit   = Fahrenheit(boiling)           -- uses from declaration
+let temp    int          = int("123")                    -- uses from int block
+let dir     Direction    = Direction("north")            -- uses from Direction block
+let wrapped Wrapper<int> = Wrapper<int>(42)              -- uses generic from declaration
+let nums    [_, int]     = [_, int](Range { lo=0 hi=5 }) -- uses from [_, int] block
 ```
 
 ---
@@ -1846,76 +1919,59 @@ arg_list        := expr { [','] expr }
 
 Three distinct kinds:
 
-| Kind    | Syntax | Memory           | Growable |
-| ------- | ------ | ---------------- | -------- |
-| Fixed   | `[N]T` | stack/inline     | ❌        |
-| Slice   | `[]T`  | fat pointer view | ❌        |
-| Dynamic | `[*]T` | heap-owned       | ✅        |
+| Kind    | Syntax   | Memory           | Growable |
+| ------- | -------- | ---------------- | -------- |
+| Slice   | `[_, T]` | fat pointer view | ❌        |
+| Dynamic | `[*, T]` | heap-owned       | ✅        |
+| Fixed   | `[N, T]` | stack/inline     | ❌        |
+
+Array syntax encloses both the kind marker and the element type inside brackets. The closing `]` unambiguously marks the end of the array type before any suffix is encountered — `?` and `!` always attach to the whole array, and inline function types are fully supported as element types without requiring an alias.
 
 ```luc
-let rgba [4]float = [1.0, 0.5, 0.0, 1.0]
-let nums [*]int   = [10, 20, 30, 40, 50]
-let view []int    = nums[1..3]     -- elements at index 1, 2, 3 (inclusive)
-let excl []int    = nums[1..<3]    -- elements at index 1, 2 (exclusive end)
+let rgba [4, float]  = [1.0, 0.5, 0.0, 1.0]
+let nums [*, int]    = [10, 20, 30, 40, 50]
+let view [_, int]    = nums[1..3]     -- elements at index 1, 2, 3 (inclusive)
+let excl [_, int]    = nums[1..<3]    -- elements at index 1, 2 (exclusive end)
+```
+
+Suffix binding is completely unambiguous:
+
+```luc
+[_, int]!string     -- ([_, int])!string   — slice of int, op can fail with string
+[*, int]?           -- ([*, int])?         — nullable dynamic array
+[4, int]!DbError    -- ([4, int])!DbError  — fixed array, op can fail
+[_, int?]           -- slice of nullable int
+[_, int!string]     -- slice of result elements
+```
+
+Nested arrays:
+
+```luc
+[_, [*, int]]        -- slice of dynamic arrays of int
+[*, [_, string]]     -- dynamic array of slices of string
+[4, [_, float]]      -- fixed array of 4 slices of float
 ```
 
 > [!NOTE]
-> - **Array elements are not nullable by default.** To allow nil elements use `T?`: `let nums [*]int? = [1, nil, 3]`
+> - **Array elements are not nullable by default.** To allow nil elements use `T?`: `let nums [*, int?] = [1, nil, 3]`
 > - **Out of bounds:** Fixed and slice arrays panic at runtime. Dynamic arrays return nil for out-of-bounds index access.
-
-### Slice Range Rules
-
-| Operator | End bound | Example on `[10,20,30,40,50]`              |
-| -------- | --------- | ------------------------------------------ |
-| `..`     | inclusive | `nums[1..3]` → `[20, 30, 40]` (3 elements) |
-| `..<`    | exclusive | `nums[1..<3]` → `[20, 30]` (2 elements)    |
-
-### Built-in Methods
-
-**All kinds (`[N]T`, `[]T`, `[*]T`):**
-
-| Method       | Returns | Description          |
-| ------------ | ------- | -------------------- |
-| `.len()`     | `int`   | number of elements   |
-| `.isEmpty()` | `bool`  | true if `len() == 0` |
-| `[i]`        | `T`     | element at index     |
-| `[i..j]`     | `[]T`   | inclusive slice      |
-| `[i..<j]`    | `[]T`   | exclusive slice      |
-
-**Slice and dynamic (`[]T`, `[*]T`):**
-
-| Method     | Returns | Description        |
-| ---------- | ------- | ------------------ |
-| `.cap()`   | `int`   | allocated capacity |
-| `.first()` | `T`     | first element      |
-| `.last()`  | `T`     | last element       |
-
-**Dynamic only (`[*]T`):**
-
-| Method                | Returns | Description                           |
-| --------------------- | ------- | ------------------------------------- |
-| `.push(v T)`          | —       | append to end                         |
-| `.pop()`              | `T`     | remove and return last                |
-| `.insert(i int, v T)` | —       | insert at index                       |
-| `.remove(i int)`      | `T`     | remove at index                       |
-| `.clear()`            | —       | remove all elements, free heap buffer |
-| `.reserve(n int)`     | —       | pre-allocate capacity                 |
-
-`+` is defined on `[]T` and `[*]T` — produces a new array containing all elements of both operands.
 
 ### Arrays of Function Types
 
-Arrays of any type, including function types, are fully supported.
+Inline function types are fully supported as element types — the closing `]` makes the boundary unambiguous. No alias is required, though aliases are still recommended for named reuse:
 
 ```luc
--- slice of functions that take an int and return a bool
-let predicates [] (int) -> bool = [isEven, isPositive, isPrime]
+-- inline function type as element — fully unambiguous
+let predicates  [_, (int) -> bool]              = [isEven, isPositive, isPrime]
+let asyncTasks  [*, ~async (url string) -> string] = [fetchUser, fetchPosts]
+let handlers    [4, (event Event) -> bool]      = [onKeyDown, onKeyUp, onClick, onScroll]
 
--- dynamic array of async functions
-let asyncTasks [*] ~async (url string) -> string = [fetchUser, fetchPosts]
+-- alias still useful for reuse and naming
+type PredicateFn  = (int) -> bool
+type FetchAsyncFn = ~async (url string) -> string
 
--- fixed array of curried functions
-let curries [2] (int)(int) -> int = [add, mul]
+let predicates  [_, PredicateFn]   = [isEven, isPositive, isPrime]
+let asyncTasks  [*, FetchAsyncFn]  = [fetchUser, fetchPosts]
 ```
 
 **Allowed operations:**
@@ -1924,38 +1980,37 @@ let curries [2] (int)(int) -> int = [add, mul]
 | -------------------- | ------------------------------- | -------------------------------------------------------------------------- |
 | Store function       | `handlers[0] = validate`        | The function type must match the array's element type exactly.             |
 | Call through index   | `let result = handlers[i](arg)` | The index must be an integer; the call follows normal rules.               |
-| Pass as argument     | `applyAll(handlers, data)`      | The array is passed by value (owned) or by reference (`&[]T`).             |
+| Pass as argument     | `applyAll(handlers, data)`      | The array is passed by value (owned) or by reference (`&[_, T]`).          |
 | Return from function | `return getCallbacks()`         | Ownership follows array semantics (deep copy for dynamic, view for slice). |
 
-> [!WARNING]
-> Restrictions on arrays of function types
+> [!WARNING] Restrictions on arrays of function types
 >
-> 1. **No equality** — Function types are not comparable (`==`, `!=`). Consequently, arrays of functions are also not comparable.
+> 1. **No equality** — Function types are not comparable (`==`, `!=`). Arrays of functions are also not comparable.
 >
 > ```luc
-> let a [] (int) -> int = [f]
-> let b [] (int) -> int = [f]
+> let a [_, (int) -> bool] = [f]
+> let b [_, (int) -> bool] = [f]
 > if a == b { ... }   -- ERROR: cannot compare arrays of function type
 > ```
 >
-> 2. **Qualifiers affect element type** — An array of `~async (int) -> int` is distinct from an array of `(int) -> int`. Storing an async function in an array of plain functions is a type error.
+> 2. **Qualifiers affect element type** — `[_, ~async (int) -> int]` is distinct from `[_, (int) -> int]`. The qualifier is part of the element type's identity.
 >
 > ```luc
 > let asyncFn ~async (x int) -> int = { ... }
-> let arr [] (int) -> int = [asyncFn]   -- OK: qualifier ignored for storage
+> let arr [_, ~async (x int) -> int] = [asyncFn]   -- OK: types match
 >
-> let result = await arr[0](5)   -- OK: caller uses await
-> let result = arr[0](5)         -- ERROR: ~async called without await
+> let result = await arr[0](5)    -- OK: caller uses await
+> let result = arr[0](5)          -- ERROR: ~async called without await
 > ```
 >
-> 3. **Closure capture** — If a stored function captures variables (a closure), the array holds a reference to the closure's environment. Use `.clear()` on dynamic arrays to release closures early.
+> 3. **Closure capture** — If a stored function captures variables (a closure), the array holds a reference to the closure's environment. Use the standard library's `.clear()` on dynamic arrays to release closures early.
 >
 > 4. **No generic specialisation** — The element type is a concrete function signature. Generic functions cannot be stored directly unless instantiated.
 >
 > ```luc
-> let idInt   = identity<int>
-> let arr [] (int) -> int = [idInt]   -- OK
-> let arr [] (T) -> T = [identity]    -- ERROR: generic function without type arguments
+> let idInt   (int) -> int        = identity<int>
+> let arr     [_, (int) -> int]   = [idInt]    -- OK: concrete instantiation
+> let bad     [_, (T) -> T]       = [identity] -- ERROR: generic without type arguments
 > ```
 
 > [!TIP] Arrays of function types enable
@@ -1963,6 +2018,49 @@ let curries [2] (int)(int) -> int = [add, mul]
 > - **Callback lists** — Event handlers, middleware chains, plugin systems.
 > - **Higher-order collections** — Store partially applied functions, curried functions, or stateful closures.
 > - **Interpreters & DSLs** — Represent operations as functions in a data structure.
+
+### Slice Range Rules
+
+| Operator | End bound | Example on `[10,20,30,40,50]`              |
+| -------- | --------- | ------------------------------------------ |
+| `..`     | inclusive | `nums[1..3]` → `[20, 30, 40]` (3 elements) |
+| `..<`    | exclusive | `nums[1..<3]` → `[20, 30]` (2 elements)    |
+
+### Compiler-Built Operations
+
+The compiler has direct knowledge of three array operations only. Everything else is provided by the standard library or implemented by the user via `impl`.
+
+**Indexing and slicing — built into the compiler:**
+
+| Operation    | Returns  | Description      |
+| ------------ | -------- | ---------------- |
+| `arr[i]`     | `T`      | element at index |
+| `arr[i..j]`  | `[_, T]` | inclusive slice  |
+| `arr[i..<j]` | `[_, T]` | exclusive slice  |
+
+> [!NOTE]
+> - **Out of bounds:** Fixed and slice arrays panic at runtime. Dynamic arrays return nil for out-of-bounds index access.
+> - **Concatenation** (`+`) on `[_, T]` and `[*, T]` is also built into the compiler — it produces a new array containing all elements of both operands.
+
+### Standard Library Methods
+
+All other array operations — `.len()`, `.push()`, `.pop()`, `.clear()`, `.reserve()`, etc. — are provided by the standard library as `impl` blocks on the array types. The standard library is included by default but is not part of the language specification.
+
+Users who want different semantics can write their own `impl` blocks. The compiler does not enforce any particular method names or signatures beyond the three built-in operations above.
+
+```luc
+-- example: user-defined impl on a slice type
+impl [_, int] {
+    sum () -> int = {
+        let total int = 0
+        for v int in self { total += v }
+        return total
+    }
+}
+```
+
+> [!NOTE]
+> The standard library's `impl` blocks for array types follow the same shadowing rules as any other `impl` — a local `impl` in a narrower scope wins over the std library's `impl` in the outer scope. This means users can selectively override individual methods without replacing the entire standard implementation.
 
 ---
 
@@ -2313,42 +2411,36 @@ The error type is always explicit — no built-in `Error` type. The programmer o
 
 ### `!` Binding Rules
 
-`!` binds to the immediately preceding **named or primitive** type token only. It is never valid directly after an array type or inline function type as a whole — the parser cannot determine whether `!` belongs to the composite type or to its element/return type.
+`!` binds to the immediately preceding **named or primitive** type token only. With postfix array syntax, `!` after an array type attaches to the whole array unambiguously — the bracket closes the array type before `!` is encountered:
 
 ```luc
--- AMBIGUOUS: does ! attach to []int as a whole, or to int (making it an array of int!string)?
-[]int!string
+int[]!string      -- (int[])!string    — slice of int, op can fail with string
+int[*]!DbError    -- (int[*])!DbError  — dynamic array, op can fail
+int!string[]      -- (int!string)[]    — slice of result elements
+int?[]!string     -- (int?[])!string   — slice of nullable int, op can fail
+```
 
+Inline function types still require an alias before `!` can attach to the whole function type — the function return type bleeds into what follows, making the binding ambiguous:
+
+```luc
 -- AMBIGUOUS: does ! attach to the function type as a whole, or to its return type int?
 (src string) -> int!string
+
+-- parser reads: (src string) -> (int!string) — function returning int!string
+-- to make the whole function type the success value, alias first:
+type ParserFn       = (src string) -> int
+let f () -> ParserFn!string = { ... }    -- (ParserFn)!string — unambiguous
 ```
 
-In both cases the parser reads `!` as binding to the innermost preceding type — so `[]int!string` is always `[](int!string)` (array of `int!string` elements) and `(src string) -> int!string` is always `(src string) -> (int!string)` (function returning `int!string`). If you want the composite type itself to be the success value, alias it first:
+Valid without alias — primitives, structs, enums, array types, and named aliases:
 
 ```luc
--- array: alias first, then apply !
-type UserList          = [*]User
-type UserListOrDbError = UserList!DbError    -- ([*]User)!DbError — unambiguous
-
--- function: alias first, then apply !
-type FetchAsyncFn           = ~async (url string) -> string
-type FetchAsyncFnOrNetError = FetchAsyncFn!NetworkError    -- (FetchAsyncFn)!NetworkError
-
--- element-level result: alias the element type
-type IntOrString = int!string
-let f () -> []IntOrString = { ... }    -- array of (int!string) elements — unambiguous
-```
-
-> [!NOTE]
-> The rule is consistent across `?` and `!` — neither suffix can attach to an array type or inline function type as a whole. The solution is always the same: alias the composite type first, then apply the suffix to the alias.
-
-Valid without alias — primitives, structs, enums, and named aliases only:
-
-```luc
-int!string          -- OK: primitive success, primitive error
-Vec2!string         -- OK: struct success, primitive error
-Direction!string    -- OK: enum success, primitive error
-UserList!DbError    -- OK: named alias success, struct error
+int!string          -- OK: primitive
+Vec2!string         -- OK: struct
+Direction!string    -- OK: enum
+int[]!string        -- OK: postfix array — unambiguous
+int[*]!DbError      -- OK: postfix dynamic array — unambiguous
+UserArray!DbError   -- OK: named alias
 ```
 
 ### `?` on a Result Type

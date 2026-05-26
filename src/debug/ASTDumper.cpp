@@ -1,6 +1,6 @@
 /**
  * @file ASTDumper.cpp
- * @brief Implementation of AST visitor that prints the AST in a human-readable format.
+ * @brief Implementation of AST dumping as free functions.
  */
 
 #include "ASTDumper.hpp"
@@ -9,72 +9,58 @@
 #include "ast/ExprAST.hpp"
 #include "ast/StmtAST.hpp"
 #include "ast/TypeAST.hpp"
-#include <sstream>
-#include <string>
 
 namespace LucDebug {
 
-ASTDumper::ASTDumper(int verb, const StringPool& p) 
-    : verbosity(verb), indentLevel(0), pool(&p) {
-    rebuildIndentCache();
-}
+namespace {
 
-void ASTDumper::rebuildIndentCache() {
-    for (int i = 0; i < 16; ++i) {
-        indentCache[i].clear();
-        for (int j = 0; j < i; ++j) {
-            indentCache[i] += '\t';
-        }
+// =============================================================================
+// Forward declaration – the main dispatch function
+// =============================================================================
+
+void dumpNode(std::string& out, const BaseAST* node, const StringPool* pool, int indentLevel);
+
+// =============================================================================
+// Indentation helpers
+// =============================================================================
+
+static std::string getIndent(int level) {
+    std::string result;
+    for (int i = 0; i < level; ++i) {
+        result += '\t';
     }
+    return result;
 }
 
-void ASTDumper::indent() {
-    if (indentLevel < 16) {
-        out += indentCache[indentLevel];
-    } else {
-        for (int i = 0; i < indentLevel; ++i) out += '\t';
-    }
+static void printLine(std::string& out, int indentLevel, const std::string& text) {
+    out += getIndent(indentLevel) + text + "\n";
 }
 
-void ASTDumper::printLine(const std::string& text) {
-    indent();
-    out += text + "\n";
-}
-
-void ASTDumper::printKV(const std::string& key, const std::string& value) {
-    indent();
-    out += "\t" + key + ": '" + value + "'\n";
-}
-
-void ASTDumper::printNodeHeader(const BaseAST& node, const std::string& nodeName) {
-    indent();
-    out += "[" + std::to_string(indentLevel) + "] " + nodeName;
+static void printNodeHeader(std::string& out, int indentLevel, const BaseAST& node, const std::string& nodeName) {
+    out += getIndent(indentLevel) + "[" + std::to_string(indentLevel) + "] " + nodeName;
     out += " (kind=" + kindToString(node.kind) + ")";
     out += " at line " + std::to_string(node.loc.line()) + ", col " + std::to_string(node.loc.column()) + "\n";
 }
 
-void ASTDumper::visitChild(BaseAST* child, const std::string& label) {
-    if (!child) return;
-    indentLevel++;
-    child->accept(*this);
-    indentLevel--;
-}
+// =============================================================================
+// Type formatting helpers
+// =============================================================================
 
-std::string ASTDumper::formatType(TypeAST* type) {
+std::string formatType(const TypeAST* type, const StringPool* pool) {
     if (!type) return "<unresolved>";
 
     switch (type->kind) {
         case ASTKind::PrimitiveType:
-            return primitiveKindToString(static_cast<PrimitiveTypeAST*>(type)->primitiveKind);
+            return primitiveKindToString(static_cast<const PrimitiveTypeAST*>(type)->primitiveKind);
 
         case ASTKind::NamedType: {
-            auto* n = static_cast<NamedTypeAST*>(type);
+            auto* n = static_cast<const NamedTypeAST*>(type);
             std::string res = toStr(pool, n->name);
             if (!n->genericArgs.empty()) {
                 res += "<";
                 for (size_t i = 0; i < n->genericArgs.size(); ++i) {
                     if (i > 0) res += ", ";
-                    res += formatType(n->genericArgs[i].get());
+                    res += formatType(n->genericArgs[i].get(), pool);
                 }
                 res += ">";
             }
@@ -82,47 +68,43 @@ std::string ASTDumper::formatType(TypeAST* type) {
         }
 
         case ASTKind::NullableType:
-            return formatType(static_cast<NullableTypeAST*>(type)->inner.get()) + "?";
+            return formatType(static_cast<const NullableTypeAST*>(type)->inner.get(), pool) + "?";
 
         case ASTKind::ResultType: {
-            auto* r = static_cast<ResultTypeAST*>(type);
-            std::string innerStr = formatType(r->inner.get());
+            auto* r = static_cast<const ResultTypeAST*>(type);
+            std::string innerStr = formatType(r->inner.get(), pool);
             if (r->hasErrorType()) {
-                return innerStr + "!" + formatType(r->errorType.get());
-            } else {
-                return innerStr + "!";
+                return innerStr + "!" + formatType(r->errorType.get(), pool);
             }
+            return innerStr + "!";
         }
 
         case ASTKind::RefType:
-            return "&" + formatType(static_cast<RefTypeAST*>(type)->inner.get());
+            return "&" + formatType(static_cast<const RefTypeAST*>(type)->inner.get(), pool);
 
         case ASTKind::PtrType:
-            return "*" + formatType(static_cast<PtrTypeAST*>(type)->inner.get());
+            return "*" + formatType(static_cast<const PtrTypeAST*>(type)->inner.get(), pool);
 
         case ASTKind::FixedArrayType: {
-            auto* a = static_cast<FixedArrayTypeAST*>(type);
-            return "[" + std::to_string(a->size) + "]" + formatType(a->element.get());
+            auto* a = static_cast<const FixedArrayTypeAST*>(type);
+            return "[" + std::to_string(a->size) + "]" + formatType(a->element.get(), pool);
         }
 
         case ASTKind::SliceType:
-            return "[]" + formatType(static_cast<SliceTypeAST*>(type)->element.get());
+            return "[]" + formatType(static_cast<const SliceTypeAST*>(type)->element.get(), pool);
 
         case ASTKind::DynamicArrayType:
-            return "[*]" + formatType(static_cast<DynamicArrayTypeAST*>(type)->element.get());
+            return "[*]" + formatType(static_cast<const DynamicArrayTypeAST*>(type)->element.get(), pool);
 
         case ASTKind::FuncType: {
-            auto* f = static_cast<FuncTypeAST*>(type);
-            const auto& sig = f->sig;
+            const auto& sig = static_cast<const FuncTypeAST*>(type)->sig;
             std::string res;
 
-            // Qualifiers
             uint32_t q = sig.qualifiers;
             if (q & QualifierBits::Async) res += "~async ";
             if (q & QualifierBits::Nullable) res += "~nullable ";
             if (q & QualifierBits::Parallel) res += "~parallel ";
 
-            // Parameter groups (using flat representation)
             size_t paramOffset = 0;
             for (size_t g = 0; g < sig.groupSizes.size(); ++g) {
                 res += "(";
@@ -130,19 +112,18 @@ std::string ASTDumper::formatType(TypeAST* type) {
                 for (size_t i = 0; i < groupSize; ++i) {
                     if (i > 0) res += ", ";
                     const auto& param = sig.allParams[paramOffset + i];
-                    if (param->type) res += formatType(param->type.get());
+                    if (param->type) res += formatType(param->type.get(), pool);
                     if (param->isVariadic) res += "...";
                 }
                 res += ")";
                 paramOffset += groupSize;
             }
 
-            // Return types
             if (!sig.returnTypes.empty()) {
                 res += " -> ";
                 for (size_t i = 0; i < sig.returnTypes.size(); ++i) {
                     if (i > 0) res += ", ";
-                    res += formatType(sig.returnTypes[i].get());
+                    res += formatType(sig.returnTypes[i].get(), pool);
                 }
             }
             return res;
@@ -153,873 +134,759 @@ std::string ASTDumper::formatType(TypeAST* type) {
     }
 }
 
-std::string ASTDumper::formatParamGroup(const ArenaSpan<ParamPtr>& params) {
-    std::string res = "(";
-    for (size_t i = 0; i < params.size(); ++i) {
-        if (i > 0) res += ", ";
-        if (params[i]->type) {
-            res += formatType(params[i]->type.get());
-        }
-        if (params[i]->isVariadic) res += "...";
+std::string formatVisibility(Visibility vis) {
+    switch (vis) {
+        case Visibility::Package: return "pub";
+        case Visibility::Export:  return "export";
+        default:                  return "";
     }
-    res += ")";
-    return res;
 }
 
-// ── Root ──────────────────────────────────────────────────────────────────
-void ASTDumper::visit(ProgramAST& node) {
-    printNodeHeader(node, "ProgramAST");
-    indent(); out += "\tpackageName: '" + toStr(pool, node.packageName) + "'\n";
-    indent(); out += "\tfilePath: '" + std::string(pool->lookup(node.filePath)) + "'\n";
-    indent(); out += "\tdecls (count): " + std::to_string(node.decls.size()) + "\n";
+// =============================================================================
+// Individual node dumpers (all take const BaseAST* and cast internally)
+// =============================================================================
 
-    indentLevel++;
-    for (const auto& decl : node.decls) {
-        if (decl) decl->accept(*this);
+void dumpProgram(std::string& out, const ProgramAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "ProgramAST");
+    out += getIndent(indentLevel) + "\tpackageName: '" + toStr(pool, node->packageName) + "'\n";
+    out += getIndent(indentLevel) + "\tfilePath: '" + std::string(pool->lookup(node->filePath)) + "'\n";
+    out += getIndent(indentLevel) + "\tdecls (count): " + std::to_string(node->decls.size()) + "\n";
+
+    for (const auto& decl : node->decls) {
+        dumpNode(out, decl.get(), pool, indentLevel + 1);
     }
-    indentLevel--;
 }
 
-// ── Type nodes ────────────────────────────────────────────────────────────
-void ASTDumper::visit(PrimitiveTypeAST& node) {
-    printNodeHeader(node, "PrimitiveTypeAST " + formatType(&node));
+void dumpPrimitiveType(std::string& out, const PrimitiveTypeAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "PrimitiveTypeAST " + formatType(node, pool));
 }
 
-void ASTDumper::visit(NamedTypeAST& node) {
-    printNodeHeader(node, "NamedTypeAST '" + toStr(pool, node.name) + "'");
-    indentLevel++;
-    for (const auto& arg : node.genericArgs) visitChild(arg.get());
-    indentLevel--;
+void dumpNamedType(std::string& out, const NamedTypeAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "NamedTypeAST '" + toStr(pool, node->name) + "'");
+    for (const auto& arg : node->genericArgs) {
+        dumpNode(out, arg.get(), pool, indentLevel + 1);
+    }
 }
 
-void ASTDumper::visit(NullableTypeAST& node) {
-    printNodeHeader(node, "NullableTypeAST");
-    if (node.inner) visitChild(node.inner.get());
+void dumpNullableType(std::string& out, const NullableTypeAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "NullableTypeAST");
+    if (node->inner) dumpNode(out, node->inner.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(ResultTypeAST& node) {
+void dumpResultType(std::string& out, const ResultTypeAST* node, const StringPool* pool, int indentLevel) {
     std::string header = "ResultTypeAST ";
-    if (node.hasErrorType()) {
-        header += formatType(node.inner.get()) + "!" + formatType(node.errorType.get());
+    if (node->hasErrorType()) {
+        header += formatType(node->inner.get(), pool) + "!" + formatType(node->errorType.get(), pool);
     } else {
-        header += formatType(node.inner.get()) + "!";
+        header += formatType(node->inner.get(), pool) + "!";
     }
-    printNodeHeader(node, header);
-    indentLevel++;
-    visitChild(node.inner.get(), "inner");
-    if (node.errorType) visitChild(node.errorType.get(), "errorType");
-    indentLevel--;
+    printNodeHeader(out, indentLevel, *node, header);
+    dumpNode(out, node->inner.get(), pool, indentLevel + 1);
+    if (node->errorType) dumpNode(out, node->errorType.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(FixedArrayTypeAST& node) {
-    printNodeHeader(node, "FixedArrayTypeAST [" + std::to_string(node.size) + "]");
-    if (node.element) visitChild(node.element.get());
+void dumpFixedArrayType(std::string& out, const FixedArrayTypeAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "FixedArrayTypeAST [" + std::to_string(node->size) + "]");
+    if (node->element) dumpNode(out, node->element.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(SliceTypeAST& node) {
-    printNodeHeader(node, "SliceTypeAST");
-    if (node.element) visitChild(node.element.get());
+void dumpSliceType(std::string& out, const SliceTypeAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "SliceTypeAST");
+    if (node->element) dumpNode(out, node->element.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(DynamicArrayTypeAST& node) {
-    printNodeHeader(node, "DynamicArrayTypeAST");
-    if (node.element) visitChild(node.element.get());
+void dumpDynamicArrayType(std::string& out, const DynamicArrayTypeAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "DynamicArrayTypeAST");
+    if (node->element) dumpNode(out, node->element.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(RefTypeAST& node) {
-    printNodeHeader(node, "RefTypeAST");
-    if (node.inner) visitChild(node.inner.get());
+void dumpRefType(std::string& out, const RefTypeAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "RefTypeAST");
+    if (node->inner) dumpNode(out, node->inner.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(PtrTypeAST& node) {
-    printNodeHeader(node, "PtrTypeAST");
-    if (node.inner) visitChild(node.inner.get());
+void dumpPtrType(std::string& out, const PtrTypeAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "PtrTypeAST");
+    if (node->inner) dumpNode(out, node->inner.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(FuncTypeAST& node) {
+void dumpFuncType(std::string& out, const FuncTypeAST* node, const StringPool* pool, int indentLevel) {
     std::string header = "FuncTypeAST";
-    uint32_t q = node.sig.qualifiers;
+    uint32_t q = node->sig.qualifiers;
     if (q & QualifierBits::Async) header += " ~async";
     if (q & QualifierBits::Nullable) header += " ~nullable";
     if (q & QualifierBits::Parallel) header += " ~parallel";
-    printNodeHeader(node, header);
-    
-    indentLevel++;
-    // Parameter groups (using flat representation)
+    printNodeHeader(out, indentLevel, *node, header);
+
     size_t paramOffset = 0;
-    for (size_t g = 0; g < node.sig.groupSizes.size(); ++g) {
-        size_t groupSize = node.sig.groupSizes[g];
+    for (size_t g = 0; g < node->sig.groupSizes.size(); ++g) {
+        size_t groupSize = node->sig.groupSizes[g];
         for (size_t i = 0; i < groupSize; ++i) {
-            if (node.sig.allParams[paramOffset + i]) {
-                visitChild(node.sig.allParams[paramOffset + i].get(), "param");
+            if (node->sig.allParams[paramOffset + i]) {
+                dumpNode(out, node->sig.allParams[paramOffset + i].get(), pool, indentLevel + 1);
             }
         }
         paramOffset += groupSize;
     }
-    // Return types
-    for (const auto& ret : node.sig.returnTypes) {
-        if (ret) visitChild(ret.get(), "return");
+    for (const auto& ret : node->sig.returnTypes) {
+        if (ret) dumpNode(out, ret.get(), pool, indentLevel + 1);
     }
-    indentLevel--;
 }
 
-// ── Declaration nodes ─────────────────────────────────────────────────────
-void ASTDumper::visit(PackageDeclAST& node) {
-    printNodeHeader(node, "PackageDeclAST '" + toStr(pool, node.name) + "'");
+void dumpPackageDecl(std::string& out, const PackageDeclAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "PackageDeclAST '" + toStr(pool, node->name) + "'");
 }
 
-void ASTDumper::visit(UseDeclAST& node) {
+void dumpUseDecl(std::string& out, const UseDeclAST* node, const StringPool* pool, int indentLevel) {
     std::string pathStr;
-    for (size_t i = 0; i < node.path.size(); ++i) {
+    for (size_t i = 0; i < node->path.size(); ++i) {
         if (i > 0) pathStr += ".";
-        pathStr += toStr(pool, node.path[i]);
+        pathStr += toStr(pool, node->path[i]);
     }
     std::string header = "UseDeclAST '" + pathStr + "'";
-    if (node.alias) header += " as " + toStr(pool, *node.alias);
-    printNodeHeader(node, header);
+    if (node->alias) header += " as " + toStr(pool, *node->alias);
+    printNodeHeader(out, indentLevel, *node, header);
 }
 
-void ASTDumper::visit(VarDeclAST& node) {
-    std::string header = "VarDeclAST '" + toStr(pool, node.name) + "'";
-    if (node.type) header += " : " + formatType(node.type.get());
-    printNodeHeader(node, header);
-    indentLevel++;
-    if (node.init) visitChild(node.init.get(), "init");
-    for (const auto& attr : node.attributes) visitChild(attr.get());
-    indentLevel--;
+void dumpVarDecl(std::string& out, const VarDeclAST* node, const StringPool* pool, int indentLevel) {
+    std::string header = "VarDeclAST '" + toStr(pool, node->name) + "'";
+    if (node->type) header += " : " + formatType(node->type.get(), pool);
+    printNodeHeader(out, indentLevel, *node, header);
+    if (node->init) dumpNode(out, node->init.get(), pool, indentLevel + 1);
+    for (const auto& attr : node->attributes) dumpNode(out, attr.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(FuncDeclAST& node) {
-    std::string header = "FuncDeclAST '" + toStr(pool, node.name) + "'";
-    
-    // Qualifiers
-    uint32_t q = node.sig.qualifiers;
-    if (q & QualifierBits::Async) header += " ~async";
-    if (q & QualifierBits::Nullable) header += " ~nullable";
-    if (q & QualifierBits::Parallel) header += " ~parallel";
-    
-    // Parameter groups (using flat representation)
-    size_t paramOffset = 0;
-    for (size_t g = 0; g < node.sig.groupSizes.size(); ++g) {
-        header += " (";
-        size_t groupSize = node.sig.groupSizes[g];
-        for (size_t i = 0; i < groupSize; ++i) {
-            if (i > 0) header += ", ";
-            const auto& param = node.sig.allParams[paramOffset + i];
-            if (param->type) header += formatType(param->type.get());
-        }
-        header += ")";
-        paramOffset += groupSize;
-    }
-    
-    // Return types
-    if (!node.sig.returnTypes.empty()) {
-        header += " -> ";
-        for (size_t i = 0; i < node.sig.returnTypes.size(); ++i) {
-            if (i > 0) header += ", ";
-            header += formatType(node.sig.returnTypes[i].get());
-        }
-    }
-    
-    printNodeHeader(node, header);
-    indentLevel++;
-    if (node.body) visitChild(node.body.get());
-    for (const auto& attr : node.attributes) visitChild(attr.get());
-    indentLevel--;
+void dumpFuncDecl(std::string& out, const FuncDeclAST* node, const StringPool* pool, int indentLevel) {
+    std::string header = "FuncDeclAST '" + toStr(pool, node->name) + "'";
+    printNodeHeader(out, indentLevel, *node, header);
+    if (node->body) dumpNode(out, node->body.get(), pool, indentLevel + 1);
+    for (const auto& attr : node->attributes) dumpNode(out, attr.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(StructDeclAST& node) {
-    printNodeHeader(node, "StructDeclAST '" + toStr(pool, node.name) + "'");
-    indentLevel++;
-    for (const auto& field : node.fields) visitChild(field.get());
-    for (const auto& attr : node.attributes) visitChild(attr.get());
-    indentLevel--;
+void dumpStructDecl(std::string& out, const StructDeclAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "StructDeclAST '" + toStr(pool, node->name) + "'");
+    for (const auto& field : node->fields) dumpNode(out, field.get(), pool, indentLevel + 1);
+    for (const auto& attr : node->attributes) dumpNode(out, attr.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(FieldDeclAST& node) {
-    std::string header = "FieldDeclAST '" + toStr(pool, node.name) + "'";
-    if (node.type) header += " : " + formatType(node.type.get());
-    printNodeHeader(node, header);
-    indentLevel++;
-    if (node.defaultVal) {
-        indent(); out += "\tdefault: ";
-        indentLevel++;
-        node.defaultVal->accept(*this);
-        indentLevel--;
-    }
-    indentLevel--;
+void dumpFieldDecl(std::string& out, const FieldDeclAST* node, const StringPool* pool, int indentLevel) {
+    std::string header = "FieldDeclAST '" + toStr(pool, node->name) + "'";
+    if (node->type) header += " : " + formatType(node->type.get(), pool);
+    printNodeHeader(out, indentLevel, *node, header);
+    if (node->defaultVal) dumpNode(out, node->defaultVal.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(EnumDeclAST& node) {
-    printNodeHeader(node, "EnumDeclAST '" + toStr(pool, node.name) + "'");
-    for (const auto& variant : node.variants) visitChild(variant.get());
+void dumpEnumDecl(std::string& out, const EnumDeclAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "EnumDeclAST '" + toStr(pool, node->name) + "'");
+    for (const auto& variant : node->variants) dumpNode(out, variant.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(EnumVariantAST& node) {
-    std::string header = "EnumVariantAST '" + toStr(pool, node.name) + "'";
-    if (node.explicitValue) header += " = " + std::to_string(*node.explicitValue);
-    printNodeHeader(node, header);
+void dumpEnumVariant(std::string& out, const EnumVariantAST* node, const StringPool* pool, int indentLevel) {
+    std::string header = "EnumVariantAST '" + toStr(pool, node->name) + "'";
+    if (node->explicitValue) header += " = " + std::to_string(*node->explicitValue);
+    printNodeHeader(out, indentLevel, *node, header);
 }
 
-void ASTDumper::visit(TraitMethodAST& node) {
-    std::string header = "TraitMethodAST '" + toStr(pool, node.name) + "'";
-    
-    // Qualifiers
-    uint32_t q = node.sig.qualifiers;
-    if (q & QualifierBits::Async) header += " ~async";
-    if (q & QualifierBits::Nullable) header += " ~nullable";
-    if (q & QualifierBits::Parallel) header += " ~parallel";
-    
-    // Parameter groups (using flat representation)
-    size_t paramOffset = 0;
-    for (size_t g = 0; g < node.sig.groupSizes.size(); ++g) {
-        header += " (";
-        size_t groupSize = node.sig.groupSizes[g];
-        for (size_t i = 0; i < groupSize; ++i) {
-            if (i > 0) header += ", ";
-            const auto& param = node.sig.allParams[paramOffset + i];
-            if (param->type) header += formatType(param->type.get());
-        }
-        header += ")";
-        paramOffset += groupSize;
-    }
-    
-    // Return types
-    if (!node.sig.returnTypes.empty()) {
-        header += " -> ";
-        for (size_t i = 0; i < node.sig.returnTypes.size(); ++i) {
-            if (i > 0) header += ", ";
-            header += formatType(node.sig.returnTypes[i].get());
-        }
-    }
-    
-    printNodeHeader(node, header);
+void dumpTraitMethod(std::string& out, const TraitMethodAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "TraitMethodAST '" + toStr(pool, node->name) + "'");
 }
 
-void ASTDumper::visit(TraitDeclAST& node) {
-    printNodeHeader(node, "TraitDeclAST '" + toStr(pool, node.name) + "'");
-    for (const auto& method : node.methods) visitChild(method.get());
+void dumpTraitDecl(std::string& out, const TraitDeclAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "TraitDeclAST '" + toStr(pool, node->name) + "'");
+    for (const auto& method : node->methods) dumpNode(out, method.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(TraitRefAST& node) {
-    std::string header = "TraitRefAST '" + toStr(pool, node.name) + "'";
-    if (!node.genericArgs.empty()) {
+void dumpTraitRef(std::string& out, const TraitRefAST* node, const StringPool* pool, int indentLevel) {
+    std::string header = "TraitRefAST '" + toStr(pool, node->name) + "'";
+    if (!node->genericArgs.empty()) {
         header += "<";
-        for (size_t i = 0; i < node.genericArgs.size(); ++i) {
+        for (size_t i = 0; i < node->genericArgs.size(); ++i) {
             if (i > 0) header += ", ";
-            header += formatType(node.genericArgs[i].get());
+            header += formatType(node->genericArgs[i].get(), pool);
         }
         header += ">";
     }
-    printNodeHeader(node, header);
+    printNodeHeader(out, indentLevel, *node, header);
 }
 
-void ASTDumper::visit(ImplDeclAST& node) {
+void dumpImplDecl(std::string& out, const ImplDeclAST* node, const StringPool* pool, int indentLevel) {
     std::string header = "ImplDeclAST";
-    
-    // Add visibility
-    if (node.visibility == Visibility::Package) {
-        header = "pub " + header;
-    } else if (node.visibility == Visibility::Export) {
-        header = "export " + header;
+    if (!formatVisibility(node->visibility).empty()) {
+        header = formatVisibility(node->visibility) + " " + header;
     }
-    
-    // Add target type
-    if (node.targetType) {
-        header += " for " + formatType(node.targetType.get());
-    } else {
-        header += " for <unknown>";
+    if (node->targetType) {
+        header += " for " + formatType(node->targetType.get(), pool);
     }
-    
-    // Add generic parameters if any
-    if (!node.genericParams.empty()) {
+    if (!node->genericParams.empty()) {
         header += " <";
-        for (size_t i = 0; i < node.genericParams.size(); ++i) {
+        for (size_t i = 0; i < node->genericParams.size(); ++i) {
             if (i > 0) header += ", ";
-            if (node.genericParams[i]) {
-                header += toStr(pool, node.genericParams[i]->name);
+            if (node->genericParams[i]) {
+                header += toStr(pool, node->genericParams[i]->name);
             }
         }
         header += ">";
     }
-    
-    // Add receiver alias if present
-    if (node.receiverAlias.isValid()) {
-        header += " as " + toStr(pool, node.receiverAlias);
+    if (node->receiverAlias.isValid()) {
+        header += " as " + toStr(pool, node->receiverAlias);
     }
-    
-    // Add trait conformance if present
-    if (node.traitRef) {
-        header += " : " + toStr(pool, node.traitRef->name);
-        if (!node.traitRef->genericArgs.empty()) {
+    if (node->traitRef) {
+        header += " : " + toStr(pool, node->traitRef->name);
+        if (!node->traitRef->genericArgs.empty()) {
             header += "<";
-            for (size_t i = 0; i < node.traitRef->genericArgs.size(); ++i) {
+            for (size_t i = 0; i < node->traitRef->genericArgs.size(); ++i) {
                 if (i > 0) header += ", ";
-                header += formatType(node.traitRef->genericArgs[i].get());
+                header += formatType(node->traitRef->genericArgs[i].get(), pool);
             }
             header += ">";
         }
     }
-    
-    printNodeHeader(node, header);
-    
-    indentLevel++;
-    for (const auto& gp : node.genericParams) {
-        if (gp) visitChild(gp.get());
+    printNodeHeader(out, indentLevel, *node, header);
+
+    for (const auto& gp : node->genericParams) {
+        if (gp) dumpNode(out, gp.get(), pool, indentLevel + 1);
     }
-    for (const auto& method : node.methods) {
-        if (method) visitChild(method.get());
+    for (const auto& method : node->methods) {
+        if (method) dumpNode(out, method.get(), pool, indentLevel + 1);
     }
-    indentLevel--;
 }
 
-void ASTDumper::visit(MethodDeclAST& node) {
-    std::string header = "MethodDeclAST '" + toStr(pool, node.name) + "'";
-    
-    // Qualifiers
-    uint32_t q = node.sig.qualifiers;
-    if (q & QualifierBits::Async) header += " ~async";
-    if (q & QualifierBits::Nullable) header += " ~nullable";
-    if (q & QualifierBits::Parallel) header += " ~parallel";
-    
-    // Parameter groups (using flat representation)
-    size_t paramOffset = 0;
-    for (size_t g = 0; g < node.sig.groupSizes.size(); ++g) {
-        header += " (";
-        size_t groupSize = node.sig.groupSizes[g];
-        for (size_t i = 0; i < groupSize; ++i) {
-            if (i > 0) header += ", ";
-            const auto& param = node.sig.allParams[paramOffset + i];
-            if (param->type) header += formatType(param->type.get());
-        }
-        header += ")";
-        paramOffset += groupSize;
-    }
-    
-    // Return types
-    if (!node.sig.returnTypes.empty()) {
-        header += " -> ";
-        for (size_t i = 0; i < node.sig.returnTypes.size(); ++i) {
-            if (i > 0) header += ", ";
-            header += formatType(node.sig.returnTypes[i].get());
-        }
-    }
-    
-    printNodeHeader(node, header);
-    if (node.body) visitChild(node.body.get());
+void dumpMethodDecl(std::string& out, const MethodDeclAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "MethodDeclAST '" + toStr(pool, node->name) + "'");
+    if (node->body) dumpNode(out, node->body.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(FromDeclAST& node) {
+void dumpFromDecl(std::string& out, const FromDeclAST* node, const StringPool* pool, int indentLevel) {
     std::string header = "FromDeclAST";
-    
-    // Add visibility
-    if (node.visibility == Visibility::Package) {
-        header = "pub " + header;
-    } else if (node.visibility == Visibility::Export) {
-        header = "export " + header;
+    if (!formatVisibility(node->visibility).empty()) {
+        header = formatVisibility(node->visibility) + " " + header;
     }
-    
-    // Add target type
-    if (node.targetType) {
-        header += " to " + formatType(node.targetType.get());
-    } else {
-        header += " to <unknown>";
+    if (node->targetType) {
+        header += " to " + formatType(node->targetType.get(), pool);
     }
-    
-    // Add generic parameters if any
-    if (!node.genericParams.empty()) {
+    if (!node->genericParams.empty()) {
         header += " <";
-        for (size_t i = 0; i < node.genericParams.size(); ++i) {
+        for (size_t i = 0; i < node->genericParams.size(); ++i) {
             if (i > 0) header += ", ";
-            if (node.genericParams[i]) {
-                header += toStr(pool, node.genericParams[i]->name);
+            if (node->genericParams[i]) {
+                header += toStr(pool, node->genericParams[i]->name);
             }
         }
         header += ">";
     }
-    
-    printNodeHeader(node, header);
-    
-    indentLevel++;
-    for (const auto& entry : node.entries) {
-        if (entry) visitChild(entry.get());
+    printNodeHeader(out, indentLevel, *node, header);
+
+    for (const auto& entry : node->entries) {
+        if (entry) dumpNode(out, entry.get(), pool, indentLevel + 1);
     }
-    for (const auto& gp : node.genericParams) {
-        if (gp) visitChild(gp.get());
+    for (const auto& gp : node->genericParams) {
+        if (gp) dumpNode(out, gp.get(), pool, indentLevel + 1);
     }
-    indentLevel--;
 }
 
-void ASTDumper::visit(FromEntryAST& node) {
-    std::string header = "FromEntryAST '" + formatType(node.returnType.get()) + "'";
-    
-    // Parameter groups (using flat representation)
-    size_t paramOffset = 0;
-    for (size_t g = 0; g < node.sig.groupSizes.size(); ++g) {
-        header += " (";
-        size_t groupSize = node.sig.groupSizes[g];
-        for (size_t i = 0; i < groupSize; ++i) {
-            if (i > 0) header += ", ";
-            const auto& param = node.sig.allParams[paramOffset + i];
-            if (param->type) header += formatType(param->type.get());
-        }
-        header += ")";
-        paramOffset += groupSize;
-    }
-    
-    printNodeHeader(node, header);
-    if (node.body) visitChild(node.body.get());
+void dumpFromEntry(std::string& out, const FromEntryAST* node, const StringPool* pool, int indentLevel) {
+    std::string header = "FromEntryAST '" + formatType(node->returnType.get(), pool) + "'";
+    printNodeHeader(out, indentLevel, *node, header);
+    if (node->body) dumpNode(out, node->body.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(TypeAliasDeclAST& node) {
-    std::string header = "TypeAliasDeclAST '" + toStr(pool, node.name) + "'";
-    if (node.aliasedType) header += " = " + formatType(node.aliasedType.get());
-    printNodeHeader(node, header);
+void dumpTypeAliasDecl(std::string& out, const TypeAliasDeclAST* node, const StringPool* pool, int indentLevel) {
+    std::string header = "TypeAliasDeclAST '" + toStr(pool, node->name) + "'";
+    if (node->aliasedType) header += " = " + formatType(node->aliasedType.get(), pool);
+    printNodeHeader(out, indentLevel, *node, header);
 }
 
-void ASTDumper::visit(GenericParamAST& node) {
-    std::string header = "GenericParamAST '" + toStr(pool, node.name) + "'";
-    if (!node.constraints.empty()) {
+void dumpGenericParam(std::string& out, const GenericParamAST* node, const StringPool* pool, int indentLevel) {
+    std::string header = "GenericParamAST '" + toStr(pool, node->name) + "'";
+    if (!node->constraints.empty()) {
         header += " : ";
-        for (size_t i = 0; i < node.constraints.size(); ++i) {
-            header += toStr(pool, node.constraints[i]);
-            if (i + 1 < node.constraints.size()) header += " + ";
+        for (size_t i = 0; i < node->constraints.size(); ++i) {
+            header += toStr(pool, node->constraints[i]);
+            if (i + 1 < node->constraints.size()) header += " + ";
         }
     }
-    printNodeHeader(node, header);
+    printNodeHeader(out, indentLevel, *node, header);
 }
 
-void ASTDumper::visit(ParamAST& node) {
-    std::string header = "ParamAST '" + toStr(pool, node.name) + "'";
-    if (node.type) header += " : " + formatType(node.type.get());
-    if (node.isVariadic) header += "...";
-    printNodeHeader(node, header);
+void dumpParam(std::string& out, const ParamAST* node, const StringPool* pool, int indentLevel) {
+    std::string header = "ParamAST '" + toStr(pool, node->name) + "'";
+    if (node->type) header += " : " + formatType(node->type.get(), pool);
+    if (node->isVariadic) header += "...";
+    printNodeHeader(out, indentLevel, *node, header);
 }
 
-// ── Expression nodes ──────────────────────────────────────────────────────
-void ASTDumper::visit(LiteralExprAST& node) {
-    printNodeHeader(node, "LiteralExprAST '" + toStr(pool, node.value) + "'");
+void dumpLiteralExpr(std::string& out, const LiteralExprAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "LiteralExprAST '" + toStr(pool, node->value) + "'");
 }
 
-void ASTDumper::visit(IdentifierExprAST& node) {
-    printNodeHeader(node, "IdentifierExprAST '" + toStr(pool, node.name) + "'");
+void dumpIdentifierExpr(std::string& out, const IdentifierExprAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "IdentifierExprAST '" + toStr(pool, node->name) + "'");
 }
 
-void ASTDumper::visit(ArrayLiteralExprAST& node) {
-    printNodeHeader(node, "ArrayLiteralExprAST");
-    for (const auto& elem : node.elements) visitChild(elem.get());
+void dumpArrayLiteralExpr(std::string& out, const ArrayLiteralExprAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "ArrayLiteralExprAST");
+    for (const auto& elem : node->elements) dumpNode(out, elem.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(StructLiteralExprAST& node) {
-    printNodeHeader(node, "StructLiteralExprAST '" + toStr(pool, node.typeName) + "'");
-    for (const auto& init : node.inits) {
-        if (init && init->value) visitChild(init->value.get());
+void dumpStructLiteralExpr(std::string& out, const StructLiteralExprAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "StructLiteralExprAST '" + toStr(pool, node->typeName) + "'");
+    for (const auto& init : node->inits) {
+        if (init && init->value) dumpNode(out, init->value.get(), pool, indentLevel + 1);
     }
 }
 
-void ASTDumper::visit(BinaryExprAST& node) {
-    printNodeHeader(node, "BinaryExprAST");
-    if (node.left) visitChild(node.left.get(), "left");
-    if (node.right) visitChild(node.right.get(), "right");
+void dumpFieldInit(std::string& out, const FieldInitAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "FieldInitAST '" + toStr(pool, node->name) + "'");
+    if (node->value) dumpNode(out, node->value.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(UnaryExprAST& node) {
-    printNodeHeader(node, "UnaryExprAST");
-    if (node.operand) visitChild(node.operand.get(), "operand");
+void dumpBinaryExpr(std::string& out, const BinaryExprAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "BinaryExprAST");
+    if (node->left) dumpNode(out, node->left.get(), pool, indentLevel + 1);
+    if (node->right) dumpNode(out, node->right.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(CallExprAST& node) {
-    printNodeHeader(node, "CallExprAST");
-    if (node.callee) visitChild(node.callee.get(), "callee");
-    for (const auto& arg : node.args) visitChild(arg.get());
+void dumpUnaryExpr(std::string& out, const UnaryExprAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "UnaryExprAST");
+    if (node->operand) dumpNode(out, node->operand.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(IndexExprAST& node) {
-    printNodeHeader(node, "IndexExprAST");
-    if (node.target) visitChild(node.target.get(), "target");
-    if (node.index) visitChild(node.index.get(), "index");
-    if (node.sliceEnd) visitChild(node.sliceEnd.get(), "sliceEnd");
+void dumpCallExpr(std::string& out, const CallExprAST* node, const StringPool* pool, int indentLevel) {
+    std::string header = "CallExprAST";
+    if (node->isArgPack) header += " (arg pack)";
+    if (node->isAsyncCall) header += " (async)";
+    printNodeHeader(out, indentLevel, *node, header);
+    if (node->callee) dumpNode(out, node->callee.get(), pool, indentLevel + 1);
+    for (const auto& arg : node->args) dumpNode(out, arg.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(FieldAccessExprAST& node) {
-    printNodeHeader(node, "FieldAccessExprAST ." + toStr(pool, node.field));
-    if (node.object) visitChild(node.object.get(), "object");
+void dumpIndexExpr(std::string& out, const IndexExprAST* node, const StringPool* pool, int indentLevel) {
+    std::string header = "IndexExprAST";
+    header += (node->kind == IndexKind::Slice) ? " (slice)" : " (element)";
+    if (node->isExclusive) header += " exclusive";
+    printNodeHeader(out, indentLevel, *node, header);
+    if (node->target) dumpNode(out, node->target.get(), pool, indentLevel + 1);
+    if (node->index) dumpNode(out, node->index.get(), pool, indentLevel + 1);
+    if (node->sliceEnd) dumpNode(out, node->sliceEnd.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(BehaviorAccessExprAST& node) {
-    printNodeHeader(node, "BehaviorAccessExprAST " + toStr(pool, node.typeName) + ":" + toStr(pool, node.method));
+void dumpFieldAccessExpr(std::string& out, const FieldAccessExprAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "FieldAccessExprAST ." + toStr(pool, node->field));
+    if (node->object) dumpNode(out, node->object.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(NullableChainExprAST& node) {
-    printNodeHeader(node, "NullableChainExprAST");
-    if (node.object) visitChild(node.object.get(), "object");
-    if (!node.steps.empty()) {
-        indent(); out += "\tsteps: ";
-        for (size_t i = 0; i < node.steps.size(); ++i) {
-            out += toStr(pool, node.steps[i]);
-            if (i + 1 < node.steps.size()) out += ", ";
+void dumpBehaviorAccessExpr(std::string& out, const BehaviorAccessExprAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "BehaviorAccessExprAST " + toStr(pool, node->typeName) + ":" + toStr(pool, node->method));
+}
+
+void dumpNullableChainExpr(std::string& out, const NullableChainExprAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "NullableChainExprAST");
+    if (node->object) dumpNode(out, node->object.get(), pool, indentLevel + 1);
+    if (!node->steps.empty()) {
+        out += getIndent(indentLevel) + "\tsteps: ";
+        for (size_t i = 0; i < node->steps.size(); ++i) {
+            out += toStr(pool, node->steps[i]);
+            if (i + 1 < node->steps.size()) out += ", ";
         }
         out += "\n";
     }
 }
 
-void ASTDumper::visit(NullCoalesceExprAST& node) {
-    printNodeHeader(node, "NullCoalesceExprAST");
-    if (node.value) visitChild(node.value.get(), "value");
-    if (node.fallback) visitChild(node.fallback.get(), "fallback");
+void dumpNullCoalesceExpr(std::string& out, const NullCoalesceExprAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "NullCoalesceExprAST");
+    if (node->value) dumpNode(out, node->value.get(), pool, indentLevel + 1);
+    if (node->fallback) dumpNode(out, node->fallback.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(AssignExprAST& node) {
-    printNodeHeader(node, "AssignExprAST");
-    if (node.lhs) visitChild(node.lhs.get(), "lhs");
-    if (node.rhs) visitChild(node.rhs.get(), "rhs");
+void dumpAssignExpr(std::string& out, const AssignExprAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "AssignExprAST");
+    if (node->lhs) dumpNode(out, node->lhs.get(), pool, indentLevel + 1);
+    if (node->rhs) dumpNode(out, node->rhs.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(IsExprAST& node) {
-    printNodeHeader(node, "IsExprAST");
-    if (node.expr) visitChild(node.expr.get(), "expr");
+void dumpIsExpr(std::string& out, const IsExprAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "IsExprAST");
+    if (node->expr) dumpNode(out, node->expr.get(), pool, indentLevel + 1);
+    if (node->checkType) dumpNode(out, node->checkType.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(PipelineExprAST& node) {
-    printNodeHeader(node, "PipelineExprAST");
-    if (node.seed) visitChild(node.seed.get(), "seed");
-    for (const auto& step : node.steps) {
-        if (step) visitChild(step.get());
+void dumpPipelineExpr(std::string& out, const PipelineExprAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "PipelineExprAST");
+    if (node->seed) dumpNode(out, node->seed.get(), pool, indentLevel + 1);
+    for (const auto& step : node->steps) {
+        if (step) dumpNode(out, step.get(), pool, indentLevel + 1);
     }
 }
 
-void ASTDumper::visit(PipelineStepAST& node) {
-    printNodeHeader(node, "PipelineStepAST (kind=" + std::to_string(static_cast<int>(node.kind)) + ")");
-    indentLevel++;
-    if (node.ident.isValid()) { indent(); out += "ident: " + toStr(pool, node.ident) + "\n"; }
-    if (node.typeName.isValid()) { indent(); out += "typeName: " + toStr(pool, node.typeName) + "\n"; }
-    if (node.method.isValid()) { indent(); out += "method: " + toStr(pool, node.method) + "\n"; }
-    if (node.field.isValid()) { indent(); out += "field: " + toStr(pool, node.field) + "\n"; }
-    for (const auto& arg : node.packArgs) visitChild(arg.get(), "packArg");
-    if (node.anonFunc) visitChild(node.anonFunc.get(), "anonFunc");
-    indentLevel--;
+void dumpPipelineStep(std::string& out, const PipelineStepAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "PipelineStepAST (kind=" + std::to_string(static_cast<int>(node->kind)) + ")");
+    if (node->ident.isValid()) out += getIndent(indentLevel + 1) + "ident: " + toStr(pool, node->ident) + "\n";
+    if (node->typeName.isValid()) out += getIndent(indentLevel + 1) + "typeName: " + toStr(pool, node->typeName) + "\n";
+    if (node->method.isValid()) out += getIndent(indentLevel + 1) + "method: " + toStr(pool, node->method) + "\n";
+    if (node->field.isValid()) out += getIndent(indentLevel + 1) + "field: " + toStr(pool, node->field) + "\n";
+    for (const auto& arg : node->packArgs) dumpNode(out, arg.get(), pool, indentLevel + 1);
+    if (node->anonFunc) dumpNode(out, node->anonFunc.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(ComposeExprAST& node) {
-    printNodeHeader(node, "ComposeExprAST");
-    for (const auto& op : node.operands) {
-        if (op) visitChild(op.get());
+void dumpComposeExpr(std::string& out, const ComposeExprAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "ComposeExprAST");
+    for (const auto& op : node->operands) {
+        if (op) dumpNode(out, op.get(), pool, indentLevel + 1);
     }
 }
 
-void ASTDumper::visit(ComposeOperandAST& node) {
-    printNodeHeader(node, "ComposeOperandAST (kind=" + std::to_string(static_cast<int>(node.kind)) + ")");
-    indentLevel++;
-    if (node.ident.isValid()) { indent(); out += "ident: " + toStr(pool, node.ident) + "\n"; }
-    if (node.typeName.isValid()) { indent(); out += "typeName: " + toStr(pool, node.typeName) + "\n"; }
-    if (node.method.isValid()) { indent(); out += "method: " + toStr(pool, node.method) + "\n"; }
-    if (node.field.isValid()) { indent(); out += "field: " + toStr(pool, node.field) + "\n"; }
-    indentLevel--;
+void dumpComposeOperand(std::string& out, const ComposeOperandAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "ComposeOperandAST (kind=" + std::to_string(static_cast<int>(node->kind)) + ")");
+    if (node->ident.isValid()) out += getIndent(indentLevel + 1) + "ident: " + toStr(pool, node->ident) + "\n";
+    if (node->typeName.isValid()) out += getIndent(indentLevel + 1) + "typeName: " + toStr(pool, node->typeName) + "\n";
+    if (node->method.isValid()) out += getIndent(indentLevel + 1) + "method: " + toStr(pool, node->method) + "\n";
+    if (node->field.isValid()) out += getIndent(indentLevel + 1) + "field: " + toStr(pool, node->field) + "\n";
 }
 
-void ASTDumper::visit(AnonFuncExprAST& node) {
-    std::string header = "AnonFuncExprAST";
-    
-    // Parameter groups (using flat representation)
-    size_t paramOffset = 0;
-    for (size_t g = 0; g < node.sig.groupSizes.size(); ++g) {
-        header += " (";
-        size_t groupSize = node.sig.groupSizes[g];
-        for (size_t i = 0; i < groupSize; ++i) {
-            if (i > 0) header += ", ";
-            const auto& param = node.sig.allParams[paramOffset + i];
-            if (param->type) header += formatType(param->type.get());
-            if (param->isVariadic) header += "...";
-        }
-        header += ")";
-        paramOffset += groupSize;
-    }
-    
-    // Return types
-    if (!node.sig.returnTypes.empty()) {
-        header += " -> ";
-        for (size_t i = 0; i < node.sig.returnTypes.size(); ++i) {
-            if (i > 0) header += ", ";
-            header += formatType(node.sig.returnTypes[i].get());
-        }
-    }
-    
-    printNodeHeader(node, header);
-    if (node.body) visitChild(node.body.get());
+void dumpAnonFuncExpr(std::string& out, const AnonFuncExprAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "AnonFuncExprAST");
+    if (node->body) dumpNode(out, node->body.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(AwaitExprAST& node) {
-    printNodeHeader(node, "AwaitExprAST");
-    if (node.inner) visitChild(node.inner.get());
+void dumpAwaitExpr(std::string& out, const AwaitExprAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "AwaitExprAST");
+    if (node->inner) dumpNode(out, node->inner.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(MatchExprAST& node) {
-    printNodeHeader(node, "MatchExprAST");
-    if (node.subject) visitChild(node.subject.get(), "subject");
-    for (const auto& arm : node.arms) visitChild(arm.get());
-    if (node.defaultBody) visitChild(node.defaultBody.get(), "default");
+void dumpMatchExpr(std::string& out, const MatchExprAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "MatchExprAST");
+    if (node->subject) dumpNode(out, node->subject.get(), pool, indentLevel + 1);
+    for (const auto& arm : node->arms) dumpNode(out, arm.get(), pool, indentLevel + 1);
+    if (node->defaultBody) dumpNode(out, node->defaultBody.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(IfExprAST& node) {
-    printNodeHeader(node, "IfExprAST");
-    if (node.condition) visitChild(node.condition.get(), "cond");
-    if (node.thenBranch) visitChild(node.thenBranch.get(), "then");
-    if (node.elseBranch) visitChild(node.elseBranch.get(), "else");
+void dumpIfExpr(std::string& out, const IfExprAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "IfExprAST");
+    if (node->condition) dumpNode(out, node->condition.get(), pool, indentLevel + 1);
+    if (node->thenBranch) dumpNode(out, node->thenBranch.get(), pool, indentLevel + 1);
+    if (node->elseBranch) dumpNode(out, node->elseBranch.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(RangeExprAST& node) {
-    printNodeHeader(node, "RangeExprAST");
-    if (node.lo) visitChild(node.lo.get(), "lo");
-    if (node.hi) visitChild(node.hi.get(), "hi");
+void dumpRangeExpr(std::string& out, const RangeExprAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "RangeExprAST");
+    if (node->lo) dumpNode(out, node->lo.get(), pool, indentLevel + 1);
+    if (node->hi) dumpNode(out, node->hi.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(TypeConvExprAST& node) {
+void dumpTypeConvExpr(std::string& out, const TypeConvExprAST* node, const StringPool* pool, int indentLevel) {
     std::string header = "TypeConvExprAST";
-    if (node.isUnsafe) header += " (unsafe)";
-    if (node.targetType) header += " -> " + formatType(node.targetType.get());
-    printNodeHeader(node, header);
-    if (node.expr) visitChild(node.expr.get());
+    if (node->isUnsafe) header += " (unsafe)";
+    if (node->targetType) header += " -> " + formatType(node->targetType.get(), pool);
+    printNodeHeader(out, indentLevel, *node, header);
+    if (node->expr) dumpNode(out, node->expr.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(ResolveExprAST& node) {
-    printNodeHeader(node, "ResolveExprAST");
-    indentLevel++;
-    if (node.subject) visitChild(node.subject.get(), "subject");
-    if (node.okArm) visitChild(node.okArm.get(), "okArm");
-    if (node.errArm) visitChild(node.errArm.get(), "errArm");
-    indentLevel--;
+void dumpResolveExpr(std::string& out, const ResolveExprAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "ResolveExprAST");
+    if (node->subject) dumpNode(out, node->subject.get(), pool, indentLevel + 1);
+    if (node->okArm) dumpNode(out, node->okArm.get(), pool, indentLevel + 1);
+    if (node->errArm) dumpNode(out, node->errArm.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(OkArmAST& node) {
-    std::string header = "OkArmAST '" + toStr(pool, node.bindName) + "'";
-    if (node.bindType) header += " : " + formatType(node.bindType.get());
-    printNodeHeader(node, header);
-    if (node.body) visitChild(node.body.get(), "body");
+void dumpOkArm(std::string& out, const OkArmAST* node, const StringPool* pool, int indentLevel) {
+    std::string header = "OkArmAST '" + toStr(pool, node->bindName) + "'";
+    if (node->bindType) header += " : " + formatType(node->bindType.get(), pool);
+    printNodeHeader(out, indentLevel, *node, header);
+    if (node->body) dumpNode(out, node->body.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(ErrArmAST& node) {
+void dumpErrArm(std::string& out, const ErrArmAST* node, const StringPool* pool, int indentLevel) {
     std::string header = "ErrArmAST";
-    if (!node.bindName.isValid() && !node.bindType) {
+    if (!node->bindName.isValid() && !node->bindType) {
         header += " (bare)";
     } else {
-        header += " '" + toStr(pool, node.bindName) + "'";
-        if (node.bindType) header += " : " + formatType(node.bindType.get());
+        header += " '" + toStr(pool, node->bindName) + "'";
+        if (node->bindType) header += " : " + formatType(node->bindType.get(), pool);
     }
-    printNodeHeader(node, header);
-    if (node.body) visitChild(node.body.get(), "body");
+    printNodeHeader(out, indentLevel, *node, header);
+    if (node->body) dumpNode(out, node->body.get(), pool, indentLevel + 1);
 }
 
-// ── Pattern nodes ─────────────────────────────────────────────────────────
-void ASTDumper::visit(BindPatternAST& node) {
-    printNodeHeader(node, "BindPatternAST '" + toStr(pool, node.name) + "'");
+void dumpBindPattern(std::string& out, const BindPatternAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "BindPatternAST '" + toStr(pool, node->name) + "'");
 }
 
-void ASTDumper::visit(WildcardPatternAST& node) {
-    printNodeHeader(node, "WildcardPatternAST");
+void dumpWildcardPattern(std::string& out, const WildcardPatternAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "WildcardPatternAST");
 }
 
-void ASTDumper::visit(TypePatternAST& node) {
-    printNodeHeader(node, "TypePatternAST");
-    indentLevel++;
-    if (node.checkType) visitChild(node.checkType.get(), "checkType");
-    indentLevel--;
+void dumpTypePattern(std::string& out, const TypePatternAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "TypePatternAST");
+    if (node->checkType) dumpNode(out, node->checkType.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(StructPatternAST& node) {
-    printNodeHeader(node, "StructPatternAST '" + toStr(pool, node.typeName) + "'");
-    for (const auto& field : node.fields) {
+void dumpStructPattern(std::string& out, const StructPatternAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "StructPatternAST '" + toStr(pool, node->typeName) + "'");
+    for (const auto& field : node->fields) {
         if (field) {
             if (field->subPattern) {
-                visitChild(field->subPattern.get(), toStr(pool, field->field));
+                dumpNode(out, field->subPattern.get(), pool, indentLevel + 1);
             } else {
-                indent(); out += "\tField: " + toStr(pool, field->field) + " (shorthand)\n";
+                out += getIndent(indentLevel + 1) + "Field: " + toStr(pool, field->field) + " (shorthand)\n";
             }
         }
     }
 }
 
-void ASTDumper::visit(PatternExprAST& node) {
-    printNodeHeader(node, "PatternExprAST");
-    if (node.inner) visitChild(node.inner.get());
+void dumpPatternExpr(std::string& out, const PatternExprAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "PatternExprAST");
+    if (node->inner) dumpNode(out, node->inner.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(MatchArmAST& node) {
-    printNodeHeader(node, "MatchArmAST");
-    for (const auto& p : node.patterns) visitChild(p.get());
-    if (node.guard) visitChild(node.guard.get(), "guard");
-    for (const auto& e : node.exprs) visitChild(e.get());
+void dumpMatchArm(std::string& out, const MatchArmAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "MatchArmAST");
+    for (const auto& p : node->patterns) dumpNode(out, p.get(), pool, indentLevel + 1);
+    if (node->guard) dumpNode(out, node->guard.get(), pool, indentLevel + 1);
+    for (const auto& e : node->exprs) dumpNode(out, e.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(DefaultArmAST& node) {
-    printNodeHeader(node, "DefaultArmAST");
-    for (const auto& e : node.exprs) visitChild(e.get());
+void dumpDefaultArm(std::string& out, const DefaultArmAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "DefaultArmAST");
+    for (const auto& e : node->exprs) dumpNode(out, e.get(), pool, indentLevel + 1);
 }
 
-// ── Statement nodes ───────────────────────────────────────────────────────
-void ASTDumper::visit(BlockStmtAST& node) {
-    printNodeHeader(node, "BlockStmtAST");
-    for (const auto& stmt : node.stmts) visitChild(stmt.get());
+void dumpBlockStmt(std::string& out, const BlockStmtAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "BlockStmtAST");
+    for (const auto& stmt : node->stmts) dumpNode(out, stmt.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(ExprStmtAST& node) {
-    printNodeHeader(node, "ExprStmtAST");
-    if (node.expr) visitChild(node.expr.get());
+void dumpExprStmt(std::string& out, const ExprStmtAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "ExprStmtAST");
+    if (node->expr) dumpNode(out, node->expr.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(DeclStmtAST& node) {
-    printNodeHeader(node, "DeclStmtAST");
-    if (node.decl) visitChild(node.decl.get());
+void dumpDeclStmt(std::string& out, const DeclStmtAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "DeclStmtAST");
+    if (node->decl) dumpNode(out, node->decl.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(IfStmtAST& node) {
-    printNodeHeader(node, "IfStmtAST");
-    if (node.condition) visitChild(node.condition.get(), "condition");
-    if (node.thenBranch) visitChild(node.thenBranch.get(), "then");
-    if (node.elseBranch) visitChild(node.elseBranch.get(), "else");
+void dumpIfStmt(std::string& out, const IfStmtAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "IfStmtAST");
+    if (node->condition) dumpNode(out, node->condition.get(), pool, indentLevel + 1);
+    if (node->thenBranch) dumpNode(out, node->thenBranch.get(), pool, indentLevel + 1);
+    if (node->elseBranch) dumpNode(out, node->elseBranch.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(SwitchStmtAST& node) {
-    printNodeHeader(node, "SwitchStmtAST");
-    if (node.subject) visitChild(node.subject.get(), "subject");
-    for (const auto& c : node.cases) {
+void dumpSwitchStmt(std::string& out, const SwitchStmtAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "SwitchStmtAST");
+    if (node->subject) dumpNode(out, node->subject.get(), pool, indentLevel + 1);
+    for (const auto& c : node->cases) {
         if (c) {
-            indent(); out += "\t\tCase:\n";
-            indentLevel++;
-            for (const auto& val : c->values) visitChild(val.get());
-            if (c->body) visitChild(c->body.get());
-            indentLevel--;
+            out += getIndent(indentLevel + 1) + "Case:\n";
+            for (const auto& val : c->values) dumpNode(out, val.get(), pool, indentLevel + 2);
+            if (c->body) dumpNode(out, c->body.get(), pool, indentLevel + 2);
         }
     }
-    if (node.defaultBody) visitChild(node.defaultBody.get(), "default");
+    if (node->defaultBody) dumpNode(out, node->defaultBody.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(ForStmtAST& node) {
-    printNodeHeader(node, "ForStmtAST '" + toStr(pool, node.iterVar->name) + "'");
-    if (node.iterVar->type) {
-        indent(); out += "\tvarType: " + formatType(node.iterVar->type.get()) + "\n";
-    }
-    if (node.iterable) visitChild(node.iterable.get(), "iterable");
-    if (node.step) visitChild(node.step.get(), "step");
-    if (node.body) visitChild(node.body.get());
+void dumpForStmt(std::string& out, const ForStmtAST* node, const StringPool* pool, int indentLevel) {
+    std::string header = "ForStmtAST '" + toStr(pool, node->iterVar->name) + "'";
+    if (node->iterVar->type) header += " : " + formatType(node->iterVar->type.get(), pool);
+    printNodeHeader(out, indentLevel, *node, header);
+    if (node->iterable) dumpNode(out, node->iterable.get(), pool, indentLevel + 1);
+    if (node->step) dumpNode(out, node->step.get(), pool, indentLevel + 1);
+    if (node->body) dumpNode(out, node->body.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(WhileStmtAST& node) {
-    printNodeHeader(node, "WhileStmtAST");
-    if (node.condition) visitChild(node.condition.get(), "cond");
-    if (node.body) visitChild(node.body.get());
+void dumpWhileStmt(std::string& out, const WhileStmtAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "WhileStmtAST");
+    if (node->condition) dumpNode(out, node->condition.get(), pool, indentLevel + 1);
+    if (node->body) dumpNode(out, node->body.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(DoWhileStmtAST& node) {
-    printNodeHeader(node, "DoWhileStmtAST");
-    if (node.body) visitChild(node.body.get());
-    if (node.condition) visitChild(node.condition.get(), "cond");
+void dumpDoWhileStmt(std::string& out, const DoWhileStmtAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "DoWhileStmtAST");
+    if (node->body) dumpNode(out, node->body.get(), pool, indentLevel + 1);
+    if (node->condition) dumpNode(out, node->condition.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(ReturnStmtAST& node) {
-    printNodeHeader(node, "ReturnStmtAST");
-    if (node.values.empty()) return;
-    
-    if (node.values.size() == 1) {
-        if (node.values[0]) visitChild(node.values[0].get());
-    } else {
-        for (size_t i = 0; i < node.values.size(); ++i) {
-            if (node.values[i]) {
-                visitChild(node.values[i].get(), "value_" + std::to_string(i));
-            }
-        }
-    }
+void dumpReturnStmt(std::string& out, const ReturnStmtAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "ReturnStmtAST");
+    for (const auto& val : node->values) dumpNode(out, val.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(BreakStmtAST& node) {
-    printNodeHeader(node, "BreakStmtAST");
+void dumpBreakStmt(std::string& out, const BreakStmtAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "BreakStmtAST");
 }
 
-void ASTDumper::visit(ContinueStmtAST& node) {
-    printNodeHeader(node, "ContinueStmtAST");
+void dumpContinueStmt(std::string& out, const ContinueStmtAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "ContinueStmtAST");
 }
 
-void ASTDumper::visit(MultiVarDeclAST& node) {
+void dumpMultiVarDecl(std::string& out, const MultiVarDeclAST* node, const StringPool* pool, int indentLevel) {
     std::string header = "MultiVarDeclAST (";
-    header += (node.keyword == DeclKeyword::Let) ? "let" : "const";
+    header += (node->keyword == DeclKeyword::Let) ? "let" : "const";
     header += ") ";
-    for (size_t i = 0; i < node.vars.size(); ++i) {
+    for (size_t i = 0; i < node->vars.size(); ++i) {
         if (i > 0) header += ", ";
-        header += toStr(pool, node.vars[i].first);
-        if (node.vars[i].second)
-            header += " : " + formatType(node.vars[i].second.get());
+        header += toStr(pool, node->vars[i].first);
+        if (node->vars[i].second) header += " : " + formatType(node->vars[i].second.get(), pool);
     }
     header += " = ...";
-    printNodeHeader(node, header);
-    if (node.rhs) {
-        indentLevel++;
-        visitChild(node.rhs.get(), "rhs");
-        indentLevel--;
-    }
+    printNodeHeader(out, indentLevel, *node, header);
+    if (node->rhs) dumpNode(out, node->rhs.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(MultiAssignStmtAST& node) {
+void dumpMultiAssignStmt(std::string& out, const MultiAssignStmtAST* node, const StringPool* pool, int indentLevel) {
     std::string header = "MultiAssignStmtAST (";
-    for (size_t i = 0; i < node.lhs.size(); ++i) {
+    for (size_t i = 0; i < node->lhs.size(); ++i) {
         if (i > 0) header += ", ";
         header += "lhs_" + std::to_string(i);
     }
     header += " = ...";
-    printNodeHeader(node, header);
-    indentLevel++;
-    for (size_t i = 0; i < node.lhs.size(); ++i) {
-        if (node.lhs[i]) {
-            visitChild(node.lhs[i].get(), "lhs_" + std::to_string(i));
-        }
-    }
-    if (node.rhs) visitChild(node.rhs.get(), "rhs");
-    indentLevel--;
+    printNodeHeader(out, indentLevel, *node, header);
+    for (const auto& lhs : node->lhs) dumpNode(out, lhs.get(), pool, indentLevel + 1);
+    if (node->rhs) dumpNode(out, node->rhs.get(), pool, indentLevel + 1);
 }
 
-// ── Other nodes ───────────────────────────────────────────────────────────
-void ASTDumper::visit(AttributeAST& node) {
-    std::string header = "AttributeAST @" + toStr(pool, node.name);
-    if (!node.args.empty()) {
+void dumpAttribute(std::string& out, const AttributeAST* node, const StringPool* pool, int indentLevel) {
+    std::string header = "AttributeAST @" + toStr(pool, node->name);
+    if (!node->args.empty()) {
         header += "(";
-        for (size_t i = 0; i < node.args.size(); ++i) {
+        for (size_t i = 0; i < node->args.size(); ++i) {
             if (i > 0) header += ", ";
-            header += toStr(pool, node.args[i]->value);
+            header += toStr(pool, node->args[i]->value);
         }
         header += ")";
     }
-    printNodeHeader(node, header);
+    printNodeHeader(out, indentLevel, *node, header);
 }
 
-void ASTDumper::visit(AttributeArgAST& node) {
+void dumpAttributeArg(std::string& out, const AttributeArgAST* node, const StringPool* pool, int indentLevel) {
     std::string header = "AttributeArgAST ";
-    switch (node.kind) {
-        case AttributeArgKind::StringLit: header += "\"" + toStr(pool, node.value) + "\""; break;
-        case AttributeArgKind::IntLit:    header += toStr(pool, node.value); break;
-        case AttributeArgKind::BoolLit:   header += toStr(pool, node.value); break;
-        case AttributeArgKind::TypeIdent: header += toStr(pool, node.value); break;
+    switch (node->kind) {
+        case AttributeArgKind::StringLit: header += "\"" + toStr(pool, node->value) + "\""; break;
+        case AttributeArgKind::IntLit:    header += toStr(pool, node->value); break;
+        case AttributeArgKind::BoolLit:   header += toStr(pool, node->value); break;
+        case AttributeArgKind::TypeIdent: header += toStr(pool, node->value); break;
     }
-    printNodeHeader(node, header);
+    printNodeHeader(out, indentLevel, *node, header);
 }
 
-void ASTDumper::visit(IntrinsicCallExprAST& node) {
-    printNodeHeader(node, "IntrinsicCallExprAST " + toStr(pool, node.intrinsicName));
-    if (node.typeArg) visitChild(node.typeArg.get(), "typeArg");
-    for (const auto& e : node.args) visitChild(e.get(), "arg");
+void dumpIntrinsicCallExpr(std::string& out, const IntrinsicCallExprAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "IntrinsicCallExprAST " + toStr(pool, node->intrinsicName));
+    if (node->typeArg) dumpNode(out, node->typeArg.get(), pool, indentLevel + 1);
+    for (const auto& e : node->args) dumpNode(out, e.get(), pool, indentLevel + 1);
 }
 
-void ASTDumper::visit(UnknownDeclAST& node) {
-    printNodeHeader(node, "UnknownDeclAST");
+void dumpUnknown(std::string& out, const BaseAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "Unknown");
 }
 
-void ASTDumper::visit(UnknownExprAST& node) {
-    printNodeHeader(node, "UnknownExprAST");
+// =============================================================================
+// Main dispatch function – single entry point for all node types
+// =============================================================================
+
+void dumpNode(std::string& out, const BaseAST* node, const StringPool* pool, int indentLevel) {
+    if (!node) return;
+
+    switch (node->kind) {
+        case ASTKind::Program:             dumpProgram(out, static_cast<const ProgramAST*>(node), pool, indentLevel); break;
+        case ASTKind::PrimitiveType:       dumpPrimitiveType(out, static_cast<const PrimitiveTypeAST*>(node), pool, indentLevel); break;
+        case ASTKind::NamedType:           dumpNamedType(out, static_cast<const NamedTypeAST*>(node), pool, indentLevel); break;
+        case ASTKind::NullableType:        dumpNullableType(out, static_cast<const NullableTypeAST*>(node), pool, indentLevel); break;
+        case ASTKind::ResultType:          dumpResultType(out, static_cast<const ResultTypeAST*>(node), pool, indentLevel); break;
+        case ASTKind::FixedArrayType:      dumpFixedArrayType(out, static_cast<const FixedArrayTypeAST*>(node), pool, indentLevel); break;
+        case ASTKind::SliceType:           dumpSliceType(out, static_cast<const SliceTypeAST*>(node), pool, indentLevel); break;
+        case ASTKind::DynamicArrayType:    dumpDynamicArrayType(out, static_cast<const DynamicArrayTypeAST*>(node), pool, indentLevel); break;
+        case ASTKind::RefType:             dumpRefType(out, static_cast<const RefTypeAST*>(node), pool, indentLevel); break;
+        case ASTKind::PtrType:             dumpPtrType(out, static_cast<const PtrTypeAST*>(node), pool, indentLevel); break;
+        case ASTKind::FuncType:            dumpFuncType(out, static_cast<const FuncTypeAST*>(node), pool, indentLevel); break;
+        case ASTKind::PackageDecl:         dumpPackageDecl(out, static_cast<const PackageDeclAST*>(node), pool, indentLevel); break;
+        case ASTKind::UseDecl:             dumpUseDecl(out, static_cast<const UseDeclAST*>(node), pool, indentLevel); break;
+        case ASTKind::VarDecl:             dumpVarDecl(out, static_cast<const VarDeclAST*>(node), pool, indentLevel); break;
+        case ASTKind::FuncDecl:            dumpFuncDecl(out, static_cast<const FuncDeclAST*>(node), pool, indentLevel); break;
+        case ASTKind::StructDecl:          dumpStructDecl(out, static_cast<const StructDeclAST*>(node), pool, indentLevel); break;
+        case ASTKind::FieldDecl:           dumpFieldDecl(out, static_cast<const FieldDeclAST*>(node), pool, indentLevel); break;
+        case ASTKind::EnumDecl:            dumpEnumDecl(out, static_cast<const EnumDeclAST*>(node), pool, indentLevel); break;
+        case ASTKind::EnumVariant:         dumpEnumVariant(out, static_cast<const EnumVariantAST*>(node), pool, indentLevel); break;
+        case ASTKind::TraitMethod:         dumpTraitMethod(out, static_cast<const TraitMethodAST*>(node), pool, indentLevel); break;
+        case ASTKind::TraitDecl:           dumpTraitDecl(out, static_cast<const TraitDeclAST*>(node), pool, indentLevel); break;
+        case ASTKind::TraitRef:            dumpTraitRef(out, static_cast<const TraitRefAST*>(node), pool, indentLevel); break;
+        case ASTKind::ImplDecl:            dumpImplDecl(out, static_cast<const ImplDeclAST*>(node), pool, indentLevel); break;
+        case ASTKind::MethodDecl:          dumpMethodDecl(out, static_cast<const MethodDeclAST*>(node), pool, indentLevel); break;
+        case ASTKind::FromDecl:            dumpFromDecl(out, static_cast<const FromDeclAST*>(node), pool, indentLevel); break;
+        case ASTKind::FromEntry:           dumpFromEntry(out, static_cast<const FromEntryAST*>(node), pool, indentLevel); break;
+        case ASTKind::TypeAliasDecl:       dumpTypeAliasDecl(out, static_cast<const TypeAliasDeclAST*>(node), pool, indentLevel); break;
+        case ASTKind::GenericParam:        dumpGenericParam(out, static_cast<const GenericParamAST*>(node), pool, indentLevel); break;
+        case ASTKind::Param:               dumpParam(out, static_cast<const ParamAST*>(node), pool, indentLevel); break;
+        case ASTKind::LiteralExpr:         dumpLiteralExpr(out, static_cast<const LiteralExprAST*>(node), pool, indentLevel); break;
+        case ASTKind::IdentifierExpr:      dumpIdentifierExpr(out, static_cast<const IdentifierExprAST*>(node), pool, indentLevel); break;
+        case ASTKind::ArrayLiteralExpr:    dumpArrayLiteralExpr(out, static_cast<const ArrayLiteralExprAST*>(node), pool, indentLevel); break;
+        case ASTKind::StructLiteralExpr:   dumpStructLiteralExpr(out, static_cast<const StructLiteralExprAST*>(node), pool, indentLevel); break;
+        case ASTKind::FieldInit:           dumpFieldInit(out, static_cast<const FieldInitAST*>(node), pool, indentLevel); break;
+        case ASTKind::BinaryExpr:          dumpBinaryExpr(out, static_cast<const BinaryExprAST*>(node), pool, indentLevel); break;
+        case ASTKind::UnaryExpr:           dumpUnaryExpr(out, static_cast<const UnaryExprAST*>(node), pool, indentLevel); break;
+        case ASTKind::CallExpr:            dumpCallExpr(out, static_cast<const CallExprAST*>(node), pool, indentLevel); break;
+        case ASTKind::IndexExpr:           dumpIndexExpr(out, static_cast<const IndexExprAST*>(node), pool, indentLevel); break;
+        case ASTKind::FieldAccessExpr:     dumpFieldAccessExpr(out, static_cast<const FieldAccessExprAST*>(node), pool, indentLevel); break;
+        case ASTKind::BehaviorAccessExpr:  dumpBehaviorAccessExpr(out, static_cast<const BehaviorAccessExprAST*>(node), pool, indentLevel); break;
+        case ASTKind::NullableChainExpr:   dumpNullableChainExpr(out, static_cast<const NullableChainExprAST*>(node), pool, indentLevel); break;
+        case ASTKind::NullCoalesceExpr:    dumpNullCoalesceExpr(out, static_cast<const NullCoalesceExprAST*>(node), pool, indentLevel); break;
+        case ASTKind::AssignExpr:          dumpAssignExpr(out, static_cast<const AssignExprAST*>(node), pool, indentLevel); break;
+        case ASTKind::IsExpr:              dumpIsExpr(out, static_cast<const IsExprAST*>(node), pool, indentLevel); break;
+        case ASTKind::PipelineExpr:        dumpPipelineExpr(out, static_cast<const PipelineExprAST*>(node), pool, indentLevel); break;
+        case ASTKind::PipelineStep:        dumpPipelineStep(out, static_cast<const PipelineStepAST*>(node), pool, indentLevel); break;
+        case ASTKind::ComposeExpr:         dumpComposeExpr(out, static_cast<const ComposeExprAST*>(node), pool, indentLevel); break;
+        case ASTKind::ComposeOperand:      dumpComposeOperand(out, static_cast<const ComposeOperandAST*>(node), pool, indentLevel); break;
+        case ASTKind::AnonFuncExpr:        dumpAnonFuncExpr(out, static_cast<const AnonFuncExprAST*>(node), pool, indentLevel); break;
+        case ASTKind::AwaitExpr:           dumpAwaitExpr(out, static_cast<const AwaitExprAST*>(node), pool, indentLevel); break;
+        case ASTKind::MatchExpr:           dumpMatchExpr(out, static_cast<const MatchExprAST*>(node), pool, indentLevel); break;
+        case ASTKind::IfExpr:              dumpIfExpr(out, static_cast<const IfExprAST*>(node), pool, indentLevel); break;
+        case ASTKind::RangeExpr:           dumpRangeExpr(out, static_cast<const RangeExprAST*>(node), pool, indentLevel); break;
+        case ASTKind::TypeConvExpr:        dumpTypeConvExpr(out, static_cast<const TypeConvExprAST*>(node), pool, indentLevel); break;
+        case ASTKind::ResolveExpr:         dumpResolveExpr(out, static_cast<const ResolveExprAST*>(node), pool, indentLevel); break;
+        case ASTKind::OkArm:               dumpOkArm(out, static_cast<const OkArmAST*>(node), pool, indentLevel); break;
+        case ASTKind::ErrArm:              dumpErrArm(out, static_cast<const ErrArmAST*>(node), pool, indentLevel); break;
+        case ASTKind::BindPattern:         dumpBindPattern(out, static_cast<const BindPatternAST*>(node), pool, indentLevel); break;
+        case ASTKind::WildcardPattern:     dumpWildcardPattern(out, static_cast<const WildcardPatternAST*>(node), pool, indentLevel); break;
+        case ASTKind::TypePattern:         dumpTypePattern(out, static_cast<const TypePatternAST*>(node), pool, indentLevel); break;
+        case ASTKind::StructPattern:       dumpStructPattern(out, static_cast<const StructPatternAST*>(node), pool, indentLevel); break;
+        case ASTKind::FieldPattern:        // handled by StructPattern
+        case ASTKind::PatternExpr:         dumpPatternExpr(out, static_cast<const PatternExprAST*>(node), pool, indentLevel); break;
+        case ASTKind::MatchArm:            dumpMatchArm(out, static_cast<const MatchArmAST*>(node), pool, indentLevel); break;
+        case ASTKind::DefaultArm:          dumpDefaultArm(out, static_cast<const DefaultArmAST*>(node), pool, indentLevel); break;
+        case ASTKind::BlockStmt:           dumpBlockStmt(out, static_cast<const BlockStmtAST*>(node), pool, indentLevel); break;
+        case ASTKind::ExprStmt:            dumpExprStmt(out, static_cast<const ExprStmtAST*>(node), pool, indentLevel); break;
+        case ASTKind::DeclStmt:            dumpDeclStmt(out, static_cast<const DeclStmtAST*>(node), pool, indentLevel); break;
+        case ASTKind::IfStmt:              dumpIfStmt(out, static_cast<const IfStmtAST*>(node), pool, indentLevel); break;
+        case ASTKind::SwitchStmt:          dumpSwitchStmt(out, static_cast<const SwitchStmtAST*>(node), pool, indentLevel); break;
+        case ASTKind::SwitchCase:          // handled by SwitchStmt
+        case ASTKind::ForStmt:             dumpForStmt(out, static_cast<const ForStmtAST*>(node), pool, indentLevel); break;
+        case ASTKind::WhileStmt:           dumpWhileStmt(out, static_cast<const WhileStmtAST*>(node), pool, indentLevel); break;
+        case ASTKind::DoWhileStmt:         dumpDoWhileStmt(out, static_cast<const DoWhileStmtAST*>(node), pool, indentLevel); break;
+        case ASTKind::ReturnStmt:          dumpReturnStmt(out, static_cast<const ReturnStmtAST*>(node), pool, indentLevel); break;
+        case ASTKind::BreakStmt:           dumpBreakStmt(out, static_cast<const BreakStmtAST*>(node), pool, indentLevel); break;
+        case ASTKind::ContinueStmt:        dumpContinueStmt(out, static_cast<const ContinueStmtAST*>(node), pool, indentLevel); break;
+        case ASTKind::MultiVarDecl:        dumpMultiVarDecl(out, static_cast<const MultiVarDeclAST*>(node), pool, indentLevel); break;
+        case ASTKind::MultiAssignStmt:     dumpMultiAssignStmt(out, static_cast<const MultiAssignStmtAST*>(node), pool, indentLevel); break;
+        case ASTKind::Attribute:           dumpAttribute(out, static_cast<const AttributeAST*>(node), pool, indentLevel); break;
+        case ASTKind::AttributeArg:        dumpAttributeArg(out, static_cast<const AttributeArgAST*>(node), pool, indentLevel); break;
+        case ASTKind::IntrinsicCallExpr:   dumpIntrinsicCallExpr(out, static_cast<const IntrinsicCallExprAST*>(node), pool, indentLevel); break;
+        default:                           dumpUnknown(out, node, pool, indentLevel); break;
+    }
 }
 
-void ASTDumper::visit(UnknownStmtAST& node) {
-    printNodeHeader(node, "UnknownStmtAST");
-}
+} // anonymous namespace
 
-void ASTDumper::visit(UnknownTypeAST& node) {
-    printNodeHeader(node, "UnknownTypeAST");
+// =============================================================================
+// Public entry point
+// =============================================================================
+
+std::string dumpAST(const BaseAST* node, const StringPool& pool, int verbosity) {
+    std::string out;
+    if (node) {
+        dumpNode(out, node, &pool, 0);
+    } else {
+        out = "<null>\n";
+    }
+    return out;
 }
 
 } // namespace LucDebug
