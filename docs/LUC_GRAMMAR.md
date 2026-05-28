@@ -72,7 +72,9 @@ export const main () -> int = {
 }
 
 -- with command-line arguments
-export const main (args string[]) -> int = {
+-- [_, string]: slice — the runtime owns the argument buffer, main gets a read-only view
+-- [*, string] would be wrong: that implies main owns a heap copy of all arguments
+export const main (args [_, string]) -> int = {
     return 0
 }
 ```
@@ -325,9 +327,9 @@ Every type is either **owned** or **borrowed**. Bare `T` = owned, `&T` = borrowe
 | -------------- | -------------------------------- | ------------------------------- | ---------------------------------- |
 | Primitives     | `bool` `int` `float` `char` …    | stack / inline                  | full copy                          |
 | Enum           | `Direction.North`                | integer (`byte`/`short`)        | full copy                          |
-| Fixed array    | `T[*N]`                          | stack / inline                  | full element copy                  |
-| Slice          | `T[]`                            | fat pointer (`ptr + len + cap`) | copies view header — shares buffer |
-| Dynamic array  | `T[*]`                           | heap-owned buffer               | full deep copy                     |
+| Fixed array    | `[N, T]`                         | stack / inline                  | full element copy                  |
+| Slice          | `[_, T]`                         | fat pointer (`ptr + len + cap`) | copies view header — shares buffer |
+| Dynamic array  | `[*, T]`                         | heap-owned buffer               | full deep copy                     |
 | String         | `string`                         | heap-owned sequence             | full deep copy                     |
 | Struct         | `Vec2` `Player` …                | inline / stack                  | full deep copy                     |
 | Named function | `add` `myVector:normalize`       | function pointer                | pointer copy                       |
@@ -340,7 +342,7 @@ Struct assignment always produces a fully independent value. Owned fields are cl
 ```luc
 struct Player {
     score  int        -- owned: cloned
-    items  string[*]  -- owned: buffer deep-copied
+    items  [*, string]  -- owned: buffer deep-copied
     world  &World     -- borrowed: reference copied, World not cloned
 }
 
@@ -486,7 +488,7 @@ let double (x int) -> int = { return x * 2 }
 let triple (x int) -> int = { return x * factor }
 -- triple's captured environment is released when triple goes out of scope
 
-let bigData byte[*] = loadFile("huge.bin")
+let bigData [*, byte] = loadFile("huge.bin")
 -- ... use bigData ...
 bigData.clear()    -- free heap buffer early; bigData is now empty but valid
 ```
@@ -613,7 +615,7 @@ let f ~nullable ~async (a int) -> int = nil
 **Generics belong to the identifier, before qualifiers:**
 
 ```luc
-let parallelFor<T> ~parallel (items T[*], body (item T)) = { ... }
+let parallelFor<T> ~parallel (items [*, T], body (item T)) = { ... }
 let fetch<T>       ~async    (url string) -> T = { ... }
 ```
 
@@ -688,7 +690,7 @@ When a function is called through a `~parallel`-qualified binding, the compiler 
 - No writes to variables declared outside the body scope
 
 ```luc
-let parallelFor<T> ~parallel (items T[*], body (item T)) = { ... }
+let parallelFor<T> ~parallel (items [*, T], body (item T)) = { ... }
 
 parallelFor(mesh.vertices, (vertex Vertex) {
     vertex.pos = vertex.pos |> transform    -- OK: local to this iteration
@@ -972,13 +974,13 @@ Generic parameters come immediately after the function name, before any paramete
 ```luc
 let identity<T> (v T) -> T = { return v }
 
-let map<T, U> (items T[*], f (item T) -> U) -> U[*] = { ... }
+let map<T, U> (items [*, T], f (item T) -> U) -> [*, U] = { ... }
 ```
 
 **Type constraints** — constrain type parameters to traits using `:`. Multiple traits are joined with `+`:
 
 ```luc
-let printSorted<T : Comparable + Printable> (items T[]) = { ... }
+let printSorted<T : Comparable + Printable> (items [_, T]) = { ... }
 ```
 
 **Instantiation** — generic functions can be called with explicit type arguments:
@@ -1025,10 +1027,10 @@ let f (a int)(b string) -> (int, string) = { ... }
 
 -- qualifiers
 let fetch ~async    (url string) -> string = { ... }
-let find  ~nullable (items int[*], pred (item int) -> bool) -> int = { ... }
+let find  ~nullable (items [*, int], pred (item int) -> bool) -> int = { ... }
 
 -- generic (generic before qualifiers, always)
-let map<T, U> (items T[*], f (item T) -> U) -> U[*] = { ... }
+let map<T, U> (items [*, T], f (item T) -> U) -> [*, U] = { ... }
 
 -- returned curry function, formatted
 let f (a int) -> (
@@ -1104,12 +1106,12 @@ struct Color {
 }
 
 struct Scene<T : Drawable> {
-    objects T[]
+    objects [_, T]
 }
 
 struct Cache<K : Hashable + Comparable, V> {
-    keys   []K
-    values []V
+    keys   [_, K]
+    values [_, V]
 }
 
 -- struct literals
@@ -1197,9 +1199,9 @@ Every generic parameter declared on a type alias **must appear at least once in 
 
 ```luc
 type Pair<T>  = struct { first T, second T }   -- OK: T is used
-type Wrap<T>  = T[]                             -- OK: T is used
-type Gen<T>   = int                             -- ERROR: T is unused
-type Odd<T>   = string                          -- ERROR: T is unused
+type Wrap<T>  = [_, T]                         -- OK: T is used
+type Gen<T>   = int                            -- ERROR: T is unused
+type Odd<T>   = string                         -- ERROR: T is unused
 ```
 
 If you intentionally want a type parameter that does not appear in the body (a phantom type), annotate with `@phantom`:
@@ -1226,17 +1228,17 @@ type AsyncMaybeOp = ~async ~nullable (a int) -> int
 
 Type alias names should reflect their kind at a glance. The following conventions are recommended:
 
-| Kind                   | Convention              | Example                        |
-| ---------------------- | ----------------------- | ------------------------------ |
-| Slice (`T[]`)          | `...List` suffix        | `IntList`, `UserList`          |
-| Dynamic array (`T[*]`) | `...Array` suffix       | `IntArray`, `UserArray`        |
-| Fixed array (`T[*N]`)  | `...Buffer` suffix      | `ByteBuffer`, `FloatBuffer`    |
-| Nullable (`T?`)        | `Maybe...` prefix       | `MaybeInt`, `MaybeUser`        |
-| Result (`T!E`)         | `...Or...` — both sides | `IntOrString`, `UserOrDbError` |
-| Function type          | `...Fn` suffix          | `ParserFn`, `HandlerFn`        |
-| Nullable function      | `Maybe...Fn`            | `MaybeParserFn`                |
-| Async function         | `...AsyncFn` suffix     | `FetchAsyncFn`                 |
-| Parallel function      | `...ParallelFn` suffix  | `TransformParallelFn`          |
+| Kind                     | Convention              | Example                        |
+| ------------------------ | ----------------------- | ------------------------------ |
+| Slice (`[_, T]`)         | `...List` suffix        | `IntList`, `UserList`          |
+| Dynamic array (`[*, T]`) | `...Array` suffix       | `IntArray`, `UserArray`        |
+| Fixed array (`[N, T]`)   | `...Buffer` suffix      | `ByteBuffer`, `FloatBuffer`    |
+| Nullable (`T?`)          | `Maybe...` prefix       | `MaybeInt`, `MaybeUser`        |
+| Result (`T!E`)           | `...Or...` — both sides | `IntOrString`, `UserOrDbError` |
+| Function type            | `...Fn` suffix          | `ParserFn`, `HandlerFn`        |
+| Nullable function        | `Maybe...Fn`            | `MaybeParserFn`                |
+| Async function           | `...AsyncFn` suffix     | `FetchAsyncFn`                 |
+| Parallel function        | `...ParallelFn` suffix  | `TransformParallelFn`          |
 
 The `Or` convention for result types surfaces both the success and error type explicitly — `IntOrString` immediately tells you success is `int` and failure is `string` without opening the definition. Generic aliases need no convention — `<>` already signals the kind clearly.
 
@@ -1258,9 +1260,9 @@ type IntOrString   = int!string
 type UserOrDbError = User!DbError
 
 -- array aliases (postfix syntax)
-type UserArray  = User[*]
-type UserList   = User[]
-type ByteBuffer = byte[*256]
+type UserArray  = [*, User]
+type UserList   = [_, User]
+type ByteBuffer = [256, byte]
 
 -- array result — alias the array first, then apply Or convention
 type UserArrayOrDbError = UserArray!DbError
@@ -1276,10 +1278,10 @@ type FetchAsyncFnOrNetError = FetchAsyncFn!NetworkError
 -- nullable function alias
 type MaybeParserFn = ~nullable (src string) -> int
 
--- array of function type — alias the function first, then array
-type HandlerFn     = (event Event) -> bool
-type HandlerFnList = HandlerFn[]       -- slice of handlers
-type HandlerFnArray = HandlerFn[*]     -- dynamic array of handlers
+-- array of function type — alias optional, shown for named reuse
+type HandlerFn      = (event Event) -> bool
+type HandlerFnList  = [_, HandlerFn]    -- slice of handlers
+type HandlerFnArray = [*, HandlerFn]    -- dynamic array of handlers
 
 -- generic alias — no convention needed
 type Transform<T> = (v T) -> T
@@ -1348,8 +1350,10 @@ impl_decl       := [ visibility_mod ] 'impl' impl_target
                    [ ':' trait_ref ]
                    '{' { method_decl } '}'
 
-impl_target     := type_name
-                 | primitive_type
+impl_target     := IDENTIFIER     -- named type (struct, enum, alias, primitive)
+                 | primitive_type -- primitive directly
+                 | array_type     -- [_, T], [*, T], [N, T]
+                 | func_type      -- (params) -> return
 
 impl_generic_params := '<' impl_generic_param { ',' impl_generic_param } '>'
 
@@ -1358,8 +1362,117 @@ impl_generic_param  := IDENTIFIER [ ':' constraint_list ]
 trait_ref       := IDENTIFIER [ generic_args ]
 
 method_decl     := IDENTIFIER [ qualifier_list ] param_group { param_group }
-                   [ '->' return_list ] '=' func_body
+                   [ '->' return_list ] '=' func_body -- inline body
+
+                 | IDENTIFIER '=' func_ref -- plain assignment, no injection
+                                           -- func_ref exposed as-is
+
+                 | IDENTIFIER '=' func_ref '(' receiver_arg ')' '!'
+                   -- injection form
+                   -- receiver_arg: must be 'self' or the impl's 'as' alias
+                   -- semantic phase removes the first parameter of the first group
+                   -- and produces a new resolved function type
+                   -- compiler generates an internal wrapper capturing the receiver
+                   -- func_ref must be a plain function — qualifiers forbidden
+                   -- variadic @extern functions are forbidden with '!'
+
+func_ref        := IDENTIFIER                -- local or imported name
+                 | IDENTIFIER '.' IDENTIFIER -- module path: file.fn
+                 | func_ref generic_args     -- generic instantiation: fn<T>
+                   -- func_ref must resolve to a plain non-qualified function
+                   -- @extern functions are allowed if non-variadic
 ```
+
+The `as IDENTIFIER` clause introduces a local alias for the receiver inside the method bodies. If omitted, the receiver is accessible as `self`.
+
+| `as` clause | Receiver name inside methods |
+| ----------- | ---------------------------- |
+| omitted     | `self`                       |
+| `as alias`  | `alias`                      |
+
+> [!WARNING] `as` and `self` are mutually exclusive
+> If `as alias` is declared on the `impl` block, `self` is **undefined** inside every method body in that block. If `as` is omitted, only `self` is valid. The choice is made once at the `impl` header and applies to all methods uniformly — you cannot mix both names within the same `impl` block.
+>
+> ```luc
+> impl int as number {
+>     isEven () -> bool = { return number % 2 == 0 }   -- OK
+>     isOdd  () -> bool = { return self % 2 != 0 }     -- ERROR: self undefined, use number
+> }
+>
+> impl int {
+>     isEven () -> bool = { return self % 2 == 0 }     -- OK
+>     isOdd  () -> bool = { return number % 2 != 0 }   -- ERROR: number undefined, use self
+> }
+> ```
+
+### Injection Form — `!` Semantics
+
+When `= func_ref(receiver)!` is used, the semantic phase resolves the referenced function into a new function type by removing the first parameter of the first parameter group. The compiler generates an internal wrapper capturing the receiver. The resolved type is what the call site sees.
+
+| Original signature                          | After `!` injection | Resolved call site type           |
+| ------------------------------------------- | ------------------- | --------------------------------- |
+| `(n int) -> string`                         | `n` fixed           | `() -> string`                    |
+| `(n int, s string) -> string`               | `n` fixed           | `(s string) -> string`            |
+| `(n int, s string, x int) -> string`        | `n` fixed           | `(s string, x int) -> string`     |
+| `(n int)(lo int)(hi int) -> int`            | `n` fixed           | `(lo int)(hi int) -> int`         |
+| `(s string, extra string)(n int) -> string` | `s` fixed           | `(extra string)(n int) -> string` |
+
+The wrapper is a thin closure capturing the receiver. For primitive types and small structs the wrapper is inlined by the compiler — zero overhead in the final binary.
+
+> [!WARNING] Injection restrictions
+> - `func_ref` must be a **plain function** — no `~async`, `~nullable`, or `~parallel` qualifiers.
+> - `func_ref` must **not** be a variadic `@extern` function (`args ...any`).
+> - `receiver_arg` must be exactly `self` or the `as` alias declared on this `impl` block.
+> - The first parameter group must have **at least one parameter** — the first parameter is the one removed.
+>
+> ```luc
+> impl int as i {
+>     fetch  = httpGet(i)!      -- ERROR: httpGet is ~async
+>     find   = maybeGet(i)!     -- ERROR: maybeGet is ~nullable
+>     printf = printf(i)!       -- ERROR: printf is variadic @extern
+> }
+> ```
+
+### Naming Conflict Resolution
+
+Within a single `impl` block, each method name must be unique — duplicate names in the same block are a compile error. Across multiple `impl` blocks for the same type, duplicate names are allowed. The compiler resolves them by **scope proximity** — the innermost or last-declared `impl` wins:
+
+```luc
+impl int {
+    toStr () -> string = { return "first" }
+}
+
+impl int {
+    toStr () -> string = { return "second" }    -- shadows the first
+}
+
+5:toStr()    -- "second"
+```
+
+For multiple imported files, the last `use` declaration wins:
+
+```luc
+use file1    -- file1 defines impl int { toStr }
+use file2    -- file2 also defines impl int { toStr }
+
+5:toStr()    -- uses file2's toStr — last import wins
+```
+
+When fine-grained control is needed — taking some methods from `file1` and some from `file2` — create a resolution file that explicitly declares a new `impl` block choosing each method:
+
+```luc
+-- ResolveImport.luc
+use file1
+use file2
+
+impl int as i {
+    toStr   = file1.intToStr(i)!     -- explicitly choose file1's version
+    parse   = file2.parseInt(i)!     -- explicitly choose file2's version
+    version = file1.getVersion       -- plain assignment, no injection
+}
+```
+
+This `impl` block, being declared last, takes priority over both `file1` and `file2` for the methods it declares. Methods not mentioned here fall through to the normal last-import-wins resolution.
 
 ### Impl Target Rules
 
@@ -1382,10 +1495,10 @@ method_decl     := IDENTIFIER [ qualifier_list ] param_group { param_group }
 > **Array of function types** — both rules apply together. The element function type must be an exact signature match including qualifiers:
 >
 > ```luc
-> impl [_, (int) -> bool] {
+> impl [_, (int) -> bool] as predicates {
 >     applyAll (value int) -> [_, bool] = {
 >         let results [*, bool] = []
->         for f (int) -> bool in self { results:push(f(value)) }
+>         for f (int) -> bool in predicates { results:push(f(value)) }
 >         return results
 >     }
 > }
@@ -1424,14 +1537,72 @@ impl Box<T> {
 ### Examples
 
 ```luc
--- No alias, no generics, no trait
+-- No alias — receiver accessed as self
 impl Vec2 {
     length () -> float = { return #sqrt(self.x*self.x + self.y*self.y) }
 }
 
--- With generics, no alias
-impl Box<T> {
-    get () -> T = { return self.value }
+-- With alias — receiver accessed as v
+impl Vec2 as v {
+    length () -> float = { return #sqrt(v.x*v.x + v.y*v.y) }
+}
+
+-- Plain assignment — no injection, function exposed as-is
+impl int as i {
+    version = utils.getVersion     -- () -> string, called as 5:version()
+}
+
+-- Injection form — receiver fixed, resolved type at call site
+impl int as i {
+    toStr     = utils.intToStr(i)! -- (n int) -> string         resolved: () -> string
+    format    = utils.format(i)!   -- (n int, s string) -> str  resolved: (s string) -> string
+    clamp     = utils.clamp(i)!    -- (n int)(lo int)(hi int)   resolved: (lo int)(hi int) -> int
+    process   = utils.process(i)!  -- (n int, s string)(x int)  resolved: (s string)(x int) -> int
+}
+
+-- call sites match the resolved types exactly
+5:toStr()              -- () -> string
+5:format("prefix")     -- (s string) -> string
+5:clamp(0)(100)        -- (lo int)(hi int) -> int
+5:process("a")(3)      -- (s string)(x int) -> int
+5:version()            -- () -> string
+
+-- Generic instantiation with injection
+impl int as i {
+    toStr = utils.toStr<int>(i)!    -- generic instantiated, i injected
+}
+
+-- @extern single param — works perfectly
+@extern("strlen")
+const strlen (s *uint8) -> uint64
+
+impl [_, byte] as buf {
+    len = strlen(buf)!    -- resolved: () -> uint64
+}
+
+-- @extern multiple params — works, remaining params at call site
+@extern("memset")
+const memset (dst *uint8, val uint8, len uint64) -> *uint8
+
+impl [_, byte] as buf {
+    fill = memset(buf)!    -- resolved: (val uint8, len uint64) -> *uint8
+}
+myBuf:fill(0xFF, 1024)     -- memset(myBuf, 0xFF, 1024)
+
+-- @extern variadic — forbidden with !, use inline body
+@extern("printf", "C")
+const printf (fmt *uint8, args ...any) -> int
+
+impl string as s {
+    -- print = printf(s)!    -- ERROR: variadic @extern forbidden with !
+    print (args ...any) -> int = { return printf(s, args) }    -- inline body instead
+}
+
+-- Mixed forms in one block
+impl int as i {
+    isEven   () -> bool    = { return i % 2 == 0 }  -- inline body
+    toStr    = intToStr(i)!                         -- injection
+    version  = getVersion                           -- plain assignment
 }
 
 -- With generics and alias
@@ -1441,26 +1612,31 @@ impl Box<T> as b {
 
 -- With alias and trait conformance
 impl Circle as c : Drawable {
-    draw () { c:render() }
+    draw () = { c:render() }
 }
 
--- Primitive with alias
-impl int as i {
-    isEven () -> bool = { return i % 2 == 0 }
+-- Array type with alias and injection
+impl [_, int] as list {
+    sum  () -> int = {
+        let total int = 0
+        for v int in list { total += v }
+        return total
+    }
+    sort = utils.sortSlice(list)!    -- resolved: () -> [_, int]
 }
 
--- Generic struct
-struct Box<T> { value T }
-
-impl Box<T> {
-    get () -> T = { return self.value }
+-- Function type with alias
+impl (int) -> bool as pred {
+    negate () -> (int) -> bool = {
+        return (x int) -> bool { return not pred(x) }
+    }
 }
 
 -- Generic type alias
-type Result<T, E> = struct { ok T?, err E? }
+type Pair<T, E> = struct { ok T?, err E? }
 
-impl Result<T, E> {
-    isOk () -> bool = { return self.ok != nil }
+impl Pair<T, E> as p {
+    isOk () -> bool = { return p.ok != nil }
 }
 
 -- ERROR cases
@@ -1477,11 +1653,19 @@ impl Pair<X> { ... }     -- ERROR: arity mismatch (needs 2 parameters, got 1)
 `from` can be declared at top level or inside a block. Local declarations **must not** have `pub` or `export`.
 
 ```
-from_decl   := [ visibility_mod ] 'from' type [ generic_params ] '{' { from_entry } '}'
+from_decl   := [ visibility_mod ] 'from' type [ generic_params ]
+               '{' { from_entry } '}'
 
-from_entry  := param_group { param_group } '->' type '=' func_body
-               -- source param(s), target type name, body
-               -- target type name must match the enclosing from target
+from_entry  := param_group { param_group } '->' type '=' func_body   -- inline entry
+             | func_ref                                               -- path entry
+               -- compiler reads func_ref's full signature as the entry signature
+               -- the return type must match the enclosing from target type
+               -- func_ref must be a plain function — qualifiers forbidden
+               -- no receiver injection: from entries convert TO the target, not on it
+
+func_ref    := IDENTIFIER
+             | IDENTIFIER '.' IDENTIFIER     -- module path: file.fn
+             | func_ref generic_args         -- generic instantiation: fn<T>
 ```
 
 A `from` block defines implicit and explicit conversions from a source type (described by the parameter groups) to a target type. The target type can be **any type** — primitive, struct, enum, type alias, array type, or function type.
@@ -1499,13 +1683,23 @@ A `from` block defines implicit and explicit conversions from a source type (des
 
 ### Rules
 
-Each `from` entry contains:
+**Inline entry** — explicitly declares the source signature and body:
 
 - One or more parameter groups (currying allowed) — the source value(s).
 - The arrow `->` (mandatory).
-- A single return type — must be the type named in the enclosing `from` declaration.
+- A single return type — must match the enclosing `from` target type.
 - `=` followed by the conversion body (a block or expression).
 - No qualifiers (`~async`, `~nullable`, `~parallel`) — `from` entries are plain functions.
+
+**Path entry** — references an existing function by name:
+
+- The compiler reads the function's full signature and registers it as a `from` entry.
+- The function's return type must match the enclosing `from` target type — compile error otherwise.
+- The function must be a plain non-qualified function — qualifiers forbidden.
+- No receiver injection (`!`) — `from` converts *to* the target type, not *on* it.
+- Local functions, imported functions, and `@extern` non-variadic functions are all valid.
+
+**Conflict resolution** — if two `from` entries in the same block have identical source signatures, it is a compile error. Across multiple `from` blocks for the same target type, the innermost or last-declared block wins by the same scope-proximity rule as `impl`.
 
 The compiler does not chain conversions (e.g., A → B → C) — only a single direct conversion is applied.
 
@@ -1546,14 +1740,14 @@ When a `from` declaration exists for target `T` accepting source `S`, the compil
 ### Examples
 
 ```luc
--- Convert from string to int (primitive target)
+-- Convert from string to int (inline entry)
 from int {
     (s string) -> int = {
         return #parseInt(s)
     }
 }
 
--- Convert from Celsius and Kelvin to Fahrenheit (struct target)
+-- Convert from Celsius and Kelvin to Fahrenheit (inline entries)
 export from Fahrenheit {
     (c Celsius) -> Fahrenheit = {
         return Fahrenheit { value = c.value * 9.0 / 5.0 + 32.0 }
@@ -1563,14 +1757,7 @@ export from Fahrenheit {
     }
 }
 
--- Convert from Celsius to Kelvin (struct target)
-pub from Kelvin {
-    (c Celsius) -> Kelvin = {
-        return Kelvin { value = c.value + 273.15 }
-    }
-}
-
--- Convert from string to Direction (enum target)
+-- Convert from string to Direction (inline entry)
 from Direction {
     (s string) -> Direction = {
         match s {
@@ -1580,6 +1767,41 @@ from Direction {
             "west"  => Direction.West
             default => Direction.North
         }
+    }
+}
+
+-- Path entries — compiler reads each function's signature
+-- utils.floatToStr : (f float) -> string  → registered as from entry
+-- utils.doubleToStr: (d double) -> string → registered as from entry
+from string {
+    (n int) -> string { return string(n) } -- inline entry
+    utils.floatToStr                       -- path entry: (float) -> string
+    utils.doubleToStr                      -- path entry: (double) -> string
+    localCharToStr                         -- path entry: local function
+}
+
+-- Path entry with generic instantiation
+-- utils.toStr<int>: (n int) -> string → registered as from entry
+from string {
+    utils.toStr<int>    -- instantiate generic, register signature
+}
+
+-- From on array type directly
+from [_, int] {
+    (r Range) -> [_, int] = {
+        let result [*, int] = []
+        for i int in r { result:push(i) }
+        return result
+    }
+    utils.rangeToSlice    -- path entry: (Range) -> [_, int]
+}
+
+-- From on function type
+from (int) -> bool {
+    -- inline: strip ~nullable qualifier with a fallback
+    (f ~nullable (int) -> bool) -> (int) -> bool = {
+        if f == nil { return (x int) -> bool { return false } }
+        return f
     }
 }
 
@@ -1594,49 +1816,38 @@ from Wrapper<T> {
 
 -- Local from declaration (only visible inside this function)
 let process () -> int = {
-    from string {
-        (s string) -> int = {
-            return #parseInt(s)
-        }
+    from int {
+        (s string) -> int = { return #parseInt(s) }
     }
-
     let x int = "42"  -- uses the local from declaration
     return x
 }
 
--- From on array type directly (no alias required)
-from [_, int] {
-    (r Range) -> [_, int] = {
-        let result int[*] = []
-        for i int in r { result:push(i) }
-        return result
-    }
+-- Conflict resolution — two from blocks for same target, last wins
+from int {
+    utils.parseInt    -- (string) -> int from utils
 }
 
-from [*, int] {
-    (arr [_, int]) -> [*, int] = {
-        let result int[*] = []
-        for v int in arr { result:push(v) }
-        return result
-    }
+from int {
+    myLib.parseInt    -- (string) -> int from myLib — shadows utils version
 }
 
--- From on function type directly (no alias required)
--- strips ~nullable qualifier by providing a plain fallback
-from (int) -> bool {
-    (f ~nullable (int) -> bool) -> (int) -> bool = {
-        if f == nil { return (x int) -> bool { return false } }
-        return f
-    }
+-- ResolveImport pattern — explicit control over which version wins
+use file1    -- file1.floatToInt: (float) -> int
+use file2    -- file2.floatToInt: (float) -> int
+
+from int {
+    file1.floatToInt    -- explicitly choose file1's version
+    file2.doubleToInt   -- take double conversion from file2
 }
 
--- Call site examples
-let boiling Celsius      = Celsius { value = 100.0 }
-let hot     Fahrenheit   = Fahrenheit(boiling)           -- uses from declaration
-let temp    int          = int("123")                    -- uses from int block
-let dir     Direction    = Direction("north")            -- uses from Direction block
-let wrapped Wrapper<int> = Wrapper<int>(42)              -- uses generic from declaration
-let nums    [_, int]     = [_, int](Range { lo=0 hi=5 }) -- uses from [_, int] block
+-- ERROR cases
+from int {
+    utils.asyncParser      -- ERROR: asyncParser is ~async
+    utils.maybeParser      -- ERROR: maybeParser is ~nullable
+    utils.badReturn        -- ERROR: return type is string, not int
+    utils.printf           -- ERROR: printf is variadic @extern
+}
 ```
 
 ---
@@ -1751,8 +1962,8 @@ if p.onComplete != nil {
 compose_expr    := pipeline_expr { '+>' compose_operand }
 
 compose_operand := IDENTIFIER
-                 | expr ':' IDENTIFIER          -- method reference on a value
-                 | expr '.' IDENTIFIER          -- non-nullable data field only
+                 | expr ':' IDENTIFIER  -- method reference on a value
+                 | expr '.' IDENTIFIER  -- non-nullable data field only
 ```
 
 ```luc
@@ -1780,7 +1991,7 @@ Generic functions must be explicitly instantiated before composing — type infe
 let doubleInt   (x int) -> int    = { ... }
 let intToString (x int) -> string = { ... }
 
-let process = doubleInt +> intToString    -- valid: both concrete
+let process = doubleInt +> intToString -- valid: both concrete
 ```
 
 > [!WARNING]
@@ -2411,13 +2622,13 @@ The error type is always explicit — no built-in `Error` type. The programmer o
 
 ### `!` Binding Rules
 
-`!` binds to the immediately preceding **named or primitive** type token only. With postfix array syntax, `!` after an array type attaches to the whole array unambiguously — the bracket closes the array type before `!` is encountered:
+`!` binds to the immediately preceding **named or primitive** type token only. With bracket-enclosed array syntax, `!` after an array type attaches to the whole array unambiguously — the closing `]` marks the end of the array type before `!` is encountered:
 
 ```luc
-int[]!string      -- (int[])!string    — slice of int, op can fail with string
-int[*]!DbError    -- (int[*])!DbError  — dynamic array, op can fail
-int!string[]      -- (int!string)[]    — slice of result elements
-int?[]!string     -- (int?[])!string   — slice of nullable int, op can fail
+[_, int]!string     -- ([_, int])!string   — slice of int, op can fail with string
+[*, int]!DbError    -- ([*, int])!DbError  — dynamic array, op can fail
+[_, int!string]     -- [_, (int!string)]   — slice of result elements
+[_, int?]!string    -- ([_, int?])!string  — slice of nullable int, op can fail
 ```
 
 Inline function types still require an alias before `!` can attach to the whole function type — the function return type bleeds into what follows, making the binding ambiguous:
@@ -2428,19 +2639,19 @@ Inline function types still require an alias before `!` can attach to the whole 
 
 -- parser reads: (src string) -> (int!string) — function returning int!string
 -- to make the whole function type the success value, alias first:
-type ParserFn       = (src string) -> int
+type ParserFn    = (src string) -> int
 let f () -> ParserFn!string = { ... }    -- (ParserFn)!string — unambiguous
 ```
 
 Valid without alias — primitives, structs, enums, array types, and named aliases:
 
 ```luc
-int!string          -- OK: primitive
-Vec2!string         -- OK: struct
-Direction!string    -- OK: enum
-int[]!string        -- OK: postfix array — unambiguous
-int[*]!DbError      -- OK: postfix dynamic array — unambiguous
-UserArray!DbError   -- OK: named alias
+int!string           -- OK: primitive
+Vec2!string          -- OK: struct
+Direction!string     -- OK: enum
+[_, int]!string      -- OK: bracket array — unambiguous
+[*, User]!DbError    -- OK: bracket dynamic array — unambiguous
+UserArray!DbError    -- OK: named alias
 ```
 
 ### `?` on a Result Type

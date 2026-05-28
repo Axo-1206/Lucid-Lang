@@ -51,7 +51,6 @@ add_executable(luc-comp
     src/semantic/TypeChecker.cpp
     src/semantic/Annotator.cpp
     src/debug/ASTDumper.cpp
-    src/registry/BuiltinMethodRegistry.cpp
     src/registry/QualifierRegistry.cpp
     src/registry/AttributeRegistry.cpp
     src/registry/IntrinsicRegistry.cpp
