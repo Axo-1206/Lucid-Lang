@@ -680,6 +680,17 @@ if handler != nil {
 }
 ```
 
+The inverse narrowing early-exit pattern also applies to `~nullable` function variables — including mixed conditions with `or`:
+
+```luc
+let process (handler ~nullable (e Event), ctx Context?) -> int = {
+    if handler == nil or ctx == nil { return -1 }
+    -- handler is narrowed to plain (e Event)
+    -- ctx is narrowed to Context
+    handler(someEvent)    -- OK: no nil check needed
+    return ctx.id
+}
+
 **`~parallel` — body restrictions:**
 
 When a function is called through a `~parallel`-qualified binding, the compiler enforces these restrictions inside the body function argument:
@@ -2336,7 +2347,168 @@ let compute () -> int = {
 if_stmt         := 'if' expr block [ 'else' ( if_stmt | block ) ]
 ```
 
-`else` is optional. Type narrowing applies inside the then-branch when the condition is an `is` expression.
+`else` is optional. The compiler applies **type narrowing** inside branches based on the condition.
+
+#### Standard Narrowing — Inside the Block
+
+When the condition checks a nullable variable, the compiler narrows its type inside the then-branch:
+
+```luc
+let a int? = getValue()
+
+if a != nil {
+    -- a is int here, not int?
+    let x int = a + 1    -- OK
+}
+-- a is still int? here
+```
+
+The `is` expression also narrows inside the then-branch:
+
+```luc
+let x any = getValue()
+
+if x is int {
+    -- x is int here
+}
+```
+
+#### Inverse Narrowing — Early Exit Pattern
+
+When a **standalone `if` with no `else`** contains a control flow exit (`return`, `return expr`, `break`, or `continue`), the compiler applies the **inverse** of the condition to the rest of the enclosing scope.
+
+> [!WARNING] Inverse narrowing only applies to standalone `if` — no `else`
+> The moment an `else` or `else if` is present, the compiler cannot guarantee which branch ran. The exit may have come from the `if` branch or never fired at all. Inverse narrowing is therefore **not applied** after an `if-else` chain.
+>
+> ```luc
+> -- VALID: standalone if — inverse narrowing applies
+> if a == nil { return }
+> -- a is non-nullable here
+>
+> -- INVALID: has else — inverse narrowing NOT applied after the chain
+> if a == nil { return } else { io.printl("not nil") }
+> -- a is still int? here
+>
+> -- INVALID: chained else-if — inverse narrowing NOT applied after the chain
+> if a == nil { return } else if b == nil { return }
+> -- a and b are still nullable here — compiler cannot know which branch ran
+> ```
+
+The condition determines what gets narrowed and in which direction:
+
+| Condition  | Inside block        | Rest of scope (inverse)      |
+| ---------- | ------------------- | ---------------------------- |
+| `a == nil` | `a` is nil          | `a` is non-nullable          |
+| `a != nil` | `a` is non-nullable | `a` is nullable (no change)  |
+| `not a`    | `a` is nil or false | `a` is non-nullable          |
+| `a is T`   | `a` is `T`          | `a` is not `T` (still `any`) |
+| `a is T?`  | `a` is `T?`         | `a` is not `T?`              |
+
+```luc
+-- guard: exit on nil → rest of scope is non-nullable
+if a == nil { return }       -- rest: a is int
+if not a    { return }       -- rest: a is int  (lua-style nil/false check)
+
+-- guard: exit on non-nil → no narrowing gained after exit
+if a != nil { return }       -- rest: a is int? (unchanged)
+```
+
+**`or` at the top level — each sub-condition narrowed independently:**
+
+When conditions are joined by `or`, the exit fires if ANY is true. The inverse is ALL negated — every sub-condition's inverse is safely applied:
+
+```luc
+if a == nil or b == nil { return }
+-- inverse: a != nil AND b != nil
+-- rest: a is int, b is string — both narrowed
+
+if a == nil or b == nil or c == nil { return }
+-- rest: a, b, c all non-nullable
+
+-- mixed: nil check + comparison — both sides contribute
+if a == nil or x > 0 { return }
+-- inverse: a != nil AND x <= 0
+-- rest: a is int (type narrowed), x <= 0 (value constraint)
+
+-- mixed: nil check + is — both sides contribute
+if a == nil or x is string { return }
+-- inverse: a != nil AND x is not string
+-- rest: a is int (narrowed), x is not string (still any)
+```
+
+**`and` at the top level — narrowing is unsound, not applied:**
+
+When conditions are joined by `and`, the exit fires only if ALL are true. The inverse is `or` — at least one condition is false, but the compiler cannot know which. Narrowing any single variable would be unsound:
+
+```luc
+if a == nil and b == nil { return }
+-- inverse: a != nil OR b != nil
+-- only one is guaranteed non-nil — cannot narrow either safely
+-- W3009 emitted: 'and' at top level prevents narrowing
+```
+
+**Nested `and`/`or` — compiler walks until it hits `and`:**
+
+```luc
+if (a == nil and b == nil) or c == nil { return }
+-- left sub-expr: AND at top level → a and b not narrowed
+-- right sub-expr: c == nil → c narrowed
+-- rest: only c is non-nullable
+```
+
+**`is` narrowing with exit:**
+
+```luc
+let x any = getValue()
+
+if x is int  { return }    -- rest: x is not int  (still any)
+if x is int? { return }    -- rest: x is not int?
+```
+
+Narrowing away a type is useful for early rejection but cannot assert a positive type for `any`.
+
+> [!TIP] Inverse narrowing patterns to know
+>
+> **Flat nil guards at the top of a function** — eliminates deeply nested blocks and makes preconditions visible at a glance:
+>
+> ```luc
+> let process (a int?, b string?, c User?) -> int = {
+>     if a == nil or b == nil or c == nil { return -1 }
+>     -- from here: a is int, b is string, c is User
+>     return a + b:len() + c.id
+> }
+> ```
+>
+> **Loop body guards** — skip nil elements without nesting:
+>
+> ```luc
+> for item int? in items {
+>     if item == nil { continue }
+>     -- item is int for the rest of this iteration
+>     process(item)
+> }
+> ```
+>
+> **Mixed conditions are fine with `or`** — comparisons and `is` checks alongside nil checks all contribute to narrowing:
+>
+> ```luc
+> if a == nil or b == nil or x > 100 { return }
+> -- rest: a is int, b is int, x <= 100
+> ```
+>
+> **Stack multiple standalone guards instead of chaining else-if** — each guard independently narrows its variables:
+>
+> ```luc
+> -- WRONG: chained else-if, no inverse narrowing after chain
+> if a == nil { return } else if b == nil { return }
+>
+> -- CORRECT: two standalone guards, both narrow independently
+> if a == nil { return }
+> if b == nil { return }
+> -- a is int, b is string here
+> ```
+>
+> **Prefer `or` over `and` in guard conditions** — `and` at the top level prevents narrowing because the compiler cannot determine which variable caused the exit.
 
 ```luc
 if score >= 90 {
@@ -2347,6 +2519,100 @@ if score >= 90 {
     io.printl("F")
 }
 ```
+
+#### If / Else — Common Patterns
+
+**Single branch — no else:**
+
+```luc
+if user == nil { return }
+
+if flags && 0x01 != 0 {
+    io.printl("flag set")
+}
+```
+
+**Two branches:**
+
+```luc
+let label string = ""
+
+if score >= 60 {
+    label = "pass"
+} else {
+    label = "fail"
+}
+```
+
+**Chained else-if — evaluated top to bottom, first match wins:**
+
+```luc
+if score >= 90 {
+    io.printl("A")
+} else if score >= 80 {
+    io.printl("B")
+} else if score >= 70 {
+    io.printl("C")
+} else if score >= 60 {
+    io.printl("D")
+} else {
+    io.printl("F")
+}
+```
+
+**Inverse narrowing across chained else-if:**
+
+Standard narrowing applies **inside** each branch and accumulates. After the entire chain, no inverse narrowing is applied — the compiler cannot know which branch ran:
+
+```luc
+let x any = getValue()
+
+if x is int {
+    -- x is int
+} else if x is string {
+    -- x is string (and not int)
+} else if x is bool {
+    -- x is bool (and not int, not string)
+} else {
+    -- x is not int, not string, not bool
+}
+-- after the chain: x is any again — no inverse narrowing
+```
+
+**Combining inverse narrowing with else-if:**
+
+```luc
+let a int? = getA()
+let b int? = getB()
+
+if a == nil {
+    io.printl("a is nil")
+} else if b == nil {
+    -- a is int here (narrowed by the first condition being false)
+    io.printl("b is nil, a is: " + string(a))
+} else {
+    -- both a and b are int here
+    io.printl(string(a + b))
+}
+-- after the chain: a and b are int? again — no inverse narrowing applied
+```
+
+> [!NOTE]
+> To narrow variables after a multi-condition check, use **stacked standalone guards** instead of `else-if`:
+>
+> ```luc
+> -- else-if: no inverse narrowing after the chain
+> if a == nil { return } else if b == nil { return }
+> -- a and b still nullable here
+>
+> -- stacked guards: each narrows independently
+> if a == nil { return }
+> if b == nil { return }
+> -- a is int, b is string here
+> ```
+
+> [!NOTE]
+> When you need to produce a value from a branch, prefer the `if` expression form (`if cond ?? thenExpr else elseExpr`) over a multi-branch statement. Reserve the statement form for side effects, multiple statements per branch, or more than two outcomes.
 
 ### If Expression — Inline Form
 
