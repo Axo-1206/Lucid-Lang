@@ -83,16 +83,14 @@ int main(int argc, char* argv[]) {
     std::cout << "[MAIN] Source file size: " << source.size() << " bytes" << std::endl;
 
     StringPool stringPool; 
-    InternedString fileId = stringPool.intern(filePath);
     AttributeRegistry::instance().setStringPool(stringPool);
     IntrinsicRegistry::instance().setStringPool(stringPool);
     QualifierRegistry::instance().setStringPool(stringPool);
     
     // Phase 1: Lexical Analysis
     std::cout << "[MAIN] Starting lexical analysis..." << std::endl;
-    LexerState* lexer = createLexer(source, fileId);
-    std::vector<Token> tokens = tokenize(lexer);
-    destroyLexer(lexer);
+    Lexer lexer(source);
+    std::vector<Token> tokens = lexer.tokenize();
     std::cout << "[MAIN] Lexical analysis complete: " << tokens.size() << " tokens" << std::endl;
     
     // Error reporting for Lexer

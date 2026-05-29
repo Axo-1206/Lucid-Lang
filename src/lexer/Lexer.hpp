@@ -1,6 +1,6 @@
 /**
- * @file Lexer.h
- *
+ * @file Lexer.hpp
+ * @project LUC Compiler
  * @responsibility The Front-End Scanner. Converts raw source code (strings) into a Token stream.
  * 
  * @related_files
@@ -16,26 +16,59 @@
 
 #pragma once
 #include "Tokens.hpp"
-#include "Diagnostics/Diagnostic.hpp"
-
 #include <string>
 #include <vector>
+#include <unordered_map>
 
-// Forward declaration of lexer state (opaque pointer pattern)
-struct LexerState;
+class Lexer
+{
+public:
+    explicit Lexer(const std::string& source);
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Lifecycle Management
-// ─────────────────────────────────────────────────────────────────────────────
-LexerState* createLexer(const std::string& source, InternedString fileName);
-void destroyLexer(LexerState* state);
+    // Returns all tokens including the final EOF_TOKEN.
+    // DOC_COMMENT tokens are emitted inline — the parser attaches each one
+    // to the declaration that immediately follows it.
+    std::vector<Token> tokenize();
 
-// Returns all tokens including the final EOF_TOKEN.
-std::vector<Token> tokenize(LexerState* state);
+private:
+    // ── State ──────────────────────────────────────────────────────────────────
+    std::string src;
+    size_t      pos;
+    int         line;
+    int         column;
+    std::unordered_map<std::string, TokenType> keywords;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Accessors (for debugging)
-// ─────────────────────────────────────────────────────────────────────────────
-int getLexerLine(const LexerState* state);
-int getLexerColumn(const LexerState* state);
-size_t getLexerPosition(const LexerState* state);
+    // ── Primitives ─────────────────────────────────────────────────────────────
+    bool  isAtEnd();
+    char  peek();
+    char  peekNext();
+    char  peekNext(int offset) const;
+    char  advance();
+    bool  match(char expected);
+
+    Token makeToken(TokenType type, const std::string& value);
+
+    // ── Skipping ───────────────────────────────────────────────────────────────
+    // Eats whitespace, single-line comments (--) and block comments (/- ... -/).
+    // Stops without consuming when it encounters a doc comment /-- so that
+    // getNextToken can emit it as a DOC_COMMENT token.
+    void skipWhitespace();
+
+    // ── Literal readers ────────────────────────────────────────────────────────
+    Token readNumber(char first);
+    Token readString();
+    Token readRawString(int hashCount);
+    Token readChar();
+
+    // Reads a -- ... line comment. Called from getNextToken after the first '-'
+    // has been consumed and the next char is confirmed to be '-'. Emits a
+    // LINE_COMMENT token so the Parser can harvest stacked/trailing doc comments.
+    Token readLineComment();
+
+    // Reads a /-- ... --/ doc comment. Called from getNextToken after '/' has
+    // been consumed and the next two chars are confirmed to be '--'.
+    Token readDocComment();
+
+    // ── Scanner ────────────────────────────────────────────────────────────────
+    Token getNextToken();
+};

@@ -1,104 +1,16 @@
 #include "Lexer.hpp"
 #include "Tokens.hpp"
-#include "debug/DebugMacros.hpp"
+#include "debug/DebugMacros.hpp" 
 #include <cctype>
-#include <unordered_map>
-#include <string>
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Lexer State Structure Definition
-// Holds all state information for the lexical analysis process.
-// An instance is created per source file and is opaque to external code.
+// Constructor — keyword table
 // ─────────────────────────────────────────────────────────────────────────────
-struct LexerState {
-    // ─────────────────────────────────────────────────────────────────────────
-    // Input Source
-    // ─────────────────────────────────────────────────────────────────────────
-    
-    /// The complete source code string being tokenized.
-    /// This is the raw input buffer that the lexer scans character by character.
-    std::string src;
-    
-    /// Interned file path (e.g., "src/main.luc") used exclusively for diagnostic
-    /// error messages. The lexer never reads from this; it only passes it to
-    /// diagnostic::error() when reporting invalid characters or other lexical issues.
-    InternedString fileName;
-    
-    // ─────────────────────────────────────────────────────────────────────────
-    // Scanning Position
-    // ─────────────────────────────────────────────────────────────────────────
-    
-    /// Current scan position (0-based index) within src.
-    /// Points to the next character to be read by advance().
-    /// Incremented each time a character is consumed.
-    size_t pos;
-    
-    /// Current line number (1-based). Incremented when a newline ('\n') is
-    /// encountered. Used for token location tracking and error reporting.
-    int line;
-    
-    /// Current column number (1-based) within the current line.
-    /// Resets to 1 after each newline. Incremented with each character consumed.
-    int column;
-    
-    // ─────────────────────────────────────────────────────────────────────────
-    // Keyword Lookup Table
-    // ─────────────────────────────────────────────────────────────────────────
-    
-    /// Maps reserved keyword strings (e.g., "if", "while", "struct") to their
-    /// corresponding TokenType enum values. Initialized in initKeywords().
-    /// Enables O(1) lookup when distinguishing identifiers from keywords.
-    std::unordered_map<std::string, TokenType> keywords;
-    
-    // ─────────────────────────────────────────────────────────────────────────
-    // Construction & Initialization
-    // ─────────────────────────────────────────────────────────────────────────
-    
-    /// Constructs a new lexer state for the given source code and file name.
-    /// Initializes position to the start (pos=0, line=1, column=1) and builds
-    /// the keyword lookup table.
-    /// 
-    /// @param source The complete source code string to tokenize.
-    /// @param fname  Interned file path for diagnostic messages.
-    LexerState(const std::string& source, InternedString fname)
-        : src(source), fileName(fname), pos(0), line(1), column(1) {
-        initKeywords();
-    }
-    
-private:
-    /// Populates the keywords map with all reserved words in the language.
-    /// Called once during construction. Includes:
-    ///   - Modifiers (pub, export)
-    ///   - Type keywords (int, string, bool, etc.)
-    ///   - Control flow (if, else, while, for, etc.)
-    ///   - Logical operators (and, or, not)
-    ///   - Error handling (resolve, ok, err)
-    void initKeywords();
-};
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Helper function declarations
-// ─────────────────────────────────────────────────────────────────────────────
-static bool isAtEnd(const LexerState* state);
-static char peek(const LexerState* state);
-static char peekNext(const LexerState* state);
-static char peekNextOffset(const LexerState* state, int offset);
-static char advance(LexerState* state);
-static bool match(LexerState* state, char expected);
-static Token makeToken(LexerState* state, TokenType type, const std::string& value);
-static void skipWhitespace(LexerState* state);
-static Token readNumber(LexerState* state, char first);
-static Token readString(LexerState* state);
-static Token readRawString(LexerState* state, int hashCount);
-static Token readChar(LexerState* state);
-static Token readLineComment(LexerState* state);
-static Token readDocComment(LexerState* state);
-static Token getNextToken(LexerState* state);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Keyword Initialization
-// ─────────────────────────────────────────────────────────────────────────────
-void LexerState::initKeywords() {
+Lexer::Lexer(const std::string &source)
+    : src(source), pos(0), line(1), column(1) {
+    LUC_LOG_LEXER("Lexer constructed, source size: " << source.size() << " bytes");
+    
     // ── Modifiers ──────────────────────────────────────────────────────────────
     keywords["pub"]     = TokenType::PUB;
     keywords["export"]  = TokenType::EXPORT;
@@ -120,6 +32,8 @@ void LexerState::initKeywords() {
 
     // ── Concurrency ────────────────────────────────────────────────────────────
     keywords["await"]   = TokenType::AWAIT;
+    // keywords["async"] = TokenType::ASYNC; deprecated use ~async instead
+    // keywords["parallel"] = TokenType::PARALLEL; deprecated use ~parallel instead
 
     // ── Primary Types ──────────────────────────────────────────────────────────
     keywords["bool"]    = TokenType::TYPE_BOOL;
@@ -186,120 +100,87 @@ void LexerState::initKeywords() {
     keywords["resolve"] = TokenType::RESOLVE;
     keywords["ok"]      = TokenType::OK;
     keywords["err"]     = TokenType::ERR;
+
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Lifecycle Implementation
+// Helpers
 // ─────────────────────────────────────────────────────────────────────────────
-LexerState* createLexer(const std::string& source, InternedString fileName) {
-    LUC_LOG_LEXER("Lexer constructed, source size: " << source.size() << " bytes");
-    return new LexerState(source, fileName);
+
+Token Lexer::makeToken(TokenType type, const std::string &value) {
+    LUC_LOG_LEXER_EXTREME("makeToken: type=" << static_cast<int>(type) << ", value='" << value << "', line=" << line << ", col=" << column);
+    return {type, value, line, column};
 }
 
-void destroyLexer(LexerState* state) {
-    delete state;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Accessors Implementation
-// ─────────────────────────────────────────────────────────────────────────────
-int getLexerLine(const LexerState* state) {
-    return state ? state->line : 0;
-}
-
-int getLexerColumn(const LexerState* state) {
-    return state ? state->column : 0;
-}
-
-size_t getLexerPosition(const LexerState* state) {
-    return state ? state->pos : 0;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Helper Implementations
-// ─────────────────────────────────────────────────────────────────────────────
-static Token makeToken(LexerState* state, TokenType type, const std::string& value) {
-    LUC_LOG_LEXER_EXTREME("makeToken: type=" << static_cast<int>(type) << ", value='" << value << "', line=" << state->line << ", col=" << state->column);
-    return {type, value, state->line, state->column};
-}
-
-static char peek(const LexerState* state) { 
-    char c = isAtEnd(state) ? '\0' : state->src[state->pos];
-    LUC_LOG_LEXER_EXTREME("peek: '" << (c == '\n' ? '\\' : c) << "' at pos=" << state->pos);
+char Lexer::peek() { 
+    char c = isAtEnd() ? '\0' : src[pos];
+    LUC_LOG_LEXER_EXTREME("peek: '" << (c == '\n' ? '\\' : c) << "' at pos=" << pos);
     return c;
 }
 
-static char peekNext(const LexerState* state) { 
-    char c = (state->pos + 1 >= state->src.size()) ? '\0' : state->src[state->pos + 1];
+char Lexer::peekNext() { 
+    char c = (pos + 1 >= src.size()) ? '\0' : src[pos + 1];
     LUC_LOG_LEXER_EXTREME("peekNext: '" << (c == '\n' ? '\\' : c) << "'");
     return c;
 }
 
-static char peekNextOffset(const LexerState* state, int offset) {
-    size_t idx = state->pos + offset;
-    return (idx < state->src.size()) ? state->src[idx] : '\0';
+char Lexer::peekNext(int offset) const {
+    size_t idx = pos + offset;
+    return (idx < src.size()) ? src[idx] : '\0';
 }
 
-static char advance(LexerState* state) {
-    char c = state->src[state->pos++];
-    state->column++;
-    LUC_LOG_LEXER_EXTREME("advance: consumed '" << (c == '\n' ? '\\' : c) << "', new pos=" << state->pos);
+char Lexer::advance() {
+    char c = src[pos++];
+    column++;
+    LUC_LOG_LEXER_EXTREME("advance: consumed '" << (c == '\n' ? '\\' : c) << "', new pos=" << pos);
     return c;
 }
 
-static bool isAtEnd(const LexerState* state) { 
-    bool end = state->pos >= state->src.size();
+bool Lexer::isAtEnd() { 
+    bool end = pos >= src.size();
     LUC_LOG_LEXER_EXTREME("isAtEnd: " << (end ? "true" : "false"));
     return end;
 }
 
-static bool match(LexerState* state, char expected) {
-    if (isAtEnd(state) || state->src[state->pos] != expected) {
+bool Lexer::match(char expected) {
+    if (isAtEnd() || src[pos] != expected) {
         LUC_LOG_LEXER_EXTREME("match('" << expected << "'): false");
         return false;
     }
-    state->pos++;
-    state->column++;
+    pos++;
+    column++;
     LUC_LOG_LEXER_EXTREME("match('" << expected << "'): true");
     return true;
-}
-
-// Returns number of bytes in the UTF-8 sequence starting at 'c' (1-4), or 0 if invalid.
-static int utf8SequenceLength(unsigned char c) {
-    if (c < 0x80) return 1;               // ASCII
-    if ((c & 0xE0) == 0xC0) return 2;     // 2-byte: 110xxxxx
-    if ((c & 0xF0) == 0xE0) return 3;     // 3-byte: 1110xxxx
-    if ((c & 0xF8) == 0xF0) return 4;     // 4-byte: 11110xxx
-    return 0;                             // Invalid UTF-8 start
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Whitespace & Comments
 // ─────────────────────────────────────────────────────────────────────────────
-static void skipWhitespace(LexerState* state) {
-    LUC_LOG_LEXER_VERBOSE("skipWhitespace: pos=" << state->pos << ", line=" << state->line);
+
+void Lexer::skipWhitespace() {
+    LUC_LOG_LEXER_VERBOSE("skipWhitespace: pos=" << pos << ", line=" << line);
     
-    while (!isAtEnd(state)) {
-        char c = peek(state);
+    while (!isAtEnd()) {
+        char c = peek();
 
         if (c == ' ' || c == '\r' || c == '\t') {
             LUC_LOG_LEXER_EXTREME("skipWhitespace: skipping whitespace char '" << c << "'");
-            advance(state);
+            advance();
         } else if (c == '\n') {
-            LUC_LOG_LEXER_VERBOSE("skipWhitespace: newline, line=" << state->line << "->" << state->line + 1);
-            state->line++;
-            state->column = 1;
-            advance(state);
+            LUC_LOG_LEXER_VERBOSE("skipWhitespace: newline, line=" << line << "->" << line + 1);
+            line++;
+            column = 1;
+            advance();
         }
         // Single-line comment: --
-        else if (c == '-' && peekNext(state) == '-') {
+        else if (c == '-' && peekNext() == '-') {
             LUC_LOG_LEXER_VERBOSE("skipWhitespace: found line comment start '--', breaking");
             break;
         }
         // Block comment: /- ... -/
         // Doc comment:   /-- ... --/
-        else if (c == '/' && peekNext(state) == '-') {
-            bool isDoc = (state->pos + 1 < state->src.size() && state->src[state->pos + 1] == '-');
+        else if (c == '/' && peekNext() == '-') {
+            bool isDoc = (pos + 1 < src.size() && src[pos + 1] == '-');
             if (isDoc) {
                 LUC_LOG_LEXER_VERBOSE("skipWhitespace: found doc comment '/--', breaking");
                 break;
@@ -307,92 +188,93 @@ static void skipWhitespace(LexerState* state) {
 
             // Plain block comment /- ... -/
             LUC_LOG_LEXER_VERBOSE("skipWhitespace: skipping block comment");
-            advance(state); // consume '/'
-            advance(state); // consume '-'
-            while (!isAtEnd(state) && !(peek(state) == '-' && peekNext(state) == '/')) {
-                if (peek(state) == '\n') {
-                    state->line++;
-                    state->column = 1;
+            advance(); // consume '/'
+            advance(); // consume '-'
+            while (!isAtEnd() && !(peek() == '-' && peekNext() == '/')) {
+                if (peek() == '\n') {
+                    line++;
+                    column = 1;
                 }
-                advance(state);
+                advance();
             }
-            if (!isAtEnd(state)) {
-                advance(state);
-                advance(state);
+            if (!isAtEnd()) {
+                advance();
+                advance();
             }
         } else {
             break;
         }
     }
-    LUC_LOG_LEXER_VERBOSE("skipWhitespace: done, pos=" << state->pos);
+    LUC_LOG_LEXER_VERBOSE("skipWhitespace: done, pos=" << pos);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Literal readers
 // ─────────────────────────────────────────────────────────────────────────────
-static Token readNumber(LexerState* state, char first) {
+
+Token Lexer::readNumber(char first) {
     LUC_LOG_LEXER_VERBOSE("readNumber: first char='" << first << "'");
     std::string num(1, first);
 
     // Hex: 0xFF
-    if (first == '0' && (peek(state) == 'x' || peek(state) == 'X')) {
+    if (first == '0' && (peek() == 'x' || peek() == 'X')) {
         LUC_LOG_LEXER_VERBOSE("readNumber: hex literal");
-        num += advance(state); // consume 'x'
-        while (isxdigit(peek(state)) || peek(state) == '_')
-            num += advance(state);
+        num += advance(); // consume 'x'
+        while (isxdigit(peek()) || peek() == '_')
+            num += advance();
         LUC_LOG_LEXER("readNumber: hex literal: " << num);
-        return makeToken(state, TokenType::HEX_LITERAL, num);
+        return makeToken(TokenType::HEX_LITERAL, num);
     }
 
     // Binary: 0b1010
-    if (first == '0' && (peek(state) == 'b' || peek(state) == 'B')) {
+    if (first == '0' && (peek() == 'b' || peek() == 'B')) {
         LUC_LOG_LEXER_VERBOSE("readNumber: binary literal");
-        num += advance(state); // consume 'b'
-        while (peek(state) == '0' || peek(state) == '1' || peek(state) == '_')
-            num += advance(state);
+        num += advance(); // consume 'b'
+        while (peek() == '0' || peek() == '1' || peek() == '_')
+            num += advance();
         LUC_LOG_LEXER("readNumber: binary literal: " << num);
-        return makeToken(state, TokenType::BINARY_LITERAL, num);
+        return makeToken(TokenType::BINARY_LITERAL, num);
     }
 
     // Integer or float
     bool isFloat = false;
-    while (isdigit(peek(state)) || peek(state) == '_')
-        num += advance(state);
+    while (isdigit(peek()) || peek() == '_')
+        num += advance();
 
-    if (peek(state) == '.' && peekNext(state) != '.') {
+    if (peek() == '.' && peekNext() != '.') {
         isFloat = true;
         LUC_LOG_LEXER_VERBOSE("readNumber: decimal point detected");
-        num += advance(state); // consume '.'
-        while (isdigit(peek(state)) || peek(state) == '_')
-            num += advance(state);
+        num += advance(); // consume '.'
+        while (isdigit(peek()) || peek() == '_')
+            num += advance();
     }
 
     // Exponent: 1e10, 1.5e-3
-    if (peek(state) == 'e' || peek(state) == 'E') {
+    if (peek() == 'e' || peek() == 'E') {
         isFloat = true;
         LUC_LOG_LEXER_VERBOSE("readNumber: exponent detected");
-        num += advance(state);
-        if (peek(state) == '+' || peek(state) == '-')
-            num += advance(state);
-        while (isdigit(peek(state)))
-            num += advance(state);
+        num += advance();
+        if (peek() == '+' || peek() == '-')
+            num += advance();
+        while (isdigit(peek()))
+            num += advance();
     }
 
     LUC_LOG_LEXER("readNumber: " << (isFloat ? "float" : "int") << " literal: " << num);
-    return makeToken(state, isFloat ? TokenType::FLOAT_LITERAL : TokenType::INT_LITERAL, num);
+    return makeToken(isFloat ? TokenType::FLOAT_LITERAL : TokenType::INT_LITERAL, num);
 }
 
-static Token readString(LexerState* state) {
+Token Lexer::readString() {
     LUC_LOG_LEXER_VERBOSE("readString: starting");
     std::string str;
-    while (!isAtEnd(state) && peek(state) != '"') {
-        if (peek(state) == '\n') {
-            state->line++;
-            state->column = 1;
+    while (!isAtEnd() && peek() != '"') {
+        if (peek() == '\n') {
+            line++;
+            column = 1;
         }
-        if (peek(state) == '\\') {
-            advance(state); // consume '\'
-            char esc = advance(state);
+        if (peek() == '\\') {
+            advance(); // consume '\'
+            char esc = advance();
             LUC_LOG_LEXER_EXTREME("readString: escape sequence '\\" << esc << "'");
             switch (esc) {
             case 'n':
@@ -418,15 +300,15 @@ static Token readString(LexerState* state) {
                 break;
             case 'x': {
                 std::string hex;
-                for (int i = 0; i < 2 && isxdigit(peek(state)); i++)
-                    hex += advance(state);
+                for (int i = 0; i < 2 && isxdigit(peek()); i++)
+                    hex += advance();
                 str += (char)std::stoi(hex, nullptr, 16);
                 break;
             }
             case 'u': {
                 std::string hex;
-                for (int i = 0; i < 4 && isxdigit(peek(state)); i++)
-                    hex += advance(state);
+                for (int i = 0; i < 4 && isxdigit(peek()); i++)
+                    hex += advance();
                 unsigned long cp = std::stoul(hex, nullptr, 16);
                 // UTF-8 encoding...
                 if (cp < 0x80) {
@@ -443,8 +325,8 @@ static Token readString(LexerState* state) {
             }
             case 'U': {
                 std::string hex;
-                for (int i = 0; i < 8 && isxdigit(peek(state)); i++)
-                    hex += advance(state);
+                for (int i = 0; i < 8 && isxdigit(peek()); i++)
+                    hex += advance();
                 unsigned long cp = std::stoul(hex, nullptr, 16);
                 // UTF-8 encoding for up to 4 bytes...
                 if (cp < 0x80) {
@@ -470,31 +352,31 @@ static Token readString(LexerState* state) {
                 break;
             }
         } else {
-            str += advance(state);
+            str += advance();
         }
     }
-    if (!isAtEnd(state))
-        advance(state); // consume closing '"'
+    if (!isAtEnd())
+        advance(); // consume closing '"'
     
     LUC_LOG_LEXER_VERBOSE("readString: result length=" << str.size());
-    return makeToken(state, TokenType::STRING_LITERAL, str);
+    return makeToken(TokenType::STRING_LITERAL, str);
 }
 
-static Token readChar(LexerState* state) {
+Token Lexer::readChar() {
     LUC_LOG_LEXER_VERBOSE("readChar: starting");
     std::string result;
     bool closed = false;
 
-    while (!isAtEnd(state)) {
-        char c = peek(state);
+    while (!isAtEnd()) {
+        char c = peek();
         if (c == '\'') {
-            advance(state);          // consume closing '
+            advance();          // consume closing '
             closed = true;
             break;
         }
         if (c == '\\') {
-            advance(state);          // consume backslash
-            char esc = advance(state);
+            advance();          // consume backslash
+            char esc = advance();
             switch (esc) {
                 case 'n':  result += '\n'; break;
                 case 't':  result += '\t'; break;
@@ -505,11 +387,11 @@ static Token readChar(LexerState* state) {
                 case '0':  result += '\0'; break;
                 case 'x': {
                     std::string hex;
-                    for (int i = 0; i < 2 && isxdigit(peek(state)); ++i)
-                        hex += advance(state);
+                    for (int i = 0; i < 2 && isxdigit(peek()); ++i)
+                        hex += advance();
                     if (hex.size() != 2) {
                         // incomplete hex escape – error recovery
-                        return makeToken(state, TokenType::UNKNOWN, "");
+                        return makeToken(TokenType::UNKNOWN, "");
                     }
                     unsigned long val = std::stoul(hex, nullptr, 16);
                     result += static_cast<char>(val);
@@ -517,10 +399,10 @@ static Token readChar(LexerState* state) {
                 }
                 case 'u': {
                     std::string hex;
-                    for (int i = 0; i < 4 && isxdigit(peek(state)); ++i)
-                        hex += advance(state);
+                    for (int i = 0; i < 4 && isxdigit(peek()); ++i)
+                        hex += advance();
                     if (hex.size() != 4) {
-                        return makeToken(state, TokenType::UNKNOWN, "");
+                        return makeToken(TokenType::UNKNOWN, "");
                     }
                     unsigned long cp = std::stoul(hex, nullptr, 16);
                     // UTF‑8 encoding (same as string)
@@ -543,10 +425,10 @@ static Token readChar(LexerState* state) {
                 }
                 case 'U': {
                     std::string hex;
-                    for (int i = 0; i < 8 && isxdigit(peek(state)); ++i)
-                        hex += advance(state);
+                    for (int i = 0; i < 8 && isxdigit(peek()); ++i)
+                        hex += advance();
                     if (hex.size() != 8) {
-                        return makeToken(state, TokenType::UNKNOWN, "");
+                        return makeToken(TokenType::UNKNOWN, "");
                     }
                     unsigned long cp = std::stoul(hex, nullptr, 16);
                     // UTF‑8 encoding (same as string)
@@ -575,420 +457,410 @@ static Token readChar(LexerState* state) {
             }
         } else {
             // normal character (not a backslash)
-            result += advance(state);
+            result += advance();
         }
     }
 
     if (!closed) {
         // unterminated character literal
-        return makeToken(state, TokenType::UNKNOWN, "");
+        return makeToken(TokenType::UNKNOWN, "");
     }
 
-    return makeToken(state, TokenType::CHAR_LITERAL, result);
+    return makeToken(TokenType::CHAR_LITERAL, result);
 }
 
-static Token readRawString(LexerState* state, int hashCount) {
+Token Lexer::readRawString(int hashCount) {
     LUC_LOG_LEXER_VERBOSE("readRawString: starting with " << hashCount << " hash delimiters");
     std::string str;
-    while (!isAtEnd(state)) {
-        if (peek(state) == '"') {
+    while (!isAtEnd()) {
+        if (peek() == '"') {
             // Check if the next hashCount characters are '#' and then end
             bool match = true;
             for (int i = 0; i < hashCount; ++i) {
-                if (peekNextOffset(state, i + 1) != '#') {
+                if (peekNext(i + 1) != '#') {
                     match = false;
                     break;
                 }
             }
             if (match) {
-                advance(state); // consume "
-                for (int i = 0; i < hashCount; ++i) advance(state); // consume the #s
+                advance(); // consume "
+                for (int i = 0; i < hashCount; ++i) advance(); // consume the #s
                 break;
             }
         }
-        if (peek(state) == '\n') {
-            state->line++;
-            state->column = 1;
+        if (peek() == '\n') {
+            line++;
+            column = 1;
         }
-        str += advance(state);
-        if (isAtEnd(state)) {
+        str += advance();
+        if (isAtEnd()) {
             // Unterminated raw string – error recovery
             break;
         }
     }
-    return makeToken(state, TokenType::RAW_STRING_LITERAL, str);
+    return makeToken(TokenType::RAW_STRING_LITERAL, str);
 }
 
-static Token readDocComment(LexerState* state) {
+Token Lexer::readDocComment() {
     LUC_LOG_LEXER_VERBOSE("readDocComment: starting");
-    advance(state); // consume first '-' (of opening --)
-    advance(state); // consume second '-'
+    advance(); // consume first '-' (of opening --)
+    advance(); // consume second '-'
 
     std::string doc;
 
-    while (!isAtEnd(state)) {
+    while (!isAtEnd()) {
         // Closing sequence is --/
-        if (peek(state) == '-' && state->pos + 1 < state->src.size() && state->src[state->pos + 1] == '-' &&
-            state->pos + 2 < state->src.size() && state->src[state->pos + 2] == '/') {
-            advance(state);
-            advance(state);
-            advance(state); // consume --/
+        if (peek() == '-' && pos + 1 < src.size() && src[pos + 1] == '-' &&
+            pos + 2 < src.size() && src[pos + 2] == '/') {
+            advance();
+            advance();
+            advance(); // consume --/
             break;
         }
-        if (peek(state) == '\n') {
-            state->line++;
-            state->column = 1;
+        if (peek() == '\n') {
+            line++;
+            column = 1;
         }
-        doc += advance(state);
+        doc += advance();
     }
 
     LUC_LOG_LEXER_VERBOSE("readDocComment: length=" << doc.size());
-    return makeToken(state, TokenType::DOC_COMMENT, doc);
+    return makeToken(TokenType::DOC_COMMENT, doc);
 }
 
-static Token readLineComment(LexerState* state) {
+Token Lexer::readLineComment() {
     LUC_LOG_LEXER_VERBOSE("readLineComment: starting");
-    advance(state); // consume the second '-'
+    advance(); // consume the second '-'
 
     // Strip a single optional leading space (the common "-- text" style).
-    if (peek(state) == ' ')
-        advance(state);
+    if (peek() == ' ')
+        advance();
 
     std::string text;
-    while (!isAtEnd(state) && peek(state) != '\n')
-        text += advance(state);
+    while (!isAtEnd() && peek() != '\n')
+        text += advance();
 
     LUC_LOG_LEXER_VERBOSE("readLineComment: '" << text << "'");
-    return makeToken(state, TokenType::LINE_COMMENT, text);
+    return makeToken(TokenType::LINE_COMMENT, text);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Scanner
-// ─────────────────────────────────────────────────────────────────────────────
-static Token getNextToken(LexerState* state) {
-    LUC_LOG_LEXER_VERBOSE("getNextToken: pos=" << state->pos << ", line=" << state->line << ", col=" << state->column);
+Token Lexer::getNextToken() {
+    LUC_LOG_LEXER_VERBOSE("getNextToken: pos=" << pos << ", line=" << line << ", col=" << column);
     
-    skipWhitespace(state);
-    if (isAtEnd(state)) {
+    skipWhitespace();
+    if (isAtEnd()) {
         LUC_LOG_LEXER("getNextToken: EOF");
-        return makeToken(state, TokenType::EOF_TOKEN, "EOF");
+        return makeToken(TokenType::EOF_TOKEN, "EOF");
     }
 
-    char c = advance(state);
-
-    // ── Reject non‑ASCII in source code (except inside comments/literals) ──
-    if (static_cast<unsigned char>(c) >= 0x80) {
-        // Found a non‑ASCII byte – consume the whole UTF‑8 sequence
-        std::string badChar(1, c);
-        int len = utf8SequenceLength(static_cast<unsigned char>(c));
-        for (int i = 1; i < len && !isAtEnd(state); ++i) {
-            badChar += advance(state);
-        }
-        // Report a single error at the start location
-        diagnostic::error(
-            DiagnosticCategory::Lexical,
-            state->fileName,
-            SourceLocation(state->line, state->column - len),  // start column
-            DiagCode::E1001,
-            {badChar}
-        );
-        // Continue scanning (the bad char is consumed)
-        return getNextToken(state); // recurse to next token
-    }
-
+    char c = advance();
     LUC_LOG_LEXER_EXTREME("getNextToken: processing char '" << c << "'");
 
     // ── Identifiers & Keywords ─────────────────────────────────────────────────
     if (isalpha(c) || c == '_') {
         std::string ident(1, c);
-        while (isalnum(peek(state)) || peek(state) == '_')
-            ident += advance(state);
+        while (isalnum(peek()) || peek() == '_')
+            ident += advance();
 
         // r"..." raw string literal with optional # delimiters
         if (ident == "r") {
             int hashCount = 0;
-            while (peek(state) == '#') {
+            while (peek() == '#') {
                 ++hashCount;
-                advance(state);
+                advance();
             }
-            if (peek(state) == '"') {
-                advance(state); // consume opening "
-                return readRawString(state, hashCount);
+            if (peek() == '"') {
+                advance(); // consume opening "
+                return readRawString(hashCount);
             }
         }
 
         // Standalone _ is a wildcard token
         if (ident == "_") {
             LUC_LOG_LEXER_EXTREME("getNextToken: wildcard '_'");
-            return makeToken(state, TokenType::WILDCARD, "_");
+            return makeToken(TokenType::WILDCARD, "_");
         }
 
-        auto it = state->keywords.find(ident);
-        if (it != state->keywords.end()) {
+        auto it = keywords.find(ident);
+        if (it != keywords.end()) {
             LUC_LOG_LEXER_VERBOSE("getNextToken: keyword '" << ident << "'");
-            return makeToken(state, it->second, ident);
+            return makeToken(it->second, ident);
         }
         LUC_LOG_LEXER_VERBOSE("getNextToken: identifier '" << ident << "'");
-        return makeToken(state, TokenType::IDENTIFIER, ident);
+        return makeToken(TokenType::IDENTIFIER, ident);
     }
 
     // ── Numbers ────────────────────────────────────────────────────────────────
     if (isdigit(c)) {
-        return readNumber(state, c);
+        return readNumber(c);
     }
 
     // ── String literals ────────────────────────────────────────────────────────
     if (c == '"') {
         LUC_LOG_LEXER_VERBOSE("getNextToken: string literal");
-        return readString(state);
+        return readString();
     }
 
     // ── Char literals ──────────────────────────────────────────────────────────
     if (c == '\'') {
         LUC_LOG_LEXER_VERBOSE("getNextToken: char literal");
-        return readChar(state);
+        return readChar();
     }
 
     // ── Operators & Symbols ────────────────────────────────────────────────────
     switch (c) {
     // ── Access ─────────────────────────────────────────────────────────────────
     case '.':
-        if (match(state, '.')) {
-            if (match(state, '.')) {
+        if (match('.')) {
+            if (match('.')) {
                 LUC_LOG_LEXER_EXTREME("getNextToken: '...' (variadic)");
-                return makeToken(state, TokenType::VARIADIC, "...");
+                return makeToken(TokenType::VARIADIC, "...");
             }
             LUC_LOG_LEXER_EXTREME("getNextToken: '..' (range)");
-            return makeToken(state, TokenType::RANGE, "..");
+            return makeToken(TokenType::RANGE, "..");
         }
         LUC_LOG_LEXER_EXTREME("getNextToken: '.'");
-        return makeToken(state, TokenType::DOT, ".");
+        return makeToken(TokenType::DOT, ".");
 
     case ':':
+        // if (match(':')) {
+        //     LUC_LOG_LEXER_EXTREME("getNextToken: '::'");
+        //     return makeToken(TokenType::DOUBLE_COLON, "::");
+        // }
         LUC_LOG_LEXER_EXTREME("getNextToken: ':'");
-        return makeToken(state, TokenType::COLON, ":");
+        return makeToken(TokenType::COLON, ":");
 
     case '?':
-        if (match(state, '.')) {
+        if (match('.')) {
             LUC_LOG_LEXER_EXTREME("getNextToken: '?.'");
-            return makeToken(state, TokenType::QUESTION_DOT, "?.");
+            return makeToken(TokenType::QUESTION_DOT, "?.");
         }
-        if (match(state, '?')) {
+        if (match('?')) {
             LUC_LOG_LEXER_EXTREME("getNextToken: '\?\?'");
-            return makeToken(state, TokenType::QUESTION_QUESTION, "??");
+            return makeToken(TokenType::QUESTION_QUESTION, "??");
         }
         LUC_LOG_LEXER_EXTREME("getNextToken: '?'");
-        return makeToken(state, TokenType::QUESTION, "?");
+        return makeToken(TokenType::QUESTION, "?");
 
     case '=':
-        if (match(state, '=')) {
-            if (match(state, '=')) {
+        if (match('=')) {
+            if (match('=')) {
                 LUC_LOG_LEXER_EXTREME("getNextToken: '==='");
-                return makeToken(state, TokenType::EQUAL_EQUAL_EQUAL, "===");
+                return makeToken(TokenType::EQUAL_EQUAL_EQUAL, "===");
             }
             LUC_LOG_LEXER_EXTREME("getNextToken: '=='");
-            return makeToken(state, TokenType::EQUAL_EQUAL, "==");
+            return makeToken(TokenType::EQUAL_EQUAL, "==");
         }
-        if (peek(state) == '>') {
-            advance(state);
-            return Token{TokenType::FAT_ARROW, "=>", state->line, state->column};
+        if (peek() == '>') {
+            advance();
+            return Token{TokenType::FAT_ARROW, "=>", line, column};
         }
         LUC_LOG_LEXER_EXTREME("getNextToken: '='");
-        return makeToken(state, TokenType::ASSIGN, "=");
+        return makeToken(TokenType::ASSIGN, "=");
 
     case '!':
-        if (match(state, '=')) {
+        if (match('=')) {
             LUC_LOG_LEXER_EXTREME("getNextToken: '!='");
-            return makeToken(state, TokenType::NOT_EQUAL, "!=");
+            return makeToken(TokenType::NOT_EQUAL, "!=");
         }
         LUC_LOG_LEXER_EXTREME("getNextToken: '!'");
-        return makeToken(state, TokenType::BANG, "!");
+        return makeToken(TokenType::BANG, "!");
 
     case '<':
-        if (match(state, '<')) {
-            if (match(state, '=')) {
+        if (match('<')) {
+            if (match('=')) {
                 LUC_LOG_LEXER_EXTREME("getNextToken: '<<='");
-                return makeToken(state, TokenType::SHL_ASSIGN, "<<=");
+                return makeToken(TokenType::SHL_ASSIGN, "<<=");
             }
             LUC_LOG_LEXER_EXTREME("getNextToken: '<<'");
-            return makeToken(state, TokenType::SHL, "<<");
+            return makeToken(TokenType::SHL, "<<");
         }
-        if (match(state, '=')) {
+        if (match('=')) {
             LUC_LOG_LEXER_EXTREME("getNextToken: '<='");
-            return makeToken(state, TokenType::LESS_EQUAL, "<=");
+            return makeToken(TokenType::LESS_EQUAL, "<=");
         }
         LUC_LOG_LEXER_EXTREME("getNextToken: '<'");
-        return makeToken(state, TokenType::LESS, "<");
+        return makeToken(TokenType::LESS, "<");
 
     case '>':
-        if (match(state, '>')) {
-            if (match(state, '=')) {
+        if (match('>')) {
+            if (match('=')) {
                 LUC_LOG_LEXER_EXTREME("getNextToken: '>>='");
-                return makeToken(state, TokenType::SHR_ASSIGN, ">>=");
+                return makeToken(TokenType::SHR_ASSIGN, ">>=");
             }
             LUC_LOG_LEXER_EXTREME("getNextToken: '>>'");
-            return makeToken(state, TokenType::SHR, ">>");
+            return makeToken(TokenType::SHR, ">>");
         }
-        if (match(state, '=')) {
+        if (match('=')) {
             LUC_LOG_LEXER_EXTREME("getNextToken: '>='");
-            return makeToken(state, TokenType::GREATER_EQUAL, ">=");
+            return makeToken(TokenType::GREATER_EQUAL, ">=");
         }
         LUC_LOG_LEXER_EXTREME("getNextToken: '>'");
-        return makeToken(state, TokenType::GREATER, ">");
+        return makeToken(TokenType::GREATER, ">");
 
     case '+':
-        if (match(state, '>')) {
+        if (match('>')) {
             LUC_LOG_LEXER_EXTREME("getNextToken: '+>'");
-            return makeToken(state, TokenType::COMPOSE, "+>");
+            return makeToken(TokenType::COMPOSE, "+>");
         }
-        if (match(state, '=')) {
+        if (match('=')) {
             LUC_LOG_LEXER_EXTREME("getNextToken: '+='");
-            return makeToken(state, TokenType::PLUS_ASSIGN, "+=");
+            return makeToken(TokenType::PLUS_ASSIGN, "+=");
         }
         LUC_LOG_LEXER_EXTREME("getNextToken: '+'");
-        return makeToken(state, TokenType::PLUS, "+");
+        return makeToken(TokenType::PLUS, "+");
 
     case '-':
-        if (peek(state) == '-') {
+        if (peek() == '-') {
             LUC_LOG_LEXER_EXTREME("getNextToken: line comment '--'");
-            return readLineComment(state);
+            return readLineComment();
         }
-        if (match(state, '=')) {
+        if (match('=')) {
             LUC_LOG_LEXER_EXTREME("getNextToken: '-='");
-            return makeToken(state, TokenType::MINUS_ASSIGN, "-=");
+            return makeToken(TokenType::MINUS_ASSIGN, "-=");
         }
-        if (match(state, '>')) {
+        if (match('>')) {
             LUC_LOG_LEXER_EXTREME("getNextToken: '->'");
-            return makeToken(state, TokenType::ARROW, "->");
+            return makeToken(TokenType::ARROW, "->");
         }
         LUC_LOG_LEXER_EXTREME("getNextToken: '-'");
-        return makeToken(state, TokenType::MINUS, "-");
+        return makeToken(TokenType::MINUS, "-");
 
     case '*':
-        if (match(state, '=')) {
+        if (match('=')) {
             LUC_LOG_LEXER_EXTREME("getNextToken: '*='");
-            return makeToken(state, TokenType::MUL_ASSIGN, "*=");
+            return makeToken(TokenType::MUL_ASSIGN, "*=");
         }
         LUC_LOG_LEXER_EXTREME("getNextToken: '*'");
-        return makeToken(state, TokenType::MUL, "*");
+        return makeToken(TokenType::MUL, "*");
 
     case '/':
-        if (peek(state) == '-' && state->pos + 1 < state->src.size() && state->src[state->pos + 1] == '-') {
+        if (peek() == '-' && pos + 1 < src.size() && src[pos + 1] == '-') {
             LUC_LOG_LEXER_EXTREME("getNextToken: doc comment '/--'");
-            return readDocComment(state);
+            return readDocComment();
         }
-        if (match(state, '=')) {
+        if (match('=')) {
             LUC_LOG_LEXER_EXTREME("getNextToken: '/='");
-            return makeToken(state, TokenType::DIV_ASSIGN, "/=");
+            return makeToken(TokenType::DIV_ASSIGN, "/=");
         }
         LUC_LOG_LEXER_EXTREME("getNextToken: '/'");
-        return makeToken(state, TokenType::DIV, "/");
+        return makeToken(TokenType::DIV, "/");
 
     case '%':
-        if (match(state, '=')) {
+        if (match('=')) {
             LUC_LOG_LEXER_EXTREME("getNextToken: '%='");
-            return makeToken(state, TokenType::MOD_ASSIGN, "%=");
+            return makeToken(TokenType::MOD_ASSIGN, "%=");
         }
         LUC_LOG_LEXER_EXTREME("getNextToken: '%'");
-        return makeToken(state, TokenType::MOD, "%");
+        return makeToken(TokenType::MOD, "%");
 
     case '^':
-        if (match(state, '=')) {
+        if (match('=')) {
             LUC_LOG_LEXER_EXTREME("getNextToken: '^='");
-            return makeToken(state, TokenType::POW_ASSIGN, "^=");
+            return makeToken(TokenType::POW_ASSIGN, "^=");
         }
         LUC_LOG_LEXER_EXTREME("getNextToken: '^'");
-        return makeToken(state, TokenType::POW, "^");
+        return makeToken(TokenType::POW, "^");
 
     case '&':
-        if (match(state, '&')) {
-            if (match(state, '=')) {
+        if (match('&')) {
+            if (match('=')) {
                 LUC_LOG_LEXER_EXTREME("getNextToken: '&&='");
-                return makeToken(state, TokenType::BIT_AND_ASSIGN, "&&=");
+                return makeToken(TokenType::BIT_AND_ASSIGN, "&&=");
             }
             LUC_LOG_LEXER_EXTREME("getNextToken: '&&'");
-            return makeToken(state, TokenType::BIT_AND, "&&");
+            return makeToken(TokenType::BIT_AND, "&&");
         }
         LUC_LOG_LEXER_EXTREME("getNextToken: '&'");
-        return makeToken(state, TokenType::AMPERSAND, "&");
+        return makeToken(TokenType::AMPERSAND, "&");
 
     case '|':
-        if (match(state, '>')) {
+        if (match('>')) {
             LUC_LOG_LEXER_EXTREME("getNextToken: '|>' (pipeline)");
-            return makeToken(state, TokenType::PIPELINE, "|>");
+            return makeToken(TokenType::PIPELINE, "|>");
         }
-        if (match(state, '|')) {
-            if (match(state, '=')) {
+        if (match('|')) {
+            if (match('=')) {
                 LUC_LOG_LEXER_EXTREME("getNextToken: '||='");
-                return makeToken(state, TokenType::BIT_OR_ASSIGN, "||=");
+                return makeToken(TokenType::BIT_OR_ASSIGN, "||=");
             }
             LUC_LOG_LEXER_EXTREME("getNextToken: '||'");
-            return makeToken(state, TokenType::BIT_OR, "||");
+            return makeToken(TokenType::BIT_OR, "||");
         }
         LUC_LOG_LEXER_EXTREME("getNextToken: '|'");
-        return makeToken(state, TokenType::PIPE, "|");
+        return makeToken(TokenType::PIPE, "|");
 
     case '~':
-        if (match(state, '~')) {
-            return makeToken(state, TokenType::BIT_NOT, "~~");
-        }
-        if (match(state, '^')) {
-            if (match(state, '=')) {
-                return makeToken(state, TokenType::BIT_XOR_ASSIGN, "~^=");
+        // Check for ~~ first (new bitwise NOT)
+        if (match('~')) {
+            // ~~ is bitwise NOT
+            if (match('^')) {
+                // ~~^ is bitwise XOR? This is getting messy
+                // Better: keep ~^ as XOR, only change single ~ to TILDE
+                // But then ~~ and ~ are different...
             }
-            return makeToken(state, TokenType::BIT_XOR, "~^");
+            return makeToken(TokenType::BIT_NOT, "~~");
         }
-        return makeToken(state, TokenType::TILDE, "~");
+        // Check for ~^ (bitwise XOR) - keep as is
+        if (match('^')) {
+            if (match('=')) {
+                return makeToken(TokenType::BIT_XOR_ASSIGN, "~^=");
+            }
+            return makeToken(TokenType::BIT_XOR, "~^");
+        }
+        // Single ~ is type qualifier prefix
+        return makeToken(TokenType::TILDE, "~");
         
     case '@':
         LUC_LOG_LEXER_EXTREME("getNextToken: '@'");
-        return makeToken(state, TokenType::AT_SIGN, "@");
+        return makeToken(TokenType::AT_SIGN, "@");
     case '#':
         LUC_LOG_LEXER_EXTREME("getNextToken: '#'");
-        return makeToken(state, TokenType::HASH, "#");
+        return makeToken(TokenType::HASH, "#");
 
     case ',':
         LUC_LOG_LEXER_EXTREME("getNextToken: ','");
-        return makeToken(state, TokenType::COMMA, ",");
+        return makeToken(TokenType::COMMA, ",");
     case ';':
         LUC_LOG_LEXER_EXTREME("getNextToken: ';'");
-        return makeToken(state, TokenType::SEMICOLON, ";");
+        return makeToken(TokenType::SEMICOLON, ";");
     case '(':
         LUC_LOG_LEXER_EXTREME("getNextToken: '('");
-        return makeToken(state, TokenType::LPAREN, "(");
+        return makeToken(TokenType::LPAREN, "(");
     case ')':
         LUC_LOG_LEXER_EXTREME("getNextToken: ')'");
-        return makeToken(state, TokenType::RPAREN, ")");
+        return makeToken(TokenType::RPAREN, ")");
     case '{':
         LUC_LOG_LEXER_EXTREME("getNextToken: '{'");
-        return makeToken(state, TokenType::LBRACE, "{");
+        return makeToken(TokenType::LBRACE, "{");
     case '}':
         LUC_LOG_LEXER_EXTREME("getNextToken: '}'");
-        return makeToken(state, TokenType::RBRACE, "}");
+        return makeToken(TokenType::RBRACE, "}");
     case '[':
         LUC_LOG_LEXER_EXTREME("getNextToken: '['");
-        return makeToken(state, TokenType::LBRACKET, "[");
+        return makeToken(TokenType::LBRACKET, "[");
     case ']':
         LUC_LOG_LEXER_EXTREME("getNextToken: ']'");
-        return makeToken(state, TokenType::RBRACKET, "]");
+        return makeToken(TokenType::RBRACKET, "]");
     }
 
     // Unknown character
     LUC_LOG_LEXER("getNextToken: UNKNOWN character '" << c << "'");
-    return makeToken(state, TokenType::UNKNOWN, std::string(1, c));
+    return makeToken(TokenType::UNKNOWN, std::string(1, c));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public tokenize
 // ─────────────────────────────────────────────────────────────────────────────
-std::vector<Token> tokenize(LexerState* state) {
+
+std::vector<Token> Lexer::tokenize() {
     LUC_LOG_LEXER("tokenize: starting");
     std::vector<Token> tokens;
-    Token t = makeToken(state, TokenType::EOF_TOKEN, "");
+    Token t = makeToken(TokenType::EOF_TOKEN, "");
     int tokenCount = 0;
 
     do {
-        t = getNextToken(state);
+        t = getNextToken();
         tokens.push_back(t);
         tokenCount++;
         LUC_LOG_LEXER_EXTREME("tokenize: token " << tokenCount << " - type=" << static_cast<int>(t.type) << ", value='" << t.value << "'");

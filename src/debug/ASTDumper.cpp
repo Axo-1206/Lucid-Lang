@@ -97,14 +97,15 @@ std::string formatType(const TypeAST* type, const StringPool* pool) {
             return "[*]" + formatType(static_cast<const DynamicArrayTypeAST*>(type)->element.get(), pool);
 
         case ASTKind::FuncType: {
-            const auto& sig = static_cast<const FuncTypeAST*>(type)->sig;
+            const auto* ft = static_cast<const FuncTypeAST*>(type);
             std::string res;
 
-            uint32_t q = sig.qualifiers;
-            if (q & QualifierBits::Async) res += "~async ";
+            uint32_t q = ft->qualifiers;
+            if (q & QualifierBits::Async)   res += "~async ";
             if (q & QualifierBits::Nullable) res += "~nullable ";
             if (q & QualifierBits::Parallel) res += "~parallel ";
 
+            const FuncSignature& sig = ft->sig;
             size_t paramOffset = 0;
             for (size_t g = 0; g < sig.groupSizes.size(); ++g) {
                 res += "(";
@@ -211,25 +212,50 @@ void dumpPtrType(std::string& out, const PtrTypeAST* node, const StringPool* poo
 }
 
 void dumpFuncType(std::string& out, const FuncTypeAST* node, const StringPool* pool, int indentLevel) {
-    std::string header = "FuncTypeAST";
-    uint32_t q = node->sig.qualifiers;
-    if (q & QualifierBits::Async) header += " ~async";
-    if (q & QualifierBits::Nullable) header += " ~nullable";
-    if (q & QualifierBits::Parallel) header += " ~parallel";
+    // Build qualifier prefix
+    std::string qualStr;
+    if (node->qualifiers & QualifierBits::Async)   qualStr += "~async ";
+    if (node->qualifiers & QualifierBits::Nullable) qualStr += "~nullable ";
+    if (node->qualifiers & QualifierBits::Parallel) qualStr += "~parallel ";
+
+    std::string header = "FuncTypeAST " + qualStr;
     printNodeHeader(out, indentLevel, *node, header);
 
+    const FuncSignature& sig = node->sig;
     size_t paramOffset = 0;
-    for (size_t g = 0; g < node->sig.groupSizes.size(); ++g) {
-        size_t groupSize = node->sig.groupSizes[g];
+    for (size_t g = 0; g < sig.groupSizes.size(); ++g) {
+        out += getIndent(indentLevel + 1) + "Group " + std::to_string(g) + ": (";
+        size_t groupSize = sig.groupSizes[g];
         for (size_t i = 0; i < groupSize; ++i) {
-            if (node->sig.allParams[paramOffset + i]) {
-                dumpNode(out, node->sig.allParams[paramOffset + i].get(), pool, indentLevel + 1);
+            if (i > 0) out += ", ";
+            const auto& param = sig.allParams[paramOffset + i];
+            if (param) {
+                out += toStr(pool, param->name) + " : ";
+                if (param->type) out += formatType(param->type.get(), pool);
+                if (param->isVariadic) out += "...";
             }
         }
+        out += ")\n";
         paramOffset += groupSize;
     }
-    for (const auto& ret : node->sig.returnTypes) {
-        if (ret) dumpNode(out, ret.get(), pool, indentLevel + 1);
+
+    if (!sig.returnTypes.empty()) {
+        out += getIndent(indentLevel + 1) + "-> ";
+        for (size_t i = 0; i < sig.returnTypes.size(); ++i) {
+            if (i > 0) out += ", ";
+            out += formatType(sig.returnTypes[i].get(), pool);
+        }
+        out += "\n";
+    }
+
+    // Optionally dump raw qualifiers (for debugging)
+    if (!node->rawQualifiers.empty()) {
+        out += getIndent(indentLevel + 1) + "rawQualifiers: ";
+        for (size_t i = 0; i < node->rawQualifiers.size(); ++i) {
+            if (i > 0) out += " ";
+            out += toStr(pool, node->rawQualifiers[i]);
+        }
+        out += "\n";
     }
 }
 
