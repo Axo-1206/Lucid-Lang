@@ -101,6 +101,15 @@ export const main () -> int = {
 
 Every `.luc` file is a module. The module's identity is its file path relative to the package root. Modules are flat; nesting is not supported.
 
+### No Classes (Encapsulation via Modules)
+
+Luc does not feature a `class` keyword. Encapsulation is handled entirely at the module (file) level using visibility modifiers, while data layout and behavior are kept strictly separate:
+*   **Data:** Declared via simple, flat data structures (`struct` and `enum`).
+*   **Behavior:** Declared via functions and `impl` blocks.
+*   **Encapsulation:** Visibility rules (`pub` / `export`) control what elements are exposed outside the module.
+
+This supports a **Data-Oriented Design (DOD)** philosophy, separating memory layout from logic to maximize CPU cache efficiency and simplify application state.
+
 ### Visibility — Three Tiers
 
 | Keyword  | Scope       | Access                                                     |
@@ -337,21 +346,22 @@ Every type is either **owned** or **borrowed**. Bare `T` = owned, `&T` = borrowe
 
 ### Struct Deep Copy
 
-Struct assignment always produces a fully independent value. Owned fields are cloned, borrowed (`&T`) fields copy their reference only.
+Struct assignment always produces a fully independent value. Owned fields are cloned. Since references (`&T`) cannot be stored in structs (see Scoped Reference Rules below), structs consist entirely of owned fields and deep copies are always independent.
 
 ```luc
 struct Player {
     score  int        -- owned: cloned
     items  [*, string]  -- owned: buffer deep-copied
-    world  &World     -- borrowed: reference copied, World not cloned
 }
 
-let a Player = Player { score = 10  items = ["sword"]  world = &w }
+let a Player = Player { score = 10  items = ["sword"] }
 let b Player = a
--- b.score and b.items are independent; b.world shares the same World as a.world
+-- b.score and b.items are fully independent of a
 ```
 
-### Borrowed Types — Share Without Copying
+### Borrowed Types — Scoped References (`&T`)
+
+References (`&T`) allow sharing data without copying. They represent a safe borrowed view of an owned variable.
 
 ```luc
 let a Player = Player { … }
@@ -366,14 +376,39 @@ const rc &Player = a    -- read-only shared reference
 | `let ref &Player = a`   | ❌ shared    | ✅ visible through `a` | `a`   |
 | `const ref &Player = a` | ❌ shared    | ❌ read-only           | `a`   |
 
-### Circular References
+#### The Downward Flow Rule (Reference Scoping)
 
-```luc
-struct Node {
-    value int
-    next  &Node?    -- borrowed reference, nullable
-}
-```
+To guarantee memory safety and eliminate dangling pointers without using a Garbage Collector or a complex compile-time borrow checker, references (`&T`) are strictly scoped. They are allowed to flow *downward* (into nested calls), but never *upward or sideways*.
+
+1. **No Struct Storage:** A struct field cannot have a reference type (e.g., `field &T` is a compile error).
+2. **No Array/Slice Storage:** An array or slice cannot store reference types (e.g., `[*, &T]` or `[_, &T]` is a compile error).
+3. **No Reference Returns:** A function cannot return a reference type (e.g., `-> &T` is a compile error).
+
+As a result, a reference (`&T`) can only exist in two places:
+*   As a **function parameter** (e.g., `let process(p &Player)`).
+*   As a **local variable alias** inside a block (e.g., `let ref &Weapon = player.weapon`).
+
+This guarantees that a reference never outlives the owned variable it points to.
+
+#### Modeling Complex Data Structures (Trees, Graphs, Links)
+
+Because references (`&T`) cannot be stored inside structs, building circular or linked data structures requires alternative approaches:
+
+1. **Indices and Arenas (Recommended DOD Style):** Store integer indices into a flat array/arena instead of memory references.
+   ```luc
+   struct Node {
+       value int
+       next  int    -- index of the next node in an array / arena
+   }
+   ```
+2. **Raw Pointers (`*T`):** For manual memory management (e.g., building low-level systems or C integrations), use raw pointers. Raw pointers are "sealed conduits" and require explicit `#toRef` conversion to use, signaling unsafe operations. Type conversion syntax (e.g., `*T(val)` or `&T(val)`) is forbidden for raw pointers and references; the `#toRef` and `#toPtr` intrinsics must be used instead to cross the unsafe boundary.
+   ```luc
+   struct Node {
+       value int
+       next  *Node?  -- raw pointer, nullable. Requires manual lifecycle tracking.
+   }
+   ```
+3. **Smart Pointers (Standard Library):** For safe shared heap state, use standard library reference-counted wrappers like `Shared<T>` and `Weak<T>` (which auto-nulls when the owner is destroyed). These incur a small runtime cost.
 
 ### Function Values and Closures
 
@@ -394,7 +429,7 @@ Raw pointers (`*T`) are sealed conduits — carry them, pass them to extern func
 1. Store in a variable, struct field, or parameter
 2. Pass to an `@extern` function
 3. Nil check (`== nil`, `!= nil`)
-4. Pass to pointer intrinsics (`#ptrToRef`, `#ptrOffset`, etc.)
+4. Pass to pointer intrinsics (`#toRef`, `#ptrOffset`, etc.)
 5. Print the address for debugging
 
 ### Forbidden Operations (Compiler Error)
@@ -404,12 +439,13 @@ Raw pointers (`*T`) are sealed conduits — carry them, pass them to extern func
 - Indexing: `ptr[i]`
 - Arithmetic: `ptr + 4` — use `#ptrOffset` instead
 - Assignment: `*ptr = value`
+- Type casting/conversion: e.g., `*float(x)` or `&float(x)` (must use `#toRef` or `#toPtr` to cross safety boundaries)
 
 ### Boundary Crossing (Intrinsics)
 
 ```luc
-#ptrToRef(ptr)      -- *T → &T  (assert validity, cross to safe reference)
-#refToPtr(ref)      -- &T → *T  (convert back to raw pointer)
+#toRef(ptr)         -- *T → &T  (assert validity, cross to safe reference)
+#toPtr(ref)         -- &T → *T  (convert back to raw pointer)
 #ptrOffset(ptr, n)  -- pointer arithmetic, returns new *T
 #ptrDiff(p1, p2)    -- distance between two pointers as int64
 ```
@@ -421,7 +457,7 @@ const malloc (size uint64) -> *uint8?
 let buf *uint8? = malloc(1024)
 if buf == nil { return 1 }
 
-let ref &uint8 = #ptrToRef(buf)        -- cross the boundary
+let ref &uint8 = #toRef(buf)           -- cross the boundary
 ref = 0xFF                             -- work with it safely
 
 let next *uint8? = #ptrOffset(buf, 1)  -- pointer arithmetic
@@ -474,7 +510,11 @@ const v Vec2 = Vec2 { x = 0.0 }  -- ERROR: struct literal is not compile-time
 A non-nullable variable (e.g. `int`, `Vec2`, `string`) **can never be set to nil**. This eliminates null pointer exceptions for these types. The compiler guarantees that if a non-nullable variable exists it holds a valid value.
 
 - **Primitive types** (`int`, `float`, `bool`, `char`) live on the stack. When the scope ends they are gone automatically — no manual release needed.
-- **Heap-allocated types** (`string`, `[*, T]`, **closures**) are cleaned up when the variable goes out of scope. To free a dynamic array buffer **early** while the scope is still live, call `.clear()` from the standard library — the variable remains valid as an empty collection, never nil.
+- **Heap-allocated types** (`string`, `[*, T]`, **closures**) are cleaned up when the variable goes out of scope.
+- **Destructors and the `Disposable` Trait:** Types can implement the standard library `Disposable` trait to run custom cleanup logic when they go out of scope.
+  - Built-in heap types (`string`, `[*, T]`) have internal disposers generated automatically.
+  - Custom types that manage external resources (like raw pointers `*T` or file handles) implement `Disposable` to free their resources automatically.
+  - To free resources **early** while a scope is still live, the developer can explicitly call `.dispose()` (or `.clear()` for collections).
 
 A plain named function declared inside a scope is just a function pointer — no heap allocation. A **closure** (an anonymous function that captures variables from the enclosing scope) allocates its captured environment on the heap. That environment is released when the closure variable goes out of scope:
 
@@ -488,9 +528,16 @@ let double (x int) -> int = { return x * 2 }
 let triple (x int) -> int = { return x * factor }
 -- triple's captured environment is released when triple goes out of scope
 
-let bigData [*, byte] = loadFile("huge.bin")
--- ... use bigData ...
-bigData.clear()    -- free heap buffer early; bigData is now empty but valid
+-- Custom disposable struct
+struct File {
+    handle int
+}
+
+impl Disposable for File {
+    pub const dispose (self &File) = {
+        closeFile(self.handle) -- Automatically called at scope exit
+    }
+}
 ```
 
 Use nullable types (`int?`, `Vec2?`) when a value genuinely may be absent. Non-nullable types express the guarantee that a value is always present.
@@ -2282,12 +2329,12 @@ const _dynarrayReserve (arr *uint8, n uint64)
 
 -- ── exported functions: usable directly ─────────────────────────────
 
-export const len<T>     (arr [_, T])          -> uint64 = { return _sliceLen(#refToPtr(arr)) }
-export const len<T>     (arr [*, T])          -> uint64 = { return _sliceLen(#refToPtr(arr)) }
-export const push<T>    (arr [*, T], v T)               = { _dynarrayPush(#refToPtr(arr), #refToPtr(v)) }
-export const pop<T>     (arr [*, T])          -> T      = { return #ptrToRef(_dynarrayPop(#refToPtr(arr))) }
-export const clear<T>   (arr [*, T])                    = { _dynarrayClear(#refToPtr(arr)) }
-export const reserve<T> (arr [*, T], n uint64)          = { _dynarrayReserve(#refToPtr(arr), n) }
+export const len<T>     (arr [_, T])          -> uint64 = { return _sliceLen(#toPtr(arr)) }
+export const len<T>     (arr [*, T])          -> uint64 = { return _sliceLen(#toPtr(arr)) }
+export const push<T>    (arr [*, T], v T)               = { _dynarrayPush(#toPtr(arr), #toPtr(v)) }
+export const pop<T>     (arr [*, T])          -> T      = { return #toRef(_dynarrayPop(#toPtr(arr))) }
+export const clear<T>   (arr [*, T])                    = { _dynarrayClear(#toPtr(arr)) }
+export const reserve<T> (arr [*, T], n uint64)          = { _dynarrayReserve(#toPtr(arr), n) }
 export const first<T>   (arr [_, T])          -> T      = { return arr[0] }
 export const last<T>    (arr [_, T])          -> T      = { return arr[arr:len() - 1] }
 
@@ -2404,7 +2451,7 @@ const _sliceLen (arr *uint8) -> uint64
 
 -- wrap it
 export const myLen<T> (arr [_, T]) -> uint64 = {
-    return _sliceLen(#refToPtr(arr))
+    return _sliceLen(#toPtr(arr))
 }
 
 -- register as method
@@ -3728,8 +3775,8 @@ All memory intrinsics operate on raw pointers (`*T`) and are only valid inside `
 
 | Intrinsic            | Args       | Returns | Notes                                 |
 | -------------------- | ---------- | ------- | ------------------------------------- |
-| `#ptrToRef(ptr)`     | `*T`       | `&T`    | Assert valid, cross to safe reference |
-| `#refToPtr(ref)`     | `&T`       | `*T`    | Convert reference to raw pointer      |
+| `#toRef(ptr)`        | `*T`       | `&T`    | Assert valid, cross to safe reference |
+| `#toPtr(ref)`        | `&T`       | `*T`    | Convert reference to raw pointer      |
 | `#ptrOffset(ptr, n)` | `*T`, int  | `*T`    | Pointer arithmetic (element offset)   |
 | `#ptrDiff(p1, p2)`   | `*T`, `*T` | `int64` | Distance between pointers in elements |
 
@@ -3737,7 +3784,7 @@ These intrinsics are the only way to cross the sealed conduit boundary or perfor
 
 ```luc
 let buf  *uint8 = malloc(1024)
-let ref  &uint8 = #ptrToRef(buf)
+let ref  &uint8 = #toRef(buf)
 ref = 0xFF
 
 let next     *uint8 = #ptrOffset(buf, 1)
