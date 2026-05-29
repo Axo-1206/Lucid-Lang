@@ -9,20 +9,6 @@
  *   - src/parser/ParserStmt.cpp – primary producer of these nodes
  *   - src/semantic/ – consumes for control flow analysis
  *
- * @grammar (from LUC_GRAMMAR.md)
- *   block           := '{' { stmt } '}'
- *   if_stmt         := 'if' expr block [ 'else' ( if_stmt | block ) ]
- *   switch_stmt     := 'switch' expr '{' { case_clause } [ default_clause ] '}'
- *   case_clause     := 'case' case_value { ',' case_value } ':' block
- *   default_clause  := 'default' ':' block
- *   for_stmt        := 'for' IDENTIFIER [ type ] 'in' ( range_iter | expr ) block
- *   while_stmt      := 'while' expr block
- *   do_while_stmt   := 'do' block 'while' expr
- *   return_stmt     := 'return' [ expr ]
- *   break_stmt      := 'break'
- *   continue_stmt   := 'continue'
- *   multi_assign    := decl_keyword var_spec { ',' var_spec } '=' expr
- *   multi_assign_stmt := expr_lhs { ',' expr_lhs } '=' expr
  */
 
 #pragma once
@@ -37,9 +23,9 @@
 #include <memory>
 #include <optional>
 
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 // BLOCK
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * @brief A brace‑delimited sequence of statements – the fundamental scoping unit.
@@ -60,14 +46,14 @@
 struct BlockStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::BlockStmt;
 
-    ArenaSpan<StmtPtr> stmts;   ///< Statements in execution order
+    ArenaSpan<StmtPtr> stmts; // Statements in execution order
 
     BlockStmtAST() : StmtAST(ASTKind::BlockStmt) {}
 };
 
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 // EXPRESSION & DECLARATION STATEMENTS
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * @brief An expression used as a statement – its value is silently discarded.
@@ -84,7 +70,7 @@ struct BlockStmtAST : StmtAST {
 struct ExprStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::ExprStmt;
 
-    ExprPtr expr;   ///< The expression being evaluated for its side effects
+    ExprPtr expr; // The expression being evaluated for its side effects
 
     explicit ExprStmtAST(ExprPtr e)
         : StmtAST(ASTKind::ExprStmt), expr(std::move(e)) {}
@@ -115,7 +101,7 @@ struct ExprStmtAST : StmtAST {
 struct DeclStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::DeclStmt;
 
-    DeclPtr decl;   ///< The actual declaration node
+    DeclPtr decl; // The actual declaration node
 
     explicit DeclStmtAST(DeclPtr d) : StmtAST(ASTKind::DeclStmt), decl(std::move(d)) {}
 
@@ -132,9 +118,9 @@ struct DeclStmtAST : StmtAST {
 
 };
 
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 // BRANCHING STATEMENTS
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * @brief The statement form of `if` – `else` is optional, no value is produced.
@@ -157,9 +143,9 @@ struct DeclStmtAST : StmtAST {
 struct IfStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::IfStmt;
 
-    ExprPtr  condition;   ///< The test expression (must resolve to `bool`)
-    StmtPtr  thenBranch;  ///< Always a `BlockStmtAST`
-    StmtPtr  elseBranch;  ///< `nullptr` | `BlockStmtAST` | `IfStmtAST`
+    ExprPtr  condition;  // The test expression (must resolve to `bool`)
+    StmtPtr  thenBranch; // Always a `BlockStmtAST`
+    StmtPtr  elseBranch; // `nullptr` | `BlockStmtAST` | `IfStmtAST`
 
     IfStmtAST() : StmtAST(ASTKind::IfStmt) {}
 };
@@ -217,9 +203,9 @@ struct SwitchStmtAST : StmtAST {
     SwitchStmtAST() : StmtAST(ASTKind::SwitchStmt) {}
 };
 
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 // LOOP STATEMENTS
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * @brief Iterates over a collection or an inclusive range.
@@ -241,10 +227,10 @@ struct SwitchStmtAST : StmtAST {
 struct ForStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::ForStmt;
 
-    ParamPtr iterVar;   ///< Iteration variable (name + optional explicit type)
-    ExprPtr  iterable;  ///< Collection or `RangeExprAST`
-    ExprPtr  step;      ///< Optional step (only for range loops, `nullptr` if omitted)
-    StmtPtr  body;      ///< Always a `BlockStmtAST`
+    ParamPtr iterVar;  // Iteration variable (name explicit type)
+    ExprPtr  iterable; // Collection or `RangeExprAST`
+    ExprPtr  step;     // Optional step (only for range loops, `nullptr` if omitted)
+    StmtPtr  body;     // Always a `BlockStmtAST`
 
     ForStmtAST() : StmtAST(ASTKind::ForStmt) {}
 };
@@ -261,8 +247,8 @@ struct ForStmtAST : StmtAST {
 struct WhileStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::WhileStmt;
 
-    ExprPtr condition;   ///< Must resolve to `bool`
-    StmtPtr body;        ///< Always a `BlockStmtAST`
+    ExprPtr condition; // Must resolve to `bool`
+    StmtPtr body;      // Always a `BlockStmtAST`
 
     WhileStmtAST() : StmtAST(ASTKind::WhileStmt) {}
 };
@@ -285,9 +271,9 @@ struct DoWhileStmtAST : StmtAST {
     DoWhileStmtAST() : StmtAST(ASTKind::DoWhileStmt) {}
 };
 
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 // CONTROL TRANSFER STATEMENTS
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * @brief Exits the enclosing function, optionally yielding one or more values.
@@ -306,7 +292,7 @@ struct DoWhileStmtAST : StmtAST {
 struct ReturnStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::ReturnStmt;
 
-    ArenaSpan<ExprPtr> values;   ///< Empty for bare `return`, otherwise one or more expressions
+    ArenaSpan<ExprPtr> values; // Empty for bare `return`, otherwise one or more expressions
 
     ReturnStmtAST() : StmtAST(ASTKind::ReturnStmt) {}
 };
@@ -343,9 +329,9 @@ struct ContinueStmtAST : StmtAST {
     ContinueStmtAST() : StmtAST(ASTKind::ContinueStmt) {}
 };
 
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 // MULTI‑ASSIGNMENT STATEMENTS
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * @brief Multiple variable declaration (with `let` or `const`).
@@ -365,9 +351,9 @@ struct ContinueStmtAST : StmtAST {
 struct MultiVarDeclAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::MultiVarDecl;
 
-    DeclKeyword keyword;                                      ///< `let` or `const`
-    ArenaSpan<std::pair<InternedString, TypePtr>> vars;       ///< (name, type) for each variable
-    ExprPtr rhs;                                              ///< Initialiser expression
+    DeclKeyword keyword;                                // `let` or `const`
+    ArenaSpan<std::pair<InternedString, TypePtr>> vars; // (name, type) for each variable
+    ExprPtr rhs;                                        // Initialiser expression
 
     MultiVarDeclAST() : StmtAST(ASTKind::MultiVarDecl) {}
 };
@@ -392,8 +378,8 @@ struct MultiVarDeclAST : StmtAST {
 struct MultiAssignStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::MultiAssignStmt;
 
-    ArenaSpan<ExprPtr> lhs;   ///< Left‑hand side lvalues
-    ExprPtr rhs;              ///< Right‑hand side expression (single)
+    ArenaSpan<ExprPtr> lhs; // Left‑hand side lvalues
+    ExprPtr rhs;            // Right‑hand side expression (single)
 
     MultiAssignStmtAST() : StmtAST(ASTKind::MultiAssignStmt) {}
 };

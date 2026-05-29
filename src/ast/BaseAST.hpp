@@ -155,7 +155,6 @@ struct IntrinsicCallExprAST;
 // Or use the helpers on BaseAST:
 //   if (node->isa<PrimitiveTypeAST>()) { node->as<PrimitiveTypeAST>() ... }
 // ─────────────────────────────────────────────────────────────────────────────
-
 enum class ASTKind : uint16_t {
     Unknown,
     UnknownDecl,
@@ -263,7 +262,6 @@ enum class ASTKind : uint16_t {
 // ─────────────────────────────────────────────────────────────────────────────
 // IndexKind — distinguishes array element access vs slice access.
 // ─────────────────────────────────────────────────────────────────────────────
-
 enum class IndexKind {
     Element,  // expr '[' expr ']'              — nums[2]
     Slice,    // expr '[' expr '..' expr ']'    — nums[1..3] (inclusive)
@@ -303,165 +301,62 @@ struct SourceLocation {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ASTVisitor — abstract base for all AST passes.
-// Each concrete node's `accept()` calls the corresponding `visit()` method.
-// Default implementations do nothing, so passes only override needed methods.
-// ─────────────────────────────────────────────────────────────────────────────
-
-struct ASTVisitor {
-    virtual ~ASTVisitor() = default;
-
-    // Type nodes
-    virtual void visit(PrimitiveTypeAST&)      {}
-    virtual void visit(NamedTypeAST&)          {}
-    virtual void visit(NullableTypeAST&)       {}
-    virtual void visit(ResultTypeAST&)         {}
-    virtual void visit(FixedArrayTypeAST&)     {}
-    virtual void visit(SliceTypeAST&)          {}
-    virtual void visit(DynamicArrayTypeAST&)   {}
-    virtual void visit(RefTypeAST&)            {}
-    virtual void visit(PtrTypeAST&)            {}
-    virtual void visit(FuncTypeAST&)           {}
-
-    // Declaration nodes
-    virtual void visit(PackageDeclAST&)     {}
-    virtual void visit(UseDeclAST&)         {}
-    virtual void visit(VarDeclAST&)         {}
-    virtual void visit(FuncDeclAST&)        {}
-    virtual void visit(StructDeclAST&)      {}
-    virtual void visit(FieldDeclAST&)       {}
-    virtual void visit(EnumDeclAST&)        {}
-    virtual void visit(EnumVariantAST&)     {}
-    virtual void visit(TraitMethodAST&)     {}
-    virtual void visit(TraitDeclAST&)       {}
-    virtual void visit(TraitRefAST&)        {}
-    virtual void visit(ImplDeclAST&)        {}
-    virtual void visit(MethodDeclAST&)      {}
-    virtual void visit(FromDeclAST&)        {}
-    virtual void visit(FromEntryAST&)       {}
-    virtual void visit(TypeAliasDeclAST&)   {}
-    virtual void visit(ParamAST&)           {}
-    virtual void visit(GenericParamAST&)    {}
-
-    // Expression nodes
-    virtual void visit(LiteralExprAST&)         {}
-    virtual void visit(IdentifierExprAST&)      {}
-    virtual void visit(ArrayLiteralExprAST&)    {}
-    virtual void visit(StructLiteralExprAST&)   {}
-    virtual void visit(FieldInitAST&)           {}
-    virtual void visit(BinaryExprAST&)          {}
-    virtual void visit(UnaryExprAST&)           {}
-    virtual void visit(CallExprAST&)            {}
-    virtual void visit(IndexExprAST&)           {}
-    virtual void visit(FieldAccessExprAST&)     {}
-    virtual void visit(BehaviorAccessExprAST&)  {}
-    virtual void visit(NullableChainExprAST&)   {}
-    virtual void visit(NullCoalesceExprAST&)    {}
-    virtual void visit(AssignExprAST&)          {}
-    virtual void visit(IsExprAST&)              {}
-    virtual void visit(PipelineExprAST&)        {}
-    virtual void visit(PipelineStepAST&)        {}
-    virtual void visit(ComposeExprAST&)         {}
-    virtual void visit(ComposeOperandAST&)      {}
-    virtual void visit(AnonFuncExprAST&)        {}
-    virtual void visit(AwaitExprAST&)           {}
-    virtual void visit(ResolveExprAST&)         {}
-    virtual void visit(OkArmAST&)               {}
-    virtual void visit(ErrArmAST&)              {}
-    virtual void visit(MatchExprAST&)           {}
-    virtual void visit(IfExprAST&)              {}
-    virtual void visit(RangeExprAST&)           {}
-    virtual void visit(TypeConvExprAST&)        {}
-
-    // Pattern nodes
-    virtual void visit(BindPatternAST&)         {}
-    virtual void visit(WildcardPatternAST&)     {}
-    virtual void visit(TypePatternAST&)         {}
-    virtual void visit(StructPatternAST&)       {}
-    virtual void visit(FieldPatternAST&)        {}
-    virtual void visit(PatternExprAST&)         {}
-    virtual void visit(MatchArmAST&)            {}
-    virtual void visit(DefaultArmAST&)          {}
-
-    // Statement nodes
-    virtual void visit(BlockStmtAST&)           {}
-    virtual void visit(ExprStmtAST&)            {}
-    virtual void visit(DeclStmtAST&)            {}
-    virtual void visit(IfStmtAST&)              {}
-    virtual void visit(SwitchStmtAST&)          {}
-    virtual void visit(SwitchCaseAST&)          {}
-    virtual void visit(ForStmtAST&)             {}
-    virtual void visit(WhileStmtAST&)           {}
-    virtual void visit(DoWhileStmtAST&)         {}
-    virtual void visit(ReturnStmtAST&)          {}
-    virtual void visit(BreakStmtAST&)           {}
-    virtual void visit(ContinueStmtAST&)        {}
-    virtual void visit(MultiVarDeclAST&)        {}
-    virtual void visit(MultiAssignStmtAST&)     {}
-
-    // Root
-    virtual void visit(ProgramAST&)             {}
-
-    // Compiler directives
-    virtual void visit(AttributeAST&)           {}
-    virtual void visit(AttributeArgAST&)        {}
-    virtual void visit(IntrinsicCallExprAST&)   {}
-
-    // Unknown / recovery nodes
-    virtual void visit(UnknownDeclAST&)         {}
-    virtual void visit(UnknownExprAST&)         {}
-    virtual void visit(UnknownStmtAST&)         {}
-    virtual void visit(UnknownTypeAST&)         {}
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Effect — behavioural bitmask for semantic analysis.
-// ─────────────────────────────────────────────────────────────────────────────
-
-enum class Effect : uint32_t {
-    None          = 0,
-    SideEffect    = 1 << 0,  // writes memory, calls impure function, I/O
-    IsAsync       = 1 << 1,  // contains await or async call
-    WritesMemory  = 1 << 2,  // direct assignment to memory location
-    ReadsMemory   = 1 << 3,  // dereference or non-const field access
-    Tainted       = 1 << 4,  // raw pointer (*T) involved, FFI boundary
-};
-
-inline constexpr Effect operator|(Effect a, Effect b) {
-    return static_cast<Effect>(static_cast<uint32_t>(a) | static_cast<uint32_t>(b));
-}
-inline bool hasEffect(uint32_t flags, Effect e) {
-    return (flags & static_cast<uint32_t>(e)) != 0;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // BaseAST — root of the entire AST hierarchy.
-//
-// This struct is deliberately small. Node‑specific data (doc comments,
-// attributes, resolved types) is pushed down to the family bases (DeclAST,
-// ExprAST, etc.) to minimise per‑node memory footprint.
-//
-// Fields:
-//   kind            — discriminator for LLVM‑style RTTI (isa/as)
-//   loc             — source location (packed line+column)
-//   isBehaviorMember — set by semantic pass for Type:method references
-//   isConst         — compile‑time constant value
-//   scopeDepth      — nesting depth (0 = file scope)
-//   effectFlags     — bitmask of Effect values
-//
-// No `doc`, `attributes`, or `resolvedType` here – they belong to DeclAST
-// and ExprAST/PatternAST respectively.
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * @brief Root of the entire AST hierarchy. All concrete AST nodes inherit from this.
+ *
+ * This struct is deliberately small (typically 16-24 bytes on 64-bit platforms)
+ * to minimise memory footprint across thousands of nodes. Node‑specific data
+ * (doc comments, attributes, resolved types) is pushed down to family bases
+ * (DeclAST, ExprAST, etc.).
+ *
+ * @par Memory Layout (64-bit, typical)
+ *   - `kind` (ASTKind)        : 2 bytes  (uint16_t)
+ *   - `loc` (SourceLocation)  : 4 bytes  (uint32_t)
+ *   - `isBehaviorMember`      : 1 byte   (bool)
+ *   - `isConst`               : 1 byte   (bool)
+ *   - padding                 : 4 bytes  (alignment to 8 bytes)
+ *   - vtable pointer          : 8 bytes
+ *   @n Total: ~20 bytes (may vary by compiler and padding)
+ *
+ * @note `scopeDepth` and `effectFlags` were removed from this struct because
+ *       they are rarely used and can be stored in semantic analysis side tables
+ *       (e.g., ScopeTree, EffectAnalyzer) rather than bloating every AST node.
+ *       This reduces per‑node memory by ~8 bytes.
+ *
+ * @field kind             Discriminator for LLVM‑style RTTI (isa/as). Zero overhead
+ *                         compared to dynamic_cast.
+ * @field loc              Packed source location (20 bits line, 12 bits column).
+ *                         File path is stored once in ProgramAST, not per node.
+ * @field isBehaviorMember Set by semantic pass for `Type:method` references.
+ *                         Signals that this expression refers to an impl method.
+ * @field isConst          Set by semantic pass for compile‑time constant values.
+ *                         Used for constant folding and propagation.
+ *
+ * @par Usage
+ *   Every concrete AST node inherits from BaseAST and provides:
+ *     1. A `static constexpr ASTKind staticKind` member
+ *     2. A constructor that passes `staticKind` to BaseAST
+ *     3. (Optional) Semantic annotation fields
+ *
+ *   Type checking uses the `kind` field directly:
+ *   @code
+ *   switch (node->kind) {
+ *       case ASTKind::IfStmt:
+ *           auto* stmt = node->as<IfStmtAST>();
+ *           // ...
+ *   }
+ *   @endcode
+ *
+ * @note Virtual destructor is required for polymorphic deletion when using
+ *       raw pointers. With arena allocation, deletion never happens, but the
+ *       vtable is still needed for `isa<>` and `as<>` to work correctly.
+ */
 struct BaseAST {
     ASTKind kind;
     SourceLocation loc;
-
-    // Semantic annotations (filled by semantic pass)
-    bool    isBehaviorMember = false;
-    bool    isConst          = false;
-    int     scopeDepth       = 0;
-    uint32_t effectFlags     = 0;
 
     explicit BaseAST(ASTKind k) : kind(k) {}
     virtual ~BaseAST() = default;
@@ -536,6 +431,10 @@ struct DeclAST    : BaseAST {
 struct ExprAST    : BaseAST {
     TypeAST* resolvedType = nullptr;   // set by semantic pass
 
+    // Semantic annotations specific to expressions
+    bool isBehaviorMember = false;     // true for obj:method references
+    bool isConst          = false;     // true for compile‑time constants
+
     explicit ExprAST(ASTKind k) : BaseAST(k) {}
     bool hasType() const { return resolvedType != nullptr; }
 };
@@ -561,9 +460,44 @@ using StmtPtr    = std::unique_ptr<StmtAST, ASTDeleter>;
 using PatternPtr = std::unique_ptr<PatternAST, ASTDeleter>;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ProgramAST – root node for a single translation unit (source file).
+// ProgramAST — root node for a single translation unit.
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * @brief Root node for a single translation unit (source file).
+ *
+ * This node represents an entire `.luc` file after parsing. It owns all
+ * top‑level declarations and provides file‑level context for semantic passes.
+ *
+ * @par Memory Layout (64-bit, typical)
+ *   - BaseAST overhead        : ~20 bytes (vtable + kind + loc + flags + padding)
+ *   - `packageName`           : 4 bytes (InternedString is a uint32_t)
+ *   - `filePath`              : 4 bytes (InternedString)
+ *   - `decls` (ArenaSpan)     : 16 bytes (ptr + size, each 8 bytes)
+ *   @n Total: ~44 bytes per file (excluding the actual declaration nodes)
+ *
+ * @note Why separate `packageName` and `filePath`?
+ *   - `packageName` is the identifier after `package` (e.g., "math").
+ *     Used for cross‑file symbol resolution within the same package.
+ *   - `filePath` is the relative path from the package root (e.g., "math/vec2.luc").
+ *     Used for error messages, debug info, and module identity.
+ *   Both are interned to avoid duplicate string storage across the AST.
+ *
+ * @par Declaration Ownership
+ *   The `decls` span holds all top‑level declarations in source order.
+ *   Each declaration is an ASTPtr<DeclAST> (unique_ptr with no‑op deleter).
+ *   The underlying memory is arena‑allocated; the unique_ptr is just an
+ *   ownership wrapper that does not call delete.
+ *
+ * @note Relationship with PackageDeclAST
+ *   ProgramAST duplicates the package name as a convenience. The separate
+ *   PackageDeclAST node exists primarily for source location tracking when
+ *   the package name mismatches the directory structure.
+ *
+ * @field packageName The package name declared by `package foo` at file start.
+ * @field filePath    Relative path from package root (e.g., "math/vec2.luc").
+ * @field decls       Top‑level declarations in source order.
+ */
 struct ProgramAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::Program;
 
@@ -578,6 +512,46 @@ struct ProgramAST : BaseAST {
 // GenericParamAST – a generic type parameter (e.g., `<T : Drawable>`).
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * @brief Represents a single generic type parameter declaration.
+ *
+ * This node appears in the generic parameter list of functions, structs,
+ * traits, impl blocks, and type aliases. Each parameter has a name and
+ * an optional list of trait constraints.
+ *
+ * @par Grammar Reference (from LUC_GRAMMAR.md)
+ *   generic_param := IDENTIFIER
+ *                  | IDENTIFIER ':' IDENTIFIER
+ *                  | IDENTIFIER ':' constraint_list
+ *   constraint_list := IDENTIFIER { '+' IDENTIFIER }
+ *
+ * @par Examples
+ *   @code
+ *   struct Box<T> { ... }                    // unconstrained T
+ *   fn find<T : Comparable> (items []T) ...  // T must implement Comparable
+ *   type Pair<K, V> = struct { ... }         // two unconstrained parameters
+ *   impl Map<K : Hashable, V> { ... }        // K constrained, V unconstrained
+ *   @endcode
+ *
+ * @par Memory Layout (64-bit, typical)
+ *   - BaseAST overhead    : ~16 bytes (vtable + kind + loc + padding)
+ *   - `name`              : 4 bytes (InternedString is uint32_t)
+ *   - `constraints` span  : 16 bytes (ptr + size, each 8 bytes)
+ *   @n Total: ~36 bytes per generic parameter (excluding constraint strings)
+ *
+ * @par Semantic Resolution
+ *   During semantic analysis, each constraint name is resolved to a
+ *   `TraitDeclAST`. The order of constraints does not affect semantics,
+ *   but is preserved for source fidelity.
+ *
+ * @field name        The identifier of the type parameter (e.g., "T", "K", "V").
+ * @field constraints Trait names that this parameter must satisfy.
+ *                    Empty span means the parameter is unconstrained.
+ *
+ * @note Multiple constraints are joined with `+` in source (e.g., `T : Hashable + Comparable`).
+ *       The semantic pass verifies that all constraint names resolve to traits
+ *       and that the traits are compatible (no conflicting method signatures).
+ */
 struct GenericParamAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::GenericParam;
 
@@ -593,6 +567,46 @@ struct GenericParamAST : BaseAST {
 // ParamAST – a function parameter (name, type, variadic flag).
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * @brief Represents a single parameter in a function or method signature.
+ *
+ * This node appears in the parameter list of `FuncDeclAST`, `MethodDeclAST`,
+ * `TraitMethodAST`, `FromEntryAST`, and `AnonFuncExprAST`. Each parameter
+ * has a name and an explicit type annotation (Luc requires explicit types
+ * everywhere – no type inference).
+ *
+ * @par Grammar Reference (from LUC_GRAMMAR.md)
+ *   param := IDENTIFIER type
+ *   variadic_param := IDENTIFIER '...' type
+ *
+ * @par Examples
+ *   @code
+ *   let add (a int, b int) -> int           // two normal parameters
+ *   let printf (fmt string, args ...any)    // variadic parameter
+ *   fn map<T, U> (items []T, f (T) -> U)    // function parameter
+ *   @endcode
+ *
+ * @par Memory Layout (64-bit, typical)
+ *   - BaseAST overhead    : ~16 bytes (vtable + kind + loc + padding)
+ *   - `name`              : 4 bytes (InternedString)
+ *   - `type` (unique_ptr) : 8 bytes (pointer to arena‑allocated TypeAST)
+ *   - `isVariadic`        : 1 byte
+ *   - padding             : 7 bytes (alignment to 8 bytes)
+ *   @n Total: ~36 bytes per parameter (excluding the TypeAST node itself)
+ *
+ * @par Semantic Rules
+ *   - Only the **last** parameter in a parameter group may be variadic.
+ *   - Variadic parameters are only allowed in `@extern` functions and
+ *     in standard library variadic functions (e.g., `printf`-style).
+ *   - The type of a variadic parameter must be `any` (for `@extern` C variadics)
+ *     or a concrete array type for Luc‑side variadics.
+ *
+ * @field name        Parameter name (e.g., "x", "items", "args").
+ * @field type        Explicit type annotation (never null).
+ * @field isVariadic  True if this is the variadic `...` parameter.
+ *
+ * @see FuncSignature for how parameters are grouped into curry groups.
+ */
 struct ParamAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::Param;
 
@@ -603,20 +617,84 @@ struct ParamAST : BaseAST {
     ParamAST() : BaseAST(ASTKind::Param) {}
 };
 
-using ParamPtr      = ASTPtr<ParamAST>;
-using ParamGroup = std::vector<ParamPtr>;
-using GenericParamPtr = ASTPtr<GenericParamAST>;
+using ParamPtr          = ASTPtr<ParamAST>;
+using ParamGroup        = std::vector<ParamPtr>;
+using GenericParamPtr   = ASTPtr<GenericParamAST>;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// UnknownAST family – error recovery nodes, never null.
+// UnknownAST family – error recovery nodes.
+//
+// These nodes are produced by the parser when it encounters syntax errors
+// but can continue parsing. They act as placeholders, allowing the AST to
+// remain well‑formed even when parts of the source code are invalid.
+//
+// ## When are these created?
+//   - Unexpected token where an expression was expected → UnknownExprAST
+//   - Invalid declaration syntax → UnknownDeclAST
+//   - Malformed statement → UnknownStmtAST
+//   - Unrecognised type annotation → UnknownTypeAST
+//   - Generic fallback when the exact kind is unknown → UnknownAST
+//
+// ## How are they used?
+//   1. The parser creates one via `arena.make<UnknownExprAST>()`
+//   2. The node is inserted into the AST at the error location
+//   3. Semantic passes may skip or ignore unknown nodes
+//   4. Code generation should never receive unknown nodes (semantic pass
+//      should abort compilation if any remain after error recovery)
+//
+// ## Why have multiple unknown kinds?
+//   - `UnknownDeclAST` : can be stored in `ArenaSpan<DeclPtr>`
+//   - `UnknownExprAST` : can be stored in `ArenaSpan<ExprPtr>`
+//   - `UnknownStmtAST` : can be stored in `ArenaSpan<StmtPtr>`
+//   - `UnknownTypeAST` : can be stored in `ArenaSpan<TypePtr>`
+//   - `UnknownAST`     : generic fallback when the context is ambiguous
+//
+//   Using the correct subtype preserves type safety in collections
+//   while still indicating an error occurred.
+//
+// ## Memory Layout
+//   All unknown nodes are trivial – they add no fields beyond BaseAST.
+//   Size: ~16 bytes (vtable + kind + loc + padding)
+//
+// @see isUnknown() helper for checking any unknown node kind
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * @brief Generic unknown node – fallback when the specific kind is ambiguous.
+ *
+ * Used only when the parser cannot determine whether the invalid syntax
+ * was a declaration, expression, statement, or type. Prefer the more
+ * specific unknown node types when possible.
+ */
 struct UnknownAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::Unknown;
 
     UnknownAST() : BaseAST(ASTKind::Unknown) {}
 };
 
+/**
+ * @brief Helper to check if a node is any kind of unknown node.
+ *
+ * Returns true for:
+ *   - UnknownAST (generic)
+ *   - UnknownDeclAST
+ *   - UnknownExprAST
+ *   - UnknownStmtAST
+ *   - UnknownTypeAST
+ *
+ * Also returns true for `nullptr` (treats missing node as unknown).
+ *
+ * @param node The AST node to check (may be null).
+ * @return true if the node is unknown, null, or an error recovery node.
+ *
+ * @par Usage
+ *   @code
+ *   if (isUnknown(node)) {
+ *       // Skip this node during semantic analysis
+ *       return;
+ *   }
+ *   @endcode
+ */
 inline bool isUnknown(const BaseAST* node) {
     if (!node) return true;
     switch (node->kind) {
@@ -631,21 +709,67 @@ inline bool isUnknown(const BaseAST* node) {
     }
 }
 
+/**
+ * @brief Unknown declaration – produced when a declaration is malformed.
+ *
+ * Examples:
+ *   - Missing identifier: `let = 5`
+ *   - Invalid visibility: `pub pub struct X`
+ *   - Malformed generic parameters: `struct Box<T :`
+ *
+ * This node can appear in `ArenaSpan<DeclPtr>` (e.g., `ProgramAST::decls`).
+ * Semantic analysis should skip it and report the original parse error.
+ */
 struct UnknownDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::UnknownDecl;
     UnknownDeclAST() : DeclAST(ASTKind::UnknownDecl) {}
 };
 
+/**
+ * @brief Unknown expression – produced when an expression is malformed.
+ *
+ * Examples:
+ *   - Unmatched parentheses: `(1 + 2`
+ *   - Missing operand: `x +`
+ *   - Invalid operator sequence: `x * / y`
+ *
+ * This node can appear in `ArenaSpan<ExprPtr>` (e.g., function arguments,
+ * initialisers, condition expressions). Semantic analysis should skip it.
+ */
 struct UnknownExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::UnknownExpr;
     UnknownExprAST() : ExprAST(ASTKind::UnknownExpr) {}
 };
 
+/**
+ * @brief Unknown statement – produced when a statement is malformed.
+ *
+ * Examples:
+ *   - Incomplete `if`: `if x {` (missing closing brace)
+ *   - Missing loop body: `for i in 0..10`
+ *   - Invalid `return` placement: `return break`
+ *
+ * This node can appear in `ArenaSpan<StmtPtr>` (e.g., block bodies,
+ * loop bodies, if branches). Semantic analysis should skip it.
+ */
 struct UnknownStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::UnknownStmt;
     UnknownStmtAST() : StmtAST(ASTKind::UnknownStmt) {}
 };
 
+/**
+ * @brief Unknown type – produced when a type annotation is malformed.
+ *
+ * Examples:
+ *   - Missing bracket: `[_, int`
+ *   - Invalid array syntax: `[10` 
+ *   - Unknown primitive: `int128`
+ *   - Unterminated generic: `Vec2<int`
+ *
+ * This node can appear in `ArenaSpan<TypePtr>` (e.g., variable types,
+ * function return types, generic arguments). Semantic analysis should
+ * treat it as an unresolved type and propagate the error.
+ */
 struct UnknownTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::UnknownType;
     UnknownTypeAST() : TypeAST(ASTKind::UnknownType) {}

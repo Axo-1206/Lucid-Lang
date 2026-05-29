@@ -86,11 +86,9 @@ int main(int argc, char* argv[]) {
     std::string source = buffer.str();
     std::cout << "[MAIN] Source file size: " << source.size() << " bytes" << std::endl;
 
-    DiagnosticEngine dc;
     StringPool stringPool; 
     AttributeRegistry::instance().setStringPool(stringPool);
     IntrinsicRegistry::instance().setStringPool(stringPool);
-    BuiltinMethodRegistry::instance().setStringPool(stringPool);
     QualifierRegistry::instance().setStringPool(stringPool);
     
     // Phase 1: Lexical Analysis
@@ -164,7 +162,6 @@ int main(int argc, char* argv[]) {
 
     AttributeRegistry::instance().resetStringPool();
     IntrinsicRegistry::instance().resetStringPool();
-    BuiltinMethodRegistry::instance().resetStringPool();
     QualifierRegistry::instance().resetStringPool();
     
     file.close();

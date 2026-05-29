@@ -12,16 +12,6 @@
  * @note These represent types **as written** in source. The semantic pass later
  *       resolves these into actual resolved Type objects.
  *
- * @grammar (from LUC_GRAMMAR.md)
- *   type            := base_type [ generic_args ] [ '?' ]
- *                    | ref_type | ptr_type | array_type | func_type
- *   base_type       := primitive_type | IDENTIFIER
- *   primitive_type  := 'bool' | 'byte' | 'short' | 'int' | 'long'
- *                    | 'ubyte' | 'ushort' | 'uint' | 'ulong'
- *                    | 'int8' | 'int16' | 'int32' | 'int64'
- *                    | 'uint8' | 'uint16' | 'uint32' | 'uint64'
- *                    | 'float' | 'double' | 'decimal'
- *                    | 'string' | 'char' | 'any'
  */
 
 #pragma once
@@ -138,11 +128,11 @@ struct PrimitiveTypeAST : TypeAST {
 struct NamedTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::NamedType;
 
-    InternedString name;                     ///< Type name (e.g., "Vec2", "Buffer")
-    ArenaSpan<TypePtr> genericArgs;          ///< Concrete type arguments (empty if non‑generic)
+    InternedString name;            // Type name (e.g., "Vec2", "Buffer")
+    ArenaSpan<TypePtr> genericArgs; // Concrete type arguments (empty if non‑generic)
 
     // Semantic annotation (written by TypeResolver, read by codegen)
-    bool isGenericParam = false;             ///< True if this is a generic parameter (T, K, V)
+    bool isGenericParam = false;    // True if this is a generic parameter (T, K, V)
 
     explicit NamedTypeAST(InternedString n)
         : TypeAST(ASTKind::NamedType), name(n) {}
@@ -226,9 +216,9 @@ struct ResultTypeAST : TypeAST {
  * @brief An array with a compile‑time constant size. Size is part of the type.
  *
  * @example
- *   [4]float    → size = 4, element = Float
- *   [16]float   → size = 16, element = Float
- *   [4][4]float → size = 4, element = FixedArrayTypeAST(4, Float)
+ *   [4, float]         → size = 4, element = Float
+ *   [16, float]        → size = 16, element = Float
+ *   [4, [4, float] ]   → size = 4, element = FixedArrayTypeAST(4, Float)
  *
  * The size is stored as `uint64_t` from `INT_LITERAL`, always non‑negative.
  * The semantic pass checks that `size > 0` and fits platform limits.
@@ -237,8 +227,8 @@ struct ResultTypeAST : TypeAST {
 struct FixedArrayTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::FixedArrayType;
 
-    std::uint64_t size;      ///< Compile‑time constant from `INT_LITERAL`
-    TypePtr       element;   ///< Element type (may itself be an array)
+    std::uint64_t size;    // Compile‑time constant from `INT_LITERAL`
+    TypePtr       element; // Element type (may itself be an array)
 
     FixedArrayTypeAST(std::uint64_t sz, TypePtr elem)
         : TypeAST(ASTKind::FixedArrayType), size(sz), element(std::move(elem)) {}
@@ -253,9 +243,9 @@ struct FixedArrayTypeAST : TypeAST {
  * @brief A non‑owning view into an existing array. Internally a fat pointer.
  *
  * @example
- *   []int        → element = Int
- *   []Vec2       → element = NamedTypeAST("Vec2")
- *   [][*]float   → element = DynamicArrayTypeAST(element = Float)
+ *   [_, int]           → element = Int
+ *   [_, Vec2]          → element = NamedTypeAST("Vec2")
+ *   [_, [*, float] ]   → element = DynamicArrayTypeAST(element = Float)
  *
  * Slice expressions (`nums[1..3]`) produce a `SliceTypeAST` as their resolved type.
  * The slice shares memory with the original array – writing through the slice
@@ -264,7 +254,7 @@ struct FixedArrayTypeAST : TypeAST {
 struct SliceTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::SliceType;
 
-    TypePtr element;   ///< Element type
+    TypePtr element; // Element type
 
     explicit SliceTypeAST(TypePtr elem)
         : TypeAST(ASTKind::SliceType), element(std::move(elem)) {}
@@ -279,9 +269,9 @@ struct SliceTypeAST : TypeAST {
  * @brief A heap‑owned, growable array.
  *
  * @example
- *   [*]int      → element = Int
- *   [*]Vec2     → element = NamedTypeAST("Vec2")
- *   [*][*]float → element = DynamicArrayTypeAST(element = Float)
+ *   [*, int]           → element = Int
+ *   [*, Vec2]          → element = NamedTypeAST("Vec2")
+ *   [*, [*, float] ]   → element = DynamicArrayTypeAST(element = Float)
  *
  * Semantic rules:
  *   - Mutating methods (`.push()`, `.pop()`, `.insert()`, `.remove()`, `.clear()`, `.reserve()`)
@@ -291,7 +281,7 @@ struct SliceTypeAST : TypeAST {
 struct DynamicArrayTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::DynamicArrayType;
 
-    TypePtr element;   ///< Element type
+    TypePtr element; // Element type
 
     explicit DynamicArrayTypeAST(TypePtr elem)
         : TypeAST(ASTKind::DynamicArrayType), element(std::move(elem)) {}
@@ -365,111 +355,85 @@ struct RefTypeAST : TypeAST {
 struct PtrTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::PtrType;
 
-    TypePtr inner;   ///< The pointed‑to type
+    TypePtr inner; // The pointed‑to type
 
     explicit PtrTypeAST(TypePtr t)
         : TypeAST(ASTKind::PtrType), inner(std::move(t)) {}
 
 };
 
-// ═════════════════════════════════════════════════════════════════════════════
-// FUNCTION SIGNATURE
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
+// FUNCTION SIGNATURE (pure parameter/return shape, no qualifiers)
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * @brief Stores function signature data using flat arrays for cache efficiency.
+ * @brief Pure signature of a function: parameters (flattened with curry groups)
+ *        and return types. Does NOT include qualifiers (`~async`, `~nullable`,
+ *        `~parallel`).
  *
- * Parameter groups (currying) are stored as flattened arrays:
- *   - `allParams`  – flattened list of all parameters across all groups
- *   - `groupSizes` – size of each group (sum equals `allParams.size()`)
+ * This struct is reused in multiple contexts:
+ *   - `FuncDeclAST` / `MethodDeclAST` / `TraitMethodAST` – combined with
+ *     separate qualifier fields to form a complete declaration.
+ *   - `AnonFuncExprAST` – anonymous functions have no qualifiers, so only the
+ *     pure signature is needed.
+ *   - `FuncTypeAST` – combined with qualifier fields to form a complete
+ *     function type (used in type annotations).
  *
- * @example
- *   (a int)(b int)(c int) → allParams = [a, b, c], groupSizes = [1, 1, 1]
- *   (x int, y int)        → allParams = [x, y],    groupSizes = [2]
- *
- * Qualifiers (`~async`, `~nullable`, `~parallel`) are part of the function
- * type for `~async` and `~nullable` – they affect type identity.
- * `~parallel` does not affect type identity.
+ * @see FuncTypeAST for the qualifier‑bearing version.
  */
 struct FuncSignature {
-    ArenaSpan<ParamPtr> allParams;          ///< Flattened parameters across all groups
-    ArenaSpan<size_t>   groupSizes;         ///< Size of each curry group
-
-    ArenaSpan<TypePtr>  returnTypes;        ///< Return types (empty = void)
-
-    uint32_t qualifiers = 0;                ///< `QualifierBits` flags
-    ArenaSpan<InternedString> rawQualifiers; ///< Source qualifier strings (for error messages)
+    ArenaSpan<ParamPtr> allParams;          // Flattened parameters across all groups
+    ArenaSpan<size_t>   groupSizes;         // Size of each curry group
+    ArenaSpan<TypePtr>  returnTypes;        // Return types (empty = void)
 
     FuncSignature() = default;
 
-    // Copy disabled (ArenaSpan is trivially copyable, but ownership semantics are explicit)
+    // Copy disabled, move enabled
     FuncSignature(const FuncSignature&) = delete;
     FuncSignature& operator=(const FuncSignature&) = delete;
-
-    // Move enabled
     FuncSignature(FuncSignature&&) = default;
     FuncSignature& operator=(FuncSignature&&) = default;
 
-    /// Check if a specific qualifier bit is set
-    bool hasQualifier(uint32_t bit) const { return (qualifiers & bit) != 0; }
-
-    /// True if the function is marked `~async`
-    bool isAsync()    const { return hasQualifier(QualifierBits::Async); }
-
-    /// True if the function is marked `~parallel` (implementation attribute)
-    bool isParallel() const { return hasQualifier(QualifierBits::Parallel); }
-
-    /// True if the function binding is `~nullable`
-    bool isNullable() const { return hasQualifier(QualifierBits::Nullable); }
-
-    /// True if the function has any parameters (across all groups)
     bool hasParams() const { return !allParams.empty(); }
-
-    /// Total number of parameters across all groups
     size_t totalParamCount() const { return allParams.size(); }
-
-    /// Number of curry groups
     size_t groupCount() const { return groupSizes.size(); }
 
-    /**
-     * @brief Get a specific parameter group as a span.
-     * @param idx Group index (0‑based)
-     * @return ArenaSpan containing the parameters in that group, or empty if index is out of range
-     */
     ArenaSpan<ParamPtr> getGroup(size_t idx) const {
         if (idx >= groupSizes.size()) return {};
-
         size_t offset = 0;
-        for (size_t i = 0; i < idx; ++i) {
-            offset += groupSizes[i];
-        }
+        for (size_t i = 0; i < idx; ++i) offset += groupSizes[i];
         return ArenaSpan<ParamPtr>(allParams.data() + offset, groupSizes[idx]);
     }
 };
 
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 // FUNCTION TYPE
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * @brief Represents a function type (e.g., in a type annotation).
+ * @brief Complete function type, combining a pure signature with qualifiers
+ *        (`~async`, `~nullable`, `~parallel`).
  *
- * @example
- *   let callback (int) -> string = ...
+ * Used in type annotations (e.g., `let f : ~async (int) -> string`). The
+ * qualifiers are part of the type identity for `~async` and `~nullable`;
+ * `~parallel` is an implementation attribute that does not affect type
+ * equality.
  *
- * This node is used for function **types** in annotations. Declarations
- * (`FuncDeclAST`, `MethodDeclAST`, etc.) embed `FuncSignature` directly
- * to avoid an extra level of indirection.
- *
- * Function types include qualifiers (`~async`, `~nullable`) as part of the
- * type identity. `~parallel` is an implementation attribute and does not
- * affect type identity.
+ * @note Anonymous function expressions (`AnonFuncExprAST`) never have qualifiers
+ *       – they are plain values. The qualifier context comes from the
+ *       declaration or parameter type to which the anonymous function is assigned.
  */
 struct FuncTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::FuncType;
 
-    FuncSignature sig;   ///< The function signature (params, returns, qualifiers)
+    FuncSignature sig;                         // pure parameter/return shape
+    uint32_t qualifiers = 0;                   // QualifierBits flags
+    ArenaSpan<InternedString> rawQualifiers;   // source qualifier strings (for diagnostics)
 
     explicit FuncTypeAST() : TypeAST(ASTKind::FuncType) {}
 
+    bool hasQualifier(uint32_t bit) const { return (qualifiers & bit) != 0; }
+    bool isAsync()    const { return hasQualifier(QualifierBits::Async); }
+    bool isParallel() const { return hasQualifier(QualifierBits::Parallel); }
+    bool isNullable() const { return hasQualifier(QualifierBits::Nullable); }
 };

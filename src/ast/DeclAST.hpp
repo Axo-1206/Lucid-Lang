@@ -15,12 +15,6 @@
  *       not in every BaseAST node. This matches the grammar and reduces
  *       memory footprint for non‑declaration nodes.
  *
- * @grammar (from LUC_GRAMMAR.md)
- *   from_decl    := visibility? 'from' type_path generic_params?
- *                    '{' from_entry* '}'
- *   from_entry   := param_group+ '->' type_path '=' func_body
- *   impl_decl    := visibility? 'impl' type_path generic_params?
- *                    (':' type_path)? '{' (method_decl)* '}'
  */
 
 #pragma once
@@ -85,8 +79,8 @@ struct PackageDeclAST : DeclAST {
 
     explicit PackageDeclAST(InternedString n)
         : DeclAST(ASTKind::PackageDecl), name(n) {}
-
 };
+using PackageDeclPtr = ASTPtr<PackageDeclAST>;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // UseDeclAST – imports a module path with optional alias.
@@ -113,6 +107,7 @@ struct UseDeclAST : DeclAST {
 
     UseDeclAST() : DeclAST(ASTKind::UseDecl) {}
 };
+using UseDeclPtr = ASTPtr<UseDeclAST>;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // VarDeclAST – variable declaration (let or const).
@@ -141,6 +136,7 @@ struct VarDeclAST : DeclAST {
 
     VarDeclAST() : DeclAST(ASTKind::VarDecl) {}
 };
+using VarDeclPtr = ASTPtr<VarDeclAST>;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // FuncDeclAST – function declaration (top‑level or local).
@@ -154,9 +150,9 @@ struct VarDeclAST : DeclAST {
  *   let fetch ~async (url string) -> string = { return await httpGet(url) }
  *   @extern("printf") const printf (fmt *uint8, args ...any) -> int
  *
- * The function signature (parameter groups, return types, qualifiers) is
- * stored in the `sig` field (FuncSignature). The body is always a BlockStmtAST
- * (the parser desugars expression bodies into `return expr`).
+ * The function type (parameter groups, return types, qualifiers) is stored in
+ * `funcType`. The body is always a BlockStmtAST (the parser desugars expression
+ * bodies into `return expr`).
  *
  * Visibility is only meaningful at top‑level; inside blocks, the parser forces
  * Private. Attributes (e.g., @extern, @inline) are stored in DeclAST::attributes.
@@ -167,16 +163,16 @@ struct FuncDeclAST : DeclAST {
     DeclKeyword keyword;
     InternedString name;
     ArenaSpan<GenericParamPtr> genericParams;   // empty if non‑generic
-    FuncSignature sig;                          // parameters, returns, qualifiers
+    FuncTypeAST funcType;                       // full function type (includes qualifiers)
     StmtPtr body;                               // always BlockStmtAST
     Visibility visibility = Visibility::Private;
 
-    bool isAsync()   const { return sig.isAsync(); }
-    bool hasParams() const { return sig.hasParams(); }
+    // Convenience accessors
+    bool isAsync()   const { return funcType.isAsync(); }
+    bool hasParams() const { return funcType.sig.hasParams(); }
 
     FuncDeclAST() : DeclAST(ASTKind::FuncDecl) {}
 };
-
 using FuncDeclPtr = ASTPtr<FuncDeclAST>;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -245,6 +241,7 @@ struct StructDeclAST : DeclAST {
 
     StructDeclAST() : DeclAST(ASTKind::StructDecl) {}
 };
+using StructDeclPtr = ASTPtr<StructDeclAST>;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // EnumVariantAST – a single named constant inside an enum.
@@ -272,7 +269,6 @@ struct EnumVariantAST : BaseAST {
         : BaseAST(ASTKind::EnumVariant), name(n) {}
 
 };
-
 using EnumVariantPtr = ASTPtr<EnumVariantAST>;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -301,6 +297,7 @@ struct EnumDeclAST : DeclAST {
 
     EnumDeclAST() : DeclAST(ASTKind::EnumDecl) {}
 };
+using EnumDeclPtr = ASTPtr<EnumDeclAST>;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TraitMethodAST – a method signature inside a trait (no body).
@@ -322,13 +319,12 @@ struct TraitMethodAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::TraitMethod;
 
     InternedString name;
-    FuncSignature sig;
+    FuncTypeAST funcType;           // full function type (includes qualifiers)
 
-    bool isAsync() const { return sig.isAsync(); }
+    bool isAsync() const { return funcType.isAsync(); }
 
     TraitMethodAST() : BaseAST(ASTKind::TraitMethod) {}
 };
-
 using TraitMethodPtr = ASTPtr<TraitMethodAST>;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -358,6 +354,7 @@ struct TraitDeclAST : DeclAST {
 
     TraitDeclAST() : DeclAST(ASTKind::TraitDecl) {}
 };
+using TraitDeclPtr = ASTPtr<TraitDeclAST>;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TraitRefAST – a reference to a trait (with optional generic arguments).
@@ -383,12 +380,7 @@ struct TraitRefAST : BaseAST {
 
     TraitRefAST() : BaseAST(ASTKind::TraitRef) {}
 };
-
 using TraitRefPtr = ASTPtr<TraitRefAST>;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// MethodDeclAST – a method body inside an impl block.
-// ─────────────────────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MethodDeclAST – a method body inside an impl block.
@@ -414,14 +406,13 @@ struct MethodDeclAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::MethodDecl;
 
     InternedString name;
-    FuncSignature sig;
-    StmtPtr body;   // always BlockStmtAST
+    FuncTypeAST funcType;           // full function type (includes qualifiers)
+    StmtPtr body;                   // always BlockStmtAST
 
-    bool isAsync() const { return sig.isAsync(); }
+    bool isAsync() const { return funcType.isAsync(); }
 
     MethodDeclAST() : BaseAST(ASTKind::MethodDecl) {}
 };
-
 using MethodDeclPtr = ASTPtr<MethodDeclAST>;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -457,7 +448,6 @@ struct FromEntryAST : BaseAST {
 
     FromEntryAST() : BaseAST(ASTKind::FromEntry) {}
 };
-
 using FromEntryPtr = ASTPtr<FromEntryAST>;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -522,6 +512,7 @@ struct FromDeclAST : DeclAST {
 
     FromDeclAST() : DeclAST(ASTKind::FromDecl) {}
 };
+using FromDeclPtr = ASTPtr<FromDeclAST>;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ImplDeclAST – binds method implementations to a type.
@@ -678,6 +669,7 @@ struct ImplDeclAST : DeclAST {
 
     ImplDeclAST() : DeclAST(ASTKind::ImplDecl) {}
 };
+using ImplDeclPtr = ASTPtr<ImplDeclAST>;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TypeAliasDeclAST – a named alias for an existing type.
@@ -710,3 +702,4 @@ struct TypeAliasDeclAST : DeclAST {
 
     TypeAliasDeclAST() : DeclAST(ASTKind::TypeAliasDecl) {}
 };
+using TypeAliasDeclPtr = ASTPtr<TypeAliasDeclAST>;

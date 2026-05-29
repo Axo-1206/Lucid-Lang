@@ -126,7 +126,7 @@ enum class BinaryOp {
 enum class UnaryOp {
     Neg,    // -x       arithmetic negation
     Not,    // not x    logical negation
-    BitNot, // ~x       bitwise NOT
+    BitNot, // ~~x       bitwise NOT
     Ref,    // &x       take a reference
 };
 
@@ -142,14 +142,16 @@ enum class UnaryOp {
  */
 enum class PipelineStepKind {
     Ident,            // fn – bare function name
-    BehaviorRef,      // Type:method – impl method reference
+    BehaviorRef,      // obj:method – impl method reference
     FieldRef,         // obj.field – data field of non‑nullable function type
     IndexRef,         // arr[idx] – function reference
-    FieldArgPack,     // Type.field(args)! – field with argument pack
-    IndexArgPack,     // Array[x](args)! – array instance with argument pack
-    BehaviorArgPack,  // Type:method(args)! – method with argument pack
+
     ArgPack,          // fn(args)! – upstream injected as first argument
-    AnonFunc,         // (x T) R { } – inline anonymous function
+    BehaviorArgPack,  // obj:method(args)! – method with argument pack
+    FieldArgPack,     // obj.field(args)! – field with argument pack
+    IndexArgPack,     // arr[idx](args)! – array instance with argument pack
+
+    AnonFunc,         // (x T) R { } – inline anonymous function, (single param group)
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -162,14 +164,14 @@ enum class PipelineStepKind {
  * Mirrors PipelineStepKind but without ArgPack (! is only valid in pipelines).
  */
 enum class ComposeOperandKind {
-    Ident,        // fn
-    BehaviorRef,  // Type:method
-    FieldRef,     // obj.field – non‑nullable only
+    Ident,       // fn
+    BehaviorRef, // obj:method
+    FieldRef,    // obj.field – non‑nullable only
 };
 
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 // LITERAL NODES
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * @brief A scalar literal value – numbers, strings, characters, booleans, nil.
@@ -212,7 +214,7 @@ struct LiteralExprAST : ExprAST {
 struct ArrayLiteralExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::ArrayLiteralExpr;
 
-    ArenaSpan<ExprPtr> elements;   // may be empty
+    ArenaSpan<ExprPtr> elements; // may be empty
 
     ArrayLiteralExprAST() : ExprAST(ASTKind::ArrayLiteralExpr) {}
 };
@@ -231,8 +233,8 @@ struct ArrayLiteralExprAST : ExprAST {
 struct FieldInitAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::FieldInit;
 
-    InternedString name;   // field name being initialised
-    ExprPtr value;         // initialiser expression
+    InternedString name; // field name being initialised
+    ExprPtr value;       // initialiser expression
 
     FieldInitAST() : BaseAST(ASTKind::FieldInit) {}
     FieldInitAST(InternedString n, ExprPtr v)
@@ -259,17 +261,17 @@ using FieldInitPtr = ASTPtr<FieldInitAST>;
 struct StructLiteralExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::StructLiteralExpr;
 
-    InternedString typeName;                     // "Vec2", "Color", "Pair"
-    ArenaSpan<TypePtr> genericArgs;              // empty if non‑generic
-    ArenaSpan<FieldInitPtr> inits;               // field = expr entries
-    ASTPtr<NamedTypeAST> instantiatedType;       // semantic cache
+    InternedString typeName;               // "Vec2", "Color", "Pair"
+    ArenaSpan<TypePtr> genericArgs;        // empty if non‑generic
+    ArenaSpan<FieldInitPtr> inits;         // field = expr entries
+    ASTPtr<NamedTypeAST> instantiatedType; // semantic cache
 
     StructLiteralExprAST() : ExprAST(ASTKind::StructLiteralExpr) {}
 };
 
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 // NAME & ACCESS NODES
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * @brief A bare identifier used as an expression.
@@ -291,15 +293,14 @@ struct IdentifierExprAST : ExprAST {
 
     explicit IdentifierExprAST(InternedString n)
         : ExprAST(ASTKind::IdentifierExpr), name(n) {}
-
 };
 
 /**
  * @brief Accesses a data member (struct field) via the '.' operator.
  *
  * @example
- *   v.x            → object = identifier("v"), field = "x"
- *   player.health  → object = identifier("player"), field = "health"
+ *   v.x             → object = identifier("v"), field = "x"
+ *   player.health   → object = identifier("player"), field = "health"
  *   Direction.North → object = identifier("Direction"), field = "North" (enum variant)
  *
  * The '.' operator always means data – a field declared inside a struct body,
@@ -318,8 +319,8 @@ struct FieldAccessExprAST : ExprAST {
  * @brief Accesses a method on a value via the ':' operator.
  *
  * @example
- *   v:normalize()   → typeName = type of v, method = "normalize"
- *   v:length()      → typeName = type of v, method = "length"
+ *   v:normalize() → typeName = type of v, method = "normalize"
+ *   v:length()    → typeName = type of v, method = "length"
  *
  * The left‑hand side of ':' is an expression (a value), not a type name.
  * The semantic pass resolves the receiver's type, then looks up the method
@@ -339,41 +340,68 @@ struct FieldAccessExprAST : ExprAST {
 struct BehaviorAccessExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::BehaviorAccessExpr;
 
-    InternedString typeName;   // resolved type name (for mangling)
-    InternedString method;     // method name
+    InternedString typeName; // resolved type name (for mangling)
+    InternedString method;   // method name
 
     // Codegen annotations
-    ArenaSpan<InternedString> concreteTypeArgs;   // from receiver's type
-    std::string resolvedMangledName;              // for direct registry lookup
-    ArenaSpan<TypePtr> genericArgs;               // explicit generic args
+    ArenaSpan<InternedString> concreteTypeArgs; // from receiver's type
+    std::string resolvedMangledName;            // for direct registry lookup
+    ArenaSpan<TypePtr> genericArgs;             // explicit generic args
 
     BehaviorAccessExprAST() : ExprAST(ASTKind::BehaviorAccessExpr) {}
 };
 
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 // CALL & INDEX NODES
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * @brief A function call – regular or generic, optionally with argument pack.
+ * @brief A function call – supports regular calls, method calls, array element calls,
+ *        generic instantiation, argument pack (!), and async detection.
+ *
+ * @par Grammar Reference (from LUC_GRAMMAR.md)
+ *   postfix_op := '(' [ arg_list ] ')'                -- regular call
+ *               | '(' [ arg_list ] ')' '!'            -- argument pack (pipeline injection)
+ *               | generic_args '(' [ arg_list ] ')'   -- generic instantiation
+ *
+ * The callable can be:
+ *   - A bare identifier:        `f(args)`
+ *   - A method on a value:      `obj:method(args)`
+ *   - A field access:           `obj.field(args)`
+ *   - An array element:         `arr[idx](args)`
+ *   - Any expression that yields a function type
  *
  * @example
- *   f(args)                    → callee = identifier("f")
- *   Buffer<int>(cap)           → genericArgs = [Int]
- *   obj.method(args)           → callee = FieldAccessExpr
- *   fn(args)!                  → isArgPack = true (pipeline argument pack)
+ *   f(1, 2, 3)                              → isArgPack = false, genericArgs empty
+ *   Buffer<int>(capacity)                   → genericArgs = [Int]
+ *   obj:method(a, b)                        → callee is BehaviorAccessExprAST
+ *   arr[idx](x, y)                          → callee is IndexExprAST
+ *   pipelineFn(2.0)!                        → isArgPack = true (upstream injected as first arg)
+ *   handlers[i](event)                      → callee is IndexExprAST
  *
- * genericArgs is non‑empty only when the source had explicit type arguments.
- * isArgPack is true when the call was suffixed with '!' in a pipeline step.
+ * @par Generic Instantiation
+ *   Generic arguments are stored in `genericArgs`. The callee remains a plain
+ *   function reference; the generic arguments are applied at the call site.
+ *
+ * @par Argument Pack (`!`)
+ *   When `isArgPack` is true, the argument list is intentionally incomplete.
+ *   The upstream value from a `|>` pipeline will be injected as the first argument
+ *   during semantic transformation. This is only valid inside a pipeline step.
+ *
+ * @par Async Calls
+ *   `isAsyncCall` is set by the semantic pass after resolving the callee.
+ *   If the callee's type has the `~async` qualifier, this flag is true and
+ *   the call must be preceded by `await` (unless inside another async function).
+ *
  */
 struct CallExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::CallExpr;
 
-    ExprPtr callee;
-    ArenaSpan<TypePtr> genericArgs;   // explicit type args
-    ArenaSpan<ExprPtr> args;          // call arguments in order
-    bool isArgPack = false;           // true → fn(args)! pipeline argument pack
-    bool isAsyncCall = false;         // true if calling an async function
+    ExprPtr callee;                 // The callable expression
+    ArenaSpan<TypePtr> genericArgs; // Explicit type arguments (e.g., <int>)
+    ArenaSpan<ExprPtr> args;        // Call arguments in order
+    bool isArgPack = false;         // true → fn(args)! — pipeline argument pack
+    bool isAsyncCall = false;       // true if calling an async function
 
     CallExprAST() : ExprAST(ASTKind::CallExpr) {}
 };
@@ -392,10 +420,10 @@ struct IndexExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::IndexExpr;
 
     ExprPtr target;
-    ExprPtr index;       // element index or slice start
-    ExprPtr sliceEnd;    // slice end – nullptr for Element kind
+    ExprPtr index;     // element index or slice start
+    ExprPtr sliceEnd;  // slice end – nullptr for Element kind
     IndexKind kind;
-    bool isExclusive = false;   // true if ..< syntax used
+    bool isExclusive = false; // true if ..< syntax used
 
     // Semantic cache: owned SliceTypeAST when kind == Slice
     mutable ASTPtr<TypeAST> sliceType;
@@ -403,9 +431,9 @@ struct IndexExprAST : ExprAST {
     IndexExprAST() : ExprAST(ASTKind::IndexExpr) {}
 };
 
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 // OPERATOR NODES
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * @brief An infix binary operation.
@@ -432,7 +460,7 @@ struct BinaryExprAST : ExprAST {
  * @example
  *   -x      → op = Neg
  *   not x   → op = Not
- *   ~x      → op = BitNot
+ *   ~~x     → op = BitNot
  *   &x      → op = Ref (take a reference)
  */
 struct UnaryExprAST : ExprAST {
@@ -483,9 +511,9 @@ struct IsExprAST : ExprAST {
     IsExprAST() : ExprAST(ASTKind::IsExpr) {}
 };
 
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 // NULLABLE CHAIN NODES
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * @brief A ?. chain – each step is only evaluated if the previous value is non‑nil.
@@ -523,9 +551,9 @@ struct NullCoalesceExprAST : ExprAST {
     NullCoalesceExprAST() : ExprAST(ASTKind::NullCoalesceExpr) {}
 };
 
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 // PIPELINE & COMPOSITION NODES
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * @brief One step in a pipeline chain – owned by PipelineExprAST.
@@ -607,19 +635,18 @@ struct ComposeExprAST : ExprAST {
     ComposeExprAST() : ExprAST(ASTKind::ComposeExpr) {}
 };
 
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 // FUNCTION NODES
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * @brief An anonymous function expression – a function value without a name.
  *
  * @example
  *   (x int) int { return x * 2 }
- *   ~async (url string) string { return await httpGet(url) }
  *   (a int) (b int) int { return a + b }   – curried
  *
- * The signature (parameters, return types, qualifiers) is stored in `sig`.
+ * The signature (parameters, return types) is stored in `sig`.
  * The body is always a BlockStmtAST.
  */
 struct AnonFuncExprAST : ExprAST {
@@ -628,7 +655,6 @@ struct AnonFuncExprAST : ExprAST {
     FuncSignature sig;
     StmtPtr body;   // always BlockStmtAST
 
-    bool isAsync() const { return sig.isAsync(); }
     bool hasParams() const { return sig.hasParams(); }
 
     AnonFuncExprAST() : ExprAST(ASTKind::AnonFuncExpr) {}
@@ -654,9 +680,9 @@ struct AwaitExprAST : ExprAST {
 
 };
 
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 // RESOLVE NODES — structured error unwrapping
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * @brief The `ok` arm of a resolve expression.
@@ -734,16 +760,16 @@ using ErrArmPtr = ASTPtr<ErrArmAST>;
 struct ResolveExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::ResolveExpr;
 
-    ExprPtr    subject;   ///< The T!E expression being resolved
-    OkArmPtr   okArm;     ///< Required ok arm
-    ErrArmPtr  errArm;    ///< Required err arm
+    ExprPtr    subject; // The T!E expression being resolved
+    OkArmPtr   okArm;   // Required ok arm
+    ErrArmPtr  errArm;  // Required err arm
 
     ResolveExprAST() : ExprAST(ASTKind::ResolveExpr) {}
 };
 
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 // CONTROL FLOW EXPRESSION NODES
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * @brief The expression form of if – both branches required, both produce the same type.
@@ -760,15 +786,15 @@ struct IfExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::IfExpr;
 
     ExprPtr condition;
-    ExprPtr thenBranch;   // expression
-    ExprPtr elseBranch;   // expression
+    ExprPtr thenBranch; // expression
+    ExprPtr elseBranch; // expression
 
     IfExprAST() : ExprAST(ASTKind::IfExpr) {}
 };
 
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 // OTHER EXPRESSION NODES
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * @brief An inclusive range literal – lo..hi or lo..<hi.
@@ -804,9 +830,9 @@ struct RangeExprAST : ExprAST {
 struct TypeConvExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::TypeConvExpr;
 
-    TypePtr targetType;   // the type to convert to
-    ExprPtr expr;         // the value being converted
-    bool isUnsafe;        // true → *T(expr) bit reinterpret
+    TypePtr targetType; // the type to convert to
+    ExprPtr expr;       // the value being converted
+    bool isUnsafe;      // true → *T(expr) bit reinterpret
 
     TypeConvExprAST(TypePtr t, ExprPtr e, bool unsafe = false)
         : ExprAST(ASTKind::TypeConvExpr),
@@ -828,16 +854,16 @@ struct TypeConvExprAST : ExprAST {
 struct IntrinsicCallExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::IntrinsicCallExpr;
 
-    InternedString intrinsicName;        // "sizeof", "memcpy", "sqrt", etc.
-    TypePtr typeArg;                     // for #sizeof(T) – nullptr otherwise
-    ArenaSpan<ExprPtr> args;             // value arguments in order
+    InternedString intrinsicName; // "sizeof", "memcpy", "sqrt", etc.
+    TypePtr typeArg;              // for #sizeof(T) – nullptr otherwise
+    ArenaSpan<ExprPtr> args;      // value arguments in order
 
     IntrinsicCallExprAST() : ExprAST(ASTKind::IntrinsicCallExpr) {}
 };
 
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 // PATTERN NODES
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 //
 // Pattern nodes are used exclusively in match expressions. They are separate
 // from ExprAST because patterns have different semantics (binding, destructuring)
@@ -847,7 +873,7 @@ struct IntrinsicCallExprAST : ExprAST {
 // The semantic pass recognises ASTKind::LiteralExpr and ASTKind::RangeExpr in
 // pattern position and applies match semantics (equality/bounds tests) rather
 // than evaluation semantics.
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * @brief Matches any value and binds it to a name.
@@ -952,9 +978,9 @@ struct StructPatternAST : PatternAST {
     StructPatternAST() : PatternAST(ASTKind::StructPattern) {}
 };
 
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 // ARM NODES – used inside MatchExprAST
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * @brief One non‑default arm in a match expression.
