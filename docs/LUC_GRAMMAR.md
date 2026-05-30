@@ -201,9 +201,22 @@ ptr_type        := '*' type
 -- This eliminates all suffix ambiguity: '?' and '!' always attach to the whole array type.
 -- Inline function types ARE allowed as array element types — the closing ']' unambiguously
 -- marks the end of the element type.
-array_type      := '[' '_' ',' type ']'         -- slice:   [_, T]  (fat pointer view)
-                 | '[' '*' ',' type ']'         -- dynamic: [*, T]  (heap-owned, growable)
-                 | '[' INT_LITERAL ',' type ']' -- fixed:   [N, T]  (stack, compile-time size)
+array_type      := '[' '_' ',' type ']'              -- slice:   [_, T]  (fat pointer view)
+                 | '[' '*' ',' type ']'              -- dynamic: [*, T]  (heap-owned, growable)
+                 | '[' INT_LITERAL ',' type ']'      -- fixed:   [N, T]  (stack, compile-time size)
+
+-- Generic array type — only valid as an impl target.
+-- '<' IDENTIFIER '>' inside the bracket declares a free type variable.
+-- The compiler unifies the variable with the concrete element type at the call site.
+-- Equivalent to declaring a type alias 'type Slice<T> = [_, T]' and using 'impl Slice<T>'.
+-- Multiple variables allowed: [_, <K>, <V>] is not valid — arrays have one element type.
+-- Only one type variable per array type.
+-- IMPORTANT: generic_array_type is ONLY valid as an impl target — it is NOT a valid type
+-- in variable declarations, function parameters, return types, or struct fields.
+-- Use a type alias for those contexts: type Slice<T> = [_, T]
+generic_array_type := '[' '_' ',' '<' IDENTIFIER '>' ']'        -- [_, <T>]
+                    | '[' '*' ',' '<' IDENTIFIER '>' ']'        -- [*, <T>]
+                    | '[' INT_LITERAL ',' '<' IDENTIFIER '>' ']' -- [N, <T>]
 
 -- Generic arguments — always before '?'
 generic_args    := '<' type { [','] type } '>'
@@ -1015,7 +1028,7 @@ run(() -> int { return await fetch() }) -- also valid: body uses await correctly
 
 ### Generic Functions
 
-Generic functions allow code to operate on multiple types using type parameters.
+Generic functions allow code to operate on multiple types using type parameters declared between `<` and `>` immediately after the function name — before any qualifiers or parameter groups.
 
 ```
 generic_params  := '<' generic_param { [','] generic_param } '>'
@@ -1027,34 +1040,137 @@ generic_param   := IDENTIFIER
 constraint_list := IDENTIFIER { '+' IDENTIFIER }
 ```
 
-Generic parameters come immediately after the function name, before any parameter groups or qualifiers.
+#### Declaration
 
 ```luc
+-- single type parameter
 let identity<T> (v T) -> T = { return v }
 
+-- multiple type parameters
 let map<T, U> (items [*, T], f (item T) -> U) -> [*, U] = { ... }
-```
 
-**Type constraints** — constrain type parameters to traits using `:`. Multiple traits are joined with `+`:
-
-```luc
+-- type parameter with constraint
 let printSorted<T : Comparable + Printable> (items [_, T]) = { ... }
+
+-- qualifier comes after generic params
+let fetch<T> ~async (url string) -> T = { ... }
+
+-- curry with generics
+let wrap<T> (v T)(label string) -> string = {
+    return label + ": " + string(v)
+}
 ```
 
-**Instantiation** — generic functions can be called with explicit type arguments:
+#### Type Constraints
+
+Constraints restrict what types a parameter accepts. A type parameter with no constraint accepts any type. A type parameter with a constraint only accepts types whose `impl` satisfies the named trait:
 
 ```luc
-let x int = identity<int>(42)
+-- T must satisfy Comparable
+let max<T : Comparable> (a T, b T) -> T = {
+    if a:compareTo(b) >= 0 { return a }
+    return b
+}
+
+-- T must satisfy both Comparable and Printable
+let printMax<T : Comparable + Printable> (a T, b T) = {
+    let m T = max<T>(a, b)
+    m:print()
+}
+
+-- multiple independent constraints
+let transfer<S : Readable, D : Writable> (src S, dst D) = { ... }
+```
+
+#### Instantiation
+
+Generic functions must always be called with explicit type arguments. Luc does not infer type arguments:
+
+```luc
+let x int    = identity<int>(42)
+let s string = identity<string>("hello")
+
+let nums [*, int]    = map<int, int>([1, 2, 3], (n int) -> int { return n * 2 })
+let strs [*, string] = map<int, string>([1, 2, 3], (n int) -> string { return string(n) })
+```
+
+A generic function can also be assigned to a concrete non-generic variable by instantiating it at the assignment site. The resulting variable is a plain function — no type arguments needed at the call site:
+
+```luc
+export const sum<T : Numeric> (a T, b T) -> T = { return a + b }
+
+-- instantiate at assignment: sumOfInt is now a plain (int, int) -> int
+let sumOfInt (n1 int, n2 int) -> int = sum<int>
+
+-- call site: no type args needed
+let foo int = sumOfInt(2, 3)    -- 5
+
+-- also works with curry
+export const clampTo<T : Comparable> (lo T)(hi T)(v T) -> T = { ... }
+
+let clampInt (lo int)(hi int)(v int) -> int = clampTo<int>
+let result int = clampInt(0)(100)(42)    -- 42
 ```
 
 > [!NOTE]
-> No type inference for generic functions — type must always be specified.
+> No type inference for generic functions — type must always be specified at the instantiation site, whether that is a call `identity<int>(42)` or an assignment `let f = identity<int>`.
 
-**Qualifiers** follow the generic parameter list:
+#### Generic Functions and Currying
+
+Generic parameters interact cleanly with curry — the type parameter applies to all parameter groups:
 
 ```luc
-let fetch<T> ~async (url string) -> T = { ... }
+let clampTo<T : Comparable> (lo T)(hi T)(v T) -> T = {
+    if v:compareTo(lo) < 0 { return lo }
+    if v:compareTo(hi) > 0 { return hi }
+    return v
+}
+
+let clamp0to100 = clampTo<int>(0)(100)    -- (v int) -> int
+clamp0to100(42)                           -- 42
+clamp0to100(150)                          -- 100
+
+-- pipelines
+42  |> clampTo<int>(0)(100)!    -- 42
+150 |> clampTo<int>(0)(100)!    -- 100
 ```
+
+#### Generic Functions and Arrays
+
+Generic functions work naturally with all three array kinds:
+
+```luc
+-- works on slice, dynamic, or fixed via type alias
+let sum<T : Numeric> (items [_, T]) -> T = {
+    let total T = 0
+    for v T in items { total += v }
+    return total
+}
+
+let filter<T> (items [_, T], pred (v T) -> bool) -> [*, T] = {
+    let result [*, T] = []
+    for v T in items {
+        if pred(v) { result:push(v) }
+    }
+    return result
+}
+
+-- call
+let nums [_, int] = [1, 2, 3, 4, 5]
+let evens [*, int] = filter<int>(nums, (v int) -> bool { return v % 2 == 0 })
+```
+
+> [!WARNING]
+> Generic functions cannot be stored in arrays or assigned to plain function variables without instantiation. A generic function is not a value until its type parameters are resolved:
+>
+> ```luc
+> type IntFn = (int) -> int
+>
+> let arr [_, IntFn] = [identity]           -- ERROR: identity is generic
+> let arr [_, IntFn] = [identity<int>]      -- OK: instantiated
+> let f    IntFn     = identity             -- ERROR: generic without type args
+> let f    IntFn     = identity<int>        -- OK
+> ```
 
 ### Complete Signature Reference
 
@@ -1182,6 +1298,131 @@ let x float = origin.x    -- read
 origin.x = 5.0            -- write (only valid if origin is 'let')
 ```
 
+### Generic Structs
+
+A struct can declare one or more type parameters between `<` and `>` immediately after its name. Every type parameter must appear at least once in the field declarations — unused parameters require `@phantom`.
+
+#### Declaration
+
+```luc
+-- single type parameter
+struct Box<T> {
+    value T
+}
+
+-- multiple type parameters
+struct Pair<K, V> {
+    first  K
+    second V
+}
+
+-- constrained type parameter
+struct SortedPair<T : Comparable> {
+    lo T
+    hi T
+}
+
+-- multiple constraints
+struct Index<K : Hashable + Comparable, V> {
+    keys   [_, K]
+    values [_, V]
+}
+
+-- type parameter used in array fields
+struct Stack<T> {
+    items    [*, T]
+    capacity uint64
+}
+
+-- nullable field using type parameter
+struct Result<T, E> {
+    value T?
+    error E?
+}
+```
+
+#### Instantiation
+
+Generic structs must always be instantiated with explicit type arguments. Luc does not infer type arguments for struct literals:
+
+```luc
+let box     Box<int>              = Box<int>    { value = 42 }
+let pair    Pair<string, int>     = Pair<string, int>  { first = "age"  second = 30 }
+let stack   Stack<float>          = Stack<float> { items = []  capacity = 16 }
+let result  Result<int, string>   = Result<int, string> { value = 5  error = nil }
+```
+
+#### Generic Structs and `impl`
+
+An `impl` block for a generic struct must declare matching generic parameters. The parameter names are independent — they bind positionally:
+
+```luc
+struct Box<T> { value T }
+
+impl Box<T> as b {
+    get     ()  -> T    = { return b.value }
+    isEmpty ()  -> bool = { return b.value == nil }
+}
+
+-- instantiation at call site
+let box Box<int> = Box<int> { value = 42 }
+box:get()       -- 42
+```
+
+#### Nesting Generic Structs
+
+Generic structs can be used as field types in other generic structs:
+
+```luc
+struct Node<T> {
+    value T
+    next  Node<T>?    -- recursive: nullable to allow termination
+}
+
+struct Tree<T : Comparable> {
+    root Node<T>?
+    size uint64
+}
+
+-- instantiation
+let list Node<int> = Node<int> { value = 1  next = nil }
+```
+
+#### Generic Struct and Default Field Values
+
+Default values on generic fields are allowed only when the expression is valid for all possible instantiations — typically `nil` for nullable fields or zero literals for numeric parameters:
+
+```luc
+struct Container<T> {
+    value    T?       = nil     -- OK: nil is valid for any T?
+    count    uint64   = 0       -- OK: 0 is a concrete literal
+    -- label T        = ""      -- ERROR: "" is not valid for all T
+}
+```
+
+> [!NOTE]
+> A generic struct with all fields defaulted still requires explicit type arguments at the instantiation site — the compiler cannot infer `T` from an empty literal:
+>
+> ```luc
+> let c = Container {}           -- ERROR: type arguments required
+> let c Container<string> = Container<string> {}   -- OK: all fields take defaults
+> ```
+
+> [!WARNING]
+> Every type parameter must be used in at least one field. An unused parameter is a compile error unless the struct is annotated with `@phantom`:
+>
+> ```luc
+> struct Wrapper<T> {
+>     raw int    -- ERROR: T is unused
+> }
+>
+> @phantom
+> struct Tagged<T> {
+>     raw int    -- OK: T is a phantom tag, erased at runtime
+>     -- Tagged<int> and Tagged<string> are distinct types despite identical layout
+> }
+> ```
+
 ---
 
 ## Member Access
@@ -1262,7 +1503,7 @@ type Gen<T>   = int                            -- ERROR: T is unused
 type Odd<T>   = string                         -- ERROR: T is unused
 ```
 
-If you intentionally want a type parameter that does not appear in the body (a phantom type), annotate with `@phantom`:
+If you intentionally want a type parameter that does not appear in the body (a phantom type), annotate with `@phantom`. This also applies to generic structs and generic functions — see the `@phantom` Rules section under Known Attributes.
 
 ```luc
 @phantom
@@ -1408,9 +1649,14 @@ impl_decl       := [ visibility_mod ] 'impl' impl_target
                    [ ':' trait_ref ]
                    '{' { method_decl } '}'
 
-impl_target     := IDENTIFIER     -- named type (struct, enum, alias, primitive)
-                 | primitive_type -- primitive directly
-                 | array_type     -- [_, T], [*, T], [N, T]
+impl_target     := IDENTIFIER          -- named type (struct, enum, alias, primitive)
+                 | primitive_type      -- primitive directly
+                 | array_type          -- [_, T], [*, T], [N, T]  — concrete element type
+                 | generic_array_type  -- [_, <T>], [*, <T>], [N, <T>]  — free type variable
+                   -- generic_array_type is ONLY valid as an impl target
+                   -- the '<T>' declares T as a free type variable unified at each call site
+                   -- equivalent to: type Slice<T> = [_, T]  then  impl Slice<T>
+                   -- T is then usable in method signatures as a plain IDENTIFIER
 
 impl_generic_params := '<' impl_generic_param { ',' impl_generic_param } '>'
 
@@ -1447,7 +1693,8 @@ The `as IDENTIFIER` clause introduces a local alias for the receiver inside the 
 | omitted     | `self`                       |
 | `as alias`  | `alias`                      |
 
-> [!WARNING] `as` and `self` are mutually exclusive
+> [!WARNING]
+> `as` and `self` are mutually exclusive
 > If `as alias` is declared on the `impl` block, `self` is **undefined** inside every method body in that block. If `as` is omitted, only `self` is valid. The choice is made once at the `impl` header and applies to all methods uniformly — you cannot mix both names within the same `impl` block.
 >
 > ```luc
@@ -1476,7 +1723,8 @@ When `= func_ref(receiver)!` is used, the semantic phase resolves the referenced
 
 The wrapper is a thin closure capturing the receiver. For primitive types and small structs the wrapper is inlined by the compiler — zero overhead in the final binary.
 
-> [!WARNING] Injection restrictions
+> [!WARNING]
+> Injection restrictions
 > - `func_ref` must be a **plain function** — no `~async`, `~nullable`, or `~parallel` qualifiers.
 > - `func_ref` must **not** be a variadic `@extern` function (`args ...any`).
 > - `receiver_arg` must be exactly `self` or the `as` alias declared on this `impl` block.
@@ -1542,7 +1790,113 @@ This `impl` block, being declared last, takes priority over both `file1` and `fi
 | **Array type** (`[_, T]`, `[*, T]`, `[N, T]`)            | ✅ Yes             | `impl [_, int] { sum () -> int = { … } }`       |
 | **Trait**                                                | ❌ No              | Traits are contracts, not implementations       |
 
-> [!WARNING] `impl` on array types
+### Type Alias Transparency
+
+A type alias is just another name for the underlying type — it does not create a new distinct type. This means `impl int` and `impl Numeric` (where `type Numeric = int`) target the **same type** and their methods are merged by the same scope-proximity rule that resolves any other `impl` conflict.
+
+```luc
+type Numeric = int
+type ID      = int
+
+impl int as i {
+    isEven () -> bool = { return i % 2 == 0 }
+}
+
+impl Numeric as n {
+    isPositive () -> bool = { return n > 0 }    -- same target as impl int
+}
+
+impl ID as id {
+    isZero () -> bool = { return id == 0 }      -- also same target as impl int
+}
+
+-- all three methods are available on any int value
+let x int = 5
+x:isEven()       -- OK: from impl int
+x:isPositive()   -- OK: from impl Numeric — same target
+x:isZero()       -- OK: from impl ID — same target
+```
+
+This also holds for struct aliases — `impl Vec2` and `impl Point` (where `type Point = Vec2`) target the same struct:
+
+```luc
+struct Vec2 { x float  y float }
+type Point = Vec2
+
+impl Vec2 as v {
+    length () -> float = { return #sqrt(v.x*v.x + v.y*v.y) }
+}
+
+impl Point as p {
+    distanceTo (other Point) -> float = {
+        let dx float = p.x - other.x
+        let dy float = p.y - other.y
+        return #sqrt(dx*dx + dy*dy)
+    }
+}
+
+let a Vec2  = Vec2  { x = 3.0  y = 4.0 }
+let b Point = Point { x = 0.0  y = 0.0 }
+
+a:length()          -- OK: from impl Vec2
+a:distanceTo(b)     -- OK: from impl Point — same target
+b:length()          -- OK: Point is Vec2, both methods available
+```
+
+For arrays, `impl [_, int]` and `impl IntList` (where `type IntList = [_, int]`) target the same array type:
+
+```luc
+type IntList = [_, int]
+
+impl [_, int] as s {
+    sum () -> int = {
+        let total int = 0
+        for v int in s { total += v }
+        return total
+    }
+}
+
+impl IntList as s {
+    product () -> int = {
+        let result int = 1
+        for v int in s { result *= v }
+        return result
+    }
+}
+
+let nums [_, int] = [1, 2, 3, 4, 5]
+nums:sum()        -- 15  — from impl [_, int]
+nums:product()    -- 120 — from impl IntList, same target
+
+-- also callable via an IntList variable
+let list IntList = [2, 3, 4]
+list:sum()        -- 9
+list:product()    -- 24
+```
+
+For generic arrays, `impl [_, <T>]` and `impl Slice<T>` (where `type Slice<T> = [_, T]`) are equivalent:
+
+```luc
+type Slice<T> = [_, T]
+
+impl [_, <T>] as s {
+    first () -> T = { return s[0] }
+}
+
+impl Slice<T> as s {
+    last () -> T = { return s[s:len() - 1] }
+}
+
+let nums [_, int] = [1, 2, 3]
+nums:first()    -- 1  — from impl [_, <T>] with T = int
+nums:last()     -- 3  — from impl Slice<T> with T = int, same target
+```
+
+> [!NOTE]
+> Because type aliases are transparent, naming conflicts between `impl int` and `impl Numeric` are resolved by scope proximity — the innermost or last-declared block wins, exactly as with any two `impl` blocks for the same type. The alias name used in the `impl` header has no effect on resolution — only the underlying target type matters.
+
+> [!WARNING]
+> `impl` on array types
 >
 > Methods defined on `[_, int]` apply to every slice of `int` in the visible scope. Use with care or prefer a named alias for clarity and narrower scope. There are no built-in array methods to shadow — the compiler only knows indexing and slicing.
 >
@@ -1557,6 +1911,92 @@ This `impl` block, being declared last, takes priority over both `file1` and `fi
 >     }
 > }
 > ```
+
+### Generic Array `impl`
+
+When a method needs to refer to the element type — for example returning `T` from `first()` or accepting `T` in `push()` — use the `<T>` syntax inside the bracket to declare a free type variable:
+
+> [!WARNING]
+> `[_, <T>]` is only valid as an `impl` target
+> The `<T>` syntax inside an array bracket is **not a valid type** in any other context. It cannot appear in variable declarations, function parameters, return types, or struct fields. For those contexts, use a named type alias:
+>
+> ```luc
+> -- ONLY valid here: impl target
+> impl [_, <T>] as s { ... }
+>
+> -- INVALID everywhere else
+> let arr  [_, <T>]  = []         -- ERROR: not a valid variable type
+> let f    (items [_, <T>]) = {}  -- ERROR: not a valid parameter type
+> type Foo = [_, <T>]             -- ERROR: not a valid alias body
+>
+> -- CORRECT for non-impl contexts: use a type alias
+> type Slice<T> = [_, T]
+> let arr  Slice<int>          = []
+> let f    (items Slice<int>)  = {}
+> ```
+
+```luc
+impl [_, <T>] as s {
+    first () -> T = { return s[0] }
+    last  () -> T = { return s[s:len() - 1] }
+}
+
+impl [*, <T>] as a {
+    push  (v T)   = { _dynarrayPush(#refToPtr(a), #refToPtr(v)) }
+    pop   () -> T = { return #ptrToRef(_dynarrayPop(#refToPtr(a))) }
+    first () -> T = { return a[0] }
+    last  () -> T = { return a[a:len() - 1] }
+}
+```
+
+The `<T>` in the target declares `T` as a free type variable. Inside the method signatures and bodies, `T` is a plain identifier referring to the declared variable. The compiler unifies `T` with the concrete element type at each call site — no instantiation needed.
+
+**The two forms are equivalent.** The compiler treats them identically:
+
+```luc
+-- form 1: inline generic array target
+impl [_, <T>] as s {
+    first () -> T = { return s[0] }
+}
+
+-- form 2: via type alias
+type Slice<T> = [_, T]
+impl Slice<T> as s {
+    first () -> T = { return s[0] }
+}
+```
+
+Use the inline form for brevity. Use the alias form when the type already has a meaningful name or is reused elsewhere.
+
+**Precedence — most specific target wins:**
+
+```luc
+impl [_, int] as s {
+    sum () -> int = { ... }         -- most specific: wins for [_, int]
+}
+
+impl [_, <T>] as s {
+    sum () -> T = { ... }           -- structural: wins for all other [_, T]
+}
+
+impl [_, any] as s {
+    sum () -> any = { ... }         -- concrete any: wins only for [_, any]
+}
+```
+
+For a `[_, int]` array, `impl [_, int]` wins. For a `[_, string]` array, `impl [_, <T>]` wins with `T = string`. For a `[_, any]` array, `impl [_, any]` wins.
+
+**`any` is not a type variable:**
+
+`impl [_, any]` is a concrete impl that applies only to arrays whose declared element type is literally `any`. It is not equivalent to `impl [_, <T>]`:
+
+```luc
+let nums  [_, int]  = [1, 2, 3]
+let items [_, any]  = [1, "hello", true]
+
+nums:sum()     -- resolves to impl [_, int]  or impl [_, <T>] with T=int
+items:sum()    -- resolves to impl [_, any]  only
+```
 
 ### Generic Parameters on Impl Declarations
 
@@ -1749,7 +2189,8 @@ A `from` block defines implicit and explicit conversions from a source type (des
 
 The compiler does not chain conversions (e.g., A → B → C) — only a single direct conversion is applied.
 
-> [!NOTE] `from` on array and function types
+> [!NOTE]
+> `from` on array and function types
 >
 > **Array types** — the `from` target is the specific array kind and element type. `from [_, int]` only applies when the target type is exactly `[_, int]` (a slice of int). A `from [*, int]` is a separate declaration for dynamic arrays of int.
 >
@@ -1911,16 +2352,18 @@ pipeline_step   := IDENTIFIER
                  | expr ':' IDENTIFIER                 -- method call on value
                  | IDENTIFIER '.' IDENTIFIER           -- non-nullable data field
                  | IDENTIFIER '(' arg_list ')' '!'     -- argument pack
+                 | func_ref generic_args               -- instantiated generic: fn<T>
                  | anon_func
 ```
 
-| Step form      | What `\|>` does                 | Nullability                |
-| -------------- | ------------------------------- | -------------------------- |
-| `fn`           | calls `fn(upstream)`            | must be non-nullable       |
-| `var:method`   | calls `method(upstream)`        | always safe                |
-| `struct.field` | calls function stored in field  | field must be non-nullable |
-| `fn(args)!`    | calls `fn(upstream, args...)`   | must be non-nullable       |
-| `anon_func`    | calls with upstream as argument | always safe                |
+| Step form      | What `\|>` does                           | Nullability                |
+| -------------- | ----------------------------------------- | -------------------------- |
+| `fn`           | calls `fn(upstream)`                      | must be non-nullable       |
+| `var:method`   | calls `method(upstream)`                  | always safe                |
+| `struct.field` | calls function stored in field            | field must be non-nullable |
+| `fn(args)!`    | calls `fn(upstream, args...)`             | must be non-nullable       |
+| `fn<T>`        | instantiates generic, calls with upstream | must be non-nullable       |
+| `anon_func`    | calls with upstream as argument           | always safe                |
 
 > [!NOTE]
 > `var:method` — `var` is the variable the method is dispatched on, not a type name. `:` is the method call operator in Luc (see Member Access). The upstream value is passed as the argument to the method, not as the receiver. For example, `v |> list:push` passes `v` as the argument to `push` on `list`.
@@ -1941,13 +2384,60 @@ v |> scale(2.0)      -- ERROR: looks like a complete call, no place for upstream
 
 ### Rules
 
+**Generic functions as pipeline steps:**
+
+A generic function can be used as a pipeline step by instantiating it with explicit type arguments. This is consistent with the assignment form `let f = identity<int>` — the `<T>` produces a concrete function value that `|>` can call:
+
+```luc
+export const identity<T> (v T) -> T = { return v }
+export const map<T, U>   (v T, f (T) -> U) -> U = { return f(v) }
+
+let result int    = 42       |> identity<int>
+let result string = 42       |> map<int, string>(string)!
+let result int    = "hello"  |> map<string, int>(str:len)!
+```
+
+An uninstantiated generic function is not a valid pipeline step — type arguments are always required:
+
+```luc
+42 |> identity        -- ERROR: generic function without type arguments
+42 |> identity<int>   -- OK
+```
+
 **Qualifier behavior in pipeline steps:**
 
 - Steps with `~async` are allowed. The pipeline expression becomes `~async` (its type includes `~async`). The caller must `await` the entire pipeline result.
 - Steps with `~nullable` are forbidden.
 - Steps with `~parallel` are forbidden — pipeline execution is synchronous.
 
-> [!WARNING] Alias bypass is not allowed
+> [!WARNING]
+> Curry functions are forbidden as pipeline steps
+> A curry function has more than one parameter group. When used as a pipeline step, `|>` injects the upstream value into the **first** parameter group only. The remaining parameter groups are never filled — there is no upstream for them and no call syntax to provide them inline. This leaves the function partially applied with no way to complete the call, which is a compile error.
+>
+> ```luc
+> export const clamp (lo int)(hi int)(v int) -> int = { ... }
+> export const add   (a int)(b int) -> int          = { ... }
+>
+> 42 |> clamp        -- ERROR: clamp is a curry function — upstream fills (lo int),
+>                    -- but (hi int) and (v int) have no values
+> 42 |> add          -- ERROR: add is a curry function — upstream fills (a int),
+>                    -- but (b int) has no value
+>
+> -- CORRECT: use argument pack to pre-fill all but the last group
+> 42 |> clamp(0)(100)!   -- ERROR: ! is for single extra args, not multi-group curry
+>
+> -- CORRECT: instantiate to a single-group function first
+> let clamp0to100 (v int) -> int = clamp(0)(100)
+> 42 |> clamp0to100      -- OK: clamp0to100 has one parameter group
+>
+> -- CORRECT: use anonymous function to wrap
+> 42 |> (v int) -> int { return clamp(0)(100)(v) }   -- OK
+> ```
+>
+> This applies to all curry function kinds — concrete, generic (instantiated or not), and method references that resolve to curry signatures. If the step resolves to a function with more than one parameter group, it is a compile error.
+
+> [!WARNING]
+> Alias bypass is not allowed
 > The qualifier check is enforced on the **resolved underlying type**, not the surface syntax. A variable whose type alias wraps a `~nullable` or `~parallel` function does not bypass the restriction — the compiler looks through the alias chain before accepting a step.
 >
 > ```luc
@@ -2008,8 +2498,9 @@ if p.onComplete != nil {
 compose_expr    := pipeline_expr { '+>' compose_operand }
 
 compose_operand := IDENTIFIER
-                 | expr ':' IDENTIFIER  -- method reference on a value
-                 | expr '.' IDENTIFIER  -- non-nullable data field only
+                 | expr ':' IDENTIFIER          -- method reference on a value
+                 | expr '.' IDENTIFIER          -- non-nullable data field only
+                 | func_ref generic_args        -- instantiated generic: fn<T>
 ```
 
 ```luc
@@ -2031,13 +2522,135 @@ if transform != nil {
 }
 ```
 
+### Generic Functions and `+>`
+
+`+>` is where generic functions shine. A single generic function can act as a universal adapter between any two compatible types — eliminating the need for concrete one-off wrapper functions.
+
+**Instantiate a generic at the composition site:**
+
+```luc
+export const toString<T>  (v T)      -> string = { ... }
+export const parseFloat   (s string) -> float  = { ... }
+export const double       (x float)  -> float  = { return x * 2.0 }
+
+-- compose: int → string → float → float
+let intToDoubled (x int) -> float = toString<int> +> parseFloat +> double
+
+-- call — no boilerplate wrapper needed
+let result float = intToDoubled(42)    -- "42" → 42.0 → 84.0
+```
+
+**Generic adapters — compose different kinds of pipelines:**
+
+A generic function with matching input/output types can slot into any composition chain where the types align:
+
+```luc
+export const map<T, U>    (v T, f (T) -> U) -> U = { return f(v) }
+export const filter<T>    (v T, pred (T) -> bool) -> T? = {
+    if pred(v) { return v }
+    return nil
+}
+export const withDefault<T> (v T?, fallback T) -> T = { return v ?? fallback }
+
+-- compose a processing chain using generic adapters
+let processScore (score int) -> string =
+    map<int, string>(toString<int>)!       +>
+    map<string, int>(parseIntFromStr)!     +>
+    filter<int>(isPositive)!               +>
+    withDefault<int>(0)!                   +>
+    toString<int>
+```
+
+**Building reusable pipeline factories:**
+
+Generic functions make it easy to build configurable pipelines as values:
+
+```luc
+export const clamp<T : Comparable> (lo T)(hi T)(v T) -> T = { ... }
+export const scale<T : Numeric>    (factor T)(v T) -> T   = { ... }
+
+-- concrete pipeline built from generic instantiations
+let normalizeScore (score int) -> int =
+    clamp<int>(0)(100) +>    -- ERROR: curry — pre-apply first
+    scale<int>(2)            -- ERROR: curry — pre-apply first
+
+-- CORRECT: pre-apply curry groups to produce single-group functions
+let clamp0to100 (v int) -> int = clamp<int>(0)(100)
+let scaleBy2    (v int) -> int = scale<int>(2)
+
+let normalizeScore (score int) -> int = clamp0to100 +> scaleBy2
+
+normalizeScore(150)    -- 100 → 200 (clamped first, then scaled)
+normalizeScore(-10)    -- 0   → 0
+normalizeScore(50)     -- 50  → 100
+```
+
+**Generic composition with qualifiers:**
+
+Qualifiers live on the binding, not on the composed result. A chain of generic functions with different qualifiers requires explicit qualifier assignment:
+
+```luc
+export const fetch<T>  ~async (url string) -> T    = { ... }
+export const parse<T>         (raw string) -> T    = { ... }
+export const format<T>        (v T) -> string      = { ... }
+
+-- composed pipeline is async because fetch is async
+let fetchAndFormat ~async (url string) -> string =
+    fetch<string> +> parse<string> +> format<string>
+
+let result string = await fetchAndFormat("https://api.example.com/data")
+```
+
+**Why `+>` with generics reduces boilerplate:**
+
+Without generics, every type combination needs a wrapper:
+
+```luc
+-- without generics: one wrapper per type combination
+let intToStr    (v int)    -> string = { return string(v) }
+let floatToStr  (v float)  -> string = { return string(v) }
+let boolToStr   (v bool)   -> string = { return string(v) }
+
+let pipeInt   = validate     +> intToStr   +> trim
+let pipeFloat = validateFloat +> floatToStr +> trim
+let pipeBool  = validateBool  +> boolToStr  +> trim
+```
+
+With generics, one function covers all:
+
+```luc
+-- with generics: one function, instantiate at composition site
+export const toString<T> (v T) -> string = { return string(v) }
+
+let pipeInt   = validateInt   +> toString<int>   +> trim
+let pipeFloat = validateFloat +> toString<float> +> trim
+let pipeBool  = validateBool  +> toString<bool>  +> trim
+```
+
+> [!NOTE]
+> An uninstantiated generic function is not a valid `+>` operand — type arguments are always required. The compiler cannot infer types across `+>` boundaries:
+>
+> ```luc
+> let h = f +> toString        -- ERROR: toString is generic, type args required
+> let h = f +> toString<int>   -- OK
+> ```
+
+> [!WARNING]
+> Curry functions are forbidden as `+>` operands for the same reason as in `|>` — `+>` wires the output of the left to the input of the right. A curry function with multiple parameter groups has no single input type to wire to. Pre-apply all curry groups to produce a single-group function before composing:
+>
+> ```luc
+> let clamp0to100 (v int) -> int = clamp<int>(0)(100)   -- single group
+> let process = validate +> clamp0to100 +> toString<int>  -- OK
+> let bad     = validate +> clamp<int>                    -- ERROR: curry operand
+> ```
+
 Generic functions must be explicitly instantiated before composing — type inference across `+>` is not supported:
 
 ```luc
 let doubleInt   (x int) -> int    = { ... }
 let intToString (x int) -> string = { ... }
 
-let process = doubleInt +> intToString -- valid: both concrete
+let process = doubleInt +> intToString    -- valid: both concrete
 ```
 
 > [!WARNING]
@@ -2241,7 +2854,8 @@ let asyncTasks  [*, FetchAsyncFn]  = [fetchUser, fetchPosts]
 | Pass as argument     | `applyAll(handlers, data)`      | The array is passed by value (owned) or by reference (`&[_, T]`).          |
 | Return from function | `return getCallbacks()`         | Ownership follows array semantics (deep copy for dynamic, view for slice). |
 
-> [!WARNING] Restrictions on arrays of function types
+> [!WARNING]
+> Restrictions on arrays of function types
 >
 > 1. **No equality** — Function types are not comparable (`==`, `!=`). Arrays of functions are also not comparable.
 >
@@ -2271,7 +2885,8 @@ let asyncTasks  [*, FetchAsyncFn]  = [fetchUser, fetchPosts]
 > let bad     [_, (T) -> T]       = [identity] -- ERROR: generic without type arguments
 > ```
 
-> [!TIP] Arrays of function types enable
+> [!TIP]
+> Arrays of function types enable
 > - **Dispatch tables** — Replace switch/match with indexed function lookup.
 > - **Callback lists** — Event handlers, middleware chains, plugin systems.
 > - **Higher-order collections** — Store partially applied functions, curried functions, or stateful closures.
@@ -2341,14 +2956,14 @@ export const last<T>    (arr [_, T])          -> T      = { return arr[arr:len()
 
 -- ── impl blocks: usable as methods via injection ─────────────────────
 
-impl [_, T] as s {
+impl [_, <T>] as s {
     len     = std.len<T>(s)!
     isEmpty () -> bool = { return s:len() == 0 }
     first   = std.first<T>(s)!
     last    = std.last<T>(s)!
 }
 
-impl [*, T] as a {
+impl [*, <T>] as a {
     len     = std.len<T>(a)!
     isEmpty () -> bool = { return a:len() == 0 }
     push    = std.push<T>(a)!
@@ -2359,7 +2974,7 @@ impl [*, T] as a {
     last    = std.last<T>(a)!
 }
 
-impl [N, T] as b {
+impl [N, <T>] as b {
     len     () -> uint64 = { return N }    -- compile-time constant, no extern needed
     isEmpty () -> bool   = { return N == 0 }
     first   = std.first<T>(b)!
@@ -2418,28 +3033,32 @@ Operations that require touching the internal array header cannot be expressed i
 
 #### Writing Your Own Array Methods
 
-Developers can add methods to any array type using `impl`. Operations that only need indexing and iteration require no `@extern`:
+Developers can add methods to any array type using `impl`. Operations that only need indexing and iteration require no `@extern`. Use `[_, <T>]` when the method needs to reference the element type:
 
 ```luc
-impl [_, int] as list {
-    sum () -> int = {
-        let total int = 0
-        for v int in list { total += v }
-        return total
-    }
-
-    contains (target int) -> bool = {
-        for v int in list {
+-- element-type-aware method using <T>
+impl [_, <T>] as list {
+    contains (target T) -> bool = {
+        for v T in list {
             if v == target { return true }
         }
         return false
     }
 }
 
+-- concrete element type — no <T> needed
+impl [_, int] as list {
+    sum () -> int = {
+        let total int = 0
+        for v int in list { total += v }
+        return total
+    }
+}
+
 -- use as method or standalone function
 let nums [_, int] = [1, 2, 3, 4, 5]
-nums:sum()         -- 15
-nums:contains(3)   -- true
+nums:sum()            -- 15
+nums:contains(3)      -- true
 ```
 
 Operations that need the internal header must go through `@extern`:
@@ -2556,7 +3175,8 @@ if x is int {
 
 When a **standalone `if` with no `else`** contains a control flow exit (`return`, `return expr`, `break`, or `continue`), the compiler applies the **inverse** of the condition to the rest of the enclosing scope.
 
-> [!WARNING] Inverse narrowing only applies to standalone `if` — no `else`
+> [!WARNING]
+> Inverse narrowing only applies to standalone `if` — no `else`
 > The moment an `else` or `else if` is present, the compiler cannot guarantee which branch ran. The exit may have come from the `if` branch or never fired at all. Inverse narrowing is therefore **not applied** after an `if-else` chain.
 >
 > ```luc
@@ -2646,7 +3266,8 @@ if x is int? { return }    -- rest: x is not int?
 
 Narrowing away a type is useful for early rejection but cannot assert a positive type for `any`.
 
-> [!TIP] Inverse narrowing patterns to know
+> [!TIP]
+> Inverse narrowing patterns to know
 >
 > **Flat nil guards at the top of a function** — eliminates deeply nested blocks and makes preconditions visible at a glance:
 >
@@ -3637,17 +4258,17 @@ Attribute arguments are intentionally limited to compile-time literals and type 
 
 #### Known Attributes
 
-| Attribute                | Valid on                | Purpose                                   |
-| ------------------------ | ----------------------- | ----------------------------------------- |
-| `@extern("sym")`         | `let`, `const` func/var | Bind to C/OS/Vulkan symbol                |
-| `@extern("sym", "conv")` | `let`, `const` func/var | With explicit calling convention          |
-| `@inline`                | func                    | Suggest always inline                     |
-| `@noinline`              | func                    | Prevent inlining                          |
-| `@packed`                | `struct`                | Remove padding — all fields byte-adjacent |
-| `@deprecated("msg")`     | func, var, struct       | Emit warning at every use site            |
-| `@phantom`               | `type` alias            | Allow unused generic parameters           |
-| `@aot`                   | `main` only             | Ahead-of-time compilation                 |
-| `@jit`                   | `main` only             | JIT compilation                           |
+| Attribute                | Valid on                     | Purpose                                   |
+| ------------------------ | ---------------------------- | ----------------------------------------- |
+| `@extern("sym")`         | `let`, `const` func/var      | Bind to C/OS/Vulkan symbol                |
+| `@extern("sym", "conv")` | `let`, `const` func/var      | With explicit calling convention          |
+| `@inline`                | func                         | Suggest always inline                     |
+| `@noinline`              | func                         | Prevent inlining                          |
+| `@packed`                | `struct`                     | Remove padding — all fields byte-adjacent |
+| `@deprecated("msg")`     | func, var, struct            | Emit warning at every use site            |
+| `@phantom`               | `type` alias, `struct`, func | Allow unused generic parameters           |
+| `@aot`                   | `main` only                  | Ahead-of-time compilation                 |
+| `@jit`                   | `main` only                  | JIT compilation                           |
 
 `@inline` and `@noinline` are mutually exclusive on the same declaration.
 `@aot` and `@jit` are mutually exclusive on the same declaration.
@@ -3681,16 +4302,42 @@ const stackTop *uint8
 
 #### `@phantom` Rules
 
-- Only valid on `type` alias declarations that have generic parameters.
-- Without `@phantom`, a type parameter that does not appear in the alias body is a **compile error**.
-- With `@phantom`, unused parameters are permitted — the compiler treats them as phantom tags that exist only at the type-checking level and are erased at runtime.
-- Phantom parameters still participate in type identity: `Tagged<int>` and `Tagged<string>` are distinct types even though both resolve to `int` at runtime.
+`@phantom` suppresses the unused-type-parameter compile error. It is valid on three declaration kinds:
+
+- **Type aliases** — a type parameter that does not appear in the alias body
+- **Structs** — a type parameter that does not appear in any field declaration
+- **Functions** — a type parameter that does not appear in any parameter type or return type
+
+Without `@phantom`, an unused type parameter is a **compile error** on all three. With `@phantom`, unused parameters are permitted — the compiler treats them as phantom tags that exist only at the type-checking level and are erased at runtime. Phantom parameters still participate in type identity.
 
 ```luc
+-- type alias
 @phantom
-type Tagged<T> = int    -- OK: T is a phantom tag
+type Tagged<T> = int         -- OK: T is a phantom tag
+type Gen<T>    = int         -- ERROR: T is unused — add @phantom if intentional
 
-type Gen<T> = int       -- ERROR: T is unused — add @phantom if intentional
+-- struct
+@phantom
+struct Marker<T> {
+    raw int                  -- OK: T is a phantom tag
+}
+struct Bad<T> {
+    raw int                  -- ERROR: T is unused — add @phantom if intentional
+}
+
+-- function
+@phantom
+let makeToken<T> (name string) -> string = {
+    return name              -- OK: T used only as a type tag at call site
+}
+let bad<T> (name string) -> string = {
+    return name              -- ERROR: T is unused — add @phantom if intentional
+}
+
+-- phantom parameters still affect type identity
+let intToken    string = makeToken<int>("id")
+let stringToken string = makeToken<string>("id")
+-- makeToken<int> and makeToken<string> are distinct instantiations
 ```
 
 ---
