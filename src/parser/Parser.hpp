@@ -361,6 +361,13 @@ private:
     ArenaSpan<ExprPtr> parseArgList();                           // until ')'
 
     // ========================================================================
+    // Specialize Helper
+    // ========================================================================
+
+    // For impl method declaration
+    ExprPtr parseFuncRef();
+
+    // ========================================================================
     // Declaration detection & dispatch
     // ========================================================================
     enum class DeclContext { TopLevel, Local };

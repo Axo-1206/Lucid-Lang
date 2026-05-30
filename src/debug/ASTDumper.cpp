@@ -419,13 +419,25 @@ void dumpImplDecl(std::string& out, const ImplDeclAST* node, const StringPool* p
 }
 
 void dumpMethodDecl(std::string& out, const MethodDeclAST* node, const StringPool* pool, int indentLevel) {
-    printNodeHeader(out, indentLevel, *node, "MethodDeclAST '" + toStr(pool, node->name) + "'");
-
-    // Dump function type (signature + qualifiers)
+    std::string header = "MethodDeclAST '" + toStr(pool, node->name) + "'";
+    if (node->isInlineBody()) {
+        header += " (inline body)";
+    } else if (node->isPlainAssignment()) {
+        header += " (plain assignment)";
+    } else if (node->isInjectionAssignment()) {
+        header += " (injection assignment)";
+        if (node->receiverArg.isValid()) {
+            header += " receiver: " + toStr(pool, node->receiverArg);
+        }
+    }
+    printNodeHeader(out, indentLevel, *node, header);
+    
     if (node->funcType) {
         dumpNode(out, node->funcType.get(), pool, indentLevel + 1);
     }
-    // Dump body
+    if (node->assignmentRef) {
+        dumpNode(out, node->assignmentRef.get(), pool, indentLevel + 1);
+    }
     if (node->body) {
         dumpNode(out, node->body.get(), pool, indentLevel + 1);
     }

@@ -68,95 +68,6 @@
 #include <string>
 
 /**
- * @brief Parses `package name` declaration.
- * 
- * Must be the first non‑comment line of every .luc file.
- * 
- * Grammar: `package` IDENTIFIER
- * 
- * Example: `package math`
- * 
- * ─── Token Consumption ─────────────────────────────────────────────────────
- * On entry: positioned at 'package' keyword
- * On exit:  positioned after the package name
- * 
- * ─── Error Recovery ───────────────────────────────────────────────────────
- * - Missing package name: returns dummy node with "<error>" name
- * - Missing 'package' keyword: handled by caller (parse())
- */
-ASTPtr<PackageDeclAST> Parser::parsePackageDecl() {
-    SourceLocation loc = ts_.currentLoc();
-    ts_.consume(TokenType::PACKAGE, "expected 'package'");
-
-    if (!ts_.check(TokenType::IDENTIFIER)) {
-        errorAt(DiagCode::E2003, "expected package name");
-        auto node = arena_.make<PackageDeclAST>(pool_.intern("<error>"));
-        node->loc = loc;
-        return node;
-    }
-    
-    InternedString name = pool_.intern(ts_.advance().value);
-    auto node = arena_.make<PackageDeclAST>(name);
-    node->loc = loc;
-    return node;
-}
-
-/**
- * @brief Parses `use` import declaration.
- * 
- * Grammar: `use` module_path [ `as` IDENTIFIER ]
- * 
- * Example: `use math.vec2 as v`
- * 
- * ─── Token Consumption ─────────────────────────────────────────────────────
- * On entry: positioned at 'use' keyword
- * On exit:  positioned after the alias (or after the last path segment)
- * 
- * ─── Module Path Format ────────────────────────────────────────────────────
- *   - Dotted identifiers: `std.io`, `renderer.core.math`
- *   - Minimum one identifier
- * 
- * ─── Error Recovery ───────────────────────────────────────────────────────
- * - Missing module path: returns node with empty path
- * - Missing alias after 'as': reports error, continues
- */
-ASTPtr<UseDeclAST> Parser::parseUseDecl(Visibility vis) {
-    SourceLocation loc = ts_.currentLoc();
-    ts_.consume(TokenType::USE, "expected 'use'");
-
-    auto node = arena_.make<UseDeclAST>();
-    node->loc = loc;
-    node->visibility = vis;
-
-    if (!ts_.check(TokenType::IDENTIFIER)) {
-        errorAt(DiagCode::E2003, "expected module path after 'use'");
-        return node;
-    }
-
-    std::vector<InternedString> path;
-    path.push_back(pool_.intern(ts_.advance().value));
-
-    while (ts_.check(TokenType::DOT) && ts_.peekNextType() == TokenType::IDENTIFIER) {
-        ts_.advance();
-        path.push_back(pool_.intern(ts_.advance().value));
-    }
-
-    auto builder = arena_.makeBuilder<InternedString>();
-    for (auto& p : path) builder.push_back(std::move(p));
-    node->path = builder.build();
-
-    if (ts_.match(TokenType::AS)) {
-        if (!ts_.check(TokenType::IDENTIFIER)) {
-            errorAt(DiagCode::E2003, "expected alias name after 'as'");
-        } else {
-            node->alias = pool_.intern(ts_.advance().value);
-        }
-    }
-
-    return node;
-}
-
-/**
  * @brief Parses a variable declaration (`let` or `const`).
  * 
  * Grammar: `let` IDENTIFIER type_ann [ `=` expr ]
@@ -1135,15 +1046,74 @@ ASTPtr<ImplDeclAST> Parser::parseImplDecl(Visibility vis) {
 MethodDeclPtr Parser::parseMethodDecl() {
     SourceLocation loc = ts_.currentLoc();
 
-    auto method = arena_.make<MethodDeclAST>();
-    method->loc = loc;
-
+    // ---------- 1. Parse method name ----------
     if (!ts_.check(TokenType::IDENTIFIER)) {
         errorAt(DiagCode::E2003, "expected method name");
         return nullptr;
     }
-    method->name = pool_.intern(ts_.advance().value);
-
+    InternedString name = pool_.intern(ts_.advance().value);
+    
+    // ---------- 2. Peek to see if we have an assignment form ----------
+    // Save position to restore if we later find it's not an assignment form
+    size_t savedPos = ts_.getPos();
+    bool isAssignment = false;
+    
+    // Skip comments and look for '=' without consuming any tokens yet
+    size_t peekPos = ts_.skipCommentsFrom(ts_.getPos());
+    if (peekPos < ts_.getTokenCount() && ts_.getTokenAt(peekPos).type == TokenType::ASSIGN) {
+        isAssignment = true;
+    }
+    
+    // ---------- 3. Assignment form (plain or injection) ----------
+    if (isAssignment) {
+        ts_.advance(); // Consume the '=' token.
+        
+        // Parse the function reference
+        ExprPtr funcRef = parseFuncRef();
+        if (!funcRef || funcRef->isa<UnknownExprAST>()) {
+            errorAt(DiagCode::E2008, "expected function reference after '='");
+            return nullptr;
+        }
+        
+        // Check for injection form: '(' receiver_arg ')' '!'
+        bool isInjection = false;
+        InternedString receiverArg;
+        
+        if (ts_.check(TokenType::LPAREN)) {
+            ts_.advance(); // consume '('
+            if (!ts_.check(TokenType::IDENTIFIER)) {
+                errorAt(DiagCode::E2003, "expected receiver name in injection form");
+            } else {
+                receiverArg = pool_.intern(ts_.advance().value);
+            }
+            ts_.consume(TokenType::RPAREN, "expected ')' after receiver name");
+            if (!ts_.match(TokenType::BANG)) {
+                errorAt(DiagCode::E2001, "expected '!' for injection form");
+            } else {
+                isInjection = true;
+            }
+        }
+        
+        auto method = arena_.make<MethodDeclAST>();
+        method->loc = loc;
+        method->name = name;
+        method->assignmentRef = std::move(funcRef);
+        method->receiverArg = receiverArg;
+        method->isInjection = isInjection;
+        
+        ts_.match(TokenType::SEMICOLON);
+        return method;
+    }
+    
+    // ---------- 4. Inline body form ----------
+    // At this point we are not in assignment mode, so we must parse a full signature.
+    // Restore position to after the method name (savedPos) to start parsing qualifiers etc.
+    ts_.setPos(savedPos);
+    
+    auto method = arena_.make<MethodDeclAST>();
+    method->loc = loc;
+    method->name = name;
+    
     // Create a FuncTypeAST to hold signature and qualifiers
     auto funcType = arena_.make<FuncTypeAST>();
     funcType->loc = loc;
@@ -1197,7 +1167,7 @@ MethodDeclPtr Parser::parseMethodDecl() {
 
     method->funcType = std::move(funcType);
 
-    // Body parsing (unchanged) 
+    // Body
     if (!ts_.check(TokenType::ASSIGN)) {
         errorAt(DiagCode::E2001, "expected '=' before method body");
         return nullptr;
@@ -1207,12 +1177,20 @@ MethodDeclPtr Parser::parseMethodDecl() {
     if (ts_.check(TokenType::LBRACE)) {
         method->body = parseBlock();
     } else if (ts_.check(TokenType::LPAREN)) {
+        // Verbose anonymous function body: (params) -> ret { ... }
+        // This is already handled by parseBlock()? Actually parseBlock() only parses '{...}'.
+        // For anonymous function, we need to parse the entire anonymous function expression.
+        // But in method body, the grammar allows either a block or an expression that could be an anonymous function.
+        // Instead, we can parse an expression; if it's an anonymous function, we wrap it in a return statement.
+        // The current code already handles expression body by creating a ReturnStmt and block.
+        // Let's keep that logic.
         if (!ts_.check(TokenType::LBRACE)) {
             errorAt(DiagCode::E2001, "expected '{' to start method body");
             return nullptr;
         }
         method->body = parseBlock();
     } else {
+        // Expression body
         SourceLocation bodyLoc = ts_.currentLoc();
         ExprPtr expr = parseExpr();
         if (!expr) {

@@ -38,8 +38,7 @@ add_executable(luc-comp
     src/parser/ParserExpr.cpp
     src/parser/ParserDecl.cpp
     src/parser/ParserType.cpp
-    src/parser/ParserStmt.cpp
-    src/parser/ParserLookahead.cpp
+    src/parser/lookahead/ParserLookahead.cpp
     src/parser/ParserPattern.cpp
     src/semantic/SymbolTable.cpp
     src/semantic/SemanticAnalyzer.cpp
@@ -55,6 +54,14 @@ add_executable(luc-comp
     src/registry/AttributeRegistry.cpp
     src/registry/IntrinsicRegistry.cpp
     src/ast/support/StringPool.cpp
+    src/parser/top/PackageParser.cpp
+    src/parser/top/UseParser.cpp
+    src/parser/stmt/StmtParser.cpp
+    src/parser/stmt/BlockParser.cpp
+    src/parser/stmt/SwitchParser.cpp
+    src/parser/stmt/LoopParser.cpp
+    src/parser/stmt/FlowControlParser.cpp
+    src/parser/stmt/LocalDeclParser.cpp
     # src/codegen/CodeGen.cpp
     # src/codegen/CodeGenExpr.cpp
     # src/codegen/CodeGenDecl.cpp

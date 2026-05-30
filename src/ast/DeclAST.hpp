@@ -387,29 +387,55 @@ using TraitRefPtr = ASTPtr<TraitRefAST>;
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * @brief Represents a method implementation inside an impl block.
+ * @brief Represents a method implementation inside an `impl` block.
  *
- * Grammar: func_signature '=' func_body
+ * This node supports three syntactic forms defined in the grammar:
  *
- * @example
- *   length () -> float = { return #sqrt(self.x*self.x + self.y*self.y) }
- *   offset ~async (dx float)(dy float) -> Point = { ... }
+ * 1. **Inline Body** – Full signature and a block/expression body.
+ *    - `funcType` contains the signature (including qualifiers, parameters, return types).
+ *    - `body` is a `BlockStmtAST` (the parser desugars expression bodies).
  *
- * Methods are called on values using the colon operator: `value:method(args)`.
- * Inside the method body, the receiver is accessible via the name `self`
- * (or a custom alias if `receiverAlias` was specified in the impl block).
+ * 2. **Plain Assignment** – Method name bound to an existing function.
+ *    - `assignmentRef` points to a function reference (`IdentifierExprAST`,
+ *      `FieldAccessExprAST`, or a `CallExprAST` for generic instantiation).
+ *    - `isInjection = false`, `receiverArg` is empty.
  *
- * No per‑method visibility – visibility is set at the ImplDeclAST level.
- * The body is always a BlockStmtAST (the parser desugars expression bodies).
+ * 3. **Injection Assignment** – Method name bound to a function where the first
+ *    parameter is fixed to the receiver (`self` or an alias).
+ *    - `assignmentRef` as in plain assignment.
+ *    - `isInjection = true`, `receiverArg` holds the receiver name (must be `self`
+ *      or the alias declared on the enclosing `impl` block).
+ *
+ * Methods are called using the colon operator: `value:method(args)`. The semantic
+ * pass resolves the call using the `impl` block that matches the receiver's type.
+ *
+ * @field name            Method name.
+ * @field funcType        Non‑null for inline body form; holds signature and qualifiers.
+ * @field body            Non‑null for inline body form; block statement of the method.
+ * @field assignmentRef   Non‑null for assignment forms; expression that yields a function.
+ * @field receiverArg     For injection assignment, the receiver name (empty otherwise).
+ * @field isInjection     True for injection assignment form.
+ *
+ * @see ImplDeclAST for the enclosing `impl` block.
  */
 struct MethodDeclAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::MethodDecl;
 
     InternedString name;
-    ASTPtr<FuncTypeAST> funcType;   // full function type (includes qualifiers)
-    StmtPtr body;                   // always BlockStmtAST
+    
+    // Inline body form
+    ASTPtr<FuncTypeAST> funcType;   // signature + qualifiers
+    StmtPtr body;                   // block body
 
-    bool isAsync() const { return funcType->isAsync(); }
+    // Assignment forms (plain or injection)
+    ExprPtr assignmentRef;          // non‑null if assignment form
+    InternedString receiverArg;     // for injection form, the receiver name (e.g., "self" or alias)
+    bool isInjection = false;       // true for injection form
+
+    bool isInlineBody() const { return funcType != nullptr; }
+    bool isPlainAssignment() const { return assignmentRef != nullptr && !isInjection; }
+    bool isInjectionAssignment() const { return isInjection && assignmentRef != nullptr; }
+    bool isAsync() const { return funcType && funcType->isAsync(); }
 
     MethodDeclAST() : BaseAST(ASTKind::MethodDecl) {}
 };
