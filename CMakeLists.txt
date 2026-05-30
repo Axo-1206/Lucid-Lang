@@ -62,6 +62,8 @@ add_executable(luc-comp
     src/parser/stmt/LoopParser.cpp
     src/parser/stmt/FlowControlParser.cpp
     src/parser/stmt/LocalDeclParser.cpp
+    src/parser/generic/GenericArgParser.cpp
+    src/parser/generic/GenericParamParser.cpp
     # src/codegen/CodeGen.cpp
     # src/codegen/CodeGenExpr.cpp
     # src/codegen/CodeGenDecl.cpp
