@@ -85,16 +85,18 @@ std::string formatType(const TypeAST* type, const StringPool* pool) {
         case ASTKind::PtrType:
             return "*" + formatType(static_cast<const PtrTypeAST*>(type)->inner.get(), pool);
 
-        case ASTKind::FixedArrayType: {
-            auto* a = static_cast<const FixedArrayTypeAST*>(type);
-            return "[" + std::to_string(a->size) + "]" + formatType(a->element.get(), pool);
+        case ASTKind::ArrayType: {
+            auto* a = static_cast<const ArrayTypeAST*>(type);
+            switch (a->arrayKind) {
+                case ArrayKind::Slice:
+                    return "[_, " + formatType(a->element.get(), pool) + "]";
+                case ArrayKind::Dynamic:
+                    return "[*, " + formatType(a->element.get(), pool) + "]";
+                case ArrayKind::Fixed:
+                    return "[" + std::to_string(a->size) + ", " + formatType(a->element.get(), pool) + "]";
+            }
+            return "<invalid array>";
         }
-
-        case ASTKind::SliceType:
-            return "[]" + formatType(static_cast<const SliceTypeAST*>(type)->element.get(), pool);
-
-        case ASTKind::DynamicArrayType:
-            return "[*]" + formatType(static_cast<const DynamicArrayTypeAST*>(type)->element.get(), pool);
 
         case ASTKind::FuncType: {
             const auto* ft = static_cast<const FuncTypeAST*>(type);
@@ -143,6 +145,15 @@ std::string formatVisibility(Visibility vis) {
     }
 }
 
+std::string arrayKindToString(ArrayKind kind) {
+    switch (kind) {
+        case ArrayKind::Slice:   return "slice";
+        case ArrayKind::Dynamic: return "dynamic";
+        case ArrayKind::Fixed:   return "fixed";
+    }
+    return "unknown";
+}
+
 // =============================================================================
 // Individual node dumpers (all take const BaseAST* and cast internally)
 // =============================================================================
@@ -186,19 +197,23 @@ void dumpResultType(std::string& out, const ResultTypeAST* node, const StringPoo
     if (node->errorType) dumpNode(out, node->errorType.get(), pool, indentLevel + 1);
 }
 
-void dumpFixedArrayType(std::string& out, const FixedArrayTypeAST* node, const StringPool* pool, int indentLevel) {
-    printNodeHeader(out, indentLevel, *node, "FixedArrayTypeAST [" + std::to_string(node->size) + "]");
+void dumpArrayType(std::string& out, const ArrayTypeAST* node, const StringPool* pool, int indentLevel) {
+    std::string header = "ArrayTypeAST (" + arrayKindToString(node->arrayKind) + ")";
+    if (node->arrayKind == ArrayKind::Fixed) {
+        header += " size=" + std::to_string(node->size);
+    }
+    printNodeHeader(out, indentLevel, *node, header);
     if (node->element) dumpNode(out, node->element.get(), pool, indentLevel + 1);
 }
 
-void dumpSliceType(std::string& out, const SliceTypeAST* node, const StringPool* pool, int indentLevel) {
-    printNodeHeader(out, indentLevel, *node, "SliceTypeAST");
-    if (node->element) dumpNode(out, node->element.get(), pool, indentLevel + 1);
-}
-
-void dumpDynamicArrayType(std::string& out, const DynamicArrayTypeAST* node, const StringPool* pool, int indentLevel) {
-    printNodeHeader(out, indentLevel, *node, "DynamicArrayTypeAST");
-    if (node->element) dumpNode(out, node->element.get(), pool, indentLevel + 1);
+void dumpGenericArrayType(std::string& out, const GenericArrayTypeAST* node, const StringPool* pool, int indentLevel) {
+    std::string kindStr;
+    switch (node->arrayKind) {
+        case ArrayKind::Slice:   kindStr = "[_, <" + toStr(pool, node->typeParamName) + ">]"; break;
+        case ArrayKind::Dynamic: kindStr = "[*, <" + toStr(pool, node->typeParamName) + ">]"; break;
+        case ArrayKind::Fixed:   kindStr = "[" + std::to_string(node->size) + ", <" + toStr(pool, node->typeParamName) + ">]"; break;
+    }
+    printNodeHeader(out, indentLevel, *node, "GenericArrayTypeAST " + kindStr);
 }
 
 void dumpRefType(std::string& out, const RefTypeAST* node, const StringPool* pool, int indentLevel) {
@@ -284,9 +299,30 @@ void dumpVarDecl(std::string& out, const VarDeclAST* node, const StringPool* poo
 
 void dumpFuncDecl(std::string& out, const FuncDeclAST* node, const StringPool* pool, int indentLevel) {
     std::string header = "FuncDeclAST '" + toStr(pool, node->name) + "'";
+    if (!node->genericParams.empty()) {
+        header += " <";
+        for (size_t i = 0; i < node->genericParams.size(); ++i) {
+            if (i > 0) header += ", ";
+            if (node->genericParams[i]) {
+                header += toStr(pool, node->genericParams[i]->name);
+            }
+        }
+        header += ">";
+    }
     printNodeHeader(out, indentLevel, *node, header);
-    if (node->body) dumpNode(out, node->body.get(), pool, indentLevel + 1);
-    for (const auto& attr : node->attributes) dumpNode(out, attr.get(), pool, indentLevel + 1);
+
+    // Dump function type (signature + qualifiers)
+    if (node->funcType) {
+        dumpNode(out, node->funcType.get(), pool, indentLevel + 1);
+    }
+    // Dump body
+    if (node->body) {
+        dumpNode(out, node->body.get(), pool, indentLevel + 1);
+    }
+    // Dump attributes
+    for (const auto& attr : node->attributes) {
+        dumpNode(out, attr.get(), pool, indentLevel + 1);
+    }
 }
 
 void dumpStructDecl(std::string& out, const StructDeclAST* node, const StringPool* pool, int indentLevel) {
@@ -315,6 +351,11 @@ void dumpEnumVariant(std::string& out, const EnumVariantAST* node, const StringP
 
 void dumpTraitMethod(std::string& out, const TraitMethodAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "TraitMethodAST '" + toStr(pool, node->name) + "'");
+
+    // Dump function type (signature + qualifiers)
+    if (node->funcType) {
+        dumpNode(out, node->funcType.get(), pool, indentLevel + 1);
+    }
 }
 
 void dumpTraitDecl(std::string& out, const TraitDeclAST* node, const StringPool* pool, int indentLevel) {
@@ -379,7 +420,15 @@ void dumpImplDecl(std::string& out, const ImplDeclAST* node, const StringPool* p
 
 void dumpMethodDecl(std::string& out, const MethodDeclAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "MethodDeclAST '" + toStr(pool, node->name) + "'");
-    if (node->body) dumpNode(out, node->body.get(), pool, indentLevel + 1);
+
+    // Dump function type (signature + qualifiers)
+    if (node->funcType) {
+        dumpNode(out, node->funcType.get(), pool, indentLevel + 1);
+    }
+    // Dump body
+    if (node->body) {
+        dumpNode(out, node->body.get(), pool, indentLevel + 1);
+    }
 }
 
 void dumpFromDecl(std::string& out, const FromDeclAST* node, const StringPool* pool, int indentLevel) {
@@ -818,9 +867,8 @@ void dumpNode(std::string& out, const BaseAST* node, const StringPool* pool, int
         case ASTKind::NamedType:           dumpNamedType(out, static_cast<const NamedTypeAST*>(node), pool, indentLevel); break;
         case ASTKind::NullableType:        dumpNullableType(out, static_cast<const NullableTypeAST*>(node), pool, indentLevel); break;
         case ASTKind::ResultType:          dumpResultType(out, static_cast<const ResultTypeAST*>(node), pool, indentLevel); break;
-        case ASTKind::FixedArrayType:      dumpFixedArrayType(out, static_cast<const FixedArrayTypeAST*>(node), pool, indentLevel); break;
-        case ASTKind::SliceType:           dumpSliceType(out, static_cast<const SliceTypeAST*>(node), pool, indentLevel); break;
-        case ASTKind::DynamicArrayType:    dumpDynamicArrayType(out, static_cast<const DynamicArrayTypeAST*>(node), pool, indentLevel); break;
+        case ASTKind::ArrayType:           dumpArrayType(out, static_cast<const ArrayTypeAST*>(node), pool, indentLevel); break;
+        case ASTKind::GenericArrayType:    dumpGenericArrayType(out, static_cast<const GenericArrayTypeAST*>(node), pool, indentLevel); break;
         case ASTKind::RefType:             dumpRefType(out, static_cast<const RefTypeAST*>(node), pool, indentLevel); break;
         case ASTKind::PtrType:             dumpPtrType(out, static_cast<const PtrTypeAST*>(node), pool, indentLevel); break;
         case ASTKind::FuncType:            dumpFuncType(out, static_cast<const FuncTypeAST*>(node), pool, indentLevel); break;

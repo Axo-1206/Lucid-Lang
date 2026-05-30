@@ -99,10 +99,10 @@
 #include "ast/StmtAST.hpp"
 #include "ast/TypeAST.hpp"
 #include "ast/support/ASTArena.hpp"
-#include "diagnostics/DiagnosticEngine.hpp"
 #include "registry/QualifierRegistry.hpp"
 #include "debug/DebugMacros.hpp"
 #include "debug/DebugUtils.hpp"
+#include "diagnostics/Diagnostic.hpp"
 
 #include <optional>
 #include <utility>
@@ -148,7 +148,7 @@
  */
 class TokenStream {
 public:
-    TokenStream(std::vector<Token> tokens, DiagnosticEngine& dc, InternedString filePath);
+    TokenStream(std::vector<Token> tokens, InternedString filePath);
 
     // ------------------------------------------------------------------------
     // Grammar interface (skips comments automatically)
@@ -156,9 +156,9 @@ public:
     const Token& peek() const;
     Token advance();
     bool check(TokenType type) const;
-    bool checkAny(std::initializer_list<TokenType> types) const;   // ← ADD
+    bool checkAny(std::initializer_list<TokenType> types) const;
     bool match(TokenType type);
-    bool matchAny(std::initializer_list<TokenType> types);         // ← ADD
+    bool matchAny(std::initializer_list<TokenType> types);
     std::optional<Token> consumeIf(TokenType type);
     Token consume(TokenType type, DiagCode code, const std::string& msg);
     Token consume(TokenType type, const std::string& msg);
@@ -169,9 +169,9 @@ public:
     // Lookahead helpers (non‑consuming, skip comments)
     // ------------------------------------------------------------------------
     TokenType peekType() const { return peek().type; }
-    TokenType peekNextType() const;                                 // ← ADD
-    const Token& peekNext() const;                                  // ← ADD
-    const Token& peekAt(size_t offset) const;                       // ← ADD
+    TokenType peekNextType() const;
+    const Token& peekNext() const;
+    const Token& peekAt(size_t offset) const;
 
     // ------------------------------------------------------------------------
     // Raw inspection (keeps comments, for doc harvesting & lookahead)
@@ -186,13 +186,12 @@ public:
     size_t skipCommentsFrom(size_t start) const;
 
     // Convert a token to SourceLocation
-    SourceLocation locOf(const Token& tok) const;                   // ← ADD
+    SourceLocation locOf(const Token& tok) const;
 
 private:
     std::vector<Token> tokens_;
     size_t pos_ = 0;
-    DiagnosticEngine& dc_;
-    InternedString filePath_;
+    InternedString filePath_;   // used for error reporting
 
     static const Token eofToken;
 };
@@ -315,11 +314,11 @@ struct QualifierSet {
  */
 class Parser {
 public:
-    Parser(std::vector<Token> tokens, DiagnosticEngine& dc,
+    Parser(std::vector<Token> tokens,
            InternedString filePath, StringPool& pool, ASTArena& arena);
 
     ASTPtr<ProgramAST> parse();
-    bool hasErrors() const { return dc_.hasErrors(); }
+    bool hasErrors() const { return diagnostic::hasErrors(); }
 
 private:
     // ========================================================================
@@ -329,7 +328,6 @@ private:
     InternedString filePath_;
     StringPool& pool_;
     ASTArena& arena_;
-    DiagnosticEngine& dc_;
 
     // Context flags (used for semantic checks during parsing)
     int loopDepth_ = 0;      ///< >0 when inside a loop (for break/continue)
@@ -406,6 +404,7 @@ private:
     TypePtr parsePrimitiveType();
     TypePtr parseNamedType();
     TypePtr parseArrayType();
+    TypePtr parseArrayTarget(); // parses both concrete and generic array types for impl declaration
     TypePtr parseRefType();
     TypePtr parsePtrType();
     TypePtr parseFuncType();

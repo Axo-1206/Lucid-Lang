@@ -59,8 +59,7 @@
  */
 
 #include "Parser.hpp"
-#include "diagnostics/Diagnostic.hpp"
-#include "diagnostics/DiagnosticEngine.hpp"
+#include "diagnostics/Diagnostic.hpp"   // new diagnostic API
 #include "debug/DebugUtils.hpp"
 
 #include <algorithm>
@@ -73,8 +72,8 @@
 
 const Token TokenStream::eofToken = {TokenType::EOF_TOKEN, "", 0, 0};
 
-TokenStream::TokenStream(std::vector<Token> tokens, DiagnosticEngine& dc, InternedString filePath)
-    : tokens_(std::move(tokens)), dc_(dc), filePath_(filePath) {}
+TokenStream::TokenStream(std::vector<Token> tokens, InternedString filePath)
+    : tokens_(std::move(tokens)), filePath_(filePath) {}
 
 size_t TokenStream::skipCommentsFrom(size_t start) const {
     size_t i = start;
@@ -137,7 +136,7 @@ std::optional<Token> TokenStream::consumeIf(TokenType type) {
 Token TokenStream::consume(TokenType type, DiagCode code, const std::string& msg) {
     if (check(type)) return advance();
     SourceLocation loc = currentLoc();
-    dc_.error(DiagnosticCategory::Syntax, filePath_, loc, code, {msg});
+    diagnostic::error(DiagnosticCategory::Syntax, filePath_, loc, code, {msg});
     // Return a dummy token for recovery
     return {type, "", 0, 0};
 }
@@ -179,18 +178,18 @@ const Token& TokenStream::peekAt(size_t offset) const {
 // Parser construction
 // ============================================================================
 
-Parser::Parser(std::vector<Token> tokens, DiagnosticEngine& dc,
-               InternedString filePath, StringPool& pool, ASTArena& arena)
-    : ts_(std::move(tokens), dc, filePath),
+Parser::Parser(std::vector<Token> tokens, InternedString filePath,
+               StringPool& pool, ASTArena& arena)
+    : ts_(std::move(tokens), filePath),
       filePath_(std::move(filePath)),
-      pool_(pool), arena_(arena), dc_(dc) {}
+      pool_(pool), arena_(arena) {}
 
 // ============================================================================
 // Error handling
 // ============================================================================
 
 void Parser::error(const SourceLocation& loc, DiagCode code, const std::string& msg) {
-    dc_.error(DiagnosticCategory::Syntax, filePath_, loc, code, {msg});
+    diagnostic::error(DiagnosticCategory::Syntax, filePath_, loc, code, {msg});
 }
 
 void Parser::errorAt(DiagCode code, const std::string& msg) {
@@ -810,7 +809,7 @@ std::optional<DocComment> Parser::harvestDocComment() {
 //   @inline
 //   @deprecated("Use newAPI")
 //   @extern("malloc") const malloc (size uint64) -> *uint8?
-// ============================================================================s
+// ============================================================================
 
 std::vector<AttributePtr> Parser::parseAttributes() {
     std::vector<AttributePtr> attrs;

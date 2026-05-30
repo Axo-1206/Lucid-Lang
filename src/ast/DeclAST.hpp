@@ -163,13 +163,13 @@ struct FuncDeclAST : DeclAST {
     DeclKeyword keyword;
     InternedString name;
     ArenaSpan<GenericParamPtr> genericParams;   // empty if non‑generic
-    FuncTypeAST funcType;                       // full function type (includes qualifiers)
+    ASTPtr<FuncTypeAST> funcType;               // full function type (includes qualifiers)
     StmtPtr body;                               // always BlockStmtAST
     Visibility visibility = Visibility::Private;
 
     // Convenience accessors
-    bool isAsync()   const { return funcType.isAsync(); }
-    bool hasParams() const { return funcType.sig.hasParams(); }
+    bool isAsync()   const { return funcType->isAsync(); }
+    bool hasParams() const { return funcType->sig.hasParams(); }
 
     FuncDeclAST() : DeclAST(ASTKind::FuncDecl) {}
 };
@@ -319,9 +319,9 @@ struct TraitMethodAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::TraitMethod;
 
     InternedString name;
-    FuncTypeAST funcType;           // full function type (includes qualifiers)
+    ASTPtr<FuncTypeAST> funcType; // full function type (includes qualifiers)
 
-    bool isAsync() const { return funcType.isAsync(); }
+    bool isAsync() const { return funcType->isAsync(); }
 
     TraitMethodAST() : BaseAST(ASTKind::TraitMethod) {}
 };
@@ -406,10 +406,10 @@ struct MethodDeclAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::MethodDecl;
 
     InternedString name;
-    FuncTypeAST funcType;           // full function type (includes qualifiers)
+    ASTPtr<FuncTypeAST> funcType;   // full function type (includes qualifiers)
     StmtPtr body;                   // always BlockStmtAST
 
-    bool isAsync() const { return funcType.isAsync(); }
+    bool isAsync() const { return funcType->isAsync(); }
 
     MethodDeclAST() : BaseAST(ASTKind::MethodDecl) {}
 };
@@ -696,8 +696,8 @@ struct TypeAliasDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::TypeAliasDecl;
 
     InternedString name;
-    ArenaSpan<GenericParamPtr> genericParams;   // empty if non‑generic
-    TypePtr aliasedType;                        // the right‑hand side type
+    ArenaSpan<GenericParamPtr> genericParams; // empty if non‑generic
+    TypePtr aliasedType;                      // the right‑hand side type
     Visibility visibility = Visibility::Private;
 
     TypeAliasDeclAST() : DeclAST(ASTKind::TypeAliasDecl) {}

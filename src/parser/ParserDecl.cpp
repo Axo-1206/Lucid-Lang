@@ -267,19 +267,31 @@ ASTPtr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vis) {
         node->genericParams = parseGenericParams();
     }
 
-    // Raw qualifiers
+    // Create a FuncTypeAST to hold signature and qualifiers
+    auto funcType = arena_.make<FuncTypeAST>();
+    funcType->loc = loc;
+
+    // Parse raw qualifiers and build bitmask
     std::vector<InternedString> rawQuals;
+    uint32_t qualMask = 0;
     while (ts_.check(TokenType::TILDE)) {
         ts_.advance();
         if (!ts_.check(TokenType::IDENTIFIER)) {
             errorAt(DiagCode::E2003, "expected qualifier name after '~'");
             break;
         }
-        rawQuals.push_back(pool_.intern(ts_.advance().value));
+        InternedString q = pool_.intern(ts_.advance().value);
+        rawQuals.push_back(q);
+        // Set bit based on qualifier name (semantic pass will validate)
+        if (pool_.lookup(q) == "async") qualMask |= QualifierBits::Async;
+        else if (pool_.lookup(q) == "nullable") qualMask |= QualifierBits::Nullable;
+        else if (pool_.lookup(q) == "parallel") qualMask |= QualifierBits::Parallel;
+        // Other qualifiers are ignored here; semantic pass reports errors
     }
     auto qBuilder = arena_.makeBuilder<InternedString>();
     for (auto& q : rawQuals) qBuilder.push_back(std::move(q));
-    node->sig.rawQualifiers = qBuilder.build();
+    funcType->rawQualifiers = qBuilder.build();
+    funcType->qualifiers = qualMask;
 
     // Parameter groups: accumulate flat
     std::vector<ParamPtr> allParams;
@@ -297,18 +309,21 @@ ASTPtr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vis) {
     }
     auto paramsBuilder = arena_.makeBuilder<ParamPtr>();
     for (auto& p : allParams) paramsBuilder.push_back(std::move(p));
-    node->sig.allParams = paramsBuilder.build();
+    funcType->sig.allParams = paramsBuilder.build();
 
     auto gsBuilder = arena_.makeBuilder<size_t>();
     for (auto& sz : groupSizes) gsBuilder.push_back(sz);
-    node->sig.groupSizes = gsBuilder.build();
+    funcType->sig.groupSizes = gsBuilder.build();
 
     // Return types
     if (ts_.match(TokenType::ARROW)) {
-        node->sig.returnTypes = parseReturnList();
+        funcType->sig.returnTypes = parseReturnList();
     }
 
-    // Body
+    // Store the complete function type in the declaration
+    node->funcType = std::move(funcType);
+
+    // Body (unchanged)
     if (!ts_.check(TokenType::ASSIGN)) {
         ts_.match(TokenType::SEMICOLON);
         return node;
@@ -702,19 +717,29 @@ TraitMethodPtr Parser::parseTraitMethod() {
     }
     method->name = pool_.intern(ts_.advance().value);
     
-    // Raw qualifiers
+    // Create a FuncTypeAST to hold signature and qualifiers
+    auto funcType = arena_.make<FuncTypeAST>();
+    funcType->loc = loc;
+
+    // Parse raw qualifiers and build bitmask
     std::vector<InternedString> rawQuals;
+    uint32_t qualMask = 0;
     while (ts_.check(TokenType::TILDE)) {
         ts_.advance();
         if (!ts_.check(TokenType::IDENTIFIER)) {
             errorAt(DiagCode::E2003, "expected qualifier name after '~'");
             break;
         }
-        rawQuals.push_back(pool_.intern(ts_.advance().value));
+        InternedString q = pool_.intern(ts_.advance().value);
+        rawQuals.push_back(q);
+        if (pool_.lookup(q) == "async") qualMask |= QualifierBits::Async;
+        else if (pool_.lookup(q) == "nullable") qualMask |= QualifierBits::Nullable;
+        else if (pool_.lookup(q) == "parallel") qualMask |= QualifierBits::Parallel;
     }
     auto qBuilder = arena_.makeBuilder<InternedString>();
     for (auto& q : rawQuals) qBuilder.push_back(std::move(q));
-    method->sig.rawQualifiers = qBuilder.build();
+    funcType->rawQualifiers = qBuilder.build();
+    funcType->qualifiers = qualMask;
 
     // Parameter groups: flat accumulation
     std::vector<ParamPtr> allParams;
@@ -732,17 +757,18 @@ TraitMethodPtr Parser::parseTraitMethod() {
     }
     auto paramsBuilder = arena_.makeBuilder<ParamPtr>();
     for (auto& p : allParams) paramsBuilder.push_back(std::move(p));
-    method->sig.allParams = paramsBuilder.build();
+    funcType->sig.allParams = paramsBuilder.build();
 
     auto gsBuilder = arena_.makeBuilder<size_t>();
     for (auto& sz : groupSizes) gsBuilder.push_back(sz);
-    method->sig.groupSizes = gsBuilder.build();
+    funcType->sig.groupSizes = gsBuilder.build();
 
     // Return types
     if (ts_.match(TokenType::ARROW)) {
-        method->sig.returnTypes = parseReturnList();
+        funcType->sig.returnTypes = parseReturnList();
     }
-    
+
+    method->funcType = std::move(funcType);
     return method;
 }
 
@@ -995,34 +1021,37 @@ ASTPtr<ImplDeclAST> Parser::parseImplDecl(Visibility vis) {
     node->loc = loc;
     node->visibility = vis;
 
-    // Parse target type (supports BOTH named types AND primitive types)
-    
-    // Check if we have a primitive type keyword OR an identifier
-    bool isPrimitive = isPrimitiveTypeToken(ts_.peekType());
-    bool isIdentifier = ts_.check(TokenType::IDENTIFIER);
-    
-    if (!isPrimitive && !isIdentifier) {
-        errorAt(DiagCode::E2003, "expected target type after 'impl' (primitive or identifier)");
+    // Determine the target type
+    TypePtr targetType;
+
+    if (ts_.check(TokenType::LBRACKET)) {
+        // Array target (concrete or generic)
+        targetType = parseArrayTarget();
+        if (!targetType || targetType->isa<UnknownTypeAST>()) {
+            errorAt(DiagCode::E2005, "invalid array target in impl block");
+            return nullptr;
+        }
+    } else if (isPrimitiveTypeToken(ts_.peekType())) {
+        targetType = parsePrimitiveType();
+    } else if (ts_.check(TokenType::IDENTIFIER)) {
+        targetType = parseNamedType();
+    } else {
+        errorAt(DiagCode::E2003, "expected target type after 'impl' (primitive, identifier, or '[')");
         return nullptr;
     }
-    
-    TypePtr targetType;
-    if (isPrimitive) {
-        targetType = parsePrimitiveType();  // Handles int, float, string, etc.
-    } else {
-        targetType = parseNamedType();       // Handles user-defined types
-    }
-    
+
     if (!targetType || targetType->isa<UnknownTypeAST>()) {
         errorAt(DiagCode::E2005, "invalid target type in impl block");
         return nullptr;
     }
     node->targetType = std::move(targetType);
 
-    // Parse impl-level generic parameters (if any)
-    // Note: For primitive types, generic parameters are NOT allowed
-    // (semantic pass will enforce E3020)
-    if (ts_.check(TokenType::LESS)) {
+    // For generic array targets, the type variable is already stored in the node.
+    // The impl should NOT have additional generic parameters.
+    bool isGenericArray = node->targetType->isa<GenericArrayTypeAST>();
+
+    // Parse impl-level generic parameters (only for generic structs/aliases)
+    if (!isGenericArray && ts_.check(TokenType::LESS)) {
         node->genericParams = parseGenericParams();
     }
 
@@ -1115,19 +1144,29 @@ MethodDeclPtr Parser::parseMethodDecl() {
     }
     method->name = pool_.intern(ts_.advance().value);
 
-    // Raw qualifiers
+    // Create a FuncTypeAST to hold signature and qualifiers
+    auto funcType = arena_.make<FuncTypeAST>();
+    funcType->loc = loc;
+
+    // Parse raw qualifiers and build bitmask
     std::vector<InternedString> rawQuals;
+    uint32_t qualMask = 0;
     while (ts_.check(TokenType::TILDE)) {
         ts_.advance();
         if (!ts_.check(TokenType::IDENTIFIER)) {
             errorAt(DiagCode::E2003, "expected qualifier name after '~'");
             break;
         }
-        rawQuals.push_back(pool_.intern(ts_.advance().value));
+        InternedString q = pool_.intern(ts_.advance().value);
+        rawQuals.push_back(q);
+        if (pool_.lookup(q) == "async") qualMask |= QualifierBits::Async;
+        else if (pool_.lookup(q) == "nullable") qualMask |= QualifierBits::Nullable;
+        else if (pool_.lookup(q) == "parallel") qualMask |= QualifierBits::Parallel;
     }
     auto qBuilder = arena_.makeBuilder<InternedString>();
     for (auto& q : rawQuals) qBuilder.push_back(std::move(q));
-    method->sig.rawQualifiers = qBuilder.build();
+    funcType->rawQualifiers = qBuilder.build();
+    funcType->qualifiers = qualMask;
 
     // Parameter groups: flat accumulation
     std::vector<ParamPtr> allParams;
@@ -1145,18 +1184,20 @@ MethodDeclPtr Parser::parseMethodDecl() {
     }
     auto paramsBuilder = arena_.makeBuilder<ParamPtr>();
     for (auto& p : allParams) paramsBuilder.push_back(std::move(p));
-    method->sig.allParams = paramsBuilder.build();
+    funcType->sig.allParams = paramsBuilder.build();
 
     auto gsBuilder = arena_.makeBuilder<size_t>();
     for (auto& sz : groupSizes) gsBuilder.push_back(sz);
-    method->sig.groupSizes = gsBuilder.build();
+    funcType->sig.groupSizes = gsBuilder.build();
 
     // Return types
     if (ts_.match(TokenType::ARROW)) {
-        method->sig.returnTypes = parseReturnList();
+        funcType->sig.returnTypes = parseReturnList();
     }
 
-    // Body
+    method->funcType = std::move(funcType);
+
+    // Body parsing (unchanged) 
     if (!ts_.check(TokenType::ASSIGN)) {
         errorAt(DiagCode::E2001, "expected '=' before method body");
         return nullptr;

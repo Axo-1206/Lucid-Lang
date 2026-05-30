@@ -167,9 +167,8 @@ enum class ASTKind : uint16_t {
     NamedType,
     NullableType,
     ResultType,      // T!E / T! — result type
-    FixedArrayType,
-    SliceType,
-    DynamicArrayType,
+    ArrayType,
+    GenericArrayType,
     RefType,
     PtrType,
     FuncType,

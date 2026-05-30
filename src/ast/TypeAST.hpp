@@ -26,6 +26,23 @@
 #include <cstdint>
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ArrayKind
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @brief Distinguishes the three array types in Luc.
+ *
+ * - Slice   : non‑owning view (`[_, T]`)
+ * - Dynamic : heap‑owned, growable (`[*, T]`)
+ * - Fixed   : stack/inline, compile‑time size (`[N, T]`)
+ */
+enum class ArrayKind {
+    Slice,
+    Dynamic,
+    Fixed
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // PrimitiveKind – all built‑in primitive types.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -96,7 +113,6 @@ struct PrimitiveTypeAST : TypeAST {
 
     explicit PrimitiveTypeAST(PrimitiveKind k)
         : TypeAST(ASTKind::PrimitiveType), primitiveKind(k) {}
-
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -136,7 +152,6 @@ struct NamedTypeAST : TypeAST {
 
     explicit NamedTypeAST(InternedString n)
         : TypeAST(ASTKind::NamedType), name(n) {}
-
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -164,7 +179,6 @@ struct NullableTypeAST : TypeAST {
 
     explicit NullableTypeAST(TypePtr t)
         : TypeAST(ASTKind::NullableType), inner(std::move(t)) {}
-
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -204,88 +218,98 @@ struct ResultTypeAST : TypeAST {
     bool isWellFormed() const {
         if (inner && inner->isa<ResultTypeAST>()) return false;
         if (errorType && errorType->isa<ResultTypeAST>()) return false;
-    return true;
-}
+        return true;
+    }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FixedArrayTypeAST – compile‑time fixed‑size array `[N]T`.
+// ArrayTypeAST – unified concrete array type (slice, dynamic, fixed).
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * @brief An array with a compile‑time constant size. Size is part of the type.
+ * @brief Represents a concrete array type: slice, dynamic, or fixed.
  *
- * @example
- *   [4, float]         → size = 4, element = Float
- *   [16, float]        → size = 16, element = Float
- *   [4, [4, float] ]   → size = 4, element = FixedArrayTypeAST(4, Float)
+ * This node unifies the three array kinds under a single representation.
+ * The `kind` field determines which memory model applies.
  *
- * The size is stored as `uint64_t` from `INT_LITERAL`, always non‑negative.
- * The semantic pass checks that `size > 0` and fits platform limits.
- * Memory is allocated inline (stack or struct field).
+ * Grammar:
+ *   array_type := '[' '_' ',' type ']'      -- slice
+ *               | '[' '*' ',' type ']'      -- dynamic
+ *               | '[' INT_LITERAL ',' type ']' -- fixed
+ *
+ * Examples:
+ *   [_, int]   → kind = Slice,   element = Int
+ *   [*, float] → kind = Dynamic, element = Float
+ *   [4, Vec2]  → kind = Fixed,   size = 4, element = Vec2
+ *
+ * @note For arrays with a free type variable (e.g., `impl [_, <T>]`), use
+ *       `GenericArrayTypeAST` instead.
+ *
+ * @field kind    The array kind (Slice, Dynamic, Fixed).
+ * @field size    Only valid when `kind == Fixed`; ignored otherwise (should be 0).
+ * @field element The element type (may itself be an array, function type, etc.).
  */
-struct FixedArrayTypeAST : TypeAST {
-    static constexpr ASTKind staticKind = ASTKind::FixedArrayType;
+struct ArrayTypeAST : TypeAST {
+    static constexpr ASTKind staticKind = ASTKind::ArrayType;
 
-    std::uint64_t size;    // Compile‑time constant from `INT_LITERAL`
-    TypePtr       element; // Element type (may itself be an array)
+    ArrayKind arrayKind;
+    uint64_t size; // valid only for Fixed
+    TypePtr element;
 
-    FixedArrayTypeAST(std::uint64_t sz, TypePtr elem)
-        : TypeAST(ASTKind::FixedArrayType), size(sz), element(std::move(elem)) {}
+    ArrayTypeAST(ArrayKind k, uint64_t sz, TypePtr elem)
+        : TypeAST(ASTKind::ArrayType), arrayKind(k), size(sz), element(std::move(elem)) {}
 
+    bool isFixed()   const { return arrayKind == ArrayKind::Fixed; }
+    bool isSlice()   const { return arrayKind == ArrayKind::Slice; }
+    bool isDynamic() const { return arrayKind == ArrayKind::Dynamic; }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SliceTypeAST – non‑owning view `[]T`.
+// GenericArrayTypeAST – array with a free type variable (valid only as impl target)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * @brief A non‑owning view into an existing array. Internally a fat pointer.
+ * @brief Represents an array type with a free type variable, e.g., `impl [_, <T>]`.
  *
- * @example
- *   [_, int]           → element = Int
- *   [_, Vec2]          → element = NamedTypeAST("Vec2")
- *   [_, [*, float] ]   → element = DynamicArrayTypeAST(element = Float)
+ * This node is only valid as the `impl_target` in an `impl` declaration. It
+ * declares a type variable (e.g., `T`) that is bound to the concrete element
+ * type of the array at the call site.
  *
- * Slice expressions (`nums[1..3]`) produce a `SliceTypeAST` as their resolved type.
- * The slice shares memory with the original array – writing through the slice
- * affects the original, but reassigning the slice variable does not.
+ * Grammar:
+ *   generic_array_type := '[' '_' ',' '<' IDENTIFIER '>' ']'      -- slice
+ *                       | '[' '*' ',' '<' IDENTIFIER '>' ']'      -- dynamic
+ *                       | '[' INT_LITERAL ',' '<' IDENTIFIER '>' ']' -- fixed
+ *
+ * Example:
+ *   impl [*, <T>] as a {
+ *       first () -> T = { return a[0] }
+ *   }
+ *
+ * The variable `T` is in scope inside the method bodies of this `impl` block.
+ * The semantic pass unifies `T` with the concrete element type of the array
+ * the method is called on (e.g., `[*, int]` → `T = int`).
+ *
+ * @note This node does **not** represent a concrete array type. For concrete
+ *       arrays (e.g., `impl [_, int]`), use `ArrayTypeAST`.
+ *
+ * @field kind          The kind of array: Slice, Dynamic, or Fixed.
+ * @field size          For fixed arrays, the compile‑time size; ignored for others.
+ * @field typeParamName The name of the free type variable (e.g., "T").
  */
-struct SliceTypeAST : TypeAST {
-    static constexpr ASTKind staticKind = ASTKind::SliceType;
+struct GenericArrayTypeAST : TypeAST {
+    static constexpr ASTKind staticKind = ASTKind::GenericArrayType;
 
-    TypePtr element; // Element type
+    ArrayKind arrayKind;
+    uint64_t size; // valid only for Fixed
+    InternedString typeParamName;
 
-    explicit SliceTypeAST(TypePtr elem)
-        : TypeAST(ASTKind::SliceType), element(std::move(elem)) {}
+    GenericArrayTypeAST(ArrayKind k, uint64_t sz, InternedString name)
+        : TypeAST(ASTKind::GenericArrayType),
+          arrayKind(k), size(sz), typeParamName(name) {}
 
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// DynamicArrayTypeAST – heap‑owned, growable array `[*]T`.
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * @brief A heap‑owned, growable array.
- *
- * @example
- *   [*, int]           → element = Int
- *   [*, Vec2]          → element = NamedTypeAST("Vec2")
- *   [*, [*, float] ]   → element = DynamicArrayTypeAST(element = Float)
- *
- * Semantic rules:
- *   - Mutating methods (`.push()`, `.pop()`, `.insert()`, `.remove()`, `.clear()`, `.reserve()`)
- *     are only valid when the variable is declared with `let`
- *   - Concatenation with `+` produces a new `[*]T`
- */
-struct DynamicArrayTypeAST : TypeAST {
-    static constexpr ASTKind staticKind = ASTKind::DynamicArrayType;
-
-    TypePtr element; // Element type
-
-    explicit DynamicArrayTypeAST(TypePtr elem)
-        : TypeAST(ASTKind::DynamicArrayType), element(std::move(elem)) {}
-
+    bool isFixed()   const { return arrayKind == ArrayKind::Fixed; }
+    bool isSlice()   const { return arrayKind == ArrayKind::Slice; }
+    bool isDynamic() const { return arrayKind == ArrayKind::Dynamic; }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -312,7 +336,6 @@ struct RefTypeAST : TypeAST {
 
     explicit RefTypeAST(TypePtr t)
         : TypeAST(ASTKind::RefType), inner(std::move(t)) {}
-
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -345,7 +368,7 @@ struct RefTypeAST : TypeAST {
  *   - `#ptrToRef(ptr) -> &T`   (cross to safe reference)
  *   - `#refToPtr(ref) -> *T`   (convert back to raw pointer)
  *   - `#ptrOffset(ptr, n) -> *T` (pointer arithmetic)
- *   - `#ptrDiff(p1, p2) -> int64` (distance in elements)
+ *   - `#ptrDiff(p1, p2) -> int64` (distance in pointers)
  *
  * **Valid contexts for `PtrTypeAST`:**
  *   - `@extern`-decorated declarations
@@ -359,7 +382,6 @@ struct PtrTypeAST : TypeAST {
 
     explicit PtrTypeAST(TypePtr t)
         : TypeAST(ASTKind::PtrType), inner(std::move(t)) {}
-
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

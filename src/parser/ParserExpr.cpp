@@ -376,7 +376,7 @@ ExprPtr Parser::parseInfixBinary(ExprPtr lhs, TokenType opTok, int prec, bool al
     };
 
     if (isComparisonOp(opTok) && isComparisonOp(ts_.peekType())) {
-        errorAt(DiagCode::E3014, "chained comparisons not allowed; use 'and' explicitly");
+        errorAt(DiagCode::E2002, "chained comparisons not allowed; use 'and' explicitly");
     }
 
     auto node = arena_.make<BinaryExprAST>();

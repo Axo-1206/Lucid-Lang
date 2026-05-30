@@ -23,17 +23,17 @@ enum class DiagCode : uint32_t {
     E2007,         ///< Duplicate clause.
     E2008,         ///< Expected expression.
     E2009,         ///< Malformed literal.
-    E2010,         ///< Unknown qualifier.
+    // E2010,         ///< Unknown qualifier.
     E2014,         ///< Visibility in local.
     E2015,         ///< Qualifier on anonymous function.
-    E2016,         ///< '?' on inline function type.
-    E2018,         ///< Missing '->' in from entry.
-    E2019,         ///< Missing '=' before body.
-    E2020,         ///< '!' only in pipeline step.
-    E2026,         ///< Chained comparison (use 'and').
+    // E2016,         ///< '?' on inline function type.
+    // E2018,         ///< Missing '->' in from entry.
+    // E2019,         ///< Missing '=' before body.
+    // E2020,         ///< '!' only in pipeline step.
+    // E2026,         ///< Chained comparison (use 'and').
     E2027,         ///< Attributes on multi-var decl.
-    E2028,         ///< Invalid type after '!'.
-    E2029,         ///< Nested '!'.
+    // E2028,         ///< Invalid type after '!'.
+    // E2029,         ///< Nested '!'.
 
     // ========== 3000–3999: Semantic (reserved for later) ==========
     // None currently used – add as needed.
@@ -47,9 +47,6 @@ enum class DiagCode : uint32_t {
     W3003,         ///< Nullable operation.
     W3004,         ///< Unreachable code.
     W3005,         ///< Default unreachable.
-    W3006,         ///< Discarded result.
-    W3007,         ///< Method on literal.
-    W3008,         ///< Primitive impl shadow.
 };
 
-static_assert(static_cast<uint32_t>(DiagCode::W3008) < 6000, "range check");
+static_assert(static_cast<uint32_t>(DiagCode::W3005) < 6000, "range check");

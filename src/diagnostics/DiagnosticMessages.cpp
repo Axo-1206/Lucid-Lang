@@ -36,9 +36,6 @@ std::string_view getMessage(DiagCode code) {
         case DiagCode::W3003: return "Operation on nullable type; value may be nil at runtime.";
         case DiagCode::W3004: return "Unreachable code after unconditional bind pattern.";
         case DiagCode::W3005: return "'default' arm unreachable (all cases covered).";
-        case DiagCode::W3006: return "Non‑void expression result discarded.";
-        case DiagCode::W3007: return "Method call on literal may be confusing; consider using a variable.";
-        case DiagCode::W3008: return "'impl' block for primitive type may shadow built‑in method.";
         default: return "Unknown diagnostic code.";
     }
 }

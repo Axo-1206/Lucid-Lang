@@ -1029,7 +1029,7 @@ ASTPtr<ReturnStmtAST> Parser::parseReturnStmt() {
     ts_.consume(TokenType::RETURN, "expected 'return'");
 
     if (parallelDepth_ > 0) {
-        error(loc, DiagCode::E3029, "'return' is not valid inside a 'parallel' body");
+        error(loc, DiagCode::E2006, "'return' is not valid inside a 'parallel' body");
     }
 
     auto node = arena_.make<ReturnStmtAST>();
@@ -1100,7 +1100,7 @@ ASTPtr<BreakStmtAST> Parser::parseBreakStmt() {
     ts_.consume(TokenType::BREAK, "expected 'break'");
 
     if (loopDepth_ == 0) {
-        error(loc, DiagCode::E3031, "'break' is only valid inside a loop body");
+        error(loc, DiagCode::E2006, "'break' is only valid inside a loop body");
     }
     if (parallelDepth_ > 0) {
         error(loc, DiagCode::E2006, "'break' is not valid inside a 'parallel' body");
@@ -1116,7 +1116,7 @@ ASTPtr<ContinueStmtAST> Parser::parseContinueStmt() {
     ts_.consume(TokenType::CONTINUE, "expected 'continue'");
 
     if (loopDepth_ == 0) {
-        error(loc, DiagCode::E3031, "'continue' is only valid inside a loop body");
+        error(loc, DiagCode::E2006, "'continue' is only valid inside a loop body");
     }
     if (parallelDepth_ > 0) {
         error(loc, DiagCode::E2006, "'continue' is not valid inside a 'parallel' body");
