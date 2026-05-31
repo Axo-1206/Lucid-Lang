@@ -53,14 +53,13 @@ add_executable(luc-comp
     src/registry/IntrinsicRegistry.cpp
     src/ast/support/StringPool.cpp
 
-    src/parser/top/PackageParser.cpp
-    src/parser/top/UseParser.cpp
-
     src/parser/generic/GenericArgParser.cpp
     src/parser/generic/GenericParamParser.cpp
     src/parser/common/ParserHelpers.cpp
     src/parser/common/ParserAttributes.cpp
 
+    src/parser/decl/topLevel/PackageParser.cpp
+    src/parser/decl/topLevel/UseParser.cpp
     src/parser/decl/TraitParser.cpp
     src/parser/decl/EnumParser.cpp
     src/parser/decl/FromParser.cpp
@@ -69,16 +68,12 @@ add_executable(luc-comp
     src/parser/decl/StructParser.cpp
     src/parser/decl/FuncParser.cpp
     src/parser/decl/VarParser.cpp
-
-    src/parser/type/TypeParser.cpp
     src/parser/type/PrimitiveParser.cpp
     src/parser/type/NamedParser.cpp
     src/parser/type/ArrayParser.cpp
     src/parser/type/RefParser.cpp
     src/parser/type/PtrParser.cpp
     src/parser/type/FuncTypeParser.cpp
-
-    src/parser/stmt/StmtParser.cpp
     src/parser/stmt/BlockParser.cpp
     src/parser/stmt/SwitchParser.cpp
     src/parser/stmt/LoopParser.cpp
@@ -105,6 +100,7 @@ add_executable(luc-comp
     src/parser/expr/match/PatternParser.cpp
     src/parser/expr/other/CallParser.cpp
     src/parser/expr/other/IndexParser.cpp
+    src/parser/Dispatcher.cpp
 
 
 

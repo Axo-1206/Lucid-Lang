@@ -7,18 +7,19 @@ The Luc parser is a recursive-descent parser with a Pratt (precedence-climbing) 
 ```
 src/parser/
 ├── Parser.hpp                          # Parser class, TokenStream, QualifierSet
-├── Parser.cpp                          # TokenStream, errors, parse(), declaration dispatch, Pratt core
+├── Parser.cpp                          # TokenStream, errors, parse(), precedence helpers
+├── Dispatcher.cpp                      # declaration, type, expression, and statement dispatch
 │
-├── common/                             # Shared list/param/qualifier helpers
-│   ├── ParserHelpers.cpp               # parseParamList, parseArgList, parseParamGroup, parseReturnList,
-│   │                                   # parseQualifiers, parseModulePath
+├── common/                             # Shared param/qualifier helpers
+│   ├── ParserHelpers.cpp               # parseParamList, parseArgList, parseParamGroup,
+│   │                                   # parseReturnList, parseQualifiers, parseModulePath
 │   └── ParserAttributes.cpp            # parseAttributes, parseAttribute, parseAttributeArgLiteral
 │
-├── top/                                # Program preamble
-│   ├── PackageParser.cpp               # parsePackageDecl
-│   └── UseParser.cpp                   # parseUseDecl
-│
 ├── decl/                               # Declarations
+│   ├── topLevel/                       # Program preamble
+│   │   ├── PackageParser.cpp           # parsePackageDecl
+│   │   └── UseParser.cpp               # parseUseDecl
+│   │
 │   ├── VarParser.cpp                   # parseVarDecl
 │   ├── FuncParser.cpp                  # parseFuncDecl
 │   ├── StructParser.cpp                # parseStructDecl, parseFieldDecl
@@ -28,8 +29,7 @@ src/parser/
 │   ├── FromParser.cpp                  # parseFromDecl (from entries parsed inline)
 │   └── TypeAliasParser.cpp             # parseTypeAliasDecl
 │
-├── type/                               # Type annotations
-│   ├── TypeParser.cpp                  # parseType, parseTypeWithNullable, parseBaseType
+├── type/                               # Concrete type parsers
 │   ├── PrimitiveParser.cpp             # parsePrimitiveType
 │   ├── NamedParser.cpp                 # parseNamedType
 │   ├── ArrayParser.cpp                 # parseArrayType, parseArrayTarget
@@ -71,13 +71,12 @@ src/parser/
 │                                       # parseFieldPattern
 │
 ├── stmt/                               # Statements
-│   ├── StmtParser.cpp                  # parseStmt (entry)
 │   ├── BlockParser.cpp                 # parseBlock
 │   ├── FlowControlParser.cpp           # parseIfStmt, parseReturnStmt,
 │   │                                   # parseBreakStmt, parseContinueStmt
 │   ├── SwitchParser.cpp                # parseSwitchStmt, parseSwitchCase
 │   ├── LoopParser.cpp                  # parseForStmt, parseWhileStmt, parseDoWhileStmt
-│   └── LocalDeclParser.cpp             # parseMultiVarDecl, parseMultiAssignStmt
+│   └── LocalDeclParser.cpp             # parseLvalue, parseMultiVarDecl, parseMultiAssignStmt
 │
 └── lookahead/                          # Non-consuming disambiguation
     └── ParserLookahead.cpp             # looksLikeType, looksLikeFuncDecl, looksLikeAnonFunc,
@@ -88,14 +87,16 @@ src/parser/
 
 ## Dispatch graph
 
-### Program
+All dispatch functions below live in `Dispatcher.cpp` unless noted (declarations, types, expressions, statements).
+
+### Program (`Parser.cpp`)
 
 ```
-parse
+parse                                          [Parser.cpp]
 ├── harvestDocComment                          (before each top-level decl)
 ├── parsePackageDecl                           (mandatory; error recovery if missing)
 └── loop until EOF
-    └── parseTopLevelDecl
+    └── parseTopLevelDecl                      [Dispatcher.cpp]
         └── parseDeclaration(TopLevel)
             ├── parseAttributes
             ├── parseVisibility                  (top-level only)
@@ -106,7 +107,7 @@ parse
 ### Declaration dispatch (`parseDeclaration`)
 
 ```
-parseDeclaration(ctx)
+parseDeclaration(ctx)                          [Dispatcher.cpp]
 ├── use      → parseUseDecl
 ├── struct   → parseStructDecl        → parseGenericParams?, parseFieldDecl*
 ├── enum     → parseEnumDecl          → parseEnumVariant*
@@ -125,26 +126,30 @@ Local declarations reuse `parseDeclaration(Local)` from `parseStmt` (wrapped in 
 ### Type dispatch
 
 ```
-parseType
-└── parseTypeWithNullable
-    ├── parseBaseType
-    │   ├── primitive keyword → parsePrimitiveType
-    │   ├── identifier        → parseNamedType        → parseGenericArgs?
-    │   ├── [                 → parseArrayType
-    │   ├── &                 → parseRefType          → parseType
-    │   ├── *                 → parsePtrType          → parseType
-    │   └── ( or ~            → parseFuncType           → parseQualifiers, parseParamGroup,
+parseType                                      [Dispatcher.cpp]
+└── parseTypeWithNullable                      [Dispatcher.cpp]
+    ├── parseBaseType                          [Dispatcher.cpp]
+    │   ├── primitive keyword → parsePrimitiveType   [type/PrimitiveParser.cpp]
+    │   ├── identifier        → parseNamedType       → parseGenericArgs?
+    │   │                                              [type/NamedParser.cpp]
+    │   ├── [                 → parseArrayType         [type/ArrayParser.cpp]
+    │   ├── &                 → parseRefType           → parseType
+    │   │                      [type/RefParser.cpp]
+    │   ├── *                 → parsePtrType           → parseType
+    │   │                      [type/PtrParser.cpp]
+    │   └── ( or ~            → parseFuncType          → parseQualifiers, parseParamGroup,
     │                                                    parseReturnList
+    │                         [type/FuncTypeParser.cpp]
     ├── ?                     → NullableTypeAST
     └── ! [type]              → ResultTypeAST
 ```
 
-`parseArrayTarget` (used by `parseImplDecl`) accepts concrete and generic array forms.
+`parseArrayTarget` (used by `parseImplDecl`, in `type/ArrayParser.cpp`) accepts concrete and generic array forms.
 
-### Statement dispatch
+### Statement dispatch (`parseStmt`)
 
 ```
-parseStmt
+parseStmt                                      [Dispatcher.cpp]
 ├── looksLikeMultiAssignStart → parseMultiAssignStmt     → parseLvalue*, parseExpr
 ├── let/const + comma pattern → parseMultiVarDecl        → parseVarDecl*
 ├── decl start                → parseDeclaration(Local)  → DeclStmtAST
@@ -159,7 +164,7 @@ parseStmt
 ├── continue                  → parseContinueStmt
 └── else                      → parseExpr                → ExprStmtAST
 
-parseBlock
+parseBlock                                     [stmt/BlockParser.cpp]
 └── loop: parseStmt*
 ```
 
@@ -168,7 +173,7 @@ Control-flow and function bodies call `parseBlock`, which loops on `parseStmt`.
 ### Expression dispatch (Pratt)
 
 ```
-parseExpr
+parseExpr                                      [Dispatcher.cpp]
 └── parsePrattExpr(minPrec)
     ├── parsePrefixExpr
     │   ├── unary (-, not, ~, &) → recurse parsePrefixExpr
@@ -179,7 +184,7 @@ parseExpr
     │   ├── [                   → parseIndexExpr             → parseExpr (slice uses ..)
     │   ├── .                   → FieldAccessExprAST
     │   └── ?.                  → NullableChainExprAST
-    └── infix loop (while prec > minPrec)
+    └── infix loop (while prec > minPrec)      [infixPrec in Parser.cpp]
         ├── assign ops          → parseInfixAssign           → parseLvalue, parsePrattExpr
         ├── is                  → parseInfixIs               → parseType
         ├── |>                  → parsePipelineExpr          → parsePipelineStep*
@@ -196,7 +201,7 @@ parseExpr
 ### Primary expression dispatch (`parsePrimaryExpr`)
 
 ```
-parsePrimaryExpr
+parsePrimaryExpr                               [Dispatcher.cpp]
 ├── match          → parseMatchExpr       → parseExpr, parseMatchArm*, parseDefaultArm
 ├── if             → parseIfExpr          → parseExpr, parseBlock | parseExpr
 ├── resolve        → parseResolveExpr     → parseOkArm, parseErrArm
@@ -217,8 +222,8 @@ parsePrimaryExpr
 ### Match arm / pattern dispatch
 
 ```
-parseMatchArm
-└── parsePattern
+parseMatchArm                                  [expr/match/MatchParser.cpp]
+└── parsePattern                               [expr/match/PatternParser.cpp]
     ├── _                → parseWildcardPattern
     ├── literal tokens   → parseLiteralOrRangePattern
     └── identifier
@@ -238,22 +243,20 @@ parseAttributes        → parseAttribute*        → parseAttributeArgLiteral*
 parseParamGroup        → parseParamList         → parseType
 parseReturnList        → parseType*
 parseGenericParams     → parseGenericParam*
-parseGenericArgs       → parseTypeList
-parseExprList          → parseExpr*
-parseTypeList          → parseType*
-parseStmtList          → parseStmt*
+parseGenericArgs       → parseType*             (inline loop, not parseTypeList)
 parseArgList           → parseExpr*
 parseQualifiers
 parseModulePath        (use declarations)
-parseLvalue            (multi-assign, infix assign)
-harvestDocComment      (top-level only)
-parseVisibility
-synchronize / synchronizeTo
+parseLvalue            (multi-assign, infix assign)   [stmt/LocalDeclParser.cpp]
+harvestDocComment      (top-level only)               [Parser.cpp]
+parseVisibility                                       [Parser.cpp]
+infixPrec / tokenToBinaryOp / tokenToAssignOp / isAssignOp   [Parser.cpp]
+synchronize / synchronizeTo                           [Parser.cpp]
 ```
 
 ### Lookahead (non-consuming)
 
-Used before committing to a parse path:
+Used before committing to a parse path (`lookahead/ParserLookahead.cpp`):
 
 | Function                    | Disambiguates                             |
 | --------------------------- | ----------------------------------------- |
