@@ -10,8 +10,7 @@ src/parser/
 ├── Parser.cpp                          # TokenStream, errors, parse(), declaration dispatch, Pratt core
 │
 ├── common/                             # Shared list/param/qualifier helpers
-│   ├── ParserHelpers.cpp               # parseExprList, parseTypeList, parseStmtList, parseParamList,
-│   │                                   # parseArgList, parseParamGroup, parseReturnList,
+│   ├── ParserHelpers.cpp               # parseParamList, parseArgList, parseParamGroup, parseReturnList,
 │   │                                   # parseQualifiers, parseModulePath
 │   └── ParserAttributes.cpp            # parseAttributes, parseAttribute, parseAttributeArgLiteral
 │
@@ -256,14 +255,14 @@ synchronize / synchronizeTo
 
 Used before committing to a parse path:
 
-| Function | Disambiguates |
-|---|---|
-| `looksLikeType` | type position vs expression |
-| `looksLikeFuncDecl` | `let`/`const` function vs variable |
-| `looksLikeAnonFunc` | grouped expr vs anon func / pipeline step |
-| `looksLikeStructLiteral` | `Ident {` struct literal |
-| `looksLikeBehaviorAccess` | `Ident : method` |
-| `looksLikeMultiAssignStart` | `a, b = …` reassignment |
-| `looksLikeStmtStart` | valid expression-statement start |
-| `looksLikeDeclStart` | declaration vs other statement |
-| `isPrimitiveTypeToken` | primitive type keyword check |
+| Function                    | Disambiguates                             |
+| --------------------------- | ----------------------------------------- |
+| `looksLikeType`             | type position vs expression               |
+| `looksLikeFuncDecl`         | `let`/`const` function vs variable        |
+| `looksLikeAnonFunc`         | grouped expr vs anon func / pipeline step |
+| `looksLikeStructLiteral`    | `Ident {` struct literal                  |
+| `looksLikeBehaviorAccess`   | `Ident : method`                          |
+| `looksLikeMultiAssignStart` | `a, b = …` reassignment                   |
+| `looksLikeStmtStart`        | valid expression-statement start          |
+| `looksLikeDeclStart`        | declaration vs other statement            |
+| `isPrimitiveTypeToken`      | primitive type keyword check              |

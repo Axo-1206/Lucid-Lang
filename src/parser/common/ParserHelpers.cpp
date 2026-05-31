@@ -1,46 +1,64 @@
+/**
+ * @file ParserHelpers.cpp
+ * @brief Shared helper functions for the Luc parser.
+ * 
+ * ============================================================================
+ * FILE OVERVIEW
+ * ============================================================================
+ * 
+ * This file implements utility functions that are shared across multiple parser
+ * modules. These helpers are used by declaration, statement, expression, and
+ * type parsers.
+ * 
+ * ## Categories of Helpers
+ * 
+ *   1. Parameter Helpers  – parse parameter lists, groups, and argument lists
+ *   2. Return List Parser – parse return types after '->' (handles function types and multi-return)
+ *   3. Qualifiers         – parse `~async`, `~nullable`, `~parallel` qualifiers
+ *   4. Module Path        – parse dotted module paths for `use` declarations
+ * 
+ * ## Design Principles
+ * 
+ *   - **Temporary Collections**: Parameter list parsers return `std::vector<T>` (temporary).
+ *     The caller is responsible for converting to `ArenaSpan<T>` using `SpanBuilder`.
+ *   - **Error Recovery**: Uses saved position patterns and consecutive error counters
+ *     to prevent infinite loops on malformed input.
+ *   - **Null Safety**: Functions return empty collections on error, never nullptr.
+ * 
+ * @see Parser.cpp for core infrastructure
+ * @see LUC_GRAMMAR.md for grammar rules
+ */
+
 #include "parser/Parser.hpp"
 #include "ast/support/InternedString.hpp"
 #include "diagnostics/DiagnosticCodes.hpp"
 #include "debug/DebugUtils.hpp"
 
 // ============================================================================
-// List helpers (temporary vector builders)
+// 1. PARAMETER HELPERS
+// ============================================================================
+//
+// These functions handle function parameters and call arguments.
 // ============================================================================
 
-std::vector<ExprPtr> Parser::parseExprList(TokenType endType) {
-    std::vector<ExprPtr> list;
-    while (!ts_.check(endType) && !ts_.isAtEnd()) {
-        if (!list.empty() && !ts_.match(TokenType::COMMA))
-            break;
-        ExprPtr expr = parseExpr();
-        if (expr) list.push_back(std::move(expr));
-    }
-    ts_.consume(endType, "expected '" + LucDebug::tokenTypeToString(endType) + "'");
-    return list;
-}
-
-std::vector<TypePtr> Parser::parseTypeList(TokenType endType) {
-    std::vector<TypePtr> list;
-    while (!ts_.check(endType) && !ts_.isAtEnd()) {
-        if (!list.empty() && !ts_.match(TokenType::COMMA))
-            break;
-        TypePtr ty = parseType();
-        if (ty) list.push_back(std::move(ty));
-    }
-    ts_.consume(endType, "expected '" + LucDebug::tokenTypeToString(endType) + "'");
-    return list;
-}
-
-std::vector<StmtPtr> Parser::parseStmtList(TokenType endType) {
-    std::vector<StmtPtr> list;
-    while (!ts_.check(endType) && !ts_.isAtEnd()) {
-        StmtPtr stmt = parseStmt();
-        if (stmt) list.push_back(std::move(stmt));
-    }
-    ts_.consume(endType, "expected '" + LucDebug::tokenTypeToString(endType) + "'");
-    return list;
-}
-
+/**
+ * @brief Parses a parameter list inside parentheses.
+ *
+ * Grammar: param { ',' param } [ ',' variadic_param ]
+ *
+ * Example: `a int, b string, args ...any`
+ *
+ * @return std::vector<ParamPtr> – temporary collection, empty on error.
+ *
+ * ─── Important Rules ────────────────────────────────────────────────────────
+ * - Variadic parameter (`...type`) is allowed only as the last parameter.
+ * - Parameter names are required (no anonymous parameters).
+ * - Type annotations are required (no type inference).
+ *
+ * ─── Loop Safety ───────────────────────────────────────────────────────────
+ * - Uses saved position pattern to prevent infinite loops.
+ * - If parsing fails, consumes one token and continues.
+ */
 std::vector<ParamPtr> Parser::parseParamList() {
     std::vector<ParamPtr> list;
     while (!ts_.check(TokenType::RPAREN) && !ts_.isAtEnd()) {
@@ -59,6 +77,48 @@ std::vector<ParamPtr> Parser::parseParamList() {
     return list;
 }
 
+/**
+ * @brief Parses a single parameter group: '(' param_list ')'.
+ *
+ * Called for each parameter group in curried functions and function types.
+ *
+ * Grammar: '(' [ param_list ] ')'
+ *
+ * @return ParamGroup (std::vector<ParamPtr>) – temporary collection.
+ *
+ * ─── Token Consumption ─────────────────────────────────────────────────────
+ * On entry: positioned at '('
+ * On exit:  positioned after the closing ')'
+ *
+ * ─── Edge Cases ────────────────────────────────────────────────────────────
+ * - Empty parentheses `()` are allowed (zero parameters).
+ * - Recovers from missing ')' by consuming until RPAREN or EOF.
+ */
+ParamGroup Parser::parseParamGroup() {
+    SourceLocation loc = ts_.currentLoc();
+    ts_.consume(TokenType::LPAREN, "expected '(' to start parameter group");
+    
+    std::vector<ParamPtr> params = parseParamList();
+    
+    ts_.consume(TokenType::RPAREN, "expected ')' to close parameter group");
+    
+    return params;
+}
+
+/**
+ * @brief Parses a comma‑separated argument list inside parentheses.
+ *
+ * Used for function calls, method calls, and intrinsic calls.
+ *
+ * Grammar: expr { ',' expr }
+ *
+ * @return ArenaSpan<ExprPtr> – arena-allocated span of arguments.
+ *
+ * ─── Consecutive Error Protection ──────────────────────────────────────────
+ * Uses a counter (max 5) to prevent infinite loops when the parser repeatedly
+ * fails to parse an expression. After 5 consecutive errors, it skips to the
+ * closing ')'.
+ */
 ArenaSpan<ExprPtr> Parser::parseArgList() {
     std::vector<ExprPtr> args;
     int consecutiveErrors = 0;
@@ -102,93 +162,54 @@ ArenaSpan<ExprPtr> Parser::parseArgList() {
 }
 
 // ============================================================================
-// Parameter Group Parsing
+// 2. RETURN LIST PARSER
 // ============================================================================
-// 
-// parseParamGroup() is called for each `( param_list )` in function types and
-// function declarations.
-// 
-// Grammar: '(' [ param_list ] ')'
-// 
-// The function is implemented in Parser.cpp but documented here for context.
-// 
-// ─── Token Consumption ─────────────────────────────────────────────────────
-// On entry: positioned at '('
-// On exit:  positioned after the closing ')'
 //
-// ─── Return Value ─────────────────────────────────────────────────────────
-//   Returns ParamGroup (std::vector<ParamPtr>) – temporary collection
-//   Caller is responsible for converting to ArenaSpan using SpanBuilder
+// parseReturnList() handles the return types after '->' in function signatures.
+// It must distinguish between:
+//   - Single return type:   `-> int`
+//   - Multi‑return:         `-> (int, string)`
+//   - Function type:        `-> (x int) -> int` (returns a function)
+//   - Empty parentheses:    `-> () -> int` (function with zero parameters)
 //
-// ─── Loop Safety ──────────────────────────────────────────────────────────
-// Uses parseParamList() which has its own loop safety.
-//
-// ─── Error Recovery ───────────────────────────────────────────────────────
-// - Missing '(': consume() reports error
-// - Missing ')': consume() reports error
-//
+// The detection uses lookahead to avoid consuming tokens permanently.
 // ============================================================================
-
-ParamGroup Parser::parseParamGroup() {
-    SourceLocation loc = ts_.currentLoc();
-    ts_.consume(TokenType::LPAREN, "expected '(' to start parameter group");
-    
-    std::vector<ParamPtr> params = parseParamList();
-    
-    ts_.consume(TokenType::RPAREN, "expected ')' to close parameter group");
-    
-    return params;
-}
 
 /**
  * @brief Parses the return list after '->' in function signatures.
- * 
+ *
  * Grammar:
  *   return_list := '(' [ return_type { ',' return_type } ] ')'   -- multiple
  *                | return_type                                    -- single
- * 
+ *
  * where `return_type` can itself be a function type with its own '->'.
- * 
- * Examples:
- *   -> int                                    -- single return
- *   -> (int, string)                          -- multi-return
- *   -> (x int) -> int                         -- function type
- *   -> (Result, int)                          -- multi-return with named type
- *   -> ((x int) -> int, string)               -- multi-return with function type
- *   -> () -> int                              -- zero-parameter function type
- * 
- * ─── Detection Strategy ─────────────────────────────────────────────────────
+ *
+ * @par Examples
+ *   -> int                         // single return
+ *   -> (int, string)               // multi-return
+ *   -> (x int) -> int              // function type (returns a function)
+ *   -> () -> int                   // zero-parameter function type
+ *   -> ((x int) -> int, string)    // multi-return with function type
+ *
+ * @par Detection Strategy
  *   To distinguish between multi-return `(Type, Type)` and function type
  *   `(param Type) -> Ret`, the parser:
- * 
  *   1. Looks inside the parentheses
  *   2. If it sees `IDENTIFIER` followed by a type start (parameter pattern)
  *      and later finds `->` after a complete parameter group, it parses as
  *      a function type
  *   3. Otherwise, it parses as a multi-return list
- * 
- *   This correctly handles ambiguous cases like `(Result, int)` where `Result`
- *   is a named type, not a parameter name.
- * 
- * ─── Function Type Detection Details ───────────────────────────────────────
- *   - Empty parentheses `()` are treated as a function type (zero parameters)
- *   - Single identifier without following type is NOT a function type
- *   - The presence of `->` after parameter group(s) confirms function type
- *   - Uses temporary parsing to test hypothesis without consuming tokens
- * 
+ *
+ * @return ArenaSpan<TypePtr> – span of return types (empty = void function)
+ *
  * ─── Token Consumption ─────────────────────────────────────────────────────
- * On entry: positioned at the token after '->' (may be '(' or type start)
+ * On entry: positioned at the token after '->'
  * On exit:  positioned after the return list
- * 
- * ─── Return Value ─────────────────────────────────────────────────────────
- *   Returns ArenaSpan<TypePtr> – empty span indicates void function.
- * 
+ *
  * ─── Error Recovery ───────────────────────────────────────────────────────
  * - Missing return type: reports error, returns empty span
  * - Missing ')' in multi-return: consume() reports error
  * - Invalid type in list: skips type, continues
- * 
- * @return ArenaSpan<TypePtr> – span of return types (empty = void)
  */
 ArenaSpan<TypePtr> Parser::parseReturnList() {
     // Helper to check if a token type can start a type
@@ -215,49 +236,32 @@ ArenaSpan<TypePtr> Parser::parseReturnList() {
     }
 
     // We have '(' - need to determine if it's a function type or multi-return
-    // Strategy: Peek inside and look for '->' after a complete parameter group
-    
     size_t savedPos = ts_.getPos();
     const auto& tokens = ts_.getTokens();
     size_t tokenCount = ts_.getTokenCount();
     
-    // Try to parse as a function type first
-    // We'll attempt to parse a complete function type and see if it succeeds
-    // without consuming tokens permanently
-    
-    // Create a temporary copy of the parser position
+    // Try to parse as a function type first (non‑consuming lookahead)
     size_t testPos = savedPos;
-    
-    // Skip comments at the start
     testPos = ts_.skipCommentsFrom(testPos);
     
-    // Check if the '(' is followed by something that looks like a parameter group
     if (testPos < tokenCount && tokens[testPos].type == TokenType::LPAREN) {
-        ++testPos; // consume '('
+        ++testPos;
         testPos = ts_.skipCommentsFrom(testPos);
         
-        // If we see a closing ')' immediately, this could be empty function type
         bool isEmptyParen = (testPos < tokenCount && tokens[testPos].type == TokenType::RPAREN);
         
         if (!isEmptyParen) {
-            // Need to see if this looks like a parameter: IDENTIFIER followed by type start
-            // vs just a type name (multi-return case)
-            
-            // Check if the next token is an identifier AND the token after that starts a type
+            // Check if this looks like a parameter: IDENTIFIER followed by type start
             bool looksLikeParameter = false;
             if (testPos < tokenCount && tokens[testPos].type == TokenType::IDENTIFIER) {
                 size_t afterIdent = testPos + 1;
                 afterIdent = ts_.skipCommentsFrom(afterIdent);
                 if (afterIdent < tokenCount && isTypeStart(tokens[afterIdent].type)) {
-                    // This looks like a parameter: "name Type"
                     looksLikeParameter = true;
                 }
             }
             
             if (looksLikeParameter) {
-                // Try to parse a complete function type
-                // We need to see if there's a '->' after the parameter group(s)
-                
                 // Simulate parsing up to the closing ')' of the first parameter group
                 int parenDepth = 1;
                 size_t paramEnd = testPos;
@@ -270,11 +274,10 @@ ArenaSpan<TypePtr> Parser::parseReturnList() {
                     ++paramEnd;
                 }
                 
-                // Check after the closing ')' for '->' or more parameter groups
+                // Check after the closing ')' for '->'
                 size_t afterParams = paramEnd;
                 afterParams = ts_.skipCommentsFrom(afterParams);
                 
-                // Look for additional parameter groups or '->'
                 bool hasArrow = false;
                 while (afterParams < tokenCount) {
                     afterParams = ts_.skipCommentsFrom(afterParams);
@@ -285,7 +288,6 @@ ArenaSpan<TypePtr> Parser::parseReturnList() {
                         break;
                     }
                     if (tt == TokenType::LPAREN) {
-                        // More parameter groups - continue scanning
                         ++afterParams;
                         continue;
                     }
@@ -293,7 +295,7 @@ ArenaSpan<TypePtr> Parser::parseReturnList() {
                 }
                 
                 if (hasArrow) {
-                    // This is definitely a function type
+                    // This is a function type
                     TypePtr funcType = parseFuncType();
                     if (!funcType || funcType->isa<UnknownTypeAST>()) {
                         errorAt(DiagCode::E2005, "expected function type");
@@ -305,9 +307,8 @@ ArenaSpan<TypePtr> Parser::parseReturnList() {
                 }
             }
         } else {
-            // Empty parentheses - this is a function type with zero parameters
-            // Check if there's a '->' after the closing ')'
-            size_t afterParen = testPos + 1; // skip the ')'
+            // Empty parentheses - check if this is a function type with zero parameters
+            size_t afterParen = testPos + 1;
             afterParen = ts_.skipCommentsFrom(afterParen);
             if (afterParen < tokenCount && tokens[afterParen].type == TokenType::ARROW) {
                 TypePtr funcType = parseFuncType();
@@ -322,8 +323,7 @@ ArenaSpan<TypePtr> Parser::parseReturnList() {
         }
     }
     
-    // Not a function type (or detection inconclusive) → parse as multi-return list
-    // Restore position and parse as multi-return
+    // Not a function type → parse as multi-return list
     ts_.setPos(savedPos);
     ts_.advance(); // consume '('
     
@@ -331,10 +331,8 @@ ArenaSpan<TypePtr> Parser::parseReturnList() {
     
     while (!ts_.check(TokenType::RPAREN) && !ts_.isAtEnd()) {
         if (!types.empty() && !ts_.match(TokenType::COMMA)) {
-            // Missing comma - try to continue
             if (ts_.check(TokenType::RPAREN)) break;
             errorAt(DiagCode::E2001, "expected ',' between return types");
-            // Skip to next comma or closing parenthesis
             while (!ts_.isAtEnd() && !ts_.check(TokenType::COMMA) && !ts_.check(TokenType::RPAREN)) {
                 ts_.advance();
             }
@@ -347,7 +345,6 @@ ArenaSpan<TypePtr> Parser::parseReturnList() {
         TypePtr t = parseType();
         if (ts_.getPos() == typeSavedPos) {
             errorAt(DiagCode::E2005, "expected return type");
-            // Skip to closing parenthesis
             while (!ts_.isAtEnd() && !ts_.check(TokenType::RPAREN)) {
                 ts_.advance();
             }
@@ -366,9 +363,32 @@ ArenaSpan<TypePtr> Parser::parseReturnList() {
 }
 
 // ============================================================================
-// Qualifiers
+// 3. QUALIFIERS
+// ============================================================================
+//
+// parseQualifiers() parses a sequence of `~name` qualifiers (e.g., `~async`,
+// `~nullable`, `~parallel`) and returns a bitmask and raw names.
+//
+// The bitmask is pre‑computed during parsing for O(1) checks during later
+// phases. Raw names are preserved for accurate error messages.
 // ============================================================================
 
+/**
+ * @brief Parses a sequence of qualifiers (`~async`, `~nullable`, `~parallel`).
+ *
+ * Grammar: { '~' IDENTIFIER }
+ *
+ * Example: `~async ~nullable`
+ *
+ * @return QualifierSet containing:
+ *         - raw: vector of InternedString (original names, for errors)
+ *         - bitmask: OR of QualifierBits flags
+ *
+ * ─── Error Handling ─────────────────────────────────────────────────────────
+ * - Missing identifier after '~': reports error, stops parsing qualifiers.
+ * - Unknown qualifier names: the registry lookup returns nullptr; the current
+ *   code is commented out but would report an error if enabled.
+ */
 QualifierSet Parser::parseQualifiers() {
     QualifierSet qs;
     auto& registry = QualifierRegistry::instance();
@@ -384,6 +404,7 @@ QualifierSet Parser::parseQualifiers() {
         InternedString name = pool_.intern(ts_.advance().value);
         
         const QualifierInfo* info = registry.lookup(name);
+        // Uncomment for strict qualifier validation:
         // if (!info) {
         //     error(loc, DiagCode::E2010, 
         //           "unknown qualifier '~" + std::string(pool_.lookup(name)) + 
@@ -398,9 +419,25 @@ QualifierSet Parser::parseQualifiers() {
 }
 
 // ============================================================================
-// Module path parsing
+// 4. MODULE PATH PARSING
+// ============================================================================
+//
+// parseModulePath() parses a dotted identifier sequence for `use` declarations.
 // ============================================================================
 
+/**
+ * @brief Parses a dotted module path for `use` declarations.
+ *
+ * Grammar: IDENTIFIER { '.' IDENTIFIER }
+ *
+ * Example: `std.io`, `renderer.core.math`
+ *
+ * @return std::vector<InternedString> – path segments in order.
+ *
+ * ─── Error Recovery ─────────────────────────────────────────────────────────
+ * - Missing identifier after '.': reports error, stops building path.
+ * - Returns empty vector on no initial identifier.
+ */
 std::vector<InternedString> Parser::parseModulePath() {
     std::vector<InternedString> path;
     if (!ts_.check(TokenType::IDENTIFIER)) return path;
