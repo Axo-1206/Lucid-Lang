@@ -36,7 +36,6 @@ add_executable(luc-comp
     src/diagnostics/DiagnosticMessages.cpp
     src/parser/Parser.cpp
     src/parser/ParserExpr.cpp
-    src/parser/ParserDecl.cpp
     src/parser/lookahead/ParserLookahead.cpp
     src/parser/ParserPattern.cpp
     src/semantic/SymbolTable.cpp
@@ -66,7 +65,6 @@ add_executable(luc-comp
     src/parser/literal/LiteralParser.cpp
     src/parser/trait/TraitParser.cpp
     src/parser/enum/EnumParser.cpp
-    src/parser/impl/ImplParser.cpp
     src/parser/type/TypeParser.cpp
     src/parser/type/PrimitiveParser.cpp
     src/parser/type/NamedParser.cpp
@@ -74,6 +72,12 @@ add_executable(luc-comp
     src/parser/type/RefParser.cpp
     src/parser/type/PtrParser.cpp
     src/parser/type/FuncTypeParser.cpp
+    src/parser/decl/FromParser.cpp
+    src/parser/decl/ImplParser.cpp
+    src/parser/decl/TypeAliasParser.cpp
+    src/parser/decl/StructParser.cpp
+    src/parser/decl/FuncParser.cpp
+    src/parser/decl/VarParser.cpp
     # src/codegen/CodeGen.cpp
     # src/codegen/CodeGenExpr.cpp
     # src/codegen/CodeGenDecl.cpp

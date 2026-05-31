@@ -17,8 +17,7 @@ src/parser/
 │   └── StructParser.cpp           # parseStructDecl, parseFieldDecl
 │
 ├── function/                      # Function declarations
-│   ├── FuncParser.cpp             # parseFuncDecl (entry point)
-│   └── FuncSignatureParser.cpp    # parseFuncSignature (shared logic)
+│   └── FuncParser.cpp             # parseFuncDecl (entry point)
 │
 ├── enum/                          # Enums
 │   └── EnumParser.cpp             # parseEnumDecl, parseEnumVariant
