@@ -378,13 +378,6 @@ private:
     ArenaSpan<ExprPtr> parseArgList();                           // until ')'
 
     // ========================================================================
-    // Specialize Helper
-    // ========================================================================
-
-    // For impl method declaration
-    ExprPtr parseFuncRef();
-
-    // ========================================================================
     // Declaration detection & dispatch
     // ========================================================================
     enum class DeclContext { TopLevel, Local };
@@ -428,9 +421,9 @@ private:
     TypePtr parsePrimitiveType();
     TypePtr parseNamedType();
     TypePtr parseArrayType();
-    TypePtr parseArrayTarget(); // parses both concrete and generic array types for impl declaration
+    TypePtr parseGenericArray();
     TypePtr parseRefType();
-    TypePtr parsePtrType();
+    TypePtr parsePtrType(); 
     TypePtr parseFuncType();
 
     // ========================================================================
@@ -454,6 +447,8 @@ private:
     TraitMethodPtr parseTraitMethod();
     TraitRefPtr parseTraitRef();
     MethodDeclPtr parseMethodDecl();
+    ExprPtr parseFuncRef(); // For impl method asignment
+    FromEntryPtr parseFromEntry();
 
     // ========================================================================
     // Expression parsing (Pratt parser)
@@ -556,5 +551,7 @@ private:
     bool looksLikeDeclStart() const;
     bool looksLikeMultiAssignStart() const;
     bool looksLikeBehaviorAccess() const;
+    bool looksLikeGenericArray() const;
+    bool looksLikeGenericTypeInstantiation() const;
     static bool isPrimitiveTypeToken(TokenType type);
 };

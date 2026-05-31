@@ -1,118 +1,93 @@
+/**
+ * @file ImplParser.cpp
+ * @brief Parses `impl` declarations and method implementations.
+ * 
+ * ============================================================================
+ * FILE OVERVIEW
+ * ============================================================================
+ * 
+ * This file implements parsing of `impl` blocks, which bind method
+ * implementations to types (primitives, structs, enums, arrays, or type aliases).
+ * 
+ * ## Impl Declaration Grammar (from LUC_GRAMMAR.md)
+ * 
+ *   impl_decl := [ visibility_mod ] 'impl' impl_target [ impl_generic_params ]
+ *                [ 'as' IDENTIFIER ] [ ':' trait_ref ] '{' method_decl* '}'
+ * 
+ *   impl_target := IDENTIFIER                    -- named type
+ *                | primitive_type                -- primitive
+ *                | array_type                    -- concrete array
+ *                | generic_array_type            -- generic array (with <T>)
+ * 
+ *   generic_array_type := '[' '_' ',' '<' IDENTIFIER '>' ']'
+ *                       | '[' '*' ',' '<' IDENTIFIER '>' ']'
+ *                       | '[' INT_LITERAL ',' '<' IDENTIFIER '>' ']'
+ * 
+ * @see ParserDecl.cpp for declaration dispatch
+ * @see MethodDeclAST for method representation
+ */
+
 #include "parser/Parser.hpp"
 #include "ast/support/InternedString.hpp"
 #include "diagnostics/DiagnosticCodes.hpp"
 #include "debug/DebugUtils.hpp"
 
+// ============================================================================
+// 1. IMPL DECLARATION
+// ============================================================================
+
 /**
- * @brief Parses an impl block that binds methods to a type.
- * 
- * Grammar:
+ * @brief Parses an `impl` block that binds methods to a type.
+ *
+ * Grammar (from LUC_GRAMMAR.md):
  *   impl_decl := [ visibility_mod ] 'impl' impl_target [ impl_generic_params ]
  *                [ 'as' IDENTIFIER ] [ ':' trait_ref ] '{' method_decl* '}'
- * 
- *   impl_target     := type_name | primitive_type
- *   impl_generic_params := '<' impl_generic_param { ',' impl_generic_param } '>'
- *   trait_ref       := IDENTIFIER [ '<' type_args '>' ]
- * 
- * Examples:
+ *
+ * @par Examples
  *   impl Vec2 {
  *       length () -> float = { return #sqrt(self.x*self.x + self.y*self.y) }
  *   }
- * 
+ *
  *   impl Box<T> as b {
  *       get () -> T = { return b.value }
  *   }
- * 
+ *
  *   impl Circle as c : Drawable {
  *       draw () { c:render() }
  *   }
- * 
+ *
  *   impl int as i {
  *       isEven () -> bool = { return i % 2 == 0 }
  *   }
- * 
- *   impl string {
- *       length () -> int = { return #strlen(self) }
+ *
+ *   impl [_, int] as list {                     -- concrete array target
+ *       sum () -> int = { ... }
  *   }
- * 
+ *
+ *   impl [*, <T>] as a {                        -- generic array target
+ *       first () -> T = { return a[0] }
+ *   }
+ *
  * ─── Parsing Order ─────────────────────────────────────────────────────────
  *   1. 'impl' keyword
- *   2. Target type (primitive OR named type, may include generic arguments)
- *   3. Optional impl-level generic parameters (if target is generic struct)
+ *   2. Target type (primitive, named, or array)
+ *   3. Optional impl-level generic parameters (only for generic structs/aliases)
  *   4. Optional 'as' alias (replaces 'self' as receiver name)
  *   5. Optional ':' trait conformance
  *   6. '{' method_decl* '}'
- * 
- * ─── Important Notes ───────────────────────────────────────────────────────
- * 
- * **Target Type Support:**
- *   - Primitive types: int, float, string, bool, char, etc.
- *   - Named types: user-defined structs, enums, and type aliases
- *   - Array types: NOT allowed directly (requires type alias)
- *   - Function types: NOT allowed directly (requires type alias)
- * 
- * **Generic Parameters on Impl:**
- *   - Impl blocks MAY declare generic parameters ONLY when the target type
- *     is generic (a generic struct or generic type alias)
- *   - The number of generic parameters MUST match the target's arity
- *   - Parameter names are independent; they bind positionally
- *   - Example: `struct Box<T>` → `impl Box<T>` (arity 1)
- * 
- * **Receiver Alias (`as IDENTIFIER`):**
- *   - If omitted, the receiver is named `self` inside method bodies
- *   - If provided, the given identifier replaces `self` as the receiver name
- *   - The alias must appear AFTER the target type and its generics
- *   - Must appear BEFORE an optional trait conformance
- * 
- * **Trait Conformance (`: trait_ref`):**
- *   - Optional. When present, the impl block must implement every method
- *     declared in that trait
- *   - Extra methods (not in the trait) are allowed
- * 
- * **Visibility:**
- *   - `pub` makes all methods visible within the package
- *   - `export` makes all methods visible to external consumers
- *   - Individual methods cannot have separate visibility modifiers
- * 
- * **Primitive Impl Restrictions (Semantic Pass):**
- *   - Primitive types (int, float, string, etc.) cannot have generic parameters
- *   - User-defined methods cannot override built-in methods (E3020)
- * 
- * **Array/Function Type Impl:**
- *   - NOT allowed directly: `impl []int { ... }` is a parse error
- *   - Must use a type alias: `type IntList = []int; impl IntList { ... }`
- * 
+ *
  * ─── Token Consumption ─────────────────────────────────────────────────────
  * On entry: positioned at 'impl' keyword
  * On exit:  positioned after the closing '}' of the impl body
- * 
- * ─── Loop Safety ──────────────────────────────────────────────────────────
- * Uses saved position pattern when parsing methods. If parseMethodDecl()
- * makes no progress:
- *   - Consumes one token (advance)
- *   - Skips to next identifier or closing brace
- *   - Continues (does NOT push a method)
- * 
+ *
  * ─── Error Recovery ───────────────────────────────────────────────────────
  * - Missing target type: reports error, returns nullptr
- * - Invalid target type (neither primitive nor identifier): reports error,
- *   returns nullptr
+ * - Invalid target type: reports error, returns nullptr
  * - Missing '{' after header: reports error, returns nullptr
  * - Invalid method: skips method, continues parsing remaining methods
- * - Unrecognised token inside impl: reports error, calls synchronize()
  * - Missing '}': consume() reports error
- * 
- * ─── Semantic Pass Validation (Not Parser Responsibility) ──────────────────
- * - Generic arity matches target type (E3019)
- * - Primitive impl has no generic parameters (E3020)
- * - Trait methods all implemented (E3024)
- * - Method signatures match trait (E3025)
- * - No duplicate method names across merged impl blocks (E3026)
- * - `self` type resolved correctly
- * 
+ *
  * @param vis Visibility modifier (Private, Package, or Export)
- *        determined by caller from 'pub'/'export' keywords
- * 
  * @return ASTPtr<ImplDeclAST> – impl node on success, nullptr on error
  */
 ASTPtr<ImplDeclAST> Parser::parseImplDecl(Visibility vis) {
@@ -126,19 +101,40 @@ ASTPtr<ImplDeclAST> Parser::parseImplDecl(Visibility vis) {
     // Determine the target type
     TypePtr targetType;
 
+    // Case 1: Array target (concrete or generic)
     if (ts_.check(TokenType::LBRACKET)) {
-        // Array target (concrete or generic)
-        targetType = parseArrayTarget();
+        // Check if this is a generic array target (contains '<' after kind)
+        size_t savedPos = ts_.getPos();
+        
+        // Peek to see if this is a generic array
+        bool isGenericArray = false;
+        if (looksLikeGenericArray()) {
+            isGenericArray = true;
+        }
+        
+        if (isGenericArray) {
+            targetType = parseGenericArray();
+        } else {
+            targetType = parseArrayType();
+        }
+        
         if (!targetType || targetType->isa<UnknownTypeAST>()) {
             errorAt(DiagCode::E2005, "invalid array target in impl block");
             return nullptr;
         }
-    } else if (isPrimitiveTypeToken(ts_.peekType())) {
+    }
+    // Case 2: Primitive type
+    else if (isPrimitiveTypeToken(ts_.peekType())) {
         targetType = parsePrimitiveType();
-    } else if (ts_.check(TokenType::IDENTIFIER)) {
+    }
+    // Case 3: Named type (struct, enum, type alias)
+    else if (ts_.check(TokenType::IDENTIFIER)) {
         targetType = parseNamedType();
-    } else {
-        errorAt(DiagCode::E2003, "expected target type after 'impl' (primitive, identifier, or '[')");
+    }
+    // Case 4: Error
+    else {
+        errorAt(DiagCode::E2003, 
+                "expected target type after 'impl' (primitive, identifier, or '[')");
         return nullptr;
     }
 
@@ -208,31 +204,54 @@ ASTPtr<ImplDeclAST> Parser::parseImplDecl(Visibility vis) {
     return node;
 }
 
+// ============================================================================
+// 2. METHOD DECLARATION
+// ============================================================================
+
 /**
- * @brief Parses a method implementation inside an impl block.
- * 
- * Grammar: IDENTIFIER [ `~async` | `~nullable` | `~parallel` ]*
- *          param_group+ [ `->` return_list ] `=` body
- * 
- * Example: `length () -> float = { return #sqrt(x*x + y*y) }`
- * 
- * ─── Token Consumption ─────────────────────────────────────────────────────
- * On entry: positioned at method name
- * On exit:  positioned after the body (or after signature if no body)
- * 
- * ─── Body Parsing ─────────────────────────────────────────────────────────
- * Same as function bodies (block, verbose anon-func, or expression)
- * 
- * ─── Important Notes ───────────────────────────────────────────────────────
- *   - No visibility modifiers (impl block controls visibility)
- *   - Receiver is `self` (or alias from impl's `as` clause)
- *   - `~nullable` marks the method binding as nullable
- * 
- * ─── Error Recovery ───────────────────────────────────────────────────────
- * - Missing method name: returns nullptr
- * - Missing '(' after name/qualifiers: reports error, returns nullptr
- * - Missing '=' before body: reports error, returns nullptr
- * - Missing body after '=': reports error, returns nullptr
+ * @brief Parses a method implementation inside an `impl` block.
+ *
+ * Grammar (from LUC_GRAMMAR.md):
+ *   method_decl := IDENTIFIER [ '<' generic_params '>' ] [ qualifier_list ] 
+ *                  param_group+ [ '->' return_list ] '=' func_body           -- inline body
+ *                | IDENTIFIER '=' func_ref                                   -- plain assignment
+ *                | IDENTIFIER '=' func_ref '(' receiver_arg ')' '!'          -- injection assignment
+ *
+ *   func_ref := IDENTIFIER
+ *             | IDENTIFIER '.' IDENTIFIER
+ *             | func_ref generic_args
+ *
+ * @par Examples
+ *   // Inline body with generic parameters
+ *   map<U> (f (T) -> U) -> Box<U> = { ... }
+ *
+ *   // Plain assignment with generic instantiation
+ *   toStr = utils.toStr<int>
+ *
+ *   // Injection assignment with generic instantiation
+ *   map = transform<T, U>(self)!
+ *
+ *   // Inline body without generics
+ *   length () -> float = { return #sqrt(self.x*self.x + self.y*self.y) }
+ *
+ * ─── The Three Forms ──────────────────────────────────────────────────────
+ *
+ * 1. **Inline Body** – Full signature with optional generic parameters,
+ *    qualifiers, parameter groups, return types, and a block/expression body.
+ *
+ * 2. **Plain Assignment** – Method name, `=`, and a function reference.
+ *    No qualifiers, no parameter groups, no return type. The function reference
+ *    may include generic instantiation (e.g., `utils.toStr<int>`).
+ *
+ * 3. **Injection Assignment** – Same as plain assignment, but with `(receiver_arg)!`
+ *    appended. The function reference may include generic instantiation.
+ *
+ * ─── Detection ─────────────────────────────────────────────────────────────
+ *   The parser peeks ahead after the method name to see if the next non‑comment
+ *   token is `=`. If yes, it treats the declaration as an assignment form;
+ *   otherwise, it falls back to the inline body form.
+ *
+ * @return MethodDeclPtr – parsed method node, or nullptr on error
  */
 MethodDeclPtr Parser::parseMethodDecl() {
     SourceLocation loc = ts_.currentLoc();
@@ -244,22 +263,56 @@ MethodDeclPtr Parser::parseMethodDecl() {
     }
     InternedString name = pool_.intern(ts_.advance().value);
     
-    // ---------- 2. Peek to see if we have an assignment form ----------
-    // Save position to restore if we later find it's not an assignment form
+    // ---------- 2. Check for generic parameters on the method ----------
+    // Save position before parsing generic params (we may need to restore for assignment form)
+    size_t beforeGenericParams = ts_.getPos();
+    ArenaSpan<GenericParamPtr> methodGenericParams;
+    bool hasGenericParams = false;
+    
+    if (ts_.check(TokenType::LESS)) {
+        // Try to parse generic parameters
+        // For assignment forms, there should NOT be generic parameters after the name
+        size_t savedPos = ts_.getPos();
+        ArenaSpan<GenericParamPtr> tempParams = parseGenericParams();
+        
+        // After parsing, check if the next token is '(' or '~' (inline body) or '=' (assignment)
+        size_t afterParams = ts_.getPos();
+        if (ts_.check(TokenType::ASSIGN)) {
+            // This is an assignment form with bogus generic parameters - error
+            errorAt(DiagCode::E2001, 
+                    "assignment form method cannot have generic parameters; remove '<...>'");
+            // Restore and continue as assignment form
+            ts_.setPos(savedPos);
+        } else {
+            // Valid inline body with generic parameters
+            methodGenericParams = tempParams;
+            hasGenericParams = true;
+        }
+    }
+    
+    // ---------- 3. Peek to see if we have an assignment form ----------
     size_t savedPos = ts_.getPos();
     bool isAssignment = false;
     
     // Skip comments and look for '=' without consuming any tokens yet
     size_t peekPos = ts_.skipCommentsFrom(ts_.getPos());
-    if (peekPos < ts_.getTokenCount() && ts_.getTokenAt(peekPos).type == TokenType::ASSIGN) {
+    if (peekPos < ts_.getTokenCount() && 
+        ts_.getTokenAt(peekPos).type == TokenType::ASSIGN) {
         isAssignment = true;
     }
     
-    // ---------- 3. Assignment form (plain or injection) ----------
+    // ---------- 4. Assignment form (plain or injection) ----------
     if (isAssignment) {
-        ts_.advance(); // Consume the '=' token.
+        // If we parsed generic parameters but it's actually an assignment form,
+        // restore to before they were parsed
+        if (hasGenericParams) {
+            ts_.setPos(beforeGenericParams);
+        }
         
-        // Parse the function reference
+        // Consume the '=' token
+        ts_.advance();
+        
+        // Parse the function reference (may include generic instantiation)
         ExprPtr funcRef = parseFuncRef();
         if (!funcRef || funcRef->isa<UnknownExprAST>()) {
             errorAt(DiagCode::E2008, "expected function reference after '='");
@@ -291,19 +344,25 @@ MethodDeclPtr Parser::parseMethodDecl() {
         method->assignmentRef = std::move(funcRef);
         method->receiverArg = receiverArg;
         method->isInjection = isInjection;
+        // methodGenericParams remains empty for assignment form
         
         ts_.match(TokenType::SEMICOLON);
         return method;
     }
     
-    // ---------- 4. Inline body form ----------
-    // At this point we are not in assignment mode, so we must parse a full signature.
-    // Restore position to after the method name (savedPos) to start parsing qualifiers etc.
-    ts_.setPos(savedPos);
+    // ---------- 5. Inline body form ----------
+    // Restore position to after the method name (or after generic params if we parsed them)
+    if (hasGenericParams) {
+        // Position is already after generic params from earlier parsing
+        // No need to restore
+    } else {
+        ts_.setPos(savedPos);
+    }
     
     auto method = arena_.make<MethodDeclAST>();
     method->loc = loc;
     method->name = name;
+    method->methodGenericParams = methodGenericParams;
     
     // Create a FuncTypeAST to hold signature and qualifiers
     auto funcType = arena_.make<FuncTypeAST>();
@@ -320,9 +379,10 @@ MethodDeclPtr Parser::parseMethodDecl() {
         }
         InternedString q = pool_.intern(ts_.advance().value);
         rawQuals.push_back(q);
-        if (pool_.lookup(q) == "async") qualMask |= QualifierBits::Async;
-        else if (pool_.lookup(q) == "nullable") qualMask |= QualifierBits::Nullable;
-        else if (pool_.lookup(q) == "parallel") qualMask |= QualifierBits::Parallel;
+        std::string_view qstr = pool_.lookup(q);
+        if (qstr == "async") qualMask |= QualifierBits::Async;
+        else if (qstr == "nullable") qualMask |= QualifierBits::Nullable;
+        else if (qstr == "parallel") qualMask |= QualifierBits::Parallel;
     }
     auto qBuilder = arena_.makeBuilder<InternedString>();
     for (auto& q : rawQuals) qBuilder.push_back(std::move(q));
@@ -337,7 +397,7 @@ MethodDeclPtr Parser::parseMethodDecl() {
         return nullptr;
     }
     while (ts_.check(TokenType::LPAREN)) {
-        std::vector<ParamPtr> group = parseParamGroup();
+        ParamGroup group = parseParamGroup();
         groupSizes.push_back(group.size());
         for (auto& p : group) {
             allParams.push_back(std::move(p));
@@ -366,19 +426,6 @@ MethodDeclPtr Parser::parseMethodDecl() {
     ts_.advance();
 
     if (ts_.check(TokenType::LBRACE)) {
-        method->body = parseBlock();
-    } else if (ts_.check(TokenType::LPAREN)) {
-        // Verbose anonymous function body: (params) -> ret { ... }
-        // This is already handled by parseBlock()? Actually parseBlock() only parses '{...}'.
-        // For anonymous function, we need to parse the entire anonymous function expression.
-        // But in method body, the grammar allows either a block or an expression that could be an anonymous function.
-        // Instead, we can parse an expression; if it's an anonymous function, we wrap it in a return statement.
-        // The current code already handles expression body by creating a ReturnStmt and block.
-        // Let's keep that logic.
-        if (!ts_.check(TokenType::LBRACE)) {
-            errorAt(DiagCode::E2001, "expected '{' to start method body");
-            return nullptr;
-        }
         method->body = parseBlock();
     } else {
         // Expression body
@@ -410,85 +457,4 @@ MethodDeclPtr Parser::parseMethodDecl() {
 
     ts_.match(TokenType::SEMICOLON);
     return method;
-}
-
-/**
- * @brief Parses a function reference for use in method assignments (`plain` or `injection`).
- *
- * Grammar:
- *   func_ref := IDENTIFIER
- *             | IDENTIFIER '.' IDENTIFIER
- *             | func_ref generic_args
- *
- * Examples:
- *   utils.getVersion                       -- dotted path
- *   transform<int, string>                 -- generic instantiation
- *   std.map<U>                             -- dotted + generic
- *
- * ─── Parsing Steps ──────────────────────────────────────────────────────────────────
- *   1. Parse the first identifier (required).
- *   2. While the next token is `.` and the token after that is `IDENTIFIER`,
- *      consume `.` and the identifier, building a chain of `FieldAccessExprAST`.
- *   3. If the next token is `<`, parse a generic argument list (`parseGenericArgs()`)
- *      and wrap the current expression in a `CallExprAST` with those generic arguments.
- *      The `CallExprAST` has no call arguments (`args` empty) and `isArgPack = false`.
- *
- * ─── Return Value ──────────────────────────────────────────────────────────────────
- *   Returns an `ExprPtr` that represents the resolved function reference. This can be:
- *   - An `IdentifierExprAST` for a simple name.
- *   - A `FieldAccessExprAST` for a dotted path.
- *   - A `CallExprAST` wrapping either of the above when generic arguments are supplied.
- *
- * ─── Token Consumption ──────────────────────────────────────────────────────────────
- *   Consumes all tokens belonging to the function reference, including the optional
- *   generic argument list.
- *
- * ─── Error Recovery ────────────────────────────────────────────────────────────────
- *   - Missing identifier after `.`: reports error, stops building path.
- *   - Malformed generic arguments: `parseGenericArgs()` reports error and returns
- *     an empty span (the `CallExprAST` is still created with empty args).
- *   - On unrecoverable error, returns `UnknownExprAST`.
- *
- * @return ExprPtr – expression representing the function reference, never nullptr.
- */
-ExprPtr Parser::parseFuncRef() {
-    SourceLocation loc = ts_.currentLoc();
-    
-    // Parse the base identifier
-    if (!ts_.check(TokenType::IDENTIFIER)) {
-        errorAt(DiagCode::E2003, "expected function name in method assignment");
-        return arena_.make<UnknownExprAST>();
-    }
-    std::string name = ts_.advance().value;
-    ExprPtr expr = arena_.make<IdentifierExprAST>(pool_.intern(name));
-    expr->loc = loc;
-    
-    // Parse optional dotted path segments
-    while (ts_.check(TokenType::DOT)) {
-        ts_.advance();
-        if (!ts_.check(TokenType::IDENTIFIER)) {
-            errorAt(DiagCode::E2003, "expected identifier after '.'");
-            break;
-        }
-        std::string field = ts_.advance().value;
-        auto node = arena_.make<FieldAccessExprAST>();
-        node->loc = loc;
-        node->object = std::move(expr);
-        node->field = pool_.intern(field);
-        expr = std::move(node);
-    }
-    
-    // Parse optional generic arguments (e.g., <int>)
-    if (ts_.check(TokenType::LESS)) {
-        ArenaSpan<TypePtr> genericArgs = parseGenericArgs(); // consumes '<' ... '>'
-        auto callNode = arena_.make<CallExprAST>();
-        callNode->loc = loc;
-        callNode->callee = std::move(expr);
-        callNode->genericArgs = genericArgs;
-        callNode->isArgPack = false;
-        callNode->isAsyncCall = false;
-        expr = std::move(callNode);
-    }
-    
-    return expr;
 }

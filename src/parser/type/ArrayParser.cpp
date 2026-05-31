@@ -1,45 +1,69 @@
+/**
+ * @file ArrayParser.cpp
+ * @brief Parses concrete and generic array types.
+ * 
+ * ============================================================================
+ * FILE OVERVIEW
+ * ============================================================================
+ * 
+ * This file implements array type parsing for the Luc language.
+ * 
+ * ## Array Kinds
+ * 
+ * | Kind     | Concrete Syntax | Generic Syntax (with type variable) |
+ * |----------|-----------------|--------------------------------------|
+ * | Slice    | `[_, T]`        | `[_, <T>]`                           |
+ * | Dynamic  | `[*, T]`        | `[*, <T>]`                           |
+ * | Fixed    | `[N, T]`        | `[N, <T>]`                           |
+ * 
+ * ## Two Entry Points
+ * 
+ *   1. parseArrayType()    – concrete arrays only (no type variables)
+ *                            Called from parseBaseType()
+ * 
+ *   2. parseGenericArray() – generic arrays with type variables
+ *                            Called from parseImplDecl(), parseFromDecl(),
+ *                            and parseTypeAliasDecl()
+ * 
+ * @see ArrayTypeAST for concrete array representation
+ * @see GenericArrayTypeAST for generic array representation
+ */
+
 #include "parser/Parser.hpp"
 #include "ast/support/InternedString.hpp"
 #include "diagnostics/DiagnosticCodes.hpp"
 #include "debug/DebugUtils.hpp"
 
 // ============================================================================
-// Array Type
+// 1. CONCRETE ARRAY TYPE
 // ============================================================================
-// 
-// parseArrayType() parses fixed, slice, and dynamic array types.
-// 
+//
+// parseArrayType() parses concrete array types (no type variables).
+// It is called from parseBaseType() for normal type annotations.
+//
 // Grammar:
-//   array_type := '[' '_' ',' type ']'         -- slice:   [_, T]
-//               | '[' '*' ',' type ']'         -- dynamic: [*, T]
+//   array_type := '[' '_' ',' type ']'      -- slice:   [_, T]
+//               | '[' '*' ',' type ']'      -- dynamic: [*, T]
 //               | '[' INT_LITERAL ',' type ']' -- fixed:   [N, T]
-// 
+//
+// This function does NOT parse generic arrays like `[_, <T>]`.
+//
 // Examples:
 //   [_, int]   → ArrayTypeAST { kind=Slice,   element=Int }
 //   [*, float] → ArrayTypeAST { kind=Dynamic, element=Float }
 //   [4, Vec2]  → ArrayTypeAST { kind=Fixed,   size=4, element=Vec2 }
-//   [4, [4, float]] → nested: fixed array of fixed arrays
-// 
-// Note: This function parses ONLY concrete array types. For generic arrays
-//       with a free type variable (e.g., `[_, <T>]`), use parseArrayTarget()
-//       which is called from parseImplDecl.
-// 
+//
 // ─── Token Consumption ─────────────────────────────────────────────────────
 // On entry: positioned at '['
 // On exit:  positioned after the element type
-// 
-// ─── Multidimensional Arrays ──────────────────────────────────────────────
-//   Handled naturally because the element type is parsed via parseType(),
-//   which recursively calls parseArrayType() if the element starts with '['.
-// 
-// ─── Loop Safety ──────────────────────────────────────────────────────────
-//   - Uses bracket depth tracking when skipping to matching ']' on error
-// 
+//
 // ─── Error Recovery ───────────────────────────────────────────────────────
-//   - Missing closing ']' after '*' or size: reports error
+//   - Missing closing ']': reports error
 //   - Invalid size literal: reports error, size set to 0
 //   - Missing element type: reports error, returns UnknownTypeAST
-//   - Unrecognised content inside brackets: skips to matching ']'
+//   - Unrecognised content: skips to matching ']'
+//
+// @return TypePtr – ArrayTypeAST on success, UnknownTypeAST on error
 // ============================================================================
 
 TypePtr Parser::parseArrayType() {
@@ -115,22 +139,48 @@ TypePtr Parser::parseArrayType() {
     return arena_.make<UnknownTypeAST>();
 }
 
-/**
- * @brief Parses an array target for an `impl` block.
- *
- * This function handles both concrete arrays (e.g., `[_, int]`) and generic
- * arrays with a free type variable (e.g., `[_, <T>]`).
- *
- * Grammar:
- *   array_target := '[' ( '_' | '*' | INT_LITERAL ) ',' ( type | '<' IDENTIFIER '>' ) ']'
- *
- * Note: The generic form `<IDENTIFIER>` is only allowed inside an `impl` target
- * (or equivalently inside a type alias). For normal type annotations, only the
- * concrete type form is allowed.
- *
- * @return TypePtr – one of ArrayTypeAST (concrete) or GenericArrayTypeAST
- */
-TypePtr Parser::parseArrayTarget() {
+// ============================================================================
+// 2. GENERIC ARRAY TYPE (with free type variable)
+// ============================================================================
+//
+// parseGenericArray() parses an array type with a free type variable,
+// e.g., `[_, <T>]`, `[*, <T>]`, or `[N, <T>]`.
+//
+// This form declares a type variable (e.g., `T`) that can be used in
+// method signatures or conversion entries. It is ONLY valid in:
+//   - `impl` targets:   `impl [_, <T>] { ... }`
+//   - `from` targets:   `from [_, <T>] { ... }`
+//   - Type alias RHS:   `type List<T> = [_, T]`
+//
+// Grammar:
+//   generic_array := '[' ( '_' | '*' | INT_LITERAL ) ',' '<' IDENTIFIER '>' ']'
+//
+// Examples:
+//   [_, <T>]   → GenericArrayTypeAST { kind=Slice,   typeParamName="T" }
+//   [*, <T>]   → GenericArrayTypeAST { kind=Dynamic, typeParamName="T" }
+//   [4, <K>]   → GenericArrayTypeAST { kind=Fixed,   size=4, typeParamName="K" }
+//
+// ─── Token Consumption ─────────────────────────────────────────────────────
+// On entry: positioned at '['
+// On exit:  positioned after the closing ']'
+//
+// ─── Important ────────────────────────────────────────────────────────────
+//   - The type variable name is stored in GenericArrayTypeAST::typeParamName
+//   - The semantic pass will introduce this variable into the scope of the
+//     impl, from, or type alias block
+//   - The variable can then be used as a plain identifier in method signatures
+//
+// ─── Error Recovery ───────────────────────────────────────────────────────
+//   - Invalid array kind: reports error, skips to matching ']'
+//   - Missing '<' before type variable: reports error
+//   - Missing type variable name: reports error
+//   - Missing '>' after type variable: consume() reports error
+//   - Missing closing ']': consume() reports error
+//
+// @return TypePtr – GenericArrayTypeAST on success, UnknownTypeAST on error
+// ============================================================================
+
+TypePtr Parser::parseGenericArray() {
     SourceLocation loc = ts_.currentLoc();
     ts_.consume(TokenType::LBRACKET, "expected '['");
 
@@ -156,7 +206,7 @@ TypePtr Parser::parseArrayTarget() {
             fixedSize = 0;
         }
     } else {
-        errorAt(DiagCode::E2001, "expected '_', '*', or integer literal in array target");
+        errorAt(DiagCode::E2001, "expected '_', '*', or integer literal in generic array");
         // Recovery: skip to matching ']'
         int depth = 1;
         while (!ts_.isAtEnd() && depth > 0) {
@@ -169,41 +219,22 @@ TypePtr Parser::parseArrayTarget() {
 
     ts_.consume(TokenType::COMMA, "expected ',' after array kind");
 
-    // Parse element type (concrete or generic variable)
-    TypePtr elemType;
-    bool isGeneric = false;
-    InternedString typeParamName;
+    // Parse the type variable: '<' IDENTIFIER '>'
+    ts_.consume(TokenType::LESS, "expected '<' before type variable in generic array");
 
-    if (ts_.check(TokenType::LESS)) {
-        // Generic array target: '<' IDENTIFIER '>'
-        ts_.advance(); // consume '<'
-        if (!ts_.check(TokenType::IDENTIFIER)) {
-            errorAt(DiagCode::E2003, "expected type variable name after '<'");
-        } else {
-            typeParamName = pool_.intern(ts_.advance().value);
-            isGeneric = true;
-        }
+    if (!ts_.check(TokenType::IDENTIFIER)) {
+        errorAt(DiagCode::E2003, "expected type variable name after '<'");
+        // Still try to recover
         ts_.consume(TokenType::GREATER, "expected '>' after type variable");
-    } else {
-        // Concrete element type
-        elemType = parseType();
-        if (!elemType || elemType->isa<UnknownTypeAST>()) {
-            errorAt(DiagCode::E2005, "expected element type for array");
-            elemType = arena_.make<UnknownTypeAST>();
-        }
+        ts_.consume(TokenType::RBRACKET, "expected ']' to close generic array");
+        return arena_.make<UnknownTypeAST>();
     }
 
-    ts_.consume(TokenType::RBRACKET, "expected ']' to close array target");
+    InternedString typeParamName = pool_.intern(ts_.advance().value);
+    ts_.consume(TokenType::GREATER, "expected '>' after type variable");
+    ts_.consume(TokenType::RBRACKET, "expected ']' to close generic array");
 
-    if (isGeneric) {
-        // Create generic array node
-        auto node = arena_.make<GenericArrayTypeAST>(arrayKind, fixedSize, typeParamName);
-        node->loc = loc;
-        return node;
-    } else {
-        // Create concrete array node
-        auto node = arena_.make<ArrayTypeAST>(arrayKind, fixedSize, std::move(elemType));
-        node->loc = loc;
-        return node;
-    }
+    auto node = arena_.make<GenericArrayTypeAST>(arrayKind, fixedSize, typeParamName);
+    node->loc = loc;
+    return node;
 }

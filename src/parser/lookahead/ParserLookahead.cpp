@@ -47,7 +47,9 @@
  * @see Parser.hpp for the declaration of these helpers
  */
 
-#include "Parser.hpp"
+#include "parser/Parser.hpp"
+#include "ast/support/InternedString.hpp"
+#include "diagnostics/DiagnosticCodes.hpp"
 #include "debug/DebugUtils.hpp"
 
 // ============================================================================
@@ -683,4 +685,83 @@ bool Parser::isPrimitiveTypeToken(TokenType type) {
         default:
             return false;
     }
+}
+
+/**
+ * @brief Checks whether the current position looks like a generic array target.
+ *
+ * Used by parseImplDecl() to distinguish between:
+ *   - Concrete array: `[_, int]`
+ *   - Generic array:  `[_, <T>]`
+ *
+ * Detection pattern:
+ *   - Current token is '['
+ *   - After parsing the array kind (`_`, `*`, or integer) and comma,
+ *     the next non‑comment token is '<'
+ *
+ * @return true if the next token after array kind and comma is '<'
+ *
+ * @note This function is non‑consuming – it does NOT modify the token stream.
+ */
+bool Parser::looksLikeGenericArray() const {
+    const auto& tokens = ts_.getTokens();
+    size_t tokenCount = ts_.getTokenCount();
+    size_t i = ts_.getPos();
+
+    i = ts_.skipCommentsFrom(i);
+    if (i >= tokenCount || tokens[i].type != TokenType::LBRACKET) {
+        return false;
+    }
+    ++i; // skip '['
+
+    i = ts_.skipCommentsFrom(i);
+    if (i >= tokenCount) return false;
+
+    // Check array kind (_, *, or integer)
+    if (tokens[i].type == TokenType::WILDCARD ||
+        tokens[i].type == TokenType::MUL ||
+        tokens[i].type == TokenType::INT_LITERAL) {
+        ++i;
+    } else {
+        return false;
+    }
+
+    i = ts_.skipCommentsFrom(i);
+    if (i >= tokenCount || tokens[i].type != TokenType::COMMA) {
+        return false;
+    }
+    ++i; // skip ','
+
+    i = ts_.skipCommentsFrom(i);
+    if (i >= tokenCount) return false;
+
+    // If the next token is '<', this is a generic array
+    return tokens[i].type == TokenType::LESS;
+}
+
+/**
+ * @brief Checks whether the current position looks like a generic type
+ *        instantiation (e.g., `Wrapper<T>`).
+ *
+ * Detection pattern:
+ *   - Current token is IDENTIFIER
+ *   - The next non‑comment token is '<'
+ *
+ * @return true if the next token after identifier is '<'
+ */
+bool Parser::looksLikeGenericTypeInstantiation() const {
+    const auto& tokens = ts_.getTokens();
+    size_t tokenCount = ts_.getTokenCount();
+    size_t i = ts_.getPos();
+
+    i = ts_.skipCommentsFrom(i);
+    if (i >= tokenCount || tokens[i].type != TokenType::IDENTIFIER) {
+        return false;
+    }
+    ++i;
+
+    i = ts_.skipCommentsFrom(i);
+    if (i >= tokenCount) return false;
+
+    return tokens[i].type == TokenType::LESS;
 }

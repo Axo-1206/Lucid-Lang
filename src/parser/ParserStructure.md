@@ -144,7 +144,7 @@ parseType                                      [Dispatcher.cpp]
     └── ! [type]              → ResultTypeAST
 ```
 
-`parseArrayTarget` (used by `parseImplDecl`, in `type/ArrayParser.cpp`) accepts concrete and generic array forms.
+`parseGenericArray` (used by `parseImplDecl`, in `type/ArrayParser.cpp`) accepts generic array forms.
 
 ### Statement dispatch (`parseStmt`)
 

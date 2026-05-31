@@ -422,6 +422,9 @@ struct MethodDeclAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::MethodDecl;
 
     InternedString name;
+
+    // Generic parameters for the method itself (e.g., map<U>)
+    ArenaSpan<GenericParamPtr> methodGenericParams;
     
     // Inline body form
     ASTPtr<FuncTypeAST> funcType;   // signature + qualifiers

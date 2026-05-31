@@ -451,3 +451,88 @@ std::vector<InternedString> Parser::parseModulePath() {
     }
     return path;
 }
+
+// ============================================================================
+// 5. FUNCTION REFERENCE (for assignment forms)
+// ============================================================================
+
+/**
+ * @brief Parses a function reference for use in method assignments.
+ *
+ * Grammar:
+ *   func_ref := IDENTIFIER
+ *             | IDENTIFIER '.' IDENTIFIER
+ *             | func_ref generic_args
+ *
+ * Examples:
+ *   utils.getVersion                       -- dotted path
+ *   transform<int, string>                 -- generic instantiation
+ *   std.map<U>                             -- dotted + generic
+ *
+ * ─── Parsing Steps ─────────────────────────────────────────────────────────
+ *   1. Parse the first identifier (required).
+ *   2. While the next token is `.` and the token after that is `IDENTIFIER`,
+ *      consume `.` and the identifier, building a chain of `FieldAccessExprAST`.
+ *   3. If the next token is `<`, parse a generic argument list and wrap the
+ *      current expression in a `CallExprAST` with those generic arguments.
+ *
+ * @return ExprPtr – expression representing the function reference
+ */
+ExprPtr Parser::parseFuncRef() {
+    SourceLocation loc = ts_.currentLoc();
+    
+    // Parse a name (identifier or dotted path)
+    if (!ts_.check(TokenType::IDENTIFIER)) {
+        errorAt(DiagCode::E2003, "expected function name in function reference");
+        return arena_.make<UnknownExprAST>();
+    }
+    std::string name = ts_.advance().value;
+    ExprPtr expr = arena_.make<IdentifierExprAST>(pool_.intern(name));
+    expr->loc = loc;
+    
+    // Parse dotted path segments
+    while (ts_.check(TokenType::DOT)) {
+        ts_.advance();
+        if (!ts_.check(TokenType::IDENTIFIER)) {
+            errorAt(DiagCode::E2003, "expected identifier after '.'");
+            break;
+        }
+        std::string field = ts_.advance().value;
+        auto node = arena_.make<FieldAccessExprAST>();
+        node->loc = loc;
+        node->object = std::move(expr);
+        node->field = pool_.intern(field);
+        expr = std::move(node);
+    }
+    
+    // Optional behavior access
+    if (ts_.check(TokenType::COLON)) {
+        ts_.advance();
+        if (!ts_.check(TokenType::IDENTIFIER)) {
+            errorAt(DiagCode::E2003, "expected method name after ':'");
+            return expr;
+        }
+        std::string method = ts_.advance().value;
+        auto behavior = arena_.make<BehaviorAccessExprAST>();
+        behavior->loc = loc;
+        // typeName will be resolved later; for now store the base name
+        // (The semantic pass will resolve the actual type of the receiver.)
+        behavior->typeName = pool_.intern(name);
+        behavior->method = pool_.intern(method);
+        behavior->isBehaviorMember = true;
+        expr = std::move(behavior);
+    }
+    
+    // After parsing the base name and optional dotted path / behavior access,
+    // check for generic arguments.
+    if (ts_.check(TokenType::LESS)) {
+        ArenaSpan<TypePtr> typeArgs = parseGenericArgs(); // consumes '<' ... '>'
+        auto refNode = arena_.make<CallableRefExprAST>();
+        refNode->loc = loc;
+        refNode->entity = std::move(expr);
+        refNode->typeArgs = typeArgs;
+        expr = std::move(refNode);
+    }
+    
+    return expr;
+}

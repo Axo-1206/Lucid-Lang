@@ -547,6 +547,19 @@ void dumpCallExpr(std::string& out, const CallExprAST* node, const StringPool* p
     for (const auto& arg : node->args) dumpNode(out, arg.get(), pool, indentLevel + 1);
 }
 
+void dumpCallableRefExpr(std::string& out, const CallableRefExprAST* node, const StringPool* pool, int indentLevel) {
+    printNodeHeader(out, indentLevel, *node, "CallableRefExprAST");
+    if (node->entity) dumpNode(out, node->entity.get(), pool, indentLevel + 1);
+    if (!node->typeArgs.empty()) {
+        out += getIndent(indentLevel + 1) + "typeArgs: ";
+        for (size_t i = 0; i < node->typeArgs.size(); ++i) {
+            if (i > 0) out += ", ";
+            out += formatType(node->typeArgs[i].get(), pool);
+        }
+        out += "\n";
+    }
+}
+
 void dumpIndexExpr(std::string& out, const IndexExprAST* node, const StringPool* pool, int indentLevel) {
     std::string header = "IndexExprAST";
     header += (node->kind == IndexKind::Slice) ? " (slice)" : " (element)";
@@ -910,6 +923,7 @@ void dumpNode(std::string& out, const BaseAST* node, const StringPool* pool, int
         case ASTKind::BinaryExpr:          dumpBinaryExpr(out, static_cast<const BinaryExprAST*>(node), pool, indentLevel); break;
         case ASTKind::UnaryExpr:           dumpUnaryExpr(out, static_cast<const UnaryExprAST*>(node), pool, indentLevel); break;
         case ASTKind::CallExpr:            dumpCallExpr(out, static_cast<const CallExprAST*>(node), pool, indentLevel); break;
+        case ASTKind::CallableRefExpr:     dumpCallableRefExpr(out, static_cast<const CallableRefExprAST*>(node), pool, indentLevel); break;
         case ASTKind::IndexExpr:           dumpIndexExpr(out, static_cast<const IndexExprAST*>(node), pool, indentLevel); break;
         case ASTKind::FieldAccessExpr:     dumpFieldAccessExpr(out, static_cast<const FieldAccessExprAST*>(node), pool, indentLevel); break;
         case ASTKind::BehaviorAccessExpr:  dumpBehaviorAccessExpr(out, static_cast<const BehaviorAccessExprAST*>(node), pool, indentLevel); break;

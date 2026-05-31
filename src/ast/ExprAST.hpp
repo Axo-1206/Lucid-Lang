@@ -170,6 +170,53 @@ enum class ComposeOperandKind {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Callable Reference
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @brief Reference to a callable entity (function, method, or function-valued field)
+ *        with optional generic arguments.
+ *
+ * Grammar:
+ *   callable_ref := IDENTIFIER
+ *                 | IDENTIFIER '.' IDENTIFIER
+ *                 | IDENTIFIER ':' IDENTIFIER
+ *                 | callable_ref '<' type-list '>'
+ *
+ * Examples:
+ *   identity<int>               – generic function reference
+ *   math.utils.toString         – module path (no generics)
+ *   list:map<U>                 – generic method reference
+ *   getVersion                  – plain function reference
+ *
+ * This node is used wherever the grammar expects a `func_ref`:
+ *   - Method assignments in `impl` blocks
+ *   - Path entries in `from` blocks
+ *   - Generic function steps in pipelines (`|>`)
+ *   - Generic operands in composition (`+>`)
+ *
+ * The `entity` must be one of:
+ *   - IdentifierExprAST   – a plain function name
+ *   - FieldAccessExprAST  – a dotted module or namespace path
+ *   - BehaviorAccessExprAST – a method reference (`Type:method` or `value:method`)
+ *
+ * If generic arguments are present, they are stored in `typeArgs`. Otherwise,
+ * `typeArgs` is empty. The semantic pass resolves the entity and checks that
+ * the number and kinds of type arguments match the declaration.
+ *
+ * @field entity   The base callable reference (identifier, field access, or behavior access)
+ * @field typeArgs Optional concrete type arguments (empty if none)
+ */
+struct CallableRefExprAST : ExprAST {
+    static constexpr ASTKind staticKind = ASTKind::CallableRefExpr;
+
+    ExprPtr entity;                 // The base callable reference
+    ArenaSpan<TypePtr> typeArgs;    // Generic type arguments (if any)
+
+    CallableRefExprAST() : ExprAST(ASTKind::CallableRefExpr) {}
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // LITERAL NODES
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -296,15 +343,15 @@ struct IdentifierExprAST : ExprAST {
 };
 
 /**
- * @brief Accesses a data member (struct field) via the '.' operator.
+ * @brief Accesses a data member (struct field, enum variant, or module path) via '.' operator.
  *
  * @example
- *   v.x             → object = identifier("v"), field = "x"
- *   player.health   → object = identifier("player"), field = "health"
- *   Direction.North → object = identifier("Direction"), field = "North" (enum variant)
+ *   v.x                     → object = identifier("v"), field = "x"
+ *   Direction.North         → object = identifier("Direction"), field = "North"
+ *   math.utils.toString     → object = identifier("math"), field = "utils" (then nested)
  *
- * The '.' operator always means data – a field declared inside a struct body,
- * or an enum variant. Impl methods use ':' (BehaviorAccessExprAST).
+ * When the field refers to a generic function (e.g., `math.utils.toString<int>`),
+ * the FieldAccessExprAST becomes the `entity` of a GenericInstantiationExprAST.
  */
 struct FieldAccessExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::FieldAccessExpr;
@@ -316,26 +363,15 @@ struct FieldAccessExprAST : ExprAST {
 };
 
 /**
- * @brief Accesses a method on a value via the ':' operator.
+ * @brief Accesses a method on a type or value via the ':' operator.
  *
  * @example
- *   v:normalize() → typeName = type of v, method = "normalize"
- *   v:length()    → typeName = type of v, method = "length"
+ *   Vec2:normalize           → typeName = "Vec2", method = "normalize"
+ *   v:length                 → typeName = type of v, method = "length"
  *
- * The left‑hand side of ':' is an expression (a value), not a type name.
- * The semantic pass resolves the receiver's type, then looks up the method
- * in the impl blocks for that type.
- *
- * Behavior members are never reassignable – the semantic pass enforces this
- * via the isBehaviorMember flag.
- *
- * The result is a plain function reference – can be stored, passed as an
- * argument, or used as a pipeline step.
- *
- * ## Codegen Annotations (written by semantic Phase 3b)
- *
- * - concreteTypeArgs: concrete type args from the receiver's declared type
- * - resolvedMangledName: fully qualified LLVM function name for direct lookup
+ * When the method is generic (e.g., `list:map<U>`), the BehaviorAccessExprAST
+ * becomes the `entity` of a GenericInstantiationExprAST that supplies the
+ * type arguments.
  */
 struct BehaviorAccessExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::BehaviorAccessExpr;
