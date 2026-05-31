@@ -372,10 +372,13 @@ private:
 
     // ---- Direct storage builders (return ArenaSpan) ----
     ParamGroup parseParamGroup();                                // '(' param-list ')'
-    ArenaSpan<TypePtr> parseReturnList();                        // after '->'
-    ArenaSpan<GenericParamPtr> parseGenericParams();             // '<' generic-params '>'
-    ArenaSpan<TypePtr> parseGenericArgs();                       // '<' type-list '>'
     ArenaSpan<ExprPtr> parseArgList();                           // until ')'
+    ArenaSpan<TypePtr> parseReturnList();                        // after '->'
+   
+    GenericParamPtr parseGenericParam();
+    ArenaSpan<GenericParamPtr> parseGenericParams();             // '<' generic-params '>'
+    TypePtr parseGenericArg();
+    ArenaSpan<TypePtr> parseGenericArgs();                       // '<' type-list '>'
 
     // ========================================================================
     // Declaration detection & dispatch
@@ -441,7 +444,6 @@ private:
     ASTPtr<TypeAliasDeclAST> parseTypeAliasDecl(Visibility vis);
 
     // ---- Sub‑components ----
-    GenericParamPtr parseGenericParam();
     FieldDeclPtr parseFieldDecl();
     EnumVariantPtr parseEnumVariant();
     TraitMethodPtr parseTraitMethod();
