@@ -3,6 +3,43 @@
 #include "diagnostics/DiagnosticCodes.hpp"
 #include "debug/DebugUtils.hpp"
 
+// ============================================================================
+// Generic Arguments
+// ============================================================================
+// 
+// parseGenericArgs() parses a generic argument list for type instantiation.
+// 
+// Grammar: '<' type { ',' type } '>'
+// 
+// Examples:
+//   <int>
+//   <string, Vec2>
+//   <T, U, V>
+//   <>                    (empty – allowed)
+// 
+// ─── Preconditions ────────────────────────────────────────────────────────
+//   - The caller (parseNamedType or parsePostfixExpr) has already consumed
+//     the opening '<' token
+//   - This function starts immediately after the '<'
+// 
+// ─── Token Consumption ─────────────────────────────────────────────────────
+//   - If next token is '>', consumes it and returns empty span
+//   - Otherwise parses comma‑separated types until '>'
+//   - Consumes the closing '>'
+// 
+// ─── Loop Safety ──────────────────────────────────────────────────────────
+//   - Uses saved position pattern with parseType()
+//   - If parseType() makes no progress, consumes token and breaks
+// 
+// ─── Error Recovery ───────────────────────────────────────────────────────
+//   - Missing '>' at end: consume() reports error
+//   - Missing type after comma: reports error, breaks loop
+//   - Empty list '<' '>' is valid (returns empty span)
+// 
+// ─── Return Value ─────────────────────────────────────────────────────────
+//   Returns ArenaSpan<TypePtr> (temporary, caller converts to span)
+// ============================================================================
+
 ArenaSpan<TypePtr> Parser::parseGenericArgs() {
     if (!ts_.match(TokenType::LESS)) return ArenaSpan<TypePtr>();
     
