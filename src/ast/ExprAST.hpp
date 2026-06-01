@@ -872,11 +872,10 @@ struct TypeConvExprAST : ExprAST {
 
     TypePtr targetType; // the type to convert to
     ExprPtr expr;       // the value being converted
-    bool isUnsafe;      // true → *T(expr) bit reinterpret
 
     TypeConvExprAST(TypePtr t, ExprPtr e, bool unsafe = false)
         : ExprAST(ASTKind::TypeConvExpr),
-          targetType(std::move(t)), expr(std::move(e)), isUnsafe(unsafe) {}
+          targetType(std::move(t)), expr(std::move(e)) {}
 
 };
 

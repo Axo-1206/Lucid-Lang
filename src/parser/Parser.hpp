@@ -476,7 +476,7 @@ private:
     ExprPtr parseIntrinsicCallExpr();
     ExprPtr parseMatchExpr();
     ExprPtr parseIfExpr(bool allowStructLiteral = true);
-    ExprPtr parseTypeConvExpr(bool isUnsafe, TypePtr targetType);
+    ExprPtr parseTypeConvExpr(TypePtr targetType);
     ExprPtr parseRangeExpr(ExprPtr lo, bool allowStructLiteral = true);
 
     // ---- Call & index ----

@@ -12,14 +12,16 @@
  * 
  * ## Categories of Helpers
  * 
- *   1. Parameter Helpers  – parse parameter lists, groups, and argument lists
- *   2. Return List Parser – parse return types after '->' (handles function types and multi-return)
- *   3. Qualifiers         – parse `~async`, `~nullable`, `~parallel` qualifiers
- *   4. Module Path        – parse dotted module paths for `use` declarations
+ *   1. Parameter Helpers      – parse parameter lists, groups, and argument lists
+ *   2. Return List Parser     – parse return types after '->' (handles function types and multi-return)
+ *   3. Qualifiers             – parse `~async`, `~nullable`, `~parallel` qualifiers
+ *   4. Module Path            – parse dotted module paths for `use` declarations
+ *   5. Function Reference     – parse `func_ref` for assignments and references
+ *   6. Precedence Helpers     – map tokens to precedence levels and operator enums
  * 
  * ## Design Principles
  * 
- *   - **Temporary Collections**: Parameter list parsers return `std::vector<T>` (temporary).
+ *   - **Temporary Collections**: Parameter list parsers return `std::vector<T>`.
  *     The caller is responsible for converting to `ArenaSpan<T>` using `SpanBuilder`.
  *   - **Error Recovery**: Uses saved position patterns and consecutive error counters
  *     to prevent infinite loops on malformed input.
@@ -38,13 +40,17 @@
 // 1. PARAMETER HELPERS
 // ============================================================================
 //
-// These functions handle function parameters and call arguments.
+// These functions handle function parameters and call arguments. They are used
+// by function declarations, function types, and method definitions.
 // ============================================================================
 
 /**
  * @brief Parses a parameter list inside parentheses.
  *
- * Grammar: param { ',' param } [ ',' variadic_param ]
+ * Grammar:
+ *   param_list := param { ',' param } [ ',' variadic_param ]
+ *   param := IDENTIFIER type
+ *   variadic_param := IDENTIFIER '...' type
  *
  * Example: `a int, b string, args ...any`
  *
@@ -82,7 +88,8 @@ std::vector<ParamPtr> Parser::parseParamList() {
  *
  * Called for each parameter group in curried functions and function types.
  *
- * Grammar: '(' [ param_list ] ')'
+ * Grammar:
+ *   param_group := '(' [ param_list ] ')'
  *
  * @return ParamGroup (std::vector<ParamPtr>) – temporary collection.
  *
@@ -110,7 +117,8 @@ ParamGroup Parser::parseParamGroup() {
  *
  * Used for function calls, method calls, and intrinsic calls.
  *
- * Grammar: expr { ',' expr }
+ * Grammar:
+ *   arg_list := expr { ',' expr }
  *
  * @return ArenaSpan<ExprPtr> – arena-allocated span of arguments.
  *
@@ -166,13 +174,13 @@ ArenaSpan<ExprPtr> Parser::parseArgList() {
 // ============================================================================
 //
 // parseReturnList() handles the return types after '->' in function signatures.
-// It must distinguish between:
+// It must distinguish between three forms:
 //   - Single return type:   `-> int`
 //   - Multi‑return:         `-> (int, string)`
 //   - Function type:        `-> (x int) -> int` (returns a function)
 //   - Empty parentheses:    `-> () -> int` (function with zero parameters)
 //
-// The detection uses lookahead to avoid consuming tokens permanently.
+// The detection uses non‑consuming lookahead to avoid permanent token consumption.
 // ============================================================================
 
 /**
@@ -240,7 +248,7 @@ ArenaSpan<TypePtr> Parser::parseReturnList() {
     const auto& tokens = ts_.getTokens();
     size_t tokenCount = ts_.getTokenCount();
     
-    // Try to parse as a function type first (non‑consuming lookahead)
+    // Non‑consuming lookahead: try to parse as a function type
     size_t testPos = savedPos;
     testPos = ts_.skipCommentsFrom(testPos);
     
@@ -376,7 +384,8 @@ ArenaSpan<TypePtr> Parser::parseReturnList() {
 /**
  * @brief Parses a sequence of qualifiers (`~async`, `~nullable`, `~parallel`).
  *
- * Grammar: { '~' IDENTIFIER }
+ * Grammar:
+ *   qualifier_list := { '~' IDENTIFIER }
  *
  * Example: `~async ~nullable`
  *
@@ -428,7 +437,8 @@ QualifierSet Parser::parseQualifiers() {
 /**
  * @brief Parses a dotted module path for `use` declarations.
  *
- * Grammar: IDENTIFIER { '.' IDENTIFIER }
+ * Grammar:
+ *   module_path := IDENTIFIER { '.' IDENTIFIER }
  *
  * Example: `std.io`, `renderer.core.math`
  *
@@ -455,28 +465,49 @@ std::vector<InternedString> Parser::parseModulePath() {
 // ============================================================================
 // 5. FUNCTION REFERENCE (for assignment forms)
 // ============================================================================
+//
+// parseFuncRef() parses a function reference for use in:
+//   - Method assignments in `impl` blocks
+//   - Path entries in `from` blocks
+//   - Pipeline steps (`|>`)
+//   - Compose operands (`+>`)
+//
+// The grammar for func_ref is shared across all these contexts.
+// ============================================================================
 
 /**
- * @brief Parses a function reference for use in method assignments.
+ * @brief Parses a function reference for use in assignments and references.
  *
  * Grammar:
  *   func_ref := IDENTIFIER
  *             | IDENTIFIER '.' IDENTIFIER
+ *             | IDENTIFIER ':' IDENTIFIER
  *             | func_ref generic_args
  *
- * Examples:
- *   utils.getVersion                       -- dotted path
- *   transform<int, string>                 -- generic instantiation
- *   std.map<U>                             -- dotted + generic
+ * @par Examples
+ *   utils.getVersion                       – dotted path
+ *   transform<int, string>                 – generic instantiation
+ *   std.map<U>                             – dotted + generic
+ *   Vec2:normalize                         – method reference
+ *
+ * @return ExprPtr – expression representing the function reference.
+ *         The result may be:
+ *         - IdentifierExprAST
+ *         - FieldAccessExprAST
+ *         - BehaviorAccessExprAST
+ *         - CallableRefExprAST (wrapping one of the above with generic args)
  *
  * ─── Parsing Steps ─────────────────────────────────────────────────────────
  *   1. Parse the first identifier (required).
- *   2. While the next token is `.` and the token after that is `IDENTIFIER`,
- *      consume `.` and the identifier, building a chain of `FieldAccessExprAST`.
- *   3. If the next token is `<`, parse a generic argument list and wrap the
- *      current expression in a `CallExprAST` with those generic arguments.
+ *   2. Parse optional dotted path segments (`.identifier`).
+ *   3. Parse optional behavior access (`:method`).
+ *   4. Parse optional generic arguments (`<type-list>`).
  *
- * @return ExprPtr – expression representing the function reference
+ * ─── Error Recovery ───────────────────────────────────────────────────────
+ *   - Missing identifier: reports error, returns UnknownExprAST.
+ *   - Missing identifier after '.': reports error, stops building path.
+ *   - Malformed generic arguments: parseGenericArgs() reports error,
+ *     returns empty span (still creates CallableRefExprAST with empty args).
  */
 ExprPtr Parser::parseFuncRef() {
     SourceLocation loc = ts_.currentLoc();
@@ -505,7 +536,7 @@ ExprPtr Parser::parseFuncRef() {
         expr = std::move(node);
     }
     
-    // Optional behavior access
+    // Optional behavior access (method reference)
     if (ts_.check(TokenType::COLON)) {
         ts_.advance();
         if (!ts_.check(TokenType::IDENTIFIER)) {
@@ -515,16 +546,14 @@ ExprPtr Parser::parseFuncRef() {
         std::string method = ts_.advance().value;
         auto behavior = arena_.make<BehaviorAccessExprAST>();
         behavior->loc = loc;
-        // typeName will be resolved later; for now store the base name
-        // (The semantic pass will resolve the actual type of the receiver.)
+        // typeName will be resolved later by semantic pass
         behavior->typeName = pool_.intern(name);
         behavior->method = pool_.intern(method);
         behavior->isBehaviorMember = true;
         expr = std::move(behavior);
     }
     
-    // After parsing the base name and optional dotted path / behavior access,
-    // check for generic arguments.
+    // Optional generic arguments
     if (ts_.check(TokenType::LESS)) {
         ArenaSpan<TypePtr> typeArgs = parseGenericArgs(); // consumes '<' ... '>'
         auto refNode = arena_.make<CallableRefExprAST>();
@@ -535,4 +564,166 @@ ExprPtr Parser::parseFuncRef() {
     }
     
     return expr;
+}
+
+// ============================================================================
+// 6. PRECEDENCE HELPERS
+// ============================================================================
+//
+// These functions map token types to precedence levels and operator enums.
+// They are used by the Pratt parser to implement operator precedence.
+//
+// Precedence levels (higher = tighter binding):
+//   Level 12 : '^' (exponentiation, right‑associative)
+//   Level 11 : '*', '/', '%'
+//   Level 10 : '+', '-'
+//   Level 8  : '&&', '||', '~^', '<<', '>>' (bitwise)
+//   Level 7  : '==', '!=', '<', '>', '<=', '>=', 'is', '==='
+//   Level 6  : 'and'
+//   Level 5  : 'or'
+//   Level 4  : '??' (null coalesce)
+//   Level 3  : '|>' (pipeline)
+//   Level 2  : '+>' (composition)
+//   Level 1  : '=', '+=', '-=', etc. (assignment)
+// ============================================================================
+
+/**
+ * @brief Returns the precedence level of an infix operator token.
+ *
+ * @param t The token type.
+ * @return int Precedence level (higher = tighter binding), or PREC_NONE.
+ */
+int Parser::infixPrec(TokenType t) const {
+    switch (t) {
+        case TokenType::ASSIGN:
+        case TokenType::PLUS_ASSIGN:
+        case TokenType::MINUS_ASSIGN:
+        case TokenType::MUL_ASSIGN:
+        case TokenType::DIV_ASSIGN:
+        case TokenType::POW_ASSIGN:
+        case TokenType::MOD_ASSIGN:
+        case TokenType::BIT_AND_ASSIGN:
+        case TokenType::BIT_OR_ASSIGN:
+        case TokenType::BIT_XOR_ASSIGN:
+        case TokenType::SHL_ASSIGN:
+        case TokenType::SHR_ASSIGN:
+            return PREC_ASSIGN;
+        case TokenType::COMPOSE:            return PREC_COMPOSE;
+        case TokenType::PIPELINE:           return PREC_PIPE;
+        case TokenType::QUESTION_QUESTION:  return PREC_NULLCOAL;
+        case TokenType::OR:                 return PREC_OR;
+        case TokenType::AND:                return PREC_AND;
+        case TokenType::EQUAL_EQUAL:
+        case TokenType::EQUAL_EQUAL_EQUAL:
+        case TokenType::NOT_EQUAL:
+        case TokenType::LESS:
+        case TokenType::GREATER:
+        case TokenType::LESS_EQUAL:
+        case TokenType::GREATER_EQUAL:
+        case TokenType::IS:
+            return PREC_CMP;
+        case TokenType::BIT_AND:
+        case TokenType::BIT_OR:
+        case TokenType::BIT_XOR:
+        case TokenType::SHL:
+        case TokenType::SHR:
+            return PREC_BITWISE;
+        case TokenType::PLUS:
+        case TokenType::MINUS:
+            return PREC_ADD;
+        case TokenType::MUL:
+        case TokenType::DIV:
+        case TokenType::MOD:
+            return PREC_MUL;
+        case TokenType::POW:
+            return PREC_POW;
+        default:
+            return PREC_NONE;
+    }
+}
+
+/**
+ * @brief Converts a token type to a BinaryOp enum value.
+ *
+ * Used for arithmetic, comparison, logical, and bitwise operators.
+ *
+ * @param t The token type.
+ * @return BinaryOp – corresponding enum value.
+ */
+BinaryOp Parser::tokenToBinaryOp(TokenType t) const {
+    switch (t) {
+        case TokenType::PLUS:                return BinaryOp::Add;
+        case TokenType::MINUS:               return BinaryOp::Sub;
+        case TokenType::MUL:                 return BinaryOp::Mul;
+        case TokenType::DIV:                 return BinaryOp::Div;
+        case TokenType::POW:                 return BinaryOp::Pow;
+        case TokenType::MOD:                 return BinaryOp::Mod;
+        case TokenType::EQUAL_EQUAL:         return BinaryOp::Eq;
+        case TokenType::EQUAL_EQUAL_EQUAL:   return BinaryOp::RefEq;
+        case TokenType::NOT_EQUAL:           return BinaryOp::Ne;
+        case TokenType::LESS:                return BinaryOp::Lt;
+        case TokenType::GREATER:             return BinaryOp::Gt;
+        case TokenType::LESS_EQUAL:          return BinaryOp::Le;
+        case TokenType::GREATER_EQUAL:       return BinaryOp::Ge;
+        case TokenType::AND:                 return BinaryOp::And;
+        case TokenType::OR:                  return BinaryOp::Or;
+        case TokenType::BIT_AND:             return BinaryOp::BitAnd;
+        case TokenType::BIT_OR:              return BinaryOp::BitOr;
+        case TokenType::BIT_XOR:             return BinaryOp::BitXor;
+        case TokenType::SHL:                 return BinaryOp::Shl;
+        case TokenType::SHR:                 return BinaryOp::Shr;
+        default:                             return BinaryOp::Add;
+    }
+}
+
+/**
+ * @brief Converts a token type to an AssignOp enum value.
+ *
+ * Used for assignment and compound assignment operators.
+ *
+ * @param t The token type.
+ * @return AssignOp – corresponding enum value.
+ */
+AssignOp Parser::tokenToAssignOp(TokenType t) const {
+    switch (t) {
+        case TokenType::ASSIGN:          return AssignOp::Assign;
+        case TokenType::PLUS_ASSIGN:     return AssignOp::AddAssign;
+        case TokenType::MINUS_ASSIGN:    return AssignOp::SubAssign;
+        case TokenType::MUL_ASSIGN:      return AssignOp::MulAssign;
+        case TokenType::DIV_ASSIGN:      return AssignOp::DivAssign;
+        case TokenType::POW_ASSIGN:      return AssignOp::PowAssign;
+        case TokenType::MOD_ASSIGN:      return AssignOp::ModAssign;
+        case TokenType::BIT_AND_ASSIGN:  return AssignOp::BitAndAssign;
+        case TokenType::BIT_OR_ASSIGN:   return AssignOp::BitOrAssign;
+        case TokenType::BIT_XOR_ASSIGN:  return AssignOp::BitXorAssign;
+        case TokenType::SHL_ASSIGN:      return AssignOp::ShlAssign;
+        case TokenType::SHR_ASSIGN:      return AssignOp::ShrAssign;
+        default:                         return AssignOp::Assign;
+    }
+}
+
+/**
+ * @brief Checks if a token type is an assignment operator.
+ *
+ * @param t The token type.
+ * @return true if the token is an assignment operator.
+ */
+bool Parser::isAssignOp(TokenType t) const {
+    switch (t) {
+        case TokenType::ASSIGN:
+        case TokenType::PLUS_ASSIGN:
+        case TokenType::MINUS_ASSIGN:
+        case TokenType::MUL_ASSIGN:
+        case TokenType::DIV_ASSIGN:
+        case TokenType::POW_ASSIGN:
+        case TokenType::MOD_ASSIGN:
+        case TokenType::BIT_AND_ASSIGN:
+        case TokenType::BIT_OR_ASSIGN:
+        case TokenType::BIT_XOR_ASSIGN:
+        case TokenType::SHL_ASSIGN:
+        case TokenType::SHR_ASSIGN:
+            return true;
+        default:
+            return false;
+    }
 }

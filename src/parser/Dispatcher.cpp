@@ -503,10 +503,9 @@ ExprPtr Parser::parsePrefixExpr(bool allowStructLiteral) {
  *   7. bare '{' (error)
  *   8. anonymous function
  *   9. grouped expression (expr)
- *   10. unsafe cast *T(expr)
- *   11. identifier (struct literal, behavior access, or plain)
- *   12. primitive type cast T(expr)
- *   13. literal
+ *   10. identifier (struct literal, behavior access, or plain)
+ *   11. primitive type cast T(expr)
+ *   12. literal
  */
 ExprPtr Parser::parsePrimaryExpr(bool allowStructLiteral) {
     SourceLocation loc = ts_.currentLoc();
@@ -541,20 +540,6 @@ ExprPtr Parser::parsePrimaryExpr(bool allowStructLiteral) {
             ts_.advance();
         }
         return inner;
-    }
-
-    if (ts_.check(TokenType::MUL) && looksLikeType()) {
-        ts_.advance();
-        TypePtr targetType = parseBaseType();
-        if (!targetType) {
-            errorAt(DiagCode::E2005, "expected type after '*' in unsafe cast");
-            return arena_.make<UnknownExprAST>();
-        }
-        if (!ts_.check(TokenType::LPAREN)) {
-            errorAt(DiagCode::E2001, "expected '(' after type in unsafe cast");
-            return arena_.make<UnknownExprAST>();
-        }
-        return parseTypeConvExpr(true, std::move(targetType));
     }
 
     if (ts_.check(TokenType::IDENTIFIER)) {
@@ -597,10 +582,11 @@ ExprPtr Parser::parsePrimaryExpr(bool allowStructLiteral) {
         return node;
     }
 
+    // primitive type cast
     if (looksLikeType() && ts_.peekNextType() == TokenType::LPAREN) {
         TypePtr targetType = parsePrimitiveType();
         if (targetType && ts_.check(TokenType::LPAREN)) {
-            return parseTypeConvExpr(false, std::move(targetType));
+            return parseTypeConvExpr(std::move(targetType));
         }
     }
 
