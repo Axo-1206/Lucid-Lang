@@ -81,9 +81,9 @@ int main(int argc, char* argv[]) {
     std::cout << "[MAIN] Source file size: " << source.size() << " bytes" << std::endl;
 
     StringPool stringPool; 
-    AttributeRegistry::instance().setStringPool(stringPool);
+    attribute::initialize(stringPool);
     intrinsic::initialize(stringPool);
-    QualifierRegistry::instance().setStringPool(stringPool);
+    qualifier::initialize(stringPool);
     
     // Phase 1: Lexical Analysis
     std::cout << "[MAIN] Starting lexical analysis..." << std::endl;
@@ -152,9 +152,9 @@ int main(int argc, char* argv[]) {
         std::cout << "\n>>> Semantic Analysis SUCCESSFUL!" << std::endl;
     }
 
-    AttributeRegistry::instance().resetStringPool();
+    attribute::shutdown();
     intrinsic::shutdown();
-    QualifierRegistry::instance().resetStringPool();
+    qualifier::shutdown();
     
     file.close();
     

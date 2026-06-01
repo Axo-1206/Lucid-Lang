@@ -58,6 +58,7 @@ struct QualifierEntry {
     uint32_t bit;                      // Bitmask value (from QualifierBits)
     bool affectsTypeEquality;          // Does this qualifier affect type identity?
     QualifierContext validContexts;    // Where this qualifier may appear
+    DiagCode errorCode;                // primary diagnostic code for this qualifier
     std::string_view description;      // Human‑readable description
 };
 

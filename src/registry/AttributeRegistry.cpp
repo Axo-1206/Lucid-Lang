@@ -16,7 +16,7 @@ static bool validateExtern(const ArenaSpan<AttributeArgPtr>& args,
     if (args.size() >= 2) {
         if (args[1]->kind != AttributeArgKind::StringLit) {
             diagnostic::error(DiagnosticCategory::Syntax, ctx.file, ctx.loc,
-                             DiagCode::E3046,
+                             DiagCode::E3003,
                              {"second argument to @extern must be a calling convention string"});
             return false;
         }
@@ -29,7 +29,7 @@ static bool validateDeprecated(const ArenaSpan<AttributeArgPtr>& args,
     if (args.size() >= 1) {
         if (args[0]->kind != AttributeArgKind::StringLit) {
             diagnostic::error(DiagnosticCategory::Syntax, ctx.file, ctx.loc,
-                             DiagCode::E3046,
+                             DiagCode::E3003,
                              {"@deprecated argument must be a string literal"});
             return false;
         }
@@ -48,7 +48,7 @@ static AttributeEntry kAttributes[] = {
         true, 0, 2, AttrArgKind::String, true,
         "",
         InternedString(),
-        DiagCode::E2010,
+        DiagCode::E3004,   // attribute not allowed on declaration (context mismatch)
         validateExtern
     },
     {
@@ -58,7 +58,7 @@ static AttributeEntry kAttributes[] = {
         false, 0, 0, AttrArgKind::None, false,
         "",
         InternedString(),
-        DiagCode::E2010,
+        DiagCode::E3004,
         nullptr
     },
     {
@@ -68,7 +68,7 @@ static AttributeEntry kAttributes[] = {
         false, 0, 0, AttrArgKind::None, false,
         "noinline",
         InternedString(),
-        DiagCode::E2010,
+        DiagCode::E3009,   // mutual exclusion with noinline
         nullptr
     },
     {
@@ -78,7 +78,7 @@ static AttributeEntry kAttributes[] = {
         false, 0, 0, AttrArgKind::None, false,
         "inline",
         InternedString(),
-        DiagCode::E2010,
+        DiagCode::E3009,
         nullptr
     },
     {
@@ -92,7 +92,7 @@ static AttributeEntry kAttributes[] = {
         true, 0, 1, AttrArgKind::String, false,
         "",
         InternedString(),
-        DiagCode::E2010,
+        DiagCode::E3004,
         validateDeprecated
     },
     {
@@ -102,7 +102,7 @@ static AttributeEntry kAttributes[] = {
         true, 1, -1, AttrArgKind::String, false,
         "",
         InternedString(),
-        DiagCode::E2010,
+        DiagCode::E3007,   // multiple @link not allowed
         nullptr
     },
     {
@@ -112,7 +112,7 @@ static AttributeEntry kAttributes[] = {
         false, 0, 0, AttrArgKind::None, false,
         "",
         InternedString(),
-        DiagCode::E2010,
+        DiagCode::E3011,   // @phantom only allowed on type alias, struct, or function
         nullptr
     },
     {
@@ -122,7 +122,7 @@ static AttributeEntry kAttributes[] = {
         false, 0, 0, AttrArgKind::None, false,
         "jit",
         InternedString(),
-        DiagCode::E3015,
+        DiagCode::E2013,   // @aot and @jit mutually exclusive
         nullptr
     },
     {
@@ -132,7 +132,7 @@ static AttributeEntry kAttributes[] = {
         false, 0, 0, AttrArgKind::None, false,
         "aot",
         InternedString(),
-        DiagCode::E3015,
+        DiagCode::E2013,
         nullptr
     },
 };
@@ -236,7 +236,7 @@ bool validateAttribute(const AttributeEntry& entry,
     // 1) Context check
     if (!hasFlag(entry.validContexts, ctx)) {
         diagnostic::error(DiagnosticCategory::Syntax, file, loc,
-                         entry.errorCode,
+                         entry.errorCode,   // E3004 for most, but can be overridden per entry
                          {std::string("@") + std::string(entry.name)});
         valid = false;
     }
@@ -246,19 +246,19 @@ bool validateAttribute(const AttributeEntry& entry,
     if (entry.takesArgs) {
         if (argCount < entry.minArgs) {
             diagnostic::error(DiagnosticCategory::Syntax, file, loc,
-                             DiagCode::E3046,
+                             DiagCode::E3002,   // wrong argument count
                              {std::string("@") + std::string(entry.name)});
             valid = false;
         }
         if (entry.maxArgs != -1 && argCount > entry.maxArgs) {
             diagnostic::error(DiagnosticCategory::Syntax, file, loc,
-                             DiagCode::E3046,
+                             DiagCode::E3002,
                              {std::string("@") + std::string(entry.name)});
             valid = false;
         }
     } else if (argCount > 0) {
         diagnostic::error(DiagnosticCategory::Syntax, file, loc,
-                         DiagCode::E3046,
+                         DiagCode::E3002,
                          {std::string("@") + std::string(entry.name)});
         valid = false;
     }
@@ -273,16 +273,16 @@ bool validateAttribute(const AttributeEntry& entry,
         if (hasFlag(needed, AttrArgKind::Type) && arg->kind == AttributeArgKind::TypeIdent) ok = true;
         if (!ok) {
             diagnostic::error(DiagnosticCategory::Syntax, file, arg->loc,
-                             DiagCode::E3046,
+                             DiagCode::E3003,   // argument type mismatch
                              {std::string("@") + std::string(entry.name)});
             valid = false;
         }
     }
 
-    // 4) requiresConst (warning only)
+    // 4) requiresConst (warning) – use W6006
     if (entry.requiresConst && declKw != DeclKeyword::Const) {
         diagnostic::warning(DiagnosticCategory::Semantic, file, loc,
-                           DiagCode::W3001,
+                           DiagCode::W6006,   // @extern with 'let'
                            {std::string("@") + std::string(entry.name)});
     }
 
@@ -305,14 +305,14 @@ bool checkMutualExclusion(InternedString id1, InternedString id2,
 
     if (a->exclusiveWithId.isValid() && a->exclusiveWithId == id2) {
         diagnostic::error(DiagnosticCategory::Syntax, InternedString(), loc,
-                         DiagCode::E3015,
+                         a->errorCode,   // uses the entry's errorCode (E3009 for inline/noinline, E2013 for aot/jit)
                          {std::string("@") + std::string(a->name),
                           std::string("@") + std::string(b->name)});
         return false;
     }
     if (b->exclusiveWithId.isValid() && b->exclusiveWithId == id1) {
         diagnostic::error(DiagnosticCategory::Syntax, InternedString(), loc,
-                         DiagCode::E3015,
+                         b->errorCode,
                          {std::string("@") + std::string(a->name),
                           std::string("@") + std::string(b->name)});
         return false;

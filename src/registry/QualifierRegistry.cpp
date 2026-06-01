@@ -5,6 +5,7 @@
 
 #include "QualifierRegistry.hpp"
 #include "diagnostics/Diagnostic.hpp"
+#include <string>
 #include <unordered_map>
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -18,6 +19,7 @@ static QualifierEntry kQualifiers[] = {
         true,                           // affectsTypeEquality
         QualifierContext::Function | QualifierContext::Parameter |
         QualifierContext::Return | QualifierContext::TypeAlias,
+        DiagCode::E1017,                // qualifier on non‑function type
         "Marks a function as asynchronous – call site must use `await`"
     },
     {
@@ -28,6 +30,7 @@ static QualifierEntry kQualifiers[] = {
         QualifierContext::Function | QualifierContext::Variable |
         QualifierContext::Parameter | QualifierContext::Return |
         QualifierContext::TypeAlias,
+        DiagCode::E1017,
         "Marks a function binding as nullable – call site must guard against nil"
     },
     {
@@ -36,6 +39,7 @@ static QualifierEntry kQualifiers[] = {
         QualifierBits::Parallel,
         false,                          // does NOT affect type equality
         QualifierContext::Function | QualifierContext::Parameter,
+        DiagCode::E1017,
         "Marks a function for parallel execution – body has restrictions (no return, no writes to outer scope)"
     },
 };
@@ -126,14 +130,25 @@ uint32_t getBit(std::string_view name) {
 
 bool applyQualifier(uint32_t& mask, InternedString id) {
     uint32_t bit = getBit(id);
-    if (!bit) return false;
+    if (!bit) {
+        // Unknown qualifier – use E1016
+        diagnostic::error(DiagnosticCategory::Syntax, InternedString(), SourceLocation(),
+                         DiagCode::E1016,
+                         {id.isValid() ? std::string(stringPool->lookup(id)) : "unknown"});
+        return false;
+    }
     mask |= bit;
     return true;
 }
 
 bool applyQualifier(uint32_t& mask, std::string_view name) {
     uint32_t bit = getBit(name);
-    if (!bit) return false;
+    if (!bit) {
+        diagnostic::error(DiagnosticCategory::Syntax, InternedString(), SourceLocation(),
+                         DiagCode::E1016,
+                         {std::string(name)});
+        return false;
+    }
     mask |= bit;
     return true;
 }
@@ -143,8 +158,9 @@ bool validateUsage(const QualifierEntry& entry,
                    InternedString file,
                    const SourceLocation& loc) {
     if (!hasFlag(entry.validContexts, ctx)) {
+        // Use E1017 for qualifier on wrong declaration type
         diagnostic::error(DiagnosticCategory::Syntax, file, loc,
-                         DiagCode::E2015,
+                         entry.errorCode,
                          {std::string("~") + std::string(entry.name)});
         return false;
     }

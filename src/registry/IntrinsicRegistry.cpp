@@ -6,6 +6,7 @@
 #include "IntrinsicRegistry.hpp"
 #include "diagnostics/Diagnostic.hpp"
 #include <array>
+#include <string>
 #include <unordered_map>
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -289,15 +290,17 @@ bool validateCall(const IntrinsicEntry& entry,
                   size_t numValueArgs,
                   InternedString file,
                   const SourceLocation& loc) {
-    // Check argument count
+    // Check argument count using new diagnostic code E4002
     if (numValueArgs < static_cast<size_t>(entry.minArgs)) {
         diagnostic::error(DiagnosticCategory::Semantic, file, loc,
-                         DiagCode::E3010, {"too few arguments"});
+                         DiagCode::E4002,   // wrong argument count for intrinsic
+                         {"#" + std::string(entry.lucName)});
         return false;
     }
     if (entry.maxArgs != -1 && numValueArgs > static_cast<size_t>(entry.maxArgs)) {
         diagnostic::error(DiagnosticCategory::Semantic, file, loc,
-                         DiagCode::E3010, {"too many arguments"});
+                         DiagCode::E4002,
+                         {"#" + std::string(entry.lucName)});
         return false;
     }
     return true;
