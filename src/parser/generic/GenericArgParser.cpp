@@ -109,7 +109,7 @@ TypePtr Parser::parseGenericArg() {
     size_t savedPos = ts_.getPos();
     TypePtr arg = parseType();
     if (ts_.getPos() == savedPos) {
-        errorAt(DiagCode::E2005, "expected type in generic argument list");
+        errorAt(DiagCode::E1005, "expected type in generic argument list");
         return arena_.make<UnknownTypeAST>();
     }
     return arg;

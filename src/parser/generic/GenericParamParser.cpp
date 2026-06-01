@@ -1,7 +1,30 @@
+/**
+ * @file GenericParamParser.cpp
+ * @brief Parses generic type parameters on declarations (definition side).
+ * 
+ * ============================================================================
+ * FILE OVERVIEW
+ * ============================================================================
+ * 
+ * This file implements the parser for generic parameter lists used in
+ * declarations of functions, structs, traits, impl blocks, and type aliases.
+ * 
+ * ## Functions
+ * 
+ *   - parseGenericParams() – parses `< param { ',' param } >`
+ *   - parseGenericParam()  – parses a single parameter with optional constraints
+ * 
+ * @see GenericArgParser.cpp for call‑site generic arguments
+ */
+
 #include "parser/Parser.hpp"
 #include "ast/support/InternedString.hpp"
 #include "diagnostics/DiagnosticCodes.hpp"
 #include "debug/DebugUtils.hpp"
+
+// ============================================================================
+// Generic Parameters – Full List
+// ============================================================================
 
 /**
  * @brief Parses generic type parameters on a declaration.
@@ -48,6 +71,10 @@ ArenaSpan<GenericParamPtr> Parser::parseGenericParams() {
     return builder.build();
 }
 
+// ============================================================================
+// Generic Parameter – Single Parameter with Constraints
+// ============================================================================
+
 /**
  * @brief Parses a single generic parameter with optional trait constraints.
  * 
@@ -69,7 +96,7 @@ ArenaSpan<GenericParamPtr> Parser::parseGenericParams() {
  */
 GenericParamPtr Parser::parseGenericParam() {
     if (!ts_.check(TokenType::IDENTIFIER)) {
-        errorAt(DiagCode::E2003, "expected generic parameter name");
+        errorAt(DiagCode::E1003, "expected generic parameter name");
         return nullptr;
     }
     InternedString name = pool_.intern(ts_.advance().value);
@@ -79,7 +106,7 @@ GenericParamPtr Parser::parseGenericParam() {
         std::vector<InternedString> constraints;
         while (true) {
             if (!ts_.check(TokenType::IDENTIFIER)) {
-                errorAt(DiagCode::E2003, "expected trait name in constraint");
+                errorAt(DiagCode::E1003, "expected trait name in constraint");
                 break;
             }
             constraints.push_back(pool_.intern(ts_.advance().value));
