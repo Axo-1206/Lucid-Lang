@@ -619,13 +619,13 @@ void dumpPipelineExpr(std::string& out, const PipelineExprAST* node, const Strin
 }
 
 void dumpPipelineStep(std::string& out, const PipelineStepAST* node, const StringPool* pool, int indentLevel) {
-    printNodeHeader(out, indentLevel, *node, "PipelineStepAST (kind=" + std::to_string(static_cast<int>(node->kind)) + ")");
-    if (node->ident.isValid()) out += getIndent(indentLevel + 1) + "ident: " + toStr(pool, node->ident) + "\n";
-    if (node->typeName.isValid()) out += getIndent(indentLevel + 1) + "typeName: " + toStr(pool, node->typeName) + "\n";
-    if (node->method.isValid()) out += getIndent(indentLevel + 1) + "method: " + toStr(pool, node->method) + "\n";
-    if (node->field.isValid()) out += getIndent(indentLevel + 1) + "field: " + toStr(pool, node->field) + "\n";
-    for (const auto& arg : node->packArgs) dumpNode(out, arg.get(), pool, indentLevel + 1);
-    if (node->anonFunc) dumpNode(out, node->anonFunc.get(), pool, indentLevel + 1);
+    printNodeHeader(out, indentLevel, *node, "PipelineStepAST");
+    if (node->callable) dumpNode(out, node->callable.get(), pool, indentLevel + 1);
+    if (!node->packArgs.empty()) {
+        out += getIndent(indentLevel + 1) + "packArgs:\n";
+        for (const auto& arg : node->packArgs)
+            dumpNode(out, arg.get(), pool, indentLevel + 2);
+    }
 }
 
 void dumpComposeExpr(std::string& out, const ComposeExprAST* node, const StringPool* pool, int indentLevel) {
@@ -636,11 +636,8 @@ void dumpComposeExpr(std::string& out, const ComposeExprAST* node, const StringP
 }
 
 void dumpComposeOperand(std::string& out, const ComposeOperandAST* node, const StringPool* pool, int indentLevel) {
-    printNodeHeader(out, indentLevel, *node, "ComposeOperandAST (kind=" + std::to_string(static_cast<int>(node->kind)) + ")");
-    if (node->ident.isValid()) out += getIndent(indentLevel + 1) + "ident: " + toStr(pool, node->ident) + "\n";
-    if (node->typeName.isValid()) out += getIndent(indentLevel + 1) + "typeName: " + toStr(pool, node->typeName) + "\n";
-    if (node->method.isValid()) out += getIndent(indentLevel + 1) + "method: " + toStr(pool, node->method) + "\n";
-    if (node->field.isValid()) out += getIndent(indentLevel + 1) + "field: " + toStr(pool, node->field) + "\n";
+    printNodeHeader(out, indentLevel, *node, "ComposeOperandAST");
+    if (node->callable) dumpNode(out, node->callable.get(), pool, indentLevel + 1);
 }
 
 void dumpAnonFuncExpr(std::string& out, const AnonFuncExprAST* node, const StringPool* pool, int indentLevel) {

@@ -594,21 +594,19 @@ struct NullCoalesceExprAST : ExprAST {
 /**
  * @brief One step in a pipeline chain – owned by PipelineExprAST.
  *
- * Not an ExprAST node because it cannot appear independently as an expression.
- * The kind field determines which other fields are populated.
+ * Grammar: pipeline_step := func_ref [ '(' arg_list ')' '!' ] | anon_func
+ *
+ * The `callable` expression is the result of `parseFuncRef()` or an anonymous
+ * function expression. If the step includes an argument pack `(args)!`, then
+ * `packArgs` is non‑empty and the step is an argument pack step (the `!`
+ * annotation). The `kind` field is kept for quick classification but can be
+ * derived from the callable.
  */
 struct PipelineStepAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::PipelineStep;
 
-    PipelineStepKind kind;
-    InternedString ident;                    // function name, object name
-    ArenaSpan<TypePtr> genericArgs;          // explicit generic arguments
-    InternedString typeName;                 // for BehaviorRef / BehaviorArgPack
-    InternedString method;                   // for BehaviorRef / BehaviorArgPack
-    InternedString field;                    // for FieldRef / FieldArgPack
-    ExprPtr index;                           // for IndexRef / IndexArgPack
-    ArenaSpan<ExprPtr> packArgs;             // for ArgPack variants
-    ExprPtr anonFunc;                        // for AnonFunc
+    ExprPtr callable;                // function reference or anonymous function
+    ArenaSpan<ExprPtr> packArgs;     // non‑empty for argument pack steps
 
     PipelineStepAST() : BaseAST(ASTKind::PipelineStep) {}
 };
@@ -637,19 +635,25 @@ struct PipelineExprAST : ExprAST {
 /**
  * @brief One operand in a +> composition chain – owned by ComposeExprAST.
  *
- * Three syntactic forms – no ArgPack, no AnonFunc.
+ * Grammar: compose_operand := func_ref   (no argument pack, no anonymous function)
+ *
+ * The callable expression is the result of `parseFuncRef()`, which can be:
+ *   - IdentifierExprAST (plain function name)
+ *   - FieldAccessExprAST (dotted path)
+ *   - BehaviorAccessExprAST (method reference)
+ *   - CallableRefExprAST (with generic arguments)
+ *
+ * There is no argument pack or anonymous function in composition operands.
  */
 struct ComposeOperandAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::ComposeOperand;
 
-    ComposeOperandKind kind;
-    InternedString ident;       // Ident / FieldRef
-    InternedString typeName;    // BehaviorRef – "Vec2"
-    InternedString method;      // BehaviorRef – "normalize"
-    InternedString field;       // FieldRef
+    ExprPtr callable;   // the function reference (required)
 
     ComposeOperandAST() : BaseAST(ASTKind::ComposeOperand) {}
 };
+
+using ComposeOperandPtr = ASTPtr<ComposeOperandAST>;
 
 using ComposeOperandPtr = ASTPtr<ComposeOperandAST>;
 
