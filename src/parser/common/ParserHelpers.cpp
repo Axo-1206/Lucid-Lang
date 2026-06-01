@@ -34,14 +34,11 @@
 #include "parser/Parser.hpp"
 #include "ast/support/InternedString.hpp"
 #include "diagnostics/DiagnosticCodes.hpp"
+#include "registry/QualifierRegistry.hpp"
 #include "debug/DebugUtils.hpp"
 
 // ============================================================================
 // 1. PARAMETER HELPERS
-// ============================================================================
-//
-// These functions handle function parameters and call arguments. They are used
-// by function declarations, function types, and method definitions.
 // ============================================================================
 
 /**
@@ -71,7 +68,7 @@ std::vector<ParamPtr> Parser::parseParamList() {
         if (!list.empty() && !ts_.match(TokenType::COMMA))
             break;
         if (!ts_.check(TokenType::IDENTIFIER)) {
-            errorAt(DiagCode::E2003, "expected parameter name");
+            errorAt(DiagCode::E1003, "expected parameter name");
             break;
         }
         auto param = arena_.make<ParamAST>();
@@ -134,7 +131,7 @@ ArenaSpan<ExprPtr> Parser::parseArgList() {
 
     while (!ts_.check(TokenType::RPAREN) && !ts_.isAtEnd()) {
         if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-            errorAt(DiagCode::E2002, "too many consecutive errors in argument list; skipping to ')'");
+            errorAt(DiagCode::E1002, "too many consecutive errors in argument list; skipping to ')'");
             while (!ts_.isAtEnd() && !ts_.check(TokenType::RPAREN)) ts_.advance();
             break;
         }
@@ -143,7 +140,7 @@ ArenaSpan<ExprPtr> Parser::parseArgList() {
         ExprPtr arg = parseExpr();
 
         if (ts_.getPos() == savedPos) {
-            errorAt(DiagCode::E2008, "expected argument expression");
+            errorAt(DiagCode::E1008, "expected argument expression");
             if (!ts_.isAtEnd()) ts_.advance();
             consecutiveErrors++;
             if (ts_.check(TokenType::COMMA)) ts_.advance();
@@ -155,7 +152,7 @@ ArenaSpan<ExprPtr> Parser::parseArgList() {
 
         if (ts_.check(TokenType::RPAREN)) break;
         if (!ts_.match(TokenType::COMMA)) {
-            errorAt(DiagCode::E2001, "expected ',' after argument");
+            errorAt(DiagCode::E1001, "expected ',' after argument");
             while (!ts_.isAtEnd() && !ts_.check(TokenType::COMMA) && !ts_.check(TokenType::RPAREN)) {
                 ts_.advance();
             }
@@ -235,7 +232,7 @@ ArenaSpan<TypePtr> Parser::parseReturnList() {
     if (!ts_.check(TokenType::LPAREN)) {
         TypePtr t = parseType();
         if (!t || t->isa<UnknownTypeAST>()) {
-            errorAt(DiagCode::E2005, "expected return type after '->'");
+            errorAt(DiagCode::E1005, "expected return type after '->'");
             return ArenaSpan<TypePtr>();
         }
         auto builder = arena_.makeBuilder<TypePtr>();
@@ -306,7 +303,7 @@ ArenaSpan<TypePtr> Parser::parseReturnList() {
                     // This is a function type
                     TypePtr funcType = parseFuncType();
                     if (!funcType || funcType->isa<UnknownTypeAST>()) {
-                        errorAt(DiagCode::E2005, "expected function type");
+                        errorAt(DiagCode::E1005, "expected function type");
                         return ArenaSpan<TypePtr>();
                     }
                     auto builder = arena_.makeBuilder<TypePtr>();
@@ -321,7 +318,7 @@ ArenaSpan<TypePtr> Parser::parseReturnList() {
             if (afterParen < tokenCount && tokens[afterParen].type == TokenType::ARROW) {
                 TypePtr funcType = parseFuncType();
                 if (!funcType || funcType->isa<UnknownTypeAST>()) {
-                    errorAt(DiagCode::E2005, "expected function type");
+                    errorAt(DiagCode::E1005, "expected function type");
                     return ArenaSpan<TypePtr>();
                 }
                 auto builder = arena_.makeBuilder<TypePtr>();
@@ -340,7 +337,7 @@ ArenaSpan<TypePtr> Parser::parseReturnList() {
     while (!ts_.check(TokenType::RPAREN) && !ts_.isAtEnd()) {
         if (!types.empty() && !ts_.match(TokenType::COMMA)) {
             if (ts_.check(TokenType::RPAREN)) break;
-            errorAt(DiagCode::E2001, "expected ',' between return types");
+            errorAt(DiagCode::E1001, "expected ',' between return types");
             while (!ts_.isAtEnd() && !ts_.check(TokenType::COMMA) && !ts_.check(TokenType::RPAREN)) {
                 ts_.advance();
             }
@@ -352,7 +349,7 @@ ArenaSpan<TypePtr> Parser::parseReturnList() {
         size_t typeSavedPos = ts_.getPos();
         TypePtr t = parseType();
         if (ts_.getPos() == typeSavedPos) {
-            errorAt(DiagCode::E2005, "expected return type");
+            errorAt(DiagCode::E1005, "expected return type");
             while (!ts_.isAtEnd() && !ts_.check(TokenType::RPAREN)) {
                 ts_.advance();
             }
@@ -394,35 +391,40 @@ ArenaSpan<TypePtr> Parser::parseReturnList() {
  *         - bitmask: OR of QualifierBits flags
  *
  * ─── Error Handling ─────────────────────────────────────────────────────────
- * - Missing identifier after '~': reports error, stops parsing qualifiers.
- * - Unknown qualifier names: the registry lookup returns nullptr; the current
- *   code is commented out but would report an error if enabled.
+ * - Missing identifier after '~': reports error (E1003), stops parsing qualifiers.
+ * - Unknown qualifier name: reports error (E1016), skips this qualifier.
+ * - Duplicate qualifier: reports error (E1018), skips the duplicate.
  */
 QualifierSet Parser::parseQualifiers() {
     QualifierSet qs;
-    auto& registry = QualifierRegistry::instance();
     
     while (ts_.check(TokenType::TILDE)) {
         SourceLocation loc = ts_.currentLoc();
-        ts_.advance();
+        ts_.advance(); // consume '~'
         
         if (!ts_.check(TokenType::IDENTIFIER)) {
-            error(loc, DiagCode::E2003, "expected qualifier name after '~'");
+            error(loc, DiagCode::E1003, "expected qualifier name after '~'");
             break;
         }
         InternedString name = pool_.intern(ts_.advance().value);
         
-        const QualifierInfo* info = registry.lookup(name);
-        // Uncomment for strict qualifier validation:
-        // if (!info) {
-        //     error(loc, DiagCode::E2010, 
-        //           "unknown qualifier '~" + std::string(pool_.lookup(name)) + 
-        //           "'; known qualifiers: " + registry.allNames());
-        //     continue;
-        // }
+        // Check for duplicate qualifier
+        if (std::find(qs.raw.begin(), qs.raw.end(), name) != qs.raw.end()) {
+            error(loc, DiagCode::E1018, 
+                  "duplicate qualifier '~" + std::string(pool_.lookup(name)) + "'");
+            continue;
+        }
+        
+        const QualifierEntry* entry = qualifier::lookup(name);
+        if (!entry) {
+            error(loc, DiagCode::E1016, 
+                  "unknown qualifier '~" + std::string(pool_.lookup(name)) + 
+                  "'; known qualifiers: " + qualifier::allNames());
+            continue;
+        }
         
         qs.raw.push_back(name);
-        qs.bitmask |= info->bit;
+        qs.bitmask |= entry->bit;
     }
     return qs;
 }
@@ -454,7 +456,7 @@ std::vector<InternedString> Parser::parseModulePath() {
     path.push_back(pool_.intern(ts_.advance().value));
     while (ts_.match(TokenType::DOT)) {
         if (!ts_.check(TokenType::IDENTIFIER)) {
-            errorAt(DiagCode::E2003, "expected identifier after '.'");
+            errorAt(DiagCode::E1003, "expected identifier after '.'");
             break;
         }
         path.push_back(pool_.intern(ts_.advance().value));
@@ -514,7 +516,7 @@ ExprPtr Parser::parseFuncRef() {
     
     // Parse a name (identifier or dotted path)
     if (!ts_.check(TokenType::IDENTIFIER)) {
-        errorAt(DiagCode::E2003, "expected function name in function reference");
+        errorAt(DiagCode::E1003, "expected function name in function reference");
         return arena_.make<UnknownExprAST>();
     }
     std::string name = ts_.advance().value;
@@ -525,7 +527,7 @@ ExprPtr Parser::parseFuncRef() {
     while (ts_.check(TokenType::DOT)) {
         ts_.advance();
         if (!ts_.check(TokenType::IDENTIFIER)) {
-            errorAt(DiagCode::E2003, "expected identifier after '.'");
+            errorAt(DiagCode::E1003, "expected identifier after '.'");
             break;
         }
         std::string field = ts_.advance().value;
@@ -540,7 +542,7 @@ ExprPtr Parser::parseFuncRef() {
     if (ts_.check(TokenType::COLON)) {
         ts_.advance();
         if (!ts_.check(TokenType::IDENTIFIER)) {
-            errorAt(DiagCode::E2003, "expected method name after ':'");
+            errorAt(DiagCode::E1003, "expected method name after ':'");
             return expr;
         }
         std::string method = ts_.advance().value;

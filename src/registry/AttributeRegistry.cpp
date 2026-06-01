@@ -237,7 +237,7 @@ bool validateAttribute(const AttributeEntry& entry,
     if (!hasFlag(entry.validContexts, ctx)) {
         diagnostic::error(DiagnosticCategory::Syntax, file, loc,
                          entry.errorCode,   // E3004 for most, but can be overridden per entry
-                         {std::string("@") + std::string(entry.name)});
+                         {"@" + std::string(entry.name)});
         valid = false;
     }
 
@@ -247,19 +247,19 @@ bool validateAttribute(const AttributeEntry& entry,
         if (argCount < entry.minArgs) {
             diagnostic::error(DiagnosticCategory::Syntax, file, loc,
                              DiagCode::E3002,   // wrong argument count
-                             {std::string("@") + std::string(entry.name)});
+                             {"@" + std::string(entry.name)});
             valid = false;
         }
         if (entry.maxArgs != -1 && argCount > entry.maxArgs) {
             diagnostic::error(DiagnosticCategory::Syntax, file, loc,
                              DiagCode::E3002,
-                             {std::string("@") + std::string(entry.name)});
+                             {"@" + std::string(entry.name)});
             valid = false;
         }
     } else if (argCount > 0) {
         diagnostic::error(DiagnosticCategory::Syntax, file, loc,
                          DiagCode::E3002,
-                         {std::string("@") + std::string(entry.name)});
+                         {"@" + std::string(entry.name)});
         valid = false;
     }
 
@@ -274,7 +274,7 @@ bool validateAttribute(const AttributeEntry& entry,
         if (!ok) {
             diagnostic::error(DiagnosticCategory::Syntax, file, arg->loc,
                              DiagCode::E3003,   // argument type mismatch
-                             {std::string("@") + std::string(entry.name)});
+                             {"@" + std::string(entry.name)});
             valid = false;
         }
     }
@@ -283,7 +283,7 @@ bool validateAttribute(const AttributeEntry& entry,
     if (entry.requiresConst && declKw != DeclKeyword::Const) {
         diagnostic::warning(DiagnosticCategory::Semantic, file, loc,
                            DiagCode::W6006,   // @extern with 'let'
-                           {std::string("@") + std::string(entry.name)});
+                           {"@" + std::string(entry.name)});
     }
 
     // 5) Custom validator
@@ -306,15 +306,15 @@ bool checkMutualExclusion(InternedString id1, InternedString id2,
     if (a->exclusiveWithId.isValid() && a->exclusiveWithId == id2) {
         diagnostic::error(DiagnosticCategory::Syntax, InternedString(), loc,
                          a->errorCode,   // uses the entry's errorCode (E3009 for inline/noinline, E2013 for aot/jit)
-                         {std::string("@") + std::string(a->name),
-                          std::string("@") + std::string(b->name)});
+                         {"@" + std::string(a->name),
+                          "@" + std::string(b->name)});
         return false;
     }
     if (b->exclusiveWithId.isValid() && b->exclusiveWithId == id1) {
         diagnostic::error(DiagnosticCategory::Syntax, InternedString(), loc,
                          b->errorCode,
-                         {std::string("@") + std::string(a->name),
-                          std::string("@") + std::string(b->name)});
+                         {"@" + std::string(a->name),
+                          "@" + std::string(b->name)});
         return false;
     }
     return true;
