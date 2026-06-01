@@ -972,7 +972,7 @@ static TypeAST* checkRangeExpr(RangeExprAST& node, SemanticContext& ctx) {
 // IntrinsicCallExprAST – #intrinsic(...)
 // ─────────────────────────────────────────────────────────────────────────────
 static TypeAST* checkIntrinsicCallExpr(IntrinsicCallExprAST& node, SemanticContext& ctx) {
-    const IntrinsicEntry* entry = IntrinsicRegistry::instance().lookup(node.intrinsicName);
+    const IntrinsicEntry* entry = intrinsic::lookup(node.intrinsicName);
     if (!entry) {
         ctx.error(node.loc, DiagCode::E3009,
             {"unknown intrinsic '#" + std::string(ctx.pool.lookup(node.intrinsicName)) + "'"});

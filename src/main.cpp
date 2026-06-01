@@ -9,10 +9,8 @@
 #include "ast/support/ASTArena.hpp"
 #include "registry/AttributeRegistry.hpp"
 #include "registry/IntrinsicRegistry.hpp"
-#include "registry/BuiltinMethodRegistry.hpp"
 #include "registry/QualifierRegistry.hpp"
-#include "semantic/header/SemanticAnalyzer.hpp"
-#include "diagnostics/DiagnosticEngine.hpp"
+// #include "semantic/header/SemanticAnalyzer.hpp"
 #include "debug/DebugMacros.hpp"
 #include "debug/ASTDumper.hpp"
 
@@ -84,7 +82,7 @@ int main(int argc, char* argv[]) {
 
     StringPool stringPool; 
     AttributeRegistry::instance().setStringPool(stringPool);
-    IntrinsicRegistry::instance().setStringPool(stringPool);
+    intrinsic::initialize(stringPool);
     QualifierRegistry::instance().setStringPool(stringPool);
     
     // Phase 1: Lexical Analysis
@@ -104,29 +102,27 @@ int main(int argc, char* argv[]) {
     //     }
     // }
 
-    if (dc.hasErrors()) {
+    if (diagnostic::hasErrors()) {
         std::cerr << "[MAIN] Lexical Analysis FAILED:" << std::endl;
-        dc.dumpAll(stringPool, std::cerr);
+        diagnostic::dumpAll(stringPool, std::cerr);
         return 1;
     }
 
     // Phase 2: Syntax Analysis (Parsing)
     std::cout << "[MAIN] Starting syntax analysis..." << std::endl;
     ASTArena arena;
-    Parser parser(tokens, dc, stringPool.intern(filePath), stringPool, arena);
+    Parser parser(tokens, stringPool.intern(filePath), stringPool, arena);
     ASTPtr<ProgramAST> program = parser.parse();
     
     if (program && LucDebug::isDebugEnabled("PARSE_RESULT")) {
-        LucDebug::ASTDumper dumper(LucDebug::getVerbosity(), stringPool);
-        program->accept(dumper);
-        LUC_LOG_PARSE_RESULT_MINIMAL("\n" << dumper.getOutput());
+        std::cout << LucDebug::dumpAST(program.get(), stringPool, LucDebug::getVerbosity());
     }
 
     std::cout << "[MAIN] Syntax analysis complete" << std::endl;
     
-    if (dc.hasErrors()) {
+    if (diagnostic::hasErrors()) {
         std::cerr << "[MAIN] Syntax Analysis (Parsing) FAILED:" << std::endl;
-        dc.dumpAll(stringPool, std::cerr);
+        diagnostic::dumpAll(stringPool, std::cerr);
         return 1;
     }
 
@@ -136,28 +132,28 @@ int main(int argc, char* argv[]) {
     }
 
     // Phase 3: Semantic Analysis
-    std::cout << "[MAIN] Starting semantic analysis..." << std::endl;
-    std::vector<ProgramAST*> files = { program.get() };
-    SemanticAnalyzer analyzer(dc, stringPool, arena);
+    // std::cout << "[MAIN] Starting semantic analysis..." << std::endl;
+    // std::vector<ProgramAST*> files = { program.get() };
+    // SemanticAnalyzer analyzer(dc, stringPool, arena);
     
-    bool success = analyzer.analyze(files);
-    std::cout << "[MAIN] Semantic analysis complete: " << (success ? "SUCCESS" : "FAILED") << std::endl;
+    // bool success = analyzer.analyze(files);
+    // std::cout << "[MAIN] Semantic analysis complete: " << (success ? "SUCCESS" : "FAILED") << std::endl;
     
-    if (dc.hasErrors()) {
+    if (diagnostic::hasErrors()) {
         std::cerr << "\n>>> Semantic Analysis FAILED:" << std::endl;
-        dc.dumpAll(stringPool, std::cerr);
+        diagnostic::dumpAll(stringPool, std::cerr);
         return 1;
     }
 
-    if (dc.hasWarnings()) {
+    if (diagnostic::hasWarnings()) {
         std::cerr << "\n>>> Semantic Analysis SUCCESSFUL with warnings:" << std::endl;
-        dc.dumpAll(stringPool, std::cerr);
+        diagnostic::dumpAll(stringPool, std::cerr);
     } else {
         std::cout << "\n>>> Semantic Analysis SUCCESSFUL!" << std::endl;
     }
 
     AttributeRegistry::instance().resetStringPool();
-    IntrinsicRegistry::instance().resetStringPool();
+    intrinsic::shutdown();
     QualifierRegistry::instance().resetStringPool();
     
     file.close();

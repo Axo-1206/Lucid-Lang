@@ -672,7 +672,6 @@ void dumpRangeExpr(std::string& out, const RangeExprAST* node, const StringPool*
 
 void dumpTypeConvExpr(std::string& out, const TypeConvExprAST* node, const StringPool* pool, int indentLevel) {
     std::string header = "TypeConvExprAST";
-    if (node->isUnsafe) header += " (unsafe)";
     if (node->targetType) header += " -> " + formatType(node->targetType.get(), pool);
     printNodeHeader(out, indentLevel, *node, header);
     if (node->expr) dumpNode(out, node->expr.get(), pool, indentLevel + 1);

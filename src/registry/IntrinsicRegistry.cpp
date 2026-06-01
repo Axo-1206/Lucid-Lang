@@ -1,16 +1,17 @@
 /**
  * @file IntrinsicRegistry.cpp
- * @brief Implementation of the IntrinsicRegistry singleton.
+ * @brief Implementation of the intrinsic registry namespace.
  */
 
 #include "IntrinsicRegistry.hpp"
-#include "diagnostics/DiagnosticEngine.hpp"
+#include "diagnostics/Diagnostic.hpp"
 #include <array>
+#include <unordered_map>
 
 // ─────────────────────────────────────────────────────────────────────────────
 // kEntries – static table of all built‑in intrinsics
 // ─────────────────────────────────────────────────────────────────────────────
-IntrinsicEntry IntrinsicRegistry::kEntries[] = {
+static IntrinsicEntry kEntries[] = {
     // ════════════════════════════════════════════════════════════════════════
     // Compile‑time type queries (folded at IR level, no runtime LLVM intrinsic)
     // ════════════════════════════════════════════════════════════════════════
@@ -222,16 +223,16 @@ IntrinsicEntry IntrinsicRegistry::kEntries[] = {
     },
 };
 
-const size_t IntrinsicRegistry::kEntryCount = sizeof(kEntries) / sizeof(kEntries[0]);
+static const size_t kEntryCount = sizeof(kEntries) / sizeof(kEntries[0]);
 
-IntrinsicRegistry& IntrinsicRegistry::instance() {
-    static IntrinsicRegistry registry;
-    return registry;
-}
+static StringPool* stringPool = nullptr;
+static std::unordered_map<InternedString, const IntrinsicEntry*> idToEntry;
+static InternedString sizeofId;
+static InternedString alignofId;
 
-IntrinsicRegistry::IntrinsicRegistry() = default;
+namespace intrinsic {
 
-void IntrinsicRegistry::setStringPool(StringPool& pool) {
+void initialize(StringPool& pool) {
     stringPool = &pool;
     idToEntry.clear();
 
@@ -244,38 +245,38 @@ void IntrinsicRegistry::setStringPool(StringPool& pool) {
     alignofId = pool.intern("alignof");
 }
 
-void IntrinsicRegistry::resetStringPool() {
+void shutdown() {
     stringPool = nullptr;
     idToEntry.clear();
     sizeofId = InternedString();
     alignofId = InternedString();
 }
 
-const IntrinsicEntry* IntrinsicRegistry::lookup(InternedString id) const {
+const IntrinsicEntry* lookup(InternedString id) {
     if (!stringPool) return nullptr;
     auto it = idToEntry.find(id);
     return (it != idToEntry.end()) ? it->second : nullptr;
 }
 
-const IntrinsicEntry* IntrinsicRegistry::lookup(std::string_view name) const {
+const IntrinsicEntry* lookup(std::string_view name) {
     if (!stringPool) return nullptr;
     return lookup(stringPool->intern(std::string(name)));
 }
 
-InternedString IntrinsicRegistry::getId(std::string_view name) const {
+InternedString getId(std::string_view name) {
     const IntrinsicEntry* entry = lookup(name);
     return entry ? entry->id : InternedString();
 }
 
-bool IntrinsicRegistry::isKnown(InternedString id) const {
+bool isKnown(InternedString id) {
     return lookup(id) != nullptr;
 }
 
-bool IntrinsicRegistry::isKnown(std::string_view name) const {
+bool isKnown(std::string_view name) {
     return lookup(name) != nullptr;
 }
 
-std::string IntrinsicRegistry::allNames() const {
+std::string allNames() {
     std::string result;
     for (size_t i = 0; i < kEntryCount; ++i) {
         if (i) result += ", ";
@@ -284,21 +285,25 @@ std::string IntrinsicRegistry::allNames() const {
     return result;
 }
 
-bool IntrinsicRegistry::validateCall(const IntrinsicEntry& entry,
-                                     size_t numValueArgs,
-                                     DiagnosticEngine& dc,
-                                     const SourceLocation& loc) const {
+bool validateCall(const IntrinsicEntry& entry,
+                  size_t numValueArgs,
+                  InternedString file,
+                  const SourceLocation& loc) {
     // Check argument count
     if (numValueArgs < static_cast<size_t>(entry.minArgs)) {
-        dc.error(DiagnosticCategory::Semantic, InternedString(), loc,
-                 DiagCode::E3010, {"too few arguments"});
+        diagnostic::error(DiagnosticCategory::Semantic, file, loc,
+                         DiagCode::E3010, {"too few arguments"});
         return false;
     }
     if (entry.maxArgs != -1 && numValueArgs > static_cast<size_t>(entry.maxArgs)) {
-        dc.error(DiagnosticCategory::Semantic, InternedString(), loc,
-                 DiagCode::E3010, {"too many arguments"});
+        diagnostic::error(DiagnosticCategory::Semantic, file, loc,
+                         DiagCode::E3010, {"too many arguments"});
         return false;
     }
-    // Argument kinds are checked by the semantic pass (type checking)
     return true;
 }
+
+InternedString getSizeofId() { return sizeofId; }
+InternedString getAlignofId() { return alignofId; }
+
+} // namespace intrinsic

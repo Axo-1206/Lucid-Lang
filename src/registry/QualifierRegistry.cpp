@@ -1,33 +1,27 @@
 /**
  * @file QualifierRegistry.cpp
- * @brief Implementation of the QualifierRegistry singleton.
+ * @brief Implementation of the qualifier registry namespace.
  */
 
 #include "QualifierRegistry.hpp"
-#include "diagnostics/DiagnosticEngine.hpp"
+#include "diagnostics/Diagnostic.hpp"
+#include <unordered_map>
 
-#include <sstream>
-
-namespace {
-
-struct BuiltinQualifier {
-    std::string_view name;
-    uint32_t bit;
-    bool affectsTypeEquality;
-    QualifierContext validContexts;
-    std::string_view description;
-};
-
-const BuiltinQualifier kBuiltinQualifiers[] = {
+// ─────────────────────────────────────────────────────────────────────────────
+// kQualifiers – static table of all built‑in qualifiers
+// ─────────────────────────────────────────────────────────────────────────────
+static QualifierEntry kQualifiers[] = {
     {
+        InternedString(),               // id (filled later)
         "async",
         QualifierBits::Async,
-        true,
+        true,                           // affectsTypeEquality
         QualifierContext::Function | QualifierContext::Parameter |
         QualifierContext::Return | QualifierContext::TypeAlias,
         "Marks a function as asynchronous – call site must use `await`"
     },
     {
+        InternedString(),
         "nullable",
         QualifierBits::Nullable,
         true,
@@ -37,137 +31,142 @@ const BuiltinQualifier kBuiltinQualifiers[] = {
         "Marks a function binding as nullable – call site must guard against nil"
     },
     {
+        InternedString(),
         "parallel",
         QualifierBits::Parallel,
-        false,
+        false,                          // does NOT affect type equality
         QualifierContext::Function | QualifierContext::Parameter,
         "Marks a function for parallel execution – body has restrictions (no return, no writes to outer scope)"
     },
 };
 
-const size_t kNumBuiltinQualifiers = sizeof(kBuiltinQualifiers) / sizeof(kBuiltinQualifiers[0]);
+static const size_t kQualifierCount = sizeof(kQualifiers) / sizeof(kQualifiers[0]);
 
-} // namespace
+// ─────────────────────────────────────────────────────────────────────────────
+// Static state
+// ─────────────────────────────────────────────────────────────────────────────
+static StringPool* stringPool = nullptr;
+static std::unordered_map<InternedString, const QualifierEntry*> idToEntry;
+static uint32_t cachedEqualityMask = 0;
 
-QualifierRegistry& QualifierRegistry::instance() {
-    static QualifierRegistry registry;
-    return registry;
-}
+// Pre‑interned IDs for well‑known qualifiers
+static InternedString asyncId;
+static InternedString nullableId;
+static InternedString parallelId;
 
-QualifierRegistry::QualifierRegistry() = default;
+// ─────────────────────────────────────────────────────────────────────────────
+// Implementation of namespace functions
+// ─────────────────────────────────────────────────────────────────────────────
+namespace qualifier {
 
-void QualifierRegistry::setStringPool(StringPool& pool) {
+void initialize(StringPool& pool) {
     stringPool = &pool;
+    idToEntry.clear();
 
-    // Clear existing maps (to support re‑initialisation)
-    byId.clear();
-    nameToId.clear();
-
-    for (const auto& builtin : kBuiltinQualifiers) {
-        InternedString id = pool.intern(std::string(builtin.name));
-        std::string_view nameView = pool.lookup(id);
-
-        QualifierInfo info;
-        info.id = id;
-        info.name = nameView;
-        info.bit = builtin.bit;
-        info.affectsTypeEquality = builtin.affectsTypeEquality;
-        info.validContexts = builtin.validContexts;
-        info.description = builtin.description;
-
-        byId[id] = info;
-        nameToId[std::string(builtin.name)] = id;
+    for (size_t i = 0; i < kQualifierCount; ++i) {
+        auto& entry = kQualifiers[i];
+        entry.id = pool.intern(std::string(entry.name));
+        idToEntry[entry.id] = &entry;
     }
 
-    // Pre‑intern well‑known IDs for fast access
+    // Pre‑intern well‑known IDs
     asyncId    = pool.intern("async");
     nullableId = pool.intern("nullable");
     parallelId = pool.intern("parallel");
 
     // Pre‑compute equality mask
     cachedEqualityMask = 0;
-    for (const auto& [_, info] : byId) {
-        if (info.affectsTypeEquality) {
-            cachedEqualityMask |= info.bit;
+    for (size_t i = 0; i < kQualifierCount; ++i) {
+        if (kQualifiers[i].affectsTypeEquality) {
+            cachedEqualityMask |= kQualifiers[i].bit;
         }
     }
 }
 
-void QualifierRegistry::resetStringPool() {
+void shutdown() {
     stringPool = nullptr;
-    byId.clear();
-    nameToId.clear();
-    asyncId = InternedString();
-    nullableId = InternedString();
-    parallelId = InternedString();
+    idToEntry.clear();
+    asyncId = nullableId = parallelId = InternedString();
     cachedEqualityMask = 0;
 }
 
-const QualifierInfo* QualifierRegistry::lookup(InternedString id) const {
+const QualifierEntry* lookup(InternedString id) {
     if (!stringPool) return nullptr;
-    auto it = byId.find(id);
-    return (it != byId.end()) ? &it->second : nullptr;
+    auto it = idToEntry.find(id);
+    return (it != idToEntry.end()) ? it->second : nullptr;
 }
 
-const QualifierInfo* QualifierRegistry::lookup(std::string_view name) const {
+const QualifierEntry* lookup(std::string_view name) {
     if (!stringPool) return nullptr;
-    auto it = nameToId.find(std::string(name));
-    if (it == nameToId.end()) return nullptr;
-    return lookup(it->second);
+    return lookup(stringPool->intern(std::string(name)));
 }
 
-uint32_t QualifierRegistry::getBit(InternedString id) const {
-    const QualifierInfo* info = lookup(id);
-    return info ? info->bit : 0;
+InternedString getId(std::string_view name) {
+    const QualifierEntry* entry = lookup(name);
+    return entry ? entry->id : InternedString();
 }
 
-uint32_t QualifierRegistry::getBit(std::string_view name) const {
-    const QualifierInfo* info = lookup(name);
-    return info ? info->bit : 0;
-}
-
-bool QualifierRegistry::isValid(InternedString id) const {
+bool isKnown(InternedString id) {
     return lookup(id) != nullptr;
 }
 
-bool QualifierRegistry::isValid(std::string_view name) const {
+bool isKnown(std::string_view name) {
     return lookup(name) != nullptr;
 }
 
-bool QualifierRegistry::applyQualifier(uint32_t& mask, InternedString id) const {
+uint32_t getBit(InternedString id) {
+    const QualifierEntry* entry = lookup(id);
+    return entry ? entry->bit : 0;
+}
+
+uint32_t getBit(std::string_view name) {
+    const QualifierEntry* entry = lookup(name);
+    return entry ? entry->bit : 0;
+}
+
+bool applyQualifier(uint32_t& mask, InternedString id) {
     uint32_t bit = getBit(id);
     if (!bit) return false;
     mask |= bit;
     return true;
 }
 
-bool QualifierRegistry::applyQualifier(uint32_t& mask, std::string_view name) const {
+bool applyQualifier(uint32_t& mask, std::string_view name) {
     uint32_t bit = getBit(name);
     if (!bit) return false;
     mask |= bit;
     return true;
 }
 
-bool QualifierRegistry::validateUsage(const QualifierInfo& info,
-                                      QualifierContext ctx,
-                                      DiagnosticEngine& dc,
-                                      const SourceLocation& loc) const {
-    if (!hasFlag(info.validContexts, ctx)) {
-        // Use diagnostic code E2015 for invalid qualifier context
-        dc.error(DiagnosticCategory::Syntax, InternedString(), loc,
-                 DiagCode::E2015, {std::string("~") + std::string(info.name)});
+bool validateUsage(const QualifierEntry& entry,
+                   QualifierContext ctx,
+                   InternedString file,
+                   const SourceLocation& loc) {
+    if (!hasFlag(entry.validContexts, ctx)) {
+        diagnostic::error(DiagnosticCategory::Syntax, file, loc,
+                         DiagCode::E2015,
+                         {std::string("~") + std::string(entry.name)});
         return false;
     }
     return true;
 }
 
-std::string QualifierRegistry::allNames() const {
-    std::stringstream ss;
-    bool first = true;
-    for (const auto& [name, _] : nameToId) {
-        if (!first) ss << ", ";
-        ss << "~" << name;
-        first = false;
+std::string allNames() {
+    std::string result;
+    for (size_t i = 0; i < kQualifierCount; ++i) {
+        if (i) result += ", ";
+        result += "~";
+        result += kQualifiers[i].name;
     }
-    return ss.str();
+    return result;
 }
+
+uint32_t equalityMask() {
+    return cachedEqualityMask;
+}
+
+InternedString getAsyncId()    { return asyncId; }
+InternedString getNullableId() { return nullableId; }
+InternedString getParallelId() { return parallelId; }
+
+} // namespace qualifier

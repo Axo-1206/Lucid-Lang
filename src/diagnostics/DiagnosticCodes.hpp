@@ -36,7 +36,53 @@ enum class DiagCode : uint32_t {
     // E2029,         ///< Nested '!'.
 
     // ========== 3000–3999: Semantic (reserved for later) ==========
-    // None currently used – add as needed.
+    E3001 = 3000,  ///< Undeclared identifier.
+    E3002,         ///< Type mismatch.
+    E3003,         ///< Parameter/argument count mismatch.
+    E3004,         ///< Assignment to immutable value.
+    E3005,         ///< Symbol already declared.
+    E3006,         ///< Missing 'main' entry point.
+    E3007,         ///< Invalid 'main' signature.
+    E3008,         ///< Implicit conversion disallowed.
+    E3009,         ///< Unknown '#...' intrinsic.
+    E3010,         ///< Wrong argument count/type for intrinsic.
+    E3011,         ///< '==' on struct – use :equals().
+    E3012,         ///< '==' on function type.
+    E3013,         ///< '==' on array type.
+    E3014,         ///< Chained comparison.
+    E3015,         ///< '@aot' and '@jit' together.
+    E3016,         ///< '@aot'/'@jit' not on 'main'.
+    E3017,         ///< Generic signature mismatch in impl.
+    E3018,         ///< Impl target must be named type.
+    E3019,         ///< Generic arity mismatch in impl.
+    E3020,         ///< Impl on primitive/enum cannot have generics.
+    E3021,         ///< From target must be named type.
+    E3022,         ///< From entry return type mismatch.
+    E3023,         ///< Method not found for receiver.
+    E3024,         ///< Trait conformance missing method(s).
+    E3025,         ///< Method signature mismatch with trait.
+    E3026,         ///< Duplicate method name in impls.
+    E3027,         ///< 'await' outside ~async.
+    E3028,         ///< ~async call without await.
+    E3029,         ///< 'return' in ~parallel body.
+    E3030,         ///< Write to outer variable in ~parallel.
+    E3031,         ///< break/continue outside loop.
+    E3032,         ///< Multi‑assign RHS value count mismatch.
+    E3033,         ///< Assigning to non‑lvalue.
+    E3034,         ///< 'const' missing initialiser.
+    E3035,         ///< 'const' initialiser not compile‑time constant.
+    E3036,         ///< 'nil' assigned to non‑nullable type.
+    E3037,         ///< Double nullable (e.g., int??).
+    E3038,         ///< ~nullable call without nil guard.
+    E3039,         ///< Generic call missing type arguments.
+    E3040,         ///< Type argument count mismatch.
+    E3041,         ///< 'is' expression outside conditional.
+    E3042,         ///< Pattern bind name conflicts.
+    E3043,         ///< Unconditional bind after specific patterns.
+    E3044,         ///< Generic parameter unused in type alias – add '@phantom'.
+    E3045,         ///< Operation on unresolved '!' type.   
+    E3046,         ///< Unknown '@' attribute.
+    E3047,         ///< Wrong argument count for '@' attribute.
 
     // ========== 4000–4999: Backend ==========
     // None yet.

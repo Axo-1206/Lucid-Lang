@@ -21,8 +21,6 @@
 #include <unordered_map>
 #include <vector>
 
-class DiagnosticEngine;
-
 // ─────────────────────────────────────────────────────────────────────────────
 // IntrinsicArgKind – what kind of argument an intrinsic expects
 // ─────────────────────────────────────────────────────────────────────────────
@@ -54,7 +52,7 @@ enum class IntrinsicReturnKind {
 // IntrinsicEntry – metadata for a single built‑in intrinsic
 // ─────────────────────────────────────────────────────────────────────────────
 struct IntrinsicEntry {
-    InternedString id;                          ///< Pre‑interned key (filled by setStringPool)
+    InternedString id;                          ///< Pre‑interned key (filled by initialize)
     std::string_view lucName;                   ///< Luc name (e.g., "sizeof")
     std::string_view llvmID;                    ///< Corresponding LLVM intrinsic ID (or "llvm.none")
     std::vector<IntrinsicArgKind> argKinds;     ///< Kinds of arguments in order
@@ -66,53 +64,41 @@ struct IntrinsicEntry {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// IntrinsicRegistry – singleton providing intrinsic metadata
+// namespace `intrinsic` – procedural interface for intrinsic metadata
 // ─────────────────────────────────────────────────────────────────────────────
-class IntrinsicRegistry {
-public:
-    static IntrinsicRegistry& instance();
+namespace intrinsic {
 
-    // Must be called once before any lookups (usually after creating StringPool)
-    void setStringPool(StringPool& pool);
-    
-    // Call before destroying the StringPool to avoid dangling references
-    void resetStringPool();
+// Initialize the registry with the active StringPool. Must be called once before lookup.
+void initialize(StringPool& pool);
 
-    // Lookup by interned ID (O(1))
-    const IntrinsicEntry* lookup(InternedString id) const;
+// Shutdown the registry and release the StringPool pointer.
+void shutdown();
 
-    // Lookup by name (interning on the fly)
-    const IntrinsicEntry* lookup(std::string_view name) const;
+// Lookup by interned ID (O(1))
+const IntrinsicEntry* lookup(InternedString id);
 
-    // Get the pre‑interned ID for a known intrinsic (or 0 if unknown)
-    InternedString getId(std::string_view name) const;
+// Lookup by name (interning on the fly)
+const IntrinsicEntry* lookup(std::string_view name);
 
-    // Quick existence checks
-    bool isKnown(InternedString id) const;
-    bool isKnown(std::string_view name) const;
+// Get the pre‑interned ID for a known intrinsic (or 0 if unknown)
+InternedString getId(std::string_view name);
 
-    // Returns a comma‑separated list of all intrinsic names (for error messages)
-    std::string allNames() const;
+// Quick existence checks
+bool isKnown(InternedString id);
+bool isKnown(std::string_view name);
 
-    // Validate a call to an intrinsic (argument count and types)
-    // Reports errors using the diagnostic engine and returns true if valid.
-    bool validateCall(const IntrinsicEntry& entry,
-                      size_t numValueArgs,
-                      DiagnosticEngine& dc,
-                      const SourceLocation& loc) const;
+// Returns a comma‑separated list of all intrinsic names (for error messages)
+std::string allNames();
 
-    // Convenience: pre‑interned IDs for the most common intrinsics
-    InternedString getSizeofId() const   { return sizeofId; }
-    InternedString getAlignofId() const  { return alignofId; }
+// Validate a call to an intrinsic (argument count and types)
+// Reports errors using the global diagnostic module and returns true if valid.
+bool validateCall(const IntrinsicEntry& entry,
+                  size_t numValueArgs,
+                  InternedString file,
+                  const SourceLocation& loc);
 
-private:
-    IntrinsicRegistry();
-    void buildMap();
+// Convenience: pre‑interned IDs for the most common intrinsics
+InternedString getSizeofId();
+InternedString getAlignofId();
 
-    StringPool* stringPool = nullptr;
-    std::unordered_map<InternedString, const IntrinsicEntry*> idToEntry;
-    InternedString sizeofId, alignofId;
-
-    static IntrinsicEntry kEntries[];
-    static const size_t kEntryCount;
-};
+} // namespace intrinsic
