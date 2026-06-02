@@ -57,42 +57,6 @@
 // Composition Expression
 // ============================================================================
 
-/**
- * @brief Parses a function composition expression (`lhs +> operand +> ...`).
- *
- * Grammar:
- *   compose_expr := pipeline_expr { '+>' compose_operand }
- *
- * The left‑hand side is already parsed by the Pratt parser (as a pipeline
- * expression). This function consumes one or more `+>` operators and their
- * right‑hand operands, building a chain of composed functions.
- *
- * @param lhs The left‑hand side expression (already parsed).
- * @return ExprPtr – ComposeExprAST on success, or the original lhs if no
- *         `+>` operators are present (meaning this is not a composition).
- *
- * ─── Token Consumption ─────────────────────────────────────────────────────
- * On entry: positioned after the left‑hand side expression.
- * On exit:  positioned after the last compose operand.
- *
- * ─── Example ──────────────────────────────────────────────────────────────
- *   Input:  `validate +> transform +> render`
- *   Steps:  parseComposeExpr(validate)
- *             → consumes `+> transform +> render`
- *             → returns ComposeExprAST { left = validate, operands = [transform, render] }
- *
- * ─── Edge Cases ───────────────────────────────────────────────────────────
- *   - If no `+>` is found, the function returns the lhs unchanged.
- *   - A single `+>` with one operand produces a ComposeExprAST with one operand.
- *   - Multiple `+>` operators chain left‑associatively.
- *
- * ─── Error Recovery ───────────────────────────────────────────────────────
- *   - `parseComposeOperand()` always returns a valid node (never nullptr),
- *     even on error (with an UnknownExprAST placeholder).
- *   - The loop continues after an error, so all operands are collected.
- *   - The error recovery inside `parseComposeOperand()` consumes invalid
- *     tokens, preventing infinite loops.
- */
 ExprPtr Parser::parseComposeExpr(ExprPtr lhs) {
     auto node = arena_.make<ComposeExprAST>();
     node->loc = lhs->loc;
@@ -122,56 +86,6 @@ ExprPtr Parser::parseComposeExpr(ExprPtr lhs) {
 // Compose Operand
 // ============================================================================
 
-/**
- * @brief Parses a single composition operand (right‑hand side of `+>`).
- *
- * Grammar:
- *   compose_operand := func_ref
- *
- *   func_ref := IDENTIFIER
- *             | IDENTIFIER '.' IDENTIFIER
- *             | IDENTIFIER ':' IDENTIFIER
- *             | func_ref generic_args
- *
- * @return ComposeOperandPtr – always a valid node (never nullptr).
- *         On error, returns a node with an UnknownExprAST as the callable.
- *
- * ─── Token Consumption ─────────────────────────────────────────────────────
- * On entry: positioned at the start of a function reference.
- * On exit:  positioned after the function reference, or after skipping
- *           invalid tokens to the next `+>` or safe boundary.
- *
- * ─── Supported Forms ──────────────────────────────────────────────────────
- *   - Plain identifier:        `validate`
- *   - Dotted path:             `math.utils.normalize`
- *   - Method reference:        `vec:scale`
- *   - Generic instantiation:   `toString<int>`
- *   - Any combination:         `math.utils.toString<int>`, `list:map<U>`
- *
- * ─── What is NOT Allowed ───────────────────────────────────────────────────
- *   - Anonymous functions (not allowed in composition operands)
- *   - Argument pack `(args)!` (only valid in pipeline steps, not composition)
- *   - Parenthesised expressions
- *   - Binary operators
- *
- * ─── Error Recovery Details ───────────────────────────────────────────────
- *   - If `parseFuncRef()` fails (returns nullptr or UnknownExprAST), an error
- *     is reported.
- *   - A placeholder operand is created with `UnknownExprAST` as the callable.
- *   - The parser then consumes tokens until it finds:
- *       - Another `+>` operator (so the loop can continue)
- *       - A semicolon or closing brace (statement boundary)
- *       - End of file
- *   - This ensures that invalid operands do not cause infinite loops and that
- *     subsequent valid operands after another `+>` are still parsed.
- *
- * ─── Semantic Validation (Not Parser Responsibility) ──────────────────────
- *   - The resolved callable must be a plain function (no curry, no ~nullable,
- *     no ~parallel) – enforced by semantic pass.
- *   - Generic function references must have all type arguments supplied.
- *   - The output type of the previous operand must match the input type of
- *     this operand.
- */
 ComposeOperandPtr Parser::parseComposeOperand() {
     // Parse a function reference using the shared helper.
     ExprPtr callable = parseFuncRef();
@@ -181,7 +95,7 @@ ComposeOperandPtr Parser::parseComposeOperand() {
 
     // Check for parse failure
     if (!callable || callable->isa<UnknownExprAST>()) {
-        errorAt(DiagCode::E2002,
+        errorAt(DiagCode::E1002,
                 "expected function name, method reference, or dotted path after '+>'");
         operand->callable = arena_.make<UnknownExprAST>();
 

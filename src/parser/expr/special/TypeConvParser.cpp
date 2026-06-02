@@ -77,7 +77,7 @@ ExprPtr Parser::parseTypeConvExpr(TypePtr targetType) {
 
     ExprPtr expr = parseExpr();
     if (!expr) {
-        errorAt(DiagCode::E2008, "expected expression inside explicit type cast");
+        errorAt(DiagCode::E1008, "expected expression inside explicit type cast");
         return arena_.make<UnknownExprAST>();
     }
 

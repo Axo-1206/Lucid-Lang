@@ -34,12 +34,12 @@ ExprPtr Parser::parseAwaitExpr(bool allowStructLiteral) {
     ts_.consume(TokenType::AWAIT, "expected 'await'");
 
     if (parallelDepth_ > 0) {
-        error(loc, DiagCode::E2006, "'await' is not valid inside a 'parallel' block");
+        error(loc, DiagCode::E1006, "'await' is not valid inside a 'parallel' block");
     }
 
     ExprPtr inner = parsePrattExpr(PREC_NONE, allowStructLiteral);
     if (!inner) {
-        errorAt(DiagCode::E2008, "expected expression after 'await'");
+        errorAt(DiagCode::E1008, "expected expression after 'await'");
         return arena_.make<UnknownExprAST>();
     }
 

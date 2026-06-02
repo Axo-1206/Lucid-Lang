@@ -42,28 +42,28 @@ ExprPtr Parser::parseIfExpr(bool allowStructLiteral) {
 
     ExprPtr condition = parsePrattExpr(PREC_NULLCOAL, allowStructLiteral);
     if (!condition) {
-        errorAt(DiagCode::E2008, "expected condition after 'if'");
+        errorAt(DiagCode::E1008, "expected condition after 'if'");
         return arena_.make<UnknownExprAST>();
     }
 
     if (!ts_.match(TokenType::QUESTION_QUESTION)) {
-        errorAt(DiagCode::E2001, "expected '\?\?' after if condition in expression form");
+        errorAt(DiagCode::E1001, "expected '\?\?' after if condition in expression form");
         return arena_.make<UnknownExprAST>();
     }
 
     ExprPtr thenBranch = parseExpr();
     if (!thenBranch) {
-        errorAt(DiagCode::E2008, "expected expression after '\?\?'");
+        errorAt(DiagCode::E1008, "expected expression after '\?\?'");
     }
 
     if (!ts_.match(TokenType::ELSE)) {
-        errorAt(DiagCode::E2006, "expression-form 'if' requires an 'else' branch");
+        errorAt(DiagCode::E1006, "expression-form 'if' requires an 'else' branch");
         return arena_.make<UnknownExprAST>();
     }
 
     ExprPtr elseBranch = parseExpr();
     if (!elseBranch) {
-        errorAt(DiagCode::E2008, "expected expression after 'else'");
+        errorAt(DiagCode::E1008, "expected expression after 'else'");
     }
 
     auto node = arena_.make<IfExprAST>();

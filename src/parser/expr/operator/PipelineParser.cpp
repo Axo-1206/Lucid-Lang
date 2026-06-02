@@ -57,40 +57,9 @@
 // Pipeline Expression
 // ============================================================================
 
-/**
- * @brief Parses a pipeline expression (`seed |> step |> step |> ...`).
- *
- * Grammar:
- *   pipeline_expr := pipeline_seed { '|>' pipeline_step }
- *
- * The seed is already parsed by the Pratt parser (as a logical expression).
- * This function consumes one or more `|>` operators and their right‑hand
- * steps, building a chain of runtime function applications.
- *
- * @param seed The left‑hand side expression (already parsed).
- * @return ExprPtr – PipelineExprAST if at least one step is found,
- *         otherwise the original seed (no pipeline).
- *
- * ─── Token Consumption ─────────────────────────────────────────────────────
- * On entry: positioned after the seed expression.
- * On exit:  positioned after the last pipeline step.
- *
- * ─── Example ──────────────────────────────────────────────────────────────
- *   Input:  `42 |> float |> sqrt`
- *   Steps:  parsePipelineExpr(42)
- *             → consumes `|> float |> sqrt`
- *             → returns PipelineExprAST { seed = 42, steps = [float, sqrt] }
- *
- * ─── Error Recovery ───────────────────────────────────────────────────────
- *   - If a `|>` is found but parsePipelineStep() returns a step with an
- *     UnknownExprAST (because of parsing error), the loop still adds it to
- *     the steps vector and continues. The error is already reported.
- *   - If no steps are collected (should not happen because parsePipelineStep
- *     always returns a step), the function returns the seed.
- */
 ExprPtr Parser::parsePipelineExpr(ExprPtr seed) {
     if (!seed) {
-        errorAt(DiagCode::E2008, "expected pipeline seed before '|>'");
+        errorAt(DiagCode::E1008, "expected pipeline seed before '|>'");
         return arena_.make<UnknownExprAST>();
     }
 
@@ -121,73 +90,6 @@ ExprPtr Parser::parsePipelineExpr(ExprPtr seed) {
 // Pipeline Step
 // ============================================================================
 
-/**
- * @brief Parses a single pipeline step (right‑hand side of `|>`).
- *
- * Grammar:
- *   pipeline_step := func_ref [ '(' arg_list ')' '!' ] | anon_func
- *
- * This function is guaranteed to never return nullptr. On error, it returns
- * a step with an `UnknownExprAST` as the callable and skips to the next
- * pipeline operator or safe boundary.
- *
- * @return PipelineStepPtr – always a valid node (never nullptr).
- *
- * ─── Token Consumption ─────────────────────────────────────────────────────
- * On entry: positioned at the start of a function reference or anonymous
- *           function.
- * On exit:  positioned after the step (and optional argument pack), or after
- *           skipping invalid tokens to the next '|>' or safe boundary.
- *
- * ─── Supported Step Forms ─────────────────────────────────────────────────
- *   | Form                          | Example                          |
- *   |-------------------------------|----------------------------------|
- *   | Plain identifier              | `validate`                       |
- *   | Dotted path                   | `math.utils.normalize`           |
- *   | Method reference              | `Vec2:normalize`                 |
- *   | Generic instantiation         | `identity<int>`                  |
- *   | Generic method reference      | `list:map<U>`                    |
- *   | Argument pack (plain)         | `scale(2.0)!`                    |
- *   | Argument pack (method)        | `list:push(item)!`               |
- *   | Argument pack (generic)       | `map<int, string>(toString)!`    |
- *   | Anonymous function            | `(x int) -> int { return x * 2 }`|
- *
- * ─── What is NOT Allowed ───────────────────────────────────────────────────
- *   - Parenthesised expressions (e.g., `(f)(x)` – not valid as a step)
- *   - Binary operators (e.g., `a + b` – not a function reference)
- *   - Curry functions with multiple groups (e.g., `add` with `(a)(b)`)
- *     – pre‑apply all but the last group first.
- *
- * ─── Argument Pack (`!`) ──────────────────────────────────────────────────
- *   The `!` annotation marks an intentionally incomplete argument list.
- *   The upstream value from the pipeline is injected as the first argument
- *   when the step is executed.
- *
- *   Example:
- *     let scale (v Vec2, factor float) -> Vec2 = { ... }
- *     v |> scale(2.0)!     -- calls scale(v, 2.0)
- *
- * ─── Error Recovery Details ───────────────────────────────────────────────
- *   - If `parseFuncRef()` fails (returns nullptr or UnknownExprAST), an error
- *     is reported. A placeholder step is created with `UnknownExprAST` as the
- *     callable.
- *   - The parser then consumes tokens until it finds:
- *       - Another pipeline operator `|>` (so the loop can continue)
- *       - A semicolon or closing brace (statement boundary)
- *       - End of file
- *   - This ensures that invalid steps do not cause infinite loops and that
- *     subsequent valid steps after another `|>` are still parsed.
- *   - The placeholder step is added to the steps vector, preserving the
- *     structure of the pipeline.
- *
- * ─── Semantic Validation (Not Parser Responsibility) ──────────────────────
- *   - The resolved callable must be a function (not a type or value).
- *   - Generic function references must have all type arguments supplied.
- *   - The input type of the step must match the output type of the previous
- *     step or seed.
- *   - The step cannot be ~nullable or ~parallel (enforced by semantic pass).
- *   - If the step is ~async, the entire pipeline becomes async.
- */
 PipelineStepPtr Parser::parsePipelineStep() {
     // 1. Anonymous function step
     if (looksLikeAnonFunc()) {
@@ -202,7 +104,7 @@ PipelineStepPtr Parser::parsePipelineStep() {
 
     // 3. Handle parse failure
     if (!callable || callable->isa<UnknownExprAST>()) {
-        errorAt(DiagCode::E2002,
+        errorAt(DiagCode::E1002,
                 "expected function name, method reference, or anonymous function");
 
         // Create error placeholder step
@@ -240,7 +142,7 @@ PipelineStepPtr Parser::parsePipelineStep() {
         ts_.consume(TokenType::RPAREN, "expected ')'");
 
         if (!ts_.match(TokenType::BANG)) {
-            errorAt(DiagCode::E2001,
+            errorAt(DiagCode::E1001,
                     "expected '!' after arguments for argument pack");
             // Still return the step – it just won't have packArgs
             return step;

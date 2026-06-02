@@ -46,7 +46,7 @@ ExprPtr Parser::parseResolveExpr() {
 
     ExprPtr subject = parseExpr(false);
     if (!subject) {
-        errorAt(DiagCode::E2008, "expected expression after 'resolve'");
+        errorAt(DiagCode::E1008, "expected expression after 'resolve'");
         return arena_.make<UnknownExprAST>();
     }
 
@@ -54,12 +54,12 @@ ExprPtr Parser::parseResolveExpr() {
 
     OkArmPtr okArm = parseOkArm();
     if (!okArm) {
-        errorAt(DiagCode::E2006, "expected 'ok' arm in resolve expression");
+        errorAt(DiagCode::E1006, "expected 'ok' arm in resolve expression");
     }
 
     ErrArmPtr errArm = parseErrArm();
     if (!errArm) {
-        errorAt(DiagCode::E2006, "expected 'err' arm in resolve expression");
+        errorAt(DiagCode::E1006, "expected 'err' arm in resolve expression");
     }
 
     ts_.consume(TokenType::RBRACE, "expected '}' to close resolve expression");
@@ -111,14 +111,14 @@ OkArmPtr Parser::parseOkArm() {
     ts_.consume(TokenType::LPAREN, "expected '(' after 'ok'");
 
     if (!ts_.check(TokenType::IDENTIFIER)) {
-        errorAt(DiagCode::E2003, "expected identifier for ok arm binding");
+        errorAt(DiagCode::E1003, "expected identifier for ok arm binding");
         return nullptr;
     }
     InternedString bindName = pool_.intern(ts_.advance().value);
 
     TypePtr bindType = parseType();
     if (!bindType) {
-        errorAt(DiagCode::E2005, "expected type for ok arm binding");
+        errorAt(DiagCode::E1005, "expected type for ok arm binding");
         return nullptr;
     }
 
@@ -126,7 +126,7 @@ OkArmPtr Parser::parseOkArm() {
 
     StmtPtr body = parseBlock();
     if (!body) {
-        errorAt(DiagCode::E2001, "expected block for ok arm");
+        errorAt(DiagCode::E1001, "expected block for ok arm");
         return nullptr;
     }
 
@@ -183,12 +183,12 @@ ErrArmPtr Parser::parseErrArm() {
     // Check for optional identifier and type (bare '!' case)
     if (!ts_.check(TokenType::RPAREN)) {
         if (!ts_.check(TokenType::IDENTIFIER)) {
-            errorAt(DiagCode::E2003, "expected identifier for err arm binding");
+            errorAt(DiagCode::E1003, "expected identifier for err arm binding");
         } else {
             bindName = pool_.intern(ts_.advance().value);
             bindType = parseType();
             if (!bindType) {
-                errorAt(DiagCode::E2005, "expected type for err arm binding");
+                errorAt(DiagCode::E1005, "expected type for err arm binding");
             }
         }
     }
@@ -197,7 +197,7 @@ ErrArmPtr Parser::parseErrArm() {
 
     StmtPtr body = parseBlock();
     if (!body) {
-        errorAt(DiagCode::E2001, "expected block for err arm");
+        errorAt(DiagCode::E1001, "expected block for err arm");
         return nullptr;
     }
 

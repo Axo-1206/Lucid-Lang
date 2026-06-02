@@ -90,7 +90,7 @@ ExprPtr Parser::parseRangeExpr(ExprPtr lo, bool allowStructLiteral) {
     bool isExclusive = ts_.match(TokenType::LESS);
     ExprPtr hi = parsePrattExpr(PREC_ADD, allowStructLiteral);
     if (!hi) {
-        errorAt(DiagCode::E2008, "expected upper bound after '..'");
+        errorAt(DiagCode::E1008, "expected upper bound after '..'");
         return arena_.make<UnknownExprAST>();
     }
 
