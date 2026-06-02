@@ -32,7 +32,7 @@ src/parser/
 ├── type/                               # Concrete type parsers
 │   ├── PrimitiveParser.cpp             # parsePrimitiveType
 │   ├── NamedParser.cpp                 # parseNamedType
-│   ├── ArrayParser.cpp                 # parseArrayType, parseArrayTarget
+│   ├── ArrayParser.cpp                 # parseArrayType, parseGenericArray
 │   ├── RefParser.cpp                   # parseRefType
 │   ├── PtrParser.cpp                   # parsePtrType
 │   └── FuncTypeParser.cpp              # parseFuncType
@@ -144,7 +144,7 @@ parseType                                      [Dispatcher.cpp]
     └── ! [type]              → ResultTypeAST
 ```
 
-`parseGenericArray` (used by `parseImplDecl`, in `type/ArrayParser.cpp`) accepts generic array forms.
+`parseGenericArray` (in `type/ArrayParser.cpp`) is the generic-array entry point used by `parseImplDecl`, `parseFromDecl`, and `parseTypeAliasDecl`.
 
 ### Statement dispatch (`parseStmt`)
 
@@ -210,12 +210,11 @@ parsePrimaryExpr                               [Dispatcher.cpp]
 ├── [              → parseArrayLiteralExpr
 ├── looksLikeAnonFunc → parseAnonFuncExpr → parseParamGroup, parseReturnList?, parseBlock | parseExpr
 ├── (              → parsePrattExpr       (grouped)
-├── * type (       → parseTypeConvExpr    (unsafe cast)
 ├── identifier
 │   ├── struct literal  → parseStructLiteralExpr
 │   ├── behavior access → BehaviorAccessExprAST (Type:method)
 │   └── plain           → IdentifierExprAST
-├── primitive (    → parseTypeConvExpr    (safe cast)
+├── primitive (    → parseTypeConvExpr(TypePtr)    [expr/special/TypeConvParser.cpp]
 └── else           → parseLiteralExpr
 ```
 

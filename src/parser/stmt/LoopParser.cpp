@@ -140,9 +140,7 @@ ASTPtr<ForStmtAST> Parser::parseForStmt() {
         return nullptr;
     }
 
-    ++loopDepth_;
     StmtPtr body = parseBlock();
-    --loopDepth_;
 
     auto node = arena_.make<ForStmtAST>();
     node->loc = loc;
@@ -201,9 +199,7 @@ ASTPtr<WhileStmtAST> Parser::parseWhileStmt() {
         return nullptr;
     }
 
-    ++loopDepth_;
     StmtPtr body = parseBlock();
-    --loopDepth_;
 
     auto node = arena_.make<WhileStmtAST>();
     node->loc = loc;
@@ -250,9 +246,7 @@ ASTPtr<DoWhileStmtAST> Parser::parseDoWhileStmt() {
         return nullptr;
     }
 
-    ++loopDepth_;
     StmtPtr body = parseBlock();
-    --loopDepth_;
 
     ts_.consume(TokenType::WHILE, "expected 'while' after do body");
 

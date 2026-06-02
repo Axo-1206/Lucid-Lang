@@ -103,16 +103,7 @@ ASTPtr<ImplDeclAST> Parser::parseImplDecl(Visibility vis) {
 
     // Case 1: Array target (concrete or generic)
     if (ts_.check(TokenType::LBRACKET)) {
-        // Check if this is a generic array target (contains '<' after kind)
-        size_t savedPos = ts_.getPos();
-        
-        // Peek to see if this is a generic array
-        bool isGenericArray = false;
         if (looksLikeGenericArray()) {
-            isGenericArray = true;
-        }
-        
-        if (isGenericArray) {
             targetType = parseGenericArray();
         } else {
             targetType = parseArrayType();
