@@ -25,7 +25,7 @@ ASTPtr<PackageDeclAST> Parser::parsePackageDecl() {
     ts_.consume(TokenType::PACKAGE, "expected 'package'");
 
     if (!ts_.check(TokenType::IDENTIFIER)) {
-        errorAt(DiagCode::E2003, "expected package name");
+        errorAt(DiagCode::E1003, "expected package name");
         auto node = arena_.make<PackageDeclAST>(pool_.intern("<error>"));
         node->loc = loc;
         return node;

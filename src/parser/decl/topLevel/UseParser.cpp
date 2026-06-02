@@ -31,7 +31,7 @@ ASTPtr<UseDeclAST> Parser::parseUseDecl(Visibility vis) {
     node->visibility = vis;
 
     if (!ts_.check(TokenType::IDENTIFIER)) {
-        errorAt(DiagCode::E2003, "expected module path after 'use'");
+        errorAt(DiagCode::E1003, "expected module path after 'use'");
         return node;
     }
 
@@ -49,7 +49,7 @@ ASTPtr<UseDeclAST> Parser::parseUseDecl(Visibility vis) {
 
     if (ts_.match(TokenType::AS)) {
         if (!ts_.check(TokenType::IDENTIFIER)) {
-            errorAt(DiagCode::E2003, "expected alias name after 'as'");
+            errorAt(DiagCode::E1003, "expected alias name after 'as'");
         } else {
             node->alias = pool_.intern(ts_.advance().value);
         }

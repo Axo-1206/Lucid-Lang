@@ -113,13 +113,13 @@ ASTPtr<FromDeclAST> Parser::parseFromDecl(Visibility vis) {
         }
         
         if (!targetType || targetType->isa<UnknownTypeAST>()) {
-            errorAt(DiagCode::E2005, "invalid array target in from block");
+            errorAt(DiagCode::E1005, "invalid array target in from block");
             return nullptr;
         }
         node->targetType = std::move(targetType);
         // Array targets cannot have additional generic parameters
     }
-    // Case 2: Generic struct type (IDENTIFIER '<')
+    // Case 2: Generic struct type or generic type alias (IDENTIFIER '<')
     else if (ts_.check(TokenType::IDENTIFIER) && 
              looksLikeGenericTypeInstantiation()) {
         
@@ -139,14 +139,14 @@ ASTPtr<FromDeclAST> Parser::parseFromDecl(Visibility vis) {
     else if (looksLikeType()) {
         targetType = parseType();
         if (!targetType || targetType->isa<UnknownTypeAST>()) {
-            errorAt(DiagCode::E2005, "invalid target type in from block");
+            errorAt(DiagCode::E1005, "invalid target type in from block");
             return nullptr;
         }
         node->targetType = std::move(targetType);
     }
     // Case 4: Error
     else {
-        errorAt(DiagCode::E2005, "expected target type in from block");
+        errorAt(DiagCode::E1005, "expected target type in from block");
         return nullptr;
     }
 
@@ -250,7 +250,7 @@ FromEntryPtr Parser::parseFromEntry() {
 
         // Expect '->'
         if (!ts_.check(TokenType::ARROW)) {
-            errorAt(DiagCode::E2001, "expected '->' before return type for conversion entry");
+            errorAt(DiagCode::E1001, "expected '->' before return type for conversion entry");
             return nullptr;
         }
         ts_.advance();
@@ -258,14 +258,14 @@ FromEntryPtr Parser::parseFromEntry() {
         // Parse return type
         TypePtr returnType = parseType();
         if (!returnType) {
-            errorAt(DiagCode::E2005, "expected return type after '->'");
+            errorAt(DiagCode::E1005, "expected return type after '->'");
             return nullptr;
         }
         entry->returnType = std::move(returnType);
 
         // Expect '='
         if (!ts_.check(TokenType::ASSIGN)) {
-            errorAt(DiagCode::E2001, "expected '=' before body for conversion entry");
+            errorAt(DiagCode::E1001, "expected '=' before body for conversion entry");
             return nullptr;
         }
         ts_.advance();
@@ -277,7 +277,7 @@ FromEntryPtr Parser::parseFromEntry() {
             SourceLocation bodyLoc = ts_.currentLoc();
             ExprPtr expr = parseExpr();
             if (!expr) {
-                errorAt(DiagCode::E2008, "expected expression after '=' in conversion entry");
+                errorAt(DiagCode::E1008, "expected expression after '=' in conversion entry");
                 return nullptr;
             }
 
@@ -305,7 +305,7 @@ FromEntryPtr Parser::parseFromEntry() {
         // Parse function reference (may include generic instantiation)
         ExprPtr funcRef = parseFuncRef();
         if (!funcRef || funcRef->isa<UnknownExprAST>()) {
-            errorAt(DiagCode::E2008, "expected function reference in from entry");
+            errorAt(DiagCode::E1008, "expected function reference in from entry");
             return nullptr;
         }
         entry->path = std::move(funcRef);

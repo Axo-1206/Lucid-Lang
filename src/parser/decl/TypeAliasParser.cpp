@@ -30,7 +30,7 @@ ASTPtr<TypeAliasDeclAST> Parser::parseTypeAliasDecl(Visibility vis) {
     ts_.consume(TokenType::TYPE, "expected 'type' before type alias");
 
     if (!ts_.check(TokenType::IDENTIFIER)) {
-        errorAt(DiagCode::E2003, "expected type alias name");
+        errorAt(DiagCode::E1003, "expected type alias name");
         return nullptr;
     }
     InternedString name = pool_.intern(ts_.advance().value);
@@ -48,7 +48,7 @@ ASTPtr<TypeAliasDeclAST> Parser::parseTypeAliasDecl(Visibility vis) {
 
     node->aliasedType = parseType();
     if (!node->aliasedType) {
-        errorAt(DiagCode::E2005, "expected type on the right-hand side of type alias");
+        errorAt(DiagCode::E1005, "expected type on the right-hand side of type alias");
     }
 
     return node;

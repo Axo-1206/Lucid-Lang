@@ -31,19 +31,19 @@ ASTPtr<VarDeclAST> Parser::parseVarDecl(Visibility vis) {
     SourceLocation loc = ts_.currentLoc();
 
     if (!ts_.check(TokenType::IDENTIFIER)) {
-        errorAt(DiagCode::E2003, "expected variable name");
+        errorAt(DiagCode::E1003, "expected variable name");
         return nullptr;
     }
     InternedString name = pool_.intern(ts_.advance().value);
 
     if (!looksLikeType()) {
-        errorAt(DiagCode::E2005, "expected type annotation for '" + std::string(pool_.lookup(name)) + "'");
+        errorAt(DiagCode::E1005, "expected type annotation for '" + std::string(pool_.lookup(name)) + "'");
         return nullptr;
     }
 
     TypePtr type = parseType();
     if (!type) {
-        errorAt(DiagCode::E2005, "expected type for variable '" + std::string(pool_.lookup(name)) + "'");
+        errorAt(DiagCode::E1005, "expected type for variable '" + std::string(pool_.lookup(name)) + "'");
         return nullptr;
     }
 
@@ -51,7 +51,7 @@ ASTPtr<VarDeclAST> Parser::parseVarDecl(Visibility vis) {
     if (ts_.match(TokenType::ASSIGN)) {
         init = parseExpr();
         if (!init) {
-            errorAt(DiagCode::E2008, "expected expression after '=' in variable declaration");
+            errorAt(DiagCode::E1008, "expected expression after '=' in variable declaration");
         }
     }
 

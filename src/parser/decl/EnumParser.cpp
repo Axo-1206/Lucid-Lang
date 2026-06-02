@@ -33,7 +33,7 @@ ASTPtr<EnumDeclAST> Parser::parseEnumDecl(Visibility vis) {
     ts_.consume(TokenType::ENUM, "expected 'enum'");
 
     if (!ts_.check(TokenType::IDENTIFIER)) {
-        errorAt(DiagCode::E2003, "expected enum name");
+        errorAt(DiagCode::E1003, "expected enum name");
         return nullptr;
     }
     InternedString name = pool_.intern(ts_.advance().value);
@@ -94,7 +94,7 @@ EnumVariantPtr Parser::parseEnumVariant() {
     SourceLocation loc = ts_.currentLoc();
 
     if (!ts_.check(TokenType::IDENTIFIER)) {
-        errorAt(DiagCode::E2003, "expected enum variant name");
+        errorAt(DiagCode::E1003, "expected enum variant name");
         return nullptr;
     }
     InternedString name = pool_.intern(ts_.advance().value);
@@ -117,11 +117,11 @@ EnumVariantPtr Parser::parseEnumVariant() {
             if (endPtr != raw.c_str() && *endPtr == '\0' && errno != ERANGE) {
                 variant->explicitValue = val;
             } else {
-                error(ts_.locOf(valTok), DiagCode::E2009,
+                error(ts_.locOf(valTok), DiagCode::E1007,
                       "enum variant value '" + valTok.value + "' is not a valid integer");
             }
         } else {
-            errorAt(DiagCode::E2009, "expected integer literal after '=' in enum variant");
+            errorAt(DiagCode::E1007, "expected integer literal after '=' in enum variant");
         }
     }
 

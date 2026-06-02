@@ -33,7 +33,7 @@ ASTPtr<TraitDeclAST> Parser::parseTraitDecl(Visibility vis) {
     ts_.consume(TokenType::TRAIT, "expected 'trait'");
 
     if (!ts_.check(TokenType::IDENTIFIER)) {
-        errorAt(DiagCode::E2003, "expected trait name");
+        errorAt(DiagCode::E1003, "expected trait name");
         return nullptr;
     }
     InternedString name = pool_.intern(ts_.advance().value);
@@ -102,7 +102,7 @@ TraitMethodPtr Parser::parseTraitMethod() {
     method->loc = loc;
 
     if (!ts_.check(TokenType::IDENTIFIER)) {
-        errorAt(DiagCode::E2003, "expected trait method name");
+        errorAt(DiagCode::E1003, "expected trait method name");
         return nullptr;
     }
     method->name = pool_.intern(ts_.advance().value);
@@ -117,7 +117,7 @@ TraitMethodPtr Parser::parseTraitMethod() {
     while (ts_.check(TokenType::TILDE)) {
         ts_.advance();
         if (!ts_.check(TokenType::IDENTIFIER)) {
-            errorAt(DiagCode::E2003, "expected qualifier name after '~'");
+            errorAt(DiagCode::E1003, "expected qualifier name after '~'");
             break;
         }
         InternedString q = pool_.intern(ts_.advance().value);
@@ -135,7 +135,7 @@ TraitMethodPtr Parser::parseTraitMethod() {
     std::vector<ParamPtr> allParams;
     std::vector<size_t> groupSizes;
     if (!ts_.check(TokenType::LPAREN)) {
-        errorAt(DiagCode::E2001, "expected '(' for trait method parameters");
+        errorAt(DiagCode::E1001, "expected '(' for trait method parameters");
         return nullptr;
     }
     while (ts_.check(TokenType::LPAREN)) {
@@ -186,7 +186,7 @@ TraitRefPtr Parser::parseTraitRef() {
     ts_.consume(TokenType::COLON, "expected ':' before trait name");
 
     if (!ts_.check(TokenType::IDENTIFIER)) {
-        errorAt(DiagCode::E2003, "expected trait name after ':'");
+        errorAt(DiagCode::E1003, "expected trait name after ':'");
         return nullptr;
     }
 

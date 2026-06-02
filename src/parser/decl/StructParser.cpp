@@ -29,7 +29,7 @@ ASTPtr<StructDeclAST> Parser::parseStructDecl(Visibility vis) {
     ts_.consume(TokenType::STRUCT, "expected 'struct'");
 
     if (!ts_.check(TokenType::IDENTIFIER)) {
-        errorAt(DiagCode::E2003, "expected struct name");
+        errorAt(DiagCode::E1003, "expected struct name");
         return nullptr;
     }
     InternedString name = pool_.intern(ts_.advance().value);
@@ -94,14 +94,14 @@ FieldDeclPtr Parser::parseFieldDecl() {
     SourceLocation loc = ts_.currentLoc();
 
     if (!ts_.check(TokenType::IDENTIFIER)) {
-        errorAt(DiagCode::E2003, "expected field name");
+        errorAt(DiagCode::E1003, "expected field name");
         return nullptr;
     }
     InternedString name = pool_.intern(ts_.advance().value);
 
     TypePtr type = parseType();
     if (!type) {
-        errorAt(DiagCode::E2005, "expected type for field '" + std::string(pool_.lookup(name)) + "'");
+        errorAt(DiagCode::E1005, "expected type for field '" + std::string(pool_.lookup(name)) + "'");
         return nullptr;
     }
 
@@ -109,7 +109,7 @@ FieldDeclPtr Parser::parseFieldDecl() {
     if (ts_.match(TokenType::ASSIGN)) {
         defaultVal = parseExpr();
         if (!defaultVal) {
-            errorAt(DiagCode::E2008, "expected expression after '=' in field default value");
+            errorAt(DiagCode::E1008, "expected expression after '=' in field default value");
         }
     }
 

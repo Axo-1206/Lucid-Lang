@@ -119,7 +119,7 @@ ASTPtr<ImplDeclAST> Parser::parseImplDecl(Visibility vis) {
         }
         
         if (!targetType || targetType->isa<UnknownTypeAST>()) {
-            errorAt(DiagCode::E2005, "invalid array target in impl block");
+            errorAt(DiagCode::E1005, "invalid array target in impl block");
             return nullptr;
         }
     }
@@ -133,13 +133,13 @@ ASTPtr<ImplDeclAST> Parser::parseImplDecl(Visibility vis) {
     }
     // Case 4: Error
     else {
-        errorAt(DiagCode::E2003, 
+        errorAt(DiagCode::E1003, 
                 "expected target type after 'impl' (primitive, identifier, or '[')");
         return nullptr;
     }
 
     if (!targetType || targetType->isa<UnknownTypeAST>()) {
-        errorAt(DiagCode::E2005, "invalid target type in impl block");
+        errorAt(DiagCode::E1005, "invalid target type in impl block");
         return nullptr;
     }
     node->targetType = std::move(targetType);
@@ -156,7 +156,7 @@ ASTPtr<ImplDeclAST> Parser::parseImplDecl(Visibility vis) {
     // Parse 'as' alias (optional)
     if (ts_.match(TokenType::AS)) {
         if (!ts_.check(TokenType::IDENTIFIER)) {
-            errorAt(DiagCode::E2003, "expected identifier after 'as' for receiver alias");
+            errorAt(DiagCode::E1003, "expected identifier after 'as' for receiver alias");
         } else {
             node->receiverAlias = pool_.intern(ts_.advance().value);
         }
@@ -190,7 +190,7 @@ ASTPtr<ImplDeclAST> Parser::parseImplDecl(Visibility vis) {
             continue;
         }
 
-        errorAt(DiagCode::E2002, "expected method declaration inside impl block");
+        errorAt(DiagCode::E1002, "expected method declaration inside impl block");
         if (ts_.getPos() == savedPos && !ts_.isAtEnd()) ts_.advance();
         while (!ts_.isAtEnd() && !ts_.check(TokenType::RBRACE) && 
                !ts_.check(TokenType::IDENTIFIER)) ts_.advance();
@@ -258,7 +258,7 @@ MethodDeclPtr Parser::parseMethodDecl() {
 
     // ---------- 1. Parse method name ----------
     if (!ts_.check(TokenType::IDENTIFIER)) {
-        errorAt(DiagCode::E2003, "expected method name");
+        errorAt(DiagCode::E1003, "expected method name");
         return nullptr;
     }
     InternedString name = pool_.intern(ts_.advance().value);
@@ -279,7 +279,7 @@ MethodDeclPtr Parser::parseMethodDecl() {
         size_t afterParams = ts_.getPos();
         if (ts_.check(TokenType::ASSIGN)) {
             // This is an assignment form with bogus generic parameters - error
-            errorAt(DiagCode::E2001, 
+            errorAt(DiagCode::E1001, 
                     "assignment form method cannot have generic parameters; remove '<...>'");
             // Restore and continue as assignment form
             ts_.setPos(savedPos);
@@ -315,7 +315,7 @@ MethodDeclPtr Parser::parseMethodDecl() {
         // Parse the function reference (may include generic instantiation)
         ExprPtr funcRef = parseFuncRef();
         if (!funcRef || funcRef->isa<UnknownExprAST>()) {
-            errorAt(DiagCode::E2008, "expected function reference after '='");
+            errorAt(DiagCode::E1008, "expected function reference after '='");
             return nullptr;
         }
         
@@ -326,13 +326,13 @@ MethodDeclPtr Parser::parseMethodDecl() {
         if (ts_.check(TokenType::LPAREN)) {
             ts_.advance(); // consume '('
             if (!ts_.check(TokenType::IDENTIFIER)) {
-                errorAt(DiagCode::E2003, "expected receiver name in injection form");
+                errorAt(DiagCode::E1003, "expected receiver name in injection form");
             } else {
                 receiverArg = pool_.intern(ts_.advance().value);
             }
             ts_.consume(TokenType::RPAREN, "expected ')' after receiver name");
             if (!ts_.match(TokenType::BANG)) {
-                errorAt(DiagCode::E2001, "expected '!' for injection form");
+                errorAt(DiagCode::E1001, "expected '!' for injection form");
             } else {
                 isInjection = true;
             }
@@ -374,7 +374,7 @@ MethodDeclPtr Parser::parseMethodDecl() {
     while (ts_.check(TokenType::TILDE)) {
         ts_.advance();
         if (!ts_.check(TokenType::IDENTIFIER)) {
-            errorAt(DiagCode::E2003, "expected qualifier name after '~'");
+            errorAt(DiagCode::E1003, "expected qualifier name after '~'");
             break;
         }
         InternedString q = pool_.intern(ts_.advance().value);
@@ -393,7 +393,7 @@ MethodDeclPtr Parser::parseMethodDecl() {
     std::vector<ParamPtr> allParams;
     std::vector<size_t> groupSizes;
     if (!ts_.check(TokenType::LPAREN)) {
-        errorAt(DiagCode::E2001, "expected '(' to start parameter list for method");
+        errorAt(DiagCode::E1001, "expected '(' to start parameter list for method");
         return nullptr;
     }
     while (ts_.check(TokenType::LPAREN)) {
@@ -420,7 +420,7 @@ MethodDeclPtr Parser::parseMethodDecl() {
 
     // Body
     if (!ts_.check(TokenType::ASSIGN)) {
-        errorAt(DiagCode::E2001, "expected '=' before method body");
+        errorAt(DiagCode::E1001, "expected '=' before method body");
         return nullptr;
     }
     ts_.advance();
@@ -432,7 +432,7 @@ MethodDeclPtr Parser::parseMethodDecl() {
         SourceLocation bodyLoc = ts_.currentLoc();
         ExprPtr expr = parseExpr();
         if (!expr) {
-            errorAt(DiagCode::E2008, "expected expression after '=' for method");
+            errorAt(DiagCode::E1008, "expected expression after '=' for method");
             return nullptr;
         }
 

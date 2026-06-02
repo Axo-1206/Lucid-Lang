@@ -36,7 +36,7 @@ ASTPtr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vis) {
     SourceLocation loc = ts_.currentLoc();
 
     if (!ts_.check(TokenType::IDENTIFIER)) {
-        errorAt(DiagCode::E2003, "expected function name");
+        errorAt(DiagCode::E1003, "expected function name");
         return nullptr;
     }
     InternedString name = pool_.intern(ts_.advance().value);
@@ -61,7 +61,7 @@ ASTPtr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vis) {
     while (ts_.check(TokenType::TILDE)) {
         ts_.advance();
         if (!ts_.check(TokenType::IDENTIFIER)) {
-            errorAt(DiagCode::E2003, "expected qualifier name after '~'");
+            errorAt(DiagCode::E1003, "expected qualifier name after '~'");
             break;
         }
         InternedString q = pool_.intern(ts_.advance().value);
@@ -81,7 +81,7 @@ ASTPtr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vis) {
     std::vector<ParamPtr> allParams;
     std::vector<size_t> groupSizes;
     if (!ts_.check(TokenType::LPAREN)) {
-        errorAt(DiagCode::E2001, "expected '(' to start parameter list for function '" + std::string(pool_.lookup(name)) + "'");
+        errorAt(DiagCode::E1001, "expected '(' to start parameter list for function '" + std::string(pool_.lookup(name)) + "'");
         return nullptr;
     }
     while (ts_.check(TokenType::LPAREN)) {
@@ -119,7 +119,7 @@ ASTPtr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vis) {
         node->body = parseBlock();
     } else if (ts_.check(TokenType::LPAREN)) {
         if (!ts_.check(TokenType::LBRACE)) {
-            errorAt(DiagCode::E2001, "expected '{' to start function body");
+            errorAt(DiagCode::E1001, "expected '{' to start function body");
             return nullptr;
         }
         node->body = parseBlock();
@@ -127,7 +127,7 @@ ASTPtr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vis) {
         SourceLocation bodyLoc = ts_.currentLoc();
         ExprPtr expr = parseExpr();
         if (!expr) {
-            errorAt(DiagCode::E2008, "expected expression after '='");
+            errorAt(DiagCode::E1008, "expected expression after '='");
             return nullptr;
         }
 
