@@ -47,7 +47,7 @@ ASTPtr<SwitchStmtAST> Parser::parseSwitchStmt() {
 
     ExprPtr subject = parseExpr(false);
     if (!subject) {
-        errorAt(DiagCode::E2008, "expected expression after 'switch'");
+        errorAt(DiagCode::E1008, "expected expression after 'switch'");
         return nullptr;
     }
 
@@ -72,13 +72,13 @@ ASTPtr<SwitchStmtAST> Parser::parseSwitchStmt() {
 
         if (ts_.check(TokenType::DEFAULT)) {
             if (hasDefault) {
-                errorAt(DiagCode::E2007, "duplicate 'default' clause");
+                errorAt(DiagCode::E1002, "duplicate 'default' clause");
             }
             node->defaultLoc = ts_.currentLoc();
             ts_.advance();
             ts_.consume(TokenType::COLON, "expected ':' after 'default'");
             if (!ts_.check(TokenType::LBRACE)) {
-                errorAt(DiagCode::E2001, "expected '{' to start default body");
+                errorAt(DiagCode::E1001, "expected '{' to start default body");
             } else {
                 node->defaultBody = parseBlock();
             }
@@ -86,7 +86,7 @@ ASTPtr<SwitchStmtAST> Parser::parseSwitchStmt() {
             continue;
         }
 
-        errorAt(DiagCode::E2002, "expected 'case' or 'default' inside switch");
+        errorAt(DiagCode::E1002, "expected 'case' or 'default' inside switch");
         ts_.advance();
     }
 
@@ -136,12 +136,12 @@ SwitchCasePtr Parser::parseSwitchCase() {
     const int MAX_CONSECUTIVE_ERRORS = 5;
 
     if (ts_.check(TokenType::COLON)) {
-        errorAt(DiagCode::E2001, "expected case value before ':'");
+        errorAt(DiagCode::E1001, "expected case value before ':'");
     } else {
         size_t savedPos = ts_.getPos();
         ExprPtr val = parsePrattExpr(0, false);
         if (ts_.getPos() == savedPos) {
-            errorAt(DiagCode::E2002, "expected case value");
+            errorAt(DiagCode::E1002, "expected case value");
             if (!ts_.isAtEnd()) ts_.advance();
             consecutiveErrors++;
         } else if (val && !val->isa<UnknownExprAST>()) {
@@ -161,7 +161,7 @@ SwitchCasePtr Parser::parseSwitchCase() {
         size_t savedPos = ts_.getPos();
         ExprPtr val = parsePrattExpr(0, false);
         if (ts_.getPos() == savedPos) {
-            errorAt(DiagCode::E2002, "expected case value after comma");
+            errorAt(DiagCode::E1002, "expected case value after comma");
             if (!ts_.isAtEnd()) ts_.advance();
             break;
         }
@@ -175,7 +175,7 @@ SwitchCasePtr Parser::parseSwitchCase() {
     }
 
     if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-        errorAt(DiagCode::E2002, "too many errors in case values; skipping to ':'");
+        errorAt(DiagCode::E1002, "too many errors in case values; skipping to ':'");
         while (!ts_.isAtEnd() && !ts_.check(TokenType::COLON)) ts_.advance();
     }
 
@@ -187,7 +187,7 @@ SwitchCasePtr Parser::parseSwitchCase() {
     sc->values = builder.build();
 
     if (!ts_.check(TokenType::LBRACE)) {
-        errorAt(DiagCode::E2001, "expected '{' to start case body");
+        errorAt(DiagCode::E1001, "expected '{' to start case body");
     } else {
         sc->body = parseBlock();
     }

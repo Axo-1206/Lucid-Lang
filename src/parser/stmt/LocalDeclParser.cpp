@@ -35,7 +35,7 @@
 #include "debug/DebugUtils.hpp"
 
 // ============================================================================
-// 1. LVALUE PARSING
+// 1. LVALUE PARSING (the value receiver aka the variable)
 // ============================================================================
 //
 // parseLvalue() parses an assignable left‑hand side expression for multi‑assignment
@@ -75,7 +75,7 @@
  */
 ExprPtr Parser::parseLvalue() {
     if (!ts_.check(TokenType::IDENTIFIER)) {
-        errorAt(DiagCode::E2003, "expected identifier for lvalue");
+        errorAt(DiagCode::E1003, "expected identifier for lvalue");
         return nullptr;
     }
     std::string name = ts_.advance().value;
@@ -87,7 +87,7 @@ ExprPtr Parser::parseLvalue() {
         if (ts_.check(TokenType::DOT)) {
             ts_.advance();
             if (!ts_.check(TokenType::IDENTIFIER)) {
-                errorAt(DiagCode::E2003, "expected field name after '.'");
+                errorAt(DiagCode::E1003, "expected field name after '.'");
                 return expr;
             }
             std::string field = ts_.advance().value;
@@ -102,7 +102,7 @@ ExprPtr Parser::parseLvalue() {
             ts_.advance();
             ExprPtr index = parseExpr();
             if (!index) {
-                errorAt(DiagCode::E2008, "expected index expression");
+                errorAt(DiagCode::E1008, "expected index expression");
                 return expr;
             }
             ts_.consume(TokenType::RBRACKET, "expected ']' after index");
@@ -145,14 +145,14 @@ ExprPtr Parser::parseLvalue() {
  *
  * Example: `let x int, y string = f()`
  *
- * @param attrs Attributes (NOT allowed – emits E2027 error).
+ * @param attrs Attributes (NOT allowed – emits error).
  * @return ASTPtr<MultiVarDeclAST> – parsed node, or nullptr on error.
  *
  * ─── Important Rules ────────────────────────────────────────────────────────
  *   - Each variable has its own explicit type annotation (no type inference)
  *   - The RHS must be a single expression returning N values (N = variable count)
  *   - `const` multi‑declaration requires compile‑time constant RHS
- *   - Attributes are NOT allowed (E2027)
+ *   - Attributes are NOT allowed (E1006)
  *
  * ─── Token Consumption ─────────────────────────────────────────────────────
  * On entry: positioned at 'let' or 'const' keyword
@@ -166,14 +166,14 @@ ExprPtr Parser::parseLvalue() {
 ASTPtr<MultiVarDeclAST> Parser::parseMultiVarDecl(std::vector<AttributePtr> attrs) {
     // Attributes are not allowed on multi-variable declarations
     if (!attrs.empty()) {
-        error(attrs[0]->loc, DiagCode::E2027, 
+        error(attrs[0]->loc, DiagCode::E1006, 
               "attributes cannot be used on multi-variable declarations");
     }
 
     SourceLocation loc = ts_.currentLoc();
 
     if (!ts_.checkAny({TokenType::LET, TokenType::CONST})) {
-        errorAt(DiagCode::E2002, "expected 'let' or 'const'");
+        errorAt(DiagCode::E1002, "expected 'let' or 'const'");
         return nullptr;
     }
     Token kwTok = ts_.advance();
@@ -183,12 +183,12 @@ ASTPtr<MultiVarDeclAST> Parser::parseMultiVarDecl(std::vector<AttributePtr> attr
 
     // Parse first variable: IDENTIFIER type
     if (!ts_.check(TokenType::IDENTIFIER)) {
-        errorAt(DiagCode::E2003, "expected variable name");
+        errorAt(DiagCode::E1003, "expected variable name");
         return nullptr;
     }
     std::string firstName = ts_.advance().value;
     if (!looksLikeType()) {
-        errorAt(DiagCode::E2005, "expected type annotation for '" + firstName + "'");
+        errorAt(DiagCode::E1005, "expected type annotation for '" + firstName + "'");
         return nullptr;
     }
     TypePtr firstType = parseType();
@@ -199,12 +199,12 @@ ASTPtr<MultiVarDeclAST> Parser::parseMultiVarDecl(std::vector<AttributePtr> attr
     while (ts_.check(TokenType::COMMA)) {
         ts_.advance();
         if (!ts_.check(TokenType::IDENTIFIER)) {
-            errorAt(DiagCode::E2003, "expected variable name after comma");
+            errorAt(DiagCode::E1003, "expected variable name after comma");
             break;
         }
         std::string name = ts_.advance().value;
         if (!looksLikeType()) {
-            errorAt(DiagCode::E2005, "expected type annotation for '" + name + "'");
+            errorAt(DiagCode::E1005, "expected type annotation for '" + name + "'");
             break;
         }
         TypePtr type = parseType();
@@ -213,10 +213,10 @@ ASTPtr<MultiVarDeclAST> Parser::parseMultiVarDecl(std::vector<AttributePtr> attr
     }
 
     // Parse '=' and RHS
-    ts_.consume(TokenType::ASSIGN, DiagCode::E2001, "expected '=' in multi-assignment");
+    ts_.consume(TokenType::ASSIGN, DiagCode::E1001, "expected '=' in multi-assignment");
     ExprPtr rhs = parseExpr();
     if (!rhs) {
-        errorAt(DiagCode::E2008, "expected expression after '='");
+        errorAt(DiagCode::E1008, "expected expression after '='");
         return nullptr;
     }
 
@@ -279,7 +279,7 @@ ASTPtr<MultiAssignStmtAST> Parser::parseMultiAssignStmt() {
     // Parse first lvalue
     ExprPtr first = parseLvalue();
     if (!first) {
-        errorAt(DiagCode::E2008, "expected left-hand side expression");
+        errorAt(DiagCode::E1008, "expected left-hand side expression");
         return nullptr;
     }
     lhs.push_back(std::move(first));
@@ -289,7 +289,7 @@ ASTPtr<MultiAssignStmtAST> Parser::parseMultiAssignStmt() {
         ts_.advance();
         ExprPtr next = parseLvalue();
         if (!next) {
-            errorAt(DiagCode::E2008, "expected left-hand side expression after comma");
+            errorAt(DiagCode::E1008, "expected left-hand side expression after comma");
             break;
         }
         lhs.push_back(std::move(next));
@@ -297,7 +297,7 @@ ASTPtr<MultiAssignStmtAST> Parser::parseMultiAssignStmt() {
 
     // Expect '='
     if (!ts_.check(TokenType::ASSIGN)) {
-        errorAt(DiagCode::E2001, "expected '=' in multiple assignment");
+        errorAt(DiagCode::E1001, "expected '=' in multiple assignment");
         // Skip to recovery point
         while (!ts_.isAtEnd() && !ts_.check(TokenType::SEMICOLON) && !ts_.check(TokenType::RBRACE)) {
             ts_.advance();
@@ -309,7 +309,7 @@ ASTPtr<MultiAssignStmtAST> Parser::parseMultiAssignStmt() {
     // Parse RHS
     ExprPtr rhs = parseExpr(true);
     if (!rhs) {
-        errorAt(DiagCode::E2008, "expected expression after '='");
+        errorAt(DiagCode::E1008, "expected expression after '='");
         return nullptr;
     }
 

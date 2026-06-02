@@ -45,14 +45,14 @@ ASTPtr<IfStmtAST> Parser::parseIfStmt() {
 
     ExprPtr condition = parseExpr(false);
     if (!condition) {
-        errorAt(DiagCode::E2008, "expected condition after 'if'");
+        errorAt(DiagCode::E1008, "expected condition after 'if'");
         auto node = arena_.make<IfStmtAST>();
         node->loc = loc;
         return node;
     }
 
     if (!ts_.check(TokenType::LBRACE)) {
-        errorAt(DiagCode::E2001, "expected '{' after if condition");
+        errorAt(DiagCode::E1001, "expected '{' after if condition");
         auto node = arena_.make<IfStmtAST>();
         node->loc = loc;
         node->condition = std::move(condition);
@@ -71,7 +71,7 @@ ASTPtr<IfStmtAST> Parser::parseIfStmt() {
         } else if (ts_.check(TokenType::LBRACE)) {
             node->elseBranch = parseBlock();
         } else {
-            errorAt(DiagCode::E2001, "expected 'if' or '{' after 'else'");
+            errorAt(DiagCode::E1001, "expected 'if' or '{' after 'else'");
         }
     }
 
@@ -116,7 +116,7 @@ ASTPtr<ReturnStmtAST> Parser::parseReturnStmt() {
     ts_.consume(TokenType::RETURN, "expected 'return'");
 
     if (parallelDepth_ > 0) {
-        error(loc, DiagCode::E2006, "'return' is not valid inside a 'parallel' body");
+        error(loc, DiagCode::E1006, "'return' is not valid inside a 'parallel' body");
     }
 
     auto node = arena_.make<ReturnStmtAST>();
@@ -130,12 +130,12 @@ ASTPtr<ReturnStmtAST> Parser::parseReturnStmt() {
             if (!first) {
                 if (!ts_.match(TokenType::COMMA)) break;
                 if (ts_.check(TokenType::COMMA)) {
-                    errorAt(DiagCode::E2008, "empty expression in return list");
+                    errorAt(DiagCode::E1008, "empty expression in return list");
                     ts_.advance();
                     continue;
                 }
                 if (ts_.check(TokenType::RBRACE) || ts_.check(TokenType::SEMICOLON) || ts_.isAtEnd()) {
-                    errorAt(DiagCode::E2001, "trailing comma in return list");
+                    errorAt(DiagCode::E1001, "trailing comma in return list");
                     break;
                 }
             }
@@ -144,7 +144,7 @@ ASTPtr<ReturnStmtAST> Parser::parseReturnStmt() {
             size_t savedPos = ts_.getPos();
             ExprPtr expr = parseExpr();
             if (ts_.getPos() == savedPos) {
-                errorAt(DiagCode::E2008, "expected expression after 'return'");
+                errorAt(DiagCode::E1008, "expected expression after 'return'");
                 if (!ts_.isAtEnd()) ts_.advance();
                 break;
             }
@@ -178,8 +178,8 @@ ASTPtr<ReturnStmtAST> Parser::parseReturnStmt() {
 // On exit:  positioned after the keyword
 // 
 // ─── Error Recovery ───────────────────────────────────────────────────────
-//   - Reports error with diagnostic code E3031 (outside loop) or E2006
-//     (inside parallel). Node is still created to avoid nullptr.
+//   - Reports error with diagnostic code E1006 (invalid context) for both
+//     outside loop and inside parallel.
 // ============================================================================
 
 ASTPtr<BreakStmtAST> Parser::parseBreakStmt() {
@@ -187,10 +187,10 @@ ASTPtr<BreakStmtAST> Parser::parseBreakStmt() {
     ts_.consume(TokenType::BREAK, "expected 'break'");
 
     if (loopDepth_ == 0) {
-        error(loc, DiagCode::E2006, "'break' is only valid inside a loop body");
+        error(loc, DiagCode::E1006, "'break' is only valid inside a loop body");
     }
     if (parallelDepth_ > 0) {
-        error(loc, DiagCode::E2006, "'break' is not valid inside a 'parallel' body");
+        error(loc, DiagCode::E1006, "'break' is not valid inside a 'parallel' body");
     }
 
     auto node = arena_.make<BreakStmtAST>();
@@ -203,10 +203,10 @@ ASTPtr<ContinueStmtAST> Parser::parseContinueStmt() {
     ts_.consume(TokenType::CONTINUE, "expected 'continue'");
 
     if (loopDepth_ == 0) {
-        error(loc, DiagCode::E2006, "'continue' is only valid inside a loop body");
+        error(loc, DiagCode::E1006, "'continue' is only valid inside a loop body");
     }
     if (parallelDepth_ > 0) {
-        error(loc, DiagCode::E2006, "'continue' is not valid inside a 'parallel' body");
+        error(loc, DiagCode::E1006, "'continue' is not valid inside a 'parallel' body");
     }
 
     auto node = arena_.make<ContinueStmtAST>();

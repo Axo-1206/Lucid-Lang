@@ -66,19 +66,19 @@ ASTPtr<ForStmtAST> Parser::parseForStmt() {
 
     // Parse iteration variable name (required)
     if (!ts_.check(TokenType::IDENTIFIER)) {
-        errorAt(DiagCode::E2003, "expected iteration variable name");
+        errorAt(DiagCode::E1003, "expected iteration variable name");
         return nullptr;
     }
     std::string varName = ts_.advance().value;
 
     // Parse type annotation (required - no type inference in Luc)
     if (!looksLikeType()) {
-        errorAt(DiagCode::E2005, "expected type annotation for iteration variable '" + varName + "'");
+        errorAt(DiagCode::E1005, "expected type annotation for iteration variable '" + varName + "'");
         return nullptr;
     }
     TypePtr varType = parseType();
     if (!varType) {
-        errorAt(DiagCode::E2005, "invalid type for iteration variable");
+        errorAt(DiagCode::E1005, "invalid type for iteration variable");
         return nullptr;
     }
 
@@ -103,7 +103,7 @@ ASTPtr<ForStmtAST> Parser::parseForStmt() {
         
         ExprPtr hi = parseExpr(false);
         if (!hi) {
-            errorAt(DiagCode::E2008, "expected upper bound after '..' in range iteration");
+            errorAt(DiagCode::E1008, "expected upper bound after '..' in range iteration");
             return nullptr;
         }
         
@@ -119,7 +119,7 @@ ASTPtr<ForStmtAST> Parser::parseForStmt() {
         if (ts_.match(TokenType::RANGE)) {
             step = parseExpr(false);
             if (!step) {
-                errorAt(DiagCode::E2008, "expected step expression after '..'");
+                errorAt(DiagCode::E1008, "expected step expression after '..'");
                 return nullptr;
             }
         }
@@ -129,14 +129,14 @@ ASTPtr<ForStmtAST> Parser::parseForStmt() {
         ts_.setPos(savedPos);
         iterable = parseExpr(false);
         if (!iterable) {
-            errorAt(DiagCode::E2008, "expected iterable expression after 'in'");
+            errorAt(DiagCode::E1008, "expected iterable expression after 'in'");
             return nullptr;
         }
     }
 
     // Parse loop body (must be a block)
     if (!ts_.check(TokenType::LBRACE)) {
-        errorAt(DiagCode::E2001, "expected '{' to start for loop body");
+        errorAt(DiagCode::E1001, "expected '{' to start for loop body");
         return nullptr;
     }
 
@@ -192,12 +192,12 @@ ASTPtr<WhileStmtAST> Parser::parseWhileStmt() {
 
     ExprPtr condition = parseExpr(false);
     if (!condition) {
-        errorAt(DiagCode::E2008, "expected condition after 'while'");
+        errorAt(DiagCode::E1008, "expected condition after 'while'");
         return nullptr;
     }
 
     if (!ts_.check(TokenType::LBRACE)) {
-        errorAt(DiagCode::E2001, "expected '{' to start while loop body");
+        errorAt(DiagCode::E1001, "expected '{' to start while loop body");
         return nullptr;
     }
 
@@ -246,7 +246,7 @@ ASTPtr<DoWhileStmtAST> Parser::parseDoWhileStmt() {
     ts_.consume(TokenType::DO, "expected 'do'");
 
     if (!ts_.check(TokenType::LBRACE)) {
-        errorAt(DiagCode::E2001, "expected '{' after 'do'");
+        errorAt(DiagCode::E1001, "expected '{' after 'do'");
         return nullptr;
     }
 
@@ -258,7 +258,7 @@ ASTPtr<DoWhileStmtAST> Parser::parseDoWhileStmt() {
 
     ExprPtr condition = parseExpr(false);
     if (!condition) {
-        errorAt(DiagCode::E2008, "expected condition after 'while'");
+        errorAt(DiagCode::E1008, "expected condition after 'while'");
         return nullptr;
     }
 
