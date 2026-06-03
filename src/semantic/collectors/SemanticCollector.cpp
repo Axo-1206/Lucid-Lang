@@ -2,289 +2,118 @@
  * @file SemanticCollector.cpp
  * @responsibility Implements Phase 1 of semantic analysis: collecting top‑level declarations into the symbol table.
  *
- * This file contains the SemanticCollector class, an ASTVisitor that walks the
- * parse tree before type checking. It extracts names of structs, enums,
- * functions, traits, impls, from blocks, and type aliases, and declares them
- * in the global symbol table. This enables forward references during later
- * phases (type resolution and checking).
- *
- * The collector does not resolve types; it only records names and their kinds.
- * Type information (e.g., field types, function signatures) is left unresolved
- * until Phase 2 (TypeResolver).
- *
- * @related
- *   - SemanticCollector.hpp – class declaration
- *   - SymbolTable.hpp – stores collected symbols
- *   - SemanticAnalyzer.cpp – orchestrates the four phases
- *   - NameMangler.hpp – generates unique names for methods, variants, and conversions
- *
- * ─────────────────────────────────────────────────────────────────────────────
- * NAVIGATION – Functions in this file (in order of appearance)
- * ─────────────────────────────────────────────────────────────────────────────
- *
- * ██ Constructor & Entry Point
- *   SemanticCollector::SemanticCollector()   – initialises symbol table, diagnostic engine, and StringPool.
- *   collectProgram()                         – collects symbols from a single ProgramAST.
- *
- * ██ Symbol Management
- *   declareSymbol()                          – declares a symbol in the symbol table (checks duplicates).
- *   extractExternMetadata()                  – extracts @extern attribute metadata for a symbol.
- *
- * ██ Declaration Visitors
- *   visit(VarDeclAST)                        – collects variable declarations.
- *   visit(FuncDeclAST)                       – collects function declarations (handles @extern).
- *   visit(StructDeclAST)                     – collects struct declarations.
- *   visit(EnumDeclAST)                       – collects enum declarations and their variants.
- *   visit(TraitDeclAST)                      – collects trait declarations and their methods.
- *   visit(ImplDeclAST)                       – collects impl blocks and their methods.
- *   visit(FromDeclAST)                       – collects from conversion entries.
- *   visit(ExtensionDeclAST)                  – collects extension methods.
- *   visit(TypeAliasDeclAST)                  – collects type alias declarations.
- *
- * ─────────────────────────────────────────────────────────────────────────────
- * @note The collector assumes the AST has been parsed (no error nodes except
- *       UnknownDeclAST). It processes only top‑level declarations; function
- *       bodies, block scopes, and expressions are ignored. All symbols are
- *       stored with their original (or mangled) names; the symbol table uses
- *       InternedString IDs for efficient lookup.
- * ─────────────────────────────────────────────────────────────────────────────
+ * This file contains the SemanticCollector implementation, which now uses
+ * switch‑case dispatch on ASTKind instead of the visitor pattern. All state
+ * is passed via SemanticContext.
  */
 
 #include "SemanticCollector.hpp"
-#include "diagnostics/DiagnosticEngine.hpp"
-#include "diagnostics/DiagnosticCodes.hpp"
+#include "diagnostics/Diagnostic.hpp"
 #include "debug/DebugMacros.hpp"
 #include "ast/ExprAST.hpp"
 #include "ast/TypeAST.hpp"
-#include "header/NameMangler.hpp"
+#include "semantic/helpers/NameMangler.hpp"
 #include <string>
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Constructor & Entry Point
+// collectProgram  —  Main entry point: collects all top‑level symbols.
 // ─────────────────────────────────────────────────────────────────────────────
-SemanticCollector::SemanticCollector(SymbolTable& symbols, DiagnosticEngine& dc,
-                                      StringPool& pool)
-    : symbols_(symbols), dc_(dc), pool_(pool) {
-    LUC_LOG_SEMANTIC("SemanticCollector constructed");
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// collectProgram  —  Collects all top‑level symbols from a single ProgramAST.
-//
-// Walks all declarations inside the program node, dispatching to the appropriate
-// visitor method for each declaration type. This is the entry point for Phase 1
-// on a per‑file basis. The symbol table must have at least the global scope
-// before collection begins.
-//
-// ─── Purpose ─────────────────────────────────────────────────────────────────
-// Populates the symbol table with all top‑level declarations (structs, enums,
-// functions, traits, impls, from blocks, type aliases, variables) from the
-// current file. This establishes the name mapping needed for forward references
-// during Phase 2 and Phase 3.
-//
-// ─── Algorithm ───────────────────────────────────────────────────────────────
-//   1. If the symbol table has no scopes (currentDepth() == 0), push a new
-//      global scope to ensure there is a place to store symbols.
-//   2. Iterate over all declarations in program.decls.
-//   3. For each non‑null declaration, call decl->accept(*this), which will
-//      invoke the appropriate visit() method based on the declaration's kind.
-//   4. The visit methods will call declareSymbol() to register each symbol.
-//
-// ─── Cases Covered ───────────────────────────────────────────────────────────
-//   - First file in the package → creates the global scope.
-//   - Subsequent files → reuses existing global scope (no new global scope).
-//   - UnknownDeclAST (error recovery) → ignored (no symbol created).
-//   - Multiple declarations of the same name in the same file → duplicate
-//     detection happens inside declareSymbol (error reported, second ignored).
-//
-// ─── What is NOT covered ─────────────────────────────────────────────────────
-//   - Does NOT collect symbols from local scopes (inside functions, blocks).
-//     Local symbols are collected later during Phase 3 (checking) when the
-//     function body is traversed.
-//   - Does NOT resolve types or check type validity – that is Phase 2.
-//   - Does NOT generate code or perform semantic checks.
-//
-// ─── Note ────────────────────────────────────────────────────────────────────
-//   This function is called once per ProgramAST (i.e., per source file) by
-//   SemanticAnalyzer::collectSymbols().
-// ─────────────────────────────────────────────────────────────────────────────
-void SemanticCollector::collectProgram(ProgramAST& program) {
-    LUC_LOG_SEMANTIC("SemanticCollector::collectProgram: file=" 
-                     << pool_.lookup(program.filePath));
-    
-    currentFile_ = program.filePath;
+void SemanticCollector::collectProgram(ProgramAST& program, SemanticContext& ctx) {
+    LUC_LOG_SEMANTIC("SemanticCollector::collectProgram: file=" << ctx.pool.lookup(program.filePath));
 
     // Ensure global scope exists
-    if (symbols_.currentDepth() == 0) {
-        symbols_.pushScope();
+    if (ctx.symbols->currentDepth() == 0) {
+        ctx.symbols->pushScope();
     }
-    
-    // Collect all top-level declarations
+
     for (auto& decl : program.decls) {
-        if (decl) {
-            decl->accept(*this);
+        if (!decl) continue;
+
+        switch (decl->kind) {
+            case ASTKind::UseDecl:
+                collectUseDecl(*decl->as<UseDeclAST>(), ctx);
+                break;
+            case ASTKind::VarDecl:
+                collectVarDecl(*decl->as<VarDeclAST>(), ctx);
+                break;
+            case ASTKind::FuncDecl:
+                collectFuncDecl(*decl->as<FuncDeclAST>(), ctx);
+                break;
+            case ASTKind::StructDecl:
+                collectStructDecl(*decl->as<StructDeclAST>(), ctx);
+                break;
+            case ASTKind::EnumDecl:
+                collectEnumDecl(*decl->as<EnumDeclAST>(), ctx);
+                break;
+            case ASTKind::TraitDecl:
+                collectTraitDecl(*decl->as<TraitDeclAST>(), ctx);
+                break;
+            case ASTKind::ImplDecl:
+                collectImplDecl(*decl->as<ImplDeclAST>(), ctx);
+                break;
+            case ASTKind::FromDecl:
+                collectFromDecl(*decl->as<FromDeclAST>(), ctx);
+                break;
+            case ASTKind::TypeAliasDecl:
+                collectTypeAliasDecl(*decl->as<TypeAliasDeclAST>(), ctx);
+                break;
+            default:
+                // Unknown or error recovery node – ignore
+                break;
         }
     }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Symbol Management
+// Symbol Management Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ─────────────────────────────────────────────────────────────────────────────
-// declareSymbol  —  Registers a symbol in the current scope of the symbol table.
-//
-// Performs the actual insertion of a Symbol into the symbol table after basic
-// validation. Checks for duplicate declarations in the same scope, reports
-// errors, and updates the symbol table if the declaration is valid.
-//
-// ─── Purpose ─────────────────────────────────────────────────────────────────
-// Centralises the logic for adding a symbol to the symbol table, ensuring that
-// duplicates are caught early and that error messages are consistent. Called
-// by every visit() method for declarations that create a new symbol.
-//
-// ─── Algorithm ───────────────────────────────────────────────────────────────
-//   1. Log the symbol name and kind (debugging).
-//   2. Check if a symbol with the same name already exists in the current
-//      scope using symbols_.lookupLocal(sym.name).
-//   3. If duplicate exists:
-//        - Report an error (duplicate declaration) and return.
-//   4. Call symbols_.declare(sym) to insert the symbol.
-//   5. If declare() returns false (should not happen after duplicate check,
-//      but defensive), report a generic failure error.
-//
-// ─── Cases Covered (successful declaration) ──────────────────────────────────
-//   - First declaration of a name in the current scope → symbol added.
-//   - Same name declared in an outer scope (allowed) → symbol added in
-//     current scope (shadows outer).
-//   - Symbols with mangled names (methods, variants, conversions) → added
-//     without conflict because mangled names are unique.
-//
-// ─── Cases Covered (error, no declaration) ───────────────────────────────────
-//   - Duplicate declaration in the same scope → error reported, symbol not added.
-//   - Internal symbol table error (e.g., out of memory) → error reported.
-//
-// ─── What is NOT covered ─────────────────────────────────────────────────────
-//   - Type resolution or checking – symbols are added with type = nullptr.
-//   - Visibility checking – that happens later (Phase 3).
-//   - Cross‑scope duplicates (same name in different scopes) – allowed.
-//
-// ─── Note ────────────────────────────────────────────────────────────────────
-//   The function uses symbols_.lookupLocal() only, not lookup(), because
-//   duplicates are only prohibited in the same scope. Shadowing outer symbols
-//   is permitted and is handled naturally by the symbol table's scope stack.
-// ─────────────────────────────────────────────────────────────────────────────
-void SemanticCollector::declareSymbol(const Symbol& sym) {
-    LUC_LOG_SEMANTIC_VERBOSE("declareSymbol: name=" << pool_.lookup(sym.name) 
+void SemanticCollector::declareSymbol(const Symbol& sym, SemanticContext& ctx) {
+    LUC_LOG_SEMANTIC_VERBOSE("declareSymbol: name=" << ctx.pool.lookup(sym.name)
                              << " kind=" << SymbolUtils::kindToString(sym.kind));
-    
-    if (symbols_.lookupLocal(sym.name)) {
-        std::string_view nameStr = pool_.lookup(sym.name);
-        dc_.error(DiagnosticCategory::Semantic, currentFile_, sym.loc, DiagCode::E3005,
+
+    if (ctx.symbols->lookupLocal(sym.name)) {
+        std::string_view nameStr = ctx.pool.lookup(sym.name);
+        ctx.error(sym.loc, DiagCode::E2005,
                   {"duplicate declaration of '" + std::string(nameStr) + "'"});
         return;
     }
-    
-    if (!symbols_.declare(sym)) {
-        std::string_view nameStr = pool_.lookup(sym.name);
-        dc_.error(DiagnosticCategory::Semantic, currentFile_, sym.loc, DiagCode::E3005,
+
+    if (!ctx.symbols->declare(sym)) {
+        std::string_view nameStr = ctx.pool.lookup(sym.name);
+        ctx.error(sym.loc, DiagCode::E2005,
                   {"failed to declare symbol '" + std::string(nameStr) + "'"});
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// extractExternMetadata  —  Extracts `@extern` attribute information from a
-//                           declaration's attributes and stores it in the Symbol.
-//
-// Scans the attribute list of a declaration (e.g., function or variable) for
-// the `@extern` attribute. If found, it extracts the external symbol name
-// (first argument, a string literal) and optionally the calling convention
-// (second argument, a type identifier) and stores them in the Symbol's
-// `isExtern`, `externSymbol`, and `callingConv` fields.
-//
-// ─── Purpose ─────────────────────────────────────────────────────────────────
-// Enables the semantic analyser and code generator to treat `@extern`‑marked
-// declarations as foreign functions or variables that are resolved at link time
-// rather than implemented in Luc. The metadata is attached to the Symbol for
-// later use during code generation (LLVM external declarations).
-//
-// ─── Algorithm ───────────────────────────────────────────────────────────────
-//   1. Iterate over each AttributePtr in attrs.
-//   2. For each attribute, look up its name via pool_.lookup(attr->name).
-//   3. If the name is "extern":
-//        - Set sym.isExtern = true.
-//        - If there is at least one argument and it is a StringLit,
-//          assign sym.externSymbol = arg->value (the C/OS symbol name).
-//        - If there is a second argument and it is a TypeIdent,
-//          assign sym.callingConv = arg->value (e.g., "C", "stdcall").
-//   4. Other attributes are ignored (no action).
-//
-// ─── Cases Covered ───────────────────────────────────────────────────────────
-//   - `@extern("malloc")` → isExtern = true, externSymbol = "malloc".
-//   - `@extern("printf", C)` → callingConv = "C".
-//   - Multiple `@extern` attributes on the same declaration → last one
-//     overwrites (not typical, but harmless).
-//   - No `@extern` attribute → sym remains unchanged (default false).
-//
-// ─── What is NOT covered ─────────────────────────────────────────────────────
-//   - Validates that the attribute arguments are of the correct type – the
-//     parser guarantees StringLit and TypeIdent for the expected positions.
-//   - Checks that the declaration is a function or variable – the caller must
-//     only call this on declarations that can be `@extern` (e.g., FuncDeclAST,
-//     VarDeclAST). Other declarations (struct, enum) ignore `@extern`.
-//   - Semantically validates the extern symbol name (e.g., that it is a
-//     valid C identifier) – that is left to the code generator.
-//   - Handles default calling convention – if no second argument, callingConv
-//     remains the default (InternedString() which maps to empty string, codegen
-//     defaults to "C").
-//
-// ─── Note ────────────────────────────────────────────────────────────────────
-//   This function is called from visit(FuncDeclAST) and visit(VarDeclAST) before
-//   declareSymbol(), so the extern metadata is part of the symbol from the start.
-// ─────────────────────────────────────────────────────────────────────────────
-void SemanticCollector::extractExternMetadata(const ArenaSpan<AttributePtr>& attrs, Symbol& sym) {
+void SemanticCollector::extractExternMetadata(const ArenaSpan<AttributePtr>& attrs, Symbol& sym, SemanticContext& ctx) {
     for (const auto& attr : attrs) {
         if (!attr) continue;
-        
-        std::string_view attrName = pool_.lookup(attr->name);
+        std::string_view attrName = ctx.pool.lookup(attr->name);
         if (attrName == "extern") {
             sym.isExtern = true;
-            
-            // Extract the symbol name from the attribute argument
-            if (!attr->args.empty() && attr->args[0]) {
-                auto* arg = attr->args[0].get();
-                if (arg && arg->kind == AttributeArgKind::StringLit) {
-                    sym.externSymbol = arg->value;
-                }
+            if (!attr->args.empty() && attr->args[0] && attr->args[0]->kind == AttributeArgKind::StringLit) {
+                sym.externSymbol = attr->args[0]->value;
             }
-            
-            // Extract calling convention if specified as second argument
-            if (attr->args.size() >= 2 && attr->args[1]) {
-                auto* arg = attr->args[1].get();
-                if (arg && arg->kind == AttributeArgKind::TypeIdent) {
-                    sym.callingConv = arg->value;
-                }
+            if (attr->args.size() >= 2 && attr->args[1] && attr->args[1]->kind == AttributeArgKind::TypeIdent) {
+                sym.callingConv = attr->args[1]->value;
             }
-            
-            LUC_LOG_SEMANTIC_VERBOSE("extractExternMetadata: extern symbol=" 
-                                     << pool_.lookup(sym.externSymbol));
+            LUC_LOG_SEMANTIC_VERBOSE("extractExternMetadata: extern symbol=" << ctx.pool.lookup(sym.externSymbol));
         }
     }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// visit(UseDeclAST)
+// Declaration Collectors (each corresponds to a specific ASTKind)
 // ─────────────────────────────────────────────────────────────────────────────
-void SemanticCollector::visit(UseDeclAST& node) {
-    // Build the full module path as a string (for mangling)
+
+void SemanticCollector::collectUseDecl(UseDeclAST& node, SemanticContext& ctx) {
+    // Build full path for mangling (optional, but kept for consistency)
     std::string fullPath;
     for (size_t i = 0; i < node.path.size(); ++i) {
         if (i > 0) fullPath += ".";
-        fullPath += pool_.lookup(node.path[i]);
+        fullPath += ctx.pool.lookup(node.path[i]);
     }
-    InternedString pathStr = pool_.intern(fullPath);
-
-    // Determine the symbol name: alias if present, otherwise the last path segment
     InternedString symName = node.alias.value_or(node.path.back());
 
     Symbol sym;
@@ -293,231 +122,153 @@ void SemanticCollector::visit(UseDeclAST& node) {
     sym.visibility = node.visibility;
     sym.decl = &node;
     sym.loc = node.loc;
-    sym.type = nullptr; // modules have no type
-
-    declareSymbol(sym);
+    sym.type = nullptr;
+    declareSymbol(sym, ctx);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// visit(VarDeclAST)
-// ─────────────────────────────────────────────────────────────────────────────
-void SemanticCollector::visit(VarDeclAST& node) {
-    LUC_LOG_SEMANTIC("SemanticCollector::visit(VarDeclAST): name=" 
-                     << pool_.lookup(node.name));
-    
+void SemanticCollector::collectVarDecl(VarDeclAST& node, SemanticContext& ctx) {
     Symbol sym;
     sym.name = node.name;
     sym.kind = SymbolKind::Var;
     sym.declKw = node.keyword;
     sym.visibility = node.visibility;
-    sym.type = nullptr;  // Will be set during type resolution
+    sym.type = nullptr;
     sym.decl = &node;
     sym.loc = node.loc;
-    
-    // Check for @extern attribute (though vars typically don't have it)
-    extractExternMetadata(node.attributes, sym);
-    
-    declareSymbol(sym);
+    extractExternMetadata(node.attributes, sym, ctx);
+    declareSymbol(sym, ctx);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// visit(FuncDeclAST)
-// ─────────────────────────────────────────────────────────────────────────────
-void SemanticCollector::visit(FuncDeclAST& node) {
-    LUC_LOG_SEMANTIC("SemanticCollector::visit(FuncDeclAST): name=" 
-                     << pool_.lookup(node.name));
-    
+void SemanticCollector::collectFuncDecl(FuncDeclAST& node, SemanticContext& ctx) {
     Symbol sym;
     sym.name = node.name;
-    sym.kind = SymbolKind::Func;  // default, may be changed to ExternFunc
+    sym.kind = SymbolKind::Func;
     sym.declKw = node.keyword;
     sym.visibility = node.visibility;
     sym.type = nullptr;
     sym.decl = &node;
     sym.loc = node.loc;
-    
-    // Extract @extern metadata (sets sym.isExtern, sym.externSymbol, etc.)
-    extractExternMetadata(node.attributes, sym);
-    
-    // If an @extern attribute was found, change the kind accordingly
-    if (sym.isExtern) {
-        sym.kind = SymbolKind::ExternFunc;
-    }
-    
-    declareSymbol(sym);
+    extractExternMetadata(node.attributes, sym, ctx);
+    if (sym.isExtern) sym.kind = SymbolKind::ExternFunc;
+    declareSymbol(sym, ctx);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// visit(StructDeclAST)
-// ─────────────────────────────────────────────────────────────────────────────
-void SemanticCollector::visit(StructDeclAST& node) {
-    LUC_LOG_SEMANTIC("SemanticCollector::visit(StructDeclAST): name=" 
-                     << pool_.lookup(node.name));
-    
+void SemanticCollector::collectStructDecl(StructDeclAST& node, SemanticContext& ctx) {
     Symbol sym;
     sym.name = node.name;
     sym.kind = SymbolKind::Struct;
-    sym.declKw = DeclKeyword::Let;  // Not applicable for structs
     sym.visibility = node.visibility;
-    sym.type = nullptr;  // Will be set during type resolution (selfType)
+    sym.type = nullptr;
     sym.decl = &node;
     sym.loc = node.loc;
-    
-    declareSymbol(sym);
-    
-    // Note: Struct fields and methods are collected separately by the
-    // SemanticAnalyzer when processing the struct's body.
+    declareSymbol(sym, ctx);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// visit(EnumDeclAST)
-// ─────────────────────────────────────────────────────────────────────────────
-void SemanticCollector::visit(EnumDeclAST& node) {
-    LUC_LOG_SEMANTIC("SemanticCollector::visit(EnumDeclAST): name=" 
-                     << pool_.lookup(node.name));
-    
+void SemanticCollector::collectEnumDecl(EnumDeclAST& node, SemanticContext& ctx) {
     Symbol sym;
     sym.name = node.name;
     sym.kind = SymbolKind::Enum;
-    sym.declKw = DeclKeyword::Let;  // Not applicable for enums
     sym.visibility = node.visibility;
     sym.type = nullptr;
     sym.decl = &node;
     sym.loc = node.loc;
-    
-    declareSymbol(sym);
-    
-    // Declare enum variants as symbols in the enum's scope
-    // Note: Variants are accessed via EnumName.Variant syntax
+    declareSymbol(sym, ctx);
+
+    // Enum variants
+    std::string_view enumName = ctx.pool.lookup(node.name);
     for (const auto& variant : node.variants) {
         if (!variant) continue;
-        
-        // Create mangled name for the variant
-        std::string mangledName = NameMangler::mangleEnumVariant(pool_.lookup(node.name), pool_.lookup(variant->name));
-        InternedString mangledInterned = pool_.intern(mangledName);
+        std::string mangled = NameMangler::mangleEnumVariant(enumName, ctx.pool.lookup(variant->name));
+        InternedString mangledInterned = ctx.pool.intern(mangled);
 
-        Symbol variantSym;
-        variantSym.name = mangledInterned;
-        variantSym.kind = SymbolKind::EnumVariant;
-        variantSym.declKw = DeclKeyword::Const;  // Enum variants are constants
-        variantSym.visibility = node.visibility;
-        variantSym.type = nullptr;  // Will be set to the enum type
-        variantSym.decl = variant.get();
-        variantSym.loc = variant->loc;
-        
-        declareSymbol(variantSym);
+        Symbol vsym;
+        vsym.name = mangledInterned;
+        vsym.kind = SymbolKind::EnumVariant;
+        vsym.declKw = DeclKeyword::Const;
+        vsym.visibility = node.visibility;
+        vsym.type = nullptr;
+        vsym.decl = variant.get();
+        vsym.loc = variant->loc;
+        declareSymbol(vsym, ctx);
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// visit(TraitDeclAST)
-// ─────────────────────────────────────────────────────────────────────────────
-void SemanticCollector::visit(TraitDeclAST& node) {
-    LUC_LOG_SEMANTIC("SemanticCollector::visit(TraitDeclAST): name=" 
-                     << pool_.lookup(node.name));
-    
+void SemanticCollector::collectTraitDecl(TraitDeclAST& node, SemanticContext& ctx) {
     Symbol sym;
     sym.name = node.name;
     sym.kind = SymbolKind::Trait;
-    sym.declKw = DeclKeyword::Let;  // Not applicable for traits
     sym.visibility = node.visibility;
     sym.type = nullptr;
     sym.decl = &node;
     sym.loc = node.loc;
-    
-    declareSymbol(sym);
-    
-    // Declare trait methods as symbols with mangled names (TraitName.methodName)
+    declareSymbol(sym, ctx);
+
+    // Trait methods
+    std::string_view traitName = ctx.pool.lookup(node.name);
     for (const auto& method : node.methods) {
         if (!method) continue;
-        
-        // Create mangled name for the trait method
-        std::string mangledName = NameMangler::mangleMethod(pool_.lookup(node.name), pool_.lookup(method->name));
-        InternedString mangledInterned = pool_.intern(mangledName);
-        
-        Symbol methodSym;
-        methodSym.name = mangledInterned;
-        methodSym.kind = SymbolKind::Method;
-        methodSym.declKw = DeclKeyword::Let;
-        methodSym.visibility = node.visibility;
-        methodSym.type = nullptr;  // Will be set during type resolution
-        methodSym.decl = method.get();
-        methodSym.loc = method->loc;
-        
-        declareSymbol(methodSym);
+        std::string mangled = NameMangler::mangleMethod(traitName, ctx.pool.lookup(method->name));
+        InternedString mangledInterned = ctx.pool.intern(mangled);
+
+        Symbol msym;
+        msym.name = mangledInterned;
+        msym.kind = SymbolKind::Method;
+        msym.visibility = node.visibility;
+        msym.type = nullptr;
+        msym.decl = method.get();
+        msym.loc = method->loc;
+        declareSymbol(msym, ctx);
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// visit(ImplDeclAST)
-// ─────────────────────────────────────────────────────────────────────────────
-void SemanticCollector::visit(ImplDeclAST& node) {
-    // Extract the struct name from the target type (must be a NamedTypeAST)
+void SemanticCollector::collectImplDecl(ImplDeclAST& node, SemanticContext& ctx) {
+    // Extract struct name from target type (must be NamedTypeAST)
     InternedString structName;
     if (node.targetType && node.targetType->isa<NamedTypeAST>()) {
         structName = node.targetType->as<NamedTypeAST>()->name;
     } else {
-        dc_.error(DiagnosticCategory::Semantic, currentFile_, node.loc, DiagCode::E3001,
-                {"impl target must be a named type (struct, enum, or type alias)"});
+        ctx.error(node.loc, DiagCode::E2016, {"impl target must be a named type (struct, enum, or type alias)"});
         return;
     }
 
-    LUC_LOG_SEMANTIC("SemanticCollector::visit(ImplDeclAST): struct=" 
-                     << pool_.lookup(structName)
-                     << ", methods=" << node.methods.size());
-
+    // Record trait conformance for later use (e.g., in type resolution)
     if (node.traitRef) {
         structTraits_[structName].push_back(node.traitRef->name);
     }
 
-    // Impl blocks themselves don't create symbols, but their methods do.
-    // Methods are stored with mangled names: StructName.methodName
+    // Methods
+    std::string_view structNameStr = ctx.pool.lookup(structName);
     for (const auto& method : node.methods) {
         if (!method) continue;
+        std::string mangled = NameMangler::mangleMethod(structNameStr, ctx.pool.lookup(method->name));
+        InternedString mangledInterned = ctx.pool.intern(mangled);
 
-        std::string mangledName = NameMangler::mangleMethod(
-            pool_.lookup(structName), 
-            pool_.lookup(method->name)
-        );
-        InternedString mangledInterned = pool_.intern(mangledName);
-
-        Symbol methodSym;
-        methodSym.name = mangledInterned;
-        methodSym.kind = SymbolKind::Method;
-        methodSym.declKw = DeclKeyword::Let;
-        methodSym.visibility = node.visibility;
-        methodSym.type = nullptr;  // Will be set during type resolution
-        methodSym.decl = method.get();
-        methodSym.loc = method->loc;
-
-        declareSymbol(methodSym);
+        Symbol msym;
+        msym.name = mangledInterned;
+        msym.kind = SymbolKind::Method;
+        msym.visibility = node.visibility;
+        msym.type = nullptr;
+        msym.decl = method.get();
+        msym.loc = method->loc;
+        declareSymbol(msym, ctx);
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// visit(FromDeclAST)
-// ─────────────────────────────────────────────────────────────────────────────
-void SemanticCollector::visit(FromDeclAST& node) {
-    // Extract the target type name from the target type (must be a NamedTypeAST)
-    InternedString targetTypeName;
+void SemanticCollector::collectFromDecl(FromDeclAST& node, SemanticContext& ctx) {
+    // Extract target type name
+    InternedString targetName;
     if (node.targetType && node.targetType->isa<NamedTypeAST>()) {
-        targetTypeName = node.targetType->as<NamedTypeAST>()->name;
+        targetName = node.targetType->as<NamedTypeAST>()->name;
     } else {
-        dc_.error(DiagnosticCategory::Semantic, currentFile_, node.loc, DiagCode::E3001,
-                {"from target must be a named type (struct, enum, or type alias)"});
+        ctx.error(node.loc, DiagCode::E2016, {"from target must be a named type (struct, enum, or type alias)"});
         return;
     }
 
-    LUC_LOG_SEMANTIC("SemanticCollector::visit(FromDeclAST): target=" 
-                     << pool_.lookup(targetTypeName)
-                     << ", entries=" << node.entries.size());
-
-    // From blocks themselves don't create symbols, but their conversion entries do.
-    // Conversion entries are stored with mangled names: TargetType::from::ParamType
+    std::string_view targetStr = ctx.pool.lookup(targetName);
     for (const auto& entry : node.entries) {
         if (!entry) continue;
 
-        // Build a mangled name for the conversion
+        // Get the type of the first parameter (source type)
         TypeAST* firstParamType = nullptr;
         if (entry->sig.totalParamCount() > 0 && entry->sig.groupCount() > 0) {
             auto group = entry->sig.getGroup(0);
@@ -525,41 +276,28 @@ void SemanticCollector::visit(FromDeclAST& node) {
                 firstParamType = group[0]->type.get();
             }
         }
-        std::string mangledName = NameMangler::mangleFrom(
-            pool_.lookup(targetTypeName), 
-            firstParamType, 
-            pool_
-        );
-        InternedString mangledInterned = pool_.intern(mangledName);
 
-        Symbol entrySym;
-        entrySym.name = mangledInterned;
-        entrySym.kind = SymbolKind::Casting;
-        entrySym.declKw = DeclKeyword::Let;
-        entrySym.visibility = node.visibility;
-        entrySym.type = nullptr;
-        entrySym.decl = entry.get();
-        entrySym.loc = entry->loc;
+        std::string mangled = NameMangler::mangleFrom(targetStr, firstParamType, ctx.pool);
+        InternedString mangledInterned = ctx.pool.intern(mangled);
 
-        declareSymbol(entrySym);
+        Symbol esym;
+        esym.name = mangledInterned;
+        esym.kind = SymbolKind::Casting;
+        esym.visibility = node.visibility;
+        esym.type = nullptr;
+        esym.decl = entry.get();
+        esym.loc = entry->loc;
+        declareSymbol(esym, ctx);
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// visit(TypeAliasDeclAST)
-// ─────────────────────────────────────────────────────────────────────────────
-void SemanticCollector::visit(TypeAliasDeclAST& node) {
-    LUC_LOG_SEMANTIC("SemanticCollector::visit(TypeAliasDeclAST): name=" 
-                     << pool_.lookup(node.name));
-    
+void SemanticCollector::collectTypeAliasDecl(TypeAliasDeclAST& node, SemanticContext& ctx) {
     Symbol sym;
     sym.name = node.name;
     sym.kind = SymbolKind::TypeAlias;
-    sym.declKw = DeclKeyword::Let;  // Not applicable for type aliases
     sym.visibility = node.visibility;
-    sym.type = nullptr;  // Will be set during type resolution
+    sym.type = nullptr;
     sym.decl = &node;
     sym.loc = node.loc;
-    
-    declareSymbol(sym);
+    declareSymbol(sym, ctx);
 }

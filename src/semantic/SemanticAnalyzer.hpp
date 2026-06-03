@@ -8,7 +8,6 @@
 #include "helpers/SemanticContext.hpp"
 #include "collectors/SemanticCollector.hpp"
 #include "resolveType/TypeResolver.hpp"
-#include "resolveType/TypeChecker.hpp"
 #include "SymbolTable.hpp"
 #include "ast/BaseAST.hpp"
 
@@ -26,14 +25,11 @@ public:
     CompilationMode getCompilationMode() const { return compilationMode_; }
 
 private:
-    // Owned components
+    // Owned components (order matters: ctx_ must be initialized before resolver_)
     SymbolTable symbols_;
+    SemanticContext ctx_;        // ctx_ must come BEFORE resolver_
     TypeResolver resolver_;
-    TypeChecker checker_;
     SemanticCollector collector_;
-
-    // Context used during analysis (references to above components)
-    SemanticContext ctx_;
 
     // Result of analysis
     CompilationMode compilationMode_ = CompilationMode::AOT;
@@ -45,7 +41,5 @@ private:
     void checkDecls(std::vector<ProgramAST*>& files);
     void annotate(std::vector<ProgramAST*>& files);
     void validateNoDuplicateSymbols();
-
-    // Helper to set current file in context before processing each file
-    void setCurrentFile(InternedString file) { ctx_.currentFile = file; }
+    void validateEntryPoint();
 };

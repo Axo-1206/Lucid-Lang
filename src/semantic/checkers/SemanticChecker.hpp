@@ -17,7 +17,7 @@
 
 #pragma once
 
-#include "SemanticContext.hpp"
+#include "semantic/helpers/SemanticContext.hpp"
 #include "ast/DeclAST.hpp"
 #include "ast/ExprAST.hpp"
 #include "ast/StmtAST.hpp"

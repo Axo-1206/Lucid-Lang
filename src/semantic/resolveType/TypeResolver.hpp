@@ -9,24 +9,24 @@
 #include "ast/DeclAST.hpp"
 #include <unordered_map>
 
-struct SemanticContext;  // forward declaration
+struct SemanticContext;
 
 class TypeResolver {
 public:
-    // No constructor arguments – all methods take SemanticContext&
-    TypeResolver() = default;
+    explicit TypeResolver(SemanticContext& ctx);
 
     // Main entry point
-    TypeAST* resolveType(TypeAST* typeNode, SemanticContext& ctx);
+    TypeAST* resolveType(TypeAST* typeNode);
 
-    // Declaration‑level helpers
-    void resolveStructFields(StructDeclAST& node, SemanticContext& ctx);
-    void resolveFunctionType(FuncTypeAST& type, SemanticContext& ctx);
-    void resolveFunctionReturnTypes(const FuncTypeAST& type, SemanticContext& ctx);
-    TypeAST* getFunctionReturnType(const FuncTypeAST& type, const SourceLocation* loc, SemanticContext& ctx);
-    std::vector<TypeAST*> getFunctionReturnTypes(const FuncTypeAST& type, SemanticContext& ctx);
+    // Declaration‑level resolution (for Phase 2)
+    void resolveTypeAlias(TypeAliasDeclAST& node);
+    void resolveStructFields(StructDeclAST& node);
+    void resolveFunctionSignature(FuncDeclAST& node);
+    void resolveImplMethods(ImplDeclAST& node);
+    void resolveFromEntries(FromDeclAST& node);
+    void resolveVarType(VarDeclAST& node);
 
-    // Generic parameter stack management (context‑independent)
+    // Generic parameter stack management
     void pushGenericParams(const ArenaSpan<GenericParamPtr>* params);
     void popGenericParams();
     bool isGenericParam(InternedString name) const;
@@ -36,33 +36,39 @@ public:
     void popSubstitutionMap();
     TypeAST* lookupSubstitution(InternedString name) const;
 
-    // Constraint checking (uses ctx for diagnostics)
-    bool satisfiesConstraints(TypeAST* type, const std::vector<InternedString>& requiredTraits,
-                              SemanticContext& ctx) const;
+    // Constraint checking
+    bool satisfiesConstraints(TypeAST* type, const std::vector<InternedString>& requiredTraits) const;
 
-    // Cloning utilities (context‑independent, uses ctx.arena for allocation)
-    TypeAST* cloneType(const TypeAST* type, SemanticContext& ctx);
-    FuncTypeAST* cloneFuncSignature(const FuncSignature& sig, const SourceLocation& loc, SemanticContext& ctx);
+    // Cloning utilities
+    TypeAST* cloneType(const TypeAST* type);
+    FuncTypeAST* cloneFuncType(const FuncTypeAST* src, const SourceLocation& loc);
 
     // Trait mapping (set by SemanticAnalyzer)
     void setStructTraits(const std::unordered_map<InternedString, std::vector<InternedString>>* map) {
         structTraits_ = map;
     }
 
+    // Helper to get function return type(s)
+    TypeAST* getFunctionReturnType(const FuncTypeAST& type, const SourceLocation* loc);
+    std::vector<TypeAST*> getFunctionReturnTypes(const FuncTypeAST& type);
+
 private:
-    // Dispatch helpers (each takes ctx)
-    TypeAST* resolvePrimitiveType(PrimitiveTypeAST& node, SemanticContext& ctx);
-    TypeAST* resolveNamedType(NamedTypeAST& node, SemanticContext& ctx);
-    TypeAST* resolveNullableType(NullableTypeAST& node, SemanticContext& ctx);
-    TypeAST* resolveResultType(ResultTypeAST& node, SemanticContext& ctx);
-    TypeAST* resolveArrayType(ArrayTypeAST& node, SemanticContext& ctx);
-    TypeAST* resolveRefType(RefTypeAST& node, SemanticContext& ctx);
-    TypeAST* resolvePtrType(PtrTypeAST& node, SemanticContext& ctx);
-    TypeAST* resolveFuncType(FuncTypeAST& node, SemanticContext& ctx);
+    SemanticContext& ctx_;  // Reference to the semantic context
 
-    void resolveGenericParamConstraints(GenericParamAST& gp, SemanticContext& ctx);
+    // Dispatch helpers
+    TypeAST* resolvePrimitiveType(PrimitiveTypeAST& node);
+    TypeAST* resolveNamedType(NamedTypeAST& node);
+    TypeAST* resolveNullableType(NullableTypeAST& node);
+    TypeAST* resolveResultType(ResultTypeAST& node);
+    TypeAST* resolveArrayType(ArrayTypeAST& node);
+    TypeAST* resolveRefType(RefTypeAST& node);
+    TypeAST* resolvePtrType(PtrTypeAST& node);
+    TypeAST* resolveFuncType(FuncTypeAST& node);
 
-    // Generic stacks (do not depend on ctx)
+    // Internal helper for cloning function type (used by cloneFuncType)
+    FuncTypeAST* cloneFuncTypeInternal(FuncTypeAST* dst, const FuncTypeAST* src, const SourceLocation& loc);
+
+    // Generic stacks
     std::vector<const ArenaSpan<GenericParamPtr>*> genericParamsStack_;
     std::vector<const std::unordered_map<InternedString, TypeAST*>*> substitutionMapStack_;
     const std::unordered_map<InternedString, std::vector<InternedString>>* structTraits_ = nullptr;

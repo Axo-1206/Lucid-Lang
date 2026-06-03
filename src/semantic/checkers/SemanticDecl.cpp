@@ -13,14 +13,13 @@
 #include "ast/ExprAST.hpp"
 #include "ast/support/ArenaSpan.hpp"
 #include "ast/support/StringPool.hpp"
-#include "diagnostics/DiagnosticEngine.hpp"
 #include "debug/DebugUtils.hpp"
 #include "registry/AttributeRegistry.hpp"
-#include "header/SymbolTable.hpp"
-#include "header/TypeResolver.hpp"
-#include "header/TypeChecker.hpp"
-#include "header/SemanticContext.hpp"
-#include "header/SemanticChecker.hpp"
+#include "semantic/SymbolTable.hpp"
+#include "semantic/resolveType/TypeResolver.hpp"
+#include "semantic/resolveType/TypeChecker.hpp"
+#include "semantic/helpers/SemanticContext.hpp"
+#include "SemanticChecker.hpp"
 
 #include <unordered_set>
 #include <string>

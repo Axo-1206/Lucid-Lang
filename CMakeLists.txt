@@ -37,15 +37,20 @@ add_executable(luc-comp
 
     src/parser/Parser.cpp
     src/parser/lookahead/ParserLookahead.cpp
+
     src/semantic/SymbolTable.cpp
     src/semantic/SemanticAnalyzer.cpp
-    src/semantic/TypeResolver.cpp
-    src/semantic/SemanticCollector.cpp
-    src/semantic/SemanticDecl.cpp
-    src/semantic/SemanticExpr.cpp
-    src/semantic/SemanticStmt.cpp
-    src/semantic/TypeChecker.cpp
     src/semantic/Annotator.cpp
+
+    src/semantic/collectors/SemanticCollector.cpp
+
+    src/semantic/checkers/SemanticDecl.cpp
+    src/semantic/checkers/SemanticExpr.cpp
+    src/semantic/checkers/SemanticStmt.cpp
+
+    src/semantic/resolveType/TypeResolver.cpp
+    src/semantic/resolveType/TypeChecker.cpp
+    
 
     src/debug/ASTDumper.cpp
     src/registry/QualifierRegistry.cpp
@@ -68,19 +73,20 @@ add_executable(luc-comp
     src/parser/decl/StructParser.cpp
     src/parser/decl/FuncParser.cpp
     src/parser/decl/VarParser.cpp
+
     src/parser/type/PrimitiveParser.cpp
     src/parser/type/NamedParser.cpp
     src/parser/type/ArrayParser.cpp
     src/parser/type/RefParser.cpp
     src/parser/type/PtrParser.cpp
     src/parser/type/FuncTypeParser.cpp
+
     src/parser/stmt/BlockParser.cpp
     src/parser/stmt/SwitchParser.cpp
     src/parser/stmt/LoopParser.cpp
     src/parser/stmt/FlowControlParser.cpp
     src/parser/stmt/LocalDeclParser.cpp
 
-    
 
     src/parser/expr/literal/LiteralParser.cpp
     src/parser/expr/operator/BinaryParser.cpp

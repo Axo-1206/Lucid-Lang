@@ -13,6 +13,9 @@
 #include "ast/support/ASTArena.hpp"
 #include "diagnostics/Diagnostic.hpp"
 #include "semantic/SymbolTable.hpp"
+#include <utility>
+#include <string>
+#include <sstream>
 
 struct SemanticContext {
     // ── References to shared resources ──────────────────────────────────────
@@ -38,16 +41,61 @@ struct SemanticContext {
         : pool(p), arena(a), symbols(sym) {}
 
     // ── Convenience diagnostic helpers (using global diagnostic module) ─────
-    void error(SourceLocation loc, DiagCode code,
-               std::initializer_list<std::string> args = {}) const {
-        diagnostic::error(DiagnosticCategory::Semantic, currentFile, loc, code, args);
+    
+    /**
+     * @brief Helper to convert any printable type to string.
+     */
+    template<typename T>
+    static std::string toString(const T& value) {
+        std::ostringstream oss;
+        oss << value;
+        return oss.str();
     }
 
-    void warning(SourceLocation loc, DiagCode code,
-                 std::initializer_list<std::string> args = {}) const {
-        diagnostic::warning(DiagnosticCategory::Semantic, currentFile, loc, code, args);
+    // Specialization for string_view
+    static std::string toString(std::string_view sv) {
+        return std::string(sv);
     }
 
+    // Specialization for const char*
+    static std::string toString(const char* str) {
+        return std::string(str);
+    }
+
+    // Specialization for std::string
+    static std::string toString(const std::string& s) {
+        return s;
+    }
+
+    /**
+     * @brief Report an error with any number of format arguments.
+     * @param loc Source location
+     * @param code Diagnostic code
+     * @param args Format arguments to substitute for %s placeholders
+     */
+    template<typename... Args>
+    void error(SourceLocation loc, DiagCode code, Args&&... args) const {
+        std::initializer_list<std::string> argList = { toString(std::forward<Args>(args))... };
+        diagnostic::error(DiagnosticCategory::Semantic, currentFile, loc, code, argList);
+    }
+
+    /**
+     * @brief Report a warning with any number of format arguments.
+     * @param loc Source location
+     * @param code Diagnostic code
+     * @param args Format arguments to substitute for %s placeholders
+     */
+    template<typename... Args>
+    void warning(SourceLocation loc, DiagCode code, Args&&... args) const {
+        std::initializer_list<std::string> argList = { toString(std::forward<Args>(args))... };
+        diagnostic::warning(DiagnosticCategory::Semantic, currentFile, loc, code, argList);
+    }
+
+    /**
+     * @brief Report a free‑text note.
+     * @param loc Source location
+     * @param msg Human‑readable message
+     */
     void note(SourceLocation loc, const std::string& msg) const {
         diagnostic::note(currentFile, loc, msg);
     }
