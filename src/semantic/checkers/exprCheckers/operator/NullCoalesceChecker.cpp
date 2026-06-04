@@ -20,7 +20,7 @@ TypeAST* checkNullCoalesceExpr(NullCoalesceExprAST& node, SemanticContext& ctx) 
     
     // Left side must be nullable
     if (!TypeChecker::isNullable(leftType, ctx)) {
-        ctx.error(node.loc, DiagCode::E2002, "left side of '??' must be nullable");
+        ctx.error(node.loc, DiagCode::E2002, "left side of '\?\?' must be nullable");
         return nullptr;
     }
     

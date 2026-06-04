@@ -234,11 +234,15 @@ bool TypeChecker::isAssignable(TypeAST* from, TypeAST* to, SemanticContext& ctx)
         auto* fFrom = from->as<FuncTypeAST>();
         auto* fTo = to->as<FuncTypeAST>();
 
-        uint32_t mask = QualifierBits::Async;
-        uint32_t fromBits = fFrom->qualifiers & mask;
-        uint32_t toBits = fTo->qualifiers & mask;
-        if (fromBits != toBits) return false;
+        // Compare async qualifier specially:
+        // - Plain → async is allowed (the binding carries the qualifier)
+        // - Async → plain is forbidden
+        bool fromAsync = (fFrom->qualifiers & QualifierBits::Async) != 0;
+        bool toAsync = (fTo->qualifiers & QualifierBits::Async) != 0;
+        if (fromAsync && !toAsync) return false;  // async → plain forbidden
+        // Plain → async allowed, all other combinations allowed
 
+        // Compare parameter groups and return types (structural equality)
         if (fFrom->sig.groupCount() != fTo->sig.groupCount()) return false;
         for (size_t g = 0; g < fFrom->sig.groupCount(); ++g) {
             auto groupFrom = fFrom->sig.getGroup(g);
@@ -253,10 +257,12 @@ bool TypeChecker::isAssignable(TypeAST* from, TypeAST* to, SemanticContext& ctx)
             if (!isEqual(fFrom->sig.returnTypes[i].get(), fTo->sig.returnTypes[i].get(), ctx)) return false;
         }
 
+        // Compare nullability: non‑nullable → nullable allowed; reverse forbidden
         bool fromNullable = fFrom->isNullable();
         bool toNullable = fTo->isNullable();
-        if (!fromNullable && toNullable) return true;  // non-nullable -> nullable allowed
-        if (fromNullable && !toNullable) return false; // nullable -> non-nullable forbidden
+        if (!fromNullable && toNullable) return true;   // non‑nullable → nullable allowed
+        if (fromNullable && !toNullable) return false;  // nullable → non‑nullable forbidden
+
         return true;
     }
 
@@ -351,20 +357,9 @@ bool TypeChecker::primitiveWidening(PrimitiveKind from, PrimitiveKind to) {
         }
     }
 
-    // Signed to unsigned (allowed for positive literals)
-    if (from == PrimitiveKind::Byte || from == PrimitiveKind::Int8 ||
-        from == PrimitiveKind::Short || from == PrimitiveKind::Int16 ||
-        from == PrimitiveKind::Int || from == PrimitiveKind::Int32 ||
-        from == PrimitiveKind::Long || from == PrimitiveKind::Int64) {
-        switch (to) {
-            case PrimitiveKind::Ubyte: case PrimitiveKind::Uint8:
-            case PrimitiveKind::Ushort: case PrimitiveKind::Uint16:
-            case PrimitiveKind::Uint: case PrimitiveKind::Uint32:
-            case PrimitiveKind::Ulong: case PrimitiveKind::Uint64:
-                return true;
-            default: break;
-        }
-    }
+    // NOTE: Signed → unsigned widening is NOT allowed as implicit conversion.
+    // The programmer must use an explicit cast or a `from` conversion.
+    // The branch that previously allowed this has been removed.
 
     // Floating-point widening
     if (from == PrimitiveKind::Float) {
@@ -374,7 +369,7 @@ bool TypeChecker::primitiveWidening(PrimitiveKind from, PrimitiveKind to) {
         if (to == PrimitiveKind::Decimal) return true;
     }
 
-    // Integer to floating-point
+    // Integer to floating-point (widening)
     if ((from == PrimitiveKind::Byte || from == PrimitiveKind::Int8 ||
          from == PrimitiveKind::Short || from == PrimitiveKind::Int16 ||
          from == PrimitiveKind::Int || from == PrimitiveKind::Int32 ||
@@ -389,6 +384,7 @@ bool TypeChecker::primitiveWidening(PrimitiveKind from, PrimitiveKind to) {
 
     return false;
 }
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Type Queries
@@ -421,8 +417,11 @@ bool TypeChecker::isBooleanCompatible(TypeAST* type, SemanticContext& ctx) {
 
 bool TypeChecker::isNullable(TypeAST* type, SemanticContext& ctx) {
     if (!type) return false;
+    
     if (type->isa<NullableTypeAST>()) return true;
     if (type->isa<FuncTypeAST>()) return type->as<FuncTypeAST>()->isNullable();
+    if (type->isa<PtrTypeAST>()) return true;   // raw pointers are always nullable
+    
     return false;
 }
 

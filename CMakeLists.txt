@@ -41,6 +41,7 @@ add_executable(luc-comp
     src/registry/IntrinsicRegistry.cpp
     src/ast/support/StringPool.cpp
 
+    # Parser
 
     src/parser/Parser.cpp
     src/parser/lookahead/ParserLookahead.cpp
@@ -92,14 +93,13 @@ add_executable(luc-comp
     src/parser/expr/other/IndexParser.cpp
     src/parser/Dispatcher.cpp
 
+    # Semantic Analyzer
 
     src/semantic/SymbolTable.cpp
     src/semantic/SemanticAnalyzer.cpp
     src/semantic/Annotator.cpp
     src/semantic/collectors/SemanticCollector.cpp
-
-    src/semantic/resolveType/TypeResolver.cpp
-    src/semantic/resolveType/TypeChecker.cpp
+    src/semantic/checkType/TypeChecker.cpp
 
     src/semantic/checkers/declCheckers/DeclDispatcher.cpp
     src/semantic/checkers/declCheckers/checkVarDecl.cpp
@@ -144,6 +144,20 @@ add_executable(luc-comp
     src/semantic/checkers/exprCheckers/special/NullableChainChecker.cpp
     src/semantic/checkers/exprCheckers/match/MatchChecker.cpp
     src/semantic/checkers/exprCheckers/match/PatternChecker.cpp
+
+    src/semantic/resolveType/TypeDispatcher.cpp
+    src/semantic/resolveType/core/GenericParamHandler.cpp
+    src/semantic/resolveType/core/TypeCloner.cpp
+    src/semantic/resolveType/core/ConstraintChecker.cpp
+    src/semantic/resolveType/named/NamedResolver.cpp
+    src/semantic/resolveType/composite/NullableResolver.cpp
+    src/semantic/resolveType/composite/FuncResolver.cpp
+    src/semantic/resolveType/decl/StructResolver.cpp
+    src/semantic/resolveType/decl/ImplResolver.cpp
+    src/semantic/resolveType/decl/FromResolver.cpp
+    src/semantic/resolveType/injection/InjectionTransformer.cpp
+    src/semantic/resolveType/callable/CallableExtractor.cpp
+
 
     # src/codegen/CodeGen.cpp
     # src/codegen/CodeGenExpr.cpp

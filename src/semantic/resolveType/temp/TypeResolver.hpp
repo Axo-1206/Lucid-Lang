@@ -7,6 +7,7 @@
 
 #include "ast/TypeAST.hpp"
 #include "ast/DeclAST.hpp"
+#include "ast/ExprAST.hpp"
 #include <unordered_map>
 
 struct SemanticContext;
@@ -52,6 +53,12 @@ public:
     TypeAST* getFunctionReturnType(const FuncTypeAST& type, const SourceLocation* loc);
     std::vector<TypeAST*> getFunctionReturnTypes(const FuncTypeAST& type);
 
+    // Injection form type transformation
+    FuncTypeAST* transformInjectionType(FuncTypeAST* funcType, InternedString receiverName, const SourceLocation& loc);
+
+    // Helper to resolve a function reference (for from entries and method assignments)
+    TypeAST* resolveFunctionReference(ExprPtr& ref, ArenaSpan<TypePtr>& typeArgs, const SourceLocation& loc);
+
 private:
     SemanticContext& ctx_;  // Reference to the semantic context
 
@@ -65,8 +72,18 @@ private:
     TypeAST* resolvePtrType(PtrTypeAST& node);
     TypeAST* resolveFuncType(FuncTypeAST& node);
 
-    // Internal helper for cloning function type (used by cloneFuncType)
+    // Internal helpers for cloning
     FuncTypeAST* cloneFuncTypeInternal(FuncTypeAST* dst, const FuncTypeAST* src, const SourceLocation& loc);
+
+    // From entry resolution helpers
+    void resolveFromEntryInline(FromEntryAST& entry, TypeAST* targetType);
+    void resolveFromEntryPath(FromEntryAST& entry, TypeAST* targetType);
+    FuncTypeAST* extractFuncTypeFromCallable(ExprPtr& callable, ArenaSpan<TypePtr>& explicitTypeArgs, const SourceLocation& loc);
+
+    // Method resolution helpers
+    void resolveMethodInline(MethodDeclAST& method, ImplDeclAST& impl);
+    void resolveMethodPlainAssignment(MethodDeclAST& method, ImplDeclAST& impl);
+    void resolveMethodInjectionAssignment(MethodDeclAST& method, ImplDeclAST& impl);
 
     // Generic stacks
     std::vector<const ArenaSpan<GenericParamPtr>*> genericParamsStack_;
