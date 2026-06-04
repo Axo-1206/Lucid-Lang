@@ -1,5 +1,5 @@
 /**
- * @file SemanticStmt.cpp
+ * @file StmtDispatcher.cpp
  *
  * @responsibility Dispatcher for statement checking (Phase 3c).
  */

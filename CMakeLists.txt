@@ -35,27 +35,15 @@ add_executable(luc-comp
     src/diagnostics/diagnostic.cpp
     src/diagnostics/DiagnosticMessages.cpp
 
-    src/parser/Parser.cpp
-    src/parser/lookahead/ParserLookahead.cpp
-
-    src/semantic/SymbolTable.cpp
-    src/semantic/SemanticAnalyzer.cpp
-    src/semantic/Annotator.cpp
-
-    src/semantic/collectors/SemanticCollector.cpp
-
-    src/semantic/checkers/exprCheckers/SemanticExpr.cpp
-    
-
-    src/semantic/resolveType/TypeResolver.cpp
-    src/semantic/resolveType/TypeChecker.cpp
-    
-
     src/debug/ASTDumper.cpp
     src/registry/QualifierRegistry.cpp
     src/registry/AttributeRegistry.cpp
     src/registry/IntrinsicRegistry.cpp
     src/ast/support/StringPool.cpp
+
+
+    src/parser/Parser.cpp
+    src/parser/lookahead/ParserLookahead.cpp
 
     src/parser/generic/GenericArgParser.cpp
     src/parser/generic/GenericParamParser.cpp
@@ -86,13 +74,11 @@ add_executable(luc-comp
     src/parser/stmt/FlowControlParser.cpp
     src/parser/stmt/LocalDeclParser.cpp
 
-
     src/parser/expr/literal/LiteralParser.cpp
     src/parser/expr/operator/BinaryParser.cpp
     src/parser/expr/operator/PipelineParser.cpp
     src/parser/expr/operator/ComposeParser.cpp
     
-
     src/parser/expr/special/IntrinsicParser.cpp
     src/parser/expr/special/RangeParser.cpp
     src/parser/expr/special/IfExprParser.cpp
@@ -100,7 +86,6 @@ add_executable(luc-comp
     src/parser/expr/special/ResolveParser.cpp
     src/parser/expr/special/TypeConvParser.cpp
     
-
     src/parser/expr/match/MatchParser.cpp
     src/parser/expr/match/PatternParser.cpp
     src/parser/expr/other/CallParser.cpp
@@ -108,7 +93,15 @@ add_executable(luc-comp
     src/parser/Dispatcher.cpp
 
 
-    src/semantic/checkers/declCheckers/SemanticDecl.cpp
+    src/semantic/SymbolTable.cpp
+    src/semantic/SemanticAnalyzer.cpp
+    src/semantic/Annotator.cpp
+    src/semantic/collectors/SemanticCollector.cpp
+
+    src/semantic/resolveType/TypeResolver.cpp
+    src/semantic/resolveType/TypeChecker.cpp
+
+    src/semantic/checkers/declCheckers/DeclDispatcher.cpp
     src/semantic/checkers/declCheckers/checkVarDecl.cpp
     src/semantic/checkers/declCheckers/checkFuncDecl.cpp
     src/semantic/checkers/declCheckers/checkStructDecl.cpp
@@ -117,8 +110,7 @@ add_executable(luc-comp
     src/semantic/checkers/declCheckers/checkImplDecl.cpp
     src/semantic/checkers/declCheckers/checkFromDecl.cpp
 
-
-    src/semantic/checkers/stmtCheckers/SemanticStmt.cpp
+    src/semantic/checkers/stmtCheckers/StmtDispatcher.cpp
     src/semantic/checkers/stmtCheckers/BlockChecker.cpp
     src/semantic/checkers/stmtCheckers/ExprStmtChecker.cpp
     src/semantic/checkers/stmtCheckers/DeclStmtChecker.cpp
@@ -127,6 +119,31 @@ add_executable(luc-comp
     src/semantic/checkers/stmtCheckers/SwitchChecker.cpp
     src/semantic/checkers/stmtCheckers/MultiAssignChecker.cpp
     src/semantic/checkers/stmtCheckers/MultiVarDeclChecker.cpp
+
+    src/semantic/checkers/exprCheckers/ExprDispatcher.cpp
+    src/semantic/checkers/exprCheckers/literal/LiteralChecker.cpp
+    src/semantic/checkers/exprCheckers/literal/ArrayLiteralChecker.cpp
+    src/semantic/checkers/exprCheckers/literal/StructLiteralChecker.cpp
+    src/semantic/checkers/exprCheckers/literal/AnonFuncChecker.cpp
+    src/semantic/checkers/exprCheckers/operator/BinaryChecker.cpp
+    src/semantic/checkers/exprCheckers/operator/AssignChecker.cpp
+    src/semantic/checkers/exprCheckers/operator/IsChecker.cpp
+    src/semantic/checkers/exprCheckers/operator/NullCoalesceChecker.cpp
+    src/semantic/checkers/exprCheckers/operator/PipelineChecker.cpp
+    src/semantic/checkers/exprCheckers/operator/ComposeChecker.cpp
+    src/semantic/checkers/exprCheckers/other/CallChecker.cpp
+    src/semantic/checkers/exprCheckers/other/IndexChecker.cpp
+    src/semantic/checkers/exprCheckers/other/FieldAccessChecker.cpp
+    src/semantic/checkers/exprCheckers/other/BehaviorAccessChecker.cpp
+    src/semantic/checkers/exprCheckers/other/IdentifierChecker.cpp
+    src/semantic/checkers/exprCheckers/special/AwaitChecker.cpp
+    src/semantic/checkers/exprCheckers/special/IfExprChecker.cpp
+    src/semantic/checkers/exprCheckers/special/IntrinsicChecker.cpp
+    src/semantic/checkers/exprCheckers/special/RangeChecker.cpp
+    src/semantic/checkers/exprCheckers/special/TypeConvChecker.cpp
+    src/semantic/checkers/exprCheckers/special/NullableChainChecker.cpp
+    src/semantic/checkers/exprCheckers/match/MatchChecker.cpp
+    src/semantic/checkers/exprCheckers/match/PatternChecker.cpp
 
     # src/codegen/CodeGen.cpp
     # src/codegen/CodeGenExpr.cpp

@@ -13,6 +13,9 @@
  *
  * Statement checkers take an `expectedReturn` type (nullptr for void functions)
  * to validate return statements.
+ *
+ * Expression checkers are organised by category (literal, operator, special, other, match)
+ * and each returns the resolved TypeAST* for the expression.
  */
 
 #pragma once
@@ -37,7 +40,7 @@ void checkImplDecl(ImplDeclAST& node, SemanticContext& ctx, bool isLocal = false
 void checkFromDecl(FromDeclAST& node, SemanticContext& ctx, bool isLocal = false);
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Statement Checkers (dispatched by checkStmt)
+// Statement Checkers
 // ─────────────────────────────────────────────────────────────────────────────
 
 void checkStmt(StmtAST* node, SemanticContext& ctx, TypeAST* expectedReturn = nullptr);
@@ -47,7 +50,7 @@ void checkBlockStmt(BlockStmtAST& node, SemanticContext& ctx, TypeAST* expectedR
 void checkDeclStmt(DeclStmtAST& node, SemanticContext& ctx);
 void checkExprStmt(ExprStmtAST& node, SemanticContext& ctx);
 
-// Control flow (if, return, break, continue)
+// Control flow
 void checkIfStmt(IfStmtAST& node, SemanticContext& ctx, TypeAST* expectedReturn);
 void checkReturnStmt(ReturnStmtAST& node, SemanticContext& ctx, TypeAST* expectedReturn);
 void checkBreakStmt(BreakStmtAST& node, SemanticContext& ctx);
@@ -64,7 +67,40 @@ void checkMultiVarDecl(MultiVarDeclAST& node, SemanticContext& ctx);
 void checkMultiAssignStmt(MultiAssignStmtAST& node, SemanticContext& ctx);
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Expression Checker
+// Expression Checkers (dispatched by checkExpr)
 // ─────────────────────────────────────────────────────────────────────────────
 
 TypeAST* checkExpr(ExprAST* node, SemanticContext& ctx);
+
+// ── Literal Expressions ─────────────────────────────────────────────────────
+TypeAST* checkLiteralExpr(LiteralExprAST& node, SemanticContext& ctx);
+TypeAST* checkArrayLiteralExpr(ArrayLiteralExprAST& node, SemanticContext& ctx);
+TypeAST* checkStructLiteralExpr(StructLiteralExprAST& node, SemanticContext& ctx);
+TypeAST* checkAnonFuncExpr(AnonFuncExprAST& node, SemanticContext& ctx);
+
+// ── Operator Expressions ────────────────────────────────────────────────────
+TypeAST* checkBinaryExpr(BinaryExprAST& node, SemanticContext& ctx);
+TypeAST* checkUnaryExpr(UnaryExprAST& node, SemanticContext& ctx);
+TypeAST* checkAssignExpr(AssignExprAST& node, SemanticContext& ctx);
+TypeAST* checkIsExpr(IsExprAST& node, SemanticContext& ctx);
+TypeAST* checkNullCoalesceExpr(NullCoalesceExprAST& node, SemanticContext& ctx);
+TypeAST* checkPipelineExpr(PipelineExprAST& node, SemanticContext& ctx);
+TypeAST* checkComposeExpr(ComposeExprAST& node, SemanticContext& ctx);
+
+// ── Special Expressions ─────────────────────────────────────────────────────
+TypeAST* checkAwaitExpr(AwaitExprAST& node, SemanticContext& ctx);
+TypeAST* checkIfExpr(IfExprAST& node, SemanticContext& ctx);
+TypeAST* checkIntrinsicCallExpr(IntrinsicCallExprAST& node, SemanticContext& ctx);
+TypeAST* checkRangeExpr(RangeExprAST& node, SemanticContext& ctx);
+TypeAST* checkTypeConvExpr(TypeConvExprAST& node, SemanticContext& ctx);
+TypeAST* checkNullableChainExpr(NullableChainExprAST& node, SemanticContext& ctx);
+
+// ── Other Expressions ───────────────────────────────────────────────────────
+TypeAST* checkCallExpr(CallExprAST& node, SemanticContext& ctx);
+TypeAST* checkIndexExpr(IndexExprAST& node, SemanticContext& ctx);
+TypeAST* checkFieldAccessExpr(FieldAccessExprAST& node, SemanticContext& ctx);
+TypeAST* checkBehaviorAccessExpr(BehaviorAccessExprAST& node, SemanticContext& ctx);
+TypeAST* checkIdentifierExpr(IdentifierExprAST& node, SemanticContext& ctx);
+
+// ── Match Expressions ───────────────────────────────────────────────────────
+TypeAST* checkMatchExpr(MatchExprAST& node, SemanticContext& ctx);

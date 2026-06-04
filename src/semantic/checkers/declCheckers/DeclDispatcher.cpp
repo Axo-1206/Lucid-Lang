@@ -1,5 +1,5 @@
 /**
- * @file SemanticDecl.cpp
+ * @file DeclDispatcher.cpp
  *
  * @nutshell Verifies the structure of structs, enums, functions, and implementations.
  *
