@@ -22,9 +22,8 @@ namespace LucDebug {
             case ASTKind::NamedType:         return "NamedType";
             case ASTKind::NullableType:      return "NullableType";
             case ASTKind::ResultType:        return "ResultType";
-            case ASTKind::FixedArrayType:    return "FixedArrayType";
-            case ASTKind::SliceType:         return "SliceType";
-            case ASTKind::DynamicArrayType:  return "DynamicArrayType";
+            case ASTKind::ArrayType:         return "ArrayType";
+            case ASTKind::GenericArrayType:  return "GenericArrayType";
             case ASTKind::RefType:           return "RefType";
             case ASTKind::PtrType:           return "PtrType";
             case ASTKind::FuncType:          return "FuncType";
@@ -165,5 +164,31 @@ namespace LucDebug {
     inline std::string toStr(const StringPool* pool, const InternedString& s) {
         if (!s.isValid()) return "";
         return std::string(pool->lookup(s));
+    }
+
+    // Helper to convert a TypeAST to a readable string for diagnostics
+    inline std::string formatType(TypeAST* type, const StringPool& pool) {
+        if (!type) return "<null>";
+        
+        if (type->isa<PrimitiveTypeAST>()) {
+            auto* prim = type->as<PrimitiveTypeAST>();
+            return primitiveKindToString(prim->primitiveKind);
+        }
+        
+        if (type->isa<NamedTypeAST>()) {
+            auto* named = type->as<NamedTypeAST>();
+            std::string result = std::string(pool.lookup(named->name));
+            if (!named->genericArgs.empty()) {
+                result += "<";
+                for (size_t i = 0; i < named->genericArgs.size(); ++i) {
+                    if (i > 0) result += ", ";
+                    result += formatType(named->genericArgs[i].get(), pool);
+                }
+                result += ">";
+            }
+            return result;
+        }
+        
+        return LucDebug::kindToString(type->kind);
     }
 }

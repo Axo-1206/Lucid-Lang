@@ -44,8 +44,8 @@ add_executable(luc-comp
 
     src/semantic/collectors/SemanticCollector.cpp
 
-    src/semantic/checkers/SemanticExpr.cpp
-    src/semantic/checkers/SemanticStmt.cpp
+    src/semantic/checkers/exprCheckers/SemanticExpr.cpp
+    
 
     src/semantic/resolveType/TypeResolver.cpp
     src/semantic/resolveType/TypeChecker.cpp
@@ -118,6 +118,15 @@ add_executable(luc-comp
     src/semantic/checkers/declCheckers/checkFromDecl.cpp
 
 
+    src/semantic/checkers/stmtCheckers/SemanticStmt.cpp
+    src/semantic/checkers/stmtCheckers/BlockChecker.cpp
+    src/semantic/checkers/stmtCheckers/ExprStmtChecker.cpp
+    src/semantic/checkers/stmtCheckers/DeclStmtChecker.cpp
+    src/semantic/checkers/stmtCheckers/LoopChecker.cpp
+    src/semantic/checkers/stmtCheckers/ControlFlowChecker.cpp
+    src/semantic/checkers/stmtCheckers/SwitchChecker.cpp
+    src/semantic/checkers/stmtCheckers/MultiAssignChecker.cpp
+    src/semantic/checkers/stmtCheckers/MultiVarDeclChecker.cpp
 
     # src/codegen/CodeGen.cpp
     # src/codegen/CodeGenExpr.cpp

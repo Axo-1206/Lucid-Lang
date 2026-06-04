@@ -99,7 +99,7 @@ void checkVarDecl(VarDeclAST& node, SemanticContext& ctx, bool isLocal) {
         if (lit->kind == LiteralKind::Nil && !TypeChecker::isNullable(declaredType, ctx)) {
             ctx.error(node.loc, DiagCode::E2002,
                       "nil cannot be assigned to non-nullable type '",
-                      formatType(declaredType, ctx.pool), "'");
+                      LucDebug::formatType(declaredType, ctx.pool), "'");
             return;
         }
     }
@@ -128,7 +128,7 @@ void checkVarDecl(VarDeclAST& node, SemanticContext& ctx, bool isLocal) {
         } else {
             ctx.error(node.loc, DiagCode::E2008,
                       "cannot implicitly convert initializer to type '",
-                      formatType(declaredType, ctx.pool),
+                      LucDebug::formatType(declaredType, ctx.pool),
                       "' for variable '", ctx.pool.lookup(node.name),
                       "'; use an explicit type cast like '[target_type](value)' "
                       "or define a 'from' casting block");

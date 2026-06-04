@@ -153,59 +153,6 @@ static inline void checkAttributes(const ArenaSpan<AttributePtr>& attributes,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// formatType  — Helper to convert a TypeAST to a readable string for diagnostics
-// ─────────────────────────────────────────────────────────────────────────────
-static inline std::string formatType(TypeAST* type, const StringPool& pool) {
-    if (!type) return "<null>";
-    
-    if (type->isa<PrimitiveTypeAST>()) {
-        auto* prim = type->as<PrimitiveTypeAST>();
-        switch (prim->primitiveKind) {
-            case PrimitiveKind::Bool:   return "bool";
-            case PrimitiveKind::Byte:   return "byte";
-            case PrimitiveKind::Short:  return "short";
-            case PrimitiveKind::Int:    return "int";
-            case PrimitiveKind::Long:   return "long";
-            case PrimitiveKind::Ubyte:  return "ubyte";
-            case PrimitiveKind::Ushort: return "ushort";
-            case PrimitiveKind::Uint:   return "uint";
-            case PrimitiveKind::Ulong:  return "ulong";
-            case PrimitiveKind::Int8:   return "int8";
-            case PrimitiveKind::Int16:  return "int16";
-            case PrimitiveKind::Int32:  return "int32";
-            case PrimitiveKind::Int64:  return "int64";
-            case PrimitiveKind::Uint8:  return "uint8";
-            case PrimitiveKind::Uint16: return "uint16";
-            case PrimitiveKind::Uint32: return "uint32";
-            case PrimitiveKind::Uint64: return "uint64";
-            case PrimitiveKind::Float:  return "float";
-            case PrimitiveKind::Double: return "double";
-            case PrimitiveKind::Decimal:return "decimal";
-            case PrimitiveKind::String: return "string";
-            case PrimitiveKind::Char:   return "char";
-            case PrimitiveKind::Any:    return "any";
-            default: return "primitive";
-        }
-    }
-    
-    if (type->isa<NamedTypeAST>()) {
-        auto* named = type->as<NamedTypeAST>();
-        std::string result = std::string(pool.lookup(named->name));
-        if (!named->genericArgs.empty()) {
-            result += "<";
-            for (size_t i = 0; i < named->genericArgs.size(); ++i) {
-                if (i > 0) result += ", ";
-                result += formatType(named->genericArgs[i].get(), pool);
-            }
-            result += ">";
-        }
-        return result;
-    }
-    
-    return LucDebug::kindToString(type->kind);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Impl Block Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 

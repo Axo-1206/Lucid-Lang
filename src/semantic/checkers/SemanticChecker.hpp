@@ -37,26 +37,34 @@ void checkImplDecl(ImplDeclAST& node, SemanticContext& ctx, bool isLocal = false
 void checkFromDecl(FromDeclAST& node, SemanticContext& ctx, bool isLocal = false);
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Statement Checkers (dispatched by checkStmt)
+// ─────────────────────────────────────────────────────────────────────────────
+
+void checkStmt(StmtAST* node, SemanticContext& ctx, TypeAST* expectedReturn = nullptr);
+
+// Block and declarations
+void checkBlockStmt(BlockStmtAST& node, SemanticContext& ctx, TypeAST* expectedReturn);
+void checkDeclStmt(DeclStmtAST& node, SemanticContext& ctx);
+void checkExprStmt(ExprStmtAST& node, SemanticContext& ctx);
+
+// Control flow (if, return, break, continue)
+void checkIfStmt(IfStmtAST& node, SemanticContext& ctx, TypeAST* expectedReturn);
+void checkReturnStmt(ReturnStmtAST& node, SemanticContext& ctx, TypeAST* expectedReturn);
+void checkBreakStmt(BreakStmtAST& node, SemanticContext& ctx);
+void checkContinueStmt(ContinueStmtAST& node, SemanticContext& ctx);
+
+// Loops
+void checkWhileStmt(WhileStmtAST& node, SemanticContext& ctx, TypeAST* expectedReturn);
+void checkForStmt(ForStmtAST& node, SemanticContext& ctx, TypeAST* expectedReturn);
+void checkDoWhileStmt(DoWhileStmtAST& node, SemanticContext& ctx, TypeAST* expectedReturn);
+
+// Switch and multi-assignment
+void checkSwitchStmt(SwitchStmtAST& node, SemanticContext& ctx, TypeAST* expectedReturn);
+void checkMultiVarDecl(MultiVarDeclAST& node, SemanticContext& ctx);
+void checkMultiAssignStmt(MultiAssignStmtAST& node, SemanticContext& ctx);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Expression Checker
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * @brief Recursively checks an expression, sets node->resolvedType, and returns it.
- * @param node Expression to check (may be null)
- * @param ctx  Semantic context
- * @return Resolved TypeAST* (or nullptr on error)
- */
 TypeAST* checkExpr(ExprAST* node, SemanticContext& ctx);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Statement Checker
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * @brief Recursively checks a statement, managing scopes and control flow.
- * @param node           Statement to check (may be null)
- * @param ctx            Semantic context
- * @param expectedReturn Expected return type of the enclosing function
- *                       (nullptr for void functions)
- */
-void checkStmt(StmtAST* node, SemanticContext& ctx, TypeAST* expectedReturn = nullptr);
