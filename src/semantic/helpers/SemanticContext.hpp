@@ -13,6 +13,7 @@
 #include "ast/support/ASTArena.hpp"
 #include "diagnostics/Diagnostic.hpp"
 #include "semantic/SymbolTable.hpp"
+#include "semantic/resolveType/TypeResolver.hpp"
 #include <utility>
 #include <string>
 #include <sstream>
@@ -22,6 +23,7 @@ struct SemanticContext {
     StringPool&   pool;      // String pool (for name demangling)
     ASTArena&     arena;     // Arena for temporary type synthesis
     SymbolTable*  symbols;   // Symbol table (non‑owning, owned by SemanticAnalyzer)
+    TypeResolver* resolver;  // Type resolver (non‑owning, owned by SemanticAnalyzer)
 
     // ── Per‑file state (set before processing each file) ────────────────────
     InternedString currentFile;
@@ -36,9 +38,10 @@ struct SemanticContext {
      * @param p String pool
      * @param a AST arena
      * @param sym Symbol table (pointer, may be null initially)
+     * @param res Type resolver (pointer, may be null initially)
      */
-    SemanticContext(StringPool& p, ASTArena& a, SymbolTable* sym = nullptr)
-        : pool(p), arena(a), symbols(sym) {}
+    SemanticContext(StringPool& p, ASTArena& a, SymbolTable* sym = nullptr, TypeResolver* res = nullptr)
+        : pool(p), arena(a), symbols(sym), resolver(res) {}
 
     // ── Convenience diagnostic helpers (using global diagnostic module) ─────
     

@@ -44,7 +44,6 @@ add_executable(luc-comp
 
     src/semantic/collectors/SemanticCollector.cpp
 
-    src/semantic/checkers/SemanticDecl.cpp
     src/semantic/checkers/SemanticExpr.cpp
     src/semantic/checkers/SemanticStmt.cpp
 
@@ -107,6 +106,16 @@ add_executable(luc-comp
     src/parser/expr/other/CallParser.cpp
     src/parser/expr/other/IndexParser.cpp
     src/parser/Dispatcher.cpp
+
+
+    src/semantic/checkers/declCheckers/SemanticDecl.cpp
+    src/semantic/checkers/declCheckers/checkVarDecl.cpp
+    src/semantic/checkers/declCheckers/checkFuncDecl.cpp
+    src/semantic/checkers/declCheckers/checkStructDecl.cpp
+    src/semantic/checkers/declCheckers/checkEnumDecl.cpp
+    src/semantic/checkers/declCheckers/checkTraitDecl.cpp
+    src/semantic/checkers/declCheckers/checkImplDecl.cpp
+    src/semantic/checkers/declCheckers/checkFromDecl.cpp
 
 
 

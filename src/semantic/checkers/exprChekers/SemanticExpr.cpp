@@ -16,18 +16,16 @@
  */
 
 #include "registry/IntrinsicRegistry.hpp"
-#include "registry/BuiltinMethodRegistry.hpp"
 #include "ast/ExprAST.hpp"
 #include "ast/BaseAST.hpp"
 #include "ast/TypeAST.hpp"
 #include "debug/DebugUtils.hpp"
-#include "diagnostics/DiagnosticEngine.hpp"
 #include "diagnostics/DiagnosticCodes.hpp"
-#include "header/SymbolTable.hpp"
-#include "header/TypeResolver.hpp"
-#include "header/SemanticContext.hpp"
-#include "header/SemanticChecker.hpp"
-#include "header/NameMangler.hpp"
+#include "SemanticChecker.hpp"
+#include "semantic/SymbolTable.hpp"
+#include "semantic/resolveType/TypeResolver.hpp"
+#include "semantic/helpers/SemanticContext.hpp"
+#include "semantic/helpers/NameMangler.hpp"
 
 #include <string>
 #include <unordered_map>
