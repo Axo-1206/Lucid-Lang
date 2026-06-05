@@ -1305,15 +1305,15 @@ let strs     [*, string] = map<int, string>([1, 2, 3])(toString<int>)
 
 ### Key Differences
 
-| | Form 1 | Form 2 |
-|---|---|---|
-| Syntax | `(a int) -> (b int) -> int` | `(a int)(b int) -> int` |
-| Body runs at | First group call | All groups provided |
-| Pre-computation | ✅ Before inner function created | ❌ Not possible |
-| Capture control | ✅ Explicit — reference what you need | ❌ Implicit — compiler captures used vars |
-| Boilerplate | Higher — must write `return (...) -> T { ... }` | Lower — plain body |
-| Mixing logic between groups | ✅ Yes — outer body is free code | ❌ No — only one body for all groups |
-| Compiler desugars to | Itself | Form 1 |
+|                             | Form 1                                          | Form 2                                   |
+| --------------------------- | ----------------------------------------------- | ---------------------------------------- |
+| Syntax                      | `(a int) -> (b int) -> int`                     | `(a int)(b int) -> int`                  |
+| Body runs at                | First group call                                | All groups provided                      |
+| Pre-computation             | ✅ Before inner function created                 | ❌ Not possible                           |
+| Capture control             | ✅ Explicit — reference what you need            | ❌ Implicit — compiler captures used vars |
+| Boilerplate                 | Higher — must write `return (...) -> T { ... }` | Lower — plain body                       |
+| Mixing logic between groups | ✅ Yes — outer body is free code                 | ❌ No — only one body for all groups      |
+| Compiler desugars to        | Itself                                          | Form 1                                   |
 
 ### Partial Application — Intermediate Type Annotation Required
 
@@ -1404,13 +1404,13 @@ let process (b int) -> string = add(10) +> string
 
 ### Performance
 
-| Usage | Form 1 | Form 2 |
-|---|---|---|
-| Full application `add(1)(2)` | Inlined — zero overhead | Inlined — zero overhead |
-| Partial stored `let f = add(1)` | Heap closure | Heap closure |
-| Pre-computation at partial | ✅ Runs once at partial | ❌ Repeats on every full call |
-| LLVM escape analysis | Stack-alloc if non-escaping | Stack-alloc if non-escaping |
-| Inline `add(1)(2)` in pipeline | LLVM eliminates closure | LLVM eliminates closure |
+| Usage                           | Form 1                      | Form 2                       |
+| ------------------------------- | --------------------------- | ---------------------------- |
+| Full application `add(1)(2)`    | Inlined — zero overhead     | Inlined — zero overhead      |
+| Partial stored `let f = add(1)` | Heap closure                | Heap closure                 |
+| Pre-computation at partial      | ✅ Runs once at partial      | ❌ Repeats on every full call |
+| LLVM escape analysis            | Stack-alloc if non-escaping | Stack-alloc if non-escaping  |
+| Inline `add(1)(2)` in pipeline  | LLVM eliminates closure     | LLVM eliminates closure      |
 
 For pure functions with no setup work, both forms have identical runtime performance. Form 1 only outperforms form 2 when the outer body performs computation that should run once at the partial application boundary.
 
@@ -1753,20 +1753,20 @@ type AsyncMaybeOp = ~async ~nullable (a int) -> int
 
 Type alias names should reflect their kind at a glance. The following conventions are recommended:
 
-| Kind                              | Convention                 | Example                          |
-| --------------------------------- | -------------------------- | -------------------------------- |
-| Slice (`[_, T]`)                  | `...List` suffix           | `IntList`, `UserList`            |
-| Dynamic array (`[*, T]`)          | `...Array` suffix          | `IntArray`, `UserArray`          |
-| Fixed array (`[N, T]`)            | `...Buffer` suffix         | `ByteBuffer`, `FloatBuffer`      |
-| Generic slice (`[_, <T>]`)        | `List<T>` — no prefix      | `List<T>`, `List<User>`          |
-| Generic dynamic (`[*, <T>]`)      | `Array<T>` — no prefix     | `Array<T>`, `Array<User>`        |
-| Generic fixed (`[N, <T>]`)        | `Buffer<T, N>` — no prefix | `Buffer<T, 256>`                 |
-| Nullable (`T?`)                   | `Maybe...` prefix          | `MaybeInt`, `MaybeUser`          |
-| Result (`T!E`)                    | `...Or...` — both sides    | `IntOrString`, `UserOrDbError`   |
-| Function type                     | `...Fn` suffix             | `ParserFn`, `HandlerFn`          |
-| Nullable function                 | `Maybe...Fn`               | `MaybeParserFn`                  |
-| Async function                    | `...AsyncFn` suffix        | `FetchAsyncFn`                   |
-| Parallel function                 | `...ParallelFn` suffix     | `TransformParallelFn`            |
+| Kind                         | Convention                 | Example                        |
+| ---------------------------- | -------------------------- | ------------------------------ |
+| Slice (`[_, T]`)             | `...List` suffix           | `IntList`, `UserList`          |
+| Dynamic array (`[*, T]`)     | `...Array` suffix          | `IntArray`, `UserArray`        |
+| Fixed array (`[N, T]`)       | `...Buffer` suffix         | `ByteBuffer`, `FloatBuffer`    |
+| Generic slice (`[_, <T>]`)   | `List<T>` — no prefix      | `List<T>`, `List<User>`        |
+| Generic dynamic (`[*, <T>]`) | `Array<T>` — no prefix     | `Array<T>`, `Array<User>`      |
+| Generic fixed (`[N, <T>]`)   | `Buffer<T, N>` — no prefix | `Buffer<T, 256>`               |
+| Nullable (`T?`)              | `Maybe...` prefix          | `MaybeInt`, `MaybeUser`        |
+| Result (`T!E`)               | `...Or...` — both sides    | `IntOrString`, `UserOrDbError` |
+| Function type                | `...Fn` suffix             | `ParserFn`, `HandlerFn`        |
+| Nullable function            | `Maybe...Fn`               | `MaybeParserFn`                |
+| Async function               | `...AsyncFn` suffix        | `FetchAsyncFn`                 |
+| Parallel function            | `...ParallelFn` suffix     | `TransformParallelFn`          |
 
 The `Or` convention for result types surfaces both the success and error type explicitly. Generic aliases follow the same base suffix as their concrete counterparts — the `<T>` already signals the kind, so no prefix like `Generic` or `T` is needed or wanted.
 
@@ -1913,9 +1913,14 @@ trait_method    := IDENTIFIER [ qualifier_list ] param_group { param_group }
 - Traits can be top-level or local. When local, `visibility_mod` must be omitted.
 - No field declarations — method signatures only.
 - No default implementations.
-- A struct satisfies a trait by declaring `impl StructName : TraitName { ... }`.
+- **All types except function types can implement a trait.** This includes structs, primitives, enums, type aliases, and array types.
+- A type satisfies a trait by declaring `impl TypeName : TraitName { ... }`.
 - The impl declaration must provide every method in the trait.
 - No function overloading — each method name must be unique.
+
+### Trait Conformance — All Types Except Function Types
+
+Trait conformance is valid for every type that can be an `impl` target, with the single exception of function types. Function types are excluded because adding trait conformance to a function type blurs the boundary between values and objects — every function of that exact signature would implicitly gain the trait's methods, which is surprising and conflicts with Luc's design where functions are pure values with no method dispatch.
 
 ```luc
 pub trait Drawable {
@@ -1932,10 +1937,110 @@ pub trait Hashable {
     equals (other any) -> bool
 }
 
-pub trait AsyncFetcher {
-    fetch ~async (url string) -> string
+pub trait Iterable<T> {
+    iterator () -> Iterator<T>
 }
+
+pub trait Collection<T> {
+    add    (v T)
+    remove (v T)
+    size   () -> int
+}
+
+-- struct: always valid
+impl Circle : Drawable {
+    draw   ()         = { ... }
+    bounds () -> Rect = { ... }
+}
+
+-- primitive: valid — essential for generic algorithms
+impl int : Comparable<int> {
+    compareTo (other int) -> int = {
+        if self > other { return 1 }
+        if self < other { return -1 }
+        return 0
+    }
+}
+
+impl string : Hashable {
+    hash   () -> uint64      = { ... }
+    equals (other any) -> bool = { return self === other }
+}
+
+-- enum: valid
+impl Direction : Comparable<Direction> {
+    compareTo (other Direction) -> int = {
+        return int(self) - int(other)
+    }
+}
+
+impl ShaderStage : Hashable {
+    hash   () -> uint64      = { return uint64(self) }
+    equals (other any) -> bool = { return self === other }
+}
+
+-- type alias: valid — same underlying type, semantic context conformance
+type ID = int
+
+impl ID : Hashable {
+    hash   () -> uint64      = { return uint64(self) }
+    equals (other any) -> bool = { return self === other }
+}
+
+-- array type: valid — enables generic collection algorithms
+impl [_, <T>] : Iterable<T> {
+    iterator () -> Iterator<T> = { ... }
+}
+
+impl [*, <T>] : Collection<T> {
+    add    (v T)     = { self:push(v) }
+    remove (v T)     = { ... }
+    size   () -> int = { return self:len() }
+}
+
+-- function type: FORBIDDEN
+type PredicateFn = (int) -> bool
+impl PredicateFn : Composable { ... }   -- ERROR: function types cannot implement traits
+impl (int) -> bool : Composable { ... } -- ERROR: function types cannot implement traits
 ```
+
+### Trait as a Type
+
+When a trait name appears as a type — in a function parameter, return type, struct field, or variable declaration — the compiler enforces that every value provided at that position is a type that has declared conformance to the trait via `impl TypeName : TraitName`. The trait acts as a structural contract checked at each use site:
+
+```luc
+-- trait as parameter type
+let render (shape Drawable) = {
+    shape:draw()
+    let r Rect = shape:bounds()
+}
+
+-- trait as return type
+let createShape (kind string) -> Drawable = {
+    if kind == "circle" { return Circle { radius = 1.0  center = Vec2 { x=0.0 y=0.0 } } }
+    return Square { side = 1.0  origin = Vec2 { x=0.0 y=0.0 } }
+}
+
+-- trait as generic constraint
+let drawAll<T : Drawable> (items [_, T]) = {
+    for item T in items { item:draw() }
+}
+
+-- trait as struct field type
+struct Scene {
+    objects [_, Drawable]
+}
+
+-- call sites
+render(Circle { radius = 5.0  center = Vec2 { x=0.0 y=0.0 } })  -- OK: Circle : Drawable
+render(42)                                                         -- ERROR: int does not implement Drawable
+
+drawAll<Circle>([...])    -- OK: Circle : Drawable
+drawAll<int>([...])       -- ERROR: int has no Drawable impl
+```
+
+> [!NOTE]
+> A trait name used as a type does not mean the value is stored as a trait object with dynamic dispatch. Luc resolves the concrete type at each call site at compile time. The trait name is a constraint — the compiler checks conformance and uses the concrete type's methods directly. There is no virtual dispatch table unless the language explicitly introduces one in a future version.
 
 ---
 
@@ -2131,6 +2236,9 @@ This `impl` block, being declared last, takes priority over both `file1` and `fi
 | **Type alias**                                           | ✅ Yes             | `impl IntList { sum () -> int = { … } }`        |
 | **Array type** (`[_, T]`, `[*, T]`, `[N, T]`)            | ✅ Yes             | `impl [_, int] { sum () -> int = { … } }`       |
 | **Trait**                                                | ❌ No              | Traits are contracts, not implementations       |
+
+> [!NOTE]
+> Trait conformance (`impl TypeName : TraitName`) is valid for all `impl` targets **except function types**. Structs, primitives, enums, type aliases, and array types can all implement traits. See the Trait section for details and examples.
 
 ### Type Alias Transparency
 
@@ -2863,14 +2971,14 @@ pipeline_step   := IDENTIFIER
                  | anon_func
 ```
 
-| Step form        | What `\|>` does                  | Nullability                |
-| ---------------- | -------------------------------- | -------------------------- |
-| `fn`             | calls `fn(upstream)`             | must be non-nullable       |
-| `var:method`     | calls `method(upstream)`         | always safe                |
-| `struct.field`   | calls function stored in field   | field must be non-nullable |
-| `fn(args)!`      | calls `fn(upstream, args...)`    | must be non-nullable       |
-| `fn<T>`          | instantiates generic, calls with upstream | must be non-nullable |
-| `anon_func`      | calls with upstream as argument  | always safe                |
+| Step form      | What `\|>` does                           | Nullability                |
+| -------------- | ----------------------------------------- | -------------------------- |
+| `fn`           | calls `fn(upstream)`                      | must be non-nullable       |
+| `var:method`   | calls `method(upstream)`                  | always safe                |
+| `struct.field` | calls function stored in field            | field must be non-nullable |
+| `fn(args)!`    | calls `fn(upstream, args...)`             | must be non-nullable       |
+| `fn<T>`        | instantiates generic, calls with upstream | must be non-nullable       |
+| `anon_func`    | calls with upstream as argument           | always safe                |
 
 > [!NOTE]
 > `var:method` — `var` is the variable the method is dispatched on, not a type name. `:` is the method call operator in Luc (see Member Access). The upstream value is passed as the argument to the method, not as the receiver. For example, `v |> list:push` passes `v` as the argument to `push` on `list`.
@@ -4765,18 +4873,18 @@ Attribute arguments are intentionally limited to compile-time literals and type 
 
 #### Known Attributes
 
-| Attribute                | Valid on                     | Purpose                                          |
-| ------------------------ | ---------------------------- | ------------------------------------------------ |
-| `@extern("sym")`         | `let`, `const` func/var      | Bind to C symbol by name                         |
-| `@extern("sym", "conv")` | `let`, `const` func/var      | With explicit calling convention                 |
+| Attribute                | Valid on                     | Purpose                                                          |
+| ------------------------ | ---------------------------- | ---------------------------------------------------------------- |
+| `@extern("sym")`         | `let`, `const` func/var      | Bind to C symbol by name                                         |
+| `@extern("sym", "conv")` | `let`, `const` func/var      | With explicit calling convention                                 |
 | `@link("lib")`           | package, file, or `const`    | Set active link context — one declaration, comma-separated paths |
-| `@inline`                | func                         | Suggest always inline                            |
-| `@noinline`              | func                         | Prevent inlining                                 |
-| `@packed`                | `struct`                     | Remove padding — all fields byte-adjacent        |
-| `@deprecated("msg")`     | func, var, struct             | Emit warning at every use site                   |
-| `@phantom`               | `type` alias, `struct`, func | Allow unused generic parameters                  |
-| `@aot`                   | `main` only                  | Ahead-of-time compilation                        |
-| `@jit`                   | `main` only                  | JIT compilation                                  |
+| `@inline`                | func                         | Suggest always inline                                            |
+| `@noinline`              | func                         | Prevent inlining                                                 |
+| `@packed`                | `struct`                     | Remove padding — all fields byte-adjacent                        |
+| `@deprecated("msg")`     | func, var, struct            | Emit warning at every use site                                   |
+| `@phantom`               | `type` alias, `struct`, func | Allow unused generic parameters                                  |
+| `@aot`                   | `main` only                  | Ahead-of-time compilation                                        |
+| `@jit`                   | `main` only                  | JIT compilation                                                  |
 
 `@inline` and `@noinline` are mutually exclusive on the same declaration.
 `@aot` and `@jit` are mutually exclusive on the same declaration.
@@ -5054,13 +5162,13 @@ const free (ptr *uint8)
 
 Library name forms:
 
-| Form | Meaning |
-|---|---|
-| `"m"` | System library — linker searches standard paths for `libm` |
-| `"sqlite3"` | System library — linker searches for `libsqlite3` |
-| `"./libs/mylib.a"` | Relative path to static library |
-| `"./libs/libmylib.so"` | Relative path to dynamic library |
-| `"/usr/local/lib/libpng.a"` | Absolute path to static library |
+| Form                        | Meaning                                                    |
+| --------------------------- | ---------------------------------------------------------- |
+| `"m"`                       | System library — linker searches standard paths for `libm` |
+| `"sqlite3"`                 | System library — linker searches for `libsqlite3`          |
+| `"./libs/mylib.a"`          | Relative path to static library                            |
+| `"./libs/libmylib.so"`      | Relative path to dynamic library                           |
+| `"/usr/local/lib/libpng.a"` | Absolute path to static library                            |
 
 #### `@phantom` Rules
 
