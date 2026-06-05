@@ -21,6 +21,9 @@ namespace LucDebug {
             #ifdef LUC_DEBUG_LEXER
                 if (std::string(component) == "LEXER") return true;
             #endif
+            #ifdef LUC_DEBUG_LEXER_TOKENS 
+                if (std::string(component) == "LEXER_TOKENS") return true;
+            #endif
             #ifdef LUC_DEBUG_PARSER
                 if (std::string(component) == "PARSER") return true;
             #endif

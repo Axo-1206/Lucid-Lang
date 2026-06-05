@@ -3,6 +3,171 @@
 #include "debug/DebugMacros.hpp" 
 #include <cctype>
 
+// Helper to convert token to readable string for debugging
+static std::string tokenTypeToString(const Token& token) {
+    switch (token.type) {
+        case TokenType::IDENTIFIER:     return "IDENTIFIER('" + token.value + "')";
+        case TokenType::INT_LITERAL:    return "INT_LITERAL(" + token.value + ")";
+        case TokenType::FLOAT_LITERAL:  return "FLOAT_LITERAL(" + token.value + ")";
+        case TokenType::STRING_LITERAL: return "STRING_LITERAL(\"" + token.value + "\")";
+        case TokenType::CHAR_LITERAL:   return "CHAR_LITERAL('" + token.value + "')";
+        case TokenType::HEX_LITERAL:    return "HEX_LITERAL(" + token.value + ")";
+        case TokenType::BINARY_LITERAL: return "BINARY_LITERAL(" + token.value + ")";
+        case TokenType::RAW_STRING_LITERAL: return "RAW_STRING_LITERAL(\"\"\"" + token.value + "\"\"\")";
+        case TokenType::LINE_COMMENT:   return "LINE_COMMENT(--" + token.value + ")";
+        case TokenType::DOC_COMMENT:    return "DOC_COMMENT(/--" + token.value + "--/)";
+        case TokenType::EOF_TOKEN:      return "EOF";
+        case TokenType::UNKNOWN:        return "UNKNOWN('" + token.value + "')";
+        
+        // Keywords
+        case TokenType::PUB:            return "PUB(pub)";
+        case TokenType::EXPORT:         return "EXPORT(export)";
+        case TokenType::PACKAGE:        return "PACKAGE(package)";
+        case TokenType::USE:            return "USE(use)";
+        case TokenType::AS:             return "AS(as)";
+        case TokenType::IMPL:           return "IMPL(impl)";
+        case TokenType::TYPE:           return "TYPE(type)";
+        case TokenType::STRUCT:         return "STRUCT(struct)";
+        case TokenType::ENUM:           return "ENUM(enum)";
+        case TokenType::TRAIT:          return "TRAIT(trait)";
+        case TokenType::FROM:           return "FROM(from)";
+        case TokenType::LET:            return "LET(let)";
+        case TokenType::CONST:          return "CONST(const)";
+        case TokenType::AWAIT:          return "AWAIT(await)";
+        case TokenType::IF:             return "IF(if)";
+        case TokenType::ELSE:           return "ELSE(else)";
+        case TokenType::MATCH:          return "MATCH(match)";
+        case TokenType::SWITCH:         return "SWITCH(switch)";
+        case TokenType::CASE:           return "CASE(case)";
+        case TokenType::DEFAULT:        return "DEFAULT(default)";
+        case TokenType::IS:             return "IS(is)";
+        case TokenType::WHILE:          return "WHILE(while)";
+        case TokenType::FOR:            return "FOR(for)";
+        case TokenType::IN:             return "IN(in)";
+        case TokenType::DO:             return "DO(do)";
+        case TokenType::RETURN:         return "RETURN(return)";
+        case TokenType::BREAK:          return "BREAK(break)";
+        case TokenType::CONTINUE:       return "CONTINUE(continue)";
+        case TokenType::AND:            return "AND(and)";
+        case TokenType::OR:             return "OR(or)";
+        case TokenType::NOT:            return "NOT(not)";
+        case TokenType::TRUE:           return "TRUE(true)";
+        case TokenType::FALSE:          return "FALSE(false)";
+        case TokenType::NIL:            return "NIL(nil)";
+        case TokenType::RESOLVE:        return "RESOLVE(resolve)";
+        case TokenType::OK:             return "OK(ok)";
+        case TokenType::ERR:            return "ERR(err)";
+        
+        // Type keywords
+        case TokenType::TYPE_BOOL:      return "TYPE_BOOL(bool)";
+        case TokenType::TYPE_BYTE:      return "TYPE_BYTE(byte)";
+        case TokenType::TYPE_SHORT:     return "TYPE_SHORT(short)";
+        case TokenType::TYPE_INT:       return "TYPE_INT(int)";
+        case TokenType::TYPE_LONG:      return "TYPE_LONG(long)";
+        case TokenType::TYPE_UBYTE:     return "TYPE_UBYTE(ubyte)";
+        case TokenType::TYPE_USHORT:    return "TYPE_USHORT(ushort)";
+        case TokenType::TYPE_UINT:      return "TYPE_UINT(uint)";
+        case TokenType::TYPE_ULONG:     return "TYPE_ULONG(ulong)";
+        case TokenType::TYPE_INT8:      return "TYPE_INT8(int8)";
+        case TokenType::TYPE_INT16:     return "TYPE_INT16(int16)";
+        case TokenType::TYPE_INT32:     return "TYPE_INT32(int32)";
+        case TokenType::TYPE_INT64:     return "TYPE_INT64(int64)";
+        case TokenType::TYPE_UINT8:     return "TYPE_UINT8(uint8)";
+        case TokenType::TYPE_UINT16:    return "TYPE_UINT16(uint16)";
+        case TokenType::TYPE_UINT32:    return "TYPE_UINT32(uint32)";
+        case TokenType::TYPE_UINT64:    return "TYPE_UINT64(uint64)";
+        case TokenType::TYPE_FLOAT:     return "TYPE_FLOAT(float)";
+        case TokenType::TYPE_DOUBLE:    return "TYPE_DOUBLE(double)";
+        case TokenType::TYPE_DECIMAL:   return "TYPE_DECIMAL(decimal)";
+        case TokenType::TYPE_STRING:    return "TYPE_STRING(string)";
+        case TokenType::TYPE_CHAR:      return "TYPE_CHAR(char)";
+        case TokenType::TYPE_ANY:       return "TYPE_ANY(any)";
+        
+        // Single character tokens
+        case TokenType::DOT:            return "DOT(.)";
+        case TokenType::COLON:          return "COLON(:)";
+        case TokenType::COMMA:          return "COMMA(,)";
+        case TokenType::SEMICOLON:      return "SEMICOLON(;)";
+        case TokenType::LPAREN:         return "LPAREN(()";
+        case TokenType::RPAREN:         return "RPAREN())";
+        case TokenType::LBRACE:         return "LBRACE({)";
+        case TokenType::RBRACE:         return "RBRACE(})";
+        case TokenType::LBRACKET:       return "LBRACKET([)";
+        case TokenType::RBRACKET:       return "RBRACKET(])";
+        case TokenType::PLUS:           return "PLUS(+)";
+        case TokenType::MINUS:          return "MINUS(-)";
+        case TokenType::MUL:            return "MUL(*)";
+        case TokenType::DIV:            return "DIV(/)";
+        case TokenType::MOD:            return "MOD(%)";
+        case TokenType::POW:            return "POW(^)";
+        case TokenType::ASSIGN:         return "ASSIGN(=)";
+        case TokenType::BANG:           return "BANG(!)";
+        case TokenType::QUESTION:       return "QUESTION(?)";
+        case TokenType::TILDE:          return "TILDE(~)";
+        case TokenType::AT_SIGN:        return "AT_SIGN(@)";
+        case TokenType::HASH:           return "HASH(#)";
+        case TokenType::AMPERSAND:      return "AMPERSAND(&)";
+        case TokenType::PIPE:           return "PIPE(|)";
+        case TokenType::WILDCARD:       return "WILDCARD(_)";
+        
+        // Two+ character tokens
+        case TokenType::RANGE:          return "RANGE(..)";
+        case TokenType::VARIADIC:       return "VARIADIC(...)";
+        case TokenType::QUESTION_DOT:   return "QUESTION_DOT(?.)";
+        case TokenType::QUESTION_QUESTION: return "QUESTION_QUESTION(?\?)";
+        case TokenType::EQUAL_EQUAL:    return "EQUAL_EQUAL(==)";
+        case TokenType::EQUAL_EQUAL_EQUAL: return "EQUAL_EQUAL_EQUAL(===)";
+        case TokenType::NOT_EQUAL:      return "NOT_EQUAL(!=)";
+        case TokenType::LESS_EQUAL:     return "LESS_EQUAL(<=)";
+        case TokenType::GREATER_EQUAL:  return "GREATER_EQUAL(>=)";
+        case TokenType::SHL:            return "SHL(<<)";
+        case TokenType::SHR:            return "SHR(>>)";
+        case TokenType::ARROW:          return "ARROW(->)";
+        case TokenType::FAT_ARROW:      return "FAT_ARROW(=>)";
+        case TokenType::COMPOSE:        return "COMPOSE(+>)";
+        case TokenType::PIPELINE:       return "PIPELINE(|>)";
+        case TokenType::BIT_AND:        return "BIT_AND(&&)";
+        case TokenType::BIT_OR:         return "BIT_OR(||)";
+        case TokenType::BIT_NOT:        return "BIT_NOT(~~)";
+        case TokenType::BIT_XOR:        return "BIT_XOR(~^)";
+        case TokenType::PLUS_ASSIGN:    return "PLUS_ASSIGN(+=)";
+        case TokenType::MINUS_ASSIGN:   return "MINUS_ASSIGN(-=)";
+        case TokenType::MUL_ASSIGN:     return "MUL_ASSIGN(*=)";
+        case TokenType::DIV_ASSIGN:     return "DIV_ASSIGN(/=)";
+        case TokenType::MOD_ASSIGN:     return "MOD_ASSIGN(%=)";
+        case TokenType::POW_ASSIGN:     return "POW_ASSIGN(^=)";
+        case TokenType::SHL_ASSIGN:     return "SHL_ASSIGN(<<=)";
+        case TokenType::SHR_ASSIGN:     return "SHR_ASSIGN(>>=)";
+        
+        default: return "UNKNOWN_TOKEN(" + std::to_string(static_cast<int>(token.type)) + ")";
+    }
+}
+
+// Helper to dump all tokens (similar to dumpAST)
+static std::string dumpTokens(const std::vector<Token>& tokens, int verbosity = 1) {
+    std::stringstream ss;
+    ss << "\n========== TOKEN STREAM ==========\n";
+    ss << "Total tokens: " << tokens.size() << "\n\n";
+    
+    for (size_t i = 0; i < tokens.size(); ++i) {
+        const auto& token = tokens[i];
+        ss << "Token " << std::setw(4) << i << ": ";
+        ss << std::left << std::setw(30) << tokenTypeToString(token);
+        ss << " at line " << std::setw(4) << token.line;
+        ss << ", col " << std::setw(3) << token.column;
+        
+        // Show more details in verbose mode
+        if (verbosity >= 2) {
+            ss << " [type=" << static_cast<int>(token.type) << "]";
+        }
+        
+        ss << "\n";
+    }
+    
+    ss << "==================================\n";
+    return ss.str();
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Constructor — keyword table
 // ─────────────────────────────────────────────────────────────────────────────
@@ -174,33 +339,54 @@ void Lexer::skipWhitespace() {
         }
         // Single-line comment: --
         else if (c == '-' && peekNext() == '-') {
-            LUC_LOG_LEXER_VERBOSE("skipWhitespace: found line comment start '--', breaking");
-            break;
+            LUC_LOG_LEXER_VERBOSE("skipWhitespace: found line comment start '--', consuming it");
+            // Consume the entire line comment
+            advance(); // consume first '-'
+            advance(); // consume second '-'
+            while (!isAtEnd() && peek() != '\n') {
+                advance();
+            }
+            // Don't break, continue loop to skip more whitespace
         }
         // Block comment: /- ... -/
-        // Doc comment:   /-- ... --/
         else if (c == '/' && peekNext() == '-') {
-            bool isDoc = (pos + 1 < src.size() && src[pos + 1] == '-');
-            if (isDoc) {
-                LUC_LOG_LEXER_VERBOSE("skipWhitespace: found doc comment '/--', breaking");
+            // Check if it's a doc comment /-- (three characters: /, -, -)
+            if (pos + 1 < src.size() && src[pos + 1] == '-' && 
+                pos + 2 < src.size() && src[pos + 2] == '-') {
+                // This is a doc comment, don't skip it - let getNextToken handle it
+                LUC_LOG_LEXER_VERBOSE("skipWhitespace: found doc comment '/--', breaking to let getNextToken handle it");
                 break;
             }
-
+            
             // Plain block comment /- ... -/
             LUC_LOG_LEXER_VERBOSE("skipWhitespace: skipping block comment");
             advance(); // consume '/'
             advance(); // consume '-'
-            while (!isAtEnd() && !(peek() == '-' && peekNext() == '/')) {
+            
+            int nestedLevel = 1;
+            while (!isAtEnd() && nestedLevel > 0) {
                 if (peek() == '\n') {
                     line++;
                     column = 1;
                 }
-                advance();
+                
+                // Check for nested block comment start /-
+                if (peek() == '/' && peekNext() == '-') {
+                    nestedLevel++;
+                    advance(); // consume '/'
+                    advance(); // consume '-'
+                }
+                // Check for block comment end -/
+                else if (peek() == '-' && peekNext() == '/') {
+                    nestedLevel--;
+                    advance(); // consume '-'
+                    advance(); // consume '/'
+                }
+                else {
+                    advance();
+                }
             }
-            if (!isAtEnd()) {
-                advance();
-                advance();
-            }
+            // Continue loop to skip more whitespace
         } else {
             break;
         }
@@ -503,25 +689,45 @@ Token Lexer::readRawString(int hashCount) {
 
 Token Lexer::readDocComment() {
     LUC_LOG_LEXER_VERBOSE("readDocComment: starting");
-    advance(); // consume first '-' (of opening --)
-    advance(); // consume second '-'
+    
+    // The '/' has already been consumed by getNextToken
+    // Now consume the '--' part
+    if (peek() == '-') {
+        advance(); // consume first '-'
+        if (peek() == '-') {
+            advance(); // consume second '-'
+        } else {
+            LUC_LOG_LEXER("readDocComment: expected '--' after '/', got '" << peek() << "'");
+            return makeToken(TokenType::UNKNOWN, "");
+        }
+    } else {
+        LUC_LOG_LEXER("readDocComment: expected '-' after '/', got '" << peek() << "'");
+        return makeToken(TokenType::UNKNOWN, "");
+    }
 
     std::string doc;
+    bool closed = false;
 
     while (!isAtEnd()) {
-        // Closing sequence is --/
-        if (peek() == '-' && pos + 1 < src.size() && src[pos + 1] == '-' &&
-            pos + 2 < src.size() && src[pos + 2] == '/') {
-            advance();
-            advance();
-            advance(); // consume --/
+        // Check for closing sequence: --/
+        if (peek() == '-' && peekNext() == '-' && peekNext(2) == '/') {
+            advance(); // consume first '-'
+            advance(); // consume second '-'
+            advance(); // consume '/'
+            closed = true;
             break;
         }
+        
         if (peek() == '\n') {
             line++;
             column = 1;
         }
         doc += advance();
+    }
+
+    if (!closed) {
+        LUC_LOG_LEXER("readDocComment: unclosed doc comment");
+        // Return what we have as an error token
     }
 
     LUC_LOG_LEXER_VERBOSE("readDocComment: length=" << doc.size());
@@ -735,6 +941,7 @@ Token Lexer::getNextToken() {
         return makeToken(TokenType::MUL, "*");
 
     case '/':
+        // Check for doc comment '/--' (three characters: /, -, -)
         if (peek() == '-' && pos + 1 < src.size() && src[pos + 1] == '-') {
             LUC_LOG_LEXER_EXTREME("getNextToken: doc comment '/--'");
             return readDocComment();
@@ -864,8 +1071,19 @@ std::vector<Token> Lexer::tokenize() {
         tokens.push_back(t);
         tokenCount++;
         LUC_LOG_LEXER_EXTREME("tokenize: token " << tokenCount << " - type=" << static_cast<int>(t.type) << ", value='" << t.value << "'");
+        
+        // Log each token using the regular LEXER debug macro
+        // This will only output when LUC_DEBUG_LEXER is enabled
+        LUC_LOG_LEXER("Token " << tokenCount << ": " << tokenTypeToString(t) << " at line " << t.line << ", col " << t.column);
+        
     } while (t.type != TokenType::EOF_TOKEN);
 
     LUC_LOG_LEXER("tokenize: complete, " << tokenCount << " tokens produced");
+    
+    // Dump all tokens if LEXER_TOKENS debug is enabled
+    #ifdef LUC_DEBUG_LEXER_TOKENS
+        LucDebug::getDebugStream() << dumpTokens(tokens, LucDebug::getVerbosity());
+    #endif
+    
     return tokens;
 }

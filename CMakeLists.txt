@@ -318,11 +318,12 @@ add_executable(luc-comp
 # |-------------------------------|----------------------------------|---------|
 # | -DLUC_DEBUG_MASTER=ON         | Enable ALL debug logging         | OFF     |
 # | -DLUC_DEBUG_LEXER=ON          | Enable lexer logging             | OFF     |
+# | -LUC_DEBUG_LEXER_TOKENS=ON    | Enable lexer tokens logging      | OFF     |
 # | -DLUC_DEBUG_PARSER=ON         | Enable parser logging            | OFF     |
 # | -DLUC_DEBUG_PARSE_RESULT=ON   | Enable parse result logging      | OFF     |
 # | -DLUC_DEBUG_TYPE=ON           | Enable type parsing logging      | OFF     |
 # | -DLUC_DEBUG_SEMANTIC=ON       | Enable semantic analysis logging | OFF     |
-# | -DLUC_DEBUG_DUMP_SYMBOL=ON     | Enable symbol collection result  | OFF     |
+# | -DLUC_DEBUG_DUMP_SYMBOL=ON    | Enable symbol collection result  | OFF     |
 # | -DLUC_DEBUG_CODEGEN=ON        | Enable codegen logging           | OFF     |
 # | -DLUC_DEBUG_VERBOSITY=LEVEL   | Output detail (MINIMAL/NORMAL/   | NORMAL  |
 # |                               | VERBOSE/EXTREME)                 |         |
@@ -357,6 +358,7 @@ option(LUC_DEBUG_MASTER "Enable all debug logging (overrides individual flags)" 
 
 # Component-specific debug flags (only take effect if LUC_DEBUG_MASTER is OFF)
 option(LUC_DEBUG_LEXER   "Enable lexer debug logging" OFF)
+option(LUC_DEBUG_LEXER_TOKENS "Enable lexer token output logging" OFF)
 option(LUC_DEBUG_PARSER  "Enable parser debug logging" OFF)
 option(LUC_DEBUG_PARSE_RESULT "Enable parse result debug logging" OFF)
 option(LUC_DEBUG_TYPE    "Enable type parsing debug logging" OFF)
@@ -380,6 +382,7 @@ message(STATUS "  Master: ${LUC_DEBUG_MASTER}")
 
 if(NOT LUC_DEBUG_MASTER)
     message(STATUS "  Lexer:   ${LUC_DEBUG_LEXER}")
+    message(STATUS "  Lexer Tokens: ${LUC_DEBUG_LEXER_TOKENS}")
     message(STATUS "  Parser:  ${LUC_DEBUG_PARSER}")
     message(STATUS "  Parse Result: ${LUC_DEBUG_PARSE_RESULT}")
     message(STATUS "  Type:    ${LUC_DEBUG_TYPE}")
@@ -405,6 +408,7 @@ if(LUC_DEBUG_MASTER)
     # Master debug enables everything
     list(APPEND LUC_DEBUG_DEFINITIONS "LUC_DEBUG_MASTER=1")
     list(APPEND LUC_DEBUG_DEFINITIONS "LUC_DEBUG_LEXER=1")
+    list(APPEND LUC_DEBUG_DEFINITIONS "LUC_DEBUG_LEXER_TOKENS=1")
     list(APPEND LUC_DEBUG_DEFINITIONS "LUC_DEBUG_PARSER=1")
     list(APPEND LUC_DEBUG_DEFINITIONS "LUC_DEBUG_PARSE_RESULT=1")
     list(APPEND LUC_DEBUG_DEFINITIONS "LUC_DEBUG_TYPE=1")
@@ -415,6 +419,9 @@ else()
     # Individual flags
     if(LUC_DEBUG_LEXER)
         list(APPEND LUC_DEBUG_DEFINITIONS "LUC_DEBUG_LEXER=1")
+    endif()
+    if(LUC_DEBUG_LEXER_TOKENS)
+        list(APPEND LUC_DEBUG_DEFINITIONS "LUC_DEBUG_LEXER_TOKENS=1")
     endif()
     if(LUC_DEBUG_PARSER)
         list(APPEND LUC_DEBUG_DEFINITIONS "LUC_DEBUG_PARSER=1")
