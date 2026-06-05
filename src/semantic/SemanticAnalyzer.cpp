@@ -16,6 +16,7 @@
 #include "ast/DeclAST.hpp"
 #include "debug/DebugMacros.hpp"
 #include "debug/DebugUtils.hpp"
+#include "debug/SymbolDumper.hpp"
 #include "semantic/helpers/NameMangler.hpp"
 
 #include <unordered_map>
@@ -67,7 +68,11 @@ bool SemanticAnalyzer::analyze(std::vector<ProgramAST*>& files) {
     }
 
     validateNoDuplicateSymbols();
-    dumpSymbols();
+    
+    if (LucDebug::isDebugEnabled("DUMP_SYMBOL")) {
+        std::string dump = LucDebug::dumpSymbolTable(symbols_, ctx_.pool, LucDebug::getVerbosity());
+        LucDebug::getDebugStream() << dump << std::endl;
+    }
 
     // Phase 2: Resolve Types.
     LUC_LOG_SEMANTIC("\n--- Phase 2: Resolve Types ---");
@@ -437,11 +442,4 @@ void SemanticAnalyzer::annotate(std::vector<ProgramAST*>& files) {
     LUC_LOG_SEMANTIC_VERBOSE("annotate: running annotation pass");
     annotateAll(files, ctx_);
     LUC_LOG_SEMANTIC_VERBOSE("annotate: annotation complete");
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// dumpSymbols  — debug output
-// ─────────────────────────────────────────────────────────────────────────────
-void SemanticAnalyzer::dumpSymbols() const {
-    ctx_.symbols->dump(ctx_.pool);
 }

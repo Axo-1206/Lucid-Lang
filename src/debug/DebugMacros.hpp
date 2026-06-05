@@ -33,6 +33,9 @@ namespace LucDebug {
             #ifdef LUC_DEBUG_SEMANTIC
                 if (std::string(component) == "SEMANTIC") return true;
             #endif
+            #ifdef LUC_DEBUG_DUMP_SYMBOL
+                if (std::string(component) == "DUMP_SYMBOL") return true;
+            #endif
             #ifdef LUC_DEBUG_CODEGEN
                 if (std::string(component) == "CODEGEN") return true;
             #endif

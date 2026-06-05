@@ -36,6 +36,7 @@ add_executable(luc-comp
     src/diagnostics/DiagnosticMessages.cpp
 
     src/debug/ASTDumper.cpp
+    src/debug/SymbolDumper.cpp
     src/registry/QualifierRegistry.cpp
     src/registry/AttributeRegistry.cpp
     src/registry/IntrinsicRegistry.cpp
@@ -321,6 +322,7 @@ add_executable(luc-comp
 # | -DLUC_DEBUG_PARSE_RESULT=ON   | Enable parse result logging      | OFF     |
 # | -DLUC_DEBUG_TYPE=ON           | Enable type parsing logging      | OFF     |
 # | -DLUC_DEBUG_SEMANTIC=ON       | Enable semantic analysis logging | OFF     |
+# | -LUC_DEBUG_DUMP_SYMBOL=ON     | Enable symbol collection result  | OFF     |
 # | -DLUC_DEBUG_CODEGEN=ON        | Enable codegen logging           | OFF     |
 # | -DLUC_DEBUG_VERBOSITY=LEVEL   | Output detail (MINIMAL/NORMAL/   | NORMAL  |
 # |                               | VERBOSE/EXTREME)                 |         |
@@ -359,6 +361,7 @@ option(LUC_DEBUG_PARSER  "Enable parser debug logging" OFF)
 option(LUC_DEBUG_PARSE_RESULT "Enable parse result debug logging" OFF)
 option(LUC_DEBUG_TYPE    "Enable type parsing debug logging" OFF)
 option(LUC_DEBUG_SEMANTIC "Enable semantic analysis debug logging" OFF)
+option(LUC_DEBUG_DUMP_SYMBOL "Enable symbol table dumping after collection" OFF)
 option(LUC_DEBUG_CODEGEN "Enable code generation debug logging" OFF)
 
 # Verbosity levels (numeric: 0=MINIMAL, 1=NORMAL, 2=VERBOSE, 3=EXTREME)
@@ -405,6 +408,7 @@ if(LUC_DEBUG_MASTER)
     list(APPEND LUC_DEBUG_DEFINITIONS "LUC_DEBUG_PARSE_RESULT=1")
     list(APPEND LUC_DEBUG_DEFINITIONS "LUC_DEBUG_TYPE=1")
     list(APPEND LUC_DEBUG_DEFINITIONS "LUC_DEBUG_SEMANTIC=1")
+    list(APPEND LUC_DEBUG_DEFINITIONS "LUC_DEBUG_DUMP_SYMBOL=1")
     list(APPEND LUC_DEBUG_DEFINITIONS "LUC_DEBUG_CODEGEN=1")
 else()
     # Individual flags
@@ -422,6 +426,9 @@ else()
     endif()
     if(LUC_DEBUG_SEMANTIC)
         list(APPEND LUC_DEBUG_DEFINITIONS "LUC_DEBUG_SEMANTIC=1")
+    endif()
+    if(LUC_DEBUG_DUMP_SYMBOL)
+        list(APPEND LUC_DEBUG_DEFINITIONS "LUC_DEBUG_DUMP_SYMBOL=1")
     endif()
     if(LUC_DEBUG_CODEGEN)
         list(APPEND LUC_DEBUG_DEFINITIONS "LUC_DEBUG_CODEGEN=1")

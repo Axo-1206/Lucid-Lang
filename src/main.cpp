@@ -10,7 +10,7 @@
 #include "registry/AttributeRegistry.hpp"
 #include "registry/IntrinsicRegistry.hpp"
 #include "registry/QualifierRegistry.hpp"
-// #include "semantic/header/SemanticAnalyzer.hpp"
+#include "semantic/SemanticAnalyzer.hpp"
 #include "debug/DebugMacros.hpp"
 #include "debug/ASTDumper.hpp"
 
@@ -40,6 +40,9 @@ int main(int argc, char* argv[]) {
     #endif
     #ifdef LUC_DEBUG_SEMANTIC
         std::cout << "[DEBUG] LUC_DEBUG_SEMANTIC is ENABLED" << std::endl;
+    #endif
+    #ifdef LUC_DEBUG_DUMP_SYMBOL
+        std::cout << "[DEBUG] LUC_DEBUG_DUMP_SYMBOL is ENABLED" << std::endl;
     #endif
     #ifdef LUC_DEBUG_PARSE_RESULT
         std::cout << "[DEBUG] LUC_DEBUG_PARSE_RESULT is ENABLED" << std::endl;
@@ -115,7 +118,7 @@ int main(int argc, char* argv[]) {
     ASTPtr<ProgramAST> program = parser.parse();
     
     if (program && LucDebug::isDebugEnabled("PARSE_RESULT")) {
-        std::cout << LucDebug::dumpAST(program.get(), stringPool, LucDebug::getVerbosity());
+        LucDebug::getDebugStream() << LucDebug::dumpAST(program.get(), stringPool, LucDebug::getVerbosity());
     }
 
     std::cout << "[MAIN] Syntax analysis complete" << std::endl;
@@ -132,12 +135,12 @@ int main(int argc, char* argv[]) {
     }
 
     // Phase 3: Semantic Analysis
-    // std::cout << "[MAIN] Starting semantic analysis..." << std::endl;
-    // std::vector<ProgramAST*> files = { program.get() };
-    // SemanticAnalyzer analyzer(dc, stringPool, arena);
+    std::cout << "[MAIN] Starting semantic analysis..." << std::endl;
+    std::vector<ProgramAST*> files = { program.get() };
+    SemanticAnalyzer analyzer(stringPool, arena);
     
-    // bool success = analyzer.analyze(files);
-    // std::cout << "[MAIN] Semantic analysis complete: " << (success ? "SUCCESS" : "FAILED") << std::endl;
+    bool success = analyzer.analyze(files);
+    std::cout << "[MAIN] Semantic analysis complete: " << (success ? "SUCCESS" : "FAILED") << std::endl;
     
     if (diagnostic::hasErrors()) {
         std::cerr << "\n>>> Semantic Analysis FAILED:" << std::endl;

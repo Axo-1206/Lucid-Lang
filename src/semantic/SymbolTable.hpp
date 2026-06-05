@@ -137,6 +137,8 @@ public:
     // Get the number of scopes currently on the stack
     size_t scopeCount() const { return scopes_.size(); }
 
+    const std::deque<std::unordered_map<uint32_t, Symbol>>& getScopes() const { return scopes_; }
+
 private:
     // Each scope is a map from InternedString ID to Symbol.
     // Using uint32_t directly as the key is faster than InternedString

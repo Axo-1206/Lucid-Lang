@@ -59,8 +59,7 @@
  */
 
 #include "Parser.hpp"
-#include "diagnostics/Diagnostic.hpp"   // new diagnostic API
-#include "debug/DebugUtils.hpp"
+#include "diagnostics/Diagnostic.hpp"
 
 #include <algorithm>
 #include <cassert>

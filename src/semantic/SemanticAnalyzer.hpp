@@ -21,7 +21,6 @@ public:
     explicit SemanticAnalyzer(StringPool& pool, ASTArena& arena);
 
     bool analyze(std::vector<ProgramAST*>& files);
-    void dumpSymbols() const;
     CompilationMode getCompilationMode() const { return compilationMode_; }
 
 private:
