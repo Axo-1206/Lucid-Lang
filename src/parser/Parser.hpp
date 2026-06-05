@@ -359,9 +359,6 @@ private:
     // ========================================================================
 
     // ---- Temporary list builders (return std::vector) ----
-    std::vector<ExprPtr> parseExprList(TokenType endType);
-    std::vector<TypePtr> parseTypeList(TokenType endType);
-    std::vector<StmtPtr> parseStmtList(TokenType endType);
     std::vector<ParamPtr> parseParamList();           // ends at RPAREN
     std::vector<InternedString> parseModulePath();    // dotted identifiers
     std::vector<AttributePtr> parseAttributes();      // collects '@' attributes

@@ -45,7 +45,7 @@
  *   can skip or report them.
  * 
  * @see ParserExpr.cpp for Pratt parser integration
- * @see ParserHelpers.cpp for parseFuncRef, parseExprList
+ * @see ParserHelpers.cpp for parseFuncRef
  */
 
 #include "parser/Parser.hpp"
@@ -113,8 +113,6 @@ PipelineStepPtr Parser::parsePipelineStep() {
         step->callable = arena_.make<UnknownExprAST>();
 
         // Recover: skip to next pipeline operator or safe boundary
-        // This ensures we don't get stuck on invalid tokens and allows
-        // the pipeline loop to continue with the next step.
         while (!ts_.isAtEnd() &&
                !ts_.check(TokenType::PIPELINE) &&
                !ts_.check(TokenType::SEMICOLON) &&
@@ -136,9 +134,42 @@ PipelineStepPtr Parser::parsePipelineStep() {
         ts_.advance();
 
         std::vector<ExprPtr> packArgs;
-        if (!ts_.check(TokenType::RPAREN)) {
-            packArgs = parseExprList(TokenType::RPAREN);
+        int consecutiveErrors = 0;
+        const int MAX_CONSECUTIVE_ERRORS = 5;
+
+        // Parse comma‑separated expressions until closing ')'
+        while (!ts_.check(TokenType::RPAREN) && !ts_.isAtEnd()) {
+            if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+                errorAt(DiagCode::E1002, "too many consecutive errors in argument pack; skipping to ')'");
+                while (!ts_.isAtEnd() && !ts_.check(TokenType::RPAREN)) ts_.advance();
+                break;
+            }
+
+            size_t savedPos = ts_.getPos();
+            ExprPtr arg = parseExpr();
+
+            if (ts_.getPos() == savedPos) {
+                errorAt(DiagCode::E1008, "expected argument expression");
+                if (!ts_.isAtEnd()) ts_.advance();
+                consecutiveErrors++;
+                if (ts_.check(TokenType::COMMA)) ts_.advance();
+                continue;
+            }
+
+            consecutiveErrors = 0;
+            packArgs.push_back(std::move(arg));
+
+            if (ts_.check(TokenType::RPAREN)) break;
+            if (!ts_.match(TokenType::COMMA)) {
+                errorAt(DiagCode::E1001, "expected ',' after argument");
+                while (!ts_.isAtEnd() && !ts_.check(TokenType::COMMA) && !ts_.check(TokenType::RPAREN)) {
+                    ts_.advance();
+                }
+                if (ts_.check(TokenType::COMMA)) ts_.advance();
+                break;
+            }
         }
+
         ts_.consume(TokenType::RPAREN, "expected ')'");
 
         if (!ts_.match(TokenType::BANG)) {

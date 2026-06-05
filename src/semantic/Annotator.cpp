@@ -78,12 +78,8 @@ static void annotateExpr(ExprAST* expr, SemanticContext& ctx) {
             sl->isConst = allConst;
             break;
         }
-        case ASTKind::FieldInit: {
-            auto* fi = static_cast<FieldInitAST*>(expr);
-            if (fi->value) annotateExpr(fi->value.get(), ctx);
-            fi->isConst = (fi->value && fi->value->isConst);
-            break;
-        }
+        // Note: FieldInitAST is not an ExprAST; field initializers are handled
+        // when annotating StructLiteralExpr (see that case above).
         case ASTKind::FieldAccessExpr: {
             auto* fa = static_cast<FieldAccessExprAST*>(expr);
             annotateExpr(fa->object.get(), ctx);
@@ -417,11 +413,7 @@ static void annotateType(TypeAST* type, SemanticContext& ctx) {
             annotateType(at->element.get(), ctx);
             break;
         }
-        case ASTKind::GenericArrayType: {
-            auto* gat = static_cast<GenericArrayTypeAST*>(type);
-            annotateType(gat->element.get(), ctx);
-            break;
-        }
+        // GenericArrayTypeAST does not contain concrete type
         case ASTKind::RefType: {
             auto* rt = static_cast<RefTypeAST*>(type);
             annotateType(rt->inner.get(), ctx);
