@@ -355,6 +355,9 @@ struct MultiVarDeclAST : StmtAST {
     ArenaSpan<std::pair<InternedString, TypePtr>> vars; // (name, type) for each variable
     ExprPtr rhs;                                        // Initialiser expression
 
+    // semantic
+    bool isConst = false; // true for compile‑time constants
+
     MultiVarDeclAST() : StmtAST(ASTKind::MultiVarDecl) {}
 };
 

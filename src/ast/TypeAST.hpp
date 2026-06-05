@@ -303,6 +303,9 @@ struct GenericArrayTypeAST : TypeAST {
     uint64_t size; // valid only for Fixed
     InternedString typeParamName;
 
+    // semantic
+    bool isConst = false; // true for compile‑time constants
+
     GenericArrayTypeAST(ArrayKind k, uint64_t sz, InternedString name)
         : TypeAST(ASTKind::GenericArrayType),
           arrayKind(k), size(sz), typeParamName(name) {}

@@ -614,6 +614,9 @@ struct ParamAST : BaseAST {
     TypePtr        type;
     bool           isVariadic = false;
 
+    // semantic
+    bool isConst = false; // true for compile‑time constants
+
     ParamAST() : BaseAST(ASTKind::Param) {}
 };
 

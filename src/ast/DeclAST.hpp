@@ -134,6 +134,9 @@ struct VarDeclAST : DeclAST {
     ExprPtr init;                  // nullptr if no initialiser
     Visibility visibility = Visibility::Private;
 
+    // semantic
+    bool isConst = false; // true for compile‑time constants
+
     VarDeclAST() : DeclAST(ASTKind::VarDecl) {}
 };
 using VarDeclPtr = ASTPtr<VarDeclAST>;
@@ -166,6 +169,9 @@ struct FuncDeclAST : DeclAST {
     ASTPtr<FuncTypeAST> funcType;               // full function type (includes qualifiers)
     StmtPtr body;                               // always BlockStmtAST
     Visibility visibility = Visibility::Private;
+
+    // semantic
+    bool isConst = false; // true for compile‑time constants
 
     // Convenience accessors
     bool isAsync()   const { return funcType->isAsync(); }
@@ -265,6 +271,9 @@ struct EnumVariantAST : BaseAST {
     InternedString name;
     std::optional<int64_t> explicitValue;
 
+    // semantic
+    bool isConst = false; // true for compile‑time constants
+
     explicit EnumVariantAST(InternedString n)
         : BaseAST(ASTKind::EnumVariant), name(n) {}
 
@@ -294,6 +303,9 @@ struct EnumDeclAST : DeclAST {
     InternedString name;
     ArenaSpan<EnumVariantPtr> variants;
     Visibility visibility = Visibility::Private;
+
+    // semantic
+    bool isConst = false; // true for compile‑time constants
 
     EnumDeclAST() : DeclAST(ASTKind::EnumDecl) {}
 };
