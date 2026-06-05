@@ -4,8 +4,8 @@
 #include "debug/DebugUtils.hpp"
 #include "registry/AttributeRegistry.hpp"
 #include "semantic/SymbolTable.hpp"
-#include "semantic/resolveType/TypeResolver.hpp"
-#include "semantic/resolveType/TypeChecker.hpp"
+#include "semantic/resolveType/TypeDispatcher.hpp"
+#include "semantic/checkType/TypeChecker.hpp"
 #include "semantic/helpers/SemanticContext.hpp"
 #include "semantic/checkers/SemanticChecker.hpp"
 #include "semantic/checkers/declCheckers/DeclHelpers.hpp"
@@ -62,8 +62,8 @@ void checkFuncDecl(FuncDeclAST& node, SemanticContext& ctx, bool isLocal) {
     }
 
     // ── Push generic parameters onto resolver stack (if any) ─────────────────
-    if (!node.genericParams.empty() && ctx.resolver) {
-        ctx.resolver->pushGenericParams(&node.genericParams);
+    if (!node.genericParams.empty() && ctx.dispatcher) {
+        ctx.dispatcher->pushGenericParams(&node.genericParams);
     }
 
     // ── Track async/parallel qualifiers ──────────────────────────────────────
@@ -84,8 +84,8 @@ void checkFuncDecl(FuncDeclAST& node, SemanticContext& ctx, bool isLocal) {
             if (!param) continue;
 
             TypeAST* paramType = param->type.get();
-            if (!paramType && ctx.resolver) {
-                paramType = ctx.resolver->resolveType(param->type.get());
+            if (!paramType && ctx.dispatcher) {
+                paramType = ctx.dispatcher->resolveType(param->type.get());
                 if (!paramType) {
                     ctx.error(param->loc, DiagCode::E2001,
                               "cannot resolve type for parameter '", ctx.pool.lookup(param->name), "'");
@@ -123,8 +123,8 @@ void checkFuncDecl(FuncDeclAST& node, SemanticContext& ctx, bool isLocal) {
         ctx.exitParallel();
     }
 
-    if (!node.genericParams.empty() && ctx.resolver) {
-        ctx.resolver->popGenericParams();
+    if (!node.genericParams.empty() && ctx.dispatcher) {
+        ctx.dispatcher->popGenericParams();
     }
 
     LUC_LOG_SEMANTIC_VERBOSE("checkFuncDecl: complete for " << ctx.pool.lookup(node.name));

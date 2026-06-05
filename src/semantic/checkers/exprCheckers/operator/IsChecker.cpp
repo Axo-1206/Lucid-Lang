@@ -6,7 +6,8 @@
 #include "semantic/checkers/SemanticChecker.hpp"
 #include "ast/ExprAST.hpp"
 #include "ast/TypeAST.hpp"
-#include "semantic/resolveType/TypeChecker.hpp"
+#include "semantic/checkType/TypeChecker.hpp"
+#include "semantic/resolveType/TypeDispatcher.hpp"
 #include "semantic/helpers/SemanticContext.hpp"
 #include "debug/DebugUtils.hpp"
 #include "diagnostics/DiagnosticCodes.hpp"
@@ -16,8 +17,8 @@ TypeAST* checkIsExpr(IsExprAST& node, SemanticContext& ctx) {
     if (!exprType) return nullptr;
     
     TypeAST* checkType = nullptr;
-    if (ctx.resolver) {
-        checkType = ctx.resolver->resolveType(node.checkType.get());
+    if (ctx.dispatcher) {
+        checkType = ctx.dispatcher->resolveType(node.checkType.get());
     }
     if (!checkType) {
         ctx.error(node.loc, DiagCode::E2001, "cannot resolve type in 'is' expression");

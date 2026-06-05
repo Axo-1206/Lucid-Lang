@@ -6,7 +6,7 @@
 #include "ast/StmtAST.hpp"
 #include "ast/ExprAST.hpp"
 #include "semantic/helpers/SemanticContext.hpp"
-#include "semantic/resolveType/TypeChecker.hpp"
+#include "semantic/checkType/TypeChecker.hpp"
 #include "semantic/checkers/SemanticChecker.hpp"
 #include "semantic/checkers/declCheckers/DeclHelpers.hpp"
 #include "debug/DebugUtils.hpp"
@@ -29,7 +29,7 @@ void checkMultiVarDecl(MultiVarDeclAST& node, SemanticContext& ctx) {
     // Handle single variable case
     if (node.vars.size() == 1) {
         const auto& var = node.vars[0];
-        TypeAST* varType = ctx.resolver->resolveType(var.second.get());
+        TypeAST* varType = ctx.dispatcher->resolveType(var.second.get());
         if (!varType) return;
 
         // Check assignability with possible from-casting
@@ -109,7 +109,7 @@ void checkMultiVarDecl(MultiVarDeclAST& node, SemanticContext& ctx) {
             for (size_t i = 0; i < node.vars.size(); ++i) {
                 const auto& var = node.vars[i];
                 TypeAST* retType = returnTypes[i].get();
-                TypeAST* varType = ctx.resolver->resolveType(var.second.get());
+                TypeAST* varType = ctx.dispatcher->resolveType(var.second.get());
                 if (!varType) continue;
 
                 if (!TypeChecker::isAssignable(retType, varType, ctx)) {

@@ -4,8 +4,8 @@
 #include "debug/DebugUtils.hpp"
 #include "registry/AttributeRegistry.hpp"
 #include "semantic/SymbolTable.hpp"
-#include "semantic/resolveType/TypeResolver.hpp"
-#include "semantic/resolveType/TypeChecker.hpp"
+#include "semantic/resolveType/TypeDispatcher.hpp"
+#include "semantic/checkType/TypeChecker.hpp"
 #include "semantic/helpers/SemanticContext.hpp"
 #include "semantic/checkers/SemanticChecker.hpp"
 #include "semantic/checkers/declCheckers/DeclHelpers.hpp"
@@ -46,8 +46,8 @@ void checkImplDecl(ImplDeclAST& node, SemanticContext& ctx, bool isLocal) {
     }
 
     // Push substitution map (if any) so that generic parameters inside method bodies are replaced
-    if (!node.resolvedSubstitutionMap.empty() && ctx.resolver) {
-        ctx.resolver->pushSubstitutionMap(&node.resolvedSubstitutionMap);
+    if (!node.resolvedSubstitutionMap.empty() && ctx.dispatcher) {
+        ctx.dispatcher->pushSubstitutionMap(&node.resolvedSubstitutionMap);
     }
 
     // Check each method
@@ -72,8 +72,8 @@ void checkImplDecl(ImplDeclAST& node, SemanticContext& ctx, bool isLocal) {
     }
 
     // Pop substitution map
-    if (!node.resolvedSubstitutionMap.empty() && ctx.resolver) {
-        ctx.resolver->popSubstitutionMap();
+    if (!node.resolvedSubstitutionMap.empty() && ctx.dispatcher) {
+        ctx.dispatcher->popSubstitutionMap();
     }
 
     LUC_LOG_SEMANTIC_VERBOSE("checkImplDecl: complete");

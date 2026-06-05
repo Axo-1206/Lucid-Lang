@@ -48,6 +48,26 @@ public:
     TypeAST* getFunctionReturnType(const FuncTypeAST& type, const SourceLocation* loc);
     std::vector<TypeAST*> getFunctionReturnTypes(const FuncTypeAST& type);
 
+    // Generic parameter stack management (forward to GenericParamHandler)
+    void pushGenericParams(const ArenaSpan<GenericParamPtr>* params) {
+        genericParams_.pushParams(params);
+    }
+    void popGenericParams() {
+        genericParams_.popParams();
+    }
+    void pushSubstitutionMap(const std::unordered_map<InternedString, TypeAST*>* map) {
+        genericParams_.pushSubstMap(map);
+    }
+    void popSubstitutionMap() {
+        genericParams_.popSubstMap();
+    }
+    TypeAST* lookupSubstitution(InternedString name) const {
+        return genericParams_.lookupSubst(name);
+    }
+    bool isGenericParam(InternedString name) const {
+        return genericParams_.isParam(name);
+    }
+    
 private:
     SemanticContext& ctx_;
 

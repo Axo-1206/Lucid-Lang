@@ -7,7 +7,8 @@
 #include "ast/ExprAST.hpp"
 #include "ast/TypeAST.hpp"
 #include "ast/DeclAST.hpp"
-#include "semantic/resolveType/TypeChecker.hpp"
+#include "semantic/checkType/TypeChecker.hpp"
+#include "semantic/resolveType/TypeDispatcher.hpp"
 #include "semantic/helpers/SemanticContext.hpp"
 #include "debug/DebugUtils.hpp"
 #include "diagnostics/DiagnosticCodes.hpp"
@@ -29,18 +30,18 @@ TypeAST* checkIdentifierExpr(IdentifierExprAST& node, SemanticContext& ctx) {
     // If type not resolved yet, try to resolve from declaration
     if (!type && sym->decl) {
         if (auto* varDecl = sym->decl->as<VarDeclAST>()) {
-            if (varDecl->type && ctx.resolver) {
-                type = ctx.resolver->resolveType(varDecl->type.get());
+            if (varDecl->type && ctx.dispatcher) {
+                type = ctx.dispatcher->resolveType(varDecl->type.get());
                 sym->type = type;
             }
         } else if (auto* funcDecl = sym->decl->as<FuncDeclAST>()) {
-            if (funcDecl->funcType && ctx.resolver) {
-                type = ctx.resolver->resolveType(funcDecl->funcType.get());
+            if (funcDecl->funcType && ctx.dispatcher) {
+                type = ctx.dispatcher->resolveType(funcDecl->funcType.get());
                 sym->type = type;
             }
         } else if (auto* param = sym->decl->as<ParamAST>()) {
-            if (param->type && ctx.resolver) {
-                type = ctx.resolver->resolveType(param->type.get());
+            if (param->type && ctx.dispatcher) {
+                type = ctx.dispatcher->resolveType(param->type.get());
                 sym->type = type;
             }
         }

@@ -7,7 +7,8 @@
 #include "ast/ExprAST.hpp"
 #include "ast/TypeAST.hpp"
 #include "registry/IntrinsicRegistry.hpp"
-#include "semantic/resolveType/TypeChecker.hpp"
+#include "semantic/checkType/TypeChecker.hpp"
+#include "semantic/resolveType/TypeDispatcher.hpp"
 #include "semantic/helpers/SemanticContext.hpp"
 #include "debug/DebugUtils.hpp"
 #include "diagnostics/DiagnosticCodes.hpp"
@@ -31,8 +32,8 @@ TypeAST* checkIntrinsicCallExpr(IntrinsicCallExprAST& node, SemanticContext& ctx
                       "' requires a type argument");
             return nullptr;
         }
-        if (ctx.resolver) {
-            TypeAST* resolvedType = ctx.resolver->resolveType(node.typeArg.get());
+        if (ctx.dispatcher) {
+            TypeAST* resolvedType = ctx.dispatcher->resolveType(node.typeArg.get());
             if (!resolvedType) {
                 ctx.error(node.loc, DiagCode::E4003,
                           "invalid type argument for intrinsic '#",

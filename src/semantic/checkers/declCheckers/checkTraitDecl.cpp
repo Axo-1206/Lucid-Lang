@@ -4,8 +4,8 @@
 #include "debug/DebugUtils.hpp"
 #include "registry/AttributeRegistry.hpp"
 #include "semantic/SymbolTable.hpp"
-#include "semantic/resolveType/TypeResolver.hpp"
-#include "semantic/resolveType/TypeChecker.hpp"
+#include "semantic/resolveType/TypeDispatcher.hpp"
+#include "semantic/checkType/TypeChecker.hpp"
 #include "semantic/helpers/SemanticContext.hpp"
 #include "semantic/checkers/SemanticChecker.hpp"
 #include "semantic/checkers/declCheckers/DeclHelpers.hpp"
@@ -41,8 +41,8 @@ void checkTraitDecl(TraitDeclAST& node, SemanticContext& ctx, bool isLocal) {
                     ctx, attrIsExtern, attrExternSym, attrCallingConv);
 
     // ── Push generic parameters so method signatures can refer to T ──────────
-    if (!node.genericParams.empty() && ctx.resolver) {
-        ctx.resolver->pushGenericParams(&node.genericParams);
+    if (!node.genericParams.empty() && ctx.dispatcher) {
+        ctx.dispatcher->pushGenericParams(&node.genericParams);
     }
 
     // ── Check methods: duplicate names, resolve parameter/return types ────────
@@ -69,8 +69,8 @@ void checkTraitDecl(TraitDeclAST& node, SemanticContext& ctx, bool isLocal) {
             if (!param) continue;
             if (param->type) {
                 TypeAST* paramType = param->type.get();
-                if (!paramType && ctx.resolver) {
-                    paramType = ctx.resolver->resolveType(param->type.get());
+                if (!paramType && ctx.dispatcher) {
+                    paramType = ctx.dispatcher->resolveType(param->type.get());
                     if (!paramType) {
                         ctx.error(param->loc, DiagCode::E2001,
                                   "cannot resolve type for parameter '", ctx.pool.lookup(param->name),
@@ -84,8 +84,8 @@ void checkTraitDecl(TraitDeclAST& node, SemanticContext& ctx, bool isLocal) {
         for (auto& retType : sig.returnTypes) {
             if (retType) {
                 TypeAST* resolvedRet = retType.get();
-                if (!resolvedRet && ctx.resolver) {
-                    resolvedRet = ctx.resolver->resolveType(retType.get());
+                if (!resolvedRet && ctx.dispatcher) {
+                    resolvedRet = ctx.dispatcher->resolveType(retType.get());
                     if (!resolvedRet) {
                         ctx.error(method->loc, DiagCode::E2001,
                                   "cannot resolve return type for trait method '", methodName, "'");
@@ -96,8 +96,8 @@ void checkTraitDecl(TraitDeclAST& node, SemanticContext& ctx, bool isLocal) {
     }
 
     // ── Pop generic parameters ───────────────────────────────────────────────
-    if (!node.genericParams.empty() && ctx.resolver) {
-        ctx.resolver->popGenericParams();
+    if (!node.genericParams.empty() && ctx.dispatcher) {
+        ctx.dispatcher->popGenericParams();
     }
 
     LUC_LOG_SEMANTIC_VERBOSE("checkTraitDecl: complete for " << ctx.pool.lookup(node.name)

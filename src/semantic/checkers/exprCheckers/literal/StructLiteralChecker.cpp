@@ -7,8 +7,8 @@
 #include "ast/ExprAST.hpp"
 #include "ast/TypeAST.hpp"
 #include "ast/DeclAST.hpp"
-#include "semantic/resolveType/TypeChecker.hpp"
-#include "semantic/resolveType/TypeResolver.hpp"
+#include "semantic/checkType/TypeChecker.hpp"
+#include "semantic/resolveType/TypeDispatcher.hpp"
 #include "semantic/helpers/SemanticContext.hpp"
 #include "semantic/helpers/NameMangler.hpp"
 #include "debug/DebugUtils.hpp"
@@ -33,8 +33,8 @@ TypeAST* checkStructLiteralExpr(StructLiteralExprAST& node, SemanticContext& ctx
         auto* instantiated = ctx.arena.make<NamedTypeAST>(node.typeName).release();
         instantiated->genericArgs = node.genericArgs;
         for (auto& arg : instantiated->genericArgs) {
-            if (ctx.resolver) {
-                ctx.resolver->resolveType(arg.get());
+            if (ctx.dispatcher) {
+                ctx.dispatcher->resolveType(arg.get());
             }
         }
         node.instantiatedType = ASTPtr<NamedTypeAST>(instantiated);

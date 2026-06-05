@@ -7,7 +7,8 @@
 #include "ast/ExprAST.hpp"
 #include "ast/TypeAST.hpp"
 #include "ast/DeclAST.hpp"
-#include "semantic/resolveType/TypeChecker.hpp"
+#include "semantic/checkType/TypeChecker.hpp"
+#include "semantic/resolveType/TypeDispatcher.hpp"
 #include "semantic/helpers/SemanticContext.hpp"
 #include "semantic/helpers/NameMangler.hpp"
 #include "debug/DebugUtils.hpp"
@@ -43,13 +44,13 @@ TypeAST* checkBehaviorAccessExpr(BehaviorAccessExprAST& node, SemanticContext& c
     TypeAST* methodType = methodSym->type;
     if (!methodType) {
         if (auto* methodDecl = methodSym->decl->as<MethodDeclAST>()) {
-            if (methodDecl->funcType && ctx.resolver) {
-                methodType = ctx.resolver->resolveType(methodDecl->funcType.get());
+            if (methodDecl->funcType && ctx.dispatcher) {
+                methodType = ctx.dispatcher->resolveType(methodDecl->funcType.get());
                 methodSym->type = methodType;
             }
         } else if (auto* traitMethod = methodSym->decl->as<TraitMethodAST>()) {
-            if (traitMethod->funcType && ctx.resolver) {
-                methodType = ctx.resolver->resolveType(traitMethod->funcType.get());
+            if (traitMethod->funcType && ctx.dispatcher) {
+                methodType = ctx.dispatcher->resolveType(traitMethod->funcType.get());
                 methodSym->type = methodType;
             }
         }

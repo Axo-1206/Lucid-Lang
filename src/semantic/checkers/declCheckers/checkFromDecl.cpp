@@ -4,8 +4,8 @@
 #include "debug/DebugUtils.hpp"
 #include "registry/AttributeRegistry.hpp"
 #include "semantic/SymbolTable.hpp"
-#include "semantic/resolveType/TypeResolver.hpp"
-#include "semantic/resolveType/TypeChecker.hpp"
+#include "semantic/resolveType/TypeDispatcher.hpp"
+#include "semantic/checkType/TypeChecker.hpp"
 #include "semantic/helpers/SemanticContext.hpp"
 #include "semantic/checkers/SemanticChecker.hpp"
 #include "semantic/checkers/declCheckers/DeclHelpers.hpp"
@@ -68,8 +68,8 @@ void checkFromDecl(FromDeclAST& node, SemanticContext& ctx, bool isLocal) {
     }
 
     // ── Push generic parameters (from block can be generic: from Wrapper<T>) ──
-    if (!node.genericParams.empty() && ctx.resolver) {
-        ctx.resolver->pushGenericParams(&node.genericParams);
+    if (!node.genericParams.empty() && ctx.dispatcher) {
+        ctx.dispatcher->pushGenericParams(&node.genericParams);
     }
 
     // ── Check each from entry ────────────────────────────────────────────────
@@ -83,8 +83,8 @@ void checkFromDecl(FromDeclAST& node, SemanticContext& ctx, bool isLocal) {
         // Resolve return type (should be target struct type)
         TypeAST* entryReturnType = entry->returnType.get();
         if (!entryReturnType) {
-            if (ctx.resolver) {
-                entryReturnType = ctx.resolver->resolveType(entry->returnType.get());
+            if (ctx.dispatcher) {
+                entryReturnType = ctx.dispatcher->resolveType(entry->returnType.get());
             }
             if (!entryReturnType) {
                 ctx.error(entry->loc, DiagCode::E2001, "from entry: cannot resolve return type");
@@ -100,20 +100,6 @@ void checkFromDecl(FromDeclAST& node, SemanticContext& ctx, bool isLocal) {
             continue;
         }
 
-        // Check that the entry has no qualifiers
-        // Note: FromEntryAST doesn't have rawQualifiers/qualifiers directly.
-        // Qualifiers would only appear if the entry's signature is wrapped in a FuncTypeAST.
-        // For from entries, the signature is stored directly, and qualifiers are not allowed.
-        // The grammar doesn't permit qualifiers on from entries, so this check is redundant
-        // but kept for safety in case of malformed AST.
-        bool hasQualifiers = false;
-        if (entry->sig.qualifiers != 0) {
-            ctx.error(entry->loc, DiagCode::E1017,
-                      "from entries cannot have qualifiers (~async, ~nullable, ~parallel)");
-            hasQualifiers = true;
-        }
-        if (hasQualifiers) continue;
-
         // Push a new scope for the entry's parameters
         ctx.symbols->pushScope();
 
@@ -124,8 +110,8 @@ void checkFromDecl(FromDeclAST& node, SemanticContext& ctx, bool isLocal) {
 
             TypeAST* paramType = param->type.get();
             if (!paramType) {
-                if (ctx.resolver) {
-                    paramType = ctx.resolver->resolveType(param->type.get());
+                if (ctx.dispatcher) {
+                    paramType = ctx.dispatcher->resolveType(param->type.get());
                 }
                 if (!paramType) {
                     ctx.error(param->loc, DiagCode::E2001,
@@ -203,8 +189,8 @@ void checkFromDecl(FromDeclAST& node, SemanticContext& ctx, bool isLocal) {
     }
 
     // ── Pop generic parameters ───────────────────────────────────────────────
-    if (!node.genericParams.empty() && ctx.resolver) {
-        ctx.resolver->popGenericParams();
+    if (!node.genericParams.empty() && ctx.dispatcher) {
+        ctx.dispatcher->popGenericParams();
     }
 
     LUC_LOG_SEMANTIC_VERBOSE("checkFromDecl: complete for "

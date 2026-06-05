@@ -7,7 +7,7 @@
 #include "ast/ExprAST.hpp"
 #include "ast/TypeAST.hpp"
 #include "ast/DeclAST.hpp"
-#include "semantic/resolveType/TypeChecker.hpp"
+#include "semantic/checkType/TypeChecker.hpp"
 #include "semantic/helpers/SemanticContext.hpp"
 #include "semantic/helpers/NameMangler.hpp"
 #include "debug/DebugUtils.hpp"

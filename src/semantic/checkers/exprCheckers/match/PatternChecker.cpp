@@ -17,7 +17,8 @@
 #include "semantic/checkers/SemanticChecker.hpp"
 #include "ast/ExprAST.hpp"
 #include "ast/TypeAST.hpp"
-#include "semantic/resolveType/TypeChecker.hpp"
+#include "semantic/checkType/TypeChecker.hpp"
+#include "semantic/resolveType/TypeDispatcher.hpp"
 #include "semantic/helpers/SemanticContext.hpp"
 #include "debug/DebugUtils.hpp"
 #include "diagnostics/DiagnosticCodes.hpp"
@@ -41,8 +42,8 @@ static bool checkPattern(PatternAST* pattern, TypeAST* subjectType, SemanticCont
         case ASTKind::TypePattern: {
             auto* typePat = pattern->as<TypePatternAST>();
             // Type pattern: check that the type exists
-            if (typePat->checkType && ctx.resolver) {
-                TypeAST* resolved = ctx.resolver->resolveType(typePat->checkType.get());
+            if (typePat->checkType && ctx.dispatcher) {
+                TypeAST* resolved = ctx.dispatcher->resolveType(typePat->checkType.get());
                 if (!resolved) {
                     ctx.error(typePat->loc, DiagCode::E2001,
                               "unknown type in type pattern '",

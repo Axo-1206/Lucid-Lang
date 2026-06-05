@@ -15,8 +15,6 @@
 #include "debug/DebugUtils.hpp"
 #include "registry/AttributeRegistry.hpp"
 #include "semantic/SymbolTable.hpp"
-#include "semantic/resolveType/TypeResolver.hpp"
-#include "semantic/resolveType/TypeChecker.hpp"
 #include "semantic/helpers/SemanticContext.hpp"
 #include "semantic/checkers/SemanticChecker.hpp"
 

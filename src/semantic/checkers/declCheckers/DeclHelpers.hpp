@@ -15,7 +15,7 @@
 #include "debug/DebugUtils.hpp"
 #include "registry/AttributeRegistry.hpp"
 #include "semantic/SymbolTable.hpp"
-#include "semantic/resolveType/TypeResolver.hpp"
+#include "semantic/resolveType/TypeDispatcher.hpp"
 #include "semantic/helpers/SemanticContext.hpp"
 #include "semantic/checkers/SemanticChecker.hpp"
 
@@ -228,8 +228,8 @@ static inline void checkImplMethod(const ImplDeclAST& node, MethodDeclAST& metho
             if (!param) continue;
 
             TypeAST* paramType = param->type.get();
-            if (!paramType && ctx.resolver) {
-                paramType = ctx.resolver->resolveType(param->type.get());
+            if (!paramType && ctx.dispatcher) {
+                paramType = ctx.dispatcher->resolveType(param->type.get());
                 if (!paramType) {
                     ctx.error(param->loc, DiagCode::E2001,
                               "cannot resolve parameter type for '", ctx.pool.lookup(param->name), "'");

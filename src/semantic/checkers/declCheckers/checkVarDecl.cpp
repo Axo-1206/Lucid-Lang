@@ -4,8 +4,8 @@
 #include "debug/DebugUtils.hpp"
 #include "registry/AttributeRegistry.hpp"
 #include "semantic/SymbolTable.hpp"
-#include "semantic/resolveType/TypeResolver.hpp"
-#include "semantic/resolveType/TypeChecker.hpp"
+#include "semantic/resolveType/TypeDispatcher.hpp"
+#include "semantic/checkType/TypeChecker.hpp"
 #include "semantic/helpers/SemanticContext.hpp"
 #include "semantic/checkers/SemanticChecker.hpp"
 #include "semantic/checkers/declCheckers/DeclHelpers.hpp"
@@ -54,7 +54,7 @@ void checkVarDecl(VarDeclAST& node, SemanticContext& ctx, bool isLocal) {
         
         // Set insideExtern flag for type resolution (permits raw pointers)
         ctx.enterExtern();
-        TypeAST* declaredType = ctx.resolver ? ctx.resolver->resolveType(node.type.get()) : nullptr;
+        TypeAST* declaredType = ctx.dispatcher ? ctx.dispatcher->resolveType(node.type.get()) : nullptr;
         ctx.exitExtern();
         
         if (!declaredType) return;
@@ -71,7 +71,7 @@ void checkVarDecl(VarDeclAST& node, SemanticContext& ctx, bool isLocal) {
     }
 
     // ── Resolve declared type ─────────────────────────────────────────────────
-    TypeAST* declaredType = ctx.resolver ? ctx.resolver->resolveType(node.type.get()) : nullptr;
+    TypeAST* declaredType = ctx.dispatcher ? ctx.dispatcher->resolveType(node.type.get()) : nullptr;
     if (!declaredType) return;
 
     // ── No initialiser ────────────────────────────────────────────────────────

@@ -6,7 +6,8 @@
 #include "semantic/checkers/SemanticChecker.hpp"
 #include "ast/ExprAST.hpp"
 #include "ast/TypeAST.hpp"
-#include "semantic/resolveType/TypeChecker.hpp"
+#include "semantic/checkType/TypeChecker.hpp"
+#include "semantic/resolveType/TypeDispatcher.hpp"
 #include "semantic/helpers/SemanticContext.hpp"
 #include "debug/DebugUtils.hpp"
 #include "diagnostics/DiagnosticCodes.hpp"
@@ -19,8 +20,8 @@ TypeAST* checkTypeConvExpr(TypeConvExprAST& node, SemanticContext& ctx) {
     
     // Resolve target type
     TypeAST* targetType = nullptr;
-    if (ctx.resolver) {
-        targetType = ctx.resolver->resolveType(node.targetType.get());
+    if (ctx.dispatcher) {
+        targetType = ctx.dispatcher->resolveType(node.targetType.get());
     }
     if (!targetType) {
         ctx.error(node.loc, DiagCode::E2001, "cannot resolve target type for conversion");

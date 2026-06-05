@@ -7,7 +7,8 @@
 #include "ast/ExprAST.hpp"
 #include "ast/TypeAST.hpp"
 #include "semantic/helpers/SemanticContext.hpp"
-#include "semantic/resolveType/TypeChecker.hpp"
+#include "semantic/checkType/TypeChecker.hpp"
+#include "semantic/resolveType/TypeDispatcher.hpp"
 #include "semantic/checkers/SemanticChecker.hpp"
 #include "debug/DebugUtils.hpp"
 #include "diagnostics/DiagnosticCodes.hpp"
@@ -68,7 +69,7 @@ void checkForStmt(ForStmtAST& node, SemanticContext& ctx, TypeAST* expectedRetur
     // Determine iteration variable type
     TypeAST* varType = elementType;
     if (node.iterVar && node.iterVar->type) {
-        varType = ctx.resolver->resolveType(node.iterVar->type.get());
+        varType = ctx.dispatcher->resolveType(node.iterVar->type.get());
         if (!varType) return;
         
         if (!TypeChecker::isAssignable(elementType, varType, ctx)) {
