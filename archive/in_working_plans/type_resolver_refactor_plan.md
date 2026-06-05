@@ -23,14 +23,11 @@ Also ensure `src/semantic/checkType/` exists for `TypeChecker` (already moved pe
 
 ---
 
-## Phase 1: Core Components (no external dependencies)
+## Phase 1: Core Components
 
-These components have no dependencies on other resolvers and can be implemented first.
+These components have minimal dependencies.
 
-### 1.1 `core/GenericParamHandler.hpp` + `.cpp`
-
-**Dependencies:** None (only uses standard library)
-**Estimated lines:** ~80 total
+### 1.1 `core/GenericParamHandler.hpp` + `.cpp` — **Class (stateful)**
 
 ```cpp
 // GenericParamHandler.hpp
@@ -61,76 +58,54 @@ private:
 };
 ```
 
-### 1.2 `core/TypeCloner.hpp` + `.cpp`
-
-**Dependencies:** `GenericParamHandler`, `ASTArena`
-**Estimated lines:** ~200
+### 1.2 `core/TypeCloner.hpp` + `.cpp` — **Namespace (stateless)**
 
 ```cpp
 // TypeCloner.hpp
 #pragma once
 #include "ast/TypeAST.hpp"
+#include "ast/support/ASTArena.hpp"
 
 class GenericParamHandler;
 
-class TypeCloner {
-public:
-    TypeCloner(ASTArena& arena, GenericParamHandler& paramHandler);
-    
-    TypeAST* clone(const TypeAST* type);
-    FuncTypeAST* cloneFunc(const FuncTypeAST* src, const SourceLocation& loc);
-    TypeAST* cloneWithSubstitution(const TypeAST* type);
-    
-private:
-    // One private helper per type kind
-    TypeAST* clonePrimitive(const PrimitiveTypeAST* src);
-    TypeAST* cloneNamed(const NamedTypeAST* src);
-    TypeAST* cloneNullable(const NullableTypeAST* src);
-    TypeAST* cloneResult(const ResultTypeAST* src);
-    TypeAST* cloneArray(const ArrayTypeAST* src);
-    TypeAST* cloneRef(const RefTypeAST* src);
-    TypeAST* clonePtr(const PtrTypeAST* src);
-    FuncTypeAST* cloneFuncInternal(FuncTypeAST* dst, const FuncTypeAST* src, const SourceLocation& loc);
-    
-    ASTArena& arena_;
-    GenericParamHandler& paramHandler_;
-};
+namespace TypeCloner {
+    TypeAST* clone(ASTArena& arena, const TypeAST* type);
+    FuncTypeAST* cloneFunc(ASTArena& arena, const FuncTypeAST* src);
+    TypeAST* cloneWithSubstitution(ASTArena& arena, GenericParamHandler& paramHandler, const TypeAST* type);
+    FuncTypeAST* createFuncType(ASTArena& arena, const SourceLocation& loc = SourceLocation());
+}
 ```
 
-### 1.3 `core/ConstraintChecker.hpp` + `.cpp`
-
-**Dependencies:** `SemanticContext`
-**Estimated lines:** ~100
+### 1.3 `core/ConstraintChecker.hpp` + `.cpp` — **Namespace (stateless)**
 
 ```cpp
 // ConstraintChecker.hpp
 #pragma once
 #include "ast/TypeAST.hpp"
 #include "ast/support/InternedString.hpp"
-#include <unordered_map>
 #include <vector>
 
 struct SemanticContext;
 
-class ConstraintChecker {
-public:
-    explicit ConstraintChecker(SemanticContext& ctx);
-    
-    bool satisfies(TypeAST* type, const std::vector<InternedString>& requiredTraits) const;
-    void setStructTraits(const std::unordered_map<InternedString, std::vector<InternedString>>* map);
-    bool isValueType(TypeAST* type) const;
-    
-private:
-    SemanticContext& ctx_;
-    const std::unordered_map<InternedString, std::vector<InternedString>>* structTraits_ = nullptr;
-};
+namespace ConstraintChecker {
+    bool satisfies(SemanticContext& ctx, TypeAST* type, const std::vector<InternedString>& requiredTraits);
+    bool isValueType(SemanticContext& ctx, TypeAST* type);
+    bool isStructType(SemanticContext& ctx, TypeAST* type);
+    bool isEnumType(SemanticContext& ctx, TypeAST* type);
+    bool isFunctionType(SemanticContext& ctx, TypeAST* type);
+    bool isReferenceType(SemanticContext& ctx, TypeAST* type);
+    bool isArrayType(SemanticContext& ctx, TypeAST* type);
+    bool isValidImplTarget(SemanticContext& ctx, TypeAST* type);
+    InternedString getTypeName(SemanticContext& ctx, TypeAST* type);
+    TypeAST* unwrapAliases(SemanticContext& ctx, TypeAST* type);
+}
 ```
 
 ---
 
-## Phase 2: Simple Inline Resolvers (trivial)
+## Phase 2: Simple Inline Resolvers (header-only)
 
-These can be header-only and have minimal dependencies.
+These rely on Phase 1 core components but are trivial.
 
 ### 2.1 `primitive/PrimitiveResolver.hpp`
 
@@ -143,12 +118,7 @@ struct SemanticContext;
 class PrimitiveResolver {
 public:
     explicit PrimitiveResolver(SemanticContext& ctx) : ctx_(ctx) {}
-    
-    TypeAST* resolve(PrimitiveTypeAST& node) {
-        // Primitive types are self-contained
-        return &node;
-    }
-    
+    TypeAST* resolve(PrimitiveTypeAST& node) { return &node; }
 private:
     SemanticContext& ctx_;
 };
@@ -159,25 +129,19 @@ private:
 ```cpp
 #pragma once
 #include "ast/TypeAST.hpp"
-
-struct SemanticContext;
+#include "semantic/helpers/SemanticContext.hpp"
+#include "diagnostics/DiagnosticCodes.hpp"
 
 class ResultResolver {
 public:
     explicit ResultResolver(SemanticContext& ctx) : ctx_(ctx) {}
-    
     TypeAST* resolve(ResultTypeAST& node) {
-        if (node.inner && node.inner->isa<ResultTypeAST>()) {
-            ctx_.error(node.loc, DiagCode::E2002, "result type cannot nest '!'");
-            return nullptr;
-        }
-        if (node.errorType && node.errorType->isa<ResultTypeAST>()) {
-            ctx_.error(node.loc, DiagCode::E2002, "error type cannot carry '!'");
-            return nullptr;
-        }
+        if (node.inner && node.inner->isa<ResultTypeAST>())
+            ctx_.error(node.loc, DiagCode::E1021, "result type cannot nest '!'");
+        if (node.errorType && node.errorType->isa<ResultTypeAST>())
+            ctx_.error(node.loc, DiagCode::E1021, "error type cannot carry '!'");
         return &node;
     }
-    
 private:
     SemanticContext& ctx_;
 };
@@ -188,20 +152,17 @@ private:
 ```cpp
 #pragma once
 #include "ast/TypeAST.hpp"
-
-struct SemanticContext;
+#include "semantic/helpers/SemanticContext.hpp"
+#include "diagnostics/DiagnosticCodes.hpp"
 
 class ArrayResolver {
 public:
     explicit ArrayResolver(SemanticContext& ctx) : ctx_(ctx) {}
-    
     TypeAST* resolve(ArrayTypeAST& node) {
-        if (node.arrayKind == ArrayKind::Fixed && node.size == 0) {
-            ctx_.error(node.loc, DiagCode::E2002, "fixed array size must be greater than zero");
-        }
+        if (node.arrayKind == ArrayKind::Fixed && node.size == 0)
+            ctx_.error(node.loc, DiagCode::E2002, "fixed array size must be > 0");
         return &node;
     }
-    
 private:
     SemanticContext& ctx_;
 };
@@ -212,18 +173,12 @@ private:
 ```cpp
 #pragma once
 #include "ast/TypeAST.hpp"
-
-struct SemanticContext;
+#include "semantic/helpers/SemanticContext.hpp"
 
 class RefResolver {
 public:
     explicit RefResolver(SemanticContext& ctx) : ctx_(ctx) {}
-    
-    TypeAST* resolve(RefTypeAST& node) {
-        // Reference type resolution is simple
-        return &node;
-    }
-    
+    TypeAST* resolve(RefTypeAST& node) { return &node; }
 private:
     SemanticContext& ctx_;
 };
@@ -234,18 +189,12 @@ private:
 ```cpp
 #pragma once
 #include "ast/TypeAST.hpp"
-
-struct SemanticContext;
+#include "semantic/helpers/SemanticContext.hpp"
 
 class PtrResolver {
 public:
     explicit PtrResolver(SemanticContext& ctx) : ctx_(ctx) {}
-    
-    TypeAST* resolve(PtrTypeAST& node) {
-        // Pointer type resolution is simple
-        return &node;
-    }
-    
+    TypeAST* resolve(PtrTypeAST& node) { return &node; }
 private:
     SemanticContext& ctx_;
 };
@@ -256,17 +205,13 @@ private:
 ```cpp
 #pragma once
 #include "ast/DeclAST.hpp"
-
-struct SemanticContext;
-class GenericParamHandler;
+#include "core/GenericParamHandler.hpp"
 
 class TypeAliasResolver {
 public:
     TypeAliasResolver(SemanticContext& ctx, GenericParamHandler& paramHandler)
         : ctx_(ctx), paramHandler_(paramHandler) {}
-    
     void resolve(TypeAliasDeclAST& node);
-    
 private:
     SemanticContext& ctx_;
     GenericParamHandler& paramHandler_;
@@ -278,22 +223,17 @@ private:
 ```cpp
 #pragma once
 #include "ast/DeclAST.hpp"
-
-struct SemanticContext;
-class GenericParamHandler;
-class TypeCloner;
+#include "core/GenericParamHandler.hpp"
+#include "core/TypeCloner.hpp"
 
 class FuncSignatureResolver {
 public:
-    FuncSignatureResolver(SemanticContext& ctx, GenericParamHandler& paramHandler, TypeCloner& cloner)
-        : ctx_(ctx), paramHandler_(paramHandler), cloner_(cloner) {}
-    
+    FuncSignatureResolver(SemanticContext& ctx, GenericParamHandler& paramHandler)
+        : ctx_(ctx), paramHandler_(paramHandler) {}
     void resolve(FuncDeclAST& node);
-    
 private:
     SemanticContext& ctx_;
     GenericParamHandler& paramHandler_;
-    TypeCloner& cloner_;
 };
 ```
 
@@ -303,14 +243,10 @@ private:
 #pragma once
 #include "ast/DeclAST.hpp"
 
-struct SemanticContext;
-
 class VarResolver {
 public:
     explicit VarResolver(SemanticContext& ctx) : ctx_(ctx) {}
-    
     void resolve(VarDeclAST& node);
-    
 private:
     SemanticContext& ctx_;
 };
@@ -326,7 +262,6 @@ private:
 struct SemanticContext;
 
 namespace ResolverHelpers {
-    
     bool isPrimitiveType(TypeAST* type);
     bool isStructType(TypeAST* type, const SemanticContext& ctx);
     bool isEnumType(TypeAST* type, const SemanticContext& ctx);
@@ -334,278 +269,59 @@ namespace ResolverHelpers {
     bool isReferenceType(TypeAST* type);
     bool isPointerType(TypeAST* type);
     bool isArrayType(TypeAST* type);
-    
     std::string getTypeName(TypeAST* type, const SemanticContext& ctx);
-    
     bool hasGenericParams(TypeAST* type);
     size_t getGenericArity(TypeAST* type);
-    
-} // namespace ResolverHelpers
+}
 ```
 
 ---
 
-## Phase 3: Medium Complexity Resolvers
+## Phase 3: Medium Complexity Resolvers (with .cpp files)
 
-These depend on Phase 1 components.
+These depend on Phase 1 core components (namespaces) and Phase 2 simple resolvers.
 
 ### 3.1 `composite/FuncResolver.hpp` + `.cpp`
 
-**Dependencies:** `GenericParamHandler`, `TypeCloner`, `SemanticContext`
-**Estimated lines:** ~150
-
-```cpp
-// FuncResolver.hpp
-#pragma once
-#include "ast/TypeAST.hpp"
-
-struct SemanticContext;
-class GenericParamHandler;
-class TypeCloner;
-
-class FuncResolver {
-public:
-    FuncResolver(SemanticContext& ctx, GenericParamHandler& paramHandler, TypeCloner& cloner);
-    
-    TypeAST* resolve(FuncTypeAST& node);
-    TypeAST* getReturnType(const FuncTypeAST& type, const SourceLocation* loc);
-    std::vector<TypeAST*> getReturnTypes(const FuncTypeAST& type);
-    
-private:
-    void resolveQualifiers(FuncTypeAST& node);
-    void resolveParameters(FuncTypeAST& node);
-    void resolveReturnTypes(FuncTypeAST& node);
-    
-    SemanticContext& ctx_;
-    GenericParamHandler& paramHandler_;
-    TypeCloner& cloner_;
-};
-```
+- Depends on `GenericParamHandler`, `TypeCloner` (namespace)
+- Resolves qualifiers, parameters, return types.
 
 ### 3.2 `named/NamedResolver.hpp` + `.cpp`
 
-**Dependencies:** `GenericParamHandler`, `ConstraintChecker`, `SemanticContext`
-**Estimated lines:** ~200
-
-```cpp
-// NamedResolver.hpp
-#pragma once
-#include "ast/TypeAST.hpp"
-
-struct SemanticContext;
-class GenericParamHandler;
-class ConstraintChecker;
-
-class NamedResolver {
-public:
-    NamedResolver(SemanticContext& ctx, GenericParamHandler& paramHandler, ConstraintChecker& constraintChecker);
-    
-    TypeAST* resolve(NamedTypeAST& node);
-    
-private:
-    TypeAST* resolveGenericParam(NamedTypeAST& node);
-    TypeAST* resolveConcreteType(NamedTypeAST& node);
-    TypeAST* unwrapTypeAlias(NamedTypeAST& node, Symbol* sym);
-    void validateGenericConstraints(NamedTypeAST& node, Symbol* structSym);
-    
-    SemanticContext& ctx_;
-    GenericParamHandler& paramHandler_;
-    ConstraintChecker& constraintChecker_;
-};
-```
+- Depends on `GenericParamHandler`, `ConstraintChecker` (namespace)
+- Resolves named types, generic parameters, constraints.
 
 ### 3.3 `composite/NullableResolver.hpp` + `.cpp`
 
-**Dependencies:** `SemanticContext`, `FuncResolver` (for validation)
-**Estimated lines:** ~80
-
-```cpp
-// NullableResolver.hpp
-#pragma once
-#include "ast/TypeAST.hpp"
-
-struct SemanticContext;
-class FuncResolver;
-
-class NullableResolver {
-public:
-    NullableResolver(SemanticContext& ctx, FuncResolver& funcResolver);
-    
-    TypeAST* resolve(NullableTypeAST& node);
-    
-private:
-    SemanticContext& ctx_;
-    FuncResolver& funcResolver_;
-};
-```
+- Depends on `SemanticContext`, `FuncResolver` (forward declared)
+- Validates nullable types and rule "no `?` on function types".
 
 ### 3.4 `decl/StructResolver.hpp` + `.cpp`
 
-**Dependencies:** `GenericParamHandler`, `TypeCloner`, `SemanticContext`
-**Estimated lines:** ~100
-
-```cpp
-// StructResolver.hpp
-#pragma once
-#include "ast/DeclAST.hpp"
-
-struct SemanticContext;
-class GenericParamHandler;
-class TypeCloner;
-
-class StructResolver {
-public:
-    StructResolver(SemanticContext& ctx, GenericParamHandler& paramHandler, TypeCloner& cloner);
-    
-    void resolve(StructDeclAST& node);
-    
-private:
-    SemanticContext& ctx_;
-    GenericParamHandler& paramHandler_;
-    TypeCloner& cloner_;
-};
-```
+- Depends on `GenericParamHandler`, `TypeCloner` (namespace)
+- Resolves struct fields and creates self-type.
 
 ---
 
 ## Phase 4: High Complexity Components
 
-These depend on multiple Phase 2-3 components.
-
 ### 4.1 `callable/CallableExtractor.hpp` + `.cpp`
 
-**Dependencies:** `SemanticContext`, `TypeCloner`
-**Estimated lines:** ~250
-
-```cpp
-// CallableExtractor.hpp
-#pragma once
-#include "ast/ExprAST.hpp"
-#include "ast/TypeAST.hpp"
-
-struct SemanticContext;
-class TypeCloner;
-
-class CallableExtractor {
-public:
-    CallableExtractor(SemanticContext& ctx, TypeCloner& cloner);
-    
-    FuncTypeAST* extract(ExprPtr& callable, ArenaSpan<TypePtr>& explicitTypeArgs, const SourceLocation& loc);
-    TypeAST* resolveReference(ExprPtr& ref, ArenaSpan<TypePtr>& typeArgs, const SourceLocation& loc);
-    
-private:
-    FuncTypeAST* extractFromIdentifier(IdentifierExprAST* ident, const SourceLocation& loc);
-    FuncTypeAST* extractFromFieldAccess(FieldAccessExprAST* field, const SourceLocation& loc);
-    FuncTypeAST* extractFromCallableRef(CallableRefExprAST* callableRef, const SourceLocation& loc);
-    FuncTypeAST* extractFromBehaviorAccess(BehaviorAccessExprAST* behavior, const SourceLocation& loc);
-    
-    SemanticContext& ctx_;
-    TypeCloner& cloner_;
-};
-```
+- Uses `TypeCloner` namespace to clone function types from callable AST nodes.
+- Resolves identifiers, field accesses, behavior accesses, generic references.
 
 ### 4.2 `injection/InjectionTransformer.hpp` + `.cpp`
 
-**Dependencies:** `SemanticContext`, `TypeCloner`
-**Estimated lines:** ~120
-
-```cpp
-// InjectionTransformer.hpp
-#pragma once
-#include "ast/TypeAST.hpp"
-
-struct SemanticContext;
-class TypeCloner;
-
-class InjectionTransformer {
-public:
-    InjectionTransformer(SemanticContext& ctx, TypeCloner& cloner);
-    
-    FuncTypeAST* transform(FuncTypeAST* funcType, InternedString receiverName, const SourceLocation& loc);
-    
-private:
-    bool validateTransformable(const FuncTypeAST* funcType, const SourceLocation& loc);
-    FuncTypeAST* createTransformedType(const FuncTypeAST* src, const SourceLocation& loc);
-    
-    SemanticContext& ctx_;
-    TypeCloner& cloner_;
-};
-```
+- Uses `TypeCloner` namespace to remove first parameter from function type for `!` injection.
 
 ### 4.3 `decl/FromResolver.hpp` + `.cpp`
 
-**Dependencies:** `GenericParamHandler`, `CallableExtractor`, `SemanticContext`
-**Estimated lines:** ~150
-
-```cpp
-// FromResolver.hpp
-#pragma once
-#include "ast/DeclAST.hpp"
-
-struct SemanticContext;
-class GenericParamHandler;
-class CallableExtractor;
-
-class FromResolver {
-public:
-    FromResolver(SemanticContext& ctx, GenericParamHandler& paramHandler, CallableExtractor& callableExtractor);
-    
-    void resolve(FromDeclAST& node);
-    
-private:
-    void resolveInlineEntry(FromEntryAST& entry, TypeAST* targetType);
-    void resolvePathEntry(FromEntryAST& entry, TypeAST* targetType);
-    bool validateReturnType(FromEntryAST& entry, TypeAST* targetType);
-    
-    SemanticContext& ctx_;
-    GenericParamHandler& paramHandler_;
-    CallableExtractor& callableExtractor_;
-};
-```
+- Depends on `GenericParamHandler`, `CallableExtractor`, `TypeCloner` namespace.
 
 ### 4.4 `decl/ImplResolver.hpp` + `.cpp`
 
-**Dependencies:** `GenericParamHandler`, `TypeCloner`, `InjectionTransformer`, `CallableExtractor`, `SemanticContext`
-**Estimated lines:** ~300
-
-```cpp
-// ImplResolver.hpp
-#pragma once
-#include "ast/DeclAST.hpp"
-
-struct SemanticContext;
-class GenericParamHandler;
-class TypeCloner;
-class InjectionTransformer;
-class CallableExtractor;
-
-class ImplResolver {
-public:
-    ImplResolver(SemanticContext& ctx,
-                 GenericParamHandler& paramHandler,
-                 TypeCloner& cloner,
-                 InjectionTransformer& injector,
-                 CallableExtractor& callableExtractor);
-    
-    void resolve(ImplDeclAST& node);
-    
-private:
-    TypeAST* resolveTargetType(ImplDeclAST& node);
-    TypeAST* unwrapTargetType(TypeAST* target);
-    void validateGenericArity(ImplDeclAST& node, TypeAST* underlying, bool isGenericStruct);
-    void buildSubstitutionMap(ImplDeclAST& node, TypeAST* target, const ArenaSpan<GenericParamPtr>* targetGenericParams);
-    void resolveMethods(ImplDeclAST& node, const std::string& typeName);
-    void resolveMethodInline(MethodDeclAST& method);
-    void resolveMethodPlainAssignment(MethodDeclAST& method);
-    void resolveMethodInjectionAssignment(MethodDeclAST& method);
-    
-    SemanticContext& ctx_;
-    GenericParamHandler& paramHandler_;
-    TypeCloner& cloner_;
-    InjectionTransformer& injector_;
-    CallableExtractor& callableExtractor_;
-};
-```
+- Depends on `GenericParamHandler`, `TypeCloner`, `InjectionTransformer`, `CallableExtractor`.
+- Validates impl target, generic arity, builds substitution map, resolves methods.
 
 ---
 
@@ -613,87 +329,10 @@ private:
 
 ### 5.1 `TypeDispatcher.hpp` + `.cpp`
 
-**Dependencies:** All of the above
-**Estimated lines:** ~200
-
-```cpp
-// TypeDispatcher.hpp
-#pragma once
-#include "ast/TypeAST.hpp"
-#include "ast/DeclAST.hpp"
-#include "core/GenericParamHandler.hpp"
-#include "core/TypeCloner.hpp"
-#include "core/ConstraintChecker.hpp"
-#include "injection/InjectionTransformer.hpp"
-#include "callable/CallableExtractor.hpp"
-#include "primitive/PrimitiveResolver.hpp"
-#include "named/NamedResolver.hpp"
-#include "composite/NullableResolver.hpp"
-#include "composite/ResultResolver.hpp"
-#include "composite/ArrayResolver.hpp"
-#include "composite/RefResolver.hpp"
-#include "composite/PtrResolver.hpp"
-#include "composite/FuncResolver.hpp"
-#include "decl/TypeAliasResolver.hpp"
-#include "decl/StructResolver.hpp"
-#include "decl/FuncSignatureResolver.hpp"
-#include "decl/ImplResolver.hpp"
-#include "decl/FromResolver.hpp"
-#include "decl/VarResolver.hpp"
-
-struct SemanticContext;
-
-class TypeDispatcher {
-public:
-    explicit TypeDispatcher(SemanticContext& ctx);
-    
-    // Main entry point
-    TypeAST* resolveType(TypeAST* typeNode);
-    
-    // Declaration-level resolution
-    void resolveTypeAlias(TypeAliasDeclAST& node);
-    void resolveStructFields(StructDeclAST& node);
-    void resolveFunctionSignature(FuncDeclAST& node);
-    void resolveImplMethods(ImplDeclAST& node);
-    void resolveFromEntries(FromDeclAST& node);
-    void resolveVarType(VarDeclAST& node);
-    
-    // Access to components (for checkers that need late resolution)
-    GenericParamHandler& genericParams() { return genericParams_; }
-    ConstraintChecker& constraintChecker() { return constraintChecker_; }
-    TypeCloner& cloner() { return cloner_; }
-    
-private:
-    SemanticContext& ctx_;
-    
-    // Core components
-    GenericParamHandler genericParams_;
-    TypeCloner cloner_;
-    ConstraintChecker constraintChecker_;
-    
-    // Transformers
-    InjectionTransformer injectionTransformer_;
-    CallableExtractor callableExtractor_;
-    
-    // Type resolvers
-    PrimitiveResolver primitiveResolver_;
-    NamedResolver namedResolver_;
-    NullableResolver nullableResolver_;
-    ResultResolver resultResolver_;
-    ArrayResolver arrayResolver_;
-    RefResolver refResolver_;
-    PtrResolver ptrResolver_;
-    FuncResolver funcResolver_;
-    
-    // Declaration resolvers
-    TypeAliasResolver typeAliasResolver_;
-    StructResolver structResolver_;
-    FuncSignatureResolver funcSignatureResolver_;
-    ImplResolver implResolver_;
-    FromResolver fromResolver_;
-    VarResolver varResolver_;
-};
-```
+- Owns `GenericParamHandler` instance (stateful).
+- Uses `TypeCloner` and `ConstraintChecker` namespaces (no instance needed).
+- Owns all resolver class instances.
+- Dispatches `resolveType` and declaration-level resolutions.
 
 ---
 
@@ -701,33 +340,17 @@ private:
 
 ### 6.1 Update `SemanticContext.hpp`
 
-Change from `TypeResolver*` to `TypeDispatcher*`:
-
-```cpp
-// Before
-TypeResolver* resolver;
-
-// After
-TypeDispatcher* dispatcher;
-```
+- Change `TypeResolver* resolver` → `TypeDispatcher* dispatcher`
+- Add `typeTraits` map (key: mangled type, value: list of trait names)
 
 ### 6.2 Update `SemanticAnalyzer.cpp`
 
-Update construction and usage:
-
-```cpp
-// Before
-TypeResolver resolver_(ctx_);
-ctx_.resolver = &resolver_;
-
-// After
-TypeDispatcher dispatcher_(ctx_);
-ctx_.dispatcher = &dispatcher_;
-```
+- Construct `TypeDispatcher` instead of `TypeResolver`
+- After Phase 2 type resolution, build `typeTraits` map by iterating impl blocks.
 
 ### 6.3 Update `checkers/` files
 
-Replace calls to `ctx_.resolver->resolveType()` with `ctx_.dispatcher->resolveType()`
+- Replace `ctx_.resolver->resolveType(...)` with `ctx_.dispatcher->resolveType(...)`
 
 ### 6.4 Delete old files
 
@@ -740,32 +363,30 @@ rm src/semantic/resolveType/TypeResolver.cpp
 
 ## Implementation Order Summary Table
 
-| Phase   | Folder/File                      | Dependencies      | Est. Lines | Priority |
-| ------- | -------------------------------- | ----------------- | ---------- | -------- |
-| 1.1     | `core/GenericParamHandler`       | None              | 80         | Critical |
-| 1.2     | `core/TypeCloner`                | Phase 1.1         | 200        | Critical |
-| 1.3     | `core/ConstraintChecker`         | None              | 100        | Critical |
-| 2.1-2.9 | Simple inline resolvers          | Phase 1           | 300        | High     |
-| 3.1     | `composite/FuncResolver`         | Phase 1           | 150        | High     |
-| 3.2     | `named/NamedResolver`            | Phase 1           | 200        | High     |
-| 3.3     | `composite/NullableResolver`     | Phase 3.1         | 80         | Medium   |
-| 3.4     | `decl/StructResolver`            | Phase 1           | 100        | Medium   |
-| 4.1     | `callable/CallableExtractor`     | Phase 1, 2        | 250        | Medium   |
-| 4.2     | `injection/InjectionTransformer` | Phase 1, 2        | 120        | Medium   |
-| 4.3     | `decl/FromResolver`              | Phase 1, 4.1      | 150        | Medium   |
-| 4.4     | `decl/ImplResolver`              | Phase 1, 4.1, 4.2 | 300        | Medium   |
-| 5.1     | `TypeDispatcher`                 | All above         | 200        | Final    |
-| 6       | Integration                      | All               | N/A        | Final    |
+| Phase   | Component               | Type             | Dependencies                  |
+| ------- | ----------------------- | ---------------- | ----------------------------- |
+| 1.1     | GenericParamHandler     | Class (stateful) | None                          |
+| 1.2     | TypeCloner              | Namespace        | ASTArena, GenericParamHandler |
+| 1.3     | ConstraintChecker       | Namespace        | SemanticContext, NameMangler  |
+| 2.1-2.9 | Simple inline resolvers | Classes          | Phase 1                       |
+| 3.1     | FuncResolver            | Class            | Phase 1, 2                    |
+| 3.2     | NamedResolver           | Class            | Phase 1, 2                    |
+| 3.3     | NullableResolver        | Class            | Phase 3.1                     |
+| 3.4     | StructResolver          | Class            | Phase 1, 2                    |
+| 4.1     | CallableExtractor       | Class            | Phase 1, 2                    |
+| 4.2     | InjectionTransformer    | Class            | Phase 1, 2                    |
+| 4.3     | FromResolver            | Class            | Phase 1, 4.1                  |
+| 4.4     | ImplResolver            | Class            | Phase 1, 4.1, 4.2             |
+| 5.1     | TypeDispatcher          | Class            | All of the above              |
+| 6       | Integration             | N/A              | All                           |
 
 ## Testing Strategy per Phase
-
-After each phase, you can run the existing test suite to verify no regression:
 
 ```bash
 # After Phase 1 (core components)
 make test-core
 
-# After Phase 2 (inline resolvers)  
+# After Phase 2 (inline resolvers)
 make test-resolvers-simple
 
 # After Phase 3 (medium resolvers)
@@ -794,4 +415,4 @@ make test-all
 | Phase 6: Integration        | 1-2 hours       |
 | **Total**                   | **13-18 hours** |
 
-This is a significant refactoring. I recommend implementing Phase 1 completely first, testing, then moving to Phase 2, etc. Each phase should be committed separately with clear commit messages.
+```
