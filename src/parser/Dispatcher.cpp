@@ -190,11 +190,17 @@ DeclPtr Parser::parseDeclaration(DeclContext ctx) {
 // ============================================================================
 
 TypePtr Parser::parseType() {
-    LUC_LOG_TYPE_VERBOSE("parseType: entering");
+    LUC_LOG_TYPE_VERBOSE("parseType: entering at line " << ts_.currentLoc().line()
+                         << ", col " << ts_.currentLoc().column());
+    
+    LUC_LOG_TYPE("parseType: current token = '" << ts_.peek().value 
+                 << "' (type=" << static_cast<int>(ts_.peek().type) 
+                 << ") at line " << ts_.peek().line << ", col " << ts_.peek().column);
+    
     TypePtr result = parseTypeWithNullable();
-    if (result) {
-        LUC_LOG_TYPE_VERBOSE("parseType: parsed " << LucDebug::kindToString(result->kind));
-    }
+    
+    LUC_LOG_TYPE_VERBOSE("parseType: returning, next token = '" << ts_.peek().value 
+                         << "' at line " << ts_.peek().line << ", col " << ts_.peek().column);
     return result;
 }
 

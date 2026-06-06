@@ -190,12 +190,12 @@ Parser::Parser(std::vector<Token> tokens, InternedString filePath,
 // Error handling
 // ============================================================================
 
-void Parser::error(const SourceLocation& loc, DiagCode code, const std::string& msg) {
-    diagnostic::error(DiagnosticCategory::Syntax, filePath_, loc, code, {msg});
+void Parser::error(const SourceLocation& loc, DiagCode code, std::initializer_list<std::string> args) {
+    diagnostic::error(DiagnosticCategory::Syntax, filePath_, loc, code, args);
 }
 
-void Parser::errorAt(DiagCode code, const std::string& msg) {
-    error(ts_.currentLoc(), code, msg);
+void Parser::errorAt(DiagCode code, std::initializer_list<std::string> args) {
+    error(ts_.currentLoc(), code, args);
 }
 
 void Parser::synchronize() {

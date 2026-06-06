@@ -75,15 +75,22 @@
 // ============================================================================
 
 bool Parser::looksLikeType() const {
-    TokenType tt = ts_.peekType();
+    if (ts_.isAtEnd()) return false;
     
-    if (isPrimitiveTypeToken(tt)) return true;
-    if (tt == TokenType::IDENTIFIER) return true;
-    if (tt == TokenType::LBRACKET) return true;
-    if (tt == TokenType::AMPERSAND) return true;
-    if (tt == TokenType::MUL) return true;
-    if (tt == TokenType::TILDE) return true;
-    if (tt == TokenType::LPAREN) return true;
+    TokenType t = ts_.peekType();
+    
+    // Primitive type keywords
+    if (isPrimitiveTypeToken(t)) return true;
+    
+    // Identifiers (could be named types or generic parameters)
+    if (t == TokenType::IDENTIFIER) return true;
+    
+    // Type constructors
+    if (t == TokenType::AMPERSAND) return true;  // &T (reference)
+    if (t == TokenType::MUL) return true;        // *T (pointer)
+    if (t == TokenType::LBRACKET) return true;   // [_, T] (array)
+    if (t == TokenType::LPAREN) return true;     // (a int) -> T (function type)
+    if (t == TokenType::TILDE) return true;      // ~async (a int) -> T
     
     return false;
 }

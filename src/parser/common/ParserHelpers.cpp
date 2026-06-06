@@ -78,14 +78,45 @@ std::vector<ParamPtr> Parser::parseParamList() {
         }
         auto param = arena_.make<ParamAST>();
         param->name = pool_.intern(ts_.advance().value);
+        
+        // Check if we have a variadic parameter
         param->isVariadic = ts_.match(TokenType::VARIADIC);
+        
+        // Special diagnostic: Check if the next token is ')' or ',' or '->'
+        // This means the user forgot the type annotation
+        if (ts_.check(TokenType::RPAREN) || ts_.check(TokenType::COMMA) || ts_.check(TokenType::ARROW)) {
+            std::string paramName = std::string(pool_.lookup(param->name));
+            
+            // Use the specific diagnostic code E1025
+            errorAt(DiagCode::E1025, paramName, paramName);
+            
+            // Skip the parameter and continue
+            continue;
+        }
+        
+        // Check if we have a type annotation
+        if (!looksLikeType()) {
+            // Report a helpful error
+            std::string msg = "expected type annotation for parameter '" + 
+                              std::string(pool_.lookup(param->name)) + 
+                              "'. In Luc, every parameter must have an explicit type. "
+                              "Example: '(" + std::string(pool_.lookup(param->name)) + " int)'";
+            errorAt(DiagCode::E1005, msg);
+            // Skip to recover - consume until ',' or ')'
+            while (!ts_.isAtEnd() && !ts_.check(TokenType::COMMA) && !ts_.check(TokenType::RPAREN)) {
+                ts_.advance();
+            }
+            continue;
+        }
+        
         param->type = parseType();
         if (param->type) {
             paramCount++;
             LUC_LOG_DECL_EXTREME("parseParamList: parameter #" << paramCount 
-                                 << " = " << pool_.lookup(param->name)
-                                 << (param->isVariadic ? " ..." : ""));
+                                 << " = " << pool_.lookup(param->name));
             list.push_back(std::move(param));
+        } else {
+            LUC_LOG_DECL("parseParamList: ERROR - failed to parse type for parameter");
         }
     }
     
@@ -112,7 +143,46 @@ std::vector<ParamPtr> Parser::parseParamList() {
  * - Recovers from missing ')' by consuming until RPAREN or EOF.
  */
 ParamGroup Parser::parseParamGroup() {
-    LUC_LOG_DECL_EXTREME("parseParamGroup: entering");
+    LUC_LOG_DECL_EXTREME("parseParamGroup: entering at line " << ts_.currentLoc().line()
+                         << ", col " << ts_.currentLoc().column());
+    
+    // Check for common mistake: (T) where T has no type annotation
+    // Pattern: '(' IDENTIFIER and the next token after identifier is ')' or ',' or '->'
+    if (ts_.check(TokenType::LPAREN)) {
+        size_t checkPos = ts_.getPos();
+        size_t afterParen = ts_.skipCommentsFrom(checkPos + 1);
+        
+        if (afterParen < ts_.getTokenCount() && 
+            ts_.getTokenAt(afterParen).type == TokenType::IDENTIFIER) {
+            
+            size_t afterIdent = ts_.skipCommentsFrom(afterParen + 1);
+            if (afterIdent < ts_.getTokenCount()) {
+                TokenType nextType = ts_.getTokenAt(afterIdent).type;
+                
+                // If after identifier we see ')', ',', or '->', the user forgot the type
+                if (nextType == TokenType::RPAREN || nextType == TokenType::COMMA || nextType == TokenType::ARROW) {
+                    Token ident = ts_.getTokenAt(afterParen);
+                    errorAt(DiagCode::E1025, ident.value, ident.value);
+                    
+                    // Consume the bad tokens to allow parsing to continue
+                    ts_.advance(); // consume '('
+                    ts_.advance(); // consume identifier
+                    
+                    // Skip to closing ')'
+                    while (!ts_.isAtEnd() && !ts_.check(TokenType::RPAREN)) {
+                        ts_.advance();
+                    }
+                    if (ts_.check(TokenType::RPAREN)) {
+                        ts_.advance(); // consume ')'
+                    }
+                    
+                    return {}; // Return empty parameter group
+                }
+            }
+        }
+    }
+    
+    // Continue with normal parsing
     SourceLocation loc = ts_.currentLoc();
     ts_.consume(TokenType::LPAREN, "expected '(' to start parameter group");
     
@@ -445,43 +515,74 @@ std::vector<InternedString> Parser::parseModulePath() {
 // ============================================================================
 
 /**
- * @brief Parses a function reference for use in assignments and references.
+ * @brief Parses a named function reference for use in declarations and expressions.
  *
- * Grammar:
- *   func_ref := IDENTIFIER
- *             | IDENTIFIER '.' IDENTIFIER
- *             | IDENTIFIER ':' IDENTIFIER
- *             | func_ref generic_args
+ * Grammar (from LUC_GRAMMAR.md, Shared Productions):
+ *   func_ref := IDENTIFIER                    -- local or imported name
+ *             | IDENTIFIER '.' IDENTIFIER     -- module path: pkg.fn
+ *             | func_ref generic_args        -- generic instantiation: fn<T>
  *
  * @par Examples
  *   utils.getVersion                       – dotted path
  *   transform<int, string>                 – generic instantiation
  *   std.map<U>                             – dotted + generic
- *   Vec2:normalize                         – method reference
+ *   identity                               – plain identifier
+ *
+ * @par Valid Contexts
+ *   - Method assignments in `impl` blocks: `id = identity<int>(i)!`
+ *   - Path entries in `from` blocks: `from string { toString<int> }`
+ *   - Pipeline steps (without `!`): `42 |> identity<int>`
+ *   - Compose operands: `validate +> toString<int>`
+ *   - Variable initialisers: `let f (int) -> int = identity<int>`
+ *
+ * @par Invalid (Not part of grammar)
+ *   - Method references with colon (`vec:normalize`) – use `expr ':' IDENTIFIER` in
+ *     pipeline/compose parsers instead.
+ *   - Function calls or expressions – `func_ref` is a *name*, not a call.
+ *   - Field access on an expression – only dotted module paths are allowed.
  *
  * @return ExprPtr – expression representing the function reference.
- *         The result may be:
- *         - IdentifierExprAST
- *         - FieldAccessExprAST
- *         - BehaviorAccessExprAST
- *         - CallableRefExprAST (wrapping one of the above with generic args)
+ *         Result may be:
+ *         - `IdentifierExprAST`        – plain identifier (e.g., `identity`)
+ *         - `FieldAccessExprAST`       – dotted module path (e.g., `math.utils.toString`)
+ *         - `CallableRefExprAST`       – wrapped with generic arguments (e.g., `identity<int>`)
  *
  * ─── Parsing Steps ─────────────────────────────────────────────────────────
  *   1. Parse the first identifier (required).
  *   2. Parse optional dotted path segments (`.identifier`).
- *   3. Parse optional behavior access (`:method`).
- *   4. Parse optional generic arguments (`<type-list>`).
+ *   3. Parse optional generic arguments (`<type-list>`).
+ *
+ * ─── Token Consumption ─────────────────────────────────────────────────────
+ * On entry: positioned at an IDENTIFIER (the function name).
+ * On exit:  positioned after the optional generic arguments (or after the name).
+ *
+ * ─── Generic Arguments ────────────────────────────────────────────────────
+ *   - The opening `<` is consumed BEFORE calling `parseGenericArgs()`.
+ *   - `parseGenericArgs()` parses the type list and consumes the closing `>`.
+ *   - The result is wrapped in a `CallableRefExprAST`.
  *
  * ─── Error Recovery ───────────────────────────────────────────────────────
- *   - Missing identifier: reports error, returns UnknownExprAST.
+ *   - Missing identifier: returns `UnknownExprAST`, reports error.
  *   - Missing identifier after '.': reports error, stops building path.
- *   - Malformed generic arguments: parseGenericArgs() reports error,
- *     returns empty span (still creates CallableRefExprAST with empty args).
+ *   - Malformed generic arguments: `parseGenericArgs()` reports error,
+ *     returns empty span, still creates `CallableRefExprAST` with empty args.
+ *
+ * ─── Important Notes ──────────────────────────────────────────────────────
+ *   - Colon `:` is NOT handled here – it belongs to pipeline steps and
+ *     compose operands (`expr ':' IDENTIFIER` for method calls).
+ *   - Dotted paths represent module/namespace resolution, not field access
+ *     on runtime values. The semantic pass resolves them appropriately.
+ *   - Generic arguments are always explicit (no inference). An uninstantiated
+ *     generic function (e.g., `identity` without `<type>`) is not a valid
+ *     `func_ref` – the caller must provide type arguments.
+ *
+ * @see parseGenericArgs() for the generic argument list parser
+ * @see CallableRefExprAST for the node that stores generic arguments
  */
 ExprPtr Parser::parseFuncRef() {
     LUC_LOG_EXPR_VERBOSE("parseFuncRef: entering");
     SourceLocation loc = ts_.currentLoc();
-    
+
     // Parse a name (identifier or dotted path)
     if (!ts_.check(TokenType::IDENTIFIER)) {
         LUC_LOG_EXPR("parseFuncRef: ERROR - expected function name");
@@ -490,11 +591,11 @@ ExprPtr Parser::parseFuncRef() {
     }
     std::string name = ts_.advance().value;
     LUC_LOG_EXPR_EXTREME("parseFuncRef: base name = '" << name << "'");
-    
+
     ExprPtr expr = arena_.make<IdentifierExprAST>(pool_.intern(name));
     expr->loc = loc;
-    
-    // Parse dotted path segments
+
+    // Parse dotted path segments (module path)
     while (ts_.check(TokenType::DOT)) {
         ts_.advance();
         if (!ts_.check(TokenType::IDENTIFIER)) {
@@ -510,31 +611,15 @@ ExprPtr Parser::parseFuncRef() {
         node->field = pool_.intern(field);
         expr = std::move(node);
     }
-    
-    // Optional behavior access (method reference)
-    if (ts_.check(TokenType::COLON)) {
-        LUC_LOG_EXPR_EXTREME("parseFuncRef: behavior access");
-        ts_.advance();
-        if (!ts_.check(TokenType::IDENTIFIER)) {
-            LUC_LOG_EXPR("parseFuncRef: ERROR - expected method name after ':'");
-            errorAt(DiagCode::E1003, "expected method name after ':'");
-            return expr;
-        }
-        std::string method = ts_.advance().value;
-        LUC_LOG_EXPR_EXTREME("parseFuncRef: method = " << method);
-        auto behavior = arena_.make<BehaviorAccessExprAST>();
-        behavior->loc = loc;
-        // typeName will be resolved later by semantic pass
-        behavior->typeName = pool_.intern(name);
-        behavior->method = pool_.intern(method);
-        behavior->isBehaviorMember = true;
-        expr = std::move(behavior);
-    }
-    
+
+    // Colon (:) is NOT part of func_ref grammar.
+    // Method references (e.g., `obj:method`) are handled by pipeline/compose parsers separately.
+
     // Optional generic arguments
     if (ts_.check(TokenType::LESS)) {
         LUC_LOG_EXPR_EXTREME("parseFuncRef: parsing generic arguments");
-        ArenaSpan<TypePtr> typeArgs = parseGenericArgs(); // consumes '<' ... '>'
+        ts_.advance(); // consume '<' — parseGenericArgs expects it already consumed
+        ArenaSpan<TypePtr> typeArgs = parseGenericArgs(); // parses type list and consumes '>'
         auto refNode = arena_.make<CallableRefExprAST>();
         refNode->loc = loc;
         refNode->entity = std::move(expr);
@@ -542,7 +627,7 @@ ExprPtr Parser::parseFuncRef() {
         expr = std::move(refNode);
         LUC_LOG_EXPR_EXTREME("parseFuncRef: generic args count = " << typeArgs.size());
     }
-    
+
     LUC_LOG_EXPR_VERBOSE("parseFuncRef: success");
     return expr;
 }

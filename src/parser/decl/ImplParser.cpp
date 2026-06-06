@@ -23,10 +23,25 @@
  *                       | '[' '*' ',' '<' IDENTIFIER '>' ']'
  *                       | '[' INT_LITERAL ',' '<' IDENTIFIER '>' ']'
  * 
+ *   method_decl := IDENTIFIER [ generic_params ] [ qualifier_list ]
+ *                  param_group { param_group } [ '->' return_list ]
+ *                  '=' func_body                                 -- inline body
+ *                | IDENTIFIER '=' func_ref                       -- plain assignment
+ *                | IDENTIFIER '=' func_ref '(' receiver_arg ')' '!'
+ *                                                               -- injection form
+ * 
+ *   func_ref := IDENTIFIER
+ *             | IDENTIFIER '.' IDENTIFIER
+ *             | func_ref generic_args
+ * 
+ * IMPORTANT: Method references with colon (`obj:method`) are NOT part of
+ * `func_ref` grammar. They belong to pipeline steps and compose operands.
+ * 
  * @see ParserDecl.cpp for declaration dispatch
  * @see MethodDeclAST for method representation
  */
 
+#include "ast/BaseAST.hpp"
 #include "parser/Parser.hpp"
 #include "ast/support/InternedString.hpp"
 #include "diagnostics/DiagnosticCodes.hpp"
@@ -127,6 +142,7 @@ ASTPtr<ImplDeclAST> Parser::parseImplDecl(Visibility vis) {
             errorAt(DiagCode::E1005, "invalid array target in impl block");
             return nullptr;
         }
+        node->targetType = std::move(targetType);
     }
     // Case 2: Primitive type
     else if (isPrimitiveTypeToken(ts_.peekType())) {
@@ -136,18 +152,46 @@ ASTPtr<ImplDeclAST> Parser::parseImplDecl(Visibility vis) {
                      << LucDebug::tokenToString(ts_.peek())
                      << " at line " << ts_.peek().line << ", col " << ts_.peek().column);
         targetType = parsePrimitiveType();
+        node->targetType = std::move(targetType);
         LUC_LOG_DECL("After parsePrimitiveType, at token: " 
                      << LucDebug::tokenToString(ts_.peek())
                      << " line " << ts_.peek().line << ", col " << ts_.peek().column);
     }
-    // Case 3: Named type (struct, enum, type alias)
+    // Case 3: Named type (struct, enum, type alias) - may have generic parameters
     else if (ts_.check(TokenType::IDENTIFIER)) {
         LUC_LOG_DECL_EXTREME("parseImplDecl: named type target at " 
                              << ts_.peek().line << ":" << ts_.peek().column);
-        LUC_LOG_DECL("Named type identifier: '" << ts_.peek().value 
-                     << "' at line " << ts_.peek().line << ", col " << ts_.peek().column);
-        targetType = parseNamedType();
-        LUC_LOG_DECL("After parseNamedType, at token: " 
+        
+        // Parse the type name
+        SourceLocation loc = ts_.currentLoc();
+        Token nameToken = ts_.advance();
+        InternedString typeName = pool_.intern(nameToken.value);
+        LUC_LOG_DECL("Named type identifier: '" << pool_.lookup(typeName) 
+                     << "' at line " << nameToken.line << ", col " << nameToken.column);
+        
+        // Check for generic PARAMETERS (declaration), not generic arguments
+        // For impl Box<T>, the <T> declares a generic parameter for the impl block
+        ArenaSpan<GenericParamPtr> implGenericParams;
+        
+        if (ts_.check(TokenType::LESS)) {
+            LUC_LOG_DECL_EXTREME("parseImplDecl: parsing generic PARAMETERS for impl target");
+            // Parse generic parameters (these are declarations for the impl block)
+            implGenericParams = parseGenericParams();
+            LUC_LOG_DECL_EXTREME("parseImplDecl: parsed " << implGenericParams.size() 
+                                 << " generic parameter(s)");
+        }
+        
+        // Store generic parameters on the impl node
+        node->genericParams = implGenericParams;
+        
+        // Create a named type WITHOUT generic arguments
+        // The generic parameters are stored on the impl node, not on the type reference
+        auto namedType = arena_.make<NamedTypeAST>(typeName);
+        namedType->loc = loc;
+        targetType = std::move(namedType);
+        node->targetType = std::move(targetType);
+        
+        LUC_LOG_DECL("After parsing impl target (with possible generics), at token: " 
                      << LucDebug::tokenToString(ts_.peek())
                      << " line " << ts_.peek().line << ", col " << ts_.peek().column);
     }
@@ -162,27 +206,24 @@ ASTPtr<ImplDeclAST> Parser::parseImplDecl(Visibility vis) {
         return nullptr;
     }
 
-    if (!targetType || targetType->isa<UnknownTypeAST>()) {
+    if (!node->targetType || node->targetType->isa<UnknownTypeAST>()) {
         LUC_LOG_DECL("parseImplDecl: ERROR - invalid target type");
         errorAt(DiagCode::E1005, "invalid target type in impl block");
         return nullptr;
     }
-    node->targetType = std::move(targetType);
-    LUC_LOG_DECL_EXTREME("parseImplDecl: target type parsed, current token: " 
-                         << LucDebug::tokenToString(ts_.peek())
-                         << " at line " << ts_.peek().line << ", col " << ts_.peek().column);
 
     // For generic array targets, the type variable is already stored in the node.
-    // The impl should NOT have additional generic parameters.
+    // The impl should NOT have additional generic parameters (already handled above).
     bool isGenericArray = node->targetType->isa<GenericArrayTypeAST>();
 
+    // REMOVE the old generic parameter parsing here since it's now handled above
     // Parse impl-level generic parameters (only for generic structs/aliases)
-    if (!isGenericArray && ts_.check(TokenType::LESS)) {
-        LUC_LOG_DECL_EXTREME("parseImplDecl: parsing generic parameters at line " 
-                             << ts_.peek().line << ", col " << ts_.peek().column);
-        node->genericParams = parseGenericParams();
-        LUC_LOG_DECL_EXTREME("parseImplDecl: " << node->genericParams.size() << " generic parameter(s)");
-    }
+    // if (!isGenericArray && ts_.check(TokenType::LESS)) {
+    //     LUC_LOG_DECL_EXTREME("parseImplDecl: parsing generic parameters at line " 
+    //                          << ts_.peek().line << ", col " << ts_.peek().column);
+    //     node->genericParams = parseGenericParams();
+    //     LUC_LOG_DECL_EXTREME("parseImplDecl: " << node->genericParams.size() << " generic parameter(s)");
+    // }
 
     // Parse 'as' alias (optional)
     if (ts_.match(TokenType::AS)) {
@@ -262,9 +303,73 @@ ASTPtr<ImplDeclAST> Parser::parseImplDecl(Visibility vis) {
 // 2. METHOD DECLARATION
 // ============================================================================
 
-// Add logging to parseMethodDecl (similar to FuncParser.cpp patterns)
+/**
+ * @brief Parses a method declaration inside an `impl` block.
+ *
+ * Grammar (from LUC_GRAMMAR.md, Impl Declaration section):
+ *
+ *   method_decl := IDENTIFIER [ qualifier_list ] param_group { param_group }
+ *                  [ '->' return_list ] '=' block                     -- inline body
+ *
+ *                | IDENTIFIER '=' func_ref                            -- plain assignment
+ *
+ *                | IDENTIFIER '=' func_ref '(' receiver_arg ')' '!'
+ *                                                                     -- injection form
+ *
+ *   block       := '{' { stmt } '}'
+ *   func_ref    := IDENTIFIER
+ *                | IDENTIFIER '.' IDENTIFIER
+ *                | func_ref generic_args
+ *
+ * ─── Important ────────────────────────────────────────────────────────────
+ *   - Method declarations CANNOT have their own generic parameters (`<...>`).
+ *     Generic parameters belong to the impl target (e.g., `impl Box<T>`).
+ *
+ *   - Inline method bodies MUST be blocks (`{ ... }`). Expression bodies are
+ *     NOT allowed for methods (unlike functions).
+ *
+ * ─── Three Forms ─────────────────────────────────────────────────────────
+ *
+ * 1. **Inline Body Form** (has `=` followed by `{`)
+ *    - Includes optional qualifiers, parameter groups, return types, and a block body.
+ *    - Expression bodies are NOT allowed – method bodies must be blocks.
+ *    - `funcType` is populated with the signature.
+ *    - `body` is a `BlockStmtAST`.
+ *    - `assignmentRef` and `receiverArg` remain null/empty.
+ *    - `isInjection` is false.
+ *
+ * 2. **Plain Assignment Form** (has `=` followed immediately by a `func_ref`)
+ *    - No qualifiers, parameter groups, or return types.
+ *    - The full type (including qualifiers) is read from `func_ref`.
+ *    - `assignmentRef` points to the `func_ref` expression.
+ *    - `funcType` remains null (type is resolved from `func_ref` by semantic pass).
+ *    - `isInjection` is false.
+ *
+ * 3. **Injection Form** (has `=` followed by `func_ref (receiver_arg) !`)
+ *    - Same as plain assignment, but with receiver injection.
+ *    - The first parameter of the referenced function is removed.
+ *    - `receiverArg` holds the receiver name (must be `self` or impl alias).
+ *    - `isInjection` is true.
+ *
+ * ─── Token Consumption ─────────────────────────────────────────────────────
+ * On entry: positioned at the method name (IDENTIFIER).
+ * On exit:  positioned after the semicolon (or after the closing '}' of body).
+ *
+ * ─── Error Recovery ───────────────────────────────────────────────────────
+ * - Missing method name: reports error, returns nullptr.
+ * - Generic parameters on method: reports error, skips to matching '>', continues.
+ * - Missing '(' for inline form: reports error, returns nullptr.
+ * - Missing '=' before body: reports error, returns nullptr.
+ * - Missing '{' after '=' for inline form: reports error, returns nullptr.
+ * - Invalid func_ref in assignment form: reports error, returns nullptr.
+ * - Missing '!' after (receiver_arg) in injection form: reports error,
+ *   treats as plain assignment (continues).
+ *
+ * @return MethodDeclPtr – parsed method node, or nullptr on error.
+ */
 MethodDeclPtr Parser::parseMethodDecl() {
-    LUC_LOG_DECL_EXTREME("parseMethodDecl: entering");
+    LUC_LOG_DECL_EXTREME("parseMethodDecl: entering at line " << ts_.currentLoc().line()
+                         << ", col " << ts_.currentLoc().column());
     SourceLocation loc = ts_.currentLoc();
 
     // ---------- 1. Parse method name ----------
@@ -276,199 +381,207 @@ MethodDeclPtr Parser::parseMethodDecl() {
     InternedString name = pool_.intern(ts_.advance().value);
     LUC_LOG_DECL_EXTREME("parseMethodDecl: method name = " << pool_.lookup(name));
     
-    // ---------- 2. Check for generic parameters on the method ----------
-    // Save position before parsing generic params (we may need to restore for assignment form)
-    size_t beforeGenericParams = ts_.getPos();
-    ArenaSpan<GenericParamPtr> methodGenericParams;
-    bool hasGenericParams = false;
-    
+    // ---------- 2. NO generic parameters on methods! ----------
+    // If we see '<', it's a syntax error - report and skip to recover
     if (ts_.check(TokenType::LESS)) {
-        // Try to parse generic parameters
-        // For assignment forms, there should NOT be generic parameters after the name
-        size_t savedPos = ts_.getPos();
-        ArenaSpan<GenericParamPtr> tempParams = parseGenericParams();
-        
-        // After parsing, check if the next token is '(' or '~' (inline body) or '=' (assignment)
-        size_t afterParams = ts_.getPos();
-        if (ts_.check(TokenType::ASSIGN)) {
-            // This is an assignment form with bogus generic parameters - error
-            errorAt(DiagCode::E1001, 
-                    "assignment form method cannot have generic parameters; remove '<...>'");
-            // Restore and continue as assignment form
-            ts_.setPos(savedPos);
-        } else {
-            // Valid inline body with generic parameters
-            methodGenericParams = tempParams;
-            hasGenericParams = true;
+        LUC_LOG_DECL("parseMethodDecl: ERROR - generic parameters not allowed on methods");
+        errorAt(DiagCode::E1001, 
+                "generic parameters are not allowed on method declarations; "
+                "use generic parameters on the impl target instead (e.g., 'impl Box<T>')");
+        // Skip the generic parameters to recover
+        int depth = 1;
+        while (!ts_.isAtEnd() && depth > 0) {
+            if (ts_.check(TokenType::LESS)) depth++;
+            else if (ts_.check(TokenType::GREATER)) depth--;
+            ts_.advance();
         }
+        // Continue parsing - the error will be reported once
     }
     
-    // ---------- 3. Peek to see if we have an assignment form ----------
-    size_t savedPos = ts_.getPos();
-    bool isAssignment = false;
-    
-    // Skip comments and look for '=' without consuming any tokens yet
+    // ---------- 3. Determine if this is an assignment form ----------
+    // Peek ahead to see if we have signature components that indicate inline body form
     size_t peekPos = ts_.skipCommentsFrom(ts_.getPos());
-    if (peekPos < ts_.getTokenCount() && 
-        ts_.getTokenAt(peekPos).type == TokenType::ASSIGN) {
-        isAssignment = true;
+    bool hasQualifiers = false;
+    bool hasParameterGroups = false;
+    
+    if (peekPos < ts_.getTokenCount()) {
+        TokenType nextType = ts_.getTokenAt(peekPos).type;
+        if (nextType == TokenType::TILDE) {
+            hasQualifiers = true;
+            LUC_LOG_DECL_EXTREME("parseMethodDecl: detected qualifiers (inline body)");
+        } else if (nextType == TokenType::LPAREN) {
+            hasParameterGroups = true;
+            LUC_LOG_DECL_EXTREME("parseMethodDecl: detected parameter groups (inline body)");
+        }
     }
     
-    // ---------- 4. Assignment form (plain or injection) ----------
-    if (isAssignment) {
-        // If we parsed generic parameters but it's actually an assignment form,
-        // restore to before they were parsed
-        if (hasGenericParams) {
-            ts_.setPos(beforeGenericParams);
+    if (hasQualifiers || hasParameterGroups) {
+        // ========== INLINE BODY FORM ==========
+        LUC_LOG_DECL_EXTREME("parseMethodDecl: inline body form");
+        
+        // Parse qualifiers
+        std::vector<InternedString> rawQuals;
+        uint32_t qualMask = 0;
+        while (ts_.check(TokenType::TILDE)) {
+            ts_.advance();
+            if (!ts_.check(TokenType::IDENTIFIER)) {
+                errorAt(DiagCode::E1003, "expected qualifier name after '~'");
+                break;
+            }
+            InternedString q = pool_.intern(ts_.advance().value);
+            rawQuals.push_back(q);
+            std::string_view qstr = pool_.lookup(q);
+            if (qstr == "async") qualMask |= QualifierBits::Async;
+            else if (qstr == "nullable") qualMask |= QualifierBits::Nullable;
+            else if (qstr == "parallel") qualMask |= QualifierBits::Parallel;
         }
         
-        // Consume the '=' token
-        ts_.advance();
+        // Parse parameter groups
+        std::vector<ParamPtr> allParams;
+        std::vector<size_t> groupSizes;
+        int groupCount = 0;
         
-        // Parse the function reference (may include generic instantiation)
-        ExprPtr funcRef = parseFuncRef();
-        if (!funcRef || funcRef->isa<UnknownExprAST>()) {
-            errorAt(DiagCode::E1008, "expected function reference after '='");
+        if (!ts_.check(TokenType::LPAREN)) {
+            LUC_LOG_DECL("parseMethodDecl: ERROR - expected '(' to start parameter list");
+            errorAt(DiagCode::E1001, "expected '(' to start parameter list for method");
             return nullptr;
         }
         
-        // Check for injection form: '(' receiver_arg ')' '!'
-        bool isInjection = false;
-        InternedString receiverArg;
-        
-        if (ts_.check(TokenType::LPAREN)) {
-            ts_.advance(); // consume '('
-            if (!ts_.check(TokenType::IDENTIFIER)) {
-                errorAt(DiagCode::E1003, "expected receiver name in injection form");
-            } else {
-                receiverArg = pool_.intern(ts_.advance().value);
-            }
-            ts_.consume(TokenType::RPAREN, "expected ')' after receiver name");
-            if (!ts_.match(TokenType::BANG)) {
-                errorAt(DiagCode::E1001, "expected '!' for injection form");
-            } else {
-                isInjection = true;
+        while (ts_.check(TokenType::LPAREN)) {
+            groupCount++;
+            ParamGroup group = parseParamGroup();
+            groupSizes.push_back(group.size());
+            LUC_LOG_DECL_EXTREME("parseMethodDecl: parameter group #" << groupCount 
+                                 << " has " << group.size() << " parameter(s)");
+            for (auto& p : group) {
+                allParams.push_back(std::move(p));
             }
         }
+        
+        // Parse return types
+        std::vector<TypePtr> returnTypes;
+        if (ts_.match(TokenType::ARROW)) {
+            ArenaSpan<TypePtr> returnSpan = parseReturnList();
+            for (size_t i = 0; i < returnSpan.size(); ++i) {
+                returnTypes.push_back(std::move(const_cast<TypePtr&>(returnSpan[i])));
+            }
+            LUC_LOG_DECL_EXTREME("parseMethodDecl: parsed " << returnTypes.size() << " return type(s)");
+        }
+        
+        // Expect '='
+        if (!ts_.check(TokenType::ASSIGN)) {
+            LUC_LOG_DECL("parseMethodDecl: ERROR - expected '=' before method body");
+            errorAt(DiagCode::E1001, "expected '=' before method body");
+            return nullptr;
+        }
+        ts_.advance(); // consume '='
+        
+        // Parse body - ONLY block bodies allowed for methods
+        if (!ts_.check(TokenType::LBRACE)) {
+            errorAt(DiagCode::E1001, "expected '{' for method body; method bodies must be blocks");
+            return nullptr;
+        }
+        
+        LUC_LOG_DECL_EXTREME("parseMethodDecl: block body");
         
         auto method = arena_.make<MethodDeclAST>();
         method->loc = loc;
         method->name = name;
-        method->assignmentRef = std::move(funcRef);
-        method->receiverArg = receiverArg;
-        method->isInjection = isInjection;
-        // methodGenericParams remains empty for assignment form
+        // methodGenericParams remains empty (not allowed on methods)
+        method->body = parseBlock();
+        
+        // Build FuncTypeAST
+        auto funcType = arena_.make<FuncTypeAST>();
+        funcType->loc = loc;
+        
+        auto qBuilder = arena_.makeBuilder<InternedString>();
+        for (auto& q : rawQuals) qBuilder.push_back(std::move(q));
+        funcType->rawQualifiers = qBuilder.build();
+        funcType->qualifiers = qualMask;
+        
+        auto paramsBuilder = arena_.makeBuilder<ParamPtr>();
+        for (auto& p : allParams) paramsBuilder.push_back(std::move(p));
+        funcType->sig.allParams = paramsBuilder.build();
+        
+        auto gsBuilder = arena_.makeBuilder<size_t>();
+        for (auto& sz : groupSizes) gsBuilder.push_back(sz);
+        funcType->sig.groupSizes = gsBuilder.build();
+        
+        auto retBuilder = arena_.makeBuilder<TypePtr>();
+        for (auto& t : returnTypes) retBuilder.push_back(std::move(t));
+        funcType->sig.returnTypes = retBuilder.build();
+        
+        method->funcType = std::move(funcType);
         
         ts_.match(TokenType::SEMICOLON);
+        LUC_LOG_DECL_EXTREME("parseMethodDecl: inline body success");
         return method;
     }
     
-    // ---------- 5. Inline body form ----------
-    // Restore position to after the method name (or after generic params if we parsed them)
-    if (hasGenericParams) {
-        // Position is already after generic params from earlier parsing
-        // No need to restore
-    } else {
-        ts_.setPos(savedPos);
+    // ========== ASSIGNMENT FORM (plain or injection) ==========
+    // At this point, we should have just IDENTIFIER followed by '='
+    LUC_LOG_DECL_EXTREME("parseMethodDecl: assignment form (plain or injection)");
+    
+    // Check for '='
+    if (!ts_.check(TokenType::ASSIGN)) {
+        LUC_LOG_DECL("parseMethodDecl: ERROR - expected '=' for assignment form");
+        errorAt(DiagCode::E1001, "expected '=' after method name for assignment form");
+        return nullptr;
+    }
+    ts_.advance(); // consume '='
+    
+    // Parse func_ref (may include generic instantiation)
+    ExprPtr funcRef = parseFuncRef();
+    if (!funcRef || funcRef->isa<UnknownExprAST>()) {
+        LUC_LOG_DECL("parseMethodDecl: ERROR - expected function reference after '='");
+        errorAt(DiagCode::E1008, "expected function reference after '='");
+        return nullptr;
+    }
+    LUC_LOG_DECL_EXTREME("parseMethodDecl: parsed function reference");
+    
+    // Check for injection form: '(' receiver_arg ')' '!'
+    bool isInjection = false;
+    InternedString receiverArg;
+    
+    // Skip any whitespace/comments before checking for '('
+    size_t afterFuncRef = ts_.skipCommentsFrom(ts_.getPos());
+    if (afterFuncRef < ts_.getTokenCount() && 
+        ts_.getTokenAt(afterFuncRef).type == TokenType::LPAREN) {
+        
+        LUC_LOG_DECL_EXTREME("parseMethodDecl: checking for injection form");
+        ts_.setPos(afterFuncRef);
+        ts_.advance(); // consume '('
+        
+        if (!ts_.check(TokenType::IDENTIFIER)) {
+            LUC_LOG_DECL("parseMethodDecl: ERROR - expected receiver name in injection form");
+            errorAt(DiagCode::E1003, "expected receiver name in injection form");
+        } else {
+            receiverArg = pool_.intern(ts_.advance().value);
+            LUC_LOG_DECL_EXTREME("parseMethodDecl: injection receiver = " 
+                                 << pool_.lookup(receiverArg));
+        }
+        
+        ts_.consume(TokenType::RPAREN, "expected ')' after receiver name");
+        
+        if (!ts_.match(TokenType::BANG)) {
+            LUC_LOG_DECL("parseMethodDecl: ERROR - expected '!' for injection form");
+            errorAt(DiagCode::E1001, "expected '!' for injection form");
+            // Continue without injection flag (treat as plain assignment)
+        } else {
+            isInjection = true;
+            LUC_LOG_DECL_EXTREME("parseMethodDecl: injection form detected");
+        }
     }
     
     auto method = arena_.make<MethodDeclAST>();
     method->loc = loc;
     method->name = name;
-    method->methodGenericParams = methodGenericParams;
+    method->assignmentRef = std::move(funcRef);
+    method->receiverArg = receiverArg;
+    method->isInjection = isInjection;
+    // methodGenericParams remains empty (not allowed on methods)
     
-    // Create a FuncTypeAST to hold signature and qualifiers
-    auto funcType = arena_.make<FuncTypeAST>();
-    funcType->loc = loc;
-
-    // Parse raw qualifiers and build bitmask
-    std::vector<InternedString> rawQuals;
-    uint32_t qualMask = 0;
-    while (ts_.check(TokenType::TILDE)) {
-        ts_.advance();
-        if (!ts_.check(TokenType::IDENTIFIER)) {
-            errorAt(DiagCode::E1003, "expected qualifier name after '~'");
-            break;
-        }
-        InternedString q = pool_.intern(ts_.advance().value);
-        rawQuals.push_back(q);
-        std::string_view qstr = pool_.lookup(q);
-        if (qstr == "async") qualMask |= QualifierBits::Async;
-        else if (qstr == "nullable") qualMask |= QualifierBits::Nullable;
-        else if (qstr == "parallel") qualMask |= QualifierBits::Parallel;
-    }
-    auto qBuilder = arena_.makeBuilder<InternedString>();
-    for (auto& q : rawQuals) qBuilder.push_back(std::move(q));
-    funcType->rawQualifiers = qBuilder.build();
-    funcType->qualifiers = qualMask;
-
-    // Parameter groups: flat accumulation
-    std::vector<ParamPtr> allParams;
-    std::vector<size_t> groupSizes;
-    if (!ts_.check(TokenType::LPAREN)) {
-        errorAt(DiagCode::E1001, "expected '(' to start parameter list for method");
-        return nullptr;
-    }
-    while (ts_.check(TokenType::LPAREN)) {
-        ParamGroup group = parseParamGroup();
-        groupSizes.push_back(group.size());
-        for (auto& p : group) {
-            allParams.push_back(std::move(p));
-        }
-    }
-    auto paramsBuilder = arena_.makeBuilder<ParamPtr>();
-    for (auto& p : allParams) paramsBuilder.push_back(std::move(p));
-    funcType->sig.allParams = paramsBuilder.build();
-
-    auto gsBuilder = arena_.makeBuilder<size_t>();
-    for (auto& sz : groupSizes) gsBuilder.push_back(sz);
-    funcType->sig.groupSizes = gsBuilder.build();
-
-    // Return types
-    if (ts_.match(TokenType::ARROW)) {
-        funcType->sig.returnTypes = parseReturnList();
-    }
-
-    method->funcType = std::move(funcType);
-
-    // Body
-    if (!ts_.check(TokenType::ASSIGN)) {
-        errorAt(DiagCode::E1001, "expected '=' before method body");
-        return nullptr;
-    }
-    ts_.advance();
-
-    if (ts_.check(TokenType::LBRACE)) {
-        method->body = parseBlock();
-    } else {
-        // Expression body
-        SourceLocation bodyLoc = ts_.currentLoc();
-        ExprPtr expr = parseExpr();
-        if (!expr) {
-            errorAt(DiagCode::E1008, "expected expression after '=' for method");
-            return nullptr;
-        }
-
-        auto ret = arena_.make<ReturnStmtAST>();
-        ret->loc = bodyLoc;
-        std::vector<ExprPtr> vals;
-        vals.push_back(std::move(expr));
-        auto valsBuilder = arena_.makeBuilder<ExprPtr>();
-        for (auto& v : vals) valsBuilder.push_back(std::move(v));
-        ret->values = valsBuilder.build();
-
-        auto block = arena_.make<BlockStmtAST>();
-        block->loc = bodyLoc;
-        std::vector<StmtPtr> stmts;
-        stmts.push_back(std::move(ret));
-        auto stmtsBuilder = arena_.makeBuilder<StmtPtr>();
-        for (auto& s : stmts) stmtsBuilder.push_back(std::move(s));
-        block->stmts = stmtsBuilder.build();
-
-        method->body = std::move(block);
-    }
-
     ts_.match(TokenType::SEMICOLON);
-    LUC_LOG_DECL_EXTREME("parseMethodDecl: success");
+    LUC_LOG_DECL_EXTREME("parseMethodDecl: assignment form success");
     return method;
 }

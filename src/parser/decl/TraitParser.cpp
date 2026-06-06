@@ -173,17 +173,17 @@ TraitMethodPtr Parser::parseTraitMethod() {
 }
 
 TraitRefPtr Parser::parseTraitRef() {
-    LUC_LOG_DECL_EXTREME("parseTraitRef: entering at line " << ts_.currentLoc().line() 
+    LUC_LOG_DECL_EXTREME("parseTraitRef: entering at line " << ts_.currentLoc().line()
                          << ", col " << ts_.currentLoc().column());
     SourceLocation loc = ts_.currentLoc();
     ts_.consume(TokenType::COLON, "expected ':' before trait name");
 
-    LUC_LOG_DECL("parseTraitRef: after consuming ':', token is " 
+    LUC_LOG_DECL("parseTraitRef: after consuming ':', token is "
                  << LucDebug::tokenToString(ts_.peek())
                  << " at line " << ts_.peek().line << ", col " << ts_.peek().column);
 
     if (!ts_.check(TokenType::IDENTIFIER)) {
-        LUC_LOG_DECL("parseTraitRef: ERROR - expected trait name after ':' at line " 
+        LUC_LOG_DECL("parseTraitRef: ERROR - expected trait name after ':' at line "
                      << ts_.peek().line << ", col " << ts_.peek().column);
         errorAt(DiagCode::E1003, "expected trait name after ':'");
         return nullptr;
@@ -194,74 +194,26 @@ TraitRefPtr Parser::parseTraitRef() {
     ref->name = pool_.intern(ts_.advance().value);
     LUC_LOG_DECL_EXTREME("parseTraitRef: trait name = " << pool_.lookup(ref->name));
 
-    LUC_LOG_DECL("After reading trait name, next token: " 
+    LUC_LOG_DECL("After reading trait name, next token: "
                  << LucDebug::tokenToString(ts_.peek())
                  << " at line " << ts_.peek().line << ", col " << ts_.peek().column);
 
     // Parse generic arguments if present
     if (ts_.check(TokenType::LESS)) {
-        LUC_LOG_DECL_EXTREME("parseTraitRef: parsing generic arguments at line " 
+        LUC_LOG_DECL_EXTREME("parseTraitRef: found '<' for generic arguments at line "
                              << ts_.peek().line << ", col " << ts_.peek().column);
-        
-        // Consume the '<'
-        ts_.advance();
-        
-        std::vector<TypePtr> genericArgs;
-        
-        // Parse comma-separated type arguments
-        do {
-            if (ts_.check(TokenType::GREATER)) {
-                // Empty generic arguments list is allowed
-                break;
-            }
-            
-            LUC_LOG_DECL_EXTREME("parseTraitRef: parsing generic argument at line " 
-                                 << ts_.peek().line << ", col " << ts_.peek().column);
-            
-            // Parse a type argument (can be primitive, named, etc.)
-            TypePtr argType = parseType();
-            if (!argType || argType->isa<UnknownTypeAST>()) {
-                LUC_LOG_DECL("parseTraitRef: ERROR - failed to parse generic argument");
-                errorAt(DiagCode::E1005, "expected type as generic argument");
-                // Skip to the closing '>' to recover
-                while (!ts_.isAtEnd() && !ts_.check(TokenType::GREATER)) {
-                    ts_.advance();
-                }
-                break;
-            }
-            genericArgs.push_back(std::move(argType));
-            
-        } while (ts_.match(TokenType::COMMA));
-        
-        // Expect closing '>'
-        if (!ts_.check(TokenType::GREATER)) {
-            LUC_LOG_DECL("parseTraitRef: ERROR - expected '>' to close generic arguments, got " 
-                         << LucDebug::tokenToString(ts_.peek()));
-            errorAt(DiagCode::E1001, "expected '>' to close generic arguments");
-            // Try to recover by consuming until we find '>'
-            while (!ts_.isAtEnd() && !ts_.check(TokenType::GREATER)) {
-                ts_.advance();
-            }
-        }
-        
-        // Consume the '>'
-        if (ts_.check(TokenType::GREATER)) {
-            ts_.advance();
-        }
-        
-        // Build the generic arguments span
-        auto builder = arena_.makeBuilder<TypePtr>();
-        for (auto& arg : genericArgs) {
-            builder.push_back(std::move(arg));
-        }
-        ref->genericArgs = builder.build();
-        
+        // ★ CONSUME the '<' token before calling parseGenericArgs()
+        ts_.advance();   // consume '<'
+
+        // parseGenericArgs() now sees the first type argument (or '>' for empty)
+        ref->genericArgs = parseGenericArgs();
+
         LUC_LOG_DECL_EXTREME("parseTraitRef: parsed " << ref->genericArgs.size() << " generic argument(s)");
-        LUC_LOG_DECL("After parsing generic args, at token: " 
+        LUC_LOG_DECL("After parsing generic args, at token: "
                      << LucDebug::tokenToString(ts_.peek())
                      << " line " << ts_.peek().line << ", col " << ts_.peek().column);
     } else {
-        LUC_LOG_DECL("No generic arguments for trait, next token: " 
+        LUC_LOG_DECL("No generic arguments for trait, next token: "
                      << LucDebug::tokenToString(ts_.peek())
                      << " at line " << ts_.peek().line << ", col " << ts_.peek().column);
     }

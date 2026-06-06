@@ -35,6 +35,10 @@
  */
 ASTPtr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vis) {
     LUC_LOG_DECL_VERBOSE("parseFuncDecl: entering, kw=" << (kw == DeclKeyword::Let ? "let" : "const"));
+    LUC_LOG_DECL("parseFuncDecl: current token at entry = '" << ts_.peek().value 
+                 << "' (type=" << static_cast<int>(ts_.peek().type) 
+                 << ") at line " << ts_.peek().line << ", col " << ts_.peek().column);
+    
     SourceLocation loc = ts_.currentLoc();
 
     if (!ts_.check(TokenType::IDENTIFIER)) {
@@ -51,10 +55,13 @@ ASTPtr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vis) {
     node->name = name;
     node->visibility = vis;
 
+    // Parse generic parameters
     if (ts_.check(TokenType::LESS)) {
         LUC_LOG_DECL_EXTREME("parseFuncDecl: parsing generic parameters");
         node->genericParams = parseGenericParams();
         LUC_LOG_DECL_EXTREME("parseFuncDecl: " << node->genericParams.size() << " generic parameter(s)");
+        LUC_LOG_DECL("parseFuncDecl: after generic params, token = '" << ts_.peek().value 
+                     << "' at line " << ts_.peek().line << ", col " << ts_.peek().column);
     }
 
     // Create a FuncTypeAST to hold signature and qualifiers
@@ -67,6 +74,7 @@ ASTPtr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vis) {
     int qualifierCount = 0;
     
     while (ts_.check(TokenType::TILDE)) {
+        LUC_LOG_DECL_EXTREME("parseFuncDecl: found '~' at line " << ts_.peek().line);
         ts_.advance();
         if (!ts_.check(TokenType::IDENTIFIER)) {
             LUC_LOG_DECL("parseFuncDecl: ERROR - expected qualifier name after '~'");
@@ -79,11 +87,9 @@ ASTPtr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vis) {
         std::string_view qstr = pool_.lookup(q);
         LUC_LOG_DECL_EXTREME("parseFuncDecl: qualifier ~" << qstr);
         
-        // Set bit based on qualifier name (semantic pass will validate)
         if (qstr == "async") qualMask |= QualifierBits::Async;
         else if (qstr == "nullable") qualMask |= QualifierBits::Nullable;
         else if (qstr == "parallel") qualMask |= QualifierBits::Parallel;
-        // Other qualifiers are ignored here; semantic pass reports errors
     }
     
     if (qualifierCount > 0) {
@@ -100,6 +106,9 @@ ASTPtr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vis) {
     std::vector<size_t> groupSizes;
     int groupCount = 0;
     
+    LUC_LOG_DECL("parseFuncDecl: checking for '(' at line " << ts_.peek().line 
+                 << ", col " << ts_.peek().column);
+    
     if (!ts_.check(TokenType::LPAREN)) {
         LUC_LOG_DECL("parseFuncDecl: ERROR - expected '(' to start parameter list");
         errorAt(DiagCode::E1001, "expected '(' to start parameter list for function '" + std::string(pool_.lookup(name)) + "'");
@@ -108,13 +117,21 @@ ASTPtr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vis) {
     
     while (ts_.check(TokenType::LPAREN)) {
         groupCount++;
+        LUC_LOG_DECL_EXTREME("parseFuncDecl: parsing parameter group #" << groupCount 
+                             << " at line " << ts_.peek().line << ", col " << ts_.peek().column);
+        
         std::vector<ParamPtr> group = parseParamGroup();
         groupSizes.push_back(group.size());
         LUC_LOG_DECL_EXTREME("parseFuncDecl: parameter group #" << groupCount 
                              << " has " << group.size() << " parameter(s)");
+        
         for (auto& p : group) {
             allParams.push_back(std::move(p));
         }
+        
+        LUC_LOG_DECL_EXTREME("parseFuncDecl: after group #" << groupCount 
+                             << ", next token = '" << ts_.peek().value 
+                             << "' at line " << ts_.peek().line << ", col " << ts_.peek().column);
     }
     
     auto paramsBuilder = arena_.makeBuilder<ParamPtr>();
@@ -126,18 +143,22 @@ ASTPtr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vis) {
     funcType->sig.groupSizes = gsBuilder.build();
     
     LUC_LOG_DECL_EXTREME("parseFuncDecl: total " << allParams.size() << " parameters");
+    LUC_LOG_DECL("parseFuncDecl: after all parameter groups, token = '" << ts_.peek().value 
+                 << "' at line " << ts_.peek().line << ", col " << ts_.peek().column);
 
     // Return types
     if (ts_.match(TokenType::ARROW)) {
-        LUC_LOG_DECL_EXTREME("parseFuncDecl: parsing return types");
+        LUC_LOG_DECL_EXTREME("parseFuncDecl: found '->' at line " << ts_.peek().line);
         funcType->sig.returnTypes = parseReturnList();
         LUC_LOG_DECL_EXTREME("parseFuncDecl: " << funcType->sig.returnTypes.size() << " return type(s)");
+        LUC_LOG_DECL("parseFuncDecl: after return list, token = '" << ts_.peek().value 
+                     << "' at line " << ts_.peek().line << ", col " << ts_.peek().column);
     }
 
     // Store the complete function type in the declaration
     node->funcType = std::move(funcType);
 
-    // Body (unchanged)
+    // Body
     if (!ts_.check(TokenType::ASSIGN)) {
         LUC_LOG_DECL_EXTREME("parseFuncDecl: no body (extern or forward declaration)");
         ts_.match(TokenType::SEMICOLON);

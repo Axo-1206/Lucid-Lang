@@ -349,8 +349,21 @@ private:
     // ========================================================================
     // Error handling
     // ========================================================================
-    void error(const SourceLocation& loc, DiagCode code, const std::string& msg);
-    void errorAt(DiagCode code, const std::string& msg);
+    // Base error function that takes initializer_list
+    void error(const SourceLocation& loc, DiagCode code, std::initializer_list<std::string> args = {});
+    void errorAt(DiagCode code, std::initializer_list<std::string> args = {});
+    
+    // Variadic template helpers
+    template<typename... Args>
+    void error(const SourceLocation& loc, DiagCode code, Args&&... args) {
+        error(loc, code, {std::forward<Args>(args)...});
+    }
+    
+    template<typename... Args>
+    void errorAt(DiagCode code, Args&&... args) {
+        error(ts_.currentLoc(), code, {std::forward<Args>(args)...});
+    }
+
     void synchronize();
     void synchronizeTo(std::initializer_list<TokenType> stopTokens);
 

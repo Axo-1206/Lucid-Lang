@@ -44,6 +44,7 @@ std::string_view getMessage(DiagCode code) {
         case DiagCode::E1022: return "Chained comparison (use 'and').";
         case DiagCode::E1023: return "Mismatched parentheses in curry type.";
         case DiagCode::E1024: return "Generic array type (e.g., `[_, <T>]`) only allowed as `impl` target, `from` target, or in type alias right‑hand side.";
+        case DiagCode::E1025: return "Missing type annotation for parameter '%s' in function type. Write `(%s Type)` instead.";
         
         // ========== 2000–2999: Semantic ==========
         case DiagCode::E2001: return "Identifier '%s' used before it was declared.";

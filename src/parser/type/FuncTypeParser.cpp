@@ -44,7 +44,14 @@
 // ============================================================================
 
 TypePtr Parser::parseFuncType() {
-    LUC_LOG_TYPE_VERBOSE("parseFuncType: entering");
+    LUC_LOG_TYPE_VERBOSE("parseFuncType: entering at line " << ts_.currentLoc().line()
+                         << ", col " << ts_.currentLoc().column());
+    
+    // Log current token
+    LUC_LOG_TYPE("parseFuncType: current token = '" << ts_.peek().value 
+                 << "' (type=" << static_cast<int>(ts_.peek().type) 
+                 << ") at line " << ts_.peek().line << ", col " << ts_.peek().column);
+    
     SourceLocation loc = ts_.currentLoc();
     auto funcType = arena_.make<FuncTypeAST>();
     funcType->loc = loc;
@@ -54,6 +61,8 @@ TypePtr Parser::parseFuncType() {
     uint32_t qualMask = 0;
     int qualifierCount = 0;
     while (ts_.check(TokenType::TILDE)) {
+        LUC_LOG_TYPE_EXTREME("parseFuncType: found '~' at line " << ts_.peek().line 
+                             << ", col " << ts_.peek().column);
         ts_.advance();
         if (!ts_.check(TokenType::IDENTIFIER)) {
             LUC_LOG_TYPE("parseFuncType: ERROR - expected qualifier name after '~'");
@@ -63,12 +72,11 @@ TypePtr Parser::parseFuncType() {
         InternedString q = pool_.intern(ts_.advance().value);
         rawQuals.push_back(q);
         std::string_view qstr = pool_.lookup(q);
-        LUC_LOG_TYPE_EXTREME("parseFuncType: found qualifier '" << qstr << "'");
+        LUC_LOG_TYPE_EXTREME("parseFuncType: found qualifier '~" << qstr << "'");
         
         if (qstr == "async") qualMask |= QualifierBits::Async;
         else if (qstr == "nullable") qualMask |= QualifierBits::Nullable;
         else if (qstr == "parallel") qualMask |= QualifierBits::Parallel;
-        // Other qualifiers are ignored here; semantic pass will report errors
         qualifierCount++;
     }
     
@@ -86,14 +94,19 @@ TypePtr Parser::parseFuncType() {
     std::vector<size_t> groupSizes;
     int groupCount = 0;
     
+    LUC_LOG_TYPE("parseFuncType: checking for '(' at line " << ts_.peek().line 
+                 << ", col " << ts_.peek().column);
+    
     if (!ts_.check(TokenType::LPAREN)) {
-        LUC_LOG_TYPE("parseFuncType: ERROR - expected '(' for function type parameters, got '" << ts_.peek().value << "'");
+        LUC_LOG_TYPE("parseFuncType: ERROR - expected '(' for function type parameters, got '" 
+                     << ts_.peek().value << "'");
         errorAt(DiagCode::E1001, "expected '(' for function type parameters");
         return arena_.make<UnknownTypeAST>();
     }
     
     while (ts_.check(TokenType::LPAREN)) {
-        LUC_LOG_TYPE_EXTREME("parseFuncType: parsing parameter group " << groupCount + 1);
+        LUC_LOG_TYPE_EXTREME("parseFuncType: parsing parameter group " << groupCount + 1 
+                             << " at line " << ts_.peek().line << ", col " << ts_.peek().column);
         ParamGroup group = parseParamGroup();
         groupSizes.push_back(group.size());
         LUC_LOG_TYPE_EXTREME("parseFuncType: group " << groupCount << " has " << group.size() << " parameters");
@@ -104,7 +117,13 @@ TypePtr Parser::parseFuncType() {
         groupCount++;
     }
     
-    LUC_LOG_TYPE_VERBOSE("parseFuncType: parsed " << groupCount << " parameter groups with " << allParams.size() << " total parameters");
+    LUC_LOG_TYPE_VERBOSE("parseFuncType: parsed " << groupCount << " parameter groups with " 
+                         << allParams.size() << " total parameters");
+
+    // Log after parameter groups
+    LUC_LOG_TYPE("parseFuncType: after parameter groups, next token: '" << ts_.peek().value 
+                 << "' (type=" << static_cast<int>(ts_.peek().type)
+                 << ") at line " << ts_.peek().line << ", col " << ts_.peek().column);
     
     auto paramsBuilder = arena_.makeBuilder<ParamPtr>();
     for (auto& p : allParams) paramsBuilder.push_back(std::move(p));
@@ -116,9 +135,11 @@ TypePtr Parser::parseFuncType() {
 
     // Return types
     if (ts_.match(TokenType::ARROW)) {
-        LUC_LOG_TYPE_EXTREME("parseFuncType: parsing return list");
+        LUC_LOG_TYPE_EXTREME("parseFuncType: found '->' at line " << ts_.peek().line
+                             << ", col " << ts_.peek().column);
         funcType->sig.returnTypes = parseReturnList();
-        LUC_LOG_TYPE_VERBOSE("parseFuncType: found " << funcType->sig.returnTypes.size() << " return type(s)");
+        LUC_LOG_TYPE_VERBOSE("parseFuncType: found " << funcType->sig.returnTypes.size() 
+                             << " return type(s)");
     } else {
         LUC_LOG_TYPE_EXTREME("parseFuncType: no return types (void)");
     }

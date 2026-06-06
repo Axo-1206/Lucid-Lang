@@ -158,9 +158,9 @@ export const convert<T, U> (v T, f (T) -> U) -> U = { return f(v) }
 
 impl Box<T> as b {
     -- Dependent T from Box<T>, independent U on method
-    map<U> (fn (T) -> U) -> Box<U> = {
-        return Box<U> { value = fn(b.value) }
-    }
+    -- map<U> (fn (T) -> U) -> Box<U> = {
+    --     return Box<U> { value = fn(b.value) }
+    -- }
 
     -- Using injection with mixed dependent/independent
     convert = convert<T, int>(b)!   -- T dependent, int concrete
