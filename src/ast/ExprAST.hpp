@@ -131,27 +131,14 @@ enum class UnaryOp {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PipelineStepKind – syntactic form of a pipeline step.
+// CallKind – distinguishes the kind of function call
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * @brief Distinguishes the different syntactic forms a pipeline step can take.
- *
- * Stored on PipelineStepAST so the semantic pass can apply the correct rules
- * without re‑parsing the node structure.
- */
-enum class PipelineStepKind {
-    Ident,            // fn – bare function name
-    BehaviorRef,      // obj:method – impl method reference
-    FieldRef,         // obj.field – data field of non‑nullable function type
-    IndexRef,         // arr[idx] – function reference
-
-    ArgPack,          // fn(args)! – upstream injected as first argument
-    BehaviorArgPack,  // obj:method(args)! – method with argument pack
-    FieldArgPack,     // obj.field(args)! – field with argument pack
-    IndexArgPack,     // arr[idx](args)! – array instance with argument pack
-
-    AnonFunc,         // (x T) R { } – inline anonymous function, (single param group)
+enum class CallKind {
+    Plain,      // normal function call
+    Async,      // ~async – must be awaited
+    Nullable,   // ~nullable – emit warning, nil check needed
+    Parallel    // ~parallel – handled by codegen
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -214,7 +201,7 @@ struct LiteralExprAST : ExprAST {
 struct ArrayLiteralExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::ArrayLiteralExpr;
 
-    ArenaSpan<ExprPtr> elements; // may be empty
+    ArenaSpan<ExprAST*> elements; // may be empty
 
     ArrayLiteralExprAST() : ExprAST(ASTKind::ArrayLiteralExpr) {}
 };
@@ -234,15 +221,15 @@ struct FieldInitAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::FieldInit;
 
     InternedString name; // field name being initialised
-    ExprPtr value;       // initialiser expression
+    ExprAST* value;      // initialiser expression
 
     FieldInitAST() : BaseAST(ASTKind::FieldInit) {}
-    FieldInitAST(InternedString n, ExprPtr v)
-        : BaseAST(ASTKind::FieldInit), name(n), value(std::move(v)) {}
+    FieldInitAST(InternedString n, ExprAST* v)
+        : BaseAST(ASTKind::FieldInit), name(n), value(v) {}
 
 };
 
-using FieldInitPtr = ASTPtr<FieldInitAST>;
+using FieldInitPtr = FieldInitAST*;
 
 /**
  * @brief Constructs a value of a named struct type.
@@ -262,9 +249,9 @@ struct StructLiteralExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::StructLiteralExpr;
 
     InternedString typeName;               // "Vec2", "Color", "Pair"
-    ArenaSpan<TypePtr> genericArgs;        // empty if non‑generic
+    ArenaSpan<TypeAST*> genericArgs;       // empty if non‑generic
     ArenaSpan<FieldInitPtr> inits;         // field = expr entries
-    ASTPtr<NamedTypeAST> instantiatedType; // semantic cache
+    NamedTypeAST* instantiatedType;        // semantic cache (raw pointer)
 
     StructLiteralExprAST() : ExprAST(ASTKind::StructLiteralExpr) {}
 };
@@ -290,7 +277,7 @@ struct IdentifierExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::IdentifierExpr;
 
     InternedString name;
-    ArenaSpan<TypePtr> genericArgs;
+    ArenaSpan<TypeAST*> genericArgs;
 
     explicit IdentifierExprAST(InternedString n)
         : ExprAST(ASTKind::IdentifierExpr), name(n) {}
@@ -310,9 +297,9 @@ struct IdentifierExprAST : ExprAST {
 struct FieldAccessExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::FieldAccessExpr;
 
-    ExprPtr object;
+    ExprAST* object;
     InternedString field;
-    ArenaSpan<TypePtr> genericArgs;
+    ArenaSpan<TypeAST*> genericArgs;
 
     FieldAccessExprAST() : ExprAST(ASTKind::FieldAccessExpr) {}
 };
@@ -333,11 +320,6 @@ struct BehaviorAccessExprAST : ExprAST {
 
     InternedString typeName; // resolved type name (for mangling)
     InternedString method;   // method name
-
-    // Codegen annotations
-    ArenaSpan<InternedString> concreteTypeArgs; // from receiver's type
-    std::string resolvedMangledName;            // for direct registry lookup
-    ArenaSpan<TypePtr> genericArgs;             // explicit generic args
 
     BehaviorAccessExprAST() : ExprAST(ASTKind::BehaviorAccessExpr) {}
 };
@@ -363,21 +345,19 @@ struct BehaviorAccessExprAST : ExprAST {
  *   - Any expression that yields a function type
  *
  * @example
- *   f(1, 2, 3)                              → isArgPack = false, genericArgs empty
+ *   f(1, 2, 3)                              → callee is IdentifierExprAST
  *   Buffer<int>(capacity)                   → genericArgs = [Int]
  *   obj:method(a, b)                        → callee is BehaviorAccessExprAST
  *   arr[idx](x, y)                          → callee is IndexExprAST
- *   pipelineFn(2.0)!                        → isArgPack = true (upstream injected as first arg)
- *   handlers[i](event)                      → callee is IndexExprAST
+ *   utils.dosomething()                     → callee is FieldAccessExprAST
+ * 
+ * @note 
+ *  slice[1..5]() is not valid
+ *  obj:dosomething<T>() - wrong method does not have independent generic
  *
  * @par Generic Instantiation
  *   Generic arguments are stored in `genericArgs`. The callee remains a plain
  *   function reference; the generic arguments are applied at the call site.
- *
- * @par Argument Pack (`!`)
- *   When `isArgPack` is true, the argument list is intentionally incomplete.
- *   The upstream value from a `|>` pipeline will be injected as the first argument
- *   during semantic transformation. This is only valid inside a pipeline step.
  *
  * @par Async Calls
  *   `isAsyncCall` is set by the semantic pass after resolving the callee.
@@ -388,37 +368,48 @@ struct BehaviorAccessExprAST : ExprAST {
 struct CallExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::CallExpr;
 
-    ExprPtr callee;                 // The callable expression
-    ArenaSpan<TypePtr> genericArgs; // Explicit type arguments (e.g., <int>)
-    ArenaSpan<ExprPtr> args;        // Call arguments in order
-    bool isAsyncCall = false;       // true if calling an async function
+    ExprAST* callee;
+    ArenaSpan<TypeAST*> genericArgs;
+    ArenaSpan<ExprAST*> args;
+    CallKind callKind = CallKind::Plain;
 
     CallExprAST() : ExprAST(ASTKind::CallExpr) {}
 };
+
 
 /**
  * @brief Array element access or slice expression.
  *
  * @example
  *   nums[2]      → kind = Element, index = 2, sliceEnd = nullptr
- *   nums[1..3]   → kind = Slice,   index = 1, sliceEnd = 3
- *
- * For Element: index holds the element index, sliceEnd is null.
- * For Slice:   index holds the start, sliceEnd holds the end (both inclusive).
  */
 struct IndexExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::IndexExpr;
 
-    ExprPtr target;
-    ExprPtr index;     // element index or slice start
-    ExprPtr sliceEnd;  // slice end – nullptr for Element kind
-    IndexKind kind;
-    bool isExclusive = false; // true if ..< syntax used
-
-    // Semantic cache: owned SliceTypeAST when kind == Slice
-    mutable ASTPtr<TypeAST> sliceType;
+    ExprAST* target;
+    ExprAST* index;      // element index
 
     IndexExprAST() : ExprAST(ASTKind::IndexExpr) {}
+};
+
+/**
+ * @brief Array element access or slice expression.
+ *
+ * @example
+ *   nums[1..3]   → kind = Slice,   index = 1, sliceEnd = 3
+ */
+struct SliceExprAST : ExprAST {
+    static constexpr ASTKind staticKind = ASTKind::SliceExpr;
+
+    ExprAST* target;
+    ExprAST* start;      // inclusive, nullptr means 0
+    ExprAST* end;        // inclusive or exclusive depending on isExclusive
+    bool isExclusive = false; // true for ..< syntax
+
+    // Semantic cache: the resulting slice type
+    mutable TypeAST* sliceType = nullptr;
+
+    SliceExprAST() : ExprAST(ASTKind::SliceExpr) {}
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -438,8 +429,8 @@ struct BinaryExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::BinaryExpr;
 
     BinaryOp op;
-    ExprPtr left;
-    ExprPtr right;
+    ExprAST* left;
+    ExprAST* right;
 
     BinaryExprAST() : ExprAST(ASTKind::BinaryExpr) {}
 };
@@ -457,7 +448,7 @@ struct UnaryExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::UnaryExpr;
 
     UnaryOp op;
-    ExprPtr operand;
+    ExprAST* operand;
 
     UnaryExprAST() : ExprAST(ASTKind::UnaryExpr) {}
 };
@@ -475,8 +466,8 @@ struct AssignExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::AssignExpr;
 
     AssignOp op;
-    ExprPtr lhs;
-    ExprPtr rhs;
+    ExprAST* lhs;
+    ExprAST* rhs;
 
     AssignExprAST() : ExprAST(ASTKind::AssignExpr) {}
 };
@@ -487,7 +478,7 @@ struct AssignExprAST : ExprAST {
  * @example
  *   x is int
  *   shape is Circle
- *   stage is ShaderStage.Fragment
+ *   stage is Fragment
  *
  * After a successful `if x is SomeType { ... }`, x is treated as SomeType
  * inside the block.
@@ -495,8 +486,8 @@ struct AssignExprAST : ExprAST {
 struct IsExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::IsExpr;
 
-    ExprPtr expr;
-    TypePtr checkType;   // the type being checked against
+    ExprAST* expr;
+    TypeAST* checkType;   // the type being checked against
 
     IsExprAST() : ExprAST(ASTKind::IsExpr) {}
 };
@@ -520,7 +511,7 @@ struct IsExprAST : ExprAST {
 struct NullableChainExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::NullableChainExpr;
 
-    ExprPtr object;
+    ExprAST* object;
     ArenaSpan<InternedString> steps;   // field names accessed via ?.
 
     NullableChainExprAST() : ExprAST(ASTKind::NullableChainExpr) {}
@@ -535,8 +526,8 @@ struct NullableChainExprAST : ExprAST {
 struct NullCoalesceExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::NullCoalesceExpr;
 
-    ExprPtr value;
-    ExprPtr fallback;
+    ExprAST* value;
+    ExprAST* fallback;
 
     NullCoalesceExprAST() : ExprAST(ASTKind::NullCoalesceExpr) {}
 };
@@ -559,13 +550,13 @@ struct NullCoalesceExprAST : ExprAST {
 struct PipelineStepAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::PipelineStep;
 
-    ExprPtr callable;                // function reference or anonymous function
-    ArenaSpan<ExprPtr> packArgs;     // non‑empty for argument pack steps
+    ExprAST* callable;                // function reference or anonymous function
+    ArenaSpan<ExprAST*> packArgs;     // non‑empty for argument pack steps
 
     PipelineStepAST() : BaseAST(ASTKind::PipelineStep) {}
 };
 
-using PipelineStepPtr = ASTPtr<PipelineStepAST>;
+using PipelineStepPtr = PipelineStepAST*;
 
 /**
  * @brief A runtime pipeline chain – seed |> step |> step |> ...
@@ -580,7 +571,7 @@ using PipelineStepPtr = ASTPtr<PipelineStepAST>;
 struct PipelineExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::PipelineExpr;
 
-    ExprPtr seed;
+    ExprAST* seed;
     ArenaSpan<PipelineStepPtr> steps;   // at least one
 
     PipelineExprAST() : ExprAST(ASTKind::PipelineExpr) {}
@@ -589,41 +580,63 @@ struct PipelineExprAST : ExprAST {
 /**
  * @brief One operand in a +> composition chain – owned by ComposeExprAST.
  *
- * Grammar: compose_operand := func_ref   (no argument pack, no anonymous function)
+ * Grammar (from LUC_GRAMMAR.md):
+ *   compose_operand := func_ref                     -- named function, module path
+ *                    | expr ':' IDENTIFIER          -- method reference on a value
+ *                    | expr '.' IDENTIFIER          -- non‑nullable data field only
+ *                    | generic_args compose_operand -- generic instantiation (e.g., toString<int>)
  *
- * The callable expression is the result of `parseFuncRef()`, which can be:
+ * The callable expression can be:
  *   - IdentifierExprAST (plain function name)
  *   - FieldAccessExprAST (dotted path)
  *   - BehaviorAccessExprAST (method reference)
  *
- * There is no argument pack or anonymous function in composition operands.
+ * Generic arguments are applied to the callable (e.g., `toString<int>` becomes
+ * callable = IdentifierExprAST("toString") with genericArgs = [int]).
+ *
+ * @note No argument pack or anonymous function in composition operands.
+ * @note ~nullable function as operand is forbidden.
  */
 struct ComposeOperandAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::ComposeOperand;
 
-    ExprPtr callable;   // the function reference (required)
+    ExprAST* callable;                    // the function reference (required)
+    ArenaSpan<TypeAST*> genericArgs;      // explicit type arguments for generic instantiation
 
     ComposeOperandAST() : BaseAST(ASTKind::ComposeOperand) {}
 };
 
-using ComposeOperandPtr = ASTPtr<ComposeOperandAST>;
-
-using ComposeOperandPtr = ASTPtr<ComposeOperandAST>;
+using ComposeOperandPtr = ComposeOperandAST*;
 
 /**
  * @brief A compile‑time function composition chain – f +> g +> h
  *
+ * Grammar (from LUC_GRAMMAR.md):
+ *   compose_expr := pipeline_expr { '+>' compose_operand }
+ *
  * @example
  *   let process = validate +> transform +> render
+ *   let intToString = identity<int> +> toString<int> +> trim
  *
  * +> enforces strict type matching at compile time: the output type of the
  * left operand must exactly match the input type of the next operand.
+ *
+ * ─── Qualifier Rules ──────────────────────────────────────────────────────
+ *   - If any operand has ~async or ~nullable, the composition is forbidden
+ *     (qualifiers must be handled before composition).
+ *   - The resulting function is plain (no qualifiers).
+ *   - Assign the qualifier to the binding that holds the composed result.
+ *
+ * ─── Generic Functions ────────────────────────────────────────────────────
+ *   - Generic functions must be instantiated with explicit type arguments
+ *     before composition (e.g., `toString<int>`).
+ *   - Uninstantiated generic functions are not valid operands.
  */
 struct ComposeExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::ComposeExpr;
 
-    ExprPtr left;
-    ArenaSpan<ComposeOperandPtr> operands;   // right‑hand operands in order
+    ExprAST* left;                                // leftmost operand (already parsed)
+    ArenaSpan<ComposeOperandPtr> operands;        // right‑hand operands in order
 
     ComposeExprAST() : ExprAST(ASTKind::ComposeExpr) {}
 };
@@ -646,7 +659,7 @@ struct AnonFuncExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::AnonFuncExpr;
 
     FuncSignature sig;
-    StmtPtr body;   // always BlockStmtAST
+    StmtAST* body;   // always BlockStmtAST
 
     bool hasParams() const { return sig.hasParams(); }
 
@@ -666,10 +679,10 @@ struct AnonFuncExprAST : ExprAST {
 struct AwaitExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::AwaitExpr;
 
-    ExprPtr inner;   // the async expression being awaited
+    ExprAST* inner;   // the async expression being awaited
 
-    explicit AwaitExprAST(ExprPtr e)
-        : ExprAST(ASTKind::AwaitExpr), inner(std::move(e)) {}
+    explicit AwaitExprAST(ExprAST* e)
+        : ExprAST(ASTKind::AwaitExpr), inner(e) {}
 
 };
 
@@ -695,13 +708,13 @@ struct OkArmAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::OkArm;
 
     InternedString bindName;   ///< Name of the success variable (e.g. "v")
-    TypePtr        bindType;   ///< Plain T (never T!E — ! is consumed by resolve)
-    StmtPtr        body;       ///< Always BlockStmtAST
+    TypeAST* bindType;         ///< Plain T (never T!E — ! is consumed by resolve)
+    StmtAST* body;             ///< Always BlockStmtAST
 
     OkArmAST() : BaseAST(ASTKind::OkArm) {}
 };
 
-using OkArmPtr = ASTPtr<OkArmAST>;
+using OkArmPtr = OkArmAST*;
 
 /**
  * @brief The `err` arm of a resolve expression.
@@ -721,8 +734,8 @@ struct ErrArmAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::ErrArm;
 
     InternedString bindName;   ///< Error variable name; empty string when bare '!'
-    TypePtr        bindType;   ///< Error type E; nullptr when bare '!' (no error value)
-    StmtPtr        body;       ///< Always BlockStmtAST
+    TypeAST* bindType;         ///< Error type E; nullptr when bare '!' (no error value)
+    StmtAST* body;             ///< Always BlockStmtAST
 
     /// True when the enclosing result type was bare '!' (no error payload)
     bool isBareError() const { return bindType == nullptr; }
@@ -730,7 +743,7 @@ struct ErrArmAST : BaseAST {
     ErrArmAST() : BaseAST(ASTKind::ErrArm) {}
 };
 
-using ErrArmPtr = ASTPtr<ErrArmAST>;
+using ErrArmPtr = ErrArmAST*;
 
 /**
  * @brief Structured resolution of a T!E value — forces handling of both outcomes.
@@ -753,9 +766,9 @@ using ErrArmPtr = ASTPtr<ErrArmAST>;
 struct ResolveExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::ResolveExpr;
 
-    ExprPtr    subject; // The T!E expression being resolved
-    OkArmPtr   okArm;   // Required ok arm
-    ErrArmPtr  errArm;  // Required err arm
+    ExprAST* subject;    // The T!E expression being resolved
+    OkArmPtr   okArm;    // Required ok arm
+    ErrArmPtr  errArm;   // Required err arm
 
     ResolveExprAST() : ExprAST(ASTKind::ResolveExpr) {}
 };
@@ -778,9 +791,9 @@ struct ResolveExprAST : ExprAST {
 struct IfExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::IfExpr;
 
-    ExprPtr condition;
-    ExprPtr thenBranch; // expression
-    ExprPtr elseBranch; // expression
+    ExprAST* condition;
+    ExprAST* thenBranch; // expression
+    ExprAST* elseBranch; // expression
 
     IfExprAST() : ExprAST(ASTKind::IfExpr) {}
 };
@@ -803,8 +816,8 @@ struct IfExprAST : ExprAST {
 struct RangeExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::RangeExpr;
 
-    ExprPtr lo;   // start (inclusive)
-    ExprPtr hi;   // end (inclusive/exclusive depends on flag)
+    ExprAST* lo;   // start (inclusive)
+    ExprAST* hi;   // end (inclusive/exclusive depends on flag)
     bool isExclusive = false;   // true for ..<
 
     RangeExprAST() : ExprAST(ASTKind::RangeExpr) {}
@@ -825,8 +838,8 @@ struct IntrinsicCallExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::IntrinsicCallExpr;
 
     InternedString intrinsicName; // "sizeof", "memcpy", "sqrt", etc.
-    TypePtr typeArg;              // for #sizeof(T) – nullptr otherwise
-    ArenaSpan<ExprPtr> args;      // value arguments in order
+    TypeAST* typeArg;              // for #sizeof(T) – nullptr otherwise
+    ArenaSpan<ExprAST*> args;      // value arguments in order
 
     IntrinsicCallExprAST() : ExprAST(ASTKind::IntrinsicCallExpr) {}
 };
@@ -886,9 +899,9 @@ struct WildcardPatternAST : PatternAST {
 struct PatternExprAST : PatternAST {
     static constexpr ASTKind staticKind = ASTKind::PatternExpr;
 
-    ExprPtr inner;   // LiteralExprAST or RangeExprAST
+    ExprAST* inner;   // LiteralExprAST or RangeExprAST
 
-    PatternExprAST(ExprPtr expr) : PatternAST(ASTKind::PatternExpr), inner(std::move(expr)) {}
+    PatternExprAST(ExprAST* expr) : PatternAST(ASTKind::PatternExpr), inner(expr) {}
 };
 
 /**
@@ -903,7 +916,7 @@ struct TypePatternAST : PatternAST {
     static constexpr ASTKind staticKind = ASTKind::TypePattern;
 
     InternedString bindName;    // name introduced into arm scope
-    TypePtr checkType;          // the type being tested against
+    TypeAST* checkType;         // the type being tested against
 
     TypePatternAST() : PatternAST(ASTKind::TypePattern) {}
 };
@@ -920,12 +933,12 @@ struct FieldPatternAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::FieldPattern;
 
     InternedString field;
-    ASTPtr<PatternAST> subPattern;
+    PatternAST* subPattern;
 
     FieldPatternAST() : BaseAST(ASTKind::FieldPattern) {}
 };
 
-using FieldPatternPtr = ASTPtr<FieldPatternAST>;
+using FieldPatternPtr = FieldPatternAST*;
 
 /**
  * @brief Matches when the subject is a struct of the named type and its fields
@@ -970,14 +983,14 @@ struct StructPatternAST : PatternAST {
 struct MatchArmAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::MatchArm;
 
-    ArenaSpan<ASTPtr<PatternAST>> patterns;   // at least one
-    ExprPtr guard;                            // nullptr if no guard
-    ArenaSpan<ExprPtr> exprs;                 // 1 or more result expressions
+    ArenaSpan<PatternAST*> patterns;   // at least one
+    ExprAST* guard;                    // nullptr if no guard
+    ArenaSpan<ExprAST*> exprs;         // 1 or more result expressions
 
     MatchArmAST() : BaseAST(ASTKind::MatchArm) {}
 };
 
-using MatchArmPtr = ASTPtr<MatchArmAST>;
+using MatchArmPtr = MatchArmAST*;
 
 /**
  * @brief The required final fallback arm – always present on every match expression.
@@ -992,12 +1005,12 @@ using MatchArmPtr = ASTPtr<MatchArmAST>;
 struct DefaultArmAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::DefaultArm;
 
-    ArenaSpan<ExprPtr> exprs;   // 1 or more result expressions
+    ArenaSpan<ExprAST*> exprs;   // 1 or more result expressions
 
     DefaultArmAST() : BaseAST(ASTKind::DefaultArm) {}
 };
 
-using DefaultArmPtr = ASTPtr<DefaultArmAST>;
+using DefaultArmPtr = DefaultArmAST*;
 
 /**
  * @brief Pattern matching expression – always produces a value.
@@ -1018,7 +1031,7 @@ using DefaultArmPtr = ASTPtr<DefaultArmAST>;
 struct MatchExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::MatchExpr;
 
-    ExprPtr subject;
+    ExprAST* subject;
     ArenaSpan<MatchArmPtr> arms;
     DefaultArmPtr defaultBody;           // required
     SourceLocation defaultLoc;           // location of 'default' keyword

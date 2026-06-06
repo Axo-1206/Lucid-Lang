@@ -12,9 +12,7 @@
  *   - src/semantic/TypeResolver.cpp – resolves types and generic parameters
  *
  * @note Doc comments and attributes are stored in the DeclAST base class,
- *       not in every BaseAST node. This matches the grammar and reduces
- *       memory footprint for non‑declaration nodes.
- *
+ *       not in every BaseAST node.
  */
 
 #pragma once
@@ -47,19 +45,13 @@ enum class Visibility {
 // DeclKeyword – declaration keyword for variables and functions.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * @brief Distinguishes `let` (mutable) from `const` (immutable) declarations.
- *
- * Stored on VarDeclAST and FuncDeclAST so the semantic pass can enforce
- * reassignability and nil rules without inspecting token types.
- */
 enum class DeclKeyword {
-    Let,   // reassignable, mutable in place, nil allowed
-    Const, // not reassignable, not mutable in place, nil allowed
+    Let,
+    Const
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PackageDeclAST – the `package` declaration at the start of every file.
+// PackageDeclAST
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -75,15 +67,15 @@ enum class DeclKeyword {
 struct PackageDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::PackageDecl;
 
-    InternedString name;   // "math", "renderer", "app", etc.
+    InternedString name;
 
     explicit PackageDeclAST(InternedString n)
         : DeclAST(ASTKind::PackageDecl), name(n) {}
 };
-using PackageDeclPtr = ASTPtr<PackageDeclAST>;
+using PackageDeclPtr = PackageDeclAST*;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// UseDeclAST – imports a module path with optional alias.
+// UseDeclAST
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -101,16 +93,16 @@ using PackageDeclPtr = ASTPtr<PackageDeclAST>;
 struct UseDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::UseDecl;
 
-    ArenaSpan<InternedString> path;              // e.g., ["math", "vec2"]
-    std::optional<InternedString> alias;         // present when `as IDENT` was written
+    ArenaSpan<InternedString> path;
+    std::optional<InternedString> alias;
     Visibility visibility = Visibility::Private;
 
     UseDeclAST() : DeclAST(ASTKind::UseDecl) {}
 };
-using UseDeclPtr = ASTPtr<UseDeclAST>;
+using UseDeclPtr = UseDeclAST*;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// VarDeclAST – variable declaration (let or const).
+// VarDeclAST
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -128,21 +120,19 @@ using UseDeclPtr = ASTPtr<UseDeclAST>;
 struct VarDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::VarDecl;
 
-    DeclKeyword keyword;           // Let or Const
+    DeclKeyword keyword;
     InternedString name;
-    TypePtr type;                  // always present
-    ExprPtr init;                  // nullptr if no initialiser
+    TypeAST* type;
+    ExprAST* init;
     Visibility visibility = Visibility::Private;
-
-    // semantic
-    bool isConst = false; // true for compile‑time constants
+    bool isConst = false;
 
     VarDeclAST() : DeclAST(ASTKind::VarDecl) {}
 };
-using VarDeclPtr = ASTPtr<VarDeclAST>;
+using VarDeclPtr = VarDeclAST*;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FuncDeclAST – function declaration (top‑level or local).
+// FuncDeclAST
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -165,24 +155,21 @@ struct FuncDeclAST : DeclAST {
 
     DeclKeyword keyword;
     InternedString name;
-    ArenaSpan<GenericParamPtr> genericParams;   // empty if non‑generic
-    ASTPtr<FuncTypeAST> funcType;               // full function type (includes qualifiers)
-    StmtPtr body;                               // always BlockStmtAST
+    ArenaSpan<GenericParamPtr> genericParams;
+    FuncTypeAST* funcType;
+    StmtAST* body;
     Visibility visibility = Visibility::Private;
+    bool isConst = false;
 
-    // semantic
-    bool isConst = false; // true for compile‑time constants
-
-    // Convenience accessors
     bool isAsync()   const { return funcType->isAsync(); }
     bool hasParams() const { return funcType->sig.hasParams(); }
 
     FuncDeclAST() : DeclAST(ASTKind::FuncDecl) {}
 };
-using FuncDeclPtr = ASTPtr<FuncDeclAST>;
+using FuncDeclPtr = FuncDeclAST*;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FieldDeclAST – a single field inside a struct body.
+// FieldDeclAST
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -200,16 +187,15 @@ struct FieldDeclAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::FieldDecl;
 
     InternedString name;
-    TypePtr type;
-    ExprPtr defaultVal;   // nullptr if no default was written
+    TypeAST* type;
+    ExprAST* defaultVal;
 
     FieldDeclAST() : BaseAST(ASTKind::FieldDecl) {}
 };
-
-using FieldDeclPtr = ASTPtr<FieldDeclAST>;
+using FieldDeclPtr = FieldDeclAST*;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// StructDeclAST – a struct type declaration.
+// StructDeclAST
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -237,20 +223,17 @@ struct StructDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::StructDecl;
 
     InternedString name;
-    ArenaSpan<GenericParamPtr> genericParams;   // empty if non‑generic
+    ArenaSpan<GenericParamPtr> genericParams;
     ArenaSpan<FieldDeclPtr> fields;
     Visibility visibility = Visibility::Private;
-
-    // Semantic cache: self‑type representing this struct as a type.
-    // Initialized lazily by SemanticCollector.
-    mutable ASTPtr<NamedTypeAST> selfType;
+    mutable NamedTypeAST* selfType = nullptr;
 
     StructDeclAST() : DeclAST(ASTKind::StructDecl) {}
 };
-using StructDeclPtr = ASTPtr<StructDeclAST>;
+using StructDeclPtr = StructDeclAST*;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// EnumVariantAST – a single named constant inside an enum.
+// EnumVariantAST
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -270,18 +253,15 @@ struct EnumVariantAST : BaseAST {
 
     InternedString name;
     std::optional<int64_t> explicitValue;
-
-    // semantic
-    bool isConst = false; // true for compile‑time constants
+    bool isConst = false;
 
     explicit EnumVariantAST(InternedString n)
         : BaseAST(ASTKind::EnumVariant), name(n) {}
-
 };
-using EnumVariantPtr = ASTPtr<EnumVariantAST>;
+using EnumVariantPtr = EnumVariantAST*;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// EnumDeclAST – a named, closed set of integer‑backed constants.
+// EnumDeclAST
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -303,16 +283,14 @@ struct EnumDeclAST : DeclAST {
     InternedString name;
     ArenaSpan<EnumVariantPtr> variants;
     Visibility visibility = Visibility::Private;
-
-    // semantic
-    bool isConst = false; // true for compile‑time constants
+    bool isConst = false;
 
     EnumDeclAST() : DeclAST(ASTKind::EnumDecl) {}
 };
-using EnumDeclPtr = ASTPtr<EnumDeclAST>;
+using EnumDeclPtr = EnumDeclAST*;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TraitMethodAST – a method signature inside a trait (no body).
+// TraitMethodAST
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -331,16 +309,16 @@ struct TraitMethodAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::TraitMethod;
 
     InternedString name;
-    ASTPtr<FuncTypeAST> funcType; // full function type (includes qualifiers)
+    FuncTypeAST* funcType;
 
     bool isAsync() const { return funcType->isAsync(); }
 
     TraitMethodAST() : BaseAST(ASTKind::TraitMethod) {}
 };
-using TraitMethodPtr = ASTPtr<TraitMethodAST>;
+using TraitMethodPtr = TraitMethodAST*;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TraitDeclAST – a named method contract (signatures only).
+// TraitDeclAST
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -360,16 +338,16 @@ struct TraitDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::TraitDecl;
 
     InternedString name;
-    ArenaSpan<GenericParamPtr> genericParams;   // empty if non‑generic
+    ArenaSpan<GenericParamPtr> genericParams;
     ArenaSpan<TraitMethodPtr> methods;
     Visibility visibility = Visibility::Private;
 
     TraitDeclAST() : DeclAST(ASTKind::TraitDecl) {}
 };
-using TraitDeclPtr = ASTPtr<TraitDeclAST>;
+using TraitDeclPtr = TraitDeclAST*;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TraitRefAST – a reference to a trait (with optional generic arguments).
+// TraitRefAST
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -388,14 +366,14 @@ struct TraitRefAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::TraitRef;
 
     InternedString name;
-    ArenaSpan<TypePtr> genericArgs;   // concrete type arguments
+    ArenaSpan<TypePtr> genericArgs;
 
     TraitRefAST() : BaseAST(ASTKind::TraitRef) {}
 };
-using TraitRefPtr = ASTPtr<TraitRefAST>;
+using TraitRefPtr = TraitRefAST*;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MethodDeclAST – a method body inside an impl block.
+// MethodDeclAST – method inside impl block
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -434,18 +412,15 @@ struct MethodDeclAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::MethodDecl;
 
     InternedString name;
-
-    // Generic parameters for the method itself (e.g., map<U>)
-    ArenaSpan<GenericParamPtr> methodGenericParams;
     
     // Inline body form
-    ASTPtr<FuncTypeAST> funcType;   // signature + qualifiers
-    StmtPtr body;                   // block body
+    FuncTypeAST* funcType = nullptr;
+    StmtAST* body = nullptr;
 
     // Assignment forms (plain or injection)
-    ExprPtr assignmentRef;          // non‑null if assignment form
-    InternedString receiverArg;     // for injection form, the receiver name (e.g., "self" or alias)
-    bool isInjection = false;       // true for injection form
+    ExprAST* assignmentRef = nullptr;
+    InternedString receiverArg;
+    bool isInjection = false;
 
     bool isInlineBody() const { return funcType != nullptr; }
     bool isPlainAssignment() const { return assignmentRef != nullptr && !isInjection; }
@@ -454,266 +429,92 @@ struct MethodDeclAST : BaseAST {
 
     MethodDeclAST() : BaseAST(ASTKind::MethodDecl) {}
 };
-using MethodDeclPtr = ASTPtr<MethodDeclAST>;
+using MethodDeclPtr = MethodDeclAST*;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FromEntryAST – a single conversion entry inside a from block.
+// FromEntryAST – a single conversion entry inside a from block
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * @brief Represents one implicit conversion definition in a `from` block.
- *
- * Grammar: param_group { param_group } '->' type_path '=' func_body
- *
- * @example
- *   (c Celsius) -> Fahrenheit = { return Fahrenheit { value = c.value * 9/5 + 32 } }
- *   (c Celsius)(scale float) -> Fahrenheit = { ... }   -- curried form
- *
- * The parameter groups define the source type(s). The return type must match
- * the target type name of the enclosing FromDeclAST.
- *
- * The semantic pass registers this conversion in the current scope and uses
- * it for implicit casting in:
- *   - variable initialisation
- *   - function arguments
- *   - return statements
- *   - assignments
- */
 struct FromEntryAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::FromEntry;
 
-    FuncSignature sig;        // parameter groups (source type shape)
-    TypePtr returnType;       // must match the target type of FromDeclAST
-    StmtPtr body;             // always BlockStmtAST – the conversion logic
-    ExprPtr path;                // non‑null for path entry (e.g., IdentifierExprAST)
+    FromEntryKind kind = FromEntryKind::Inline;
+    
+    // For inline entries
+    FuncSignature sig;
+    TypeAST* returnType = nullptr;
+    StmtAST* body = nullptr;
+    
+    // For path entries
+    ExprAST* path = nullptr;
+    
+    // Qualifiers inferred from path entry (set by semantic pass)
+    bool isAsync = false;
+    bool isNullable = false;
 
     FromEntryAST() : BaseAST(ASTKind::FromEntry) {}
 };
-using FromEntryPtr = ASTPtr<FromEntryAST>;
+using FromEntryPtr = FromEntryAST*;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FromDeclAST – defines implicit conversions from one or more source types
-//               to a target type.
+// FromDeclAST – defines implicit conversions to a type
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * @brief Represents a `from` block – defines implicit conversions to a type.
- *
- * Grammar: visibility? 'from' type_path [ generic_params ] '{' from_entry* '}'
- *
- * @example
- *   export from Fahrenheit {
- *       (c Celsius) -> Fahrenheit = { return Fahrenheit { value = c.value * 9/5 + 32 } }
- *   }
- *   from Wrapper<T> {
- *       (val T) -> Wrapper<T> = { return Wrapper<T> { value = val } }
- *   }
- *
- * The target type is named by `targetType`. Generic parameters (e.g., <T>)
- * are stored in `genericParams` and are used to instantiate the target type
- * when the conversion is invoked.
- *
- * ## Important Semantic Rules
- *
- * 1. **Target Type**: `targetType` must be a struct type (or a type alias
- *    that resolves to a struct). It cannot be a primitive, trait, or function type.
- *
- * 2. **Generic Consistency**: The number of generic parameters on the
- *    `from` declaration must match the generic arity of the target struct.
- *    Each generic parameter is a fresh binding, not necessarily the same
- *    name used in the struct definition (though convention suggests
- *    consistency).
- *
- * 3. **Overload Resolution**: Multiple `from` declarations for the same
- *    target type are allowed if they accept different source parameter types.
- *    The semantic pass selects the best match based on argument types.
- *
- * 4. **Scoping**: `from` declarations can appear at top‑level (file scope)
- *    or inside any block (local scope). Local `from` declarations are only
- *    visible within that block.
- *
- * 5. **Visibility**: `pub`/`export` modifiers are only allowed at top‑level.
- *    The parser rejects visibility modifiers inside blocks.
- *
- * 6. **Return Type Matching**: Each `FromEntryAST::returnType` must exactly
- *    match the `targetType` of the enclosing `FromDeclAST` after substitution
- *    of generic parameters.
- *
- * 7. **One‑way Conversion**: Conversions are **from** the source type **to**
- *    the target type. There is no automatic reverse conversion – that must
- *    be defined separately with another `from` block.
- */
 struct FromDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::FromDecl;
 
     Visibility visibility = Visibility::Private;
-    TypePtr targetType;                           // the type being converted to
-    ArenaSpan<GenericParamPtr> genericParams;     // e.g., <T> in from Wrapper<T>
-    ArenaSpan<FromEntryPtr> entries;              // conversion definitions
+    
+    // Target information (unified with impl)
+    TargetKind targetKind = TargetKind::Concrete;
+    TypeAST* targetType = nullptr;
+    
+    // For GenericArray target
+    InternedString arrayTypeParamName;
+    
+    // For GenericNamed target
+    ArenaSpan<GenericParamPtr> genericParams;
+    
+    ArenaSpan<FromEntryPtr> entries;
 
     FromDeclAST() : DeclAST(ASTKind::FromDecl) {}
 };
-using FromDeclPtr = ASTPtr<FromDeclAST>;
+using FromDeclPtr = FromDeclAST*;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ImplDeclAST – binds method implementations to a type.
+// ImplDeclAST – binds method implementations to a type
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * @brief Represents an **impl declaration** – method implementations for a type.
- *
- * Grammar: visibility? 'impl' impl_target
- *          [ impl_generic_params ]
- *          [ 'as' IDENTIFIER ]
- *          [ ':' trait_ref ]
- *          '{' method_decl* '}'
- *
- * impl_target     := type_name | primitive_type
- * impl_generic_params ::= '<' impl_generic_param { ',' impl_generic_param } '>'
- * trait_ref       := IDENTIFIER [ generic_args ]
- *
- * @example
- *   // No alias, no generics, no trait
- *   impl Vec2 {
- *       length () -> float = { return #sqrt(self.x*self.x + self.y*self.y) }
- *   }
- *   // Usage: let v = Vec2 { x = 3, y = 4 }; let len = v:length()
- *
- *   // With generics and implicit `self` alias
- *   impl Box<T> {
- *       get () -> T = { return self.value }
- *   }
- *
- *   // With generics and explicit alias `b`
- *   impl Box<T> as b {
- *       get () -> T = { return b.value }
- *   }
- *
- *   // Trait conformance with alias
- *   impl Circle as c : Drawable {
- *       draw () { c:render() }
- *   }
- *
- *   // Primitive type impl with alias
- *   impl int as i {
- *       isEven () -> bool = { return i % 2 == 0 }
- *   }
- *   // Usage: 42:isEven()
- *
- *   // Array or function types – must use a type alias first
- *   type IntArray = []int
- *   impl IntArray {
- *       sum () -> int = { ... }
- *   }
- *
- * ## Important Semantic Rules
- *
- * 1. **Call Syntax – Value‑oriented**: Methods are called on a **value**
- *    using the colon operator: `value:method(args)`. The receiver is the value
- *    itself, not the type name. The type of the receiver determines which
- *    `impl` block is consulted.
- *
- * 2. **Target Type**: `targetType` can be any type:
- *    - Struct types (most common)
- *    - Primitive types (`int`, `string`, `bool`, `float`, etc.)
- *    - Enum types
- *    - Type aliases that resolve to a primitive/struct/enum
- *
- *    **Not allowed directly**: array types (`[]T`, `[*]T`, `[N]T`) or
- *    function types. To add methods to an array or a function, first create
- *    a type alias, then impl that alias.
- *
- * 3. **Generic Parameters**: An impl declaration may declare generic parameters
- *    **only when the target type is generic** (generic struct or generic type alias).
- *    The number of generic parameters **must exactly match the arity of the target type**.
- *    The parameter names are fresh bindings (positional correspondence).
- *
- *    @code
- *    struct Box<T> { value T }
- *    impl Box<T> { ... }           // OK: arity 1 matches Box<T>
- *    impl Box<K> { ... }           // OK: different name, same arity
- *    impl Box { ... }              // Error: missing generic parameter
- *    impl Box<T, U> { ... }        // Error: too many parameters
- *    @endcode
- *
- * 4. **Receiver Alias (`as IDENTIFIER`)**: Optional. If omitted, the receiver
- *    is named `self` inside the method bodies. If provided, the given identifier
- *    replaces `self` as the name for the receiver value. The alias is in scope
- *    for all method declarations inside the impl block. It must appear **after**
- *    any generic parameters and **before** an optional trait conformance.
- *
- * 5. **Trait Conformance**: When `traitRef` is present, the impl block
- *    promises to implement every method declared in that trait. The semantic
- *    pass verifies:
- *    - All trait methods are present in `methods`
- *    - Each method signature matches exactly (parameters, return types,
- *      qualifiers like `~async`, `~nullable`, `~parallel`)
- *    - Extra methods are allowed (they are not part of the trait contract)
- *
- * 6. **Method Resolution**: When a method call `value:method()` is encountered,
- *    the semantic pass:
- *    - Determines the static type of `value`
- *    - Looks for an `impl` block whose `targetType` matches that type
- *      (after substituting any generic parameters)
- *    - Finds the method with the given name inside that impl block
- *    - If no matching impl or method is found, emits an error
- *
- * 7. **Self Parameter**: Within method bodies, the receiver value is available
- *    via `self` (or `receiverAlias` if specified). The type of `self` is the
- *    resolved target type (including any generic arguments). The field
- *    `resolvedSelfType` caches this for the semantic pass.
- *
- * 8. **Visibility**: The visibility of the impl block applies to all methods
- *    within it. Individual methods cannot have separate visibility.
- *    `pub`/`export` on an impl block means all its methods are visible
- *    according to that level.
- *
- * 9. **Merging**: Multiple impl blocks for the same target type are allowed
- *    and are merged at semantic time. They can be in different files within
- *    the same package. Method names must be unique across all impl blocks
- *    for a given type (no overloading).
- *
- * 10. **Primitive Methods**: Built‑in primitive types (`int`, `string`, etc.)
- *     can have impl blocks defined by the user. The compiler also provides
- *     a standard set of primitive methods. User‑defined methods cannot
- *     override built‑ins; duplicates cause a semantic error.
- *
- * 11. **Array / Function Types**: Because arrays and function types are
- *     structural (not nominal), they cannot be the target of an impl block
- *     directly. Instead, the programmer must create a type alias:
- *     @code
- *       type IntArray = []int
- *       impl IntArray { ... }
- *     @endcode
- *
- * ## Semantic Caches (filled by TypeResolver)
- *
- * - `resolvedSelfType`: The resolved type of `self` inside method bodies
- * - `resolvedTargetGenericParams`: Generic parameters of the target type
- * - `resolvedSubstitutionMap`: Maps generic param names to concrete types
- *   when the impl is instantiated
- */
 struct ImplDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::ImplDecl;
 
-    InternedString receiverAlias;                     // empty = default "self"
+    InternedString receiverAlias;
     Visibility visibility = Visibility::Private;
-    ArenaSpan<GenericParamPtr> genericParams;         // impl‑level type params
-    TypePtr targetType;                               // the type being implemented
-    TraitRefPtr traitRef;                             // nullptr if no trait conformance
-    ArenaSpan<MethodDeclPtr> methods;                 // method bodies
+    
+    // Target information (unified with from)
+    TargetKind targetKind = TargetKind::Concrete;
+    TypeAST* targetType = nullptr;
+    
+    // For GenericArray target
+    InternedString arrayTypeParamName;
+    
+    // For GenericNamed target
+    ArenaSpan<GenericParamPtr> genericParams;
+    
+    TraitRefPtr traitRef = nullptr;
+    ArenaSpan<MethodDeclPtr> methods;
 
-    // Semantic caches (filled by TypeResolver, Phase 2a)
-    mutable TypeAST* resolvedSelfType = nullptr;      // type of 'self' receiver
+    // Semantic caches
+    mutable TypeAST* resolvedSelfType = nullptr;
     mutable const ArenaSpan<GenericParamPtr>* resolvedTargetGenericParams = nullptr;
     mutable std::unordered_map<InternedString, TypeAST*> resolvedSubstitutionMap;
 
     ImplDeclAST() : DeclAST(ASTKind::ImplDecl) {}
 };
-using ImplDeclPtr = ASTPtr<ImplDeclAST>;
+using ImplDeclPtr = ImplDeclAST*;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TypeAliasDeclAST – a named alias for an existing type.
+// TypeAliasDeclAST
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -737,10 +538,10 @@ struct TypeAliasDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::TypeAliasDecl;
 
     InternedString name;
-    ArenaSpan<GenericParamPtr> genericParams; // empty if non‑generic
-    TypePtr aliasedType;                      // the right‑hand side type
+    ArenaSpan<GenericParamPtr> genericParams;
+    TypeAST* aliasedType;
     Visibility visibility = Visibility::Private;
 
     TypeAliasDeclAST() : DeclAST(ASTKind::TypeAliasDecl) {}
 };
-using TypeAliasDeclPtr = ASTPtr<TypeAliasDeclAST>;
+using TypeAliasDeclPtr = TypeAliasDeclAST*;

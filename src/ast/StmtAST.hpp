@@ -46,7 +46,7 @@
 struct BlockStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::BlockStmt;
 
-    ArenaSpan<StmtPtr> stmts; // Statements in execution order
+    ArenaSpan<StmtAST*> stmts; // Statements in execution order
 
     BlockStmtAST() : StmtAST(ASTKind::BlockStmt) {}
 };
@@ -70,10 +70,10 @@ struct BlockStmtAST : StmtAST {
 struct ExprStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::ExprStmt;
 
-    ExprPtr expr; // The expression being evaluated for its side effects
+    ExprAST* expr; // The expression being evaluated for its side effects
 
-    explicit ExprStmtAST(ExprPtr e)
-        : StmtAST(ASTKind::ExprStmt), expr(std::move(e)) {}
+    explicit ExprStmtAST(ExprAST* e)
+        : StmtAST(ASTKind::ExprStmt), expr(e) {}
 
 };
 
@@ -101,9 +101,9 @@ struct ExprStmtAST : StmtAST {
 struct DeclStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::DeclStmt;
 
-    DeclPtr decl; // The actual declaration node
+    DeclAST* decl; // The actual declaration node
 
-    explicit DeclStmtAST(DeclPtr d) : StmtAST(ASTKind::DeclStmt), decl(std::move(d)) {}
+    explicit DeclStmtAST(DeclAST* d) : StmtAST(ASTKind::DeclStmt), decl(d) {}
 
     // Convenience helpers – use decl->isa<T>() directly in most cases
     bool isVar()        const { return decl && decl->isa<VarDeclAST>(); }
@@ -143,9 +143,9 @@ struct DeclStmtAST : StmtAST {
 struct IfStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::IfStmt;
 
-    ExprPtr  condition;  // The test expression (must resolve to `bool`)
-    StmtPtr  thenBranch; // Always a `BlockStmtAST`
-    StmtPtr  elseBranch; // `nullptr` | `BlockStmtAST` | `IfStmtAST`
+    ExprAST* condition;  // The test expression (must resolve to `bool`)
+    StmtAST* thenBranch; // Always a `BlockStmtAST`
+    StmtAST* elseBranch; // `nullptr` | `BlockStmtAST` | `IfStmtAST`
 
     IfStmtAST() : StmtAST(ASTKind::IfStmt) {}
 };
@@ -168,13 +168,13 @@ struct IfStmtAST : StmtAST {
 struct SwitchCaseAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::SwitchCase;
 
-    ArenaSpan<ExprPtr> values;          ///< Match values (literals or ranges)
-    ASTPtr<BlockStmtAST> body;          ///< Statements executed on match
+    ArenaSpan<ExprAST*> values;          ///< Match values (literals or ranges)
+    BlockStmtAST* body;                 ///< Statements executed on match
 
     SwitchCaseAST() : BaseAST(ASTKind::SwitchCase) {}
 };
 
-using SwitchCasePtr = ASTPtr<SwitchCaseAST>;
+using SwitchCasePtr = SwitchCaseAST*;
 
 /**
  * @brief Statement‑oriented value dispatch – runs statement blocks, produces no value.
@@ -195,10 +195,10 @@ using SwitchCasePtr = ASTPtr<SwitchCaseAST>;
 struct SwitchStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::SwitchStmt;
 
-    ExprPtr subject;                           ///< The value being dispatched
-    ArenaSpan<SwitchCasePtr> cases;            ///< Non‑default case clauses
-    ASTPtr<BlockStmtAST> defaultBody;          ///< `nullptr` if no `default`
-    std::optional<SourceLocation> defaultLoc;  ///< Location of `default` keyword (for diagnostics)
+    ExprAST* subject;                           ///< The value being dispatched
+    ArenaSpan<SwitchCasePtr> cases;             ///< Non‑default case clauses
+    BlockStmtAST* defaultBody;                  ///< `nullptr` if no `default`
+    std::optional<SourceLocation> defaultLoc;   ///< Location of `default` keyword (for diagnostics)
 
     SwitchStmtAST() : StmtAST(ASTKind::SwitchStmt) {}
 };
@@ -215,6 +215,7 @@ struct SwitchStmtAST : StmtAST {
  *   for i    in 0..10     { io.printl(string(i)) }
  *   for v    in mesh.vertices { v.pos = v.pos |> transform }
  *   for i int in 0..10..2 { io.printl(string(i)) }   – step of 2
+ *   for i int in arr[1..10] { io.printl(string(i)) }
  *
  * Both grammar forms (collection and range) map to a single node. The semantic
  * pass infers the iteration variable’s type from the iterable:
@@ -227,10 +228,10 @@ struct SwitchStmtAST : StmtAST {
 struct ForStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::ForStmt;
 
-    ParamPtr iterVar;  // Iteration variable (name explicit type)
-    ExprPtr  iterable; // Collection or `RangeExprAST`
-    ExprPtr  step;     // Optional step (only for range loops, `nullptr` if omitted)
-    StmtPtr  body;     // Always a `BlockStmtAST`
+    ParamAST* iterVar;  // Iteration variable (name explicit type) – raw pointer
+    ExprAST*  iterable; // Collection or `RangeExprAST`
+    ExprAST*  step;     // Optional step (only for range loops, `nullptr` if omitted)
+    StmtAST*  body;     // Always a `BlockStmtAST`
 
     ForStmtAST() : StmtAST(ASTKind::ForStmt) {}
 };
@@ -247,8 +248,8 @@ struct ForStmtAST : StmtAST {
 struct WhileStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::WhileStmt;
 
-    ExprPtr condition; // Must resolve to `bool`
-    StmtPtr body;      // Always a `BlockStmtAST`
+    ExprAST* condition; // Must resolve to `bool`
+    StmtAST* body;      // Always a `BlockStmtAST`
 
     WhileStmtAST() : StmtAST(ASTKind::WhileStmt) {}
 };
@@ -265,8 +266,8 @@ struct WhileStmtAST : StmtAST {
 struct DoWhileStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::DoWhileStmt;
 
-    StmtPtr body;       ///< Executed at least once (always `BlockStmtAST`)
-    ExprPtr condition;  ///< Evaluated after each iteration; must resolve to `bool`
+    StmtAST* body;       ///< Executed at least once (always `BlockStmtAST`)
+    ExprAST* condition;  ///< Evaluated after each iteration; must resolve to `bool`
 
     DoWhileStmtAST() : StmtAST(ASTKind::DoWhileStmt) {}
 };
@@ -292,7 +293,7 @@ struct DoWhileStmtAST : StmtAST {
 struct ReturnStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::ReturnStmt;
 
-    ArenaSpan<ExprPtr> values; // Empty for bare `return`, otherwise one or more expressions
+    ArenaSpan<ExprAST*> values; // Empty for bare `return`, otherwise one or more expressions
 
     ReturnStmtAST() : StmtAST(ASTKind::ReturnStmt) {}
 };
@@ -352,8 +353,8 @@ struct MultiVarDeclAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::MultiVarDecl;
 
     DeclKeyword keyword;                                // `let` or `const`
-    ArenaSpan<std::pair<InternedString, TypePtr>> vars; // (name, type) for each variable
-    ExprPtr rhs;                                        // Initialiser expression
+    ArenaSpan<std::pair<InternedString, TypeAST*>> vars; // (name, type) for each variable
+    ExprAST* rhs;                                        // Initialiser expression
 
     // semantic
     bool isConst = false; // true for compile‑time constants
@@ -381,8 +382,8 @@ struct MultiVarDeclAST : StmtAST {
 struct MultiAssignStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::MultiAssignStmt;
 
-    ArenaSpan<ExprPtr> lhs; // Left‑hand side lvalues
-    ExprPtr rhs;            // Right‑hand side expression (single)
+    ArenaSpan<ExprAST*> lhs; // Left‑hand side lvalues
+    ExprAST* rhs;            // Right‑hand side expression (single)
 
     MultiAssignStmtAST() : StmtAST(ASTKind::MultiAssignStmt) {}
 };

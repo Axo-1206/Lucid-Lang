@@ -11,7 +11,6 @@
  *
  * @note These represent types **as written** in source. The semantic pass later
  *       resolves these into actual resolved Type objects.
- *
  */
 
 #pragma once
@@ -95,7 +94,7 @@ enum class PrimitiveKind {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PrimitiveTypeAST – a built‑in primitive keyword used as a type.
+// PrimitiveTypeAST
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -109,14 +108,14 @@ enum class PrimitiveKind {
 struct PrimitiveTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::PrimitiveType;
 
-    PrimitiveKind primitiveKind;   ///< Which primitive type
+    PrimitiveKind primitiveKind;
 
     explicit PrimitiveTypeAST(PrimitiveKind k)
         : TypeAST(ASTKind::PrimitiveType), primitiveKind(k) {}
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// NamedTypeAST – a user‑defined type referenced by name.
+// NamedTypeAST – a concrete user‑defined type reference.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -144,18 +143,30 @@ struct PrimitiveTypeAST : TypeAST {
 struct NamedTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::NamedType;
 
-    InternedString name;            // Type name (e.g., "Vec2", "Buffer")
-    ArenaSpan<TypePtr> genericArgs; // Concrete type arguments (empty if non‑generic)
-
-    // Semantic annotation (written by TypeResolver, read by codegen)
-    bool isGenericParam = false;    // True if this is a generic parameter (T, K, V)
+    InternedString name;
+    ArenaSpan<TypeAST*> genericArgs;
 
     explicit NamedTypeAST(InternedString n)
         : TypeAST(ASTKind::NamedType), name(n) {}
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// NullableTypeAST – the `?` suffix for nullable value types.
+// GenericParamTypeAST – a generic type parameter reference.
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct GenericParamTypeAST : TypeAST {
+    static constexpr ASTKind staticKind = ASTKind::GenericParamType;
+
+    InternedString name;
+    GenericParamAST* declaration = nullptr;
+    bool isPhantom = false;
+
+    explicit GenericParamTypeAST(InternedString n)
+        : TypeAST(ASTKind::GenericParamType), name(n) {}
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// NullableTypeAST
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -175,14 +186,14 @@ struct NamedTypeAST : TypeAST {
 struct NullableTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::NullableType;
 
-    TypePtr inner;   ///< The type being made nullable
+    TypeAST* inner;
 
-    explicit NullableTypeAST(TypePtr t)
-        : TypeAST(ASTKind::NullableType), inner(std::move(t)) {}
+    explicit NullableTypeAST(TypeAST* t)
+        : TypeAST(ASTKind::NullableType), inner(t) {}
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ResultTypeAST – the `!` suffix: success type T paired with error type E.
+// ResultTypeAST
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -204,17 +215,13 @@ struct NullableTypeAST : TypeAST {
 struct ResultTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::ResultType;
 
-    TypePtr inner;       ///< The success type (T in T!E or T?!E)
-    TypePtr errorType;   ///< The error type E; nullptr means bare '!' (fails with nil)
+    TypeAST* inner;
+    TypeAST* errorType;
 
-    ResultTypeAST(TypePtr t, TypePtr err)
-        : TypeAST(ASTKind::ResultType),
-          inner(std::move(t)), errorType(std::move(err)) {}
+    ResultTypeAST(TypeAST* t, TypeAST* err)
+        : TypeAST(ASTKind::ResultType), inner(t), errorType(err) {}
 
-    /// Convenience: true when this is a bare '!' with no error payload
     bool hasErrorType() const { return errorType != nullptr; }
-
-    // Makes the semantic pass cleaner and provides a single place to enforce the grammar rule.
     bool isWellFormed() const {
         if (inner && inner->isa<ResultTypeAST>()) return false;
         if (errorType && errorType->isa<ResultTypeAST>()) return false;
@@ -223,7 +230,7 @@ struct ResultTypeAST : TypeAST {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ArrayTypeAST – unified concrete array type (slice, dynamic, fixed).
+// ArrayTypeAST – concrete array type.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -253,11 +260,11 @@ struct ArrayTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::ArrayType;
 
     ArrayKind arrayKind;
-    uint64_t size; // valid only for Fixed
-    TypePtr element;
+    uint64_t size;
+    TypeAST* element;
 
-    ArrayTypeAST(ArrayKind k, uint64_t sz, TypePtr elem)
-        : TypeAST(ASTKind::ArrayType), arrayKind(k), size(sz), element(std::move(elem)) {}
+    ArrayTypeAST(ArrayKind k, uint64_t sz, TypeAST* elem)
+        : TypeAST(ASTKind::ArrayType), arrayKind(k), size(sz), element(elem) {}
 
     bool isFixed()   const { return arrayKind == ArrayKind::Fixed; }
     bool isSlice()   const { return arrayKind == ArrayKind::Slice; }
@@ -265,7 +272,7 @@ struct ArrayTypeAST : TypeAST {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GenericArrayTypeAST – array with a free type variable (valid only as impl target)
+// GenericArrayTypeAST – array with a free type variable (valid only as impl/from target)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -300,11 +307,9 @@ struct GenericArrayTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::GenericArrayType;
 
     ArrayKind arrayKind;
-    uint64_t size; // valid only for Fixed
+    uint64_t size;
     InternedString typeParamName;
-
-    // semantic
-    bool isConst = false; // true for compile‑time constants
+    bool isConst = false;
 
     GenericArrayTypeAST(ArrayKind k, uint64_t sz, InternedString name)
         : TypeAST(ASTKind::GenericArrayType),
@@ -316,7 +321,7 @@ struct GenericArrayTypeAST : TypeAST {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// RefTypeAST – safe managed reference `&T`.
+// RefTypeAST – safe managed reference.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -335,14 +340,14 @@ struct GenericArrayTypeAST : TypeAST {
 struct RefTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::RefType;
 
-    TypePtr inner;   ///< The referenced type
+    TypeAST* inner;
 
-    explicit RefTypeAST(TypePtr t)
-        : TypeAST(ASTKind::RefType), inner(std::move(t)) {}
+    explicit RefTypeAST(TypeAST* t)
+        : TypeAST(ASTKind::RefType), inner(t) {}
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PtrTypeAST – raw, unmanaged pointer `*T` (sealed conduit).
+// PtrTypeAST – raw, unmanaged pointer.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -381,14 +386,14 @@ struct RefTypeAST : TypeAST {
 struct PtrTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::PtrType;
 
-    TypePtr inner; // The pointed‑to type
+    TypeAST* inner;
 
-    explicit PtrTypeAST(TypePtr t)
-        : TypeAST(ASTKind::PtrType), inner(std::move(t)) {}
+    explicit PtrTypeAST(TypeAST* t)
+        : TypeAST(ASTKind::PtrType), inner(t) {}
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FUNCTION SIGNATURE (pure parameter/return shape, no qualifiers)
+// FUNCTION SIGNATURE
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -407,13 +412,12 @@ struct PtrTypeAST : TypeAST {
  * @see FuncTypeAST for the qualifier‑bearing version.
  */
 struct FuncSignature {
-    ArenaSpan<ParamAST*> allParams; // raw pointers
-    ArenaSpan<size_t>   groupSizes; 
-    ArenaSpan<TypeAST*> returnTypes; // raw pointers
+    ArenaSpan<ParamAST*> allParams;
+    ArenaSpan<size_t>   groupSizes;
+    ArenaSpan<TypeAST*> returnTypes;
 
     FuncSignature() = default;
 
-    // Copy disabled, move enabled
     FuncSignature(const FuncSignature&) = delete;
     FuncSignature& operator=(const FuncSignature&) = delete;
     FuncSignature(FuncSignature&&) = default;
@@ -451,9 +455,9 @@ struct FuncSignature {
 struct FuncTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::FuncType;
 
-    FuncSignature sig;                         // pure parameter/return shape
-    uint32_t qualifiers = 0;                   // QualifierBits flags
-    ArenaSpan<InternedString> rawQualifiers;   // source qualifier strings (for diagnostics)
+    FuncSignature sig;
+    uint32_t qualifiers = 0;
+    ArenaSpan<InternedString> rawQualifiers;
 
     explicit FuncTypeAST() : TypeAST(ASTKind::FuncType) {}
 
