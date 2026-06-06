@@ -1665,7 +1665,7 @@ let t Transformer<int> = Transformer<int> { fn = double }
 t.fn(21)    -- 42: T = int, fn is (int) -> int
 ```
 
-This is distinct from `impl` methods, which are not stored in the struct and can freely use independent generics — because methods are function pointers resolved at call time, not values laid out in memory.
+This is distinct from `impl` methods — methods are function pointers, not stored values. A method's type parameters all come from the enclosing `impl` target declaration and are resolved at the call site. No memory layout is affected.
 
 ---
 
@@ -2457,62 +2457,6 @@ An `impl` block may declare generic parameters **only when the target type is ge
 | Array type               | ✅ Yes                 | ❌ No                    | Methods apply to all arrays of that element type in scope |
 | Trait                    | ❌ No                  | N/A                     | Traits are contracts, not implementations                 |
 
-### Dependent vs Independent Generic Parameters in Methods
-
-`impl` methods may freely use both dependent and independent type parameters. The distinction determines how the call site provides them:
-
-**Dependent parameters** — come from the `impl` target declaration (e.g. `T` in `impl Foo<T>`). They are already resolved when the instance is declared. The compiler infers them automatically at the call site. Writing them explicitly is a compile error:
-
-```luc
-impl Foo<T> as f {
-    doSomething (v T) -> T = { return v }
-}
-
-let a Foo<int> = Foo<int> { value = 42 }
-
-a:doSomething(42)           -- OK: T = int inferred from Foo<int>
-a:doSomething<int>(42)      -- ERROR: T is dependent, do not write explicitly
-a:doSomething<string>(42)   -- ERROR: T is dependent, contradicts Foo<int>
-```
-
-**Independent parameters** — declared on the method itself (e.g. `<U>` in `convert<U>`). They are resolved fresh at each call site. The caller must provide them explicitly. Omitting them is a compile error:
-
-```luc
-impl Foo<T> as f {
-    convert<U> (fn (T) -> U) -> U = { return fn(f.value) }
-}
-
-let a Foo<int> = Foo<int> { value = 42 }
-
-a:convert<string>(toString<int>)    -- OK: U = string, explicit required
-a:convert(toString<int>)            -- ERROR: U is independent, must provide
-```
-
-**Mixing dependent and concrete in method assignments:**
-
-In the injection form, `func_ref<...>` may mix dependent parameters with concrete type arguments:
-
-```luc
-export const magic<A, B> (v A, fn (A) -> B) -> B = { return fn(v) }
-
-impl Foo<T> as f {
-    toInt    = magic<T, int>(f)!     -- T dependent, int concrete
-                                     -- resolved: (fn (T) -> int) -> int
-    convert<U> = magic<T, U>(f)!    -- T dependent, U independent
-                                     -- resolved: (fn (T) -> U) -> U
-}
-
-let a Foo<string> = Foo<string> { value = "hello" }
-a:toInt(str:len)                  -- OK: T=string inferred, int fixed
-a:convert<bool>(str:isEmpty)      -- OK: T=string inferred, U=bool explicit
-```
-
-**Why `impl` allows independent generics but structs do not:**
-
-`impl` only contains methods — function pointers. A function pointer has a fixed size (one pointer width) regardless of its type parameters. Independent `<U>` is resolved at the call site, not at the impl declaration. No memory layout is affected.
-
-Struct fields contain stored values. Every field must have a known size at instantiation time. An independent `<U>` with no resolution site produces unknown size — the compiler cannot lay out the struct in memory.
-
 ### Examples
 
 ```luc
@@ -2533,10 +2477,10 @@ impl int as i {
 
 -- Injection form — receiver fixed, resolved type at call site
 impl int as i {
-    toStr     = utils.intToStr(i)! -- (n int) -> string         resolved: () -> string
-    format    = utils.format(i)!   -- (n int, s string) -> str  resolved: (s string) -> string
-    clamp     = utils.clamp(i)!    -- (n int)(lo int)(hi int)   resolved: (lo int)(hi int) -> int
-    process   = utils.process(i)!  -- (n int, s string)(x int)  resolved: (s string)(x int) -> int
+    toStr     = utils.intToStr(i)! -- (n int) -> string        resolved: () -> string
+    format    = utils.format(i)!   -- (n int, s string) -> str resolved: (s string) -> string
+    clamp     = utils.clamp(i)!    -- (n int)(lo int)(hi int)  resolved: (lo int)(hi int) -> int
+    process   = utils.process(i)!  -- (n int, s string)(x int) resolved: (s string)(x int) -> int
 }
 
 -- call sites match the resolved types exactly
@@ -2546,27 +2490,14 @@ impl int as i {
 5:process("a")(3)      -- (s string)(x int) -> int
 5:version()            -- () -> string
 
--- Generic instantiation with injection
-impl int as i {
-    toStr = utils.toStr<int>(i)!    -- generic instantiated, i injected
-}
-
 -- Generic function assigned to generic struct impl
--- The generic parameter T flows from impl Box<T> into the method assignment
-export const unwrap<T>  (box Box<T>) -> T      = { return box.value }
-export const rewrap<T>  (box Box<T>, v T) -> Box<T> = { return Box<T> { value = v } }
-export const transform<T, U> (box Box<T>, f (T) -> U) -> Box<U> = {
-    return Box<U> { value = f(box.value) }
-}
+-- T flows from impl Box<T> into the method assignments
+export const unwrap<T> (box Box<T>) -> T         = { return box.value }
+export const rewrap<T> (box Box<T>, v T) -> Box<T> = { return Box<T> { value = v } }
 
 impl Box<T> as b {
-    -- inject b as first param, T flows through from impl Box<T>
-    unwrap    = unwrap<T>(b)!
-    rewrap    = rewrap<T>(b)!
-
-    -- transform has two param groups: (box Box<T>)(f ...) → after injection: (f (T) -> U) -> Box<U>
-    -- U is a free type variable resolved at the call site
-    map<U>    = transform<T, U>(b)!    -- generic method: extra type param U at call site
+    unwrap = unwrap<T>(b)!    -- T dependent, resolved from Box<T>
+    rewrap = rewrap<T>(b)!    -- T dependent, resolved from Box<T>
 }
 
 -- call sites
