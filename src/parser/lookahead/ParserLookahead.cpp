@@ -824,28 +824,190 @@ bool Parser::looksLikeGenericArray() const {
 }
 
 /**
- * @brief Checks whether the current position looks like a generic type
- *        instantiation (e.g., `Wrapper<T>`).
+ * @brief Checks whether the current position looks like a valid generic
+ *        type instantiation (e.g., `Wrapper<T>` or `identity<int>`).
+ *
+ * This function performs a deep lookahead to verify that the tokens following
+ * an identifier form a complete, valid generic argument list:
+ *   - Starts with '<'
+ *   - Contains a comma‑separated list of type expressions
+ *   - Ends with '>'
  *
  * Detection pattern:
- *   - Current token is IDENTIFIER
- *   - The next non‑comment token is '<'
+ *   1. Current token is IDENTIFIER (the base name)
+ *   2. Next non‑comment token is '<'
+ *   3. The tokens between '<' and the matching '>' form a valid sequence:
+ *        - At least one type expression
+ *        - Types separated by commas
+ *        - No binary operators or statement boundaries appear before '>'
+ *   4. The matching '>' is found before any semicolon, brace, or EOF
  *
- * @return true if the next token after identifier is '<'
+ * @return true if a complete generic argument list is detected, false otherwise
+ *
+ * ─── Complexity ────────────────────────────────────────────────────────────
+ * O(n) where n = number of tokens inside the generic arguments.
+ *
+ * ─── Example Matches ───────────────────────────────────────────────────────
+ *   - `Box<int>`                    → true
+ *   - `identity<T, U>`              → true
+ *   - `Map<string, Vec2>`           → true
+ *   - `Result<T!E>`                 → true (type expressions can have '!')
+ *   - `Option<T?>`                  → true (type expressions can have '?')
+ *   - `FnType<(int) -> string>`     → true (function types inside <>)
+ *
+ * ─── Example Non‑Matches ───────────────────────────────────────────────────
+ *   - `self < other`                → false (next token after other is not ',' or '>')
+ *   - `a < b < c`                   → false (no matching '>' before next '<')
+ *   - `x < y`                       → false (no closing '>')
+ *   - `foo<`                        → false (unclosed '<')
+ *   - `foo<T`                       → false (missing '>')
+ *   - `vec<`                        → false (no type after '<')
+ *   - `array< int,`                 → false (trailing comma, no closing '>')
+ *
+ * ─── Note ──────────────────────────────────────────────────────────────────
+ * This function uses the same `isTypeStart()` logic as the type parser to
+ * determine what constitutes a valid type expression. It does NOT consume
+ * any tokens and does not emit error messages.
  */
 bool Parser::looksLikeGenericTypeInstantiation() const {
     const auto& tokens = ts_.getTokens();
     size_t tokenCount = ts_.getTokenCount();
     size_t i = ts_.getPos();
 
+    // Helper to check if a token can start a type expression
+    auto isTypeStart = [&](TokenType tt) -> bool {
+        return isPrimitiveTypeToken(tt) ||
+               tt == TokenType::IDENTIFIER ||
+               tt == TokenType::LBRACKET ||   // array type
+               tt == TokenType::LPAREN ||     // function type
+               tt == TokenType::TILDE;        // qualifier start
+    };
+
+    // Helper to skip a complete balanced group (e.g., parentheses, brackets)
+    // Returns the index after the matching closing token, or tokenCount on failure.
+    auto skipBalanced = [&](size_t pos, TokenType open, TokenType close) -> size_t {
+        if (pos >= tokenCount || tokens[pos].type != open) return pos;
+        int depth = 1;
+        size_t j = pos + 1;
+        while (j < tokenCount && depth > 0) {
+            j = ts_.skipCommentsFrom(j);
+            if (j >= tokenCount) break;
+            TokenType tt = tokens[j].type;
+            if (tt == open) ++depth;
+            else if (tt == close) --depth;
+            ++j;
+        }
+        return j;
+    };
+
+    // Step 1: Skip comments and check for identifier
     i = ts_.skipCommentsFrom(i);
     if (i >= tokenCount || tokens[i].type != TokenType::IDENTIFIER) {
         return false;
     }
-    ++i;
+    ++i; // move past identifier
 
+    // Step 2: Check for '<'
     i = ts_.skipCommentsFrom(i);
-    if (i >= tokenCount) return false;
+    if (i >= tokenCount || tokens[i].type != TokenType::LESS) {
+        return false;
+    }
+    ++i; // move past '<'
 
-    return tokens[i].type == TokenType::LESS;
+    // Step 3: Parse the content inside <...>
+    bool hasType = false;
+    i = ts_.skipCommentsFrom(i);
+
+    while (i < tokenCount) {
+        TokenType tt = tokens[i].type;
+
+        // Closing '>' – success if we saw at least one type
+        if (tt == TokenType::GREATER) {
+            return hasType;
+        }
+
+        // Comma between types – skip and continue
+        if (tt == TokenType::COMMA) {
+            ++i;
+            i = ts_.skipCommentsFrom(i);
+            continue;
+        }
+
+        // If we see a token that cannot start a type, it's not a generic argument list
+        if (!isTypeStart(tt)) {
+            return false;
+        }
+
+        // We have a type start – skip the entire type expression
+        hasType = true;
+
+        // Handle array types: '[' ... ']'
+        if (tt == TokenType::LBRACKET) {
+            i = skipBalanced(i, TokenType::LBRACKET, TokenType::RBRACKET);
+            if (i >= tokenCount) return false;
+        }
+        // Handle function types: '(' ... ')'
+        else if (tt == TokenType::LPAREN) {
+            i = skipBalanced(i, TokenType::LPAREN, TokenType::RPAREN);
+            if (i >= tokenCount) return false;
+        }
+        // Handle nested generic types: e.g., `Box<Vec2<int>>`
+        else if (tt == TokenType::LESS) {
+            i = skipBalanced(i, TokenType::LESS, TokenType::GREATER);
+            if (i >= tokenCount) return false;
+        }
+        // Handle primitive or named type
+        else {
+            // For identifiers or primitives, we need to skip any following '?' or '!' suffixes
+            ++i; // consume the type start token
+            
+            // Skip optional '?' and '!' suffixes
+            while (i < tokenCount) {
+                i = ts_.skipCommentsFrom(i);
+                if (i >= tokenCount) break;
+                TokenType suffix = tokens[i].type;
+                if (suffix == TokenType::QUESTION || suffix == TokenType::BANG) {
+                    ++i;
+                    // After '!', there may be an error type (e.g., int!string)
+                    if (suffix == TokenType::BANG) {
+                        i = ts_.skipCommentsFrom(i);
+                        if (i < tokenCount && isTypeStart(tokens[i].type)) {
+                            // Skip the error type
+                            if (tokens[i].type == TokenType::LPAREN) {
+                                i = skipBalanced(i, TokenType::LPAREN, TokenType::RPAREN);
+                            } else if (tokens[i].type == TokenType::LESS) {
+                                i = skipBalanced(i, TokenType::LESS, TokenType::GREATER);
+                            } else if (tokens[i].type == TokenType::LBRACKET) {
+                                i = skipBalanced(i, TokenType::LBRACKET, TokenType::RBRACKET);
+                            } else {
+                                ++i; // simple type
+                            }
+                        }
+                    }
+                } else {
+                    break;
+                }
+            }
+        }
+
+        // After skipping a type, check what comes next
+        i = ts_.skipCommentsFrom(i);
+        if (i >= tokenCount) return false;
+
+        // If next token is '>', we're done – success
+        if (tokens[i].type == TokenType::GREATER) {
+            return hasType;
+        }
+        // If next token is ',', continue to next type
+        if (tokens[i].type == TokenType::COMMA) {
+            ++i;
+            i = ts_.skipCommentsFrom(i);
+            continue;
+        }
+        // Any other token means this is not a valid generic argument list
+        return false;
+    }
+
+    // Ran out of tokens before finding '>'
+    return false;
 }

@@ -43,6 +43,8 @@ enum class DiagCode : uint32_t {
     E1023,          ///< Mismatched parentheses in curry type.
     E1024,          ///< Invalid context for generic array
     E1025,          ///< Missing type annotation in function type parameter (e.g., `(T) -> U` instead of `(t T) -> U`)
+    E1026,          ///< Generic argument cannot be a reference type (&T).
+    E1027,          ///< Generic argument cannot be a pointer type (*T).
 
     // ========== 2000–2999: Semantic ==========
     E2001 = 2000,   ///< Undeclared identifier '%s'.

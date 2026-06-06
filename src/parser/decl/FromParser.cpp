@@ -126,7 +126,7 @@ ASTPtr<FromDeclAST> Parser::parseFromDecl(Visibility vis) {
     }
     // Case 2: Generic struct type or generic type alias (IDENTIFIER '<')
     else if (ts_.check(TokenType::IDENTIFIER) && 
-             looksLikeGenericTypeInstantiation()) {
+        looksLikeGenericTypeInstantiation()) {
         
         InternedString typeName = pool_.intern(ts_.advance().value);
         LUC_LOG_DECL_EXTREME("parseFromDecl: generic struct target " << pool_.lookup(typeName));

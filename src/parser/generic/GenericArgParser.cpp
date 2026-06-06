@@ -139,6 +139,21 @@ TypePtr Parser::parseGenericArg() {
         errorAt(DiagCode::E1005, "expected type in generic argument list");
         return arena_.make<UnknownTypeAST>();
     }
+    
+    // Disallow reference types (&T) as generic arguments
+    if (arg->isa<RefTypeAST>()) {
+        LUC_LOG_TYPE("parseGenericArg: ERROR - reference type cannot be generic argument");
+        errorAt(DiagCode::E1026, "Reference type '&T' cannot be used as a generic argument. Use a type alias if needed.");
+        return arena_.make<UnknownTypeAST>();
+    }
+    
+    // Disallow pointer types (*T) as generic arguments
+    if (arg->isa<PtrTypeAST>()) {
+        LUC_LOG_TYPE("parseGenericArg: ERROR - pointer type cannot be generic argument");
+        errorAt(DiagCode::E1027, "Pointer type '*T' cannot be used as a generic argument. Use a type alias if needed.");
+        return arena_.make<UnknownTypeAST>();
+    }
+    
     LUC_LOG_TYPE_EXTREME("parseGenericArg: success, parsed type");
     return arg;
 }

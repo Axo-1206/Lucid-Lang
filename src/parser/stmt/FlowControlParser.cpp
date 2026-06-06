@@ -57,7 +57,7 @@ ASTPtr<IfStmtAST> Parser::parseIfStmt() {
 
     if (!ts_.check(TokenType::LBRACE)) {
         LUC_LOG_STMT("parseIfStmt: ERROR - expected '{' after condition");
-        errorAt(DiagCode::E1001, "expected '{' after if condition");
+        errorAt(DiagCode::E1001, "expected '{' after if condition", ts_.peek().value);
         auto node = arena_.make<IfStmtAST>();
         node->loc = loc;
         node->condition = std::move(condition);
@@ -127,6 +127,9 @@ ASTPtr<ReturnStmtAST> Parser::parseReturnStmt() {
     SourceLocation loc = ts_.currentLoc();
     ts_.consume(TokenType::RETURN, "expected 'return'");
 
+    LUC_LOG_STMT_VERBOSE("parseReturnStmt: 'return' at line " << loc.line() 
+                         << ", col " << loc.column());
+
     auto node = arena_.make<ReturnStmtAST>();
     node->loc = loc;
 
@@ -164,13 +167,15 @@ ASTPtr<ReturnStmtAST> Parser::parseReturnStmt() {
             values.push_back(std::move(expr));
         }
         
-        LUC_LOG_STMT_EXTREME("parseReturnStmt: returning " << valueCount << " value(s)");
+        LUC_LOG_STMT_VERBOSE("parseReturnStmt: returning " << valueCount 
+                             << " value(s) at line " << loc.line() << ", col " << loc.column());
         
         auto builder = arena_.makeBuilder<ExprPtr>();
         for (auto& v : values) builder.push_back(std::move(v));
         node->values = builder.build();
     } else {
-        LUC_LOG_STMT_EXTREME("parseReturnStmt: void return (no values)");
+        LUC_LOG_STMT_VERBOSE("parseReturnStmt: void return at line " << loc.line() 
+                             << ", col " << loc.column());
     }
 
     return node;
@@ -200,8 +205,9 @@ ASTPtr<ReturnStmtAST> Parser::parseReturnStmt() {
 // ============================================================================
 
 ASTPtr<BreakStmtAST> Parser::parseBreakStmt() {
-    LUC_LOG_STMT_EXTREME("parseBreakStmt: break statement");
     SourceLocation loc = ts_.currentLoc();
+    LUC_LOG_STMT_VERBOSE("parseBreakStmt: 'break' at line " << loc.line() 
+                         << ", col " << loc.column());
     ts_.consume(TokenType::BREAK, "expected 'break'");
 
     auto node = arena_.make<BreakStmtAST>();
@@ -210,8 +216,9 @@ ASTPtr<BreakStmtAST> Parser::parseBreakStmt() {
 }
 
 ASTPtr<ContinueStmtAST> Parser::parseContinueStmt() {
-    LUC_LOG_STMT_EXTREME("parseContinueStmt: continue statement");
     SourceLocation loc = ts_.currentLoc();
+    LUC_LOG_STMT_VERBOSE("parseContinueStmt: 'continue' at line " << loc.line() 
+                         << ", col " << loc.column());
     ts_.consume(TokenType::CONTINUE, "expected 'continue'");
 
     auto node = arena_.make<ContinueStmtAST>();
