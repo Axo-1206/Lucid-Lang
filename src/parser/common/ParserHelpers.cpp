@@ -18,6 +18,7 @@
  *   4. Module Path            – parse dotted module paths for `use` declarations
  *   5. Function Reference     – parse `func_ref` for assignments and references
  *   6. Precedence Helpers     – map tokens to precedence levels and operator enums
+ *   7. isPrimitiveTypeToken   – check if a token is a primitive type
  * 
  * ## Design Principles
  * 
@@ -839,4 +840,58 @@ bool Parser::isAssignOp(TokenType t) const {
     }
     LUC_LOG_EXPR_EXTREME("isAssignOp: " << LucDebug::tokenTypeToString(t) << " -> " << result);
     return result;
+}
+
+// ============================================================================
+// 7. isPrimitiveTypeToken
+// ============================================================================
+// 
+// Static helper that returns true if a TokenType is a primitive type keyword.
+// 
+// Primitive types include:
+//   - Boolean:   bool
+//   - Signed:    byte, short, int, long, int8, int16, int32, int64
+//   - Unsigned:  ubyte, ushort, uint, ulong, uint8, uint16, uint32, uint64
+//   - Floating:  float, double, decimal
+//   - Text:      string, char
+//   - Dynamic:   any
+// 
+// Used by looksLikeType() and various type parsers.
+// 
+// ─── Complexity ────────────────────────────────────────────────────────────
+// O(1) – switch statement on the enum value.
+// 
+// ─── Note ──────────────────────────────────────────────────────────────────
+// This is static because it only depends on the TokenType, not on parser state.
+// ============================================================================
+
+bool Parser::isPrimitiveTypeToken(TokenType type) {
+    switch (type) {
+        case TokenType::TYPE_BOOL:
+        case TokenType::TYPE_BYTE:
+        case TokenType::TYPE_SHORT:
+        case TokenType::TYPE_INT:
+        case TokenType::TYPE_LONG:
+        case TokenType::TYPE_UBYTE:
+        case TokenType::TYPE_USHORT:
+        case TokenType::TYPE_UINT:
+        case TokenType::TYPE_ULONG:
+        case TokenType::TYPE_INT8:
+        case TokenType::TYPE_INT16:
+        case TokenType::TYPE_INT32:
+        case TokenType::TYPE_INT64:
+        case TokenType::TYPE_UINT8:
+        case TokenType::TYPE_UINT16:
+        case TokenType::TYPE_UINT32:
+        case TokenType::TYPE_UINT64:
+        case TokenType::TYPE_FLOAT:
+        case TokenType::TYPE_DOUBLE:
+        case TokenType::TYPE_DECIMAL:
+        case TokenType::TYPE_STRING:
+        case TokenType::TYPE_CHAR:
+        case TokenType::TYPE_ANY:
+            return true;
+        default:
+            return false;
+    }
 }

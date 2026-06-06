@@ -59,9 +59,14 @@ struct SemanticContext {
      */
     template<typename T>
     static std::string toString(const T& value) {
-        std::ostringstream oss;
-        oss << value;
-        return oss.str();
+        // For types with operator<<, use ostringstream
+        if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, std::string_view> || std::is_same_v<T, const char*>) {
+            return toString_impl(value);
+        } else {
+            std::ostringstream oss;
+            oss << value;
+            return oss.str();
+        }
     }
 
     // Specialization for string_view
@@ -78,6 +83,9 @@ struct SemanticContext {
     static std::string toString(const std::string& s) {
         return s;
     }
+
+    // Specialization for InternedString
+    static std::string toString(const InternedString& is);
 
     /**
      * @brief Report an error with any number of format arguments.
@@ -101,6 +109,13 @@ struct SemanticContext {
     void warning(SourceLocation loc, DiagCode code, Args&&... args) const {
         std::initializer_list<std::string> argList = { toString(std::forward<Args>(args))... };
         diagnostic::warning(DiagnosticCategory::Semantic, currentFile, loc, code, argList);
+    }
+
+    template<typename T>
+    static std::string toString_impl(const T& value) {
+        std::ostringstream oss;
+        oss << value;
+        return oss.str();
     }
 
     /**

@@ -92,7 +92,6 @@ TypeAST* checkAwaitExpr(AwaitExprAST& node, SemanticContext& ctx);
 TypeAST* checkIfExpr(IfExprAST& node, SemanticContext& ctx);
 TypeAST* checkIntrinsicCallExpr(IntrinsicCallExprAST& node, SemanticContext& ctx);
 TypeAST* checkRangeExpr(RangeExprAST& node, SemanticContext& ctx);
-TypeAST* checkTypeConvExpr(TypeConvExprAST& node, SemanticContext& ctx);
 TypeAST* checkNullableChainExpr(NullableChainExprAST& node, SemanticContext& ctx);
 
 // ── Other Expressions ───────────────────────────────────────────────────────

@@ -41,10 +41,8 @@ void checkMultiVarDecl(MultiVarDeclAST& node, SemanticContext& ctx) {
                 auto targetTypeNode = ctx.arena.make<NamedTypeAST>(
                     varType->as<NamedTypeAST>()->name);
                 targetTypeNode->loc = node.rhs->loc;
-                auto convExpr = ctx.arena.make<TypeConvExprAST>(
-                    std::move(targetTypeNode), std::move(node.rhs), false);
-                convExpr->loc = node.rhs->loc;
-                node.rhs = std::move(convExpr);
+
+
                 checkExpr(node.rhs.get(), ctx);
             } else {
                 ctx.error(node.rhs->loc, DiagCode::E2008,

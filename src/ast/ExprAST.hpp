@@ -811,28 +811,6 @@ struct RangeExprAST : ExprAST {
 };
 
 /**
- * @brief An explicit type cast – safe primitive cast or unsafe bit reinterpret.
- *
- * @example
- *   float(x)       – safe cast
- *   *float(bits)   – unsafe bit reinterpret (isUnsafe = true)
- *
- * Safe casts are only allowed for widening primitive conversions and enum→int.
- * Unsafe casts are only allowed inside @extern declarations.
- */
-struct TypeConvExprAST : ExprAST {
-    static constexpr ASTKind staticKind = ASTKind::TypeConvExpr;
-
-    TypePtr targetType; // the type to convert to
-    ExprPtr expr;       // the value being converted
-
-    TypeConvExprAST(TypePtr t, ExprPtr e, bool unsafe = false)
-        : ExprAST(ASTKind::TypeConvExpr),
-          targetType(std::move(t)), expr(std::move(e)) {}
-
-};
-
-/**
  * @brief A compiler‑builtin call invoked with the '#' prefix.
  *
  * @example

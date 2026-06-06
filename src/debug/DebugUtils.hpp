@@ -73,7 +73,6 @@ namespace LucDebug {
             case ASTKind::MatchExpr:          return "MatchExpr";
             case ASTKind::IfExpr:             return "IfExpr";
             case ASTKind::RangeExpr:          return "RangeExpr";
-            case ASTKind::TypeConvExpr:       return "TypeConvExpr";
             case ASTKind::ResolveExpr:        return "ResolveExpr";
             case ASTKind::OkArm:              return "OkArm";
             case ASTKind::ErrArm:             return "ErrArm";

@@ -126,7 +126,7 @@ std::string formatType(const TypeAST* type, const StringPool* pool) {
                 res += " -> ";
                 for (size_t i = 0; i < sig.returnTypes.size(); ++i) {
                     if (i > 0) res += ", ";
-                    res += formatType(sig.returnTypes[i].get(), pool);
+                    res += formatType(sig.returnTypes[i], pool);
                 }
             }
             return res;
@@ -258,7 +258,7 @@ void dumpFuncType(std::string& out, const FuncTypeAST* node, const StringPool* p
         out += getIndent(indentLevel + 1) + "-> ";
         for (size_t i = 0; i < sig.returnTypes.size(); ++i) {
             if (i > 0) out += ", ";
-            out += formatType(sig.returnTypes[i].get(), pool);
+            out += formatType(sig.returnTypes[i], pool);
         }
         out += "\n";
     }
@@ -683,13 +683,6 @@ void dumpRangeExpr(std::string& out, const RangeExprAST* node, const StringPool*
     if (node->hi) dumpNode(out, node->hi.get(), pool, indentLevel + 1);
 }
 
-void dumpTypeConvExpr(std::string& out, const TypeConvExprAST* node, const StringPool* pool, int indentLevel) {
-    std::string header = "TypeConvExprAST";
-    if (node->targetType) header += " -> " + formatType(node->targetType.get(), pool);
-    printNodeHeader(out, indentLevel, *node, header);
-    if (node->expr) dumpNode(out, node->expr.get(), pool, indentLevel + 1);
-}
-
 void dumpResolveExpr(std::string& out, const ResolveExprAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "ResolveExprAST");
     if (node->subject) dumpNode(out, node->subject.get(), pool, indentLevel + 1);
@@ -948,7 +941,6 @@ void dumpNode(std::string& out, const BaseAST* node, const StringPool* pool, int
         case ASTKind::MatchExpr:           dumpMatchExpr(out, static_cast<const MatchExprAST*>(node), pool, indentLevel); break;
         case ASTKind::IfExpr:              dumpIfExpr(out, static_cast<const IfExprAST*>(node), pool, indentLevel); break;
         case ASTKind::RangeExpr:           dumpRangeExpr(out, static_cast<const RangeExprAST*>(node), pool, indentLevel); break;
-        case ASTKind::TypeConvExpr:        dumpTypeConvExpr(out, static_cast<const TypeConvExprAST*>(node), pool, indentLevel); break;
         case ASTKind::ResolveExpr:         dumpResolveExpr(out, static_cast<const ResolveExprAST*>(node), pool, indentLevel); break;
         case ASTKind::OkArm:               dumpOkArm(out, static_cast<const OkArmAST*>(node), pool, indentLevel); break;
         case ASTKind::ErrArm:              dumpErrArm(out, static_cast<const ErrArmAST*>(node), pool, indentLevel); break;

@@ -690,26 +690,42 @@ ExprPtr Parser::parsePrimaryExpr(bool allowStructLiteral) {
         return inner;
     }
 
+    // =================================================================
+    // Primitive type names in expression context (e.g., int(42))
+    // Treat them as identifiers; the call will be parsed in parsePostfixExpr.
+    // =================================================================
+    if (isPrimitiveTypeToken(ts_.peekType())) {
+        SourceLocation primLoc = ts_.currentLoc();
+        Token primTok = ts_.advance();
+        InternedString name = pool_.intern(primTok.value);
+        LUC_LOG_EXPR_VERBOSE("parsePrimaryExpr: primitive type name used as conversion: '" << primTok.value << "'");
+        auto ident = arena_.make<IdentifierExprAST>(name);
+        ident->loc = primLoc;
+        return ident;
+    }
+
+    // =================================================================
+    // Identifier handling (variables, generic instantiations,
+    // behavior access, struct literals)
+    // =================================================================
     if (ts_.check(TokenType::IDENTIFIER)) {
         SourceLocation idenLoc = ts_.currentLoc();
         Token identTok = ts_.advance();
         InternedString name = pool_.intern(identTok.value);
         LUC_LOG_EXPR_VERBOSE("parsePrimaryExpr: identifier '" << identTok.value 
-                            << "' at line " << identTok.line << ", col " << identTok.column);
+                             << "' at line " << identTok.line << ", col " << identTok.column);
         
-        // Use the robust lookahead to determine if this is a generic instantiation
+        // Tentative generic argument parsing – if it fails, restore token stream.
         ArenaSpan<TypePtr> genericArgs;
-        if (looksLikeGenericTypeInstantiation()) {
-            // We are positioned after the identifier; the next token is '<'
-            LUC_LOG_EXPR_EXTREME("parsePrimaryExpr: looks like generic instantiation for '" 
-                                << identTok.value << "'");
+        if (ts_.check(TokenType::LESS) && looksLikeGenericTypeInstantiation()) {
+            LUC_LOG_EXPR_EXTREME("parsePrimaryExpr: generic instantiation for '" << identTok.value << "'");
             ts_.advance(); // consume '<'
-            genericArgs = parseGenericArgs(); // This will now succeed cleanly
+            genericArgs = parseGenericArgs();
             LUC_LOG_EXPR("parsePrimaryExpr: parsed " << genericArgs.size() 
-                        << " generic args for '" << identTok.value << "'");
+                         << " generic args for '" << identTok.value << "'");
         }
         
-        // Check for behavior access (method call) – takes precedence over struct literal
+        // Check for behavior access (method call)
         if (ts_.check(TokenType::COLON)) {
             LUC_LOG_EXPR_VERBOSE("parsePrimaryExpr: behavior access (method call)");
             ts_.advance(); // consume ':'
@@ -728,7 +744,7 @@ ExprPtr Parser::parsePrimaryExpr(bool allowStructLiteral) {
             node->isBehaviorMember = true;
             if (genericArgs.size() > 0) {
                 LUC_LOG_EXPR("parsePrimaryExpr: warning – method '" << identTok.value << ":" << methodTok.value 
-                            << "' has generic arguments (ignored)");
+                             << "' has generic arguments (ignored)");
             }
             return node;
         }
@@ -736,7 +752,7 @@ ExprPtr Parser::parsePrimaryExpr(bool allowStructLiteral) {
         // Check for struct literal (with or without generic args)
         if (allowStructLiteral && ts_.check(TokenType::LBRACE)) {
             LUC_LOG_EXPR_VERBOSE("parsePrimaryExpr: struct literal '" << identTok.value 
-                                << "' with " << genericArgs.size() << " generic args");
+                                 << "' with " << genericArgs.size() << " generic args");
             return parseStructLiteralExpr(name, genericArgs);
         }
         
@@ -746,11 +762,12 @@ ExprPtr Parser::parsePrimaryExpr(bool allowStructLiteral) {
         node->genericArgs = genericArgs;
         if (genericArgs.size() > 0) {
             LUC_LOG_EXPR("parsePrimaryExpr: generic function reference '" << identTok.value 
-                        << "' with " << genericArgs.size() << " args");
+                         << "' with " << genericArgs.size() << " args");
         }
         return node;
     }
 
+    // Fallback to literal
     LUC_LOG_EXPR_VERBOSE("parsePrimaryExpr: falling back to parseLiteralExpr");
     return parseLiteralExpr();
 }

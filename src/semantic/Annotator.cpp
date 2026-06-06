@@ -215,12 +215,6 @@ static void annotateExpr(ExprAST* expr, SemanticContext& ctx) {
             re->isConst = re->lo->isConst && re->hi->isConst;
             break;
         }
-        case ASTKind::TypeConvExpr: {
-            auto* tc = static_cast<TypeConvExprAST*>(expr);
-            annotateExpr(tc->expr.get(), ctx);
-            tc->isConst = tc->expr->isConst;
-            break;
-        }
         case ASTKind::IntrinsicCallExpr: {
             auto* ic = static_cast<IntrinsicCallExprAST*>(expr);
             for (auto& arg : ic->args) annotateExpr(arg.get(), ctx);

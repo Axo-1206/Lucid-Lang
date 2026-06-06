@@ -98,7 +98,6 @@ struct ErrArmAST;            // err (e E) { ... }
 struct MatchExprAST;
 struct IfExprAST;
 struct RangeExprAST;
-struct TypeConvExprAST;
 
 // Pattern nodes (defined in ExprAST.hpp)
 struct BindPatternAST;
@@ -221,7 +220,6 @@ enum class ASTKind : uint16_t {
     MatchExpr,
     IfExpr,
     RangeExpr,
-    TypeConvExpr,
 
     // Statement nodes
     BlockStmt,

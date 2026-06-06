@@ -30,6 +30,7 @@ namespace TypeChecker {
 
     // ── Custom conversion lookup ───────────────────────────────────────────
     Symbol* isFromCastable(TypeAST* src, TypeAST* target, SemanticContext& ctx);
+    Symbol* isFromCastableMulti(const std::vector<TypeAST*>& srcTypes, TypeAST* target, SemanticContext& ctx);
 
     // ── Type queries ───────────────────────────────────────────────────────
     bool isIntegerType(TypeAST* type, SemanticContext& ctx);

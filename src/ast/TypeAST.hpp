@@ -407,9 +407,9 @@ struct PtrTypeAST : TypeAST {
  * @see FuncTypeAST for the qualifier‑bearing version.
  */
 struct FuncSignature {
-    ArenaSpan<ParamPtr> allParams;          // Flattened parameters across all groups
-    ArenaSpan<size_t>   groupSizes;         // Size of each curry group
-    ArenaSpan<TypePtr>  returnTypes;        // Return types (empty = void)
+    ArenaSpan<ParamAST*> allParams; // raw pointers
+    ArenaSpan<size_t>   groupSizes; 
+    ArenaSpan<TypeAST*> returnTypes; // raw pointers
 
     FuncSignature() = default;
 
@@ -423,11 +423,11 @@ struct FuncSignature {
     size_t totalParamCount() const { return allParams.size(); }
     size_t groupCount() const { return groupSizes.size(); }
 
-    ArenaSpan<ParamPtr> getGroup(size_t idx) const {
+    ArenaSpan<ParamAST*> getGroup(size_t idx) const {
         if (idx >= groupSizes.size()) return {};
         size_t offset = 0;
         for (size_t i = 0; i < idx; ++i) offset += groupSizes[i];
-        return ArenaSpan<ParamPtr>(allParams.data() + offset, groupSizes[idx]);
+        return ArenaSpan<ParamAST*>(allParams.data() + offset, groupSizes[idx]);
     }
 };
 

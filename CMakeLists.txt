@@ -86,7 +86,6 @@ add_executable(luc-comp
     src/parser/expr/special/IfExprParser.cpp
     src/parser/expr/special/AwaitParser.cpp
     src/parser/expr/special/ResolveParser.cpp
-    src/parser/expr/special/TypeConvParser.cpp
     
     src/parser/expr/match/MatchParser.cpp
     src/parser/expr/match/PatternParser.cpp
@@ -142,7 +141,6 @@ add_executable(luc-comp
     src/semantic/checkers/exprCheckers/special/IfExprChecker.cpp
     src/semantic/checkers/exprCheckers/special/IntrinsicChecker.cpp
     src/semantic/checkers/exprCheckers/special/RangeChecker.cpp
-    src/semantic/checkers/exprCheckers/special/TypeConvChecker.cpp
     src/semantic/checkers/exprCheckers/special/NullableChainChecker.cpp
     src/semantic/checkers/exprCheckers/match/MatchChecker.cpp
     src/semantic/checkers/exprCheckers/match/PatternChecker.cpp

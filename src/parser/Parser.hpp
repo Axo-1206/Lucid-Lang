@@ -482,7 +482,6 @@ private:
     ExprPtr parseIntrinsicCallExpr();
     ExprPtr parseMatchExpr();
     ExprPtr parseIfExpr(bool allowStructLiteral = true);
-    ExprPtr parseTypeConvExpr(TypePtr targetType);
     ExprPtr parseRangeExpr(ExprPtr lo, bool allowStructLiteral = true);
 
     // ---- Call & index ----

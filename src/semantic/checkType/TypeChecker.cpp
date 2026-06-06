@@ -606,6 +606,32 @@ Symbol* TypeChecker::isFromCastable(TypeAST* src, TypeAST* target, SemanticConte
     return nullptr;
 }
 
+Symbol* TypeChecker::isFromCastableMulti(const std::vector<TypeAST*>& srcTypes, TypeAST* target, SemanticContext& ctx) {
+    if (!target || !ctx.symbols) return nullptr;
+    std::string targetMangled = NameMangler::mangleType(target, ctx.pool, ctx.symbols);
+    std::string prefix = NameMangler::getFromPrefix(targetMangled);
+    std::vector<Symbol*> candidates = ctx.symbols->findSymbolsByPrefix(prefix, ctx.pool);
+    for (Symbol* sym : candidates) {
+        if (!sym || sym->kind != SymbolKind::Casting) continue;
+        if (!sym->decl || !sym->decl->isa<FromEntryAST>()) continue;
+        auto* entry = sym->decl->as<FromEntryAST>();
+        if (entry->sig.groupCount() == 0) continue;
+        auto firstGroup = entry->sig.getGroup(0);
+        if (firstGroup.size() != srcTypes.size()) continue;
+        bool match = true;
+        for (size_t i = 0; i < firstGroup.size(); ++i) {
+            TypeAST* paramType = firstGroup[i]->type.get();
+            if (!paramType) { match = false; break; }
+            if (!isAssignable(srcTypes[i], paramType, ctx)) {
+                match = false;
+                break;
+            }
+        }
+        if (match) return sym;
+    }
+    return nullptr;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Comparison Helpers
 // ─────────────────────────────────────────────────────────────────────────────

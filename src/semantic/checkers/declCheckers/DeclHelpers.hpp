@@ -57,11 +57,6 @@ static inline bool isConstExpr(ExprAST* expr, SemanticContext& ctx) {
         return isConstExpr(expr->as<UnaryExprAST>()->operand.get(), ctx);
     }
 
-    if (expr->isa<TypeConvExprAST>()) {
-        auto* tc = expr->as<TypeConvExprAST>();
-        return isConstExpr(tc->expr.get(), ctx);
-    }
-
     return false;
 }
 

@@ -112,6 +112,7 @@ void checkVarDecl(VarDeclAST& node, SemanticContext& ctx, bool isLocal) {
     }
 
     // ── Type assignability check, with optional from‑casting ──────────────────
+    // NOTE: this implementation is not fully correct
     if (!TypeChecker::isAssignable(initType, declaredType, ctx)) {
         // Try to find a `from` conversion from initType to declaredType
         Symbol* fromCast = TypeChecker::isFromCastable(initType, declaredType, ctx);
@@ -119,11 +120,7 @@ void checkVarDecl(VarDeclAST& node, SemanticContext& ctx, bool isLocal) {
             // Rewrite the initialiser as an explicit cast
             auto targetTypeNode = ctx.arena.make<NamedTypeAST>(
                 declaredType->as<NamedTypeAST>()->name);
-            targetTypeNode->loc = node.loc;
-            auto convExpr = ctx.arena.make<TypeConvExprAST>(
-                std::move(targetTypeNode), std::move(node.init), false);
-            convExpr->loc = node.init->loc;
-            node.init = std::move(convExpr);
+                 targetTypeNode->loc = node.loc;
             checkExpr(node.init.get(), ctx);
         } else {
             ctx.error(node.loc, DiagCode::E2008,

@@ -74,9 +74,6 @@ TypeAST* checkExpr(ExprAST* node, SemanticContext& ctx) {
         case ASTKind::RangeExpr:
             result = checkRangeExpr(*node->as<RangeExprAST>(), ctx);
             break;
-        case ASTKind::TypeConvExpr:
-            result = checkTypeConvExpr(*node->as<TypeConvExprAST>(), ctx);
-            break;
         case ASTKind::NullableChainExpr:
             result = checkNullableChainExpr(*node->as<NullableChainExprAST>(), ctx);
             break;
