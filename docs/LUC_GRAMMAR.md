@@ -19,6 +19,24 @@ A+                          -- one or more
 'token'                     -- literal terminal
 ```
 
+### Shared Productions
+
+The following productions are used across multiple sections. They are defined once here and referenced by name throughout:
+
+```
+-- A named function reference — used in impl assignment, from path entry,
+-- pipeline steps, and composition operands.
+-- func_ref may be plain or carry qualifiers (~async, ~nullable, ~parallel).
+-- The full resolved type including qualifiers is what the caller sees.
+-- func_ref must be a named reference — NOT a call expression, NOT a
+-- factory function whose return value is a function, NOT a partial
+-- application result, NOT an anonymous function literal.
+-- @extern functions are allowed if non-variadic.
+func_ref    := IDENTIFIER                      -- local or imported name
+             | IDENTIFIER '.' IDENTIFIER       -- module path: pkg.fn
+             | func_ref generic_args           -- generic instantiation: fn<T>
+```
+
 ---
 
 ## Separators
@@ -2092,15 +2110,10 @@ method_decl     := IDENTIFIER [ qualifier_list ] param_group { param_group }
                    -- func_ref must be a named function reference — NOT a call expression,
                    -- NOT a returned function, NOT a partial application result
 
-func_ref        := IDENTIFIER                -- local or imported name
-                 | IDENTIFIER '.' IDENTIFIER -- module path: file.fn
-                 | func_ref generic_args     -- generic instantiation: fn<T>
-                   -- func_ref may be plain or carry qualifiers (~async, ~nullable, ~parallel)
-                   -- the full resolved type including qualifiers becomes the method's type
-                   -- @extern functions are allowed if non-variadic
-                   -- function calls, expressions that produce functions, and
-                   -- factory functions whose return value is a function are ALL forbidden
-                   -- use an inline body for those cases
+func_ref        := see Shared Productions in Notation section
+                   -- local name, module path, or generic instantiation
+                   -- qualifiers flow through from the referenced function
+                   -- call expressions and factory functions are forbidden
 ```
 
 The `as IDENTIFIER` clause introduces a local alias for the receiver inside the method bodies. If omitted, the receiver is accessible as `self`.
@@ -2666,9 +2679,7 @@ from_entry  := param_group { param_group } '->' type '=' func_body   -- inline e
                -- the return type must match the enclosing from target type
                -- no receiver injection: from entries convert TO the target, not on it
 
-func_ref    := IDENTIFIER
-             | IDENTIFIER '.' IDENTIFIER     -- module path: file.fn
-             | func_ref generic_args         -- generic instantiation: fn<T>
+func_ref    := see Shared Productions in Notation section
 ```
 
 A `from` block defines implicit and explicit conversions from a source type (described by the parameter groups) to a target type. The target type can be **any type** — primitive, struct, enum, type alias, array type, or function type.
@@ -2963,12 +2974,13 @@ pipeline_expr   := pipeline_seed { '|>' pipeline_step }
 
 pipeline_seed   := expr
 
-pipeline_step   := IDENTIFIER
+pipeline_step   := func_ref                            -- named function, module path, or fn<T>
                  | expr ':' IDENTIFIER                 -- method call on value
                  | IDENTIFIER '.' IDENTIFIER           -- non-nullable data field
-                 | IDENTIFIER '(' arg_list ')' '!'     -- argument pack
-                 | func_ref generic_args               -- instantiated generic: fn<T>
+                 | func_ref '(' arg_list ')' '!'       -- argument pack
                  | anon_func
+                   -- func_ref: see Shared Productions in Notation section
+                   -- ~nullable and ~parallel func_ref forbidden as steps (see Rules)
 ```
 
 | Step form      | What `\|>` does                           | Nullability                |
@@ -3112,10 +3124,11 @@ if p.onComplete != nil {
 ```
 compose_expr    := pipeline_expr { '+>' compose_operand }
 
-compose_operand := IDENTIFIER
-                 | expr ':' IDENTIFIER          -- method reference on a value
-                 | expr '.' IDENTIFIER          -- non-nullable data field only
-                 | func_ref generic_args        -- instantiated generic: fn<T>
+compose_operand := func_ref                      -- named function, module path, or fn<T>
+                 | expr ':' IDENTIFIER           -- method reference on a value
+                 | expr '.' IDENTIFIER           -- non-nullable data field only
+                   -- func_ref: see Shared Productions in Notation section
+                   -- ~nullable func_ref forbidden as operand (see Rules)
 ```
 
 ```luc
