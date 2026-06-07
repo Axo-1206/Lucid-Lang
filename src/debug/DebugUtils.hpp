@@ -58,6 +58,7 @@ namespace LucDebug {
             case ASTKind::BehaviorAccessExpr: return "BehaviorAccessExpr";
             case ASTKind::CallExpr:           return "CallExpr";
             case ASTKind::IndexExpr:          return "IndexExpr";
+            case ASTKind::SliceExpr:          return "SliceExpr";
             case ASTKind::BinaryExpr:         return "BinaryExpr";
             case ASTKind::UnaryExpr:          return "UnaryExpr";
             case ASTKind::AssignExpr:         return "AssignExpr";
@@ -321,7 +322,7 @@ namespace LucDebug {
                 result += "<";
                 for (size_t i = 0; i < named->genericArgs.size(); ++i) {
                     if (i > 0) result += ", ";
-                    result += formatType(named->genericArgs[i].get(), pool);
+                    result += formatType(named->genericArgs[i], pool);
                 }
                 result += ">";
             }

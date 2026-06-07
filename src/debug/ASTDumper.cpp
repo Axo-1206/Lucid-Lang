@@ -60,42 +60,66 @@ std::string formatType(const TypeAST* type, const StringPool* pool) {
                 res += "<";
                 for (size_t i = 0; i < n->genericArgs.size(); ++i) {
                     if (i > 0) res += ", ";
-                    res += formatType(n->genericArgs[i].get(), pool);
+                    res += formatType(n->genericArgs[i], pool);
                 }
                 res += ">";
             }
             return res;
         }
 
+        case ASTKind::GenericParamType: {
+            auto* gp = static_cast<const GenericParamTypeAST*>(type);
+            std::string res = toStr(pool, gp->name);
+            if (gp->isPhantom) res += " (phantom)";
+            return res;
+        }
+
         case ASTKind::NullableType:
-            return formatType(static_cast<const NullableTypeAST*>(type)->inner.get(), pool) + "?";
+            return formatType(static_cast<const NullableTypeAST*>(type)->inner, pool) + "?";
 
         case ASTKind::ResultType: {
             auto* r = static_cast<const ResultTypeAST*>(type);
-            std::string innerStr = formatType(r->inner.get(), pool);
+            std::string innerStr = formatType(r->inner, pool);
             if (r->hasErrorType()) {
-                return innerStr + "!" + formatType(r->errorType.get(), pool);
+                return innerStr + "!" + formatType(r->errorType, pool);
             }
             return innerStr + "!";
         }
 
         case ASTKind::RefType:
-            return "&" + formatType(static_cast<const RefTypeAST*>(type)->inner.get(), pool);
+            return "&" + formatType(static_cast<const RefTypeAST*>(type)->inner, pool);
 
         case ASTKind::PtrType:
-            return "*" + formatType(static_cast<const PtrTypeAST*>(type)->inner.get(), pool);
+            return "*" + formatType(static_cast<const PtrTypeAST*>(type)->inner, pool);
 
         case ASTKind::ArrayType: {
             auto* a = static_cast<const ArrayTypeAST*>(type);
             switch (a->arrayKind) {
                 case ArrayKind::Slice:
-                    return "[_, " + formatType(a->element.get(), pool) + "]";
+                    return "[_, " + formatType(a->element, pool) + "]";
                 case ArrayKind::Dynamic:
-                    return "[*, " + formatType(a->element.get(), pool) + "]";
+                    return "[*, " + formatType(a->element, pool) + "]";
                 case ArrayKind::Fixed:
-                    return "[" + std::to_string(a->size) + ", " + formatType(a->element.get(), pool) + "]";
+                    return "[" + std::to_string(a->size) + ", " + formatType(a->element, pool) + "]";
             }
             return "<invalid array>";
+        }
+
+        case ASTKind::GenericArrayType: {
+            auto* ga = static_cast<const GenericArrayTypeAST*>(type);
+            std::string kindPart;
+            switch (ga->arrayKind) {
+                case ArrayKind::Slice:
+                    kindPart = "_";
+                    break;
+                case ArrayKind::Dynamic:
+                    kindPart = "*";
+                    break;
+                case ArrayKind::Fixed:
+                    kindPart = std::to_string(ga->size);
+                    break;
+            }
+            return "[" + kindPart + ", <" + toStr(pool, ga->typeParamName) + ">]";
         }
 
         case ASTKind::FuncType: {
@@ -115,8 +139,12 @@ std::string formatType(const TypeAST* type, const StringPool* pool) {
                 for (size_t i = 0; i < groupSize; ++i) {
                     if (i > 0) res += ", ";
                     const auto& param = sig.allParams[paramOffset + i];
-                    if (param->type) res += formatType(param->type.get(), pool);
-                    if (param->isVariadic) res += "...";
+                    if (param && param->type) {
+                        res += formatType(param->type, pool);
+                        if (param->isVariadic) res += "...";
+                    } else {
+                        res += "<unknown>";
+                    }
                 }
                 res += ")";
                 paramOffset += groupSize;
@@ -165,7 +193,7 @@ void dumpProgram(std::string& out, const ProgramAST* node, const StringPool* poo
     out += getIndent(indentLevel) + "\tdecls (count): " + std::to_string(node->decls.size()) + "\n";
 
     for (const auto& decl : node->decls) {
-        dumpNode(out, decl.get(), pool, indentLevel + 1);
+        dumpNode(out, decl, pool, indentLevel + 1);
     }
 }
 
@@ -176,25 +204,25 @@ void dumpPrimitiveType(std::string& out, const PrimitiveTypeAST* node, const Str
 void dumpNamedType(std::string& out, const NamedTypeAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "NamedTypeAST '" + toStr(pool, node->name) + "'");
     for (const auto& arg : node->genericArgs) {
-        dumpNode(out, arg.get(), pool, indentLevel + 1);
+        dumpNode(out, arg, pool, indentLevel + 1);
     }
 }
 
 void dumpNullableType(std::string& out, const NullableTypeAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "NullableTypeAST");
-    if (node->inner) dumpNode(out, node->inner.get(), pool, indentLevel + 1);
+    if (node->inner) dumpNode(out, node->inner, pool, indentLevel + 1);
 }
 
 void dumpResultType(std::string& out, const ResultTypeAST* node, const StringPool* pool, int indentLevel) {
     std::string header = "ResultTypeAST ";
     if (node->hasErrorType()) {
-        header += formatType(node->inner.get(), pool) + "!" + formatType(node->errorType.get(), pool);
+        header += formatType(node->inner, pool) + "!" + formatType(node->errorType, pool);
     } else {
-        header += formatType(node->inner.get(), pool) + "!";
+        header += formatType(node->inner, pool) + "!";
     }
     printNodeHeader(out, indentLevel, *node, header);
-    dumpNode(out, node->inner.get(), pool, indentLevel + 1);
-    if (node->errorType) dumpNode(out, node->errorType.get(), pool, indentLevel + 1);
+    dumpNode(out, node->inner, pool, indentLevel + 1);
+    if (node->errorType) dumpNode(out, node->errorType, pool, indentLevel + 1);
 }
 
 void dumpArrayType(std::string& out, const ArrayTypeAST* node, const StringPool* pool, int indentLevel) {
@@ -203,7 +231,7 @@ void dumpArrayType(std::string& out, const ArrayTypeAST* node, const StringPool*
         header += " size=" + std::to_string(node->size);
     }
     printNodeHeader(out, indentLevel, *node, header);
-    if (node->element) dumpNode(out, node->element.get(), pool, indentLevel + 1);
+    if (node->element) dumpNode(out, node->element, pool, indentLevel + 1);
 }
 
 void dumpGenericArrayType(std::string& out, const GenericArrayTypeAST* node, const StringPool* pool, int indentLevel) {
@@ -218,12 +246,12 @@ void dumpGenericArrayType(std::string& out, const GenericArrayTypeAST* node, con
 
 void dumpRefType(std::string& out, const RefTypeAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "RefTypeAST");
-    if (node->inner) dumpNode(out, node->inner.get(), pool, indentLevel + 1);
+    if (node->inner) dumpNode(out, node->inner, pool, indentLevel + 1);
 }
 
 void dumpPtrType(std::string& out, const PtrTypeAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "PtrTypeAST");
-    if (node->inner) dumpNode(out, node->inner.get(), pool, indentLevel + 1);
+    if (node->inner) dumpNode(out, node->inner, pool, indentLevel + 1);
 }
 
 void dumpFuncType(std::string& out, const FuncTypeAST* node, const StringPool* pool, int indentLevel) {
@@ -246,7 +274,7 @@ void dumpFuncType(std::string& out, const FuncTypeAST* node, const StringPool* p
             const auto& param = sig.allParams[paramOffset + i];
             if (param) {
                 out += toStr(pool, param->name) + " : ";
-                if (param->type) out += formatType(param->type.get(), pool);
+                if (param->type) out += formatType(param->type, pool);
                 if (param->isVariadic) out += "...";
             }
         }
@@ -291,10 +319,10 @@ void dumpUseDecl(std::string& out, const UseDeclAST* node, const StringPool* poo
 
 void dumpVarDecl(std::string& out, const VarDeclAST* node, const StringPool* pool, int indentLevel) {
     std::string header = "VarDeclAST '" + toStr(pool, node->name) + "'";
-    if (node->type) header += " : " + formatType(node->type.get(), pool);
+    if (node->type) header += " : " + formatType(node->type, pool);
     printNodeHeader(out, indentLevel, *node, header);
-    if (node->init) dumpNode(out, node->init.get(), pool, indentLevel + 1);
-    for (const auto& attr : node->attributes) dumpNode(out, attr.get(), pool, indentLevel + 1);
+    if (node->init) dumpNode(out, node->init, pool, indentLevel + 1);
+    for (const auto& attr : node->attributes) dumpNode(out, attr, pool, indentLevel + 1);
 }
 
 void dumpFuncDecl(std::string& out, const FuncDeclAST* node, const StringPool* pool, int indentLevel) {
@@ -313,34 +341,34 @@ void dumpFuncDecl(std::string& out, const FuncDeclAST* node, const StringPool* p
 
     // Dump function type (signature + qualifiers)
     if (node->funcType) {
-        dumpNode(out, node->funcType.get(), pool, indentLevel + 1);
+        dumpNode(out, node->funcType, pool, indentLevel + 1);
     }
     // Dump body
     if (node->body) {
-        dumpNode(out, node->body.get(), pool, indentLevel + 1);
+        dumpNode(out, node->body, pool, indentLevel + 1);
     }
     // Dump attributes
     for (const auto& attr : node->attributes) {
-        dumpNode(out, attr.get(), pool, indentLevel + 1);
+        dumpNode(out, attr, pool, indentLevel + 1);
     }
 }
 
 void dumpStructDecl(std::string& out, const StructDeclAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "StructDeclAST '" + toStr(pool, node->name) + "'");
-    for (const auto& field : node->fields) dumpNode(out, field.get(), pool, indentLevel + 1);
-    for (const auto& attr : node->attributes) dumpNode(out, attr.get(), pool, indentLevel + 1);
+    for (const auto& field : node->fields) dumpNode(out, field, pool, indentLevel + 1);
+    for (const auto& attr : node->attributes) dumpNode(out, attr, pool, indentLevel + 1);
 }
 
 void dumpFieldDecl(std::string& out, const FieldDeclAST* node, const StringPool* pool, int indentLevel) {
     std::string header = "FieldDeclAST '" + toStr(pool, node->name) + "'";
-    if (node->type) header += " : " + formatType(node->type.get(), pool);
+    if (node->type) header += " : " + formatType(node->type, pool);
     printNodeHeader(out, indentLevel, *node, header);
-    if (node->defaultVal) dumpNode(out, node->defaultVal.get(), pool, indentLevel + 1);
+    if (node->defaultVal) dumpNode(out, node->defaultVal, pool, indentLevel + 1);
 }
 
 void dumpEnumDecl(std::string& out, const EnumDeclAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "EnumDeclAST '" + toStr(pool, node->name) + "'");
-    for (const auto& variant : node->variants) dumpNode(out, variant.get(), pool, indentLevel + 1);
+    for (const auto& variant : node->variants) dumpNode(out, variant, pool, indentLevel + 1);
 }
 
 void dumpEnumVariant(std::string& out, const EnumVariantAST* node, const StringPool* pool, int indentLevel) {
@@ -354,13 +382,13 @@ void dumpTraitMethod(std::string& out, const TraitMethodAST* node, const StringP
 
     // Dump function type (signature + qualifiers)
     if (node->funcType) {
-        dumpNode(out, node->funcType.get(), pool, indentLevel + 1);
+        dumpNode(out, node->funcType, pool, indentLevel + 1);
     }
 }
 
 void dumpTraitDecl(std::string& out, const TraitDeclAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "TraitDeclAST '" + toStr(pool, node->name) + "'");
-    for (const auto& method : node->methods) dumpNode(out, method.get(), pool, indentLevel + 1);
+    for (const auto& method : node->methods) dumpNode(out, method, pool, indentLevel + 1);
 }
 
 void dumpTraitRef(std::string& out, const TraitRefAST* node, const StringPool* pool, int indentLevel) {
@@ -369,7 +397,7 @@ void dumpTraitRef(std::string& out, const TraitRefAST* node, const StringPool* p
         header += "<";
         for (size_t i = 0; i < node->genericArgs.size(); ++i) {
             if (i > 0) header += ", ";
-            header += formatType(node->genericArgs[i].get(), pool);
+            header += formatType(node->genericArgs[i], pool);
         }
         header += ">";
     }
@@ -382,7 +410,7 @@ void dumpImplDecl(std::string& out, const ImplDeclAST* node, const StringPool* p
         header = formatVisibility(node->visibility) + " " + header;
     }
     if (node->targetType) {
-        header += " for " + formatType(node->targetType.get(), pool);
+        header += " for " + formatType(node->targetType, pool);
     }
     if (!node->genericParams.empty()) {
         header += " <";
@@ -403,7 +431,7 @@ void dumpImplDecl(std::string& out, const ImplDeclAST* node, const StringPool* p
             header += "<";
             for (size_t i = 0; i < node->traitRef->genericArgs.size(); ++i) {
                 if (i > 0) header += ", ";
-                header += formatType(node->traitRef->genericArgs[i].get(), pool);
+                header += formatType(node->traitRef->genericArgs[i], pool);
             }
             header += ">";
         }
@@ -411,10 +439,10 @@ void dumpImplDecl(std::string& out, const ImplDeclAST* node, const StringPool* p
     printNodeHeader(out, indentLevel, *node, header);
 
     for (const auto& gp : node->genericParams) {
-        if (gp) dumpNode(out, gp.get(), pool, indentLevel + 1);
+        if (gp) dumpNode(out, gp, pool, indentLevel + 1);
     }
     for (const auto& method : node->methods) {
-        if (method) dumpNode(out, method.get(), pool, indentLevel + 1);
+        if (method) dumpNode(out, method, pool, indentLevel + 1);
     }
 }
 
@@ -433,13 +461,13 @@ void dumpMethodDecl(std::string& out, const MethodDeclAST* node, const StringPoo
     printNodeHeader(out, indentLevel, *node, header);
     
     if (node->funcType) {
-        dumpNode(out, node->funcType.get(), pool, indentLevel + 1);
+        dumpNode(out, node->funcType, pool, indentLevel + 1);
     }
     if (node->assignmentRef) {
-        dumpNode(out, node->assignmentRef.get(), pool, indentLevel + 1);
+        dumpNode(out, node->assignmentRef, pool, indentLevel + 1);
     }
     if (node->body) {
-        dumpNode(out, node->body.get(), pool, indentLevel + 1);
+        dumpNode(out, node->body, pool, indentLevel + 1);
     }
 }
 
@@ -449,7 +477,7 @@ void dumpFromDecl(std::string& out, const FromDeclAST* node, const StringPool* p
         header = formatVisibility(node->visibility) + " " + header;
     }
     if (node->targetType) {
-        header += " to " + formatType(node->targetType.get(), pool);
+        header += " to " + formatType(node->targetType, pool);
     }
     if (!node->genericParams.empty()) {
         header += " <";
@@ -464,22 +492,22 @@ void dumpFromDecl(std::string& out, const FromDeclAST* node, const StringPool* p
     printNodeHeader(out, indentLevel, *node, header);
 
     for (const auto& entry : node->entries) {
-        if (entry) dumpNode(out, entry.get(), pool, indentLevel + 1);
+        if (entry) dumpNode(out, entry, pool, indentLevel + 1);
     }
     for (const auto& gp : node->genericParams) {
-        if (gp) dumpNode(out, gp.get(), pool, indentLevel + 1);
+        if (gp) dumpNode(out, gp, pool, indentLevel + 1);
     }
 }
 
 void dumpFromEntry(std::string& out, const FromEntryAST* node, const StringPool* pool, int indentLevel) {
-    std::string header = "FromEntryAST '" + formatType(node->returnType.get(), pool) + "'";
+    std::string header = "FromEntryAST '" + formatType(node->returnType, pool) + "'";
     printNodeHeader(out, indentLevel, *node, header);
-    if (node->body) dumpNode(out, node->body.get(), pool, indentLevel + 1);
+    if (node->body) dumpNode(out, node->body, pool, indentLevel + 1);
 }
 
 void dumpTypeAliasDecl(std::string& out, const TypeAliasDeclAST* node, const StringPool* pool, int indentLevel) {
     std::string header = "TypeAliasDeclAST '" + toStr(pool, node->name) + "'";
-    if (node->aliasedType) header += " = " + formatType(node->aliasedType.get(), pool);
+    if (node->aliasedType) header += " = " + formatType(node->aliasedType, pool);
     printNodeHeader(out, indentLevel, *node, header);
 }
 
@@ -497,7 +525,7 @@ void dumpGenericParam(std::string& out, const GenericParamAST* node, const Strin
 
 void dumpParam(std::string& out, const ParamAST* node, const StringPool* pool, int indentLevel) {
     std::string header = "ParamAST '" + toStr(pool, node->name) + "'";
-    if (node->type) header += " : " + formatType(node->type.get(), pool);
+    if (node->type) header += " : " + formatType(node->type, pool);
     if (node->isVariadic) header += "...";
     printNodeHeader(out, indentLevel, *node, header);
 }
@@ -512,7 +540,7 @@ void dumpIdentifierExpr(std::string& out, const IdentifierExprAST* node, const S
         header += "<";
         for (size_t i = 0; i < node->genericArgs.size(); ++i) {
             if (i > 0) header += ", ";
-            header += formatType(node->genericArgs[i].get(), pool);
+            header += formatType(node->genericArgs[i], pool);
         }
         header += ">";
     }
@@ -521,7 +549,7 @@ void dumpIdentifierExpr(std::string& out, const IdentifierExprAST* node, const S
 
 void dumpArrayLiteralExpr(std::string& out, const ArrayLiteralExprAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "ArrayLiteralExprAST");
-    for (const auto& elem : node->elements) dumpNode(out, elem.get(), pool, indentLevel + 1);
+    for (const auto& elem : node->elements) dumpNode(out, elem, pool, indentLevel + 1);
 }
 
 void dumpStructLiteralExpr(std::string& out, const StructLiteralExprAST* node, const StringPool* pool, int indentLevel) {
@@ -530,48 +558,58 @@ void dumpStructLiteralExpr(std::string& out, const StructLiteralExprAST* node, c
         header += "<";
         for (size_t i = 0; i < node->genericArgs.size(); ++i) {
             if (i > 0) header += ", ";
-            header += formatType(node->genericArgs[i].get(), pool);
+            header += formatType(node->genericArgs[i], pool);
         }
         header += ">";
     }
     printNodeHeader(out, indentLevel, *node, header);
     for (const auto& init : node->inits) {
-        if (init && init->value) dumpNode(out, init->value.get(), pool, indentLevel + 1);
+        if (init && init->value) dumpNode(out, init->value, pool, indentLevel + 1);
     }
 }
 
 void dumpFieldInit(std::string& out, const FieldInitAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "FieldInitAST '" + toStr(pool, node->name) + "'");
-    if (node->value) dumpNode(out, node->value.get(), pool, indentLevel + 1);
+    if (node->value) dumpNode(out, node->value, pool, indentLevel + 1);
 }
 
 void dumpBinaryExpr(std::string& out, const BinaryExprAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "BinaryExprAST");
-    if (node->left) dumpNode(out, node->left.get(), pool, indentLevel + 1);
-    if (node->right) dumpNode(out, node->right.get(), pool, indentLevel + 1);
+    if (node->left) dumpNode(out, node->left, pool, indentLevel + 1);
+    if (node->right) dumpNode(out, node->right, pool, indentLevel + 1);
 }
 
 void dumpUnaryExpr(std::string& out, const UnaryExprAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "UnaryExprAST");
-    if (node->operand) dumpNode(out, node->operand.get(), pool, indentLevel + 1);
+    if (node->operand) dumpNode(out, node->operand, pool, indentLevel + 1);
 }
 
 void dumpCallExpr(std::string& out, const CallExprAST* node, const StringPool* pool, int indentLevel) {
     std::string header = "CallExprAST";
-    if (node->isAsyncCall) header += " (async)";
+    switch (node->callKind) {
+        case CallKind::Async:   header += " (async)"; break;
+        case CallKind::Nullable: header += " (nullable)"; break;
+        case CallKind::Parallel: header += " (parallel)"; break;
+        default: break;
+    }
     printNodeHeader(out, indentLevel, *node, header);
-    if (node->callee) dumpNode(out, node->callee.get(), pool, indentLevel + 1);
-    for (const auto& arg : node->args) dumpNode(out, arg.get(), pool, indentLevel + 1);
+    if (node->callee) dumpNode(out, node->callee, pool, indentLevel + 1);
+    for (const auto& arg : node->args) dumpNode(out, arg, pool, indentLevel + 1);
 }
 
 void dumpIndexExpr(std::string& out, const IndexExprAST* node, const StringPool* pool, int indentLevel) {
-    std::string header = "IndexExprAST";
-    header += (node->kind == IndexKind::Slice) ? " (slice)" : " (element)";
-    if (node->isExclusive) header += " exclusive";
+    printNodeHeader(out, indentLevel, *node, "IndexExprAST");
+    if (node->target) dumpNode(out, node->target, pool, indentLevel + 1);
+    if (node->index) dumpNode(out, node->index, pool, indentLevel + 1);
+}
+
+void dumpSliceExpr(std::string& out, const SliceExprAST* node, const StringPool* pool, int indentLevel) {
+    std::string header = "SliceExprAST";
+    if (node->isExclusive) header += " (exclusive)";
     printNodeHeader(out, indentLevel, *node, header);
-    if (node->target) dumpNode(out, node->target.get(), pool, indentLevel + 1);
-    if (node->index) dumpNode(out, node->index.get(), pool, indentLevel + 1);
-    if (node->sliceEnd) dumpNode(out, node->sliceEnd.get(), pool, indentLevel + 1);
+    if (node->target) dumpNode(out, node->target, pool, indentLevel + 1);
+    if (node->start) dumpNode(out, node->start, pool, indentLevel + 1);
+    if (node->end) dumpNode(out, node->end, pool, indentLevel + 1);
 }
 
 void dumpFieldAccessExpr(std::string& out, const FieldAccessExprAST* node, const StringPool* pool, int indentLevel) {
@@ -580,12 +618,12 @@ void dumpFieldAccessExpr(std::string& out, const FieldAccessExprAST* node, const
         header += "<";
         for (size_t i = 0; i < node->genericArgs.size(); ++i) {
             if (i > 0) header += ", ";
-            header += formatType(node->genericArgs[i].get(), pool);
+            header += formatType(node->genericArgs[i], pool);
         }
         header += ">";
     }
     printNodeHeader(out, indentLevel, *node, header);
-    if (node->object) dumpNode(out, node->object.get(), pool, indentLevel + 1);
+    if (node->object) dumpNode(out, node->object, pool, indentLevel + 1);
 }
 
 void dumpBehaviorAccessExpr(std::string& out, const BehaviorAccessExprAST* node, const StringPool* pool, int indentLevel) {
@@ -594,7 +632,7 @@ void dumpBehaviorAccessExpr(std::string& out, const BehaviorAccessExprAST* node,
 
 void dumpNullableChainExpr(std::string& out, const NullableChainExprAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "NullableChainExprAST");
-    if (node->object) dumpNode(out, node->object.get(), pool, indentLevel + 1);
+    if (node->object) dumpNode(out, node->object, pool, indentLevel + 1);
     if (!node->steps.empty()) {
         out += getIndent(indentLevel) + "\tsteps: ";
         for (size_t i = 0; i < node->steps.size(); ++i) {
@@ -607,94 +645,94 @@ void dumpNullableChainExpr(std::string& out, const NullableChainExprAST* node, c
 
 void dumpNullCoalesceExpr(std::string& out, const NullCoalesceExprAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "NullCoalesceExprAST");
-    if (node->value) dumpNode(out, node->value.get(), pool, indentLevel + 1);
-    if (node->fallback) dumpNode(out, node->fallback.get(), pool, indentLevel + 1);
+    if (node->value) dumpNode(out, node->value, pool, indentLevel + 1);
+    if (node->fallback) dumpNode(out, node->fallback, pool, indentLevel + 1);
 }
 
 void dumpAssignExpr(std::string& out, const AssignExprAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "AssignExprAST");
-    if (node->lhs) dumpNode(out, node->lhs.get(), pool, indentLevel + 1);
-    if (node->rhs) dumpNode(out, node->rhs.get(), pool, indentLevel + 1);
+    if (node->lhs) dumpNode(out, node->lhs, pool, indentLevel + 1);
+    if (node->rhs) dumpNode(out, node->rhs, pool, indentLevel + 1);
 }
 
 void dumpIsExpr(std::string& out, const IsExprAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "IsExprAST");
-    if (node->expr) dumpNode(out, node->expr.get(), pool, indentLevel + 1);
-    if (node->checkType) dumpNode(out, node->checkType.get(), pool, indentLevel + 1);
+    if (node->expr) dumpNode(out, node->expr, pool, indentLevel + 1);
+    if (node->checkType) dumpNode(out, node->checkType, pool, indentLevel + 1);
 }
 
 void dumpPipelineExpr(std::string& out, const PipelineExprAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "PipelineExprAST");
-    if (node->seed) dumpNode(out, node->seed.get(), pool, indentLevel + 1);
+    if (node->seed) dumpNode(out, node->seed, pool, indentLevel + 1);
     for (const auto& step : node->steps) {
-        if (step) dumpNode(out, step.get(), pool, indentLevel + 1);
+        if (step) dumpNode(out, step, pool, indentLevel + 1);
     }
 }
 
 void dumpPipelineStep(std::string& out, const PipelineStepAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "PipelineStepAST");
-    if (node->callable) dumpNode(out, node->callable.get(), pool, indentLevel + 1);
+    if (node->callable) dumpNode(out, node->callable, pool, indentLevel + 1);
     if (!node->packArgs.empty()) {
         out += getIndent(indentLevel + 1) + "packArgs:\n";
         for (const auto& arg : node->packArgs)
-            dumpNode(out, arg.get(), pool, indentLevel + 2);
+            dumpNode(out, arg, pool, indentLevel + 2);
     }
 }
 
 void dumpComposeExpr(std::string& out, const ComposeExprAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "ComposeExprAST");
     for (const auto& op : node->operands) {
-        if (op) dumpNode(out, op.get(), pool, indentLevel + 1);
+        if (op) dumpNode(out, op, pool, indentLevel + 1);
     }
 }
 
 void dumpComposeOperand(std::string& out, const ComposeOperandAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "ComposeOperandAST");
-    if (node->callable) dumpNode(out, node->callable.get(), pool, indentLevel + 1);
+    if (node->callable) dumpNode(out, node->callable, pool, indentLevel + 1);
 }
 
 void dumpAnonFuncExpr(std::string& out, const AnonFuncExprAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "AnonFuncExprAST");
-    if (node->body) dumpNode(out, node->body.get(), pool, indentLevel + 1);
+    if (node->body) dumpNode(out, node->body, pool, indentLevel + 1);
 }
 
 void dumpAwaitExpr(std::string& out, const AwaitExprAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "AwaitExprAST");
-    if (node->inner) dumpNode(out, node->inner.get(), pool, indentLevel + 1);
+    if (node->inner) dumpNode(out, node->inner, pool, indentLevel + 1);
 }
 
 void dumpMatchExpr(std::string& out, const MatchExprAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "MatchExprAST");
-    if (node->subject) dumpNode(out, node->subject.get(), pool, indentLevel + 1);
-    for (const auto& arm : node->arms) dumpNode(out, arm.get(), pool, indentLevel + 1);
-    if (node->defaultBody) dumpNode(out, node->defaultBody.get(), pool, indentLevel + 1);
+    if (node->subject) dumpNode(out, node->subject, pool, indentLevel + 1);
+    for (const auto& arm : node->arms) dumpNode(out, arm, pool, indentLevel + 1);
+    if (node->defaultBody) dumpNode(out, node->defaultBody, pool, indentLevel + 1);
 }
 
 void dumpIfExpr(std::string& out, const IfExprAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "IfExprAST");
-    if (node->condition) dumpNode(out, node->condition.get(), pool, indentLevel + 1);
-    if (node->thenBranch) dumpNode(out, node->thenBranch.get(), pool, indentLevel + 1);
-    if (node->elseBranch) dumpNode(out, node->elseBranch.get(), pool, indentLevel + 1);
+    if (node->condition) dumpNode(out, node->condition, pool, indentLevel + 1);
+    if (node->thenBranch) dumpNode(out, node->thenBranch, pool, indentLevel + 1);
+    if (node->elseBranch) dumpNode(out, node->elseBranch, pool, indentLevel + 1);
 }
 
 void dumpRangeExpr(std::string& out, const RangeExprAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "RangeExprAST");
-    if (node->lo) dumpNode(out, node->lo.get(), pool, indentLevel + 1);
-    if (node->hi) dumpNode(out, node->hi.get(), pool, indentLevel + 1);
+    if (node->lo) dumpNode(out, node->lo, pool, indentLevel + 1);
+    if (node->hi) dumpNode(out, node->hi, pool, indentLevel + 1);
 }
 
 void dumpResolveExpr(std::string& out, const ResolveExprAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "ResolveExprAST");
-    if (node->subject) dumpNode(out, node->subject.get(), pool, indentLevel + 1);
-    if (node->okArm) dumpNode(out, node->okArm.get(), pool, indentLevel + 1);
-    if (node->errArm) dumpNode(out, node->errArm.get(), pool, indentLevel + 1);
+    if (node->subject) dumpNode(out, node->subject, pool, indentLevel + 1);
+    if (node->okArm) dumpNode(out, node->okArm, pool, indentLevel + 1);
+    if (node->errArm) dumpNode(out, node->errArm, pool, indentLevel + 1);
 }
 
 void dumpOkArm(std::string& out, const OkArmAST* node, const StringPool* pool, int indentLevel) {
     std::string header = "OkArmAST '" + toStr(pool, node->bindName) + "'";
-    if (node->bindType) header += " : " + formatType(node->bindType.get(), pool);
+    if (node->bindType) header += " : " + formatType(node->bindType, pool);
     printNodeHeader(out, indentLevel, *node, header);
-    if (node->body) dumpNode(out, node->body.get(), pool, indentLevel + 1);
+    if (node->body) dumpNode(out, node->body, pool, indentLevel + 1);
 }
 
 void dumpErrArm(std::string& out, const ErrArmAST* node, const StringPool* pool, int indentLevel) {
@@ -703,10 +741,10 @@ void dumpErrArm(std::string& out, const ErrArmAST* node, const StringPool* pool,
         header += " (bare)";
     } else {
         header += " '" + toStr(pool, node->bindName) + "'";
-        if (node->bindType) header += " : " + formatType(node->bindType.get(), pool);
+        if (node->bindType) header += " : " + formatType(node->bindType, pool);
     }
     printNodeHeader(out, indentLevel, *node, header);
-    if (node->body) dumpNode(out, node->body.get(), pool, indentLevel + 1);
+    if (node->body) dumpNode(out, node->body, pool, indentLevel + 1);
 }
 
 void dumpBindPattern(std::string& out, const BindPatternAST* node, const StringPool* pool, int indentLevel) {
@@ -719,7 +757,7 @@ void dumpWildcardPattern(std::string& out, const WildcardPatternAST* node, const
 
 void dumpTypePattern(std::string& out, const TypePatternAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "TypePatternAST");
-    if (node->checkType) dumpNode(out, node->checkType.get(), pool, indentLevel + 1);
+    if (node->checkType) dumpNode(out, node->checkType, pool, indentLevel + 1);
 }
 
 void dumpStructPattern(std::string& out, const StructPatternAST* node, const StringPool* pool, int indentLevel) {
@@ -727,7 +765,7 @@ void dumpStructPattern(std::string& out, const StructPatternAST* node, const Str
     for (const auto& field : node->fields) {
         if (field) {
             if (field->subPattern) {
-                dumpNode(out, field->subPattern.get(), pool, indentLevel + 1);
+                dumpNode(out, field->subPattern, pool, indentLevel + 1);
             } else {
                 out += getIndent(indentLevel + 1) + "Field: " + toStr(pool, field->field) + " (shorthand)\n";
             }
@@ -737,80 +775,80 @@ void dumpStructPattern(std::string& out, const StructPatternAST* node, const Str
 
 void dumpPatternExpr(std::string& out, const PatternExprAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "PatternExprAST");
-    if (node->inner) dumpNode(out, node->inner.get(), pool, indentLevel + 1);
+    if (node->inner) dumpNode(out, node->inner, pool, indentLevel + 1);
 }
 
 void dumpMatchArm(std::string& out, const MatchArmAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "MatchArmAST");
-    for (const auto& p : node->patterns) dumpNode(out, p.get(), pool, indentLevel + 1);
-    if (node->guard) dumpNode(out, node->guard.get(), pool, indentLevel + 1);
-    for (const auto& e : node->exprs) dumpNode(out, e.get(), pool, indentLevel + 1);
+    for (const auto& p : node->patterns) dumpNode(out, p, pool, indentLevel + 1);
+    if (node->guard) dumpNode(out, node->guard, pool, indentLevel + 1);
+    for (const auto& e : node->exprs) dumpNode(out, e, pool, indentLevel + 1);
 }
 
 void dumpDefaultArm(std::string& out, const DefaultArmAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "DefaultArmAST");
-    for (const auto& e : node->exprs) dumpNode(out, e.get(), pool, indentLevel + 1);
+    for (const auto& e : node->exprs) dumpNode(out, e, pool, indentLevel + 1);
 }
 
 void dumpBlockStmt(std::string& out, const BlockStmtAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "BlockStmtAST");
-    for (const auto& stmt : node->stmts) dumpNode(out, stmt.get(), pool, indentLevel + 1);
+    for (const auto& stmt : node->stmts) dumpNode(out, stmt, pool, indentLevel + 1);
 }
 
 void dumpExprStmt(std::string& out, const ExprStmtAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "ExprStmtAST");
-    if (node->expr) dumpNode(out, node->expr.get(), pool, indentLevel + 1);
+    if (node->expr) dumpNode(out, node->expr, pool, indentLevel + 1);
 }
 
 void dumpDeclStmt(std::string& out, const DeclStmtAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "DeclStmtAST");
-    if (node->decl) dumpNode(out, node->decl.get(), pool, indentLevel + 1);
+    if (node->decl) dumpNode(out, node->decl, pool, indentLevel + 1);
 }
 
 void dumpIfStmt(std::string& out, const IfStmtAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "IfStmtAST");
-    if (node->condition) dumpNode(out, node->condition.get(), pool, indentLevel + 1);
-    if (node->thenBranch) dumpNode(out, node->thenBranch.get(), pool, indentLevel + 1);
-    if (node->elseBranch) dumpNode(out, node->elseBranch.get(), pool, indentLevel + 1);
+    if (node->condition) dumpNode(out, node->condition, pool, indentLevel + 1);
+    if (node->thenBranch) dumpNode(out, node->thenBranch, pool, indentLevel + 1);
+    if (node->elseBranch) dumpNode(out, node->elseBranch, pool, indentLevel + 1);
 }
 
 void dumpSwitchStmt(std::string& out, const SwitchStmtAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "SwitchStmtAST");
-    if (node->subject) dumpNode(out, node->subject.get(), pool, indentLevel + 1);
+    if (node->subject) dumpNode(out, node->subject, pool, indentLevel + 1);
     for (const auto& c : node->cases) {
         if (c) {
             out += getIndent(indentLevel + 1) + "Case:\n";
-            for (const auto& val : c->values) dumpNode(out, val.get(), pool, indentLevel + 2);
-            if (c->body) dumpNode(out, c->body.get(), pool, indentLevel + 2);
+            for (const auto& val : c->values) dumpNode(out, val, pool, indentLevel + 2);
+            if (c->body) dumpNode(out, c->body, pool, indentLevel + 2);
         }
     }
-    if (node->defaultBody) dumpNode(out, node->defaultBody.get(), pool, indentLevel + 1);
+    if (node->defaultBody) dumpNode(out, node->defaultBody, pool, indentLevel + 1);
 }
 
 void dumpForStmt(std::string& out, const ForStmtAST* node, const StringPool* pool, int indentLevel) {
     std::string header = "ForStmtAST '" + toStr(pool, node->iterVar->name) + "'";
-    if (node->iterVar->type) header += " : " + formatType(node->iterVar->type.get(), pool);
+    if (node->iterVar->type) header += " : " + formatType(node->iterVar->type, pool);
     printNodeHeader(out, indentLevel, *node, header);
-    if (node->iterable) dumpNode(out, node->iterable.get(), pool, indentLevel + 1);
-    if (node->step) dumpNode(out, node->step.get(), pool, indentLevel + 1);
-    if (node->body) dumpNode(out, node->body.get(), pool, indentLevel + 1);
+    if (node->iterable) dumpNode(out, node->iterable, pool, indentLevel + 1);
+    if (node->step) dumpNode(out, node->step, pool, indentLevel + 1);
+    if (node->body) dumpNode(out, node->body, pool, indentLevel + 1);
 }
 
 void dumpWhileStmt(std::string& out, const WhileStmtAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "WhileStmtAST");
-    if (node->condition) dumpNode(out, node->condition.get(), pool, indentLevel + 1);
-    if (node->body) dumpNode(out, node->body.get(), pool, indentLevel + 1);
+    if (node->condition) dumpNode(out, node->condition, pool, indentLevel + 1);
+    if (node->body) dumpNode(out, node->body, pool, indentLevel + 1);
 }
 
 void dumpDoWhileStmt(std::string& out, const DoWhileStmtAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "DoWhileStmtAST");
-    if (node->body) dumpNode(out, node->body.get(), pool, indentLevel + 1);
-    if (node->condition) dumpNode(out, node->condition.get(), pool, indentLevel + 1);
+    if (node->body) dumpNode(out, node->body, pool, indentLevel + 1);
+    if (node->condition) dumpNode(out, node->condition, pool, indentLevel + 1);
 }
 
 void dumpReturnStmt(std::string& out, const ReturnStmtAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "ReturnStmtAST");
-    for (const auto& val : node->values) dumpNode(out, val.get(), pool, indentLevel + 1);
+    for (const auto& val : node->values) dumpNode(out, val, pool, indentLevel + 1);
 }
 
 void dumpBreakStmt(std::string& out, const BreakStmtAST* node, const StringPool* pool, int indentLevel) {
@@ -828,11 +866,11 @@ void dumpMultiVarDecl(std::string& out, const MultiVarDeclAST* node, const Strin
     for (size_t i = 0; i < node->vars.size(); ++i) {
         if (i > 0) header += ", ";
         header += toStr(pool, node->vars[i].first);
-        if (node->vars[i].second) header += " : " + formatType(node->vars[i].second.get(), pool);
+        if (node->vars[i].second) header += " : " + formatType(node->vars[i].second, pool);
     }
     header += " = ...";
     printNodeHeader(out, indentLevel, *node, header);
-    if (node->rhs) dumpNode(out, node->rhs.get(), pool, indentLevel + 1);
+    if (node->rhs) dumpNode(out, node->rhs, pool, indentLevel + 1);
 }
 
 void dumpMultiAssignStmt(std::string& out, const MultiAssignStmtAST* node, const StringPool* pool, int indentLevel) {
@@ -843,8 +881,8 @@ void dumpMultiAssignStmt(std::string& out, const MultiAssignStmtAST* node, const
     }
     header += " = ...";
     printNodeHeader(out, indentLevel, *node, header);
-    for (const auto& lhs : node->lhs) dumpNode(out, lhs.get(), pool, indentLevel + 1);
-    if (node->rhs) dumpNode(out, node->rhs.get(), pool, indentLevel + 1);
+    for (const auto& lhs : node->lhs) dumpNode(out, lhs, pool, indentLevel + 1);
+    if (node->rhs) dumpNode(out, node->rhs, pool, indentLevel + 1);
 }
 
 void dumpAttribute(std::string& out, const AttributeAST* node, const StringPool* pool, int indentLevel) {
@@ -873,8 +911,8 @@ void dumpAttributeArg(std::string& out, const AttributeArgAST* node, const Strin
 
 void dumpIntrinsicCallExpr(std::string& out, const IntrinsicCallExprAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "IntrinsicCallExprAST " + toStr(pool, node->intrinsicName));
-    if (node->typeArg) dumpNode(out, node->typeArg.get(), pool, indentLevel + 1);
-    for (const auto& e : node->args) dumpNode(out, e.get(), pool, indentLevel + 1);
+    if (node->typeArg) dumpNode(out, node->typeArg, pool, indentLevel + 1);
+    for (const auto& e : node->args) dumpNode(out, e, pool, indentLevel + 1);
 }
 
 void dumpUnknown(std::string& out, const BaseAST* node, const StringPool* pool, int indentLevel) {
@@ -926,6 +964,7 @@ void dumpNode(std::string& out, const BaseAST* node, const StringPool* pool, int
         case ASTKind::UnaryExpr:           dumpUnaryExpr(out, static_cast<const UnaryExprAST*>(node), pool, indentLevel); break;
         case ASTKind::CallExpr:            dumpCallExpr(out, static_cast<const CallExprAST*>(node), pool, indentLevel); break;
         case ASTKind::IndexExpr:           dumpIndexExpr(out, static_cast<const IndexExprAST*>(node), pool, indentLevel); break;
+        case ASTKind::SliceExpr:           dumpSliceExpr(out, static_cast<const SliceExprAST*>(node), pool, indentLevel); break;
         case ASTKind::FieldAccessExpr:     dumpFieldAccessExpr(out, static_cast<const FieldAccessExprAST*>(node), pool, indentLevel); break;
         case ASTKind::BehaviorAccessExpr:  dumpBehaviorAccessExpr(out, static_cast<const BehaviorAccessExprAST*>(node), pool, indentLevel); break;
         case ASTKind::NullableChainExpr:   dumpNullableChainExpr(out, static_cast<const NullableChainExprAST*>(node), pool, indentLevel); break;
