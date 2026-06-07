@@ -41,12 +41,10 @@
 // TypeAST.hpp
 struct PrimitiveTypeAST;
 struct NamedTypeAST;
+struct ArrayTypeAST;
 struct GenericParamTypeAST;
 struct NullableTypeAST;
-struct ResultTypeAST;        // T!E / T! — result type
-struct FixedArrayTypeAST;
-struct SliceTypeAST;
-struct DynamicArrayTypeAST;
+struct ResultTypeAST;        // T!E / T! — result type;
 struct RefTypeAST;
 struct PtrTypeAST;
 struct FuncTypeAST;
@@ -166,10 +164,10 @@ enum class ASTKind : uint16_t {
     // Type nodes
     PrimitiveType,
     NamedType,
+    ArrayType,
     GenericParamType,
     NullableType,
     ResultType,
-    ArrayType,
     GenericArrayType,
     RefType,
     PtrType,
@@ -466,6 +464,7 @@ struct ProgramAST : BaseAST {
 
     ProgramAST() : BaseAST(ASTKind::Program) {}
 };
+using ProgramASTPtr = ProgramAST*;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GenericParamAST — a generic type parameter declaration.

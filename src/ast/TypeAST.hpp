@@ -392,76 +392,59 @@ struct PtrTypeAST : TypeAST {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FUNCTION SIGNATURE
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * @brief Pure signature of a function: parameters (flattened with curry groups)
- *        and return types. Does NOT include qualifiers (`~async`, `~nullable`,
- *        `~parallel`).
- *
- * This struct is reused in multiple contexts:
- *   - `FuncDeclAST` / `MethodDeclAST` / `TraitMethodAST` – combined with
- *     separate qualifier fields to form a complete declaration.
- *   - `AnonFuncExprAST` – anonymous functions have no qualifiers, so only the
- *     pure signature is needed.
- *   - `FuncTypeAST` – combined with qualifier fields to form a complete
- *     function type (used in type annotations).
- *
- * @see FuncTypeAST for the qualifier‑bearing version.
- */
-struct FuncSignature {
-    ArenaSpan<ParamAST*> allParams;
-    ArenaSpan<size_t>   groupSizes;
-    ArenaSpan<TypeAST*> returnTypes;
-
-    FuncSignature() = default;
-
-    FuncSignature(const FuncSignature&) = delete;
-    FuncSignature& operator=(const FuncSignature&) = delete;
-    FuncSignature(FuncSignature&&) = default;
-    FuncSignature& operator=(FuncSignature&&) = default;
-
-    bool hasParams() const { return !allParams.empty(); }
-    size_t totalParamCount() const { return allParams.size(); }
-    size_t groupCount() const { return groupSizes.size(); }
-
-    ArenaSpan<ParamAST*> getGroup(size_t idx) const {
-        if (idx >= groupSizes.size()) return {};
-        size_t offset = 0;
-        for (size_t i = 0; i < idx; ++i) offset += groupSizes[i];
-        return ArenaSpan<ParamAST*>(allParams.data() + offset, groupSizes[idx]);
-    }
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
 // FUNCTION TYPE
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * @brief Complete function type, combining a pure signature with qualifiers
- *        (`~async`, `~nullable`, `~parallel`).
+ * @brief Represents a function type with a single parameter group.
  *
- * Used in type annotations (e.g., `let f : ~async (int) -> string`). The
- * qualifiers are part of the type identity for `~async` and `~nullable`;
- * `~parallel` is an implementation attribute that does not affect type
- * equality.
+ * This is a recursive design: a function type consists of one parameter group
+ * and one or more return types. If the function is curried, the return type
+ * is another FuncTypeAST.
  *
- * @note Anonymous function expressions (`AnonFuncExprAST`) never have qualifiers
- *       – they are plain values. The qualifier context comes from the
- *       declaration or parameter type to which the anonymous function is assigned.
+ * Grammar (desugared):
+ *   func_type := [ qualifier_list ] param_group [ '->' return_list ]
+ *
+ * The parser desugars multiple parameter groups (e.g., `(a int)(b int) -> int`)
+ * into nested FuncTypeAST: `(a int) -> (b int) -> int`
+ *
+ * Examples of nested structure:
+ *   - `(a int) -> int`                    → params=[a], returnTypes=[int]
+ *   - `(a int) -> (b int) -> int`         → params=[a], returnTypes=[FuncTypeAST(...)]
+ *   - `(a int) -> (int, string)`          → params=[a], returnTypes=[int, string]
+ *   - `(a int)(b int) -> (int, string)`   → desugars to `(a int) -> (b int) -> (int, string)`
+ *
+ * @field params        The parameters for this group (raw pointers to ParamAST)
+ * @field returnTypes   Return types – each may be a plain TypeAST or another FuncTypeAST
+ * @field qualifiers    Bitmask of qualifiers (Async, Nullable, Parallel)
+ * @field rawQualifiers Original qualifier names (for diagnostics)
  */
 struct FuncTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::FuncType;
 
-    FuncSignature sig;
-    uint32_t qualifiers = 0;
-    ArenaSpan<InternedString> rawQualifiers;
+    ArenaSpan<ParamAST*> params;           // parameters for this group
+    ArenaSpan<TypeAST*>  returnTypes;      // return types (may contain FuncTypeAST)
+    uint32_t qualifiers = 0;               // QualifierBits flags
+    ArenaSpan<InternedString> rawQualifiers; // source qualifier strings
 
     explicit FuncTypeAST() : TypeAST(ASTKind::FuncType) {}
 
+    // Convenience methods
     bool hasQualifier(uint32_t bit) const { return (qualifiers & bit) != 0; }
     bool isAsync()    const { return hasQualifier(QualifierBits::Async); }
     bool isParallel() const { return hasQualifier(QualifierBits::Parallel); }
     bool isNullable() const { return hasQualifier(QualifierBits::Nullable); }
+    
+    // Returns true if the return type is a function type (currying)
+    bool isCurried() const { 
+        return returnTypes.size() == 1 && returnTypes[0] && returnTypes[0]->isa<FuncTypeAST>();
+    }
+    
+    // Returns the inner function type if curried, otherwise nullptr
+    FuncTypeAST* getNext() const {
+        if (isCurried()) {
+            return returnTypes[0]->as<FuncTypeAST>();
+        }
+        return nullptr;
+    }
 };

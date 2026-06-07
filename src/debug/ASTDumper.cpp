@@ -131,32 +131,34 @@ std::string formatType(const TypeAST* type, const StringPool* pool) {
             if (q & QualifierBits::Nullable) res += "~nullable ";
             if (q & QualifierBits::Parallel) res += "~parallel ";
 
-            const FuncSignature& sig = ft->sig;
-            size_t paramOffset = 0;
-            for (size_t g = 0; g < sig.groupSizes.size(); ++g) {
-                res += "(";
-                size_t groupSize = sig.groupSizes[g];
-                for (size_t i = 0; i < groupSize; ++i) {
-                    if (i > 0) res += ", ";
-                    const auto& param = sig.allParams[paramOffset + i];
-                    if (param && param->type) {
-                        res += formatType(param->type, pool);
-                        if (param->isVariadic) res += "...";
-                    } else {
-                        res += "<unknown>";
-                    }
+            // Dump parameters
+            res += "(";
+            for (size_t i = 0; i < ft->params.size(); ++i) {
+                if (i > 0) res += ", ";
+                const auto* param = ft->params[i];
+                if (param && param->type) {
+                    res += formatType(param->type, pool);
+                    if (param->isVariadic) res += "...";
+                } else {
+                    res += "<unknown>";
                 }
-                res += ")";
-                paramOffset += groupSize;
             }
+            res += ")";
 
-            if (!sig.returnTypes.empty()) {
+            // Dump return types
+            if (!ft->returnTypes.empty()) {
                 res += " -> ";
-                for (size_t i = 0; i < sig.returnTypes.size(); ++i) {
+                for (size_t i = 0; i < ft->returnTypes.size(); ++i) {
                     if (i > 0) res += ", ";
-                    res += formatType(sig.returnTypes[i], pool);
+                    res += formatType(ft->returnTypes[i], pool);
                 }
             }
+            
+            // Handle currying
+            if (ft->isCurried() && ft->getNext()) {
+                res += " -> " + formatType(ft->getNext(), pool);
+            }
+            
             return res;
         }
 
@@ -264,34 +266,32 @@ void dumpFuncType(std::string& out, const FuncTypeAST* node, const StringPool* p
     std::string header = "FuncTypeAST " + qualStr;
     printNodeHeader(out, indentLevel, *node, header);
 
-    const FuncSignature& sig = node->sig;
-    size_t paramOffset = 0;
-    for (size_t g = 0; g < sig.groupSizes.size(); ++g) {
-        out += getIndent(indentLevel + 1) + "Group " + std::to_string(g) + ": (";
-        size_t groupSize = sig.groupSizes[g];
-        for (size_t i = 0; i < groupSize; ++i) {
-            if (i > 0) out += ", ";
-            const auto& param = sig.allParams[paramOffset + i];
-            if (param) {
-                out += toStr(pool, param->name) + " : ";
-                if (param->type) out += formatType(param->type, pool);
-                if (param->isVariadic) out += "...";
-            }
+    // Dump parameters
+    out += getIndent(indentLevel + 1) + "params: (";
+    for (size_t i = 0; i < node->params.size(); ++i) {
+        if (i > 0) out += ", ";
+        const auto* param = node->params[i];
+        if (param) {
+            out += toStr(pool, param->name) + " : ";
+            if (param->type) out += formatType(param->type, pool);
+            if (param->isVariadic) out += "...";
+        } else {
+            out += "<unknown>";
         }
-        out += ")\n";
-        paramOffset += groupSize;
     }
+    out += ")\n";
 
-    if (!sig.returnTypes.empty()) {
+    // Dump return types
+    if (!node->returnTypes.empty()) {
         out += getIndent(indentLevel + 1) + "-> ";
-        for (size_t i = 0; i < sig.returnTypes.size(); ++i) {
+        for (size_t i = 0; i < node->returnTypes.size(); ++i) {
             if (i > 0) out += ", ";
-            out += formatType(sig.returnTypes[i], pool);
+            out += formatType(node->returnTypes[i], pool);
         }
         out += "\n";
     }
 
-    // Optionally dump raw qualifiers (for debugging)
+    // Dump raw qualifiers (for debugging)
     if (!node->rawQualifiers.empty()) {
         out += getIndent(indentLevel + 1) + "rawQualifiers: ";
         for (size_t i = 0; i < node->rawQualifiers.size(); ++i) {
@@ -299,6 +299,12 @@ void dumpFuncType(std::string& out, const FuncTypeAST* node, const StringPool* p
             out += toStr(pool, node->rawQualifiers[i]);
         }
         out += "\n";
+    }
+    
+    // If curried, dump the next function type
+    if (node->isCurried() && node->getNext()) {
+        out += getIndent(indentLevel + 1) + "curried:\n";
+        dumpNode(out, node->getNext(), pool, indentLevel + 2);
     }
 }
 
@@ -354,9 +360,116 @@ void dumpFuncDecl(std::string& out, const FuncDeclAST* node, const StringPool* p
 }
 
 void dumpStructDecl(std::string& out, const StructDeclAST* node, const StringPool* pool, int indentLevel) {
-    printNodeHeader(out, indentLevel, *node, "StructDeclAST '" + toStr(pool, node->name) + "'");
-    for (const auto& field : node->fields) dumpNode(out, field, pool, indentLevel + 1);
-    for (const auto& attr : node->attributes) dumpNode(out, attr, pool, indentLevel + 1);
+    std::string header = "StructDeclAST '" + toStr(pool, node->name) + "'";
+    if (!node->genericParams.empty()) {
+        header += " <";
+        for (size_t i = 0; i < node->genericParams.size(); ++i) {
+            if (i > 0) header += ", ";
+            if (node->genericParams[i]) {
+                header += toStr(pool, node->genericParams[i]->name);
+            }
+        }
+        header += ">";
+    }
+    printNodeHeader(out, indentLevel, *node, header);
+    
+    // Dump visibility
+    if (node->visibility != Visibility::Private) {
+        out += getIndent(indentLevel + 1) + "visibility: " + formatVisibility(node->visibility) + "\n";
+    }
+    
+    // Dump fields
+    for (const auto& field : node->fields) {
+        dumpNode(out, field, pool, indentLevel + 1);
+    }
+    
+    // Dump generic params
+    for (const auto& gp : node->genericParams) {
+        dumpNode(out, gp, pool, indentLevel + 1);
+    }
+    
+    // Dump selfType if set (semantic cache)
+    if (node->selfType) {
+        out += getIndent(indentLevel + 1) + "selfType: " + formatType(node->selfType, pool) + "\n";
+    }
+    
+    // Dump attributes
+    for (const auto& attr : node->attributes) {
+        dumpNode(out, attr, pool, indentLevel + 1);
+    }
+}
+
+void dumpFromDecl(std::string& out, const FromDeclAST* node, const StringPool* pool, int indentLevel) {
+    std::string header = "FromDeclAST";
+    if (!formatVisibility(node->visibility).empty()) {
+        header = formatVisibility(node->visibility) + " " + header;
+    }
+    
+    // Dump target information
+    switch (node->targetKind) {
+        case TargetKind::Concrete:
+            if (node->targetType) {
+                header += " to " + formatType(node->targetType, pool);
+            }
+            break;
+        case TargetKind::GenericArray:
+            header += " to GenericArray";
+            if (!node->arrayTypeParamName.isValid()) {
+                header += " <" + toStr(pool, node->arrayTypeParamName) + ">";
+            }
+            break;
+        case TargetKind::GenericNamed:
+            header += " to GenericNamed";
+            if (!node->genericParams.empty()) {
+                header += " <";
+                for (size_t i = 0; i < node->genericParams.size(); ++i) {
+                    if (i > 0) header += ", ";
+                    if (node->genericParams[i]) {
+                        header += toStr(pool, node->genericParams[i]->name);
+                    }
+                }
+                header += ">";
+            }
+            break;
+    }
+    
+    printNodeHeader(out, indentLevel, *node, header);
+    
+    // Dump entries
+    for (const auto& entry : node->entries) {
+        if (entry) dumpNode(out, entry, pool, indentLevel + 1);
+    }
+    
+    // Dump generic params
+    for (const auto& gp : node->genericParams) {
+        if (gp) dumpNode(out, gp, pool, indentLevel + 1);
+    }
+}
+
+void dumpFromEntry(std::string& out, const FromEntryAST* node, const StringPool* pool, int indentLevel) {
+    std::string header = "FromEntryAST";
+    switch (node->kind) {
+        case FromEntryKind::Inline:
+            header += " (inline)";
+            break;
+        case FromEntryKind::Path:
+            header += " (path)";
+            break;
+    }
+    printNodeHeader(out, indentLevel, *node, header);
+    
+    if (node->kind == FromEntryKind::Inline) {
+        if (node->funcType) {
+            dumpNode(out, node->funcType, pool, indentLevel + 1);
+        }
+        if (node->body) {
+            dumpNode(out, node->body, pool, indentLevel + 1);
+        }
+    } else {
+        if (node->path) {
+            dumpNode(out, node->path, pool, indentLevel + 1);
+        }
+    }
 }
 
 void dumpFieldDecl(std::string& out, const FieldDeclAST* node, const StringPool* pool, int indentLevel) {
@@ -409,22 +522,39 @@ void dumpImplDecl(std::string& out, const ImplDeclAST* node, const StringPool* p
     if (!formatVisibility(node->visibility).empty()) {
         header = formatVisibility(node->visibility) + " " + header;
     }
-    if (node->targetType) {
-        header += " for " + formatType(node->targetType, pool);
-    }
-    if (!node->genericParams.empty()) {
-        header += " <";
-        for (size_t i = 0; i < node->genericParams.size(); ++i) {
-            if (i > 0) header += ", ";
-            if (node->genericParams[i]) {
-                header += toStr(pool, node->genericParams[i]->name);
+    
+    // Dump target information
+    switch (node->targetKind) {
+        case TargetKind::Concrete:
+            if (node->targetType) {
+                header += " for " + formatType(node->targetType, pool);
             }
-        }
-        header += ">";
+            break;
+        case TargetKind::GenericArray:
+            header += " for GenericArray";
+            if (!node->arrayTypeParamName.isValid()) {
+                header += " <" + toStr(pool, node->arrayTypeParamName) + ">";
+            }
+            break;
+        case TargetKind::GenericNamed:
+            header += " for GenericNamed";
+            if (!node->genericParams.empty()) {
+                header += " <";
+                for (size_t i = 0; i < node->genericParams.size(); ++i) {
+                    if (i > 0) header += ", ";
+                    if (node->genericParams[i]) {
+                        header += toStr(pool, node->genericParams[i]->name);
+                    }
+                }
+                header += ">";
+            }
+            break;
     }
+    
     if (node->receiverAlias.isValid()) {
         header += " as " + toStr(pool, node->receiverAlias);
     }
+    
     if (node->traitRef) {
         header += " : " + toStr(pool, node->traitRef->name);
         if (!node->traitRef->genericArgs.empty()) {
@@ -436,11 +566,15 @@ void dumpImplDecl(std::string& out, const ImplDeclAST* node, const StringPool* p
             header += ">";
         }
     }
+    
     printNodeHeader(out, indentLevel, *node, header);
-
+    
+    // Dump generic params
     for (const auto& gp : node->genericParams) {
         if (gp) dumpNode(out, gp, pool, indentLevel + 1);
     }
+    
+    // Dump methods
     for (const auto& method : node->methods) {
         if (method) dumpNode(out, method, pool, indentLevel + 1);
     }
@@ -469,40 +603,6 @@ void dumpMethodDecl(std::string& out, const MethodDeclAST* node, const StringPoo
     if (node->body) {
         dumpNode(out, node->body, pool, indentLevel + 1);
     }
-}
-
-void dumpFromDecl(std::string& out, const FromDeclAST* node, const StringPool* pool, int indentLevel) {
-    std::string header = "FromDeclAST";
-    if (!formatVisibility(node->visibility).empty()) {
-        header = formatVisibility(node->visibility) + " " + header;
-    }
-    if (node->targetType) {
-        header += " to " + formatType(node->targetType, pool);
-    }
-    if (!node->genericParams.empty()) {
-        header += " <";
-        for (size_t i = 0; i < node->genericParams.size(); ++i) {
-            if (i > 0) header += ", ";
-            if (node->genericParams[i]) {
-                header += toStr(pool, node->genericParams[i]->name);
-            }
-        }
-        header += ">";
-    }
-    printNodeHeader(out, indentLevel, *node, header);
-
-    for (const auto& entry : node->entries) {
-        if (entry) dumpNode(out, entry, pool, indentLevel + 1);
-    }
-    for (const auto& gp : node->genericParams) {
-        if (gp) dumpNode(out, gp, pool, indentLevel + 1);
-    }
-}
-
-void dumpFromEntry(std::string& out, const FromEntryAST* node, const StringPool* pool, int indentLevel) {
-    std::string header = "FromEntryAST '" + formatType(node->returnType, pool) + "'";
-    printNodeHeader(out, indentLevel, *node, header);
-    if (node->body) dumpNode(out, node->body, pool, indentLevel + 1);
 }
 
 void dumpTypeAliasDecl(std::string& out, const TypeAliasDeclAST* node, const StringPool* pool, int indentLevel) {
@@ -587,14 +687,27 @@ void dumpUnaryExpr(std::string& out, const UnaryExprAST* node, const StringPool*
 void dumpCallExpr(std::string& out, const CallExprAST* node, const StringPool* pool, int indentLevel) {
     std::string header = "CallExprAST";
     switch (node->callKind) {
-        case CallKind::Async:   header += " (async)"; break;
-        case CallKind::Nullable: header += " (nullable)"; break;
-        case CallKind::Parallel: header += " (parallel)"; break;
-        default: break;
+        case CallKind::Async:   header += " ~async"; break;
+        case CallKind::Nullable: header += " ~nullable"; break;
+        case CallKind::Parallel: header += " ~parallel"; break;
+        case CallKind::Plain:   /* no suffix */ break;
     }
     printNodeHeader(out, indentLevel, *node, header);
+    
     if (node->callee) dumpNode(out, node->callee, pool, indentLevel + 1);
-    for (const auto& arg : node->args) dumpNode(out, arg, pool, indentLevel + 1);
+    
+    if (!node->genericArgs.empty()) {
+        out += getIndent(indentLevel + 1) + "genericArgs: ";
+        for (size_t i = 0; i < node->genericArgs.size(); ++i) {
+            if (i > 0) out += ", ";
+            out += formatType(node->genericArgs[i], pool);
+        }
+        out += "\n";
+    }
+    
+    for (const auto& arg : node->args) {
+        dumpNode(out, arg, pool, indentLevel + 1);
+    }
 }
 
 void dumpIndexExpr(std::string& out, const IndexExprAST* node, const StringPool* pool, int indentLevel) {
@@ -681,6 +794,7 @@ void dumpPipelineStep(std::string& out, const PipelineStepAST* node, const Strin
 
 void dumpComposeExpr(std::string& out, const ComposeExprAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "ComposeExprAST");
+    if (node->left) dumpNode(out, node->left, pool, indentLevel + 1);
     for (const auto& op : node->operands) {
         if (op) dumpNode(out, op, pool, indentLevel + 1);
     }
@@ -756,7 +870,9 @@ void dumpWildcardPattern(std::string& out, const WildcardPatternAST* node, const
 }
 
 void dumpTypePattern(std::string& out, const TypePatternAST* node, const StringPool* pool, int indentLevel) {
-    printNodeHeader(out, indentLevel, *node, "TypePatternAST");
+    std::string header = "TypePatternAST '" + toStr(pool, node->bindName) + "'";
+    if (node->checkType) header += " : " + formatType(node->checkType, pool);
+    printNodeHeader(out, indentLevel, *node, header);
     if (node->checkType) dumpNode(out, node->checkType, pool, indentLevel + 1);
 }
 
@@ -870,6 +986,20 @@ void dumpMultiVarDecl(std::string& out, const MultiVarDeclAST* node, const Strin
     }
     header += " = ...";
     printNodeHeader(out, indentLevel, *node, header);
+    
+    // Dump each variable declaration
+    for (size_t i = 0; i < node->vars.size(); ++i) {
+        out += getIndent(indentLevel + 1) + "Var " + std::to_string(i) + ": ";
+        out += toStr(pool, node->vars[i].first);
+        if (node->vars[i].second) {
+            out += " : " + formatType(node->vars[i].second, pool);
+        }
+        out += "\n";
+        if (node->vars[i].second) {
+            dumpNode(out, node->vars[i].second, pool, indentLevel + 2);
+        }
+    }
+    
     if (node->rhs) dumpNode(out, node->rhs, pool, indentLevel + 1);
 }
 

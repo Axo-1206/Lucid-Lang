@@ -50,6 +50,7 @@ struct BlockStmtAST : StmtAST {
 
     BlockStmtAST() : StmtAST(ASTKind::BlockStmt) {}
 };
+using BlockStmtPtr = BlockStmtAST*;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // EXPRESSION & DECLARATION STATEMENTS
@@ -76,6 +77,7 @@ struct ExprStmtAST : StmtAST {
         : StmtAST(ASTKind::ExprStmt), expr(e) {}
 
 };
+using ExprStmtPtr = ExprStmtAST*;
 
 /**
  * @brief A local declaration inside a block body – supports **any** declaration kind.
@@ -117,6 +119,7 @@ struct DeclStmtAST : StmtAST {
     bool isTrait()      const { return decl && decl->isa<TraitDeclAST>(); }
 
 };
+using DeclStmtPtr = DeclStmtAST*;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // BRANCHING STATEMENTS
@@ -149,6 +152,7 @@ struct IfStmtAST : StmtAST {
 
     IfStmtAST() : StmtAST(ASTKind::IfStmt) {}
 };
+using IfStmtPtr = IfStmtAST*;
 
 /**
  * @brief One case clause inside a `switch` statement.
@@ -173,7 +177,6 @@ struct SwitchCaseAST : BaseAST {
 
     SwitchCaseAST() : BaseAST(ASTKind::SwitchCase) {}
 };
-
 using SwitchCasePtr = SwitchCaseAST*;
 
 /**
@@ -202,6 +205,7 @@ struct SwitchStmtAST : StmtAST {
 
     SwitchStmtAST() : StmtAST(ASTKind::SwitchStmt) {}
 };
+using SwitchStmtPtr = SwitchStmtAST*;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LOOP STATEMENTS
@@ -235,6 +239,7 @@ struct ForStmtAST : StmtAST {
 
     ForStmtAST() : StmtAST(ASTKind::ForStmt) {}
 };
+using ForStmtPtr = ForStmtAST*;
 
 /**
  * @brief Condition‑first loop – condition is tested before each iteration.
@@ -253,6 +258,7 @@ struct WhileStmtAST : StmtAST {
 
     WhileStmtAST() : StmtAST(ASTKind::WhileStmt) {}
 };
+using WhileStmtPtr = WhileStmtAST*;
 
 /**
  * @brief Body‑first loop – body executes at least once before condition is checked.
@@ -271,6 +277,7 @@ struct DoWhileStmtAST : StmtAST {
 
     DoWhileStmtAST() : StmtAST(ASTKind::DoWhileStmt) {}
 };
+using DoWhileStmtPtr = DoWhileStmtAST*;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CONTROL TRANSFER STATEMENTS
@@ -297,6 +304,7 @@ struct ReturnStmtAST : StmtAST {
 
     ReturnStmtAST() : StmtAST(ASTKind::ReturnStmt) {}
 };
+using ReturnStmtPtr = ReturnStmtAST*;
 
 /**
  * @brief Exits the nearest enclosing loop (`for`, `while`, `do‑while`).
@@ -313,6 +321,7 @@ struct BreakStmtAST : StmtAST {
 
     BreakStmtAST() : StmtAST(ASTKind::BreakStmt) {}
 };
+using BreakStmtPtr = BreakStmtAST*;
 
 /**
  * @brief Skips the rest of the current loop iteration and jumps to the next.
@@ -329,6 +338,7 @@ struct ContinueStmtAST : StmtAST {
 
     ContinueStmtAST() : StmtAST(ASTKind::ContinueStmt) {}
 };
+using ContinueStmtPtr = ContinueStmtAST*;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MULTI‑ASSIGNMENT STATEMENTS
@@ -358,6 +368,7 @@ struct MultiVarDeclAST : StmtAST {
 
     MultiVarDeclAST() : StmtAST(ASTKind::MultiVarDecl) {}
 };
+using MultiVarDeclPtr = MultiVarDeclAST*;
 
 /**
  * @brief Multi‑assignment to existing variables (no `let`/`const`).
@@ -384,3 +395,4 @@ struct MultiAssignStmtAST : StmtAST {
 
     MultiAssignStmtAST() : StmtAST(ASTKind::MultiAssignStmt) {}
 };
+using MultiAssignStmtPtr = MultiAssignStmtAST*;

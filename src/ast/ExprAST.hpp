@@ -652,16 +652,14 @@ struct ComposeExprAST : ExprAST {
  *   (x int) int { return x * 2 }
  *   (a int) (b int) int { return a + b }   – curried
  *
- * The signature (parameters, return types) is stored in `sig`.
- * The body is always a BlockStmtAST.
  */
 struct AnonFuncExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::AnonFuncExpr;
 
-    FuncSignature sig;
-    StmtAST* body;   // always BlockStmtAST
+    FuncTypeAST* funcType = nullptr;   // the anonymous function type
+    StmtAST* body = nullptr;           // always BlockStmtAST
 
-    bool hasParams() const { return sig.hasParams(); }
+    bool hasParams() const { return funcType && !funcType->params.empty(); }
 
     AnonFuncExprAST() : ExprAST(ASTKind::AnonFuncExpr) {}
 };
@@ -878,6 +876,8 @@ struct BindPatternAST : PatternAST {
 
 };
 
+using BindPatternPtr = BindPatternAST*;
+
 /**
  * @brief Matches any value and discards it – the '_' token.
  *
@@ -889,6 +889,8 @@ struct WildcardPatternAST : PatternAST {
 
     WildcardPatternAST() : PatternAST(ASTKind::WildcardPattern) {}
 };
+
+using WildcardPatternPtr = WildcardPatternAST*;
 
 /**
  * @brief Wraps a LiteralExprAST or RangeExprAST for use in pattern contexts.
@@ -920,6 +922,8 @@ struct TypePatternAST : PatternAST {
 
     TypePatternAST() : PatternAST(ASTKind::TypePattern) {}
 };
+
+using TypePatternPtr = TypePatternAST*;
 
 /**
  * @brief One field entry inside a struct pattern.
@@ -960,6 +964,8 @@ struct StructPatternAST : PatternAST {
 
     StructPatternAST() : PatternAST(ASTKind::StructPattern) {}
 };
+
+using StructPatternPtr = StructPatternAST*;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ARM NODES – used inside MatchExprAST

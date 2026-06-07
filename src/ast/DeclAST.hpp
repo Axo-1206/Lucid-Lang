@@ -155,12 +155,9 @@ struct FuncDeclAST : DeclAST {
     DeclKeyword keyword;
     InternedString name;
     ArenaSpan<GenericParamPtr> genericParams;
-    FuncTypeAST* funcType;
-    StmtAST* body;
+    FuncTypeAST* funcType = nullptr;   // full function type (includes qualifiers)
+    StmtAST* body = nullptr;           // always BlockStmtAST
     Visibility visibility = Visibility::Private;
-
-    bool isAsync()   const { return funcType->isAsync(); }
-    bool hasParams() const { return funcType->sig.hasParams(); }
 
     FuncDeclAST() : DeclAST(ASTKind::FuncDecl) {}
 };
@@ -306,9 +303,7 @@ struct TraitMethodAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::TraitMethod;
 
     InternedString name;
-    FuncTypeAST* funcType;
-
-    bool isAsync() const { return funcType->isAsync(); }
+    FuncTypeAST* funcType = nullptr;
 
     TraitMethodAST() : BaseAST(ASTKind::TraitMethod) {}
 };
@@ -411,7 +406,7 @@ struct MethodDeclAST : BaseAST {
     InternedString name;
     
     // Inline body form
-    FuncTypeAST* funcType = nullptr;
+    FuncTypeAST* funcType = nullptr;   // signature + qualifiers
     StmtAST* body = nullptr;
 
     // Assignment forms (plain or injection)
@@ -422,7 +417,6 @@ struct MethodDeclAST : BaseAST {
     bool isInlineBody() const { return funcType != nullptr; }
     bool isPlainAssignment() const { return assignmentRef != nullptr && !isInjection; }
     bool isInjectionAssignment() const { return isInjection && assignmentRef != nullptr; }
-    bool isAsync() const { return funcType && funcType->isAsync(); }
 
     MethodDeclAST() : BaseAST(ASTKind::MethodDecl) {}
 };
@@ -438,16 +432,11 @@ struct FromEntryAST : BaseAST {
     FromEntryKind kind = FromEntryKind::Inline;
     
     // For inline entries
-    FuncSignature sig;
-    TypeAST* returnType = nullptr;
+    FuncTypeAST* funcType = nullptr;   // the conversion function type
     StmtAST* body = nullptr;
     
     // For path entries
     ExprAST* path = nullptr;
-    
-    // Qualifiers inferred from path entry (set by semantic pass)
-    bool isAsync = false;
-    bool isNullable = false;
 
     FromEntryAST() : BaseAST(ASTKind::FromEntry) {}
 };
