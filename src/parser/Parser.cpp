@@ -382,82 +382,73 @@ std::optional<DocComment> Parser::harvestDocComment() {
 //   It parses attributes, visibility, then dispatches to specific parsers.
 // ============================================================================
 
-ASTPtr<ProgramAST> Parser::parse() {
+ProgramASTPtr Parser::parse() {
     LUC_LOG_PARSER("Parser::parse: starting parsing of file " 
                    << std::string(pool_.lookup(filePath_)));
     
-    auto program = arena_.make<ProgramAST>();
+    auto* program = arena_.make<ProgramAST>();
     program->filePath = filePath_;
     program->loc = ts_.currentLoc();
 
-    std::vector<DeclPtr> decls;
+    std::vector<DeclAST*> decls;  // Raw pointers, not unique_ptr
 
     // Package declaration
     if (!ts_.check(TokenType::PACKAGE)) {
         LUC_LOG_PARSER("Parser::parse: ERROR - missing package declaration");
         errorAt(DiagCode::E2001, "expected 'package' declaration at start of file");
         synchronize();
-        auto dummy = arena_.make<PackageDeclAST>(pool_.intern("<unknown>"));
+        auto* dummy = arena_.make<PackageDeclAST>(pool_.intern("<unknown>"));
         dummy->loc = ts_.currentLoc();
         program->packageName = pool_.intern("<error>");
-        decls.push_back(std::move(dummy));
+        decls.push_back(dummy);  // No std::move for raw pointers
     } else {
         LUC_LOG_PARSER_VERBOSE("Parser::parse: parsing package declaration");
-        auto pkg = parsePackageDecl();
+        auto* pkg = parsePackageDecl();
         if (pkg) {
             program->packageName = pkg->name;
-            decls.push_back(std::move(pkg));
+            decls.push_back(pkg);
             LUC_LOG_PARSER_VERBOSE("Parser::parse: package name = " 
                                    << std::string(pool_.lookup(program->packageName)));
         } else {
             LUC_LOG_PARSER("Parser::parse: ERROR - failed to parse package declaration");
-            auto dummy = arena_.make<PackageDeclAST>(pool_.intern("<error>"));
+            auto* dummy = arena_.make<PackageDeclAST>(pool_.intern("<error>"));
             dummy->loc = ts_.currentLoc();
             program->packageName = pool_.intern("<error>");
-            decls.push_back(std::move(dummy));
+            decls.push_back(dummy);
         }
     }
 
     // Top-level declarations with infinite loop protection
     int declCount = 0;
     int consecutiveFailures = 0;
-    const int MAX_CONSECUTIVE_FAILURES = 100;  // Safety limit - should never be reached
+    const int MAX_CONSECUTIVE_FAILURES = 100;
     size_t lastPos = ts_.getPos();
     
     while (!ts_.isAtEnd() && consecutiveFailures < MAX_CONSECUTIVE_FAILURES) {
-        // Harvest doc comments before parsing the declaration
         auto doc = harvestDocComment();
-        
-        // Track position before parsing to detect progress
         size_t savedPos = ts_.getPos();
         
-        // Parse the declaration
-        DeclPtr decl = parseTopLevelDecl();
+        DeclAST* decl = parseTopLevelDecl();  // Raw pointer
         
-        // Check if we made progress
         if (ts_.getPos() == savedPos) {
-            // No progress - we're stuck on the same token
             consecutiveFailures++;
             LUC_LOG_PARSER("Parser::parse: NO PROGRESS - stuck on token '" 
                            << ts_.peek().value << "' (type=" 
                            << LucDebug::tokenTypeToString(ts_.peekType())
                            << "), consecutive failures: " << consecutiveFailures);
             
-            // Force consume the problematic token to break the deadlock
             if (!ts_.isAtEnd()) {
                 LUC_LOG_PARSER("Parser::parse: forcing consumption of stuck token");
                 ts_.advance();
             }
             
-            // If we've had too many consecutive failures, try a more aggressive recovery
             if (consecutiveFailures > 5) {
                 LUC_LOG_PARSER("Parser::parse: too many consecutive failures, aggressive recovery");
                 synchronize();
             }
         } else if (decl) {
-            // Successfully parsed a declaration
             declCount++;
-            consecutiveFailures = 0;  // Reset failure counter on success
+            consecutiveFailures = 0;
             lastPos = ts_.getPos();
             
             LUC_LOG_PARSER_EXTREME("Parser::parse: parsed declaration #" << declCount 
@@ -466,16 +457,12 @@ ASTPtr<ProgramAST> Parser::parse() {
             if (doc) {
                 decl->doc = std::move(doc);
             }
-            decls.push_back(std::move(decl));
+            decls.push_back(decl);
         } else {
-            // parseTopLevelDecl returned nullptr but still made progress (consumed tokens)
-            consecutiveFailures = 0;  // Reset because we made progress even though parse failed
+            consecutiveFailures = 0;
             LUC_LOG_PARSER("Parser::parse: parseTopLevelDecl returned nullptr but made progress, continuing");
-            
-            // Note: synchronize() was likely already called inside parseTopLevelDecl
         }
         
-        // Safety check: if we've been at the same position for too long
         if (ts_.getPos() == lastPos && consecutiveFailures > 10) {
             LUC_LOG_PARSER("Parser::parse: CRITICAL - still no progress after " 
                            << consecutiveFailures << " attempts, forcing advance");
@@ -486,7 +473,6 @@ ASTPtr<ProgramAST> Parser::parse() {
         }
     }
 
-    // Check if we aborted due to too many failures
     if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
         LUC_LOG_PARSER("Parser::parse: ERROR - too many consecutive failures (" 
                        << MAX_CONSECUTIVE_FAILURES << "), aborting parsing");
@@ -496,8 +482,8 @@ ASTPtr<ProgramAST> Parser::parse() {
     LUC_LOG_PARSER("Parser::parse: parsed " << declCount << " top-level declarations");
 
     // Build the ArenaSpan for program->decls
-    auto builder = arena_.makeBuilder<DeclPtr>();
-    for (auto& d : decls) builder.push_back(std::move(d));
+    auto builder = arena_.makeBuilder<DeclAST*>();
+    for (auto* d : decls) builder.push_back(d);
     program->decls = builder.build();
 
     LUC_LOG_PARSER("Parser::parse: parsing complete");

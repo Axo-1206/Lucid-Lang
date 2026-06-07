@@ -5,11 +5,11 @@
 #include "debug/DebugMacros.hpp"
 
 // ============================================================================
-// Named Type
+// Named Type (Concrete User-Defined Type)
 // ============================================================================
 // 
-// parseNamedType() parses a user-defined type reference with optional generic
-// arguments.
+// parseNamedType() parses a concrete user-defined type reference with optional
+// generic arguments.
 // 
 // Grammar: IDENTIFIER [ '<' type { ',' type } '>' ]
 // 
@@ -17,6 +17,9 @@
 //   Vec2
 //   Buffer<int>
 //   Map<string, Vec2>
+// 
+// IMPORTANT: This is for CONCRETE types only. Generic parameters (e.g., `T`
+// in `struct Box<T>`) are parsed by parseGenericParamType().
 // 
 // ─── Token Consumption ─────────────────────────────────────────────────────
 // On entry: positioned at IDENTIFIER (type name)
@@ -52,27 +55,16 @@ TypePtr Parser::parseNamedType() {
     LUC_LOG_TYPE("parseNamedType: consumed identifier '" << nameToken.value 
                  << "' at line " << nameToken.line << ", col " << nameToken.column);
     
-    auto type = arena_.make<NamedTypeAST>(pool_.intern(nameToken.value));
+    auto* type = arena_.make<NamedTypeAST>(pool_.intern(nameToken.value));
     type->loc = loc;
-    type->name = pool_.intern(nameToken.value);
 
-    // Check for generic arguments - IMPORTANT: we must check BEFORE returning
-    LUC_LOG_TYPE("parseNamedType: checking for '<', next token = '" << ts_.peek().value 
-                 << "' (type=" << static_cast<int>(ts_.peek().type)
-                 << ") at line " << ts_.peek().line << ", col " << ts_.peek().column);
-    
+    // Check for generic arguments
     if (ts_.check(TokenType::LESS)) {
-        LUC_LOG_TYPE("parseNamedType: found '<' for generic arguments at line " 
-                     << ts_.peek().line << ", col " << ts_.peek().column);
-        // Consume the '<' before calling parseGenericArgs
-        ts_.advance();
+        LUC_LOG_TYPE("parseNamedType: found '<' for generic arguments");
+        ts_.advance(); // consume '<'
         type->genericArgs = parseGenericArgs();
         LUC_LOG_TYPE("parseNamedType: parsed " << type->genericArgs.size() 
                      << " generic argument(s)");
-        LUC_LOG_TYPE("parseNamedType: after generic args, next token = '" << ts_.peek().value 
-                     << "' at line " << ts_.peek().line << ", col " << ts_.peek().column);
-    } else {
-        LUC_LOG_TYPE("parseNamedType: no generic arguments found");
     }
 
     return type;

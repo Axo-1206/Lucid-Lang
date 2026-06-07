@@ -15,7 +15,7 @@
 // Examples:
 //   (x int) -> int
 //   ~async (url string) -> string
-//   (a int)(b int) -> int                    (curried)
+//   (a int)(b int) -> int                    (curried → nested FuncTypeAST)
 //   (src string) -> (int, string)            (multiple returns)
 //   () -> int                                (zero parameters)
 // 
@@ -24,18 +24,18 @@
 //   - Validation and bitmask computation deferred to semantic phase
 //   - `~parallel` does NOT affect type equality; `~async`/`~nullable` do
 // 
-// ─── Parameter Groups (Flat Representation) ───────────────────────────────
-//   - Parameters are flattened into `allParams` vector
-//   - `groupSizes` records how many parameters belong to each curry group
-//   - Example: `(a int)(b int)(c int)` → allParams=[a,b,c], groupSizes=[1,1,1]
+// ─── Parameter Groups (Currying via Recursion) ────────────────────────────
+//   - Multiple parameter groups desugar to nested FuncTypeAST
+//   - Example: `(a int)(b int) -> int` becomes:
+//       FuncTypeAST(params=[a]) -> FuncTypeAST(params=[b]) -> returnTypes=[int]
 // 
 // ─── Token Consumption ─────────────────────────────────────────────────────
 // On entry: positioned at first '(' or '~' (qualifier)
 // On exit:  positioned after return list (or after last param group if void)
 // 
-// ─── Loop Safety ──────────────────────────────────────────────────────────
-//   - Parameter group loop continues while '(' is found
-//   - parseParamGroup() guarantees progress
+// ─── Parameter Parsing ────────────────────────────────────────────────────
+//   - Each parameter group is parsed as: '(' parseParamList() ')'
+//   - The caller consumes the parentheses directly, not via parseParamGroup()
 // 
 // ─── Error Recovery ───────────────────────────────────────────────────────
 //   - Missing '(' after qualifiers: reports error, returns UnknownTypeAST
@@ -85,18 +85,11 @@ TypePtr Parser::parseFuncType() {
     }
     
     auto qBuilder = arena_.makeBuilder<InternedString>();
-    for (auto& q : rawQuals) qBuilder.push_back(std::move(q));
+    for (auto& q : rawQuals) qBuilder.push_back(q);
     funcType->rawQualifiers = qBuilder.build();
     funcType->qualifiers = qualMask;
 
-    // Parameter groups: flat accumulation
-    std::vector<ParamPtr> allParams;
-    std::vector<size_t> groupSizes;
-    int groupCount = 0;
-    
-    LUC_LOG_TYPE("parseFuncType: checking for '(' at line " << ts_.peek().line 
-                 << ", col " << ts_.peek().column);
-    
+    // Parse first parameter group (required)
     if (!ts_.check(TokenType::LPAREN)) {
         LUC_LOG_TYPE("parseFuncType: ERROR - expected '(' for function type parameters, got '" 
                      << ts_.peek().value << "'");
@@ -104,44 +97,48 @@ TypePtr Parser::parseFuncType() {
         return arena_.make<UnknownTypeAST>();
     }
     
-    while (ts_.check(TokenType::LPAREN)) {
-        LUC_LOG_TYPE_EXTREME("parseFuncType: parsing parameter group " << groupCount + 1 
-                             << " at line " << ts_.peek().line << ", col " << ts_.peek().column);
-        ParamGroup group = parseParamGroup();
-        groupSizes.push_back(group.size());
-        LUC_LOG_TYPE_EXTREME("parseFuncType: group " << groupCount << " has " << group.size() << " parameters");
-        
-        for (size_t i = 0; i < group.size(); ++i) {
-            allParams.push_back(std::move(const_cast<ParamPtr&>(group[i])));
-        }
-        groupCount++;
-    }
+    LUC_LOG_TYPE_EXTREME("parseFuncType: parsing first parameter group at line " 
+                         << ts_.peek().line << ", col " << ts_.peek().column);
     
-    LUC_LOG_TYPE_VERBOSE("parseFuncType: parsed " << groupCount << " parameter groups with " 
-                         << allParams.size() << " total parameters");
-
-    // Log after parameter groups
-    LUC_LOG_TYPE("parseFuncType: after parameter groups, next token: '" << ts_.peek().value 
-                 << "' (type=" << static_cast<int>(ts_.peek().type)
-                 << ") at line " << ts_.peek().line << ", col " << ts_.peek().column);
+    // Parse '(' param_list ')'
+    ts_.consume(TokenType::LPAREN, "expected '(' to start parameter group");
+    std::vector<ParamPtr> params = parseParamList();
+    ts_.consume(TokenType::RPAREN, "expected ')' to close parameter group");
     
+    LUC_LOG_TYPE_EXTREME("parseFuncType: first group has " << params.size() << " parameters");
+    
+    // Store parameters for this group
     auto paramsBuilder = arena_.makeBuilder<ParamPtr>();
-    for (auto& p : allParams) paramsBuilder.push_back(std::move(p));
-    funcType->sig.allParams = paramsBuilder.build();
-    
-    auto gsBuilder = arena_.makeBuilder<size_t>();
-    for (auto& sz : groupSizes) gsBuilder.push_back(sz);
-    funcType->sig.groupSizes = gsBuilder.build();
+    for (auto* p : params) paramsBuilder.push_back(p);
+    funcType->params = paramsBuilder.build();
 
-    // Return types
+    // Check for additional parameter groups (currying)
+    // If another '(' is found, parse the rest recursively as the return type
+    if (ts_.check(TokenType::LPAREN)) {
+        LUC_LOG_TYPE_EXTREME("parseFuncType: found additional parameter group - currying");
+        // Parse the curried function type (remaining groups + return types)
+        TypePtr curriedType = parseFuncType();
+        if (curriedType) {
+            // The return type becomes the curried function type
+            auto retBuilder = arena_.makeBuilder<TypePtr>();
+            retBuilder.push_back(curriedType);
+            funcType->returnTypes = retBuilder.build();
+        }
+        LUC_LOG_TYPE_VERBOSE("parseFuncType: curried function with " 
+                             << funcType->params.size() << " parameters");
+        return funcType;
+    }
+
+    // No currying - parse return types if present
     if (ts_.match(TokenType::ARROW)) {
         LUC_LOG_TYPE_EXTREME("parseFuncType: found '->' at line " << ts_.peek().line
                              << ", col " << ts_.peek().column);
-        funcType->sig.returnTypes = parseReturnList();
-        LUC_LOG_TYPE_VERBOSE("parseFuncType: found " << funcType->sig.returnTypes.size() 
+        funcType->returnTypes = parseReturnList();
+        LUC_LOG_TYPE_VERBOSE("parseFuncType: found " << funcType->returnTypes.size() 
                              << " return type(s)");
     } else {
         LUC_LOG_TYPE_EXTREME("parseFuncType: no return types (void)");
+        // Void function - returnTypes remains empty
     }
 
     LUC_LOG_TYPE_VERBOSE("parseFuncType: success");

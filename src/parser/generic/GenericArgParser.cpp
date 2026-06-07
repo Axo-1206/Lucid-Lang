@@ -87,7 +87,7 @@ ArenaSpan<TypePtr> Parser::parseGenericArgs() {
         }
         argCount++;
         LUC_LOG_TYPE_EXTREME("parseGenericArgs: parsed argument #" << argCount);
-        args.push_back(std::move(arg));
+        args.push_back(arg);
         
         LUC_LOG_TYPE_EXTREME("parseGenericArgs: after argument, next token = '" << ts_.peek().value 
                              << "' (type=" << static_cast<int>(ts_.peek().type) << ")");
@@ -99,7 +99,7 @@ ArenaSpan<TypePtr> Parser::parseGenericArgs() {
     ts_.consume(TokenType::GREATER, "expected '>' to close generic arguments");
     
     auto builder = arena_.makeBuilder<TypePtr>();
-    for (auto& a : args) builder.push_back(std::move(a));
+    for (auto& a : args) builder.push_back(a);
     
     LUC_LOG_TYPE_VERBOSE("parseGenericArgs: parsed " << argCount << " generic argument(s)");
     return builder.build();

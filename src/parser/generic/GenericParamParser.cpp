@@ -73,14 +73,14 @@ ArenaSpan<GenericParamPtr> Parser::parseGenericParams() {
         if (gp) {
             paramCount++;
             LUC_LOG_DECL_EXTREME("parseGenericParams: parsed parameter #" << paramCount);
-            params.push_back(std::move(gp));
+            params.push_back(gp);
         }
     } while (!ts_.check(TokenType::GREATER) && !ts_.isAtEnd());
     
     ts_.consume(TokenType::GREATER, "expected '>' after generic parameters");
     
     auto builder = arena_.makeBuilder<GenericParamPtr>();
-    for (auto& p : params) builder.push_back(std::move(p));
+    for (auto& p : params) builder.push_back(p);
     
     LUC_LOG_DECL_VERBOSE("parseGenericParams: parsed " << paramCount << " generic parameter(s)");
     return builder.build();
@@ -143,7 +143,7 @@ GenericParamPtr Parser::parseGenericParam() {
         }
         
         auto builder = arena_.makeBuilder<InternedString>();
-        for (auto& c : constraints) builder.push_back(std::move(c));
+        for (auto& c : constraints) builder.push_back(c);
         gp->constraints = builder.build();
         
         LUC_LOG_DECL_EXTREME("parseGenericParam: " << constraintCount << " constraint(s)");

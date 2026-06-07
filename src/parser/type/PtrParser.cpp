@@ -47,7 +47,7 @@ TypePtr Parser::parsePtrType() {
         return arena_.make<UnknownTypeAST>();
     }
     
-    auto node = arena_.make<PtrTypeAST>(std::move(inner));
+    auto node = arena_.make<PtrTypeAST>(inner);
     node->loc = loc;
     LUC_LOG_TYPE_EXTREME("parsePtrType: success");
     return node;

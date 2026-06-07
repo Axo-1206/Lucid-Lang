@@ -89,7 +89,7 @@ TypePtr Parser::parseArrayType() {
             return arena_.make<UnknownTypeAST>();
         }
         ts_.consume(TokenType::RBRACKET, "expected ']' after element type");
-        auto node = arena_.make<ArrayTypeAST>(arrayKind, 0, std::move(elem));
+        auto node = arena_.make<ArrayTypeAST>(arrayKind, 0, elem);
         node->loc = loc;
         LUC_LOG_TYPE_VERBOSE("parseArrayType: created dynamic array");
         return node;
@@ -109,7 +109,7 @@ TypePtr Parser::parseArrayType() {
             return arena_.make<UnknownTypeAST>();
         }
         ts_.consume(TokenType::RBRACKET, "expected ']' after element type");
-        auto node = arena_.make<ArrayTypeAST>(arrayKind, 0, std::move(elem));
+        auto node = arena_.make<ArrayTypeAST>(arrayKind, 0, elem);
         node->loc = loc;
         LUC_LOG_TYPE_VERBOSE("parseArrayType: created slice");
         return node;
@@ -140,7 +140,7 @@ TypePtr Parser::parseArrayType() {
             return arena_.make<UnknownTypeAST>();
         }
         ts_.consume(TokenType::RBRACKET, "expected ']' after element type");
-        auto node = arena_.make<ArrayTypeAST>(arrayKind, fixedSize, std::move(elem));
+        auto node = arena_.make<ArrayTypeAST>(arrayKind, fixedSize, elem);
         node->loc = loc;
         LUC_LOG_TYPE_VERBOSE("parseArrayType: created fixed array with size " << fixedSize);
         return node;

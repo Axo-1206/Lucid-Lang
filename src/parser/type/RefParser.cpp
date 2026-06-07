@@ -43,7 +43,7 @@ TypePtr Parser::parseRefType() {
         return arena_.make<UnknownTypeAST>();
     }
     
-    auto node = arena_.make<RefTypeAST>(std::move(inner));
+    auto node = arena_.make<RefTypeAST>(inner);
     node->loc = loc;
     LUC_LOG_TYPE_EXTREME("parseRefType: success");
     return node;

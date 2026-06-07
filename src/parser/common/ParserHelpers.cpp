@@ -12,7 +12,7 @@
  * 
  * ## Categories of Helpers
  * 
- *   1. Parameter Helpers      – parse parameter lists, groups, and argument lists
+ *   1. Parameter Helpers      – parse parameter lists and argument lists
  *   2. Return List Parser     – parse return types after '->' (handles function types and multi-return)
  *   3. Qualifiers             – parse `~async`, `~nullable`, `~parallel` qualifiers
  *   4. Module Path            – parse dotted module paths for `use` declarations
@@ -45,7 +45,7 @@
 // ============================================================================
 
 /**
- * @brief Parses a parameter list inside parentheses.
+ * @brief Parses a parameter list inside already-consumed parentheses.
  *
  * Grammar:
  *   param_list := param { ',' param } [ ',' variadic_param ]
@@ -61,9 +61,17 @@
  * - Parameter names are required (no anonymous parameters).
  * - Type annotations are required (no type inference).
  *
+ * ─── Token Consumption ─────────────────────────────────────────────────────
+ * On entry: positioned at first token of first parameter (or ')' for empty)
+ * On exit:  positioned at the closing ')' of the parameter list
+ *
  * ─── Loop Safety ───────────────────────────────────────────────────────────
  * - Uses saved position pattern to prevent infinite loops.
  * - If parsing fails, consumes one token and continues.
+ *
+ * @note This function does NOT consume the surrounding parentheses.
+ *       The caller is responsible for consuming '(' before calling
+ *       and ')' after this function returns.
  */
 std::vector<ParamPtr> Parser::parseParamList() {
     LUC_LOG_DECL_EXTREME("parseParamList: entering");
@@ -116,7 +124,7 @@ std::vector<ParamPtr> Parser::parseParamList() {
             paramCount++;
             LUC_LOG_DECL_EXTREME("parseParamList: parameter #" << paramCount 
                                  << " = " << pool_.lookup(param->name));
-            list.push_back(std::move(param));
+            list.push_back(param);
         } else {
             LUC_LOG_DECL("parseParamList: ERROR - failed to parse type for parameter");
         }
@@ -124,76 +132,6 @@ std::vector<ParamPtr> Parser::parseParamList() {
     
     LUC_LOG_DECL_EXTREME("parseParamList: parsed " << paramCount << " parameter(s)");
     return list;
-}
-
-/**
- * @brief Parses a single parameter group: '(' param_list ')'.
- *
- * Called for each parameter group in curried functions and function types.
- *
- * Grammar:
- *   param_group := '(' [ param_list ] ')'
- *
- * @return ParamGroup (std::vector<ParamPtr>) – temporary collection.
- *
- * ─── Token Consumption ─────────────────────────────────────────────────────
- * On entry: positioned at '('
- * On exit:  positioned after the closing ')'
- *
- * ─── Edge Cases ────────────────────────────────────────────────────────────
- * - Empty parentheses `()` are allowed (zero parameters).
- * - Recovers from missing ')' by consuming until RPAREN or EOF.
- */
-ParamGroup Parser::parseParamGroup() {
-    LUC_LOG_DECL_EXTREME("parseParamGroup: entering at line " << ts_.currentLoc().line()
-                         << ", col " << ts_.currentLoc().column());
-    
-    // Check for common mistake: (T) where T has no type annotation
-    // Pattern: '(' IDENTIFIER and the next token after identifier is ')' or ',' or '->'
-    if (ts_.check(TokenType::LPAREN)) {
-        size_t checkPos = ts_.getPos();
-        size_t afterParen = ts_.skipCommentsFrom(checkPos + 1);
-        
-        if (afterParen < ts_.getTokenCount() && 
-            ts_.getTokenAt(afterParen).type == TokenType::IDENTIFIER) {
-            
-            size_t afterIdent = ts_.skipCommentsFrom(afterParen + 1);
-            if (afterIdent < ts_.getTokenCount()) {
-                TokenType nextType = ts_.getTokenAt(afterIdent).type;
-                
-                // If after identifier we see ')', ',', or '->', the user forgot the type
-                if (nextType == TokenType::RPAREN || nextType == TokenType::COMMA || nextType == TokenType::ARROW) {
-                    Token ident = ts_.getTokenAt(afterParen);
-                    errorAt(DiagCode::E1025, ident.value, ident.value);
-                    
-                    // Consume the bad tokens to allow parsing to continue
-                    ts_.advance(); // consume '('
-                    ts_.advance(); // consume identifier
-                    
-                    // Skip to closing ')'
-                    while (!ts_.isAtEnd() && !ts_.check(TokenType::RPAREN)) {
-                        ts_.advance();
-                    }
-                    if (ts_.check(TokenType::RPAREN)) {
-                        ts_.advance(); // consume ')'
-                    }
-                    
-                    return {}; // Return empty parameter group
-                }
-            }
-        }
-    }
-    
-    // Continue with normal parsing
-    SourceLocation loc = ts_.currentLoc();
-    ts_.consume(TokenType::LPAREN, "expected '(' to start parameter group");
-    
-    std::vector<ParamPtr> params = parseParamList();
-    
-    ts_.consume(TokenType::RPAREN, "expected ')' to close parameter group");
-    
-    LUC_LOG_DECL_EXTREME("parseParamGroup: parsed " << params.size() << " parameter(s)");
-    return params;
 }
 
 /**
@@ -205,6 +143,10 @@ ParamGroup Parser::parseParamGroup() {
  *   arg_list := expr { ',' expr }
  *
  * @return ArenaSpan<ExprPtr> – arena-allocated span of arguments.
+ *
+ * ─── Token Consumption ─────────────────────────────────────────────────────
+ * On entry: positioned at first argument (or ')' for empty)
+ * On exit:  positioned after the closing ')'
  *
  * ─── Consecutive Error Protection ──────────────────────────────────────────
  * Uses a counter (max 5) to prevent infinite loops when the parser repeatedly
@@ -241,7 +183,7 @@ ArenaSpan<ExprPtr> Parser::parseArgList() {
         consecutiveErrors = 0;
         argCount++;
         LUC_LOG_DECL_EXTREME("parseArgList: argument #" << argCount);
-        args.push_back(std::move(arg));
+        args.push_back(arg);
 
         if (ts_.check(TokenType::RPAREN)) break;
         if (!ts_.match(TokenType::COMMA)) {
@@ -256,7 +198,7 @@ ArenaSpan<ExprPtr> Parser::parseArgList() {
     }
     
     auto builder = arena_.makeBuilder<ExprPtr>();
-    for (auto& a : args) builder.push_back(std::move(a));
+    for (auto& a : args) builder.push_back(a);
     
     LUC_LOG_DECL_EXTREME("parseArgList: parsed " << argCount << " argument(s)");
     return builder.build();
@@ -305,7 +247,7 @@ ArenaSpan<TypePtr> Parser::parseReturnList() {
             return ArenaSpan<TypePtr>();
         }
         auto builder = arena_.makeBuilder<TypePtr>();
-        builder.push_back(std::move(t));
+        builder.push_back(t);
         LUC_LOG_DECL_EXTREME("parseReturnList: single return type parsed");
         return builder.build();
     }
@@ -327,7 +269,7 @@ ArenaSpan<TypePtr> Parser::parseReturnList() {
             return ArenaSpan<TypePtr>();
         }
         auto builder = arena_.makeBuilder<TypePtr>();
-        builder.push_back(std::move(funcType));
+        builder.push_back(funcType);
         LUC_LOG_DECL_EXTREME("parseReturnList: function type parsed");
         return builder.build();
     }
@@ -364,14 +306,14 @@ ArenaSpan<TypePtr> Parser::parseReturnList() {
         if (t && !t->isa<UnknownTypeAST>()) {
             typeCount++;
             LUC_LOG_DECL_EXTREME("parseReturnList: return type #" << typeCount);
-            types.push_back(std::move(t));
+            types.push_back(t);
         }
     }
 
     ts_.consume(TokenType::RPAREN, "expected ')' to close return type list");
 
     auto builder = arena_.makeBuilder<TypePtr>();
-    for (auto& t : types) builder.push_back(std::move(t));
+    for (auto& t : types) builder.push_back(t);
     
     LUC_LOG_DECL_EXTREME("parseReturnList: parsed " << typeCount << " return type(s)");
     return builder.build();
@@ -399,6 +341,10 @@ ArenaSpan<TypePtr> Parser::parseReturnList() {
  * @return QualifierSet containing:
  *         - raw: vector of InternedString (original names, for errors)
  *         - bitmask: OR of QualifierBits flags
+ *
+ * ─── Token Consumption ─────────────────────────────────────────────────────
+ * On entry: positioned at first '~' (if any)
+ * On exit:  positioned after the last qualifier (or at same position if none)
  *
  * ─── Error Handling ─────────────────────────────────────────────────────────
  * - Missing identifier after '~': reports error (E1003), stops parsing qualifiers.
@@ -457,49 +403,52 @@ QualifierSet Parser::parseQualifiers() {
 // 4. MODULE PATH PARSING
 // ============================================================================
 //
-// parseModulePath() parses a dotted identifier sequence for `use` declarations.
+// parseUsePath() parses a dotted identifier sequence for `use` declarations.
 // ============================================================================
 
 /**
- * @brief Parses a dotted module path for `use` declarations.
- *
+ * @brief Parses a dotted path for `use` declarations only.
+ * 
  * Grammar:
- *   module_path := IDENTIFIER { '.' IDENTIFIER }
- *
+ *   use_path := IDENTIFIER { '.' IDENTIFIER }
+ * 
  * Example: `std.io`, `renderer.core.math`
- *
+ * 
  * @return std::vector<InternedString> – path segments in order.
- *
- * ─── Error Recovery ─────────────────────────────────────────────────────────
- * - Missing identifier after '.': reports error, stops building path.
- * - Returns empty vector on no initial identifier.
+ * 
+ * @warning This function is ONLY for `use` declarations. For expression
+ *          field access, use parsePrimaryExpr() which produces FieldAccessExprAST.
+ * 
+ * ─── Token Consumption ─────────────────────────────────────────────────────
+ * On entry: positioned at first identifier
+ * On exit:  positioned after last identifier
  */
-std::vector<InternedString> Parser::parseModulePath() {
-    LUC_LOG_DECL_EXTREME("parseModulePath: entering");
+std::vector<InternedString> Parser::parseUsePath() {
+    LUC_LOG_DECL_EXTREME("parseUsePath: entering");
     std::vector<InternedString> path;
     
     if (!ts_.check(TokenType::IDENTIFIER)) {
-        LUC_LOG_DECL_EXTREME("parseModulePath: no identifier, returning empty");
+        LUC_LOG_DECL_EXTREME("parseUsePath: no identifier, returning empty");
         return path;
     }
     
     path.push_back(pool_.intern(ts_.advance().value));
-    LUC_LOG_DECL_EXTREME("parseModulePath: segment 1 = " << pool_.lookup(path.back()));
+    LUC_LOG_DECL_EXTREME("parseUsePath: segment 1 = " << pool_.lookup(path.back()));
     
     int segmentCount = 1;
     while (ts_.match(TokenType::DOT)) {
         if (!ts_.check(TokenType::IDENTIFIER)) {
-            LUC_LOG_DECL("parseModulePath: ERROR - expected identifier after '.'");
+            LUC_LOG_DECL("parseUsePath: ERROR - expected identifier after '.'");
             errorAt(DiagCode::E1003, "expected identifier after '.'");
             break;
         }
         path.push_back(pool_.intern(ts_.advance().value));
         segmentCount++;
-        LUC_LOG_DECL_EXTREME("parseModulePath: segment " << segmentCount 
+        LUC_LOG_DECL_EXTREME("parseUsePath: segment " << segmentCount 
                              << " = " << pool_.lookup(path.back()));
     }
     
-    LUC_LOG_DECL_EXTREME("parseModulePath: " << segmentCount << " segment(s)");
+    LUC_LOG_DECL_EXTREME("parseUsePath: " << segmentCount << " segment(s)");
     return path;
 }
 
@@ -626,9 +575,9 @@ ExprPtr Parser::parseFuncRef() {
         
         auto node = arena_.make<FieldAccessExprAST>();
         node->loc = fieldLoc;
-        node->object = std::move(expr);
+        node->object = expr;
         node->field = pool_.intern(fieldToken.value);
-        expr = std::move(node);
+        expr = node;
     }
 
     // Optional generic arguments

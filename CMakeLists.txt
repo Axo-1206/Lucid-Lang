@@ -65,6 +65,7 @@ add_executable(luc-comp
 
     src/parser/type/PrimitiveParser.cpp
     src/parser/type/NamedParser.cpp
+    src/parser/type/GenericParamTypeParser.cpp
     src/parser/type/ArrayParser.cpp
     src/parser/type/RefParser.cpp
     src/parser/type/PtrParser.cpp

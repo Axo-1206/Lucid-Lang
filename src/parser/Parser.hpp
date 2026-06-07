@@ -27,7 +27,7 @@
  * 
  * 1. **Arena Allocation**: All AST nodes are allocated in a bump‑pointer arena.
  *    This provides O(1) allocation, excellent cache locality, and bulk
- *    deallocation. Nodes use `ASTPtr<T>` (unique_ptr with no‑op deleter).
+ *    deallocation. Nodes use raw pointers (arena owns all memory).
  * 
  * 2. **TokenStream Abstraction**: Wraps the token vector with safe accessors,
  *    automatic comment skipping, and position manipulation for lookahead.
@@ -109,7 +109,6 @@
 #include <vector>
 #include <string>
 
-// name spacce for expr
 namespace {
     // Precedence levels
     constexpr int PREC_NONE = 0;
@@ -318,10 +317,10 @@ struct QualifierSet {
  * 
  * ## Memory Management
  * 
- *   - All AST nodes allocated via `arena_.make<T>()`
- *   - `ASTPtr<T>` uses no‑op deleter (arena freed in bulk)
+ *   - All AST nodes allocated via `arena_.make<T>()` returning raw pointers
+ *   - The arena owns all memory; nodes are never freed individually
  *   - Temporary lists use `std::vector<T>`, converted to `ArenaSpan<T>` via
- *     `SpanBuilder` at the point of AST assignment.
+ *     `SpanBuilder` at the point of AST assignment
  * 
  * @see TokenStream for token consumption
  * @see ASTArena for arena allocation
@@ -334,7 +333,7 @@ public:
     Parser(std::vector<Token> tokens,
            InternedString filePath, StringPool& pool, ASTArena& arena);
 
-    ASTPtr<ProgramAST> parse();
+    ProgramASTPtr parse();  // Returns raw pointer (arena owns)
     bool hasErrors() const { return diagnostic::hasErrors(); }
 
 private:
@@ -349,11 +348,9 @@ private:
     // ========================================================================
     // Error handling
     // ========================================================================
-    // Base error function that takes initializer_list
     void error(const SourceLocation& loc, DiagCode code, std::initializer_list<std::string> args = {});
     void errorAt(DiagCode code, std::initializer_list<std::string> args = {});
     
-    // Variadic template helpers
     template<typename... Args>
     void error(const SourceLocation& loc, DiagCode code, Args&&... args) {
         error(loc, code, {std::forward<Args>(args)...});
@@ -371,20 +368,17 @@ private:
     // Helpers for list parsing
     // ========================================================================
 
-    // ---- Temporary list builders (return std::vector) ----
-    std::vector<ParamPtr> parseParamList();           // ends at RPAREN
-    std::vector<InternedString> parseModulePath();    // dotted identifiers
-    std::vector<AttributePtr> parseAttributes();      // collects '@' attributes
+    std::vector<ParamPtr> parseParamList();           // returns std::vector<ParamAST*>
+    std::vector<InternedString> parseUsePath();
+    std::vector<AttributePtr> parseAttributes();
 
-    // ---- Direct storage builders (return ArenaSpan) ----
-    ParamGroup parseParamGroup();                                // '(' param-list ')'
-    ArenaSpan<ExprPtr> parseArgList();                           // until ')'
-    ArenaSpan<TypePtr> parseReturnList();                        // after '->'
+    ArenaSpan<ExprAST*> parseArgList();
+    ArenaSpan<TypeAST*> parseReturnList();
    
-    GenericParamPtr parseGenericParam();
-    ArenaSpan<GenericParamPtr> parseGenericParams();             // '<' generic-params '>'
-    TypePtr parseGenericArg();
-    ArenaSpan<TypePtr> parseGenericArgs();                       // '<' type-list '>'
+    GenericParamPtr parseGenericParam();              // returns GenericParamAST*
+    ArenaSpan<GenericParamPtr> parseGenericParams();
+    TypePtr parseGenericArg();                        // returns TypeAST*
+    ArenaSpan<TypePtr> parseGenericArgs();
 
     // ========================================================================
     // Declaration detection & dispatch
@@ -393,24 +387,24 @@ private:
     bool isStartOfDeclaration() const;
     bool isStartOfStatement() const;
     bool isStartOfType() const;
-    DeclPtr parseTopLevelDecl();
+    DeclPtr parseTopLevelDecl();                      // returns DeclAST*
     DeclPtr parseDeclaration(DeclContext ctx);
 
     // ========================================================================
     // Metadata (doc comments + attributes)
     // ========================================================================
     std::optional<DocComment> harvestDocComment();
-    AttributePtr parseAttribute();
-    AttributeArgPtr parseAttributeArgLiteral();
+    AttributePtr parseAttribute();                    // returns AttributeAST*
+    AttributeArgPtr parseAttributeArgLiteral();       // returns AttributeArgAST*
 
     template<typename DeclNode>
     void attachMetadata(DeclNode& node,
                         std::optional<DocComment> doc,
                         std::vector<AttributePtr> attrs) {
-        if (doc) node.doc = std::move(doc);
+        if (doc) node.doc = doc;
         if (!attrs.empty()) {
             auto builder = arena_.template makeBuilder<AttributePtr>();
-            for (auto& a : attrs) builder.push_back(std::move(a));
+            for (auto& a : attrs) builder.push_back(a);
             node.attributes = builder.build();
         }
     }
@@ -424,44 +418,45 @@ private:
     // ========================================================================
     // Type parsing
     // ========================================================================
-    TypePtr parseTypeWithNullable();
-    TypePtr parseType();
-    TypePtr parseBaseType();
-    TypePtr parsePrimitiveType();
-    TypePtr parseNamedType();
-    TypePtr parseArrayType();
-    TypePtr parseGenericArray();
-    TypePtr parseRefType();
-    TypePtr parsePtrType(); 
-    TypePtr parseFuncType();
+    TypePtr parseTypeWithNullable();                  // returns TypeAST*
+    TypePtr parseType();                              // returns TypeAST*
+    TypePtr parseBaseType();                          // returns TypeAST*
+    TypePtr parsePrimitiveType();                     // returns TypeAST*
+    TypePtr parseNamedType();                         // returns TypeAST*
+    TypePtr parseGenericParamType();                  // returns TypeAST*
+    TypePtr parseArrayType();                         // returns TypeAST*
+    TypePtr parseGenericArray();                      // returns TypeAST*
+    TypePtr parseRefType();                           // returns TypeAST*
+    TypePtr parsePtrType();                           // returns TypeAST*
+    TypePtr parseFuncType();                          // returns TypeAST*
 
     // ========================================================================
     // Declaration parsers
     // ========================================================================
-    ASTPtr<PackageDeclAST> parsePackageDecl();
-    ASTPtr<UseDeclAST> parseUseDecl(Visibility vis);
-    ASTPtr<VarDeclAST> parseVarDecl(Visibility vis);
-    ASTPtr<FuncDeclAST> parseFuncDecl(DeclKeyword kw, Visibility vis);
-    ASTPtr<StructDeclAST> parseStructDecl(Visibility vis);
-    ASTPtr<EnumDeclAST> parseEnumDecl(Visibility vis);
-    ASTPtr<TraitDeclAST> parseTraitDecl(Visibility vis);
-    ASTPtr<ImplDeclAST> parseImplDecl(Visibility vis);
-    ASTPtr<FromDeclAST> parseFromDecl(Visibility vis);
-    ASTPtr<TypeAliasDeclAST> parseTypeAliasDecl(Visibility vis);
+    PackageDeclPtr parsePackageDecl();
+    UseDeclPtr parseUseDecl(Visibility vis);
+    VarDeclPtr parseVarDecl(Visibility vis);
+    FuncDeclPtr parseFuncDecl(DeclKeyword kw, Visibility vis);
+    StructDeclPtr parseStructDecl(Visibility vis);
+    EnumDeclPtr parseEnumDecl(Visibility vis);
+    TraitDeclPtr parseTraitDecl(Visibility vis);
+    ImplDeclPtr parseImplDecl(Visibility vis);
+    FromDeclPtr parseFromDecl(Visibility vis);
+    TypeAliasDeclPtr parseTypeAliasDecl(Visibility vis);
 
     // ---- Sub‑components ----
-    FieldDeclPtr parseFieldDecl();
-    EnumVariantPtr parseEnumVariant();
-    TraitMethodPtr parseTraitMethod();
-    TraitRefPtr parseTraitRef();
-    MethodDeclPtr parseMethodDecl();
-    ExprPtr parseFuncRef(); // For impl method asignment
-    FromEntryPtr parseFromEntry();
+    FieldDeclPtr parseFieldDecl();                    // returns FieldDeclAST*
+    EnumVariantPtr parseEnumVariant();                // returns EnumVariantAST*
+    TraitMethodPtr parseTraitMethod();                // returns TraitMethodAST*
+    TraitRefPtr parseTraitRef();                      // returns TraitRefAST*
+    MethodDeclPtr parseMethodDecl();                  // returns MethodDeclAST*
+    ExprPtr parseFuncRef();                           // returns ExprAST* (for impl method assignment)
+    FromEntryPtr parseFromEntry();                    // returns FromEntryAST*
 
     // ========================================================================
     // Expression parsing (Pratt parser)
     // ========================================================================
-    ExprPtr parseExpr(bool allowStructLiteral = true);
+    ExprPtr parseExpr(bool allowStructLiteral = true);     // returns ExprAST*
     ExprPtr parsePrattExpr(int minPrec, bool allowStructLiteral);
     ExprPtr parsePrefixExpr(bool allowStructLiteral);
     ExprPtr parsePrimaryExpr(bool allowStructLiteral);
@@ -470,23 +465,24 @@ private:
     // ---- Operator handlers ----
     ExprPtr parsePipelineExpr(ExprPtr seed);
     ExprPtr parseComposeExpr(ExprPtr lhs);
-    PipelineStepPtr parsePipelineStep();
-    ComposeOperandPtr parseComposeOperand();
+    PipelineStepPtr parsePipelineStep();              // returns PipelineStepAST*
+    ComposeOperandPtr parseComposeOperand();          // returns ComposeOperandAST*
 
     // ---- Primary expression factories ----
-    ExprPtr parseLiteralExpr();
-    ExprPtr parseArrayLiteralExpr();
-    ExprPtr parseStructLiteralExpr(InternedString typeName, ArenaSpan<TypePtr> genericArgs);
-    ExprPtr parseAnonFuncExpr();
+    ExprPtr parseLiteralExpr();                       // returns ExprAST*
+    ExprPtr parseArrayLiteralExpr();                  // returns ExprAST*
+    ExprPtr parseStructLiteralExpr(InternedString typeName, ArenaSpan<TypeAST*> genericArgs);
+    ExprPtr parseAnonFuncExpr();                      // returns ExprAST*
     ExprPtr parseAwaitExpr(bool allowStructLiteral = true);
-    ExprPtr parseIntrinsicCallExpr();
-    ExprPtr parseMatchExpr();
+    ExprPtr parseIntrinsicCallExpr();                 // returns ExprAST*
+    ExprPtr parseMatchExpr();                         // returns ExprAST*
     ExprPtr parseIfExpr(bool allowStructLiteral = true);
     ExprPtr parseRangeExpr(ExprPtr lo, bool allowStructLiteral = true);
 
     // ---- Call & index ----
-    ExprPtr parseCallExpr(ExprPtr callee, ArenaSpan<TypePtr> genericArgs);
-    ExprPtr parseIndexExpr(ExprPtr target);
+    ExprPtr parseCallExpr(ExprPtr callee, ArenaSpan<TypeAST*> genericArgs);
+    ExprPtr parseIndexExpr(ExprPtr target);           // returns IndexExprAST*
+    ExprPtr parseSliceExpr(ExprPtr target, ExprPtr start, ExprPtr end, bool isExclusive);  // returns SliceExprAST*
 
     // ---- Precedence helpers ----
     int infixPrec(TokenType type) const;
@@ -502,50 +498,50 @@ private:
 
     // ---- Pipeline step cases ----
     PipelineStepPtr parseAnonFuncPipelineStep();
-    PipelineStepPtr parseBehaviorPipelineStep(const std::string& typeName, ArenaSpan<TypePtr> genericArgs);
-    PipelineStepPtr parseFieldPipelineStep(const std::string& ident, ArenaSpan<TypePtr> genericArgs);
-    PipelineStepPtr parseIndexPipelineStep(const std::string& ident, ArenaSpan<TypePtr> genericArgs);
-    PipelineStepPtr parseArgPackPipelineStep(const std::string& ident, ArenaSpan<TypePtr> genericArgs);
+    PipelineStepPtr parseBehaviorPipelineStep(InternedString typeName, ArenaSpan<TypeAST*> genericArgs);
+    PipelineStepPtr parseFieldPipelineStep(InternedString ident, ArenaSpan<TypeAST*> genericArgs);
+    PipelineStepPtr parseIndexPipelineStep(InternedString ident, ArenaSpan<TypeAST*> genericArgs);
+    PipelineStepPtr parseArgPackPipelineStep(InternedString ident, ArenaSpan<TypeAST*> genericArgs);
 
     // ---- Error handler ----
-    OkArmPtr parseOkArm();
-    ErrArmPtr parseErrArm();
-    ExprPtr parseResolveExpr();
+    OkArmPtr parseOkArm();                            // returns OkArmAST*
+    ErrArmPtr parseErrArm();                          // returns ErrArmAST*
+    ExprPtr parseResolveExpr();                       // returns ExprAST*
 
     // ========================================================================
     // Pattern parsing (for match expressions)
     // ========================================================================
-    MatchArmPtr parseMatchArm();
-    ASTPtr<DefaultArmAST> parseDefaultArm();
-    ASTPtr<PatternAST> parsePattern();
-    ASTPtr<PatternAST> parseLiteralOrRangePattern();
-    ASTPtr<BindPatternAST> parseBindPattern(InternedString name);
-    ASTPtr<TypePatternAST> parseTypePattern(InternedString bindName);
-    ASTPtr<WildcardPatternAST> parseWildcardPattern();
-    ASTPtr<StructPatternAST> parseStructPattern(InternedString typeName);
-    FieldPatternPtr parseFieldPattern();
+    MatchArmPtr parseMatchArm();                      // returns MatchArmAST*
+    DefaultArmPtr parseDefaultArm();                  // returns DefaultArmAST*
+    PatternPtr parsePattern();                        // returns PatternAST*
+    PatternPtr parseLiteralOrRangePattern();
+    BindPatternPtr parseBindPattern(InternedString name);
+    TypePatternPtr parseTypePattern(InternedString bindName);
+    WildcardPatternPtr parseWildcardPattern();
+    StructPatternPtr parseStructPattern(InternedString typeName);
+    FieldPatternPtr parseFieldPattern();              // returns FieldPatternAST*
 
     // ========================================================================
     // Lvalue parsing (for assignments)
     // ========================================================================
-    ExprPtr parseLvalue();
+    ExprPtr parseLvalue();                            // returns ExprAST*
 
     // ========================================================================
     // Statement parsing
     // ========================================================================
-    StmtPtr parseStmt();
-    ASTPtr<BlockStmtAST> parseBlock();
-    ASTPtr<IfStmtAST> parseIfStmt();
-    ASTPtr<SwitchStmtAST> parseSwitchStmt();
-    SwitchCasePtr parseSwitchCase();
-    ASTPtr<ForStmtAST> parseForStmt();
-    ASTPtr<WhileStmtAST> parseWhileStmt();
-    ASTPtr<DoWhileStmtAST> parseDoWhileStmt();
-    ASTPtr<ReturnStmtAST> parseReturnStmt();
-    ASTPtr<BreakStmtAST> parseBreakStmt();
-    ASTPtr<ContinueStmtAST> parseContinueStmt();
-    ASTPtr<MultiVarDeclAST> parseMultiVarDecl(std::vector<AttributePtr> attrs = {});
-    ASTPtr<MultiAssignStmtAST> parseMultiAssignStmt();
+    StmtPtr parseStmt();                              // returns StmtAST*
+    BlockStmtPtr parseBlock();
+    IfStmtPtr parseIfStmt();
+    SwitchStmtPtr parseSwitchStmt();
+    SwitchCasePtr parseSwitchCase();                  // returns SwitchCaseAST*
+    ForStmtPtr parseForStmt();
+    WhileStmtPtr parseWhileStmt();
+    DoWhileStmtPtr parseDoWhileStmt();
+    ReturnStmtPtr parseReturnStmt();
+    BreakStmtPtr parseBreakStmt();
+    ContinueStmtPtr parseContinueStmt();
+    MultiVarDeclPtr parseMultiVarDecl(std::vector<AttributePtr> attrs = {});
+    MultiAssignStmtPtr parseMultiAssignStmt();
 
     // ========================================================================
     // Lookahead helpers (non‑consuming)
