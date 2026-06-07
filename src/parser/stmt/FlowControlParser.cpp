@@ -40,7 +40,7 @@
 //   - Missing '{' after condition: returns placeholder node
 // ============================================================================
 
-ASTPtr<IfStmtAST> Parser::parseIfStmt() {
+IfStmtPtr Parser::parseIfStmt() {
     LUC_LOG_STMT_VERBOSE("parseIfStmt: entering");
     SourceLocation loc = ts_.currentLoc();
     ts_.consume(TokenType::IF, "expected 'if'");
@@ -60,7 +60,7 @@ ASTPtr<IfStmtAST> Parser::parseIfStmt() {
         errorAt(DiagCode::E1001, "expected '{' after if condition", ts_.peek().value);
         auto node = arena_.make<IfStmtAST>();
         node->loc = loc;
-        node->condition = std::move(condition);
+        node->condition = condition;
         return node;
     }
     StmtPtr thenBranch = parseBlock();
@@ -68,8 +68,8 @@ ASTPtr<IfStmtAST> Parser::parseIfStmt() {
 
     auto node = arena_.make<IfStmtAST>();
     node->loc = loc;
-    node->condition = std::move(condition);
-    node->thenBranch = std::move(thenBranch);
+    node->condition = condition;
+    node->thenBranch = thenBranch;
 
     if (ts_.match(TokenType::ELSE)) {
         LUC_LOG_STMT_EXTREME("parseIfStmt: processing else branch");
@@ -88,7 +88,6 @@ ASTPtr<IfStmtAST> Parser::parseIfStmt() {
     LUC_LOG_STMT_VERBOSE("parseIfStmt: success");
     return node;
 }
-
 
 // ============================================================================
 // Return Statement
@@ -122,7 +121,7 @@ ASTPtr<IfStmtAST> Parser::parseIfStmt() {
 // On exit:  positioned after the last expression (or after keyword if no values)
 // ============================================================================
 
-ASTPtr<ReturnStmtAST> Parser::parseReturnStmt() {
+ReturnStmtPtr Parser::parseReturnStmt() {
     LUC_LOG_STMT_VERBOSE("parseReturnStmt: entering");
     SourceLocation loc = ts_.currentLoc();
     ts_.consume(TokenType::RETURN, "expected 'return'");
@@ -164,14 +163,14 @@ ASTPtr<ReturnStmtAST> Parser::parseReturnStmt() {
                 break;
             }
             valueCount++;
-            values.push_back(std::move(expr));
+            values.push_back(expr);
         }
         
         LUC_LOG_STMT_VERBOSE("parseReturnStmt: returning " << valueCount 
                              << " value(s) at line " << loc.line() << ", col " << loc.column());
         
         auto builder = arena_.makeBuilder<ExprPtr>();
-        for (auto& v : values) builder.push_back(std::move(v));
+        for (auto& v : values) builder.push_back(v);
         node->values = builder.build();
     } else {
         LUC_LOG_STMT_VERBOSE("parseReturnStmt: void return at line " << loc.line() 
@@ -204,7 +203,7 @@ ASTPtr<ReturnStmtAST> Parser::parseReturnStmt() {
 //     outside loop and inside parallel.
 // ============================================================================
 
-ASTPtr<BreakStmtAST> Parser::parseBreakStmt() {
+BreakStmtPtr Parser::parseBreakStmt() {
     SourceLocation loc = ts_.currentLoc();
     LUC_LOG_STMT_VERBOSE("parseBreakStmt: 'break' at line " << loc.line() 
                          << ", col " << loc.column());
@@ -215,7 +214,7 @@ ASTPtr<BreakStmtAST> Parser::parseBreakStmt() {
     return node;
 }
 
-ASTPtr<ContinueStmtAST> Parser::parseContinueStmt() {
+ContinueStmtPtr Parser::parseContinueStmt() {
     SourceLocation loc = ts_.currentLoc();
     LUC_LOG_STMT_VERBOSE("parseContinueStmt: 'continue' at line " << loc.line() 
                          << ", col " << loc.column());

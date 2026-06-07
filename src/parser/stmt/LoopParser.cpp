@@ -59,9 +59,9 @@
  * - Missing iterable for collection: reports error, returns nullptr
  * - Missing '{' for body: reports error, returns nullptr
  * 
- * @return ASTPtr<ForStmtAST> – for loop node on success, nullptr on error
+ * @return ForStmtPtr – for loop node on success, nullptr on error
  */
-ASTPtr<ForStmtAST> Parser::parseForStmt() {
+ForStmtPtr Parser::parseForStmt() {
     LUC_LOG_STMT_VERBOSE("parseForStmt: entering");
     SourceLocation loc = ts_.currentLoc();
     ts_.consume(TokenType::FOR, "expected 'for'");
@@ -92,7 +92,7 @@ ASTPtr<ForStmtAST> Parser::parseForStmt() {
     ts_.consume(TokenType::IN, "expected 'in'");
 
     // Parse the iterable expression
-    ExprPtr iterable;
+    ExprPtr iterable = nullptr;
     ExprPtr step = nullptr;
     
     // Check if this is a range iteration (starts with a literal or expression that could be a range bound)
@@ -119,10 +119,10 @@ ASTPtr<ForStmtAST> Parser::parseForStmt() {
         // Build the range expression
         auto range = arena_.make<RangeExprAST>();
         range->loc = lo->loc;
-        range->lo = std::move(lo);
-        range->hi = std::move(hi);
+        range->lo = lo;
+        range->hi = hi;
         range->isExclusive = isExclusive;
-        iterable = std::move(range);
+        iterable = range;
         
         // Check for optional step: '..' step
         if (ts_.match(TokenType::RANGE)) {
@@ -161,12 +161,12 @@ ASTPtr<ForStmtAST> Parser::parseForStmt() {
     
     node->iterVar = arena_.make<ParamAST>();
     node->iterVar->name = pool_.intern(varName);
-    node->iterVar->type = std::move(varType);
+    node->iterVar->type = varType;
     node->iterVar->isVariadic = false;
     
-    node->iterable = std::move(iterable);
-    node->step = std::move(step);
-    node->body = std::move(body);
+    node->iterable = iterable;
+    node->step = step;
+    node->body = body;
     
     LUC_LOG_STMT_VERBOSE("parseForStmt: success");
     return node;
@@ -199,7 +199,7 @@ ASTPtr<ForStmtAST> Parser::parseForStmt() {
 //   - Missing '{' after condition: reports error, returns nullptr
 // ============================================================================
 
-ASTPtr<WhileStmtAST> Parser::parseWhileStmt() {
+WhileStmtPtr Parser::parseWhileStmt() {
     LUC_LOG_STMT_VERBOSE("parseWhileStmt: entering");
     SourceLocation loc = ts_.currentLoc();
     ts_.consume(TokenType::WHILE, "expected 'while'");
@@ -222,8 +222,8 @@ ASTPtr<WhileStmtAST> Parser::parseWhileStmt() {
 
     auto node = arena_.make<WhileStmtAST>();
     node->loc = loc;
-    node->condition = std::move(condition);
-    node->body = std::move(body);
+    node->condition = condition;
+    node->body = body;
     
     LUC_LOG_STMT_VERBOSE("parseWhileStmt: success");
     return node;
@@ -257,7 +257,7 @@ ASTPtr<WhileStmtAST> Parser::parseWhileStmt() {
 //   - Missing condition: reports error, returns nullptr
 // ============================================================================
 
-ASTPtr<DoWhileStmtAST> Parser::parseDoWhileStmt() {
+DoWhileStmtPtr Parser::parseDoWhileStmt() {
     LUC_LOG_STMT_VERBOSE("parseDoWhileStmt: entering");
     SourceLocation loc = ts_.currentLoc();
     ts_.consume(TokenType::DO, "expected 'do'");
@@ -282,8 +282,8 @@ ASTPtr<DoWhileStmtAST> Parser::parseDoWhileStmt() {
 
     auto node = arena_.make<DoWhileStmtAST>();
     node->loc = loc;
-    node->body = std::move(body);
-    node->condition = std::move(condition);
+    node->body = body;
+    node->condition = condition;
     
     LUC_LOG_STMT_VERBOSE("parseDoWhileStmt: success");
     return node;

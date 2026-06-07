@@ -42,7 +42,7 @@
 //   - Missing '}': consume() reports error
 // ============================================================================
 
-ASTPtr<SwitchStmtAST> Parser::parseSwitchStmt() {
+SwitchStmtPtr Parser::parseSwitchStmt() {
     LUC_LOG_STMT_VERBOSE("parseSwitchStmt: entering");
     SourceLocation loc = ts_.currentLoc();
     ts_.consume(TokenType::SWITCH, "expected 'switch'");
@@ -59,7 +59,7 @@ ASTPtr<SwitchStmtAST> Parser::parseSwitchStmt() {
 
     auto node = arena_.make<SwitchStmtAST>();
     node->loc = loc;
-    node->subject = std::move(subject);
+    node->subject = subject;
 
     std::vector<SwitchCasePtr> cases;
     bool hasDefault = false;
@@ -73,7 +73,7 @@ ASTPtr<SwitchStmtAST> Parser::parseSwitchStmt() {
             SwitchCasePtr sc = parseSwitchCase();
             if (sc) {
                 caseCount++;
-                cases.push_back(std::move(sc));
+                cases.push_back(sc);
                 LUC_LOG_STMT_EXTREME("parseSwitchStmt: case #" << caseCount << " parsed");
             }
             continue;
@@ -104,7 +104,7 @@ ASTPtr<SwitchStmtAST> Parser::parseSwitchStmt() {
     }
 
     auto builder = arena_.makeBuilder<SwitchCasePtr>();
-    for (auto& c : cases) builder.push_back(std::move(c));
+    for (auto& c : cases) builder.push_back(c);
     node->cases = builder.build();
 
     ts_.consume(TokenType::RBRACE, "expected '}' to close switch");
@@ -165,9 +165,9 @@ SwitchCasePtr Parser::parseSwitchCase() {
         } else if (val && !val->isa<UnknownExprAST>()) {
             if (ts_.check(TokenType::RANGE)) {
                 LUC_LOG_STMT_EXTREME("parseSwitchCase: range value");
-                values.push_back(parseRangeExpr(std::move(val)));
+                values.push_back(parseRangeExpr(val));
             } else {
-                values.push_back(std::move(val));
+                values.push_back(val);
             }
             consecutiveErrors = 0;
         }
@@ -187,9 +187,9 @@ SwitchCasePtr Parser::parseSwitchCase() {
         }
         if (val && !val->isa<UnknownExprAST>()) {
             if (ts_.check(TokenType::RANGE)) {
-                values.push_back(parseRangeExpr(std::move(val)));
+                values.push_back(parseRangeExpr(val));
             } else {
-                values.push_back(std::move(val));
+                values.push_back(val);
             }
         }
     }
@@ -204,7 +204,7 @@ SwitchCasePtr Parser::parseSwitchCase() {
 
     // Build values span
     auto builder = arena_.makeBuilder<ExprPtr>();
-    for (auto& v : values) builder.push_back(std::move(v));
+    for (auto& v : values) builder.push_back(v);
     sc->values = builder.build();
     
     LUC_LOG_STMT_EXTREME("parseSwitchCase: case has " << values.size() << " value(s)");

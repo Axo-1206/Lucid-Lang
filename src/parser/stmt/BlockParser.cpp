@@ -38,7 +38,7 @@
 //   - Missing '}': consume() reports error and recovers
 // ============================================================================
 
-ASTPtr<BlockStmtAST> Parser::parseBlock() {
+BlockStmtPtr Parser::parseBlock() {
     LUC_LOG_STMT_VERBOSE("parseBlock: entering");
     SourceLocation loc = ts_.currentLoc();
     ts_.consume(TokenType::LBRACE, "expected '{'");
@@ -63,7 +63,7 @@ ASTPtr<BlockStmtAST> Parser::parseBlock() {
             stmtCount++;
             LUC_LOG_STMT_EXTREME("parseBlock: parsed statement #" << stmtCount 
                                  << " (" << LucDebug::kindToString(stmt->kind) << ")");
-            stmts.push_back(std::move(stmt));
+            stmts.push_back(stmt);
         }
     }
 
@@ -73,7 +73,7 @@ ASTPtr<BlockStmtAST> Parser::parseBlock() {
     block->loc = loc;
     
     auto builder = arena_.makeBuilder<StmtPtr>();
-    for (auto& s : stmts) builder.push_back(std::move(s));
+    for (auto& s : stmts) builder.push_back(s);
     block->stmts = builder.build();
     
     LUC_LOG_STMT_VERBOSE("parseBlock: parsed block with " << stmtCount << " statements");

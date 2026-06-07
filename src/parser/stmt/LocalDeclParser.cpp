@@ -101,9 +101,9 @@ ExprPtr Parser::parseLvalue() {
             LUC_LOG_EXPR_EXTREME("parseLvalue: field access ." << field);
             auto node = arena_.make<FieldAccessExprAST>();
             node->loc = expr->loc;
-            node->object = std::move(expr);
+            node->object = expr;
             node->field = pool_.intern(field);
-            expr = std::move(node);
+            expr = node;
         }
         // Array index: [index]
         else if (ts_.check(TokenType::LBRACKET)) {
@@ -118,10 +118,9 @@ ExprPtr Parser::parseLvalue() {
             ts_.consume(TokenType::RBRACKET, "expected ']' after index");
             auto node = arena_.make<IndexExprAST>();
             node->loc = expr->loc;
-            node->target = std::move(expr);
-            node->index = std::move(index);
-            node->kind = IndexKind::Element;
-            expr = std::move(node);
+            node->target = expr;
+            node->index = index;
+            expr = node;
         }
         // Method call ':' – not an lvalue, stop parsing
         else if (ts_.check(TokenType::COLON)) {
@@ -157,7 +156,7 @@ ExprPtr Parser::parseLvalue() {
  * Example: `let x int, y string = f()`
  *
  * @param attrs Attributes (NOT allowed – emits error).
- * @return ASTPtr<MultiVarDeclAST> – parsed node, or nullptr on error.
+ * @return MultiVarDeclPtr – parsed node, or nullptr on error.
  *
  * ─── Important Rules ────────────────────────────────────────────────────────
  *   - Each variable has its own explicit type annotation (no type inference)
@@ -174,7 +173,7 @@ ExprPtr Parser::parseLvalue() {
  *   - Missing RHS: reports error, returns nullptr
  *   - Invalid variable spec: breaks loop, continues with already parsed vars
  */
-ASTPtr<MultiVarDeclAST> Parser::parseMultiVarDecl(std::vector<AttributePtr> attrs) {
+MultiVarDeclPtr Parser::parseMultiVarDecl(std::vector<AttributePtr> attrs) {
     LUC_LOG_STMT_VERBOSE("parseMultiVarDecl: entering");
     
     // Attributes are not allowed on multi-variable declarations
@@ -211,7 +210,7 @@ ASTPtr<MultiVarDeclAST> Parser::parseMultiVarDecl(std::vector<AttributePtr> attr
     }
     TypePtr firstType = parseType();
     if (!firstType) return nullptr;
-    vars.emplace_back(pool_.intern(firstName), std::move(firstType));
+    vars.emplace_back(pool_.intern(firstName), firstType);
     LUC_LOG_STMT_EXTREME("parseMultiVarDecl: variable " << vars.size() << ": " << firstName);
 
     // Parse additional variables: , IDENTIFIER type
@@ -230,7 +229,7 @@ ASTPtr<MultiVarDeclAST> Parser::parseMultiVarDecl(std::vector<AttributePtr> attr
         }
         TypePtr type = parseType();
         if (!type) break;
-        vars.emplace_back(pool_.intern(name), std::move(type));
+        vars.emplace_back(pool_.intern(name), type);
         LUC_LOG_STMT_EXTREME("parseMultiVarDecl: variable " << vars.size() << ": " << name);
     }
 
@@ -249,10 +248,10 @@ ASTPtr<MultiVarDeclAST> Parser::parseMultiVarDecl(std::vector<AttributePtr> attr
     
     // Build vars span
     auto builder = arena_.makeBuilder<std::pair<InternedString, TypePtr>>();
-    for (auto& v : vars) builder.push_back(std::move(v));
+    for (auto& v : vars) builder.push_back(v);
     node->vars = builder.build();
     
-    node->rhs = std::move(rhs);
+    node->rhs = rhs;
     
     LUC_LOG_STMT_VERBOSE("parseMultiVarDecl: success with " << vars.size() << " variables");
     return node;
@@ -277,7 +276,7 @@ ASTPtr<MultiVarDeclAST> Parser::parseMultiVarDecl(std::vector<AttributePtr> attr
  *
  * Example: `a, b = f()`, `arr[i], obj.field = g()`
  *
- * @return ASTPtr<MultiAssignStmtAST> – parsed node, or nullptr on error.
+ * @return MultiAssignStmtPtr – parsed node, or nullptr on error.
  *
  * ─── Lvalue Rules ──────────────────────────────────────────────────────────
  *   - Each lvalue must be assignable: variable, field access, or array index
@@ -296,7 +295,7 @@ ASTPtr<MultiVarDeclAST> Parser::parseMultiVarDecl(std::vector<AttributePtr> attr
  *   - Missing '=': skips tokens until semicolon/brace, returns nullptr
  *   - Missing RHS: reports error, returns nullptr
  */
-ASTPtr<MultiAssignStmtAST> Parser::parseMultiAssignStmt() {
+MultiAssignStmtPtr Parser::parseMultiAssignStmt() {
     LUC_LOG_STMT_VERBOSE("parseMultiAssignStmt: entering");
     SourceLocation loc = ts_.currentLoc();
     std::vector<ExprPtr> lhs;
@@ -308,7 +307,7 @@ ASTPtr<MultiAssignStmtAST> Parser::parseMultiAssignStmt() {
         errorAt(DiagCode::E1008, "expected left-hand side expression");
         return nullptr;
     }
-    lhs.push_back(std::move(first));
+    lhs.push_back(first);
     LUC_LOG_STMT_EXTREME("parseMultiAssignStmt: first lvalue parsed");
 
     // Parse additional lvalues after commas
@@ -320,7 +319,7 @@ ASTPtr<MultiAssignStmtAST> Parser::parseMultiAssignStmt() {
             errorAt(DiagCode::E1008, "expected left-hand side expression after comma");
             break;
         }
-        lhs.push_back(std::move(next));
+        lhs.push_back(next);
         LUC_LOG_STMT_EXTREME("parseMultiAssignStmt: additional lvalue parsed (total " << lhs.size() << ")");
     }
 
@@ -350,10 +349,10 @@ ASTPtr<MultiAssignStmtAST> Parser::parseMultiAssignStmt() {
     
     // Build lhs span
     auto builder = arena_.makeBuilder<ExprPtr>();
-    for (auto& e : lhs) builder.push_back(std::move(e));
+    for (auto& e : lhs) builder.push_back(e);
     node->lhs = builder.build();
     
-    node->rhs = std::move(rhs);
+    node->rhs = rhs;
     
     LUC_LOG_STMT_VERBOSE("parseMultiAssignStmt: success with " << lhs.size() << " lvalues");
     return node;
