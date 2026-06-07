@@ -3279,7 +3279,9 @@ pipeline_seed   := logical_expr
 logical_expr    := compare_expr { ( 'and' | 'or' ) compare_expr }
 
 compare_expr    := bitwise_expr [ compare_op bitwise_expr ]
-                 | bitwise_expr 'is' type
+                 | bitwise_expr 'is' type          -- concrete type check
+                 | bitwise_expr 'is' IDENTIFIER    -- trait conformance check
+                                                   -- IDENTIFIER must be a declared trait name
 
 compare_op      := '==' | '!=' | '<' | '>' | '<=' | '>=' | '==='
 
@@ -4157,15 +4159,113 @@ Not valid for:
 
 Checks same memory address. Valid for `&T`, structs, nullable reference types.
 
-### `is` — Type Identity
+### `is` — Type Identity and Trait Conformance
 
-Checks the type of a value. Narrows the type inside the enclosing block (statement form only). Nullable and non-nullable are distinct types.
+`is` checks the type of a value or whether a value's type satisfies a trait. Narrows the type inside the enclosing block (statement form only). Nullable and non-nullable are distinct types.
+
+**Checking concrete types:**
 
 ```luc
 let x int? = 5
 x is int    -- false: int? is NOT int
 x is int?   -- true
 x == 5      -- true: value comparison unwraps nullable automatically
+
+let v any = 42
+v is int    -- true: runtime type tag matches
+v is string -- false
+```
+
+**Checking trait conformance — the `is` alternative to inheritance:**
+
+Luc has no inheritance. Instead, `is` can check whether a value's type implements a given trait. If type `A` has `impl A : TraitQ { ... }` then `a is TraitQ` is `true`. This is how you check type similarity without inheritance — two types `A` and `B` are "similar" if they both satisfy the same trait:
+
+```luc
+pub trait Drawable {
+    draw   ()
+    bounds () -> Rect
+}
+
+struct Circle { radius float  center Vec2 }
+struct Square { side float    origin Vec2 }
+
+impl Circle : Drawable { draw () = { ... }  bounds () -> Rect = { ... } }
+impl Square : Drawable { draw () = { ... }  bounds () -> Rect = { ... } }
+
+let shape any = Circle { radius = 5.0  center = Vec2 { x=0.0 y=0.0 } }
+
+shape is Circle    -- true: exact concrete type
+shape is Square    -- false
+shape is Drawable  -- true: Circle implements Drawable
+
+-- narrowing inside if block
+if shape is Drawable {
+    -- shape is narrowed to Drawable here — trait methods available
+    shape:draw()
+    let r Rect = shape:bounds()
+}
+
+-- both Circle and Square satisfy Drawable — trait is the similarity
+let items [_, any] = [
+    Circle { radius = 1.0  center = Vec2 { x=0.0 y=0.0 } },
+    Square { side = 2.0    origin = Vec2 { x=0.0 y=0.0 } }
+]
+
+for item any in items {
+    if item is Drawable {
+        item:draw()    -- works for both Circle and Square
+    }
+}
+```
+
+**`is` with primitives and traits:**
+
+```luc
+impl int : Comparable<int> { ... }
+
+let x any = 42
+x is int              -- true: concrete type
+x is Comparable<int>  -- true: int implements Comparable<int>
+```
+
+**`is` with nullable:**
+
+```luc
+let x int? = 5
+x is int    -- false: int? is not int — nullable is a distinct type
+x is int?   -- true
+```
+
+**Type narrowing rules:**
+
+- Inside an `if` block where the condition is `value is ConcreteType` — value is narrowed to `ConcreteType`
+- Inside an `if` block where the condition is `value is TraitName` — value is narrowed to `TraitName` (trait methods available)
+- The inverse narrowing early-exit rule applies: `if value is SomeType { return }` narrows away `SomeType` for the rest of the scope
+
+```luc
+let v any = getShape()
+
+if v is Circle {
+    v:draw()       -- OK: v is Circle, draw() available from impl Circle : Drawable
+    v.radius       -- OK: v is Circle, field access available
+}
+
+-- trait narrowing: only trait methods available, not concrete fields
+if v is Drawable {
+    v:draw()       -- OK: trait method
+    v.radius       -- ERROR: radius is Circle-specific, not part of Drawable
+}
+```
+
+**`is` in `match`:**
+
+```luc
+let label string = match v {
+    c is Circle  => "circle with radius " + string(c.radius)
+    s is Square  => "square with side "   + string(s.side)
+    d is Drawable => "some drawable shape"
+    default      => "unknown"
+}
 ```
 
 **Chained comparisons are not allowed:**
@@ -4817,18 +4917,18 @@ Attribute arguments are intentionally limited to compile-time literals and type 
 
 #### Known Attributes
 
-| Attribute                | Valid on                     | Purpose                                                          |
-| ------------------------ | ---------------------------- | ---------------------------------------------------------------- |
-| `@extern("sym")`         | `let`, `const` func/var      | Bind to C symbol by name                                         |
-| `@extern("sym", "conv")` | `let`, `const` func/var      | With explicit calling convention                                 |
+| Attribute                | Valid on                     | Purpose                                          |
+| ------------------------ | ---------------------------- | ------------------------------------------------ |
+| `@extern("sym")`         | `let`, `const` func/var      | Bind to C symbol by name                         |
+| `@extern("sym", "conv")` | `let`, `const` func/var      | With explicit calling convention                 |
 | `@link("lib")`           | package, file, or `const`    | Set active link context — one declaration, comma-separated paths |
-| `@inline`                | func                         | Suggest always inline                                            |
-| `@noinline`              | func                         | Prevent inlining                                                 |
-| `@packed`                | `struct`                     | Remove padding — all fields byte-adjacent                        |
-| `@deprecated("msg")`     | func, var, struct            | Emit warning at every use site                                   |
-| `@phantom`               | `type` alias, `struct`, func | Allow unused generic parameters                                  |
-| `@aot`                   | `main` only                  | Ahead-of-time compilation                                        |
-| `@jit`                   | `main` only                  | JIT compilation                                                  |
+| `@inline`                | func                         | Suggest always inline                            |
+| `@noinline`              | func                         | Prevent inlining                                 |
+| `@packed`                | `struct`                     | Remove padding — all fields byte-adjacent        |
+| `@deprecated("msg")`     | func, var, struct             | Emit warning at every use site                   |
+| `@phantom`               | `type` alias, `struct`, func | Allow unused generic parameters                  |
+| `@aot`                   | `main` only                  | Ahead-of-time compilation                        |
+| `@jit`                   | `main` only                  | JIT compilation                                  |
 
 `@inline` and `@noinline` are mutually exclusive on the same declaration.
 `@aot` and `@jit` are mutually exclusive on the same declaration.
@@ -5106,13 +5206,13 @@ const free (ptr *uint8)
 
 Library name forms:
 
-| Form                        | Meaning                                                    |
-| --------------------------- | ---------------------------------------------------------- |
-| `"m"`                       | System library — linker searches standard paths for `libm` |
-| `"sqlite3"`                 | System library — linker searches for `libsqlite3`          |
-| `"./libs/mylib.a"`          | Relative path to static library                            |
-| `"./libs/libmylib.so"`      | Relative path to dynamic library                           |
-| `"/usr/local/lib/libpng.a"` | Absolute path to static library                            |
+| Form | Meaning |
+|---|---|
+| `"m"` | System library — linker searches standard paths for `libm` |
+| `"sqlite3"` | System library — linker searches for `libsqlite3` |
+| `"./libs/mylib.a"` | Relative path to static library |
+| `"./libs/libmylib.so"` | Relative path to dynamic library |
+| `"/usr/local/lib/libpng.a"` | Absolute path to static library |
 
 #### `@phantom` Rules
 
