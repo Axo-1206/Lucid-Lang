@@ -299,27 +299,35 @@ struct FieldAccessExprAST : ExprAST {
 
     ExprAST* object;
     InternedString field;
-    ArenaSpan<TypeAST*> genericArgs;
+    ArenaSpan<TypeAST*> genericArgs; // Generic function
 
     FieldAccessExprAST() : ExprAST(ASTKind::FieldAccessExpr) {}
 };
 
 /**
- * @brief Accesses a method on a type or value via the ':' operator.
+ * @brief Accesses a method on a value via the ':' operator.
  *
  * @example
- *   v:normalize        → method = "normalize"
- *   v:length           → method = "length"
+ *   v:normalize        → object = identifier("v"), method = "normalize"
+ *   getValue():length  → object = callExpr, method = "length"
+ *   (point + offset):normalize → object = binaryExpr, method = "normalize"
  *
- * When the method is generic (e.g., `list:map<U>`), the BehaviorAccessExprAST
- * becomes the `entity` of a GenericInstantiationExprAST that supplies the
- * type arguments.
+ * This node represents a METHOD REFERENCE, not a call.
+ * For a method call, this node becomes the callee of a CallExprAST.
+ *
+ * IMPORTANT: Method references CANNOT have explicit generic arguments.
+ * Generic type parameters are determined entirely by the receiver type.
+ * For example, if `list` is `List<int>`, then `list:map` automatically
+ * knows that T = int.
+ *
+ * To call a generic function in a module path, use FieldAccessExprAST:
+ *   utils.toString<int>(value)  ← FieldAccessExprAST with genericArgs
  */
 struct BehaviorAccessExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::BehaviorAccessExpr;
 
-    InternedString typeName; // resolved type name (for mangling)
-    InternedString method;   // method name
+    ExprAST* object;          ///< The receiver expression
+    InternedString method;    ///< The method name (no generic args)
 
     BehaviorAccessExprAST() : ExprAST(ASTKind::BehaviorAccessExpr) {}
 };

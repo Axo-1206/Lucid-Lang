@@ -705,66 +705,32 @@ ExprPtr Parser::parsePrimaryExpr(bool allowStructLiteral) {
     }
 
     // =================================================================
-    // Identifier handling (variables, generic instantiations,
+    // Identifier handling (variables, type references, generic instantiations,
     // behavior access, struct literals)
     // =================================================================
-    if (ts_.check(TokenType::IDENTIFIER)) {
-        SourceLocation idenLoc = ts_.currentLoc();
-        Token identTok = ts_.advance();
-        InternedString name = pool_.intern(identTok.value);
-        LUC_LOG_EXPR_VERBOSE("parsePrimaryExpr: identifier '" << identTok.value 
-                             << "' at line " << identTok.line << ", col " << identTok.column);
-        
-        // Tentative generic argument parsing – if it fails, restore token stream.
-        ArenaSpan<TypePtr> genericArgs;
-        if (ts_.check(TokenType::LESS) && looksLikeGenericTypeInstantiation()) {
-            LUC_LOG_EXPR_EXTREME("parsePrimaryExpr: generic instantiation for '" << identTok.value << "'");
-            ts_.advance(); // consume '<'
-            genericArgs = parseGenericArgs();
-            LUC_LOG_EXPR("parsePrimaryExpr: parsed " << genericArgs.size() 
-                         << " generic args for '" << identTok.value << "'");
+    if (ts_.check(TokenType::IDENTIFIER) || isPrimitiveTypeToken(ts_.peekType())) {
+        // Parse as function reference (handles identifiers, type names, method refs,
+        // dotted paths, and generic arguments)
+        ExprPtr expr = parseFuncRef();
+        if (!expr) {
+            return arena_.make<UnknownExprAST>();
         }
         
-        // Check for behavior access (method call)
-        if (ts_.check(TokenType::COLON)) {
-            LUC_LOG_EXPR_VERBOSE("parsePrimaryExpr: behavior access (method call)");
-            ts_.advance(); // consume ':'
-            
-            if (!ts_.check(TokenType::IDENTIFIER)) {
-                errorAt(DiagCode::E1003, "expected method name after ':'");
-                return arena_.make<UnknownExprAST>();
-            }
-            Token methodTok = ts_.advance();
-            LUC_LOG_EXPR_EXTREME("parsePrimaryExpr: method = '" << methodTok.value << "'");
-            
-            auto node = arena_.make<BehaviorAccessExprAST>();
-            node->loc = idenLoc;
-            node->typeName = name;
-            node->method = pool_.intern(methodTok.value);
-            node->isBehaviorMember = true;
-            if (genericArgs.size() > 0) {
-                LUC_LOG_EXPR("parsePrimaryExpr: warning – method '" << identTok.value << ":" << methodTok.value 
-                             << "' has generic arguments (ignored)");
-            }
-            return node;
-        }
-        
-        // Check for struct literal (with or without generic args)
+        // Check for struct literal: TypeName { ... } or TypeName<GenericArgs> { ... }
+        // The parseFuncRef may have consumed generic args already (e.g., Container<int>)
+        // So we need to check if the resulting expression is an IdentifierExprAST
+        // with or without generic args, followed by '{'
         if (allowStructLiteral && ts_.check(TokenType::LBRACE)) {
-            LUC_LOG_EXPR_VERBOSE("parsePrimaryExpr: struct literal '" << identTok.value 
-                                 << "' with " << genericArgs.size() << " generic args");
-            return parseStructLiteralExpr(name, genericArgs);
+            // For struct literal, we need the type name and any generic args
+            if (auto* ident = expr->as<IdentifierExprAST>()) {
+                return parseStructLiteralExpr(ident->name, ident->genericArgs);
+            }
+            // For field access like math.Point { ... }? Not supported currently
+            errorAt(DiagCode::E1001, "expected type name before '{' for struct literal");
+            return arena_.make<UnknownExprAST>();
         }
         
-        // Plain identifier (variable, function name, or generic function reference)
-        auto node = arena_.make<IdentifierExprAST>(name);
-        node->loc = idenLoc;
-        node->genericArgs = genericArgs;
-        if (genericArgs.size() > 0) {
-            LUC_LOG_EXPR("parsePrimaryExpr: generic function reference '" << identTok.value 
-                         << "' with " << genericArgs.size() << " args");
-        }
-        return node;
+        return expr;
     }
 
     // Fallback to literal

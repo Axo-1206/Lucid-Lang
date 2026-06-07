@@ -15,10 +15,9 @@
  *   1. Parameter Helpers      – parse parameter lists and argument lists
  *   2. Return List Parser     – parse return types after '->' (handles function types and multi-return)
  *   3. Qualifiers             – parse `~async`, `~nullable`, `~parallel` qualifiers
- *   4. Module Path            – parse dotted module paths for `use` declarations
- *   5. Function Reference     – parse `func_ref` for assignments and references
- *   6. Precedence Helpers     – map tokens to precedence levels and operator enums
- *   7. isPrimitiveTypeToken   – check if a token is a primitive type
+ *   4. Function Reference     – parse `func_ref` for assignments and references
+ *   5. Precedence Helpers     – map tokens to precedence levels and operator enums
+ *   6. isPrimitiveTypeToken   – check if a token is a primitive type
  * 
  * ## Design Principles
  * 
@@ -400,60 +399,7 @@ QualifierSet Parser::parseQualifiers() {
 }
 
 // ============================================================================
-// 4. MODULE PATH PARSING
-// ============================================================================
-//
-// parseUsePath() parses a dotted identifier sequence for `use` declarations.
-// ============================================================================
-
-/**
- * @brief Parses a dotted path for `use` declarations only.
- * 
- * Grammar:
- *   use_path := IDENTIFIER { '.' IDENTIFIER }
- * 
- * Example: `std.io`, `renderer.core.math`
- * 
- * @return std::vector<InternedString> – path segments in order.
- * 
- * @warning This function is ONLY for `use` declarations. For expression
- *          field access, use parsePrimaryExpr() which produces FieldAccessExprAST.
- * 
- * ─── Token Consumption ─────────────────────────────────────────────────────
- * On entry: positioned at first identifier
- * On exit:  positioned after last identifier
- */
-std::vector<InternedString> Parser::parseUsePath() {
-    LUC_LOG_DECL_EXTREME("parseUsePath: entering");
-    std::vector<InternedString> path;
-    
-    if (!ts_.check(TokenType::IDENTIFIER)) {
-        LUC_LOG_DECL_EXTREME("parseUsePath: no identifier, returning empty");
-        return path;
-    }
-    
-    path.push_back(pool_.intern(ts_.advance().value));
-    LUC_LOG_DECL_EXTREME("parseUsePath: segment 1 = " << pool_.lookup(path.back()));
-    
-    int segmentCount = 1;
-    while (ts_.match(TokenType::DOT)) {
-        if (!ts_.check(TokenType::IDENTIFIER)) {
-            LUC_LOG_DECL("parseUsePath: ERROR - expected identifier after '.'");
-            errorAt(DiagCode::E1003, "expected identifier after '.'");
-            break;
-        }
-        path.push_back(pool_.intern(ts_.advance().value));
-        segmentCount++;
-        LUC_LOG_DECL_EXTREME("parseUsePath: segment " << segmentCount 
-                             << " = " << pool_.lookup(path.back()));
-    }
-    
-    LUC_LOG_DECL_EXTREME("parseUsePath: " << segmentCount << " segment(s)");
-    return path;
-}
-
-// ============================================================================
-// 5. FUNCTION REFERENCE (for assignment forms)
+// 4. FUNCTION REFERENCE (for assignment forms, pipelines, composition)
 // ============================================================================
 //
 // parseFuncRef() parses a function reference for use in:
@@ -461,155 +407,197 @@ std::vector<InternedString> Parser::parseUsePath() {
 //   - Path entries in `from` blocks
 //   - Pipeline steps (`|>`)
 //   - Compose operands (`+>`)
+//   - Variable initialisers
 //
 // The grammar for func_ref is shared across all these contexts.
 // ============================================================================
 
 /**
- * @brief Parses a named function reference for use in declarations and expressions.
+ * @brief Parses a function reference for use in declarations and expressions.
  *
  * Grammar (from LUC_GRAMMAR.md, Shared Productions):
- *   func_ref := IDENTIFIER                    -- local or imported name
- *             | IDENTIFIER '.' IDENTIFIER     -- module path: pkg.fn
- *             | func_ref generic_args        -- generic instantiation: fn<T>
+ *   func_ref := type_reference                    -- int, string, Box<int>
+ *             | IDENTIFIER                        -- local or imported name
+ *             | IDENTIFIER '.' IDENTIFIER         -- module path: pkg.fn
+ *             | expr ':' IDENTIFIER               -- method reference: obj:method
+ *             | func_ref generic_args             -- generic instantiation: fn<T>
+ *
+ *   type_reference := primitive_type              -- int, float, string, etc.
+ *                   | IDENTIFIER [ '<' type_list '>' ]  -- named type with optional generics
  *
  * @par Examples
- *   utils.getVersion                       – dotted path
- *   transform<int, string>                 – generic instantiation
- *   std.map<U>                             – dotted + generic
- *   identity                               – plain identifier
+ *   int                                          – primitive type as function (PrimitiveTypeAST)
+ *   string                                       – primitive type as function (PrimitiveTypeAST)
+ *   Box<int>                                     – generic type as function (NamedTypeAST with genericArgs)
+ *   utils.getVersion                             – dotted path (FieldAccessExprAST)
+ *   transform<int, string>                       – generic function (IdentifierExprAST with genericArgs)
+ *   std.map<U>                                   – dotted + generic (FieldAccessExprAST with genericArgs)
+ *   identity                                     – plain identifier (IdentifierExprAST)
+ *   list:map                                     – method reference (BehaviorAccessExprAST)
+ *   (getValue()):process                         – method reference with complex object
  *
- * @par Valid Contexts
- *   - Method assignments in `impl` blocks: `id = identity<int>(i)!`
- *   - Path entries in `from` blocks: `from string { toString<int> }`
- *   - Pipeline steps (without `!`): `42 |> identity<int>`
- *   - Compose operands: `validate +> toString<int>`
- *   - Variable initialisers: `let f (int) -> int = identity<int>`
+ * @par Important Distinction
+ *   This parses a REFERENCE to a function or type, NOT a call.
+ *   - PrimitiveTypeAST: primitive type as function value
+ *   - NamedTypeAST: named type as function value (may have genericArgs)
+ *   - FieldAccessExprAST: module paths and struct fields (may have genericArgs)
+ *   - BehaviorAccessExprAST: method references (NO genericArgs - resolved from receiver)
+ *   - IdentifierExprAST: plain identifiers (may have genericArgs)
  *
- * @par Invalid (Not part of grammar)
- *   - Method references with colon (`vec:normalize`) – use `expr ':' IDENTIFIER` in
- *     pipeline/compose parsers instead.
- *   - Function calls or expressions – `func_ref` is a *name*, not a call.
- *   - Field access on an expression – only dotted module paths are allowed.
+ *   For actual calls, use `parseCallExpr()` which consumes parentheses.
  *
  * @return ExprPtr – expression representing the function reference.
- *         Result may be:
- *         - `IdentifierExprAST`        – plain identifier (e.g., `identity`)
- *         - `FieldAccessExprAST`       – dotted module path (e.g., `math.utils.toString`)
- *         - Both may have `genericArgs` stored directly on them for generic
- *           function references (e.g., `identity<int>` has `genericArgs` on the
- *           IdentifierExprAST, `math.toString<float>` has `genericArgs` on the
- *           FieldAccessExprAST)
  *
- * ─── Parsing Steps ─────────────────────────────────────────────────────────
- *   1. Parse the first identifier (required).
- *   2. Parse optional dotted path segments (`.identifier`).
- *   3. Parse optional generic arguments (`<type-list>`).
- *
- * ─── Token Consumption ─────────────────────────────────────────────────────
- * On entry: positioned at an IDENTIFIER (the function name).
- * On exit:  positioned after the optional generic arguments (or after the name).
+ * ─── Parsing Strategy ─────────────────────────────────────────────────────────
+ *   The function parses left-to-right, building the expression incrementally:
+ *   1. Parse the leftmost atom (identifier, type reference, or parenthesized expr)
+ *   2. While we see '.' or ':', extend the expression
+ *   3. After building the base, parse optional generic arguments
  *
  * ─── Generic Arguments ────────────────────────────────────────────────────
- *   - The opening `<` is consumed BEFORE calling `parseGenericArgs()`.
- *   - `parseGenericArgs()` parses the type list and consumes the closing `>`.
- *   - Generic arguments are stored directly on the `IdentifierExprAST` or
- *     `FieldAccessExprAST` node (not in a separate wrapper node).
+ *   - Generic arguments can appear on identifiers and dotted paths
+ *   - They CANNOT appear on method references (generics resolved from receiver)
+ *   - For type references (e.g., Box<int>), the generics are part of the type
+ *     and stored on the NamedTypeAST
+ *
+ * ─── Token Consumption ─────────────────────────────────────────────────────
+ * On entry: positioned at an IDENTIFIER, primitive type, or '('
+ * On exit:  positioned after the optional generic arguments (or after the name)
  *
  * ─── Error Recovery ───────────────────────────────────────────────────────
  *   - Missing identifier: returns `UnknownExprAST`, reports error.
  *   - Missing identifier after '.': reports error, stops building path.
+ *   - Missing identifier after ':': reports error, returns nullptr.
  *   - Malformed generic arguments: `parseGenericArgs()` reports error,
- *     returns empty span (still creates the identifier/field access node
- *     with empty generic args).
- *
- * ─── Important Notes ──────────────────────────────────────────────────────
- *   - Colon `:` is NOT handled here – it belongs to pipeline steps and
- *     compose operands (`expr ':' IDENTIFIER` for method calls).
- *   - Dotted paths represent module/namespace resolution, not field access
- *     on runtime values. The semantic pass resolves them appropriately.
- *   - Generic arguments are always explicit (no inference). An uninstantiated
- *     generic function (e.g., `identity` without `<type>`) is not a valid
- *     `func_ref` – the caller must provide type arguments.
- *   - Generic arguments are stored directly on the AST node (IdentifierExprAST
- *     or FieldAccessExprAST) rather than in a separate wrapper node. This
- *     simplifies the AST and makes the semantic analysis more straightforward.
- *
- * @see parseGenericArgs() for the generic argument list parser
+ *     returns empty span (still creates the node with empty generic args).
  */
 ExprPtr Parser::parseFuncRef() {
     LUC_LOG_EXPR_VERBOSE("parseFuncRef: entering at line " << ts_.currentLoc().line()
                          << ", col " << ts_.currentLoc().column());
     SourceLocation loc = ts_.currentLoc();
 
-    // Parse a name (identifier or dotted path)
-    if (!ts_.check(TokenType::IDENTIFIER)) {
-        LUC_LOG_EXPR("parseFuncRef: ERROR - expected function name at line "
-                     << ts_.peek().line << ", col " << ts_.peek().column);
-        errorAt(DiagCode::E1003);
-        return arena_.make<UnknownExprAST>();
-    }
+    // Parse the base expression
+    ExprPtr expr = nullptr;
     
-    SourceLocation firstTokenLoc = ts_.currentLoc();
-    Token firstToken = ts_.advance();
-    std::string name = firstToken.value;
-    LUC_LOG_EXPR_EXTREME("parseFuncRef: base name = '" << name 
-                         << "' at line " << firstToken.line << ", col " << firstToken.column);
-
-    ExprPtr expr = arena_.make<IdentifierExprAST>(pool_.intern(name));
-    expr->loc = firstTokenLoc;
-
-    // Parse dotted path segments (module path)
-    while (ts_.check(TokenType::DOT)) {
-        ts_.advance();
-        if (!ts_.check(TokenType::IDENTIFIER)) {
-            LUC_LOG_EXPR("parseFuncRef: ERROR - expected identifier after '.' at line "
-                         << ts_.peek().line << ", col " << ts_.peek().column);
-            errorAt(DiagCode::E1003);
-            break;
+    // Handle parenthesized expression for method reference object
+    if (ts_.check(TokenType::LPAREN)) {
+        LUC_LOG_EXPR_EXTREME("parseFuncRef: parenthesized object expression");
+        ts_.advance(); // consume '('
+        expr = parseExpr(false);
+        if (!expr) {
+            LUC_LOG_EXPR("parseFuncRef: ERROR - expected expression in parentheses");
+            errorAt(DiagCode::E1008, "expected expression in parentheses");
+            return arena_.make<UnknownExprAST>();
         }
-        SourceLocation fieldLoc = ts_.currentLoc();
-        Token fieldToken = ts_.advance();
-        LUC_LOG_EXPR_EXTREME("parseFuncRef: dotted segment ." << fieldToken.value
-                             << " at line " << fieldToken.line << ", col " << fieldToken.column);
+        ts_.consume(TokenType::RPAREN, "expected ')' after parenthesized expression");
+    }
+    // Handle identifier or primitive type name
+    else if (ts_.check(TokenType::IDENTIFIER) || isPrimitiveTypeToken(ts_.peekType())) {
+        SourceLocation idenLoc = ts_.currentLoc();
         
-        auto node = arena_.make<FieldAccessExprAST>();
-        node->loc = fieldLoc;
-        node->object = expr;
-        node->field = pool_.intern(fieldToken.value);
+        InternedString name;
+        if (ts_.check(TokenType::IDENTIFIER)) {
+            Token idenTok = ts_.advance();
+            name = pool_.intern(idenTok.value);
+            LUC_LOG_EXPR_EXTREME("parseFuncRef: base identifier = '" << pool_.lookup(name) << "'");
+        } else {
+            Token typeTok = ts_.advance();
+            name = pool_.intern(typeTok.value);
+            LUC_LOG_EXPR_EXTREME("parseFuncRef: primitive type name = '" << pool_.lookup(name) << "'");
+        }
+        
+        // Check for optional generic arguments
+        ArenaSpan<TypePtr> genericArgs;
+        if (ts_.check(TokenType::LESS) && looksLikeGenericTypeInstantiation()) {
+            LUC_LOG_EXPR_EXTREME("parseFuncRef: generic arguments for '" << pool_.lookup(name) << "'");
+            ts_.advance(); // consume '<'
+            genericArgs = parseGenericArgs();
+            LUC_LOG_EXPR("parseFuncRef: parsed " << genericArgs.size() 
+                         << " generic args for '" << pool_.lookup(name) << "'");
+        }
+        
+        auto node = arena_.make<IdentifierExprAST>(name);
+        node->loc = idenLoc;
+        node->genericArgs = genericArgs;
         expr = node;
     }
+    else {
+        LUC_LOG_EXPR("parseFuncRef: ERROR - expected identifier or '('");
+        errorAt(DiagCode::E1003, "expected function name or '(' for method reference");
+        return arena_.make<UnknownExprAST>();
+    }
 
-    // Optional generic arguments
-    if (ts_.check(TokenType::LESS)) {
-        LUC_LOG_EXPR_EXTREME("parseFuncRef: parsing generic arguments at line "
-                             << ts_.peek().line << ", col " << ts_.peek().column);
+    // Parse postfix operators: '.' and ':' 
+    bool isMethodReference = false;
+    
+    while (!ts_.isAtEnd() && !isMethodReference) {
+        // Field access / module path: .identifier
+        if (ts_.check(TokenType::DOT)) {
+            ts_.advance();
+            if (!ts_.check(TokenType::IDENTIFIER)) {
+                LUC_LOG_EXPR("parseFuncRef: ERROR - expected identifier after '.'");
+                errorAt(DiagCode::E1003, "expected identifier after '.'");
+                break;
+            }
+            SourceLocation fieldLoc = ts_.currentLoc();
+            Token fieldTok = ts_.advance();
+            LUC_LOG_EXPR_EXTREME("parseFuncRef: dotted segment ." << fieldTok.value);
+            
+            auto node = arena_.make<FieldAccessExprAST>();
+            node->loc = fieldLoc;
+            node->object = expr;
+            node->field = pool_.intern(fieldTok.value);
+            expr = node;
+        }
+        // Method reference: :identifier
+        else if (ts_.check(TokenType::COLON)) {
+            ts_.advance(); // consume ':'
+            if (!ts_.check(TokenType::IDENTIFIER)) {
+                LUC_LOG_EXPR("parseFuncRef: ERROR - expected method name after ':'");
+                errorAt(DiagCode::E1003, "expected method name after ':'");
+                return nullptr;
+            }
+            SourceLocation methodLoc = ts_.currentLoc();
+            Token methodTok = ts_.advance();
+            LUC_LOG_EXPR_EXTREME("parseFuncRef: method reference :" << methodTok.value);
+            
+            auto node = arena_.make<BehaviorAccessExprAST>();
+            node->loc = methodLoc;
+            node->object = expr;
+            node->method = pool_.intern(methodTok.value);
+            expr = node;
+            isMethodReference = true;
+        }
+        else {
+            break;
+        }
+    }
+
+    // Generic arguments after dotted path
+    if (!isMethodReference && !expr->isa<BehaviorAccessExprAST>() && ts_.check(TokenType::LESS)) {
+        LUC_LOG_EXPR_EXTREME("parseFuncRef: parsing generic arguments after path");
+        
         ts_.advance(); // consume '<'
         ArenaSpan<TypePtr> typeArgs = parseGenericArgs();
         
-        // Apply generic arguments to the appropriate node type
         if (auto* ident = expr->as<IdentifierExprAST>()) {
-            LUC_LOG_EXPR("parseFuncRef: adding " << typeArgs.size() 
-                         << " generic args to identifier");
+            if (ident->genericArgs.size() > 0) {
+                LUC_LOG_EXPR("parseFuncRef: WARNING - identifier already has generic args");
+            }
             ident->genericArgs = typeArgs;
         } else if (auto* field = expr->as<FieldAccessExprAST>()) {
-            LUC_LOG_EXPR("parseFuncRef: adding " << typeArgs.size() 
-                         << " generic args to field access");
             field->genericArgs = typeArgs;
         } else {
-            LUC_LOG_EXPR("parseFuncRef: ERROR - cannot add generic args to node type "
-                         << static_cast<int>(expr->kind));
+            LUC_LOG_EXPR("parseFuncRef: ERROR - cannot add generic args to node type");
+            errorAt(DiagCode::E1006, "generic arguments are only allowed on identifiers and module paths");
         }
-        
-        LUC_LOG_EXPR_EXTREME("parseFuncRef: generic args count = " << typeArgs.size());
     }
 
-    LUC_LOG_EXPR_VERBOSE("parseFuncRef: success");
     return expr;
 }
 
 // ============================================================================
-// 6. PRECEDENCE HELPERS
+// 5. PRECEDENCE HELPERS
 // ============================================================================
 //
 // These functions map token types to precedence levels and operator enums.
@@ -792,7 +780,7 @@ bool Parser::isAssignOp(TokenType t) const {
 }
 
 // ============================================================================
-// 7. isPrimitiveTypeToken
+// 6. isPrimitiveTypeToken
 // ============================================================================
 // 
 // Static helper that returns true if a TokenType is a primitive type keyword.

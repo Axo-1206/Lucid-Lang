@@ -15,6 +15,7 @@
  *   compose_operand := func_ref
  * 
  *   func_ref := IDENTIFIER
+ *             | primitive_type                // int, float, string, etc.
  *             | IDENTIFIER '.' IDENTIFIER
  *             | IDENTIFIER ':' IDENTIFIER
  *             | func_ref generic_args
@@ -23,6 +24,7 @@
  *   let process = validate +> transform +> render
  *   let pipeline = toString<int> +> parseFloat +> double
  *   let chain = math.utils.normalize +> vec:scale
+ *   let convert = int +> string               // type references as functions
  * 
  * ─── Important Rules ───────────────────────────────────────────────────────
  *   - The output type of the left operand must exactly match the input type
@@ -63,7 +65,7 @@ ExprPtr Parser::parseComposeExpr(ExprPtr lhs) {
     
     auto node = arena_.make<ComposeExprAST>();
     node->loc = lhs->loc;
-    node->left = std::move(lhs);
+    node->left = lhs;  // No std::move
 
     std::vector<ComposeOperandPtr> operands;
     int operandCount = 0;
@@ -78,12 +80,12 @@ ExprPtr Parser::parseComposeExpr(ExprPtr lhs) {
     // If no operands were parsed, this wasn't actually a composition.
     if (operands.empty()) {
         LUC_LOG_EXPR_EXTREME("parseComposeExpr: no operands, returning left expression");
-        return std::move(node->left);
+        return node->left;  // No std::move
     }
 
     // Build ArenaSpan for the operands
     auto builder = arena_.makeBuilder<ComposeOperandPtr>();
-    for (auto& op : operands) builder.push_back(std::move(op));
+    for (auto& op : operands) builder.push_back(op);  // No std::move
     node->operands = builder.build();
 
     LUC_LOG_EXPR_VERBOSE("parseComposeExpr: parsed " << operandCount << " operand(s)");
@@ -107,7 +109,7 @@ ComposeOperandPtr Parser::parseComposeOperand() {
     if (!callable || callable->isa<UnknownExprAST>()) {
         LUC_LOG_EXPR("parseComposeOperand: ERROR - expected function reference after '+>'");
         errorAt(DiagCode::E1002,
-                "expected function name, method reference, or dotted path after '+>'");
+                "expected function name, type name, method reference, or dotted path after '+>'");
         operand->callable = arena_.make<UnknownExprAST>();
 
         // Recover: skip to next compose operator or safe boundary
@@ -124,6 +126,6 @@ ComposeOperandPtr Parser::parseComposeOperand() {
     }
 
     LUC_LOG_EXPR_EXTREME("parseComposeOperand: success");
-    operand->callable = std::move(callable);
+    operand->callable = callable;  // No std::move
     return operand;
 }

@@ -11,14 +11,13 @@
  * memory manipulation, and bit operations.
  * 
  * Grammar (from LUC_GRAMMAR.md):
- *   intrinsic_call := '#' IDENTIFIER '(' [ intrinsic_arg_list ] ')'
- *   intrinsic_arg_list := intrinsic_arg { ',' intrinsic_arg }
- *   intrinsic_arg := expr | type
+ *   intrinsic_call := '#' IDENTIFIER '(' [ arg_list ] ')'
+ *   arg_list := expr { ',' expr }
  * 
  * Parser Responsibility:
  *   - Parse the `#` prefix
  *   - Parse the intrinsic name (identifier)
- *   - Parse the argument list inside parentheses
+ *   - Parse the argument list inside parentheses using parseArgList()
  *   - Store ALL arguments as expressions in `IntrinsicCallExprAST::args`
  * 
  * Semantic Responsibility (NOT Parser):
@@ -28,7 +27,7 @@
  *   - Resolve types and perform any necessary conversions
  * 
  * Examples:
- *   #sizeof(Vertex)          → parsed as intrinsic name "sizeof", args=[Vertex as IdentifierExprAST?]
+ *   #sizeof(Vertex)          → parsed as intrinsic name "sizeof", args=[Vertex]
  *   #sqrt(x)                 → parsed as intrinsic name "sqrt", args=[x]
  *   #memcpy(dst, src, len)   → parsed as intrinsic name "memcpy", args=[dst, src, len]
  *   #clz(flags)              → parsed as intrinsic name "clz", args=[flags]
@@ -70,7 +69,7 @@
  * On exit:  positioned after the closing ')'.
  *
  * ─── Argument Parsing ─────────────────────────────────────────────────────
- *   - All arguments are parsed as expressions using parseExpr()
+ *   - All arguments are parsed using parseArgList()
  *   - This includes what may later be interpreted as type names (e.g., in
  *     `#sizeof(Vertex)`, "Vertex" is parsed as IdentifierExprAST)
  *   - The semantic pass will convert identifier expressions to type AST nodes
@@ -78,7 +77,7 @@
  *
  * ─── Error Recovery ───────────────────────────────────────────────────────
  *   - Missing '(' after intrinsic name: reports error, returns UnknownExprAST
- *   - Missing expression argument: reports error, breaks loop
+ *   - parseArgList() handles argument parsing errors
  *   - Missing ')' after arguments: consume() reports error
  */
 ExprPtr Parser::parseIntrinsicCallExpr() {
@@ -106,40 +105,11 @@ ExprPtr Parser::parseIntrinsicCallExpr() {
     }
     ts_.advance();  // consume '('
 
-    // Parse argument list - ALL arguments are parsed as expressions
-    // The semantic pass will interpret them appropriately based on the intrinsic
-    std::vector<ExprPtr> args;
-    int argCount = 0;
+    // Parse argument list using the shared helper
+    // parseArgList() handles empty argument list, commas, and error recovery
+    node->args = parseArgList();
     
-    // Check for empty argument list
-    if (!ts_.check(TokenType::RPAREN)) {
-        do {
-            size_t savedPos = ts_.getPos();
-            ExprPtr arg = parseExpr();
-            if (ts_.getPos() == savedPos) {
-                LUC_LOG_EXPR("parseIntrinsicCallExpr: ERROR - expected argument expression");
-                errorAt(DiagCode::E1008, "expected argument expression");
-                if (!ts_.isAtEnd()) ts_.advance();
-                break;
-            }
-            argCount++;
-            LUC_LOG_EXPR_EXTREME("parseIntrinsicCallExpr: argument #" << argCount);
-            args.push_back(arg);
-            
-            if (ts_.check(TokenType::RPAREN)) break;
-            if (!ts_.match(TokenType::COMMA)) {
-                LUC_LOG_EXPR("parseIntrinsicCallExpr: ERROR - expected ',' or ')'");
-                errorAt(DiagCode::E1001, "expected ',' or ')' in intrinsic argument list");
-                break;
-            }
-        } while (!ts_.check(TokenType::RPAREN) && !ts_.isAtEnd());
-    }
-    
-    auto builder = arena_.makeBuilder<ExprPtr>();
-    for (auto& a : args) builder.push_back(a);
-    node->args = builder.build();
-    
-    LUC_LOG_EXPR_EXTREME("parseIntrinsicCallExpr: " << argCount << " argument(s)");
+    LUC_LOG_EXPR_EXTREME("parseIntrinsicCallExpr: " << node->args.size() << " argument(s)");
     
     ts_.consume(TokenType::RPAREN, "expected ')' to close intrinsic call");
 

@@ -38,8 +38,22 @@ UseDeclPtr Parser::parseUseDecl(Visibility vis) {
         return node;
     }
 
-    // Parse use path (dotted identifiers)
-    std::vector<InternedString> path = parseUsePath();
+    // Parse use path (dotted identifiers) - inline implementation
+    std::vector<InternedString> path;
+    
+    path.push_back(pool_.intern(ts_.advance().value));
+    LUC_LOG_DECL_EXTREME("parseUseDecl: path segment 1 = " << pool_.lookup(path.back()));
+    
+    while (ts_.match(TokenType::DOT)) {
+        if (!ts_.check(TokenType::IDENTIFIER)) {
+            LUC_LOG_DECL("parseUseDecl: ERROR - expected identifier after '.'");
+            errorAt(DiagCode::E1003, "expected identifier after '.'");
+            break;
+        }
+        path.push_back(pool_.intern(ts_.advance().value));
+        LUC_LOG_DECL_EXTREME("parseUseDecl: path segment " << path.size() 
+                             << " = " << pool_.lookup(path.back()));
+    }
     
     auto builder = arena_.makeBuilder<InternedString>();
     for (auto& p : path) builder.push_back(p);

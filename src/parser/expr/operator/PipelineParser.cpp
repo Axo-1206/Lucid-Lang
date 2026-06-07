@@ -15,6 +15,7 @@
  *   pipeline_step   := func_ref [ '(' arg_list ')' '!' ] | anon_func
  * 
  *   func_ref := IDENTIFIER
+ *             | primitive_type                // int, float, string, etc.
  *             | IDENTIFIER '.' IDENTIFIER
  *             | IDENTIFIER ':' IDENTIFIER
  *             | func_ref generic_args
@@ -24,6 +25,7 @@
  *   getUser(id) |> validate |> save
  *   v |> Vec2:normalize |> scale(2.0)!
  *   numbers |> filter<int>(isPositive)! |> sum
+ *   "42" |> int |> string                    // type references in pipeline
  * 
  * ─── Important Rules ───────────────────────────────────────────────────────
  *   - The pipeline short‑circuits on Error when the error library is used.
@@ -120,10 +122,10 @@ ExprPtr Parser::parsePipelineExpr(ExprPtr seed) {
 
     auto node = arena_.make<PipelineExprAST>();
     node->loc = seed->loc;
-    node->seed = std::move(seed);
+    node->seed = seed;  // No std::move
 
     auto builder = arena_.makeBuilder<PipelineStepPtr>();
-    for (auto& s : steps) builder.push_back(std::move(s));
+    for (auto& s : steps) builder.push_back(s);  // No std::move
     node->steps = builder.build();
 
     LUC_LOG_EXPR_VERBOSE("parsePipelineExpr: parsed " << stepCount << " step(s)");
@@ -142,6 +144,7 @@ ExprPtr Parser::parsePipelineExpr(ExprPtr seed) {
  *   pipeline_step   := func_ref [ '(' arg_list ')' '!' ] | anon_func
  *
  *   func_ref := IDENTIFIER
+ *             | primitive_type
  *             | IDENTIFIER '.' IDENTIFIER
  *             | IDENTIFIER ':' IDENTIFIER
  *             | func_ref generic_args
@@ -158,6 +161,7 @@ ExprPtr Parser::parsePipelineExpr(ExprPtr seed) {
  *       42 |> sqrt
  *       42 |> vec:normalize
  *       42 |> math.utils.toString
+ *       42 |> int                           // type reference
  *
  * 2. Function reference with argument pack (injection):
  *       42 |> scale(2.0)!
@@ -173,7 +177,7 @@ ExprPtr Parser::parsePipelineExpr(ExprPtr seed) {
  * 1. Check if the next token looks like an anonymous function; if yes,
  *    parse it and return.
  * 2. Otherwise, parse a function reference using `parseFuncRef()`.
- *    - This handles identifiers, dotted paths, method references (`:`),
+ *    - This handles identifiers, primitive types, dotted paths, method references (`:`),
  *      and generic arguments (e.g., `filter<int>`).
  * 3. If parsing fails, create an error placeholder step and skip to the
  *    next safe boundary (|>, ;, }, EOF).
@@ -216,14 +220,14 @@ PipelineStepPtr Parser::parsePipelineStep() {
         return step;
     }
 
-    // 2. Parse function reference (may be generic, dotted, method)
+    // 2. Parse function reference (may be generic, path, method, or primitive type)
     ExprPtr callable = parseFuncRef();
 
     // 3. Handle parse failure
     if (!callable || callable->isa<UnknownExprAST>()) {
         LUC_LOG_EXPR("parsePipelineStep: ERROR - expected function reference or anonymous function");
         errorAt(DiagCode::E1002,
-                "expected function name, method reference, or anonymous function");
+                "expected function name, type name, method reference, or anonymous function");
 
         // Create error placeholder step
         auto step = arena_.make<PipelineStepAST>();
@@ -245,7 +249,7 @@ PipelineStepPtr Parser::parsePipelineStep() {
     // 4. Success – create step with parsed callable
     auto step = arena_.make<PipelineStepAST>();
     step->loc = callable->loc;
-    step->callable = std::move(callable);
+    step->callable = callable;  // No std::move
     
     LUC_LOG_EXPR_EXTREME("parsePipelineStep: callable parsed");
 
@@ -283,7 +287,7 @@ PipelineStepPtr Parser::parsePipelineStep() {
             consecutiveErrors = 0;
             argCount++;
             LUC_LOG_EXPR_EXTREME("parsePipelineStep: argument #" << argCount);
-            packArgs.push_back(std::move(arg));
+            packArgs.push_back(arg);  // No std::move
 
             if (ts_.check(TokenType::RPAREN)) break;
             if (!ts_.match(TokenType::COMMA)) {
@@ -308,7 +312,7 @@ PipelineStepPtr Parser::parsePipelineStep() {
         }
 
         auto builder = arena_.makeBuilder<ExprPtr>();
-        for (auto& a : packArgs) builder.push_back(std::move(a));
+        for (auto& a : packArgs) builder.push_back(a);  // No std::move
         step->packArgs = builder.build();
         
         LUC_LOG_EXPR_EXTREME("parsePipelineStep: argument pack with " << argCount << " argument(s)");
