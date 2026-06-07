@@ -25,23 +25,18 @@
  * - Missing type annotation: returns nullptr
  * - Missing expression after '=': reports error, node has null init
  */
-ASTPtr<VarDeclAST> Parser::parseVarDecl(Visibility vis) {
+VarDeclPtr Parser::parseVarDecl(Visibility vis) {
     const Token& kwTok = ts_.peekAt(0);
     DeclKeyword kw = (kwTok.type == TokenType::LET) ? DeclKeyword::Let : DeclKeyword::Const;
     LUC_LOG_DECL_VERBOSE("parseVarDecl: entering at line " << ts_.currentLoc().line()
                          << ", col " << ts_.currentLoc().column()
                          << ", kw=" << (kw == DeclKeyword::Let ? "let" : "const"));
     
-    LUC_LOG_DECL("parseVarDecl: current token at entry = '" << ts_.peek().value 
-                 << "' (type=" << static_cast<int>(ts_.peek().type) 
-                 << ") at line " << ts_.peek().line << ", col " << ts_.peek().column);
-
     SourceLocation loc = ts_.currentLoc();
 
     if (!ts_.check(TokenType::IDENTIFIER)) {
-        LUC_LOG_DECL("parseVarDecl: ERROR - expected variable name at line " 
-                     << ts_.peek().line << ", col " << ts_.peek().column);
-        errorAt(DiagCode::E1003);
+        LUC_LOG_DECL("parseVarDecl: ERROR - expected variable name");
+        errorAt(DiagCode::E1003, "expected variable name");
         return nullptr;
     }
     
@@ -50,40 +45,28 @@ ASTPtr<VarDeclAST> Parser::parseVarDecl(Visibility vis) {
     LUC_LOG_DECL_EXTREME("parseVarDecl: variable name = '" << pool_.lookup(name) 
                          << "' at line " << nameToken.line << ", col " << nameToken.column);
     
-    LUC_LOG_DECL("parseVarDecl: after name, checking for type annotation, current token = '" 
-                 << ts_.peek().value << "' (type=" << static_cast<int>(ts_.peek().type)
-                 << ") at line " << ts_.peek().line << ", col " << ts_.peek().column);
-
     if (!looksLikeType()) {
-        LUC_LOG_DECL("parseVarDecl: ERROR - expected type annotation at line " 
-                     << ts_.peek().line << ", col " << ts_.peek().column);
-        errorAt(DiagCode::E1005);
+        LUC_LOG_DECL("parseVarDecl: ERROR - expected type annotation");
+        errorAt(DiagCode::E1005, "expected type annotation for variable '" 
+                + std::string(pool_.lookup(name)) + "'");
         return nullptr;
     }
 
-    LUC_LOG_DECL("parseVarDecl: parsing type, current token = '" << ts_.peek().value 
-                 << "' at line " << ts_.peek().line << ", col " << ts_.peek().column);
-    
     TypePtr type = parseType();
     if (!type) {
-        LUC_LOG_DECL("parseVarDecl: ERROR - expected type for variable at line " 
-                     << ts_.peek().line << ", col " << ts_.peek().column);
-        errorAt(DiagCode::E1005);
+        LUC_LOG_DECL("parseVarDecl: ERROR - expected type for variable");
+        errorAt(DiagCode::E1005, "expected type for variable '" 
+                + std::string(pool_.lookup(name)) + "'");
         return nullptr;
     }
-    
-    LUC_LOG_DECL("parseVarDecl: after parseType, next token = '" << ts_.peek().value 
-                 << "' (type=" << static_cast<int>(ts_.peek().type)
-                 << ") at line " << ts_.peek().line << ", col " << ts_.peek().column);
 
-    ExprPtr init;
+    ExprPtr init = nullptr;
     if (ts_.match(TokenType::ASSIGN)) {
-        LUC_LOG_DECL_EXTREME("parseVarDecl: parsing initializer at line " 
-                             << ts_.peek().line << ", col " << ts_.peek().column);
+        LUC_LOG_DECL_EXTREME("parseVarDecl: parsing initializer");
         init = parseExpr();
         if (!init) {
             LUC_LOG_DECL("parseVarDecl: ERROR - expected expression after '='");
-            errorAt(DiagCode::E1008);
+            errorAt(DiagCode::E1008, "expected expression after '=' in variable initializer");
             return nullptr;
         }
         LUC_LOG_DECL_EXTREME("parseVarDecl: initializer parsed");
@@ -95,10 +78,10 @@ ASTPtr<VarDeclAST> Parser::parseVarDecl(Visibility vis) {
     node->loc = loc;
     node->keyword = kw;
     node->name = name;
-    node->type = std::move(type);
-    node->init = std::move(init);
+    node->type = type;
+    node->init = init;
     node->visibility = vis;
 
-    LUC_LOG_DECL_VERBOSE("parseVarDecl: success at line " << loc.line() << ", col " << loc.column());
+    LUC_LOG_DECL_VERBOSE("parseVarDecl: success");
     return node;
 }

@@ -170,7 +170,7 @@ DeclPtr Parser::parseDeclaration(DeclContext ctx) {
         if (!attrs.empty()) {
             LUC_LOG_PARSER_EXTREME("parseDeclaration: attaching " << attrs.size() << " attributes");
             auto builder = arena_.makeBuilder<AttributePtr>();
-            for (auto& a : attrs) builder.push_back(std::move(a));
+            for (auto& a : attrs) builder.push_back(a);
             decl->attributes = builder.build();
         }
         decl->loc = ts_.currentLoc();
@@ -218,7 +218,7 @@ TypePtr Parser::parseTypeWithNullable() {
     TypePtr ty = parseBaseType();
     if (ty && ts_.match(TokenType::QUESTION)) {
         LUC_LOG_TYPE_VERBOSE("parseTypeWithNullable: adding nullable modifier");
-        ty = arena_.make<NullableTypeAST>(std::move(ty));
+        ty = arena_.make<NullableTypeAST>(ty);
     }
     if (ty && ts_.match(TokenType::BANG)) {
         LUC_LOG_TYPE_VERBOSE("parseTypeWithNullable: adding result type modifier");
@@ -227,7 +227,7 @@ TypePtr Parser::parseTypeWithNullable() {
             errorType = parseType();
             LUC_LOG_TYPE_EXTREME("parseTypeWithNullable: with error type");
         }
-        ty = arena_.make<ResultTypeAST>(std::move(ty), std::move(errorType));
+        ty = arena_.make<ResultTypeAST>(ty, errorType);
     }
     return ty;
 }
@@ -350,7 +350,7 @@ StmtPtr Parser::parseStmt() {
         DeclPtr decl = parseDeclaration(DeclContext::Local);
         if (!decl) return nullptr;
         
-        auto ds = arena_.make<DeclStmtAST>(std::move(decl));
+        auto ds = arena_.make<DeclStmtAST>(decl);
         ds->loc = ts_.currentLoc();
         LUC_LOG_STMT_VERBOSE("parseStmt: created DeclStmtAST");
         return ds;
@@ -366,7 +366,7 @@ StmtPtr Parser::parseStmt() {
                           TokenType::FROM})) {
             DeclPtr decl = parseDeclaration(DeclContext::Local);
             if (decl) {
-                auto ds = arena_.make<DeclStmtAST>(std::move(decl));
+                auto ds = arena_.make<DeclStmtAST>(decl);
                 ds->loc = ts_.currentLoc();
                 return ds;
             }
@@ -453,7 +453,7 @@ StmtPtr Parser::parseStmt() {
         return unknown;
     }
 
-    auto stmt = arena_.make<ExprStmtAST>(std::move(expr));
+    auto stmt = arena_.make<ExprStmtAST>(expr);
     stmt->loc = loc;
     LUC_LOG_STMT_VERBOSE("parseStmt: created ExprStmtAST");
     return stmt;
@@ -485,7 +485,7 @@ ExprPtr Parser::parsePrattExpr(int minPrec, bool allowStructLiteral) {
         return arena_.make<UnknownExprAST>();
     }
 
-    lhs = parsePostfixExpr(std::move(lhs));
+    lhs = parsePostfixExpr(lhs);
 
     while (true) {
         int prec = infixPrec(ts_.peekType());
@@ -500,36 +500,36 @@ ExprPtr Parser::parsePrattExpr(int minPrec, bool allowStructLiteral) {
 
         if (isAssignOp(opTok)) {
             LUC_LOG_EXPR_VERBOSE("parsePrattExpr: assignment operator, calling parseInfixAssign");
-            lhs = parseInfixAssign(std::move(lhs), allowStructLiteral);
+            lhs = parseInfixAssign(lhs, allowStructLiteral);
             break;
         }
 
         if (opTok == TokenType::IS) {
             LUC_LOG_EXPR_VERBOSE("parsePrattExpr: 'is' operator, calling parseInfixIs");
-            lhs = parseInfixIs(std::move(lhs));
+            lhs = parseInfixIs(lhs);
             continue;
         }
 
         if (opTok == TokenType::PIPELINE) {
             LUC_LOG_EXPR_VERBOSE("parsePrattExpr: pipeline operator, calling parsePipelineExpr");
-            lhs = parsePipelineExpr(std::move(lhs));
+            lhs = parsePipelineExpr(lhs);
             continue;
         }
 
         if (opTok == TokenType::COMPOSE) {
             LUC_LOG_EXPR_VERBOSE("parsePrattExpr: compose operator, calling parseComposeExpr");
-            lhs = parseComposeExpr(std::move(lhs));
+            lhs = parseComposeExpr(lhs);
             continue;
         }
 
         if (opTok == TokenType::QUESTION_QUESTION) {
             LUC_LOG_EXPR_VERBOSE("parsePrattExpr: null coalesce operator, calling parseInfixNullCoalesce");
-            lhs = parseInfixNullCoalesce(std::move(lhs), allowStructLiteral);
+            lhs = parseInfixNullCoalesce(lhs, allowStructLiteral);
             break;
         }
 
-        lhs = parseInfixBinary(std::move(lhs), opTok, prec, allowStructLiteral);
-        lhs = parsePostfixExpr(std::move(lhs));
+        lhs = parseInfixBinary(lhs, opTok, prec, allowStructLiteral);
+        lhs = parsePostfixExpr(lhs);
     }
 
     return lhs;
@@ -558,7 +558,7 @@ ExprPtr Parser::parsePrefixExpr(bool allowStructLiteral) {
             auto node = arena_.make<UnaryExprAST>();
             node->loc = loc;
             node->op = UnaryOp::Neg;
-            node->operand = std::move(operand);
+            node->operand = operand;
             return node;
         }
         case TokenType::NOT: {
@@ -572,7 +572,7 @@ ExprPtr Parser::parsePrefixExpr(bool allowStructLiteral) {
             auto node = arena_.make<UnaryExprAST>();
             node->loc = loc;
             node->op = UnaryOp::Not;
-            node->operand = std::move(operand);
+            node->operand = operand;
             return node;
         }
         case TokenType::BIT_NOT: {
@@ -586,7 +586,7 @@ ExprPtr Parser::parsePrefixExpr(bool allowStructLiteral) {
             auto node = arena_.make<UnaryExprAST>();
             node->loc = loc;
             node->op = UnaryOp::BitNot;
-            node->operand = std::move(operand);
+            node->operand = operand;
             return node;
         }
         case TokenType::AMPERSAND: {
@@ -600,7 +600,7 @@ ExprPtr Parser::parsePrefixExpr(bool allowStructLiteral) {
             auto node = arena_.make<UnaryExprAST>();
             node->loc = loc;
             node->op = UnaryOp::Ref;
-            node->operand = std::move(operand);
+            node->operand = operand;
             return node;
         }
         default:
@@ -793,7 +793,7 @@ ExprPtr Parser::parsePostfixExpr(ExprPtr lhs) {
         if (ts_.check(TokenType::LPAREN)) {
             LUC_LOG_EXPR_EXTREME("parsePostfixExpr: call expression at line "
                                  << ts_.peek().line << ", col " << ts_.peek().column);
-            lhs = parseCallExpr(std::move(lhs), ArenaSpan<TypePtr>());
+            lhs = parseCallExpr(lhs, ArenaSpan<TypePtr>());
             continue;
         }
 
@@ -820,10 +820,10 @@ ExprPtr Parser::parsePostfixExpr(ExprPtr lhs) {
             
             auto node = arena_.make<FieldAccessExprAST>();
             node->loc = lhs->loc;
-            node->object = std::move(lhs);
+            node->object = lhs;
             node->field = pool_.intern(fieldTok.value);
             node->genericArgs = genericArgs;
-            lhs = std::move(node);
+            lhs = node;
             continue;
         }
 
@@ -831,7 +831,7 @@ ExprPtr Parser::parsePostfixExpr(ExprPtr lhs) {
         if (ts_.check(TokenType::LBRACKET)) {
             LUC_LOG_EXPR_EXTREME("parsePostfixExpr: index/slice expression at line "
                                  << ts_.peek().line << ", col " << ts_.peek().column);
-            lhs = parseIndexExpr(std::move(lhs));
+            lhs = parseIndexExpr(lhs);
             continue;
         }
 
@@ -840,7 +840,7 @@ ExprPtr Parser::parsePostfixExpr(ExprPtr lhs) {
             LUC_LOG_EXPR_EXTREME("parsePostfixExpr: nullable chain at line "
                                  << ts_.peek().line << ", col " << ts_.peek().column);
             std::vector<InternedString> steps;
-            ExprPtr object = std::move(lhs);
+            ExprPtr object = lhs;
             
             while (ts_.check(TokenType::QUESTION_DOT)) {
                 ts_.advance();
@@ -853,13 +853,13 @@ ExprPtr Parser::parsePostfixExpr(ExprPtr lhs) {
             
             auto chain = arena_.make<NullableChainExprAST>();
             chain->loc = object->loc;
-            chain->object = std::move(object);
+            chain->object = object;
             
             auto builder = arena_.makeBuilder<InternedString>();
-            for (auto& s : steps) builder.push_back(std::move(s));
+            for (auto& s : steps) builder.push_back(s);
             chain->steps = builder.build();
             
-            lhs = std::move(chain);
+            lhs = chain;
             continue;
         }
 

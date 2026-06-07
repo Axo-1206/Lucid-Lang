@@ -5,9 +5,35 @@
 #include "debug/DebugMacros.hpp"
 
 // ============================================================================
-// Match Expression (Stub)
+// Match Expression
 // ============================================================================
 
+/**
+ * @brief Parses a match expression (pattern matching).
+ * 
+ * Grammar:
+ *   match_expr := 'match' expr '{' { match_arm } default_arm '}'
+ * 
+ * Example:
+ *   match status {
+ *       200      => "ok"
+ *       404      => "not found"
+ *       default  => "unknown"
+ *   }
+ * 
+ * @return ExprPtr – MatchExprAST node, or UnknownExprAST on error.
+ * 
+ * ─── Token Consumption ─────────────────────────────────────────────────────
+ * On entry: positioned at 'match' keyword
+ * On exit:  positioned after the closing '}'
+ * 
+ * ─── Error Recovery ───────────────────────────────────────────────────────
+ * - Missing subject expression: reports error, returns UnknownExprAST
+ * - Missing '{' after subject: consume() reports error
+ * - Missing '}' at end: consume() reports error
+ * - Duplicate default arm: reports error
+ * - Missing default arm: reports error (E1006)
+ */
 ExprPtr Parser::parseMatchExpr() {
     LUC_LOG_EXPR_VERBOSE("parseMatchExpr: entering");
     SourceLocation loc = ts_.currentLoc();
@@ -25,7 +51,7 @@ ExprPtr Parser::parseMatchExpr() {
 
     auto node = arena_.make<MatchExprAST>();
     node->loc = loc;
-    node->subject = std::move(subject);
+    node->subject = subject;
 
     std::vector<MatchArmPtr> arms;
     bool hasDefault = false;
@@ -65,7 +91,7 @@ ExprPtr Parser::parseMatchExpr() {
         }
         armCount++;
         LUC_LOG_EXPR_EXTREME("parseMatchExpr: parsed arm #" << armCount);
-        arms.push_back(std::move(arm));
+        arms.push_back(arm);
     }
 
     ts_.consume(TokenType::RBRACE, "expected '}' to close match expression");
@@ -76,7 +102,7 @@ ExprPtr Parser::parseMatchExpr() {
     }
 
     auto armsBuilder = arena_.makeBuilder<MatchArmPtr>();
-    for (auto& a : arms) armsBuilder.push_back(std::move(a));
+    for (auto& a : arms) armsBuilder.push_back(a);
     node->arms = armsBuilder.build();
 
     LUC_LOG_EXPR_VERBOSE("parseMatchExpr: " << armCount << " arm(s), default=" << hasDefault);
@@ -87,6 +113,34 @@ ExprPtr Parser::parseMatchExpr() {
 // Match Arm
 // ============================================================================
 
+/**
+ * @brief Parses a single match arm (non‑default).
+ * 
+ * Grammar:
+ *   match_arm := pattern { ',' pattern } [ 'if' expr ] '=>' expr [ ',' expr ]
+ * 
+ * Example patterns:
+ *   200           => "ok"
+ *   200, 201, 202 => "success"
+ *   1..10         => "light"
+ *   n if n < 0    => "invalid: " + string(n)
+ *   s is Circle   => s.radius * s.radius * 3.14159
+ * 
+ * @return MatchArmPtr – MatchArmAST node, or nullptr on error.
+ * 
+ * ─── Token Consumption ─────────────────────────────────────────────────────
+ * On entry: positioned at first pattern (or ',' after previous arm)
+ * On exit:  positioned after the last expression (or after the arm)
+ * 
+ * ─── Expression Count ──────────────────────────────────────────────────────
+ * - At least one expression is required
+ * - A second expression is allowed after a comma (multi‑value return)
+ * - More than two expressions is an error
+ * 
+ * ─── Guard Clause ─────────────────────────────────────────────────────────
+ * - Optional 'if' followed by an expression
+ * - Only valid after bind/wildcard patterns
+ */
 MatchArmPtr Parser::parseMatchArm() {
     LUC_LOG_EXPR_EXTREME("parseMatchArm: entering");
     SourceLocation loc = ts_.currentLoc();
@@ -94,10 +148,10 @@ MatchArmPtr Parser::parseMatchArm() {
     arm->loc = loc;
 
     // Parse patterns (at least one)
-    std::vector<ASTPtr<PatternAST>> patterns;
-    ASTPtr<PatternAST> pat = parsePattern();
+    std::vector<PatternPtr> patterns;
+    PatternPtr pat = parsePattern();
     if (!pat) return nullptr;
-    patterns.push_back(std::move(pat));
+    patterns.push_back(pat);
 
     while (ts_.check(TokenType::COMMA)) {
         // Peek ahead - is the next token a valid pattern start?
@@ -123,14 +177,14 @@ MatchArmPtr Parser::parseMatchArm() {
         ts_.advance(); // consume comma
         pat = parsePattern();
         if (!pat) break;
-        patterns.push_back(std::move(pat));
+        patterns.push_back(pat);
     }
 
     LUC_LOG_EXPR_EXTREME("parseMatchArm: " << patterns.size() << " pattern(s)");
 
     // Build patterns span
-    auto patternsBuilder = arena_.makeBuilder<ASTPtr<PatternAST>>();
-    for (auto& p : patterns) patternsBuilder.push_back(std::move(p));
+    auto patternsBuilder = arena_.makeBuilder<PatternPtr>();
+    for (auto& p : patterns) patternsBuilder.push_back(p);
     arm->patterns = patternsBuilder.build();
 
     // Optional guard: 'if' expr
@@ -143,7 +197,7 @@ MatchArmPtr Parser::parseMatchArm() {
             LUC_LOG_EXPR("parseMatchArm: ERROR - expected guard expression");
             errorAt(DiagCode::E1008, "expected guard expression after 'if' in match arm");
         } else {
-            arm->guard = std::move(guard);
+            arm->guard = guard;
         }
     }
 
@@ -157,7 +211,7 @@ MatchArmPtr Parser::parseMatchArm() {
         LUC_LOG_EXPR("parseMatchArm: ERROR - expected result expression");
         errorAt(DiagCode::E1008, "expected result expression after '=>' in match arm");
     } else {
-        exprs.push_back(std::move(first));
+        exprs.push_back(first);
     }
 
     // Optional second expression after comma
@@ -173,7 +227,7 @@ MatchArmPtr Parser::parseMatchArm() {
                 LUC_LOG_EXPR("parseMatchArm: ERROR - expected second expression");
                 errorAt(DiagCode::E1008, "expected second result expression after ',' in match arm");
             } else {
-                exprs.push_back(std::move(second));
+                exprs.push_back(second);
             }
         }
         // No more commas allowed
@@ -196,7 +250,7 @@ MatchArmPtr Parser::parseMatchArm() {
     }
 
     auto exprsBuilder = arena_.makeBuilder<ExprPtr>();
-    for (auto& e : exprs) exprsBuilder.push_back(std::move(e));
+    for (auto& e : exprs) exprsBuilder.push_back(e);
     arm->exprs = exprsBuilder.build();
     
     LUC_LOG_EXPR_EXTREME("parseMatchArm: " << exprs.size() << " result expression(s)");
@@ -208,7 +262,24 @@ MatchArmPtr Parser::parseMatchArm() {
 // Default Arm
 // ============================================================================
 
-ASTPtr<DefaultArmAST> Parser::parseDefaultArm() {
+/**
+ * @brief Parses the default arm of a match expression.
+ * 
+ * Grammar:
+ *   default_arm := 'default' '=>' expr [ ',' expr ]
+ * 
+ * @return DefaultArmPtr – DefaultArmAST node, or nullptr on error.
+ * 
+ * ─── Token Consumption ─────────────────────────────────────────────────────
+ * On entry: positioned at 'default' keyword
+ * On exit:  positioned after the last expression
+ * 
+ * ─── Expression Count ──────────────────────────────────────────────────────
+ * - At least one expression is required
+ * - A second expression is allowed after a comma (multi‑value return)
+ * - More than two expressions is an error
+ */
+DefaultArmPtr Parser::parseDefaultArm() {
     LUC_LOG_EXPR_EXTREME("parseDefaultArm: entering");
     SourceLocation loc = ts_.currentLoc();
     ts_.consume(TokenType::DEFAULT, "expected 'default'");
@@ -226,7 +297,7 @@ ASTPtr<DefaultArmAST> Parser::parseDefaultArm() {
         LUC_LOG_EXPR("parseDefaultArm: ERROR - expected expression after '=>'");
         errorAt(DiagCode::E1008, "expected expression after '=>' in default arm");
     } else {
-        exprs.push_back(std::move(first));
+        exprs.push_back(first);
     }
 
     // Optional second expression after comma
@@ -242,7 +313,7 @@ ASTPtr<DefaultArmAST> Parser::parseDefaultArm() {
                 LUC_LOG_EXPR("parseDefaultArm: ERROR - expected second expression");
                 errorAt(DiagCode::E1008, "expected second expression after ',' in default arm");
             } else {
-                exprs.push_back(std::move(second));
+                exprs.push_back(second);
             }
         }
         // No more commas allowed
@@ -256,7 +327,7 @@ ASTPtr<DefaultArmAST> Parser::parseDefaultArm() {
     }
 
     auto builder = arena_.makeBuilder<ExprPtr>();
-    for (auto& e : exprs) builder.push_back(std::move(e));
+    for (auto& e : exprs) builder.push_back(e);
     arm->exprs = builder.build();
     
     LUC_LOG_EXPR_EXTREME("parseDefaultArm: " << exprs.size() << " expression(s)");

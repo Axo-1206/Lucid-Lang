@@ -52,7 +52,7 @@ std::vector<AttributePtr> Parser::parseAttributes() {
         if (attr) {
             attrCount++;
             LUC_LOG_DECL_EXTREME("parseAttributes: parsed attribute #" << attrCount);
-            attrs.push_back(std::move(attr));
+            attrs.push_back(attr);
         }
         // On parse failure, parseAttribute already advanced the token stream
         // so we don't loop infinitely.
@@ -123,7 +123,7 @@ AttributePtr Parser::parseAttribute() {
             AttributeArgPtr arg = parseAttributeArgLiteral();
             if (arg) {
                 argCount++;
-                args.push_back(std::move(arg));
+                args.push_back(arg);
             } else {
                 // Invalid argument – skip it and continue.
                 // parseAttributeArgLiteral() already advanced the token.
@@ -143,7 +143,7 @@ AttributePtr Parser::parseAttribute() {
         // Transfer arguments to arena
         auto builder = arena_.makeBuilder<AttributeArgPtr>();
         for (auto& a : args) {
-            builder.push_back(std::move(a));
+            builder.push_back(a);
         }
         attr->args = builder.build();
     }

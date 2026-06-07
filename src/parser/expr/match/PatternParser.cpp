@@ -8,7 +8,30 @@
 // Pattern Dispatcher
 // ============================================================================
 
-ASTPtr<PatternAST> Parser::parsePattern() {
+/**
+ * @brief Parses a single pattern for use in match arms.
+ * 
+ * Grammar:
+ *   pattern := wildcard_pattern
+ *            | literal_pattern
+ *            | range_pattern
+ *            | bind_pattern
+ *            | type_pattern
+ *            | struct_pattern
+ *            | qualified_constant_pattern
+ * 
+ * @return PatternPtr – the parsed pattern node, or nullptr on error.
+ * 
+ * ─── Dispatch Order ────────────────────────────────────────────────────────
+ *   1. Wildcard `_`
+ *   2. Literals and ranges (numeric, string, boolean, nil)
+ *   3. IDENTIFIER-based patterns:
+ *      - Type pattern: `ident 'is' type`
+ *      - Struct pattern: `ident '{' ... '}'`
+ *      - Qualified constant: `ident '.' ...`
+ *      - Bind pattern: `ident` (fallback)
+ */
+PatternPtr Parser::parsePattern() {
     LUC_LOG_EXPR_EXTREME("parsePattern: entering, token=" << ts_.peek().value);
     
     // Wildcard
@@ -63,7 +86,7 @@ ASTPtr<PatternAST> Parser::parsePattern() {
                 errorAt(DiagCode::E1002, "expected expression after '.' in pattern");
                 return nullptr;
             }
-            return arena_.make<PatternExprAST>(std::move(expr));
+            return arena_.make<PatternExprAST>(expr);
         }
 
         // Simple bind pattern
@@ -87,7 +110,23 @@ ASTPtr<PatternAST> Parser::parsePattern() {
 // Literal or Range Pattern
 // ============================================================================
 
-ASTPtr<PatternAST> Parser::parseLiteralOrRangePattern() {
+/**
+ * @brief Parses a literal or range pattern.
+ * 
+ * Grammar:
+ *   literal_pattern := literal
+ *   range_pattern   := literal '..' [ '<' ] literal
+ * 
+ * @return PatternPtr – PatternExprAST wrapping a LiteralExprAST or RangeExprAST.
+ * 
+ * ─── Token Consumption ─────────────────────────────────────────────────────
+ * On entry: positioned at literal token (or '-')
+ * On exit:  positioned after the literal/range
+ * 
+ * ─── Negative Numbers ──────────────────────────────────────────────────────
+ * Supports unary minus for negative literals (e.g., `-5`).
+ */
+PatternPtr Parser::parseLiteralOrRangePattern() {
     LUC_LOG_EXPR_EXTREME("parseLiteralOrRangePattern: entering");
     SourceLocation loc = ts_.currentLoc();
 
@@ -158,25 +197,36 @@ ASTPtr<PatternAST> Parser::parseLiteralOrRangePattern() {
 
         auto range = arena_.make<RangeExprAST>();
         range->loc = loc;
-        range->lo = std::move(loExpr);
-        range->hi = std::move(hiExpr);
+        range->lo = loExpr;
+        range->hi = hiExpr;
         range->isExclusive = isExclusive;
 
-        return arena_.make<PatternExprAST>(std::move(range));
+        return arena_.make<PatternExprAST>(range);
     }
 
     // Simple literal pattern
     LUC_LOG_EXPR_EXTREME("parseLiteralOrRangePattern: simple literal pattern");
     auto lit = arena_.make<LiteralExprAST>(kind, internedValue);
     lit->loc = loc;
-    return arena_.make<PatternExprAST>(std::move(lit));
+    return arena_.make<PatternExprAST>(lit);
 }
 
 // ============================================================================
 // Bind Pattern
 // ============================================================================
 
-ASTPtr<BindPatternAST> Parser::parseBindPattern(InternedString name) {
+/**
+ * @brief Parses a bind pattern (matches any value and binds it to a name).
+ * 
+ * Grammar:
+ *   bind_pattern := IDENTIFIER
+ * 
+ * Example: `n` (matches anything, binds to variable `n`)
+ * 
+ * @param name The already-consumed identifier name.
+ * @return BindPatternPtr – BindPatternAST node.
+ */
+BindPatternPtr Parser::parseBindPattern(InternedString name) {
     LUC_LOG_EXPR_EXTREME("parseBindPattern: name = " << pool_.lookup(name));
     SourceLocation loc = ts_.currentLoc();
     auto pat = arena_.make<BindPatternAST>(name);
@@ -188,7 +238,22 @@ ASTPtr<BindPatternAST> Parser::parseBindPattern(InternedString name) {
 // Type Pattern
 // ============================================================================
 
-ASTPtr<TypePatternAST> Parser::parseTypePattern(InternedString bindName) {
+/**
+ * @brief Parses a type pattern (matches when subject is of a specific type).
+ * 
+ * Grammar:
+ *   type_pattern := IDENTIFIER 'is' type
+ * 
+ * Example: `s is Circle` (matches if subject is Circle, binds as 's')
+ * 
+ * @param bindName The already-consumed identifier name to bind.
+ * @return TypePatternPtr – TypePatternAST node, or nullptr on error.
+ * 
+ * ─── Error Recovery ───────────────────────────────────────────────────────
+ * - Missing 'is' keyword: consume() reports error
+ * - Missing type after 'is': reports error, returns nullptr
+ */
+TypePatternPtr Parser::parseTypePattern(InternedString bindName) {
     LUC_LOG_EXPR_EXTREME("parseTypePattern: bindName = " << pool_.lookup(bindName));
     SourceLocation loc = ts_.currentLoc();
     ts_.consume(TokenType::IS, "expected 'is' in type pattern");
@@ -203,7 +268,7 @@ ASTPtr<TypePatternAST> Parser::parseTypePattern(InternedString bindName) {
     auto pat = arena_.make<TypePatternAST>();
     pat->loc = loc;
     pat->bindName = bindName;
-    pat->checkType = std::move(checkType);
+    pat->checkType = checkType;
     return pat;
 }
 
@@ -211,7 +276,15 @@ ASTPtr<TypePatternAST> Parser::parseTypePattern(InternedString bindName) {
 // Wildcard Pattern
 // ============================================================================
 
-ASTPtr<WildcardPatternAST> Parser::parseWildcardPattern() {
+/**
+ * @brief Parses a wildcard pattern (matches any value, discards it).
+ * 
+ * Grammar:
+ *   wildcard_pattern := '_'
+ * 
+ * @return WildcardPatternPtr – WildcardPatternAST node.
+ */
+WildcardPatternPtr Parser::parseWildcardPattern() {
     LUC_LOG_EXPR_EXTREME("parseWildcardPattern");
     SourceLocation loc = ts_.currentLoc();
     ts_.consume(TokenType::WILDCARD, "expected '_'");
@@ -224,7 +297,31 @@ ASTPtr<WildcardPatternAST> Parser::parseWildcardPattern() {
 // Struct Pattern
 // ============================================================================
 
-ASTPtr<StructPatternAST> Parser::parseStructPattern(InternedString typeName) {
+/**
+ * @brief Parses a struct pattern (matches struct fields against sub-patterns).
+ * 
+ * Grammar:
+ *   struct_pattern := IDENTIFIER '{' [ field_pattern { ',' field_pattern } ] '}'
+ *   field_pattern  := IDENTIFIER [ ':' pattern ]
+ * 
+ * Examples:
+ *   Vec2 { x: 0.0, y: 0.0 }   – exact match on both fields
+ *   Vec2 { x, y }              – shorthand: binds x and y from subject
+ *   Player { health: 0 }       – only health must be 0, other fields ignored
+ * 
+ * @param typeName The already-consumed struct type name.
+ * @return StructPatternPtr – StructPatternAST node, or nullptr on error.
+ * 
+ * ─── Token Consumption ─────────────────────────────────────────────────────
+ * On entry: positioned after the type name
+ * On exit:  positioned after the closing '}'
+ * 
+ * ─── Field Patterns ───────────────────────────────────────────────────────
+ * - Shorthand `field` binds the field value to a variable named `field`
+ * - Full form `field: pattern` matches the field against a sub-pattern
+ * - Fields not listed are ignored (match succeeds regardless)
+ */
+StructPatternPtr Parser::parseStructPattern(InternedString typeName) {
     LUC_LOG_EXPR_EXTREME("parseStructPattern: typeName = " << pool_.lookup(typeName));
     SourceLocation loc = ts_.currentLoc();
     ts_.consume(TokenType::LBRACE, "expected '{' in struct pattern");
@@ -245,7 +342,7 @@ ASTPtr<StructPatternAST> Parser::parseStructPattern(InternedString typeName) {
         if (fp) {
             fieldCount++;
             LUC_LOG_EXPR_EXTREME("parseStructPattern: field #" << fieldCount);
-            fields.push_back(std::move(fp));
+            fields.push_back(fp);
         } else {
             if (ts_.getPos() == savedPos && !ts_.isAtEnd()) {
                 LUC_LOG_EXPR("parseStructPattern: ERROR - expected field name");
@@ -256,7 +353,7 @@ ASTPtr<StructPatternAST> Parser::parseStructPattern(InternedString typeName) {
     }
 
     auto builder = arena_.makeBuilder<FieldPatternPtr>();
-    for (auto& f : fields) builder.push_back(std::move(f));
+    for (auto& f : fields) builder.push_back(f);
     pat->fields = builder.build();
 
     ts_.consume(TokenType::RBRACE, "expected '}' to close struct pattern");
@@ -269,6 +366,23 @@ ASTPtr<StructPatternAST> Parser::parseStructPattern(InternedString typeName) {
 // Field Pattern
 // ============================================================================
 
+/**
+ * @brief Parses a single field pattern inside a struct pattern.
+ * 
+ * Grammar:
+ *   field_pattern := IDENTIFIER [ ':' pattern ]
+ * 
+ * Examples:
+ *   x           – shorthand: binds field 'x' to name 'x'
+ *   x: 0.0      – full form: matches field 'x' against sub‑pattern 0.0
+ *   x: Vec2 {…} – nested pattern
+ * 
+ * @return FieldPatternPtr – FieldPatternAST node, or nullptr on error.
+ * 
+ * ─── Sub‑pattern ──────────────────────────────────────────────────────────
+ * - If sub‑pattern is null (shorthand), the field binds by name
+ * - If sub‑pattern is present (full form), the field is matched recursively
+ */
 FieldPatternPtr Parser::parseFieldPattern() {
     LUC_LOG_EXPR_EXTREME("parseFieldPattern: entering");
     SourceLocation loc = ts_.currentLoc();

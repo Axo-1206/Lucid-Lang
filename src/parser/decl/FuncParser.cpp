@@ -24,16 +24,17 @@
  *   3. Expression body  : `= expr` (wrapped in ReturnStmt + BlockStmt)
  *   4. No body          : (valid for `@extern` declarations)
  * 
- * ─── Parameter Groups ──────────────────────────────────────────────────────
- *   - Function may have multiple `(params)` groups (currying)
- *   - Parameters are flattened into `allParams` with `groupSizes` tracking
+ * ─── Parameter Groups (Currying via Recursion) ────────────────────────────
+ *   - Multiple parameter groups desugar to nested FuncTypeAST
+ *   - Example: `(a int)(b int) -> int` becomes:
+ *       FuncTypeAST(params=[a]) -> FuncTypeAST(params=[b]) -> returnTypes=[int]
  * 
  * ─── Error Recovery ───────────────────────────────────────────────────────
  * - Missing '(' after name: reports error, returns nullptr
  * - Missing body after '=': reports error, returns nullptr
  * - Invalid parameter group: skip group, continue parsing
  */
-ASTPtr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vis) {
+FuncDeclPtr Parser::parseFuncDecl(DeclKeyword kw, Visibility vis) {
     LUC_LOG_DECL_VERBOSE("parseFuncDecl: entering, kw=" << (kw == DeclKeyword::Let ? "let" : "const"));
     LUC_LOG_DECL("parseFuncDecl: current token at entry = '" << ts_.peek().value 
                  << "' (type=" << static_cast<int>(ts_.peek().type) 
@@ -55,108 +56,21 @@ ASTPtr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vis) {
     node->name = name;
     node->visibility = vis;
 
-    // Parse generic parameters
+    // Parse generic parameters (on the function itself, not on the type)
     if (ts_.check(TokenType::LESS)) {
         LUC_LOG_DECL_EXTREME("parseFuncDecl: parsing generic parameters");
         node->genericParams = parseGenericParams();
         LUC_LOG_DECL_EXTREME("parseFuncDecl: " << node->genericParams.size() << " generic parameter(s)");
-        LUC_LOG_DECL("parseFuncDecl: after generic params, token = '" << ts_.peek().value 
-                     << "' at line " << ts_.peek().line << ", col " << ts_.peek().column);
     }
 
-    // Create a FuncTypeAST to hold signature and qualifiers
-    auto funcType = arena_.make<FuncTypeAST>();
-    funcType->loc = loc;
-
-    // Parse raw qualifiers and build bitmask
-    std::vector<InternedString> rawQuals;
-    uint32_t qualMask = 0;
-    int qualifierCount = 0;
-    
-    while (ts_.check(TokenType::TILDE)) {
-        LUC_LOG_DECL_EXTREME("parseFuncDecl: found '~' at line " << ts_.peek().line);
-        ts_.advance();
-        if (!ts_.check(TokenType::IDENTIFIER)) {
-            LUC_LOG_DECL("parseFuncDecl: ERROR - expected qualifier name after '~'");
-            errorAt(DiagCode::E1003, "expected qualifier name after '~'");
-            break;
-        }
-        InternedString q = pool_.intern(ts_.advance().value);
-        rawQuals.push_back(q);
-        qualifierCount++;
-        std::string_view qstr = pool_.lookup(q);
-        LUC_LOG_DECL_EXTREME("parseFuncDecl: qualifier ~" << qstr);
-        
-        if (qstr == "async") qualMask |= QualifierBits::Async;
-        else if (qstr == "nullable") qualMask |= QualifierBits::Nullable;
-        else if (qstr == "parallel") qualMask |= QualifierBits::Parallel;
-    }
-    
-    if (qualifierCount > 0) {
-        LUC_LOG_DECL_EXTREME("parseFuncDecl: " << qualifierCount << " qualifier(s)");
-    }
-    
-    auto qBuilder = arena_.makeBuilder<InternedString>();
-    for (auto& q : rawQuals) qBuilder.push_back(std::move(q));
-    funcType->rawQualifiers = qBuilder.build();
-    funcType->qualifiers = qualMask;
-
-    // Parameter groups: accumulate flat
-    std::vector<ParamPtr> allParams;
-    std::vector<size_t> groupSizes;
-    int groupCount = 0;
-    
-    LUC_LOG_DECL("parseFuncDecl: checking for '(' at line " << ts_.peek().line 
-                 << ", col " << ts_.peek().column);
-    
-    if (!ts_.check(TokenType::LPAREN)) {
-        LUC_LOG_DECL("parseFuncDecl: ERROR - expected '(' to start parameter list");
-        errorAt(DiagCode::E1001, "expected '(' to start parameter list for function '" + std::string(pool_.lookup(name)) + "'");
+    // Parse the function type (qualifiers + parameter groups + return types)
+    TypePtr funcType = parseFuncType();
+    if (!funcType || funcType->isa<UnknownTypeAST>()) {
+        LUC_LOG_DECL("parseFuncDecl: ERROR - invalid function signature");
+        errorAt(DiagCode::E1005, "invalid function signature");
         return nullptr;
     }
-    
-    while (ts_.check(TokenType::LPAREN)) {
-        groupCount++;
-        LUC_LOG_DECL_EXTREME("parseFuncDecl: parsing parameter group #" << groupCount 
-                             << " at line " << ts_.peek().line << ", col " << ts_.peek().column);
-        
-        std::vector<ParamPtr> group = parseParamGroup();
-        groupSizes.push_back(group.size());
-        LUC_LOG_DECL_EXTREME("parseFuncDecl: parameter group #" << groupCount 
-                             << " has " << group.size() << " parameter(s)");
-        
-        for (auto& p : group) {
-            allParams.push_back(std::move(p));
-        }
-        
-        LUC_LOG_DECL_EXTREME("parseFuncDecl: after group #" << groupCount 
-                             << ", next token = '" << ts_.peek().value 
-                             << "' at line " << ts_.peek().line << ", col " << ts_.peek().column);
-    }
-    
-    auto paramsBuilder = arena_.makeBuilder<ParamPtr>();
-    for (auto& p : allParams) paramsBuilder.push_back(std::move(p));
-    funcType->sig.allParams = paramsBuilder.build();
-
-    auto gsBuilder = arena_.makeBuilder<size_t>();
-    for (auto& sz : groupSizes) gsBuilder.push_back(sz);
-    funcType->sig.groupSizes = gsBuilder.build();
-    
-    LUC_LOG_DECL_EXTREME("parseFuncDecl: total " << allParams.size() << " parameters");
-    LUC_LOG_DECL("parseFuncDecl: after all parameter groups, token = '" << ts_.peek().value 
-                 << "' at line " << ts_.peek().line << ", col " << ts_.peek().column);
-
-    // Return types
-    if (ts_.match(TokenType::ARROW)) {
-        LUC_LOG_DECL_EXTREME("parseFuncDecl: found '->' at line " << ts_.peek().line);
-        funcType->sig.returnTypes = parseReturnList();
-        LUC_LOG_DECL_EXTREME("parseFuncDecl: " << funcType->sig.returnTypes.size() << " return type(s)");
-        LUC_LOG_DECL("parseFuncDecl: after return list, token = '" << ts_.peek().value 
-                     << "' at line " << ts_.peek().line << ", col " << ts_.peek().column);
-    }
-
-    // Store the complete function type in the declaration
-    node->funcType = std::move(funcType);
+    node->funcType = funcType->as<FuncTypeAST>();
 
     // Body
     if (!ts_.check(TokenType::ASSIGN)) {
@@ -166,7 +80,7 @@ ASTPtr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vis) {
     }
 
     LUC_LOG_DECL_EXTREME("parseFuncDecl: parsing body");
-    ts_.advance();
+    ts_.advance(); // consume '='
 
     if (ts_.check(TokenType::LBRACE)) {
         LUC_LOG_DECL_EXTREME("parseFuncDecl: block body");
@@ -191,21 +105,19 @@ ASTPtr<FuncDeclAST> Parser::parseFuncDecl(DeclKeyword kw, Visibility vis) {
 
         auto ret = arena_.make<ReturnStmtAST>();
         ret->loc = bodyLoc;
-        std::vector<ExprPtr> vals;
-        vals.push_back(std::move(expr));
+        
         auto valsBuilder = arena_.makeBuilder<ExprPtr>();
-        for (auto& v : vals) valsBuilder.push_back(std::move(v));
+        valsBuilder.push_back(expr);
         ret->values = valsBuilder.build();
 
         auto block = arena_.make<BlockStmtAST>();
         block->loc = bodyLoc;
-        std::vector<StmtPtr> stmts;
-        stmts.push_back(std::move(ret));
+        
         auto stmtsBuilder = arena_.makeBuilder<StmtPtr>();
-        for (auto& s : stmts) stmtsBuilder.push_back(std::move(s));
+        stmtsBuilder.push_back(ret);
         block->stmts = stmtsBuilder.build();
 
-        node->body = std::move(block);
+        node->body = block;
     }
     
     ts_.match(TokenType::SEMICOLON);

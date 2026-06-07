@@ -19,14 +19,15 @@
  *   - Does NOT create a new nominal type (unlike struct)
  *   - Alias is interchangeable with its target
  *   - Generic parameters allow instantiation with concrete types
- *   - Can be top‑level or local
+ *   - Generic array syntax [_, <T>] is NOT valid here - use the declared
+ *     generic parameter instead: `type List<T> = [_, T]`
  * 
  * ─── Error Recovery ───────────────────────────────────────────────────────
  * - Missing alias name: returns nullptr
  * - Missing '=' after name/generics: reports error, returns nullptr
  * - Missing aliased type: reports error (node created with null aliasedType)
  */
-ASTPtr<TypeAliasDeclAST> Parser::parseTypeAliasDecl(Visibility vis) {
+TypeAliasDeclPtr Parser::parseTypeAliasDecl(Visibility vis) {
     LUC_LOG_DECL_VERBOSE("parseTypeAliasDecl: entering");
     SourceLocation loc = ts_.currentLoc();
     ts_.consume(TokenType::TYPE, "expected 'type' before type alias");
@@ -44,20 +45,33 @@ ASTPtr<TypeAliasDeclAST> Parser::parseTypeAliasDecl(Visibility vis) {
     node->name = name;
     node->visibility = vis;
 
+    // Parse generic parameters at the alias level (e.g., `type List<T>`)
     if (ts_.check(TokenType::LESS)) {
         LUC_LOG_DECL_EXTREME("parseTypeAliasDecl: parsing generic parameters");
         node->genericParams = parseGenericParams();
-        LUC_LOG_DECL_EXTREME("parseTypeAliasDecl: " << node->genericParams.size() << " generic parameter(s)");
+        LUC_LOG_DECL_EXTREME("parseTypeAliasDecl: " << node->genericParams.size() 
+                             << " generic parameter(s)");
     }
 
     ts_.consume(TokenType::ASSIGN, "expected '=' in type alias");
 
+    // Parse the aliased type using parseArrayType() directly
+    // Note: Generic array syntax [_, <T>] is NOT valid here and will be rejected
+    // by parseArrayType() with an error message.
     node->aliasedType = parseType();
     if (!node->aliasedType) {
         LUC_LOG_DECL("parseTypeAliasDecl: ERROR - expected type on right-hand side");
         errorAt(DiagCode::E1005, "expected type on the right-hand side of type alias");
     } else {
         LUC_LOG_DECL_EXTREME("parseTypeAliasDecl: aliased type parsed");
+        
+        // Optional: check for misplaced generic array syntax
+        if (node->aliasedType->isa<GenericArrayTypeAST>()) {
+            errorAt(DiagCode::E1024, 
+                    "generic array syntax '[_, <T>]' is not allowed in type alias right-hand side. "
+                    "Use the declared generic parameter instead: 'type " 
+                    + std::string(pool_.lookup(name)) + "<T> = [_, T]'");
+        }
     }
 
     LUC_LOG_DECL_VERBOSE("parseTypeAliasDecl: success");

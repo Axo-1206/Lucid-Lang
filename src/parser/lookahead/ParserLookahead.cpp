@@ -739,34 +739,53 @@ bool Parser::looksLikeGenericArray() const {
     size_t i = ts_.getPos();
 
     i = ts_.skipCommentsFrom(i);
-    if (i >= tokenCount || tokens[i].type != TokenType::LBRACKET) {
-        return false;
-    }
+    if (i >= tokenCount || tokens[i].type != TokenType::LBRACKET) return false;
+    
+    int bracketDepth = 1;  // Track nested '[' levels
     ++i; // skip '['
-
-    i = ts_.skipCommentsFrom(i);
-    if (i >= tokenCount) return false;
-
-    // Check array kind (_, *, or integer)
-    if (tokens[i].type == TokenType::WILDCARD ||
-        tokens[i].type == TokenType::MUL ||
-        tokens[i].type == TokenType::INT_LITERAL) {
-        ++i;
-    } else {
+    
+    // Find the position of the first element type
+    while (i < tokenCount && bracketDepth > 0) {
+        i = ts_.skipCommentsFrom(i);
+        if (i >= tokenCount) return false;
+        
+        TokenType tt = tokens[i].type;
+        
+        if (tt == TokenType::LBRACKET) {
+            bracketDepth++;
+            ++i;
+            continue;
+        } else if (tt == TokenType::RBRACKET) {
+            bracketDepth--;
+            ++i;
+            continue;
+        }
+        
+        // We're at the first token after the opening '['
+        // Check if it's a valid array kind
+        if (tt == TokenType::WILDCARD || tt == TokenType::MUL || tt == TokenType::INT_LITERAL) {
+            ++i;
+            
+            // Look for comma
+            i = ts_.skipCommentsFrom(i);
+            if (i >= tokenCount || tokens[i].type != TokenType::COMMA) return false;
+            ++i; // skip comma
+            
+            // Now we're at the element position - but we must be at depth 1
+            // (top level of this array, not inside nested brackets)
+            i = ts_.skipCommentsFrom(i);
+            if (i >= tokenCount) return false;
+            
+            // Only return true if we're at top level (bracketDepth == 1)
+            // AND the next token is '<'
+            return bracketDepth == 1 && tokens[i].type == TokenType::LESS;
+        }
+        
+        // Not a valid array kind
         return false;
     }
-
-    i = ts_.skipCommentsFrom(i);
-    if (i >= tokenCount || tokens[i].type != TokenType::COMMA) {
-        return false;
-    }
-    ++i; // skip ','
-
-    i = ts_.skipCommentsFrom(i);
-    if (i >= tokenCount) return false;
-
-    // If the next token is '<', this is a generic array
-    return tokens[i].type == TokenType::LESS;
+    
+    return false;
 }
 
 /**

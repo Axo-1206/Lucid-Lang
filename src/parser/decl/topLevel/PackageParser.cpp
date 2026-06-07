@@ -21,7 +21,7 @@
  * - Missing package name: returns dummy node with "<error>" name
  * - Missing 'package' keyword: handled by caller (parse())
  */
-ASTPtr<PackageDeclAST> Parser::parsePackageDecl() {
+PackageDeclPtr Parser::parsePackageDecl() {
     LUC_LOG_DECL_VERBOSE("parsePackageDecl: entering");
     SourceLocation loc = ts_.currentLoc();
     ts_.consume(TokenType::PACKAGE, "expected 'package'");

@@ -8,7 +8,7 @@
 // Function Type
 // ============================================================================
 // 
-// parseFuncType() parses a function type annotation.
+// parseFuncType() parses a function type annotation with full currying support.
 // 
 // Grammar: [ qualifier_list ] param_group { param_group } [ '->' return_list ]
 // 
@@ -19,23 +19,14 @@
 //   (src string) -> (int, string)            (multiple returns)
 //   () -> int                                (zero parameters)
 // 
-// ─── Qualifier Handling ───────────────────────────────────────────────────
-//   - Qualifiers stored raw in rawQualifiers (InternedString)
-//   - Validation and bitmask computation deferred to semantic phase
-//   - `~parallel` does NOT affect type equality; `~async`/`~nullable` do
-// 
-// ─── Parameter Groups (Currying via Recursion) ────────────────────────────
-//   - Multiple parameter groups desugar to nested FuncTypeAST
-//   - Example: `(a int)(b int) -> int` becomes:
-//       FuncTypeAST(params=[a]) -> FuncTypeAST(params=[b]) -> returnTypes=[int]
+// ─── Behavior ──────────────────────────────────────────────────────────────
+//   - If there are multiple parameter groups, the function recurses to parse
+//     the remaining groups as the return type.
+//   - Returns the root FuncTypeAST (outermost group).
 // 
 // ─── Token Consumption ─────────────────────────────────────────────────────
-// On entry: positioned at first '(' or '~' (qualifier)
+// On entry: positioned at '(' or '~' (qualifier)
 // On exit:  positioned after return list (or after last param group if void)
-// 
-// ─── Parameter Parsing ────────────────────────────────────────────────────
-//   - Each parameter group is parsed as: '(' parseParamList() ')'
-//   - The caller consumes the parentheses directly, not via parseParamGroup()
 // 
 // ─── Error Recovery ───────────────────────────────────────────────────────
 //   - Missing '(' after qualifiers: reports error, returns UnknownTypeAST
@@ -47,47 +38,17 @@ TypePtr Parser::parseFuncType() {
     LUC_LOG_TYPE_VERBOSE("parseFuncType: entering at line " << ts_.currentLoc().line()
                          << ", col " << ts_.currentLoc().column());
     
-    // Log current token
-    LUC_LOG_TYPE("parseFuncType: current token = '" << ts_.peek().value 
-                 << "' (type=" << static_cast<int>(ts_.peek().type) 
-                 << ") at line " << ts_.peek().line << ", col " << ts_.peek().column);
-    
     SourceLocation loc = ts_.currentLoc();
     auto funcType = arena_.make<FuncTypeAST>();
     funcType->loc = loc;
 
     // Parse raw qualifiers and build bitmask
-    std::vector<InternedString> rawQuals;
-    uint32_t qualMask = 0;
-    int qualifierCount = 0;
-    while (ts_.check(TokenType::TILDE)) {
-        LUC_LOG_TYPE_EXTREME("parseFuncType: found '~' at line " << ts_.peek().line 
-                             << ", col " << ts_.peek().column);
-        ts_.advance();
-        if (!ts_.check(TokenType::IDENTIFIER)) {
-            LUC_LOG_TYPE("parseFuncType: ERROR - expected qualifier name after '~'");
-            errorAt(DiagCode::E1003, "expected qualifier name after '~'");
-            break;
-        }
-        InternedString q = pool_.intern(ts_.advance().value);
-        rawQuals.push_back(q);
-        std::string_view qstr = pool_.lookup(q);
-        LUC_LOG_TYPE_EXTREME("parseFuncType: found qualifier '~" << qstr << "'");
-        
-        if (qstr == "async") qualMask |= QualifierBits::Async;
-        else if (qstr == "nullable") qualMask |= QualifierBits::Nullable;
-        else if (qstr == "parallel") qualMask |= QualifierBits::Parallel;
-        qualifierCount++;
-    }
-    
-    if (qualifierCount > 0) {
-        LUC_LOG_TYPE_EXTREME("parseFuncType: found " << qualifierCount << " qualifiers");
-    }
+    QualifierSet quals = parseQualifiers();
     
     auto qBuilder = arena_.makeBuilder<InternedString>();
-    for (auto& q : rawQuals) qBuilder.push_back(q);
+    for (auto& q : quals.raw) qBuilder.push_back(q);
     funcType->rawQualifiers = qBuilder.build();
-    funcType->qualifiers = qualMask;
+    funcType->qualifiers = quals.bitmask;
 
     // Parse first parameter group (required)
     if (!ts_.check(TokenType::LPAREN)) {
@@ -97,8 +58,7 @@ TypePtr Parser::parseFuncType() {
         return arena_.make<UnknownTypeAST>();
     }
     
-    LUC_LOG_TYPE_EXTREME("parseFuncType: parsing first parameter group at line " 
-                         << ts_.peek().line << ", col " << ts_.peek().column);
+    LUC_LOG_TYPE_EXTREME("parseFuncType: parsing first parameter group");
     
     // Parse '(' param_list ')'
     ts_.consume(TokenType::LPAREN, "expected '(' to start parameter group");
@@ -118,7 +78,7 @@ TypePtr Parser::parseFuncType() {
         LUC_LOG_TYPE_EXTREME("parseFuncType: found additional parameter group - currying");
         // Parse the curried function type (remaining groups + return types)
         TypePtr curriedType = parseFuncType();
-        if (curriedType) {
+        if (curriedType && !curriedType->isa<UnknownTypeAST>()) {
             // The return type becomes the curried function type
             auto retBuilder = arena_.makeBuilder<TypePtr>();
             retBuilder.push_back(curriedType);
@@ -131,8 +91,7 @@ TypePtr Parser::parseFuncType() {
 
     // No currying - parse return types if present
     if (ts_.match(TokenType::ARROW)) {
-        LUC_LOG_TYPE_EXTREME("parseFuncType: found '->' at line " << ts_.peek().line
-                             << ", col " << ts_.peek().column);
+        LUC_LOG_TYPE_EXTREME("parseFuncType: found '->'");
         funcType->returnTypes = parseReturnList();
         LUC_LOG_TYPE_VERBOSE("parseFuncType: found " << funcType->returnTypes.size() 
                              << " return type(s)");

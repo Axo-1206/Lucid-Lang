@@ -25,7 +25,7 @@
  * - Invalid field: skips field, continues parsing remaining fields
  * - Missing '}': consume() reports error
  */
-ASTPtr<StructDeclAST> Parser::parseStructDecl(Visibility vis) {
+StructDeclPtr Parser::parseStructDecl(Visibility vis) {
     LUC_LOG_DECL_VERBOSE("parseStructDecl: entering");
     SourceLocation loc = ts_.currentLoc();
     ts_.consume(TokenType::STRUCT, "expected 'struct'");
@@ -64,7 +64,7 @@ ASTPtr<StructDeclAST> Parser::parseStructDecl(Visibility vis) {
         if (field) {
             fieldCount++;
             LUC_LOG_DECL_EXTREME("parseStructDecl: parsed field #" << fieldCount);
-            fields.push_back(std::move(field));
+            fields.push_back(field);
         } else {
             LUC_LOG_DECL("parseStructDecl: ERROR - failed to parse field");
             if (ts_.getPos() == savedPos && !ts_.isAtEnd()) ts_.advance();
@@ -74,7 +74,7 @@ ASTPtr<StructDeclAST> Parser::parseStructDecl(Visibility vis) {
     }
 
     auto builder = arena_.makeBuilder<FieldDeclPtr>();
-    for (auto& f : fields) builder.push_back(std::move(f));
+    for (auto& f : fields) builder.push_back(f);
     node->fields = builder.build();
 
     ts_.consume(TokenType::RBRACE, "expected '}' to close struct body");
@@ -122,7 +122,7 @@ FieldDeclPtr Parser::parseFieldDecl() {
         return nullptr;
     }
 
-    ExprPtr defaultVal;
+    ExprPtr defaultVal = nullptr;
     if (ts_.match(TokenType::ASSIGN)) {
         LUC_LOG_DECL_EXTREME("parseFieldDecl: parsing default value");
         defaultVal = parseExpr();
@@ -135,7 +135,7 @@ FieldDeclPtr Parser::parseFieldDecl() {
     auto field = arena_.make<FieldDeclAST>();
     field->loc = loc;
     field->name = name;
-    field->type = std::move(type);
-    field->defaultVal = std::move(defaultVal);
+    field->type = type;
+    field->defaultVal = defaultVal;
     return field;
 }

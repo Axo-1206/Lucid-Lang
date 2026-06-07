@@ -7,7 +7,7 @@
 /**
  * @brief Parses `use` import declaration.
  * 
- * Grammar: `use` module_path [ `as` IDENTIFIER ]
+ * Grammar: `use` use_path [ `as` IDENTIFIER ]
  * 
  * Example: `use math.vec2 as v`
  * 
@@ -23,7 +23,7 @@
  * - Missing module path: returns node with empty path
  * - Missing alias after 'as': reports error, continues
  */
-ASTPtr<UseDeclAST> Parser::parseUseDecl(Visibility vis) {
+UseDeclPtr Parser::parseUseDecl(Visibility vis) {
     LUC_LOG_DECL_VERBOSE("parseUseDecl: entering");
     SourceLocation loc = ts_.currentLoc();
     ts_.consume(TokenType::USE, "expected 'use'");
@@ -38,24 +38,14 @@ ASTPtr<UseDeclAST> Parser::parseUseDecl(Visibility vis) {
         return node;
     }
 
-    std::vector<InternedString> path;
-    path.push_back(pool_.intern(ts_.advance().value));
-    LUC_LOG_DECL_EXTREME("parseUseDecl: path segment 1 = " << pool_.lookup(path.back()));
-
-    int segmentCount = 1;
-    while (ts_.check(TokenType::DOT) && ts_.peekNextType() == TokenType::IDENTIFIER) {
-        ts_.advance();
-        path.push_back(pool_.intern(ts_.advance().value));
-        segmentCount++;
-        LUC_LOG_DECL_EXTREME("parseUseDecl: path segment " << segmentCount 
-                             << " = " << pool_.lookup(path.back()));
-    }
-
+    // Parse use path (dotted identifiers)
+    std::vector<InternedString> path = parseUsePath();
+    
     auto builder = arena_.makeBuilder<InternedString>();
-    for (auto& p : path) builder.push_back(std::move(p));
+    for (auto& p : path) builder.push_back(p);
     node->path = builder.build();
     
-    LUC_LOG_DECL_EXTREME("parseUseDecl: path has " << segmentCount << " segment(s)");
+    LUC_LOG_DECL_EXTREME("parseUseDecl: path has " << path.size() << " segment(s)");
 
     if (ts_.match(TokenType::AS)) {
         LUC_LOG_DECL_EXTREME("parseUseDecl: parsing alias");

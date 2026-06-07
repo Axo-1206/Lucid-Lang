@@ -29,7 +29,7 @@
  * - Invalid variant: skips variant, continues
  * - Missing '}': consume() reports error
  */
-ASTPtr<EnumDeclAST> Parser::parseEnumDecl(Visibility vis) {
+EnumDeclPtr Parser::parseEnumDecl(Visibility vis) {
     LUC_LOG_DECL_VERBOSE("parseEnumDecl: entering");
     SourceLocation loc = ts_.currentLoc();
     ts_.consume(TokenType::ENUM, "expected 'enum'");
@@ -62,7 +62,7 @@ ASTPtr<EnumDeclAST> Parser::parseEnumDecl(Visibility vis) {
         if (variant) {
             variantCount++;
             LUC_LOG_DECL_EXTREME("parseEnumDecl: parsed variant #" << variantCount);
-            variants.push_back(std::move(variant));
+            variants.push_back(variant);
         } else {
             LUC_LOG_DECL("parseEnumDecl: ERROR - failed to parse variant");
             if (ts_.getPos() == savedPos && !ts_.isAtEnd()) ts_.advance();
@@ -72,7 +72,7 @@ ASTPtr<EnumDeclAST> Parser::parseEnumDecl(Visibility vis) {
     }
 
     auto builder = arena_.makeBuilder<EnumVariantPtr>();
-    for (auto& v : variants) builder.push_back(std::move(v));
+    for (auto& v : variants) builder.push_back(v);
     node->variants = builder.build();
 
     ts_.consume(TokenType::RBRACE, "expected '}' to close enum body");
