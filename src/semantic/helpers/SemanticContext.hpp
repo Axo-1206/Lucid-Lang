@@ -25,7 +25,7 @@
 #include "ast/support/ASTArena.hpp"
 #include "ast/TypeAST.hpp"
 #include "diagnostics/Diagnostic.hpp"
-#include "scope/ScopeStack.hpp"
+#include "../scope/ScopeStack.hpp"
 #include <utility>
 #include <string>
 #include <sstream>

@@ -96,7 +96,12 @@ add_executable(luc-comp
     src/parser/Dispatcher.cpp
 
     # Semantic Analyzer
-
+    src/semantic/SemanticAnalyzer.cpp
+    src/semantic/Annotator.cpp
+    src/semantic/scope/ScopeStack.cpp
+    src/semantic/collector/DeclarationCollector.cpp
+    src/semantic/resolver/TypeResolver.cpp
+    src/semantic/resolver/TypeChecker.cpp
     
 
 

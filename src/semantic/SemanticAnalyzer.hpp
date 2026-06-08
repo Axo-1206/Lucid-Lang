@@ -43,7 +43,7 @@
 #include "collector/DeclarationCollector.hpp"
 #include "resolver/TypeResolver.hpp"
 #include "scope/ScopeStack.hpp"
-#include "ast/ProgramAST.hpp"
+#include "ast/BaseAST.hpp"
 #include "ast/DeclAST.hpp"
 
 #include <vector>
