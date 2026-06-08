@@ -47,8 +47,6 @@
 #include <optional>
 #include <vector>
 
-namespace luc {
-
 /**
  * @brief Stateless type checking utilities.
  * 
@@ -364,5 +362,3 @@ private:
     static bool typesMatchForAssignment(TypeAST* source, TypeAST* target,
                                          TypeResolver& resolver);
 };
-
-} // namespace luc

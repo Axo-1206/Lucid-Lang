@@ -12,8 +12,6 @@
 #include <sstream>
 #include <algorithm>
 
-namespace luc {
-
 // ============================================================================
 // Scope Management
 // ============================================================================
@@ -409,5 +407,3 @@ std::string ScopeStack::toString(const StringPool& pool) const {
     
     return ss.str();
 }
-
-} // namespace luc

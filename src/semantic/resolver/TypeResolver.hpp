@@ -43,8 +43,6 @@
 #include "semantic/helpers/SemanticContext.hpp"
 #include "ast/support/StringPool.hpp"
 
-namespace luc {
-
 /**
  * @brief Resolves type annotations and handles type alias expansion.
  * 
@@ -235,5 +233,3 @@ private:
      */
     void ensureSelfType(TypeDeclAST* typeDecl);
 };
-
-} // namespace luc

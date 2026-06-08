@@ -32,10 +32,7 @@
 #include <unordered_map>
 #include <vector>
 
-// Forward declaration
-namespace luc {
 class TypeResolver;
-}
 
 /**
  * @brief Holds all mutable state during semantic analysis.
@@ -54,8 +51,8 @@ struct SemanticContext {
     
     StringPool& pool;           // String pool for name demangling
     ASTArena& arena;            // Arena for temporary type synthesis
-    luc::ScopeStack& scope;     // Scope stack for name lookup (AST-node-only)
-    luc::TypeResolver* typeResolver = nullptr;  // Type resolver (set after construction)
+    ScopeStack& scope;     // Scope stack for name lookup (AST-node-only)
+    TypeResolver* typeResolver = nullptr;  // Type resolver (set after construction)
     
     // ─────────────────────────────────────────────────────────────────────────
     // Trait Conformance Map (built in Phase 2.5, read-only thereafter)
@@ -94,7 +91,7 @@ struct SemanticContext {
      * @param a AST arena reference
      * @param s Scope stack reference (for name lookup)
      */
-    SemanticContext(StringPool& p, ASTArena& a, luc::ScopeStack& s)
+    SemanticContext(StringPool& p, ASTArena& a, ScopeStack& s)
         : pool(p), arena(a), scope(s) {}
 
     // ─────────────────────────────────────────────────────────────────────────

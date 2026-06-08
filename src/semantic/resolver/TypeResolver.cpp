@@ -12,8 +12,6 @@
 #include "debug/DebugMacros.hpp"
 #include "debug/DebugUtils.hpp"
 
-namespace luc {
-
 // ============================================================================
 // Constructor
 // ============================================================================
@@ -473,5 +471,3 @@ void TypeResolver::ensureSelfType(TypeDeclAST* typeDecl) {
                                  << ctx_.pool.lookup(typeDecl->name));
     }
 }
-
-} // namespace luc

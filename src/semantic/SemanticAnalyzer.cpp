@@ -14,8 +14,6 @@
 
 #include <unordered_set>
 
-namespace luc {
-
 // Forward declarations for checker functions (defined in checkers/decl/DeclChecker.cpp)
 void checkTopLevelDecl(DeclAST* decl, SemanticContext& ctx);
 
@@ -484,5 +482,3 @@ void SemanticAnalyzer::annotate(std::vector<ProgramAST*>& files) {
     annotateAll(files, ctx_);
     LUC_LOG_SEMANTIC_VERBOSE("annotate: annotation complete");
 }
-
-} // namespace luc

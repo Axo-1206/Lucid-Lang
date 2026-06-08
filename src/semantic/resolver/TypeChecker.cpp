@@ -11,8 +11,6 @@
 #include "semantic/helpers/SemanticContext.hpp"
 #include "debug/DebugMacros.hpp"
 
-namespace luc {
-
 // ============================================================================
 // Equality & Assignment
 // ============================================================================
@@ -371,5 +369,3 @@ bool TypeChecker::typesMatchForAssignment(TypeAST* source, TypeAST* target,
     // This is handled by TypeResolver::typesEqual
     return resolver.typesEqual(source, target);
 }
-
-} // namespace luc

@@ -42,8 +42,6 @@
 #include <vector>
 #include <string_view>
 
-namespace luc {
-
 // ============================================================================
 // Scope – Single lexical scope with separate namespaces
 // ============================================================================
@@ -290,5 +288,3 @@ private:
     bool signaturesEqual(FuncDeclAST* a, FuncDeclAST* b) const;
     bool hasConflictingSignature(FuncDeclAST* func, const std::vector<FuncDeclAST*>& overloads) const;
 };
-
-} // namespace luc

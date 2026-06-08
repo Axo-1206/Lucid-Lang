@@ -63,8 +63,6 @@
 #include <unordered_set>
 #include <vector>
 
-namespace luc {
-
 /**
  * @brief Phase 1 collector – registers declarations in scopes.
  * 
@@ -188,5 +186,3 @@ private:
      */
     void ensureSelfType(TypeDeclAST* typeDecl);
 };
-
-} // namespace luc

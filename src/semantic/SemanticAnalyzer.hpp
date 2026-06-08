@@ -48,8 +48,6 @@
 
 #include <vector>
 
-namespace luc {
-
 enum class CompilationMode { AOT, JIT };
 
 /**
@@ -98,5 +96,3 @@ private:
     void validateNoDuplicateDeclarations();
     void collectUseDeclarations(ProgramAST* prog);
 };
-
-} // namespace luc
