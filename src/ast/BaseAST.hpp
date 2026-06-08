@@ -376,13 +376,6 @@ using AttributePtr = AttributeAST*;
 // ─────────────────────────────────────────────────────────────────────────────
 
 struct TypeAST    : BaseAST { explicit TypeAST(ASTKind k)    : BaseAST(k) {} };
-struct DeclAST    : BaseAST {
-    std::optional<DocComment> doc;
-    ArenaSpan<AttributePtr>   attributes;
-
-    explicit DeclAST(ASTKind k) : BaseAST(k) {}
-    bool hasDoc() const { return doc.has_value(); }
-};
 struct ExprAST    : BaseAST {
     TypeAST* resolvedType = nullptr;
     bool isBehaviorMember = false;
@@ -396,6 +389,91 @@ struct PatternAST : BaseAST {
     TypeAST* resolvedType = nullptr;
     explicit PatternAST(ASTKind k) : BaseAST(k) {}
     bool hasType() const { return resolvedType != nullptr; }
+};
+
+struct DeclAST    : BaseAST {
+    std::optional<DocComment> doc;
+    ArenaSpan<AttributePtr>   attributes;
+
+    explicit DeclAST(ASTKind k) : BaseAST(k) {}
+    bool hasDoc() const { return doc.has_value(); }
+};
+// ─────────────────────────────────────────────────────────────────────────────
+// ValueDeclAST – base for declarations that produce values
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @brief Base class for declarations that produce values (can appear in expressions).
+ *
+ * Value declarations live in the VALUE NAMESPACE. When an identifier is resolved
+ * in an expression context, the lookup searches this namespace first.
+ *
+ * Value declarations include:
+ *   - Variables (VarDeclAST)
+ *   - Functions (FuncDeclAST)
+ *   - Parameters (ParamAST)
+ *   - Fields (FieldDeclAST)
+ *   - Methods (MethodDeclAST)
+ *   - Enum variants (EnumVariantAST)
+ *
+ * ─── Type Cache ─────────────────────────────────────────────────────────────
+ * The `valueType` field caches the resolved type of this value. For example:
+ *   - For a variable: its declared type
+ *   - For a function: its function type (FuncTypeAST)
+ *   - For a parameter: its parameter type
+ *
+ * This eliminates the need for a separate symbol table entry.
+ *
+ * @note ValueDeclAST nodes are stored in Scope::values map.
+ */
+struct ValueDeclAST : DeclAST {
+    // Cached resolved type of this value (set during type resolution)
+    // For functions, this points to funcType
+    TypeAST* valueType = nullptr;
+    
+    explicit ValueDeclAST(ASTKind k) : DeclAST(k) {}
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TypeDeclAST – base for declarations that define types
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @brief Base class for declarations that define types.
+ *
+ * Type declarations live in the TYPE NAMESPACE. When an identifier is resolved
+ * in a type annotation context, the lookup searches this namespace.
+ *
+ * Type declarations include:
+ *   - Structs (StructDeclAST)
+ *   - Enums (EnumDeclAST)
+ *   - Traits (TraitDeclAST)
+ *   - Type aliases (TypeAliasDeclAST)
+ *
+ * ─── Self‑Type Cache ────────────────────────────────────────────────────────
+ * The `selfType` field caches a NamedTypeAST that represents this type itself.
+ * This is used when a type name appears as a value (e.g., `int("42")` where `int`
+ * is used as a conversion function). Without this cache, we would need to
+ * create a new NamedTypeAST every time a type name is referenced.
+ *
+ * ─── Alias Resolution ───────────────────────────────────────────────────────
+ * For type aliases, `resolvedType` stores the underlying type after unwrapping
+ * all alias chains (e.g., `type A = B; type B = int` → `resolvedType = int`).
+ * This provides O(1) access to the ultimate type without repeated lookups.
+ *
+ * @note TypeDeclAST nodes are stored in Scope::types map.
+ */
+struct TypeDeclAST : DeclAST {
+    // Self-type reference (e.g., "Point" as a NamedTypeAST)
+    // Used when the type name appears as a value (e.g., `int("42")`)
+    // Mutable because it's set lazily during semantic analysis
+    mutable NamedTypeAST* selfType = nullptr;
+    
+    // For type aliases: resolved underlying type (after unwrapping chains)
+    // For non-aliases, this may be nullptr or points to selfType
+    TypeAST* resolvedType = nullptr;
+    
+    explicit TypeDeclAST(ASTKind k) : DeclAST(k) {}
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -510,20 +588,6 @@ struct GenericParamAST : BaseAST {
 
     explicit GenericParamAST(InternedString n)
         : BaseAST(ASTKind::GenericParam), name(n) {}
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ParamAST — a function parameter.
-// ─────────────────────────────────────────────────────────────────────────────
-
-struct ParamAST : BaseAST {
-    static constexpr ASTKind staticKind = ASTKind::Param;
-
-    InternedString name;
-    TypePtr        type;
-    bool           isVariadic = false;
-
-    ParamAST() : BaseAST(ASTKind::Param) {}
 };
 
 using ParamPtr          = ParamAST*;
