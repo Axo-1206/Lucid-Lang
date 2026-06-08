@@ -97,68 +97,7 @@ add_executable(luc-comp
 
     # Semantic Analyzer
 
-    src/semantic/SymbolTable.cpp
-    src/semantic/SemanticAnalyzer.cpp
-    src/semantic/Annotator.cpp
-    src/semantic/collectors/SemanticCollector.cpp
-    src/semantic/checkType/TypeChecker.cpp
-    src/semantic/helpers/SemanticContext.cpp
-
-    src/semantic/checkers/declCheckers/DeclDispatcher.cpp
-    src/semantic/checkers/declCheckers/checkVarDecl.cpp
-    src/semantic/checkers/declCheckers/checkFuncDecl.cpp
-    src/semantic/checkers/declCheckers/checkStructDecl.cpp
-    src/semantic/checkers/declCheckers/checkEnumDecl.cpp
-    src/semantic/checkers/declCheckers/checkTraitDecl.cpp
-    src/semantic/checkers/declCheckers/checkImplDecl.cpp
-    src/semantic/checkers/declCheckers/checkFromDecl.cpp
-
-    src/semantic/checkers/stmtCheckers/StmtDispatcher.cpp
-    src/semantic/checkers/stmtCheckers/BlockChecker.cpp
-    src/semantic/checkers/stmtCheckers/ExprStmtChecker.cpp
-    src/semantic/checkers/stmtCheckers/DeclStmtChecker.cpp
-    src/semantic/checkers/stmtCheckers/LoopChecker.cpp
-    src/semantic/checkers/stmtCheckers/ControlFlowChecker.cpp
-    src/semantic/checkers/stmtCheckers/SwitchChecker.cpp
-    src/semantic/checkers/stmtCheckers/MultiAssignChecker.cpp
-    src/semantic/checkers/stmtCheckers/MultiVarDeclChecker.cpp
-
-    src/semantic/checkers/exprCheckers/ExprDispatcher.cpp
-    src/semantic/checkers/exprCheckers/literal/LiteralChecker.cpp
-    src/semantic/checkers/exprCheckers/literal/ArrayLiteralChecker.cpp
-    src/semantic/checkers/exprCheckers/literal/StructLiteralChecker.cpp
-    src/semantic/checkers/exprCheckers/literal/AnonFuncChecker.cpp
-    src/semantic/checkers/exprCheckers/operator/BinaryChecker.cpp
-    src/semantic/checkers/exprCheckers/operator/AssignChecker.cpp
-    src/semantic/checkers/exprCheckers/operator/IsChecker.cpp
-    src/semantic/checkers/exprCheckers/operator/NullCoalesceChecker.cpp
-    src/semantic/checkers/exprCheckers/operator/PipelineChecker.cpp
-    src/semantic/checkers/exprCheckers/operator/ComposeChecker.cpp
-    src/semantic/checkers/exprCheckers/other/CallChecker.cpp
-    src/semantic/checkers/exprCheckers/other/IndexChecker.cpp
-    src/semantic/checkers/exprCheckers/other/FieldAccessChecker.cpp
-    src/semantic/checkers/exprCheckers/other/BehaviorAccessChecker.cpp
-    src/semantic/checkers/exprCheckers/other/IdentifierChecker.cpp
-    src/semantic/checkers/exprCheckers/special/AwaitChecker.cpp
-    src/semantic/checkers/exprCheckers/special/IfExprChecker.cpp
-    src/semantic/checkers/exprCheckers/special/IntrinsicChecker.cpp
-    src/semantic/checkers/exprCheckers/special/RangeChecker.cpp
-    src/semantic/checkers/exprCheckers/special/NullableChainChecker.cpp
-    src/semantic/checkers/exprCheckers/match/MatchChecker.cpp
-    src/semantic/checkers/exprCheckers/match/PatternChecker.cpp
-
-    src/semantic/resolveType/TypeDispatcher.cpp
-    src/semantic/resolveType/core/GenericParamHandler.cpp
-    src/semantic/resolveType/core/TypeCloner.cpp
-    src/semantic/resolveType/core/ConstraintChecker.cpp
-    src/semantic/resolveType/named/NamedResolver.cpp
-    src/semantic/resolveType/composite/NullableResolver.cpp
-    src/semantic/resolveType/composite/FuncResolver.cpp
-    src/semantic/resolveType/decl/StructResolver.cpp
-    src/semantic/resolveType/decl/ImplResolver.cpp
-    src/semantic/resolveType/decl/FromResolver.cpp
-    src/semantic/resolveType/injection/InjectionTransformer.cpp
-    src/semantic/resolveType/callable/CallableExtractor.cpp
+    
 
 
     # src/codegen/CodeGen.cpp
