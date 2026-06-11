@@ -4,21 +4,21 @@
  */
 
 #include "SemanticAnalyzer.hpp"
-#include "checker/decl/DeclChecker.hpp"
+#include "semantic/checker/decl/DeclChecker.hpp"
+#include "semantic/checker/expr/ExprChecker.hpp"
+#include "semantic/checker/stmt/StmtChecker.hpp"
+#include "semantic/checker//TypeChecker.hpp"
 #include "Annotator.hpp"
 #include "diagnostics/Diagnostic.hpp"
 #include "ast/DeclAST.hpp"
+#include "ast/TypeAST.hpp"
 #include "debug/DebugMacros.hpp"
 #include "debug/DebugUtils.hpp"
 #include "semantic/helpers/NameMangler.hpp"
 
 #include <unordered_set>
 
-// Forward declarations for checker functions (defined in checkers/decl/DeclChecker.cpp)
-void checkTopLevelDecl(DeclAST* decl, SemanticContext& ctx);
-
-// Forward declaration for annotator (defined in Annotator.cpp)
-void annotateAll(std::vector<ProgramAST*>& files, SemanticContext& ctx);
+namespace luc {
 
 // ============================================================================
 // Constructor
@@ -58,7 +58,11 @@ bool SemanticAnalyzer::analyze(std::vector<ProgramAST*>& files) {
     // Phase 2: Resolve Types
     LUC_LOG_SEMANTIC("\n--- Phase 2: Resolve Types ---");
     resolveTypes(files);
-    LUC_LOG_SEMANTIC("Phase 2 completed (warnings may exist)");
+    if (diagnostic::hasErrors()) {
+        LUC_LOG_SEMANTIC("Phase 2 FAILED with errors");
+        return false;
+    }
+    LUC_LOG_SEMANTIC("Phase 2 completed");
     
     // Phase 2.5: Build Trait Conformance Map
     LUC_LOG_SEMANTIC("\n--- Phase 2.5: Build Trait Conformance Map ---");
@@ -89,18 +93,6 @@ bool SemanticAnalyzer::analyze(std::vector<ProgramAST*>& files) {
 // Phase 1: Collect Declarations
 // ============================================================================
 
-/**
- * @brief Registers all declarations in the scope stack.
- * 
- * This pass walks every AST and registers:
- *   - Value declarations (VarDeclAST, FuncDeclAST, ParamAST, etc.) in value namespace
- *   - Type declarations (StructDeclAST, EnumDeclAST, etc.) in type namespace
- *   - Overload sets for functions with the same name
- * 
- * Also detects duplicate `use` declarations within the same file.
- * 
- * @param files All parsed ASTs
- */
 void SemanticAnalyzer::collectDeclarations(std::vector<ProgramAST*>& files) {
     LUC_LOG_SEMANTIC_VERBOSE("collectDeclarations: building scope stack");
     
@@ -120,13 +112,6 @@ void SemanticAnalyzer::collectDeclarations(std::vector<ProgramAST*>& files) {
     LUC_LOG_SEMANTIC_VERBOSE("collectDeclarations: scope stack built, depth=" << scope_.depth());
 }
 
-/**
- * @brief Detects duplicate `use` declarations within the same file.
- * 
- * This is the only remaining import-related check (moved from Phase 0).
- * 
- * @param prog The program AST to scan
- */
 void SemanticAnalyzer::collectUseDeclarations(ProgramAST* prog) {
     std::unordered_set<std::string> seen;
     
@@ -153,16 +138,6 @@ void SemanticAnalyzer::collectUseDeclarations(ProgramAST* prog) {
 // Phase 1.5: Validate No Duplicate Declarations
 // ============================================================================
 
-/**
- * @brief Checks for duplicate declarations across files in the global scope.
- * 
- * Since declarations are stored directly in scopes (not separate symbols),
- * we iterate through the global scope's value and type namespaces to find
- * duplicates.
- * 
- * A duplicate occurs when the same name appears in two different files
- * in the global scope (not allowed).
- */
 void SemanticAnalyzer::validateNoDuplicateDeclarations() {
     LUC_LOG_SEMANTIC("\n--- Phase 1.5: Validate No Duplicate Declarations ---");
 
@@ -210,17 +185,6 @@ void SemanticAnalyzer::validateNoDuplicateDeclarations() {
 // Phase 2: Resolve Types
 // ============================================================================
 
-/**
- * @brief Resolves all type annotations across all declarations.
- * 
- * This pass:
- *   - Resolves VarDeclAST::type
- *   - Resolves FuncDeclAST::funcType and caches resolvedReturnType
- *   - Unwraps type alias chains (eager resolution, cached on TypeAliasDeclAST)
- *   - Creates self-type references for structs/enums/traits
- * 
- * @param files All parsed ASTs
- */
 void SemanticAnalyzer::resolveTypes(std::vector<ProgramAST*>& files) {
     LUC_LOG_SEMANTIC_VERBOSE("resolveTypes: resolving all type annotations");
 
@@ -240,12 +204,12 @@ void SemanticAnalyzer::resolveTypes(std::vector<ProgramAST*>& files) {
                 typeResolver_.resolveStructFields(structDecl);
                 resolvedCount++;
             }
-            // Enums – resolve (no nested types, but create self-type)
+            // Enums – create self-type
             else if (auto* enumDecl = decl->as<EnumDeclAST>()) {
                 typeResolver_.resolveEnum(enumDecl);
                 resolvedCount++;
             }
-            // Traits – resolve (no nested types, but create self-type)
+            // Traits – create self-type
             else if (auto* traitDecl = decl->as<TraitDeclAST>()) {
                 typeResolver_.resolveTrait(traitDecl);
                 resolvedCount++;
@@ -280,51 +244,76 @@ void SemanticAnalyzer::resolveTypes(std::vector<ProgramAST*>& files) {
 // Phase 2.5: Build Trait Conformance Map
 // ============================================================================
 
-/**
- * @brief Builds a map from type to the list of traits it implements.
- * 
- * Scans all ImplDeclAST nodes that have a trait reference and records
- * the conformance in ctx_.typeTraits for O(1) lookup during checking.
- * 
- * The type key is a mangled string representing the canonical type
- * (after alias unwrapping).
- */
 void SemanticAnalyzer::buildTraitConformanceMap() {
     LUC_LOG_SEMANTIC_VERBOSE("buildTraitConformanceMap: building trait conformance map");
     
     ctx_.typeTraits.clear();
     
-    // Find all ImplDeclAST nodes (they are not in scopes – stored separately)
-    // Since we don't have a separate symbol table, we need to collect impls
-    // during Phase 1. For now, we'll use a member variable in DeclarationCollector.
-    // This is a TODO – we should store impls in a separate list during collection.
+    // Get all impl declarations collected during Phase 1
+    const auto& impls = collector_.getImpls();
+    int implCount = 0;
+    int traitCount = 0;
     
-    // TEMPORARY: Log that this phase is pending implementation
-    LUC_LOG_SEMANTIC("buildTraitConformanceMap: TODO - implement after collecting impls");
+    for (ImplDeclAST* impl : impls) {
+        // Skip impls without trait conformance
+        if (!impl->traitRef) continue;
+        
+        // Resolve the target type
+        if (!impl->targetType) {
+            LUC_LOG_SEMANTIC_VERBOSE("buildTraitConformanceMap: impl has no target type");
+            continue;
+        }
+        
+        // Resolve the target type through the resolver
+        TypeAST* resolvedTarget = typeResolver_.resolve(impl->targetType);
+        if (!resolvedTarget) {
+            ctx_.error(impl->loc, DiagCode::E2016, 
+                      "cannot resolve target type for trait conformance");
+            continue;
+        }
+        
+        // Unwrap aliases to get canonical type
+        TypeAST* unwrapped = typeResolver_.unwrapAlias(resolvedTarget);
+        
+        // Get canonical mangled key for this type
+        std::string typeKey = NameMangler::mangleType(unwrapped, ctx_.pool);
+        InternedString traitName = impl->traitRef->name;
+        
+        // Check for duplicate conformance
+        auto& traitList = ctx_.typeTraits[typeKey];
+        bool alreadyExists = false;
+        for (InternedString existing : traitList) {
+            if (existing == traitName) {
+                alreadyExists = true;
+                ctx_.warning(impl->loc, DiagCode::W6015,
+                            "type '" + typeKey + 
+                            "' already implements trait '" + 
+                            std::string(ctx_.pool.lookup(traitName)) + "'");
+                break;
+            }
+        }
+        
+        if (!alreadyExists) {
+            traitList.push_back(traitName);
+            traitCount++;
+            LUC_LOG_SEMANTIC_VERBOSE("buildTraitConformanceMap: " 
+                                     << typeKey << " implements "
+                                     << ctx_.pool.lookup(traitName));
+        }
+        
+        implCount++;
+    }
     
-    // The full implementation will:
-    // 1. Iterate over all impl declarations collected in Phase 1
-    // 2. For each impl with traitRef, resolve the target type
-    // 3. Mangle the type to a canonical key
-    // 4. Add traitName to ctx_.typeTraits[key]
+    LUC_LOG_SEMANTIC_VERBOSE("buildTraitConformanceMap: processed " << implCount 
+                            << " impl blocks, recorded " << traitCount 
+                            << " trait conformances across " << ctx_.typeTraits.size() 
+                            << " types");
 }
 
 // ============================================================================
 // Phase 3: Check Declarations
 // ============================================================================
 
-/**
- * @brief Performs full semantic checking on all declarations.
- * 
- * This pass checks:
- *   - Function bodies (type checking, control flow)
- *   - Variable initializers
- *   - Impl method implementations
- *   - From conversion entries
- *   - And all other semantic rules
- * 
- * @param files All parsed ASTs
- */
 void SemanticAnalyzer::checkDeclarations(std::vector<ProgramAST*>& files) {
     LUC_LOG_SEMANTIC_VERBOSE("checkDeclarations: checking all declarations");
 
@@ -335,7 +324,7 @@ void SemanticAnalyzer::checkDeclarations(std::vector<ProgramAST*>& files) {
             declCount++;
             LUC_LOG_SEMANTIC_EXTREME("\tchecking declaration #" << declCount
                                     << " kind=" << LucDebug::kindToString(decl->kind));
-            checkTopLevelDecl(decl, ctx_);
+            checker::checkTopLevelDecl(decl, ctx_);
         }
     }
     LUC_LOG_SEMANTIC_VERBOSE("checkDeclarations: checked " << declCount << " declarations");
@@ -345,18 +334,6 @@ void SemanticAnalyzer::checkDeclarations(std::vector<ProgramAST*>& files) {
 // Phase 3.5: Validate Entry Point
 // ============================================================================
 
-/**
- * @brief Validates the 'main' function and sets compilation mode.
- * 
- * Checks:
- *   1. Main function exists
- *   2. Must be exported (`export`)
- *   3. Must be const
- *   4. Parameters: none or `args [_, string]`
- *   5. Return type: int
- *   6. Not async
- *   7. @aot/@jit attributes determine compilation mode
- */
 void SemanticAnalyzer::validateEntryPoint() {
     LUC_LOG_SEMANTIC("validateEntryPoint: looking for 'main' function");
 
@@ -395,12 +372,11 @@ void SemanticAnalyzer::validateEntryPoint() {
         return;
     }
 
-    // Check parameter count and type
-    size_t paramCount = func->funcType->params.size();
+    size_t totalParams = func->funcType->params.size();
     
-    if (paramCount == 0) {
+    if (totalParams == 0) {
         hasParams = false;
-    } else if (paramCount == 1) {
+    } else if (totalParams == 1) {
         hasParams = true;
         ParamAST* param = func->funcType->params[0];
         if (param->type && param->type->isa<ArrayTypeAST>()) {
@@ -472,13 +448,10 @@ void SemanticAnalyzer::validateEntryPoint() {
 // Phase 4: Annotate
 // ============================================================================
 
-/**
- * @brief Runs the annotation pass to mark const expressions and behavior members.
- * 
- * @param files All parsed ASTs
- */
 void SemanticAnalyzer::annotate(std::vector<ProgramAST*>& files) {
     LUC_LOG_SEMANTIC_VERBOSE("annotate: running annotation pass");
     annotateAll(files, ctx_);
     LUC_LOG_SEMANTIC_VERBOSE("annotate: annotation complete");
 }
+
+} // namespace luc

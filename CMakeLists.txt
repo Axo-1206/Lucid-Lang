@@ -101,7 +101,10 @@ add_executable(luc-comp
     src/semantic/scope/ScopeStack.cpp
     src/semantic/collector/DeclarationCollector.cpp
     src/semantic/resolver/TypeResolver.cpp
-    src/semantic/resolver/TypeChecker.cpp
+    src/semantic/checker/TypeChecker.cpp
+    src/semantic/checker/expr/ExprChecker.cpp
+    src/semantic/checker/stmt/StmtChecker.cpp
+    src/semantic/checker/decl/DeclChecker.cpp
     
 
 

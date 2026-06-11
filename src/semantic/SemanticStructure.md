@@ -1,3 +1,5 @@
+# Deprecated, do not reference this file
+
 # Semantic Structure
 
 The Luc semantic analyzer runs a multi-phase pipeline over parsed ASTs. `SemanticAnalyzer` owns the symbol table, context, type dispatcher, and collector; all checking functions are declared in `checkers/SemanticChecker.hpp` and implemented in the files below.
@@ -272,7 +274,7 @@ resolveType                                  [resolveType/TypeDispatcher.cpp]
 | `VarResolver`           | Variable declared type binding on symbol                   | `resolveType/decl/`      |
 | `InjectionTransformer`  | Injection form `!` type transformation                     | `resolveType/injection/` |
 | `CallableExtractor`     | Function reference extraction from callable expressions    | `resolveType/callable/`  |
-| `ResolverHelpers`       | Type classification helpers used by resolvers                | `helpers/`               |
+| `ResolverHelpers`       | Type classification helpers used by resolvers              | `helpers/`               |
 
 ### Generic parameter and substitution management
 
