@@ -128,6 +128,10 @@ struct MultiAssignStmtAST;
 // Root
 struct ProgramAST;
 
+// Special
+struct ValueDeclAST;
+struct TypeDeclAST;
+
 // Unknown nodes
 struct UnknownDeclAST;
 struct UnknownExprAST;
@@ -160,6 +164,10 @@ enum class ASTKind : uint16_t {
     UnknownExpr,
     UnknownStmt,
     UnknownType,
+    
+    // Special
+    ValueDecl,
+    TypeDecl,
 
     // Type nodes
     PrimitiveType,
@@ -395,6 +403,7 @@ struct DeclAST    : BaseAST {
     std::optional<DocComment> doc;
     ArenaSpan<AttributePtr>   attributes;
     InternedString            file;
+    InternedString            name;
     bool                      isConst = false;
 
     explicit DeclAST(ASTKind k) : BaseAST(k) {}
@@ -429,7 +438,8 @@ struct DeclAST    : BaseAST {
  * @note ValueDeclAST nodes are stored in Scope::values map.
  */
 struct ValueDeclAST : DeclAST {
-    InternedString name;
+    static constexpr ASTKind staticKind = ASTKind::ValueDecl;
+
     // Cached resolved type of this value (set during type resolution)
     // For functions, this points to funcType
     TypeAST* valueType = nullptr;
@@ -467,7 +477,8 @@ struct ValueDeclAST : DeclAST {
  * @note TypeDeclAST nodes are stored in Scope::types map.
  */
 struct TypeDeclAST : DeclAST {
-    InternedString name;
+    static constexpr ASTKind staticKind = ASTKind::TypeDecl;
+
     // Self-type reference (e.g., "Point" as a NamedTypeAST)
     // Used when the type name appears as a value (e.g., `int("42")`)
     // Mutable because it's set lazily during semantic analysis

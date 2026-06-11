@@ -45,8 +45,6 @@
 #include "semantic/helpers/SemanticContext.hpp"
 #include "semantic/scope/ScopeStack.hpp"
 
-namespace luc::checker {
-
 // ============================================================================
 // Dispatcher
 // ============================================================================
@@ -221,5 +219,3 @@ void checkMultiVarDecl(MultiVarDeclAST* multiDecl, SemanticContext& ctx, TypeAST
  * @param expectedReturn Unused
  */
 void checkMultiAssignStmt(MultiAssignStmtAST* multiAssign, SemanticContext& ctx, TypeAST* expectedReturn = nullptr);
-
-} // namespace luc::checker

@@ -13,8 +13,6 @@
 #include "debug/DebugMacros.hpp"
 #include "debug/DebugUtils.hpp"
 
-namespace luc::checker {
-
 // ============================================================================
 // Dispatcher
 // ============================================================================
@@ -425,5 +423,3 @@ void checkMultiAssignStmt(MultiAssignStmtAST* multiAssign, SemanticContext& ctx,
     
     // Check each LHS is assignable (already checked in checkExpr)
 }
-
-} // namespace luc::checker

@@ -43,8 +43,6 @@
 #include "semantic/resolver/TypeResolver.hpp"
 #include "semantic/checker/TypeChecker.hpp"
 
-namespace luc::checker {
-
 // ============================================================================
 // Dispatcher
 // ============================================================================
@@ -262,5 +260,3 @@ TypeAST* checkAwaitExpr(AwaitExprAST* expr, SemanticContext& ctx);
  * @return TypeAST* The range type
  */
 TypeAST* checkRangeExpr(RangeExprAST* expr, SemanticContext& ctx);
-
-} // namespace luc::checker

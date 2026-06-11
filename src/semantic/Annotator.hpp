@@ -53,8 +53,6 @@
 #include "semantic/scope/ScopeStack.hpp"
 #include "semantic/resolver/TypeResolver.hpp"
 
-namespace luc {
-
 /**
  * @brief Phase 4 annotator – marks const expressions and behavior members.
  * 
@@ -172,5 +170,3 @@ private:
  * @param ctx Semantic context
  */
 void annotateAll(std::vector<ProgramAST*>& files, SemanticContext& ctx);
-
-} // namespace luc

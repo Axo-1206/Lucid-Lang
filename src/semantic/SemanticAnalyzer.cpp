@@ -18,8 +18,6 @@
 
 #include <unordered_set>
 
-namespace luc {
-
 // ============================================================================
 // Constructor
 // ============================================================================
@@ -324,7 +322,7 @@ void SemanticAnalyzer::checkDeclarations(std::vector<ProgramAST*>& files) {
             declCount++;
             LUC_LOG_SEMANTIC_EXTREME("\tchecking declaration #" << declCount
                                     << " kind=" << LucDebug::kindToString(decl->kind));
-            checker::checkTopLevelDecl(decl, ctx_);
+            checkTopLevelDecl(decl, ctx_);
         }
     }
     LUC_LOG_SEMANTIC_VERBOSE("checkDeclarations: checked " << declCount << " declarations");
@@ -453,5 +451,3 @@ void SemanticAnalyzer::annotate(std::vector<ProgramAST*>& files) {
     annotateAll(files, ctx_);
     LUC_LOG_SEMANTIC_VERBOSE("annotate: annotation complete");
 }
-
-} // namespace luc

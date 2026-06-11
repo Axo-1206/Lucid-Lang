@@ -76,8 +76,6 @@
 
 #include <vector>
 
-namespace luc {
-
 /**
  * @brief Compilation mode determined by @aot/@jit attributes on main.
  * 
@@ -211,5 +209,3 @@ private:
      */
     void collectUseDeclarations(ProgramAST* prog);
 };
-
-} // namespace luc

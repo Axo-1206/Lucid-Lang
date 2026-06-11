@@ -740,7 +740,8 @@ void dumpFieldAccessExpr(std::string& out, const FieldAccessExprAST* node, const
 }
 
 void dumpBehaviorAccessExpr(std::string& out, const BehaviorAccessExprAST* node, const StringPool* pool, int indentLevel) {
-    printNodeHeader(out, indentLevel, *node, "BehaviorAccessExprAST " + toStr(pool, node->typeName) + ":" + toStr(pool, node->method));
+    printNodeHeader(out, indentLevel, *node, "BehaviorAccessExprAST :" + toStr(pool, node->method));
+    if (node->object) dumpNode(out, node->object, pool, indentLevel + 1);
 }
 
 void dumpNullableChainExpr(std::string& out, const NullableChainExprAST* node, const StringPool* pool, int indentLevel) {
@@ -1041,7 +1042,6 @@ void dumpAttributeArg(std::string& out, const AttributeArgAST* node, const Strin
 
 void dumpIntrinsicCallExpr(std::string& out, const IntrinsicCallExprAST* node, const StringPool* pool, int indentLevel) {
     printNodeHeader(out, indentLevel, *node, "IntrinsicCallExprAST " + toStr(pool, node->intrinsicName));
-    if (node->typeArg) dumpNode(out, node->typeArg, pool, indentLevel + 1);
     for (const auto& e : node->args) dumpNode(out, e, pool, indentLevel + 1);
 }
 

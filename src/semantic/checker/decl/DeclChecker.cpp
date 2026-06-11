@@ -9,12 +9,74 @@
 #include "semantic/checker/stmt/StmtChecker.hpp"
 #include "semantic/checker/TypeChecker.hpp"
 #include "semantic/resolver/TypeResolver.hpp"
+#include "registry/AttributeRegistry.hpp"
 #include "debug/DebugMacros.hpp"
 #include "debug/DebugUtils.hpp"
 
 #include <unordered_set>
 
-namespace luc::checker {
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+std::string getDeclName(const DeclAST* decl, const StringPool& pool) {
+    if (!decl) return "<null>";
+    
+    if (auto* valueDecl = decl->as<ValueDeclAST>()) {
+        return std::string(pool.lookup(valueDecl->name));
+    }
+    if (auto* typeDecl = decl->as<TypeDeclAST>()) {
+        return std::string(pool.lookup(typeDecl->name));
+    }
+    if (auto* packageDecl = decl->as<PackageDeclAST>()) {
+        return std::string(pool.lookup(packageDecl->name));
+    }
+    if (auto* useDecl = decl->as<UseDeclAST>()) {
+        return "<use>";
+    }
+    if (auto* fromDecl = decl->as<FromDeclAST>()) {
+        return "<from>";
+    }
+    if (auto* implDecl = decl->as<ImplDeclAST>()) {
+        return "<impl>";
+    }
+    return "<anonymous>";
+}
+
+DeclKeyword getDeclKeyword(const DeclAST* decl) {
+    if (auto* var = decl->as<VarDeclAST>()) {
+        return var->keyword;
+    }
+    if (auto* func = decl->as<FuncDeclAST>()) {
+        return func->keyword;
+    }
+    return DeclKeyword::Let;  // Default for other declaration types
+}
+
+AttributeContext getAttributeContextForDecl(const DeclAST* decl) {
+    if (!decl) return AttributeContext::None;
+    
+    switch (decl->kind) {
+        case ASTKind::FuncDecl:
+            return AttributeContext::Func;
+        case ASTKind::VarDecl:
+            return AttributeContext::Var;
+        case ASTKind::StructDecl:
+            return AttributeContext::Struct;
+        case ASTKind::ImplDecl:
+            return AttributeContext::Impl;
+        case ASTKind::EnumDecl:
+            return AttributeContext::Enum;
+        case ASTKind::TraitDecl:
+            return AttributeContext::Trait;
+        case ASTKind::FromDecl:
+            return AttributeContext::From;
+        case ASTKind::TypeAliasDecl:
+            return AttributeContext::TypeAlias;
+        default:
+            return AttributeContext::None;
+    }
+}
 
 // ============================================================================
 // Dispatcher
@@ -57,37 +119,55 @@ void checkTopLevelDecl(DeclAST* decl, SemanticContext& ctx) {
 }
 
 // ============================================================================
-// Attribute Checking
+// Attribute Checking (Using Registry)
 // ============================================================================
 
 void checkAttributes(DeclAST* decl, SemanticContext& ctx) {
+    if (!decl || decl->attributes.empty()) {
+        return;
+    }
+    
+    // Get the declaration context for attribute validation
+    AttributeContext declContext = getAttributeContextForDecl(decl);
+    std::string declName = getDeclName(decl, ctx.pool);
+    DeclKeyword declKw = getDeclKeyword(decl);
+    
+    // First, validate each attribute individually
     for (auto* attr : decl->attributes) {
-        std::string_view name = ctx.pool.lookup(attr->name);
+        std::string_view attrName = ctx.pool.lookup(attr->name);
         
-        // Validate attribute arguments
-        if (name == "extern") {
-            if (attr->args.size() != 1) {
-                ctx.error(decl->loc, DiagCode::E2001,
-                          "@extern requires exactly one argument (the symbol name)");
-            }
-        } else if (name == "inline") {
-            if (!attr->args.empty()) {
-                ctx.error(decl->loc, DiagCode::E2001,
-                          "@inline takes no arguments");
-            }
-        } else if (name == "deprecated") {
-            // Deprecated can have optional message
-            if (attr->args.size() > 1) {
-                ctx.error(decl->loc, DiagCode::E2001,
-                          "@deprecated takes at most one argument (the message)");
-            }
-        } else if (name == "aot" || name == "jit") {
-            if (!attr->args.empty()) {
-                ctx.error(decl->loc, DiagCode::E2001,
-                          "@", name, " takes no arguments");
-            }
+        // Look up attribute in registry
+        const AttributeEntry* entry = attribute::lookup(attrName);
+        
+        if (!entry) {
+            // Unknown attribute
+            ctx.error(decl->loc, DiagCode::E3001,
+                      "unknown attribute '@", attrName, 
+                      "'. Known attributes: ", attribute::allNames());
+            continue;
         }
-        // Unknown attributes are handled by AttributeRegistry
+        
+        // Validate the attribute using the registry
+        attribute::validateAttribute(
+            *entry,
+            attr->args,
+            declContext,
+            declName,
+            declKw,
+            ctx.currentFile,
+            decl->loc
+        );
+    }
+    
+    // Second, check mutual exclusion between pairs of attributes
+    // This is O(n²) but attribute lists are small (typically 1-3 attributes)
+    for (size_t i = 0; i < decl->attributes.size(); ++i) {
+        for (size_t j = i + 1; j < decl->attributes.size(); ++j) {
+            InternedString id1 = decl->attributes[i]->name;
+            InternedString id2 = decl->attributes[j]->name;
+            
+            attribute::checkMutualExclusion(id1, id2, decl->loc);
+        }
     }
 }
 
@@ -143,7 +223,7 @@ bool isConstExpr(ExprAST* expr, SemanticContext& ctx) {
 void checkVarDecl(VarDeclAST* var, SemanticContext& ctx) {
     LUC_LOG_SEMANTIC_EXTREME("checkVarDecl: " << ctx.pool.lookup(var->name));
     
-    // Check attributes
+    // Check attributes using registry
     checkAttributes(var, ctx);
     
     // Check const initialization
@@ -183,13 +263,13 @@ void checkVarDecl(VarDeclAST* var, SemanticContext& ctx) {
 void checkFuncDecl(FuncDeclAST* func, SemanticContext& ctx) {
     LUC_LOG_SEMANTIC_EXTREME("checkFuncDecl: " << ctx.pool.lookup(func->name));
     
-    // Check attributes
+    // Check attributes using registry
     checkAttributes(func, ctx);
     
-    // Check extern
+    // Check if this is an extern function (using registry for consistent lookup)
     bool isExtern = false;
     for (auto* attr : func->attributes) {
-        if (ctx.pool.lookup(attr->name) == "extern") {
+        if (attr->name == attribute::getExternId()) {
             isExtern = true;
             break;
         }
@@ -233,6 +313,9 @@ void checkFuncDecl(FuncDeclAST* func, SemanticContext& ctx) {
 void checkStructDecl(StructDeclAST* structDecl, SemanticContext& ctx) {
     LUC_LOG_SEMANTIC_EXTREME("checkStructDecl: " << ctx.pool.lookup(structDecl->name));
     
+    // Check attributes using registry
+    checkAttributes(structDecl, ctx);
+    
     // Check for duplicate field names
     std::unordered_set<uint32_t> fieldNames;
     for (auto* field : structDecl->fields) {
@@ -273,6 +356,9 @@ void checkStructDecl(StructDeclAST* structDecl, SemanticContext& ctx) {
 
 void checkEnumDecl(EnumDeclAST* enumDecl, SemanticContext& ctx) {
     LUC_LOG_SEMANTIC_EXTREME("checkEnumDecl: " << ctx.pool.lookup(enumDecl->name));
+    
+    // Check attributes using registry
+    checkAttributes(enumDecl, ctx);
     
     // Check for duplicate variant names and explicit values
     std::unordered_set<uint32_t> variantNames;
@@ -317,6 +403,9 @@ void checkEnumDecl(EnumDeclAST* enumDecl, SemanticContext& ctx) {
 
 void checkTraitDecl(TraitDeclAST* trait, SemanticContext& ctx) {
     LUC_LOG_SEMANTIC_EXTREME("checkTraitDecl: " << ctx.pool.lookup(trait->name));
+    
+    // Check attributes using registry
+    checkAttributes(trait, ctx);
     
     // Check for duplicate method names
     std::unordered_set<uint32_t> methodNames;
@@ -397,6 +486,9 @@ bool checkTraitFulfillment(ImplDeclAST* impl, SemanticContext& ctx) {
 void checkImplDecl(ImplDeclAST* impl, SemanticContext& ctx) {
     LUC_LOG_SEMANTIC_EXTREME("checkImplDecl");
     
+    // Check attributes using registry
+    checkAttributes(impl, ctx);
+    
     // Check for duplicate method names
     checkDuplicateMethods(impl->methods, ctx);
     
@@ -442,6 +534,9 @@ void checkImplDecl(ImplDeclAST* impl, SemanticContext& ctx) {
 
 void checkFromDecl(FromDeclAST* from, SemanticContext& ctx) {
     LUC_LOG_SEMANTIC_EXTREME("checkFromDecl");
+    
+    // Check attributes using registry
+    checkAttributes(from, ctx);
     
     // Check each entry
     std::unordered_set<std::string> sourceTypes;
@@ -489,6 +584,9 @@ void checkFromDecl(FromDeclAST* from, SemanticContext& ctx) {
 void checkTypeAliasDecl(TypeAliasDeclAST* alias, SemanticContext& ctx) {
     LUC_LOG_SEMANTIC_EXTREME("checkTypeAliasDecl: " << ctx.pool.lookup(alias->name));
     
+    // Check attributes using registry
+    checkAttributes(alias, ctx);
+    
     // The type resolver already resolved the alias
     // Just check that the aliased type is valid
     if (!alias->aliasedType) {
@@ -496,5 +594,3 @@ void checkTypeAliasDecl(TypeAliasDeclAST* alias, SemanticContext& ctx) {
                   "type alias '", ctx.pool.lookup(alias->name), "' has no aliased type");
     }
 }
-
-} // namespace luc::checker

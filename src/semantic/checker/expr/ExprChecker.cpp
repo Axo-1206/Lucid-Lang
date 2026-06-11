@@ -12,8 +12,6 @@
 #include "debug/DebugMacros.hpp"
 #include "debug/DebugUtils.hpp"
 
-namespace luc::checker {
-
 // ============================================================================
 // Dispatcher
 // ============================================================================
@@ -736,5 +734,3 @@ TypeAST* checkRangeExpr(RangeExprAST* expr, SemanticContext& ctx) {
     // Range type - for now, just return int
     return ctx.arena.make<PrimitiveTypeAST>(PrimitiveKind::Int);
 }
-
-} // namespace luc::checker

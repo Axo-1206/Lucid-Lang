@@ -12,8 +12,6 @@
 #include "debug/DebugMacros.hpp"
 #include "debug/DebugUtils.hpp"
 
-namespace luc {
-
 // ============================================================================
 // Constructor & Public Entry Points
 // ============================================================================
@@ -568,5 +566,3 @@ void annotateAll(std::vector<ProgramAST*>& files, SemanticContext& ctx) {
     Annotator annotator(ctx);
     annotator.annotateAll(files);
 }
-
-} // namespace luc
