@@ -196,9 +196,9 @@ TypeAST* checkStructLiteralExpr(StructLiteralExprAST* expr, SemanticContext& ctx
                 
                 if (!TypeChecker::isAssignable(initType, field->valueType, ctx)) {
                     ctx.error(init->value->loc, DiagCode::E2001,
-                              "cannot assign '", TypeChecker::getTypeName(initType, ctx.pool),
+                              "cannot assign '", LucDebug::formatType(initType, ctx.pool),
                               "' to field '", ctx.pool.lookup(field->name),
-                              "' of type '", TypeChecker::getTypeName(field->valueType, ctx.pool), "'");
+                              "' of type '", LucDebug::formatType(field->valueType, ctx.pool), "'");
                     return nullptr;
                 }
                 break;
@@ -631,7 +631,7 @@ TypeAST* checkNullCoalesceExpr(NullCoalesceExprAST* expr, SemanticContext& ctx) 
     // Value must be nullable
     if (!TypeChecker::isNullable(valueType, *ctx.typeResolver)) {
         ctx.error(expr->value->loc, DiagCode::E2001,
-                  "left-hand side of '??' must be nullable");
+                  "left-hand side of '\?\?' must be nullable");
         return nullptr;
     }
     

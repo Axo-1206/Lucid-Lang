@@ -70,6 +70,11 @@ public:
     static bool isEqual(TypeAST* a, TypeAST* b, TypeResolver& resolver);
     
     /**
+     * @brief Checks if two types are equal for comparison (allows matching numeric types).
+     */
+    static bool typesEqualForComparison(TypeAST* a, TypeAST* b, TypeResolver& resolver);
+    
+    /**
      * @brief Checks if source type can be assigned to target type.
      * 
      * Considers:
@@ -331,7 +336,7 @@ public:
      * @return std::optional<int64_t> The integer value, or nullopt if not constant
      */
     static std::optional<int64_t> getConstantIntValue(ExprAST* expr,
-                                                       TypeResolver& resolver);
+                                                       SemanticContext& ctx);
     
     // ========================================================================
     // Type Queries

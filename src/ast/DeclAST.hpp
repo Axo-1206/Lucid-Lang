@@ -159,7 +159,6 @@ struct VarDeclAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::VarDecl;
 
     DeclKeyword keyword;
-    InternedString name;
     TypeAST* type;          // Original type annotation (may contain aliases)
     ExprAST* init;
     Visibility visibility = Visibility::Private;
@@ -180,7 +179,6 @@ using VarDeclPtr = VarDeclAST*;
 struct ParamAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::Param;
 
-    InternedString name;
     TypePtr type;           // Original type annotation (may contain aliases)
     bool isVariadic = false;
 
@@ -206,7 +204,6 @@ using ParamGroup = std::vector<ParamPtr>;
 struct FieldDeclAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::FieldDecl;
 
-    InternedString name;
     TypeAST* type;          // Original type annotation (may contain aliases)
     ExprAST* defaultVal;    // nullptr if no default
 
@@ -239,7 +236,6 @@ struct FuncDeclAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::FuncDecl;
 
     DeclKeyword keyword;
-    InternedString name;
     ArenaSpan<GenericParamPtr> genericParams;
     FuncTypeAST* funcType = nullptr;   // full function type (includes qualifiers)
     StmtAST* body = nullptr;           // always BlockStmtAST
@@ -285,8 +281,6 @@ using FuncDeclPtr = FuncDeclAST*;
 struct MethodDeclAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::MethodDecl;
 
-    InternedString name;
-    
     // Inline body form
     FuncTypeAST* funcType = nullptr;   // signature + qualifiers
     StmtAST* body = nullptr;
@@ -326,11 +320,12 @@ using MethodDeclPtr = MethodDeclAST*;
 struct EnumVariantAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::EnumVariant;
 
-    InternedString name;
     std::optional<int64_t> explicitValue;
 
     explicit EnumVariantAST(InternedString n)
-        : ValueDeclAST(ASTKind::EnumVariant), name(n) {}
+        : ValueDeclAST(ASTKind::EnumVariant) {
+        name = n;
+    }
 };
 using EnumVariantPtr = EnumVariantAST*;
 
@@ -359,7 +354,6 @@ using EnumVariantPtr = EnumVariantAST*;
 struct StructDeclAST : TypeDeclAST {
     static constexpr ASTKind staticKind = ASTKind::StructDecl;
 
-    InternedString name;
     ArenaSpan<GenericParamPtr> genericParams;
     ArenaSpan<FieldDeclPtr> fields;
     Visibility visibility = Visibility::Private;
@@ -388,10 +382,8 @@ using StructDeclPtr = StructDeclAST*;
 struct EnumDeclAST : TypeDeclAST {
     static constexpr ASTKind staticKind = ASTKind::EnumDecl;
 
-    InternedString name;
     ArenaSpan<EnumVariantPtr> variants;
     Visibility visibility = Visibility::Private;
-    bool isConst = false;
 
     EnumDeclAST() : TypeDeclAST(ASTKind::EnumDecl) {}
 };
@@ -417,7 +409,6 @@ using EnumDeclPtr = EnumDeclAST*;
 struct TraitDeclAST : TypeDeclAST {
     static constexpr ASTKind staticKind = ASTKind::TraitDecl;
 
-    InternedString name;
     ArenaSpan<GenericParamPtr> genericParams;
     ArenaSpan<TraitMethodAST*> methods;
     Visibility visibility = Visibility::Private;
@@ -455,7 +446,6 @@ using TraitDeclPtr = TraitDeclAST*;
 struct TypeAliasDeclAST : TypeDeclAST {
     static constexpr ASTKind staticKind = ASTKind::TypeAliasDecl;
 
-    InternedString name;
     ArenaSpan<GenericParamPtr> genericParams;
     TypeAST* aliasedType;       // Original alias target (may be another alias)
     Visibility visibility = Visibility::Private;

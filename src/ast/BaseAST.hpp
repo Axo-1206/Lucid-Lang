@@ -394,6 +394,8 @@ struct PatternAST : BaseAST {
 struct DeclAST    : BaseAST {
     std::optional<DocComment> doc;
     ArenaSpan<AttributePtr>   attributes;
+    InternedString            file;
+    bool                      isConst = false;
 
     explicit DeclAST(ASTKind k) : BaseAST(k) {}
     bool hasDoc() const { return doc.has_value(); }
@@ -427,6 +429,7 @@ struct DeclAST    : BaseAST {
  * @note ValueDeclAST nodes are stored in Scope::values map.
  */
 struct ValueDeclAST : DeclAST {
+    InternedString name;
     // Cached resolved type of this value (set during type resolution)
     // For functions, this points to funcType
     TypeAST* valueType = nullptr;
@@ -464,6 +467,7 @@ struct ValueDeclAST : DeclAST {
  * @note TypeDeclAST nodes are stored in Scope::types map.
  */
 struct TypeDeclAST : DeclAST {
+    InternedString name;
     // Self-type reference (e.g., "Point" as a NamedTypeAST)
     // Used when the type name appears as a value (e.g., `int("42")`)
     // Mutable because it's set lazily during semantic analysis

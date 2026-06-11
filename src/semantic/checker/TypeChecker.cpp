@@ -19,6 +19,15 @@ bool TypeChecker::isEqual(TypeAST* a, TypeAST* b, TypeResolver& resolver) {
     return resolver.typesEqual(a, b);
 }
 
+bool TypeChecker::typesEqualForComparison(TypeAST* a, TypeAST* b, TypeResolver& resolver) {
+    if (!a || !b) return false;
+    a = resolver.unwrapAlias(a);
+    b = resolver.unwrapAlias(b);
+    if (isEqual(a, b, resolver)) return true;
+    if (isNumeric(a, resolver) && isNumeric(b, resolver)) return true;
+    return false;
+}
+
 bool TypeChecker::isAssignable(TypeAST* source, TypeAST* target,
                                 SemanticContext& ctx) {
     if (!source || !target) return false;
@@ -309,7 +318,7 @@ TypeAST* TypeChecker::commonType(TypeAST* a, TypeAST* b, SemanticContext& ctx) {
 // ============================================================================
 
 std::optional<int64_t> TypeChecker::getConstantIntValue(ExprAST* expr,
-                                                         TypeResolver& resolver) {
+                                                         SemanticContext& ctx) {
     if (!expr) return std::nullopt;
     
     // Check if expression is marked as constant
@@ -319,7 +328,7 @@ std::optional<int64_t> TypeChecker::getConstantIntValue(ExprAST* expr,
     if (auto* literal = expr->as<LiteralExprAST>()) {
         if (literal->kind == LiteralKind::Int) {
             // Parse integer value
-            std::string_view val = resolver.ctx().pool.lookup(literal->value);
+            std::string_view val = ctx.pool.lookup(literal->value);
             return std::stoll(std::string(val));
         }
     }

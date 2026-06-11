@@ -4,7 +4,7 @@
  */
 
 #include "StmtChecker.hpp"
-#include "checker/ExprChecker.hpp"
+#include "semantic/checker/expr/ExprChecker.hpp"
 #include "semantic/checker/TypeChecker.hpp"
 #include "semantic/resolver/TypeResolver.hpp"
 #include "ast/DeclAST.hpp"

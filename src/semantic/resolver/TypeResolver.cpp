@@ -78,7 +78,6 @@ TypeAST* TypeResolver::resolveTypeAlias(TypeAliasDeclAST* alias) {
     
     // Cache the resolved type
     alias->resolvedType = resolved;
-    alias->valueType = resolved;  // For ValueDeclAST compatibility
     
     LUC_LOG_SEMANTIC_EXTREME("TypeResolver::resolveTypeAlias: " 
                              << ctx_.pool.lookup(alias->name) 
@@ -221,10 +220,11 @@ bool TypeResolver::resolveParam(ParamAST* param) {
 }
 
 bool TypeResolver::resolveReturnTypes(ArenaSpan<TypeAST*>& returnTypes) {
+    TypeAST** data = const_cast<TypeAST**>(returnTypes.data());
     for (size_t i = 0; i < returnTypes.size(); ++i) {
-        TypeAST* resolved = resolve(returnTypes[i]);
+        TypeAST* resolved = resolve(data[i]);
         if (!resolved) return false;
-        returnTypes[i] = resolved;
+        data[i] = resolved;
     }
     return true;
 }
