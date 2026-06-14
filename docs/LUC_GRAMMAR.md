@@ -213,6 +213,13 @@ ref_type        := '&' type
 
 -- Raw pointer (*T) — allowed anywhere, but operations (dereference, indexing,
 -- arithmetic) are forbidden. Use only for storage, nil checks, and intrinsics.
+--
+-- Nullability on raw pointers:
+--   *T    — non-nullable: the pointer address is always valid (programmer assertion)
+--   *T?   — nullable: (*T)? — the pointer itself may be nil (NULL in C)
+--           '?' binds to the whole *T type, NOT to T.
+--           To express a pointer to a nullable T, use a type alias:
+--           type MaybeInt = int?    then: *MaybeInt
 ptr_type        := '*' type
 
 -- Array types — bracket-prefix notation: kind and element type are enclosed together.
@@ -455,6 +462,57 @@ A value stored in `any` is boxed with a runtime type tag. Owned types placed int
 
 Raw pointers (`*T`) are sealed conduits — carry them, pass them to extern functions, check for nil, but never dereference directly.
 
+### Pointer Nullability Semantics (`*T` vs `*T?`)
+
+`?` on a raw pointer always binds to the **whole pointer type**, not to the element type:
+
+| Type  | Meaning                                                                   | C equivalent                  |
+| ----- | ------------------------------------------------------------------------- | ----------------------------- |
+| `*T`  | Non-nullable — the pointer address is always valid (programmer assertion) | `T* __attribute__((nonnull))` |
+| `*T?` | Nullable — `(*T)?` — the pointer itself may be nil                        | `T*` that may be `NULL`       |
+
+```luc
+let p  *Node  = getNode()    -- programmer asserts: address is always valid
+let q  *Node? = findNode()   -- pointer itself may be nil; nil-check required before use
+```
+
+To express the rare "pointer to nullable T" case (the `?` applies to T, not the pointer), use a type alias — this makes the intent unambiguous:
+
+```luc
+type MaybeScore = int?         -- nullable int is the element type
+let p *MaybeScore = ...        -- non-nullable pointer to a nullable int
+```
+
+> [!NOTE]
+> Unannotated `@extern` pointer returns default to `*T` (non-nullable). Use `*T?` only when you know the C function may return `NULL`. The `@extern` declaration on the Luc side is the sole nullability contract — the Luc compiler does not parse C headers.
+
+> [!CAUTION]
+> **`*T` is a programmer-level contract, not a compiler-verified proof.**
+>
+> The type system guarantees that a non-nullable `*T` will never be *statically assigned* `nil`. It does **not** and **cannot** guarantee that the pointed-to memory remains valid at runtime. External code — `@extern` calls (e.g. `free`), manual pointer arithmetic via `#ptrOffset`, or aliased ownership — can release or corrupt that memory *after* the pointer was set, producing a **dangling pointer**: non-nil in value, invalid in content.
+>
+> A nil check (`== nil`, `!= nil`) guards against a null address. It does **not** detect a dangling pointer.
+>
+> **Responsibilities when using non-nullable `*T`:**
+> - You assert that the pointer's target is valid for the duration you hold the pointer.
+> - You own or have a clear understanding of the pointed-to memory's lifetime.
+> - No other owner will free that memory while your `*T` is live.
+>
+> **Preferred mitigation — wrap `*T` in a `Disposable` struct:**
+> ```luc
+> struct OwnedBuffer {
+>     ptr  *uint8    -- non-nullable: asserts validity at construction
+>     size uint64
+> }
+>
+> impl Disposable for OwnedBuffer {
+>     pub const dispose (self &OwnedBuffer) = {
+>         freeBuffer(self.ptr, self.size)    -- lifetime ends here, predictably
+>     }
+> }
+> ```
+> For shared ownership with automatic invalidation, use the standard library's `Shared<T>` and `Weak<T>` instead.
+
 ### Allowed Operations
 
 1. Store in a variable, struct field, or parameter
@@ -493,6 +551,141 @@ ref = 0xFF                             -- work with it safely
 
 let next *uint8? = #ptrOffset(buf, 1)  -- pointer arithmetic
 ```
+
+### Reading Values Through a Pointer (C → Luc)
+
+When a C binary exposes data at a known address (e.g. a hardware register, a shared memory region, or a C struct field), the idiomatic Luc pattern is to declare an `@extern` function that accepts a raw pointer and returns the value by copy — **never by reference**.
+
+> [!IMPORTANT]
+> `@extern` functions **must not** return `&T`. The Downward Flow Rule forbids reference returns from all functions, including extern ones — returning a `&T` from C would produce a reference with no Luc-owned backing variable, which is undefined behaviour. The compiler rejects any `@extern` declaration with `-> &T` as a return type.
+>
+> The correct pattern is to return an **owned value** (a primitive, struct, or raw pointer). The caller then uses `#toRef` to enter the safe reference world if needed.
+
+```c
+// getValue.c — C side
+// Takes a pointer, reads the int at that address, returns it by value.
+int getValue(int* address) {
+    return *address;
+}
+```
+
+```luc
+-- main.luc — Luc side
+@extern("getValue")
+const getValue (address *int) -> int   -- returns owned int, never &int
+
+let addr *int = getAddressFromSomewhere()
+let n    int  = getValue(addr)         -- safe: int is owned, fully copied
+```
+
+If the value at the address is large (a struct), return a raw pointer from C and cross the boundary with `#toRef` on the Luc side:
+
+```c
+// C side — returns a pointer to the struct, caller must not free it
+Player* getPlayer(PlayerStore* store, int id) {
+    return &store->players[id];
+}
+```
+
+```luc
+-- Luc side
+@extern("getPlayer")
+const getPlayer (store *PlayerStore, id int) -> *Player?   -- nullable: id may not exist
+
+let p *Player? = getPlayer(store, 42)
+if p == nil { return }
+
+let ref &Player = #toRef(p)    -- assert validity, enter safe world
+let score int   = ref.score    -- read fields safely through the reference
+```
+
+### How C Communicates Nullable Returns to Luc
+
+C has no built-in nullable type. The `@extern` declaration in Luc is the **sole nullability contract** — the Luc compiler does not parse C headers. The programmer declares the expected nullability and owns the promise.
+
+#### Nullable Pointer Return — use `*T?`
+
+`*T?` means the pointer *itself* may be `nil` — directly mapping to C's `NULL`. This is the most common interop pattern. C returns `NULL` on failure; Luc sees `nil` and forces a nil-check before the pointer can be used.
+
+```c
+// C side — returns NULL when id is out of range
+uint8_t* findBuffer(size_t id) {
+    if (id >= pool_size) return NULL;   // NULL maps to nil in Luc
+    return pool[id];
+}
+```
+
+```luc
+-- Luc side — programmer declares *uint8? to signal the pointer may be nil
+@extern("findBuffer")
+const findBuffer (id uint64) -> *uint8?   -- *T? = the pointer itself may be nil
+
+let buf *uint8? = findBuffer(3)
+if buf == nil { return }               -- nil-check required before use
+let ref &uint8 = #toRef(buf)           -- safe to cross boundary now
+```
+
+> [!NOTE]
+> Unannotated `@extern` pointer returns default to `*T` (non-nullable). Use `*T?` only when you know the C function may return `NULL`.
+
+#### Nullable Primitive Return — no direct mapping
+
+C primitives (`int`, `float`, etc.) cannot be `NULL` — they are not pointers. There is no wire format for Luc's `int?` in C. Use one of two conventions:
+
+**Convention 1 — Sentinel value (e.g. `-1`, `UINT64_MAX`).**
+Declare the return as plain `T`, receive it, and lift to `T?` manually on the Luc side:
+
+```c
+// C side: -1 signals "not found"
+int findScore(int playerId) {
+    if (!exists(playerId)) return -1;
+    return players[playerId].score;
+}
+```
+
+```luc
+@extern("findScore")
+const findScore (playerId int) -> int      -- plain int, no ?
+
+let raw   int  = findScore(7)
+let score int? = if raw == -1 { nil } else { raw }   -- lift manually
+```
+
+**Convention 2 — Output parameter + boolean flag (recommended for new APIs).**
+The C function writes the result into a pointer argument and returns `bool` for success. The Luc side passes a stack variable's address via `#toPtr`:
+
+```c
+// C side
+bool tryGetScore(int playerId, int* outScore) {
+    if (!exists(playerId)) return false;
+    *outScore = players[playerId].score;
+    return true;
+}
+```
+
+```luc
+@extern("tryGetScore")
+const tryGetScore (playerId int, outScore *int) -> bool
+
+let scratch int  = 0
+let ok      bool = tryGetScore(7, #toPtr(scratch))
+let score   int? = if ok { scratch } else { nil }
+```
+
+> [!NOTE]
+> There is no way for a C function to return a Luc `int?` directly — the wire representation of `int?` (size, layout, nil encoding) is a Luc-internal detail. For new C APIs written specifically for Luc interop, prefer **Convention 2** — it is unambiguous and requires no sentinel magic numbers.
+
+> [!CAUTION]
+> **The compiler cannot verify `@extern` contracts against the actual C binary.** All failure modes below are undetected at compile time — they are programmer responsibility.
+>
+> | Violation | Consequence |
+> |---|---|
+> | `*T` declared but C can return `NULL` | No nil-check is forced. `NULL` flows unchecked — crash or UB when the pointer is eventually dereferenced via `#toRef` or passed to another extern. |
+> | Wrong or colliding sentinel (Convention 1) | No crash. The Luc side silently misidentifies a valid value as `nil` or vice versa — data corruption that is hard to trace. |
+> | `@extern` type signature doesn't match the actual C ABI | The compiler generates a call with the wrong layout. Stack or register corruption, likely a crash far from the call site or silent garbage reads. |
+> | `bool` return ignored in Convention 2 | The output variable holds a stale or uninitialized value that gets used as if it were written. |
+>
+> Because `@extern` is an explicit unsafe boundary, none of these are protected by the Luc type system. Always verify the C-side signature matches the Luc declaration exactly.
 
 ---
 
@@ -4917,18 +5110,18 @@ Attribute arguments are intentionally limited to compile-time literals and type 
 
 #### Known Attributes
 
-| Attribute                | Valid on                     | Purpose                                          |
-| ------------------------ | ---------------------------- | ------------------------------------------------ |
-| `@extern("sym")`         | `let`, `const` func/var      | Bind to C symbol by name                         |
-| `@extern("sym", "conv")` | `let`, `const` func/var      | With explicit calling convention                 |
+| Attribute                | Valid on                     | Purpose                                                          |
+| ------------------------ | ---------------------------- | ---------------------------------------------------------------- |
+| `@extern("sym")`         | `let`, `const` func/var      | Bind to C symbol by name                                         |
+| `@extern("sym", "conv")` | `let`, `const` func/var      | With explicit calling convention                                 |
 | `@link("lib")`           | package, file, or `const`    | Set active link context — one declaration, comma-separated paths |
-| `@inline`                | func                         | Suggest always inline                            |
-| `@noinline`              | func                         | Prevent inlining                                 |
-| `@packed`                | `struct`                     | Remove padding — all fields byte-adjacent        |
-| `@deprecated("msg")`     | func, var, struct             | Emit warning at every use site                   |
-| `@phantom`               | `type` alias, `struct`, func | Allow unused generic parameters                  |
-| `@aot`                   | `main` only                  | Ahead-of-time compilation                        |
-| `@jit`                   | `main` only                  | JIT compilation                                  |
+| `@inline`                | func                         | Suggest always inline                                            |
+| `@noinline`              | func                         | Prevent inlining                                                 |
+| `@packed`                | `struct`                     | Remove padding — all fields byte-adjacent                        |
+| `@deprecated("msg")`     | func, var, struct            | Emit warning at every use site                                   |
+| `@phantom`               | `type` alias, `struct`, func | Allow unused generic parameters                                  |
+| `@aot`                   | `main` only                  | Ahead-of-time compilation                                        |
+| `@jit`                   | `main` only                  | JIT compilation                                                  |
 
 `@inline` and `@noinline` are mutually exclusive on the same declaration.
 `@aot` and `@jit` are mutually exclusive on the same declaration.
@@ -5206,13 +5399,13 @@ const free (ptr *uint8)
 
 Library name forms:
 
-| Form | Meaning |
-|---|---|
-| `"m"` | System library — linker searches standard paths for `libm` |
-| `"sqlite3"` | System library — linker searches for `libsqlite3` |
-| `"./libs/mylib.a"` | Relative path to static library |
-| `"./libs/libmylib.so"` | Relative path to dynamic library |
-| `"/usr/local/lib/libpng.a"` | Absolute path to static library |
+| Form                        | Meaning                                                    |
+| --------------------------- | ---------------------------------------------------------- |
+| `"m"`                       | System library — linker searches standard paths for `libm` |
+| `"sqlite3"`                 | System library — linker searches for `libsqlite3`          |
+| `"./libs/mylib.a"`          | Relative path to static library                            |
+| `"./libs/libmylib.so"`      | Relative path to dynamic library                           |
+| `"/usr/local/lib/libpng.a"` | Absolute path to static library                            |
 
 #### `@phantom` Rules
 
