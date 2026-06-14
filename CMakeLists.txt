@@ -130,6 +130,7 @@ add_executable(luc-comp
     src/semantic/checker/expr/FunctionChecker.cpp
     src/semantic/checker/expr/AwaitChecker.cpp
     src/semantic/checker/expr/RangeChecker.cpp
+    src/semantic/checker/expr/IsChecker.cpp
 
     src/semantic/checker/stmt/StmtChecker.cpp
     src/semantic/checker/stmt/StmtUtils.cpp
