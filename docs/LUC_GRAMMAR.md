@@ -24,7 +24,7 @@ A+                          -- one or more
 The following productions are used across multiple sections. They are defined once here and referenced by name throughout:
 
 ```
--- A named function reference — used in impl assignment, from path entry,
+-- A named function reference — used in impl assignment,
 -- pipeline steps, and composition operands.
 -- func_ref may be plain or carry qualifiers (~async, ~nullable, ~parallel).
 -- The full resolved type including qualifiers is what the caller sees.
@@ -2796,14 +2796,13 @@ from_target := type                -- any named, primitive, array, or alias type
              | generic_array_type  -- [_, <T>], [*, <T>], [N, <T>]  — free type variable
                                    -- same rule as impl: T declared here, usable in entries
 
-from_entry  := param_group { param_group } '->' type '=' func_body   -- inline entry
-             | func_ref                                               -- path entry
-               -- compiler reads func_ref's full signature INCLUDING qualifiers
-               -- as the entry signature — no type annotation written
+-- A from_entry is always inline: exactly one named parameter (no currying,
+-- no multi-parameter groups, no variadic), followed by the target return
+-- type and a body. There is no path-entry form — reusing an existing
+-- function as a conversion is a one-line forwarding entry (see Rules).
+from_entry  := '(' IDENTIFIER type ')' '->' type '=' func_body
                -- the return type must match the enclosing from target type
                -- no receiver injection: from entries convert TO the target, not on it
-
-func_ref    := see Shared Productions in Notation section
 ```
 
 A `from` block defines implicit and explicit conversions from a source type (described by the parameter groups) to a target type. The target type can be **any type** — primitive, struct, enum, type alias, array type, or function type.
@@ -2821,45 +2820,33 @@ A `from` block defines implicit and explicit conversions from a source type (des
 
 ### Rules
 
-**Inline entry** — explicitly declares the source signature and body:
+A `from_entry` is always an inline conversion:
 
-- One or more parameter groups (currying allowed) — the source value(s).
+- **Exactly one parameter — no currying, no multi-parameter groups, no variadic.** The parameter is the single source value of the conversion; `from` converts from one source type to one target type.
 - The arrow `->` (mandatory).
 - A single return type — must match the enclosing `from` target type.
 - `=` followed by the conversion body (a block or expression).
 - No qualifiers (`~async`, `~nullable`, `~parallel`) — `from` entries are plain functions.
-
-**Path entry** — references an existing function by name:
-
-- The compiler reads the function's full signature — including any qualifiers — and registers it as a `from` entry. No type annotation is written.
-- The function's return type must match the enclosing `from` target type — compile error otherwise.
 - No receiver injection (`!`) — `from` converts *to* the target type, not *on* it.
-- Local functions, imported functions, and `@extern` non-variadic functions are all valid.
-- Function calls, expressions that produce functions, and factory functions are forbidden — use an inline entry for those cases.
 
-**Generic function as path entry — concrete target:**
-
-A generic function can be used as a path entry by instantiating it at the entry site with explicit type arguments. The compiler reads the instantiated signature and registers it as a conversion entry. The target type must match the instantiated return type:
+**Reusing an existing function** — including a generic one — is a one-line forwarding entry. The signature still appears at the `from` declaration site, where the conversion is registered:
 
 ```luc
-export const toString<T>  (v T)      -> string = { ... }
-export const parseAs<T>   (s string) -> T      = { ... }
+export const toString<T> (v T) -> string = { ... }
+export const parseAs<T>  (s string) -> T  = { ... }
 
--- concrete target: instantiate at entry site
 from string {
-    toString<int>      -- registers (int) -> string
-    toString<float>    -- registers (float) -> string
-    toString<bool>     -- registers (bool) -> string
+    (n int)   -> string = { return toString<int>(n) }
+    (f float) -> string = { return toString<float>(f) }
+    (b bool)  -> string = { return toString<bool>(b) }
 }
 
 from int {
-    parseAs<int>       -- registers (string) -> int
+    (s string) -> int = { return parseAs<int>(s) }
 }
 ```
 
-**Generic function as path entry — generic target:**
-
-When the `from` target is a generic type, its type parameters are available to path entries — the same rule as `impl Box<T>`. The generic parameter flows from the `from` declaration into the path entry instantiation:
+**Generic `from` target** — when the `from` target is a generic type, its type parameters are in scope for every entry's parameter types and body, the same rule as `impl Box<T>`:
 
 ```luc
 struct Box<T> { value T }
@@ -2867,35 +2854,19 @@ struct Box<T> { value T }
 export const wrap<T>   (v T)      -> Box<T> = { return Box<T> { value = v } }
 export const rewrap<T> (s string) -> Box<T> = { return Box<T> { value = parseAs<T>(s) } }
 
--- T flows from from Box<T> into the path entries
+-- T flows from from Box<T> into each entry
 from Box<T> {
-    wrap<T>      -- registers (T) -> Box<T>
-    rewrap<T>    -- registers (string) -> Box<T>
+    (v T)      -> Box<T> = { return wrap<T>(v) }
+    (s string) -> Box<T> = { return rewrap<T>(s) }
 }
 
 -- call sites
-let b  Box<int>    = Box<int>(42)       -- uses wrap<int>
-let b2 Box<int>    = Box<int>("42")     -- uses rewrap<int>
-let b3 Box<string> = Box<string>("hi")  -- uses wrap<string>
+let b  Box<int>    = Box<int>(42)       -- uses the (T) -> Box<T> entry
+let b2 Box<int>    = Box<int>("42")     -- uses the (string) -> Box<T> entry
+let b3 Box<string> = Box<string>("hi")  -- uses the (T) -> Box<T> entry
 ```
 
-**Independent generics are forbidden in `from` entries:**
-
-`from` conversions are implicit — there is no syntax at the conversion site to provide an independent type argument. Every type parameter used in a `from` entry must come from the `from` target declaration. An independent `<U>` with no conversion-site slot is a compile error:
-
-```luc
-export const rewrap<T, U> (v T, fn (T) -> U) -> Box<U> = { ... }
-
-from Box<T> {
-    wrap<T>          -- OK: T from from Box<T>
-    rewrap<T, U>     -- ERROR: U is independent — no syntax to provide U at conversion site
-}
-
--- CORRECT: fix U concretely at the from declaration
-from Box<string> {
-    rewrap<int, string>    -- OK: both T and U concrete
-}
-```
+Any type parameter used in a `from_entry`'s parameter types or body must come from the enclosing `from` target's generic parameters — there is no syntax to introduce an independent type parameter on a `from_entry` itself.
 
 **Conflict resolution** — if two `from` entries in the same block have identical source signatures, it is a compile error. Across multiple `from` blocks for the same target type, the innermost or last-declared block wins by the same scope-proximity rule as `impl`.
 
@@ -2969,56 +2940,54 @@ from Direction {
     }
 }
 
--- Path entries — compiler reads each function's signature
--- utils.floatToStr : (f float) -> string  → registered as from entry
--- utils.doubleToStr: (d double) -> string → registered as from entry
+-- Reusing existing functions — inline forwarding entries
+export const floatToStr  (f float)  -> string = { ... }
+export const doubleToStr (d double) -> string = { ... }
+
 from string {
-    (n int) -> string { return string(n) } -- inline entry
-    utils.floatToStr                       -- path entry: (float) -> string
-    utils.doubleToStr                      -- path entry: (double) -> string
-    localCharToStr                         -- path entry: local function
+    (n int)    -> string = { return string(n) }
+    (f float)  -> string = { return floatToStr(f) }
+    (d double) -> string = { return doubleToStr(d) }
 }
 
--- Path entries with generic instantiation — concrete target
--- instantiate at the entry site, compiler reads the resolved signature
+-- Forwarding to a generic function — instantiate explicitly in the body
 export const toString<T>  (v T)      -> string = { ... }
 export const parseAs<T>   (s string) -> T      = { ... }
 
 from string {
-    toString<int>      -- registers (int)    -> string
-    toString<float>    -- registers (float)  -> string
-    toString<bool>     -- registers (bool)   -> string
+    (n int)   -> string = { return toString<int>(n) }
+    (f float) -> string = { return toString<float>(f) }
+    (b bool)  -> string = { return toString<bool>(b) }
 }
 
 from int {
-    parseAs<int>       -- registers (string) -> int
+    (s string) -> int = { return parseAs<int>(s) }
 }
 
-let s1 string = string(42)       -- uses toString<int>
-let s2 string = string(3.14)     -- uses toString<float>
-let n  int    = int("42")        -- uses parseAs<int>
+let s1 string = string(42)       -- uses the (int)   -> string entry
+let s2 string = string(3.14)     -- uses the (float) -> string entry
+let n  int    = int("42")        -- uses the (string) -> int entry
 
--- Generic function path entry — generic target
--- T flows from from Box<T> into path entries, same rule as impl Box<T>
+-- Generic from target — T flows from from Box<T> into each entry, same rule as impl Box<T>
 struct Box<T> { value T }
 
 export const wrap<T>   (v T)      -> Box<T> = { return Box<T> { value = v } }
 export const rewrap<T> (s string) -> Box<T> = { return Box<T> { value = parseAs<T>(s) } }
 
 from Box<T> {
-    wrap<T>      -- registers (T)      -> Box<T>
-    rewrap<T>    -- registers (string) -> Box<T>
+    (v T)      -> Box<T> = { return wrap<T>(v) }
+    (s string) -> Box<T> = { return rewrap<T>(s) }
 }
 
-let b1 Box<int>    = Box<int>(42)      -- uses wrap<int>
-let b2 Box<int>    = Box<int>("42")    -- uses rewrap<int>
-let b3 Box<string> = Box<string>("hi") -- uses wrap<string>
+let b1 Box<int>    = Box<int>(42)      -- uses the (T)      -> Box<T> entry
+let b2 Box<int>    = Box<int>("42")    -- uses the (string) -> Box<T> entry
+let b3 Box<string> = Box<string>("hi") -- uses the (T)      -> Box<T> entry
 
 -- Generic array target
 export const sliceOf<T> (v T) -> [_, T] = { return [v] }
 
 from [_, <T>] {
-    sliceOf<T>    -- registers (T) -> [_, T]
+    (v T) -> [_, T] = { return sliceOf<T>(v) }
 }
 
 let nums [_, int]    = [_, int](42)      -- [42]
@@ -3031,7 +3000,6 @@ from [_, int] {
         for i int in r { result:push(i) }
         return result
     }
-    utils.rangeToSlice    -- path entry: (Range) -> [_, int]
 }
 
 -- From on function type
@@ -3063,27 +3031,28 @@ let process () -> int = {
 
 -- Conflict resolution — two from blocks for same target, last wins
 from int {
-    utils.parseInt    -- (string) -> int from utils
+    (s string) -> int = { return utils.parseInt(s) }    -- forwards to utils
 }
 
 from int {
-    myLib.parseInt    -- (string) -> int from myLib — shadows utils version
+    (s string) -> int = { return myLib.parseInt(s) }    -- shadows the block above
 }
 
--- ResolveImport pattern — explicit control over which version wins
-use file1    -- file1.floatToInt: (float) -> int
-use file2    -- file2.floatToInt: (float) -> int
+-- Explicit control over which conversion is used
+use file1    -- file1.floatToInt:  (float)  -> int
+use file2    -- file2.doubleToInt: (double) -> int
 
 from int {
-    file1.floatToInt    -- explicitly choose file1's version
-    file2.doubleToInt   -- take double conversion from file2
+    (f float)  -> int = { return file1.floatToInt(f) }   -- explicitly choose file1's version
+    (d double) -> int = { return file2.doubleToInt(d) }  -- take double conversion from file2
 }
 
 -- ERROR cases
 from int {
-    utils.badReturn        -- ERROR: return type is string, not int
-    utils.printf           -- ERROR: printf is variadic @extern
-    parseIntFromStr()      -- ERROR: function call, not a reference
+    (s string)(x int) -> int = { ... }      -- ERROR: currying — from_entry allows exactly one parameter
+    (s string, x int) -> int = { ... }      -- ERROR: multi-parameter — from_entry allows exactly one parameter
+    (s string) -> string = { return s }     -- ERROR: return type string does not match from target int
+    utils.parseInt                          -- ERROR: bare reference — path entries are not valid from_entry forms
 }
 ```
 
