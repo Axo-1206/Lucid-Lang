@@ -2309,6 +2309,9 @@ func_ref        := see Shared Productions in Notation section
                    -- call expressions and factory functions are forbidden
 ```
 
+> [!NOTE]
+> `func_ref` methods are named (`IDENTIFIER = func_ref`), so reuse here is safe in ways it isn't for `from` — see the note in *From Declaration* for why `from_entry` has no equivalent `func_ref` form.
+
 The `as IDENTIFIER` clause introduces a local alias for the receiver inside the method bodies. If omitted, the receiver is accessible as `self`.
 
 | `as` clause | Receiver name inside methods |
@@ -2828,6 +2831,11 @@ A `from_entry` is always an inline conversion:
 - `=` followed by the conversion body (a block or expression).
 - No qualifiers (`~async`, `~nullable`, `~parallel`) — `from` entries are plain functions.
 - No receiver injection (`!`) — `from` converts *to* the target type, not *on* it.
+
+> [!NOTE]
+> Why no `func_ref` form here (unlike `impl`)
+>
+> `impl` method declarations allow `IDENTIFIER '=' func_ref` and `IDENTIFIER '=' func_ref(receiver)!` because each method is **named** — duplicate-name checking and the block's contents are visible without resolving the reference. A `from_entry` has no name; its identity *is* its source-type signature. Allowing a bare reference there would make conflict detection depend on resolving external signatures, and the receiver-injection form (`!`) doesn't apply since `from` converts to a type rather than operating on a receiver. Hence `from_entry` is inline-only — reuse via a one-line forwarding call, shown next.
 
 **Reusing an existing function** — including a generic one — is a one-line forwarding entry. The signature still appears at the `from` declaration site, where the conversion is registered:
 
