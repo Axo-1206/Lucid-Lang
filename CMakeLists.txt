@@ -104,7 +104,19 @@ add_executable(luc-comp
     src/semantic/checker/TypeChecker.cpp
     src/semantic/checker/expr/ExprChecker.cpp
     src/semantic/checker/stmt/StmtChecker.cpp
+    
     src/semantic/checker/decl/DeclChecker.cpp
+    src/semantic/checker/decl/DeclUtils.cpp
+    src/semantic/checker/decl/AttributeChecker.cpp
+    src/semantic/checker/decl/ExprConstChecker.cpp
+    src/semantic/checker/decl/VarChecker.cpp
+    src/semantic/checker/decl/FuncChecker.cpp
+    src/semantic/checker/decl/StructChecker.cpp
+    src/semantic/checker/decl/EnumChecker.cpp
+    src/semantic/checker/decl/TraitChecker.cpp
+    src/semantic/checker/decl/ImplChecker.cpp
+    src/semantic/checker/decl/FromChecker.cpp
+    src/semantic/checker/decl/TypeAliasChecker.cpp
     
 
 

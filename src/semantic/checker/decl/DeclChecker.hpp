@@ -116,11 +116,11 @@ bool isConstExpr(ExprAST* expr, SemanticContext& ctx);
  * @param ctx Semantic context for diagnostics
  * 
  * @example
- *   let x int = 42        - Valid
- *   const PI float = 3.14 - Valid
- *   let s string?         - Valid (nullable, can be nil)
- *   let t int             - Error: non-nullable uninitialized
- *   const N = getValue()  - Error: non-constant initializer
+ *   let x int = 42        ✓ Valid
+ *   const PI float = 3.14 ✓ Valid
+ *   let s string?         ✓ Valid (nullable, can be nil)
+ *   let t int             ✗ Error: non-nullable uninitialized
+ *   const N = getValue()  ✗ Error: non-constant initializer
  */
 void checkVarDecl(VarDeclAST* var, SemanticContext& ctx);
 
@@ -142,9 +142,9 @@ void checkVarDecl(VarDeclAST* var, SemanticContext& ctx);
  * @param ctx Semantic context for diagnostics and scope
  * 
  * @example
- *   let add(a int, b int) int = { return a + b }  - Valid
- *   @extern("printf") const printf(fmt *uint8)    - Valid (no body)
- *   let foo() int = {}                            - Error: missing return
+ *   let add(a int, b int) int = { return a + b }  ✓ Valid
+ *   @extern("printf") const printf(fmt *uint8)    ✓ Valid (no body)
+ *   let foo() int = {}                            ✗ Error: missing return
  */
 void checkFuncDecl(FuncDeclAST* func, SemanticContext& ctx);
 
@@ -165,8 +165,8 @@ void checkFuncDecl(FuncDeclAST* func, SemanticContext& ctx);
  * @param ctx Semantic context for diagnostics
  * 
  * @example
- *   struct Vec2 { x float, y float }              - Valid
- *   struct Point { x int, x int }                 - Error: duplicate field 'x'
+ *   struct Vec2 { x float, y float }              ✓ Valid
+ *   struct Point { x int, x int }                 ✗ Error: duplicate field 'x'
  *   struct Rect { x int = 0, y int }              ⚠ Warning: default before non-default
  */
 void checkStructDecl(StructDeclAST* structDecl, SemanticContext& ctx);
@@ -188,9 +188,9 @@ void checkStructDecl(StructDeclAST* structDecl, SemanticContext& ctx);
  * @param ctx Semantic context for diagnostics
  * 
  * @example
- *   enum Color { Red, Green, Blue }               - Valid (Red=0, Green=1, Blue=2)
- *   enum Status { Ok=200, NotFound=404 }          - Valid
- *   enum Flags { A=1, B=1 }                       - Error: duplicate value 1
+ *   enum Color { Red, Green, Blue }               ✓ Valid (Red=0, Green=1, Blue=2)
+ *   enum Status { Ok=200, NotFound=404 }          ✓ Valid
+ *   enum Flags { A=1, B=1 }                       ✗ Error: duplicate value 1
  */
 void checkEnumDecl(EnumDeclAST* enumDecl, SemanticContext& ctx);
 
@@ -210,8 +210,8 @@ void checkEnumDecl(EnumDeclAST* enumDecl, SemanticContext& ctx);
  * @param ctx Semantic context for diagnostics
  * 
  * @example
- *   trait Drawable { draw(), bounds() -> Rect }   - Valid
- *   trait Bad { foo(), foo() }                    - Error: duplicate method 'foo'
+ *   trait Drawable { draw(), bounds() -> Rect }   ✓ Valid
+ *   trait Bad { foo(), foo() }                    ✗ Error: duplicate method 'foo'
  */
 void checkTraitDecl(TraitDeclAST* trait, SemanticContext& ctx);
 
@@ -233,9 +233,9 @@ void checkTraitDecl(TraitDeclAST* trait, SemanticContext& ctx);
  * @param ctx Semantic context for diagnostics and scope
  * 
  * @example
- *   impl Vec2 { length() -> float = { return #sqrt(x*x + y*y) } }  - Valid
- *   impl Drawable for Circle { draw() { ... } }                    - Valid
- *   impl Trait for Type { missing() }                              - Error: missing method
+ *   impl Vec2 { length() -> float = { return #sqrt(x*x + y*y) } }  ✓ Valid
+ *   impl Drawable for Circle { draw() { ... } }                    ✓ Valid
+ *   impl Trait for Type { missing() }                              ✗ Error: missing method
  */
 void checkImplDecl(ImplDeclAST* impl, SemanticContext& ctx);
 
@@ -259,9 +259,9 @@ void checkImplDecl(ImplDeclAST* impl, SemanticContext& ctx);
  * @example
  *   from int {
  *       (s string) -> int = { return #parseInt(s) }
- *   }                                              - Valid
+ *   }                                              ✓ Valid
  *   from string {
- *       (s string) -> int = { ... }                - Error: source type 'string' is target??
+ *       (s string) -> int = { ... }                ✗ Error: source type 'string' is target??
  *   }
  */
 void checkFromDecl(FromDeclAST* from, SemanticContext& ctx);
@@ -282,17 +282,25 @@ void checkFromDecl(FromDeclAST* from, SemanticContext& ctx);
  * @param ctx Semantic context for diagnostics
  * 
  * @example
- *   type ID = int                                 - Valid
- *   type Vec2 = struct { x float, y float }       - Valid
- *   type A = B, type B = A                        - Error: cyclic alias (in resolver)
+ *   type ID = int                                 ✓ Valid
+ *   type Vec2 = struct { x float, y float }       ✓ Valid
+ *   type A = B, type B = A                        ✗ Error: cyclic alias (in resolver)
  */
 void checkTypeAliasDecl(TypeAliasDeclAST* alias, SemanticContext& ctx);
 
 // ============================================================================
-// Helper Functions (Shared Implementation)
+// Internal Helper Functions (Declaration-Specific Utilities)
 // ============================================================================
 
-namespace detail {
+/**
+ * @namespace decl
+ * @brief Internal utilities for declaration checking (not part of public API).
+ * 
+ * These helpers are used by the individual declaration checkers but are not
+ * intended for external use. They are placed in a separate namespace to avoid
+ * conflicts with other checker modules (ExprChecker, StmtChecker, etc.).
+ */
+namespace decl {
 
 /**
  * @brief Validates all attributes on a declaration using the attribute registry.
@@ -365,4 +373,4 @@ bool hasAttribute(const DeclAST* decl, InternedString attrId);
  */
 bool hasAttribute(const DeclAST* decl, std::string_view attrName, const StringPool& pool);
 
-} // namespace detail
+} // namespace decl
