@@ -468,6 +468,8 @@ struct TypeDeclAST : DeclAST {
     // For type aliases: resolved underlying type (after unwrapping chains)
     // For non-aliases, this may be nullptr or points to selfType
     TypeAST* resolvedType = nullptr;
+
+    InternedString name;
     
     explicit TypeDeclAST(ASTKind k) : DeclAST(k) {}
 };

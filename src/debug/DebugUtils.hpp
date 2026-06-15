@@ -33,7 +33,7 @@ namespace LucDebug {
             case ASTKind::UseDecl:           return "UseDecl";
             case ASTKind::VarDecl:           return "VarDecl";
             case ASTKind::Param:             return "Param";
-            case ASTKind::GenericParam:      return "GenericParam";
+            case ASTKind::GenericParamDecl:  return "GenericParamDecl";
             case ASTKind::FuncDecl:          return "FuncDecl";
             case ASTKind::FieldDecl:         return "FieldDecl";
             case ASTKind::StructDecl:        return "StructDecl";

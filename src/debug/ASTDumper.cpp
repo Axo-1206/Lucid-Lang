@@ -67,13 +67,6 @@ std::string formatType(const TypeAST* type, const StringPool* pool) {
             return res;
         }
 
-        case ASTKind::GenericParamType: {
-            auto* gp = static_cast<const GenericParamTypeAST*>(type);
-            std::string res = toStr(pool, gp->name);
-            if (gp->isPhantom) res += " (phantom)";
-            return res;
-        }
-
         case ASTKind::NullableType:
             return formatType(static_cast<const NullableTypeAST*>(type)->inner, pool) + "?";
 
@@ -405,32 +398,21 @@ void dumpFromDecl(std::string& out, const FromDeclAST* node, const StringPool* p
         header = formatVisibility(node->visibility) + " " + header;
     }
     
-    // Dump target information
-    switch (node->targetKind) {
-        case TargetKind::Concrete:
-            if (node->targetType) {
-                header += " to " + formatType(node->targetType, pool);
+    // Unified target type representation
+    if (node->targetType) {
+        header += " to " + formatType(node->targetType, pool);
+    }
+    
+    // Dump generic parameters if present (for generic named targets)
+    if (!node->genericParams.empty()) {
+        header += " <";
+        for (size_t i = 0; i < node->genericParams.size(); ++i) {
+            if (i > 0) header += ", ";
+            if (node->genericParams[i]) {
+                header += toStr(pool, node->genericParams[i]->name);
             }
-            break;
-        case TargetKind::GenericArray:
-            header += " to GenericArray";
-            if (!node->arrayTypeParamName.isValid()) {
-                header += " <" + toStr(pool, node->arrayTypeParamName) + ">";
-            }
-            break;
-        case TargetKind::GenericNamed:
-            header += " to GenericNamed";
-            if (!node->genericParams.empty()) {
-                header += " <";
-                for (size_t i = 0; i < node->genericParams.size(); ++i) {
-                    if (i > 0) header += ", ";
-                    if (node->genericParams[i]) {
-                        header += toStr(pool, node->genericParams[i]->name);
-                    }
-                }
-                header += ">";
-            }
-            break;
+        }
+        header += ">";
     }
     
     printNodeHeader(out, indentLevel, *node, header);
@@ -440,35 +422,21 @@ void dumpFromDecl(std::string& out, const FromDeclAST* node, const StringPool* p
         if (entry) dumpNode(out, entry, pool, indentLevel + 1);
     }
     
-    // Dump generic params
+    // Dump generic param declarations (if any)
     for (const auto& gp : node->genericParams) {
         if (gp) dumpNode(out, gp, pool, indentLevel + 1);
     }
 }
 
 void dumpFromEntry(std::string& out, const FromEntryAST* node, const StringPool* pool, int indentLevel) {
-    std::string header = "FromEntryAST";
-    switch (node->kind) {
-        case FromEntryKind::Inline:
-            header += " (inline)";
-            break;
-        case FromEntryKind::Path:
-            header += " (path)";
-            break;
-    }
+    std::string header = "FromEntryAST (inline)";
     printNodeHeader(out, indentLevel, *node, header);
     
-    if (node->kind == FromEntryKind::Inline) {
-        if (node->funcType) {
-            dumpNode(out, node->funcType, pool, indentLevel + 1);
-        }
-        if (node->body) {
-            dumpNode(out, node->body, pool, indentLevel + 1);
-        }
-    } else {
-        if (node->path) {
-            dumpNode(out, node->path, pool, indentLevel + 1);
-        }
+    if (node->funcType) {
+        dumpNode(out, node->funcType, pool, indentLevel + 1);
+    }
+    if (node->body) {
+        dumpNode(out, node->body, pool, indentLevel + 1);
     }
 }
 
@@ -523,32 +491,21 @@ void dumpImplDecl(std::string& out, const ImplDeclAST* node, const StringPool* p
         header = formatVisibility(node->visibility) + " " + header;
     }
     
-    // Dump target information
-    switch (node->targetKind) {
-        case TargetKind::Concrete:
-            if (node->targetType) {
-                header += " for " + formatType(node->targetType, pool);
+    // Unified target type representation
+    if (node->targetType) {
+        header += " for " + formatType(node->targetType, pool);
+    }
+    
+    // Dump generic parameters if present (for generic named targets)
+    if (!node->genericParams.empty()) {
+        header += " <";
+        for (size_t i = 0; i < node->genericParams.size(); ++i) {
+            if (i > 0) header += ", ";
+            if (node->genericParams[i]) {
+                header += toStr(pool, node->genericParams[i]->name);
             }
-            break;
-        case TargetKind::GenericArray:
-            header += " for GenericArray";
-            if (!node->arrayTypeParamName.isValid()) {
-                header += " <" + toStr(pool, node->arrayTypeParamName) + ">";
-            }
-            break;
-        case TargetKind::GenericNamed:
-            header += " for GenericNamed";
-            if (!node->genericParams.empty()) {
-                header += " <";
-                for (size_t i = 0; i < node->genericParams.size(); ++i) {
-                    if (i > 0) header += ", ";
-                    if (node->genericParams[i]) {
-                        header += toStr(pool, node->genericParams[i]->name);
-                    }
-                }
-                header += ">";
-            }
-            break;
+        }
+        header += ">";
     }
     
     if (node->receiverAlias.isValid()) {
@@ -569,7 +526,7 @@ void dumpImplDecl(std::string& out, const ImplDeclAST* node, const StringPool* p
     
     printNodeHeader(out, indentLevel, *node, header);
     
-    // Dump generic params
+    // Dump generic param declarations (if any)
     for (const auto& gp : node->genericParams) {
         if (gp) dumpNode(out, gp, pool, indentLevel + 1);
     }
@@ -611,12 +568,12 @@ void dumpTypeAliasDecl(std::string& out, const TypeAliasDeclAST* node, const Str
     printNodeHeader(out, indentLevel, *node, header);
 }
 
-void dumpGenericParam(std::string& out, const GenericParamAST* node, const StringPool* pool, int indentLevel) {
-    std::string header = "GenericParamAST '" + toStr(pool, node->name) + "'";
+void dumpGenericParamDecl(std::string& out, const GenericParamDeclAST* node, const StringPool* pool, int indentLevel) {
+    std::string header = "GenericParamDeclAST '" + toStr(pool, node->name) + "'";
     if (!node->constraints.empty()) {
         header += " : ";
         for (size_t i = 0; i < node->constraints.size(); ++i) {
-            header += toStr(pool, node->constraints[i]);
+            header += formatType(node->constraints[i], pool);
             if (i + 1 < node->constraints.size()) header += " + ";
         }
     }
@@ -1083,7 +1040,7 @@ void dumpNode(std::string& out, const BaseAST* node, const StringPool* pool, int
         case ASTKind::FromDecl:            dumpFromDecl(out, static_cast<const FromDeclAST*>(node), pool, indentLevel); break;
         case ASTKind::FromEntry:           dumpFromEntry(out, static_cast<const FromEntryAST*>(node), pool, indentLevel); break;
         case ASTKind::TypeAliasDecl:       dumpTypeAliasDecl(out, static_cast<const TypeAliasDeclAST*>(node), pool, indentLevel); break;
-        case ASTKind::GenericParam:        dumpGenericParam(out, static_cast<const GenericParamAST*>(node), pool, indentLevel); break;
+        case ASTKind::GenericParamDecl:    dumpGenericParamDecl(out, static_cast<const GenericParamDeclAST*>(node), pool, indentLevel); break;
         case ASTKind::Param:               dumpParam(out, static_cast<const ParamAST*>(node), pool, indentLevel); break;
         case ASTKind::LiteralExpr:         dumpLiteralExpr(out, static_cast<const LiteralExprAST*>(node), pool, indentLevel); break;
         case ASTKind::IdentifierExpr:      dumpIdentifierExpr(out, static_cast<const IdentifierExprAST*>(node), pool, indentLevel); break;

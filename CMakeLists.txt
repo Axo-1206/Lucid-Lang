@@ -36,7 +36,6 @@ add_executable(luc-comp
     src/diagnostics/DiagnosticMessages.cpp
 
     src/debug/ASTDumper.cpp
-    src/debug/SymbolDumper.cpp
     src/registry/QualifierRegistry.cpp
     src/registry/AttributeRegistry.cpp
     src/registry/IntrinsicRegistry.cpp
