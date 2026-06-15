@@ -45,6 +45,7 @@ enum class DiagCode : uint32_t {
     E1025,          ///< Missing type annotation in function type parameter (e.g., `(T) -> U` instead of `(t T) -> U`)
     E1026,          ///< Generic argument cannot be a reference type (&T).
     E1027,          ///< Generic argument cannot be a pointer type (*T).
+    E1028,          ///< Missing package declaration
 
     // ========== 2000–2999: Semantic ==========
     E2001 = 2000,   ///< Undeclared identifier '%s'.

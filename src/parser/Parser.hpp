@@ -47,38 +47,6 @@
  * 6. **SpanBuilder Pattern**: Temporary `std::vector<T>` collections are
  *    converted to immutable `ArenaSpan<T>` at the point of AST assignment.
  * 
- * ## Visualized Parsing Flow
- * 
- * ```
- *                         ┌─────────────────┐
- *                         │   parse()       │
- *                         └────────┬────────┘
- *                                  │
- *                    ┌─────────────▼─────────────┐
- *                    │  parsePackageDecl()       │
- *                    └─────────────┬─────────────┘
- *                                  │
- *                    ┌─────────────▼─────────────┐
- *                    │  while (!ts_.isAtEnd())   │
- *                    │    parseTopLevelDecl()    │
- *                    └─────────────┬─────────────┘
- *                                  │
- *          ┌───────────────────────┼───────────────────────┐
- *          │                       │                       │
- *          ▼                       ▼                       ▼
- *   ┌─────────────┐         ┌─────────────┐         ┌─────────────┐
- *   │ parseUse    │         │ parseStruct │         │ parseFunc   │
- *   │ Decl()      │         │ Decl()      │         │ Decl()      │
- *   └─────────────┘         └─────────────┘         └─────────────┘
- *          │                       │                       │
- *          └───────────────────────┼───────────────────────┘
- *                                  │
- *                    ┌─────────────▼─────────────┐
- *                    │   ProgramAST built        │
- *                    │   with ArenaSpan<DeclPtr> │
- *                    └───────────────────────────┘
- * ```
- * 
  * ## Token Consumption Guarantee
  * 
  * Every parser function guarantees forward progress:
@@ -236,7 +204,27 @@ private:
  *       `~nullable`). This is enforced by the registry's `affectsTypeEquality`
  *       flag.
  * 
- * @see QualifierRegistry for qualifier metadata and validation
+ * @note Relationship with QualifierRegistry:
+ * 
+ *   QualifierRegistry (global)         QualifierSet (per declaration)
+ *   ═══════════════════════════════    ═══════════════════════════════
+ *   • One instance, static lifetime    • Many instances (one per AST node)
+ *   • Knows ALL valid qualifiers       • Stores ONLY qualifiers on THIS node
+ *   • Validates names & contexts       • Holds parsed result (ready for AST)
+ *   • Metadata (bit values, desc)      • Fast bitmask + raw names for errors
+ * 
+ *   Think of it as:
+ *     Registry = "what qualifiers EXIST in the language"
+ *     Set      = "which qualifiers appear on THIS declaration"
+ * 
+ *   Why not just store bitmask + raw names directly in AST nodes?
+ *     → Encapsulation: bitmask logic (isAsync(), isNullable()) lives in one place
+ *     → Consistency: All declarations store qualifiers the same way
+ *     → Future-proof: Easy to add qualifier-specific methods without touching AST
+ * 
+ *   Why not merge into QualifierRegistry?
+ *     → Registry is global metadata (class-level). Set is instance data.
+ *     → Mixing them would violate single responsibility principle.
  */
 struct QualifierSet {
     std::vector<InternedString> raw;   ///< Original qualifier names (for errors)
@@ -268,8 +256,8 @@ struct QualifierSet {
  *              ┌─────────────────────┼─────────────────────┐
  *              │                     │                     │
  *        ┌─────▼─────┐         ┌─────▼─────┐         ┌─────▼─────┐
- *        │Package    │         │TopLevel  │         │Attributes │
- *        │Decl       │         │Decls     │         │& Metadata │
+ *        │Package    │         │TopLevel   │         │Attributes │
+ *        │Decl       │         │Decls      │         │& Metadata │
  *        └───────────┘         └───────────┘         └───────────┘
  * ```
  * 
@@ -368,16 +356,16 @@ private:
     // Helpers for list parsing
     // ========================================================================
 
-    std::vector<ParamPtr> parseParamList();           // returns std::vector<ParamAST*>
+    std::vector<ParamPtr> parseParamList();         // returns std::vector<ParamAST*>
     std::vector<InternedString> parseUsePath();
     std::vector<AttributePtr> parseAttributes();
 
     ArenaSpan<ExprAST*> parseArgList();
     ArenaSpan<TypeAST*> parseReturnList();
    
-    GenericParamPtr parseGenericParam();              // returns GenericParamAST*
-    ArenaSpan<GenericParamPtr> parseGenericParams();
-    TypePtr parseGenericArg();                        // returns TypeAST*
+    GenericParamDeclPtr parseGenericParamDecl();    // returns GenericParamDeclAST*
+    ArenaSpan<GenericParamDeclPtr> parseGenericParamDecls();
+    TypePtr parseGenericArg();                      // returns TypeAST*
     ArenaSpan<TypePtr> parseGenericArgs();
 
     // ========================================================================

@@ -1,4 +1,5 @@
 #include "DiagnosticMessages.hpp"
+#include "DiagnosticCodes.hpp"
 
 namespace DiagnosticMessages {
 
@@ -47,6 +48,7 @@ std::string_view getMessage(DiagCode code) {
         case DiagCode::E1025: return "Missing type annotation for parameter '%s' in function type. Write `(%s Type)` instead.";
         case DiagCode::E1026: return "Reference type '&T' cannot be used as a generic argument";
         case DiagCode::E1027: return "Pointer type '*T' cannot be used as a generic argument";
+        case DiagCode::E1028: return "Missing package declaration at file: '%s'";
         
         // ========== 2000–2999: Semantic ==========
         case DiagCode::E2001: return "Identifier '%s' used before it was declared.";

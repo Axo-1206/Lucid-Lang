@@ -346,7 +346,6 @@ struct AttributeArgAST : BaseAST {
     AttributeArgAST(AttributeArgKind k, InternedString v)
         : BaseAST(ASTKind::AttributeArg), kind(k), value(v) {}
 };
-
 using AttributeArgPtr = AttributeArgAST*;
 
 struct AttributeAST : BaseAST {
@@ -357,7 +356,6 @@ struct AttributeAST : BaseAST {
 
     AttributeAST() : BaseAST(ASTKind::Attribute) {}
 };
-
 using AttributePtr = AttributeAST*;
 
 // ─────────────────────────────────────────────────────────────────────────────
