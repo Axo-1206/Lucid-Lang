@@ -1108,7 +1108,7 @@ let g (src string) -> (int, bool, string)
 
 ### Currying
 
-Multiple parameter groups express curry. Each `()` group is one call step. See **`## Curry Functions`** for the full specification of both forms, execution semantics, partial application, and performance characteristics.
+Multiple parameter groups express curry. Each `()` group is one call step. See **`## Curry Functions`** for the full specification of both forms, execution semantics, and partial application.
 
 ```luc
 let add (a int)(b int) -> int = { return a + b }
@@ -1412,96 +1412,131 @@ let f (a int) -> ~nullable (b int) -> int = { ... }
 
 ## Curry Functions
 
-A curry function is a function that can be partially applied — called with fewer argument groups than it declares, producing a new function that accepts the remaining groups. Luc supports two syntactic forms for curry functions. Both produce the same call site but have different semantics, performance characteristics, and expressiveness.
+A curry function is a function that can be partially applied — called with fewer argument groups than it declares, producing a new function that accepts the remaining groups.
 
-### Form 1 — Explicit Return Function
+**The core idea:**
 
-The outer function explicitly returns an inner function as its body result. The return type in the signature names the inner function type:
+- `(a T, b U)` — both values must arrive in one call.
+- `(a T)(b U)` — same two values, but they can arrive in two separate calls. The `()()` notation is purely about *when* the values arrive, not about what the function ultimately computes.
+- `-> T` means the same thing in both cases: "the body must eventually `return` a value of type `T`."
+
+Every `->` in a signature is a promise that *something runs at that boundary*. Form 2's `()()` groups let you omit the intermediate `->` promises when they'd be empty — the compiler inserts the mechanical nesting so you don't have to.
+
+Luc supports two syntactic forms. **Form 2 is pure textual shorthand for Form 1** — the compiler expands it before any type checking or codegen, and the two forms produce identical runtime behavior.
+
+### Form 1 — Explicit Intermediate `->` Return
+
+Each `->` in the signature corresponds to a real body boundary. The programmer writes every intermediate `return (...) -> T { ... }` explicitly. Use this form when code needs to run *between* argument groups — at the point of partial application, before the inner function is created:
 
 ```luc
+-- outer body runs the moment add(10) is called
+-- inner function is created there and captured with a=10
 let add (a int) -> (b int) -> int = {
     return (b int) -> int { return a + b }
 }
+
+let addTen (b int) -> int = add(10)   -- outer body runs here
+let result  int           = addTen(5) -- inner body runs here → 15
 ```
 
-**What executes when:**
-
-The outer body runs immediately when the first group is called. The inner function is created at that point and returned as a value:
+**Running code between groups:**
 
 ```luc
-let addTen (b int) -> int = add(10)
--- outer body ran: closure created capturing a=10
--- inner function returned and stored in addTen
-
-let result int = addTen(5)    -- 15: inner body runs here
-```
-
-**Pre-computation at partial application:**
-
-Because the outer body runs at the first call, you can do expensive setup once and capture the result — the inner function then uses the already-computed value:
-
-```luc
+-- config:compile() runs ONCE when makeProcessor(myConfig) is called
+-- every subsequent call to process(data) reuses the compiled result
 let makeProcessor (config Config) -> (data string) -> string = {
-    let compiled = config:compile()    -- runs ONCE at makeProcessor(config)
+    let compiled = config:compile()
     return (data string) -> string { return compiled:apply(data) }
 }
 
 let process (data string) -> string = makeProcessor(myConfig)
--- config:compile() already done — process(data) is cheap on every call
-process("input1")
-process("input2")
+process("input1")   -- cheap: compiled already done
+process("input2")   -- cheap: compiled already done
 ```
 
-**Explicit capture control:**
-
-The inner function captures only what you explicitly reference. You can transform outer parameters before capturing:
+**Choosing exactly what gets captured:**
 
 ```luc
+-- transform factor before capture — the returned closure never sees factor itself
 let scaleBy (factor int) -> (v int) -> int = {
-    let multiplier int = factor * 2    -- transform before capture
+    let multiplier int = factor * 2
     return (v int) -> int { return v * multiplier }
-    -- multiplier captured, not factor
 }
+
+let double (v int) -> int = scaleBy(1)   -- multiplier=2 captured, factor discarded
+double(5)   -- 10
+double(21)  -- 42
 ```
 
-### Form 2 — Multiple Parameter Groups
+### Form 2 — `()()` Shorthand
 
-Multiple `()` groups after the function name. The body runs only when **all** groups are provided. The compiler desugars this into form 1 internally — you never write the nested return:
+Think of Form 2 as a **multi-parameter function that the compiler automatically makes curriable**. You write the function exactly as if all the arguments arrive at once — the body is flat, all parameters are in scope, the logic reads left to right. The only difference from a plain multi-param function is that `()()` groups instead of `(,)` commas, which tells the compiler to make each group independently callable:
 
 ```luc
+-- plain multi-param function — all args must arrive together
+let add (a int, b int) -> int = {
+    return a + b
+}
+add(10, 5)   -- 15 — the only way to call it
+
+-- Form 2 — same body, same logic, but each group can arrive separately
 let add (a int)(b int) -> int = {
-    return a + b    -- a and b both available: body runs when both groups provided
+    return a + b   -- body is IDENTICAL — you changed nothing here
 }
-```
-
-**What executes when:**
-
-The body does not run until every parameter group is supplied. Partial application produces a compiler-generated closure:
-
-```luc
+add(10)(5)          -- 15 — all groups at once
+add(10)             -- (b int) -> int — partially applied
 let addTen (b int) -> int = add(10)
--- body has NOT run yet: compiler wrapped add with a=10 captured
--- addTen is a closure waiting for b
-
-let result int = addTen(5)    -- body runs NOW: a=10, b=5 → 15
+addTen(5)           -- 15
 ```
 
-**Deep curry:**
+The key guarantee: **the compiler only wraps around your body — it never touches what's inside it.** You write the body as if all parameters are already available, because they will be, at the point your body actually runs. The wrapping is purely mechanical plumbing that the compiler emits so callers get the currying behavior:
 
 ```luc
+-- as written — body sees a, b, c exactly like a 3-param function
 let clamp (lo int)(hi int)(v int) -> int = {
     if v < lo { return lo }
     if v > hi { return hi }
     return v
 }
 
-let clamp0to100 (v int) -> int = clamp(0)(100)
-clamp0to100(42)     -- 42
-clamp0to100(150)    -- 100
-clamp0to100(-5)     -- 0
+-- what the compiler emits (you never write or read this)
+let clamp (lo int) -> (hi int) -> (v int) -> int = {
+    return (hi int) -> (v int) -> int {
+        return (v int) -> int {
+            -- your body, untouched, innermost
+            if v < lo { return lo }
+            if v > hi { return hi }
+            return v
+        }
+    }
+}
 ```
 
-**Generic parameters apply to all groups:**
+So Form 2 answers the question: "what if I want this function to be curriable, but I don't want to think about layers, nesting, or when things get captured?" — write it flat, swap commas for `()` groups, done.
+
+**Partial application:**
+
+```luc
+let clamp0to100 (v int) -> int = clamp(0)(100)
+clamp0to100(42)    -- 42
+clamp0to100(150)   -- 100
+clamp0to100(-5)    -- 0
+
+-- build a reusable validator from a generic predicate
+let between (lo int)(hi int)(v int) -> bool = {
+    return v >= lo && v <= hi
+}
+
+let isValidAge  (v int) -> bool = between(0)(150)
+let isValidPort (v int) -> bool = between(1)(65535)
+
+isValidAge(25)      -- true
+isValidAge(200)     -- false
+isValidPort(8080)   -- true
+isValidPort(0)      -- false
+```
+
+**Generics — type parameters apply across all groups:**
 
 ```luc
 let map<T, U> (items [_, T])(f (T) -> U) -> [*, U] = {
@@ -1510,22 +1545,40 @@ let map<T, U> (items [_, T])(f (T) -> U) -> [*, U] = {
     return result
 }
 
-let doubled [*, int] = map<int, int>([1, 2, 3])(double)
-let strs     [*, string] = map<int, string>([1, 2, 3])(toString<int>)
+let doubled [*, int]    = map<int, int>([1, 2, 3])(double)
+let strs    [*, string] = map<int, string>([1, 2, 3])(toString<int>)
+
+-- partially apply the items, reuse the mapper
+let mapOverMyList [*, U] = map<int, U>([1, 2, 3])
+let ints   [*, int]    = mapOverMyList(double)
+let strs   [*, string] = mapOverMyList(toString<int>)
+```
+
+**Multiple return — `-> (T, U)` works the same way:**
+
+```luc
+let split (sep string)(s string) -> (string, string) = {
+    let i int = s:indexOf(sep)
+    return s:slice(0, i), s:slice(i + sep:len(), s:len())
+}
+
+let splitOnComma (s string) -> (string, string) = split(",")
+let splitOnSlash (s string) -> (string, string) = split("/")
+
+let a string, b string = splitOnComma("hello,world")   -- "hello", "world"
+let c string, d string = splitOnSlash("usr/local")     -- "usr", "local"
 ```
 
 ### Key Differences
 
-|                             | Form 1                                          | Form 2                                   |
-| --------------------------- | ----------------------------------------------- | ---------------------------------------- |
-| Syntax                      | `(a int) -> (b int) -> int`                     | `(a int)(b int) -> int`                  |
-| Body runs at                | First group call                                | All groups provided                      |
-| Pre-computation             | ✅ Before inner function created                 | ❌ Not possible                           |
-| Capture control             | ✅ Explicit — reference what you need            | ❌ Implicit — compiler captures used vars |
-| Boilerplate                 | Higher — must write `return (...) -> T { ... }` | Lower — plain body                       |
-| Mixing logic between groups | ✅ Yes — outer body is free code                 | ❌ No — only one body for all groups      |
-| Compiler desugars to        | Itself                                          | Form 1                                   |
-
+|                              | Form 1 — `(a T) -> (b U) -> V`                                         | Form 2 — `(a T)(b U) -> V`                                  |
+| ---------------------------- | ---------------------------------------------------------------------- | ----------------------------------------------------------- |
+| Intermediate `->`            | Written explicitly per boundary                                        | Absent — compiler inserts mechanical wrappers               |
+| Body boundaries              | One per `->` — each can contain real code                              | One only — the written body, always innermost               |
+| Code between argument groups | ✅ Yes — write it in any outer body                                     | ❌ No — no outer body slot exists in the written form        |
+| Capture control              | ✅ Explicit — compute and transform before the inner closure is created | ❌ Implicit — compiler captures whatever the body references |
+| Boilerplate                  | Higher — `return (...) -> T { ... }` per level                         | Lower — one flat group list, one body                       |
+| Best for                     | Functions that do real work between argument groups                    | Functions where only the final result matters               |
 ### Partial Application — Intermediate Type Annotation Required
 
 Luc requires explicit type annotations on all declarations — partial application is no exception. When storing an intermediate result, you must write the full type of the remaining function:
@@ -1544,18 +1597,109 @@ The type annotation documents what the partial application produces and makes th
 
 ### Mixing Forms
 
-You can mix form 1 and form 2 in the same declaration — form 2 groups come first, followed by a form 1 explicit return:
+You can mix Form 1 and Form 2 in the same declaration — Form 2 groups come first, followed by a Form 1 explicit `->` return. The split point is wherever you write the first intermediate `->` in the signature: everything before it is Form 2 (compiler-wrapped), everything from it onward is Form 1 (you write the return):
 
 ```luc
--- form 2 for first two groups, form 1 for the third
+-- form 2 for the first two groups, form 1 for the third
+-- the body runs when both a and b are provided — sum is computed once there
 let f (a int)(b int) -> (c int) -> int = {
-    let sum int = a + b              -- runs when both a and b are provided
+    let sum int = a + b              -- runs when f(a)(b) is called
     return (c int) -> int { return sum + c }
 }
 
--- partial applications
 let f10_20 (c int) -> int = f(10)(20)   -- sum=30 computed here
 f10_20(5)                               -- 35
+f10_20(10)                              -- 40
+```
+
+**Mixing Form 2, Form 1, and a tuple return:**
+
+```luc
+-- (a int)(b int) are Form 2 groups — compiler wraps them
+-- -> (string, (v string)(u string) -> string) is the Form 1 return type:
+--   a tuple whose second element is itself a curried function (also Form 2)
+let format (a int)(b int) -> (string, (v string)(u string) -> string) = {
+    let prefix string = "(" + string(a) + "," + string(b) + ")"
+    return prefix, (v string)(u string) -> string {
+        return prefix + ":" + v + "/" + u
+    }
+}
+```
+
+The compiler expands Form 2 **recursively and exhaustively** — every `()()` shorthand anywhere in the code is expanded, including inside return expressions and tuple elements. It keeps walking until no `()()` groups remain in the tree. So the full expansion is:
+
+```luc
+-- pass 1: expand (a int)(b int) at the top level
+-- pass 2: expand (v string)(u string) inside the return expression
+let format (a int) -> (b int) -> (string, (v string) -> (u string) -> string) = {
+    return (b int) -> (string, (v string) -> (u string) -> string) {
+        let prefix string = "(" + string(a) + "," + string(b) + ")"
+        return prefix, (v string) -> (u string) -> string {
+            return (u string) -> string {
+                return prefix + ":" + v + "/" + u
+            }
+        }
+    }
+}
+```
+
+The written body (`let prefix ...`, `return prefix, ...`) is never modified — only the wrapper layers are generated around and outside it.
+
+Call sites — reading each layer left to right:
+
+```luc
+-- fully apply both outer Form 2 groups
+let label string, combine (v string)(u string) -> string = format(1)(2)
+-- label   = "(1,2)"
+-- combine = the inner curried function, with prefix="(1,2)" captured
+
+-- apply combine — itself curriable, so partially applicable too
+let withV (u string) -> string = combine("hello")
+withV("world")              -- "(1,2):hello/world"
+combine("hello")("world")  -- same, all groups at once
+
+-- partially apply only the outer groups
+let fmt1x (b int) -> (string, (v string)(u string) -> string) = format(1)
+let label2 string, combine2 (v string)(u string) -> string = fmt1x(99)
+-- label2   = "(1,99)"
+-- combine2 = fresh closure with prefix="(1,99)"
+combine2("hi")("there")   -- "(1,99):hi/there"
+```
+
+**Another example — mixing Form 2 groups with a function-typed return:**
+
+```luc
+-- validate a range, return a label and a predicate curried over two strings
+let rangeCheck (lo int)(hi int) -> (string, (tag string)(v string) -> bool) = {
+    let desc string = "[" + string(lo) + ".." + string(hi) + "]"
+    return desc, (tag string)(v string) -> bool {
+        let n int = int(v)
+        return n >= lo && n <= hi
+    }
+}
+
+-- compiler fully expands — both (lo)(hi) at top level AND (tag)(v) inside the tuple
+let rangeCheck (lo int) -> (hi int) -> (string, (tag string) -> (v string) -> bool) = {
+    return (hi int) -> (string, (tag string) -> (v string) -> bool) {
+        let desc string = "[" + string(lo) + ".." + string(hi) + "]"
+        return desc, (tag string) -> (v string) -> bool {
+            return (v string) -> bool {
+                let n int = int(v)
+                return n >= lo && n <= hi
+            }
+        }
+    }
+}
+
+let rangeDesc string, check (tag string)(v string) -> bool = rangeCheck(0)(100)
+-- rangeDesc = "[0..100]"
+
+let checkAge   (v string) -> bool = check("age")
+let checkScore (v string) -> bool = check("score")
+
+checkAge("25")    -- true
+checkAge("200")   -- false
+checkScore("99")  -- true
 ```
 
 ### Recursion
