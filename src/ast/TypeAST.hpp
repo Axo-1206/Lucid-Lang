@@ -139,6 +139,8 @@ struct PrimitiveTypeAST : TypeAST {
  *
  * Codegen uses this flag to skip instantiation collection for abstract uses –
  * `InstKey{"Box", ["T"]}` is meaningless and must not be recorded.
+ *
+ * @note Named type hold generic arguments not generic parameters.
  */
 struct NamedTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::NamedType;

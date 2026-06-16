@@ -131,7 +131,7 @@ UseDeclPtr Parser::parseUseDecl(Visibility vis) {
         
         if (!ts_.check(TokenType::IDENTIFIER)) {
             LOG_DECL("parseUseDecl: ERROR - expected alias name after 'as'");
-            errorAt(DiagCode::E1103, ts_.peek().value);
+            errorAt(DiagCode::E1002, "alias name", ts_.peek().value);
             // Continue without alias (error already reported)
         } else {
             node->alias = pool_.intern(ts_.advance().value);

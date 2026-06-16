@@ -75,14 +75,6 @@ enum class DeclKeyword {
     Const
 };
 
-// ============================================================================
-// DECLARATIONS (alphabetical order)
-// ============================================================================
-
-// ─────────────────────────────────────────────────────────────────────────────
-// PackageDeclAST
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
  * @brief Represents `package name` – the first non‑comment line of every .luc file.
  *
@@ -105,10 +97,6 @@ struct PackageDeclAST : DeclAST {
         : DeclAST(ASTKind::PackageDecl), name(n) {}
 };
 using PackageDeclPtr = PackageDeclAST*;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// UseDeclAST
-// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * @brief Represents a `use` declaration – imports symbols from another module.
@@ -134,10 +122,6 @@ struct UseDeclAST : DeclAST {
     UseDeclAST() : DeclAST(ASTKind::UseDecl) {}
 };
 using UseDeclPtr = UseDeclAST*;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// VALUE NAMESPACE DECLARATIONS
-// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * @brief Represents a variable declaration with an explicit type annotation.
@@ -186,30 +170,6 @@ struct ParamAST : ValueDeclAST {
 };
 using ParamPtr = ParamAST*;
 using ParamGroup = std::vector<ParamPtr>;
-
-/**
- * @brief Represents a struct field, optionally with a default value.
- *
- * @example
- *   x     float           → defaultVal = nullptr
- *   r     float = 1.0     → defaultVal = literal 1.0
- *   items [*]string       → type = DynamicArray(String)
- *
- * The semantic pass enforces that struct literals must supply every field
- * that lacks a default value.
- *
- * ─── Semantic Cache ────────────────────────────────────────────────────────
- * `valueType` (from ValueDeclAST) points to the field's resolved type.
- */
-struct FieldDeclAST : ValueDeclAST {
-    static constexpr ASTKind staticKind = ASTKind::FieldDecl;
-
-    TypePtr type;          // Original type annotation (may contain aliases)
-    ExprPtr defaultVal;    // nullptr if no default
-
-    FieldDeclAST() : ValueDeclAST(ASTKind::FieldDecl) {}
-};
-using FieldDeclPtr = FieldDeclAST*;
 
 /**
  * @brief Represents a function declaration.
@@ -280,9 +240,29 @@ struct EnumVariantAST : ValueDeclAST {
 };
 using EnumVariantPtr = EnumVariantAST*;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// TYPE NAMESPACE DECLARATIONS
-// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * @brief Represents a struct field, optionally with a default value.
+ *
+ * @example
+ *   x     float           → defaultVal = nullptr
+ *   r     float = 1.0     → defaultVal = literal 1.0
+ *   items [*]string       → type = DynamicArray(String)
+ *
+ * The semantic pass enforces that struct literals must supply every field
+ * that lacks a default value.
+ *
+ * ─── Semantic Cache ────────────────────────────────────────────────────────
+ * `valueType` (from ValueDeclAST) points to the field's resolved type.
+ */
+struct FieldDeclAST : ValueDeclAST {
+    static constexpr ASTKind staticKind = ASTKind::FieldDecl;
+
+    TypePtr type;          // Original type annotation (may contain aliases)
+    ExprPtr defaultVal;    // nullptr if no default
+
+    FieldDeclAST() : ValueDeclAST(ASTKind::FieldDecl) {}
+};
+using FieldDeclPtr = FieldDeclAST*;
 
 /**
  * @brief Represents a struct definition with fields and optional generic parameters.

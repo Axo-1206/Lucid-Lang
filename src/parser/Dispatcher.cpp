@@ -128,7 +128,7 @@ DeclPtr Parser::parseDeclaration(DeclContext ctx) {
     if (ts_.check(TokenType::USE)) {
         LOG_PARSER_VERBOSE("parseDeclaration: dispatching to parseUseDecl");
         if (ctx == DeclContext::Local) {
-            errorAt(DiagCode::E1105);
+            errorAt(DiagCode::E1009, "keyword 'use", "Declaration of 'use' is not allowed inside a block");
             ts_.advance();
             while (!ts_.isAtEnd() && !ts_.checkAny({TokenType::SEMICOLON, TokenType::RBRACE, 
                     TokenType::LET, TokenType::CONST, TokenType::IF, TokenType::FOR,

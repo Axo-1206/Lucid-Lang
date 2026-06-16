@@ -27,13 +27,14 @@ enum class DiagCode : uint32_t {
     E1006,          ///< Expected expression after '='
     E1007,          ///< Expected token
     E1008,          ///< Expected type
+    E1009,          ///< Invalid context
 
     // Speicalize codes
     // E1101 = 1100,   ///< Expected package name
     E1102,          ///< Expected module path after keyword 'use'
-    E1103,          ///< Expected name alias after keyword 'as'
+    // E1103,          ///< Expected name alias after keyword 'as'
     E1104,          ///< Visibility modifier not allowed in local declaration
-    E1105,          ///< Invalid context: 'use' declaration is not allowed inside a block
+    // E1105,          ///< Invalid context: 'use' declaration is not allowed inside a block
     E1106,          ///< Invalid argument for attribute
     E1107,          ///< Unexpected tralling comma
     E1108,          ///< Invalid enum variant integer literal
