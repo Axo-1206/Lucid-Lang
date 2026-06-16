@@ -28,6 +28,7 @@ std::string_view getMessage(DiagCode code) {
         case DiagCode::E1005: return "Expected '%s' to close %s, but found '%s'";
         case DiagCode::E1006: return "Expected expression after '=', but found '%s'";
         case DiagCode::E1007: return "Expected '%s' (%s), but found '%s'";
+        case DiagCode::E1008: return "Expected type %s, but found '%s'";
 
         // case DiagCode::E1101: return "Expected package name, found %s";
         case DiagCode::E1102: return "Expected module path after keyword 'use', found %s"; 
@@ -37,6 +38,7 @@ std::string_view getMessage(DiagCode code) {
         case DiagCode::E1106: return "Expected string, integer, boolean, or identifier in attribute argument, but found %s";
         case DiagCode::E1107: return "Unexpected tralling comma in %s";
         case DiagCode::E1108: return "Invalid integer literal '%s' for enum variant";
+        case DiagCode::E1109: return "Type %s cannot be generic argument";
 
 
         // case DiagCode::E1001: return "Expected token '%s' but found '%s'.";

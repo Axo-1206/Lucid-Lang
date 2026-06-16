@@ -195,7 +195,7 @@ GenericParamDeclPtr Parser::parseGenericParamDecl() {
             TypePtr constraintType = parseType();
             if (!constraintType) {
                 LOG_DECL("parseGenericParamDecl: ERROR - expected type in constraint");
-                errorAt(DiagCode::E1002, "trait type in generic contraint", ts_.peek().value);
+                errorAt(DiagCode::E1008, "(trait name) in generic contraint", ts_.peek().value);
                 break;
             }
             

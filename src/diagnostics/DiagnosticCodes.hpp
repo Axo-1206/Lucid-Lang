@@ -26,6 +26,7 @@ enum class DiagCode : uint32_t {
     E1005,          ///< Expected '}, ], >, )'
     E1006,          ///< Expected expression after '='
     E1007,          ///< Expected token
+    E1008,          ///< Expected type
 
     // Speicalize codes
     // E1101 = 1100,   ///< Expected package name
@@ -36,8 +37,8 @@ enum class DiagCode : uint32_t {
     E1106,          ///< Invalid argument for attribute
     E1107,          ///< Unexpected tralling comma
     E1108,          ///< Invalid enum variant integer literal
+    E1109,          ///< Type can't be used as generic argument
 
-    // E1108,          ///< Expected trait type in generic constraint
 
     // E1001 = 1000,   ///< Expected token '%s' but found '%s'.
     // E1002,          ///< Unexpected token '%s'.

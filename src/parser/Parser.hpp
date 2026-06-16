@@ -67,6 +67,7 @@
 #include "ast/StmtAST.hpp"
 #include "ast/TypeAST.hpp"
 #include "ast/support/ASTArena.hpp"
+#include "registry/AttributeRegistry.hpp"
 #include "registry/QualifierRegistry.hpp"
 #include "debug/DebugMacros.hpp"
 #include "debug/DebugUtils.hpp"
@@ -144,9 +145,11 @@ public:
     bool match(TokenType type);
     bool matchAny(std::initializer_list<TokenType> types);
     std::optional<Token> consumeIf(TokenType type);
-    Token consume(TokenType type);
     bool isAtEnd() const;
     SourceLocation currentLoc() const;
+
+    [[deprecated("Should use explicit log and diagnostic check then advance")]]
+    Token consume(TokenType type);
 
     // ------------------------------------------------------------------------
     // Lookahead helpers (non‑consuming, skip comments)
@@ -155,6 +158,7 @@ public:
     TokenType peekNextType() const;
     const Token& peekNext() const;
     const Token& peekAt(size_t offset) const;
+    bool isPrimitiveTypeToken(TokenType type);
 
     // ------------------------------------------------------------------------
     // Raw inspection (keeps comments, for doc harvesting & lookahead)
@@ -544,5 +548,4 @@ private:
     bool looksLikeBehaviorAccess() const;
     bool looksLikeGenericArray() const;
     bool looksLikeGenericTypeInstantiation() const;
-    static bool isPrimitiveTypeToken(TokenType type);
 };
