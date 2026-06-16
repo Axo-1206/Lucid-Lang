@@ -227,8 +227,6 @@ std::optional<Token> TokenStream::consumeIf(TokenType type) {
  * @brief Requires the next token to be `type`; consumes it or reports error.
  * 
  * @param type The required token type
- * @param code The diagnostic code for error reporting
- * @param msg Human-readable error message
  * @return The consumed token (or a dummy token on error)
  * 
  * This is the workhorse for parsing mandatory syntax elements.
@@ -237,23 +235,11 @@ std::optional<Token> TokenStream::consumeIf(TokenType type) {
  * 
  * @note The dummy token has the expected type but empty value, line 0, column 0.
  */
-Token TokenStream::consume(TokenType type, DiagCode code, const std::string& msg) {
+Token TokenStream::consume(TokenType type) {
     if (check(type)) return advance();
     SourceLocation loc = currentLoc();
-    diagnostic::error(DiagnosticCategory::Syntax, filePath_, loc, code, {msg});
     // Return a dummy token for recovery
     return {type, "", 0, 0};
-}
-
-/**
- * @brief Convenience overload of consume() using default error code E2001.
- * 
- * @param type The required token type
- * @param msg Human-readable error message
- * @return The consumed token (or a dummy token on error)
- */
-Token TokenStream::consume(TokenType type, const std::string& msg) {
-    return consume(type, DiagCode::E2001, msg);
 }
 
 /**

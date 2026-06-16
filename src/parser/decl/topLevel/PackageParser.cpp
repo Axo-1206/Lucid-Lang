@@ -26,7 +26,7 @@
  * @return PackageDeclAST* on success, nullptr on error
  */
 PackageDeclPtr Parser::parsePackageDecl() {
-    LUC_LOG_DECL_VERBOSE("parsePackageDecl: entering");
+    LOG_DECL_VERBOSE("parsePackageDecl: entering");
 
     // Harvest doc comments attached to this package declaration
     auto doc = harvestDocComment();
@@ -35,23 +35,21 @@ PackageDeclPtr Parser::parsePackageDecl() {
     
     // Check for 'package' keyword
     if (!ts_.check(TokenType::PACKAGE)) {
-        LUC_LOG_DECL("parsePackageDecl: ERROR - expected 'package' keyword");
-        errorAt(DiagCode::E1001, "package", ts_.peek().value);
+        LOG_DECL("parsePackageDecl: ERROR - expected 'package' keyword");
+        errorAt(DiagCode::E1001, "package", ts_.peek().value); // Expected keyword
         return nullptr;
     }
-    
-    // Consume 'package' keyword
-    ts_.advance();
+    ts_.advance(); // Consume 'package' keyword
 
     // Parse package name (required)
     if (!ts_.check(TokenType::IDENTIFIER)) {
-        LUC_LOG_DECL("parsePackageDecl: ERROR - expected package name");
-        errorAt(DiagCode::E1101);
+        LOG_DECL("parsePackageDecl: ERROR - expected package name");
+        errorAt(DiagCode::E1101, ts_.peek().value);
         return nullptr;
     }
     
     InternedString name = pool_.intern(ts_.advance().value);
-    LUC_LOG_DECL_VERBOSE("parsePackageDecl: package name = " << pool_.lookup(name));
+    LOG_DECL_VERBOSE("parsePackageDecl: package name = " << pool_.lookup(name));
     
     auto* node = arena_.make<PackageDeclAST>(name);
     node->loc = loc;
@@ -60,7 +58,7 @@ PackageDeclPtr Parser::parsePackageDecl() {
     // Attach doc comment if found
     if (doc) {
         node->doc = std::move(doc);
-        LUC_LOG_DECL_EXTREME("parsePackageDecl: attached doc comment to package");
+        LOG_DECL_EXTREME("parsePackageDecl: attached doc comment to package");
     }
     
     return node;

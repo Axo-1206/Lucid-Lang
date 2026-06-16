@@ -144,8 +144,7 @@ public:
     bool match(TokenType type);
     bool matchAny(std::initializer_list<TokenType> types);
     std::optional<Token> consumeIf(TokenType type);
-    Token consume(TokenType type, DiagCode code, const std::string& msg);
-    Token consume(TokenType type, const std::string& msg);
+    Token consume(TokenType type);
     bool isAtEnd() const;
     SourceLocation currentLoc() const;
 

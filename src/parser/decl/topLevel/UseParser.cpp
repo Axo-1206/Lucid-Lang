@@ -41,17 +41,15 @@ UseDeclPtr Parser::parseUseDecl(Visibility vis) {
     // Check for 'use' keyword (should be present if called correctly)
     if (!ts_.check(TokenType::USE)) {
         LOG_DECL("parseUseDecl: ERROR - expected 'use' keyword");
-        errorAt(DiagCode::E1001, "use", ts_.peek().value);
+        errorAt(DiagCode::E1001, "use", ts_.peek().value); // Expected keyword
         return nullptr;
     }
-    
-    // Consume 'use' keyword
-    ts_.advance();
+    ts_.advance(); // Consume 'use' keyword
 
     // Parse module path (dotted identifiers)
     if (!ts_.check(TokenType::IDENTIFIER)) {
         LOG_DECL("parseUseDecl: ERROR - expected module path after 'use'");
-        errorAt(DiagCode::E1102);
+        errorAt(DiagCode::E1102, ts_.peek().value);
         return nullptr;
     }
     
@@ -99,7 +97,7 @@ UseDeclPtr Parser::parseUseDecl(Visibility vis) {
         LOG_DECL_EXTREME("parseUseDecl: parsing alias");
         if (!ts_.check(TokenType::IDENTIFIER)) {
             LOG_DECL("parseUseDecl: ERROR - expected alias name after 'as'");
-            errorAt(DiagCode::E1103, "expected alias name after 'as'");
+            errorAt(DiagCode::E1103, ts_.peek().value);
             // Continue without alias (error already reported)
         } else {
             node->alias = pool_.intern(ts_.advance().value);

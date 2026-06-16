@@ -11,75 +11,149 @@
  * 
  * Example: `pub struct Vec2<T> { x T, y T }`
  * 
+ * ─── Precondition ─────────────────────────────────────────────────────────
+ * Caller MUST have already verified that the current token is STRUCT.
+ * This function assumes it is positioned at the 'struct' keyword.
+ * 
  * ─── Token Consumption ─────────────────────────────────────────────────────
  * On entry: positioned at 'struct' keyword
  * On exit:  positioned after the closing '}'
+ * 
+ * ─── Doc Comment Support ───────────────────────────────────────────────────
+ * - Block doc comments (/-- ... --/) immediately above struct
+ * - Stacked line comments (-- lines) immediately above struct
+ * - Trailing comments (-- comment) on the same line as struct
  * 
  * ─── Loop Safety ──────────────────────────────────────────────────────────
  * Uses saved position pattern when parsing fields. If parseFieldDecl() makes
  * no progress, consumes one token and continues (prevents infinite loop).
  * 
  * ─── Error Recovery ───────────────────────────────────────────────────────
- * - Missing struct name: returns nullptr
+ * - Missing struct name: reports error, returns nullptr
  * - Missing '{' after name: reports error, returns nullptr
  * - Invalid field: skips field, continues parsing remaining fields
- * - Missing '}': consume() reports error
+ * - Missing '}': consume() reports error (returns partially built node)
  */
 StructDeclPtr Parser::parseStructDecl(Visibility vis) {
-    LUC_LOG_DECL_VERBOSE("parseStructDecl: entering");
+    LOG_DECL_VERBOSE("parseStructDecl: entering");
+    
+    // Harvest doc comments attached to this struct declaration
+    auto doc = harvestDocComment();
+    
+    // Parse attributes before the struct
+    auto attrs = parseAttributes();
+    
     SourceLocation loc = ts_.currentLoc();
-    ts_.consume(TokenType::STRUCT, "expected 'struct'");
+    
+    // Check for 'struct' keyword (should be present if called correctly)
+    if (!ts_.check(TokenType::STRUCT)) {
+        LOG_DECL("parseStructDecl: ERROR - expected 'struct' keyword");
+        errorAt(DiagCode::E1001, "struct", ts_.peek().value); // Expected keyword
+        return nullptr;
+    }
+    ts_.advance(); // Consume 'struct' keyword
 
+    // Parse struct name
     if (!ts_.check(TokenType::IDENTIFIER)) {
-        LUC_LOG_DECL("parseStructDecl: ERROR - expected struct name");
-        errorAt(DiagCode::E1003, "expected struct name");
+        LOG_DECL("parseStructDecl: ERROR - expected struct name");
+        errorAt(DiagCode::E1106, ts_.peek().value);
         return nullptr;
     }
     InternedString name = pool_.intern(ts_.advance().value);
-    LUC_LOG_DECL_EXTREME("parseStructDecl: struct name = " << pool_.lookup(name));
+    LOG_DECL_EXTREME("parseStructDecl: struct name = " << pool_.lookup(name));
 
-    auto node = arena_.make<StructDeclAST>();
-    node->loc = loc;
-    node->name = name;
-    node->visibility = vis;
-
+    // Parse generic parameters if present
+    ArenaSpan<GenericParamDeclPtr> genericParams;
     if (ts_.check(TokenType::LESS)) {
-        LUC_LOG_DECL_EXTREME("parseStructDecl: parsing generic parameters");
-        node->genericParams = parseGenericParams();
-        LUC_LOG_DECL_EXTREME("parseStructDecl: " << node->genericParams.size() << " generic parameter(s)");
+        LOG_DECL_EXTREME("parseStructDecl: parsing generic parameters");
+        genericParams = parseGenericParamDecls();
+        LOG_DECL_EXTREME("parseStructDecl: " << genericParams.size() << " generic parameter(s)");
     }
 
-    ts_.consume(TokenType::LBRACE, "expected '{' to open struct body");
+    // Expect opening brace
+    if (!ts_.check(TokenType::LBRACE)) {
+        LOG_DECL("parseStructDecl: ERROR - expected '{' to open struct body");
+        errorAt(DiagCode::E1004, "{", "struct body");
+        return nullptr;
+    }
+    ts_.advance();
 
+    // Parse fields
     std::vector<FieldDeclPtr> fields;
     int fieldCount = 0;
+    int consecutiveFailures = 0;
+    const int MAX_CONSECUTIVE_FAILURES = 10;
     
-    while (!ts_.check(TokenType::RBRACE) && !ts_.isAtEnd()) {
+    while (!ts_.check(TokenType::RBRACE) && !ts_.isAtEnd() && consecutiveFailures < MAX_CONSECUTIVE_FAILURES) {
+        // Skip optional separators (commas or semicolons between fields)
         ts_.match(TokenType::SEMICOLON);
         ts_.match(TokenType::COMMA);
-        if (ts_.check(TokenType::RBRACE)) break;
+        
+        // Check if we've reached the end after skipping separators
+        if (ts_.check(TokenType::RBRACE)) {
+            ts_.advance(); // consume '}'
+            break;
+        }
 
         size_t savedPos = ts_.getPos();
+        
+        // Parse field with its own doc comment and attributes
         FieldDeclPtr field = parseFieldDecl();
+        
         if (field) {
             fieldCount++;
-            LUC_LOG_DECL_EXTREME("parseStructDecl: parsed field #" << fieldCount);
+            LOG_DECL_EXTREME("parseStructDecl: parsed field #" << fieldCount 
+                                 << " (" << pool_.lookup(field->name) << ")");
             fields.push_back(field);
+            consecutiveFailures = 0;
         } else {
-            LUC_LOG_DECL("parseStructDecl: ERROR - failed to parse field");
-            if (ts_.getPos() == savedPos && !ts_.isAtEnd()) ts_.advance();
-            while (!ts_.isAtEnd() && !ts_.check(TokenType::RBRACE) && 
-                   !ts_.check(TokenType::IDENTIFIER)) ts_.advance();
+            consecutiveFailures++;
+            LOG_DECL("parseStructDecl: ERROR - failed to parse field (attempt " 
+                         << consecutiveFailures << ")");
+            
+            // Check for progress
+            if (ts_.getPos() == savedPos && !ts_.isAtEnd()) {
+                // No progress - force consume a token
+                LOG_DECL("parseStructDecl: no progress, forcing token consumption");
+                ts_.advance();
+            }
+            
+            // Skip to next potential field start
+            while (!ts_.isAtEnd() && 
+                   !ts_.check(TokenType::RBRACE) && 
+                   !ts_.check(TokenType::IDENTIFIER) &&
+                   !ts_.check(TokenType::AT_SIGN)) {
+                ts_.advance();
+            }
+        }
+        
+        // Safety: prevent infinite loops
+        if (consecutiveFailures > 5) {
+            LOG_DECL("parseStructDecl: too many consecutive failures, forcing skip to RBRACE");
+            while (!ts_.isAtEnd() && !ts_.check(TokenType::RBRACE)) {
+                ts_.advance();
+            }
+            break;
         }
     }
 
+    // Build the fields span
     auto builder = arena_.makeBuilder<FieldDeclPtr>();
     for (auto& f : fields) builder.push_back(f);
-    node->fields = builder.build();
-
-    ts_.consume(TokenType::RBRACE, "expected '}' to close struct body");
+    ArenaSpan<FieldDeclPtr> fieldSpan = builder.build();
     
-    LUC_LOG_DECL_VERBOSE("parseStructDecl: parsed " << fieldCount << " field(s)");
+    // Create the AST node only after successful parsing
+    auto* node = arena_.make<StructDeclAST>();
+    node->loc = loc;
+    node->name = name;
+    node->visibility = vis;
+    node->genericParams = genericParams;
+    node->fields = fieldSpan;
+    
+    // Attach metadata
+    attachMetadata(*node, std::move(doc), std::move(attrs));
+    
+    LOG_DECL_VERBOSE("parseStructDecl: parsed " << fieldCount << " field(s)");
     return node;
 }
 
@@ -88,11 +162,23 @@ StructDeclPtr Parser::parseStructDecl(Visibility vis) {
  * 
  * Grammar: IDENTIFIER type [ `=` expr ]
  * 
- * Example: `r float = 1.0`
+ * Example: `pub r float = 1.0`
+ * 
+ * ─── Precondition ─────────────────────────────────────────────────────────
+ * Caller should be positioned at the field name or visibility modifier.
  * 
  * ─── Token Consumption ─────────────────────────────────────────────────────
- * On entry: positioned at field name
+ * On entry: positioned at field name or visibility keyword
  * On exit:  positioned after optional default value expression
+ * 
+ * ─── Doc Comment Support ───────────────────────────────────────────────────
+ * Fields can have doc comments attached for documentation generation:
+ *   -- The X coordinate
+ *   x float
+ * 
+ * ─── Visibility ────────────────────────────────────────────────────────────
+ * Fields can be marked as `pub` (package-visible) or `export` (public).
+ * Private fields are the default (visible only within the struct).
  * 
  * ─── Default Values ───────────────────────────────────────────────────────
  *   - Struct literals may omit fields with default values
@@ -104,38 +190,55 @@ StructDeclPtr Parser::parseStructDecl(Visibility vis) {
  * - Missing expression after '=': reports error (field still created)
  */
 FieldDeclPtr Parser::parseFieldDecl() {
-    LUC_LOG_DECL_EXTREME("parseFieldDecl: entering");
+    LOG_DECL_EXTREME("parseFieldDecl: entering");
+    
+    // Harvest doc comments attached to this field
+    auto doc = harvestDocComment();
+    
+    // Parse attributes for this field
+    auto attrs = parseAttributes();
+    
     SourceLocation loc = ts_.currentLoc();
 
+    // Parse field name
     if (!ts_.check(TokenType::IDENTIFIER)) {
-        LUC_LOG_DECL("parseFieldDecl: ERROR - expected field name");
-        errorAt(DiagCode::E1003, "expected field name");
+        LOG_DECL("parseFieldDecl: ERROR - expected field name");
+        errorAt(DiagCode::E1002, "field name", ts_.peek().value);
         return nullptr;
     }
     InternedString name = pool_.intern(ts_.advance().value);
-    LUC_LOG_DECL_EXTREME("parseFieldDecl: field name = " << pool_.lookup(name));
+    LOG_DECL_EXTREME("parseFieldDecl: field name = " << pool_.lookup(name));
 
+    // Parse field type
     TypePtr type = parseType();
     if (!type) {
-        LUC_LOG_DECL("parseFieldDecl: ERROR - expected type for field");
-        errorAt(DiagCode::E1005, "expected type for field '" + std::string(pool_.lookup(name)) + "'");
+        LOG_DECL("parseFieldDecl: ERROR - expected type for field");
+        errorAt(DiagCode::E1003, ts_.peek().value);
         return nullptr;
     }
 
+    // Parse optional default value
     ExprPtr defaultVal = nullptr;
     if (ts_.match(TokenType::ASSIGN)) {
-        LUC_LOG_DECL_EXTREME("parseFieldDecl: parsing default value");
+        LOG_DECL_EXTREME("parseFieldDecl: parsing default value");
         defaultVal = parseExpr();
         if (!defaultVal) {
-            LUC_LOG_DECL("parseFieldDecl: ERROR - expected expression after '='");
-            errorAt(DiagCode::E1008, "expected expression after '=' in field default value");
+            LOG_DECL("parseFieldDecl: ERROR - expected expression after '='");
+            errorAt(DiagCode::E1006, ts_.peek().value);
+            // Continue without default value (error already reported)
         }
     }
 
-    auto field = arena_.make<FieldDeclAST>();
+    // Create the field node
+    auto* field = arena_.make<FieldDeclAST>();
     field->loc = loc;
     field->name = name;
     field->type = type;
     field->defaultVal = defaultVal;
+    
+    // Attach metadata
+    attachMetadata(*field, std::move(doc), std::move(attrs));
+    
+    LOG_DECL_EXTREME("parseFieldDecl: success - field '" << pool_.lookup(name));
     return field;
 }
