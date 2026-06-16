@@ -81,9 +81,6 @@ StructDeclPtr Parser::parseStructDecl(Visibility vis) {
         // Skip optional separators (commas or semicolons between fields)
         ts_.match(TokenType::SEMICOLON);
         ts_.match(TokenType::COMMA);
-        
-        // Check if we've reached the end after skipping separators
-        if (ts_.check(TokenType::RBRACE)) break;
 
         size_t savedPos = ts_.getPos();
         
@@ -93,7 +90,7 @@ StructDeclPtr Parser::parseStructDecl(Visibility vis) {
         if (field) {
             fieldCount++;
             LOG_DECL_EXTREME("parseStructDecl: parsed field #" << fieldCount 
-                                 << " (" << pool_.lookup(field->name) << ")");
+                             << " (" << pool_.lookup(field->name) << ")");
             fields.push_back(field);
             consecutiveFailures = 0;
         } else {
@@ -123,16 +120,17 @@ StructDeclPtr Parser::parseStructDecl(Visibility vis) {
             while (!ts_.isAtEnd() && !ts_.check(TokenType::RBRACE)) {
                 ts_.advance();
             }
-            break;
+            // Let the loop condition handle exit
         }
     }
 
-    // Expect closing brace
-    if (!ts_.check(TokenType::RBRACE)) {
-        LOG_DECL("parseStructDecl: ERROR - expected '}' to close struct body");
-        errorAt(DiagCode::E1004, "}", "struct body");
-    } else {
+    // Consume the closing brace
+    if (ts_.check(TokenType::RBRACE)) {
         ts_.advance(); // Consume '}'
+    } else {
+        // We're not at RBRACE - this means we hit EOF or max consecutive failures
+        LOG_DECL("parseStructDecl: ERROR - expected '}' to close struct body");
+        errorAt(DiagCode::E1005, "}", "struct body", ts_.peek().value);
     }
 
     // Build the fields span

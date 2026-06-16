@@ -397,3 +397,56 @@ MethodDeclPtr Parser::parseMethodDecl() {
     LUC_LOG_DECL_EXTREME("parseMethodDecl: assignment form success");
     return method;
 }
+
+/**
+ * @brief Parses a trait reference in impl declarations.
+ * 
+ * Grammar: ':' IDENTIFIER [ '<' type_args '>' ]
+ * 
+ * Example: `: Drawable`, `: Comparable<int>`
+ * 
+ * ─── Precondition ─────────────────────────────────────────────────────────
+ * Caller MUST have already verified that the current token is COLON.
+ * This function assumes it is positioned at the ':' token.
+ * 
+ * ─── Token Consumption ─────────────────────────────────────────────────────
+ * On entry: positioned at ':' token
+ * On exit:  positioned after the trait name (and optional generic arguments)
+ * 
+ * @return TraitRefPtr – parsed trait reference node, or nullptr on error
+ */
+TraitRefPtr Parser::parseTraitRef() {
+    LOG_DECL_EXTREME("parseTraitRef: entering at line " << ts_.currentLoc().line()
+                     << ", col " << ts_.currentLoc().column());
+    SourceLocation loc = ts_.currentLoc();
+    
+    // Check for ':' token (should be present if called correctly)
+    if (!ts_.check(TokenType::COLON)) {
+        LOG_DECL("parseTraitRef: ERROR - expected ':' before trait name");
+        errorAt(DiagCode::E1001, ":", ts_.peek().value);
+        return nullptr;
+    }
+    ts_.advance(); // Consume ':'
+
+    // Parse trait name
+    if (!ts_.check(TokenType::IDENTIFIER)) {
+        LOG_DECL("parseTraitRef: ERROR - expected trait name after ':'");
+        errorAt(DiagCode::E1002, "trait name", ts_.peek().value);
+        return nullptr;
+    }
+
+    auto* ref = arena_.make<TraitRefAST>();
+    ref->loc = loc;
+    ref->name = pool_.intern(ts_.advance().value);
+    LOG_DECL_EXTREME("parseTraitRef: trait name = " << pool_.lookup(ref->name));
+
+    // Parse generic arguments if present
+    if (ts_.check(TokenType::LESS)) {
+        LOG_DECL_EXTREME("parseTraitRef: parsing generic arguments");
+        ts_.advance(); // Consume '<'
+        ref->genericArgs = parseGenericArgs();
+        LOG_DECL_EXTREME("parseTraitRef: parsed " << ref->genericArgs.size() << " generic argument(s)");
+    }
+
+    return ref;
+}

@@ -11,9 +11,17 @@
  * 
  * Example: `pub trait Drawable { draw (), bounds () -> Rect }`
  * 
+ * ─── Precondition ─────────────────────────────────────────────────────────
+ * Caller MUST have already verified that the current token is TRAIT.
+ * This function assumes it is positioned at the 'trait' keyword.
+ * 
  * ─── Token Consumption ─────────────────────────────────────────────────────
  * On entry: positioned at 'trait' keyword
  * On exit:  positioned after the closing '}'
+ * 
+ * ─── Note on Metadata ─────────────────────────────────────────────────────
+ * Doc comments and attributes are handled by the dispatcher (parseDeclaration).
+ * This function should NOT call harvestDocComment() or parseAttributes().
  * 
  * ─── Important Notes ───────────────────────────────────────────────────────
  *   - Trait methods are signatures only (no body, no '=')
@@ -24,64 +32,121 @@
  * Uses saved position pattern with parseTraitMethod()
  * 
  * ─── Error Recovery ───────────────────────────────────────────────────────
- * - Missing trait name: returns nullptr
+ * - Missing trait name: reports error, returns nullptr
  * - Missing '{' after name: reports error, returns nullptr
  * - Invalid method: skips method, continues
- * - Missing '}': consume() reports error
+ * - Missing '}': reports error (returns partially built node)
  */
 TraitDeclPtr Parser::parseTraitDecl(Visibility vis) {
-    LUC_LOG_DECL_VERBOSE("parseTraitDecl: entering");
+    LOG_DECL_VERBOSE("parseTraitDecl: entering");
     SourceLocation loc = ts_.currentLoc();
-    ts_.consume(TokenType::TRAIT, "expected 'trait'");
+    
+    // Check for 'trait' keyword (should be present if called correctly)
+    if (!ts_.check(TokenType::TRAIT)) {
+        LOG_DECL("parseTraitDecl: ERROR - expected 'trait' keyword");
+        errorAt(DiagCode::E1001, "trait", ts_.peek().value);
+        return nullptr;
+    }
+    ts_.advance(); // Consume 'trait' keyword
 
+    // Parse trait name
     if (!ts_.check(TokenType::IDENTIFIER)) {
-        LUC_LOG_DECL("parseTraitDecl: ERROR - expected trait name");
-        errorAt(DiagCode::E1003, "expected trait name");
+        LOG_DECL("parseTraitDecl: ERROR - expected trait name");
+        errorAt(DiagCode::E1002, "trait name", ts_.peek().value);
         return nullptr;
     }
     InternedString name = pool_.intern(ts_.advance().value);
-    LUC_LOG_DECL_EXTREME("parseTraitDecl: trait name = " << pool_.lookup(name));
+    LOG_DECL_EXTREME("parseTraitDecl: trait name = " << pool_.lookup(name));
 
-    auto node = arena_.make<TraitDeclAST>();
-    node->loc = loc;
-    node->name = name;
-    node->visibility = vis;
-
+    // Parse generic parameters if present
+    ArenaSpan<GenericParamDeclPtr> genericParams;
     if (ts_.check(TokenType::LESS)) {
-        LUC_LOG_DECL_EXTREME("parseTraitDecl: parsing generic parameters");
-        node->genericParams = parseGenericParams();
-        LUC_LOG_DECL_EXTREME("parseTraitDecl: " << node->genericParams.size() << " generic parameter(s)");
+        LOG_DECL_EXTREME("parseTraitDecl: parsing generic parameters");
+        genericParams = parseGenericParamDecls();
+        LOG_DECL_EXTREME("parseTraitDecl: " << genericParams.size() << " generic parameter(s)");
     }
 
-    ts_.consume(TokenType::LBRACE, "expected '{' to open trait body");
+    // Expect opening brace
+    if (!ts_.check(TokenType::LBRACE)) {
+        LOG_DECL("parseTraitDecl: ERROR - expected '{' to open trait body");
+        errorAt(DiagCode::E1004, "{", "trait body", ts_.peek().value);
+        return nullptr;
+    }
+    ts_.advance(); // Consume '{'
 
+    // Parse methods
     std::vector<TraitMethodPtr> methods;
     int methodCount = 0;
+    int consecutiveFailures = 0;
+    const int MAX_CONSECUTIVE_FAILURES = 10;
     
-    while (!ts_.check(TokenType::RBRACE) && !ts_.isAtEnd()) {
-        if (ts_.check(TokenType::RBRACE)) break;
+    while (!ts_.check(TokenType::RBRACE) && !ts_.isAtEnd() && consecutiveFailures < MAX_CONSECUTIVE_FAILURES) {
+        // Skip optional separators
+        ts_.match(TokenType::COMMA);
+        ts_.match(TokenType::SEMICOLON);
 
         size_t savedPos = ts_.getPos();
         TraitMethodPtr method = parseTraitMethod();
+        
         if (method) {
             methodCount++;
-            LUC_LOG_DECL_EXTREME("parseTraitDecl: parsed method #" << methodCount);
+            LOG_DECL_EXTREME("parseTraitDecl: parsed method #" << methodCount);
             methods.push_back(method);
+            consecutiveFailures = 0;
         } else {
-            LUC_LOG_DECL("parseTraitDecl: ERROR - failed to parse trait method");
-            if (ts_.getPos() == savedPos && !ts_.isAtEnd()) ts_.advance();
-            while (!ts_.isAtEnd() && !ts_.check(TokenType::RBRACE) && 
-                   !ts_.check(TokenType::IDENTIFIER)) ts_.advance();
+            consecutiveFailures++;
+            LOG_DECL("parseTraitDecl: ERROR - failed to parse trait method (attempt " 
+                     << consecutiveFailures << ")");
+            
+            // Check for progress
+            if (ts_.getPos() == savedPos && !ts_.isAtEnd()) {
+                LOG_DECL("parseTraitDecl: no progress, forcing token consumption");
+                ts_.advance();
+            }
+            
+            // Skip to next potential method start
+            while (!ts_.isAtEnd() && 
+                   !ts_.check(TokenType::RBRACE) && 
+                   !ts_.check(TokenType::IDENTIFIER)) {
+                ts_.advance();
+            }
+        }
+        
+        // Safety: prevent infinite loops
+        if (consecutiveFailures > 5) {
+            LOG_DECL("parseTraitDecl: too many consecutive failures, forcing skip to RBRACE");
+            while (!ts_.isAtEnd() && !ts_.check(TokenType::RBRACE)) {
+                ts_.advance();
+            }
+            // Note: The loop will exit because consecutiveFailures >= MAX_CONSECUTIVE_FAILURES
+            // or because we reached RBRACE (which will cause the loop condition to fail)
+            // We don't break here - let the loop condition handle it
         }
     }
 
+    // Consume the closing brace
+    if (ts_.check(TokenType::RBRACE)) {
+        ts_.advance(); // Consume '}'
+    } else {
+        // We're not at RBRACE - this means we hit EOF or max consecutive failures
+        LOG_DECL("parseTraitDecl: ERROR - expected '}' to close trait body");
+        errorAt(DiagCode::E1005, "}", "trait body", ts_.peek().value);
+    }
+
+    // Build the methods span
     auto builder = arena_.makeBuilder<TraitMethodPtr>();
     for (auto& m : methods) builder.push_back(m);
-    node->methods = builder.build();
-
-    ts_.consume(TokenType::RBRACE, "expected '}' to close trait body");
+    ArenaSpan<TraitMethodPtr> methodSpan = builder.build();
     
-    LUC_LOG_DECL_VERBOSE("parseTraitDecl: parsed " << methodCount << " method(s)");
+    // Create the AST node
+    auto* node = arena_.make<TraitDeclAST>();
+    node->loc = loc;
+    node->name = name;
+    node->visibility = vis;
+    node->genericParams = genericParams;
+    node->methods = methodSpan;
+    
+    LOG_DECL_VERBOSE("parseTraitDecl: parsed " << methodCount << " method(s)");
     return node;
 }
 
@@ -103,70 +168,37 @@ TraitDeclPtr Parser::parseTraitDecl(Visibility vis) {
  * @return TraitMethodPtr – parsed method node, or nullptr on error
  */
 TraitMethodPtr Parser::parseTraitMethod() {
-    LUC_LOG_DECL_EXTREME("parseTraitMethod: entering");
+    LOG_DECL_EXTREME("parseTraitMethod: entering");
     SourceLocation loc = ts_.currentLoc();
     
-    auto method = arena_.make<TraitMethodAST>();
-    method->loc = loc;
-
+    // Check for method name
     if (!ts_.check(TokenType::IDENTIFIER)) {
-        LUC_LOG_DECL("parseTraitMethod: ERROR - expected trait method name");
-        errorAt(DiagCode::E1003, "expected trait method name");
+        LOG_DECL("parseTraitMethod: ERROR - expected trait method name");
+        errorAt(DiagCode::E1002, "trait method name", ts_.peek().value);
         return nullptr;
     }
-    method->name = pool_.intern(ts_.advance().value);
-    LUC_LOG_DECL_EXTREME("parseTraitMethod: method name = " << pool_.lookup(method->name));
     
+    auto* method = arena_.make<TraitMethodAST>();
+    method->loc = loc;
+    method->name = pool_.intern(ts_.advance().value);
+    LOG_DECL_EXTREME("parseTraitMethod: method name = " << pool_.lookup(method->name));
+    
+    // Parse function type signature
     TypePtr funcType = parseFuncType();
     if (!funcType || funcType->isa<UnknownTypeAST>()) {
-        LUC_LOG_DECL("parseTraitMethod: ERROR - invalid method signature");
-        errorAt(DiagCode::E1005, "invalid method signature for trait method '" 
-                + std::string(pool_.lookup(method->name)) + "'");
+        LOG_DECL("parseTraitMethod: ERROR - invalid method signature");
+        errorAt(DiagCode::E1008, "function signature", ts_.peek().value);
         return nullptr;
     }
+    
+    if (!funcType->isa<FuncTypeAST>()) {
+        LOG_DECL("parseTraitMethod: ERROR - expected function type");
+        errorAt(DiagCode::E1008, "function signature", ts_.peek().value);
+        return nullptr;
+    }
+    
     method->funcType = funcType->as<FuncTypeAST>();
     
-    LUC_LOG_DECL_EXTREME("parseTraitMethod: success");
+    LOG_DECL_EXTREME("parseTraitMethod: success");
     return method;
-}
-
-/**
- * @brief Parses a trait reference in impl declarations.
- * 
- * Grammar: ':' IDENTIFIER [ '<' type_args '>' ]
- * 
- * Example: `: Drawable`, `: Comparable<int>`
- * 
- * ─── Token Consumption ─────────────────────────────────────────────────────
- * On entry: positioned at ':' token
- * On exit:  positioned after the trait name (and optional generic arguments)
- * 
- * @return TraitRefPtr – parsed trait reference node, or nullptr on error
- */
-TraitRefPtr Parser::parseTraitRef() {
-    LUC_LOG_DECL_EXTREME("parseTraitRef: entering at line " << ts_.currentLoc().line()
-                         << ", col " << ts_.currentLoc().column());
-    SourceLocation loc = ts_.currentLoc();
-    ts_.consume(TokenType::COLON, "expected ':' before trait name");
-
-    if (!ts_.check(TokenType::IDENTIFIER)) {
-        LUC_LOG_DECL("parseTraitRef: ERROR - expected trait name after ':'");
-        errorAt(DiagCode::E1003, "expected trait name after ':'");
-        return nullptr;
-    }
-
-    auto ref = arena_.make<TraitRefAST>();
-    ref->loc = loc;
-    ref->name = pool_.intern(ts_.advance().value);
-    LUC_LOG_DECL_EXTREME("parseTraitRef: trait name = " << pool_.lookup(ref->name));
-
-    // Parse generic arguments if present
-    if (ts_.check(TokenType::LESS)) {
-        LUC_LOG_DECL_EXTREME("parseTraitRef: parsing generic arguments");
-        ts_.advance(); // consume '<'
-        ref->genericArgs = parseGenericArgs();
-        LUC_LOG_DECL_EXTREME("parseTraitRef: parsed " << ref->genericArgs.size() << " generic argument(s)");
-    }
-
-    return ref;
 }

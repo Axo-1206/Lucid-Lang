@@ -76,9 +76,6 @@ EnumDeclPtr Parser::parseEnumDecl(Visibility vis) {
         // Skip optional separators (commas or semicolons between variants)
         ts_.match(TokenType::COMMA);
         ts_.match(TokenType::SEMICOLON);
-        
-        // Check if we've reached the end after skipping separators
-        if (ts_.check(TokenType::RBRACE)) break;
 
         size_t savedPos = ts_.getPos();
         EnumVariantPtr variant = parseEnumVariant();
@@ -114,22 +111,23 @@ EnumDeclPtr Parser::parseEnumDecl(Visibility vis) {
             while (!ts_.isAtEnd() && !ts_.check(TokenType::RBRACE)) {
                 ts_.advance();
             }
-            break;
+            // Let the loop condition handle exit
         }
+    }
+
+    // Consume the closing brace
+    if (ts_.check(TokenType::RBRACE)) {
+        ts_.advance(); // Consume '}'
+    } else {
+        // We're not at RBRACE - this means we hit EOF or max consecutive failures
+        LOG_DECL("parseEnumDecl: ERROR - expected '}' to close enum body");
+        errorAt(DiagCode::E1005, "}", "enum body", ts_.peek().value);
     }
 
     // Build the variants span
     auto builder = arena_.makeBuilder<EnumVariantPtr>();
     for (auto& v : variants) builder.push_back(v);
     ArenaSpan<EnumVariantPtr> variantSpan = builder.build();
-
-    // Expect closing brace
-    if (!ts_.check(TokenType::RBRACE)) {
-        LOG_DECL("parseEnumDecl: ERROR - expected '}' to close enum body");
-        errorAt(DiagCode::E1005, "}", "enum body", ts_.peek().value);
-    } else {
-        ts_.advance(); // Consume '}'
-    }
     
     // Create the AST node
     auto* node = arena_.make<EnumDeclAST>();
