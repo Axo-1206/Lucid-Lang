@@ -70,9 +70,9 @@ EnumDeclPtr Parser::parseEnumDecl(Visibility vis) {
     std::vector<EnumVariantPtr> variants;
     int variantCount = 0;
     int consecutiveFailures = 0;
-    const int MAX_CONSECUTIVE_FAILURES = 10;
+    const int MAX_CONSECUTIVE_FAILURES = 5;
     
-    while (!ts_.check(TokenType::RBRACE) && !ts_.isAtEnd() && consecutiveFailures < MAX_CONSECUTIVE_FAILURES) {
+    while (!ts_.check(TokenType::RBRACE) && !ts_.isAtEnd()) {
         // Skip optional separators (commas or semicolons between variants)
         ts_.match(TokenType::COMMA);
         ts_.match(TokenType::SEMICOLON);
@@ -105,13 +105,13 @@ EnumDeclPtr Parser::parseEnumDecl(Visibility vis) {
             }
         }
         
-        // Safety: prevent infinite loops
-        if (consecutiveFailures > 5) {
+        // Safety: prevent infinite loops by jumping to the nearest '}' or EOF
+        if (consecutiveFailures > MAX_CONSECUTIVE_FAILURES) {
             LOG_DECL("parseEnumDecl: too many consecutive failures, forcing skip to RBRACE");
             while (!ts_.isAtEnd() && !ts_.check(TokenType::RBRACE)) {
                 ts_.advance();
             }
-            // Let the loop condition handle exit
+            // The loop will exit naturally because we're at RBRACE or EOF
         }
     }
 

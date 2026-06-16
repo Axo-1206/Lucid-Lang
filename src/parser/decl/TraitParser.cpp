@@ -78,9 +78,9 @@ TraitDeclPtr Parser::parseTraitDecl(Visibility vis) {
     std::vector<TraitMethodPtr> methods;
     int methodCount = 0;
     int consecutiveFailures = 0;
-    const int MAX_CONSECUTIVE_FAILURES = 10;
+    const int MAX_CONSECUTIVE_FAILURES = 5;
     
-    while (!ts_.check(TokenType::RBRACE) && !ts_.isAtEnd() && consecutiveFailures < MAX_CONSECUTIVE_FAILURES) {
+    while (!ts_.check(TokenType::RBRACE) && !ts_.isAtEnd()) {
         // Skip optional separators
         ts_.match(TokenType::COMMA);
         ts_.match(TokenType::SEMICOLON);
@@ -112,15 +112,13 @@ TraitDeclPtr Parser::parseTraitDecl(Visibility vis) {
             }
         }
         
-        // Safety: prevent infinite loops
-        if (consecutiveFailures > 5) {
+        // Safety: prevent infinite loops by jumping to the nearest '}' or EOF
+        if (consecutiveFailures > MAX_CONSECUTIVE_FAILURES) {
             LOG_DECL("parseTraitDecl: too many consecutive failures, forcing skip to RBRACE");
             while (!ts_.isAtEnd() && !ts_.check(TokenType::RBRACE)) {
                 ts_.advance();
             }
-            // Note: The loop will exit because consecutiveFailures >= MAX_CONSECUTIVE_FAILURES
-            // or because we reached RBRACE (which will cause the loop condition to fail)
-            // We don't break here - let the loop condition handle it
+            // The loop will exit naturally because we're at RBRACE or EOF
         }
     }
 

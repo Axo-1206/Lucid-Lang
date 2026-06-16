@@ -75,9 +75,9 @@ StructDeclPtr Parser::parseStructDecl(Visibility vis) {
     std::vector<FieldDeclPtr> fields;
     int fieldCount = 0;
     int consecutiveFailures = 0;
-    const int MAX_CONSECUTIVE_FAILURES = 10;
+    const int MAX_CONSECUTIVE_FAILURES = 5;
     
-    while (!ts_.check(TokenType::RBRACE) && !ts_.isAtEnd() && consecutiveFailures < MAX_CONSECUTIVE_FAILURES) {
+    while (!ts_.check(TokenType::RBRACE) && !ts_.isAtEnd()) {
         // Skip optional separators (commas or semicolons between fields)
         ts_.match(TokenType::SEMICOLON);
         ts_.match(TokenType::COMMA);
@@ -114,13 +114,13 @@ StructDeclPtr Parser::parseStructDecl(Visibility vis) {
             }
         }
         
-        // Safety: prevent infinite loops
-        if (consecutiveFailures > 5) {
+        // Safety: prevent infinite loops by jumping to the nearest '}' or EOF
+        if (consecutiveFailures > MAX_CONSECUTIVE_FAILURES) {
             LOG_DECL("parseStructDecl: too many consecutive failures, forcing skip to RBRACE");
             while (!ts_.isAtEnd() && !ts_.check(TokenType::RBRACE)) {
                 ts_.advance();
             }
-            // Let the loop condition handle exit
+            // The loop will exit naturally because we're at RBRACE or EOF
         }
     }
 
