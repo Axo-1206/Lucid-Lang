@@ -22,18 +22,20 @@ std::string_view getMessage(DiagCode code) {
 
         // ========== 1000–1999: Parsing (Syntax) ==========
         case DiagCode::E1001: return "Expected keyword '%s', but found '%s'";
-        case DiagCode::E1002: return "Expected an identifier aka %s, but found %s";
+        case DiagCode::E1002: return "Expected an identifier (%s), but found '%s'";
         case DiagCode::E1003: return "Expected type annotation, but found '%s'";
-        case DiagCode::E1004: return "Expected '%s' to open %s, but found %s";
-        case DiagCode::E1005: return "Expected '%s' to close %s, but found %s";
-        case DiagCode::E1006: return "Expected expression after '=', but found %s";
+        case DiagCode::E1004: return "Expected '%s' to open %s, but found '%s'";
+        case DiagCode::E1005: return "Expected '%s' to close %s, but found '%s'";
+        case DiagCode::E1006: return "Expected expression after '=', but found '%s'";
+        case DiagCode::E1007: return "Expected '%s' (%s), but found '%s'";
 
         case DiagCode::E1101: return "Expected package name, found %s";
         case DiagCode::E1102: return "Expected module path after keyword 'use', found %s"; 
         case DiagCode::E1103: return "Expected name alias after keyword 'as', found %s";
         case DiagCode::E1104: return "Visibility modifier '%s' not allowed in local declaration";
-        case DiagCode::E1105: return  "Invalid context: 'use' declaration is not allowed inside a block";
-        case DiagCode::E1106: return "Expected struct name, but found %s";
+        case DiagCode::E1105: return "Invalid context: 'use' declaration is not allowed inside a block";
+        case DiagCode::E1106: return "Expected string, integer, boolean, or identifier in attribute argument, but found %s";
+        case DiagCode::E1107: return "Unexpected tralling comma in %s";
         // case DiagCode::E1107: return "Expected generic parameter name, but found %s";
         // case DiagCode::E1108: return "Expected trait type in generic constraint, but found %s";
 

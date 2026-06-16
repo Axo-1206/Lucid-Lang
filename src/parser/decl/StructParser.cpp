@@ -49,7 +49,7 @@ StructDeclPtr Parser::parseStructDecl(Visibility vis) {
     // Parse struct name
     if (!ts_.check(TokenType::IDENTIFIER)) {
         LOG_DECL("parseStructDecl: ERROR - expected struct name");
-        errorAt(DiagCode::E1106, ts_.peek().value);
+        errorAt(DiagCode::E1002, "struct name", ts_.peek().value);
         return nullptr;
     }
     InternedString name = pool_.intern(ts_.advance().value);

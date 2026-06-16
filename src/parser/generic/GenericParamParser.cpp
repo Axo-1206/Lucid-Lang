@@ -174,7 +174,7 @@ GenericParamDeclPtr Parser::parseGenericParamDecl() {
     // Check for parameter name
     if (!ts_.check(TokenType::IDENTIFIER)) {
         LOG_DECL("parseGenericParamDecl: ERROR - expected generic parameter name");
-        errorAt(DiagCode::E1002, "generic parameter name",ts_.peek().value);
+        errorAt(DiagCode::E1002, "generic parameter name", ts_.peek().value);
         return nullptr;
     }
     

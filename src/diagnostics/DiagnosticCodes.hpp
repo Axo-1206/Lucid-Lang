@@ -25,6 +25,7 @@ enum class DiagCode : uint32_t {
     E1004,          ///< Expected '{, [, <, ('
     E1005,          ///< Expected '}, ], >, )'
     E1006,          ///< Expected expression after '='
+    E1007,          ///< Expected token
 
     // Speicalize codes
     E1101 = 1100,   ///< Expected package name
@@ -32,7 +33,8 @@ enum class DiagCode : uint32_t {
     E1103,          ///< Expected name alias after keyword 'as'
     E1104,          ///< Visibility modifier not allowed in local declaration
     E1105,          ///< Invalid context: 'use' declaration is not allowed inside a block
-    E1106,          ///< Expected struct name
+    E1106,          ///< Invalid argument for attribute
+    E1107,          ///< Unexpected tralling comma
     // E1107,          ///< Expected generic parameter name
     // E1108,          ///< Expected trait type in generic constraint
 

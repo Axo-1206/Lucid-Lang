@@ -42,6 +42,10 @@
  * Grammar: { '@' IDENTIFIER [ '(' attr_arg_list ')' ] }
  * 
  * @return std::vector<AttributePtr> – may be empty.
+ * 
+ * ─── Token Consumption ─────────────────────────────────────────────────────
+ * This function does NOT consume any tokens directly. It calls parseAttribute()
+ * which consumes each attribute and its arguments.
  */
 std::vector<AttributePtr> Parser::parseAttributes() {
     std::vector<AttributePtr> attrs;
@@ -80,19 +84,28 @@ std::vector<AttributePtr> Parser::parseAttributes() {
  * On exit:  positioned after the attribute (and its arguments, if any)
  * 
  * ─── Error Recovery ───────────────────────────────────────────────────────
- * - Missing attribute name after '@': report error (E1003), return nullptr
- * - Missing ')' after argument list: report error (E1011), recover
  * - Invalid argument literal: parseAttributeArgLiteral() reports error and
  *   advances; the argument is skipped, parsing continues
  */
 AttributePtr Parser::parseAttribute() {
     SourceLocation loc = ts_.currentLoc();
-    ts_.consume(TokenType::AT_SIGN, "expected '@'");
+    
+    // Check for '@' token
+    if (!ts_.check(TokenType::AT_SIGN)) {
+        LOG_DECL("parseAttribute: ERROR - expected '@'");
+        errorAt(DiagCode::E1007, "@", "before starting attribute name", ts_.peek().value);
+        return nullptr;
+    }
+    ts_.advance(); // Consume '@'
     
     // Attribute name is required – syntax error if missing
     if (!ts_.check(TokenType::IDENTIFIER)) {
         LOG_DECL("parseAttribute: ERROR - expected attribute name after '@'");
-        errorAt(DiagCode::E1003, "expected attribute name after '@'");
+        errorAt(DiagCode::E1002, "attribute name after '@'");
+        // Advance to avoid infinite loop on the same token
+        if (!ts_.isAtEnd()) {
+            ts_.advance();
+        }
         return nullptr;
     }
     
@@ -104,20 +117,39 @@ AttributePtr Parser::parseAttribute() {
     attr->name = name;
     
     // Parse optional argument list
-    if (ts_.match(TokenType::LPAREN)) {
+    if (ts_.check(TokenType::LPAREN)) {
         LOG_DECL_EXTREME("parseAttribute: parsing argument list");
+        ts_.advance(); // Consume '('
+        
         std::vector<AttributeArgPtr> args;
         int argCount = 0;
         
+        // Parse arguments until closing ')'
         while (!ts_.check(TokenType::RPAREN) && !ts_.isAtEnd()) {
             // Handle commas between arguments
-            if (!args.empty() && !ts_.check(TokenType::COMMA)) {
-                LOG_DECL("parseAttribute: ERROR - expected ',' between attribute arguments");
-                errorAt(DiagCode::E1002, "expected ',' between attribute arguments");
-                break;
+            if (!args.empty()) {
+                if (!ts_.check(TokenType::COMMA)) {
+                    LOG_DECL("parseAttribute: ERROR - expected ',' between attribute arguments");
+                    errorAt(DiagCode::E1007, ",", "between attribute arguments", ts_.peek().value);
+                    // Skip to next argument or closing parenthesis
+                    while (!ts_.isAtEnd() && !ts_.check(TokenType::COMMA) && !ts_.check(TokenType::RPAREN)) {
+                        ts_.advance();
+                    }
+                    if (ts_.check(TokenType::COMMA)) {
+                        ts_.advance(); // Consume comma and continue
+                    } else {
+                        break;
+                    }
+                } else {
+                    ts_.advance(); // Consume ','
+                }
             }
-            if (ts_.check(TokenType::COMMA)) {
-                ts_.advance();
+            
+            // Check for empty argument (e.g., trailing comma)
+            if (ts_.check(TokenType::RPAREN)) {
+                LOG_DECL("parseAttribute: WARNING - trailing comma in attribute arguments");
+                errorAt(DiagCode::E1107, "in attribute arguments");
+                break;
             }
             
             AttributeArgPtr arg = parseAttributeArgLiteral();
@@ -125,8 +157,11 @@ AttributePtr Parser::parseAttribute() {
                 argCount++;
                 args.push_back(arg);
             } else {
-                // Invalid argument – skip it and continue.
-                // parseAttributeArgLiteral() already advanced the token.
+                // Invalid argument – parseAttributeArgLiteral() already advanced
+                // Skip to next comma or closing parenthesis
+                while (!ts_.isAtEnd() && !ts_.check(TokenType::COMMA) && !ts_.check(TokenType::RPAREN)) {
+                    ts_.advance();
+                }
             }
         }
         
@@ -136,8 +171,15 @@ AttributePtr Parser::parseAttribute() {
         if (!ts_.check(TokenType::RPAREN)) {
             LOG_DECL("parseAttribute: ERROR - expected ')' after attribute arguments");
             errorAt(DiagCode::E1005, ")", "attribute arguments", ts_.peek().value);
+            // Skip to find ')' or end of file
+            while (!ts_.isAtEnd() && !ts_.check(TokenType::RPAREN)) {
+                ts_.advance();
+            }
+            if (ts_.check(TokenType::RPAREN)) {
+                ts_.advance(); // Consume ')'
+            }
         } else {
-            ts_.advance();
+            ts_.advance(); // Consume ')'
         }
         
         // Transfer arguments to arena
@@ -206,8 +248,7 @@ AttributeArgPtr Parser::parseAttributeArgLiteral() {
     
     // Unexpected token
     LOG_DECL("parseAttributeArgLiteral: ERROR - unexpected token");
-    errorAt(DiagCode::E1002, 
-            "expected string, integer, boolean, or identifier in attribute argument");
+    errorAt(DiagCode::E1106, ts_.peek().value);
     
     // Advance to avoid infinite loop on the same token
     if (!ts_.isAtEnd()) {
