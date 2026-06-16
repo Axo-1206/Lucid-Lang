@@ -45,7 +45,7 @@ PackageDeclPtr Parser::parsePackageDecl() {
     // Parse package name (required)
     if (!ts_.check(TokenType::IDENTIFIER)) {
         LOG_DECL("parsePackageDecl: ERROR - expected package name");
-        errorAt(DiagCode::E1101, ts_.peek().value);
+        errorAt(DiagCode::E1002, "package name", ts_.peek().value);
         return nullptr;
     }
     
