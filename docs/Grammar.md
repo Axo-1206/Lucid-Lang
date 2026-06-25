@@ -39,8 +39,26 @@ INT_LIT     = DIGIT+
 
 FLOAT_LIT   = DIGIT+ '.' DIGIT+ [ ( 'e' | 'E' ) [ '+' | '-' ] DIGIT+ ]
 
-STRING_LIT  = '"' { STRING_CHAR } '"'
-            | '`' { ANY_CHAR } '`'      (* raw string — no escape processing *)
+STRING_LIT  = '"' { STRING_CHAR | interpolation } '"'
+            | '"""' { ANY_CHAR_EXCEPT( '"""' ) } '"""'
+              (* triple-quote raw string — no escape processing, no
+                 interpolation. Content may include single and double
+                 quote characters freely; the string only closes at the
+                 next occurrence of three consecutive quotes. May span
+                 multiple lines. Lexed at higher priority than '"' so
+                 three consecutive quotes are always the multiline
+                 delimiter, never an empty string followed by a new one.
+                 The only sequence a triple-quote raw string cannot
+                 contain is '"""' itself — there is no escape mechanism
+                 inside one for that. *)
+
+STRING_CHAR = ANY_CHAR_EXCEPT( '"', '\', NEWLINE )
+            | '\' ( 'n' | 't' | 'r' | '\' | '"' | '0' )   (* escape sequence *)
+
+interpolation = '\(' expr ')'
+                (* embeds an expression directly in a string literal — see
+                   String Interpolation, under Type Conversion.
+                   Only valid inside "..." — forbidden inside """...""". *)
 
 CHAR_LIT    = '\'' CHAR_CHAR '\''
 
@@ -59,17 +77,14 @@ COMMENT     = '--' { ANY_CHAR } NEWLINE     (* line comment *)
 ## Keywords
 
 ```
-decl        struct      enum        trait       use
+let         const       struct      enum        trait       use
 as          if          else        switch      case        default
 return      break       continue    while       for         in
-do          await       and         or          not         true
-false       nil         err
+do          await       async       spawn       join        and         
+or          not         true        false       nil         err
 ```
 
 > [!NOTE]
-> `let` and `const` are **not** keywords in Lucid. Mutability and immutability
-> are expressed as qualifiers: `~[mut]` and `~[const]`. Every declaration uses
-> the single keyword `decl`.
 >
 > `pub`, `export`, `extern` and `link` are **not** keywords. Visibility and
 > linkage are expressed as attributes: `@[export]`, `@[foreign("C")]`,
@@ -80,10 +95,6 @@ false       nil         err
 > in the build manifest — no per-file declaration is required.
 >
 > **`type` (type alias) was deliberately considered and rejected — see below.**
->
-> `await` suspends the current async function until the awaited call resolves.
-> It is only valid inside a `~[async]`-qualified function body. See
-> **Async / Await**.
 
 > [!WARNING]
 > **Type alias (`type X = Y`) was deliberately rejected — do not re-propose it
@@ -101,14 +112,10 @@ false       nil         err
 > ```lucid
 > type MagicFunction = (a int) -> int
 >
-> decl doSomething MagicFunction = { return a + 5 }
+> const doSomething MagicFunction = { return a + 5 }
 > ```
 >
-> This single line is **structurally ambiguous to the parser**, not just to a
-> human reader. With no alias resolved yet, `decl doSomething MagicFunction =
-> { ... }` matches `var_decl = 'decl' IDENTIFIER { decl_qualifier } type [ '='
-> expr ]` exactly as well as it would need to match a function declaration —
-> the parser cannot know `MagicFunction` is a function type, and therefore
+> This single line is **structurally ambiguous to programmer**. We
 > cannot know `a` is a parameter name introduced by it, without first
 > resolving what the alias means. That resolution is a type-checking concern,
 > but the decision of *which grammar production this even is* — `var_decl`
@@ -120,7 +127,7 @@ false       nil         err
 > A future proposal must solve this structural problem — not just argue the
 > feature is useful — before being reconsidered. One direction that avoids it
 > entirely: restrict any alias to types that can never appear bare on the
-> left of `decl IDENTIFIER <alias> = expr` in a way that could be confused
+> left of `const IDENTIFIER <alias> = expr` in a way that could be confused
 > with a function declaration (e.g. forbid aliasing function types
 > specifically, while still allowing struct/enum/generic aliases — those
 > don't introduce named parameters and don't share `func_decl`'s ambiguous
@@ -175,16 +182,16 @@ doc_comment     = '/--' { ' -' ANY_CHAR NEWLINE } '--/'
 ```lucid
 -- normalizes the vector in place
 -- only call after the vector has been validated
-decl normalize ~[const] (v Vec2) -> Vec2 = { ... }    -- stacked attaches
+const normalize (v Vec2) -> Vec2 = { ... }    -- stacked attaches
 
-decl maxVertices ~[const] int = 65536   -- Vulkan hard limit   -- trailing attaches
+const maxVertices int = 65536   -- Vulkan hard limit   -- trailing attaches
 
 /--
  - Computes the dot product of two vectors.
  -
  - Returns `|a| * |b| * cos(angle)`.
 --/
-decl dot ~[const] (other Vec2) -> float = { ... }    -- block attaches
+const dot (other Vec2) -> float = { ... }    -- block attaches
 ```
 
 ---
@@ -201,7 +208,7 @@ structure to delimit constructs. The parser accepts them but never requires them
 ```ebnf
 program         = { top_level_item }
 
-top_level_item  = { attribute_list } { decl_qualifier } top_level_decl
+top_level_item  = { attribute_list } top_level_decl
                 | use_decl
 
 top_level_decl  = struct_decl
@@ -236,12 +243,12 @@ use graphics.gl as gl
 `@[export]` makes a name visible outside its module, but the binding belongs to
 the module that declared it. From outside the module, exported names are always
 **read-only** — they cannot be reassigned regardless of whether the declaration
-is `~[mut]` or `~[const]` internally:
+is `let` or `const` internally:
 
 ```lucid
 -- inside mymod.lucid
-@[export] decl counter ~[mut] int = 0    -- mutable inside the module
-@[export] decl PI ~[const] float = 3.14  -- immutable everywhere
+@[export] let counter int = 0    -- mutable inside the module
+@[export] const PI float = 3.14  -- immutable everywhere
 
 -- inside another module
 use mymod
@@ -272,50 +279,50 @@ use std.math as math
 use std.io   as io
 
 -- reading an exported value
-decl tau ~[const] float = math:TAU
+let tau float = math:TAU
 
 -- calling an exported function
-decl result ~[const] float = math:sqrt(2.0)
+let result float = math:sqrt(2.0)
 
 -- piping through an exported function
-decl normalized ~[const] float = 3.14 |> math:clamp
+let normalized float = 3.14 |> math:clamp
 
 -- chaining: result of a call is a value, access its fields with .
-decl len ~[const] int = math:split("a,b,c"):length   -- ERROR: : is only for module access
-decl parts ~[const] [*]string = math:split("a,b,c")
-decl len   ~[const] int       = parts.length          -- OK: . for struct field
+let len int = math:split("a,b,c"):length   -- ERROR: : is only for module access
+let parts [*]string = math:split("a,b,c")
+let len   int       = parts.length          -- OK: . for struct field
 ```
 
 **`:` vs `.` — the rule:**
 
-| Syntax        | Left-hand side | Assignable  | Example         |
-| ------------- | -------------- | ----------- | --------------- |
-| `module:mem`  | module name    | never       | `math:sqrt(x)`  |
-| `value.field` | struct value   | if `~[mut]` | `player.health` |
+| Syntax        | Left-hand side | Assignable | Example         |
+| ------------- | -------------- | ---------- | --------------- |
+| `module:mem`  | module name    | never      | `math:sqrt(x)`  |
+| `value.field` | struct value   | if `let`   | `player.health` |
 
 The compiler rejects `module:member = ...` at the assignment site regardless
-of the member's internal mutability qualifier. This is enforced syntactically —
+of the member's internal mutability. This is enforced syntactically —
 `:` never produces an l-value.
 
 #### Depth of the Read-Only Guarantee
 
 "Always read-only" applies to **everything reachable through `:`**, not just
-the immediate result — a struct obtained via `:` is treated as `~[const]` at
+the immediate result — a struct obtained via `:` is treated as `const` at
 every field depth, regardless of how its fields are individually qualified
 internally. This distinguishes two cases that look similar but are not:
 
 ```lucid
 -- the module exports a FUNCTION that returns a new struct each call
-@[export] decl makeUser ~[const] () -> User = { return User { id = 0  name = ""  email = "" } }
+@[export] const makeUser () -> User = { return User { id = 0  name = ""  email = "" } }
 
-decl u ~[const] User = mymod:makeUser()
+const u User = mymod:makeUser()
 u.name = "alice"           -- OK: u is a fresh value the caller owns outright;
                             -- mymod:makeUser() is the module_expr, already
                             -- fully resolved to a plain User before '.name'
                             -- is ever reached
 
 -- the module exports a STRUCT VALUE directly (a package-level variable)
-@[export] decl currentUser ~[mut] User = User { id = 1  name = "bob"  email = "" }
+@[export] let currentUser User = User { id = 1  name = "bob"  email = "" }
 
 mymod:currentUser.name = "eve"    -- ERROR: cannot assign through a value
                                     -- obtained via ':', at any field depth
@@ -346,11 +353,11 @@ struct Config {
     threshold int
 }
 
-decl current ~[mut] Config = Config { threshold = 10 }   -- NOT exported
+let current Config = Config { threshold = 10 }   -- NOT exported
 
-@[export] decl getThreshold ~[const] () -> int = { return current.threshold }
+@[export] const getThreshold () -> int = { return current.threshold }
 
-@[export] decl setThreshold ~[const] (v int) -> () = {
+@[export] const setThreshold (v int) -> () = {
     if v < 0 { return }    -- the module can validate, log, or guard here
     current.threshold = v
 }
@@ -360,7 +367,7 @@ decl current ~[mut] Config = Config { threshold = 10 }   -- NOT exported
 -- from outside the module
 use config
 
-decl t ~[const] int = config:getThreshold()
+const t int = config:getThreshold()
 config:setThreshold(20)
 config:current.threshold = 5    -- ERROR: current is not exported at all,
                                   -- and even if it were, '.' cannot reach
@@ -419,19 +426,19 @@ caller need:
 
 ```lucid
 -- inside users.lucid — internal layout is the module's own choice
-decl ids    [*]int    = []
-decl names  [*]string = []
+let ids    [*]int    = []
+let names  [*]string = []
 
-@[export] decl getUser ~[const] (id int)    -> User?    = { ... }   -- one full record
-@[export] decl getUser ~[const] (ids [*]int) -> [*]User  = { ... }   -- many full records
-@[export] decl getUser ~[const] ()           -> [*]int   = { return ids }  -- ids only, no copy of names
+@[export] const getUser (id int)    -> User?    = { ... }   -- one full record
+@[export] const getUser (ids [*]int) -> [*]User  = { ... }   -- many full records
+@[export] const getUser ()           -> [*]int   = { return ids }  -- ids only, no copy of names
 ```
 
 ```lucid
 -- from outside the module — caller picks the shape it actually needs
-decl one  ~[const] User?  = users:getUser(7)
-decl many ~[const] [*]User = users:getUser([7, 8, 9])
-decl all  ~[const] [*]int  = users:getUser()
+const one  User?  = users:getUser(7)
+const many [*]User = users:getUser([7, 8, 9])
+const all  [*]int  = users:getUser()
 ```
 
 Each overload can be implemented against whatever internal layout is
@@ -469,29 +476,17 @@ type            = primitive_type
                 | array_type
                 | ptr_type
                 | generic_type
-                | qualified_type
-                | tuple_type
+                | nullable_type
+                | fallible_type
                 | IDENTIFIER                (* named type reference *)
 
-qualified_type  = '~[' type_qual_item { ',' type_qual_item } ']' type
-                | type '?'                  (* nullable: T or nil *)
-                | type '!'                  (* fallible: T or err *)
-                | type '?' '!'              (* nullable and fallible: T, nil, or err *)
-                  (* qualifier applied to a type rather than a declaration *)
-                  (* e.g. ~[nullable] int, ~[async] (int) -> bool *)
-                  (* '?!' is the only valid order — '!?' does not parse *)
-                  (* ! carries no payload — see Result Type and Error Handling *)
-
-tuple_type      = '(' type ',' type { ',' type } ')'
+nullable_type   = type '?'
+fallible_type   = type '!'
 
 array_type      = '[' array_size ']' type
 array_size      = '*'       (* owned heap array — Lucid owns the memory *)
                 | '_'       (* slice — borrowed view, Lucid does not own *)
                 | INT_LIT   (* fixed-size stack array *)
-
-(* Nullable element vs nullable array:
-   [*]T?            — array of nullable T  (? binds to element, common)
-   ~[nullable] [*]T — nullable array of T  (rare — prefer empty array [] instead) *)
 
 ptr_type        = 'ptr' '<' type '>'        (* raw pointer — FFI use only *)
 
@@ -501,77 +496,24 @@ type_arg        = type | INT_LIT
 
 ---
 
-## Trait Declaration
+Here's the updated grammar section with the `const` field feature, along with a new subsection explaining the rules:
 
-A trait is a pure **field contract** — a named set of fields (name and type
-only) that a struct promises to contain. Traits have no methods, no behavior,
-no qualifiers, and no default values. They exist solely to express structural
-requirements for data polymorphism.
+---
 
-```ebnf
-trait_decl  = 'trait' IDENTIFIER [ generic_params ] '{' { trait_field } '}'
+Here's the corrected Struct and Trait section with the proper grammar and rules:
 
-trait_field = IDENTIFIER type
-              (* name and type only — no qualifiers, no defaults, no behavior *)
-```
+---
 
-```lucid
-trait Vector2 {
-    x float
-    y float
-}
+Ah, I understand now! A `const` field works exactly like a normal field, but with two key differences:
 
-trait Named {
-    name string
-}
+1. It cannot be reassigned after construction
+2. It cannot be nullable or fallible
 
-trait Bounded {
-    minVal float
-    maxVal float
-}
+The default value rules are the same as normal fields:
+- **Has default** → can be omitted during initialization
+- **No default** → must be provided during initialization
 
--- generic trait
-trait Container<T> {
-    value T
-    count int
-}
-```
-
-### Rules
-
-- Trait fields declare **name and type only** — no `~[const]`/`~[mut]`, no
-  default values. Qualifiers and defaults belong to the implementing struct.
-- A struct implementing a trait must declare all the trait's fields at the
-  **top level** with matching names and types.
-- Field type mismatch is a **compile error** at the struct declaration site.
-- Two traits requiring the same field name with **different types** is a
-  **compile error** at the struct declaration — there is no silent merging.
-  Same name, same type across two traits is fine — satisfied once.
-- Traits may be used as **field types** in structs — a field typed as a trait
-  accepts any struct implementing that trait.
-- Traits may be used as **parameter types** in functions — inside the function
-  body only the trait's fields are accessible on that parameter.
-- Traits may be used as **generic constraints** — `<T : Trait>` means T must
-  implement Trait. See **Generic Constraints**.
-
-```lucid
--- name conflict: same field, different types — compile error
-trait A { x float }
-trait B { x int   }
-
-struct Bad : A, B {   -- ERROR: field x required as float by A and int by B
-    x float           -- which one?
-}
-
--- name conflict: same field, same type — fine, satisfied once
-trait A { x float }
-trait B { x float, y float }
-
-struct Both : A, B {  -- OK: x satisfies both A and B
-    x float
-    y float
-}
-```
+Here's the corrected Struct section:
 
 ---
 
@@ -585,11 +527,9 @@ struct_decl     = 'struct' IDENTIFIER [ generic_params ]
                   [ ':' trait_ref { ',' trait_ref } ]
                   '{' { struct_field } '}'
 
-struct_field    = { attribute_list } IDENTIFIER { decl_qualifier } type [ '=' expr ]
+struct_field    = { attribute_list } [ 'const' ] IDENTIFIER type [ '=' expr ]
+                  (* optional 'const' marks the field as immutable after construction *)
                   (* name then type — Go style *)
-                  (* matches var_decl's order: IDENTIFIER before decl_qualifier,
-                     e.g. step ~[const] int — not ~[const] step int *)
-                  (* type may carry type qualifiers: x T? or f ~[async] (int)->bool *)
                   (* optional default value *)
 
 trait_ref       = IDENTIFIER
@@ -597,7 +537,7 @@ trait_ref       = IDENTIFIER
 
 generic_params  = '<' generic_param { ',' generic_param } '>'
 generic_param   = IDENTIFIER
-                | IDENTIFIER ':' trait_ref { ',' trait_ref }
+                | IDENTIFIER ':' trait_ref { '+' trait_ref }
                   (* constrained generic — T must implement listed traits *)
 ```
 
@@ -649,18 +589,181 @@ struct Config {
 }
 ```
 
+### Const Fields
+
+A struct field may be marked with the `const` keyword to make it **immutable after construction**. This is a property of the field itself, not the containing variable:
+
+```lucid
+struct Counter {
+    const step int = 1   -- const field with default
+    total int = 0        -- mutable by default
+}
+
+let c Counter = Counter { }
+c.total = 5       -- OK: total is mutable
+c.step  = 2       -- ERROR: step is const — read-only even though c is mutable
+```
+
+#### Rules for Const Fields
+
+| Rule                  | Description                                                                                                                        |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| **Read-Only**         | `const` fields cannot be reassigned after construction, even when the containing variable is declared with `let`.                  |
+| **Type Restrictions** | A `const` field may **not** be nullable (`T?`) or fallible (`T!`). It must be a plain, non-nullable, non-fallible type.            |
+| **Default Value**     | A `const` field may have a default value (`= expr`). If it has a default, it must be omitted during initialization.                |
+| **Required at Init**  | If a `const` field does **not** have a default value, it must be provided a value during struct initialization.                    |
+| **Function Types**    | A `const` field of function type fixes the behavior for the lifetime of the value — useful for callbacks that should never change. |
+
+```lucid
+-- VALID: const field with default
+struct Validator {
+    const check (int) -> bool = (n int) -> bool { return n > 0 }
+}
+
+-- VALID: const field without default
+struct Config {
+    const maxRetries int
+    const timeout float = 5.0
+}
+
+-- VALID: struct initialization — const fields with defaults can be omitted
+let v Validator = Validator { }
+
+-- VALID: struct initialization — const fields without defaults must be provided
+let cfg Config = Config {
+    maxRetries = 3
+    -- timeout = 5.0  -- optional (has default)
+}
+
+-- VALID: both const fields with defaults
+struct Defaults {
+    const a int = 1
+    const b string = "hello"
+}
+
+let d Defaults = Defaults { }   -- OK: both have defaults
+
+-- VALID: override const field with default (allowed during initialization)
+let d2 Defaults = Defaults {
+    a = 42   -- OK: providing a value during initialization is allowed
+    b = "world"
+}
+
+-- INVALID: const field with nullable type
+struct BadNullable {
+    const value int? = nil   -- ERROR: const field cannot be nullable
+}
+
+-- INVALID: const field with fallible type
+struct BadFallible {
+    const value int! = err   -- ERROR: const field cannot be fallible
+}
+
+-- INVALID: const field without default and no value provided
+struct Config {
+    const maxRetries int
+}
+
+let bad Config = Config { }   -- ERROR: const field 'maxRetries' has no default and must be initialized
+```
+
+#### Why Const Fields?
+
+Const fields serve two purposes:
+
+1. **Immutable Behavior**: For function-typed fields, `const` ensures the behavior is fixed at construction and cannot be swapped later:
+
+```lucid
+struct Logger {
+    const sink (string) -> () = (msg string) -> () { io:printl(msg) }
+}
+
+let log Logger = Logger { }
+log.sink = (msg string) -> () { system:writeToFile("app.log", msg) }   -- ERROR: sink is const
+```
+
+2. **Immutable Data**: For data fields, `const` guarantees the value never changes, making the struct easier to reason about:
+
+```lucid
+struct Connection {
+    const host string = "localhost"
+    const port int = 8080
+    socket int   -- mutable
+}
+
+let conn Connection = Connection { }
+conn.host = "0.0.0.0"   -- ERROR: const
+conn.port = 9090        -- ERROR: const
+conn.socket = 43        -- OK: socket is mutable
+```
+
+#### Field-Level Const vs Declaration Const
+
+|                    | `const` variable binding     | `const` struct field           |
+| ------------------ | ---------------------------- | ------------------------------ |
+| **Applies to**     | The variable binding         | The struct field itself        |
+| **Controls**       | Reassignment of the variable | Reassignment of the field      |
+| **Defaults to**    | `let` (mutable)              | mutable                        |
+| **Default Value**  | Optional                     | Optional                       |
+| **Initialization** | At declaration               | Must be provided if no default |
+| **Example**        | `const x int = 5`            | `struct S { const x int = 5 }` |
+
+```lucid
+-- Demonstration of the difference
+struct Thing {
+    const a int = 1   -- field is const, has default
+    b int = 2         -- field is mutable, has default
+}
+
+-- const variable: cannot reassign the variable
+const t1 Thing = Thing { }
+t1 = Thing { }   -- ERROR: t1 is const
+
+-- let variable: can reassign the variable, but const fields stay read-only
+let t2 Thing = Thing { }
+t2.b = 20              -- OK: b is mutable
+t2.a = 5               -- ERROR: a is const
+t2 = Thing { }         -- OK: t2 is mutable
+```
+
 ### Struct Initialization
 
 Structs are initialized with a struct literal — field names followed by `=`
-and a value. Fields with default values may be omitted:
+and a value. Fields with default values may be omitted. **Const fields follow
+the same rules** — if they have defaults, they can be omitted; if not, they
+must be provided.
 
 ```lucid
 -- all fields explicit
-decl p ~[const] Point = Point { x = 3.0, y = 4.0 }
+const p Point = Point { x = 3.0, y = 4.0 }
 
 -- omit fields that have defaults
-decl origin ~[const] Point = Point {}          -- x=0.0, y=0.0 from defaults
-decl shifted ~[const] Point = Point { x = 5.0 } -- x=5.0, y=0.0 from default
+const origin Point = Point {}          -- x=0.0, y=0.0 from defaults
+const shifted Point = Point { x = 5.0 } -- x=5.0, y=0.0 from default
+
+-- const fields with and without defaults
+struct Connection {
+    const host string          -- no default, must be provided
+    const port int = 8080      -- has default, can be omitted
+    timeout float = 5.0
+}
+
+-- VALID: const field without default provided
+let conn Connection = Connection {
+    host = "localhost"
+    timeout = 10.0  -- optional (has default)
+}
+
+-- VALID: override const field with default
+let conn2 Connection = Connection {
+    host = "0.0.0.0"
+    port = 9090   -- OK: providing a value during initialization is allowed
+}
+
+-- INVALID: const field without default missing
+let bad Connection = Connection {
+    timeout = 10.0  -- ERROR: const field 'host' has no default and must be initialized
+}
 
 -- nested struct
 struct Rect {
@@ -669,21 +772,23 @@ struct Rect {
     height float = 0.0
 }
 
-decl r ~[const] Rect = Rect {
+const r Rect = Rect {
     origin = Point { x = 1.0, y = 2.0 }
     width  = 100.0
     height = 50.0
 }
 
 -- generic struct
-struct Box<T> { value T }
+struct Box<T> {
+    const value T
+}
 
-decl b1 ~[const] Box<int>    = Box<int>    { value = 42 }
-decl b2 ~[const] Box<string> = Box<string> { value = "hello" }
-decl b3 ~[const] Box<Point>  = Box<Point>  { value = Point { x = 1.0, y = 2.0 } }
+const b1 Box<int>    = Box<int>    { value = 42 }
+const b2 Box<string> = Box<string> { value = "hello" }
+const b3 Box<Point>  = Box<Point>  { value = Point { x = 1.0, y = 2.0 } }
 
--- mutable struct — fields can be reassigned
-decl player ~[mut] Player = Player { name = "hero" }
+-- mutable struct — mutable fields can be reassigned
+let player Player = Player { name = "hero" }
 player.health = 80
 player.speed  = 1.5
 
@@ -693,8 +798,8 @@ struct Enemy {
     target Player?    -- nullable — may have no target
 }
 
-decl e ~[const] Enemy = Enemy { name = "goblin", target = nil }
-decl e2 ~[const] Enemy = Enemy { name = "orc", target = player }
+const e Enemy = Enemy { name = "goblin", target = nil }
+const e2 Enemy = Enemy { name = "orc", target = player }
 ```
 
 ### Field Access
@@ -702,72 +807,353 @@ decl e2 ~[const] Enemy = Enemy { name = "orc", target = player }
 Fields are accessed with `.`:
 
 ```lucid
-decl px ~[const] float = p.x         -- 3.0
-decl py ~[const] float = p.y         -- 4.0
-decl rw ~[const] float = r.width     -- 100.0
-decl ox ~[const] float = r.origin.x  -- 1.0  (nested access)
+const px float = p.x         -- 3.0
+const py float = p.y         -- 4.0
+const rw float = r.width     -- 100.0
+const ox float = r.origin.x  -- 1.0  (nested access)
 
 -- nullable field — guard before access
 if e2.target != nil {
-    decl hp ~[const] int = e2.target.health
+    const hp int = e2.target.health
 }
 ```
 
 ### Const Fields and Function-Typed Fields
 
-A field qualified `~[const]` cannot be reassigned through `field_expr`, even
-when the containing variable is itself `~[mut]`. Field-level `~[const]` is
+A field declared with `const` cannot be reassigned through `field_expr`, even
+when the containing variable is itself `let`. Field-level `const` is
 part of the struct's own definition, not something the holder of a mutable
-variable can override — `player ~[mut] Player` makes `player`'s *mutable*
-fields reassignable through `player.field = ...`, but a field the struct
-itself declared `~[const]` stays read-only regardless:
+variable can override:
 
 ```lucid
 struct Counter {
-    step    ~[const] int   -- fixed for the lifetime of every Counter value
-    total   ~[mut]   int
+    const step int = 1   -- fixed for the lifetime of every Counter value
+    total int = 0
 }
 
-decl c ~[mut] Counter = Counter { step = 1  total = 0 }
-c.total = 5       -- OK: total is ~[mut]
-c.step  = 2       -- ERROR: step is ~[const] — read-only even though c is ~[mut]
+let c Counter = Counter { }
+c.total = 5       -- OK: total is mutable
+c.step  = 2       -- ERROR: step is const — read-only even though c is mutable
 ```
 
-This applies the same way to a field of **function type**. Luc introduced
-`impl` partly to prevent a struct's behavior from being reassigned after
-construction — Lucid has no `impl` and no methods at all (see the opening
-note on removed features), so this concern only ever applies to an ordinary
-field that happens to hold a function value, and `~[const]` already covers it
-with no further mechanism needed:
+This applies the same way to a field of **function type**:
 
 ```lucid
 struct Validator {
-    check ~[const] (int) -> bool   -- fixed behavior, set once at construction
+    const check (int) -> bool = (n int) -> bool { return n > 0 }
 }
 
-decl positive ~[const] Validator = Validator {
-    check = (n int) -> bool { return n > 0 }
-}
+const positive Validator = Validator { }
 
-positive.check = (n int) -> bool { return n < 0 }   -- ERROR: check is ~[const]
+positive.check = (n int) -> bool { return n < 0 }   -- ERROR: check is const
 
-decl result ~[const] bool = positive.check(5)   -- OK: calling through a
-                                                  -- const field is unaffected;
-                                                  -- only reassignment is blocked
+const result bool = positive.check(5)   -- OK: calling through a const field
 ```
 
-A field left `~[mut]` (the default, same as any other declaration) can be
-reassigned freely, including to a different function value — useful for
-genuinely swappable behavior, like a configurable callback:
+A field left mutable (the default) can be reassigned freely:
 
 ```lucid
 struct Logger {
-    sink ~[mut] (string) -> () = (msg string) -> () { io:printl(msg) }
+    sink (string) -> () = (msg string) -> () { io:printl(msg) }
 }
 
-decl log ~[mut] Logger = Logger { }
+let log Logger = Logger { }
 log.sink = (msg string) -> () { system:writeToFile("app.log", msg) }   -- OK
 ```
+
+---
+
+Here's the updated Trait section with `const` support in trait fields:
+
+---
+
+## Trait Declaration
+
+A trait is a pure **field contract** — a named set of fields (name, type, and optionally const-ness) that a struct promises to contain. Traits have no methods, no behavior, and no default values. They exist solely to express structural requirements for data polymorphism.
+
+```ebnf
+trait_decl  = 'trait' IDENTIFIER [ generic_params ] '{' { trait_field } '}'
+
+trait_field = [ 'const' ] IDENTIFIER type
+              (* optional 'const' requires the implementing struct to
+                 declare this field as const *)
+              (* name and type only — no defaults, no behavior *)
+```
+
+```lucid
+trait Vector2 {
+    x float
+    y float
+}
+
+trait Named {
+    name string
+}
+
+trait Bounded {
+    minVal float
+    maxVal float
+}
+
+trait ImmutableConfig {
+    const maxRetries int
+    const timeout float
+}
+
+-- generic trait
+trait Container<T> {
+    value T
+    count int
+}
+```
+
+### Rules
+
+- Trait fields declare **name, type, and optional const-ness** — no default values.
+  Qualifiers and defaults belong to the implementing struct.
+- A struct implementing a trait must declare all the trait's fields at the
+  **top level** with matching names, types, and const-ness.
+- If a trait field is marked `const`, the implementing struct **must** also
+  declare that field as `const`.
+- If a trait field is **not** marked `const`, the implementing struct may
+  declare the field as either `const` or mutable — the trait only requires
+  that the field exists with the correct type.
+- Field type mismatch is a **compile error** at the struct declaration site.
+- Two traits requiring the same field name with **different types** is a
+  **compile error** at the struct declaration — there is no silent merging.
+  Same name, same type across two traits is fine — satisfied once.
+- Two traits requiring the same field name with **different const-ness** is a
+  **compile error** at the struct declaration. If one trait requires `const`
+  and the other does not, the struct must declare it as `const` to satisfy
+  both.
+- Traits may be used as **field types** in structs — a field typed as a trait
+  accepts any struct implementing that trait.
+- Traits may be used as **parameter types** in functions — inside the function
+  body only the trait's fields are accessible on that parameter.
+- Traits may be used as **generic constraints** — `<T : Trait>` means T must
+  implement Trait. See **Generic Constraints**.
+
+```lucid
+-- name conflict: same field, different types — compile error
+trait A { x float }
+trait B { x int   }
+
+struct Bad : A, B {   -- ERROR: field x required as float by A and int by B
+    x float           -- which one?
+}
+
+-- name conflict: same field, same type — fine, satisfied once
+trait A { x float }
+trait B { x float, y float }
+
+struct Both : A, B {  -- OK: x satisfies both A and B
+    x float
+    y float
+}
+
+-- const conflict: one trait requires const, the other doesn't
+trait A { x float }       -- x can be mutable or const
+trait B { const x float } -- x must be const
+
+-- OK: struct declares x as const, satisfying both
+struct BothOK : A, B {
+    const x float
+}
+
+-- ERROR: struct declares x as mutable, fails B's const requirement
+struct BothBad : A, B {
+    x float   -- ERROR: trait B requires 'const x float'
+}
+```
+
+### Trait Fields vs Struct Fields
+
+|                   | Trait Field                            | Struct Field                                          |
+| ----------------- | -------------------------------------- | ----------------------------------------------------- |
+| **Const Keyword** | Optional (`const IDENTIFIER type`)     | Optional (`const IDENTIFIER type`)                    |
+| **Default Value** | Not allowed                            | Optional                                              |
+| **Purpose**       | Requirements contract                  | Actual data storage                                   |
+| **Mutability**    | Specifies requirement (`const` or not) | `const` or mutable (must match trait if implementing) |
+
+```lucid
+trait Named {
+    name string        -- requires: field 'name' of type string (mutable or const allowed)
+}
+
+trait ImmutableId {
+    const id int       -- requires: field 'id' of type int AND it must be const
+}
+
+-- All of these satisfy Named (name can be mutable or const):
+struct Person : Named {
+    name string = "anonymous"       -- mutable, has default (OK)
+}
+
+struct Identity : Named {
+    const name string = "unknown"   -- const, has default (OK)
+}
+
+struct User : Named {
+    name string       -- mutable, no default (OK)
+}
+
+-- This satisfies ImmutableId:
+struct HasId : ImmutableId {
+    const id int = 42   -- const, matches requirement (OK)
+}
+
+-- This does NOT satisfy ImmutableId:
+struct BadId : ImmutableId {
+    id int = 42   -- ERROR: ImmutableId requires 'const id int'
+}
+
+-- This does NOT satisfy Named:
+struct Invalid {
+    name string! = err   -- ERROR: type mismatch (string vs string!)
+}
+```
+
+### Const Requirement Examples
+
+```lucid
+-- Trait with mixed const requirements
+trait Config {
+    const appName string       -- must be const
+    version int                -- can be mutable or const
+    const debug bool          -- must be const
+}
+
+-- Valid implementation: all const requirements satisfied
+struct ProductionConfig : Config {
+    const appName string = "MyApp"
+    version int = 1
+    const debug bool = false
+}
+
+-- Valid implementation: non-const trait fields can be const too
+struct StrictConfig : Config {
+    const appName string = "MyApp"
+    const version int = 1      -- version is const even though trait doesn't require it
+    const debug bool = false
+}
+
+-- INVALID: missing const on appName
+struct BadConfig : Config {
+    appName string = "MyApp"   -- ERROR: Config requires 'const appName string'
+    version int = 1
+    const debug bool = false
+}
+
+-- INVALID: missing const on debug
+struct BadConfig2 : Config {
+    const appName string = "MyApp"
+    version int = 1
+    debug bool = false         -- ERROR: Config requires 'const debug bool'
+}
+```
+
+### Trait Constraints on Generic Parameters
+
+Traits are used as constraints on generic type parameters using the `:` syntax.
+When a trait has `const` requirements, the implementing type must satisfy them:
+
+```lucid
+-- Single constraint
+const magnitude<T : Vector2> (v T) -> float = {
+    return sqrt(v.x * v.x + v.y * v.y)
+}
+
+-- Multiple constraints on one parameter (separated by '+')
+const describe<T : Vector2 + Named> (v T) -> string = {
+    return v.name + " at (" + stringFromFloat(v.x) + ", " + stringFromFloat(v.y) + ")"
+}
+
+-- Generic function with const trait constraint
+const logConfig<T : Config> (cfg T) -> string = {
+    -- 'appName' is const, guaranteed by the trait
+    return "App: " + cfg.appName + ", v" + stringFromInt(cfg.version)
+}
+
+-- Multiple constrained parameters
+struct Pair<A : Named, B : Named> {
+    first  A
+    second B
+}
+
+-- Trait with generic arguments
+trait Container<T> {
+    const value T
+    count int
+}
+
+struct Box<U : Container<int>> {
+    container U
+}
+
+-- Valid: Box requires U to implement Container<int>
+const box Box<BoxContainer> = Box {
+    container = BoxContainer { value = 42 }
+}
+```
+
+### Semantic Analysis Notes
+
+The semantic pass must enforce the following rules for traits:
+
+1. **Const Matching**: When a struct implements a trait, any field marked `const` in the trait must also be marked `const` in the struct. If the struct declares it as mutable, emit a compile error.
+
+2. **Const Optional**: If a trait field is **not** marked `const`, the struct may declare it as either `const` or mutable. Both are acceptable.
+
+3. **Type Matching**: All trait fields must have matching types in the implementing struct. Type mismatch is a compile error.
+
+4. **Const Conflict Resolution**: If a struct implements multiple traits, and one trait requires a field to be `const` while another does not, the struct must declare it as `const` to satisfy both. If one requires `const` and the other requires a different type, it's a compile error.
+
+5. **Trait as Type**: When a trait is used as a field type or parameter type, it accepts any struct implementing that trait. Inside the body, only the trait's fields are accessible. The const-ness of fields in the trait is respected — if a trait field is `const`, it cannot be reassigned through the trait reference.
+
+6. **Generic Trait Constraints**: Trait constraints on generic parameters are resolved at instantiation time. The compiler verifies that the concrete type implements all required traits, including const requirements.
+
+7. **No Trait Inheritance**: Traits do not inherit from other traits. A struct must explicitly list all traits it implements.
+
+8. **No Methods**: Traits define fields only — no methods, no behavior, no default values. All behavior is expressed as plain functions.
+
+### Trait Const Matching Table
+
+| Trait Field Declaration | Struct Field Declaration | Result                      |
+| ----------------------- | ------------------------ | --------------------------- |
+| `x float`               | `x float`                | ✅ OK                        |
+| `x float`               | `const x float`          | ✅ OK (mutable can be const) |
+| `const x float`         | `const x float`          | ✅ OK                        |
+| `const x float`         | `x float`                | ❌ ERROR (const required)    |
+| `x float`               | `x string`               | ❌ ERROR (type mismatch)     |
+| `const x float`         | `const x string`         | ❌ ERROR (type mismatch)     |
+
+### Trait Const Conflict Resolution
+
+```lucid
+trait A {
+    x float          -- x can be mutable or const
+}
+
+trait B {
+    const x float    -- x must be const
+}
+
+-- Both traits satisfied: x is const
+struct Both : A, B {
+    const x float    -- OK: satisfies both
+}
+
+trait C {
+    const x int      -- x must be const int
+}
+
+-- ERROR: conflict between A (float) and C (int), regardless of const
+struct Conflict : A, C {
+    const x float    -- ERROR: A requires float, C requires int
+}
+```
+
+---
 
 ## Enum Declaration
 
@@ -817,39 +1203,64 @@ block where each parameter group is a column, separated by `->` arrows that mark
 real execution boundaries.
 
 ```ebnf
-func_decl       = 'decl' IDENTIFIER [ generic_params ]
-                  { decl_qualifier }
-                  param_group { param_group }     (* Form 2: ()() shorthand *)
+func_decl       = ('let' | 'const') IDENTIFIER [ generic_params ]
+                  param_group
                   [ '->' return_type ]            (* omitted for void/unit *)
-                  '=' func_body
-
-                | 'decl' IDENTIFIER [ generic_params ]
-                  { decl_qualifier }
-                  param_group '->' func_type      (* Form 1: explicit intermediate -> *)
                   '=' func_body
 
 param_group     = '(' [ param_list ] ')'
 param_list      = param { ',' param } [ ',' variadic_param ]
                 | variadic_param
-param           = IDENTIFIER type               (* name then type — mutable by default *)
-                | IDENTIFIER { decl_qualifier } type
-                                                 (* ~[const] marks read-only parameter *)
+param           = IDENTIFIER type               (* pass by value — caller's copy *)
+                | IDENTIFIER 'const' type        (* read-only reference parameter *)
 variadic_param  = IDENTIFIER '...' type
-                  (* must be the last parameter in its param_group; collects
-                     zero or more trailing arguments into a [*]type array *)
+                  (* must be the last parameter; collects zero or more
+                     trailing arguments into a [*]type array *)
 
 return_type     = type
-                | '(' type { ',' type } ')'     (* multiple return *)
+                | '(' type ',' type { ',' type } ')'   (* multiple return values *)
 
 func_body       = '{' { statement } '}'
                 | expr                           (* single-expression body *)
 
-func_type       = param_group { param_group } '->' return_type
-                  (* Form 2 function type — matches Form 2 declaration shape *)
-                | param_group '->' func_type
-                  (* Form 1 function type — explicit intermediate arrow *)
-                | param_group '->' return_type
-                  (* single-group function type *)
+func_type       = param_group '->' return_type
+                  (* a function type is always a single param group *)
+```
+
+**Multiple return values** multiple return are wrapped inside `()`, this is 
+not tuple type but a way to allow the parser to detect a group of multiple return,
+the call site store the results with multiple variables
+
+```lucid
+const parseInt (s string) -> (int, bool) = {
+    -- returns parsed value and whether parsing succeeded
+    return 0, false
+}
+
+-- destructure at the call site
+let value int
+let ok bool
+value, ok = parseInt("42")
+
+-- or in a single declaration
+let value int, ok bool = parseInt("42")
+```
+
+**Parameters** are passed by value (a copy) by default. A `const` parameter
+marks a read-only reference — the function sees the caller's original value
+but cannot modify it:
+
+```lucid
+const sum (nums ...int) -> int = {
+    let total int = 0
+    for n int in nums { total = total + n }
+    return total
+}
+
+const describe (v const Vector2) -> string = {
+    -- v is a read-only reference — no copy overhead
+    return "(" + stringFromFloat(v.x) + ", " + stringFromFloat(v.y) + ")"
+}
 ```
 
 ### Variadic Parameters
@@ -864,8 +1275,8 @@ appear in any group, including a non-final one, as long as it is the last
 parameter *of that group*.
 
 ```lucid
-decl sum ~[const] (nums ...int) -> int = {
-    decl total ~[mut] int = 0
+const sum (nums ...int) -> int = {
+    let total int = 0
     for n int in nums {
         total = total + n
     }
@@ -876,15 +1287,15 @@ sum()           -- 0
 sum(1, 2, 3)    -- 6
 
 -- variadic combined with regular parameters: variadic must come last
-decl logf ~[const] (level int, fmt string, args ...string) -> () = {
+const logf (level int, fmt string, args ...string) -> () = {
     -- args is [*]string
 }
 
 -- INVALID — variadic is not the last parameter
-decl bad ~[const] (nums ...int, label string) -> int = { ... }  -- ERROR
+const bad (nums ...int, label string) -> int = { ... }  -- ERROR
 
 -- INVALID — variadic is not the last parameter of ITS OWN group
-decl bad2 ~[const] (nums ...int, label string)(words ...string) -> int = { ... }  -- ERROR
+const bad2 (nums ...int, label string)(words ...string) -> int = { ... }  -- ERROR
 ```
 
 A flat `param_list` allows at most one variadic parameter — it must be the
@@ -901,11 +1312,11 @@ itself, not from the shorthand syntax:
 ```lucid
 -- two independent variadics — impossible as a single flat param_list,
 -- straightforward as two curried groups
-decl summarize ~[const] (nums ...int)(words ...string) -> string = {
-    decl total ~[mut] int = 0
+const summarize (nums ...int)(words ...string) -> string = {
+    let total int = 0
     for n int in nums { total = total + n }
 
-    decl joined ~[mut] string = ""
+    let joined string = ""
     for w string in words { joined = joined + w + " " }
 
     return stringFromInt(total) + ": " + joined
@@ -930,12 +1341,12 @@ when code needs to run *between* argument groups — at the point of partial
 application, before the inner function is created.
 
 ```lucid
-decl makeAdder ~[const] (base int) -> (n int) -> int = {
-    decl adjusted ~[const] int = base * 2      -- runs at makeAdder(base)
+const makeAdder (base int) -> (n int) -> int = {
+    const adjusted int = base * 2      -- runs at makeAdder(base)
     return (n int) -> int { return adjusted + n }
 }
 
-decl addTen ~[const] (n int) -> int = makeAdder(5)
+const addTen (n int) -> int = makeAdder(5)
 addTen(3)   -- 13
 ```
 
@@ -954,12 +1365,12 @@ generated around it.
 
 ```lucid
 -- as written
-decl add ~[const] (a int)(b int) -> int = {
+const add (a int)(b int) -> int = {
     return a + b
 }
 
 -- compiler expands to
-decl add ~[const] (a int) -> (b int) -> int = {
+const add (a int) -> (b int) -> int = {
     return (b int) -> int {
         return a + b
     }
@@ -979,26 +1390,26 @@ The core idea:
 
 ```lucid
 -- Form 1: code runs between groups
-decl makeProcessor ~[const] (config Config) -> (data string) -> string = {
-    decl compiled ~[const] CompiledConfig = compile(config)   -- runs once at partial application
+const makeProcessor (config Config) -> (data string) -> string = {
+    const compiled CompiledConfig = compile(config)   -- runs once at partial application
     return (data string) -> string { return apply(compiled, data) }
 }
 
 -- Mixing Forms: Form 2 groups first, Form 1 explicit return after
-decl process ~[const] (a int)(b int) -> (c int) -> int = {
-    decl sum ~[const] int = a + b               -- runs when process(a)(b) is called
+const process (a int)(b int) -> (c int) -> int = {
+    const sum int = a + b               -- runs when process(a)(b) is called
     return (c int) -> int { return sum + c }
 }
 
 -- Form 2: flat body, compiler handles the wrapping
-decl clamp ~[const] (lo int)(hi int)(v int) -> int = {
+const clamp (lo int)(hi int)(v int) -> int = {
     if v < lo { return lo }
     if v > hi { return hi }
     return v
 }
 
 -- partial application
-decl clamp0to100 ~[const] (v int) -> int = clamp(0)(100)
+const clamp0to100 (v int) -> int = clamp(0)(100)
 clamp0to100(42)    -- 42
 clamp0to100(200)   -- 100
 ```
@@ -1006,7 +1417,7 @@ clamp0to100(200)   -- 100
 ### Entry Point
 
 ```lucid
-@[export, aot] decl main ~[const] () -> int = {
+@[export, aot] const main () -> int = {
     return 0
 }
 
@@ -1014,13 +1425,13 @@ clamp0to100(200)   -- 100
 -- [_]string: slice — the runtime owns the argument buffer, main gets a
 -- read-only view. [*]string would be wrong here: that implies main owns a
 -- heap copy of all arguments, which the runtime never hands over.
-@[export, aot] decl main ~[const] (args [_]string) -> int = {
+@[export, aot] const main (args [_]string) -> int = {
     return 0
 }
 ```
 
 `@[aot]` is shown explicitly above rather than omitted — see **Compilation
-Mode Directives**, immediately below, for why a bare `@[export] decl main`
+Mode Directives**, immediately below, for why a bare `@[export] const main`
 is shorthand for the same thing, not a third "unspecified" mode.
 
 ### Compilation Mode Directives
@@ -1036,21 +1447,19 @@ always compiled in exactly one of the two; `@[aot]` is the default:
 
 Both combine with `@[export]` in the same bracket — `attribute_list` is one
 `@[...]` with comma-separated items, not separate brackets stacked together
-(that stacking pattern is for qualifiers, e.g. `~[async] ~[const]`; it does
-not apply to attributes):
 
 ```lucid
-@[export, aot] decl main ~[const] () -> int = {
+@[export, aot] const main () -> int = {
     return 0
 }
 
 -- equivalent to the above — @[aot] is the default when neither is written
-@[export] decl main ~[const] () -> int = {
+@[export] const main () -> int = {
     return 0
 }
 
 -- opting into JIT instead requires writing @[jit] explicitly
-@[export, jit] decl main ~[const] () -> int = {
+@[export, jit] const main () -> int = {
     return 0
 }
 ```
@@ -1059,7 +1468,7 @@ not apply to attributes):
 
 ## Function Overloading
 
-Two or more `decl` with the same name but different parameter signatures are
+Two or more declaration with the same name but different parameter signatures are
 overloads. The compiler picks the correct overload at the call site based on
 argument types. Overloads that differ only in return type are a compile error —
 the compiler cannot resolve them from the call site alone.
@@ -1081,10 +1490,10 @@ the compiler cannot resolve them from the call site alone.
 
 ```lucid
 -- concrete overloads — same name, different parameter types
-decl describe ~[const] (v int)    -> string = { return "int: "    + stringFromInt(v) }
-decl describe ~[const] (v float)  -> string = { return "float: "  + stringFromFloat(v) }
-decl describe ~[const] (v bool)   -> string = { return "bool: "   + stringFromBool(v) }
-decl describe ~[const] (v string) -> string = { return "string: " + v }
+const describe (v int)    -> string = { return "int: "    + stringFromInt(v) }
+const describe (v float)  -> string = { return "float: "  + stringFromFloat(v) }
+const describe (v bool)   -> string = { return "bool: "   + stringFromBool(v) }
+const describe (v string) -> string = { return "string: " + v }
 
 describe(42)      -- resolves to (int) -> string
 describe(3.14)    -- resolves to (float) -> string
@@ -1092,16 +1501,16 @@ describe(true)    -- resolves to (bool) -> string
 describe("hi")    -- resolves to (string) -> string
 
 -- generic and concrete coexist — concrete wins on exact match
-decl process<T>  ~[const] (v T)   -> string = { return "generic" }
-decl process     ~[const] (v int) -> string = { return "concrete int" }
+const process<T>  (v T)   -> string = { return "generic" }
+const process     (v int) -> string = { return "concrete int" }
 
 process<string>("hi")   -- generic: "generic"
 process<int>(42)        -- concrete wins: "concrete int"
 process(42)             -- concrete wins: "concrete int"
 
 -- return-type-only difference: compile error
-decl bad ~[const] (v int) -> string = { ... }
-decl bad ~[const] (v int) -> int    = { ... }
+const bad (v int) -> string = { ... }
+const bad (v int) -> int    = { ... }
 -- ERROR: overloads differ only in return type — unresolvable at call site
 ```
 
@@ -1110,14 +1519,10 @@ decl bad ~[const] (v int) -> int    = { ... }
 
 ## Variable Declaration
 
-Variables are declared with `decl`. Every `decl` is mutable by default — a
-qualifier is not required to get that behavior. Write `~[const]` to make a
-binding immutable, or `~[mut]` only where calling out mutability explicitly
-aids the reader (see **Rules for Declaration Qualifiers**, under **Compiler
-Directives**); omitting both is the common case, not an error.
-A type is **always required** — Lucid is a compiler, not an interpreter, and
-does not infer a type from an initializer expression, even where the
-initializer looks unambiguous. A bare numeric literal like `0.01` does not
+Declare a variable with `let` to make it mutable. Write `const` to make a
+binding immutable. A type is **always required** — Lucid is a compiler, not an 
+interpreter, and does not infer a type from an initializer expression, even where
+the initializer looks unambiguous. A bare numeric literal like `0.01` does not
 by itself say whether it means `float`, `double`, or `decimal` — these are
 distinct types with different precision and performance characteristics, and
 silently picking one would be a guess, not a fact derivable from the source.
@@ -1126,17 +1531,17 @@ match only one type (a string literal could only ever be `string`): the rule
 is stated once, with no per-case exceptions to remember.
 
 ```ebnf
-var_decl    = 'decl' IDENTIFIER { decl_qualifier } type [ '=' expr ]
+var_decl    = 'let'   IDENTIFIER type [ '=' expr ]   (* mutable binding *)
+            | 'const' IDENTIFIER type [ '=' expr ]   (* immutable binding *)
 ```
 
 ```lucid
-decl x int             = 42        -- mutable by default
-decl pi ~[const] float = 3.14159   -- immutable
-decl name ~[const] string = "lucid"   -- type still required, even though
-                                        -- "lucid" could only ever be string
+let x int     = 42        -- mutable
+const pi float = 3.14159  -- immutable
+const name string = "lucid"
 
-decl bad ~[const] = "lucid"   -- ERROR: type is required, even when the
-                                -- initializer's type looks unambiguous
+let bad = "lucid"   -- ERROR: type is required, even when the
+                     -- initializer's type looks unambiguous
 ```
 
 ---
@@ -1188,12 +1593,12 @@ generic_param   = IDENTIFIER
 
 ```lucid
 -- T must implement Vector2 (has x float and y float)
-decl magnitude<T : Vector2> ~[const] (v T) -> float = {
+const magnitude<T : Vector2> (v T) -> float = {
     return sqrt(v.x * v.x + v.y * v.y)   -- x and y accessible because T : Vector2
 }
 
 -- multiple constraints on the SAME parameter — '+' joins them
-decl describeEntity<T : Vector2 + Named> ~[const] (v T) -> string = {
+const describeEntity<T : Vector2 + Named> (v T) -> string = {
     return v.name + " at (" + stringFromFloat(v.x) + ", " + stringFromFloat(v.y) + ")"
 }
 
@@ -1206,9 +1611,9 @@ decl describeEntity<T : Vector2 + Named> ~[const] (v T) -> string = {
 -- involved, which matters for readability and for the visual graph node's
 -- own signature display even when the trait alone would be enough to
 -- typecheck the body:
-decl distanceBetween<T : Vector2, U : Vector2> ~[const] (a T)(b U) -> float = {
-    decl dx ~[const] float = a.x - b.x
-    decl dy ~[const] float = a.y - b.y
+const distanceBetween<T : Vector2, U : Vector2> (a T)(b U) -> float = {
+    const dx float = a.x - b.x
+    const dy float = a.y - b.y
     return sqrt(dx * dx + dy * dy)
 }
 
@@ -1222,8 +1627,8 @@ magnitude<int>(42)   -- ERROR: int does not implement Vector2
 
 -- T = Point, U = Entity — two DIFFERENT concrete types, each satisfying
 -- Vector2 independently; distanceBetween never requires them to match
-decl p ~[const] Point  = Point  { x = 0.0, y = 0.0 }
-decl e ~[const] Entity = Entity { name = "hero", x = 3.0, y = 4.0 }
+const p Point  = Point  { x = 0.0, y = 0.0 }
+const e Entity = Entity { name = "hero", x = 3.0, y = 4.0 }
 distanceBetween<Point, Entity>(p)(e)   -- OK → 5.0
 
 -- constraint in struct generic parameter — same rule, '+' for multiple
@@ -1245,12 +1650,12 @@ fresh value of the compiler-generated minimal struct for that trait, never a
 reconstructed `T`:
 
 ```lucid
-decl addVectors ~[const] (v1 Vector2)(v2 Vector2) -> Vector2 = {
+const addVectors (v1 Vector2)(v2 Vector2) -> Vector2 = {
     return Vector2 { x = v1.x + v2.x, y = v1.y + v2.y }
 }
 
-decl e ~[const] Entity = Entity { name = "hero", x = 1.0, y = 2.0 }
-decl added ~[const] Vector2 = addVectors(e)(e)   -- returns Vector2, name discarded
+const e Entity = Entity { name = "hero", x = 1.0, y = 2.0 }
+const added Vector2 = addVectors(e)(e)   -- returns Vector2, name discarded
 ```
 
 If a function genuinely needs to produce a modified value of the caller's
@@ -1264,12 +1669,12 @@ visible through the original, and nothing about `T`'s full field set needs
 to be known, since nothing is reconstructed:
 
 ```lucid
-decl scale<T : Vector2> ~[const] (v ~[mut] &T)(s float) -> () = {
+const scale<T : Vector2> (v &T)(s float) -> () = {
     v.x = v.x * s
     v.y = v.y * s
 }
 
-decl e ~[mut] Entity = Entity { name = "hero", x = 1.0, y = 2.0 }
+let e Entity = Entity { name = "hero", x = 1.0, y = 2.0 }
 scale<Entity>(e)(2.0)   -- e.x and e.y scaled in place through the reference,
                          -- e.name untouched
 ```
@@ -1281,54 +1686,54 @@ The legitimate uses of generic functions in Lucid are:
 **Opaque pass-through — the function never inspects `T`, only passes it:**
 
 ```lucid
-decl identity<T>  ~[const] (v T)      -> T      = { return v }
-decl first<T>     ~[const] (items [_]T)(length int) -> T? = {
+const identity<T>  (v T)      -> T      = { return v }
+const first<T>     (items [_]T)(length int) -> T? = {
     if length == 0 { return nil }
     return items[0]    -- runtime-checked: a literal index does not prove
                          -- in-bounds against a slice of unknown length;
                          -- see Runtime Panics
 }
-decl swap<T>      ~[const] (a T)(b T) -> (T, T) = { return b, a }
+const swap<T>      (a T)(b T) -> (T, T) = { return b, a }
 ```
 
 **Higher-order — type-specific logic is a callback the caller provides:**
 
 ```lucid
-decl map<T, U>    ~[const] (items [_]T)(f (T) -> U)           -> [*]U  = {
-    decl result ~[mut] [*]U = []
+const map<T, U>    (items [_]T)(f (T) -> U)           -> [*]U  = {
+    let result [*]U = []
     for v T in items { arr:append<U>(result)(f(v)) }
     return result
 }
 
-decl filter<T>    ~[const] (items [_]T)(pred (T) -> bool)     -> [*]T  = {
-    decl result ~[mut] [*]T = []
+const filter<T>    (items [_]T)(pred (T) -> bool)     -> [*]T  = {
+    let result [*]T = []
     for v T in items { if pred(v) { arr:append<T>(result)(v) } }
     return result
 }
 
-decl fold<T, U>   ~[const] (items [_]T)(seed U)(f (U, T) -> U) -> U   = {
-    decl acc ~[mut] U = seed
+const fold<T, U>   (items [_]T)(seed U)(f (U, T) -> U) -> U   = {
+    let acc U = seed
     for v T in items { acc = f(acc, v) }
     return acc
 }
 
-decl sort<T>      ~[const] (items [*]T)(cmp (T, T) -> int)    -> [*]T  = { ... }
+const sort<T>      (items [*]T)(cmp (T, T) -> int)    -> [*]T  = { ... }
 ```
 
 **Call sites — explicit type arguments always required:**
 
 ```lucid
-decl nums   ~[const] [*]int    = [3, 1, 4, 1, 5]
-decl strs   ~[const] [*]string = ["hello", "world"]
+const nums   [*]int    = [3, 1, 4, 1, 5]
+const strs   [*]string = ["hello", "world"]
 
-decl doubled ~[const] [*]int    = map<int, int>(nums)((v int) -> int { return v * 2 })
-decl lengths ~[const] [*]int    = map<string, int>(strs)((s string) -> int { return strLength(s) })
-decl evens   ~[const] [*]int    = filter<int>(nums)((v int) -> bool { return v % 2 == 0 })
-decl sum     ~[const] int       = fold<int, int>(nums)(0)((acc int, v int) -> int { return acc + v })
-decl sorted  ~[const] [*]int    = sort<int>(nums)((a int, b int) -> int { return a - b })
+const doubled [*]int    = map<int, int>(nums)((v int) -> int { return v * 2 })
+const lengths [*]int    = map<string, int>(strs)((s string) -> int { return strLength(s) })
+const evens   [*]int    = filter<int>(nums)((v int) -> bool { return v % 2 == 0 })
+const sum     int       = fold<int, int>(nums)(0)((acc int, v int) -> int { return acc + v })
+const sorted  [*]int    = sort<int>(nums)((a int, b int) -> int { return a - b })
 
 -- with pipeline
-decl result ~[const] [*]string =
+const result [*]string =
     [3, 1, 4, 1, 5, 9, 2, 6]
     |> filter<int>((v int) -> bool { return v > 3 })!
     |> sort<int>((a int, b int) -> int { return a - b })!
@@ -1356,27 +1761,27 @@ struct Cache<K, V> {
 }
 
 -- instantiation
-decl b ~[const] Box<int>         = Box<int>    { value = 42 }
-decl p ~[const] Pair<int, string> = Pair<int, string> { first = 1, second = "hello" }
+const b Box<int>         = Box<int>    { value = 42 }
+const p Pair<int, string> = Pair<int, string> { first = 1, second = "hello" }
 ```
 
 Functions that operate on generic structs receive the instantiated type:
 
 ```lucid
-decl unbox<T>    ~[const] (b Box<T>)         -> T = { return b.value }
-decl rebox<T, U> ~[const] (b Box<T>)(f (T) -> U) -> Box<U> = {
+const unbox<T>    (b Box<T>)         -> T = { return b.value }
+const rebox<T, U> (b Box<T>)(f (T) -> U) -> Box<U> = {
     return Box<U> { value = f(b.value) }
 }
 
-decl n ~[const] int    = unbox<int>(b)
-decl s ~[const] Box<string> = rebox<int, string>(b)(stringFromInt)
+const n int    = unbox<int>(b)
+const s Box<string> = rebox<int, string>(b)(stringFromInt)
 ```
 
 ---
 
 ## Compiler Directives: Attributes, Qualifiers, and Intrinsics
 
-Attributes `@[]`, qualifiers `~[]`, and compiler intrinsics `#` provide instructions to the compiler, modify binding properties, or execute compile-time operations.
+Attributes `@[]` and compiler intrinsics `#` provide instructions to the compiler or execute compile-time operations.
 
 ### 1. Attributes `@[]`
 
@@ -1392,207 +1797,52 @@ attr_arg        = STRING_LIT | INT_LIT | FLOAT_LIT | BOOL_LIT | IDENTIFIER
 
 #### Built-in Attributes
 
-| Attribute              | Valid on             | Meaning                                                  |
-| ---------------------- | -------------------- | -------------------------------------------------------- |
-| `@[export]`            | any top-level `decl` | Visible outside this module                              |
-| `@[foreign("abi")]`    | function `decl`      | Implemented in a foreign language; ABI string e.g. `"C"` |
-| `@[link("name")]`      | module or `decl`     | Link against this native library                         |
-| `@[deprecated("msg")]` | any `decl`           | Compiler warning at use sites                            |
-| `@[inline]`            | function `decl`      | Hint to inline at call sites                             |
-| `@[noinline]`          | function `decl`      | Prevent inlining                                         |
-| `@[aot]`               | `main` only          | Compile ahead-of-time to native binary                   |
-| `@[jit]`               | `main` only          | Compile and execute via JIT at runtime                   |
+| Attribute              | Valid on                  | Meaning                                                  |
+| ---------------------- | ------------------------- | -------------------------------------------------------- |
+| `@[export]`            | any top-level declaration | Visible outside this module                              |
+| `@[foreign("abi")]`    | function declaration      | Implemented in a foreign language; ABI string e.g. `"C"` |
+| `@[link("name")]`      | module or declaration     | Link against this native library                         |
+| `@[deprecated("msg")]` | any declaration           | Compiler warning at use sites                            |
+| `@[inline]`            | function declaration      | Hint to inline at call sites                             |
+| `@[noinline]`          | function declaration      | Prevent inlining                                         |
+| `@[aot]`               | `main` only               | Compile ahead-of-time to native binary (default)         |
+| `@[jit]`               | `main` only               | Compile and execute via JIT at runtime                   |
 
 **Rules:**
 - `@[foreign]` requires the function body to be empty `{}` — the implementation
   is resolved by the linker.
 - `@[aot]` and `@[jit]` are mutually exclusive and only valid on `main`.
 - `main` is always compiled in exactly one of these two modes. `@[aot]` is
-  the default — writing `@[export] decl main` with neither attribute present
-  is shorthand for `@[export, aot] decl main`, not a third, mode-less state.
-  Write `@[jit]` explicitly to opt into the other mode; there is no bare
-  "unspecified" compilation mode for `main`.
+  the default — writing `@[export] const main` with neither attribute present
+  is shorthand for `@[export, aot] const main`.
 - Attributes are a **fixed, closed set** — there is no user-defined or
-  namespaced attribute form. A struct field requirement belongs to **traits**
-  (see **Trait Declaration**), not to an attribute that generates fields at
-  compile time; behavior that constrains how a declaration works belongs to a
-  **qualifier** (see **Possible Plan: Future Qualifiers**, below), not to an
-  attribute that injects code. Earlier drafts of this grammar included a
-  compile-time metaprogramming form (`attr_func_decl`, with `meta.addField` /
-  `meta.addFunction` / `meta.addAttribute` builders) for user-defined
-  attributes that could generate struct fields or functions. It was removed:
-  it duplicated what traits already do for structural field requirements, had
-  no demonstrated use case beyond that duplication, and — unlike a qualifier,
-  whose effect is fully specified by a fixed, auditable rule — its behavior
-  on any given declaration would depend on arbitrary compile-time code,
-  making it far less predictable than either traits or qualifiers for the one
-  job it would actually have done.
+  namespaced attribute form.
 
-### 2. Qualifiers `~[]`
-
-Qualifiers precede the declaration they annotate. They also use a bracket-list syntax.
-
-**What unifies a qualifier, as opposed to an attribute:** a qualifier
-constrains *how a declaration behaves and what is legal to do with it* —
-required syntax at use sites, what operations are forbidden inside a body,
-whether a binding can be reassigned, what kind of value a type may hold. An
-attribute, by contrast, describes a declaration's *standing* — where it's
-available, whether it's safe or current to use, where its implementation
-lives — without changing how it behaves once you're allowed to use it. This
-is a behavioral test, not a "does it touch the type" test: `~[const]`/`~[mut]`
-constrain what's legal to do with a binding exactly the same way
-`~[async]`/`~[nullable]` constrain what's legal to do with a value, even
-though only the latter two are also part of the type. See **Attributes vs.
-Qualifiers**, below, for the full comparison.
-
-In the visual editor, this is also the practical distinction: a qualifier is
-a small composable modifier a person drags onto a declaration node — each one
-independently toggled, stacking freely in the same `~[ , , ]` list — while an
-attribute is closer to a label or annotation attached to the node, carrying
-information about it rather than changing its behavior.
+### 2. Nullable and Fallible Types
 
 ```ebnf
-decl_qualifier  = '~[' decl_qual_item { ',' decl_qual_item } ']'
-                  (* attaches to a decl binding — not part of the type *)
-
-type_qualifier  = '~[' type_qual_item { ',' type_qual_item } ']' type
-                  (* attaches to a type — travels with the value *)
-                | type '?'
-                  (* shorthand nullable — equivalent to ~[nullable] type *)
-
-decl_qual_item  = 'const' | 'mut'
-
-type_qual_item  = 'async' | 'parallel' | 'nullable' | 'fallible'
+nullable_type   = type '?'             (* value may be nil *)
+fallible_type   = type '!'             (* value may be err *)
+combined_type   = type '?!'            (* value may be nil OR err; '?!' is
+                                          the only valid order *)
 ```
 
-#### Built-in Qualifiers
+```lucid
+int?         -- nullable int
+string!      -- fallible string
+Vector2?!    -- nullable and fallible struct value
 
-**Declaration qualifiers** — attach to `decl`, modify the binding:
-
-| Qualifier  | Meaning                                                       |
-| ---------- | ------------------------------------------------------------- |
-| *(none)*   | Mutable by default — same as `~[mut]`                         |
-| `~[mut]`   | Explicitly mutable (redundant but valid for documentation)    |
-| `~[const]` | Immutable — binding cannot be reassigned after initialisation |
-
-**Type qualifiers** — part of the type, valid anywhere a type appears:
-
-| Qualifier       | Meaning                                           |
-| --------------- | ------------------------------------------------- |
-| `T?`            | Nullable — shorthand for `~[nullable] T`          |
-| `~[nullable] T` | Nullable — value may be `nil`                     |
-| `T!`            | Fallible — shorthand for `~[fallible] T`          |
-| `~[fallible] T` | Fallible — value may be `err`                     |
-| `~[async] T`    | Async function type — caller must `await`         |
-| `~[parallel] T` | Parallel function type — may execute concurrently |
-
-**Rules for Declaration Qualifiers (`~[const]`, `~[mut]`):**
-- Attach to a `decl` binding — they are properties of the name, not the type.
-- Every `decl` defaults to `~[mut]` — mutable unless marked otherwise.
-- `~[const]` and `~[mut]` are mutually exclusive.
-- `~[mut]` is valid but redundant when written explicitly (the default); use it
-  only for documentation emphasis.
-- Declaration qualifiers are valid on `decl`, on parameters (to express
-  read-only intent on a passed reference), and on struct fields (`struct_field`
-  already includes `{ decl_qualifier }` — see **Const Fields and Function-Typed
-  Fields**, under **Struct Declaration**, for what `~[const]` means there
-  specifically).
+[*]int?      -- ERROR: ? on array type is forbidden — use empty array []
+             --        instead of a nullable array
+(int) -> bool?  -- ERROR: ? on function type is forbidden
+```
 
 > [!NOTE]
-> Examples throughout this document follow the rule above: `~[mut]` is
-> written only where the surrounding example specifically demonstrates or
-> depends on mutation (the value is reassigned later in the same snippet, or
-> the point being made is a const/mut contrast). Elsewhere, a bare `decl`
-> with no qualifier is mutable by default and is the preferred style — do not
-> read the presence or absence of `~[mut]` across this document as
-> inconsistent; it is deliberate per-example emphasis, not a stricter rule
-> than the one stated here.
-
-**Rules for Type Qualifiers (`~[async]`, `~[parallel]`, `~[nullable]` / `?`, `~[fallible]` / `!`):**
-- Are part of the type itself — they travel with the value through parameters,
-  return types, struct fields, and function type signatures.
-- `~[async]` and `~[parallel]` are only valid on function types.
-- `~[nullable] T` and `T?` are identical — the compiler normalises both to the
-  same internal form. Use `?` for brevity in everyday code; use `~[nullable]`
-  when writing a full qualifier list.
-- `~[fallible] T` and `T!` are identical — same normalisation, same brevity rule.
-- `~[fallible]` attaches to whichever type immediately follows it, exactly like
-  `~[nullable]`. This is what gives `!` an unambiguous, settled meaning on
-  function types and array types — see **`!` on Function Types** and **`!` on
-  Array Types** below.
-- Stacking nullable is an error: `T??` and `~[nullable] T?` are both rejected.
-  Stacking fails is the same error: `T!!` and `~[fallible] T!` are both rejected.
-- `?` binds to the **element type** of an array, never to the array itself:
-  `[*]T?` means "array of nullable T." To express a nullable array (rare —
-  prefer an empty array instead), use `~[nullable] [*]T` explicitly.
-- `!` binds to the **element type** of an array the same way, for the same
-  reason — see **`!` on Array Types** below.
-
-#### Attributes vs. Qualifiers
-
-Both use a prefix-bracket syntax (`@[...]` and `~[...]`) and both precede a
-declaration, but they answer different questions:
-
-| Feature             | Attribute (`@[name]`)                                          | Qualifier (`~[name]`)                                                                                                        |
-| ------------------- | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| **Answers**         | "Is this available, current, and where is it from?"            | "How does this behave, and what's legal to do with it?"                                                                      |
-| **Attached to**     | Declaration (function, variable, struct, etc.)                 | Declaration binding, or a type (function type, value type)                                                                   |
-| **Affects type?**   | No — metadata only                                             | Sometimes — `~[async]`/`~[nullable]`/`~[fallible]`/`~[parallel]` do; `~[const]`/`~[mut]` don't, but still constrain behavior |
-| **When checked**    | Compile time, as metadata                                      | Type checking and call-site / body rules                                                                                     |
-| **Examples**        | `@[export]`, `@[deprecated(...)]`, `@[foreign("C")]`           | `~[const]`, `~[async]`, `~[nullable]`, `~[parallel]`                                                                         |
-| **User-definable?** | No — fixed set (no namespaced/user form; see **Rules**, above) | No — fixed set (see **Possible Plan**, below)                                                                                |
-
-**Why the test isn't "does it affect the type":** `~[const]` doesn't change
-a value's type, yet it clearly belongs with `~[async]`/`~[nullable]` rather
-than with `@[export]`/`@[deprecated]` — it restricts what you're allowed to
-do with the binding (reassign or not), the same category of constraint
-`~[nullable]` applies to usage (narrow before use) and `~[async]` applies to
-call syntax (`await` required). The dividing line is **behavioral
-restriction vs. descriptive metadata**, not type membership.
-
-**Why `@[export]` isn't a qualifier:** it says where a name is visible, not
-how it behaves once you're allowed to see it — calling an exported function
-looks identical to calling a non-exported one from inside the same module.
-
-**Why `@[deprecated(...)]` isn't a qualifier:** it's a warning about
-*currency*, not a behavioral restriction — a deprecated function still does
-exactly what it always did; nothing about calling it or using its value
-changes.
-
-**Why `~[nullable]` can't be an attribute:** an attribute would only mark the
-declaration as metadata — every caller would still need to remember, on
-their own, to check for `nil` before use. Making it a qualifier instead puts
-the obligation into the **type**, so the compiler enforces the check; a
-nullable value is inert until narrowed (see **If / Else Narrowing**), the
-same way a fallible value is inert until narrowed.
-
-#### Possible Plan: Future Qualifiers
-
-Not part of the language yet — recorded here as a direction worth
-considering later, not a commitment:
-
-- **`~[procedure]`** — no `return` statement; parameters may be mutated
-  directly rather than only through `&T`. A shape for functions whose entire
-  purpose is a side effect on their inputs.
-- **`~[pure]`** — no parameter in any param group may be mutated, and no
-  side effects (no writes to captured outer state, no I/O) are permitted
-  inside the body. The inverse of `~[procedure]`.
-
-Both would slot into the same `type_qual_item` family as `~[async]` and
-`~[parallel]` — they restrict what's legal inside a function body and what
-shape its parameters take, the same category of constraint, just not yet
-specified to the same level of detail those two qualifiers already have (see
-**Body Restrictions**, under **Parallel**, for the level of precision a new
-qualifier would need before being added for real).
-
-**User-defined qualifiers are deliberately not planned for now.** Unlike a
-user-defined function or struct, a new qualifier would need its own
-rule-checking logic in the compiler and its own interaction rules with every
-*other* qualifier already in the fixed set (does it compose with `~[async]`?
-with `~[nullable]`?) — a much larger surface than ordinary user code, and
-one that's easy to get wrong in ways that are hard to predict in advance.
-This may be reconsidered later; for now the qualifier set stays closed, the
-same as attributes.
+> Disallowing nullable/fallible arrays and function types encourages cleaner
+> idioms: an empty array `[]` is always preferable to a `nil` array, and an
+> empty or no-op function is preferable to a nullable function binding.
+> `async` and `parallel` are no longer type qualifiers either — they are
+> statement keywords (see **Async / Await** and **Parallel**).
 
 ### 3. Compiler Intrinsics `#`
 
@@ -1615,8 +1865,8 @@ intrinsic_arg   = expr
 | `#alignof(T)` | `uint64` | Alignment requirement of T — compile-time constant |
 
 ```lucid
-decl size  ~[const] uint64 = #sizeof(Vertex)
-decl align ~[const] uint64 = #alignof(Vec2)
+const size  uint64 = #sizeof(Vertex)
+const align uint64 = #alignof(Vec2)
 ```
 
 #### Floating-Point Math
@@ -1634,9 +1884,9 @@ decl align ~[const] uint64 = #alignof(Vec2)
 | `#max(a, b)`      | same type    | same    | Maximum                               |
 
 ```lucid
-decl hyp     ~[const] float = #sqrt(x*x + y*y)
-decl rounded ~[const] float = #round(value)
-decl maxVal  ~[const] int   = #min(a, b)
+const hyp     float = #sqrt(x*x + y*y)
+const rounded float = #round(value)
+const maxVal  int   = #min(a, b)
 ```
 
 #### Bit Manipulation (Integer Types Only)
@@ -1649,10 +1899,10 @@ decl maxVal  ~[const] int   = #min(a, b)
 | `#bswap(x)`    | integer | same    | Reverse byte order (endianness) |
 
 ```lucid
-decl leading  ~[const] uint32 = #clz(flags)
-decl trailing ~[const] uint32 = #ctz(flags)
-decl bits     ~[const] uint32 = #popcount(mask)
-decl swapped  ~[const] uint32 = #bswap(networkOrder)
+const leading  uint32 = #clz(flags)
+const trailing uint32 = #ctz(flags)
+const bits     uint32 = #popcount(mask)
+const swapped  uint32 = #bswap(networkOrder)
 ```
 
 #### Memory Operations
@@ -1682,12 +1932,12 @@ All memory intrinsics operate on raw pointers (`ptr<T>`) and are only valid insi
 These intrinsics are the only way to cross the sealed conduit boundary or perform pointer arithmetic.
 
 ```lucid
-decl buf  ~[const] ptr<uint8> = malloc(1024)
-decl ref  ~[mut] &uint8       = #toRef(buf)
+const buf  ptr<uint8> = malloc(1024)
+let ref  &uint8       = #toRef(buf)
 ref = 0xFF
 
-decl next     ~[const] ptr<uint8>     = #ptrOffset(buf, 1)
-decl distance ~[const] int64          = #ptrDiff(next, buf)
+const next     ptr<uint8>     = #ptrOffset(buf, 1)
+const distance int64          = #ptrDiff(next, buf)
 ```
 
 #### Unsafe / Bit Reinterpretation
@@ -1699,8 +1949,8 @@ decl distance ~[const] int64          = #ptrDiff(next, buf)
 Valid only inside `@[foreign("C")]`-decorated functions or when the compiler flag `--unsafe` is enabled.
 
 ```lucid
-decl bits ~[const] uint32  = 0x3F800000
-decl f    ~[const] float32 = #bitcast(float32, bits)   -- 1.0
+const bits uint32  = 0x3F800000
+const f    float32 = #bitcast(float32, bits)   -- 1.0
 ```
 
 ---
@@ -1708,7 +1958,7 @@ decl f    ~[const] float32 = #bitcast(float32, bits)   -- 1.0
 ## Statements
 
 ```ebnf
-statement       = { attribute_list } { decl_qualifier } decl_stmt
+statement       = { attribute_list } decl_keyword decl_stmt
                 | assign_stmt
                 | if_stmt
                 | switch_stmt
@@ -1780,18 +2030,18 @@ case_value      = literal
 ### Examples of Valid Local Declarations
 
 ```lucid
-decl compute ~[const] () -> int = {
+const compute () -> int = {
     @[deprecated("use newVec")]
     struct Vec2 { x float = 0.0  y float = 0.0 }
 
     @[inline]
-    decl add ~[const] (a int)(b int) -> int = { return a + b }
+    const add (a int)(b int) -> int = { return a + b }
 
     struct Point { x int = 0.0  y int = 0.0 }
 
     enum Color { Red = 0  Green = 1  Blue = 2 }
 
-    decl p ~[const] Point = Point { x = 5, y = 5 }
+    const p Point = Point { x = 5, y = 5 }
     return add(p.x)(p.y)
 }
 ```
@@ -1817,11 +2067,11 @@ The compiler applies **type narrowing** inside branches based on the condition.
 When the condition checks a nullable variable, the compiler narrows its type inside the then-branch:
 
 ```lucid
-decl a ~[const] int? = getValue()
+const a int? = getValue()
 
 if a != nil {
     -- a is int here, not int?
-    decl x ~[const] int = a + 1    -- OK
+    const x int = a + 1    -- OK
 }
 -- a is still int? here
 ```
@@ -1895,7 +2145,7 @@ if a == nil and b == nil { return }
 > **Flat nil guards at the top of a function** — eliminates deeply nested blocks and makes preconditions visible at a glance:
 >
 > ```lucid
-> decl process ~[const] (a int?)(b string?)(c User?) -> int = {
+> const process (a int?)(b string?)(c User?) -> int = {
 >     if a == nil or b == nil or c == nil { return -1 }
 >     -- from here: a is int, b is string, c is User
 >     return a + strLength(b) + c.id
@@ -1933,16 +2183,16 @@ if_expr         = 'if' expr '??' expr 'else' expr
 `else` is **required** in expression form. Both branches must produce compatible types. `??` is the separator between condition and then-branch.
 
 ```lucid
-decl grade ~[const] string = if score >= 60 ?? "pass" else "fail"
+const grade string = if score >= 60 ?? "pass" else "fail"
 
 -- chained (right-associative)
-decl label ~[const] string = if n < 0 ?? "negative" else if n == 0 ?? "zero" else "positive"
+const label string = if n < 0 ?? "negative" else if n == 0 ?? "zero" else "positive"
 ```
 
 ### `while` and `do`/`while`
 
 ```lucid
-decl i ~[mut] int = 0
+let i int = 0
 while i < 10 {
     i = i + 1
 }
@@ -1986,7 +2236,7 @@ match the collection's element type):
 ```lucid
 use std.array as arr
 
-decl nums ~[const] [*]int = [1, 2, 3, 4, 5]
+const nums [*]int = [1, 2, 3, 4, 5]
 
 -- value only
 for v int in nums {
@@ -2137,7 +2387,6 @@ expr            = literal
                 | func_literal
                 | struct_literal
                 | array_literal
-                | tuple_expr
                 | pipeline_expr
                 | compose_expr
                 | fallback_expr
@@ -2168,13 +2417,13 @@ module_expr     = IDENTIFIER ':' IDENTIFIER     (* module member access — neve
                 | IDENTIFIER ':' call_expr      (* module function call *)
                 | IDENTIFIER ':' generic_expr   (* module generic function call *)
 
-unary_expr      = ( '-' | 'not' | '~~' ) expr
+unary_expr      = ( '-' | 'not' | '~' ) expr
 
 binary_expr     = expr binary_op expr
-binary_op       = '+' | '-' | '*' | '/' | '%' | '^'
+binary_op       = '+' | '-' | '*' | '/' | '%' | '**'
                 | '==' | '!=' | '<' | '<=' | '>' | '>='
                 | 'and' | 'or'
-                | '&&' | '||' | '~^' | '<<' | '>>'
+                | '&&' | '|' | '^' | '<<' | '>>'
 
 func_literal    = param_group { param_group } '->' type block
                   (* anonymous function — Form 2 *)
@@ -2186,8 +2435,6 @@ struct_literal  = IDENTIFIER '{' { field_init } '}'
 field_init      = IDENTIFIER '=' expr
 
 array_literal   = '[' [ expr { ',' expr } ] ']'
-
-tuple_expr      = '(' expr ',' expr { ',' expr } ')'
 
 generic_expr    = IDENTIFIER '<' type_arg { ',' type_arg } '>' '(' [ arg_list ] ')'
 ```
@@ -2213,7 +2460,7 @@ dispatches on a matched value, never a computed condition:
 
 ```lucid
 for i int in 0..count { ... }        -- OK: count is an arbitrary expression
-decl s ~[const] [_]int = nums[lo..hi] -- OK: lo, hi are arbitrary expressions
+const s [_]int = nums[lo..hi] -- OK: lo, hi are arbitrary expressions
 
 switch score {
     case 90..100: { log("A") }        -- OK: both bounds are literals
@@ -2226,7 +2473,7 @@ switch score {
 
 A range is not a standalone collection value with its own type — it only
 appears in the three positions above. Writing a bare range anywhere else
-(e.g. `decl r ~[const] = 0..10`) is a compile error; there is no
+(e.g. `const r = 0..10`) is a compile error; there is no
 general-purpose range type to assign it to.
 
 ### Logical Operators
@@ -2240,7 +2487,7 @@ and `not` is always `bool`.
 - **Non-nullable, non-fallible type** — always truthy. The type itself
   guarantees the value can never be `nil` or `err`, so this is a
   **compile-time** fact; no runtime check is generated.
-- **Nullable type** (`T?` / `~[nullable] T`) — truthy unless the value
+- **Nullable type** `T?` — truthy unless the value
   currently holds `nil`. This is a **runtime** check, since the value's
   nilness can only be known when the expression executes.
 - **Fallible type** (`T!`) — truthy unless the value currently holds `err`.
@@ -2260,9 +2507,9 @@ productions — no new grammar is introduced, only the typing/coercion rule
 below.
 
 ```lucid
-decl name  ~[const] string = "alice"
-decl user  ~[const] User?  = findUser(1)
-decl conn  ~[const] Connection! = openConnection()
+const name  string = "alice"
+const user  User?  = findUser(1)
+const conn  Connection! = openConnection()
 
 if name and user { }
 -- name: string is non-nullable, non-fallible → always true, compile time
@@ -2305,19 +2552,19 @@ Integer types only. `&&` and `||` are bitwise AND/OR (not logical — those use 
 | Operator | Name                |
 | -------- | ------------------- |
 | `&&`     | bitwise AND         |
-| `\|\|`   | bitwise OR          |
-| `~^`     | bitwise XOR         |
-| `~~`     | bitwise NOT (unary) |
+| `\|`     | bitwise OR          |
+| `^`      | bitwise XOR         |
+| `~`      | bitwise NOT (unary) |
 | `<<`     | left shift          |
 | `>>`     | right shift         |
 
 ```lucid
-decl flags   ~[const] uint32 = 0xFF00
-decl mask    ~[const] uint32 = 0x0F0F
-decl result  ~[const] uint32 = flags && mask     -- 0x0F00
-decl merged  ~[const] uint32 = flags || mask     -- 0xFF0F
-decl inv     ~[const] uint32 = ~~flags           -- bitwise NOT
-decl shifted ~[const] uint32 = 1 << 4            -- 16
+const flags   uint32 = 0xFF00
+const mask    uint32 = 0x0F0F
+const result  uint32 = flags && mask     -- 0x0F00
+const merged  uint32 = flags || mask     -- 0xFF0F
+const inv     uint32 = ~~flags           -- bitwise NOT
+const shifted uint32 = 1 << 4            -- 16
 ```
 
 ---
@@ -2336,7 +2583,7 @@ pipeline_step   = expr                          (* single-group function or part
 ```
 
 ```lucid
-decl result ~[const] [*]string =
+const result [*]string =
     [1, 2, 3]
     |> map<int, string>(stringFromInt)!
     |> filter<string>(isNonEmpty)!
@@ -2350,7 +2597,7 @@ argument list. The upstream value is injected as the **first** argument when
 `|>` fires:
 
 ```lucid
-decl scale ~[const] (factor float)(v float) -> float = { return v * factor }
+const scale (factor float)(v float) -> float = { return v * factor }
 
 -- without !: scale(2.0) is a complete partial application — no slot for upstream
 42.0 |> scale(2.0)    -- ERROR: upstream has no parameter to fill
@@ -2365,7 +2612,7 @@ decl scale ~[const] (factor float)(v float) -> float = { return v * factor }
 unfilled groups is a compile error as a pipeline step. Pre-apply first:
 
 ```lucid
-decl clamp ~[const] (lo int)(hi int)(v int) -> int = {
+const clamp (lo int)(hi int)(v int) -> int = {
     if v < lo { return lo }
     if v > hi { return hi }
     return v
@@ -2375,7 +2622,7 @@ decl clamp ~[const] (lo int)(hi int)(v int) -> int = {
 42 |> (v int) -> int { return clamp(0)(100)(v) }  -- OK: wrap in anonymous function
 
 -- CORRECT: pre-apply to a single-group function
-decl clamp0to100 ~[const] (v int) -> int = clamp(0)(100)
+const clamp0to100 (v int) -> int = clamp(0)(100)
 42 |> clamp0to100                        -- OK → 42
 150 |> clamp0to100                       -- OK → 100
 ```
@@ -2386,8 +2633,8 @@ Generic functions must be instantiated with explicit type arguments at the
 pipeline step site. An uninstantiated generic is a compile error:
 
 ```lucid
-decl identity<T> ~[const] (v T) -> T = { return v }
-decl map<T, U>   ~[const] (v T)(f (T) -> U) -> U = { return f(v) }
+const identity<T> (v T) -> T = { return v }
+const map<T, U>   (v T)(f (T) -> U) -> U = { return f(v) }
 
 42     |> identity<int>                       -- OK → 42
 42     |> identity                            -- ERROR: uninstantiated generic
@@ -2395,64 +2642,12 @@ decl map<T, U>   ~[const] (v T)(f (T) -> U) -> U = { return f(v) }
 "hello" |> map<string, int>(length)!          -- OK → 5
 
 -- chaining generic steps
-decl result ~[const] string =
+const result string =
     42
     |> identity<int>
     |> map<int, string>(stringFromInt)!
     |> map<string, string>(trim)!
 ```
-
-### Async Steps in Pipelines
-
-When any step is `~[async]`, the entire pipeline expression becomes async and
-must be awaited:
-
-```lucid
-decl fetch  ~[async] ~[const] (url string) -> string = { ... }
-decl parse  ~[const]          (raw string) -> int    = { ... }
-decl double ~[const]          (n int)      -> int    = { return n * 2 }
-
-decl result ~[const] int = await (
-    "https://api.example.com"
-    |> fetch
-    |> parse
-    |> double
-)
-```
-
-### Nullable and Fallible Steps
-
-A `~[nullable]` or `~[fallible]` function is **forbidden** as a pipeline step,
-for the same reason — the pipeline has no way to narrow it mid-chain. Guard
-first:
-
-```lucid
-decl transform ~[nullable] ~[const] (v int) -> int = nil
-
-42 |> transform    -- ERROR: ~[nullable] function forbidden as pipeline step
-
-if transform != nil {
-    decl result ~[const] int = transform(42)   -- OK: guarded, called directly
-}
-
-decl handler ~[const] ~[fallible] (int) -> string = lookupHandler("divide")
-
-5 |> handler        -- ERROR: ~[fallible] function forbidden as pipeline step
-
-if handler != err {
-    decl result ~[const] string = handler(5)   -- OK: guarded, called directly
-}
-```
-
-### `|>` vs `+>` — Key Difference
-
-|                  | `\|>` pipeline                 | `+>` composition                 |
-| ---------------- | ------------------------------ | -------------------------------- |
-| When             | runtime — executes now         | compile time — builds a function |
-| Seed             | required — a concrete value    | none                             |
-| Control flow     | full access (if, switch, etc.) | none                             |
-| Result           | a value                        | a new function                   |
-| Types must chain | enforced per step              | strictly enforced                |
 
 ---
 
@@ -2474,14 +2669,14 @@ compose_expr    = expr '+>' expr     (* f +> g: apply f then g, always left-to-r
 ```
 
 ```lucid
-decl f ~[const] (a int)    -> string = { ... }
-decl g ~[const] (s string) -> bool   = { ... }
+const f (a int)    -> string = { ... }
+const g (s string) -> bool   = { ... }
 
-decl h   ~[const] (a int) -> bool = f +> g    -- OK: f returns string, g takes string
-decl bad ~[const]          = g +> f           -- ERROR: g returns bool, f takes int
+const h   (a int) -> bool = f +> g    -- OK: f returns string, g takes string
+const bad          = g +> f           -- ERROR: g returns bool, f takes int
 
 -- chain three or more
-decl process ~[const] (raw string) -> bool = validate +> transform +> render
+const process (raw string) -> bool = validate +> transform +> render
 ```
 
 ### Generic Functions and `+>`
@@ -2491,12 +2686,12 @@ composition site, a generic function acts as a universal adapter between any
 two compatible types:
 
 ```lucid
-decl toString<T>  ~[const] (v T)      -> string = { ... }
-decl parseFloat   ~[const] (s string) -> float  = { ... }
-decl double       ~[const] (x float)  -> float  = { return x * 2.0 }
+const toString<T>  (v T)      -> string = { ... }
+const parseFloat   (s string) -> float  = { ... }
+const double       (x float)  -> float  = { return x * 2.0 }
 
 -- int → string → float → float
-decl intToDoubled ~[const] (x int) -> float =
+const intToDoubled (x int) -> float =
     toString<int> +> parseFloat +> double
 
 intToDoubled(42)    -- "42" → 42.0 → 84.0
@@ -2507,14 +2702,14 @@ intToDoubled(10)    -- "10" → 10.0 → 20.0
 
 ```lucid
 -- without generics: one wrapper per type combination
-decl pipeInt   ~[const] (v int)   -> string = validateInt   +> intToStr   +> trim
-decl pipeFloat ~[const] (v float) -> string = validateFloat +> floatToStr +> trim
-decl pipeBool  ~[const] (v bool)  -> string = validateBool  +> boolToStr  +> trim
+const pipeInt   (v int)   -> string = validateInt   +> intToStr   +> trim
+const pipeFloat (v float) -> string = validateFloat +> floatToStr +> trim
+const pipeBool  (v bool)  -> string = validateBool  +> boolToStr  +> trim
 
 -- with generics: instantiate at composition site
-decl pipeInt   ~[const] (v int)   -> string = validateInt   +> toString<int>   +> trim
-decl pipeFloat ~[const] (v float) -> string = validateFloat +> toString<float> +> trim
-decl pipeBool  ~[const] (v bool)  -> string = validateBool  +> toString<bool>  +> trim
+const pipeInt   (v int)   -> string = validateInt   +> toString<int>   +> trim
+const pipeFloat (v float) -> string = validateFloat +> toString<float> +> trim
+const pipeBool  (v bool)  -> string = validateBool  +> toString<bool>  +> trim
 ```
 
 **Curry functions are forbidden on both sides of `+>`** — every operand,
@@ -2529,15 +2724,15 @@ predict from reading the composition alone. Both sides are pre-applied down
 to a single group before composing:
 
 ```lucid
-decl clamp   ~[const] (lo int)(hi int)(v int) -> int = { ... }
-decl scaleBy2 ~[const] (v int)                -> int = { return v * 2 }
+const clamp   (lo int)(hi int)(v int) -> int = { ... }
+const scaleBy2 (v int)                -> int = { return v * 2 }
 
-decl pipeline ~[const] = clamp +> scaleBy2    -- ERROR: clamp has 3 groups (left side)
+const pipeline = clamp +> scaleBy2    -- ERROR: clamp has 3 groups (left side)
 
-decl validate ~[const] (a int) -> string = { ... }
-decl checkLen ~[const] (s string)(extra int) -> bool = { ... }
+const validate (a int) -> string = { ... }
+const checkLen (s string)(extra int) -> bool = { ... }
 
-decl bad ~[const] = validate +> checkLen    -- ERROR: checkLen has 2 groups (right
+const bad = validate +> checkLen    -- ERROR: checkLen has 2 groups (right
                                               -- side) — even though validate's
                                               -- output type matches checkLen's
                                               -- first group's input, the composed
@@ -2546,41 +2741,27 @@ decl bad ~[const] = validate +> checkLen    -- ERROR: checkLen has 2 groups (rig
                                               -- clear origin
 
 -- CORRECT: pre-apply every operand to a single group first
-decl clamp0to100 ~[const] (v int) -> int = clamp(0)(100)
-decl pipeline    ~[const] (v int) -> int = clamp0to100 +> scaleBy2
+const clamp0to100 (v int) -> int = clamp(0)(100)
+const pipeline    (v int) -> int = clamp0to100 +> scaleBy2
 
-decl checkLenWith5 ~[const] (s string) -> bool = (s string) -> bool { return checkLen(s)(5) }
-decl ok            ~[const] (a int) -> bool = validate +> checkLenWith5
+const checkLenWith5 (s string) -> bool = (s string) -> bool { return checkLen(s)(5) }
+const ok            (a int) -> bool = validate +> checkLenWith5
 
 pipeline(150)    -- clamp → 100, scale → 200
 pipeline(50)     -- clamp → 50,  scale → 100
 pipeline(-10)    -- clamp → 0,   scale → 0
 ```
 
-**Async composition** — when any operand is `~[async]`, the composed function
-must be declared `~[async]` and awaited at the call site:
-
-```lucid
-decl fetch<T>  ~[async] ~[const] (url string) -> T      = { ... }
-decl parse     ~[const]          (raw string) -> int    = { ... }
-decl format    ~[const]          (n int)      -> string = { ... }
-
-decl fetchAndFormat ~[async] ~[const] (url string) -> string =
-    fetch<string> +> parse +> format
-
-decl result ~[const] string = await fetchAndFormat("https://api.example.com")
-```
-
 **Nullable operands are forbidden** in composition:
 
 ```lucid
-decl transform ~[nullable] ~[const] (v int) -> int = nil
+const transform (v int) -> int = nil
 
-decl pipeline ~[const] = transform +> scaleBy2    -- ERROR: ~[nullable] operand
+const pipeline = transform +> scaleBy2
 
 -- CORRECT: guard before composing
 if transform != nil {
-    decl pipeline ~[const] (v int) -> int = transform +> scaleBy2
+    const pipeline (v int) -> int = transform +> scaleBy2
 }
 ```
 
@@ -2609,81 +2790,20 @@ handler somewhere else up the call stack.
 there is no separate error type to declare. A function either succeeds with
 `T` or fails with the bare `err` sentinel:
 
-```ebnf
-qualified_type  = '~[' type_qual_item { ',' type_qual_item } ']' type
-                | type '?'                  (* nullable: T or nil *)
-                | type '!'                  (* fallible: T or err *)
-                | type '?' '!'              (* nullable and fallible: T, nil, or err *)
-                  (* '?!' is the only valid order — '!?' is rejected by the parser *)
-```
-
 ```lucid
 int!         -- holds either int or err
 string!      -- holds either string or err
 User?!       -- holds either User, nil, or err — three possible states
 ```
 
-`!` is shorthand for `~[fallible] T`, exactly parallel to `?` being shorthand
-for `~[nullable] T` (see **Built-in Qualifiers**). Writing `!` is equivalent
-to writing the qualifier explicitly — the postfix spelling is brevity, not a
-distinct mechanism, and this is what settles its meaning everywhere it
-appears, including the two positions that would otherwise be ambiguous as a
-bare postfix mark: function types and array types.
-
-### `!` on Function Types
-
-`!` after a function type's return type is **forbidden** — there is no way
-to write it as a bare postfix mark, and no workaround exists to make the
-whole function type itself fallible:
-
-```lucid
-(src string) -> int!       -- OK: the function returns int!, ! attaches to
-                            -- int, the return type — not to the function type
-(src string)! -> int       -- ERROR: ! cannot attach to a parameter list
-~[fallible] (src string) -> int    -- OK: the function VALUE itself may be err,
-                                  -- e.g. a lookup that may fail to produce
-                                  -- a callable function at all
-```
-
-The two are genuinely different things, and `~[fallible]` keeps them
-syntactically distinct instead of relying on a binding-rule footnote:
-
-- `(src string) -> int!` — the **function always exists and is callable**;
-  *calling* it may fail. This is the common case — almost every fallible
-  operation in this document is shaped this way.
-- `~[fallible] (src string) -> int` — the **function value itself** may be
-  `err` before it is ever called — e.g. a registry lookup that returns a
-  callback or `err` if no handler is registered. This is rare. Narrow it like
-  any other fallible value before calling it:
-
-```lucid
-decl handler ~[const] ~[fallible] (int) -> string = lookupHandler("divide")
-if handler == err { return err }
--- handler is (int) -> string here, callable
-decl result ~[const] string = handler(5)
-```
-
 ### `!` on Array Types
 
 `!` binds to the **element type** of an array, never to the array itself —
-the same rule already established for `?` (see **Built-in Qualifiers**):
+the same rule already established for `?`
 
 ```lucid
-[*]int!                  -- array of fallible int — each element is independently
-                          -- int!, narrowed individually when read
-~[fallible] [*]int       -- the array itself may be err as a whole — rare, the
-                          -- same relationship ~[nullable] [*]T has to [*]T?
-```
-
-As with `~[nullable]` arrays, prefer an empty array (`[]`) over
-`~[fallible] [*]T` where possible — a whole-array failure is rarely the most
-natural shape; an empty result or a per-element `!` usually models the
-situation more precisely:
-
-```lucid
-decl items ~[const] [*]int!            = fetchAll()    -- each element independently fallible
-decl whole ~[const] ~[fallible] [*]int = fetchAll()    -- rare: the whole fetch either
-                                                          -- produces an array or fails
+[*]int! -- array of fallible int — each element is independently
+        -- int!, narrowed individually when read
 ```
 
 ### `T?!` — Combined Nullable and Fallible
@@ -2694,8 +2814,8 @@ this combination, so source code never has to choose between equivalent
 forms:
 
 ```lucid
-decl x ~[const] User?! = riskyLookup()   -- OK: x holds User, nil, or err
-decl y ~[const] User!? = riskyLookup()   -- ERROR: '!?' is not valid order, use '?!'
+const x User?! = riskyLookup()   -- OK: x holds User, nil, or err
+const y User!? = riskyLookup()   -- ERROR: '!?' is not valid order, use '?!'
 ```
 
 A `T?!` value is a genuine three-state value. Narrowing must rule out both
@@ -2710,11 +2830,11 @@ No new control-flow construct is introduced.
 **Standard narrowing — inside the block:**
 
 ```lucid
-decl x ~[const] int! = riskyOp()
+const x int! = riskyOp()
 
 if x != err {
     -- x is int here, not int!
-    decl total ~[const] int = x + 1    -- OK
+    const total int = x + 1    -- OK
 }
 -- x is still int! here
 ```
@@ -2722,8 +2842,8 @@ if x != err {
 **Inverse narrowing — standalone guard with an exit:**
 
 ```lucid
-decl process ~[const] (id int) -> int = {
-    decl x ~[const] int! = riskyOp(id)
+const process (id int) -> int = {
+    const x int! = riskyOp(id)
     if x == err { return -1 }
     -- x is int here for the rest of the function
     return x + 1
@@ -2744,8 +2864,8 @@ joining both checks with `or` narrows both independently once the guard
 exits:
 
 ```lucid
-decl process ~[const] (id int) -> int = {
-    decl x ~[const] User?! = riskyLookup(id)
+const process (id int) -> int = {
+    const x User?! = riskyLookup(id)
     if x == nil or x == err { return -1 }
     -- x is User here — neither nil nor err remain possible
     return x.id
@@ -2758,8 +2878,8 @@ reasons already established:
 
 ```lucid
 -- CORRECT: standalone guards, each narrows independently
-decl a ~[const] int?! = riskyOp()
-decl b ~[const] string?! = riskyOp2()
+const a int?! = riskyOp()
+const b string?! = riskyOp2()
 if a == nil or a == err { return }
 if b == nil or b == err { return }
 -- a is int, b is string here
@@ -2779,10 +2899,10 @@ A `T!` or `T?!` value is inert until narrowed. The following are all compile
 errors:
 
 ```lucid
-decl x ~[const] int! = riskyOp()
+const x int! = riskyOp()
 
 x + 1                    -- ERROR: cannot apply '+' to un-narrowed int!
-decl y ~[const] = x      -- ERROR: cannot assign un-narrowed int!
+const y = x      -- ERROR: cannot assign un-narrowed int!
 io:printl(x)              -- ERROR: cannot pass un-narrowed int! as argument
 x.field                   -- ERROR: cannot access field on un-narrowed int!
 x:method()                 -- ERROR: cannot call method on un-narrowed int!
@@ -2829,18 +2949,18 @@ fallback_expr   = expr '??' expr
 
 ```lucid
 -- common case: block fully resolves to plain T
-decl x ~[const] int = (10 / d) ?? {
+const x int = (10 / d) ?? {
     system:logError("division failed")
     return -1
 }
 -- x is int — the block's last expression/return is plain int
 
 -- block re-raises: result stays int!, not int
-decl y ~[const] int! = (10 / d) ?? {
-    decl retryDivisor ~[const] int = recoverDivisor(d)
+const y int! = (10 / d) ?? {
+    const retryDivisor int = recoverDivisor(d)
     if retryDivisor == 0 { return err }    -- still no valid divisor — re-raise
 
-    decl retried ~[const] int! = 10 / retryDivisor    -- still runtime-checked
+    const retried int! = 10 / retryDivisor    -- still runtime-checked
     if retried == err { return err }
     return retried
 }
@@ -2850,23 +2970,23 @@ decl y ~[const] int! = (10 / d) ?? {
 
 ```lucid
 -- nullable
-decl a ~[const] int? = nil
-decl b ~[const] int  = a ?? 0
+const a int? = nil
+const b int  = a ?? 0
 
 -- fallible
-decl c ~[const] int! = riskyOp()
-decl d ~[const] int  = c ?? 0    -- err discarded, d = 0
+const c int! = riskyOp()
+const d int  = c ?? 0    -- err discarded, d = 0
 
 -- nullable and fallible together
-decl e ~[const] User?! = riskyLookup()
-decl f ~[const] User   = e ?? User { id = 0  name = "guest"  email = "" }
+const e User?! = riskyLookup()
+const f User   = e ?? User { id = 0  name = "guest"  email = "" }
 
 -- never triggers: lhs is plain int
-decl g ~[const] int = getValue()
-decl h ~[const] int = g ?? 0    -- always g
+const g int = getValue()
+const h int = g ?? 0    -- always g
 
 -- block form: multiple statements, then a value
-decl i ~[const] int = riskyOp() ?? {
+const i int = riskyOp() ?? {
     system:logError("riskyOp failed, using default")
     return -1
 }
@@ -2902,7 +3022,7 @@ handle `err`:
 
 ```lucid
 -- MISLEADING — does not mean "first block for nil, second for err":
-decl x ~[const] int = riskyOp()
+const x int = riskyOp()
     ?? { return -1 }
     ?? { return -2 }
 ```
@@ -2915,29 +3035,29 @@ fired — `nil` and `err` both take this same branch. The second `?? { return
 
 **Chaining separate `??` expressions is fine**, and is the idiomatic way to
 layer fallbacks — each one only has to decide "is this still unresolved,"
-not "which sentinel was it." Give the intermediate result its own `decl` with
+not "which sentinel was it." Give the intermediate result its own declaration with
 an explicit type, so it's visible at a glance whether the next `??` is live
 or dead — this is exactly the check the MISLEADING example above skipped:
 
 ```lucid
-decl x ~[const] int! = riskyOp()
+const x int! = riskyOp()
 
-decl step1 ~[const] int! = x ?? {
-    decl retried ~[const] int! = retryOp()
+const step1 int! = x ?? {
+    const retried int! = retryOp()
     if retried == err { return err }
     return retried
 }
 -- step1 is explicitly int! — the block re-raised, so it did NOT fully
 -- resolve x. This makes the next ?? visibly live, not dead:
-decl step2 ~[const] int = step1 ?? -1    -- fully resolves whatever remains
+const step2 int = step1 ?? -1    -- fully resolves whatever remains
 ```
 
 Avoid writing this as one inline chain (`x ?? { ... } ?? -1`) even though it
-is grammatically legal — without the intermediate `decl step1 ~[const] int!`
+is grammatically legal — without the intermediate `const step1 int!`
 spelled out, a reader has to mentally execute the first block to know whether
 the second `??` is live or dead, which is precisely the trap the MISLEADING
 example above demonstrates. Prefer giving a chained intermediate its own
-typed `decl`.
+typed declaration.
 
 > [!NOTE]
 > Inline chaining is a style choice, not a forbidden construct. The grammar
@@ -2947,7 +3067,7 @@ typed `decl`.
 > instead of a block (`riskyOp() ?? fallbackOp() ?? -1` has the same
 > live-or-dead ambiguity, and there is no clean syntactic line between "a
 > call that happens to return a fallible type" and "a block"). The
-> intermediate-`decl` convention above is a recommendation, not a rule the
+> intermediate-declaration convention above is a recommendation, not a rule the
 > compiler enforces.
 
 The block after `??` is an ordinary `block` — it can contain any statement,
@@ -2959,11 +3079,11 @@ dispatching on some other value the block computes, not on `nil` vs `err`:
 ```lucid
 -- (assume the following lives inside a function body, as with all
 -- 'return'-containing snippets in this section)
-decl recoveryCode ~[const] (d int) -> int = { ... }
+ recoveryCode (d int) -> int = { ... }
 
-decl d ~[const] int = getDivisor()
+ d int = getDivisor()
 
-decl result ~[const] int = (10 / d) ?? {
+ result int = (10 / d) ?? {
     switch recoveryCode(d) {
         case 1: { return -1 }
         case 2: { return -2 }
@@ -2980,19 +3100,19 @@ types** under **`switch`**), so this is `if`/`else if` over the narrowing
 checks already established for `nil` and `err`:
 
 ```lucid
-decl handleAbsent ~[const] (lookup User?!) -> int = {
+ handleAbsent (lookup User?!) -> int = {
     system:logError("value was absent")
     return -1
 }
 
-decl handleFailure ~[const] (lookup User?!) -> int = {
+ handleFailure (lookup User?!) -> int = {
     system:logError("operation failed")
     return -2
 }
 
-decl x ~[const] User?! = riskyLookup()
+ x User?! = riskyLookup()
 
-decl result ~[const] int =
+ result int =
     if x == nil ?? handleAbsent(x)
     else if x == err ?? handleFailure(x)
     else x.id
@@ -3009,12 +3129,12 @@ dispatch can use `switch` instead, since `nil` and `err` are valid
 `case_value`s:
 
 ```lucid
-decl handleAbsentCode  ~[const] () -> int = { system:logError("absent")  return -1 }
-decl handleFailureCode ~[const] () -> int = { system:logError("failed")  return -2 }
+ handleAbsentCode  () -> int = { system:logError("absent")  return -1 }
+ handleFailureCode () -> int = { system:logError("failed")  return -2 }
 
-decl code ~[const] int?! = riskyParse()
+ code int?! = riskyParse()
 
-decl result ~[mut] int = 0
+let result int = 0
 switch code {
     case nil: { result = handleAbsentCode() }
     case err: { result = handleFailureCode() }
@@ -3023,10 +3143,6 @@ switch code {
 ```
 
 > [!NOTE]
-> `switch` is a statement, not an expression (see **Statements**) — it cannot
-> appear on the right-hand side of `decl`. Declare the target as `~[mut]`
-> first and assign inside each arm, as above.
->
 > Separately: whether `code` narrows to plain `int` inside `default` follows
 > the same rule referenced above for `if`/`else if` chains; until that is
 > settled, do not rely on using `code` directly inside `default` — narrow it
@@ -3061,17 +3177,17 @@ require every arithmetic or index expression to carry `!` in its type either
   instead — the fallback runs and the program continues.
 
 ```lucid
-decl a ~[const] int = 10 / 2          -- OK: divisor is a nonzero literal, no check
-decl b ~[const] int = 10 / d          -- d is a variable divisor — runtime-checked
+const a int = 10 / 2          -- OK: divisor is a nonzero literal, no check
+const b int = 10 / d          -- d is a variable divisor — runtime-checked
 
-decl c ~[const] int = 10 / d ?? -1    -- checked; panic converted to -1 on failure
-decl e ~[const] int = 10 / d          -- checked; PANICS at runtime if d == 0
+const c int = 10 / d ?? -1    -- checked; panic converted to -1 on failure
+const e int = 10 / d          -- checked; PANICS at runtime if d == 0
 ```
 
 ```lucid
-decl items ~[const] [*]int = [1, 2, 3]
-decl x ~[const] int = items[i]              -- i is runtime-computed — checked
-decl y ~[const] int = items[i] ?? 0         -- checked; panic converted to 0
+const items [*]int = [1, 2, 3]
+const x int = items[i]              -- i is runtime-computed — checked
+const y int = items[i] ?? 0         -- checked; panic converted to 0
 ```
 
 > [!WARNING]
@@ -3093,7 +3209,7 @@ branch. This is the only place a failure originates — there is no separate
 traces back to exactly one such `return err` site:
 
 ```lucid
-decl divide ~[const] (a int, b int) -> int! = {
+const divide (a int, b int) -> int! = {
     if b == 0 {
         return err
     }
@@ -3110,10 +3226,10 @@ without narrowing first, even when the caller's own return type matches
 exactly:
 
 ```lucid
-decl fetch ~[const] (url string) -> string! = { ... }
+const fetch (url string) -> string! = { ... }
 
-decl process ~[const] (url string) -> string! = {
-    decl raw ~[const] string! = fetch(url)
+const process (url string) -> string! = {
+    const raw string! = fetch(url)
     if raw == err { return err }
     -- raw is string here
     return raw
@@ -3124,8 +3240,8 @@ decl process ~[const] (url string) -> string! = {
 -- INVALID: returning an un-narrowed fallible value, even with a matching
 -- signature, is forbidden — the compiler cannot tell this apart from
 -- forgetting to handle the failure
-decl badProcess ~[const] (url string) -> string! = {
-    decl raw ~[const] string! = fetch(url)
+const badProcess (url string) -> string! = {
+    const raw string! = fetch(url)
     return raw    -- ERROR: cannot return un-narrowed string!
 }
 ```
@@ -3140,7 +3256,7 @@ without writing the guard.
 Since `err` carries no data, a function that needs to communicate *why* it
 failed does so with an ordinary out-of-band value — a logged message, a
 package-level reporting function, or a struct returned through a different
-mechanism (e.g. a `~[mut]` out-parameter, or a wrapping struct holding both a
+mechanism (e.g. a `let` out-parameter, or a wrapping struct holding both a
 status and a value). This keeps the type system simple: `!` only ever answers
 "did this fail," and any richer detail is modeled with the same struct/enum
 tools used everywhere else in the language, not folded into the fallible-type
@@ -3153,7 +3269,7 @@ enum FetchError {
     Timeout = 2
 }
 
-decl fetch ~[const] (url string)(lastError ~[mut] FetchError?) -> string! = {
+const fetch (url string)(lastError FetchError?) -> string! = {
     if not reachable(url) {
         lastError = FetchError.Network
         return err
@@ -3170,7 +3286,7 @@ pipeline. To narrow inside a pipeline, use an anonymous function as the final
 step:
 
 ```lucid
-decl result ~[const] string = dbFindUser(id)
+const result string = dbFindUser(id)
     |> formatUser
     |> (v string!) -> string {
         if v == err { return "unnamed" }
@@ -3182,7 +3298,7 @@ decl result ~[const] string = dbFindUser(id)
 not need to be distinguished from absence:
 
 ```lucid
-decl result ~[const] string = fetchData(url)
+const result string = fetchData(url)
     |> parseJson
     |> formatOutput
     ?? ""    -- any step that failed or returned nil: use ""
@@ -3202,7 +3318,7 @@ enum DbError {
     ConnectionLost = 1
 }
 
-decl dbFindUser ~[const] (id int)(lastError ~[mut] DbError?) -> User?! = {
+const dbFindUser (id int)(lastError DbError?) -> User?! = {
     if id < 0 {
         lastError = DbError.NotFound
         return err
@@ -3210,14 +3326,14 @@ decl dbFindUser ~[const] (id int)(lastError ~[mut] DbError?) -> User?! = {
     return db:query(id)    -- returns User?, nil if not found
 }
 
-decl formatUser ~[const] (user User) -> string = {
+const formatUser (user User) -> string = {
     if user.name == "" { return "user has no name" }
     return user.name + " <" + user.email + ">"
 }
 
-decl getFormattedUser ~[const] (id int) -> string = {
-    decl lastError ~[mut] DbError? = nil
-    decl found ~[const] User?! = dbFindUser(id)(lastError)
+const getFormattedUser (id int) -> string = {
+    let lastError DbError? = nil
+    const found User?! = dbFindUser(id)(lastError)
 
     if found == err {
         system:logError("lookup failed: " + string(lastError))
@@ -3225,7 +3341,7 @@ decl getFormattedUser ~[const] (id int) -> string = {
     }
     -- found is User? here — err ruled out, nil still possible
 
-    decl user ~[const] User = found ?? User { id = 0  name = "guest"  email = "" }
+    const user User = found ?? User { id = 0  name = "guest"  email = "" }
 
     return user |> formatUser
 }
@@ -3247,32 +3363,25 @@ array_size  = '*'       (* owned heap array — Lucid allocates and owns the mem
 ```
 
 ```lucid
-decl owned  ~[const] [*]int    = [1, 2, 3]      -- heap array, Lucid owns memory
-decl view   ~[const] [_]int    = owned           -- slice — borrows from owned
-decl fixed  ~[const] [3]float  = [1.0, 2.0, 3.0] -- stack array, size fixed at compile time
+const owned  [*]int    = [1, 2, 3]      -- heap array, Lucid owns memory
+const view   [_]int    = owned           -- slice — borrows from owned
+const fixed  [3]float  = [1.0, 2.0, 3.0] -- stack array, size fixed at compile time
 ```
 
-**Nullable element vs nullable array:**
+**The `?` and `!` annotation is applied to the element type not the whole array.**
+Use an empty array when you need to tell if the operation on the array has failed 
 
 ```lucid
-[*]int?             -- owned array of nullable int   (? binds to element — common)
-~[nullable] [*]int  -- nullable array of int         (rare — prefer [] over nil)
-```
-
-**Fallible element vs fallible array** — same binding rule, see **`!` on
-Array Types**:
-
-```lucid
-[*]int!              -- owned array of fallible int  (! binds to element — common)
-~[fallible] [*]int       -- fallible array of int        (rare — prefer [] over err)
+[*]int?             -- array of nullable int
+[*]int!             -- array of fallible int
 ```
 
 ### Array Literals
 
 ```lucid
-decl empty  ~[const] [*]int    = []
-decl nums   ~[const] [*]int    = [1, 2, 3, 4, 5]
-decl matrix ~[const] [3][3]float = [
+const empty  [*]int    = []
+const nums   [*]int    = [1, 2, 3, 4, 5]
+const matrix [3][3]float = [
     [1.0, 0.0, 0.0],
     [0.0, 1.0, 0.0],
     [0.0, 0.0, 1.0]
@@ -3282,8 +3391,8 @@ decl matrix ~[const] [3][3]float = [
 ### Element Access and Index
 
 ```lucid
-decl first  ~[const] int = nums[0]
-decl last   ~[const] int = nums[4]
+const first  int = nums[0]
+const last   int = nums[4]
 
 -- index out of bounds is a runtime error
 -- no implicit wrapping or clamping
@@ -3302,30 +3411,30 @@ plain functions that accept the array and a user callback where needed:
 ```lucid
 use std.array as arr
 
-decl nums  ~[const] [*]int = [3, 1, 4, 1, 5, 9, 2, 6]
+const nums  [*]int = [3, 1, 4, 1, 5, 9, 2, 6]
 
 -- sorting — user provides the comparison callback
-decl sorted ~[const] [*]int = arr:sort<int>(nums)(
+const sorted [*]int = arr:sort<int>(nums)(
     (a int, b int) -> int { return a - b }   -- ascending
 )
 
 -- mapping — user provides the transform callback
-decl doubled ~[const] [*]int = arr:map<int, int>(nums)(
+const doubled [*]int = arr:map<int, int>(nums)(
     (v int) -> int { return v * 2 }
 )
 
 -- filtering — user provides the predicate callback
-decl evens ~[const] [*]int = arr:filter<int>(nums)(
+const evens [*]int = arr:filter<int>(nums)(
     (v int) -> bool { return v % 2 == 0 }
 )
 
 -- reducing — user provides the accumulator callback
-decl sum ~[const] int = arr:reduce<int, int>(nums)(0)(
+const sum int = arr:reduce<int, int>(nums)(0)(
     (acc int, v int) -> int { return acc + v }
 )
 
 -- searching — user provides the predicate
-decl found ~[const] int? = arr:find<int>(nums)(
+const found int? = arr:find<int>(nums)(
     (v int) -> bool { return v > 4 }
 )
 ```
@@ -3336,7 +3445,7 @@ naturally with pipeline and composition:
 ```lucid
 use std.array as arr
 
-decl result ~[const] [*]string =
+const result [*]string =
     [3, 1, 4, 1, 5, 9, 2, 6]
     |> arr:filter<int>(isPositive)!
     |> arr:sort<int>((a int, b int) -> int { return a - b })!
@@ -3360,13 +3469,13 @@ Either bound may be omitted — an omitted start defaults to `0`, an omitted
 end defaults to the array's length:
 
 ```lucid
-decl nums ~[const] [*]int = [10, 20, 30, 40, 50]
+const nums [*]int = [10, 20, 30, 40, 50]
 
-decl sub    ~[const] [_]int = nums[1..3]    -- [20, 30, 40]
-decl subEx  ~[const] [_]int = nums[1..<3]   -- [20, 30]
-decl head   ~[const] [_]int = nums[..<2]    -- [10, 20] — start defaults to 0
-decl tail   ~[const] [_]int = nums[3..]     -- [40, 50] — end defaults to length
-decl all    ~[const] [_]int = nums[..]      -- [10, 20, 30, 40, 50] — whole array
+const sub    [_]int = nums[1..3]    -- [20, 30, 40]
+const subEx  [_]int = nums[1..<3]   -- [20, 30]
+const head   [_]int = nums[..<2]    -- [10, 20] — start defaults to 0
+const tail   [_]int = nums[3..]     -- [40, 50] — end defaults to length
+const all    [_]int = nums[..]      -- [10, 20, 30, 40, 50] — whole array
 ```
 
 A slice expression's bounds are runtime-checked the same way a single-element
@@ -3374,8 +3483,8 @@ index is — see **Runtime Panics**. A start or end that falls outside the
 array, or a start greater than the end, panics unless guarded with `??`:
 
 ```lucid
-decl bad ~[const] [_]int = nums[1..99]         -- PANICS: end out of bounds
-decl ok  ~[const] [_]int = nums[1..99] ?? []    -- panic converted to an empty slice
+const bad [_]int = nums[1..99]         -- PANICS: end out of bounds
+const ok  [_]int = nums[1..99] ?? []    -- panic converted to an empty slice
 ```
 
 ### Slice Rules
@@ -3384,13 +3493,13 @@ A slice `[_]T` is a borrowed view — it does not own the underlying memory. The
 backing array must outlive the slice:
 
 ```lucid
-decl data  ~[const] [*]int = [1, 2, 3, 4, 5]
-decl view  ~[const] [_]int = data              -- borrows from data
-decl sub   ~[const] [_]int = data[1..3]        -- elements at index 1, 2, 3
+const data  [*]int = [1, 2, 3, 4, 5]
+const view  [_]int = data              -- borrows from data
+const sub   [_]int = data[1..3]        -- elements at index 1, 2, 3
 
 -- writing through a mutable slice modifies the backing array
-decl buf   [*]int = [0, 0, 0]
-decl window [_]int = buf
+let buf   [*]int = [0, 0, 0]
+let window [_]int = buf
 window[0] = 42    -- buf[0] is now 42
 ```
 
@@ -3400,8 +3509,8 @@ A fixed array `[N]T` is stack-allocated. Its size must be a compile-time
 integer literal:
 
 ```lucid
-decl rgb   ~[const] [3]uint8  = [255, 128, 0]
-decl mat4  ~[const] [16]float = [
+const rgb   [3]uint8  = [255, 128, 0]
+const mat4  [16]float = [
     1.0, 0.0, 0.0, 0.0,
     0.0, 1.0, 0.0, 0.0,
     0.0, 0.0, 1.0, 0.0,
@@ -3409,7 +3518,7 @@ decl mat4  ~[const] [16]float = [
 ]
 
 -- pass as slice to functions that accept [_]T
-decl view ~[const] [_]float = mat4
+const view [_]float = mat4
 ```
 
 ---
@@ -3442,8 +3551,8 @@ struct Player {
     items  [*]string  -- owned: buffer deep-copied
 }
 
-decl a ~[const] Player = Player { score = 10, items = ["sword"] }
-decl b ~[mut] Player = a
+const a Player = Player { score = 10, items = ["sword"] }
+let b Player = a
 -- b.score and b.items are fully independent of a
 ```
 
@@ -3452,17 +3561,17 @@ decl b ~[mut] Player = a
 References (`&T`) allow sharing data without copying. They represent a safe borrowed view of an owned variable.
 
 ```lucid
-decl a ~[const] Player = Player { … }
+const a Player = Player { … }
 
-decl ref ~[mut] &Player = a     -- mutable shared reference
-decl rc ~[const] &Player = a    -- read-only shared reference
+let ref &Player = a     -- mutable shared reference
+const rc &Player = a    -- read-only shared reference
 ```
 
-| Declaration                    | Copies?     | Field mutation?       | Owner |
-| ------------------------------ | ----------- | --------------------- | ----- |
-| `decl b ~[mut] Player = a`     | ✅ deep copy | ✅ b's own fields      | `b`   |
-| `decl ref ~[mut] &Player = a`  | ❌ shared    | ✅ visible through `a` | `a`   |
-| `decl rc ~[const] &Player = a` | ❌ shared    | ❌ read-only           | `a`   |
+| Declaration            | Copies?     | Field mutation?       | Owner |
+| ---------------------- | ----------- | --------------------- | ----- |
+| `let b Player = a`     | ✅ deep copy | ✅ b's own fields      | `b`   |
+| `let ref &Player = a`  | ❌ shared    | ✅ visible through `a` | `a`   |
+| `const rc &Player = a` | ❌ shared    | ❌ read-only           | `a`   |
 
 #### The Downward Flow Rule (Reference Scoping)
 
@@ -3473,8 +3582,8 @@ To guarantee memory safety and eliminate dangling pointers without using a Garba
 3. **No Reference Returns:** A function cannot return a reference type (e.g., `-> &T` is a compile error).
 
 As a result, a reference (`&T`) can only exist in two places:
-*   As a **function parameter** (e.g., `decl process ~[const] (p &Player)`).
-*   As a **local variable alias** inside a block (e.g., `decl ref ~[mut] &Weapon = player.weapon`).
+*   As a **function parameter** (e.g., `const process (p &Player)`).
+*   As a **local variable alias** inside a block (e.g., `let ref &Weapon = player.weapon`).
 
 This guarantees that a reference never outlives the owned variable it points to.
 
@@ -3518,8 +3627,8 @@ Raw pointers (`ptr<T>`) are sealed conduits — carry them, pass them to foreign
 | `ptr<T>?` | Nullable — `(ptr<T>)?` — the pointer itself may be nil                    | `T*` that may be `NULL`       |
 
 ```lucid
-decl p ~[const] ptr<Node>  = getNode()    -- programmer asserts: address is always valid
-decl q ~[const] ptr<Node>? = findNode()   -- pointer itself may be nil; nil-check required before use
+const p ptr<Node>  = getNode()    -- programmer asserts: address is always valid
+const q ptr<Node>? = findNode()   -- pointer itself may be nil; nil-check required before use
 ```
 
 > [!NOTE]
@@ -3544,7 +3653,7 @@ decl q ~[const] ptr<Node>? = findNode()   -- pointer itself may be nil; nil-chec
 >     size uint64
 > }
 >
-> decl disposeBuffer ~[const] (buf &OwnedBuffer) = {
+> const disposeBuffer (buf &OwnedBuffer) = {
 >     freeBuffer(buf.ptr, buf.size)    -- lifetime ends here, predictably
 > }
 > ```
@@ -3578,15 +3687,15 @@ decl q ~[const] ptr<Node>? = findNode()   -- pointer itself may be nil; nil-chec
 
 ```lucid
 @[foreign("C")]
-decl malloc ~[const] (size uint64) -> ptr<uint8>?
+const malloc (size uint64) -> ptr<uint8>?
 
-decl buf ~[const] ptr<uint8>? = malloc(1024)
+const buf ptr<uint8>? = malloc(1024)
 if buf == nil { return 1 }
 
-decl ref ~[mut] &uint8 = #toRef(buf)           -- cross the boundary
+let ref &uint8 = #toRef(buf)           -- cross the boundary
 ref = 0xFF                                     -- work with it safely
 
-decl next ~[const] ptr<uint8>? = #ptrOffset(buf, 1)  -- pointer arithmetic
+const next ptr<uint8>? = #ptrOffset(buf, 1)  -- pointer arithmetic
 ```
 
 ### Reading Values Through a Pointer (C → Lucid)
@@ -3609,10 +3718,10 @@ int getValue(int* address) {
 ```lucid
 -- main.luc — Lucid side
 @[foreign("C")]
-decl getValue ~[const] (address ptr<int>) -> int   -- returns owned int, never &int
+const getValue (address ptr<int>) -> int   -- returns owned int, never &int
 
-decl addr ~[const] ptr<int> = getAddressFromSomewhere()
-decl n    ~[const] int      = getValue(addr)         -- safe: int is owned, fully copied
+const addr ptr<int> = getAddressFromSomewhere()
+const n    int      = getValue(addr)         -- safe: int is owned, fully copied
 ```
 
 If the value at the address is large (a struct), return a raw pointer from C and cross the boundary with `#toRef` on the Lucid side:
@@ -3627,13 +3736,13 @@ Player* getPlayer(PlayerStore* store, int id) {
 ```lucid
 -- Lucid side
 @[foreign("C")]
-decl getPlayer ~[const] (store ptr<PlayerStore>, id int) -> ptr<Player>?   -- nullable: id may not exist
+const getPlayer (store ptr<PlayerStore>, id int) -> ptr<Player>?   -- nullable: id may not exist
 
-decl p ~[const] ptr<Player>? = getPlayer(store, 42)
+const p ptr<Player>? = getPlayer(store, 42)
 if p == nil { return }
 
-decl ref   ~[const] &Player = #toRef(p)    -- assert validity, enter safe world
-decl score ~[const] int     = ref.score    -- read fields safely through the reference
+const ref   &Player = #toRef(p)    -- assert validity, enter safe world
+const score int     = ref.score    -- read fields safely through the reference
 ```
 
 ### How C Communicates Nullable Returns to Lucid
@@ -3649,14 +3758,119 @@ calls. Conversion functions are plain functions by convention:
 
 ```lucid
 -- naming convention: targetFromSource or targetOf
-decl intFromString ~[const] (s string) -> int! = { ... }
-decl stringFromInt ~[const] (n int)    -> string = { ... }
-decl floatFromInt  ~[const] (n int)    -> float  = { ... }
+const intFromString (s string) -> int! = { ... }
+const stringFromInt (n int)    -> string = { ... }
+const floatFromInt  (n int)    -> float  = { ... }
 
 -- use
-decl parsed ~[const] int! = intFromString("42")
-decl n ~[const] int = parsed ?? 0
-decl s ~[const] string = stringFromInt(n)
+const parsed int! = intFromString("42")
+const n int = parsed ?? 0
+const s string = stringFromInt(n)
+```
+
+### String Interpolation
+
+`\(expr)` embeds an expression directly inside a string literal. Each
+embedded expression is type-checked at the point it appears, exactly like
+any other expression — there is no separate placeholder syntax (`%s`, `%d`,
+and similar) to parse or validate:
+
+```ebnf
+interpolation = '\(' expr ')'
+```
+
+```lucid
+const name string = "alice"
+const age  int    = 30
+
+const greeting string = "hello \(name), you are \(stringFromInt(age)) years old"
+-- greeting = "hello alice, you are 30 years old"
+```
+
+**`expr` must be of type `string`.** Lucid does not silently stringify a
+value of another type — `expr` can be any expression (a variable, a function
+call, a whole sub-expression), but whatever it evaluates to must already be
+`string`. If the value isn't naturally a `string`, the conversion call is
+written inside the parentheses, in the same place it would be written
+anywhere else, fully visible and fully type-checked:
+
+```lucid
+const n int = 42
+
+const a string = "value: \(stringFromInt(n))"   -- OK: stringFromInt(n) is string
+const b string = "value: \(n)"                   -- ERROR: n is int, not string
+```
+
+This is the same conversion convention as the rest of this section —
+`stringFromInt`, `stringFromFloat`, and so on are ordinary functions, called
+the same way whether inside a literal or outside one. Interpolation does not
+introduce a second conversion mechanism; it only changes *where* the call can
+be written.
+
+**Why `%s`/`%d`-style placeholders are rejected:** a placeholder format
+string defers the type relationship between each placeholder and its
+corresponding argument to a separate parsing pass over the string's
+contents, decoupled from where the argument is actually written. That
+relationship is then either checked at runtime (a class of bug this grammar
+has consistently avoided — see **Variable Declaration**'s no-inference rule
+for the same reasoning applied elsewhere) or requires the compiler to
+specially parse string-literal contents as if they were a second grammar,
+which both `\(expr)` interpolation and the rest of this language avoid:
+every expression embedded in a literal is checked exactly where it's
+written, by the same type checker that checks everything else.
+
+**Interpolation is forbidden in raw strings** (`"""..."""`) — a raw string's
+entire purpose is literal, unprocessed content, so `\(` inside one is just
+two literal characters, not the start of an interpolation:
+
+```lucid
+const literal string = """value: \(n)"""   -- literally "value: \(n)",
+                                                      -- not interpolated
+```
+
+**A raw string may span multiple lines in the source.** Unlike `"..."`,
+which forbids a literal newline and requires the `\n` escape instead, a raw
+string's content is taken verbatim — including every newline and the
+indentation on each line — between the opening and closing `"""`:
+
+```lucid
+const query string = """
+SELECT id, name
+FROM users
+WHERE active = true
+"""
+-- query contains the literal newlines and leading/trailing whitespace shown
+-- above; nothing is stripped or reformatted
+```
+
+A single or double quote character inside a triple-quote raw string is
+perfectly legal — only three consecutive quotes close it:
+
+```lucid
+const msg string = """she said "hello" to me"""   -- OK
+const sql string = """WHERE name = 'alice'"""     -- OK
+```
+
+> [!NOTE]
+> If a raw string literal is written indented — inside a function body, for
+> example — that leading whitespace on every line after the first is part of
+> the string's content too, since nothing is stripped. Write multi-line raw
+> strings starting at column 0, or accept the indentation as literal content,
+> rather than expecting the source code's own indentation to be trimmed
+> automatically.
+
+A variadic, type-safe alternative for joining already-stringified pieces
+also exists, useful when the pieces come from a loop or are otherwise not
+known until runtime — see **Variadic Parameters**:
+
+```lucid
+const join (parts ...string) -> string = {
+    let result string = ""
+    for p string in parts { result = result + p }
+    return result
+}
+
+join("a", "b", "c")   -- "abc"
 ```
 
 ---
@@ -3673,23 +3887,23 @@ struct Vector2 {
 }
 
 -- all "methods" are plain functions
-decl vector2Add  ~[const] (a Vector2)(b Vector2) -> Vector2 = {
+const vector2Add  (a Vector2)(b Vector2) -> Vector2 = {
     return Vector2 { x = a.x + b.x, y = a.y + b.y }
 }
 
-decl vector2Scale ~[const] (v Vector2)(s float) -> Vector2 = {
+const vector2Scale (v Vector2)(s float) -> Vector2 = {
     return Vector2 { x = v.x * s, y = v.y * s }
 }
 
-decl vector2Length ~[const] (v Vector2) -> float = {
+const vector2Length (v Vector2) -> float = {
     return sqrt(v.x * v.x + v.y * v.y)
 }
 
 -- usage
-decl a ~[const] Vector2 = Vector2 { x = 1.0, y = 0.0 }
-decl b ~[const] Vector2 = Vector2 { x = 0.0, y = 1.0 }
-decl c ~[const] Vector2 = vector2Add(a)(b)
-decl len ~[const] float = vector2Length(c)
+const a Vector2 = Vector2 { x = 1.0, y = 0.0 }
+const b Vector2 = Vector2 { x = 0.0, y = 1.0 }
+const c Vector2 = vector2Add(a)(b)
+const len float = vector2Length(c)
 ```
 
 ---
@@ -3710,23 +3924,23 @@ link_attr       = 'link' '(' STRING_LIT { ',' STRING_LIT } ')'
 ```lucid
 -- standard C library function
 @[foreign("C")]
-decl malloc ~[const] (size uint64) -> ptr<byte>? = {}
+const malloc (size uint64) -> ptr<byte>? = {}
 
 -- combine foreign + link in one attribute list
 @[foreign("C"), link("path/to/file.c")]
-decl myAdd ~[const] (a int, b int) -> int = {}
+const myAdd (a int, b int) -> int = {}
 
 -- void return: omit the return type entirely
 @[foreign("C"), link("opengl")]
-decl glClear ~[const] (mask uint32) = {}
+const glClear (mask uint32) = {}
 
 -- nullable return — C function may return NULL
 @[foreign("C"), link("mylib")]
-decl findNode ~[const] (id int) -> ptr<Node>? = {}
+const findNode (id int) -> ptr<Node>? = {}
 
 -- multiple link targets in one attribute: paths and library names can be mixed
 @[foreign("C"), link("vendor/math/fast_math.c", "vendor/math/lut.c", "m")]
-decl fastSin ~[const] (x float) -> float = {}
+const fastSin (x float) -> float = {}
 ```
 
 > [!NOTE]
@@ -3767,279 +3981,639 @@ so each bound is fully evaluated before the range is formed.
 
 ---
 
+Here's a comprehensive section for Async/Await that fits seamlessly into your Lucid grammar:
+
+---
+
+Here are the two sections rewritten for your unified concurrency model:
+
+---
+
 ## Async / Await
 
-`~[async]` is a **type qualifier** — it is part of the function type, not just
-a declaration hint. Two functions with identical parameter and return types but
-different `~[async]` status are **different types** and are not interchangeable.
-
-`await` suspends the current function until the awaited async call resolves. It
-is only valid inside a `~[async]`-qualified function body.
-
-```ebnf
-await_expr  = 'await' expr
-              (* expr must be a call to a ~[async]-qualified function *)
-              (* valid only inside a ~[async] function body *)
-```
-
-```lucid
--- ~[async] is part of the function type
-decl fetch ~[async] ~[const] (url string) -> string = {
-    return await httpGet(url)    -- httpGet must also be ~[async]
-}
-
--- calling a ~[async] function requires await
-decl result ~[const] string = await fetch("https://api.example.com")
-
--- await is only valid inside a ~[async] body
-decl bad ~[const] (url string) -> string = {
-    return await fetch(url)    -- ERROR: not inside a ~[async] body
-}
-```
-
-**`~[async]` as a type qualifier on parameters and return types:**
-
-Because `~[async]` is part of the type, it travels through parameters and
-return types. A function that accepts or returns an async function must declare
-that in its signature:
-
-```lucid
--- parameter is an async function — caller must pass a ~[async] function
-decl run ~[const] (task ~[async] () -> int) -> int = {
-    return await task()
-}
-
--- return type is an async function
-decl makeLoader ~[const] (prefix string) -> ~[async] (string) -> string = {
-    return ~[async] (path string) -> string {
-        return await fetch(prefix + path)
-    }
-}
-```
-
-**Rules:**
-
-- `await expr` — `expr` must be a call to a `~[async]`-qualified function.
-  Using `await` on a non-async call is a compile error.
-- `await` is only valid inside a function body whose declaration carries
-  `~[async]`. Using `await` in a non-async body is a compile error.
-- A `~[async]` function may freely call non-async functions without `await`.
-- `~[async]` and `~[parallel]` are mutually exclusive on the same type —
-  a function is either async (suspendable, single-threaded cooperative) or
-  parallel (concurrent), not both.
-- `~[async]` is not valid on non-function types.
-
-**Type identity:**
-
-```lucid
--- these are three distinct types — not interchangeable
-decl a ~[const] (url string) -> string         = { ... }   -- plain function
-decl b ~[async] ~[const] (url string) -> string = { ... }  -- async function
-decl c ~[async] ~[const] (url string) -> string? = { ... } -- async nullable
-
-decl run (f (string) -> string) -> string = { ... }
-
-run(a)   -- OK
-run(b)   -- ERROR: ~[async] (string) -> string ≠ (string) -> string
-run(c)   -- ERROR: type mismatch on both async and nullable
-```
-
-**Async and composition / pipeline:**
-
-`~[async]` functions compose with `+>` and `|>` as long as types align. The
-resulting composed function is itself `~[async]`:
-
-```lucid
--- each step is async; the composition is async
-decl pipeline ~[async] ~[const] (url string) -> string =
-    fetch +> parseJson +> extractTitle
-
-decl result ~[const] string = await pipeline("https://api.example.com")
-```
-
----
-
-## Parallel
-
-`~[parallel]` marks a function type whose body may execute concurrently — one
-invocation per item, with no ordering guarantee between invocations. Like
-`~[async]`, it is a **type qualifier**: it is part of the function's type,
-travels with it through parameters and return types, and is mutually
-exclusive with `~[async]` on the same type (see **Rules**, under **Async /
-Await**) — a function is either suspendable-and-cooperative or
-concurrent, never both.
-
-```ebnf
-type_qualifier  = '~[' type_qual_item { ',' type_qual_item } ']' type
-type_qual_item  = 'async' | 'parallel' | 'nullable' | 'fallible'
-```
-
-### Body Restrictions
-
-A function called through a `~[parallel]`-qualified binding has its body
-restricted, because the runtime gives no guarantee about execution order or
-which thread runs which invocation. Each restriction below exists to keep a
-parallel body's effects fully local to its own invocation — without these,
-concurrent invocations could race on shared state, return out of a context
-the caller is no longer running, or block one invocation on another:
-
-- **No `return` statements.** A parallel body has no single caller waiting on
-  a single result the way a normal call does — there is no well-defined place
-  for a `return` to deliver its value *to*. Produce output by mutating data
-  passed in (through `&T`, see **Borrowed Types — Scoped References**), not
-  by returning.
-- **No `break` or `continue`.** These only have meaning relative to an
-  enclosing loop in the *caller's* control flow. A parallel body runs
-  independently of that loop's own iteration mechanics, so neither statement
-  has anywhere left to target.
-- **No `await` expressions.** Already implied by `~[async]`/`~[parallel]`
-  being mutually exclusive on the same type, and by `await` only being valid
-  inside an `~[async]`-qualified body (see **Rules**, under **Async /
-  Await**) — a `~[parallel]` body can never also be `~[async]`, so `await`
-  is unreachable inside one. Stated here explicitly since it is easy to
-  forget when only thinking about the other three restrictions.
-- **No writes to variables declared outside the body's own scope.** Lucid's
-  closures can capture outer variables (see **Function Values and
-  Closures**), which makes this restriction load-bearing rather than
-  redundant: without it, a `~[parallel]` body capturing and writing to a
-  shared outer variable would be a genuine, silent data race between
-  concurrent invocations. Reading a captured outer variable is still
-  permitted — only writing to it is forbidden.
-
-```lucid
-decl parallelFor<T> ~[const] (items [*]T)(body ~[parallel] (item T) -> ()) -> () = { ... }
-
-decl result ~[mut] int = 0
-
-parallelFor<Vertex>(mesh.vertices)((vertex Vertex) -> () {
-    vertex.pos = scalePosition(vertex.pos)   -- OK: local to this invocation
-    result = 5                                -- ERROR: write to outer-scope variable
-    return                                    -- ERROR: return in a parallel body
-    await fetch()                             -- ERROR: await in a parallel body
-})
-```
+`async` and `await` are **statement keywords** for cooperative concurrency. They appear at the call site as statements. A function does not need to declare itself `async` — any function can be called with `async` at the call site.
 
 > [!NOTE]
-> `vertex` itself is local to each invocation — it is the parameter the
-> runtime hands to that invocation, not a captured outer variable, so writing
-> to its fields is unrestricted. The restriction applies specifically to
-> variables declared **outside** the body and reached through closure
-> capture, such as `result` above.
+> **Concurrency vs Parallelism in Lucid:**
+>
+> | Feature | Model | Implementation | Best For |
+> | ------- | ----- | -------------- | -------- |
+> | `async`/`await` | Concurrency | Single-threaded event loop | I/O-bound, high-volume operations |
+> | `spawn`/`join` | Parallelism | OS threads | CPU-bound work, blocking operations |
+>
+> `async`/`await` uses **cooperative multitasking** on a single thread. `spawn`/`join` uses **preemptive multitasking** on OS threads. The two features are complementary — they can be mixed freely in the same program.
+
+### `async` — Schedule Concurrent Operations
+
+`async` schedules a function call on the event loop and binds its return value to one or more existing variables. The calling thread continues running immediately — the async operation runs concurrently with the caller, but on the same thread (cooperative multitasking).
+
+```ebnf
+async_stmt      = 'async' IDENTIFIER { ',' IDENTIFIER } '=' call_expr
+                  (* one variable per return value of call_expr *)
+                  (* variables must already be declared (let) *)
+                  (* call_expr must return a type that can be awaited *)
+```
+
+```lucid
+-- single return value
+let result string
+async result = fetchData("https://api.example.com")
+
+-- do other work while fetchData runs
+let n int = 1 + 2
+for i int in 0..1000 {
+    n = n + i
+}
+
+-- later, wait for the result
+await result
+io:printl(result)
+```
+
+**Multiple return values** follow the same pattern — one variable per returned value, in the same order as the function's return type:
+
+```lucid
+const parseInt (s string) -> (int, bool) = { ... }
+
+let value int
+let ok bool
+async value, ok = parseInt("42")
+
+-- ... other work ...
+
+await value, ok
+if ok { io:printl(stringFromInt(value)) }
+```
+
+### `await` — Wait for Async Results
+
+`await` blocks the current thread until one or more async operations complete. If multiple variables are awaited in one statement, the thread waits until **all** of them are ready.
+
+```ebnf
+await_stmt      = 'await' IDENTIFIER { ',' IDENTIFIER }
+                  (* waits for all named variables to be filled *)
+                  (* each IDENTIFIER must be a variable bound by async *)
+```
+
+```lucid
+-- Wait for a single async operation
+await result
+io:printl(result)
+
+-- Wait for multiple async operations to complete
+let user User
+let profile Profile
+async user = fetchUser(1)
+async profile = fetchProfile(1)
+await user, profile
+io:printl(user.name + ": " + profile.bio)
+```
+
+**If `await` is never called**, the async operation runs until the main thread terminates — at which point all unawaited async operations are also terminated. The variables bound by `async` remain unset if `await` is never reached.
+
+> [!WARNING]
+> The compiler **warns** about unawaited async operations when the scope exits:
+>
+> ```lucid
+> const process () -> () = {
+>     let result string
+>     async result = fetchData(url)
+>     
+>     -- If we exit without awaiting, the async operation is terminated
+>     -- COMPILER WARNING: 'result' was bound by async but never awaited
+> }
+> ```
+
+### Cooperative Multitasking — The Event Loop
+
+Async operations in Lucid are **cooperative**, not preemptive. A task runs until it explicitly yields control at an `await` point. This means:
+
+1. **No race conditions on shared data** — tasks only yield at known points (when awaiting), so data accessed between yield points is thread-safe by construction.
+2. **Predictable scheduling** — tasks run to completion unless they yield.
+3. **No OS thread overhead** — thousands of async operations can run concurrently on one thread.
+
+```lucid
+-- Three async operations sharing data safely
+let counter int = 0
+
+async task1 = {
+    -- task1 runs until it hits an await
+    counter = counter + 1    -- safe: no other task runs here
+    await someIo()
+    counter = counter + 1    -- still safe: we yielded, but no other task
+}                            -- can modify counter unless it also yields
+
+async task2 = {
+    counter = counter + 2    -- safe: happens in its own time slice
+    await otherIo()
+    counter = counter + 2
+}
+
+await task1, task2
+-- counter is predictable: 0 → 1 → 1 → 3 → 3 → 6
+-- (order depends on scheduling, but each individual operation is atomic)
+```
+
+> [!WARNING]
+> Cooperative multitasking does **not** eliminate the need for synchronization when:
+> - Data is shared between `async` tasks and **OS threads** (`spawn`/`join`)
+> - Data is shared between async tasks that yield inside a **critical section**
+>
+> In those cases, use standard library synchronization primitives (mutexes, atomics).
+
+### Async Operations in Loops
+
+Scheduling many async operations in a loop is idiomatic and efficient:
+
+```lucid
+const urls [*]string = ["https://api1.com", "https://api2.com", "https://api3.com"]
+
+-- Schedule all fetches concurrently
+let results [*]string = []
+for url string in urls {
+    let result string
+    async result = fetchData(url)
+    arr:append<string>(results)(result)   -- store the variable reference
+}
+
+-- Wait for all to complete
+for result string in results {
+    await result
+}
+
+-- All data is now ready
+for result string in results {
+    io:printl(result)
+}
+```
+
+### Error Handling with Async/Await
+
+Async operations can return fallible or nullable types. The same narrowing rules apply:
+
+```lucid
+let data string!
+async data = riskyFetch(url)
+
+-- Narrow before use
+if data == err {
+    log("fetch failed")
+    return
+}
+-- data is string here
+
+const result string = data ?? "fallback"
+```
+
+### Combining Async with Spawn
+
+Async (concurrency) and spawn (parallelism) can be mixed freely:
+
+```lucid
+-- CPU-bound work in a separate thread
+spawn heavyResult = processLargeDataset(data)
+
+-- Many I/O operations on the event loop
+let files [*]string
+for path string in filePaths {
+    let content string
+    async content = readFile(path)
+    arr:append<string>(files)(content)
+}
+
+-- Wait for all I/O first (fast)
+for content string in files {
+    await content
+}
+
+-- Then wait for the CPU work (slow)
+join heavyResult
+
+io:printl("All work complete: " + stringFromInt(heavyResult))
+```
+
+### Await Ordering
+
+`await` only waits for operations scheduled with `async`. You cannot `await` a `spawn` operation:
+
+```lucid
+let result string
+spawn result = heavyWork()    -- result is thread-bound
+
+await result                  -- ERROR: result is not an async operation
+join result                   -- CORRECT: wait for the thread
+
+let light string
+async light = ioWork()        -- light is event-loop-bound
+
+join light                    -- ERROR: light is not a thread
+await light                   -- CORRECT: wait for the async operation
+```
+
+### Async and the Visual Graph
+
+```
+[@[export, aot] const main (args [_]string)]
+    │
+    [let result string]
+    │
+    [async | result | fetchData]──┐
+    │                             │ fetchData running on event loop
+    ...continue execution         │
+    │                             │
+    [await | result] ─────────────┘  -- pause until result ready
+    │
+    [io:printl(result)]
+    │
+    [end]
+```
+
+**Visual distinction from spawn:**
+
+```
+[spawn | heavyResult | expensiveWork]────┐  ← OS thread (dashed border)
+                                          │
+[async | lightResult | ioWork]──┐         │  ← Event loop task (solid border, different color)
+                                 │         │
+[await | lightResult] ──────────┘         │  ← Wait for event loop
+                                 │         │
+[join | heavyResult] ─────────────────────┘  ← Wait for OS thread
+```
+
+### Performance Guidelines
+
+| Operation Type     | Use     | Count     | Reasoning                                                  |
+| ------------------ | ------- | --------- | ---------------------------------------------------------- |
+| Network I/O        | `async` | 1000+     | Event loop handles many concurrent connections efficiently |
+| File I/O           | `async` | 100+      | Filesystem operations yield at the OS level                |
+| CPU-bound          | `spawn` | CPU cores | Requires actual parallelism on OS threads                  |
+| Lightweight timers | `async` | Thousands | `sleep` can yield without threads                          |
+
+### Complete Example
+
+```lucid
+use std.io as io
+use std.http as http
+
+-- Fetch multiple URLs concurrently
+const fetchAll (urls [*]string) -> [*]string = {
+    let results [*]string = []
+    
+    -- Schedule all fetches
+    for url string in urls {
+        let data string
+        async data = http:get(url)
+        arr:append<string>(results)(data)
+    }
+    
+    -- Wait for all fetches to complete
+    let fetched [*]string = []
+    for data string in results {
+        await data
+        arr:append<string>(fetched)(data)
+    }
+    
+    return fetched
+}
+
+-- Mixed parallelism and concurrency
+@[export, aot] const main () -> int = {
+    let urls [*]string = [
+        "https://api1.com/users",
+        "https://api2.com/products", 
+        "https://api3.com/orders"
+    ]
+    
+    -- Concurrent I/O (event loop)
+    let userData string
+    let productData string
+    let orderData string
+    async userData = http:get(urls[0])
+    async productData = http:get(urls[1])
+    async orderData = http:get(urls[2])
+    
+    -- Parallel CPU work (OS thread)
+    let processed string
+    spawn processed = processUserData(userData)
+    
+    -- Wait for I/O first
+    await userData, productData, orderData
+    
+    -- Parse results while CPU work continues
+    const users [*]User = parseUsers(userData)
+    const products [*]Product = parseProducts(productData)
+    const orders [*]Order = parseOrders(orderData)
+    
+    -- Wait for CPU work to finish
+    join processed
+    
+    io:printl("Users: " + stringFromInt(len(users)))
+    io:printl("Products: " + stringFromInt(len(products)))
+    io:printl("Orders: " + stringFromInt(len(orders)))
+    io:printl(processed)
+    
+    return 0
+}
+```
+
+### Async vs Spawn — Decision Tree
+
+```lucid
+-- When to use each:
+--
+-- Need to wait for a result?
+--   │
+--   ├─ Yes → Is it blocking I/O?
+--   │         ├─ Yes → `async` (concurrent, event loop)
+--   │         └─ No → `spawn` (parallel, OS thread)
+--   │
+--   └─ No → `spawn _ =` (fire and forget)
+--
+-- Have thousands of operations?
+--   │
+--   ├─ Yes → `async` (event loop scales to 10,000+)
+--   └─ No → `spawn` (OS threads, limited by CPU cores)
+--
+-- Need to share data with minimal locking?
+--   │
+--   ├─ Yes → `async` (cooperative = safe yield points)
+--   └─ No → `spawn` (preemptive = needs locks)
+```
 
 ---
 
-## Grammar Summary (EBNF)
+## Spawn / Join
+
+`spawn` and `join` are **statement keywords** for thread-based parallelism. `spawn` launches a function call on a separate OS thread. `join` later blocks the calling thread until spawned operations complete.
 
 ```ebnf
-program         = { top_level_item }
-top_level_item  = { attribute_list } { decl_qualifier } top_level_decl
-                | use_decl
-top_level_decl  = trait_decl | struct_decl | enum_decl | func_decl | var_decl
-use_decl        = 'use' use_path [ 'as' IDENTIFIER ]
-use_path        = IDENTIFIER { '.' IDENTIFIER }
+spawn_stmt      = 'spawn' spawn_binding { ',' spawn_binding } '=' call_expr
+                  (* one binding per return value of call_expr *)
 
-attribute_list  = '@[' attr_item { ',' attr_item } ']'
-decl_qualifier  = '~[' decl_qual_item { ',' decl_qual_item } ']'
-attr_item       = IDENTIFIER [ '(' attr_args ')' ]
-attr_args       = attr_arg { ',' attr_arg }
-attr_arg        = STRING_LIT | INT_LIT | FLOAT_LIT | BOOL_LIT | IDENTIFIER
-qual_item       = 'const' | 'mut' | 'async' | 'nullable' | 'parallel' | 'fallible'
+spawn_binding   = IDENTIFIER      (* store result for later join *)
+                | '_'             (* discard result — fire and forget *)
 
-trait_decl      = 'trait' IDENTIFIER [ generic_params ] '{' { trait_field } '}'
-trait_field     = IDENTIFIER type
-trait_ref       = IDENTIFIER | IDENTIFIER '<' type_arg { ',' type_arg } '>'
-
-struct_decl     = 'struct' IDENTIFIER [ generic_params ] [ ':' trait_ref { ',' trait_ref } ] '{' { struct_field } '}'
-struct_field    = { attribute_list } IDENTIFIER { decl_qualifier } type [ '=' expr ]
-
-enum_decl       = 'enum' IDENTIFIER [ ':' int_type ] '{' { enum_variant } '}'
-enum_variant    = { attribute_list } IDENTIFIER '=' INT_LIT
-
-func_decl       = 'decl' IDENTIFIER [ generic_params ] { decl_qualifier }
-                  param_group { param_group } [ '->' return_type ] '=' func_body
-                | 'decl' IDENTIFIER [ generic_params ] { decl_qualifier }
-                  param_group '->' func_type '=' func_body
-var_decl        = 'decl' IDENTIFIER { decl_qualifier } type [ '=' expr ]
-
-param_group     = '(' [ param_list ] ')'
-param_list      = param { ',' param } [ ',' variadic_param ] | variadic_param
-param           = IDENTIFIER [ { decl_qualifier } ] type
-variadic_param  = IDENTIFIER '...' type
-return_type     = type | '(' type { ',' type } ')'
-func_body       = '{' { statement } '}' | expr
-func_type       = param_group { param_group } '->' return_type
-                | param_group '->' func_type
-                | param_group '->' return_type
-
-generic_params  = '<' generic_param { ',' generic_param } '>'
-generic_param   = IDENTIFIER | IDENTIFIER ':' trait_ref { '+' trait_ref }
-generic_args    = '<' type { ',' type } '>'
-
-type            = primitive_type | IDENTIFIER | generic_type | func_type
-                | array_type | ptr_type | tuple_type | qualified_type
-                (* IDENTIFIER may refer to a trait — valid as field type, param type,
-                   return type, and generic constraint *)
-primitive_type  = int_type | float_type | 'bool' | 'byte' | 'string' | 'char'
-int_type        = 'int8' | 'int16' | 'int32' | 'int64'
-                | 'uint8' | 'uint16' | 'uint32' | 'uint64'
-                | 'int' | 'uint' | 'byte' | 'short' | 'long' | 'ubyte' | 'ushort' | 'ulong'
-float_type      = 'float' | 'double' | 'decimal'
-array_type      = '[' array_size ']' type
-array_size      = '*' | '_' | INT_LIT
-ptr_type        = 'ptr' '<' type '>'
-generic_type    = IDENTIFIER '<' type_arg { ',' type_arg } '>'
-qualified_type  = '~[' qual_item { ',' qual_item } ']' type | type '?' | type '!' | type '?' '!'
-tuple_type      = '(' type ',' type { ',' type } ')'
-
-statement       = var_decl | func_decl | assign_stmt | return_stmt
-                | if_stmt | switch_stmt | while_stmt | for_stmt
-                | do_while_stmt | break_stmt | continue_stmt
-                | expr_stmt | await_stmt
-assign_stmt     = expr '=' expr | expr op_assign expr
-op_assign       = '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>='
-return_stmt     = 'return' [ expr { ',' expr } ]
-break_stmt      = 'break'
-continue_stmt   = 'continue'
-expr_stmt       = expr
-await_stmt      = 'await' expr
-
-if_stmt         = 'if' expr block { 'else' 'if' expr block } [ 'else' block ]
-while_stmt      = 'while' expr block
-do_while_stmt   = 'do' block 'while' expr
-for_stmt        = 'for' IDENTIFIER type 'in' range_iter [ '..' expr ] block
-                | 'for' IDENTIFIER type 'in' expr block
-                | 'for' IDENTIFIER type ',' IDENTIFIER type 'in' expr block
-range_iter      = expr range_op expr
-block           = '{' { statement } '}'
-switch_stmt     = 'switch' expr '{' { case_clause } [ default_clause ] '}'
-case_clause     = 'case' case_value { ',' case_value } ':' block
-default_clause  = 'default' ':' block
-case_value      = literal | IDENTIFIER '.' IDENTIFIER | literal range_op literal
-
-expr            = literal | IDENTIFIER | call_expr | index_expr | field_expr
-                | module_expr | unary_expr | binary_expr | func_literal | struct_literal
-                | array_literal | tuple_expr | pipeline_expr | compose_expr
-                | fallback_expr | generic_expr | range_expr | await_expr | '(' expr ')'
-call_expr       = expr '(' [ arg_list ] ')'
-arg_list        = expr { ',' expr }
-index_expr      = expr '[' expr ']' | expr '[' [ expr ] range_op [ expr ] ']'
-range_expr      = expr range_op expr
-range_op        = '..' | '..<'
-field_expr      = expr '.' IDENTIFIER
-module_expr     = IDENTIFIER ':' IDENTIFIER | IDENTIFIER ':' call_expr | IDENTIFIER ':' generic_expr
-unary_expr      = ( '-' | 'not' | '~' ) expr
-binary_expr     = expr binary_op expr
-binary_op       = '+' | '-' | '*' | '/' | '%' | '==' | '!=' | '<' | '<='
-                | '>' | '>=' | 'and' | 'or' | '&' | '|' | '^' | '<<' | '>>'
-func_literal    = param_group { param_group } '->' type block
-                | param_group '->' func_type block
-struct_literal  = IDENTIFIER [ generic_args ] '{' { field_init } '}'
-field_init      = IDENTIFIER '=' expr
-array_literal   = '[' [ expr { ',' expr } ] ']'
-tuple_expr      = '(' expr ',' expr { ',' expr } ')'
-pipeline_expr   = expr { '|>' expr }
-compose_expr    = expr '+>' expr
-fallback_expr   = expr '??' expr | expr '??' block
-generic_expr    = IDENTIFIER generic_args '(' [ arg_list ] ')'
-await_expr      = 'await' expr
+join_stmt       = 'join' IDENTIFIER { ',' IDENTIFIER }
+                  (* waits for all named spawn results to be ready *)
 ```
+
+### Fire and Forget (`_`)
+
+Use `_` when you don't need the return value. The spawned thread runs independently and is never joined:
+
+```lucid
+-- Logging, cleanup, background tasks
+spawn _ = logToFile("application started")
+spawn _ = garbageCollect()
+spawn _ = sendAnalytics()
+
+-- Main thread continues immediately
+io:printl("main thread continues while background tasks run")
+```
+
+**When the main thread exits**, all unjoined threads are terminated immediately. This is fine for fire-and-forget tasks that are meant to be background work.
+
+### Fire and Join (named variable)
+
+Use a named variable when you need the result. The spawned thread runs in parallel while you continue working:
+
+```lucid
+-- Single return value
+let result int
+spawn result = computeHeavyData()
+
+-- Do other work while computeHeavyData runs
+let n int = 1 + 2
+for i int in 0..1000 {
+    n = n + i
+}
+
+-- Block until result is ready
+join result
+io:printl("Result: " + stringFromInt(result))
+```
+
+**Multiple return values** follow the same pattern — one variable per returned value, in the same order as the function's return type:
+
+```lucid
+const parseData (s string) -> (int, bool) = { ... }
+
+let value int
+let ok bool
+spawn value, ok = parseData("42")
+
+-- ... other work ...
+
+join value, ok
+if ok { io:printl(stringFromInt(value)) }
+```
+
+### Mixing Discarded and Kept Results
+
+When a function returns multiple values, you can keep some and discard others:
+
+```lucid
+const processUser (data string) -> (User, AuditLog, bool) = { ... }
+
+-- Only need the User, discard the rest
+let user User
+spawn user, _, _ = processUser(rawData)
+join user
+
+-- Or keep everything
+let user User
+let log AuditLog
+let valid bool
+spawn user, log, valid = processUser(rawData)
+join user, log, valid
+```
+
+### The Discard Pattern (`_`) vs Named Variables
+
+| Syntax           | Meaning             | Join Required? | Result Available? |
+| ---------------- | ------------------- | -------------- | ----------------- |
+| `spawn _ = fn()` | Fire and forget     | ❌ No           | ❌ No              |
+| `spawn x = fn()` | Fire and join later | ✅ Yes          | ✅ Yes             |
+
+```lucid
+-- The discard pattern is explicit about intent
+spawn _ = backgroundTask()    -- Clearly: I don't care about the result
+
+-- Named variables signal: I'll need this later
+spawn result = heavyWork()    -- Clearly: I'll join this eventually
+```
+
+### Compiler Enforcement
+
+The compiler **warns** about named spawns that are never joined:
+
+```lucid
+const process () -> int = {
+    spawn result = heavyWork()   -- result is never joined
+    return 0
+}
+-- COMPILER WARNING: spawned result 'result' is never joined
+```
+
+To silence the warning, either join the result or explicitly discard it:
+
+```lucid
+const process () -> int = {
+    -- Option 1: Join before returning
+    let result int
+    spawn result = heavyWork()
+    join result
+    return result
+    
+    -- Option 2: Discard intentionally
+    spawn _ = heavyWork()
+    return 0
+}
+```
+
+### Shared State
+
+Every variable and function declared before the `spawn` call is shared between threads. This is how threads communicate:
+
+```lucid
+let sharedCounter int = 0
+
+spawn _ = {
+    -- This runs on a separate thread
+    sharedCounter = sharedCounter + 1
+}
+
+let result int
+spawn result = {
+    -- Another thread, also can access sharedCounter
+    sharedCounter = sharedCounter + 1
+    return sharedCounter
+}
+
+join result
+```
+
+> [!WARNING]
+> Concurrent writes to shared variables are not automatically synchronized.
+> Use shared state carefully — design the shared struct so each thread owns
+> distinct fields, or add explicit synchronization through the standard
+> library.
+
+### Nesting
+
+A spawned thread can itself launch further `spawn` calls:
+
+```lucid
+const processData () -> int = {
+    -- inside a thread, can spawn more threads
+    spawn _ = logToFile("subtask started")
+    let subResult int
+    spawn subResult = computeSubtask()
+    join subResult
+    return subResult
+}
+
+let result int
+spawn result = processData()
+join result
+```
+
+### Spawn and the Visual Graph
+
+```
+[@[export, aot] const main (args [_]string)]
+    │
+    [spawn | _ | backgroundTask]────┐  ← Dotted line: no join
+    │                               │
+    [let result int]                │
+    │                               │
+    [spawn | result | heavyWork]──┐ │  ← Solid line: will be joined
+    │                             │ │
+    ...continue execution         │ │
+    │                             │ │
+    [join | result] ──────────────┘ │  ← Merge point
+    │                               │
+    [end] ──────────────────────────┘  ← Unjoined threads terminate
+```
+
+### Performance Guidelines
+
+| Use Case                | Syntax                  | Count     | Reasoning                |
+| ----------------------- | ----------------------- | --------- | ------------------------ |
+| Fire and forget logging | `spawn _ = log()`       | Dozens    | No need to wait          |
+| Background cleanup      | `spawn _ = gc()`        | Few       | Runs independently       |
+| CPU-bound computation   | `spawn result = work()` | CPU cores | Need result, use threads |
+| Many independent tasks  | `spawn _ = task()`      | Dozens    | Threads have overhead    |
+
+### Complete Example
+
+```lucid
+use std.io as io
+use std.http as http
+
+-- Parallel processing with results
+const processImages (images [*]Image) -> [*]ProcessedImage = {
+    let results [*]ProcessedImage = []
+    
+    -- Spawn a thread for each image
+    for img Image in images {
+        let processed ProcessedImage
+        spawn processed = imageProcessor(img)
+        arr:append<ProcessedImage>(results)(processed)
+    }
+    
+    -- Wait for all images to be processed
+    let output [*]ProcessedImage = []
+    for processed ProcessedImage in results {
+        join processed
+        arr:append<ProcessedImage>(output)(processed)
+    }
+    
+    return output
+}
+
+-- Mixed: fire-and-forget + joinable
+@[export, aot] const main () -> int = {
+    -- Fire and forget: analytics and logging
+    spawn _ = sendAnalytics("app_started")
+    spawn _ = logToFile("main started")
+    
+    -- Fire and join: parallel computations
+    let userData string
+    let productData string
+    
+    spawn userData = fetchUserData()
+    spawn productData = fetchProductData()
+    
+    -- Do some work while fetches run
+    let config Config = loadConfig()
+    
+    -- Wait for both fetches
+    join userData, productData
+    
+    -- Process results
+    const user User = parseUser(userData)
+    const products [*]Product = parseProducts(productData)
+    
+    io:printl("User: " + user.name)
+    io:printl("Products loaded: " + stringFromInt(len(products)))
+    
+    -- Fire and forget: final cleanup
+    spawn _ = logToFile("main completed")
+    
+    return 0
+}
+```
+
+### Spawn vs Async — Quick Reference
+
+| Aspect          | `spawn`                  | `async`                     |
+| --------------- | ------------------------ | --------------------------- |
+| Model           | Parallelism (OS threads) | Concurrency (event loop)    |
+| Scheduling      | Preemptive               | Cooperative                 |
+| Overhead        | ~1MB stack               | ~few KB                     |
+| Capacity        | CPU cores (dozens)       | 10,000+                     |
+| Best for        | CPU work, blocking I/O   | I/O, network, file I/O      |
+| Join with       | `join`                   | `await`                     |
+| Fire and forget | `spawn _ =`              | N/A (must await or warning) |
+| Data sharing    | Needs locks              | Safe at yield points        |
