@@ -138,7 +138,12 @@ enum class TokenType {
     MUL_ASSIGN,     // *=
     DIV_ASSIGN,     // /=
     MOD_ASSIGN,     // %=
-    POW_ASSIGN,     // ^=
+    POW_ASSIGN,     // **=
+    BIT_AND_ASSIGN, // &=
+    BIT_OR_ASSIGN,  // |=
+    BIT_XOR_ASSIGN, // ^=
+    SHL_ASSIGN,     // <<=
+    SHR_ASSIGN,     // >>=
 
     // ─── Operators: Arithmetic ──────────────────────────────────────────
     PLUS,    // +
@@ -146,7 +151,15 @@ enum class TokenType {
     MUL,     // *
     DIV,     // /
     MOD,     // %
-    POW,     // ^
+    POW,     // **
+
+    // ─── Operators: Bitwise ─────────────────────────────────────────────
+    BIT_AND,    // &       (bitwise AND)
+    BIT_OR,     // |       (bitwise OR)
+    BIT_XOR,    // ^       (bitwise XOR)
+    BIT_NOT,    // ~       (bitwise NOT, unary)
+    SHL,        // <<      (shift left)
+    SHR,        // >>      (shift right)
 
     // ─── Operators: Comparison ──────────────────────────────────────────
     EQUAL_EQUAL,    // ==    (value equality)
@@ -155,17 +168,6 @@ enum class TokenType {
     LESS_EQUAL,     // <=
     GREATER,        // >     (also used for generics: <T>)
     GREATER_EQUAL,  // >=
-
-    // ─── Operators: Bitwise ─────────────────────────────────────────────
-    BIT_AND,    // &&      (bitwise AND)
-    BIT_OR,     // ||      (bitwise OR)
-    BIT_XOR,    // ~^      (bitwise XOR)
-    BIT_NOT,    // ~~      (bitwise NOT, unary)
-    SHL,        // <<      (shift left)
-    SHR,        // >>      (shift right)
-
-    // ─── Operators: Logical (already keywords) ────────────────────────
-    // AND, OR, NOT are keywords above
 
     // ─── Operators: Special ─────────────────────────────────────────────
     ARROW,          // ->      (function return type)
@@ -194,7 +196,7 @@ enum class TokenType {
     RBRACKET,   // ]
 
     // ─── Special Symbols ────────────────────────────────────────────────
-    AMPERSAND,  // &       (reference type: &T)
+    AMPERSAND,  // &       (reference type: &T) -- same as BIT_AND but contextual
     UNDERSCORE, // _       (discard pattern: spawn _ = function())
 
     // ─── Literals ──────────────────────────────────────────────────────
@@ -232,18 +234,23 @@ inline bool Token::is_operator() const {
         case TokenType::DIV_ASSIGN:
         case TokenType::MOD_ASSIGN:
         case TokenType::POW_ASSIGN:
-        case TokenType::EQUAL_EQUAL:
-        case TokenType::NOT_EQUAL:
-        case TokenType::LESS:
-        case TokenType::LESS_EQUAL:
-        case TokenType::GREATER:
-        case TokenType::GREATER_EQUAL:
+        case TokenType::BIT_AND_ASSIGN:
+        case TokenType::BIT_OR_ASSIGN:
+        case TokenType::BIT_XOR_ASSIGN:
+        case TokenType::SHL_ASSIGN:
+        case TokenType::SHR_ASSIGN:
         case TokenType::BIT_AND:
         case TokenType::BIT_OR:
         case TokenType::BIT_XOR:
         case TokenType::BIT_NOT:
         case TokenType::SHL:
         case TokenType::SHR:
+        case TokenType::EQUAL_EQUAL:
+        case TokenType::NOT_EQUAL:
+        case TokenType::LESS:
+        case TokenType::LESS_EQUAL:
+        case TokenType::GREATER:
+        case TokenType::GREATER_EQUAL:
         case TokenType::ARROW:
         case TokenType::COMPOSE:
         case TokenType::PIPELINE:
@@ -340,17 +347,6 @@ inline bool Token::is_keyword() const {
     }
 }
 
-inline std::string Token::to_string() const {
-    std::string result = "Token(";
-    result += std::to_string(static_cast<int>(type));
-    result += ", '" + value + "', ";
-    result += std::to_string(line);
-    result += ":";
-    result += std::to_string(column);
-    result += ")";
-    return result;
-}
-
 // ─── Token Type Name Mapping ──────────────────────────────────────────
 
 inline std::string token_type_name(TokenType type) {
@@ -419,25 +415,30 @@ inline std::string token_type_name(TokenType type) {
         {TokenType::MUL_ASSIGN, "*="},
         {TokenType::DIV_ASSIGN, "/="},
         {TokenType::MOD_ASSIGN, "%="},
-        {TokenType::POW_ASSIGN, "^="},
+        {TokenType::POW_ASSIGN, "**="},
+        {TokenType::BIT_AND_ASSIGN, "&="},
+        {TokenType::BIT_OR_ASSIGN, "|="},
+        {TokenType::BIT_XOR_ASSIGN, "^="},
+        {TokenType::SHL_ASSIGN, "<<="},
+        {TokenType::SHR_ASSIGN, ">>="},
         {TokenType::PLUS, "+"},
         {TokenType::MINUS, "-"},
         {TokenType::MUL, "*"},
         {TokenType::DIV, "/"},
         {TokenType::MOD, "%"},
-        {TokenType::POW, "^"},
+        {TokenType::POW, "**"},
+        {TokenType::BIT_AND, "&"},
+        {TokenType::BIT_OR, "|"},
+        {TokenType::BIT_XOR, "^"},
+        {TokenType::BIT_NOT, "~"},
+        {TokenType::SHL, "<<"},
+        {TokenType::SHR, ">>"},
         {TokenType::EQUAL_EQUAL, "=="},
         {TokenType::NOT_EQUAL, "!="},
         {TokenType::LESS, "<"},
         {TokenType::LESS_EQUAL, "<="},
         {TokenType::GREATER, ">"},
         {TokenType::GREATER_EQUAL, ">="},
-        {TokenType::BIT_AND, "&&"},
-        {TokenType::BIT_OR, "||"},
-        {TokenType::BIT_XOR, "~^"},
-        {TokenType::BIT_NOT, "~~"},
-        {TokenType::SHL, "<<"},
-        {TokenType::SHR, ">>"},
         {TokenType::ARROW, "->"},
         {TokenType::COMPOSE, "+>"},
         {TokenType::PIPELINE, "|>"},
@@ -480,6 +481,17 @@ inline std::string token_type_name(TokenType type) {
     return "UNKNOWN_TOKEN";
 }
 
+inline std::string Token::to_string() const {
+    std::string result = "Token(";
+    result += token_type_name(type);
+    result += ", '" + value + "', ";
+    result += std::to_string(line);
+    result += ":";
+    result += std::to_string(column);
+    result += ")";
+    return result;
+}
+
 // ─── Keyword Check ─────────────────────────────────────────────────────
 
 inline bool is_keyword(const std::string& str) {
@@ -501,4 +513,69 @@ inline bool is_keyword(const std::string& str) {
         "string", "char"
     };
     return keywords.find(str) != keywords.end();
+}
+
+// ─── Lexer Helper: Check if string is keyword ────────────────────────
+
+inline TokenType keyword_to_type(const std::string& str) {
+    static const std::unordered_map<std::string, TokenType> keyword_map = {
+        {"use", TokenType::USE},
+        {"as", TokenType::AS},
+        {"struct", TokenType::STRUCT},
+        {"enum", TokenType::ENUM},
+        {"trait", TokenType::TRAIT},
+        {"let", TokenType::LET},
+        {"const", TokenType::CONST},
+        {"if", TokenType::IF},
+        {"else", TokenType::ELSE},
+        {"switch", TokenType::SWITCH},
+        {"case", TokenType::CASE},
+        {"default", TokenType::DEFAULT},
+        {"while", TokenType::WHILE},
+        {"for", TokenType::FOR},
+        {"in", TokenType::IN},
+        {"do", TokenType::DO},
+        {"return", TokenType::RETURN},
+        {"break", TokenType::BREAK},
+        {"continue", TokenType::CONTINUE},
+        {"spawn", TokenType::SPAWN},
+        {"join", TokenType::JOIN},
+        {"async", TokenType::ASYNC},
+        {"await", TokenType::AWAIT},
+        {"and", TokenType::AND},
+        {"or", TokenType::OR},
+        {"not", TokenType::NOT},
+        {"true", TokenType::TRUE},
+        {"false", TokenType::FALSE},
+        {"nil", TokenType::NIL},
+        {"err", TokenType::ERR},
+        {"bool", TokenType::TYPE_BOOL},
+        {"int8", TokenType::TYPE_INT8},
+        {"int16", TokenType::TYPE_INT16},
+        {"int32", TokenType::TYPE_INT32},
+        {"int64", TokenType::TYPE_INT64},
+        {"uint8", TokenType::TYPE_UINT8},
+        {"uint16", TokenType::TYPE_UINT16},
+        {"uint32", TokenType::TYPE_UINT32},
+        {"uint64", TokenType::TYPE_UINT64},
+        {"byte", TokenType::TYPE_BYTE},
+        {"short", TokenType::TYPE_SHORT},
+        {"int", TokenType::TYPE_INT},
+        {"long", TokenType::TYPE_LONG},
+        {"ubyte", TokenType::TYPE_UBYTE},
+        {"ushort", TokenType::TYPE_USHORT},
+        {"uint", TokenType::TYPE_UINT},
+        {"ulong", TokenType::TYPE_ULONG},
+        {"float", TokenType::TYPE_FLOAT},
+        {"double", TokenType::TYPE_DOUBLE},
+        {"decimal", TokenType::TYPE_DECIMAL},
+        {"string", TokenType::TYPE_STRING},
+        {"char", TokenType::TYPE_CHAR}
+    };
+    
+    auto it = keyword_map.find(str);
+    if (it != keyword_map.end()) {
+        return it->second;
+    }
+    return TokenType::IDENTIFIER;
 }
