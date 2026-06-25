@@ -13,7 +13,7 @@
 // =============================================================================
 
 // Helper to check if debug is enabled for a component
-namespace LucDebug {
+namespace Debug {
     inline bool isDebugEnabled(const char* component) {
         #ifdef DEBUG_MASTER
             return true;

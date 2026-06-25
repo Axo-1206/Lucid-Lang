@@ -6,7 +6,7 @@
 #include "Tokens.hpp"
 #include <string>
 
-namespace LucDebug {
+namespace Debug {
     // Convert ASTKind enum to human-readable string
     inline std::string kindToString(ASTKind kind) {
         switch (kind) {

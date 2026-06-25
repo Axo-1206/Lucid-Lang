@@ -4,12 +4,14 @@ CompileFlags:
     - "--driver-mode=cl"
     - "/std:c++17"
     - "/IC:/Users/TaiAx/vcpkg/installed/x64-windows/include"
+    - "-I${CWD}/src"
+    - "-I${CWD}/src/debug"
     - "-fms-compatibility"
     - "-fms-extensions"
     - "-fdelayed-template-parsing"
 
 Index:
-	Background: Build
+  Background: Build
 
 Diagnostics:
   UnusedIncludes: None

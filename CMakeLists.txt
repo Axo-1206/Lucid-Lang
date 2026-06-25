@@ -28,130 +28,12 @@ message(STATUS "LLVM include dirs: ${LLVM_INCLUDE_DIRS}")
 # Standard LLVM setup
 add_definitions(${LLVM_DEFINITIONS})
 
-# Add source files
-add_executable(luc-comp 
-    src/main.cpp 
-    src/lexer/Lexer.cpp
-    src/diagnostics/diagnostic.cpp
-    src/diagnostics/DiagnosticMessages.cpp
+# Automatically gather all .cpp files within src/ and its nested directories
+file(GLOB_RECURSE SOURCES "src/*.cpp")
 
-    src/debug/ASTDumper.cpp
-    src/registry/QualifierRegistry.cpp
-    src/registry/AttributeRegistry.cpp
-    src/registry/IntrinsicRegistry.cpp
-    src/ast/support/StringPool.cpp
+# Create the executable using the automated source file list
+add_executable(lucid-comp ${SOURCES})
 
-    # Parser
-
-    src/parser/Parser.cpp
-    src/parser/lookahead/ParserLookahead.cpp
-
-    src/parser/generic/GenericArgParser.cpp
-    src/parser/generic/GenericParamParser.cpp
-    src/parser/common/ParserHelpers.cpp
-    src/parser/common/ParserAttributes.cpp
-
-    src/parser/decl/topLevel/PackageParser.cpp
-    src/parser/decl/topLevel/UseParser.cpp
-    src/parser/decl/TraitParser.cpp
-    src/parser/decl/EnumParser.cpp
-    src/parser/decl/FromParser.cpp
-    src/parser/decl/ImplParser.cpp
-    src/parser/decl/TypeAliasParser.cpp
-    src/parser/decl/StructParser.cpp
-    src/parser/decl/FuncParser.cpp
-    src/parser/decl/VarParser.cpp
-
-    src/parser/type/PrimitiveParser.cpp
-    src/parser/type/NamedParser.cpp
-    src/parser/type/GenericParamTypeParser.cpp
-    src/parser/type/ArrayParser.cpp
-    src/parser/type/RefParser.cpp
-    src/parser/type/PtrParser.cpp
-    src/parser/type/FuncTypeParser.cpp
-
-    src/parser/stmt/BlockParser.cpp
-    src/parser/stmt/SwitchParser.cpp
-    src/parser/stmt/LoopParser.cpp
-    src/parser/stmt/FlowControlParser.cpp
-    src/parser/stmt/LocalDeclParser.cpp
-
-    src/parser/expr/literal/LiteralParser.cpp
-    src/parser/expr/operator/BinaryParser.cpp
-    src/parser/expr/operator/PipelineParser.cpp
-    src/parser/expr/operator/ComposeParser.cpp
-    
-    src/parser/expr/special/IntrinsicParser.cpp
-    src/parser/expr/special/RangeParser.cpp
-    src/parser/expr/special/IfExprParser.cpp
-    src/parser/expr/special/AwaitParser.cpp
-    src/parser/expr/special/ResolveParser.cpp
-    
-    src/parser/expr/match/MatchParser.cpp
-    src/parser/expr/match/PatternParser.cpp
-    src/parser/expr/other/CallParser.cpp
-    src/parser/expr/other/IndexParser.cpp
-    src/parser/expr/other/SliceParser.cpp
-    src/parser/Dispatcher.cpp
-
-    # Semantic Analyzer
-    src/semantic/SemanticAnalyzer.cpp
-    src/semantic/Annotator.cpp
-    src/semantic/scope/ScopeStack.cpp
-    src/semantic/collector/DeclarationCollector.cpp
-    src/semantic/resolver/TypeResolver.cpp
-    src/semantic/checker/TypeChecker.cpp
-    
-    src/semantic/checker/decl/DeclChecker.cpp
-    src/semantic/checker/decl/DeclUtils.cpp
-    src/semantic/checker/decl/AttributeChecker.cpp
-    src/semantic/checker/decl/ExprConstChecker.cpp
-    src/semantic/checker/decl/VarChecker.cpp
-    src/semantic/checker/decl/FuncChecker.cpp
-    src/semantic/checker/decl/StructChecker.cpp
-    src/semantic/checker/decl/EnumChecker.cpp
-    src/semantic/checker/decl/TraitChecker.cpp
-    src/semantic/checker/decl/ImplChecker.cpp
-    src/semantic/checker/decl/FromChecker.cpp
-    src/semantic/checker/decl/TypeAliasChecker.cpp
-    
-    src/semantic/checker/expr/ExprChecker.cpp
-    src/semantic/checker/expr/ExprUtils.cpp
-    src/semantic/checker/expr/LiteralChecker.cpp
-    src/semantic/checker/expr/IdentifierChecker.cpp
-    src/semantic/checker/expr/FieldAccessChecker.cpp
-    src/semantic/checker/expr/CallChecker.cpp
-    src/semantic/checker/expr/IndexSliceChecker.cpp
-    src/semantic/checker/expr/UnaryChecker.cpp
-    src/semantic/checker/expr/BinaryChecker.cpp
-    src/semantic/checker/expr/AssignChecker.cpp
-    src/semantic/checker/expr/NullableChecker.cpp
-    src/semantic/checker/expr/FunctionChecker.cpp
-    src/semantic/checker/expr/AwaitChecker.cpp
-    src/semantic/checker/expr/RangeChecker.cpp
-    src/semantic/checker/expr/IsChecker.cpp
-
-    src/semantic/checker/stmt/StmtChecker.cpp
-    src/semantic/checker/stmt/StmtUtils.cpp
-    src/semantic/checker/stmt/BlockChecker.cpp
-    src/semantic/checker/stmt/DeclStmtChecker.cpp
-    src/semantic/checker/stmt/ExprStmtChecker.cpp
-    src/semantic/checker/stmt/IfChecker.cpp
-    src/semantic/checker/stmt/SwitchChecker.cpp
-    src/semantic/checker/stmt/ForChecker.cpp
-    src/semantic/checker/stmt/WhileChecker.cpp
-    src/semantic/checker/stmt/ReturnChecker.cpp
-    src/semantic/checker/stmt/JumpChecker.cpp
-    src/semantic/checker/stmt/MultiVarChecker.cpp
-    
-
-
-    # src/codegen/CodeGen.cpp
-    # src/codegen/CodeGenExpr.cpp
-    # src/codegen/CodeGenDecl.cpp
-    # src/codegen/CodeGenStmt.cpp
-    # src/codegen/luc_runtime.c
-)
 
 # =============================================================================
 # DEBUG BUILD COMMANDS FOR LucCompiler
@@ -160,46 +42,46 @@ add_executable(luc-comp
 # BASIC USAGE:
 #   cmake -B build                                          # Configure with defaults (debug OFF)
 #   cmake --build build                                     # Build the project
-#   .\build\Debug\luc-comp.exe tests\attribute_test.luc    # Run compiler
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid    # Run compiler
 #
 # =============================================================================
 # DEBUG FLAGS (enable specific components)
 # =============================================================================
 #
 # Enable ALL debug logging (master switch):
-#   cmake -B build -DLUC_DEBUG_MASTER=ON
+#   cmake -B build -DDEBUG_MASTER=ON
 #   cmake --build build
-#   .\build\Debug\luc-comp.exe tests\attribute_test.luc
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
 #
 # Enable ONLY parser debugging:
-#   cmake -B build -DLUC_DEBUG_PARSER=ON
+#   cmake -B build -DDEBUG_PARSER=ON
 #   cmake --build build
-#   .\build\Debug\luc-comp.exe tests\attribute_test.luc
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
 #
 # Enable ONLY semantic analysis debugging:
-#   cmake -B build -DLUC_DEBUG_SEMANTIC=ON
+#   cmake -B build -DDEBUG_SEMANTIC=ON
 #   cmake --build build
-#   .\build\Debug\luc-comp.exe tests\attribute_test.luc
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
 #
 # Enable ONLY type parsing debugging:
-#   cmake -B build -DLUC_DEBUG_TYPE=ON
+#   cmake -B build -DDEBUG_TYPE=ON
 #   cmake --build build
-#   .\build\Debug\luc-comp.exe tests\attribute_test.luc
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
 #
 # Enable ONLY lexer debugging:
-#   cmake -B build -DLUC_DEBUG_LEXER=ON
+#   cmake -B build -DDEBUG_LEXER=ON
 #   cmake --build build
-#   .\build\Debug\luc-comp.exe tests\attribute_test.luc
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
 #
 # Enable ONLY codegen debugging (when implemented):
-#   cmake -B build -DLUC_DEBUG_CODEGEN=ON
+#   cmake -B build -DDEBUG_CODEGEN=ON
 #   cmake --build build
-#   .\build\Debug\luc-comp.exe tests\attribute_test.luc
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
 #
 # Enable multiple components (parser + semantic):
-#   cmake -B build -DLUC_DEBUG_PARSER=ON -DLUC_DEBUG_SEMANTIC=ON
+#   cmake -B build -DDEBUG_PARSER=ON -DDEBUG_SEMANTIC=ON
 #   cmake --build build
-#   .\build\Debug\luc-comp.exe tests\attribute_test.luc
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
 #
 # =============================================================================
 # VERBOSITY LEVELS (controls output detail)
@@ -208,34 +90,34 @@ add_executable(luc-comp
 # Available levels: MINIMAL, NORMAL (default), VERBOSE, EXTREME
 #
 # Normal verbosity (default):
-#   cmake -B build -DLUC_DEBUG_PARSER=ON -DLUC_DEBUG_VERBOSITY=NORMAL
+#   cmake -B build -DDEBUG_PARSER=ON -DDEBUG_VERBOSITY=NORMAL
 #   cmake --build build
-#   .\build\Debug\luc-comp.exe tests\attribute_test.luc
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
 #
 # Verbose output (more details):
-#   cmake -B build -DLUC_DEBUG_PARSER=ON -DLUC_DEBUG_VERBOSITY=VERBOSE
+#   cmake -B build -DDEBUG_PARSER=ON -DDEBUG_VERBOSITY=VERBOSE
 #   cmake --build build
-#   .\build\Debug\luc-comp.exe tests\attribute_test.luc
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
 #
 # Extreme verbosity (everything, including debug helpers):
-#   cmake -B build -DLUC_DEBUG_PARSER=ON -DLUC_DEBUG_VERBOSITY=EXTREME
+#   cmake -B build -DDEBUG_PARSER=ON -DDEBUG_VERBOSITY=EXTREME
 #   cmake --build build
-#   .\build\Debug\luc-comp.exe tests\attribute_test.luc
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
 #
 # =============================================================================
 # OUTPUT TO FILE (instead of console)
 # =============================================================================
 #
 # Log to default file (debug.log):
-#   cmake -B build -DLUC_DEBUG_PARSER=ON -DLUC_DEBUG_TO_FILE=ON
+#   cmake -B build -DDEBUG_PARSER=ON -DDEBUG_TO_FILE=ON
 #   cmake --build build
-#   .\build\Debug\luc-comp.exe tests\attribute_test.luc
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
 #   type debug.log  # View the log
 #
 # Log to custom file path:
-#   cmake -B build -DLUC_DEBUG_PARSER=ON -DLUC_DEBUG_TO_FILE=ON -DLUC_DEBUG_FILE_PATH="parser_output.log"
+#   cmake -B build -DDEBUG_PARSER=ON -DDEBUG_TO_FILE=ON -DDEBUG_FILE_PATH="parser_output.log"
 #   cmake --build build
-#   .\build\Debug\luc-comp.exe tests\attribute_test.luc
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
 #   type parser_output.log
 #
 # =============================================================================
@@ -243,35 +125,35 @@ add_executable(luc-comp
 # =============================================================================
 #
 # Scenario 1: Debug parser with normal verbosity (most common for parser issues):
-#   cmake -B build -DLUC_DEBUG_PARSER=ON -DLUC_DEBUG_VERBOSITY=NORMAL
+#   cmake -B build -DDEBUG_PARSER=ON -DDEBUG_VERBOSITY=NORMAL
 #   cmake --build build
-#   .\build\Debug\luc-comp.exe tests\attribute_test.luc
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
 #
 # Scenario 2: Debug parser with verbose output (for complex parsing issues):
-#   cmake -B build -DLUC_DEBUG_PARSER=ON -DLUC_DEBUG_VERBOSITY=VERBOSE
+#   cmake -B build -DDEBUG_PARSER=ON -DDEBUG_VERBOSITY=VERBOSE
 #   cmake --build build
-#   .\build\Debug\luc-comp.exe tests\attribute_test.luc
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
 #
 # Scenario 3: Debug type parsing and save to file:
-#   cmake -B build -DLUC_DEBUG_TYPE=ON -DLUC_DEBUG_TO_FILE=ON -DLUC_DEBUG_FILE_PATH="type_debug.log"
+#   cmake -B build -DDEBUG_TYPE=ON -DDEBUG_TO_FILE=ON -DDEBUG_FILE_PATH="type_debug.log"
 #   cmake --build build
-#   .\build\Debug\luc-comp.exe tests\attribute_test.luc
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
 #   notepad type_debug.log
 #
 # Scenario 4: Debug semantic analysis with verbose output:
-#   cmake -B build -DLUC_DEBUG_SEMANTIC=ON -DLUC_DEBUG_VERBOSITY=VERBOSE
+#   cmake -B build -DDEBUG_SEMANTIC=ON -DDEBUG_VERBOSITY=VERBOSE
 #   cmake --build build
-#   .\build\Debug\luc-comp.exe tests\attribute_test.luc
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
 #
 # Scenario 5: Debug everything (master) with normal verbosity:
-#   cmake -B build -DLUC_DEBUG_MASTER=ON
+#   cmake -B build -DDEBUG_MASTER=ON
 #   cmake --build build
-#   .\build\Debug\luc-comp.exe tests\attribute_test.luc
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
 #
 # Scenario 6: Debug everything with extreme verbosity (use for hard-to-find bugs):
-#   cmake -B build -DLUC_DEBUG_MASTER=ON -DLUC_DEBUG_VERBOSITY=EXTREME
+#   cmake -B build -DDEBUG_MASTER=ON -DDEBUG_VERBOSITY=EXTREME
 #   cmake --build build
-#   .\build\Debug\luc-comp.exe tests\attribute_test.luc 2>&1 | tee full_debug.log
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid 2>&1 | tee full_debug.log
 #
 # =============================================================================
 # CLEAN BUILD (remove cache and rebuild from scratch)
@@ -279,12 +161,12 @@ add_executable(luc-comp
 #
 # Windows:
 #   rmdir /s /q build
-#   cmake -B build -DLUC_DEBUG_PARSER=ON
+#   cmake -B build -DDEBUG_PARSER=ON
 #   cmake --build build
 #
 # Linux/Mac:
 #   rm -rf build
-#   cmake -B build -DLUC_DEBUG_PARSER=ON
+#   cmake -B build -DDEBUG_PARSER=ON
 #   cmake --build build
 #
 # =============================================================================
@@ -293,7 +175,7 @@ add_executable(luc-comp
 #
 #   cmake -B build -DCMAKE_BUILD_TYPE=Release
 #   cmake --build build --config Release
-#   .\build\Release\luc-comp.exe tests\attribute_test.luc
+#   .\build\Release\lucid-comp.exe tests\attribute_test.lucid
 #
 # =============================================================================
 # QUICK REFERENCE CARD
@@ -301,19 +183,19 @@ add_executable(luc-comp
 #
 # | Flag                          | Purpose                          | Default |
 # |-------------------------------|----------------------------------|---------|
-# | -DLUC_DEBUG_MASTER=ON         | Enable ALL debug logging         | OFF     |
-# | -DLUC_DEBUG_LEXER=ON          | Enable lexer logging             | OFF     |
-# | -LUC_DEBUG_LEXER_TOKENS=ON    | Enable lexer tokens logging      | OFF     |
-# | -DLUC_DEBUG_PARSER=ON         | Enable parser logging            | OFF     |
-# | -DLUC_DEBUG_PARSE_RESULT=ON   | Enable parse result logging      | OFF     |
-# | -DLUC_DEBUG_TYPE=ON           | Enable type parsing logging      | OFF     |
-# | -DLUC_DEBUG_SEMANTIC=ON       | Enable semantic analysis logging | OFF     |
-# | -DLUC_DEBUG_DUMP_SYMBOL=ON    | Enable symbol collection result  | OFF     |
-# | -DLUC_DEBUG_CODEGEN=ON        | Enable codegen logging           | OFF     |
-# | -DLUC_DEBUG_VERBOSITY=LEVEL   | Output detail (MINIMAL/NORMAL/   | NORMAL  |
+# | -DDEBUG_MASTER=ON         | Enable ALL debug logging         | OFF     |
+# | -DDEBUG_LEXER=ON          | Enable lexer logging             | OFF     |
+# | -DEBUG_LEXER_TOKENS=ON    | Enable lexer tokens logging      | OFF     |
+# | -DDEBUG_PARSER=ON         | Enable parser logging            | OFF     |
+# | -DDEBUG_PARSE_RESULT=ON   | Enable parse result logging      | OFF     |
+# | -DDEBUG_TYPE=ON           | Enable type parsing logging      | OFF     |
+# | -DDEBUG_SEMANTIC=ON       | Enable semantic analysis logging | OFF     |
+# | -DDEBUG_DUMP_SYMBOL=ON    | Enable symbol collection result  | OFF     |
+# | -DDEBUG_CODEGEN=ON        | Enable codegen logging           | OFF     |
+# | -DDEBUG_VERBOSITY=LEVEL   | Output detail (MINIMAL/NORMAL/   | NORMAL  |
 # |                               | VERBOSE/EXTREME)                 |         |
-# | -DLUC_DEBUG_TO_FILE=ON        | Write logs to file               | OFF     |
-# | -DLUC_DEBUG_FILE_PATH=path    | Custom log file path             | debug.log|
+# | -DDEBUG_TO_FILE=ON        | Write logs to file               | OFF     |
+# | -DDEBUG_FILE_PATH=path    | Custom log file path             | debug.log|
 # | -DCMAKE_BUILD_TYPE=Release    | Release build (no debug symbols) | Debug   |
 # | -DCMAKE_BUILD_TYPE=Debug      | Debug build (with symbols)       | Debug   |
 #
@@ -322,10 +204,10 @@ add_executable(luc-comp
 # =============================================================================
 #
 # If debug output doesn't appear:
-#   1. Verify CMake cache: cmake -B build -L | findstr LUC_DEBUG
-#   2. Clean rebuild: rmdir /s /q build && cmake -B build -DLUC_DEBUG_PARSER=ON
+#   1. Verify CMake cache: cmake -B build -L | findstr DEBUG
+#   2. Clean rebuild: rmdir /s /q build && cmake -B build -DDEBUG_PARSER=ON
 #   3. Check build type: Should be Debug (not Release)
-#   4. Verify macro is defined: Look for "LUC_DEBUG_* is DEFINED" during compilation
+#   4. Verify macro is defined: Look for "DEBUG_* is DEFINED" during compilation
 #
 # If compilation errors occur:
 #   1. Update vcpkg: cd C:/Users/TaiAx/vcpkg && git pull && .\bootstrap-vcpkg.bat
@@ -339,113 +221,113 @@ add_executable(luc-comp
 # =============================================================================
 
 # Master debug switch - enables all debug logging
-option(LUC_DEBUG_MASTER "Enable all debug logging (overrides individual flags)" OFF)
+option(DEBUG_MASTER "Enable all debug logging (overrides individual flags)" OFF)
 
-# Component-specific debug flags (only take effect if LUC_DEBUG_MASTER is OFF)
-option(LUC_DEBUG_LEXER   "Enable lexer debug logging" OFF)
-option(LUC_DEBUG_LEXER_TOKENS "Enable lexer token output logging" OFF)
-option(LUC_DEBUG_PARSER  "Enable parser debug logging" OFF)
-option(LUC_DEBUG_PARSE_RESULT "Enable parse result debug logging" OFF)
-option(LUC_DEBUG_TYPE    "Enable type parsing debug logging" OFF)
-option(LUC_DEBUG_SEMANTIC "Enable semantic analysis debug logging" OFF)
-option(LUC_DEBUG_DUMP_SYMBOL "Enable symbol table dumping after collection" OFF)
-option(LUC_DEBUG_CODEGEN "Enable code generation debug logging" OFF)
+# Component-specific debug flags (only take effect if DEBUG_MASTER is OFF)
+option(DEBUG_LEXER   "Enable lexer debug logging" OFF)
+option(DEBUG_LEXER_TOKENS "Enable lexer token output logging" OFF)
+option(DEBUG_PARSER  "Enable parser debug logging" OFF)
+option(DEBUG_PARSE_RESULT "Enable parse result debug logging" OFF)
+option(DEBUG_TYPE    "Enable type parsing debug logging" OFF)
+option(DEBUG_SEMANTIC "Enable semantic analysis debug logging" OFF)
+option(DEBUG_DUMP_SYMBOL "Enable symbol table dumping after collection" OFF)
+option(DEBUG_CODEGEN "Enable code generation debug logging" OFF)
 
 # Verbosity levels (numeric: 0=MINIMAL, 1=NORMAL, 2=VERBOSE, 3=EXTREME)
-set(LUC_DEBUG_VERBOSITY 1 CACHE STRING "Debug verbosity: 0=MINIMAL, 1=NORMAL, 2=VERBOSE, 3=EXTREME")
-set_property(CACHE LUC_DEBUG_VERBOSITY PROPERTY STRINGS 0 1 2 3)
+set(DEBUG_VERBOSITY 1 CACHE STRING "Debug verbosity: 0=MINIMAL, 1=NORMAL, 2=VERBOSE, 3=EXTREME")
+set_property(CACHE DEBUG_VERBOSITY PROPERTY STRINGS 0 1 2 3)
 
 # Option to output debug logs to file instead of stdout
-option(LUC_DEBUG_TO_FILE "Write debug logs to file instead of stdout" OFF)
-set(LUC_DEBUG_FILE_PATH "debug.log" CACHE STRING "Path to debug log file when LUC_DEBUG_TO_FILE is ON")
+option(DEBUG_TO_FILE "Write debug logs to file instead of stdout" OFF)
+set(DEBUG_FILE_PATH "debug.log" CACHE STRING "Path to debug log file when DEBUG_TO_FILE is ON")
 
 
 # Print summary of debug configuration
 message(STATUS "========================================")
 message(STATUS "Debug Configuration:")
-message(STATUS "  Master: ${LUC_DEBUG_MASTER}")
+message(STATUS "  Master: ${DEBUG_MASTER}")
 
-if(NOT LUC_DEBUG_MASTER)
-    message(STATUS "  Lexer:   ${LUC_DEBUG_LEXER}")
-    message(STATUS "  Lexer Tokens: ${LUC_DEBUG_LEXER_TOKENS}")
-    message(STATUS "  Parser:  ${LUC_DEBUG_PARSER}")
-    message(STATUS "  Parse Result: ${LUC_DEBUG_PARSE_RESULT}")
-    message(STATUS "  Type:    ${LUC_DEBUG_TYPE}")
-    message(STATUS "  Semantic: ${LUC_DEBUG_SEMANTIC}")
-    message(STATUS "  Symbol Dump: ${LUC_DEBUG_DUMP_SYMBOL}")
-    message(STATUS "  CodeGen: ${LUC_DEBUG_CODEGEN}")
+if(NOT DEBUG_MASTER)
+    message(STATUS "  Lexer:   ${DEBUG_LEXER}")
+    message(STATUS "  Lexer Tokens: ${DEBUG_LEXER_TOKENS}")
+    message(STATUS "  Parser:  ${DEBUG_PARSER}")
+    message(STATUS "  Parse Result: ${DEBUG_PARSE_RESULT}")
+    message(STATUS "  Type:    ${DEBUG_TYPE}")
+    message(STATUS "  Semantic: ${DEBUG_SEMANTIC}")
+    message(STATUS "  Symbol Dump: ${DEBUG_DUMP_SYMBOL}")
+    message(STATUS "  CodeGen: ${DEBUG_CODEGEN}")
 endif()
 
-message(STATUS "  Verbosity: ${LUC_DEBUG_VERBOSITY}")
-message(STATUS "  Log to file: ${LUC_DEBUG_TO_FILE}")
-if(LUC_DEBUG_TO_FILE)
+message(STATUS "  Verbosity: ${DEBUG_VERBOSITY}")
+message(STATUS "  Log to file: ${DEBUG_TO_FILE}")
+if(DEBUG_TO_FILE)
     message(STATUS "DEBUG LOGGING TO FILE ENABLED")
-    message(STATUS "Log file will be written to: ${LUC_DEBUG_FILE_PATH}")
+    message(STATUS "Log file will be written to: ${DEBUG_FILE_PATH}")
     message(STATUS "Note: Path is relative to where the executable runs")
-    message(STATUS "To get absolute path, use: -DLUC_DEBUG_FILE_PATH=\"C:/full/path/log.txt\"")
+    message(STATUS "To get absolute path, use: -DDEBUG_FILE_PATH=\"C:/full/path/log.txt\"")
 endif()
 message(STATUS "========================================")
 
 # Build the debug definitions string
-set(LUC_DEBUG_DEFINITIONS "")
+set(DEBUG_DEFINITIONS "")
 
-if(LUC_DEBUG_MASTER)
+if(DEBUG_MASTER)
     # Master debug enables everything
-    list(APPEND LUC_DEBUG_DEFINITIONS "LUC_DEBUG_MASTER=1")
-    list(APPEND LUC_DEBUG_DEFINITIONS "LUC_DEBUG_LEXER=1")
-    list(APPEND LUC_DEBUG_DEFINITIONS "LUC_DEBUG_LEXER_TOKENS=1")
-    list(APPEND LUC_DEBUG_DEFINITIONS "LUC_DEBUG_PARSER=1")
-    list(APPEND LUC_DEBUG_DEFINITIONS "LUC_DEBUG_PARSE_RESULT=1")
-    list(APPEND LUC_DEBUG_DEFINITIONS "LUC_DEBUG_TYPE=1")
-    list(APPEND LUC_DEBUG_DEFINITIONS "LUC_DEBUG_SEMANTIC=1")
-    list(APPEND LUC_DEBUG_DEFINITIONS "LUC_DEBUG_DUMP_SYMBOL=1")
-    list(APPEND LUC_DEBUG_DEFINITIONS "LUC_DEBUG_CODEGEN=1")
+    list(APPEND DEBUG_DEFINITIONS "DEBUG_MASTER=1")
+    list(APPEND DEBUG_DEFINITIONS "DEBUG_LEXER=1")
+    list(APPEND DEBUG_DEFINITIONS "DEBUG_LEXER_TOKENS=1")
+    list(APPEND DEBUG_DEFINITIONS "DEBUG_PARSER=1")
+    list(APPEND DEBUG_DEFINITIONS "DEBUG_PARSE_RESULT=1")
+    list(APPEND DEBUG_DEFINITIONS "DEBUG_TYPE=1")
+    list(APPEND DEBUG_DEFINITIONS "DEBUG_SEMANTIC=1")
+    list(APPEND DEBUG_DEFINITIONS "DEBUG_DUMP_SYMBOL=1")
+    list(APPEND DEBUG_DEFINITIONS "DEBUG_CODEGEN=1")
 else()
     # Individual flags
-    if(LUC_DEBUG_LEXER)
-        list(APPEND LUC_DEBUG_DEFINITIONS "LUC_DEBUG_LEXER=1")
+    if(DEBUG_LEXER)
+        list(APPEND DEBUG_DEFINITIONS "DEBUG_LEXER=1")
     endif()
-    if(LUC_DEBUG_LEXER_TOKENS)
-        list(APPEND LUC_DEBUG_DEFINITIONS "LUC_DEBUG_LEXER_TOKENS=1")
+    if(DEBUG_LEXER_TOKENS)
+        list(APPEND DEBUG_DEFINITIONS "DEBUG_LEXER_TOKENS=1")
     endif()
-    if(LUC_DEBUG_PARSER)
-        list(APPEND LUC_DEBUG_DEFINITIONS "LUC_DEBUG_PARSER=1")
+    if(DEBUG_PARSER)
+        list(APPEND DEBUG_DEFINITIONS "DEBUG_PARSER=1")
     endif()
-    if(LUC_DEBUG_PARSE_RESULT)
-        list(APPEND LUC_DEBUG_DEFINITIONS "LUC_DEBUG_PARSE_RESULT=1")
+    if(DEBUG_PARSE_RESULT)
+        list(APPEND DEBUG_DEFINITIONS "DEBUG_PARSE_RESULT=1")
     endif()
-    if(LUC_DEBUG_TYPE)
-        list(APPEND LUC_DEBUG_DEFINITIONS "LUC_DEBUG_TYPE=1")
+    if(DEBUG_TYPE)
+        list(APPEND DEBUG_DEFINITIONS "DEBUG_TYPE=1")
     endif()
-    if(LUC_DEBUG_SEMANTIC)
-        list(APPEND LUC_DEBUG_DEFINITIONS "LUC_DEBUG_SEMANTIC=1")
+    if(DEBUG_SEMANTIC)
+        list(APPEND DEBUG_DEFINITIONS "DEBUG_SEMANTIC=1")
     endif()
-    if(LUC_DEBUG_DUMP_SYMBOL)
-        list(APPEND LUC_DEBUG_DEFINITIONS "LUC_DEBUG_DUMP_SYMBOL=1")
+    if(DEBUG_DUMP_SYMBOL)
+        list(APPEND DEBUG_DEFINITIONS "DEBUG_DUMP_SYMBOL=1")
     endif()
-    if(LUC_DEBUG_CODEGEN)
-        list(APPEND LUC_DEBUG_DEFINITIONS "LUC_DEBUG_CODEGEN=1")
+    if(DEBUG_CODEGEN)
+        list(APPEND DEBUG_DEFINITIONS "DEBUG_CODEGEN=1")
     endif()
 endif()
 
 # Add verbosity level 
-list(APPEND LUC_DEBUG_DEFINITIONS "LUC_DEBUG_VERBOSITY=${LUC_DEBUG_VERBOSITY}")
+list(APPEND DEBUG_DEFINITIONS "DEBUG_VERBOSITY=${DEBUG_VERBOSITY}")
 
 # Add file logging option
-if(LUC_DEBUG_TO_FILE)
-    list(APPEND LUC_DEBUG_DEFINITIONS "LUC_DEBUG_TO_FILE=1")
-    string(REPLACE "\\" "\\\\" LUC_DEBUG_FILE_PATH_ESCAPED "${LUC_DEBUG_FILE_PATH}")
-    list(APPEND LUC_DEBUG_DEFINITIONS "LUC_DEBUG_FILE_PATH=\"${LUC_DEBUG_FILE_PATH_ESCAPED}\"")
+if(DEBUG_TO_FILE)
+    list(APPEND DEBUG_DEFINITIONS "DEBUG_TO_FILE=1")
+    string(REPLACE "\\" "\\\\" DEBUG_FILE_PATH_ESCAPED "${DEBUG_FILE_PATH}")
+    list(APPEND DEBUG_DEFINITIONS "DEBUG_FILE_PATH=\"${DEBUG_FILE_PATH_ESCAPED}\"")
 endif()
 
 # Apply definitions only if at least one debug option is enabled
-if(LUC_DEBUG_DEFINITIONS)
-    target_compile_definitions(luc-comp PRIVATE ${LUC_DEBUG_DEFINITIONS})
-    message(STATUS "Debug definitions applied: ${LUC_DEBUG_DEFINITIONS}")
+if(DEBUG_DEFINITIONS)
+    target_compile_definitions(lucid-comp PRIVATE ${DEBUG_DEFINITIONS})
+    message(STATUS "Debug definitions applied: ${DEBUG_DEFINITIONS}")
 endif()
 
-target_compile_definitions(luc-comp PRIVATE ${LLVM_DEFINITIONS})
-target_include_directories(luc-comp PRIVATE 
+target_compile_definitions(lucid-comp PRIVATE ${LLVM_DEFINITIONS})
+target_include_directories(lucid-comp PRIVATE 
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/debug"
     ${LLVM_INCLUDE_DIRS}
@@ -466,14 +348,14 @@ llvm_map_components_to_libnames(llvm_libs
 
 if(MSVC)
     # Existing flag
-    set_property(TARGET luc-comp APPEND_STRING PROPERTY LINK_FLAGS " /ignore:4199")
+    set_property(TARGET lucid-comp APPEND_STRING PROPERTY LINK_FLAGS " /ignore:4199")
     
     # Force sequential PDB writes for parallel builds
-    target_compile_options(luc-comp PRIVATE /FS)
+    target_compile_options(lucid-comp PRIVATE /FS)
     
     # Optional: Enable multi-processor compilation
-    target_compile_options(luc-comp PRIVATE /MP)
+    target_compile_options(lucid-comp PRIVATE /MP)
 endif()
 
 # Link everything
-target_link_libraries(luc-comp PRIVATE ${llvm_libs} ZLIB::ZLIB)
+target_link_libraries(lucid-comp PRIVATE ${llvm_libs} ZLIB::ZLIB)
