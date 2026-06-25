@@ -10,7 +10,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Add the specific share folder to the prefix path so find_package can see LLVMConfig.cmake
-# list(APPEND CMAKE_PREFIX_PATH "C:/Users/TaiAx/vcpkg/installed/x64-windows/share/llvm")
+# list(APPEND CMAKE_PREFIX_PATH "C:/Users/TaiAx/vcpkg/installed/x64-windows/share/llvm)
 
 # Add BOTH LLVM and ZLIB paths to the prefix path
 list(APPEND CMAKE_PREFIX_PATH 
@@ -33,7 +33,6 @@ file(GLOB_RECURSE SOURCES "src/*.cpp")
 
 # Create the executable using the automated source file list
 add_executable(lucid-comp ${SOURCES})
-
 
 # =============================================================================
 # DEBUG BUILD COMMANDS FOR LucCompiler
@@ -73,6 +72,11 @@ add_executable(lucid-comp ${SOURCES})
 #   cmake --build build
 #   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
 #
+# Enable ONLY interpreter debugging:
+#   cmake -B build -DDEBUG_INTERPRETER=ON
+#   cmake --build build
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
+#
 # Enable ONLY codegen debugging (when implemented):
 #   cmake -B build -DDEBUG_CODEGEN=ON
 #   cmake --build build
@@ -87,20 +91,20 @@ add_executable(lucid-comp ${SOURCES})
 # VERBOSITY LEVELS (controls output detail)
 # =============================================================================
 #
-# Available levels: MINIMAL, NORMAL (default), VERBOSE, EXTREME
+# Available levels: 0=MINIMAL, 1=NORMAL (default), 2=DETAIL
+#
+# Minimal verbosity (major events only):
+#   cmake -B build -DDEBUG_PARSER=ON -DDEBUG_VERBOSITY=0
+#   cmake --build build
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
 #
 # Normal verbosity (default):
-#   cmake -B build -DDEBUG_PARSER=ON -DDEBUG_VERBOSITY=NORMAL
+#   cmake -B build -DDEBUG_PARSER=ON -DDEBUG_VERBOSITY=1
 #   cmake --build build
 #   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
 #
-# Verbose output (more details):
-#   cmake -B build -DDEBUG_PARSER=ON -DDEBUG_VERBOSITY=VERBOSE
-#   cmake --build build
-#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
-#
-# Extreme verbosity (everything, including debug helpers):
-#   cmake -B build -DDEBUG_PARSER=ON -DDEBUG_VERBOSITY=EXTREME
+# Detail verbosity (verbose trace):
+#   cmake -B build -DDEBUG_PARSER=ON -DDEBUG_VERBOSITY=2
 #   cmake --build build
 #   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
 #
@@ -125,12 +129,12 @@ add_executable(lucid-comp ${SOURCES})
 # =============================================================================
 #
 # Scenario 1: Debug parser with normal verbosity (most common for parser issues):
-#   cmake -B build -DDEBUG_PARSER=ON -DDEBUG_VERBOSITY=NORMAL
+#   cmake -B build -DDEBUG_PARSER=ON -DDEBUG_VERBOSITY=1
 #   cmake --build build
 #   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
 #
-# Scenario 2: Debug parser with verbose output (for complex parsing issues):
-#   cmake -B build -DDEBUG_PARSER=ON -DDEBUG_VERBOSITY=VERBOSE
+# Scenario 2: Debug parser with detail output (for complex parsing issues):
+#   cmake -B build -DDEBUG_PARSER=ON -DDEBUG_VERBOSITY=2
 #   cmake --build build
 #   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
 #
@@ -140,18 +144,18 @@ add_executable(lucid-comp ${SOURCES})
 #   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
 #   notepad type_debug.log
 #
-# Scenario 4: Debug semantic analysis with verbose output:
-#   cmake -B build -DDEBUG_SEMANTIC=ON -DDEBUG_VERBOSITY=VERBOSE
+# Scenario 4: Debug semantic analysis with detail output:
+#   cmake -B build -DDEBUG_SEMANTIC=ON -DDEBUG_VERBOSITY=2
 #   cmake --build build
 #   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
 #
 # Scenario 5: Debug everything (master) with normal verbosity:
-#   cmake -B build -DDEBUG_MASTER=ON
+#   cmake -B build -DDEBUG_MASTER=ON -DDEBUG_VERBOSITY=1
 #   cmake --build build
 #   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
 #
-# Scenario 6: Debug everything with extreme verbosity (use for hard-to-find bugs):
-#   cmake -B build -DDEBUG_MASTER=ON -DDEBUG_VERBOSITY=EXTREME
+# Scenario 6: Debug everything with detail verbosity (use for hard-to-find bugs):
+#   cmake -B build -DDEBUG_MASTER=ON -DDEBUG_VERBOSITY=2
 #   cmake --build build
 #   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid 2>&1 | tee full_debug.log
 #
@@ -183,19 +187,17 @@ add_executable(lucid-comp ${SOURCES})
 #
 # | Flag                          | Purpose                          | Default |
 # |-------------------------------|----------------------------------|---------|
-# | -DDEBUG_MASTER=ON         | Enable ALL debug logging         | OFF     |
-# | -DDEBUG_LEXER=ON          | Enable lexer logging             | OFF     |
-# | -DEBUG_LEXER_TOKENS=ON    | Enable lexer tokens logging      | OFF     |
-# | -DDEBUG_PARSER=ON         | Enable parser logging            | OFF     |
-# | -DDEBUG_PARSE_RESULT=ON   | Enable parse result logging      | OFF     |
-# | -DDEBUG_TYPE=ON           | Enable type parsing logging      | OFF     |
-# | -DDEBUG_SEMANTIC=ON       | Enable semantic analysis logging | OFF     |
-# | -DDEBUG_DUMP_SYMBOL=ON    | Enable symbol collection result  | OFF     |
-# | -DDEBUG_CODEGEN=ON        | Enable codegen logging           | OFF     |
-# | -DDEBUG_VERBOSITY=LEVEL   | Output detail (MINIMAL/NORMAL/   | NORMAL  |
-# |                               | VERBOSE/EXTREME)                 |         |
-# | -DDEBUG_TO_FILE=ON        | Write logs to file               | OFF     |
-# | -DDEBUG_FILE_PATH=path    | Custom log file path             | debug.log|
+# | -DDEBUG_MASTER=ON             | Enable ALL debug logging         | OFF     |
+# | -DDEBUG_LEXER=ON              | Enable lexer logging             | OFF     |
+# | -DDEBUG_PARSER=ON             | Enable parser logging            | OFF     |
+# | -DDEBUG_TYPE=ON               | Enable type parsing logging      | OFF     |
+# | -DDEBUG_SEMANTIC=ON           | Enable semantic analysis logging | OFF     |
+# | -DDEBUG_INTERPRETER=ON        | Enable interpreter logging       | OFF     |
+# | -DDEBUG_CODEGEN=ON            | Enable codegen logging           | OFF     |
+# | -DDEBUG_VERBOSITY=LEVEL       | Output detail (0=MINIMAL,        | 1       |
+# |                               | 1=NORMAL, 2=DETAIL)              |         |
+# | -DDEBUG_TO_FILE=ON            | Write logs to file               | OFF     |
+# | -DDEBUG_FILE_PATH=path        | Custom log file path             | debug.log|
 # | -DCMAKE_BUILD_TYPE=Release    | Release build (no debug symbols) | Debug   |
 # | -DCMAKE_BUILD_TYPE=Debug      | Debug build (with symbols)       | Debug   |
 #
@@ -224,23 +226,20 @@ add_executable(lucid-comp ${SOURCES})
 option(DEBUG_MASTER "Enable all debug logging (overrides individual flags)" OFF)
 
 # Component-specific debug flags (only take effect if DEBUG_MASTER is OFF)
-option(DEBUG_LEXER   "Enable lexer debug logging" OFF)
-option(DEBUG_LEXER_TOKENS "Enable lexer token output logging" OFF)
-option(DEBUG_PARSER  "Enable parser debug logging" OFF)
-option(DEBUG_PARSE_RESULT "Enable parse result debug logging" OFF)
-option(DEBUG_TYPE    "Enable type parsing debug logging" OFF)
-option(DEBUG_SEMANTIC "Enable semantic analysis debug logging" OFF)
-option(DEBUG_DUMP_SYMBOL "Enable symbol table dumping after collection" OFF)
-option(DEBUG_CODEGEN "Enable code generation debug logging" OFF)
+option(DEBUG_LEXER       "Enable lexer debug logging" OFF)
+option(DEBUG_PARSER      "Enable parser debug logging" OFF)
+option(DEBUG_TYPE        "Enable type parsing debug logging" OFF)
+option(DEBUG_SEMANTIC    "Enable semantic analysis debug logging" OFF)
+option(DEBUG_INTERPRETER "Enable interpreter debug logging" OFF)
+option(DEBUG_CODEGEN     "Enable code generation debug logging" OFF)
 
-# Verbosity levels (numeric: 0=MINIMAL, 1=NORMAL, 2=VERBOSE, 3=EXTREME)
-set(DEBUG_VERBOSITY 1 CACHE STRING "Debug verbosity: 0=MINIMAL, 1=NORMAL, 2=VERBOSE, 3=EXTREME")
-set_property(CACHE DEBUG_VERBOSITY PROPERTY STRINGS 0 1 2 3)
+# Verbosity levels (numeric: 0=MINIMAL, 1=NORMAL, 2=DETAIL)
+set(DEBUG_VERBOSITY 1 CACHE STRING "Debug verbosity: 0=MINIMAL, 1=NORMAL, 2=DETAIL")
+set_property(CACHE DEBUG_VERBOSITY PROPERTY STRINGS 0 1 2)
 
 # Option to output debug logs to file instead of stdout
 option(DEBUG_TO_FILE "Write debug logs to file instead of stdout" OFF)
 set(DEBUG_FILE_PATH "debug.log" CACHE STRING "Path to debug log file when DEBUG_TO_FILE is ON")
-
 
 # Print summary of debug configuration
 message(STATUS "========================================")
@@ -248,23 +247,18 @@ message(STATUS "Debug Configuration:")
 message(STATUS "  Master: ${DEBUG_MASTER}")
 
 if(NOT DEBUG_MASTER)
-    message(STATUS "  Lexer:   ${DEBUG_LEXER}")
-    message(STATUS "  Lexer Tokens: ${DEBUG_LEXER_TOKENS}")
-    message(STATUS "  Parser:  ${DEBUG_PARSER}")
-    message(STATUS "  Parse Result: ${DEBUG_PARSE_RESULT}")
-    message(STATUS "  Type:    ${DEBUG_TYPE}")
-    message(STATUS "  Semantic: ${DEBUG_SEMANTIC}")
-    message(STATUS "  Symbol Dump: ${DEBUG_DUMP_SYMBOL}")
-    message(STATUS "  CodeGen: ${DEBUG_CODEGEN}")
+    message(STATUS "  Lexer:       ${DEBUG_LEXER}")
+    message(STATUS "  Parser:      ${DEBUG_PARSER}")
+    message(STATUS "  Type:        ${DEBUG_TYPE}")
+    message(STATUS "  Semantic:    ${DEBUG_SEMANTIC}")
+    message(STATUS "  Interpreter: ${DEBUG_INTERPRETER}")
+    message(STATUS "  CodeGen:     ${DEBUG_CODEGEN}")
 endif()
 
-message(STATUS "  Verbosity: ${DEBUG_VERBOSITY}")
+message(STATUS "  Verbosity:   ${DEBUG_VERBOSITY} (0=MINIMAL, 1=NORMAL, 2=DETAIL)")
 message(STATUS "  Log to file: ${DEBUG_TO_FILE}")
 if(DEBUG_TO_FILE)
-    message(STATUS "DEBUG LOGGING TO FILE ENABLED")
-    message(STATUS "Log file will be written to: ${DEBUG_FILE_PATH}")
-    message(STATUS "Note: Path is relative to where the executable runs")
-    message(STATUS "To get absolute path, use: -DDEBUG_FILE_PATH=\"C:/full/path/log.txt\"")
+    message(STATUS "  Log file:   ${DEBUG_FILE_PATH}")
 endif()
 message(STATUS "========================================")
 
@@ -275,26 +269,18 @@ if(DEBUG_MASTER)
     # Master debug enables everything
     list(APPEND DEBUG_DEFINITIONS "DEBUG_MASTER=1")
     list(APPEND DEBUG_DEFINITIONS "DEBUG_LEXER=1")
-    list(APPEND DEBUG_DEFINITIONS "DEBUG_LEXER_TOKENS=1")
     list(APPEND DEBUG_DEFINITIONS "DEBUG_PARSER=1")
-    list(APPEND DEBUG_DEFINITIONS "DEBUG_PARSE_RESULT=1")
     list(APPEND DEBUG_DEFINITIONS "DEBUG_TYPE=1")
     list(APPEND DEBUG_DEFINITIONS "DEBUG_SEMANTIC=1")
-    list(APPEND DEBUG_DEFINITIONS "DEBUG_DUMP_SYMBOL=1")
+    list(APPEND DEBUG_DEFINITIONS "DEBUG_INTERPRETER=1")
     list(APPEND DEBUG_DEFINITIONS "DEBUG_CODEGEN=1")
 else()
     # Individual flags
     if(DEBUG_LEXER)
         list(APPEND DEBUG_DEFINITIONS "DEBUG_LEXER=1")
     endif()
-    if(DEBUG_LEXER_TOKENS)
-        list(APPEND DEBUG_DEFINITIONS "DEBUG_LEXER_TOKENS=1")
-    endif()
     if(DEBUG_PARSER)
         list(APPEND DEBUG_DEFINITIONS "DEBUG_PARSER=1")
-    endif()
-    if(DEBUG_PARSE_RESULT)
-        list(APPEND DEBUG_DEFINITIONS "DEBUG_PARSE_RESULT=1")
     endif()
     if(DEBUG_TYPE)
         list(APPEND DEBUG_DEFINITIONS "DEBUG_TYPE=1")
@@ -302,8 +288,8 @@ else()
     if(DEBUG_SEMANTIC)
         list(APPEND DEBUG_DEFINITIONS "DEBUG_SEMANTIC=1")
     endif()
-    if(DEBUG_DUMP_SYMBOL)
-        list(APPEND DEBUG_DEFINITIONS "DEBUG_DUMP_SYMBOL=1")
+    if(DEBUG_INTERPRETER)
+        list(APPEND DEBUG_DEFINITIONS "DEBUG_INTERPRETER=1")
     endif()
     if(DEBUG_CODEGEN)
         list(APPEND DEBUG_DEFINITIONS "DEBUG_CODEGEN=1")

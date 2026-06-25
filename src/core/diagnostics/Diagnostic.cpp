@@ -5,7 +5,7 @@
 
 #include "Diagnostic.hpp"
 #include "DiagnosticMessages.hpp"
-#include "ast/support/StringPool.hpp"
+#include "../memory/StringPool.hpp"
 #include <iostream>
 
 namespace diagnostic {

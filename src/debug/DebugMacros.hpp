@@ -1,223 +1,209 @@
+/**
+ * @file DebugMacros.hpp
+ * @brief Developer debug logging macros.
+ * 
+ * These macros are for internal development tracing ONLY.
+ * User-facing diagnostics are in Diagnostic.hpp.
+ * 
+ * ## Usage
+ * 
+ *   LOG_MINIMAL("Parser", "Starting parse");    // Always shown (level 0)
+ *   LOG("Parser", "Parsing function");          // Normal detail (level 1)
+ *   LOG_DETAIL("Parser", "Token: %s", tok);     // Verbose detail (level 2)
+ * 
+ * ## Build Configuration
+ * 
+ *   -DDEBUG_MASTER       → Enable all debug output (overrides all)
+ *   -DDEBUG_PARSER       → Enable PARSER component only
+ *   -DDEBUG_VERBOSITY=2  → Set detail level (0=minimal, 1=normal, 2=detail)
+ *   -DDEBUG_TO_FILE      → Write to debug.log instead of stdout
+ * 
+ * ## Verbosity Levels
+ * 
+ *   Level 0 (MINIMAL) : Major events (start/end parse, errors)
+ *   Level 1 (NORMAL)  : Important steps (function entry/exit, declarations)
+ *   Level 2 (DETAIL)  : Detailed trace (token stream, AST construction)
+ */
+
 #pragma once
 
 #include <iostream>
 #include <fstream>
-#include <cstdlib>
-#include <chrono>
-#include <sstream> 
-#include <iomanip>
 #include <string>
+#include <sstream>
+#include <iomanip>
+#include <chrono>
+#include <cstdarg>
 
-// =============================================================================
-// Debug logging configuration
-// =============================================================================
-
-// Helper to check if debug is enabled for a component
 namespace Debug {
-    inline bool isDebugEnabled(const char* component) {
-        #ifdef DEBUG_MASTER
-            return true;
-        #else
-            #ifdef DEBUG_LEXER
-                if (std::string(component) == "LEXER") return true;
-            #endif
-            #ifdef DEBUG_LEXER_TOKENS 
-                if (std::string(component) == "LEXER_TOKENS") return true;
-            #endif
-            #ifdef DEBUG_PARSER
-                if (std::string(component) == "PARSER") return true;
-            #endif
-            #ifdef DEBUG_PARSE_RESULT
-                if (std::string(component) == "PARSE_RESULT") return true;
-            #endif
-            #ifdef DEBUG_TYPE
-                if (std::string(component) == "TYPE") return true;
-            #endif
-            #ifdef DEBUG_SEMANTIC
-                if (std::string(component) == "SEMANTIC") return true;
-            #endif
-            #ifdef DEBUG_DUMP_SYMBOL
-                if (std::string(component) == "DUMP_SYMBOL") return true;
-            #endif
-            #ifdef DEBUG_CODEGEN
-                if (std::string(component) == "CODEGEN") return true;
-            #endif
-            return false;
-        #endif
-    }
 
-    inline int getVerbosity() {
-        #ifdef DEBUG_VERBOSITY
-            // DEBUG_VERBOSITY is now a number (0,1,2,3)
-            return DEBUG_VERBOSITY;
-        #else
-            return 1; // default NORMAL
-        #endif
-    }
+// ─────────────────────────────────────────────────────────────────────────────
+// Configuration (set via build flags)
+// ─────────────────────────────────────────────────────────────────────────────
 
-    inline std::string getLogFilePath() {
-        #ifdef DEBUG_FILE_PATH
-            return DEBUG_FILE_PATH;
-        #else
-            return "debug.log";
+/** @brief Check if debug is enabled for a component */
+inline bool isEnabled(const char* component) {
+    #ifdef DEBUG_MASTER
+        return true;
+    #else
+        #ifdef DEBUG_PARSER
+            if (std::string(component) == "PARSER") return true;
         #endif
-    }
-
-    // Flag to track if we've printed the log file message
-    inline bool& logFileMessagePrinted() {
-        static bool printed = false;
-        return printed;
-    }
-
-    inline std::ostream& getDebugStream() {
-        #ifdef DEBUG_TO_FILE
-            static std::ofstream file(getLogFilePath(), std::ios::out | std::ios::trunc);
-            
-            // Print message once when first accessed
-            if (!logFileMessagePrinted()) {
-                logFileMessagePrinted() = true;
-                
-                // Get absolute path for display
-                std::string logPath = getLogFilePath();
-                
-                // Try to get absolute path (Windows)
-                #ifdef _WIN32
-                    char absPath[_MAX_PATH];
-                    if (_fullpath(absPath, logPath.c_str(), _MAX_PATH)) {
-                        logPath = absPath;
-                    }
-                #endif
-                
-                std::cout << "[DEBUG] Log file enabled: " << logPath << std::endl;
-            }
-            
-            return file;
-        #else
-            return std::cout;
+        #ifdef DEBUG_LEXER
+            if (std::string(component) == "LEXER") return true;
         #endif
-    }
-    
-    inline std::string timestamp() {
-        auto now = std::chrono::system_clock::now();
-        auto time_t = std::chrono::system_clock::to_time_t(now);
-        std::stringstream ss;
-        ss << std::put_time(std::localtime(&time_t), "%H:%M:%S");
-        return ss.str();
-    }
+        #ifdef DEBUG_SEMANTIC
+            if (std::string(component) == "SEMANTIC") return true;
+        #endif
+        #ifdef DEBUG_CODEGEN
+            if (std::string(component) == "CODEGEN") return true;
+        #endif
+        #ifdef DEBUG_TYPE
+            if (std::string(component) == "TYPE") return true;
+        #endif
+        #ifdef DEBUG_INTERPRETER
+            if (std::string(component) == "INTERPRETER") return true;
+        #endif
+        return false;
+    #endif
 }
 
-// =============================================================================
-// Logging macros with verbosity control
-// =============================================================================
+/** @brief Get the current verbosity level (0=minimal, 1=normal, 2=detail) */
+inline int verbosity() {
+    #ifdef DEBUG_VERBOSITY
+        return DEBUG_VERBOSITY;
+    #else
+        return 1;  // Normal by default
+    #endif
+}
 
-// Verbosity levels
-#define VERB_MINIMAL 0
-#define VERB_NORMAL  1
-#define VERB_VERBOSE 2
-#define VERB_EXTREME 3
+/** @brief Get the log file path (default: debug.log) */
+inline std::string logPath() {
+    #ifdef DEBUG_FILE_PATH
+        return DEBUG_FILE_PATH;
+    #else
+        return "debug.log";
+    #endif
+}
 
-// Helper to check verbosity
-#define VERB_GE(level) (LucDebug::getVerbosity() >= (level))
+/** @brief Get the output stream (stdout or file) */
+inline std::ostream& stream() {
+    #ifdef DEBUG_TO_FILE
+        static std::ofstream file(logPath(), std::ios::out | std::ios::trunc);
+        static bool first = true;
+        if (first) {
+            first = false;
+            std::cout << "[DEBUG] Logging to: " << logPath() << std::endl;
+        }
+        return file;
+    #else
+        return std::cout;
+    #endif
+}
 
-// Core logging macro with timestamp and component
-#define LOG_CORE(COMPONENT, level, x) \
+/** @brief Current timestamp for log entries */
+inline std::string timestamp() {
+    auto now = std::chrono::system_clock::now();
+    auto t = std::chrono::system_clock::to_time_t(now);
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now.time_since_epoch()
+    ).count() % 1000;
+    
+    std::stringstream ss;
+    ss << std::put_time(std::localtime(&t), "%H:%M:%S")
+       << "." << std::setfill('0') << std::setw(3) << ms;
+    return ss.str();
+}
+
+} // namespace Debug
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Core Logging Macros
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @brief Internal macro that does the actual logging.
+ * 
+ * @param COMPONENT  The subsystem name (PARSER, LEXER, etc.)
+ * @param LEVEL      The verbosity level required (0, 1, 2)
+ * @param FORMAT     printf-style format string
+ * @param ...        Format arguments
+ */
+#define LOG_CORE(COMPONENT, LEVEL, FORMAT, ...) \
     do { \
-        if (LucDebug::isDebugEnabled(COMPONENT) && VERB_GE(level)) { \
-            LucDebug::getDebugStream() << "[" << LucDebug::timestamp() << "] [" << COMPONENT << "] " << x << std::endl; \
+        if (Debug::isEnabled(COMPONENT) && Debug::verbosity() >= (LEVEL)) { \
+            Debug::stream() << "[" << Debug::timestamp() << "] " \
+                            << "[" << COMPONENT << "] " \
+                            << Debug::format(FORMAT, ##__VA_ARGS__) << std::endl; \
         } \
     } while(0)
 
-// =============================================================================
-// PARSER logging macros (with verbosity levels)
-// =============================================================================
+// ─────────────────────────────────────────────────────────────────────────────
+// Public Logging Macros (3 levels, 7 components)
+// ─────────────────────────────────────────────────────────────────────────────
 
-#define LOG_PARSER_MINIMAL(x)   LOG_CORE("PARSER", VERB_MINIMAL, x)
-#define LOG_PARSER(x)           LOG_CORE("PARSER", VERB_NORMAL, x)
-#define LOG_PARSER_VERBOSE(x)   LOG_CORE("PARSER", VERB_VERBOSE, x)
-#define LOG_PARSER_EXTREME(x)   LOG_CORE("PARSER", VERB_EXTREME, x)
+// ─── Level 0: Minimal (major events only) ───────────────────────────────────
 
-// =============================================================================
-// PARSE_RESULT logging macros (with verbosity levels)
-// =============================================================================
+#define LOG_MINIMAL(COMPONENT, ...) \
+    LOG_CORE(COMPONENT, 0, __VA_ARGS__)
 
-#define LOG_PARSE_RESULT_MINIMAL(x) LOG_CORE("PARSE_RESULT", VERB_MINIMAL, x)
-#define LOG_PARSE_RESULT(x)         LOG_CORE("PARSE_RESULT", VERB_NORMAL, x)
-#define LOG_PARSE_RESULT_VERBOSE(x) LOG_CORE("PARSE_RESULT", VERB_VERBOSE, x)
-#define LOG_PARSE_RESULT_EXTREME(x) LOG_CORE("PARSE_RESULT", VERB_EXTREME, x)
+// ─── Level 1: Normal (important steps) ─────────────────────────────────────
 
-// =============================================================================
-// TYPE logging macros (with verbosity levels)
-// =============================================================================
+#define LOG(COMPONENT, ...) \
+    LOG_CORE(COMPONENT, 1, __VA_ARGS__)
 
-#define LOG_TYPE_MINIMAL(x)     LOG_CORE("TYPE", VERB_MINIMAL, x)
-#define LOG_TYPE(x)             LOG_CORE("TYPE", VERB_NORMAL, x)
-#define LOG_TYPE_VERBOSE(x)     LOG_CORE("TYPE", VERB_VERBOSE, x)
-#define LOG_TYPE_EXTREME(x)     LOG_CORE("TYPE", VERB_EXTREME, x)
+// ─── Level 2: Detail (verbose trace) ──────────────────────────────────────
 
-// =============================================================================
-// SEMANTIC logging macros (with verbosity levels)
-// =============================================================================
+#define LOG_DETAIL(COMPONENT, ...) \
+    LOG_CORE(COMPONENT, 2, __VA_ARGS__)
 
-#define LOG_SEMANTIC_MINIMAL(x) LOG_CORE("SEMANTIC", VERB_MINIMAL, x)
-#define LOG_SEMANTIC(x)         LOG_CORE("SEMANTIC", VERB_NORMAL, x)
-#define LOG_SEMANTIC_VERBOSE(x) LOG_CORE("SEMANTIC", VERB_VERBOSE, x)
-#define LOG_SEMANTIC_EXTREME(x) LOG_CORE("SEMANTIC", VERB_EXTREME, x)
+// ─────────────────────────────────────────────────────────────────────────────
+// Component-Specific Aliases (optional, for convenience)
+// ─────────────────────────────────────────────────────────────────────────────
 
-// =============================================================================
-// CODEGEN logging macros (with verbosity levels)
-// =============================================================================
+#define LOG_PARSER(...)        LOG("PARSER", __VA_ARGS__)
+#define LOG_PARSER_DETAIL(...) LOG_DETAIL("PARSER", __VA_ARGS__)
 
-#define LOG_CODEGEN_MINIMAL(x)  LOG_CORE("CODEGEN", VERB_MINIMAL, x)
-#define LOG_CODEGEN(x)          LOG_CORE("CODEGEN", VERB_NORMAL, x)
-#define LOG_CODEGEN_VERBOSE(x)  LOG_CORE("CODEGEN", VERB_VERBOSE, x)
-#define LOG_CODEGEN_EXTREME(x)  LOG_CORE("CODEGEN", VERB_EXTREME, x)
+#define LOG_LEXER(...)         LOG("LEXER", __VA_ARGS__)
+#define LOG_LEXER_DETAIL(...)  LOG_DETAIL("LEXER", __VA_ARGS__)
 
-// =============================================================================
-// LEXER logging macros (with verbosity levels)
-// =============================================================================
+#define LOG_SEMANTIC(...)      LOG("SEMANTIC", __VA_ARGS__)
+#define LOG_SEMANTIC_DETAIL(...) LOG_DETAIL("SEMANTIC", __VA_ARGS__)
 
-#define LOG_LEXER_MINIMAL(x)    LOG_CORE("LEXER", VERB_MINIMAL, x)
-#define LOG_LEXER(x)            LOG_CORE("LEXER", VERB_NORMAL, x)
-#define LOG_LEXER_VERBOSE(x)    LOG_CORE("LEXER", VERB_VERBOSE, x)
-#define LOG_LEXER_EXTREME(x)    LOG_CORE("LEXER", VERB_EXTREME, x)
+#define LOG_CODEGEN(...)       LOG("CODEGEN", __VA_ARGS__)
+#define LOG_CODEGEN_DETAIL(...) LOG_DETAIL("CODEGEN", __VA_ARGS__)
 
-// =============================================================================
-// EXPRESSION logging macros (with verbosity levels)
-// =============================================================================
+#define LOG_TYPE(...)          LOG("TYPE", __VA_ARGS__)
+#define LOG_TYPE_DETAIL(...)   LOG_DETAIL("TYPE", __VA_ARGS__)
 
-#define LOG_EXPR_MINIMAL(x)     LOG_CORE("PARSER", VERB_MINIMAL, "[EXPR] " << x)
-#define LOG_EXPR(x)             LOG_CORE("PARSER", VERB_NORMAL, "[EXPR] " << x)
-#define LOG_EXPR_VERBOSE(x)     LOG_CORE("PARSER", VERB_VERBOSE, "[EXPR] " << x)
-#define LOG_EXPR_EXTREME(x)     LOG_CORE("PARSER", VERB_EXTREME, "[EXPR] " << x)
+#define LOG_INTERPRETER(...)   LOG("INTERPRETER", __VA_ARGS__)
+#define LOG_INTERPRETER_DETAIL(...) LOG_DETAIL("INTERPRETER", __VA_ARGS__)
 
-// =============================================================================
-// STATEMENT logging macros (with verbosity levels)
-// =============================================================================
+// ─────────────────────────────────────────────────────────────────────────────
+// Helper: printf-style formatting (safe, no heap allocation)
+// ─────────────────────────────────────────────────────────────────────────────
 
-#define LOG_STMT_MINIMAL(x)     LOG_CORE("PARSER", VERB_MINIMAL, "[STMT] " << x)
-#define LOG_STMT(x)             LOG_CORE("PARSER", VERB_NORMAL, "[STMT] " << x)
-#define LOG_STMT_VERBOSE(x)     LOG_CORE("PARSER", VERB_VERBOSE, "[STMT] " << x)
-#define LOG_STMT_EXTREME(x)     LOG_CORE("PARSER", VERB_EXTREME, "[STMT] " << x)
-
-// =============================================================================
-// DECLARATION logging macros (with verbosity levels)
-// =============================================================================
-
-#define LOG_DECL_MINIMAL(x)     LOG_CORE("PARSER", VERB_MINIMAL, "[DECL] " << x)
-#define LOG_DECL(x)             LOG_CORE("PARSER", VERB_NORMAL, "[DECL] " << x)
-#define LOG_DECL_VERBOSE(x)     LOG_CORE("PARSER", VERB_VERBOSE, "[DECL] " << x)
-#define LOG_DECL_EXTREME(x)     LOG_CORE("PARSER", VERB_EXTREME, "[DECL] " << x)
-
-// =============================================================================
-// Legacy compatibility macros
-// =============================================================================
-
-#ifdef DEBUG_MASTER
-    #define LOG(x) LucDebug::getDebugStream() << "[DEBUG] " << x << std::endl
-    #define LOG_KIND(x) LOG_CORE("DEBUG", VERB_NORMAL, "kind: " << LucDebug::kindToString(x))
-    #define LOG_TOKEN(t) LOG_CORE("DEBUG", VERB_NORMAL, "token: " << LucDebug::tokenTypeToString(t))
-#else
-    #define LOG(x)
-    #define LOG_KIND(x)
-    #define LOG_TOKEN(t)
-#endif
+namespace Debug {
+    inline std::string format(const char* fmt, ...) {
+        va_list args;
+        va_start(args, fmt);
+        
+        // Determine required size
+        va_list args_copy;
+        va_copy(args_copy, args);
+        int size = vsnprintf(nullptr, 0, fmt, args_copy);
+        va_end(args_copy);
+        
+        if (size <= 0) {
+            va_end(args);
+            return std::string(fmt);  // Fallback to raw format string
+        }
+        
+        // Format the string
+        std::string result(size + 1, '\0');
+        vsnprintf(&result[0], result.size(), fmt, args);
+        result.pop_back();  // Remove null terminator
+        va_end(args);
+        return result;
+    }
+}
