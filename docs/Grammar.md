@@ -909,22 +909,15 @@ trait Container<T> {
 
 ### Rules
 
-- Trait fields declare **name, type, and optional const-ness** — no default values.
-  Qualifiers and defaults belong to the implementing struct.
 - A struct implementing a trait must declare all the trait's fields at the
   **top level** with matching names, types, and const-ness.
 - If a trait field is marked `const`, the implementing struct **must** also
   declare that field as `const`.
-- If a trait field is **not** marked `const`, the implementing struct may
-  declare the field as either `const` or mutable — the trait only requires
-  that the field exists with the correct type.
-- Field type mismatch is a **compile error** at the struct declaration site.
-- Two traits requiring the same field name with **different types** is a
-  **compile error** at the struct declaration — there is no silent merging.
+- Field type mismatch is an **error** at the struct declaration site.
+- Two traits requiring the same field name with **different types** is an
+  **error** at the struct declaration — there is no silent merging.
   Same name, same type across two traits is fine — satisfied once.
-- Two traits requiring the same field name with **different const-ness** is a
-  **compile error** at the struct declaration. If one trait requires `const`
-  and the other does not, the struct must declare it as `const` to satisfy
+- Two traits requiring the same field name is an **error** at the struct declaration. If one trait requires `const` and the other does not, the struct must declare it as `const` to satisfy
   both.
 - Traits may be used as **field types** in structs — a field typed as a trait
   accepts any struct implementing that trait.
@@ -934,7 +927,7 @@ trait Container<T> {
   implement Trait. See **Generic Constraints**.
 
 ```lucid
--- name conflict: same field, different types — compile error
+-- name conflict: same field, different types — error
 trait A { x float }
 trait B { x int   }
 
@@ -963,53 +956,6 @@ struct BothOK : A, B {
 -- ERROR: struct declares x as mutable, fails B's const requirement
 struct BothBad : A, B {
     x float   -- ERROR: trait B requires 'const x float'
-}
-```
-
-### Trait Fields vs Struct Fields
-
-|                   | Trait Field                            | Struct Field                                          |
-| ----------------- | -------------------------------------- | ----------------------------------------------------- |
-| **Const Keyword** | Optional (`const IDENTIFIER type`)     | Optional (`const IDENTIFIER type`)                    |
-| **Default Value** | Not allowed                            | Optional                                              |
-| **Purpose**       | Requirements contract                  | Actual data storage                                   |
-| **Mutability**    | Specifies requirement (`const` or not) | `const` or mutable (must match trait if implementing) |
-
-```lucid
-trait Named {
-    name string        -- requires: field 'name' of type string (mutable or const allowed)
-}
-
-trait ImmutableId {
-    const id int       -- requires: field 'id' of type int AND it must be const
-}
-
--- All of these satisfy Named (name can be mutable or const):
-struct Person : Named {
-    name string = "anonymous"       -- mutable, has default (OK)
-}
-
-struct Identity : Named {
-    const name string = "unknown"   -- const, has default (OK)
-}
-
-struct User : Named {
-    name string       -- mutable, no default (OK)
-}
-
--- This satisfies ImmutableId:
-struct HasId : ImmutableId {
-    const id int = 42   -- const, matches requirement (OK)
-}
-
--- This does NOT satisfy ImmutableId:
-struct BadId : ImmutableId {
-    id int = 42   -- ERROR: ImmutableId requires 'const id int'
-}
-
--- This does NOT satisfy Named:
-struct Invalid {
-    name string! = err   -- ERROR: type mismatch (string vs string!)
 }
 ```
 
@@ -1096,36 +1042,11 @@ const box Box<BoxContainer> = Box {
 }
 ```
 
-### Semantic Analysis Notes
-
-The semantic pass must enforce the following rules for traits:
-
-1. **Const Matching**: When a struct implements a trait, any field marked `const` in the trait must also be marked `const` in the struct. If the struct declares it as mutable, emit a compile error.
-
-2. **Const Optional**: If a trait field is **not** marked `const`, the struct may declare it as either `const` or mutable. Both are acceptable.
-
-3. **Type Matching**: All trait fields must have matching types in the implementing struct. Type mismatch is a compile error.
-
-4. **Const Conflict Resolution**: If a struct implements multiple traits, and one trait requires a field to be `const` while another does not, the struct must declare it as `const` to satisfy both. If one requires `const` and the other requires a different type, it's a compile error.
-
-5. **Trait as Type**: When a trait is used as a field type or parameter type, it accepts any struct implementing that trait. Inside the body, only the trait's fields are accessible. The const-ness of fields in the trait is respected — if a trait field is `const`, it cannot be reassigned through the trait reference.
-
-6. **Generic Trait Constraints**: Trait constraints on generic parameters are resolved at instantiation time. The compiler verifies that the concrete type implements all required traits, including const requirements.
-
-7. **No Trait Inheritance**: Traits do not inherit from other traits. A struct must explicitly list all traits it implements.
-
-8. **No Methods**: Traits define fields only — no methods, no behavior, no default values. All behavior is expressed as plain functions.
-
-### Trait Const Matching Table
-
-| Trait Field Declaration | Struct Field Declaration | Result                      |
-| ----------------------- | ------------------------ | --------------------------- |
-| `x float`               | `x float`                | ✅ OK                        |
-| `x float`               | `const x float`          | ✅ OK (mutable can be const) |
-| `const x float`         | `const x float`          | ✅ OK                        |
-| `const x float`         | `x float`                | ❌ ERROR (const required)    |
-| `x float`               | `x string`               | ❌ ERROR (type mismatch)     |
-| `const x float`         | `const x string`         | ❌ ERROR (type mismatch)     |
+> [!NOTE]
+> 1. **Const Matching**: When a struct implements a trait, any field marked `const` in the trait must also be marked `const` in the struct. If the struct declares it as mutable, emit an error.
+> 2. **Type Matching**: All trait fields must have matching types in the implementing struct. Type mismatch is an error.
+> 3. **Trait as Type**: When a trait is used as a field type or parameter type, it accepts any struct implementing that trait. Inside the body, only the trait's fields are accessible. The const-ness of fields in the trait is respected — if a trait field is `const`, it cannot be reassigned through the trait reference.
+> 4. **Generic Trait Constraints**: Trait constraints on generic parameters are resolved at instantiation time. The compiler verifies that the concrete type implements all required traits, including const requirements.
 
 ### Trait Const Conflict Resolution
 
@@ -1470,7 +1391,7 @@ Both combine with `@[export]` in the same bracket — `attribute_list` is one
 
 Two or more declaration with the same name but different parameter signatures are
 overloads. The compiler picks the correct overload at the call site based on
-argument types. Overloads that differ only in return type are a compile error —
+argument types. Overloads that differ only in return type are an error —
 the compiler cannot resolve them from the call site alone.
 
 ```ebnf
@@ -1482,7 +1403,7 @@ the compiler cannot resolve them from the call site alone.
 ### Rules
 
 - Overloads must differ in **parameter count or parameter types**.
-- Differing only in return type is a **compile error**.
+- Differing only in return type is an **error**.
 - A generic function and a concrete overload of the same name coexist — the
   concrete overload takes priority when argument types match exactly.
 - Cross-module overloads with the same name must be qualified at the call
@@ -1508,7 +1429,7 @@ process<string>("hi")   -- generic: "generic"
 process<int>(42)        -- concrete wins: "concrete int"
 process(42)             -- concrete wins: "concrete int"
 
--- return-type-only difference: compile error
+-- return-type-only difference: error
 const bad (v int) -> string = { ... }
 const bad (v int) -> int    = { ... }
 -- ERROR: overloads differ only in return type — unresolvable at call site
@@ -1567,7 +1488,7 @@ generic_args    = '<' type { ',' type } '>'
 ### Rules
 
 - Every type parameter must be used at least once in the parameter list or
-  return type — an unused `T` is a compile error.
+  return type — an unused `T` is an error.
 - Type parameters are resolved strictly at the call/instantiation site —
   there is no type inference across call boundaries.
 - Generic functions and concrete overloads of the same name coexist — the
@@ -2202,50 +2123,258 @@ do {
 } while i > 0
 ```
 
-### `for`
+### `for` Loops
 
 `for` has two forms: **range iteration**, over a numeric `start..end` (or
-`start..<end`) sequence with no backing collection, and **collection
-iteration**, over an existing array. **Both forms require an explicit type
-annotation on every loop variable.** Lucid does not infer a loop variable's
-type from context — not from a range's literal bounds, and not from a
-collection's already-known element type. This matches **Variable
-Declaration**: a type is always written, even where the answer looks
-unambiguous, because the compiler does not guess.
+`start..<end`) sequence with optional step, and **collection iteration**,
+over an existing array or slice.
 
-**Range iteration** — the loop variable's type must be numeric (`int`,
-`float`, and so on). The end bound's inclusivity is controlled by `range_op`,
-matching **Range Expressions**:
+### Range Iteration
+
+Range iteration loops over a numeric sequence. The syntax **requires both an index and a value**:
+
+```ebnf
+range_for       = 'for' range_var ',' range_var 'in' range_iter [ '..' expr ] block
+
+range_var       = IDENTIFIER type
+                | '_'                           (* ignored value, no type required *)
+
+range_iter      = expr range_op expr            (* start range_op end *)
+range_op        = '..' | '..<'
+```
+
+**Both the index and value must be present** — you cannot omit one. Use `_` to ignore either.
+
+The loop variable's type must be numeric (`int`, `float`, and so on). The
+end bound's inclusivity is controlled by `range_op`:
 
 ```lucid
-for i int in 0..10  { io:printl(stringFromInt(i)) }    -- 0 through 10 inclusive
-for i int in 0..<10 { io:printl(stringFromInt(i)) }    -- 0 through 9, end excluded
+for i int, v int in 0..10  { 
+    io:printl(stringFromInt(i) + ": " + stringFromInt(v)) 
+}    -- 0 through 10 inclusive
+
+for i int, v int in 0..<10 { 
+    io:printl(stringFromInt(i) + ": " + stringFromInt(v)) 
+}    -- 0 through 9, end excluded
 ```
 
 An optional trailing `..` *expr* sets the step. Without it, the step is `1`:
 
 ```lucid
-for i int in 0..10..2 { io:printl(stringFromInt(i)) }  -- 0, 2, 4, 6, 8, 10 — step of 2
+for i int, v int in 0..10..2 { 
+    io:printl(stringFromInt(i) + ": " + stringFromInt(v)) 
+}  -- 0, 2, 4, 6, 8, 10 — step of 2
+
+for i int, v int in 0..<10..3 { 
+    io:printl(stringFromInt(i) + ": " + stringFromInt(v)) 
+} -- 0, 3, 6, 9 — step of 3
 ```
 
-**Collection iteration** — every loop variable still requires its own type
-annotation, even though the collection's own declaration already fixes it.
-Value-only, or index and value (the index is always `int`; the value must
-match the collection's element type):
+The step must be a positive integer expression. A zero or negative step is a
+compile-time error.
+
+### Collection Iteration
+
+Collection iteration loops over an existing array or slice. The syntax **requires both an index and a value**:
+
+```ebnf
+collection_for  = 'for' collection_var ',' collection_var 'in' expr block
+
+collection_var  = IDENTIFIER type
+                | '_'                           (* ignored value, no type required *)
+
+-- First variable is always the index (int)
+-- Second variable is the value (element type of the collection)
+```
+
+Every loop variable still requires its own type annotation when named, even
+though the collection's own declaration already fixes it. This matches
+**Variable Declaration**: a type is always written, even where the answer
+looks unambiguous, because the compiler does not guess.
 
 ```lucid
 use std.array as arr
 
 const nums [*]int = [1, 2, 3, 4, 5]
 
--- value only
-for v int in nums {
+-- Both index and value required
+for i int, v int in nums {
+    log(stringFromInt(i) + ": " + stringFromInt(v))
+}
+```
+
+### The Ignored Value (`_`)
+
+Use `_` when you don't need a loop variable. The ignored value does **not**
+require a type annotation, and attempting to access it is a compile error.
+
+```lucid
+-- Ignore the value, only need the index
+for i int, _ in nums {
+    log(stringFromInt(i))
+}
+
+-- Ignore the index, only need the value
+for _, v int in nums {
     log(stringFromInt(v))
 }
 
--- index and value
-for i int, v int in nums {
+-- Ignore everything (just loop N times)
+for _, _ in nums {
+    log("processing")
+}
+
+-- Range with ignored index and value
+for _, _ in 0..10 {
+    log("iteration")
+}
+
+-- ERROR: attempting to access an ignored value
+for _, v int in nums {
+    log(stringFromInt(_))  -- ERROR: cannot access ignored value '_'
+}
+```
+
+### Range with Index and Value (Enforced)
+
+Range iteration **always** binds both index and value, where the index is the
+loop counter:
+
+```lucid
+-- Range with index and value (required)
+for i int, v int in 0..10 {
     log(stringFromInt(i) + ": " + stringFromInt(v))
+}
+
+-- Ignore index, only need value
+for _, v int in 0..10 {
+    log(stringFromInt(v))
+}
+
+-- Ignore value, only need index
+for i int, _ in 0..10 {
+    log(stringFromInt(i))
+}
+
+-- With step
+for i int, v int in 0..10..2 {
+    log(stringFromInt(i) + ": " + stringFromInt(v))
+}
+```
+
+### Range with Custom Step
+
+The step expression can be any numeric expression:
+
+```lucid
+const stepSize int = 3
+
+-- Variable step
+for i int, v int in 0..<20..stepSize {
+    log(stringFromInt(i) + ": " + stringFromInt(v))  -- 0:0, 1:3, 2:6, 3:9, 4:12, 5:15, 6:18
+}
+
+-- Step computed at runtime
+for i int, v int in 0..100..computeStep() {
+    log(stringFromInt(i) + ": " + stringFromInt(v))
+}
+```
+
+### Complete Grammar
+
+```ebnf
+for_stmt        = 'for' for_binding ',' for_binding 'in' for_iterable [ '..' expr ] block
+
+for_binding     = IDENTIFIER type              (* named variable with explicit type *)
+                | '_'                          (* ignored value, no type required *)
+
+for_iterable    = range_iter                   (* range: start..end or start..<end *)
+                | expr                         (* collection or other iterable *)
+
+range_iter      = expr range_op expr           (* start range_op end *)
+range_op        = '..' | '..<'
+```
+
+### Rules
+
+1. **Index and Value Required**: Both an index and a value must be present in
+   every `for` loop. Use `_` to ignore either.
+
+2. **Type Annotation Required**: Every named loop variable has an explicit type.
+   Lucid does not infer loop variable types (matches var_decl's no-inference rule).
+
+3. **Ignored Values**: `_` requires no type annotation. Attempting to use `_` in
+   the loop body is a compile error.
+
+4. **Range Type**: For range loops, both index and value types must be numeric
+   (`int`, `float`, etc.). They must be the same type.
+
+5. **Collection Element Type**: For collection loops, the value type must match
+   the collection's element type. The index is always `int`.
+
+6. **Step Expression**: The step must be a positive numeric expression. Zero or
+   negative steps are compile-time errors.
+
+7. **Valid Body**: `break`, `continue`, and `return` are valid inside the loop body.
+
+### Examples
+
+```lucid
+-- Basic range loop (both index and value required)
+for i int, v int in 0..10 {
+    io:printl(stringFromInt(i) + ": " + stringFromInt(v))
+}
+
+-- Range with step
+for i int, v int in 0..10..2 {
+    io:printl(stringFromInt(i) + ": " + stringFromInt(v))  -- 0:0, 1:2, 2:4, 3:6, 4:8, 5:10
+}
+
+-- Range with exclusive end
+for i int, v int in 0..<10 {
+    io:printl(stringFromInt(i) + ": " + stringFromInt(v))  -- 0:0 through 9:9
+}
+
+-- Ignore value, keep index
+for i int, _ in 0..10 {
+    io:printl(stringFromInt(i))  -- 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
+}
+
+-- Ignore index, keep value
+for _, v int in 0..10 {
+    io:printl(stringFromInt(v))  -- 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
+}
+
+-- Ignore both (just loop N times)
+for _, _ in 0..10 {
+    io:printl("iteration")
+}
+
+-- Collection iteration (both index and value required)
+for i int, v int in nums {
+    io:printl(stringFromInt(i) + ": " + stringFromInt(v))
+}
+
+-- Collection with ignored index
+for _, v int in nums {
+    io:printl(stringFromInt(v))
+}
+
+-- Collection with ignored value
+for i int, _ in nums {
+    io:printl(stringFromInt(i))
+}
+
+-- Collection with both ignored
+for _, _ in nums {
+    io:printl("processing")
+}
+
+-- Nested loops
+for i int, _ in 0..5 {
+    for j int, _ in 0..5 {
+        io:printl(stringFromInt(i * j))
+    }
 }
 ```
 
@@ -2271,7 +2400,7 @@ switch dir {
     case Direction.West:  { moveLeft() }
 }
 
--- missing variant: compile error
+-- missing variant: error
 switch dir {
     case Direction.North: { moveUp() }
     case Direction.South: { moveDown() }
@@ -2473,7 +2602,7 @@ switch score {
 
 A range is not a standalone collection value with its own type — it only
 appears in the three positions above. Writing a bare range anywhere else
-(e.g. `const r = 0..10`) is a compile error; there is no
+(e.g. `const r = 0..10`) is an error; there is no
 general-purpose range type to assign it to.
 
 ### Logical Operators
@@ -2609,7 +2738,7 @@ const scale (factor float)(v float) -> float = { return v * factor }
 ### Curry Functions in Pipelines
 
 `|>` fills exactly one parameter group. A curried function with remaining
-unfilled groups is a compile error as a pipeline step. Pre-apply first:
+unfilled groups is an error as a pipeline step. Pre-apply first:
 
 ```lucid
 const clamp (lo int)(hi int)(v int) -> int = {
@@ -2630,7 +2759,7 @@ const clamp0to100 (v int) -> int = clamp(0)(100)
 ### Generic Functions in Pipelines
 
 Generic functions must be instantiated with explicit type arguments at the
-pipeline step site. An uninstantiated generic is a compile error:
+pipeline step site. An uninstantiated generic is an error:
 
 ```lucid
 const identity<T> (v T) -> T = { return v }
@@ -3577,9 +3706,9 @@ const rc &Player = a    -- read-only shared reference
 
 To guarantee memory safety and eliminate dangling pointers without using a Garbage Collector or a complex compile-time borrow checker, references (`&T`) are strictly scoped. They are allowed to flow *downward* (into nested calls), but never *upward or sideways*.
 
-1. **No Struct Storage:** A struct field cannot have a reference type (e.g., `field &T` is a compile error).
-2. **No Array/Slice Storage:** An array or slice cannot store reference types (e.g., `[*]&T` or `[_]&T` is a compile error).
-3. **No Reference Returns:** A function cannot return a reference type (e.g., `-> &T` is a compile error).
+1. **No Struct Storage:** A struct field cannot have a reference type (e.g., `field &T` is an error).
+2. **No Array/Slice Storage:** An array or slice cannot store reference types (e.g., `[*]&T` or `[_]&T` is an error).
+3. **No Reference Returns:** A function cannot return a reference type (e.g., `-> &T` is an error).
 
 As a result, a reference (`&T`) can only exist in two places:
 *   As a **function parameter** (e.g., `const process (p &Player)`).

@@ -11,7 +11,7 @@
 #pragma once
 #include <string>
 #include <vector>
-#include "core/tokens.hpp"
+#include "core/Tokens.hpp"
 
 namespace lexer {
 

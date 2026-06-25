@@ -226,43 +226,70 @@ struct SwitchStmtAST : StmtAST {
 using SwitchStmtPtr = SwitchStmtAST*;
 
 /**
- * @brief Iterates over a collection or a numeric range.
+ * @brief Iterates over a collection or a numeric range with both index and value.
  *
  * @example
- *   for i int in 0..10  { io:printl(stringFromInt(i)) }     -- range inclusive
- *   for i int in 0..<10 { io:printl(stringFromInt(i)) }     -- range exclusive
- *   for i int in 0..10..2 { io:printl(stringFromInt(i)) }   -- step of 2
- *   for v int in nums { io:printl(stringFromInt(v)) }       -- value only
- *   for i int, v int in nums { io:printl(stringFromInt(i) + ": " + stringFromInt(v)) }  -- index + value
+ *   for i int, v int in 0..10  { io:printl(stringFromInt(i) + ": " + stringFromInt(v)) }      -- range inclusive
+ *   for i int, v int in 0..<10 { io:printl(stringFromInt(i) + ": " + stringFromInt(v)) }      -- range exclusive
+ *   for i int, v int in 0..10..2 { io:printl(stringFromInt(i) + ": " + stringFromInt(v)) }    -- step of 2
+ *   for i int, v int in nums { io:printl(stringFromInt(i) + ": " + stringFromInt(v)) }        -- collection
+ *   for _, v int in nums { io:printl(stringFromInt(v)) }                                      -- ignore index
+ *   for i int, _ in nums { io:printl(stringFromInt(i)) }                                      -- ignore value
+ *   for _, _ in nums { io:printl("processing") }                                              -- ignore both
  *
  * Both grammar forms (range and collection) map to a single node.
  *
+ * ─── Grammar ──────────────────────────────────────────────────────────────
+ *   for_stmt = 'for' for_binding ',' for_binding 'in' for_iterable [ '..' expr ] block
+ *   for_binding = IDENTIFIER type | '_'
+ *   for_iterable = range_iter | expr
+ *   range_iter = expr range_op expr
+ *   range_op = '..' | '..<'
+ *
  * ─── Range Iteration ──────────────────────────────────────────────────────
- * The loop variable's type must be numeric (`int`, `float`, etc.).
+ * Both index and value are required. Use `_` to ignore either.
+ * The loop variables' types must be numeric (`int`, `float`, etc.).
  * The end bound's inclusivity is controlled by `range_op` (`..` vs `..<`).
  * An optional trailing `..` *expr* sets the step (defaults to 1).
  *
  * ─── Collection Iteration ────────────────────────────────────────────────
- * Every loop variable requires its own type annotation, even though the
+ * Both index and value are required. Use `_` to ignore either.
+ * Every named loop variable requires its own type annotation, even though the
  * collection's own declaration already fixes it. The index is always `int`;
  * the value must match the collection's element type.
  *
+ * ─── Ignored Values (`_`) ──────────────────────────────────────────────────
+ * The `_` binding requires no type annotation. Attempting to access `_` in
+ * the loop body is a compile error.
+ *
  * ─── Semantic Analysis Notes ──────────────────────────────────────────────
- * 1. **Type Annotation Required**: Every loop variable has an explicit type.
+ * 1. **Index and Value Required**: Both an index and a value must be present.
+ *    Use `_` to ignore either.
+ * 2. **Type Annotation Required**: Every named loop variable has an explicit type.
  *    Lucid does not infer loop variable types (matches var_decl's no-inference rule).
- * 2. **Range Type**: For range loops, the variable type must be numeric.
- * 3. **Collection Element Type**: For collection loops, the value type must
- *    match the collection's element type.
- * 4. **Index Type**: The index variable (if present) must be `int`.
- * 5. **Valid Body**: `break`, `continue`, and `return` are valid inside the loop body.
+ * 3. **Ignored Values**: `_` requires no type annotation. Accessing `_` is an error.
+ * 4. **Range Type**: For range loops, both index and value types must be numeric.
+ *    They must be the same type.
+ * 5. **Collection Element Type**: For collection loops, the value type must
+ *    match the collection's element type. The index is always `int`.
+ * 6. **Step Expression**: The step must be a positive numeric expression.
+ *    Zero or negative steps are compile-time errors.
+ * 7. **Valid Body**: `break`, `continue`, and `return` are valid inside the loop body.
+ *
+ * @field indexVar      The index variable (name + explicit type) – `nullptr` if ignored (`_`)
+ * @field valueVar      The value variable (name + explicit type) – `nullptr` if ignored (`_`)
+ * @field iterable      The iterable expression (collection or `RangeExprAST`)
+ * @field step          Optional step (only for range loops, `nullptr` if omitted)
+ * @field body          Always a `BlockStmtAST`
  */
 struct ForStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::ForStmt;
 
-    ParamAST* iterVar;  // Iteration variable (name + explicit type) – raw pointer
-    ExprPtr  iterable;  // Collection or `RangeExprAST`
-    ExprPtr  step;      // Optional step (only for range loops, `nullptr` if omitted)
-    StmtPtr  body;      // Always a `BlockStmtAST`
+    ParamAST* indexVar = nullptr;   // Index variable (name + explicit type), nullptr if ignored (`_`)
+    ParamAST* valueVar = nullptr;   // Value variable (name + explicit type), nullptr if ignored (`_`)
+    ExprPtr  iterable;              // Collection or `RangeExprAST`
+    ExprPtr  step;                  // Optional step (only for range loops, `nullptr` if omitted)
+    StmtPtr  body;                  // Always a `BlockStmtAST`
 
     ForStmtAST() : StmtAST(ASTKind::ForStmt) {}
 };

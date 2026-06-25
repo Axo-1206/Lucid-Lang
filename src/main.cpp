@@ -5,7 +5,7 @@
 #include <filesystem>
 #include <unordered_set>
 
-#include "parser/lexer.hpp"
+#include "parser/Lexer.hpp"
 
 namespace fs = std::filesystem;
 
