@@ -1,7 +1,7 @@
 #include "DiagnosticMessages.hpp"
 #include "DiagnosticCodes.hpp"
 
-namespace DiagnosticMessages {
+namespace diagnosticMessages {
 
 std::string_view getMessage(DiagCode code) {
     switch (code) {
@@ -169,4 +169,4 @@ std::string_view getMessage(DiagCode code) {
     }
 }
 
-} // namespace DiagnosticMessages
+} // namespace diagnosticMessages

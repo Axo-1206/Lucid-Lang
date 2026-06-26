@@ -1,5 +1,5 @@
 /**
- * @file DebugMacros.hpp
+ * @file debugMacros.hpp
  * @brief Developer debug logging macros.
  * 
  * These macros are for internal development tracing ONLY.
@@ -13,10 +13,10 @@
  * 
  * ## Build Configuration
  * 
- *   -DDEBUG_MASTER       → Enable all debug output (overrides all)
- *   -DDEBUG_PARSER       → Enable PARSER component only
- *   -DDEBUG_VERBOSITY=2  → Set detail level (0=minimal, 1=normal, 2=detail)
- *   -DDEBUG_TO_FILE      → Write to debug.log instead of stdout
+ *   -Ddebug_MASTER       → Enable all debug output (overrides all)
+ *   -Ddebug_PARSER       → Enable PARSER component only
+ *   -Ddebug_VERBOSITY=2  → Set detail level (0=minimal, 1=normal, 2=detail)
+ *   -Ddebug_TO_FILE      → Write to debug.log instead of stdout
  * 
  * ## Verbosity Levels
  * 
@@ -35,7 +35,7 @@
 #include <chrono>
 #include <cstdarg>
 
-namespace Debug {
+namespace debug {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Configuration (set via build flags)
@@ -43,25 +43,25 @@ namespace Debug {
 
 /** @brief Check if debug is enabled for a component */
 inline bool isEnabled(const char* component) {
-    #ifdef DEBUG_MASTER
+    #ifdef debug_MASTER
         return true;
     #else
-        #ifdef DEBUG_PARSER
+        #ifdef debug_PARSER
             if (std::string(component) == "PARSER") return true;
         #endif
-        #ifdef DEBUG_LEXER
+        #ifdef debug_LEXER
             if (std::string(component) == "LEXER") return true;
         #endif
-        #ifdef DEBUG_SEMANTIC
+        #ifdef debug_SEMANTIC
             if (std::string(component) == "SEMANTIC") return true;
         #endif
-        #ifdef DEBUG_CODEGEN
+        #ifdef debug_CODEGEN
             if (std::string(component) == "CODEGEN") return true;
         #endif
-        #ifdef DEBUG_TYPE
+        #ifdef debug_TYPE
             if (std::string(component) == "TYPE") return true;
         #endif
-        #ifdef DEBUG_INTERPRETER
+        #ifdef debug_INTERPRETER
             if (std::string(component) == "INTERPRETER") return true;
         #endif
         return false;
@@ -70,8 +70,8 @@ inline bool isEnabled(const char* component) {
 
 /** @brief Get the current verbosity level (0=minimal, 1=normal, 2=detail) */
 inline int verbosity() {
-    #ifdef DEBUG_VERBOSITY
-        return DEBUG_VERBOSITY;
+    #ifdef debug_VERBOSITY
+        return debug_VERBOSITY;
     #else
         return 1;  // Normal by default
     #endif
@@ -79,8 +79,8 @@ inline int verbosity() {
 
 /** @brief Get the log file path (default: debug.log) */
 inline std::string logPath() {
-    #ifdef DEBUG_FILE_PATH
-        return DEBUG_FILE_PATH;
+    #ifdef debug_FILE_PATH
+        return debug_FILE_PATH;
     #else
         return "debug.log";
     #endif
@@ -88,12 +88,12 @@ inline std::string logPath() {
 
 /** @brief Get the output stream (stdout or file) */
 inline std::ostream& stream() {
-    #ifdef DEBUG_TO_FILE
+    #ifdef debug_TO_FILE
         static std::ofstream file(logPath(), std::ios::out | std::ios::trunc);
         static bool first = true;
         if (first) {
             first = false;
-            std::cout << "[DEBUG] Logging to: " << logPath() << std::endl;
+            std::cout << "[debug] Logging to: " << logPath() << std::endl;
         }
         return file;
     #else
@@ -115,7 +115,7 @@ inline std::string timestamp() {
     return ss.str();
 }
 
-} // namespace Debug
+} // namespace debug
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Core Logging Macros
@@ -131,10 +131,10 @@ inline std::string timestamp() {
  */
 #define LOG_CORE(COMPONENT, LEVEL, FORMAT, ...) \
     do { \
-        if (Debug::isEnabled(COMPONENT) && Debug::verbosity() >= (LEVEL)) { \
-            Debug::stream() << "[" << Debug::timestamp() << "] " \
+        if (debug::isEnabled(COMPONENT) && debug::verbosity() >= (LEVEL)) { \
+            debug::stream() << "[" << debug::timestamp() << "] " \
                             << "[" << COMPONENT << "] " \
-                            << Debug::format(FORMAT, ##__VA_ARGS__) << std::endl; \
+                            << debug::format(FORMAT, ##__VA_ARGS__) << std::endl; \
         } \
     } while(0)
 
@@ -161,20 +161,22 @@ inline std::string timestamp() {
 // Component-Specific Aliases (optional, for convenience)
 // ─────────────────────────────────────────────────────────────────────────────
 
+#define LOG_PARSER_MINIAL(...)        LOG("PARSER", __VA_ARGS__)
 #define LOG_PARSER(...)        LOG("PARSER", __VA_ARGS__)
 #define LOG_PARSER_DETAIL(...) LOG_DETAIL("PARSER", __VA_ARGS__)
 
+#define LOG_LEXER_MINIAL(...)        LOG("LEXER", __VA_ARGS__)
 #define LOG_LEXER(...)         LOG("LEXER", __VA_ARGS__)
 #define LOG_LEXER_DETAIL(...)  LOG_DETAIL("LEXER", __VA_ARGS__)
 
-#define LOG_SEMANTIC(...)      LOG("SEMANTIC", __VA_ARGS__)
-#define LOG_SEMANTIC_DETAIL(...) LOG_DETAIL("SEMANTIC", __VA_ARGS__)
+// #define LOG_SEMANTIC(...)      LOG("SEMANTIC", __VA_ARGS__)
+// #define LOG_SEMANTIC_DETAIL(...) LOG_DETAIL("SEMANTIC", __VA_ARGS__)
 
-#define LOG_CODEGEN(...)       LOG("CODEGEN", __VA_ARGS__)
-#define LOG_CODEGEN_DETAIL(...) LOG_DETAIL("CODEGEN", __VA_ARGS__)
+// #define LOG_CODEGEN(...)       LOG("CODEGEN", __VA_ARGS__)
+// #define LOG_CODEGEN_DETAIL(...) LOG_DETAIL("CODEGEN", __VA_ARGS__)
 
-#define LOG_TYPE(...)          LOG("TYPE", __VA_ARGS__)
-#define LOG_TYPE_DETAIL(...)   LOG_DETAIL("TYPE", __VA_ARGS__)
+// #define LOG_TYPE(...)          LOG("TYPE", __VA_ARGS__)
+// #define LOG_TYPE_DETAIL(...)   LOG_DETAIL("TYPE", __VA_ARGS__)
 
 #define LOG_INTERPRETER(...)   LOG("INTERPRETER", __VA_ARGS__)
 #define LOG_INTERPRETER_DETAIL(...) LOG_DETAIL("INTERPRETER", __VA_ARGS__)
@@ -183,7 +185,7 @@ inline std::string timestamp() {
 // Helper: printf-style formatting (safe, no heap allocation)
 // ─────────────────────────────────────────────────────────────────────────────
 
-namespace Debug {
+namespace debug {
     inline std::string format(const char* fmt, ...) {
         va_list args;
         va_start(args, fmt);

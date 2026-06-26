@@ -10,7 +10,7 @@
 #include "DiagnosticCodes.hpp"
 #include <string_view>
 
-namespace DiagnosticMessages {
+namespace diagnosticMessages {
 
 /**
  * @brief Returns the message template for a given diagnostic code.
@@ -21,4 +21,4 @@ namespace DiagnosticMessages {
  */
 std::string_view getMessage(DiagCode code);
 
-} // namespace DiagnosticMessages
+} // namespace diagnosticMessages

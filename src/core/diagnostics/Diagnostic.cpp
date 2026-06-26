@@ -98,7 +98,7 @@ const std::vector<Diagnostic>& getAll() {
 // =============================================================================
 
 static std::string formatMessage(const Diagnostic& diag) {
-    std::string_view tmpl = DiagnosticMessages::getMessage(diag.code);
+    std::string_view tmpl = diagnosticMessages::getMessage(diag.code);
     if (diag.args.empty()) {
         return std::string(tmpl);
     }

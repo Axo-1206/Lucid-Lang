@@ -229,13 +229,13 @@ using SwitchStmtPtr = SwitchStmtAST*;
  * @brief Iterates over a collection or a numeric range with both index and value.
  *
  * @example
- *   for i int, v int in 0..10  { io:printl(stringFromInt(i) + ": " + stringFromInt(v)) }      -- range inclusive
- *   for i int, v int in 0..<10 { io:printl(stringFromInt(i) + ": " + stringFromInt(v)) }      -- range exclusive
- *   for i int, v int in 0..10..2 { io:printl(stringFromInt(i) + ": " + stringFromInt(v)) }    -- step of 2
- *   for i int, v int in nums { io:printl(stringFromInt(i) + ": " + stringFromInt(v)) }        -- collection
- *   for _, v int in nums { io:printl(stringFromInt(v)) }                                      -- ignore index
- *   for i int, _ in nums { io:printl(stringFromInt(i)) }                                      -- ignore value
- *   for _, _ in nums { io:printl("processing") }                                              -- ignore both
+ *   for i int in 0..10  { io:printl(stringFromInt(i) + ": " + stringFromInt(v)) }      -- range inclusive
+ *   for i int in 0..<10 { io:printl(stringFromInt(i) + ": " + stringFromInt(v)) }      -- range exclusive
+ *   for i int in 0..10..2 { io:printl(stringFromInt(i) + ": " + stringFromInt(v)) }    -- step of 2
+ *   for i int, v int in nums { io:printl(stringFromInt(i) + ": " + stringFromInt(v)) } -- collection
+ *   for _, v int in nums { io:printl(stringFromInt(v)) }                               -- ignore index
+ *   for i int, _ in nums { io:printl(stringFromInt(i)) }                               -- ignore value
+ *   for _, _ in nums { io:printl("processing") }                                       -- ignore both
  *
  * Both grammar forms (range and collection) map to a single node.
  *

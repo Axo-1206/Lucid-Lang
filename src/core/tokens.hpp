@@ -198,8 +198,9 @@ enum TokenType {
     BINARY_LITERAL,     // 0b1010
 
     // ─── Comments ──────────────────────────────────────────────────────
-    DOC_COMMENT,   // /-- ... --/    (block documentation)
-    LINE_COMMENT,  // -- text        (line comment, captured for docs)
+    DOC_COMMENT,        // /-- ... --/      (block documentation)
+    BLOCK_COMMENT,      // /- ... -/        (block comments)
+    LINE_COMMENT,       // -- text          (line comment, captured for docs)
 
     // ─── Error ────────────────────────────────────────────────────────
     UNKNOWN         // unrecognized character

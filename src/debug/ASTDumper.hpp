@@ -4,7 +4,7 @@
 #include "ast/support/StringPool.hpp"
 #include <string>
 
-namespace LucDebug {
+namespace debug {
 
 /**
  * @brief Dump an AST node to a human-readable string.

@@ -935,6 +935,7 @@ struct IfExprAST : ExprAST {
  * @field lo             Start (inclusive).
  * @field hi             End (inclusive/exclusive depends on flag).
  * @field isExclusive    True for `..<` syntax (end is exclusive).
+ * @note start and end must always be a positive integer
  */
 struct RangeExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::RangeExpr;

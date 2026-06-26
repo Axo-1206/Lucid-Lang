@@ -17,7 +17,7 @@
 #include "core/memory/StringPool.hpp"
 #include <string>
 
-namespace Debug {
+namespace debug {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ASTKind to String
