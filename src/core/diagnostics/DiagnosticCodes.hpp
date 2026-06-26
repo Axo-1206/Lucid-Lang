@@ -149,21 +149,21 @@ enum class DiagCode : uint32_t {
     E5005,          ///< Target triple not supported.
 
     // ========== 6000–6999: Warnings ==========
-    W6001 = 6000,   ///< Unreachable code.
-    W6002,          ///< Unused variable '%s'.
-    W6003,          ///< Unused parameter '%s' (consider `_` or @phantom).
-    W6004,          ///< Unused function '%s'.
-    W6005,          ///< Deprecated item used: %s.
-    W6006,          ///< @extern with 'let' (should be 'const').
-    W6007,          ///< @extern function with non‑empty body (body ignored).
-    W6008,          ///< Nullable operation without explicit guard.
-    W6009,          ///< Default case in match may never be reached.
-    W6010,          ///< Inefficient slice range (exclusive vs inclusive).
-    W6011,          ///< ~async function called but result ignored.
-    W6012,          ///< ~nullable function called without checking result for nil.
-    W6013,          ///< Constant folding overflow.
-    W6014,          ///< ~nullable call without nil guard.
-    W6015,          ///< Duplication implementation for trait
+    W0001 = 6000,   ///< Unreachable code.
+    // W6002,          ///< Unused variable '%s'.
+    // W6003,          ///< Unused parameter '%s' (consider `_` or @phantom).
+    // W6004,          ///< Unused function '%s'.
+    // W6005,          ///< Deprecated item used: %s.
+    // W6006,          ///< @extern with 'let' (should be 'const').
+    // W6007,          ///< @extern function with non‑empty body (body ignored).
+    // W6008,          ///< Nullable operation without explicit guard.
+    // W6009,          ///< Default case in match may never be reached.
+    // W6010,          ///< Inefficient slice range (exclusive vs inclusive).
+    // W6011,          ///< ~async function called but result ignored.
+    // W6012,          ///< ~nullable function called without checking result for nil.
+    // W6013,          ///< Constant folding overflow.
+    // W6014,          ///< ~nullable call without nil guard.
+    // W6015,          ///< Duplication implementation for trait
 };
 
-static_assert(static_cast<uint32_t>(DiagCode::W6014) < 7000, "range check");
+static_assert(static_cast<uint32_t>(DiagCode::W0001) < 7000, "range check");

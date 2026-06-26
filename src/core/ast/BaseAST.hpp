@@ -270,6 +270,18 @@ struct SourceLocation {
     bool isKnown()    const { return value > 0; }
 };
 
+// ─── Stream operator for SourceLocation ────────────────────────────────────
+// Allows SourceLocation to be used with std::ostringstream and operator<<
+// in variadic error reporting.
+inline std::ostream& operator<<(std::ostream& os, const SourceLocation& loc) {
+    if (loc.isKnown()) {
+        os << loc.line() << ":" << loc.column();
+    } else {
+        os << "<unknown location>";
+    }
+    return os;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // BaseAST — root of the entire AST hierarchy.
 // ─────────────────────────────────────────────────────────────────────────────

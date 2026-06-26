@@ -1,80 +1,9 @@
 /**
  * @file ParserState.cpp
  * @brief TokenStream and ParserState implementation.
- * 
- * This file implements the core state management for the parser:
- * - TokenStream: Safe token consumption with comment skipping
- * - ParserState: Mutable context for a parsing session
- * 
- * ## TokenStream
- * 
- * The TokenStream wraps a vector of tokens and provides safe accessors that
- * automatically skip comments. This makes comments invisible to the grammar
- * (they are harvested separately for documentation generation).
- * 
- * ### Key Features
- * - **Comment Skipping**: All peek/advance methods skip LINE_COMMENT,
- *   DOC_COMMENT, and BLOCK_COMMENT tokens automatically.
- * - **Position Management**: Save and restore positions for lookahead and
- *   error recovery.
- * - **Lookahead**: Peek at future tokens without consuming them.
- * - **EOF Handling**: Returns a sentinel EOF token when at the end.
- * 
- * ### Usage Example
- * 
- * ```cpp
- * TokenStream stream(tokens, "example.lucid");
- * 
- * // Check current token
- * if (stream.check(TokenType::IDENTIFIER)) {
- *     Token tok = stream.advance();  // Consumes and skips following comments
- * }
- * 
- * // Lookahead
- * TokenType next = stream.peekNextType();
- * 
- * // Save position for recovery
- * size_t saved = stream.getPos();
- * // ... try parsing ...
- * if (failed) stream.setPos(saved);
- * ```
- * 
- * ## ParserState
- * 
- * The ParserState holds all mutable context for a parsing session. It is
- * passed by reference to all parsing functions, making the parser reentrant
- * and testable.
- * 
- * ### Key Features
- * - **Token Stream**: The current token stream being consumed.
- * - **Allocators**: References to StringPool and ASTArena.
- * - **Error Tracking**: Collects diagnostics and tracks error count.
- * - **Context Tracking**: Tracks spawn depth, async context, and declaration
- *   context (top-level, local, function, loop).
- * - **Doc Comments**: Stores pending doc comments for attachment.
- * 
- * ### Usage Example
- * 
- * ```cpp
- * auto tokens = lexer::tokenize(source, path);
- * TokenStream stream(std::move(tokens), pool.intern(path));
- * ParserState state(std::move(stream), pool.intern(path), pool, arena);
- * 
- * // Report an error
- * state.error("Unexpected token");
- * 
- * // Check if in spawn context
- * if (state.isSpawnContext()) { restrict operations }
- * 
- * // Check if in async context
- * if (state.isAsyncContext()) { allow await }
- * ```
- * 
- * @see ParserState.hpp for the struct definitions
- * @see Parser.hpp for the main parser API
  */
 
-#include "parser/Parser.hpp"
+#include "ParserState.hpp"
 #include "core/diagnostics/DiagnosticCodes.hpp"
 #include "debug/DebugMacros.hpp"
 #include "debug/DebugUtils.hpp"
@@ -95,7 +24,7 @@ namespace parser {
 const Token TokenStream::eofToken_ = {TokenType::EOF_TOKEN, "", 0, 0, ""};
 
 // =============================================================================
-// TokenStream - Construction
+// TokenStream Implementation
 // =============================================================================
 
 /**
@@ -413,99 +342,6 @@ SourceLocation TokenStream::locOf(const Token& tok) const {
 }
 
 // =============================================================================
-// ParserState Implementation
-// =============================================================================
-
-// =============================================================================
-// ParserState - Error Reporting
-// =============================================================================
-
-/**
- * @brief Report an error at the current token location.
- * 
- * This is a convenience method that uses the current token's location for
- * the error. It creates a Diagnostic with severity Error and category Syntax.
- * 
- * @param message The error message.
- * 
- * ## Error Handling
- * 
- * The error is added to the `errors` vector and the `hasErrors` flag is set
- * to true. The parser continues to parse to collect more errors (error
- * recovery is handled by the caller).
- */
-void ParserState::error(const std::string& message) {
-    error(currentLoc(), message);
-}
-
-/**
- * @brief Report an error at a specific location.
- * 
- * This method allows reporting errors at arbitrary locations (e.g., when
- * a token was expected but not found, the location of the missing token
- * can be specified).
- * 
- * @param loc     The source location of the error.
- * @param message The error message.
- * 
- * ## Usage
- * 
- * ```cpp
- * // Report error at the location of a token
- * state.error(tokenLoc, "Unexpected token");
- * 
- * // Report error at a saved location (e.g., after lookahead)
- * state.error(savedLoc, "Missing '}'");
- * ```
- */
-void ParserState::error(const SourceLocation& loc, const std::string& message) {
-    errors.push_back({
-        DiagnosticSeverity::Error,
-        DiagnosticCategory::Syntax,
-        filePath,
-        loc,
-        DiagCode::E1001,  // Generic syntax error
-        {message}
-    });
-    hasErrors = true;
-    consecutiveErrors++;
-}
-
-/**
- * @brief Report an error with a diagnostic code.
- * 
- * This method allows reporting errors with specific diagnostic codes, which
- * enables better error reporting with standardized messages and formatting.
- * 
- * @param loc  The source location of the error.
- * @param code The diagnostic code (e.g., DiagCode::E1102).
- * @param args Format arguments for the diagnostic message.
- * 
- * ## Usage
- * 
- * ```cpp
- * state.error(loc, DiagCode::E1102, {"use"});
- * // Outputs: "Expected module path after keyword 'use'"
- * ```
- * 
- * @see DiagCode for available diagnostic codes
- * @see DiagnosticMessages for message templates
- */
-void ParserState::error(SourceLocation loc, DiagCode code, 
-                        std::initializer_list<std::string> args) {
-    errors.push_back({
-        DiagnosticSeverity::Error,
-        DiagnosticCategory::Syntax,
-        filePath,
-        loc,
-        code,
-        std::vector<std::string>(args.begin(), args.end())
-    });
-    hasErrors = true;
-    consecutiveErrors++;
-}
-
-// =============================================================================
 // ParserState - Context Queries
 // =============================================================================
 
@@ -526,8 +362,7 @@ void ParserState::error(SourceLocation loc, DiagCode code,
  * ```
  */
 bool ParserState::canContinue() const {
-    // If we've had too many consecutive errors, stop to avoid cascading
-    return consecutiveErrors < 10 && !hasErrors;
+    return consecutiveErrors < 10;
 }
 
 // =============================================================================
@@ -546,7 +381,7 @@ SourceLocation ParserState::currentLoc() const {
 }
 
 // =============================================================================
-// Module Import Implementation
+// ParserState - Module Import
 // =============================================================================
 
 ProgramAST* ParserState::importModule(InternedString usePath) {
@@ -582,7 +417,8 @@ ProgramAST* ParserState::importModule(InternedString usePath) {
         }
     }
     
-    error("Module not found: " + std::string(pool.lookup(usePath)));
+    // Use variadic error reporting
+    error("Module '", usePath, "' not found");
     return nullptr;
 }
 
