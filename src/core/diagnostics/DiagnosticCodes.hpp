@@ -2,11 +2,12 @@
 #include <cstdint>
 
 enum class DiagCode : uint32_t {
-    // ========== 0000–0099: Environment ==========
-    E0001 = 0,      ///< File not found or inaccessible.
-    E0002,          ///< Module resolution failed.
-    E0003,          ///< Cyclic module dependency.
-    E0004,          ///< Invalid package declaration.
+    // ========== 0000–0099: Environment ==========  
+    E0001 = 0,      ///< Unknown Error   
+    E0002,          ///< File not found or inaccessible.
+    E0003,          ///< Module resolution failed.
+    E0004,          ///< Cyclic module dependency.
+    E0005,          ///< Invalid package declaration.
 
     // ========== 0100–0199: Lexical ==========
     E0101 = 100,    ///< Invalid character in source (only ASCII allowed).
@@ -149,7 +150,8 @@ enum class DiagCode : uint32_t {
     E5005,          ///< Target triple not supported.
 
     // ========== 6000–6999: Warnings ==========
-    W0001 = 6000,   ///< Unreachable code.
+    W0001 = 6000,   ///< Unknown Warning
+    W0002,          ///< Unreachable code.
     // W6002,          ///< Unused variable '%s'.
     // W6003,          ///< Unused parameter '%s' (consider `_` or @phantom).
     // W6004,          ///< Unused function '%s'.

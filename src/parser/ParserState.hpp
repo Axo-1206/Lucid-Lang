@@ -137,7 +137,7 @@ private:
  * A DiagCode can be passed as the first argument:
  * 
  * ```cpp
- * state.error(DiagCode::E1102, "Missing '", "}", "' after '", "if", "'");
+ * state.error(DiagCode::E0001, "Missing '", "}", "' after '", "if", "'");
  * ```
  * 
  * ## Template Implementation Details
@@ -230,7 +230,7 @@ private:
  * state.error("Module '", usePath, "' not found");
  * 
  * // With diagnostic code
- * state.error(DiagCode::E1102, "Missing '", "}", "' after '", "if", "'");
+ * state.error(DiagCode::E0001, "Missing '", "}", "' after '", "if", "'");
  * ```
  */
 struct ParserState {
@@ -555,7 +555,7 @@ public:
      * state.error("Expected '", "}", "' but found '", "(", "'");
      * 
      * // With diagnostic code as first argument
-     * state.error(DiagCode::E1102, "Missing '", "}", "' after '", "if", "'");
+     * state.error(DiagCode::E0001, "Missing '", "}", "' after '", "if", "'");
      * 
      * // With InternedString (automatically resolved)
      * state.error("Module '", usePath, "' not found");
@@ -574,7 +574,7 @@ public:
      */
     template<typename... Args>
     void error(Args&&... args) {
-        errorImpl(DiagCode::E1001, std::forward<Args>(args)...);
+        errorImpl(DiagCode::E0001, std::forward<Args>(args)...);
     }
     
     /**
