@@ -93,11 +93,6 @@ or          not         true        false       nil         err
 > eventual compiler, but the language semantics remain identical.
 
 > [!NOTE]
->
-> `async` and `parallel` are statement-level keywords, not type qualifiers.
-> They appear at the call site: `async x retrieveData()` / `await x` /
-> `parallel renderPhysics()`. See **Async / Await** and **Parallel**.
->
 > `pub`, `export`, `extern` and `link` are **not** keywords. Visibility and
 > linkage are expressed as attributes: `@[export]`, `@[foreign("C")]`,
 > `@[link("libname")]`.
@@ -113,7 +108,7 @@ or          not         true        false       nil         err
 > without solving the problem below first.**
 >
 > The blocking problem is not weak motivation (a transparent primitive alias
-> like `type cm = int` was also considered and found to add no compiler-enforced
+> like `type cm = int` was also considered and found to add no language-enforced
 > safety — a good variable name or a doc comment communicates the same thing).
 > The blocking problem is **structural**: a type alias that names a function
 > type breaks parsing itself, not just readability.
@@ -134,7 +129,7 @@ or          not         true        false       nil         err
 > vs. a function declaration — has to happen during parsing, before type
 > checking exists. This inverts the normal parse-then-typecheck pipeline and
 > was judged not worth the complexity it would force onto the rest of the
-> compiler.
+> language.
 >
 > A future proposal must solve this structural problem — not just argue the
 > feature is useful — before being reconsidered. One direction that avoids it
@@ -312,8 +307,8 @@ let len   int       = parts.length          -- OK: . for struct field
 | `module:mem`  | module name    | never      | `math:sqrt(x)`  |
 | `value.field` | struct value   | if `let`   | `player.health` |
 
-The compiler rejects `module:member = ...` at the assignment site regardless
-of the member's internal mutability qualifier. This is enforced syntactically —
+The language rejects `module:member = ...` at the assignment site regardless
+of the member's internal mutability. This is enforced syntactically —
 `:` never produces an l-value.
 
 #### Depth of the Read-Only Guarantee
@@ -509,80 +504,6 @@ type_arg        = type | INT_LIT
 
 ---
 
-## Trait Declaration
-
-A trait is a pure **field contract** — a named set of fields (name and type
-only) that a struct promises to contain. Traits have no methods, no behavior,
-no qualifiers, and no default values. They exist solely to express structural
-requirements for data polymorphism.
-
-```ebnf
-trait_decl  = 'trait' IDENTIFIER [ generic_params ] '{' { trait_field } '}'
-
-trait_field = IDENTIFIER type
-              (* name and type only — no qualifiers, no defaults, no behavior *)
-```
-
-```lucid
-trait Vector2 {
-    x float
-    y float
-}
-
-trait Named {
-    name string
-}
-
-trait Bounded {
-    minVal float
-    maxVal float
-}
-
--- generic trait
-trait Container<T> {
-    value T
-    count int
-}
-```
-
-### Rules
-
-- Trait fields declare **name and type only** — no `const`/`let`, no
-  default values. Qualifiers and defaults belong to the implementing struct.
-- A struct implementing a trait must declare all the trait's fields at the
-  **top level** with matching names and types.
-- Field type mismatch is a **compile error** at the struct declaration site.
-- Two traits requiring the same field name with **different types** is a
-  **compile error** at the struct declaration — there is no silent merging.
-  Same name, same type across two traits is fine — satisfied once.
-- Traits may be used as **field types** in structs — a field typed as a trait
-  accepts any struct implementing that trait.
-- Traits may be used as **parameter types** in functions — inside the function
-  body only the trait's fields are accessible on that parameter.
-- Traits may be used as **generic constraints** — `<T : Trait>` means T must
-  implement Trait. See **Generic Constraints**.
-
-```lucid
--- name conflict: same field, different types — compile error
-trait A { x float }
-trait B { x int   }
-
-struct Bad : A, B {   -- ERROR: field x required as float by A and int by B
-    x float           -- which one?
-}
-
--- name conflict: same field, same type — fine, satisfied once
-trait A { x float }
-trait B { x float, y float }
-
-struct Both : A, B {  -- OK: x satisfies both A and B
-    x float
-    y float
-}
-```
-
----
-
 ## Struct Declaration
 
 A struct is a named holder — a collection of typed fields, each on its own
@@ -595,7 +516,7 @@ struct_decl     = 'struct' IDENTIFIER [ generic_params ]
 
 struct_field    = { attribute_list } IDENTIFIER type [ '=' expr ]
                   (* mutable field by default — same as let *)
-                | { attribute_list } IDENTIFIER 'const' type [ '=' expr ]
+                | { attribute_list } 'const' IDENTIFIER type [ '=' expr ]
                   (* const field — cannot be reassigned after construction *)
                   (* name then type, optional default value *)
 
@@ -666,8 +587,8 @@ and a value. Fields with default values may be omitted:
 const p Point = Point { x = 3.0, y = 4.0 }
 
 -- omit fields that have defaults
-const origin Point = Point {}          -- x=0.0, y=0.0 from defaults
-const shifted Point = Point { x = 5.0 } -- x=5.0, y=0.0 from default
+const origin Point = Point {}          -- x=3.0, y=4.0 from defaults
+const shifted Point = Point { x = 5.0 } -- x=5.0, y=4.0 from default
 
 -- nested struct
 struct Rect {
@@ -722,7 +643,7 @@ if e2.target != nil {
 
 ### Const Fields and Function-Typed Fields
 
-A field qualified `const` cannot be reassigned through `field_expr`, even
+A field is declared with `const` cannot be reassigned through `field_expr`, even
 when the containing variable is itself `let`. Field-level `const` is
 part of the struct's own definition, not something the holder of a mutable
 variable can override — `player Player` makes `player`'s *mutable*
@@ -731,8 +652,8 @@ itself declared `const` stays read-only regardless:
 
 ```lucid
 struct Counter {
-    step    int   -- fixed for the lifetime of every Counter value
-    total     int
+    const step int   -- fixed for the lifetime of every Counter value
+    total      int
 }
 
 let c Counter = Counter { step = 1  total = 0 }
@@ -749,7 +670,7 @@ with no further mechanism needed:
 
 ```lucid
 struct Validator {
-    check (int) -> bool   -- fixed behavior, set once at construction
+    const check (int) -> bool   -- fixed behavior, set once at construction
 }
 
 const positive Validator = Validator {
@@ -776,6 +697,80 @@ let log Logger = Logger { }
 log.sink = (msg string) -> () { system:writeToFile("app.log", msg) }   -- OK
 ```
 
+---
+
+## Trait Declaration
+
+A trait is a pure **field contract** — a named set of fields (name and type
+only) that a struct promises to contain. Traits have no methods, no behavior,
+and no default values. They exist solely to express structural requirements 
+for data polymorphism.
+
+```ebnf
+trait_decl  = 'trait' IDENTIFIER [ generic_params ] '{' { trait_field } '}'
+
+trait_field    = { attribute_list } IDENTIFIER type
+                | { attribute_list } 'const' IDENTIFIER type
+```
+
+```lucid
+trait Vector2 {
+    x float
+    y float
+}
+
+trait Named {
+    name string
+}
+
+trait Bounded {
+    minVal float
+    maxVal float
+}
+
+-- generic trait
+trait Container<T> {
+    value T
+    count int
+}
+```
+
+### Rules
+
+- A struct implementing a trait must declare all the trait's fields at the
+  **top level** with matching names and types.
+- Field type mismatch is an **error** at the struct declaration site.
+- Two traits requiring the same field name with **different types** is a
+  **compile error** at the struct declaration — there is no silent merging.
+  Same name, same type across two traits is fine — satisfied once.
+- Traits may be used as **field types** in structs — a field typed as a trait
+  accepts any struct implementing that trait.
+- Traits may be used as **parameter types** in functions — inside the function
+  body only the trait's fields are accessible on that parameter.
+- Traits may be used as **generic constraints** — `<T : Trait>` means T must
+  implement Trait. See **Generic Constraints**.
+
+```lucid
+-- name conflict: same field, different types — compile error
+trait A { x float }
+trait B { x int   }
+
+struct Bad : A, B {   -- ERROR: field x required as float by A and int by B
+    x float           -- which one?
+}
+
+-- name conflict: same field, same type — fine, satisfied once
+trait A { x float }
+trait B { x float, y float }
+
+struct Both : A, B {  -- OK: x satisfies both A and B
+    x float
+    y float
+}
+```
+
+---
+
 ## Enum Declaration
 
 An enum is a set of named variants, each with a **required** integer value —
@@ -786,11 +781,12 @@ principle applies here to values, not just types). Visually: a vertical
 block where each variant is a row with a name cell and a value cell.
 
 ```ebnf
-enum_decl       = 'enum' IDENTIFIER [ ':' int_type ] '{' { enum_variant } '}'
+enum_decl       = { attribute_list } 'enum' IDENTIFIER [ ':' int_type ] 
+                  '{' { enum_variant } '}'
 
 enum_variant    = { attribute_list } IDENTIFIER '=' INT_LIT
                   (* value is required — no auto-increment. Omitting it and
-                     letting the compiler infer previous + 1 would be the
+                     letting the language infer previous + 1 would be the
                      same category of guess this grammar rejects for var_decl
                      and for-loop types; an enum is no exception. *)
 ```
@@ -824,19 +820,19 @@ block where each parameter group is a column, separated by `->` arrows that mark
 real execution boundaries.
 
 ```ebnf
-func_decl       = ('let' | 'const') IDENTIFIER [ generic_params ]
+func_decl       = { attribute_list } ('let' | 'const') IDENTIFIER [ generic_params ]
                   param_group
-                  [ '->' return_type ]            (* omitted for void/unit *)
+                  [ '->' return_type ]  (* omitted for void/unit *)
                   '=' func_body
 
 param_group     = '(' [ param_list ] ')'
 param_list      = param { ',' param } [ ',' variadic_param ]
                 | variadic_param
 param           = IDENTIFIER type               (* pass by value — caller's copy *)
-                | IDENTIFIER 'const' type        (* read-only reference parameter *)
+                | 'const' IDENTIFIER type       (* read-only reference parameter *)
 variadic_param  = IDENTIFIER '...' type
-                  (* must be the last parameter; collects zero or more
-                     trailing arguments into a [*]type array *)
+                  (* must be the last parameter of a param_group; collects zero or
+                  more trailing arguments into a [*]type array *)
 
 return_type     = type
                 | '(' type ',' type { ',' type } ')'   (* multiple return values *)
@@ -848,9 +844,8 @@ func_type       = param_group '->' return_type
                   (* a function type is always a single param group *)
 ```
 
-**Multiple return values** are declared with a tuple return type and
-destructured at the call site. Both the function and its caller are explicit
-about the number and types of returned values:
+**Multiple return values** are grouped by `()`, NOTE: this is not a tuple but a way
+to allow parser to differentiate them with a `param_group`
 
 ```lucid
 const parseInt (s string) -> (int, bool) = {
@@ -858,7 +853,7 @@ const parseInt (s string) -> (int, bool) = {
     return 0, false
 }
 
--- destructure at the call site
+-- at the call site
 let value int
 let ok bool
 value, ok = parseInt("42")
@@ -878,7 +873,7 @@ const sum (nums ...int) -> int = {
     return total
 }
 
-const describe (v const Vector2) -> string = {
+const describe (const v Vector2) -> string = {
     -- v is a read-only reference — no copy overhead
     return "(" + stringFromFloat(v.x) + ", " + stringFromFloat(v.y) + ")"
 }
@@ -973,11 +968,11 @@ addTen(3)   -- 13
 
 ### Form 2 — `()()` Shorthand
 
-Think of Form 2 as a multi-parameter function that the compiler automatically
+Think of Form 2 as a multi-parameter function that the language automatically
 makes curriable. You write the function exactly as if all the arguments arrive
 at once — the body is flat, all parameters are in scope, the logic reads left
 to right. The only difference from a plain multi-param function is that `()()`
-groups instead of `(,)` commas, which tells the compiler to make each group
+groups instead of `(,)` commas, which tells the language to make each group
 independently callable.
 
 The language processor expands Form 2 recursively and exhaustively into Form 1
@@ -990,7 +985,7 @@ const add (a int)(b int) -> int = {
     return a + b
 }
 
--- compiler expands to
+-- language expands to
 const add (a int) -> (b int) -> int = {
     return (b int) -> int {
         return a + b
@@ -1022,7 +1017,7 @@ const process (a int)(b int) -> (c int) -> int = {
     return (c int) -> int { return sum + c }
 }
 
--- Form 2: flat body, compiler handles the wrapping
+-- Form 2: flat body, language handles the wrapping
 const clamp (lo int)(hi int)(v int) -> int = {
     if v < lo { return lo }
     if v > hi { return hi }
@@ -1038,7 +1033,7 @@ clamp0to100(200)   -- 100
 ### Entry Point
 
 ```lucid
-@[export, aot] const main () -> int = {
+@[export] const main () -> int = {
     return 0
 }
 
@@ -1046,49 +1041,7 @@ clamp0to100(200)   -- 100
 -- [_]string: slice — the runtime owns the argument buffer, main gets a
 -- read-only view. [*]string would be wrong here: that implies main owns a
 -- heap copy of all arguments, which the runtime never hands over.
--- In interpreter mode, @[aot] is optional and has no effect;
--- it becomes meaningful when using the future compiled backend.
-@[export, aot] const main (args [_]string) -> int = {
-    return 0
-}
-```
-
-`@[aot]` is shown explicitly above rather than omitted — see **Compilation
-Mode Directives**, immediately below, for why a bare `@[export] const main`
-is shorthand for the same thing, not a third "unspecified" mode.
-
-### Compilation Mode Directives
-
-`@[aot]` and `@[jit]` are mutually exclusive attributes, valid only on `main`
-(see **Built-in Attributes**, under **Compiler Directives**). `main` is
-always compiled in exactly one of the two; `@[aot]` is the default:
-
-```
-@[aot]   -- ahead-of-time: produces a native binary at build time (default)
-@[jit]   -- just-in-time:  compiles and executes at runtime
-```
-
-> [!NOTE]
-> **Implementation Status:** These attributes are planned for the future
-> compiled backend. In the current interpreter-only implementation, both
-> `@[aot]` and `@[jit]` are accepted but have no effect. The interpreter
-> always executes source code directly.
-
-Both combine with `@[export]` in the same bracket — `attribute_list` is one
-`@[...]` with comma-separated items, not separate brackets stacked together
-
-```lucid
-@[export, aot] const main () -> int = {
-    return 0
-}
-
--- equivalent to the above — @[aot] is the default when neither is written
-@[export] const main () -> int = {
-    return 0
-}
-
--- opting into JIT instead requires writing @[jit] explicitly
-@[export, jit] const main () -> int = {
+@[export] const main (args [_]string) -> int = {
     return 0
 }
 ```
@@ -1098,9 +1051,9 @@ Both combine with `@[export]` in the same bracket — `attribute_list` is one
 ## Function Overloading
 
 Two or more declaration with the same name but different parameter signatures are
-overloads. The compiler picks the correct overload at the call site based on
+overloads. The language picks the correct overload at the call site based on
 argument types. Overloads that differ only in return type are a compile error —
-the compiler cannot resolve them from the call site alone.
+the language cannot resolve them from the call site alone.
 
 ```ebnf
 (* overloading is not a grammar construct — it falls out of the ordinary
@@ -1111,7 +1064,7 @@ the compiler cannot resolve them from the call site alone.
 ### Rules
 
 - Overloads must differ in **parameter count or parameter types**.
-- Differing only in return type is a **compile error**.
+- Differing only in return type is an **error**.
 - A generic function and a concrete overload of the same name coexist — the
   concrete overload takes priority when argument types match exactly.
 - Cross-module overloads with the same name must be qualified at the call
@@ -1149,15 +1102,15 @@ const bad (v int) -> int    = { ... }
 ## Variable Declaration
 
 Declare a variable with `let` to make it mutable. Write `const` to make a
-binding immutable. A type is **always required** — Lucid is a compiler, not an 
-interpreter, and does not infer a type from an initializer expression, even where
-the initializer looks unambiguous. A bare numeric literal like `0.01` does not
-by itself say whether it means `float`, `double`, or `decimal` — these are
-distinct types with different precision and performance characteristics, and
-silently picking one would be a guess, not a fact derivable from the source.
-The same principle applies uniformly, including to literals that happen to
-match only one type (a string literal could only ever be `string`): the rule
-is stated once, with no per-case exceptions to remember.
+binding immutable. A type is **always required** — Lucid does not infer a type 
+from an initializer expression, even where the initializer looks unambiguous. 
+A bare numeric literal like `0.01` does not by itself say whether it means 
+`float`, `double`, or `decimal` — these are distinct types with different 
+precision and performance characteristics, and silently picking one would be a guess, 
+not a fact derivable from the source. The same principle applies uniformly, 
+including to literals that happen to match only one type (a string literal 
+could only ever be `string`): the rule is stated once, with no per-case 
+exceptions to remember.
 
 ```ebnf
 var_decl    = 'let'   IDENTIFIER type [ '=' expr ]   (* mutable binding *)
@@ -1200,7 +1153,7 @@ generic_args    = '<' type { ',' type } '>'
 - Type parameters are resolved strictly at the call/instantiation site —
   there is no type inference across call boundaries.
 - Generic functions and concrete overloads of the same name coexist — the
-  compiler picks the concrete overload first if types match exactly, then
+  language picks the concrete overload first if types match exactly, then
   falls back to the generic.
 - A generic function body must be valid for **any** `T` — no `if T is X`
   branching. Type-specific logic is passed in as a callback parameter.
@@ -1275,7 +1228,7 @@ to return — `T`'s complete field set is unknown inside the generic function
 body (a constrained `T` only guarantees the trait's fields exist, nothing
 else). A generic function constrained this way can read and use the trait's
 fields, but it can only ever **build and return the trait type itself** — a
-fresh value of the compiler-generated minimal struct for that trait, never a
+fresh value of the language-generated minimal struct for that trait, never a
 reconstructed `T`:
 
 ```lucid
@@ -1408,9 +1361,9 @@ const s Box<string> = rebox<int, string>(b)(stringFromInt)
 
 ---
 
-## Compiler Directives: Attributes, Qualifiers, and Intrinsics
+## Language Directives: Attributes `@`, Nullable `?` / Fallible `!`, and Intrinsics `#`
 
-Attributes `@[]` and compiler intrinsics `#` provide instructions to the compiler or execute compile-time operations. The `~[...]` qualifier syntax has been removed entirely — mutability is now expressed by the `let`/`const` declaration keywords, and `async`/`parallel` are statement keywords, not type modifiers.
+Attributes `@[]` and language intrinsics `#` provide instructions to the language or execute compile-time operations.
 
 ### 1. Attributes `@[]`
 
@@ -1426,26 +1379,18 @@ attr_arg        = STRING_LIT | INT_LIT | FLOAT_LIT | BOOL_LIT | IDENTIFIER
 
 #### Built-in Attributes
 
-| Attribute              | Valid on                  | Meaning                                                                                            |
-| ---------------------- | ------------------------- | -------------------------------------------------------------------------------------------------- |
-| `@[export]`            | any top-level declaration | Visible outside this module                                                                        |
-| `@[foreign("abi")]`    | function declaration      | Implemented in a foreign language; ABI string e.g. `"C"`                                           |
-| `@[link("name")]`      | module or declaration     | Link against this native library                                                                   |
-| `@[deprecated("msg")]` | any declaration           | Compiler warning at use sites                                                                      |
-| `@[inline]`            | function declaration      | Hint to inline at call sites                                                                       |
-| `@[noinline]`          | function declaration      | Prevent inlining                                                                                   |
-| `@[aot]`               | `main` only               | Compile ahead-of-time to native binary (default) — planned; currently no effect in the interpreter |
-| `@[jit]`               | `main` only               | Compile and execute via JIT at runtime — planned; currently no effect in the interpreter           |
+| Attribute              | Valid on                  | Meaning                                                  |
+| ---------------------- | ------------------------- | -------------------------------------------------------- |
+| `@[export]`            | any top-level declaration | Visible outside this module                              |
+| `@[foreign("abi")]`    | function declaration      | Implemented in a foreign language; ABI string e.g. `"C"` |
+| `@[link("name")]`      | module or declaration     | Link against this native library                         |
+| `@[deprecated("msg")]` | any declaration           | Language warning at use sites                            |
+| `@[inline]`            | function declaration      | Hint to inline at call sites                             |
+| `@[noinline]`          | function declaration      | Prevent inlining                                         |
 
 **Rules:**
 - `@[foreign]` requires the function body to be empty `{}` — the implementation
   is resolved by the linker (AOT/JIT) or dynamic loading (interpreter).
-- `@[aot]` and `@[jit]` are mutually exclusive and only valid on `main`.
-- `main` is always compiled in exactly one of these two modes. `@[aot]` is
-  the default — writing `@[export] const main` with neither attribute present
-  is shorthand for `@[export, aot] const main`.
-- In the current interpreter implementation, `@[aot]` and `@[jit]` are
-  accepted but have no effect. They are reserved for the future compiled backend.
 - Attributes are a **fixed, closed set** — there is no user-defined or
   namespaced attribute form.
 
@@ -1472,10 +1417,8 @@ Vector2?!    -- nullable and fallible struct value
 > Disallowing nullable/fallible arrays and function types encourages cleaner
 > idioms: an empty array `[]` is always preferable to a `nil` array, and an
 > empty or no-op function is preferable to a nullable function binding.
-> `async` and `parallel` are no longer type qualifiers either — they are
-> statement keywords (see **Async / Await** and **Parallel**).
 
-### 3. Compiler Intrinsics `#`
+### 3. Language Intrinsics `#`
 
 Intrinsic calls appear in expression position and are prefixed with `#`. Unlike attributes, intrinsics can take runtime expressions and types as arguments.
 
@@ -1577,7 +1520,7 @@ const distance int64          = #ptrDiff(next, buf)
 | ---------------- | ----------- | ------- | ------------------------------------------------- |
 | `#bitcast(T, x)` | type, value | `T`     | Reinterpret bits of x as type T; sizes must match |
 
-Valid only inside `@[foreign("C")]`-decorated functions or when the compiler flag `--unsafe` is enabled.
+Valid only inside `@[foreign("C")]`-decorated functions or when the language flag `--unsafe` is enabled.
 
 ```lucid
 const bits uint32  = 0x3F800000
@@ -1631,7 +1574,7 @@ range_iter      = expr range_op expr
 
 switch_stmt     = 'switch' expr '{' { case_clause } [ default_clause ] '}'
                   (* exhaustiveness: if expr is an enum type and no
-                     default_clause is present, the compiler errors on
+                     default_clause is present, the language errors on
                      missing variants *)
 
 case_clause     = 'case' case_value { ',' case_value } ':' block
@@ -1665,7 +1608,7 @@ const compute () -> int = {
     @[deprecated("use newVec")]
     struct Vec2 { x float = 0.0  y float = 0.0 }
 
-    @[inline]
+    @[inline, deprecated("use new library")]
     const add (a int)(b int) -> int = { return a + b }
 
     struct Point { x int = 0.0  y int = 0.0 }
@@ -1691,11 +1634,11 @@ if x > 0 {
 
 #### If / Else Narrowing
 
-The compiler applies **type narrowing** inside branches based on the condition.
+The language applies **type narrowing** inside branches based on the condition.
 
 **Standard Narrowing — Inside the Block:**
 
-When the condition checks a nullable variable, the compiler narrows its type inside the then-branch:
+When the condition checks a nullable variable, the language narrows its type inside the then-branch:
 
 ```lucid
 const a int? = getValue()
@@ -1709,11 +1652,11 @@ if a != nil {
 
 **Inverse Narrowing — Early Exit Pattern:**
 
-When a **standalone `if` with no `else`** contains a control flow exit (`return`, `break`, or `continue`), the compiler applies the **inverse** of the condition to the rest of the enclosing scope.
+When a **standalone `if` with no `else`** contains a control flow exit (`return`, `break`, or `continue`), the language applies the **inverse** of the condition to the rest of the enclosing scope.
 
 > [!WARNING]
 > Inverse narrowing only applies to standalone `if` — no `else`
-> The moment an `else` or `else if` is present, the compiler cannot guarantee which branch ran. The exit may have come from the `if` branch or never fired at all. Inverse narrowing is therefore **not applied** after an `if-else` chain.
+> The moment an `else` or `else if` is present, the language cannot guarantee which branch ran. The exit may have come from the `if` branch or never fired at all. Inverse narrowing is therefore **not applied** after an `if-else` chain.
 >
 > ```lucid
 > -- VALID: standalone if — inverse narrowing applies
@@ -1726,7 +1669,7 @@ When a **standalone `if` with no `else`** contains a control flow exit (`return`
 >
 > -- INVALID: chained else-if — inverse narrowing NOT applied after the chain
 > if a == nil { return } else if b == nil { return }
-> -- a and b are still nullable here — compiler cannot know which branch ran
+> -- a and b are still nullable here — language cannot know which branch ran
 > ```
 
 The condition determines what gets narrowed and in which direction:
@@ -1761,7 +1704,7 @@ if a == nil or b == nil or c == nil { return }
 
 **`and` at the top level — narrowing is unsound, not applied:**
 
-When conditions are joined by `and`, the exit fires only if ALL are true. The inverse is `or` — at least one condition is false, but the compiler cannot know which. Narrowing any single variable would be unsound:
+When conditions are joined by `and`, the exit fires only if ALL are true. The inverse is `or` — at least one condition is false, but the language cannot know which. Narrowing any single variable would be unsound:
 
 ```lucid
 if a == nil and b == nil { return }
@@ -1842,7 +1785,7 @@ annotation on every loop variable.** Lucid does not infer a loop variable's
 type from context — not from a range's literal bounds, and not from a
 collection's already-known element type. This matches **Variable
 Declaration**: a type is always written, even where the answer looks
-unambiguous, because the compiler does not guess.
+unambiguous, because the language does not guess.
 
 **Range iteration** — the loop variable's type must be numeric (`int`,
 `float`, and so on). The end bound's inclusivity is controlled by `range_op`,
@@ -1883,12 +1826,12 @@ for i int, v int in nums {
 ### `switch`
 
 `switch` dispatches on a single value. Arms are matched top to bottom and the
-first matching arm executes — fall-through is disabled by default. The compiler
+first matching arm executes — fall-through is disabled by default. The language
 emits a jump table where possible (integer and enum types), guaranteeing O(1)
 dispatch.
 
 **Enum exhaustiveness** — when the switched value is an enum type and no
-`default` clause is present, the compiler errors on any missing variant. This
+`default` clause is present, the language errors on any missing variant. This
 ensures all variants are explicitly handled:
 
 ```lucid
@@ -1999,7 +1942,7 @@ if a < b {
 
 This is the same narrowing `case_value` already applies to a single literal
 or enum variant — a comparison or a `??` fallback simply never appears in the
-`case_value` production at all, so the compiler rejects them at parse time,
+`case_value` production at all, so the language rejects them at parse time,
 not as a later semantic check.
 
 ---
@@ -2052,10 +1995,10 @@ module_expr     = IDENTIFIER ':' IDENTIFIER     (* module member access — neve
 unary_expr      = ( '-' | 'not' | '~' ) expr
 
 binary_expr     = expr binary_op expr
-binary_op       = '+' | '-' | '*' | '/' | '%' | '^'
+binary_op       = '+' | '-' | '*' | '/' | '%' | '**'
                 | '==' | '!=' | '<' | '<=' | '>' | '>='
                 | 'and' | 'or'
-                | '&&' | '||' | '~^' | '<<' | '>>'
+                | '&' | '|' | '^' | '<<' | '>>'
 
 func_literal    = param_group { param_group } '->' type block
                   (* anonymous function — Form 2 *)
@@ -2131,7 +2074,7 @@ and `not` is always `bool`.
 
 Using `and`/`or`/`not` to coerce a fallible or nullable-and-fallible value is
 a truthiness check only — it is **not** a narrowing operation. `if x { }`
-tells you whether `x` is currently `T`, but does not let the compiler treat
+tells you whether `x` is currently `T`, but does not let the language treat
 `x` as plain `T` inside the block the way `if x != err { }` does (see
 **Narrowing a Fallible Value**). Prefer explicit `== err` / `== nil` guards
 when the block needs to use the underlying value.
@@ -2173,7 +2116,7 @@ if not x { }    -- x is nullable: nil treated as false, not flips to true
 ```
 
 > [!NOTE]
-> Coercing a non-nullable operand is never a runtime branch — the compiler
+> Coercing a non-nullable operand is never a runtime branch — the language
 > already knows the answer. Writing `and`/`or`/`not` against a non-nullable
 > operand is legal but the check folds away entirely; it is only useful when
 > mixed with a nullable operand in the same expression, as in `name and user`
@@ -2181,23 +2124,23 @@ if not x { }    -- x is nullable: nil treated as false, not flips to true
 
 ### Bitwise Operators
 
-Integer types only. `&&` and `||` are bitwise AND/OR (not logical — those use `and`/`or` keywords). This avoids ambiguity with `&` (reference operator).
+Integer types only. `&` and `|` are bitwise AND/OR (not logical — those use `and`/`or` keywords). This avoids ambiguity with `&` (reference operator).
 
 | Operator | Name                |
 | -------- | ------------------- |
-| `&&`     | bitwise AND         |
-| `\|\|`   | bitwise OR          |
-| `~^`     | bitwise XOR         |
-| `~~`     | bitwise NOT (unary) |
+| `&`      | bitwise AND         |
+| `\|`     | bitwise OR          |
+| `^`      | bitwise XOR         |
+| `~`      | bitwise NOT (unary) |
 | `<<`     | left shift          |
 | `>>`     | right shift         |
 
 ```lucid
 const flags   uint32 = 0xFF00
 const mask    uint32 = 0x0F0F
-const result  uint32 = flags && mask     -- 0x0F00
-const merged  uint32 = flags || mask     -- 0xFF0F
-const inv     uint32 = ~~flags           -- bitwise NOT
+const result  uint32 = flags & mask     -- 0x0F00
+const merged  uint32 = flags | mask     -- 0xFF0F
+const inv     uint32 = ~flags           -- bitwise NOT
 const shifted uint32 = 1 << 4            -- 16
 ```
 
@@ -2243,7 +2186,7 @@ const scale (factor float)(v float) -> float = { return v * factor }
 ### Curry Functions in Pipelines
 
 `|>` fills exactly one parameter group. A curried function with remaining
-unfilled groups is a compile error as a pipeline step. Pre-apply first:
+unfilled groups is an error as a pipeline step. Pre-apply first:
 
 ```lucid
 const clamp (lo int)(hi int)(v int) -> int = {
@@ -2408,7 +2351,7 @@ function that can fail marks its return type with `!`. A value of a fallible
 type holds exactly one of two things at any moment: a plain `T`, or the bare
 sentinel `err`. This mirrors `T?`, which holds either a plain `T` or the bare
 sentinel `nil`. Both are resolved the same way — narrowing with `if` — and
-both are **inert** until narrowed: the compiler forbids using an un-narrowed
+both are **inert** until narrowed: the language forbids using an un-narrowed
 fallible or nullable value as a plain `T`.
 
 There are no exceptions and no registered handlers. The one narrow exception
@@ -2420,17 +2363,9 @@ handler somewhere else up the call stack.
 
 ### Fallible Types
 
-`!` is a postfix qualifier, not an infix operator. It carries no payload —
+`!` is a postfix fallible, not an infix operator. It carries no payload —
 there is no separate error type to declare. A function either succeeds with
 `T` or fails with the bare `err` sentinel:
-
-```ebnf
-qualified_type  = '~[' type_qual_item { ',' type_qual_item } ']' type
-                | type '?'                  (* nullable: T or nil *)
-                | type '!'                  (* fallible: T or err *)
-                | type '?' '!'              (* nullable and fallible: T, nil, or err *)
-                  (* '?!' is the only valid order — '!?' is rejected by the parser *)
-```
 
 ```lucid
 int!         -- holds either int or err
@@ -2441,7 +2376,7 @@ User?!       -- holds either User, nil, or err — three possible states
 ### `!` on Array Types
 
 `!` binds to the **element type** of an array, never to the array itself —
-the same rule already established for `?` (see **Built-in Qualifiers**):
+the same rule already established for `?`:
 
 ```lucid
 [*]int! -- array of fallible int — each element is independently
@@ -2530,7 +2465,7 @@ if b == nil or b == err { return }
 > [!WARNING]
 > Exactly as with `nil`, inverse narrowing for `err` only applies after a
 > **standalone `if` with no `else`** that exits. The moment an `else` or
-> `else if` is present, the compiler cannot guarantee which branch ran, and
+> `else if` is present, the language cannot guarantee which branch ran, and
 > narrowing is not applied. See **If / Else Narrowing** for the full rule —
 > it applies identically here, with `err` and `nil` checks treated the same
 > way `and`/`or` combinations are already analyzed for soundness.
@@ -2572,7 +2507,7 @@ type `rhs` actually produces, checked against `x`'s own type:
   something in between — a retry, a log, a side effect) rather than fully
   resolving the value. In that case the result of the whole `?? ` expression
   is still `T!`, not `T` — the failure is preserved, not silently erased.
-- The compiler checks the block's result type against `x`'s declared type the
+- The language checks the block's result type against `x`'s declared type the
   same way it checks any other assignment: a `T!` left-hand side accepts a
   block that produces `T` **or** `err`; a plain non-fallible `T` left-hand
   side (where `??` is closer to dead code, but still legal) only accepts a
@@ -2710,7 +2645,7 @@ typed declaration.
 > live-or-dead ambiguity, and there is no clean syntactic line between "a
 > call that happens to return a fallible type" and "a block"). The
 > intermediate-declaration convention above is a recommendation, not a rule the
-> compiler enforces.
+> language enforces.
 
 The block after `??` is an ordinary `block` — it can contain any statement,
 including `if` or `switch`, exactly like a function body. This is not the
@@ -2805,7 +2740,7 @@ Lucid does not silently produce a wrong value in these cases, and it does not
 require every arithmetic or index expression to carry `!` in its type either
 — that would make ordinary arithmetic unusably verbose. Instead:
 
-- If the compiler can **prove** the operation always succeeds — dividing by a
+- If lucid can **prove** the operation always succeeds — dividing by a
   nonzero literal, or indexing a fixed-size array (`[N]T`) with a literal
   index that is provably less than `N` — the expression types as plain `T`
   and no check exists at runtime. A literal index into a slice (`[_]T`) or
@@ -2817,7 +2752,7 @@ require every arithmetic or index expression to carry `!` in its type either
 > division and indexing operations. The compile-time proof optimization
 > (eliminating the check entirely for provably-safe literals) will be available
 > in the future compiled backend.
-- If the compiler **cannot prove** this (e.g. dividing by a variable, indexing
+- If lucid **cannot prove** this (e.g. dividing by a variable, indexing
   with a runtime-computed index, or indexing a slice/dynamic array at all),
   the operation is checked at runtime. Left unhandled, a failing check
   **panics**: the program terminates immediately with a diagnostic. Attaching
@@ -2886,7 +2821,7 @@ const process (url string) -> string! = {
 
 ```lucid
 -- INVALID: returning an un-narrowed fallible value, even with a matching
--- signature, is forbidden — the compiler cannot tell this apart from
+-- signature, is forbidden — the language cannot tell this apart from
 -- forgetting to handle the failure
 const badProcess (url string) -> string! = {
     const raw string! = fetch(url)
@@ -3280,10 +3215,10 @@ const q ptr<Node>? = findNode()   -- pointer itself may be nil; nil-check requir
 ```
 
 > [!NOTE]
-> Unannotated `@[foreign("C")]` pointer returns default to `ptr<T>` (non-nullable). Use `ptr<T>?` only when you know the C function may return `NULL`. The foreign declaration on the Lucid side is the sole nullability contract — the Lucid compiler does not parse C headers.
+> Unannotated `@[foreign("C")]` pointer returns default to `ptr<T>` (non-nullable). Use `ptr<T>?` only when you know the C function may return `NULL`. The foreign declaration on the Lucid side is the sole nullability contract — the Lucid language does not parse C headers.
 
 > [!CAUTION]
-> **`ptr<T>` is a programmer-level contract, not a compiler-verified proof.**
+> **`ptr<T>` is a programmer-level contract, not a language-verified proof.**
 >
 > The type system guarantees that a non-nullable `ptr<T>` will never be *statically assigned* `nil`. It does **not** and **cannot** guarantee that the pointed-to memory remains valid at runtime. External code — foreign calls (e.g. `free`), manual pointer arithmetic via `#ptrOffset`, or aliased ownership — can release or corrupt that memory *after* the pointer was set, producing a **dangling pointer**: non-nil in value, invalid in content.
 >
@@ -3315,7 +3250,7 @@ const q ptr<Node>? = findNode()   -- pointer itself may be nil; nil-check requir
 4. Pass to pointer intrinsics (`#toRef`, `#ptrOffset`, etc.)
 5. Print the address for debugging
 
-### Forbidden Operations (Compiler Error)
+### Forbidden Operations (Error)
 
 - Dereferencing: `*ptr`
 - Field access: `ptr.field`
@@ -3351,7 +3286,7 @@ const next ptr<uint8>? = #ptrOffset(buf, 1)  -- pointer arithmetic
 When a C binary exposes data at a known address (e.g. a hardware register, a shared memory region, or a C struct field), the idiomatic Lucid pattern is to declare a `@[foreign("C")]` function that accepts a raw pointer and returns the value by copy — **never by reference**.
 
 > [!IMPORTANT]
-> Foreign functions **must not** return `&T`. The Downward Flow Rule forbids reference returns from all functions, including foreign ones — returning a `&T` from C would produce a reference with no Lucid-owned backing variable, which is undefined behaviour. The compiler rejects any foreign declaration with `-> &T` as a return type.
+> Foreign functions **must not** return `&T`. The Downward Flow Rule forbids reference returns from all functions, including foreign ones — returning a `&T` from C would produce a reference with no Lucid-owned backing variable, which is undefined behaviour. The language rejects any foreign declaration with `-> &T` as a return type.
 >
 > The correct pattern is to return an **owned value** (a primitive, struct, or raw pointer). The caller then uses `#toRef` to enter the safe reference world if needed.
 
@@ -3395,7 +3330,7 @@ const score int     = ref.score    -- read fields safely through the reference
 
 ### How C Communicates Nullable Returns to Lucid
 
-C has no built-in nullable type. The foreign declaration in Lucid is the **sole nullability contract** — the Lucid compiler does not parse C headers. The programmer declares the expected nullability and owns the promise.
+C has no built-in nullable type. The foreign declaration in Lucid is the **sole nullability contract** — the Lucid does not parse C headers. The programmer declares the expected nullability and owns the promise.
 
 ---
 
@@ -3461,7 +3396,7 @@ corresponding argument to a separate parsing pass over the string's
 contents, decoupled from where the argument is actually written. That
 relationship is then either checked at runtime (a class of bug this grammar
 has consistently avoided — see **Variable Declaration**'s no-inference rule
-for the same reasoning applied elsewhere) or requires the compiler to
+for the same reasoning applied elsewhere) or requires the language to
 specially parse string-literal contents as if they were a second grammar,
 which both `\(expr)` interpolation and the rest of this language avoid:
 every expression embedded in a literal is checked exactly where it's
@@ -3563,7 +3498,7 @@ Foreign functions are declared with `@[foreign("abi")]`. The body must be empty 
 > [!NOTE]
 > **Interpreter Mode:** In the current interpreter implementation, `@[foreign]`
 > functions are resolved through dynamic linking (dlopen/dlsym) at runtime.
-> The compiler backend will eventually resolve these at link time.
+> The language backend will eventually resolve these at link time.
 
 ```ebnf
 foreign_decl    = '@[' foreign_attr { ',' link_attr } ']' func_decl
@@ -3620,7 +3555,7 @@ Highest to lowest:
 | ----- | --------------------------- | ------------- |
 | 8     | `+>` (composition)          | left          |
 | 7     | unary `-` `not` `~`         | right         |
-| 6     | `*` `/` `%`                 | left          |
+| 6     | `*` `/` `%` `**`            | left          |
 | 5     | `+` `-`                     | left          |
 | 4     | `..` `..<` (range)          | left          |
 | 3     | `==` `!=` `<` `<=` `>` `>=` | left          |
