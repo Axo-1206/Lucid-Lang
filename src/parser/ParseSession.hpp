@@ -6,7 +6,7 @@
  * - Parsing source files into ASTs
  * - Resolving module imports
  * - Caching parsed files
- * - Detecting circular imports
+ * - Detecting circular imports (delegated to ModuleResolver)
  * - Managing shared resources (StringPool, ASTArena)
  * 
  * This is a pure parsing layer - no semantic analysis or code generation.
@@ -35,6 +35,7 @@
 
 #include "core/diagnostics/Diagnostic.hpp"
 #include "parser/ModuleResolver.hpp"
+#include "parser/ParserState.hpp"
 #include "core/memory/StringPool.hpp"
 #include "core/memory/ASTArena.hpp"
 #include "core/ast/BaseAST.hpp"
@@ -43,6 +44,7 @@
 #include <vector>
 #include <string>
 #include <filesystem>
+#include <functional>
 
 namespace parser {
 
@@ -67,6 +69,14 @@ namespace parser {
  * 
  * All AST nodes are allocated in the arena and freed when
  * the session is destroyed.
+ * 
+ * ## Module Resolution
+ * 
+ * Module resolution is delegated to ModuleResolver, which handles:
+ * - Converting use paths to file paths
+ * - Caching resolved paths and parsed ASTs
+ * - Detecting circular imports
+ * - Managing search paths
  */
 class ParseSession {
 public:
@@ -109,7 +119,7 @@ public:
      * @param filePath The file path (relative to package root)
      * @return ProgramAST* The parsed AST, or nullptr if not found
      */
-    ProgramAST* getParsedFile(const std::string& filePath) const;
+    ProgramAST* getParsedFile(const std::string& filePath);
     
     /**
      * @brief Get all parsed files.
@@ -131,6 +141,7 @@ public:
      * @brief Import a module by its use path.
      * 
      * Called by the parser when encountering a use declaration.
+     * This is the callback that ParserState uses.
      * 
      * @param usePath The import path (e.g., "std.io")
      * @return ProgramAST* The imported module AST, or nullptr on error
@@ -138,9 +149,26 @@ public:
     ProgramAST* importModule(const std::string& usePath);
     
     /**
-     * @brief Get the module resolver.
+     * @brief Get the module resolver (for ParserState).
      */
     ModuleResolver& getModuleResolver() { return moduleResolver_; }
+    
+    /**
+     * @brief Get the module resolver (const).
+     */
+    const ModuleResolver& getModuleResolver() const { return moduleResolver_; }
+    
+    /**
+     * @brief Create a ParserState for a file with proper callbacks.
+     * 
+     * This is the preferred way to create parser states within the session.
+     * It sets up the import callback and module resolver reference.
+     * 
+     * @param tokens The tokens from the lexer
+     * @param filePath The file path (interned)
+     * @return ParserState A fully configured parser state
+     */
+    ParserState createParserState(std::vector<Token>&& tokens, InternedString filePath);
     
     // ─── Diagnostics ──────────────────────────────────────────────────────
     
@@ -166,6 +194,11 @@ public:
     const StringPool& getStringPool() const { return pool_; }
     const ASTArena& getArena() const { return arena_; }
     
+    /**
+     * @brief Get the number of parsed files.
+     */
+    size_t getParsedFileCount() const { return parsedFiles_.size(); }
+    
 private:
     StringPool pool_;
     ASTArena arena_;
@@ -180,9 +213,6 @@ private:
     // Errors collected during parsing
     std::vector<Diagnostic> errors_;
     
-    // Files currently being parsed (for circular import detection)
-    std::vector<InternedString> parsingStack_;
-    
     // ─── Internal Methods ─────────────────────────────────────────────────
     
     /**
@@ -196,9 +226,82 @@ private:
     std::string readFile(const std::filesystem::path& path) const;
     
     /**
-     * @brief Report an error.
+     * @brief Report an error with location.
      */
-    void reportError(const std::string& message, const std::string& file = "");
+    void reportError(const std::string& message, const std::string& file = "", 
+                     const SourceLocation& loc = SourceLocation());
+    
+    /**
+     * @brief Parse a file with a given parser state.
+     */
+    ProgramAST* parseWithState(ParserState& state, InternedString filePath);
 };
 
 } // namespace parser
+
+// ┌────────────────────────────────────────────────────────────────────────────┐
+// │                         ParseSession                                       │
+// │                                                                            │
+// │  ┌─────────────────────────────────────────────────────────────────────┐   │
+// │  │                     parseFile("main.lucid")                         │   │
+// │  │                              │                                      │   │
+// │  │                              ▼                                      │   │
+// │  │              ┌───────────────────────────────┐                      │   │
+// │  │              │ 1. Check cache                │                      │   │
+// │  │              │    parsedFiles_["main.lucid"] │                      │   │
+// │  │              └───────────────┬───────────────┘                      │   │
+// │  │                              │                                      │   │
+// │  │                              ▼                                      │   │
+// │  │              ┌───────────────────────────────┐                      │   │
+// │  │              │ 2. Check circular             │                      │   │
+// │  │              │    moduleResolver_.isParsing()│                      │   │
+// │  │              └───────────────┬───────────────┘                      │   │
+// │  │                              │                                      │   │
+// │  │                              ▼                                      │   │
+// │  │              ┌───────────────────────────────┐                      │   │
+// │  │              │ 3. Push to stack              │                      │   │
+// │  │              │    moduleResolver_.pushParsing│                      │   │
+// │  │              └───────────────┬───────────────┘                      │   │
+// │  │                              │                                      │   │
+// │  │                              ▼                                      │   │
+// │  │              ┌───────────────────────────────┐                      │   │
+// │  │              │ 4. Parse file                 │                      │   │
+// │  │              │    parseFileInternal()        │                      │   │
+// │  │              └───────────────┬───────────────┘                      │   │
+// │  │                              │                                      │   │
+// │  │                              ▼                                      │   │
+// │  │              ┌───────────────────────────────┐                      │   │
+// │  │              │ 5. Cache result               │                      │   │
+// │  │              │    parsedFiles_[path] = ast   │                      │   │
+// │  │              │    moduleResolver_.cacheModule│                      │   │
+// │  │              └───────────────┬───────────────┘                      │   │
+// │  │                              │                                      │   │
+// │  │                              ▼                                      │   │
+// │  │              ┌───────────────────────────────┐                      │   │
+// │  │              │ 6. Pop from stack             │                      │   │
+// │  │              │    moduleResolver_.popParsing │                      │   │
+// │  │              └───────────────────────────────┘                      │   │
+// │  └─────────────────────────────────────────────────────────────────────┘   │
+// │                                                                            │
+// │  ┌─────────────────────────────────────────────────────────────────────┐   │
+// │  │                  importModule("std.io")                             │   │
+// │  │                              │                                      │   │
+// │  │                              ▼                                      │   │
+// │  │              ┌───────────────────────────────────┐                  │   │
+// │  │              │ 1. Resolve path                   │                  │   │
+// │  │              │    moduleResolver_.resolveUsePath │                  │   │
+// │  │              └───────────────┬───────────────────┘                  │   │
+// │  │                              │                                      │   │
+// │  │                              ▼                                      │   │
+// │  │              ┌───────────────────────────────────┐                  │   │
+// │  │              │ 2. Check cache                    │                  │   │
+// │  │              │    moduleResolver_.getParsedModule│                  │   │
+// │  │              └───────────────┬───────────────────┘                  │   │
+// │  │                              │                                      │   │
+// │  │                              ▼                                      │   │
+// │  │              ┌───────────────────────────────┐                      │   │
+// │  │              │ 3. Parse if not cached        │                      │   │
+// │  │              │    parseFile(filePath)        │                      │   │
+// │  │              └───────────────────────────────┘                      │   │
+// │  └─────────────────────────────────────────────────────────────────────┘   │
+// └────────────────────────────────────────────────────────────────────────────┘

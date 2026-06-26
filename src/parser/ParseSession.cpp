@@ -39,22 +39,21 @@ ProgramAST* ParseSession::parseFile(const std::string& filePath,
         return it->second;
     }
     
-    // Check for circular import
-    for (InternedString p : parsingStack_) {
-        if (p == path) {
-            reportError("Circular import detected: " + filePath, filePath);
-            return nullptr;
-        }
+    // Use ModuleResolver for circular import detection
+    if (moduleResolver_.isParsing(path)) {
+        reportError("Circular import detected: " + filePath, filePath);
+        return nullptr;
     }
     
     // Parse the file
-    parsingStack_.push_back(path);
+    moduleResolver_.pushParsing(path);
     ProgramAST* ast = parseFileInternal(path, source);
-    parsingStack_.pop_back();
+    moduleResolver_.popParsing();
     
     if (ast) {
         parsedFiles_[path] = ast;
         parsedFileOrder_.push_back(path);
+        moduleResolver_.cacheModule(path, ast);
     }
     
     return ast;
@@ -79,7 +78,7 @@ void ParseSession::parseAll() {
     }
 }
 
-ProgramAST* ParseSession::getParsedFile(const std::string& filePath) const {
+ProgramAST* ParseSession::getParsedFile(const std::string& filePath) {
     InternedString path = pool_.intern(filePath);
     auto it = parsedFiles_.find(path);
     if (it != parsedFiles_.end()) {
@@ -113,14 +112,14 @@ std::vector<std::string> ParseSession::getAllParsedFilePaths() const {
 ProgramAST* ParseSession::importModule(const std::string& usePath) {
     InternedString usePathStr = pool_.intern(usePath);
     
-    // Resolve use path to file path
+    // Resolve use path to file path using ModuleResolver
     InternedString filePath = moduleResolver_.resolveUsePath(usePathStr);
     if (!filePath.isValid()) {
         reportError("Module not found: " + usePath);
         return nullptr;
     }
     
-    // Check if already parsed
+    // Check if already parsed (ModuleResolver cache)
     ProgramAST* existing = moduleResolver_.getParsedModule(filePath);
     if (existing) {
         return existing;
@@ -130,12 +129,26 @@ ProgramAST* ParseSession::importModule(const std::string& usePath) {
     std::string pathStr = std::string(pool_.lookup(filePath));
     ProgramAST* ast = parseFile(pathStr);
     
-    if (ast) {
-        moduleResolver_.cacheModule(filePath, ast);
-        return ast;
-    }
+    return ast;
+}
+
+ParserState ParseSession::createParserState(std::vector<Token>&& tokens, 
+                                            InternedString filePath) {
+    // Create token stream
+    TokenStream stream(std::move(tokens), filePath);
     
-    return nullptr;
+    // Create parser state
+    ParserState state(std::move(stream), filePath, pool_, arena_);
+    
+    // Set up module resolution
+    state.moduleResolver = &moduleResolver_;
+    
+    // Set up import callback
+    state.importCallback = [this](const std::string& usePath) -> ProgramAST* {
+        return this->importModule(usePath);
+    };
+    
+    return state;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -151,12 +164,13 @@ ProgramAST* ParseSession::parseFileInternal(InternedString filePath,
         std::filesystem::path fullPath = moduleResolver_.getModuleFilePath(filePath);
         sourceCode = readFile(fullPath);
         if (sourceCode.empty()) {
-            reportError("Failed to read file: " + std::string(pool_.lookup(filePath)));
+            reportError("Failed to read file: " + std::string(pool_.lookup(filePath)),
+                       std::string(pool_.lookup(filePath)));
             return nullptr;
         }
     }
     
-    // Parse the file
+    // Parse the file using the helper
     ProgramAST* ast = parser::parseFile(
         std::string(pool_.lookup(filePath)),
         sourceCode,
@@ -165,6 +179,10 @@ ProgramAST* ParseSession::parseFileInternal(InternedString filePath,
     );
     
     return ast;
+}
+
+ProgramAST* ParseSession::parseWithState(ParserState& state, InternedString filePath) {
+    return parser::parse(state);
 }
 
 std::string ParseSession::readFile(const std::filesystem::path& path) const {
@@ -178,12 +196,15 @@ std::string ParseSession::readFile(const std::filesystem::path& path) const {
     return buffer.str();
 }
 
-void ParseSession::reportError(const std::string& message, const std::string& file) {
+void ParseSession::reportError(const std::string& message, const std::string& file, 
+                               const SourceLocation& loc) {
     Diagnostic diag;
     diag.severity = DiagnosticSeverity::Error;
     diag.category = DiagnosticCategory::General;
     diag.code = DiagCode::E1001;
     diag.file = pool_.intern(file);
+    diag.location = loc;
+    diag.args = {message};
     errors_.push_back(diag);
 }
 
