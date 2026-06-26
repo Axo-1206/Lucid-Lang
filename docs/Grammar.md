@@ -9,6 +9,37 @@
 
 ---
 
+## Execution Model
+
+Lucid has **one language and one syntax** regardless of how it is run. The same
+source file executes under the interpreter today and will compile natively in the
+future — nothing in the source changes between modes.
+
+**Current:** Lucid ships as an interpreter. Run a program with:
+
+```
+lucid run main.lucid
+```
+
+**Future:** A native ahead-of-time compiler will be added later. The invocation
+will be:
+
+```
+lucid build main.lucid
+```
+
+The execution mode is a **toolchain concern, not a source concern.** There are no
+attributes, pragmas, or annotations in the source that select between interpreted
+and compiled execution. The syntax is strict in both modes — interpreted Lucid is
+not a relaxed or scripting subset of compiled Lucid. They are identical.
+
+> [!NOTE]
+> Lucid's strict syntax is intentional even for the interpreter. It keeps
+> interpreter behavior predictable, makes the eventual compiler's job
+> straightforward, and means there is no dialect gap to close later.
+
+---
+
 ## Notation (EBNF)
 
 ```ebnf
@@ -853,6 +884,13 @@ value, ok = parseInt("42")
 let value int, ok bool = parseInt("42")
 ```
 
+> [!NOTE]
+> (T, U) in a return type is a return list, not a tuple. Lucid has no tuple type
+>  and does not plan to add one — multiple return values are a calling convention, 
+> not a first-class value. You cannot store, pass, or nest a return list as a value. 
+> If you need to group values, define a struct.
+
+
 **Parameters** are passed by value (a copy) by default. A `const` parameter
 marks a read-only reference — the function sees the caller's original value
 but cannot modify it:
@@ -1352,40 +1390,7 @@ const s Box<string> = rebox<int, string>(b)(stringFromInt)
 
 ---
 
-## Language Directives: Attributes `@`, Nullable `?` / Fallible `!`, and Intrinsics `#`
-
-Attributes `@[]` and language intrinsics `#` provide instructions to the language or execute compile-time operations.
-
-### 1. Attributes `@[]`
-
-Attributes precede the declaration they annotate and use a bracket-list syntax so multiple items share one delimiter pair.
-
-```ebnf
-attribute_list  = '@[' attr_item { ',' attr_item } ']'
-
-attr_item       = IDENTIFIER [ '(' attr_args ')' ]      (* built-in attribute, fixed set *)
-attr_args       = attr_arg { ',' attr_arg }
-attr_arg        = STRING_LIT | INT_LIT | FLOAT_LIT | BOOL_LIT | IDENTIFIER
-```
-
-#### Built-in Attributes
-
-| Attribute              | Valid on                  | Meaning                                                  |
-| ---------------------- | ------------------------- | -------------------------------------------------------- |
-| `@[export]`            | any top-level declaration | Visible outside this module                              |
-| `@[foreign("abi")]`    | function declaration      | Implemented in a foreign language; ABI string e.g. `"C"` |
-| `@[link("name")]`      | module or declaration     | Link against this native library                         |
-| `@[deprecated("msg")]` | any declaration           | Language warning at use sites                            |
-| `@[inline]`            | function declaration      | Hint to inline at call sites                             |
-| `@[noinline]`          | function declaration      | Prevent inlining                                         |
-
-**Rules:**
-- `@[foreign]` requires the function body to be empty `{}` — the implementation
-  is resolved by the linker (AOT/JIT) or dynamic loading (interpreter).
-- Attributes are a **fixed, closed set** — there is no user-defined or
-  namespaced attribute form.
-
-### 2. Nullable and Fallible Types
+## Nullable `?` / Fallible `!`
 
 ```ebnf
 nullable_type   = type '?'             (* value may be nil *)
@@ -1408,115 +1413,6 @@ Vector2?!    -- nullable and fallible struct value
 > Disallowing nullable/fallible arrays and function types encourages cleaner
 > idioms: an empty array `[]` is always preferable to a `nil` array, and an
 > empty or no-op function is preferable to a nullable function binding.
-
-### 3. Language Intrinsics `#`
-
-Intrinsic calls appear in expression position and are prefixed with `#`. Unlike attributes, intrinsics can take runtime expressions and types as arguments.
-
-```ebnf
-intrinsic_call  = '#' IDENTIFIER '(' [ intrinsic_arg_list ] ')'
-
-intrinsic_arg_list = intrinsic_arg { ',' intrinsic_arg }
-
-intrinsic_arg   = expr
-                | type
-```
-
-#### Compile-Time Type Queries
-
-| Intrinsic     | Returns  | Notes                                              |
-| ------------- | -------- | -------------------------------------------------- |
-| `#sizeof(T)`  | `uint64` | Byte size of type T — compile-time constant        |
-| `#alignof(T)` | `uint64` | Alignment requirement of T — compile-time constant |
-
-```lucid
-const size  uint64 = #sizeof(Vertex)
-const align uint64 = #alignof(Vec2)
-```
-
-#### Floating-Point Math
-
-| Intrinsic         | Args         | Returns | Notes                                 |
-| ----------------- | ------------ | ------- | ------------------------------------- |
-| `#sqrt(x)`        | float/double | same    | Hardware square root                  |
-| `#floor(x)`       | float/double | same    | Round toward −∞                       |
-| `#ceil(x)`        | float/double | same    | Round toward +∞                       |
-| `#round(x)`       | float/double | same    | Round to nearest, half away from zero |
-| `#abs(x)`         | numeric      | same    | Absolute value                        |
-| `#pow(base, exp)` | float/double | same    | Exponentiation                        |
-| `#fma(a, b, c)`   | float/double | same    | Fused multiply-add: `(a*b)+c`         |
-| `#min(a, b)`      | same type    | same    | Minimum                               |
-| `#max(a, b)`      | same type    | same    | Maximum                               |
-
-```lucid
-const hyp     float = #sqrt(x*x + y*y)
-const rounded float = #round(value)
-const maxVal  int   = #min(a, b)
-```
-
-#### Bit Manipulation (Integer Types Only)
-
-| Intrinsic      | Args    | Returns | Notes                           |
-| -------------- | ------- | ------- | ------------------------------- |
-| `#clz(x)`      | integer | same    | Count leading zero bits         |
-| `#ctz(x)`      | integer | same    | Count trailing zero bits        |
-| `#popcount(x)` | integer | same    | Count set (1) bits              |
-| `#bswap(x)`    | integer | same    | Reverse byte order (endianness) |
-
-```lucid
-const leading  uint32 = #clz(flags)
-const trailing uint32 = #ctz(flags)
-const bits     uint32 = #popcount(mask)
-const swapped  uint32 = #bswap(networkOrder)
-```
-
-#### Memory Operations
-
-| Intrinsic                 | Args               | Returns | Notes                       |
-| ------------------------- | ------------------ | ------- | --------------------------- |
-| `#memcpy(dst, src, len)`  | ptr, ptr, uint64   | void    | Copy bytes, no overlap      |
-| `#memmove(dst, src, len)` | ptr, ptr, uint64   | void    | Copy bytes, handles overlap |
-| `#memset(dst, val, len)`  | ptr, ubyte, uint64 | void    | Fill bytes with value       |
-
-All memory intrinsics operate on raw pointers (`ptr<T>`) and are only valid inside `@[foreign("C")]`-decorated functions or other intrinsic calls.
-
-```lucid
-#memcpy(dest, src, #sizeof(Buffer))
-#memset(ptr, 0, size)
-```
-
-#### Pointer Operations
-
-| Intrinsic            | Args               | Returns  | Notes                                 |
-| -------------------- | ------------------ | -------- | ------------------------------------- |
-| `#toRef(ptr)`        | `ptr<T>`           | `&T`     | Assert valid, cross to safe reference |
-| `#toPtr(ref)`        | `&T`               | `ptr<T>` | Convert reference to raw pointer      |
-| `#ptrOffset(ptr, n)` | `ptr<T>`, int      | `ptr<T>` | Pointer arithmetic (element offset)   |
-| `#ptrDiff(p1, p2)`   | `ptr<T>`, `ptr<T>` | `int64`  | Distance between pointers in elements |
-
-These intrinsics are the only way to cross the sealed conduit boundary or perform pointer arithmetic.
-
-```lucid
-const buf  ptr<uint8> = malloc(1024)
-let ref  &uint8       = #toRef(buf)
-ref = 0xFF
-
-const next     ptr<uint8>     = #ptrOffset(buf, 1)
-const distance int64          = #ptrDiff(next, buf)
-```
-
-#### Unsafe / Bit Reinterpretation
-
-| Intrinsic        | Args        | Returns | Notes                                             |
-| ---------------- | ----------- | ------- | ------------------------------------------------- |
-| `#bitcast(T, x)` | type, value | `T`     | Reinterpret bits of x as type T; sizes must match |
-
-Valid only inside `@[foreign("C")]`-decorated functions or when the language flag `--unsafe` is enabled.
-
-```lucid
-const bits uint32  = 0x3F800000
-const f    float32 = #bitcast(float32, bits)   -- 1.0
-```
 
 ---
 
@@ -3512,6 +3408,304 @@ const len float = vector2Length(c)
 
 ---
 
+## Language Directives: Attributes `@` and Intrinsics `#`
+
+Attributes `@[]` and intrinsics `#` provide instructions to the language processor or execute operations.
+
+### 1. Attributes `@[]`
+
+Attributes precede the declaration they annotate and use a bracket-list syntax so multiple items share one delimiter pair.
+
+```ebnf
+attribute_list  = '@[' attr_item { ',' attr_item } ']'
+
+attr_item       = IDENTIFIER [ '(' attr_args ')' ]      (* built-in attribute, fixed set *)
+attr_args       = attr_arg { ',' attr_arg }
+attr_arg        = STRING_LIT | INT_LIT | FLOAT_LIT | BOOL_LIT | IDENTIFIER
+```
+
+#### Built-in Attributes
+
+| Attribute              | Valid on                  | Meaning                                                  |
+| ---------------------- | ------------------------- | -------------------------------------------------------- |
+| `@[export]`            | any top-level declaration | Visible outside this module                              |
+| `@[foreign("abi")]`    | function declaration      | Implemented in a foreign language; ABI string e.g. `"C"` |
+| `@[link("name")]`      | module or declaration     | Link against this native library                         |
+| `@[deprecated("msg")]` | any declaration           | Language warning at use sites                            |
+| `@[inline]`            | function declaration      | Hint to inline at call sites                             |
+| `@[noinline]`          | function declaration      | Prevent inlining                                         |
+
+**Rules:**
+- `@[foreign]` requires the function body to be empty `{}` — the implementation
+  is resolved at link time (compiler) or via dynamic loading (interpreter).
+- Attributes are a **fixed, closed set** — there is no user-defined or
+  namespaced attribute form.
+
+### 2. Intrinsics `#`
+
+Intrinsics are direct calls into the language processor's backend — a layer shared
+between the interpreter and the compiler. They exist because some operations cannot
+be expressed as ordinary Lucid functions: querying a type's memory layout, emitting
+a specific hardware instruction, performing atomic operations, or crossing the safe
+memory boundary all require the language processor itself to handle the call.
+
+Unlike a standard library function, an intrinsic has no Lucid body. The language
+processor resolves it entirely — the interpreter executes a built-in implementation,
+the compiler emits the corresponding machine instruction or computation directly.
+The result is zero-overhead access to hardware capabilities without leaving the
+language.
+
+This gives Lucid a clean two-layer model:
+
+- **Lucid code** — safe, expressive, high-level logic. The language processor
+  handles memory safety, type checking, and abstractions.
+- **Intrinsics** — direct hardware access, zero overhead, no safety guarantees.
+  You opted in explicitly with `#`.
+
+> [!NOTE]
+> The `#` prefix is intentional: it signals to the reader that this call steps
+> outside what ordinary Lucid code can do. If you see `#`, the language processor
+> is doing something on your behalf that you could not write yourself. A `#` in a
+> hot loop is a performance tool; a `#` outside one is a code smell worth
+> questioning.
+
+```ebnf
+intrinsic_call  = '#' IDENTIFIER '(' [ intrinsic_arg_list ] ')'
+
+intrinsic_arg_list = intrinsic_arg { ',' intrinsic_arg }
+
+intrinsic_arg   = expr
+                | type
+```
+
+#### Compile-Time Type Queries
+
+Resolved entirely at compile time (or interpreter load time). The result is always
+a constant — no runtime cost.
+
+| Intrinsic     | Returns  | Notes                                              |
+| ------------- | -------- | -------------------------------------------------- |
+| `#sizeof(T)`  | `uint64` | Byte size of type T — compile-time constant        |
+| `#alignof(T)` | `uint64` | Alignment requirement of T — compile-time constant |
+
+```lucid
+const size  uint64 = #sizeof(Vertex)
+const align uint64 = #alignof(Vec2)
+```
+
+#### Floating-Point Math
+
+Maps directly to hardware floating-point instructions (e.g. `FSQRT`, `FMADD` on
+modern ISAs). Faster and more precise than a software implementation in the
+standard library.
+
+| Intrinsic         | Args         | Returns | Notes                                 |
+| ----------------- | ------------ | ------- | ------------------------------------- |
+| `#sqrt(x)`        | float/double | same    | Hardware square root                  |
+| `#floor(x)`       | float/double | same    | Round toward −∞                       |
+| `#ceil(x)`        | float/double | same    | Round toward +∞                       |
+| `#round(x)`       | float/double | same    | Round to nearest, half away from zero |
+| `#abs(x)`         | numeric      | same    | Absolute value                        |
+| `#pow(base, exp)` | float/double | same    | Exponentiation                        |
+| `#fma(a, b, c)`   | float/double | same    | Fused multiply-add: `(a*b)+c`         |
+| `#min(a, b)`      | same type    | same    | Minimum                               |
+| `#max(a, b)`      | same type    | same    | Maximum                               |
+
+```lucid
+const hyp     float = #sqrt(x*x + y*y)
+const rounded float = #round(value)
+const maxVal  int   = #min(a, b)
+```
+
+#### Bit Manipulation (Integer Types Only)
+
+Maps to single CPU instructions (`BSF`, `BSR`, `POPCNT`, `BSWAP` on x86-64).
+Essential for low-level data processing, compression, and protocol parsing.
+
+| Intrinsic      | Args    | Returns | Notes                           |
+| -------------- | ------- | ------- | ------------------------------- |
+| `#clz(x)`      | integer | same    | Count leading zero bits         |
+| `#ctz(x)`      | integer | same    | Count trailing zero bits        |
+| `#popcount(x)` | integer | same    | Count set (1) bits              |
+| `#bswap(x)`    | integer | same    | Reverse byte order (endianness) |
+
+```lucid
+const leading  uint32 = #clz(flags)
+const trailing uint32 = #ctz(flags)
+const bits     uint32 = #popcount(mask)
+const swapped  uint32 = #bswap(networkOrder)
+```
+
+#### SIMD / Vector
+
+Operate on fixed-width vector registers (e.g. SSE/AVX on x86-64, NEON on ARM).
+Write scalar Lucid logic for clarity; drop to SIMD explicitly in hot loops for
+throughput. The type `vec<T, N>` represents an N-wide vector of element type `T`.
+
+| Intrinsic                   | Args                   | Returns    | Notes                              |
+| --------------------------- | ---------------------- | ---------- | ---------------------------------- |
+| `#simd_load(ptr)`           | `ptr<T>`               | `vec<T,N>` | Load N elements from memory        |
+| `#simd_store(ptr, v)`       | `ptr<T>`, `vec<T,N>`   | `void`     | Store N elements to memory         |
+| `#simd_add(a, b)`           | `vec<T,N>`, `vec<T,N>` | `vec<T,N>` | Lane-wise addition                 |
+| `#simd_sub(a, b)`           | `vec<T,N>`, `vec<T,N>` | `vec<T,N>` | Lane-wise subtraction              |
+| `#simd_mul(a, b)`           | `vec<T,N>`, `vec<T,N>` | `vec<T,N>` | Lane-wise multiplication           |
+| `#simd_div(a, b)`           | `vec<T,N>`, `vec<T,N>` | `vec<T,N>` | Lane-wise division                 |
+| `#simd_fma(a, b, c)`        | `vec<T,N>` × 3         | `vec<T,N>` | Lane-wise fused multiply-add       |
+| `#simd_min(a, b)`           | `vec<T,N>`, `vec<T,N>` | `vec<T,N>` | Lane-wise minimum                  |
+| `#simd_max(a, b)`           | `vec<T,N>`, `vec<T,N>` | `vec<T,N>` | Lane-wise maximum                  |
+| `#simd_splat(T, N, scalar)` | type, int, `T`         | `vec<T,N>` | Broadcast scalar to all lanes      |
+| `#simd_extract(v, i)`       | `vec<T,N>`, int        | `T`        | Extract lane i                     |
+| `#simd_insert(v, i, x)`     | `vec<T,N>`, int, `T`   | `vec<T,N>` | Return v with lane i replaced by x |
+
+```lucid
+-- Sum an array of floats using 4-wide SIMD
+const sumFloats (data ptr<float32>, len uint64) -> float32 = {
+    let acc vec<float32, 4> = #simd_splat(float32, 4, 0.0)
+    let i   uint64          = 0
+
+    while i + 4 <= len {
+        const chunk vec<float32, 4> = #simd_load(#ptrOffset(data, i))
+        acc = #simd_add(acc, chunk)
+        i = i + 4
+    }
+
+    -- Horizontal reduce the 4 lanes
+    const a float32 = #simd_extract(acc, 0)
+    const b float32 = #simd_extract(acc, 1)
+    const c float32 = #simd_extract(acc, 2)
+    const d float32 = #simd_extract(acc, 3)
+    return a + b + c + d
+}
+```
+
+#### Atomics
+
+Lock-free operations on shared memory. Required for concurrent data structures
+and synchronization primitives. All atomic intrinsics take an explicit memory
+ordering argument.
+
+| Ordering  | Meaning                                                      |
+| --------- | ------------------------------------------------------------ |
+| `relaxed` | No synchronization — only atomicity of the operation itself  |
+| `acquire` | Subsequent reads/writes in this thread see prior releases    |
+| `release` | Prior reads/writes in this thread are visible before this op |
+| `acq_rel` | Both acquire and release (read-modify-write operations)      |
+| `seq_cst` | Total sequential consistency across all threads              |
+
+| Intrinsic                         | Args                         | Returns | Notes                                     |
+| --------------------------------- | ---------------------------- | ------- | ----------------------------------------- |
+| `#atomic_load(ptr, ord)`          | `ptr<T>`, ordering           | `T`     | Atomic read                               |
+| `#atomic_store(ptr, val, ord)`    | `ptr<T>`, `T`, ordering      | `void`  | Atomic write                              |
+| `#atomic_add(ptr, val, ord)`      | `ptr<T>`, `T`, ordering      | `T`     | Fetch-and-add; returns previous value     |
+| `#atomic_sub(ptr, val, ord)`      | `ptr<T>`, `T`, ordering      | `T`     | Fetch-and-sub; returns previous value     |
+| `#atomic_and(ptr, val, ord)`      | `ptr<T>`, `T`, ordering      | `T`     | Fetch-and-and; returns previous value     |
+| `#atomic_or(ptr, val, ord)`       | `ptr<T>`, `T`, ordering      | `T`     | Fetch-and-or; returns previous value      |
+| `#atomic_xor(ptr, val, ord)`      | `ptr<T>`, `T`, ordering      | `T`     | Fetch-and-xor; returns previous value     |
+| `#atomic_cas(ptr, exp, val, ord)` | `ptr<T>`, `T`, `T`, ordering | `bool`  | Compare-and-swap; returns true if swapped |
+
+```lucid
+-- Lock-free reference counter increment
+const retain (refcount ptr<uint32>) -> void = {
+    #atomic_add(refcount, 1, relaxed)
+}
+
+-- Lock-free reference counter decrement; returns true when count hits zero
+const release (refcount ptr<uint32>) -> bool = {
+    const prev uint32 = #atomic_sub(refcount, 1, acq_rel)
+    return prev == 1
+}
+
+-- Compare-and-swap loop (spin until success)
+const claimSlot (flag ptr<uint32>) -> void = {
+    while not #atomic_cas(flag, 0, 1, acq_rel) {
+        #pause()
+    }
+}
+```
+
+#### CPU Hints
+
+Hints to the CPU or memory subsystem. Do not affect correctness — they only
+influence performance. The language processor may ignore them on targets where
+the hint has no equivalent instruction.
+
+| Intrinsic          | Args     | Returns | Notes                                              |
+| ------------------ | -------- | ------- | -------------------------------------------------- |
+| `#prefetch(ptr)`   | `ptr<T>` | `void`  | Hint CPU to load cache line into L1                |
+| `#prefetch_w(ptr)` | `ptr<T>` | `void`  | Prefetch for write                                 |
+| `#fence(ord)`      | ordering | `void`  | Explicit memory barrier                            |
+| `#pause()`         | —        | `void`  | Spin-wait hint; reduces power in busy-wait loops   |
+| `#likely(expr)`    | `bool`   | `bool`  | Hint that expr is usually true (branch prediction) |
+| `#unlikely(expr)`  | `bool`   | `bool`  | Hint that expr is usually false                    |
+
+```lucid
+-- Prefetch the next element while processing the current one
+for i uint64 in 0..len {
+    #prefetch(#ptrOffset(data, i + 8))
+    process(data[i])
+}
+
+-- Branch prediction hints in a hot path
+if #likely(cache_hit) {
+    return cached
+} else {
+    return slowPath()
+}
+```
+
+#### Memory Operations
+
+Operate directly on raw memory. Required for bulk data movement at the lowest
+level. All memory intrinsics operate on raw pointers (`ptr<T>`) and are only
+valid inside `@[foreign("C")]`-decorated functions or other intrinsic calls.
+
+| Intrinsic                 | Args               | Returns | Notes                        |
+| ------------------------- | ------------------ | ------- | ---------------------------- |
+| `#memcpy(dst, src, len)`  | ptr, ptr, uint64   | `void`  | Copy bytes — no overlap      |
+| `#memmove(dst, src, len)` | ptr, ptr, uint64   | `void`  | Copy bytes — handles overlap |
+| `#memset(dst, val, len)`  | ptr, ubyte, uint64 | `void`  | Fill bytes with value        |
+
+```lucid
+#memcpy(dest, src, #sizeof(Buffer))
+#memset(ptr, 0, size)
+```
+
+#### Pointer Operations
+
+The only way to cross the sealed conduit boundary or perform pointer arithmetic.
+
+| Intrinsic            | Args               | Returns  | Notes                                 |
+| -------------------- | ------------------ | -------- | ------------------------------------- |
+| `#toRef(ptr)`        | `ptr<T>`           | `&T`     | Assert valid, cross to safe reference |
+| `#toPtr(ref)`        | `&T`               | `ptr<T>` | Convert reference to raw pointer      |
+| `#ptrOffset(ptr, n)` | `ptr<T>`, int      | `ptr<T>` | Pointer arithmetic (element offset)   |
+| `#ptrDiff(p1, p2)`   | `ptr<T>`, `ptr<T>` | `int64`  | Distance between pointers in elements |
+
+```lucid
+const buf  ptr<uint8> = malloc(1024)
+let ref  &uint8       = #toRef(buf)
+ref = 0xFF
+
+const next     ptr<uint8> = #ptrOffset(buf, 1)
+const distance int64      = #ptrDiff(next, buf)
+```
+
+#### Unsafe / Bit Reinterpretation
+
+| Intrinsic        | Args        | Returns | Notes                                             |
+| ---------------- | ----------- | ------- | ------------------------------------------------- |
+| `#bitcast(T, x)` | type, value | `T`     | Reinterpret bits of x as type T; sizes must match |
+
+Valid only inside `@[foreign("C")]`-decorated functions or when the language flag
+`--unsafe` is enabled.
+
+```lucid
+const bits uint32  = 0x3F800000
+const f    float32 = #bitcast(float32, bits)   -- 1.0
+```
+
+---
+
 ## Foreign Function Interface
 
 Foreign functions are declared with `@[foreign("abi")]`. The body must be empty `{}` — the implementation is resolved by the linker. Multiple attributes can be combined into a single `@[...]` list.
@@ -3822,7 +4016,7 @@ await light                   -- CORRECT: wait for the async operation
 ### Async and the Visual Graph
 
 ```
-[@[export, aot] const main (args [_]string)]
+[@[export] const main (args [_]string)]
     │
     [let result string]
     │
@@ -3886,7 +4080,7 @@ const fetchAll (urls [*]string) -> [*]string = {
 }
 
 -- Mixed parallelism and concurrency
-@[export, aot] const main () -> int = {
+@[export] const main () -> int = {
     let urls [*]string = [
         "https://api1.com/users",
         "https://api2.com/products", 
@@ -4130,7 +4324,7 @@ join result
 ### Spawn and the Visual Graph
 
 ```
-[@[export, aot] const main (args [_]string)]
+[@[export] const main (args [_]string)]
     │
     [spawn | _ | backgroundTask]────┐  ← Dotted line: no join
     │                               │
@@ -4182,7 +4376,7 @@ const processImages (images [*]Image) -> [*]ProcessedImage = {
 }
 
 -- Mixed: fire-and-forget + joinable
-@[export, aot] const main () -> int = {
+@[export] const main () -> int = {
     -- Fire and forget: analytics and logging
     spawn _ = sendAnalytics("app_started")
     spawn _ = logToFile("main started")
