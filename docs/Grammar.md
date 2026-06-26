@@ -84,14 +84,6 @@ do          await       async       spawn       join        and
 or          not         true        false       nil         err
 ```
 
-> [!IMPORTANT]
-> **Design Philosophy:** Lucid is designed as a **compiled-style** language
-> with a strict, explicit syntax to enable future compilation. The current
-> implementation is an **interpreter** that follows the same strict rules
-> to ensure code written today will work with the future compiled backend.
-> Performance characteristics differ between the interpreter and the
-> eventual compiler, but the language semantics remain identical.
-
 > [!NOTE]
 > `pub`, `export`, `extern` and `link` are **not** keywords. Visibility and
 > linkage are expressed as attributes: `@[export]`, `@[foreign("C")]`,
@@ -460,8 +452,7 @@ the storage decision behind it.
 primitive_type  = int_type | float_type | 'bool' | 'byte'
                 | 'string' | 'char' | 'nil'
                 (* 'any' is intentionally absent — all types are explicit in Lucid.
-                   Raw foreign memory (ptr<T>) is supported in the interpreter through
-                   FFI bindings. In compiled mode, these map to native pointers. *)
+                   Raw foreign memory uses ptr<byte> instead. *)
 
 int_type        = 'int8'  | 'int16'  | 'int32'  | 'int64'
                 | 'uint8' | 'uint16' | 'uint32' | 'uint64'
@@ -516,7 +507,7 @@ struct_decl     = 'struct' IDENTIFIER [ generic_params ]
 
 struct_field    = { attribute_list } IDENTIFIER type [ '=' expr ]
                   (* mutable field by default — same as let *)
-                | { attribute_list } 'const' IDENTIFIER type [ '=' expr ]
+                | { attribute_list } IDENTIFIER 'const' type [ '=' expr ]
                   (* const field — cannot be reassigned after construction *)
                   (* name then type, optional default value *)
 
@@ -869,7 +860,7 @@ but cannot modify it:
 ```lucid
 const sum (nums ...int) -> int = {
     let total int = 0
-    for n int in nums { total = total + n }
+    for _, n int in nums { total = total + n }
     return total
 }
 
@@ -893,7 +884,7 @@ parameter *of that group*.
 ```lucid
 const sum (nums ...int) -> int = {
     let total int = 0
-    for n int in nums {
+    for _, n int in nums {
         total = total + n
     }
     return total
@@ -930,10 +921,10 @@ itself, not from the shorthand syntax:
 -- straightforward as two curried groups
 const summarize (nums ...int)(words ...string) -> string = {
     let total int = 0
-    for n int in nums { total = total + n }
+    for _, n int in nums { total = total + n }
 
     let joined string = ""
-    for w string in words { joined = joined + w + " " }
+    for _, w string in words { joined = joined + w + " " }
 
     return stringFromInt(total) + ": " + joined
 }
@@ -985,7 +976,7 @@ const add (a int)(b int) -> int = {
     return a + b
 }
 
--- language expands to
+-- the language expands to
 const add (a int) -> (b int) -> int = {
     return (b int) -> int {
         return a + b
@@ -1283,19 +1274,19 @@ const swap<T>      (a T)(b T) -> (T, T) = { return b, a }
 ```lucid
 const map<T, U>    (items [_]T)(f (T) -> U)           -> [*]U  = {
     let result [*]U = []
-    for v T in items { arr:append<U>(result)(f(v)) }
+    for _, v T in items { arr:append<U>(result)(f(v)) }
     return result
 }
 
 const filter<T>    (items [_]T)(pred (T) -> bool)     -> [*]T  = {
     let result [*]T = []
-    for v T in items { if pred(v) { arr:append<T>(result)(v) } }
+    for _, v T in items { if pred(v) { arr:append<T>(result)(v) } }
     return result
 }
 
 const fold<T, U>   (items [_]T)(seed U)(f (U, T) -> U) -> U   = {
     let acc U = seed
-    for v T in items { acc = f(acc, v) }
+    for _, v T in items { acc = f(acc, v) }
     return acc
 }
 
@@ -1556,16 +1547,26 @@ while_stmt      = 'while' expr block
 do_while_stmt   = 'do' block 'while' expr
 
 for_stmt        = 'for' IDENTIFIER type 'in' range_iter [ '..' expr ] block
-                  (* range iteration — type must be numeric (int, float,
-                     etc.); trailing '..' expr is the step *)
-                | 'for' IDENTIFIER type 'in' expr block
-                | 'for' IDENTIFIER type ',' IDENTIFIER type 'in' expr block
-                  (* collection iteration — index, value, each with its own
-                     required type annotation (index is always int; value
-                     must match the collection's element type) even though
-                     both are already fixed by the collection's own
-                     declaration — Lucid does not infer a type from context,
-                     even where the answer is unambiguous *)
+                  (* Form 1 — range iteration.
+                     IDENTIFIER is the loop variable (the current value, not
+                     an index — there is no collection). type must be numeric
+                     (int, float, etc.). The trailing '..' expr is an optional
+                     step; without it the step defaults to 1.
+                     REJECTED: a second variable is a semantic error — a
+                     step loop carries no index to expose. *)
+                | 'for' for_index ',' IDENTIFIER type 'in' expr block
+                  (* Form 2 — collection iteration.
+                     for_index is the index binding (always int when named);
+                     IDENTIFIER is the element value, whose type must match
+                     the collection's element type. Both variables require
+                     explicit type annotations — Lucid does not infer types
+                     from context.
+                     REJECTED: a single variable with no index is a semantic
+                     error — the index is a required part of the binding,
+                     even if it is discarded with '_'. *)
+
+for_index       = IDENTIFIER 'int'    (* named index — always int *)
+                | '_'                  (* discard the index entirely *)
 
 range_iter      = expr range_op expr
                   (* start range_op end — reuses range_expr's shape; written
@@ -1608,7 +1609,7 @@ const compute () -> int = {
     @[deprecated("use newVec")]
     struct Vec2 { x float = 0.0  y float = 0.0 }
 
-    @[inline, deprecated("use new library")]
+    @[inline]
     const add (a int)(b int) -> int = { return a + b }
 
     struct Point { x int = 0.0  y int = 0.0 }
@@ -1729,7 +1730,7 @@ if a == nil and b == nil { return }
 > **Loop body guards** — skip nil elements without nesting:
 >
 > ```lucid
-> for item int? in items {
+> for _, item int? in items {
 >     if item == nil { continue }
 >     -- item is int for the rest of this iteration
 >     process(item)
@@ -1778,49 +1779,69 @@ do {
 
 ### `for`
 
-`for` has two forms: **range iteration**, over a numeric `start..end` (or
-`start..<end`) sequence with no backing collection, and **collection
-iteration**, over an existing array. **Both forms require an explicit type
-annotation on every loop variable.** Lucid does not infer a loop variable's
-type from context — not from a range's literal bounds, and not from a
-collection's already-known element type. This matches **Variable
-Declaration**: a type is always written, even where the answer looks
-unambiguous, because the language does not guess.
+`for` has exactly two forms. **Both require an explicit type annotation on
+every loop variable.** Lucid does not infer a loop variable's type from
+context — not from a range's literal bounds, and not from a collection's
+already-known element type. This matches **Variable Declaration**: a type is
+always written, even where the answer looks unambiguous, because the language
+processor does not guess.
 
-**Range iteration** — the loop variable's type must be numeric (`int`,
-`float`, and so on). The end bound's inclusivity is controlled by `range_op`,
-matching **Range Expressions**:
+**Form 1 — range iteration.** A single variable receives the *current value*
+at each step. There is no backing collection and therefore no index to expose
+— a second variable here is a semantic error. The variable's type must be
+numeric (`int`, `float`, and so on). Inclusivity of the end bound is
+controlled by `range_op`, matching **Range Expressions**:
 
 ```lucid
 for i int in 0..10  { io:printl(stringFromInt(i)) }    -- 0 through 10 inclusive
 for i int in 0..<10 { io:printl(stringFromInt(i)) }    -- 0 through 9, end excluded
 ```
 
-An optional trailing `..` *expr* sets the step. Without it, the step is `1`:
+An optional trailing `..` *expr* sets the step. Without it the step is `1`:
 
 ```lucid
 for i int in 0..10..2 { io:printl(stringFromInt(i)) }  -- 0, 2, 4, 6, 8, 10 — step of 2
 ```
 
-**Collection iteration** — every loop variable still requires its own type
-annotation, even though the collection's own declaration already fixes it.
-Value-only, or index and value (the index is always `int`; the value must
-match the collection's element type):
+**Rejected — two variables on a range** (the step loop has no index to give):
+
+```lucid
+for i int, v int in 0..10 { ... }   -- ERROR: Form 1 takes one variable; use Form 2 only with a collection
+```
+
+**Form 2 — collection iteration.** An index variable and a value variable
+are both required. The index is always `int`; the value must match the
+collection's element type. When the index is not needed it may be discarded
+with `_`, but the comma and the value binding are still required — writing
+only a single variable is a semantic error, because there is no way to tell
+from context whether the programmer meant the index or the value:
 
 ```lucid
 use std.array as arr
 
 const nums [*]int = [1, 2, 3, 4, 5]
 
--- value only
-for v int in nums {
-    log(stringFromInt(v))
-}
-
 -- index and value
 for i int, v int in nums {
     log(stringFromInt(i) + ": " + stringFromInt(v))
 }
+
+-- discard the index when it is not needed
+for _, v int in nums {
+    log(stringFromInt(v))
+}
+```
+
+**Rejected — single variable on a collection** (ambiguous: index or value?):
+
+```lucid
+for v int in nums { ... }   -- ERROR: Form 2 requires both index and value; use 'for _, v int in nums' to discard the index
+```
+
+**Rejected — two variables on a range** (already shown above — step loops carry no index):
+
+```lucid
+for i int, v int in 0..10..2 { ... }   -- ERROR: step ranges use Form 1 (single variable only)
 ```
 
 ### `switch`
@@ -3449,7 +3470,7 @@ known until runtime — see **Variadic Parameters**:
 ```lucid
 const join (parts ...string) -> string = {
     let result string = ""
-    for p string in parts { result = result + p }
+    for _, p string in parts { result = result + p }
     return result
 }
 
@@ -3718,19 +3739,19 @@ const urls [*]string = ["https://api1.com", "https://api2.com", "https://api3.co
 
 -- Schedule all fetches concurrently
 let results [*]string = []
-for url string in urls {
+for _, url string in urls {
     let result string
     async result = fetchData(url)
     arr:append<string>(results)(result)   -- store the variable reference
 }
 
 -- Wait for all to complete
-for result string in results {
+for _, result string in results {
     await result
 }
 
 -- All data is now ready
-for result string in results {
+for _, result string in results {
     io:printl(result)
 }
 ```
@@ -3763,14 +3784,14 @@ spawn heavyResult = processLargeDataset(data)
 
 -- Many I/O operations on the event loop
 let files [*]string
-for path string in filePaths {
+for _, path string in filePaths {
     let content string
     async content = readFile(path)
     arr:append<string>(files)(content)
 }
 
 -- Wait for all I/O first (fast)
-for content string in files {
+for _, content string in files {
     await content
 }
 
@@ -3848,7 +3869,7 @@ const fetchAll (urls [*]string) -> [*]string = {
     let results [*]string = []
     
     -- Schedule all fetches
-    for url string in urls {
+    for _, url string in urls {
         let data string
         async data = http:get(url)
         arr:append<string>(results)(data)
@@ -3856,7 +3877,7 @@ const fetchAll (urls [*]string) -> [*]string = {
     
     -- Wait for all fetches to complete
     let fetched [*]string = []
-    for data string in results {
+    for _, data string in results {
         await data
         arr:append<string>(fetched)(data)
     }
@@ -4031,7 +4052,7 @@ spawn _ = backgroundTask()    -- Clearly: I don't care about the result
 spawn result = heavyWork()    -- Clearly: I'll join this eventually
 ```
 
-### Enforcement
+### Compiler Enforcement
 
 The language processor **warns** about named spawns that are never joined:
 
@@ -4040,7 +4061,7 @@ const process () -> int = {
     spawn result = heavyWork()   -- result is never joined
     return 0
 }
--- WARNING: spawned result 'result' is never joined
+-- COMPILER WARNING: spawned result 'result' is never joined
 ```
 
 To silence the warning, either join the result or explicitly discard it:
@@ -4144,7 +4165,7 @@ const processImages (images [*]Image) -> [*]ProcessedImage = {
     let results [*]ProcessedImage = []
     
     -- Spawn a thread for each image
-    for img Image in images {
+    for _, img Image in images {
         let processed ProcessedImage
         spawn processed = imageProcessor(img)
         arr:append<ProcessedImage>(results)(processed)
@@ -4152,7 +4173,7 @@ const processImages (images [*]Image) -> [*]ProcessedImage = {
     
     -- Wait for all images to be processed
     let output [*]ProcessedImage = []
-    for processed ProcessedImage in results {
+    for _, processed ProcessedImage in results {
         join processed
         arr:append<ProcessedImage>(output)(processed)
     }
