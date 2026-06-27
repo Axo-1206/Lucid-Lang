@@ -6,7 +6,9 @@
  * - TokenStream: Safe token consumption with comment skipping
  * - ParserState: Mutable context for a parsing session
  * - Error Recovery: synchronize() and synchronizeTo()
- * - Entry Points: parse() and parseFile()
+ * - parse(): Entry point - parses the root file and all imports
+ * - parseFile(): Helper - parses a single file
+ * - parseUseDecl(): Parses use declaration and imports the module
  */
 
 #include "Parser.hpp"
@@ -16,6 +18,8 @@
 #include "core/diagnostics/DiagnosticCodes.hpp"
 
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 
 namespace parser {
 
@@ -54,15 +58,12 @@ namespace parser {
  * @see synchronizeTo() for synchronizing to specific tokens.
  */
 void synchronize(ParserState& state) {
-    LOG_PARSER_DETAIL("Synchronizing parser");
+    LOG_PARSER("Synchronizing parser");
     
-    // Skip tokens until we find a synchronization point
     while (!state.stream.isAtEnd()) {
         TokenType current = state.stream.peekType();
         
-        // Check if we've reached a statement or declaration boundary
         switch (current) {
-            // Control flow statements
             case TokenType::IF:
             case TokenType::SWITCH:
             case TokenType::FOR:
@@ -71,16 +72,13 @@ void synchronize(ParserState& state) {
             case TokenType::RETURN:
             case TokenType::BREAK:
             case TokenType::CONTINUE:
-            // Declarations
             case TokenType::LET:
             case TokenType::CONST:
             case TokenType::STRUCT:
             case TokenType::ENUM:
             case TokenType::TRAIT:
             case TokenType::USE:
-            // Block start
             case TokenType::LBRACE:
-            // Statement terminator
             case TokenType::SEMICOLON:
                 LOG_PARSER_DETAIL("Synchronized at token: %s", 
                            debug::tokenTypeToString(current).c_str());
@@ -89,11 +87,10 @@ void synchronize(ParserState& state) {
                 break;
         }
         
-        // Skip this token and continue
         state.stream.advance();
     }
     
-    LOG_PARSER_DETAIL("Synchronization reached EOF");
+    LOG_PARSER("Synchronization reached EOF");
 }
 
 /**
@@ -116,12 +113,11 @@ void synchronize(ParserState& state) {
  * @see synchronize() for general error recovery.
  */
 void synchronizeTo(ParserState& state, std::initializer_list<TokenType> stopTokens) {
-    LOG_PARSER_DETAIL("Synchronizing to stop tokens");
+    LOG_PARSER("Synchronizing to stop tokens");
     
     while (!state.stream.isAtEnd()) {
         TokenType current = state.stream.peekType();
         
-        // Check if we've reached a stop token
         for (TokenType stop : stopTokens) {
             if (current == stop) {
                 LOG_PARSER_DETAIL("Synchronized at token: %s", 
@@ -130,196 +126,214 @@ void synchronizeTo(ParserState& state, std::initializer_list<TokenType> stopToke
             }
         }
         
-        // Skip this token and continue
         state.stream.advance();
     }
     
-    LOG_PARSER_DETAIL("Synchronization reached EOF");
+    LOG_PARSER("Synchronization reached EOF");
 }
 
 // =============================================================================
-// Parser Entry Points
+// parse() - ENTRY POINT
 // =============================================================================
 
 /**
- * @brief Parse a complete translation unit.
+ * @brief Parse the root file and all imported files.
  * 
- * This function is the main entry point for the parser. It consumes tokens
- * from the `ParserState` and produces a `ProgramAST` that represents the
- * entire source file.
+ * This is the ONE entry point for parsing. It:
+ * 1. Parses the root file
+ * 2. Recursively parses all imported files via parseUseDecl()
+ * 3. Collects all declarations into a single ProgramAST
  * 
- * ## Parsing Process
- * 
- * 1. **Create ProgramAST**: Allocates the root node in the arena.
- * 2. **Parse Declarations**: Iteratively parses top-level declarations until
- *    the end of the token stream.
- * 3. **Error Recovery**: Detects and recovers from parsing errors using panic
- *    mode and consecutive error detection.
- * 4. **Build AST**: Converts the temporary declaration list to an `ArenaSpan`.
- * 
- * ## Error Handling
- * 
- * - If a declaration fails to parse and no error was reported, a generic
- *   error is emitted and the parser synchronizes to the next safe token.
- * - If more than 10 consecutive errors occur, the parser aborts to prevent
- *   an infinite loop.
- * - Stray semicolons at the top level are silently skipped.
- * 
- * @param state Parser state containing the token stream, allocators, and
- *              error tracking.
- * @return ProgramAST* The root AST node (arena-allocated), or nullptr if
- *         a fatal error occurred.
- * 
- * @see ParserState for state management
- * @see parseTopLevelDecl for declaration parsing
+ * @param state Parser state for the root file
+ * @return ProgramAST* The complete AST with all declarations from all files
  */
 ProgramAST* parse(ParserState& state) {
-    LOG_PARSER_MINIMAL("Starting parse of: %s", 
+    LOG_PARSER_MINIMAL("Starting parse of root file: %s", 
                 debug::internedToString(state.pool, state.filePath).c_str());
     
-    // ─── 1. Create the Program AST Node ──────────────────────────────────
-    // This node will own all top-level declarations in the file.
+    // ─── 1. Create the root Program AST Node ─────────────────────────────
     auto* program = state.arena.make<ProgramAST>();
     program->filePath = state.filePath;
+    program->packageName = InternedString();
     
     // ─── 2. Parse Top-Level Declarations ─────────────────────────────────
-    // We collect declarations in a vector first, then convert to ArenaSpan.
-    std::vector<DeclPtr> decls;
+    std::vector<DeclPtr> allDecls;
+    int declCount = 0;
+    int consecutiveFailures = 0;
+    const int MAX_CONSECUTIVE_FAILURES = 100;
+    size_t lastPos = state.stream.getPos();
     
-    while (!state.stream.isAtEnd()) {
-        // Skip any stray semicolons or separators at the top level.
-        // These are common in error recovery and should be ignored.
+    while (!state.stream.isAtEnd() && consecutiveFailures < MAX_CONSECUTIVE_FAILURES) {
+        auto doc = harvestDocComment(state);
+        size_t savedPos = state.stream.getPos();
+        
+        // Skip stray semicolons
         if (state.stream.check(TokenType::SEMICOLON)) {
             LOG_PARSER_DETAIL("Skipping stray semicolon at top level");
             state.stream.advance();
             continue;
         }
         
-        // ─── Parse a top-level declaration ──────────────────────────────
-        // The declaration parser handles structs, enums, traits, functions,
-        // variables, and use declarations.
+        // Parse a top-level declaration
         auto* decl = parseTopLevelDecl(state);
-        if (decl) {
-            decls.push_back(decl);
-            LOG_PARSER_DETAIL("Parsed top-level declaration: %s", 
-                       debug::kindToString(decl->kind).c_str());
-        } else if (!state.hasErrors) {
-            // If we got nullptr but no error was reported, something went
-            // wrong. Emit a generic error and attempt recovery.
-            state.error("Failed to parse top-level declaration");
-            synchronize(state);
+        
+        // Check for progress
+        if (state.stream.getPos() == savedPos) {
+            consecutiveFailures++;
+            LOG_PARSER("NO PROGRESS - stuck on token '%s' (type=%s), failures: %d",
+                       state.stream.peek().value.c_str(),
+                       debug::tokenTypeToString(state.stream.peekType()).c_str(),
+                       consecutiveFailures);
+            
+            if (!state.stream.isAtEnd()) {
+                state.stream.advance();
+            }
+            
+            if (consecutiveFailures > 5) {
+                LOG_PARSER("Too many consecutive failures, aggressive recovery");
+                synchronize(state);
+            }
+        } else if (decl) {
+            declCount++;
+            consecutiveFailures = 0;
+            lastPos = state.stream.getPos();
+            
+            LOG_PARSER_DETAIL("Parsed declaration #%d (%s)", 
+                             declCount, debug::kindToString(decl->kind).c_str());
+            
+            if (doc) {
+                decl->doc = std::move(doc);
+            }
+            
+            // ─── 3. If this is a USE declaration, the import already happened
+            //     inside parseUseDecl(). We just add the decl to the list.
+            allDecls.push_back(decl);
+        } else {
+            consecutiveFailures = 0;
+            LOG_PARSER("parseTopLevelDecl returned nullptr but made progress");
         }
         
-        // ─── Check for consecutive errors ───────────────────────────────
-        // This prevents infinite loops when the parser gets stuck in an
-        // error state. After 10 consecutive errors, we abort.
-        if (state.hasErrors) {
-            state.consecutiveErrors++;
-            if (state.consecutiveErrors > 10) {
-                state.error("Too many consecutive errors, aborting parse");
-                LOG_PARSER_MINIMAL("Aborting due to consecutive errors");
-                // Return whatever we have so far
-                auto builder = state.arena.makeBuilder<DeclPtr>();
-                for (auto* d : decls) builder.push_back(d);
-                program->decls = builder.build();
-                return program;
+        // Critical stuck detection
+        if (state.stream.getPos() == lastPos && consecutiveFailures > 10) {
+            LOG_PARSER("CRITICAL - still no progress after %d attempts, forcing advance",
+                      consecutiveFailures);
+            if (!state.stream.isAtEnd()) {
+                state.stream.advance();
             }
-        } else {
-            state.consecutiveErrors = 0;
+            lastPos = state.stream.getPos();
         }
     }
     
-    // ─── 3. Build the AST ─────────────────────────────────────────────────
-    // Convert the temporary vector to an ArenaSpan for immutable storage.
+    if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        state.error("Too many consecutive parsing errors (%d), aborting",
+                   MAX_CONSECUTIVE_FAILURES);
+        LOG_PARSER("ERROR: Too many consecutive failures (%d), aborting",
+                  MAX_CONSECUTIVE_FAILURES);
+    }
+    
+    // ─── 4. Build the AST ─────────────────────────────────────────────────
     auto builder = state.arena.makeBuilder<DeclPtr>();
-    for (auto* d : decls) {
+    for (auto* d : allDecls) {
         builder.push_back(d);
     }
     program->decls = builder.build();
     
-    LOG_PARSER_MINIMAL("Parse complete: %zu declarations in %s", 
-                decls.size(), 
-                debug::internedToString(state.pool, state.filePath).c_str());
+    LOG_PARSER_MINIMAL("Parse complete: %d total declarations across all files", 
+                      allDecls.size());
     
     return program;
 }
 
+// =============================================================================
+// parseFile() - Parse a SINGLE file
+// =============================================================================
+
 /**
  * @brief Parse a single source file into a ProgramAST.
  * 
- * This convenience wrapper handles the entire lexing and parsing pipeline:
- * 1. Lex the source code using `lexer::tokenize()`
- * 2. Create a `TokenStream` from the tokens
- * 3. Create a `ParserState` with the token stream
- * 4. Parse the file using `parse()`
+ * This is a helper function that parses ONE file. It:
+ * 1. Lexes the source
+ * 2. Creates a ParserState with TokenStream
+ * 3. Checks cyclic dependencies via ModuleResolver
+ * 4. Parses the file's internal declarations
  * 
- * ## When to Use This Function
- * 
- * Use this function when you have a source file as a string and want to
- * parse it without manually setting up the lexer and token stream. This is
- * useful for:
- * - The main compiler/interpreter driver
- * - Test harnesses
- * - Tools that process single files
- * 
- * ## When NOT to Use This Function
- * 
- * If you already have a token stream, use `parse()` directly to avoid
- * unnecessary overhead. This function creates a new lexer and token stream
- * every time it's called.
- * 
- * ## Error Handling
- * 
- * Errors from the lexer and parser are collected in the `ParserState` and
- * can be retrieved via `state.hasErrors` and `state.errors`. The function
- * returns nullptr if a fatal error occurred.
- * 
- * @param path   The file path (used for error reporting and interning).
- * @param source The source code as a string.
- * @param pool   The string pool for interning identifiers and strings.
- * @param arena  The AST arena for allocating nodes.
- * @return ProgramAST* The root AST node (arena-allocated), or nullptr if
- *         a fatal error occurred.
- * 
- * @see lexer::tokenize for lexing
- * @see parse for the main parsing function
+ * @param path The file path
+ * @param source The source code
+ * @param pool The string pool
+ * @param arena The AST arena
+ * @param resolver The module resolver (for cyclic detection)
+ * @return ProgramAST* The AST for this file, or nullptr on error
  */
 ProgramAST* parseFile(const std::string& path, 
                       const std::string& source,
                       StringPool& pool, 
-                      ASTArena& arena) {
+                      ASTArena& arena,
+                      ModuleResolver* resolver) {
     LOG_PARSER_MINIMAL("Parsing file: %s", path.c_str());
     
-    // ─── 1. Lex the Source ──────────────────────────────────────────────
-    // The lexer produces a vector of tokens with source locations.
+    // ─── 1. Intern the file path ────────────────────────────────────────
+    InternedString filePath = pool.intern(path);
+    
+    // ─── 2. Check for Cyclic Dependencies ───────────────────────────────
+    if (resolver) {
+        if (resolver->isParsing(filePath)) {
+            // Cyclic dependency detected
+            LOG_PARSER("ERROR: Circular import detected: %s", path.c_str());
+            return nullptr;
+        }
+        // Push to stack before parsing
+        resolver->pushParsing(filePath);
+        LOG_PARSER_DETAIL("Pushed to parsing stack: %s", path.c_str());
+    }
+    
+    // ─── 3. Lex the Source ──────────────────────────────────────────────
     auto tokens = lexer::tokenize(source, path);
     if (tokens.empty()) {
         LOG_PARSER_MINIMAL("Lexer produced no tokens for: %s", path.c_str());
+        if (resolver) resolver->popParsing();
         return nullptr;
     }
     
-    // Check if the lexer encountered any errors (UNKNOWN tokens)
+    // Check for lexer errors
     for (const auto& tok : tokens) {
         if (tok.type == TokenType::UNKNOWN) {
             LOG_PARSER_MINIMAL("Lexer error in: %s", path.c_str());
+            if (resolver) resolver->popParsing();
             return nullptr;
         }
     }
     
-    // ─── 2. Create the Token Stream ──────────────────────────────────────
-    // The token stream handles comment skipping and lookahead.
-    InternedString filePath = pool.intern(path);
+    // ─── 4. Create TokenStream and ParserState ──────────────────────────
     TokenStream stream(std::move(tokens), filePath);
-    
-    // ─── 3. Create the Parser State ──────────────────────────────────────
-    // The state holds all mutable parsing context.
     ParserState state(std::move(stream), filePath, pool, arena);
     
-    // ─── 4. Parse the File ──────────────────────────────────────────────
-    // This is the main parsing function that produces the AST.
-    auto* program = parse(state);
+    // ─── 5. Set up Module Resolution ────────────────────────────────────
+    if (resolver) {
+        state.moduleResolver = resolver;
+    }
     
-    // ─── 5. Report Results ──────────────────────────────────────────────
+
+    // ================================================================================
+    // [Entry Point] - Parse internal structure of a file
+    // ================================================================================
+
+    // ─── 6. Parse Internal Declarations ─────────────────────────────────
+    ProgramAST* program = parseInternal(state);
+
+    
+    // ─── 7. Pop from Parsing Stack ──────────────────────────────────────
+    if (resolver) {
+        resolver->popParsing();
+        LOG_PARSER_DETAIL("Popped from parsing stack: %s", path.c_str());
+    }
+    
+    // ─── 8. Cache the result if successful ─────────────────────────────
+    if (program && resolver && !state.hasErrors) {
+        resolver->cacheModule(filePath, program);
+        LOG_PARSER_DETAIL("Cached module: %s", path.c_str());
+    }
+    
+    // ─── 9. Report Results ──────────────────────────────────────────────
     if (state.hasErrors) {
         LOG_PARSER_MINIMAL("Parse completed with errors in: %s", path.c_str());
     } else {
@@ -327,6 +341,239 @@ ProgramAST* parseFile(const std::string& path,
     }
     
     return program;
+}
+
+// =============================================================================
+// parseInternal() - Parse a file's internal declarations
+// =============================================================================
+
+/**
+ * @brief Parse the internal declarations of a single file.
+ * 
+ * This does NOT handle imports - it only parses the declarations within
+ * the current file. Imports are handled by parseUseDecl().
+ * 
+ * @param state The parser state
+ * @return ProgramAST* The AST for this file's internal declarations
+ */
+ProgramAST* parseInternal(ParserState& state) {
+    LOG_PARSER_MINIMAL("Parsing internal declarations of: %s", 
+                debug::internedToString(state.pool, state.filePath).c_str());
+    
+    // ─── 1. Create the Program AST Node ──────────────────────────────────
+    auto* program = state.arena.make<ProgramAST>();
+    program->filePath = state.filePath;
+    program->packageName = InternedString();
+    
+    // ─── 2. Parse Declarations ───────────────────────────────────────────
+    std::vector<DeclPtr> decls;
+    int declCount = 0;
+    int consecutiveFailures = 0;
+    const int MAX_CONSECUTIVE_FAILURES = 100;
+    size_t lastPos = state.stream.getPos();
+    
+    while (!state.stream.isAtEnd() && consecutiveFailures < MAX_CONSECUTIVE_FAILURES) {
+        auto doc = harvestDocComment(state);
+        size_t savedPos = state.stream.getPos();
+        
+        // Skip stray semicolons
+        if (state.stream.check(TokenType::SEMICOLON)) {
+            LOG_PARSER_DETAIL("Skipping stray semicolon at top level");
+            state.stream.advance();
+            continue;
+        }
+        
+        // Parse a top-level declaration
+        auto* decl = parseTopLevelDecl(state);
+        
+        // Check for progress
+        if (state.stream.getPos() == savedPos) {
+            consecutiveFailures++;
+            LOG_PARSER("NO PROGRESS - stuck on token '%s' (type=%s), failures: %d",
+                       state.stream.peek().value.c_str(),
+                       debug::tokenTypeToString(state.stream.peekType()).c_str(),
+                       consecutiveFailures);
+            
+            if (!state.stream.isAtEnd()) {
+                state.stream.advance();
+            }
+            
+            if (consecutiveFailures > 5) {
+                LOG_PARSER("Too many consecutive failures, aggressive recovery");
+                synchronize(state);
+            }
+        } else if (decl) {
+            declCount++;
+            consecutiveFailures = 0;
+            lastPos = state.stream.getPos();
+            
+            LOG_PARSER_DETAIL("Parsed declaration #%d (%s)", 
+                             declCount, debug::kindToString(decl->kind).c_str());
+            
+            if (doc) {
+                decl->doc = std::move(doc);
+            }
+            decls.push_back(decl);
+        } else {
+            consecutiveFailures = 0;
+            LOG_PARSER("parseTopLevelDecl returned nullptr but made progress");
+        }
+        
+        // Critical stuck detection
+        if (state.stream.getPos() == lastPos && consecutiveFailures > 10) {
+            LOG_PARSER("CRITICAL - still no progress after %d attempts, forcing advance",
+                      consecutiveFailures);
+            if (!state.stream.isAtEnd()) {
+                state.stream.advance();
+            }
+            lastPos = state.stream.getPos();
+        }
+    }
+    
+    if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        state.error("Too many consecutive parsing errors (%d), aborting",
+                   MAX_CONSECUTIVE_FAILURES);
+        LOG_PARSER("ERROR: Too many consecutive failures (%d), aborting",
+                  MAX_CONSECUTIVE_FAILURES);
+    }
+    
+    // ─── 3. Build the AST ─────────────────────────────────────────────────
+    auto builder = state.arena.makeBuilder<DeclPtr>();
+    for (auto* d : decls) {
+        builder.push_back(d);
+    }
+    program->decls = builder.build();
+    
+    LOG_PARSER_MINIMAL("Parsed %d internal declarations", declCount);
+    
+    return program;
+}
+
+// =============================================================================
+// parseUseDecl() - Parse a use declaration and import the module
+// =============================================================================
+
+/**
+ * @brief Parse a use declaration and import the referenced module.
+ * 
+ * Grammar: `use path [as alias]`
+ * 
+ * This function:
+ * 1. Parses the use path (e.g., "std.io")
+ * 2. Parses optional alias
+ * 3. Resolves the path to a file
+ * 4. Imports the module (parses if not cached)
+ * 5. Creates the UseDeclAST node
+ * 
+ * @param state The parser state
+ * @return UseDeclAST* The use declaration AST node, or nullptr on error
+ */
+UseDeclAST* parseUseDecl(ParserState& state) {
+    SourceLocation loc = state.stream.currentLoc();
+    state.stream.consume(TokenType::USE);
+    
+    // ─── 1. Parse the use path ───────────────────────────────────────────
+    auto pathParts = parseUsePath(state);
+    if (pathParts.empty()) {
+        state.error(loc, "Expected module path after 'use'");
+        synchronize(state);
+        return nullptr;
+    }
+    
+    // Build the full use path string
+    std::string fullPath;
+    for (size_t i = 0; i < pathParts.size(); ++i) {
+        if (i > 0) fullPath += ".";
+        fullPath += std::string(state.pool.lookup(pathParts[i]));
+    }
+    InternedString usePath = state.pool.intern(fullPath);
+    
+    // ─── 2. Parse optional alias ─────────────────────────────────────────
+    InternedString alias;
+    std::string aliasStr;  // For logging
+    if (state.stream.match(TokenType::AS)) {
+        Token aliasTok = state.stream.consume(TokenType::IDENTIFIER);
+        if (aliasTok.type != TokenType::EOF_TOKEN) {
+            alias = state.pool.intern(aliasTok.value);
+            aliasStr = std::string(state.pool.lookup(alias));
+        } else {
+            state.error("Expected alias name after 'as'");
+            synchronize(state);
+            return nullptr;
+        }
+    }
+    
+    // ─── 3. Import the module ────────────────────────────────────────────
+    ProgramAST* importedModule = nullptr;
+    
+    if (state.moduleResolver) {
+        // Resolve the use path to a file path
+        InternedString filePath = state.moduleResolver->resolveUsePath(usePath);
+        if (!filePath.isValid()) {
+            state.error("Module not found: '", usePath, "'");
+            synchronize(state);
+            return nullptr;
+        }
+        
+        // Check if already parsed
+        importedModule = state.moduleResolver->getParsedModule(filePath);
+        
+        if (!importedModule) {
+            // Read the source file
+            std::string source = state.moduleResolver->readModuleSource(filePath);
+            if (source.empty()) {
+                state.error("Failed to read module: '", usePath, "'");
+                synchronize(state);
+                return nullptr;
+            }
+            
+            // Parse the module
+            std::string pathStr = std::string(state.pool.lookup(filePath));
+
+            // ================================================================================
+            // [Entry Point] - Parse the file and repeat the loop until all files are parsed
+            // ================================================================================
+            importedModule = parseFile(pathStr, source, state.pool, state.arena, state.moduleResolver);
+            
+            if (!importedModule) {
+                state.error("Failed to parse module: '", usePath, "'");
+                synchronize(state);
+                return nullptr;
+            }
+            
+            // Cache the module
+            state.moduleResolver->cacheModule(filePath, importedModule);
+        }
+        
+    } else {
+        state.error("No module resolver available for import: '", usePath, "'");
+        synchronize(state);
+        return nullptr;
+    }
+    
+    // ─── 4. Create the UseDeclAST ────────────────────────────────────────
+    auto* useDecl = state.arena.make<UseDeclAST>();
+    useDecl->loc = loc;
+    
+    // Build the path span
+    auto builder = state.arena.makeBuilder<InternedString>();
+    for (const auto& part : pathParts) {
+        builder.push_back(part);
+    }
+    useDecl->path = builder.build();
+    
+    if (alias.isValid()) {
+        useDecl->alias = alias;
+    }
+    
+    // ─── 5. Log the result (CLEAN - no printf-style!) ──────────────────
+    if (alias.isValid()) {
+        LOG_PARSER_DETAIL("Parsed use declaration: '", fullPath, "' as '", aliasStr, "'");
+    } else {
+        LOG_PARSER_DETAIL("Parsed use declaration: '", fullPath, "'");
+    }
+    
+    return useDecl;
 }
 
 } // namespace parser

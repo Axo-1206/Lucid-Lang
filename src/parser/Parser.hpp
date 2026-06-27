@@ -2,8 +2,10 @@
  * @file Parser.hpp
  * @brief Lucid language parser – converts token streams into AST.
  * 
- * The parser is implemented as a namespace with pure functions.
- * All mutable state is explicitly passed via ParserState.
+ * The parser has a single entry point: parse().
+ * - parse() is the entry point - parses the root file and all imports
+ * - parseFile() is a helper - parses a single file
+ * - parseInternal() parses internal declarations of a file
  */
 
 #pragma once
@@ -22,45 +24,79 @@
 
 #include <vector>
 #include <string>
-#include <unordered_map>
 #include <optional>
 #include <initializer_list>
 
 namespace parser {
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Public API
-// ─────────────────────────────────────────────────────────────────────────────
+// =============================================================================
+// Public API - Entry Point
+// =============================================================================
 
 /**
- * @brief Parse a complete translation unit.
+ * @brief Parse the root file and all imported files.
  * 
- * @param state Parser state (contains token stream and allocators)
- * @return ProgramAST* Root AST node (arena-allocated), or nullptr on fatal error
+ * This is the ONE entry point for parsing. It:
+ * 1. Parses the root file
+ * 2. Recursively parses all imported files via parseUseDecl()
+ * 3. Collects all declarations into a single ProgramAST
+ * 
+ * @param state Parser state for the root file
+ * @return ProgramAST* The complete AST with all declarations from all files
  */
 ProgramAST* parse(ParserState& state);
 
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
 /**
- * @brief Parse a single file into a ProgramAST.
+ * @brief Parse a single source file into a ProgramAST.
  * 
- * Convenience wrapper that creates a ParserState internally.
+ * This is a helper function that parses ONE file. It handles:
+ * - Lexing the source
+ * - Creating a ParserState with TokenStream
+ * - Checking cyclic dependencies via ModuleResolver
+ * - Parsing the file's internal declarations
  * 
- * @param path File path (for error reporting)
- * @param source Source code
- * @param pool String pool (for interning)
- * @param arena AST arena (for allocation)
- * @return ProgramAST* Root AST node, or nullptr on error
+ * @param path The file path
+ * @param source The source code
+ * @param pool The string pool
+ * @param arena The AST arena
+ * @param resolver The module resolver (for cyclic detection)
+ * @return ProgramAST* The AST for this file, or nullptr on error
  */
 ProgramAST* parseFile(const std::string& path, 
                       const std::string& source,
                       StringPool& pool, 
-                      ASTArena& arena);
+                      ASTArena& arena,
+                      ModuleResolver* resolver = nullptr);
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Internal Parser Functions (declared here for organization)
-// ─────────────────────────────────────────────────────────────────────────────
+// =============================================================================
+// Error Recovery
+// =============================================================================
 
-// ─── Declarations ────────────────────────────────────────────────────────────
+void synchronize(ParserState& state);
+void synchronizeTo(ParserState& state, std::initializer_list<TokenType> stopTokens);
+
+// =============================================================================
+// Internal Parser Functions
+// =============================================================================
+
+// ─── Parse Internal Declarations ──────────────────────────────────────────
+
+/**
+ * @brief Parse the internal declarations of a single file.
+ * 
+ * This does NOT handle imports - it only parses the declarations within
+ * the current file. Imports are handled by parse() and parseUseDecl().
+ * 
+ * @param state The parser state
+ * @return ProgramAST* The AST for this file's internal declarations
+ */
+ProgramAST* parseInternal(ParserState& state);
+
+// ─── Declarations ──────────────────────────────────────────────────────────
 
 DeclAST* parseTopLevelDecl(ParserState& state);
 UseDeclAST* parseUseDecl(ParserState& state);
@@ -70,7 +106,7 @@ StructDeclAST* parseStructDecl(ParserState& state);
 EnumDeclAST* parseEnumDecl(ParserState& state);
 TraitDeclAST* parseTraitDecl(ParserState& state);
 
-// ─── Statements ──────────────────────────────────────────────────────────────
+// ─── Statements ────────────────────────────────────────────────────────────
 
 StmtAST* parseStmt(ParserState& state);
 BlockStmtAST* parseBlock(ParserState& state);
@@ -88,7 +124,7 @@ DeclStmtAST* parseDeclStmt(ParserState& state);
 MultiVarDeclAST* parseMultiVarDecl(ParserState& state);
 MultiAssignStmtAST* parseMultiAssignStmt(ParserState& state);
 
-// ─── Expressions (Pratt Parser) ─────────────────────────────────────────────
+// ─── Expressions ───────────────────────────────────────────────────────────
 
 ExprAST* parseExpr(ParserState& state);
 ExprAST* parsePrattExpr(ParserState& state, int minPrec);
@@ -96,7 +132,7 @@ ExprAST* parsePrefixExpr(ParserState& state);
 ExprAST* parsePrimaryExpr(ParserState& state);
 ExprAST* parsePostfixExpr(ParserState& state, ExprPtr lhs);
 
-// ─── Literals ────────────────────────────────────────────────────────────────
+// ─── Literals ──────────────────────────────────────────────────────────────
 
 LiteralExprAST* parseLiteralExpr(ParserState& state);
 ArrayLiteralExprAST* parseArrayLiteralExpr(ParserState& state);
@@ -106,20 +142,20 @@ IntrinsicCallExprAST* parseIntrinsicCallExpr(ParserState& state);
 IfExprAST* parseIfExpr(ParserState& state);
 RangeExprAST* parseRangeExpr(ParserState& state, ExprPtr lo);
 
-// ─── Concurrency ─────────────────────────────────────────────────────────────
+// ─── Concurrency ───────────────────────────────────────────────────────────
 
 AsyncExprAST* parseAsyncExpr(ParserState& state);
 AwaitExprAST* parseAwaitExpr(ParserState& state);
 SpawnExprAST* parseSpawnExpr(ParserState& state);
 JoinExprAST* parseJoinExpr(ParserState& state);
 
-// ─── Call & Index ────────────────────────────────────────────────────────────
+// ─── Call & Index ──────────────────────────────────────────────────────────
 
 CallExprAST* parseCallExpr(ParserState& state, ExprPtr callee, ArenaSpan<TypeAST*> genericArgs);
 IndexExprAST* parseIndexExpr(ParserState& state, ExprPtr target);
 SliceExprAST* parseSliceExpr(ParserState& state, ExprPtr target);
 
-// ─── Pipeline & Composition ──────────────────────────────────────────────────
+// ─── Pipeline & Composition ───────────────────────────────────────────────
 
 ExprAST* parsePipelineExpr(ParserState& state, ExprPtr seed);
 ExprAST* parseComposeExpr(ParserState& state, ExprPtr lhs);
@@ -139,7 +175,7 @@ TypeAST* parsePtrType(ParserState& state);
 TypeAST* parseFuncType(ParserState& state);
 TypeAST* parseTypeWithNullable(ParserState& state);
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// ─── Helpers ────────────────────────────────────────────────────────────────
 
 std::optional<DocComment> harvestDocComment(ParserState& state);
 ArenaSpan<AttributePtr> parseAttributes(ParserState& state);
@@ -164,7 +200,7 @@ TraitRefPtr parseTraitRef(ParserState& state);
 ExprPtr parseLvalue(ParserState& state);
 ExprPtr parseFuncRef(ParserState& state);
 
-// ─── Lookahead Helpers ──────────────────────────────────────────────────────
+// ─── Lookahead Helpers ────────────────────────────────────────────────────
 
 bool isStartOfDeclaration(ParserState& state);
 bool isStartOfStatement(ParserState& state);
@@ -176,14 +212,14 @@ bool looksLikeStructLiteral(ParserState& state);
 bool looksLikeMultiAssignStart(ParserState& state);
 bool isFunctionTypeAfterParen(ParserState& state, size_t startPos);
 
-// ─── Precedence Helpers ──────────────────────────────────────────────────────
+// ─── Precedence Helpers ────────────────────────────────────────────────────
 
 int infixPrec(TokenType type);
 BinaryOp tokenToBinaryOp(TokenType type);
 AssignOp tokenToAssignOp(TokenType type);
 bool isAssignOp(TokenType type);
 
-// ─── Infix Dispatch ─────────────────────────────────────────────────────────
+// ─── Infix Dispatch ───────────────────────────────────────────────────────
 
 ExprPtr parseInfixAssign(ParserState& state, ExprPtr lhs);
 ExprPtr parseInfixIs(ParserState& state, ExprPtr lhs);

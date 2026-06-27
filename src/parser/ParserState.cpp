@@ -380,46 +380,4 @@ SourceLocation ParserState::currentLoc() const {
     return stream.currentLoc();
 }
 
-// =============================================================================
-// ParserState - Module Import
-// =============================================================================
-
-ProgramAST* ParserState::importModule(InternedString usePath) {
-    // Check if already imported in this file
-    auto it = importedModules.find(usePath);
-    if (it != importedModules.end()) {
-        return it->second;
-    }
-    
-    // Use callback to import
-    if (importCallback) {
-        std::string usePathStr = std::string(pool.lookup(usePath));
-        ProgramAST* ast = importCallback(usePathStr);
-        if (ast) {
-            importedModules[usePath] = ast;
-            return ast;
-        }
-    }
-    
-    // Use module resolver directly
-    if (moduleResolver) {
-        InternedString filePath = moduleResolver->resolveUsePath(usePath);
-        if (filePath.isValid()) {
-            // Check if already parsed
-            ProgramAST* ast = moduleResolver->getParsedModule(filePath);
-            if (ast) {
-                importedModules[usePath] = ast;
-                return ast;
-            }
-            
-            // Parse the module (this would need access to the session)
-            // This is why we prefer the callback approach
-        }
-    }
-    
-    // Use variadic error reporting
-    error("Module '", usePath, "' not found");
-    return nullptr;
-}
-
 } // namespace parser

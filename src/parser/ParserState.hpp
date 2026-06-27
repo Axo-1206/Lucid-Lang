@@ -92,11 +92,11 @@ private:
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ParserState – Mutable context for a single parsing session
+// ParserState – Mutable context
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * @brief Mutable state for a single parsing session (one file).
+ * @brief Mutable state for a single file.
  * 
  * ParserState is the central context object passed to all parsing functions.
  * It holds the token stream, error tracking, context state, and module
@@ -256,12 +256,6 @@ struct ParserState {
     
     /// Module resolver for importing modules (optional, may be nullptr)
     ModuleResolver* moduleResolver = nullptr;
-
-    /// Imported modules in this file (use path -> AST)
-    std::unordered_map<InternedString, ProgramAST*> importedModules;
-    
-    /// Callback to import a module (set by CompilerSession)
-    std::function<ProgramAST*(const std::string&)> importCallback;
     
     // ─────────────────────────────────────────────────────────────────────────
     // Error Tracking
@@ -784,24 +778,6 @@ public:
      */
     SourceLocation currentLoc() const;
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Module Import
-    // ─────────────────────────────────────────────────────────────────────────
-    
-    /**
-     * @brief Import a module by its use path.
-     * 
-     * This attempts to import a module using:
-     * 1. The importCallback (if set) - preferred for cross-file imports
-     * 2. The moduleResolver (if set) - for direct resolution
-     * 
-     * @param usePath The import path (e.g., "std.io")
-     * @return ProgramAST* The imported module AST, or nullptr on error
-     * 
-     * If the module cannot be imported, an error is reported using the
-     * variadic error reporting system.
-     */
-    ProgramAST* importModule(InternedString usePath);
 };
 
 } // namespace parser
