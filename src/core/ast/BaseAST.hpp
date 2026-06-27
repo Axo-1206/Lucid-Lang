@@ -493,7 +493,6 @@ using StmtPtr    = StmtAST*;
 struct ProgramAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::Program;
 
-    InternedString     packageName;
     InternedString     filePath;
     ArenaSpan<DeclPtr> decls;
 

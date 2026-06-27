@@ -1,13 +1,43 @@
 /**
- * @file ParserState.cpp
- * @brief TokenStream and ParserState implementation.
+ * @file TokenStream.cpp
+ * @brief Implementation of TokenStream - safe token consumption with comment skipping.
+ * 
+ * TokenStream wraps a vector of tokens and provides safe accessors that
+ * automatically skip comments. This makes comments invisible to the grammar
+ * (they are harvested separately for documentation generation).
+ * 
+ * ## Key Features
+ * 
+ * - **Comment Skipping**: All peek/advance methods skip LINE_COMMENT,
+ *   DOC_COMMENT, and BLOCK_COMMENT tokens automatically.
+ * - **Position Management**: Save and restore positions for lookahead and
+ *   error recovery.
+ * - **Lookahead**: Peek at future tokens without consuming them.
+ * - **EOF Handling**: Returns a sentinel EOF token when at the end.
+ * 
+ * ## Usage Example
+ * 
+ * ```cpp
+ * TokenStream stream(tokens, "example.lucid");
+ * 
+ * // Check current token
+ * if (stream.check(TokenType::IDENTIFIER)) {
+ *     Token tok = stream.advance();  // Consumes and skips following comments
+ * }
+ * 
+ * // Lookahead
+ * TokenType next = stream.peekNextType();
+ * 
+ * // Save position for recovery
+ * size_t saved = stream.getPos();
+ * // ... try parsing ...
+ * if (failed) stream.setPos(saved);
+ * ```
  */
 
-#include "ParserState.hpp"
-#include "core/diagnostics/DiagnosticCodes.hpp"
+#include "TokenStream.hpp"
 #include "debug/DebugMacros.hpp"
 #include "debug/DebugUtils.hpp"
-#include "parser/ModuleResolver.hpp"
 
 namespace parser {
 
@@ -24,7 +54,7 @@ namespace parser {
 const Token TokenStream::eofToken_ = {TokenType::EOF_TOKEN, "", 0, 0, ""};
 
 // =============================================================================
-// TokenStream Implementation
+// Construction
 // =============================================================================
 
 /**
@@ -49,7 +79,7 @@ TokenStream::TokenStream(std::vector<Token> tokens, InternedString filePath)
     , filePath_(filePath) {}
 
 // =============================================================================
-// TokenStream - Token Consumption
+// Token Consumption
 // =============================================================================
 
 /**
@@ -204,7 +234,7 @@ SourceLocation TokenStream::currentLoc() const {
 }
 
 // =============================================================================
-// TokenStream - Lookahead
+// Lookahead
 // =============================================================================
 
 /**
@@ -294,7 +324,7 @@ bool TokenStream::isPrimitiveTypeToken(TokenType type) const {
 }
 
 // =============================================================================
-// TokenStream - Position Management
+// Position Management
 // =============================================================================
 
 /**
@@ -339,45 +369,6 @@ size_t TokenStream::skipCommentsFrom(size_t start) const {
  */
 SourceLocation TokenStream::locOf(const Token& tok) const {
     return SourceLocation(tok.line, tok.column);
-}
-
-// =============================================================================
-// ParserState - Context Queries
-// =============================================================================
-
-/**
- * @brief Check if we can safely continue parsing.
- * 
- * This method returns true if no errors have been reported. It is used
- * to determine whether to continue parsing after an error.
- * 
- * @return true if no errors have been reported, false otherwise.
- * 
- * ## Usage
- * 
- * ```cpp
- * if (!state.canContinue()) {
- *     return nullptr;
- * }
- * ```
- */
-bool ParserState::canContinue() const {
-    return consecutiveErrors < 10;
-}
-
-// =============================================================================
-// ParserState - Convenience Methods
-// =============================================================================
-
-/**
- * @brief Get the current token location.
- * 
- * This is a convenience wrapper around `TokenStream::currentLoc()`.
- * 
- * @return SourceLocation The location of the current token.
- */
-SourceLocation ParserState::currentLoc() const {
-    return stream.currentLoc();
 }
 
 } // namespace parser

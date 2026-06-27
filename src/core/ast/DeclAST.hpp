@@ -65,9 +65,9 @@ enum class DeclKeyword {
  * @brief Represents a `use` declaration – imports symbols from another module.
  *
  * @example
- *   use std.io                → path = ["std","io"],      alias = std::io
- *   use std.math as math      → path = ["std","math"],    alias = "math"
- *   use graphics.gl as gl     → path = ["graphics","gl"], alias = "gl"
+ *   use std.io                → path = "std.io",      alias = std::io
+ *   use std.math as math      → path = "std.math",    alias = "math"
+ *   use graphics.gl as gl     → path = "graphics.gl", alias = "gl"
  *
  * Path segments are split on '.'. The semantic pass joins them back when
  * resolving against the package root.
@@ -78,8 +78,8 @@ enum class DeclKeyword {
 struct UseDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::UseDecl;
 
-    ArenaSpan<InternedString> path;
-    std::optional<InternedString> alias;
+    InternedString path;
+    InternedString alias;
 
     UseDeclAST() : DeclAST(ASTKind::UseDecl) {}
 };
