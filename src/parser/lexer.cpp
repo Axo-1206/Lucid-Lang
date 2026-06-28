@@ -93,11 +93,11 @@ inline bool match_two(LexerState& state, char first, char second) {
 
 inline Token make_token(TokenType type, const std::string& value, 
                         const LexerState& state) {
-    return Token{type, value, state.line, state.column, state.filename};
+    return Token{type, value, state.line, state.column};
 }
 
 inline Token error_token(const std::string& message, const LexerState& state) {
-    return Token{TokenType::UNKNOWN, message, state.line, state.column, state.filename};
+    return Token{TokenType::UNKNOWN, message, state.line, state.column};
 }
 
 // ─── Skip Whitespace ─────────────────────────────────────────────────
@@ -129,10 +129,10 @@ Token lex_identifier(LexerState& state) {
     
     TokenType type = keyword_to_type(value);
     if (type != TokenType::IDENTIFIER) {
-        return Token{type, value, start_line, start_col, state.filename};
+        return Token{type, value, start_line, start_col};
     }
     
-    return Token{TokenType::IDENTIFIER, value, start_line, start_col, state.filename};
+    return Token{TokenType::IDENTIFIER, value, start_line, start_col};
 }
 
 // ─── Lex Number ──────────────────────────────────────────────────────
@@ -157,7 +157,7 @@ Token lex_number(LexerState& state) {
             value += current_char(state);
             advance(state);
         }
-        return Token{TokenType::HEX_LITERAL, value, start_line, start_col, state.filename};
+        return Token{TokenType::HEX_LITERAL, value, start_line, start_col};
     }
     
     // Binary: 0b...
@@ -174,7 +174,7 @@ Token lex_number(LexerState& state) {
             value += current_char(state);
             advance(state);
         }
-        return Token{TokenType::BINARY_LITERAL, value, start_line, start_col, state.filename};
+        return Token{TokenType::BINARY_LITERAL, value, start_line, start_col};
     }
     
     // Octal: 0o...
@@ -191,7 +191,7 @@ Token lex_number(LexerState& state) {
             value += current_char(state);
             advance(state);
         }
-        return Token{TokenType::INT_LITERAL, value, start_line, start_col, state.filename};
+        return Token{TokenType::INT_LITERAL, value, start_line, start_col};
     }
     
     // Decimal integer or float
@@ -237,10 +237,10 @@ Token lex_number(LexerState& state) {
     }
     
     if (is_float) {
-        return Token{TokenType::FLOAT_LITERAL, value, start_line, start_col, state.filename};
+        return Token{TokenType::FLOAT_LITERAL, value, start_line, start_col};
     }
     
-    return Token{TokenType::INT_LITERAL, value, start_line, start_col, state.filename};
+    return Token{TokenType::INT_LITERAL, value, start_line, start_col};
 }
 
 // ─── Lex Strings ─────────────────────────────────────────────────────
@@ -304,7 +304,7 @@ Token lex_string(LexerState& state) {
     }
     
     advance(state); // consume closing "
-    return Token{TokenType::STRING_LITERAL, value, start_line, start_col, state.filename};
+    return Token{TokenType::STRING_LITERAL, value, start_line, start_col};
 }
 
 // ─── Lex Raw Strings ─────────────────────────────────────────────────
@@ -325,7 +325,7 @@ Token lex_raw_string(LexerState& state) {
             advance(state);
             advance(state);
             advance(state);
-            return Token{TokenType::RAW_STRING_LITERAL, value, start_line, start_col, state.filename};
+            return Token{TokenType::RAW_STRING_LITERAL, value, start_line, start_col};
         }
         
         value += current_char(state);
@@ -379,7 +379,7 @@ Token lex_char(LexerState& state) {
     }
     
     advance(state); // consume closing '
-    return Token{TokenType::CHAR_LITERAL, value, start_line, start_col, state.filename};
+    return Token{TokenType::CHAR_LITERAL, value, start_line, start_col};
 }
 
 // ─── Lex Comments ────────────────────────────────────────────────────
@@ -397,7 +397,7 @@ Token lex_comment(LexerState& state) {
         if (current_char(state) == '-' && peek_char(state, 1) == '/') {
             advance(state);
             advance(state);
-            return Token{TokenType::LINE_COMMENT, value, start_line, start_col, state.filename};
+            return Token{TokenType::LINE_COMMENT, value, start_line, start_col};
         }
         
         value += current_char(state);
@@ -424,7 +424,7 @@ Token lex_doc_comment(LexerState& state) {
             advance(state);
             advance(state);
             advance(state);
-            return Token{TokenType::DOC_COMMENT, value, start_line, start_col, state.filename};
+            return Token{TokenType::DOC_COMMENT, value, start_line, start_col};
         }
         
         value += current_char(state);
@@ -484,7 +484,7 @@ Token lex_block_comment(LexerState& state) {
         return error_token("Unterminated block comment (expected -/)", state);
     }
     
-    return Token{TokenType::BLOCK_COMMENT, value, start_line, start_col, state.filename};
+    return Token{TokenType::BLOCK_COMMENT, value, start_line, start_col};
 }
 
 // ─── Lex Operators and Punctuation ──────────────────────────────────
@@ -502,10 +502,10 @@ Token lex_operator_or_punctuation(LexerState& state) {
             advance(state);
             if (peek_char(state, 1) == '=') {
                 advance(state);
-                return Token{TokenType::POW_ASSIGN, "**=", start_line, start_col, state.filename};
+                return Token{TokenType::POW_ASSIGN, "**=", start_line, start_col};
             }
             advance(state);
-            return Token{TokenType::POW, "**", start_line, start_col, state.filename};
+            return Token{TokenType::POW, "**", start_line, start_col};
         }
     }
     
@@ -514,20 +514,20 @@ Token lex_operator_or_punctuation(LexerState& state) {
         advance(state);
         if (peek_char(state, 1) == '=') {
             advance(state);
-            return Token{TokenType::SHL_ASSIGN, "<<=", start_line, start_col, state.filename};
+            return Token{TokenType::SHL_ASSIGN, "<<=", start_line, start_col};
         }
         advance(state);
-        return Token{TokenType::SHL, "<<", start_line, start_col, state.filename};
+        return Token{TokenType::SHL, "<<", start_line, start_col};
     }
     
     if (c == '>' && peek_char(state, 1) == '>') {
         advance(state);
         if (peek_char(state, 1) == '=') {
             advance(state);
-            return Token{TokenType::SHR_ASSIGN, ">>=", start_line, start_col, state.filename};
+            return Token{TokenType::SHR_ASSIGN, ">>=", start_line, start_col};
         }
         advance(state);
-        return Token{TokenType::SHR, ">>", start_line, start_col, state.filename};
+        return Token{TokenType::SHR, ">>", start_line, start_col};
     }
     
     // Ranges: .. and ..<
@@ -535,45 +535,45 @@ Token lex_operator_or_punctuation(LexerState& state) {
         advance(state);
         if (peek_char(state, 1) == '<') {
             advance(state);
-            return Token{TokenType::RANGE_EXCLUSIVE, "..<", start_line, start_col, state.filename};
+            return Token{TokenType::RANGE_EXCLUSIVE, "..<", start_line, start_col};
         }
         advance(state);
-        return Token{TokenType::RANGE, "..", start_line, start_col, state.filename};
+        return Token{TokenType::RANGE, "..", start_line, start_col};
     }
     
     // Composition: +>
     if (c == '+' && peek_char(state, 1) == '>') {
         advance(state);
         advance(state);
-        return Token{TokenType::COMPOSE, "+>", start_line, start_col, state.filename};
+        return Token{TokenType::COMPOSE, "+>", start_line, start_col};
     }
     
     // Pipeline: |>
     if (c == '|' && peek_char(state, 1) == '>') {
         advance(state);
         advance(state);
-        return Token{TokenType::PIPELINE, "|>", start_line, start_col, state.filename};
+        return Token{TokenType::PIPELINE, "|>", start_line, start_col};
     }
     
     // Nullable access: ?.
     if (c == '?' && peek_char(state, 1) == '.') {
         advance(state);
         advance(state);
-        return Token{TokenType::QUESTION_DOT, "?.", start_line, start_col, state.filename};
+        return Token{TokenType::QUESTION_DOT, "?.", start_line, start_col};
     }
     
     // Nullable/fallback: ??
     if (c == '?' && peek_char(state, 1) == '?') {
         advance(state);
         advance(state);
-        return Token{TokenType::QUESTION_QUESTION, "??", start_line, start_col, state.filename};
+        return Token{TokenType::QUESTION_QUESTION, "??", start_line, start_col};
     }
     
     // Function arrow: ->
     if (c == '-' && peek_char(state, 1) == '>') {
         advance(state);
         advance(state);
-        return Token{TokenType::ARROW, "->", start_line, start_col, state.filename};
+        return Token{TokenType::ARROW, "->", start_line, start_col};
     }
     
     // ─── Single-character operators ─────────────────────────────────
@@ -582,192 +582,192 @@ Token lex_operator_or_punctuation(LexerState& state) {
         if (peek_char(state, 1) == '=') {
             advance(state);
             advance(state);
-            return Token{TokenType::EQUAL_EQUAL, "==", start_line, start_col, state.filename};
+            return Token{TokenType::EQUAL_EQUAL, "==", start_line, start_col};
         }
         advance(state);
-        return Token{TokenType::ASSIGN, "=", start_line, start_col, state.filename};
+        return Token{TokenType::ASSIGN, "=", start_line, start_col};
     }
     
     if (c == '+') {
         if (peek_char(state, 1) == '=') {
             advance(state);
             advance(state);
-            return Token{TokenType::PLUS_ASSIGN, "+=", start_line, start_col, state.filename};
+            return Token{TokenType::PLUS_ASSIGN, "+=", start_line, start_col};
         }
         advance(state);
-        return Token{TokenType::PLUS, "+", start_line, start_col, state.filename};
+        return Token{TokenType::PLUS, "+", start_line, start_col};
     }
     
     if (c == '-') {
         if (peek_char(state, 1) == '=') {
             advance(state);
             advance(state);
-            return Token{TokenType::MINUS_ASSIGN, "-=", start_line, start_col, state.filename};
+            return Token{TokenType::MINUS_ASSIGN, "-=", start_line, start_col};
         }
         advance(state);
-        return Token{TokenType::MINUS, "-", start_line, start_col, state.filename};
+        return Token{TokenType::MINUS, "-", start_line, start_col};
     }
     
     if (c == '*') {
         if (peek_char(state, 1) == '=') {
             advance(state);
             advance(state);
-            return Token{TokenType::MUL_ASSIGN, "*=", start_line, start_col, state.filename};
+            return Token{TokenType::MUL_ASSIGN, "*=", start_line, start_col};
         }
         advance(state);
-        return Token{TokenType::MUL, "*", start_line, start_col, state.filename};
+        return Token{TokenType::MUL, "*", start_line, start_col};
     }
     
     if (c == '/') {
         if (peek_char(state, 1) == '=') {
             advance(state);
             advance(state);
-            return Token{TokenType::DIV_ASSIGN, "/=", start_line, start_col, state.filename};
+            return Token{TokenType::DIV_ASSIGN, "/=", start_line, start_col};
         }
         advance(state);
-        return Token{TokenType::DIV, "/", start_line, start_col, state.filename};
+        return Token{TokenType::DIV, "/", start_line, start_col};
     }
     
     if (c == '%') {
         if (peek_char(state, 1) == '=') {
             advance(state);
             advance(state);
-            return Token{TokenType::MOD_ASSIGN, "%=", start_line, start_col, state.filename};
+            return Token{TokenType::MOD_ASSIGN, "%=", start_line, start_col};
         }
         advance(state);
-        return Token{TokenType::MOD, "%", start_line, start_col, state.filename};
+        return Token{TokenType::MOD, "%", start_line, start_col};
     }
     
     if (c == '^') {
         if (peek_char(state, 1) == '=') {
             advance(state);
             advance(state);
-            return Token{TokenType::BIT_XOR_ASSIGN, "^=", start_line, start_col, state.filename};
+            return Token{TokenType::BIT_XOR_ASSIGN, "^=", start_line, start_col};
         }
         advance(state);
-        return Token{TokenType::BIT_XOR, "^", start_line, start_col, state.filename};
+        return Token{TokenType::BIT_XOR, "^", start_line, start_col};
     }
     
     if (c == '&') {
         if (peek_char(state, 1) == '=') {
             advance(state);
             advance(state);
-            return Token{TokenType::BIT_AND_ASSIGN, "&=", start_line, start_col, state.filename};
+            return Token{TokenType::BIT_AND_ASSIGN, "&=", start_line, start_col};
         }
         advance(state);
-        return Token{TokenType::BIT_AND, "&", start_line, start_col, state.filename};
+        return Token{TokenType::BIT_AND, "&", start_line, start_col};
     }
     
     if (c == '|') {
         if (peek_char(state, 1) == '=') {
             advance(state);
             advance(state);
-            return Token{TokenType::BIT_OR_ASSIGN, "|=", start_line, start_col, state.filename};
+            return Token{TokenType::BIT_OR_ASSIGN, "|=", start_line, start_col};
         }
         advance(state);
-        return Token{TokenType::BIT_OR, "|", start_line, start_col, state.filename};
+        return Token{TokenType::BIT_OR, "|", start_line, start_col};
     }
     
     if (c == '~') {
         advance(state);
-        return Token{TokenType::BIT_NOT, "~", start_line, start_col, state.filename};
+        return Token{TokenType::BIT_NOT, "~", start_line, start_col};
     }
     
     if (c == '!') {
         if (peek_char(state, 1) == '=') {
             advance(state);
             advance(state);
-            return Token{TokenType::NOT_EQUAL, "!=", start_line, start_col, state.filename};
+            return Token{TokenType::NOT_EQUAL, "!=", start_line, start_col};
         }
         advance(state);
-        return Token{TokenType::BANG, "!", start_line, start_col, state.filename};
+        return Token{TokenType::BANG, "!", start_line, start_col};
     }
     
     if (c == '<') {
         if (peek_char(state, 1) == '=') {
             advance(state);
             advance(state);
-            return Token{TokenType::LESS_EQUAL, "<=", start_line, start_col, state.filename};
+            return Token{TokenType::LESS_EQUAL, "<=", start_line, start_col};
         }
         advance(state);
-        return Token{TokenType::LESS, "<", start_line, start_col, state.filename};
+        return Token{TokenType::LESS, "<", start_line, start_col};
     }
     
     if (c == '>') {
         if (peek_char(state, 1) == '=') {
             advance(state);
             advance(state);
-            return Token{TokenType::GREATER_EQUAL, ">=", start_line, start_col, state.filename};
+            return Token{TokenType::GREATER_EQUAL, ">=", start_line, start_col};
         }
         advance(state);
-        return Token{TokenType::GREATER, ">", start_line, start_col, state.filename};
+        return Token{TokenType::GREATER, ">", start_line, start_col};
     }
     
     // ─── Punctuation ─────────────────────────────────────────────────
     
     if (c == '.') {
         advance(state);
-        return Token{TokenType::DOT, ".", start_line, start_col, state.filename};
+        return Token{TokenType::DOT, ".", start_line, start_col};
     }
     
     if (c == ':') {
         advance(state);
-        return Token{TokenType::COLON, ":", start_line, start_col, state.filename};
+        return Token{TokenType::COLON, ":", start_line, start_col};
     }
     
     if (c == ',') {
         advance(state);
-        return Token{TokenType::COMMA, ",", start_line, start_col, state.filename};
+        return Token{TokenType::COMMA, ",", start_line, start_col};
     }
     
     if (c == ';') {
         advance(state);
-        return Token{TokenType::SEMICOLON, ";", start_line, start_col, state.filename};
+        return Token{TokenType::SEMICOLON, ";", start_line, start_col};
     }
     
     if (c == '(') {
         advance(state);
-        return Token{TokenType::LPAREN, "(", start_line, start_col, state.filename};
+        return Token{TokenType::LPAREN, "(", start_line, start_col};
     }
     
     if (c == ')') {
         advance(state);
-        return Token{TokenType::RPAREN, ")", start_line, start_col, state.filename};
+        return Token{TokenType::RPAREN, ")", start_line, start_col};
     }
     
     if (c == '{') {
         advance(state);
-        return Token{TokenType::LBRACE, "{", start_line, start_col, state.filename};
+        return Token{TokenType::LBRACE, "{", start_line, start_col};
     }
     
     if (c == '}') {
         advance(state);
-        return Token{TokenType::RBRACE, "}", start_line, start_col, state.filename};
+        return Token{TokenType::RBRACE, "}", start_line, start_col};
     }
     
     if (c == '[') {
         advance(state);
-        return Token{TokenType::LBRACKET, "[", start_line, start_col, state.filename};
+        return Token{TokenType::LBRACKET, "[", start_line, start_col};
     }
     
     if (c == ']') {
         advance(state);
-        return Token{TokenType::RBRACKET, "]", start_line, start_col, state.filename};
+        return Token{TokenType::RBRACKET, "]", start_line, start_col};
     }
     
     if (c == '@') {
         advance(state);
-        return Token{TokenType::AT_SIGN, "@", start_line, start_col, state.filename};
+        return Token{TokenType::AT_SIGN, "@", start_line, start_col};
     }
     
     if (c == '#') {
         advance(state);
-        return Token{TokenType::HASH, "#", start_line, start_col, state.filename};
+        return Token{TokenType::HASH, "#", start_line, start_col};
     }
     
     if (c == '_') {
         advance(state);
-        return Token{TokenType::UNDERSCORE, "_", start_line, start_col, state.filename};
+        return Token{TokenType::UNDERSCORE, "_", start_line, start_col};
     }
     
     // Variadic: ...
@@ -775,7 +775,7 @@ Token lex_operator_or_punctuation(LexerState& state) {
         advance(state);
         advance(state);
         advance(state);
-        return Token{TokenType::VARIADIC, "...", start_line, start_col, state.filename};
+        return Token{TokenType::VARIADIC, "...", start_line, start_col};
     }
     
     // Unknown character
@@ -783,7 +783,7 @@ Token lex_operator_or_punctuation(LexerState& state) {
     msg += c;
     msg += "'";
     advance(state);
-    return Token{TokenType::UNKNOWN, msg, start_line, start_col, state.filename};
+    return Token{TokenType::UNKNOWN, msg, start_line, start_col};
 }
 
 // ─── Main Tokenization Loop ─────────────────────────────────────────
@@ -792,7 +792,7 @@ Token next_token(detail::LexerState& state) {
     detail::skip_whitespace(state);
     
     if (detail::is_at_end(state)) {
-        return Token{TokenType::EOF_TOKEN, "", state.line, state.column, state.filename};
+        return Token{TokenType::EOF_TOKEN, "", state.line, state.column};
     }
     
     char c = detail::current_char(state);

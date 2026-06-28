@@ -220,7 +220,6 @@ struct Token {
     std::string value;     // raw lexeme
     int line;
     int column;
-    std::string filename;  // source file name for error reporting
     
     // ─── Helper Methods ──────────────────────────────────────────────────
     

@@ -51,7 +51,7 @@ namespace parser {
  * This token has type `EOF_TOKEN` and empty fields. It is used to avoid
  * null pointer checks when accessing the current token.
  */
-const Token TokenStream::eofToken_ = {TokenType::EOF_TOKEN, "", 0, 0, ""};
+const Token TokenStream::eofToken_ = {TokenType::EOF_TOKEN, "", 0, 0};
 
 // =============================================================================
 // Construction

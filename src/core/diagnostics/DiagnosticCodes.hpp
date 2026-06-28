@@ -3,20 +3,17 @@
 
 enum class DiagCode : uint32_t {
     // ========== 0000–0099: Environment ==========  
-    E0001 = 0,      ///< Unknown Error   
-    E0002,          ///< File not found or inaccessible.
-    E0003,          ///< Module resolution failed.
-    E0004,          ///< Cyclic module dependency.
-    E0005,          ///< Invalid package declaration.
+    E0001 = 0,      ///< Unknown Error
+    E0002,          ///< Too many consecutive errors. Aborting...
+    E0003,          ///< File not found or inaccessible.
+    E0004,          ///< Module resolution failed.
+    E0005,          ///< Cyclic module dependency.
 
     // ========== 0100–0199: Lexical ==========
     E0101 = 100,    ///< Invalid character in source (only ASCII allowed).
     E0102,          ///< Unterminated string literal.
     E0103,          ///< Unterminated raw string literal.
-    E0104,          ///< Mismatched '#' count in raw string literal.
-    E0105,          ///< Invalid escape sequence.
-    E0106,          ///< Unterminated block comment.
-    E0107,          ///< Unexpected end of file while scanning token.
+    E0104,          ///< Unterminated block comment.
 
     // ========== 1000–1999: Parsing (Syntax) ==========
     // General codes
@@ -27,19 +24,19 @@ enum class DiagCode : uint32_t {
     E1005,          ///< Expected '}, ], >, )'
     E1006,          ///< Expected expression after '='
     E1007,          ///< Expected token
-    E1008,          ///< Expected type
-    E1009,          ///< Invalid context
+    E1008,          ///< Unexpected token
+    E1009,          ///< Expected type
+    E1010,          ///< Invalid context
 
     // Speicalize codes
-    // E1101 = 1100,   ///< Expected package name
-    E1102,          ///< Expected module path after keyword 'use'
-    // E1103,          ///< Expected name alias after keyword 'as'
-    E1104,          ///< Visibility modifier not allowed in local declaration
+    E1101,          ///< Expected module path after keyword 'use'
+    E1102,          ///< Expected name alias after keyword 'as'
+    // E1104,          ///< Visibility modifier not allowed in local declaration
     // E1105,          ///< Invalid context: 'use' declaration is not allowed inside a block
-    E1106,          ///< Invalid argument for attribute
-    E1107,          ///< Unexpected tralling comma
-    E1108,          ///< Invalid enum variant integer literal
-    E1109,          ///< Type can't be used as generic argument
+    // E1106,          ///< Invalid argument for attribute
+    // E1107,          ///< Unexpected tralling comma
+    // E1108,          ///< Invalid enum variant integer literal
+    // E1109,          ///< Type can't be used as generic argument
 
 
     // E1001 = 1000,   ///< Expected token '%s' but found '%s'.

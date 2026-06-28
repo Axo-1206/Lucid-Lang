@@ -42,21 +42,24 @@ namespace parser {
  * 
  * ## Error Reporting API
  * 
- * All error reporting functions automatically use the current token location
- * from the TokenStream. The API is:
- * 
  * ```cpp
- * // Simple error at current token location
- * ctx.error(DiagCode::E1002, "expected", "found");
+ * // Error at current token location with no extra args
+ * ctx.error(stream, DiagCode::E1001);
  * 
- * // Error at a specific location (rarely needed)
+ * // Error at current token location with format args
+ * ctx.error(stream, DiagCode::E1002, "expected", "found");
+ * 
+ * // Error at specific location
  * ctx.errorAt(loc, DiagCode::E1002, "expected", "found");
  * 
- * // Warning at current token location
- * ctx.warning(DiagCode::W0001, "message");
+ * // Warning with no extra args
+ * ctx.warning(stream, DiagCode::W0001);
  * 
- * // Note at current token location (no code)
- * ctx.note("Informational message");
+ * // Warning with format args
+ * ctx.warning(stream, DiagCode::W0002, "variableName");
+ * 
+ * // Note (no diagnostic code)
+ * ctx.note(stream, "Consider using '", alternative, "' instead");
  * ```
  * 
  * ## Usage
@@ -204,9 +207,13 @@ private:
     
     template<typename... Args>
     std::string buildMessage(Args&&... args) const {
-        std::ostringstream oss;
-        buildMessageImpl(oss, std::forward<Args>(args)...);
-        return oss.str();
+        if constexpr (sizeof...(Args) == 0) {
+            return "";
+        } else {
+            std::ostringstream oss;
+            buildMessageImpl(oss, std::forward<Args>(args)...);
+            return oss.str();
+        }
     }
     
     void addDiagnostic(DiagnosticSeverity severity, 
@@ -235,83 +242,92 @@ public:
     // ─────────────────────────────────────────────────────────────────────────
     // Public Error Reporting API
     // ─────────────────────────────────────────────────────────────────────────
-    
+
     /**
-     * @brief Report an error at a specific location.
+     * @brief Report an error at the current token location with optional format args.
      * 
-     * @tparam Args The types of the format arguments
-     * @param loc The source location
-     * @param code The diagnostic code
-     * @param args The format arguments for the error message
-     * 
-     * ## Usage Examples
-     * 
-     * ```cpp
-     * // Error at a specific location (rarely needed)
-     * ctx.errorAt(loc, DiagCode::E1002, expected, found);
-     * ```
-     */
-    template<typename... Args>
-    void errorAt(const SourceLocation& loc, DiagCode code, Args&&... args) {
-        addDiagnostic(DiagnosticSeverity::Error, 
-                      DiagnosticCategory::Syntax,
-                      loc,
-                      code,
-                      buildMessage(std::forward<Args>(args)...));
-    }
-    
-    /**
-     * @brief Report a warning at a specific location.
-     */
-    template<typename... Args>
-    void warningAt(const SourceLocation& loc, DiagCode code, Args&&... args) {
-        addDiagnostic(DiagnosticSeverity::Warning, 
-                      DiagnosticCategory::Syntax,
-                      loc,
-                      code,
-                      buildMessage(std::forward<Args>(args)...));
-    }
-    
-    // ─────────────────────────────────────────────────────────────────────────
-    // Convenience: Error with location from TokenStream
-    // ─────────────────────────────────────────────────────────────────────────
-    
-    /**
-     * @brief Report an error using the current location from a TokenStream.
-     * 
-     * This is the primary error reporting function used by parser functions.
-     * 
-     * @tparam Args The types of the format arguments
+     * @tparam Args The types of the format arguments (can be empty)
      * @param stream The token stream to get the current location from
      * @param code The diagnostic code
-     * @param args The format arguments for the error message
+     * @param args Optional format arguments for the error message
      * 
      * ## Usage Examples
      * 
      * ```cpp
-     * // Error at current token location
-     * ctx.error(stream, DiagCode::E1002, expected, found);
+     * // Error with no extra args
+     * ctx.error(stream, DiagCode::E1001);
+     * 
+     * // Error with format args
+     * ctx.error(stream, DiagCode::E1002, "expected", "found");
+     * 
+     * // Error with InternedString
+     * ctx.error(stream, DiagCode::E2001, ctx.toString(varName));
      * ```
      */
     template<typename... Args>
     void error(TokenStream& stream, DiagCode code, Args&&... args) {
+        std::string message = buildMessage(std::forward<Args>(args)...);
         addDiagnostic(DiagnosticSeverity::Error, 
                       DiagnosticCategory::Syntax,
                       stream.currentLoc(),
                       code,
-                      buildMessage(std::forward<Args>(args)...));
+                      message);
+    }
+      
+    /**
+     * @brief Report an error at a specific location with optional format args.
+     * 
+     * @tparam Args The types of the format arguments (can be empty)
+     * @param loc The source location
+     * @param code The diagnostic code
+     * @param args Optional format arguments for the error message
+     */
+    template<typename... Args>
+    void errorAt(const SourceLocation& loc, DiagCode code, Args&&... args) {
+        std::string message = buildMessage(std::forward<Args>(args)...);
+        addDiagnostic(DiagnosticSeverity::Error, 
+                      DiagnosticCategory::Syntax,
+                      loc,
+                      code,
+                      message);
     }
     
     /**
-     * @brief Report a warning using the current location from a TokenStream.
+     * @brief Report a warning at the current token location with optional format args.
+     * 
+     * @tparam Args The types of the format arguments (can be empty)
+     * @param stream The token stream to get the current location from
+     * @param code The diagnostic code
+     * @param args Optional format arguments for the warning message
      */
     template<typename... Args>
     void warning(TokenStream& stream, DiagCode code, Args&&... args) {
+        std::string message = buildMessage(std::forward<Args>(args)...);
         addDiagnostic(DiagnosticSeverity::Warning, 
                       DiagnosticCategory::Syntax,
                       stream.currentLoc(),
                       code,
-                      buildMessage(std::forward<Args>(args)...));
+                      message);
+    }
+    
+    // ─── Warning at Specific Location ────────────────────────────────────
+    
+    /**
+     * @brief Report a warning at a specific location with optional format args.
+     * 
+     * @tparam Args The types of the format arguments (can be empty)
+     * @param loc The source location
+     * @param code The diagnostic code
+     * @param args Optional format arguments for the warning message
+     */
+    template<typename... Args>
+    void warningAt(const SourceLocation& loc, DiagCode code, Args&&... args) {
+        std::string message = buildMessage(std::forward<Args>(args)...);
+        addDiagnostic(DiagnosticSeverity::Warning, 
+                      DiagnosticCategory::Syntax,
+                      loc,
+                      code,
+                      message);
     }
     
     // ─────────────────────────────────────────────────────────────────────────

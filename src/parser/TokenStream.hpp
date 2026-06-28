@@ -11,6 +11,7 @@
 
 #include "core/Tokens.hpp"
 #include "core/ast/BaseAST.hpp"
+#include <string>
 
 namespace parser {
 
@@ -65,7 +66,8 @@ struct TokenStream {
     
     // ─── Lookahead ──────────────────────────────────────────────────────
     
-    TokenType peekType() const { return peek().type; }
+    TokenType peekType() const { return peek().type; }     // Get the token type(kind)
+    std::string peekValue() const { return peek().value; } // Get the token name(value)
     TokenType peekNextType() const;
     const Token& peekNext() const;
     const Token& peekAt(size_t offset) const;
