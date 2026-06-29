@@ -13,6 +13,7 @@
 
 #include "Parser.hpp"
 #include "Lexer.hpp"
+#include "core/ast/BaseAST.hpp"
 #include "debug/DebugMacros.hpp"
 #include "debug/DebugUtils.hpp"
 #include "core/diagnostics/DiagnosticCodes.hpp"
@@ -261,8 +262,28 @@ bool parseInternal(TokenStream& stream, ParserContext& ctx, std::vector<DeclPtr>
             continue;
         }
         
-        // Parse a top-level declaration
+        // ─── Parse a top-level declaration ──────────────────────────────
         auto* decl = parseTopLevelDecl(stream, ctx);
+        
+        // ─── Check if we're at EOF after parsing a declaration ──────────
+        // If we parsed a declaration and then hit EOF, but the declaration
+        // was incomplete (e.g., missing closing brace), we should have
+        // already reported an error. But if we're at EOF and the declaration
+        // is nullptr, we might have a malformed declaration.
+        if (!decl && stream.isAtEnd()) {
+            // We reached EOF while trying to parse a declaration.
+            // This could be because we're at EOF after a comment, or
+            // there's a malformed declaration.
+            // If we have any errors, break out.
+            if (ctx.hasErrors) {
+                break;
+            }
+            // No error was reported, but we have no declaration and we're at EOF.
+            // This could be valid (trailing whitespace after last declaration).
+            // Let's break out of the loop gracefully.
+            LOG_PARSER_DETAIL("Reached EOF after parsing declarations");
+            break;
+        }
         
         // Check for progress
         if (stream.getPos() == savedPos) {
@@ -305,9 +326,16 @@ bool parseInternal(TokenStream& stream, ParserContext& ctx, std::vector<DeclPtr>
         }
     }
     
+    // ─── Final EOF check ─────────────────────────────────────────────────
+    // If we reached EOF while there were unclosed constructs, the helper
+    // functions should have reported errors. This is just a safety net.
+    if (stream.isAtEnd() && ctx.hasErrors) {
+        // Errors already reported - nothing to do
+        LOG_PARSER_DETAIL("Parse ended at EOF with errors");
+    }
+    
     if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-        ctx.error(stream.currentLoc(), 
-                  "Too many consecutive parsing errors (", MAX_CONSECUTIVE_FAILURES, "), aborting");
+        ctx.error(stream, DiagCode::E0002, MAX_CONSECUTIVE_FAILURES);
         LOG_PARSER("ERROR: Too many consecutive failures (", MAX_CONSECUTIVE_FAILURES, "), aborting");
         return false;
     }
@@ -349,7 +377,7 @@ DeclAST* parseTopLevelDecl(TokenStream& stream, ParserContext& ctx) {
     }
     
     // Unknown declaration
-    ctx.error(stream.currentLoc(), "Unexpected token: ", stream.peek().value);
+    ctx.error(stream, DiagCode::E1008, stream.peekValue());
     synchronize(stream, ctx);
     return nullptr;
 }
@@ -384,13 +412,15 @@ DeclAST* parseTopLevelDecl(TokenStream& stream, ParserContext& ctx) {
  * @return UseDeclAST* The use declaration AST node, or nullptr on error
  */
 UseDeclAST* parseUseDecl(TokenStream& stream, ParserContext& ctx) {
+    LOG_PARSER("Enter UseDecl");
+
     SourceLocation loc = stream.currentLoc();
     stream.consume(TokenType::USE);
     
     // ─── 1. Parse the use path ───────────────────────────────────────────
     auto pathParts = parseUsePath(stream, ctx);
     if (pathParts.empty()) {
-        ctx.error(loc, "Expected module path after 'use'");
+        ctx.error(stream, DiagCode::E1102, stream.peekValue());
         synchronize(stream, ctx);
         return nullptr;
     }
@@ -414,7 +444,7 @@ UseDeclAST* parseUseDecl(TokenStream& stream, ParserContext& ctx) {
             alias = ctx.pool.intern(aliasTok.value);
             aliasStr = std::string(ctx.pool.lookup(alias));
         } else {
-            ctx.error(loc, "Expected alias name after 'as'");
+            ctx.error(stream, DiagCode::E1102, stream.peekValue());
             synchronize(stream, ctx);
             return nullptr;
         }
@@ -437,7 +467,7 @@ UseDeclAST* parseUseDecl(TokenStream& stream, ParserContext& ctx) {
         // Resolve the use path to a file path
         InternedString filePath = ctx.resolver->resolveUsePath(usePath);
         if (!filePath.isValid()) {
-            ctx.error(loc, "Module not found: '", usePath, "'");
+            ctx.errorAt(loc, DiagCode::E0003);
             synchronize(stream, ctx);
             return useDecl;
         }
@@ -453,7 +483,6 @@ UseDeclAST* parseUseDecl(TokenStream& stream, ParserContext& ctx) {
                 // NOTE: if the module is empty then we simply don't care and
                 // move on
                 // ============================================================
-                ctx.note(loc, "Failed to read module: '", usePath, "'");
                 return useDecl;
             }
             
@@ -464,7 +493,7 @@ UseDeclAST* parseUseDecl(TokenStream& stream, ParserContext& ctx) {
             importedModule = parse(pathStr, source, ctx);
             
             if (!importedModule) {
-                ctx.error(loc, "Failed to parse module: '", usePath, "'");
+                ctx.error(stream, DiagCode::E0004, usePath);
                 synchronize(stream, ctx);
                 return useDecl;
             }
@@ -473,17 +502,17 @@ UseDeclAST* parseUseDecl(TokenStream& stream, ParserContext& ctx) {
             ctx.resolver->cacheModule(filePath, importedModule);
         }
         
-        // ─── 5. NOTE: Imported declarations are automatically collected
-        //     by parse() when it parses the imported module.
-        //     No need to manually collect them here.
+        // NOTE: Imported declarations are automatically collected
+        // by parse() when it parses the imported module.
+        // No need to manually collect them here.
         
     } else {
-        ctx.error(loc, "No module resolver available for import: '", usePath, "'");
+        ctx.error(stream, DiagCode::E0004, usePath);
         synchronize(stream, ctx);
         return useDecl;
     }
     
-    LOG_PARSER_DETAIL("Parsed use declaration: '", fullPath, "' as '", aliasStr, "'");
+    LOG_PARSER_MINIMAL("Parsed use declaration: '", fullPath, "' as '", aliasStr, "'");
     
     return useDecl;
 }

@@ -31,7 +31,9 @@ enum class DiagCode : uint32_t {
     // Speicalize codes
     E1101,          ///< Expected module path after keyword 'use'
     E1102,          ///< Expected name alias after keyword 'as'
-    // E1104,          ///< Visibility modifier not allowed in local declaration
+    E1103,          ///< Trailing comma
+    E1104,          ///< Expected attribute argument literal
+
     // E1105,          ///< Invalid context: 'use' declaration is not allowed inside a block
     // E1106,          ///< Invalid argument for attribute
     // E1107,          ///< Unexpected tralling comma

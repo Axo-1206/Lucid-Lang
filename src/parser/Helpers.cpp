@@ -11,6 +11,7 @@
 
 #include "Parser.hpp"
 #include "core/Tokens.hpp"
+#include "core/diagnostics/DiagnosticCodes.hpp"
 #include "debug/DebugMacros.hpp"
 #include "debug/DebugUtils.hpp"
 
@@ -188,7 +189,7 @@ std::optional<DocComment> harvestDocComment(TokenStream& stream, ParserContext& 
  * ```
  */
 ArenaSpan<AttributePtr> parseAttributes(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER_DETAIL("parseAttributes: checking for attributes");
+    LOG_PARSER("parseAttributes: checking for attributes");
     
     std::vector<AttributePtr> attrs;
     
@@ -202,35 +203,59 @@ ArenaSpan<AttributePtr> parseAttributes(TokenStream& stream, ParserContext& ctx)
     
     // Expect '[' after '@'
     if (!stream.check(TokenType::LBRACKET)) {
-        ctx.error(stream.currentLoc(), "Expected '[' after '@' in attribute list");
+        ctx.error(stream, DiagCode::E1004, "[", "attribute list", stream.peekValue());
         synchronize(stream, ctx);
         return ctx.arena.makeBuilder<AttributePtr>().build();
     }
     stream.advance(); // Consume '['
     
+    // Check for empty attribute list: @[]
+    if (stream.check(TokenType::RBRACKET)) {
+        stream.advance(); // Consume ']'
+        return ctx.arena.makeBuilder<AttributePtr>().build();
+    }
+    
     // Parse attributes until we hit ']'
-    while (!stream.check(TokenType::RBRACKET) && !stream.isAtEnd()) {
+    while (!stream.isAtEnd()) {
+        // Parse a single attribute
         AttributePtr attr = parseAttribute(stream, ctx);
         if (attr) {
             attrs.push_back(attr);
+        } else {
+            // Error already reported, try to recover
+            synchronizeTo(stream, ctx, {TokenType::COMMA, TokenType::RBRACKET});
+            if (stream.check(TokenType::COMMA)) {
+                stream.advance();
+            }
+            continue;
         }
         
         // Check for comma separator
         if (stream.check(TokenType::COMMA)) {
             stream.advance(); // Consume comma
-        } else if (!stream.check(TokenType::RBRACKET)) {
-            ctx.error(stream.currentLoc(), "Expected ',' or ']' in attribute list");
+            
+            // Check for trailing comma: @[attr1, attr2, ]
+            if (stream.check(TokenType::RBRACKET)) {
+                ctx.error(stream, DiagCode::E1103); // Unexpected trailing comma
+                // Consume the ']' and break
+                stream.advance();
+                break;
+            }
+            
+            // Continue to parse next attribute
+        } else if (stream.check(TokenType::RBRACKET)) {
+            // End of attribute list
+            stream.advance(); // Consume ']'
+            break;
+        } else {
+            // Unexpected token
+            ctx.error(stream, DiagCode::E1008, stream.peekValue(), "',' or ']'");
             synchronizeTo(stream, ctx, {TokenType::RBRACKET});
+            if (stream.check(TokenType::RBRACKET)) {
+                stream.advance();
+            }
             break;
         }
-    }
-    
-    // Expect ']' to close the attribute list
-    if (!stream.check(TokenType::RBRACKET)) {
-        ctx.error(stream.currentLoc(), "Expected ']' to close attribute list");
-        synchronizeTo(stream, ctx, {TokenType::RBRACKET});
-    } else {
-        stream.advance(); // Consume ']'
     }
     
     // Build the ArenaSpan
@@ -268,7 +293,7 @@ AttributePtr parseAttribute(TokenStream& stream, ParserContext& ctx) {
     
     // Expect an identifier for the attribute name
     if (!stream.check(TokenType::IDENTIFIER)) {
-        ctx.error(loc, "Expected attribute name (identifier)");
+        ctx.error(stream, DiagCode::E1002, "attribute name", stream.peekValue());
         synchronize(stream, ctx);
         return nullptr;
     }
@@ -284,29 +309,50 @@ AttributePtr parseAttribute(TokenStream& stream, ParserContext& ctx) {
     // Check for arguments
     std::vector<AttributeArgPtr> args;
     if (stream.match(TokenType::LPAREN)) {
-        // Parse arguments until we hit ')'
-        while (!stream.check(TokenType::RPAREN) && !stream.isAtEnd()) {
-            AttributeArgPtr arg = parseAttributeArgLiteral(stream, ctx);
-            if (arg) {
-                args.push_back(arg);
-            }
-            
-            // Check for comma separator
-            if (stream.check(TokenType::COMMA)) {
-                stream.advance(); // Consume comma
-            } else if (!stream.check(TokenType::RPAREN)) {
-                ctx.error(stream.currentLoc(), "Expected ',' or ')' in attribute arguments");
-                synchronizeTo(stream, ctx, {TokenType::RPAREN});
-                break;
-            }
-        }
-        
-        // Expect ')' to close arguments
-        if (!stream.check(TokenType::RPAREN)) {
-            ctx.error(stream.currentLoc(), "Expected ')' to close attribute arguments");
-            synchronizeTo(stream, ctx, {TokenType::RPAREN});
-        } else {
+        // Check for empty arguments: @name()
+        if (stream.check(TokenType::RPAREN)) {
             stream.advance(); // Consume ')'
+        } else {
+            // Parse arguments until we hit ')'
+            while (!stream.isAtEnd()) {
+                AttributeArgPtr arg = parseAttributeArgLiteral(stream, ctx);
+                if (arg) {
+                    args.push_back(arg);
+                } else {
+                    // Error already reported, try to recover
+                    synchronizeTo(stream, ctx, {TokenType::COMMA, TokenType::RPAREN});
+                    if (stream.check(TokenType::COMMA)) {
+                        stream.advance();
+                    }
+                    continue;
+                }
+                
+                // Check for comma separator
+                if (stream.check(TokenType::COMMA)) {
+                    stream.advance(); // Consume comma
+                    
+                    // Check for trailing comma: @name(arg1, )
+                    if (stream.check(TokenType::RPAREN)) {
+                        ctx.error(stream, DiagCode::E1103); // Unexpected trailing comma
+                        stream.advance(); // Consume ')'
+                        break;
+                    }
+                    
+                    // Continue to parse next argument
+                } else if (stream.check(TokenType::RPAREN)) {
+                    // End of arguments
+                    stream.advance(); // Consume ')'
+                    break;
+                } else {
+                    // Unexpected token
+                    ctx.error(stream, DiagCode::E1008, stream.peekValue(), "',' or ')'");
+                    synchronizeTo(stream, ctx, {TokenType::RPAREN});
+                    if (stream.check(TokenType::RPAREN)) {
+                        stream.advance();
+                    }
+                    break;
+                }
+            }
         }
     }
     
@@ -317,8 +363,8 @@ AttributePtr parseAttribute(TokenStream& stream, ParserContext& ctx) {
     }
     attr->args = builder.build();
     
-    LOG_PARSER_DETAIL("parseAttribute: parsed attribute '", 
-                       ctx.toString(name), "' with ", args.size(), " args");
+    LOG_PARSER("parseAttribute: parsed attribute '", 
+               ctx.toString(name), "' with ", args.size(), " args");
     
     return attr;
 }
@@ -355,8 +401,6 @@ AttributeArgPtr parseAttributeArgLiteral(TokenStream& stream, ParserContext& ctx
     switch (tok.type) {
         case TokenType::STRING_LITERAL:
             kind = AttributeArgKind::StringLit;
-            // Remove quotes from the string literal
-            // The lexer gives us the raw string including quotes
             value = ctx.pool.intern(tok.value);
             stream.advance();
             break;
@@ -390,7 +434,7 @@ AttributeArgPtr parseAttributeArgLiteral(TokenStream& stream, ParserContext& ctx
             break;
             
         default:
-            ctx.error(loc, "Expected attribute argument literal (string, integer, float, bool, or identifier)");
+            ctx.error(stream, DiagCode::E1104, stream.peekValue());
             synchronize(stream, ctx);
             return nullptr;
     }
@@ -398,8 +442,8 @@ AttributeArgPtr parseAttributeArgLiteral(TokenStream& stream, ParserContext& ctx
     auto* arg = ctx.arena.make<AttributeArgAST>(kind, value);
     arg->loc = loc;
     
-    LOG_PARSER_DETAIL("parseAttributeArgLiteral: parsed argument of type ", 
-                       static_cast<int>(kind));
+    LOG_PARSER("parseAttributeArgLiteral: parsed argument of type ", 
+               static_cast<int>(kind));
     
     return arg;
 }
@@ -978,7 +1022,7 @@ std::vector<InternedString> parseUsePath(TokenStream& stream, ParserContext& ctx
     
     // Expect at least one identifier
     if (!stream.check(TokenType::IDENTIFIER)) {
-        ctx.error(stream.currentLoc(), "Expected identifier in use path");
+        ctx.error(stream, DiagCode::E1002, stream.peekValue());
         return pathParts;
     }
     
