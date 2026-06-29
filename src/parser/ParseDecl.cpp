@@ -1,78 +1,32 @@
-// =============================================================================
-// parseDeclaration() – Parses a declaration in any context
-// =============================================================================
-
 /**
- * @brief Parse a declaration in the current context.
+ * @file ParseDecl.cpp
+ * @brief Implementation of declaration parsers.
  * 
- * This function dispatches to the appropriate declaration parser based on
- * the context (top-level or local). It handles:
- * - Top-level declarations: structs, enums, traits, functions, variables, use
- * - Local declarations: variables, functions, structs, enums, traits
- * 
- * ## Context Differences
- * 
- * **Top-Level Context** (`ctx == TopLevel`):
- * - Use declarations are allowed
- * - Attributes like `@[export]` are allowed
- * 
- * **Local Context** (`ctx == Local`):
- * - Use declarations are NOT allowed
- * - `@[export]` is rejected
- * - Only declarations that make sense in a block are allowed
- * 
- * ## Error Handling
- * 
- * If a declaration fails to parse, the function returns nullptr and the
- * caller is responsible for error recovery. The parser state's `hasErrors`
- * flag will be set.
- * 
- * @param state Parser state with token stream and context.
- * @param ctx   The declaration context (TopLevel or Local).
- * @return DeclAST* The parsed declaration node, or nullptr on error.
- */
-DeclAST* parseDeclaration(ParserState& state) {
-    // The implementation is in ParserDecl.cpp
-    // This declaration is for documentation purposes only.
-    return nullptr;
-}
-
-// =============================================================================
-// parseTopLevelDecl() – Parses a top-level declaration
-// =============================================================================
-
-/**
- * @brief Parse a top-level declaration.
- * 
- * This function attempts to parse any valid top-level declaration:
- * - `use` declarations
- * - `struct` definitions
- * - `enum` definitions
- * - `trait` definitions
- * - `let` or `const` variable declarations
+ * This file implements all declaration parsers:
+ * - Use declarations
+ * - Variable declarations
  * - Function declarations
+ * - Struct declarations
+ * - Enum declarations
+ * - Trait declarations
+ * - Field declarations
+ * - Enum variants
+ * - Trait fields
+ * - Trait references
  * 
- * ## Order of Operations
- * 
- * 1. Harvest doc comments (for documentation generation)
- * 2. Parse attributes (like `@[export]`, `@[deprecated]`)
- * 3. Determine the declaration type from the current token
- * 4. Dispatch to the appropriate parser
- * 5. Attach doc comments and attributes to the parsed node
- * 
- * ## Error Handling
- * 
- * If the current token doesn't match any declaration type, a generic error
- * is reported and the parser synchronizes to the next safe token.
- * 
- * @param state Parser state with token stream.
- * @return DeclAST* The parsed declaration node, or nullptr on error.
+ * Note: All declaration parsers do NOT consume the terminating semicolon.
+ * The caller (parseDecl) is responsible for consuming it.
  */
-DeclAST* parseTopLevelDecl(ParserState& state) {
-    // The implementation is in ParserDecl.cpp
-    // This declaration is for documentation purposes only.
-    return nullptr;
-}
+
+#include "Parser.hpp"
+#include "core/Tokens.hpp"
+#include "debug/DebugMacros.hpp"
+#include "debug/DebugUtils.hpp"
+#include "core/diagnostics/DiagnosticCodes.hpp"
+
+#include <vector>
+
+namespace parser {
 
 // =============================================================================
 // parseUseDecl() – Parses a 'use' declaration
@@ -81,38 +35,124 @@ DeclAST* parseTopLevelDecl(ParserState& state) {
 /**
  * @brief Parse a `use` declaration.
  * 
- * A `use` declaration imports symbols from another module:
+ * Grammar: `use path [as alias]`
  * 
- * ```lucid
- * use std.io
- * use std.math as math
- * use graphics.gl as gl
- * ```
+ * Alias rules:
+ * 1. If `as alias` is present, use the specified alias
+ * 2. Otherwise, use the last component of the path as the alias
  * 
- * ## Grammar
+ * @param stream The token stream
+ * @param ctx The parsing context
+ * @return UseDeclAST* The parsed use declaration, or nullptr on error
  * 
- * ```
- * use_decl := 'use' IDENTIFIER { '.' IDENTIFIER } [ 'as' IDENTIFIER ]
- * ```
- * 
- * ## Module Resolution
- * 
- * The path segments (e.g., `std.io`) are resolved relative to the package
- * root. The semantic pass will actually resolve and parse the imported
- * module.
- * 
- * ## Error Handling
- * 
- * - Missing path: `E1102` ("Expected module path after keyword 'use'")
- * - Missing alias after `as`: A generic error is reported
- * 
- * @param state Parser state with token stream.
- * @return UseDeclAST* The parsed use declaration, or nullptr on error.
+ * @note This function does NOT consume the terminating semicolon.
+ *       The caller (parseDecl) consumes it.
  */
-UseDeclAST* parseUseDecl(ParserState& state) {
-    // The implementation is in ParserDecl.cpp
-    // This declaration is for documentation purposes only.
-    return nullptr;
+UseDeclAST* parseUseDecl(TokenStream& stream, ParserContext& ctx) {
+    LOG_PARSER("Enter UseDecl");
+
+    SourceLocation loc = stream.currentLoc();
+
+    // ─── 1. Parse 'use' keyword ─────────────────────────────────────────
+    if (!stream.check(TokenType::USE)) {
+        ctx.error(stream, DiagCode::E1001, "use", stream.peekValue());
+        synchronize(stream, ctx);
+        return nullptr;
+    }
+    stream.advance(); // Consume 'use'
+    
+    // ─── 2. Parse the use path ───────────────────────────────────────────
+    auto pathParts = parseUsePath(stream, ctx);
+    if (pathParts.empty()) {
+        ctx.error(stream, DiagCode::E1102, stream.peekValue());
+        synchronize(stream, ctx);
+        return nullptr;
+    }
+    
+    // Build the full use path string (dot-separated)
+    std::string fullPath;
+    for (size_t i = 0; i < pathParts.size(); ++i) {
+        if (i > 0) fullPath += ".";
+        fullPath += std::string(ctx.pool.lookup(pathParts[i]));
+    }
+    InternedString usePath = ctx.pool.intern(fullPath);
+    
+    // ─── 3. Determine the alias ──────────────────────────────────────────
+    InternedString alias;
+    std::string aliasStr;
+    
+    if (stream.match(TokenType::AS)) {
+        // Explicit alias: `use path as alias`
+        Token aliasTok = stream.consume(TokenType::IDENTIFIER);
+        if (aliasTok.type != TokenType::EOF_TOKEN) {
+            alias = ctx.pool.intern(aliasTok.value);
+            aliasStr = std::string(ctx.pool.lookup(alias));
+        } else {
+            ctx.error(stream, DiagCode::E1102, stream.peekValue());
+            synchronize(stream, ctx);
+            return nullptr;
+        }
+    } else {
+        // Implicit alias: use the last component of the path
+        // e.g., "std.math" → alias = "math"
+        InternedString lastPart = pathParts.back();
+        alias = lastPart;
+        aliasStr = std::string(ctx.pool.lookup(alias));
+    }
+    
+    // ─── 4. Create the UseDeclAST ────────────────────────────────────────
+    auto* useDecl = ctx.arena.make<UseDeclAST>();
+    useDecl->loc = loc;
+    useDecl->path = usePath;
+    useDecl->alias = alias;
+    
+    // ─── 5. Import the module ────────────────────────────────────────────
+    if (ctx.resolver) {
+        // Resolve the use path to a file path
+        InternedString filePath = ctx.resolver->resolveUsePath(usePath);
+        if (!filePath.isValid()) {
+            ctx.errorAt(loc, DiagCode::E0003);
+            synchronize(stream, ctx);
+            return useDecl;
+        }
+        
+        // Check if already parsed
+        ProgramAST* importedModule = ctx.resolver->getParsedModule(filePath);
+        
+        if (!importedModule) {
+            // Read the source file
+            std::string source = ctx.resolver->readModuleSource(filePath);
+            if (source.empty()) {
+                // Empty module - just return the declaration
+                return useDecl;
+            }
+            
+            // Parse the module (recursive call!)
+            std::string pathStr = std::string(ctx.pool.lookup(filePath));
+            importedModule = parse(pathStr, source, ctx);
+            
+            if (!importedModule) {
+                ctx.error(stream, DiagCode::E0004, usePath);
+                synchronize(stream, ctx);
+                return useDecl;
+            }
+            
+            // Cache the module
+            ctx.resolver->cacheModule(filePath, importedModule);
+        }
+        
+        // Imported declarations are automatically collected by parse()
+        // when it parses the imported module.
+        
+    } else {
+        ctx.error(stream, DiagCode::E0004, usePath);
+        synchronize(stream, ctx);
+        return useDecl;
+    }
+    
+    LOG_PARSER_MINIMAL("Parsed use declaration: '", fullPath, "' as '", aliasStr, "'");
+    
+    return useDecl;
 }
 
 // =============================================================================
@@ -122,39 +162,71 @@ UseDeclAST* parseUseDecl(ParserState& state) {
 /**
  * @brief Parse a variable declaration.
  * 
- * Variable declarations create named bindings with an explicit type:
+ * Grammar: `('let' | 'const') IDENTIFIER type [ '=' expr ]`
  * 
- * ```lucid
- * let x int = 42
- * const pi float = 3.14159
- * let name string? = nil
- * ```
+ * @param stream The token stream
+ * @param ctx The parsing context
+ * @return VarDeclAST* The parsed variable declaration, or nullptr on error
  * 
- * ## Grammar
- * 
- * ```
- * var_decl := ('let' | 'const') IDENTIFIER type [ '=' expr ]
- * ```
- * 
- * ## Rules
- * 
- * - Type is always required (no type inference)
- * - `const` requires an initializer
- * - `let` may omit the initializer
- * 
- * ## Error Handling
- * 
- * - Missing identifier: Generic error reported
- * - Missing type: Generic error reported
- * - `const` without initializer: `E2030` ("'const' missing initialiser")
- * 
- * @param state Parser state with token stream.
- * @return VarDeclAST* The parsed variable declaration, or nullptr on error.
+ * @note This function does NOT consume the terminating semicolon.
+ *       The caller (parseDecl) consumes it.
  */
-VarDeclAST* parseVarDecl(ParserState& state) {
-    // The implementation is in ParserDecl.cpp
-    // This declaration is for documentation purposes only.
-    return nullptr;
+VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
+    SourceLocation loc = stream.currentLoc();
+    
+    // Parse keyword (let or const)
+    bool isConst = stream.match(TokenType::CONST);
+    if (!isConst) {
+        if (!stream.match(TokenType::LET)) {
+            ctx.error(stream, DiagCode::E1001, "let/const", stream.peekValue());
+            synchronize(stream, ctx);
+            return nullptr;
+        }
+    }
+    
+    // Parse name
+    if (!stream.check(TokenType::IDENTIFIER)) {
+        ctx.error(stream, DiagCode::E1002, "variable name", stream.peekValue());
+        synchronize(stream, ctx);
+        return nullptr;
+    }
+    Token nameTok = stream.advance();
+    InternedString name = ctx.pool.intern(nameTok.value);
+    
+    // Parse type (required)
+    TypePtr type = parseType(stream, ctx);
+    if (!type) {
+        ctx.error(stream, DiagCode::E1003, stream.peekValue());
+        synchronize(stream, ctx);
+        return nullptr;
+    }
+    
+    // Parse initializer (optional)
+    ExprPtr init = nullptr;
+    if (stream.match(TokenType::ASSIGN)) {
+        init = parseExpr(stream, ctx);
+        if (!init) {
+            ctx.error(stream, DiagCode::E1006, stream.peekValue());
+            synchronize(stream, ctx);
+            return nullptr;
+        }
+    } else if (isConst) {
+        // const requires an initializer
+        ctx.error(stream, DiagCode::E1006, stream.peekValue());
+        synchronize(stream, ctx);
+        return nullptr;
+    }
+    
+    auto* varDecl = ctx.arena.make<VarDeclAST>();
+    varDecl->loc = loc;
+    varDecl->name = name;
+    varDecl->keyword = isConst ? DeclKeyword::Const : DeclKeyword::Let;
+    varDecl->type = type;
+    varDecl->init = init;
+    varDecl->isConst = isConst;
+    
+    LOG_PARSER_DETAIL("Parsed variable declaration: ", ctx.toString(name));
+    return varDecl;
 }
 
 // =============================================================================
@@ -164,46 +236,109 @@ VarDeclAST* parseVarDecl(ParserState& state) {
 /**
  * @brief Parse a function declaration.
  * 
- * Function declarations define callable entities with parameters and a body:
+ * Grammar: 
+ *   ('let' | 'const') IDENTIFIER [ generic_params ]
+ *   param_group { param_group }
+ *   [ '->' return_type ]
+ *   '=' func_body
  * 
- * ```lucid
- * const add (a int)(b int) -> int = { return a + b }
- * const makeAdder (base int) -> (n int) -> int = { ... }
- * const sum (nums ...int) -> int = { ... }
- * ```
+ * @param stream The token stream
+ * @param ctx The parsing context
+ * @return FuncDeclAST* The parsed function declaration, or nullptr on error
  * 
- * ## Grammar
- * 
- * ```
- * func_decl := ('let' | 'const') IDENTIFIER [ generic_params ]
- *              param_group { param_group }
- *              [ '->' return_type ]
- *              '=' func_body
- * ```
- * 
- * ## Currying and Form 2 `()()` Shorthand
- * 
- * The parser desugars Form 2 `()()` shorthand into nested Form 1 functions
- * before building the AST. The `funcType` captures the full curried structure:
- * 
- * ```
- * const clamp (lo int)(hi int)(v int) -> int
- * → FuncTypeAST: (lo int) -> (hi int) -> (v int) -> int
- * ```
- * 
- * ## Error Handling
- * 
- * - Missing identifier: Generic error reported
- * - Invalid function type: Generic error reported
- * - Missing body: Generic error reported
- * 
- * @param state Parser state with token stream.
- * @return FuncDeclAST* The parsed function declaration, or nullptr on error.
+ * @note This function does NOT consume the terminating semicolon.
+ *       The caller (parseDecl) consumes it.
  */
-FuncDeclAST* parseFuncDecl(ParserState& state) {
-    // The implementation is in ParserDecl.cpp
-    // This declaration is for documentation purposes only.
-    return nullptr;
+FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
+    SourceLocation loc = stream.currentLoc();
+    
+    // Parse keyword (let or const)
+    bool isConst = stream.match(TokenType::CONST);
+    if (!isConst) {
+        if (!stream.match(TokenType::LET)) {
+            ctx.error(stream, DiagCode::E1001, "let/const", stream.peekValue());
+            synchronize(stream, ctx);
+            return nullptr;
+        }
+    }
+    
+    // Parse name
+    if (!stream.check(TokenType::IDENTIFIER)) {
+        ctx.error(stream, DiagCode::E1002, "function name", stream.peekValue());
+        synchronize(stream, ctx);
+        return nullptr;
+    }
+    Token nameTok = stream.advance();
+    InternedString name = ctx.pool.intern(nameTok.value);
+    
+    // Parse generic parameters (optional)
+    ArenaSpan<GenericParamDeclPtr> genericParams;
+    if (stream.check(TokenType::LESS)) {
+        genericParams = parseGenericParamDecls(stream, ctx);
+    }
+    
+    // Parse parameter groups
+    std::vector<ParamGroup> paramGroups;
+    while (stream.check(TokenType::LPAREN)) {
+        auto params = parseParamList(stream, ctx);
+        paramGroups.push_back(params);
+    }
+    
+    if (paramGroups.empty()) {
+        ctx.error(stream, DiagCode::E1004, "(", "function parameter list", stream.peekValue());
+        synchronize(stream, ctx);
+        return nullptr;
+    }
+    
+    // Build function type (recursive structure)
+    FuncTypeAST* funcType = buildFuncType(stream, ctx, paramGroups);
+    if (!funcType) {
+        ctx.error(stream, DiagCode::E1003, "function type", stream.peekValue());
+        synchronize(stream, ctx);
+        return nullptr;
+    }
+    
+    // Parse body
+    StmtPtr body = nullptr;
+    if (stream.match(TokenType::LBRACE)) {
+        body = parseBlock(stream, ctx);
+        if (!stream.check(TokenType::RBRACE)) {
+            ctx.error(stream, DiagCode::E1005, "}", "function body", stream.peekValue());
+            synchronize(stream, ctx);
+        } else {
+            stream.advance(); // Consume '}'
+        }
+    } else {
+        // Single-expression body: `= expr`
+        if (!stream.match(TokenType::ASSIGN)) {
+            ctx.error(stream, DiagCode::E1006, stream.peekValue());
+            synchronize(stream, ctx);
+            return nullptr;
+        }
+        
+        ExprPtr expr = parseExpr(stream, ctx);
+        if (expr) {
+            auto* returnStmt = ctx.arena.make<ReturnStmtAST>();
+            returnStmt->expr = expr;
+            body = returnStmt;
+        } else {
+            ctx.error(stream, DiagCode::E1006, stream.peekValue());
+            synchronize(stream, ctx);
+            return nullptr;
+        }
+    }
+    
+    auto* funcDecl = ctx.arena.make<FuncDeclAST>();
+    funcDecl->loc = loc;
+    funcDecl->name = name;
+    funcDecl->keyword = isConst ? DeclKeyword::Const : DeclKeyword::Let;
+    funcDecl->genericParams = genericParams;
+    funcDecl->funcType = funcType;
+    funcDecl->body = body;
+    funcDecl->isConst = isConst;
+    
+    LOG_PARSER_DETAIL("Parsed function declaration: ", ctx.toString(name));
+    return funcDecl;
 }
 
 // =============================================================================
@@ -213,128 +348,210 @@ FuncDeclAST* parseFuncDecl(ParserState& state) {
 /**
  * @brief Parse a struct declaration.
  * 
- * Struct declarations define composite data types with named fields:
+ * Grammar: 
+ *   'struct' IDENTIFIER [ generic_params ]
+ *   [ ':' trait_ref { ',' trait_ref } ]
+ *   '{' { struct_field } '}'
  * 
- * ```lucid
- * struct Point { x float = 0.0, y float = 0.0 }
- * struct Node<T> { value T, next ptr<Node<T>>? }
- * struct Entity : Vector2, Named { name string, x float, y float }
- * ```
+ * @param stream The token stream
+ * @param ctx The parsing context
+ * @return StructDeclAST* The parsed struct declaration, or nullptr on error
  * 
- * ## Grammar
- * 
- * ```
- * struct_decl := 'struct' IDENTIFIER [ generic_params ]
- *                [ ':' trait_ref { ',' trait_ref } ]
- *                '{' { struct_field } '}'
- * ```
- * 
- * ## Features
- * 
- * - **Generic parameters**: `<T>`, `<T : Trait>`
- * - **Trait implementations**: `: Vector2, Named`
- * - **Const fields**: `step const int`
- * - **Default values**: `x float = 0.0`
- * 
- * ## Error Handling
- * 
- * - Missing name: Generic error reported
- * - Missing field type: Generic error reported
- * - Const field without default: Reported in `parseFieldDecl`
- * 
- * @param state Parser state with token stream.
- * @return StructDeclAST* The parsed struct declaration, or nullptr on error.
+ * @note This function does NOT consume the terminating semicolon.
+ *       The caller (parseDecl) consumes it.
  */
-StructDeclAST* parseStructDecl(ParserState& state) {
-    // The implementation is in ParserDecl.cpp
-    // This declaration is for documentation purposes only.
-    return nullptr;
-}
-
-// =============================================================================
-// parseEnumDecl() – Parses an enum declaration
-// =============================================================================
-
-/**
- * @brief Parse an enum declaration.
- * 
- * Enum declarations define a set of named integer constants:
- * 
- * ```lucid
- * enum Direction { North = 0, East = 1, South = 2, West = 3 }
- * enum Status : int32 { Ok = 200, NotFound = 404, Error = 500 }
- * ```
- * 
- * ## Grammar
- * 
- * ```
- * enum_decl := 'enum' IDENTIFIER [ ':' int_type ] '{' { enum_variant } '}'
- * enum_variant := IDENTIFIER '=' INT_LIT
- * ```
- * 
- * ## Rules
- * 
- * - Values are required (no auto-increment)
- * - Values must be integer literals
- * - Values must be unique within the enum
- * 
- * ## Error Handling
- * 
- * - Missing name: Generic error reported
- * - Missing value: `E1108` ("Invalid integer literal '%s' for enum variant")
- * - Backing type must be an integer type
- * 
- * @param state Parser state with token stream.
- * @return EnumDeclAST* The parsed enum declaration, or nullptr on error.
- */
-EnumDeclAST* parseEnumDecl(ParserState& state) {
-    // The implementation is in ParserDecl.cpp
-    // This declaration is for documentation purposes only.
-    return nullptr;
-}
-
-// =============================================================================
-// parseTraitDecl() – Parses a trait declaration
-// =============================================================================
-
-/**
- * @brief Parse a trait declaration.
- * 
- * Trait declarations define field contracts that structs can implement:
- * 
- * ```lucid
- * trait Vector2 { x float, y float }
- * trait Named { name string }
- * trait Container<T> { value T, count int }
- * ```
- * 
- * ## Grammar
- * 
- * ```
- * trait_decl := 'trait' IDENTIFIER [ generic_params ] '{' { trait_field } '}'
- * trait_field := [ 'const' ] IDENTIFIER type
- * ```
- * 
- * ## Rules
- * 
- * - Trait fields are name and type only (no default values)
- * - Trait fields can be marked `const`
- * - Trait fields cannot be nullable or fallible
- * - Traits can be generic
- * 
- * ## Error Handling
- * 
- * - Missing name: Generic error reported
- * - Missing field type: Generic error reported
- * - Nullable/fallible trait field: Reported in `parseTraitField`
- * 
- * @param state Parser state with token stream.
- * @return TraitDeclAST* The parsed trait declaration, or nullptr on error.
- */
-TraitDeclAST* parseTraitDecl(ParserState& state) {
-    // The implementation is in ParserDecl.cpp
-    // This declaration is for documentation purposes only.
-    return nullptr;
+StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
+    SourceLocation loc = stream.currentLoc();
+    
+    // ─── 1. Parse 'struct' keyword ──────────────────────────────────────
+    if (!stream.check(TokenType::STRUCT)) {
+        ctx.error(stream, DiagCode::E1001, "struct", stream.peekValue());
+        synchronize(stream, ctx);
+        return nullptr;
+    }
+    stream.advance(); // Consume 'struct'
+    
+    // ─── 2. Parse struct name ────────────────────────────────────────────
+    if (!stream.check(TokenType::IDENTIFIER)) {
+        ctx.error(stream, DiagCode::E1002, "struct name", stream.peekValue());
+        synchronize(stream, ctx);
+        return nullptr;
+    }
+    Token nameTok = stream.advance();
+    InternedString name = ctx.pool.intern(nameTok.value);
+    
+    // ─── 3. Parse generic parameters (optional) ─────────────────────────
+    ArenaSpan<GenericParamDeclPtr> genericParams;
+    if (stream.check(TokenType::LESS)) {
+        genericParams = parseGenericParamDecls(stream, ctx);
+    }
+    
+    // ─── 4. Parse trait implementations (optional) ──────────────────────
+    std::vector<TraitRefPtr> traitRefs;
+    if (stream.match(TokenType::COLON)) {
+        // Check for empty trait list: `: {` (no traits)
+        if (stream.check(TokenType::LBRACE)) {
+            // No traits - just proceed to body
+        } else {
+            // Parse trait references separated by ','
+            while (!stream.isAtEnd()) {
+                // ─── Skip consecutive separators ────────────────────────
+                int separatorCount = 0;
+                while (stream.check(TokenType::COMMA)) {
+                    separatorCount++;
+                    stream.advance(); // Consume the separator
+                }
+                
+                if (separatorCount > 0) {
+                    ctx.error(stream, DiagCode::E1103, stream.peekValue(), "struct traits");
+                }
+                
+                // ─── Check if we've reached a terminator ──────────────────
+                if (stream.check(TokenType::LBRACE)) {
+                    break; // End of trait list, proceed to body
+                }
+                
+                if (stream.isAtEnd()) {
+                    ctx.error(stream, DiagCode::E1005, "}", "struct body", "<EOF>");
+                    break;
+                }
+                
+                // Parse a trait reference
+                TraitRefPtr traitRef = parseTraitRef(stream, ctx);
+                if (traitRef) {
+                    traitRefs.push_back(traitRef);
+                } else {
+                    ctx.error(stream, DiagCode::E1009, "trait reference", stream.peekValue());
+                    synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::LBRACE);
+                    if (stream.check(TokenType::COMMA)) {
+                        stream.advance();
+                        continue;
+                    } else if (stream.check(TokenType::LBRACE)) {
+                        break;
+                    } else {
+                        // No recovery token found - break to avoid infinite loop
+                        break;
+                    }
+                }
+                
+                // After parsing a trait, check if we're at the end
+                if (stream.check(TokenType::LBRACE)) {
+                    break;
+                } else if (!stream.check(TokenType::COMMA) && !stream.check(TokenType::LBRACE)) {
+                    // If not a comma or brace, we might have an error
+                    // Let the loop continue to handle it
+                }
+            }
+        }
+    }
+    
+    // ─── 5. Parse struct body ────────────────────────────────────────────
+    if (!stream.check(TokenType::LBRACE)) {
+        ctx.error(stream, DiagCode::E1004, "{", "struct body", stream.peekValue());
+        synchronize(stream, ctx);
+        return nullptr;
+    }
+    stream.advance(); // Consume '{'
+    
+    std::vector<FieldDeclPtr> fields;
+    
+    // ─── 6. Check for empty body ─────────────────────────────────────────
+    if (stream.check(TokenType::RBRACE)) {
+        stream.advance(); // Consume '}'
+        // Empty struct body - skip to building AST
+        auto* structDecl = ctx.arena.make<StructDeclAST>();
+        structDecl->loc = loc;
+        structDecl->name = name;
+        structDecl->genericParams = genericParams;
+        structDecl->fields = ctx.arena.makeBuilder<FieldDeclPtr>().build();
+        
+        auto traitBuilder = ctx.arena.makeBuilder<TraitRefPtr>();
+        for (auto* tr : traitRefs) {
+            traitBuilder.push_back(tr);
+        }
+        structDecl->traitRefs = traitBuilder.build();
+        
+        LOG_PARSER_DETAIL("Parsed empty struct declaration: ", ctx.toString(name));
+        return structDecl;
+    }
+    
+    // ─── 7. Parse fields ──────────────────────────────────────────────────
+    while (!stream.isAtEnd()) {
+        // ─── Skip consecutive separators ────────────────────────────────
+        int separatorCount = 0;
+        while (stream.checkAny(TokenType::COMMA, TokenType::SEMICOLON)) {
+            separatorCount++;
+            stream.advance(); // Consume the separator
+        }
+        
+        if (separatorCount > 0) {
+            ctx.error(stream, DiagCode::E1103, stream.peekValue(), "field declaration");
+        }
+        
+        // ─── Check if we've reached a terminator ──────────────────────────
+        if (stream.check(TokenType::RBRACE)) {
+            break; // End of fields
+        }
+        
+        if (stream.isAtEnd()) {
+            ctx.error(stream, DiagCode::E1005, "}", "struct body", "<EOF>");
+            break;
+        }
+        
+        // Parse a field
+        FieldDeclPtr field = parseFieldDecl(stream, ctx);
+        if (field) {
+            fields.push_back(field);
+        } else {
+            // Error already reported, try to recover
+            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::SEMICOLON, TokenType::RBRACE);
+            if (stream.checkAny(TokenType::COMMA, TokenType::SEMICOLON)) {
+                stream.advance();
+                continue;
+            } else if (stream.check(TokenType::RBRACE)) {
+                break;
+            } else {
+                // No recovery token found - break to avoid infinite loop
+                break;
+            }
+        }
+    }
+    
+    // ─── 8. Consume closing brace ────────────────────────────────────────
+    if (!stream.check(TokenType::RBRACE)) {
+        ctx.error(stream, DiagCode::E1005, "}", "struct body", stream.peekValue());
+        synchronizeTo(stream, ctx, TokenType::RBRACE);
+        if (stream.check(TokenType::RBRACE)) {
+            stream.advance(); // Consume '}' to recover
+        }
+    } else {
+        stream.advance(); // Consume '}'
+    }
+    
+    // ─── 9. Build the AST node ───────────────────────────────────────────
+    auto* structDecl = ctx.arena.make<StructDeclAST>();
+    structDecl->loc = loc;
+    structDecl->name = name;
+    structDecl->genericParams = genericParams;
+    
+    // Build fields span
+    auto fieldBuilder = ctx.arena.makeBuilder<FieldDeclPtr>();
+    for (auto* f : fields) {
+        fieldBuilder.push_back(f);
+    }
+    structDecl->fields = fieldBuilder.build();
+    
+    // Build trait refs span
+    auto traitBuilder = ctx.arena.makeBuilder<TraitRefPtr>();
+    for (auto* tr : traitRefs) {
+        traitBuilder.push_back(tr);
+    }
+    structDecl->traitRefs = traitBuilder.build();
+    
+    LOG_PARSER_DETAIL("Parsed struct declaration: ", ctx.toString(name), 
+                      " with ", fields.size(), " fields and ", 
+                      traitRefs.size(), " traits");
+    return structDecl;
 }
 
 // =============================================================================
@@ -344,40 +561,207 @@ TraitDeclAST* parseTraitDecl(ParserState& state) {
 /**
  * @brief Parse a struct field declaration.
  * 
- * Struct fields define the data members of a struct:
+ * Grammar: [ 'const' ] IDENTIFIER type [ '=' expr ]
  * 
- * ```lucid
- * x float = 0.0
- * step const int
- * items [*]string
- * ```
- * 
- * ## Grammar
- * 
- * ```
- * struct_field := [ 'const' ] IDENTIFIER type [ '=' expr ]
- * ```
- * 
- * ## Rules
- * 
- * - Name then type (Go-style)
- * - Const fields cannot be reassigned after construction
- * - Const fields must have a default value
- * - Const fields cannot be nullable or fallible
- * 
- * ## Error Handling
- * 
- * - Missing name: Generic error reported
- * - Missing type: Generic error reported
- * - Const without default: Generic error reported
- * 
- * @param state Parser state with token stream.
- * @return FieldDeclAST* The parsed field declaration, or nullptr on error.
+ * @param stream The token stream
+ * @param ctx The parsing context
+ * @return FieldDeclAST* The parsed field declaration, or nullptr on error
+ *
+ * @note parseStructDecl already consume extra ',' and ';'
  */
-FieldDeclAST* parseFieldDecl(ParserState& state) {
-    // The implementation is in ParserDecl.cpp
-    // This declaration is for documentation purposes only.
-    return nullptr;
+FieldDeclPtr parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
+    SourceLocation loc = stream.currentLoc();
+    
+    // Parse 'const' modifier (optional)
+    bool isConst = stream.match(TokenType::CONST);
+    
+    // Parse name
+    if (!stream.check(TokenType::IDENTIFIER)) {
+        ctx.error(stream, DiagCode::E1002, "field name", stream.peekValue());
+        synchronize(stream, ctx);
+        return nullptr;
+    }
+    Token nameTok = stream.advance();
+    InternedString name = ctx.pool.intern(nameTok.value);
+    
+    // Parse type
+    TypePtr type = parseType(stream, ctx);
+    if (!type) {
+        ctx.error(stream, DiagCode::E1003, stream.peekValue());
+        synchronize(stream, ctx);
+        return nullptr;
+    }
+    
+    // Parse default value (optional)
+    ExprPtr defaultVal = nullptr;
+    if (stream.match(TokenType::ASSIGN)) {
+        defaultVal = parseExpr(stream, ctx);
+        if (!defaultVal) {
+            ctx.error(stream, DiagCode::E1006, stream.peekValue());
+            synchronize(stream, ctx);
+            return nullptr;
+        }
+    }
+    
+    // Const fields without default value should be required
+    // The semantic pass will enforce this
+    
+    auto* fieldDecl = ctx.arena.make<FieldDeclAST>();
+    fieldDecl->loc = loc;
+    fieldDecl->name = name;
+    fieldDecl->type = type;
+    fieldDecl->defaultVal = defaultVal;
+    fieldDecl->isConst = isConst;
+    
+    LOG_PARSER_DETAIL("Parsed field: ", ctx.toString(name), 
+                      (isConst ? " const" : ""));
+    return fieldDecl;
+}
+
+// =============================================================================
+// parseEnumDecl() – Parses an enum declaration
+// =============================================================================
+
+/**
+ * @brief Parse an enum declaration.
+ * 
+ * Grammar: 'enum' IDENTIFIER [ ':' int_type ] '{' { enum_variant } '}'
+ * 
+ * @param stream The token stream
+ * @param ctx The parsing context
+ * @return EnumDeclAST* The parsed enum declaration, or nullptr on error
+ * 
+ * @note This function does NOT consume the terminating semicolon.
+ *       The caller (parseDecl) consumes it.
+ */
+EnumDeclAST* parseEnumDecl(TokenStream& stream, ParserContext& ctx) {
+    SourceLocation loc = stream.currentLoc();
+    
+    // ─── 1. Parse 'enum' keyword ──────────────────────────────────────
+    if (!stream.check(TokenType::ENUM)) {
+        ctx.error(stream, DiagCode::E1001, "enum", stream.peekValue());
+        synchronize(stream, ctx);
+        return nullptr;
+    }
+    stream.advance(); // Consume 'enum'
+    
+    // ─── 2. Parse enum name ──────────────────────────────────────────────
+    if (!stream.check(TokenType::IDENTIFIER)) {
+        ctx.error(stream, DiagCode::E1002, "enum name", stream.peekValue());
+        synchronize(stream, ctx);
+        return nullptr;
+    }
+    Token nameTok = stream.advance();
+    InternedString name = ctx.pool.intern(nameTok.value);
+    
+    // ─── 3. Parse backing type (optional) ──────────────────────────────
+    PrimitiveTypeAST* backingType = nullptr;
+    if (stream.match(TokenType::COLON)) {
+        TypePtr type = parseType(stream, ctx);
+        if (type && type->isa<PrimitiveTypeAST>()) {
+            backingType = type->as<PrimitiveTypeAST>();
+            // Verify it's an integer type
+            // TODO: Check that backingType is an integer type
+        } else {
+            ctx.error(stream, DiagCode::E1009, "integer type", stream.peekValue());
+            synchronize(stream, ctx);
+            return nullptr;
+        }
+    }
+    
+    // ─── 4. Parse enum body ──────────────────────────────────────────────
+    if (!stream.check(TokenType::LBRACE)) {
+        ctx.error(stream, DiagCode::E1004, "{", "enum body", stream.peekValue());
+        synchronize(stream, ctx);
+        return nullptr;
+    }
+    stream.advance(); // Consume '{'
+    
+    std::vector<EnumVariantPtr> variants;
+    
+    // ─── 5. Check for empty body ─────────────────────────────────────────
+    if (stream.check(TokenType::RBRACE)) {
+        stream.advance(); // Consume '}'
+        // Empty enum body - skip to building AST
+        auto* enumDecl = ctx.arena.make<EnumDeclAST>();
+        enumDecl->loc = loc;
+        enumDecl->name = name;
+        enumDecl->backingType = backingType;
+        enumDecl->variants = ctx.arena.makeBuilder<EnumVariantPtr>().build();
+        
+        LOG_PARSER_DETAIL("Parsed empty enum declaration: ", ctx.toString(name));
+        return enumDecl;
+    }
+    
+    // ─── 6. Parse variants ────────────────────────────────────────────────
+    while (!stream.isAtEnd()) {
+        // ─── Skip consecutive separators ────────────────────────────────
+        int separatorCount = 0;
+        while (stream.check(TokenType::COMMA)) {
+            separatorCount++;
+            stream.advance(); // Consume the separator
+        }
+        
+        if (separatorCount > 0) {
+            ctx.error(stream, DiagCode::E1103, stream.peekValue(), "enum variant");
+        }
+        
+        // ─── Check if we've reached a terminator ──────────────────────────
+        if (stream.check(TokenType::RBRACE)) {
+            break; // End of variants
+        }
+        
+        if (stream.isAtEnd()) {
+            ctx.error(stream, DiagCode::E1005, "}", "enum body", "<EOF>");
+            break;
+        }
+        
+        // Parse a variant
+        EnumVariantPtr variant = parseEnumVariant(stream, ctx);
+        if (variant) {
+            variants.push_back(variant);
+        } else {
+            // Error already reported, try to recover
+            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RBRACE);
+            if (stream.check(TokenType::COMMA)) {
+                stream.advance();
+                continue;
+            } else if (stream.check(TokenType::RBRACE)) {
+                break;
+            } else {
+                // No recovery token found - break to avoid infinite loop
+                break;
+            }
+        }
+    }
+    
+    // ─── 7. Consume closing brace ────────────────────────────────────────
+    if (!stream.check(TokenType::RBRACE)) {
+        ctx.error(stream, DiagCode::E1005, "}", "enum body", stream.peekValue());
+        synchronizeTo(stream, ctx, TokenType::RBRACE);
+        if (stream.check(TokenType::RBRACE)) {
+            stream.advance(); // Consume '}' to recover
+        }
+    } else {
+        stream.advance(); // Consume '}'
+    }
+    
+    // ─── 8. Build the AST node ───────────────────────────────────────────
+    auto* enumDecl = ctx.arena.make<EnumDeclAST>();
+    enumDecl->loc = loc;
+    enumDecl->name = name;
+    enumDecl->backingType = backingType;
+    
+    // Build variants span
+    auto builder = ctx.arena.makeBuilder<EnumVariantPtr>();
+    for (auto* v : variants) {
+        builder.push_back(v);
+    }
+    enumDecl->variants = builder.build();
+    
+    LOG_PARSER_DETAIL("Parsed enum declaration: ", ctx.toString(name), 
+                      " with ", variants.size(), " variants");
+    return enumDecl;
 }
 
 // =============================================================================
@@ -387,33 +771,139 @@ FieldDeclAST* parseFieldDecl(ParserState& state) {
 /**
  * @brief Parse an enum variant.
  * 
- * Enum variants define named integer constants:
+ * Grammar: IDENTIFIER '=' INT_LIT
  * 
- * ```lucid
- * North = 0
- * East = 1
- * South = 2
- * ```
- * 
- * ## Grammar
- * 
- * ```
- * enum_variant := IDENTIFIER '=' INT_LIT
- * ```
- * 
- * ## Rules
- * 
- * - Value is required (no auto-increment)
- * - Value must be an integer literal (decimal, hex, or binary)
- * - Values must be unique within the enum
- * 
- * @param state Parser state with token stream.
- * @return EnumVariantAST* The parsed enum variant, or nullptr on error.
+ * @param stream The token stream
+ * @param ctx The parsing context
+ * @return EnumVariantAST* The parsed enum variant, or nullptr on error
  */
-EnumVariantAST* parseEnumVariant(ParserState& state) {
-    // The implementation is in ParserDecl.cpp
-    // This declaration is for documentation purposes only.
-    return nullptr;
+EnumVariantPtr parseEnumVariant(TokenStream& stream, ParserContext& ctx) {
+    SourceLocation loc = stream.currentLoc();
+    
+    // Parse name
+    if (!stream.check(TokenType::IDENTIFIER)) {
+        ctx.error(stream, DiagCode::E1002, "variant name", stream.peekValue());
+        synchronize(stream, ctx);
+        return nullptr;
+    }
+    Token nameTok = stream.advance();
+    InternedString name = ctx.pool.intern(nameTok.value);
+    
+    // Expect '='
+    if (!stream.match(TokenType::ASSIGN)) {
+        ctx.error(stream, DiagCode::E1006, stream.peekValue());
+        synchronize(stream, ctx);
+        return nullptr;
+    }
+    
+    // Parse value (must be integer literal)
+    if (!stream.check(TokenType::INT_LITERAL) &&
+        !stream.check(TokenType::HEX_LITERAL) &&
+        !stream.check(TokenType::BINARY_LITERAL)) {
+        ctx.error(stream, DiagCode::E1009, "integer literal", stream.peekValue());
+        synchronize(stream, ctx);
+        return nullptr;
+    }
+    
+    Token valueTok = stream.advance();
+    int64_t value = std::stoll(valueTok.value);
+    
+    auto* variant = ctx.arena.make<EnumVariantAST>(name, value);
+    variant->loc = loc;
+    
+    LOG_PARSER_DETAIL("Parsed enum variant: ", ctx.toString(name), 
+                      " = ", value);
+    return variant;
+}
+
+// =============================================================================
+// parseTraitDecl() – Parses a trait declaration
+// =============================================================================
+
+/**
+ * @brief Parse a trait declaration.
+ * 
+ * Grammar: 'trait' IDENTIFIER [ generic_params ] '{' { trait_field } '}'
+ * 
+ * @param stream The token stream
+ * @param ctx The parsing context
+ * @return TraitDeclAST* The parsed trait declaration, or nullptr on error
+ * 
+ * @note This function does NOT consume the terminating semicolon.
+ *       The caller (parseDecl) consumes it.
+ */
+TraitDeclAST* parseTraitDecl(TokenStream& stream, ParserContext& ctx) {
+    SourceLocation loc = stream.currentLoc();
+    stream.consume(TokenType::TRAIT);
+    
+    // Parse name
+    if (!stream.check(TokenType::IDENTIFIER)) {
+        ctx.error(stream, DiagCode::E1002, "trait name", stream.peekValue());
+        synchronize(stream, ctx);
+        return nullptr;
+    }
+    Token nameTok = stream.advance();
+    InternedString name = ctx.pool.intern(nameTok.value);
+    
+    // Parse generic parameters (optional)
+    ArenaSpan<GenericParamDeclPtr> genericParams;
+    if (stream.check(TokenType::LESS)) {
+        genericParams = parseGenericParamDecls(stream, ctx);
+    }
+    
+    // Parse fields
+    if (!stream.check(TokenType::LBRACE)) {
+        ctx.error(stream, DiagCode::E1004, "{", "trait body", stream.peekValue());
+        synchronize(stream, ctx);
+        return nullptr;
+    }
+    stream.advance(); // Consume '{'
+    
+    std::vector<TraitFieldPtr> fields;
+    while (!stream.check(TokenType::RBRACE) && !stream.isAtEnd()) {
+        TraitFieldPtr field = parseTraitField(stream, ctx);
+        if (field) {
+            fields.push_back(field);
+        } else {
+            synchronizeTo(stream, ctx, {TokenType::COMMA, TokenType::RBRACE});
+            if (stream.check(TokenType::COMMA)) {
+                stream.advance();
+            }
+            continue;
+        }
+        
+        // Check for comma separator between fields
+        if (stream.check(TokenType::COMMA)) {
+            stream.advance();
+        } else if (!stream.check(TokenType::RBRACE)) {
+            ctx.error(stream, DiagCode::E1008, stream.peekValue(), "',' or '}'");
+            synchronizeTo(stream, ctx, TokenType::RBRACE);
+            break;
+        }
+    }
+    
+    if (!stream.check(TokenType::RBRACE)) {
+        ctx.error(stream, DiagCode::E1005, "}", "trait body", stream.peekValue());
+        synchronizeTo(stream, ctx, TokenType::RBRACE);
+    } else {
+        stream.advance(); // Consume '}'
+    }
+    
+    auto* traitDecl = ctx.arena.make<TraitDeclAST>();
+    traitDecl->loc = loc;
+    traitDecl->name = name;
+    traitDecl->genericParams = genericParams;
+    
+    // Build fields span
+    auto builder = ctx.arena.makeBuilder<TraitFieldPtr>();
+    for (auto* f : fields) {
+        builder.push_back(f);
+    }
+    traitDecl->fields = builder.build();
+    
+    LOG_PARSER_DETAIL("Parsed trait declaration: ", ctx.toString(name), 
+                      " with ", fields.size(), " fields");
+    return traitDecl;
 }
 
 // =============================================================================
@@ -423,40 +913,47 @@ EnumVariantAST* parseEnumVariant(ParserState& state) {
 /**
  * @brief Parse a trait field declaration.
  * 
- * Trait fields define the requirements for structs implementing the trait:
+ * Grammar: [ 'const' ] IDENTIFIER type
  * 
- * ```lucid
- * x float
- * name string
- * const id int
- * ```
- * 
- * ## Grammar
- * 
- * ```
- * trait_field := [ 'const' ] IDENTIFIER type
- * ```
- * 
- * ## Rules
- * 
- * - Name then type (Go-style)
- * - No default values allowed
- * - Can be marked `const`
- * - Cannot be nullable or fallible
- * 
- * ## Error Handling
- * 
- * - Missing name: Generic error reported
- * - Missing type: Generic error reported
- * - Nullable/fallible field: Reported with error
- * 
- * @param state Parser state with token stream.
- * @return TraitFieldPtr The parsed trait field, or nullptr on error.
+ * @param stream The token stream
+ * @param ctx The parsing context
+ * @return TraitFieldPtr The parsed trait field, or nullptr on error
  */
-TraitFieldPtr parseTraitField(ParserState& state) {
-    // The implementation is in ParserDecl.cpp
-    // This declaration is for documentation purposes only.
-    return nullptr;
+TraitFieldPtr parseTraitField(TokenStream& stream, ParserContext& ctx) {
+    SourceLocation loc = stream.currentLoc();
+    
+    // Parse 'const' modifier (optional)
+    bool isConst = stream.match(TokenType::CONST);
+    
+    // Parse name
+    if (!stream.check(TokenType::IDENTIFIER)) {
+        ctx.error(stream, DiagCode::E1002, "trait field name", stream.peekValue());
+        synchronize(stream, ctx);
+        return nullptr;
+    }
+    Token nameTok = stream.advance();
+    InternedString name = ctx.pool.intern(nameTok.value);
+    
+    // Parse type
+    TypePtr type = parseType(stream, ctx);
+    if (!type) {
+        ctx.error(stream, DiagCode::E1003, stream.peekValue());
+        synchronize(stream, ctx);
+        return nullptr;
+    }
+    
+    // Trait fields cannot be nullable or fallible
+    // The semantic pass will enforce this
+    
+    auto* traitField = ctx.arena.make<TraitFieldDeclAST>();
+    traitField->loc = loc;
+    traitField->name = name;
+    traitField->type = type;
+    traitField->isConst = isConst;
+    
+    LOG_PARSER_DETAIL("Parsed trait field: ", ctx.toString(name), 
+                      (isConst ? " const" : ""));
+    return traitField;
 }
 
 // =============================================================================
@@ -466,31 +963,95 @@ TraitFieldPtr parseTraitField(ParserState& state) {
 /**
  * @brief Parse a trait reference.
  * 
- * Trait references appear in struct declarations and generic constraints:
+ * Grammar: IDENTIFIER [ '<' type { ',' type } '>' ]
  * 
- * ```lucid
- * struct Entity : Vector2, Named { ... }
- * const magnitude<T : Vector2> (v T) -> float = { ... }
- * ```
- * 
- * ## Grammar
- * 
- * ```
- * trait_ref := IDENTIFIER [ '<' type { ',' type } '>' ]
- * ```
- * 
- * ## Examples
- * 
- * - `Vector2` → name = "Vector2", genericArgs = {}
- * - `Container<int>` → name = "Container", genericArgs = {int}
- * - `Map<string, Vec2>` → name = "Map", genericArgs = {string, Vec2}
- * 
- * @param state Parser state with token stream.
- * @return TraitRefAST* The parsed trait reference, or nullptr on error.
+ * @param stream The token stream
+ * @param ctx The parsing context
+ * @return TraitRefPtr The parsed trait reference, or nullptr on error
  */
-TraitRefAST* parseTraitRef(ParserState& state) {
-    // The implementation is in ParserDecl.cpp
-    // This declaration is for documentation purposes only.
-    return nullptr;
+TraitRefPtr parseTraitRef(TokenStream& stream, ParserContext& ctx) {
+    SourceLocation loc = stream.currentLoc();
+    
+    // Expect an identifier for the trait name
+    if (!stream.check(TokenType::IDENTIFIER)) {
+        ctx.error(stream, DiagCode::E1002, "trait name", stream.peekValue());
+        synchronize(stream, ctx);
+        return nullptr;
+    }
+    
+    Token nameTok = stream.advance();
+    InternedString name = ctx.pool.intern(nameTok.value);
+    
+    // Create the trait reference node
+    auto* traitRef = ctx.arena.make<TraitRefAST>();
+    traitRef->loc = loc;
+    traitRef->name = name;
+    
+    // Check for generic arguments (optional)
+    if (stream.check(TokenType::LESS)) {
+        traitRef->genericArgs = parseGenericArgs(stream, ctx);
+    }
+    
+    LOG_PARSER_DETAIL("parseTraitRef: parsed trait '", ctx.toString(name), 
+                       "' with ", traitRef->genericArgs.size(), " generic args");
+    
+    return traitRef;
 }
 
+// =============================================================================
+// Helper: buildFuncType - Build a function type from parameter groups
+// =============================================================================
+
+/**
+ * @brief Build a function type from parameter groups.
+ * 
+ * This builds the recursive FuncTypeAST structure for a function declaration.
+ * 
+ * @param stream The token stream
+ * @param ctx The parsing context
+ * @param paramGroups The parameter groups
+ * @return FuncTypeAST* The built function type, or nullptr on error
+ */
+FuncTypeAST* buildFuncType(TokenStream& stream, ParserContext& ctx, 
+                           const std::vector<ParamGroup>& paramGroups) {
+    if (paramGroups.empty()) {
+        return nullptr;
+    }
+    
+    // Parse return types (optional)
+    ArenaSpan<TypePtr> returnTypes;
+    if (stream.match(TokenType::ARROW)) {
+        returnTypes = parseReturnList(stream, ctx);
+    }
+    
+    // Build from the innermost function type outward
+    FuncTypeAST* current = nullptr;
+    
+    // Start with the last parameter group (innermost)
+    for (int i = static_cast<int>(paramGroups.size()) - 1; i >= 0; --i) {
+        auto* funcType = ctx.arena.make<FuncTypeAST>();
+        
+        // Build params span
+        auto paramBuilder = ctx.arena.makeBuilder<ParamPtr>();
+        for (auto* p : paramGroups[i]) {
+            paramBuilder.push_back(p);
+        }
+        funcType->params = paramBuilder.build();
+        
+        // For the innermost function, use the return types
+        if (i == static_cast<int>(paramGroups.size()) - 1) {
+            funcType->returnTypes = returnTypes;
+        } else {
+            // For outer functions, the return type is the inner function
+            auto returnBuilder = ctx.arena.makeBuilder<TypePtr>();
+            returnBuilder.push_back(current);
+            funcType->returnTypes = returnBuilder.build();
+        }
+        
+        current = funcType;
+    }
+    
+    return current;
+}
+
+} // namespace parser

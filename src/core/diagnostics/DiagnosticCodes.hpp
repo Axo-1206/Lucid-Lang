@@ -32,83 +32,14 @@ enum class DiagCode : uint32_t {
     // Speicalize codes
     E1101,          ///< Expected module path after keyword 'use'
     E1102,          ///< Expected name alias after keyword 'as'
-    E1103,          ///< Trailing comma
+    E1103,          ///< Trailing tokens
     E1104,          ///< Expected attribute argument literal
-    E1105,          ///< Unexpected trailing '+' in generic constraints
-    E1106,          ///< Unexpected trailing '.' in path
+    // E1105,          ///< Unexpected trailing '+' in generic constraints
+    // E1106,          ///< Unexpected trailing '.' in path
 
    
 
-    // ========== 2000–2999: Semantic ==========
-    E2001 = 2000,   ///< Undeclared identifier '%s'.
-    E2002,          ///< Type mismatch: expected '%s', got '%s'.
-    E2003,          ///< Parameter/argument count mismatch.
-    E2004,          ///< Assignment to immutable value.
-    E2005,          ///< Symbol '%s' already declared in this scope.
-    E2006,          ///< Missing 'main' entry point.
-    E2007,          ///< Invalid signature for 'main': %s.
-    E2008,          ///< No implicit conversion found from '%s' to '%s'; use explicit cast or declare a 'from' conversion.
-    E2009,          ///< '==' on struct – use :equals() from Equatable.
-    E2010,          ///< '==' on function type (not comparable).
-    E2011,          ///< '==' on array type (use collection comparison).
-    E2012,          ///< Chained comparison (use 'and').
-    E2013,          ///< '@aot' and '@jit' together on same declaration.
-    E2014,          ///< '@aot' or '@jit' only valid on 'main'.
-    E2015,          ///< Generic signature mismatch in impl (must match target generic type).
-    E2016,          ///< Impl target must be a named type (primitive, struct, enum, alias).
-    E2017,          ///< Generic arguments mismatch in impl.
-    E2018,          ///< Impl on primitive/enum cannot have generic parameters.
-    E2019,          ///< From entry return type mismatch with enclosing from target.
-    E2020,          ///< Method '%s' not found for receiver type.
-    E2021,          ///< Trait conformance missing method(s).
-    E2022,          ///< Method signature mismatch with trait.
-    E2023,          ///< Duplicate method name in impl blocks for same type.
-    E2024,          ///< ~async call without 'await'.
-    E2025,          ///< 'return' used inside ~parallel body.
-    E2026,          ///< Write to outer variable in ~parallel.
-    E2027,          ///< 'break' or 'continue' outside loop.
-    E2028,          ///< Multi‑assign RHS value count mismatch.
-    E2029,          ///< Assignment target is not an lvalue (cannot assign to this expression).
-    E2030,          ///< 'const' missing initialiser.
-    E2031,          ///< 'const' initialiser not compile‑time constant.
-    E2032,          ///< 'nil' assigned to non‑nullable type.
-    E2033,          ///< Double nullable (e.g., int??).
-    E2034,          ///< Generic call missing type arguments.
-    E2035,          ///< Type argument count mismatch.
-    E2036,          ///< 'is' expression outside conditional (statement context only).
-    E2037,          ///< Pattern bind name '%s' conflicts with existing variable.
-    E2038,          ///< Unconditional bind after more specific patterns in match.
-    E2039,          ///< Generic parameter unused in type alias/struct/function (add @phantom).
-    E2040,          ///< Operation on unresolved '!' type (use resolve or ??).
-    E2041,          ///< Duplicate clause in switch, match, or impl.
-    E2042,          ///< Pattern bind name shadows but not allowed.
-    E2043,          ///< Return in function that cannot return (e.g., ~parallel).
-    E2044,          ///< Function call argument mismatch (expected %d, received %d).
-    E2045,          ///< Recursion not allowed in this context.
 
-    // ========== 3000–3999: Attribute Validation ==========
-    E3001 = 3000,   ///< Unknown attribute '@%s'.
-    E3002,          ///< Wrong argument count for attribute '@%s'.
-    E3003,          ///< Attribute argument type mismatch (expected string, integer, or identifier).
-    E3004,          ///< Attribute '@%s' not allowed on this declaration.
-    E3005,          ///< '@extern' missing symbol name.
-    E3006,          ///< '@extern' function must be 'const' and have empty body.
-    E3007,          ///< '@link' can only appear once per file (use comma‑separated arguments).
-    E3008,          ///< '@packed' only allowed on struct.
-    E3009,          ///< '@inline' and '@noinline' mutually exclusive.
-    E3010,          ///< '@deprecated' missing message string.
-    E3011,          ///< '@phantom' only allowed on type alias, struct, or function.
-    E3012,          ///< '@phantom' used but generic parameter is actually used.
-    E3013,          ///< '@extern' variadic function cannot be used with injection '!'.
-
-    // ========== 4000–4999: Intrinsic Validation ==========
-    E4001 = 4000,   ///< Unknown intrinsic '#%s'.
-    E4002,          ///< Wrong argument count for intrinsic '#%s'.
-    E4003,          ///< Argument type mismatch for intrinsic '#%s'.
-    E4004,          ///< Intrinsic '#%s' only allowed in unsafe context (--unsafe or @extern).
-    E4005,          ///< #bitcast size mismatch (source and target sizes differ).
-    E4006,          ///< #ptrOffset requires integer offset.
-    E4007,          ///< #toRef argument must be a raw pointer (*T).
 
     // ========== 5000–5999: Linker / Backend ==========
     E5001 = 5000,   ///< Unresolved external symbol '%s'.

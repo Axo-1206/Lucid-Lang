@@ -657,8 +657,8 @@ GenericParamDeclPtr parseGenericParamDecl(TokenStream& stream, ParserContext& ct
             // ─── Check for trailing '+' ────────────────────────────────
             if (stream.check(TokenType::PLUS)) {
                 if (!hasConstraint) {
-                    // '+' before any trait - trailing plus error
-                    ctx.error(stream, DiagCode::E1105);
+                    // find '+' before any trait aka trailing plus error
+                    ctx.error(stream, DiagCode::E1103, '+', "generic constraints");
                     stream.advance(); // Consume '+'
                     continue;
                 } else {
@@ -668,8 +668,8 @@ GenericParamDeclPtr parseGenericParamDecl(TokenStream& stream, ParserContext& ct
                     // If we're at EOF, '>', or ',', it's a trailing plus
                     if (stream.isAtEnd()) {
                         break;
-                    } else if (stream.check(TokenType::GREATER) || stream.check(TokenType::COMMA)) {
-                        ctx.error(stream, DiagCode::E1105);
+                    } else if (stream.checkAny(TokenType::GREATER, TokenType::COMMA, TokenType::SEMICOLON)) {
+                        ctx.error(stream, DiagCode::E1103, '+', "generic constraints");
                         // IMPORTANT: We DO NOT consume '>' or ',' here.
                         // The caller (parseGenericParamDecls) will handle the closing '>'
                         // or the next parameter after ','.
@@ -1299,13 +1299,13 @@ std::vector<InternedString> parseUsePath(TokenStream& stream, ParserContext& ctx
         // If we see EOF, 'as', or something that can't start an identifier,
         // it's a trailing dot error
         if (stream.isAtEnd()) {
-            ctx.error(stream, DiagCode::E1106); // Unexpected trailing '.'
+            ctx.error(stream, DiagCode::E1103, ".", "path"); // Unexpected trailing '.'
             break;
         }
         
         // Check for 'as' after dot - this means trailing dot before alias
         if (stream.check(TokenType::AS)) {
-            ctx.error(stream, DiagCode::E1106); // Unexpected trailing '.'
+            ctx.error(stream, DiagCode::E1103, ".", "path"); // Unexpected trailing '.'
             // Don't consume 'as' - let the caller handle it
             break;
         }

@@ -90,21 +90,22 @@ void synchronize(TokenStream& stream, ParserContext& ctx) {
  * specified stop tokens. This is useful for more targeted error recovery,
  * such as synchronizing to a closing brace or a specific keyword.
  * 
+ * @tparam StopTokens The token types to stop at (variadic)
  * @param stream The token stream for the current file
  * @param ctx The parsing context
- * @param stopTokens A list of token types to stop at
+ * @param stopTokens The token types to stop at
  */
-void synchronizeTo(TokenStream& stream, ParserContext& ctx, std::initializer_list<TokenType> stopTokens) {
+template<typename... StopTokens>
+void synchronizeTo(TokenStream& stream, ParserContext& ctx, StopTokens... stopTokens) {
     LOG_PARSER("Synchronizing to stop tokens");
     
     while (!stream.isAtEnd()) {
         TokenType current = stream.peekType();
         
-        for (TokenType stop : stopTokens) {
-            if (current == stop) {
-                LOG_PARSER_DETAIL("Synchronized at token: ", debug::tokenTypeToString(current));
-                return;
-            }
+        // Check if current token matches any stop token
+        if (((current == stopTokens) || ...)) {
+            LOG_PARSER_DETAIL("Synchronized at token: ", debug::tokenTypeToString(current));
+            return;
         }
         
         stream.advance();
@@ -260,7 +261,7 @@ ProgramAST* parse(const std::string& path,
  *     │       │   └── if (stream.check(SEMICOLON)) → advance() and continue
  *     │       │
  *     │       ├── 2.3 Parse Declaration
- *     │       │   └── parseTopLevelDecl()
+ *     │       │   └── parseDecl()
  *     │       │       │
  *     │       │       ├── USE → parseUseDecl()
  *     │       │       │   └── Imports module (recursive)
@@ -374,7 +375,7 @@ ProgramAST* parse(const std::string& path,
  * ```
  * 
  * @note This function does NOT handle imports directly. Imports are handled
- *       by parseUseDecl() which is called from parseTopLevelDecl().
+ *       by parseUseDecl() which is called from parseDecl().
  *       The imported module's declarations are collected recursively
  *       when parseUseDecl() calls parse() on the imported file.
  * 
@@ -404,7 +405,7 @@ bool parseInternal(TokenStream& stream, ParserContext& ctx, std::vector<DeclPtr>
         
         // ─── Parse a top-level declaration ──────────────────────────────
         // The declaration parser will consume its own terminating ';'
-        auto* decl = parseTopLevelDecl(stream, ctx);
+        auto* decl = parseDecl(stream, ctx);
         
         // ─── Check if we're at EOF after parsing a declaration ──────────
         // If we parsed a declaration and then hit EOF, but the declaration
@@ -454,7 +455,7 @@ bool parseInternal(TokenStream& stream, ParserContext& ctx, std::vector<DeclPtr>
             outDecls.push_back(decl);
         } else {
             consecutiveFailures = 0;
-            LOG_PARSER("parseTopLevelDecl returned nullptr but made progress");
+            LOG_PARSER("parseDecl returned nullptr but made progress");
         }
         
         // Critical stuck detection
@@ -486,10 +487,10 @@ bool parseInternal(TokenStream& stream, ParserContext& ctx, std::vector<DeclPtr>
 }
 
 // =============================================================================
-// parseTopLevelDecl() - Dispatch to specific declaration parsers
+// parseDecl() - Dispatch to specific declaration parsers
 // =============================================================================
 
-DeclAST* parseTopLevelDecl(TokenStream& stream, ParserContext& ctx) {
+DeclAST* parseDecl(TokenStream& stream, ParserContext& ctx) {
     // Check for USE declaration first (imports module)
     if (stream.check(TokenType::USE)) {
         return parseUseDecl(stream, ctx);
@@ -529,143 +530,5 @@ DeclAST* parseTopLevelDecl(TokenStream& stream, ParserContext& ctx) {
     synchronize(stream, ctx);
     return nullptr;
 }
-
-// =============================================================================
-// parseUseDecl() - Parse a use declaration and import the module
-// =============================================================================
-
-/**
- * @brief Parse a use declaration and import the referenced module.
- * 
- * Grammar: `use path [as alias]`
- * 
- * Alias rules:
- * 1. If `as alias` is present, use the specified alias
- * 2. Otherwise, use the last component of the path as the alias
- *    - `std.math` → alias = "math"
- *    - `graphics.gl` → alias = "gl"
- * 
- * ## How It Works
- * 
- * This function:
- * 1. Parses the use path (e.g., "std.math")
- * 2. Determines the alias
- * 3. Creates the UseDeclAST node
- * 4. Resolves the path to a file
- * 5. Recursively parses the imported module (if not cached)
- * 6. Collects the imported declarations for merging
- * 
- * @param stream The token stream for the current file
- * @param ctx The parsing context
- * @return UseDeclAST* The use declaration AST node, or nullptr on error
- *
- * @note the caller of this function already consume `;`
- */
-UseDeclAST* parseUseDecl(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER("Enter UseDecl");
-
-    SourceLocation loc = stream.currentLoc();
-    stream.consume(TokenType::USE);
-    
-    // ─── 1. Parse the use path ───────────────────────────────────────────
-    auto pathParts = parseUsePath(stream, ctx);
-    if (pathParts.empty()) {
-        ctx.error(stream, DiagCode::E1102, stream.peekValue());
-        synchronize(stream, ctx);
-        return nullptr;
-    }
-    
-    // Build the full use path string (dot-separated)
-    std::string fullPath;
-    for (size_t i = 0; i < pathParts.size(); ++i) {
-        if (i > 0) fullPath += ".";
-        fullPath += std::string(ctx.pool.lookup(pathParts[i]));
-    }
-    InternedString usePath = ctx.pool.intern(fullPath);
-    
-    // ─── 2. Determine the alias ──────────────────────────────────────────
-    InternedString alias;
-    std::string aliasStr;
-    
-    if (stream.match(TokenType::AS)) {
-        // Explicit alias: `use path as alias`
-        Token aliasTok = stream.consume(TokenType::IDENTIFIER);
-        if (aliasTok.type != TokenType::EOF_TOKEN) {
-            alias = ctx.pool.intern(aliasTok.value);
-            aliasStr = std::string(ctx.pool.lookup(alias));
-        } else {
-            ctx.error(stream, DiagCode::E1102, stream.peekValue());
-            synchronize(stream, ctx);
-            return nullptr;
-        }
-    } else {
-        // Implicit alias: use the last component of the path
-        // e.g., "std.math" → alias = "math"
-        InternedString lastPart = pathParts.back();
-        alias = lastPart;
-        aliasStr = std::string(ctx.pool.lookup(alias));
-    }
-    
-    // ─── 3. Create the UseDeclAST ────────────────────────────────────────
-    auto* useDecl = ctx.arena.make<UseDeclAST>();
-    useDecl->loc = loc;
-    useDecl->path = usePath;
-    useDecl->alias = alias;
-    
-    // ─── 4. Import the module ────────────────────────────────────────────
-    if (ctx.resolver) {
-        // Resolve the use path to a file path
-        InternedString filePath = ctx.resolver->resolveUsePath(usePath);
-        if (!filePath.isValid()) {
-            ctx.errorAt(loc, DiagCode::E0003);
-            synchronize(stream, ctx);
-            return useDecl;
-        }
-        
-        // Check if already parsed
-        ProgramAST* importedModule = ctx.resolver->getParsedModule(filePath);
-        
-        if (!importedModule) {
-            // Read the source file
-            std::string source = ctx.resolver->readModuleSource(filePath);
-            if (source.empty()) {
-                // ============================================================
-                // NOTE: if the module is empty then we simply don't care and
-                // move on
-                // ============================================================
-                return useDecl;
-            }
-            
-            // ============================================================
-            // Parse the module (recursive call!)
-            // ============================================================
-            std::string pathStr = std::string(ctx.pool.lookup(filePath));
-            importedModule = parse(pathStr, source, ctx);
-            
-            if (!importedModule) {
-                ctx.error(stream, DiagCode::E0004, usePath);
-                synchronize(stream, ctx);
-                return useDecl;
-            }
-            
-            // Cache the module
-            ctx.resolver->cacheModule(filePath, importedModule);
-        }
-        
-        // NOTE: Imported declarations are automatically collected
-        // by parse() when it parses the imported module.
-        // No need to manually collect them here.
-        
-    } else {
-        ctx.error(stream, DiagCode::E0004, usePath);
-        synchronize(stream, ctx);
-        return useDecl;
-    }
-    
-    LOG_PARSER_MINIMAL("Parsed use declaration: '", fullPath, "' as '", aliasStr, "'");
-    
-    return useDecl;
-}
-
 
 } // namespace parser

@@ -48,7 +48,9 @@ ProgramAST* parse(const std::string& path,
 // =============================================================================
 
 void synchronize(TokenStream& stream, ParserContext& ctx);
-void synchronizeTo(TokenStream& stream, ParserContext& ctx, std::initializer_list<TokenType> stopTokens);
+
+template<typename... StopTokens>
+void synchronizeTo(TokenStream& stream, ParserContext& ctx, StopTokens... stopTokens);
 
 // =============================================================================
 // Internal Parser Functions
@@ -66,7 +68,7 @@ bool parseInternal(TokenStream& stream, ParserContext& ctx, std::vector<DeclPtr>
 
 // ─── Declarations ──────────────────────────────────────────────────────────
 
-DeclAST* parseTopLevelDecl(TokenStream& stream, ParserContext& ctx);
+DeclAST* parseDecl(TokenStream& stream, ParserContext& ctx);
 UseDeclAST* parseUseDecl(TokenStream& stream, ParserContext& ctx);
 VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx);
 FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx);
