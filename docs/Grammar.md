@@ -1414,6 +1414,119 @@ Vector2?!    -- nullable and fallible struct value
 > idioms: an empty array `[]` is always preferable to a `nil` array, and an
 > empty or no-op function is preferable to a nullable function binding.
 
+### Memory Layout
+
+Every `T?`, `T!`, or `T?!` value occupies a **tagged slot** in the current scope
+arena:
+
+```
+[ tag: 1 byte | value: sizeof(T) bytes ]
+```
+
+The tag encodes the state of the slot:
+
+| Tag | Meaning                                 | Valid on          |
+| --- | --------------------------------------- | ----------------- |
+| `0` | `nil` — slot is absent, no value        | `T?`, `T?!`       |
+| `1` | value present                           | `T?`, `T!`, `T?!` |
+| `2` | `err` — slot failed, carries error info | `T!`, `T?!`       |
+
+The language processor allocates the slot when the declaration is entered and
+releases it automatically when the scope exits. The user never calls `#alloc` or
+`#free` on these — the scope arena manages them.
+
+### Lifetime
+
+Nullable and fallible values live in the **scope arena** of the block that
+declares them — not for the entire program. They are released when that block
+exits, whether by normal flow, `return`, or `break`.
+
+```lucid
+const compute () -> int? = {
+    let x int? = 42       -- x allocated in this scope's arena
+    if someCondition {
+        let y int? = 10   -- y allocated in the if-block's arena
+        x = y
+    }                     -- y released here
+    return x
+}                         -- x released here
+```
+
+### `nil` — Absence
+
+`nil` is a **semantic signal**, not a memory operation. It means "there is no
+value here" — a domain concept the programmer expresses intentionally. The
+language processor handles the memory automatically regardless; `nil` only
+changes the tag.
+
+```lucid
+let target Player? = nil      -- no target selected yet
+target = findEnemy()          -- now has a value
+target = nil                  -- cleared — not an error, just absent
+
+if target == nil {
+    -- no target
+} else {
+    -- target is Player here (narrowed by the language processor)
+}
+```
+
+Assigning `nil` sets the tag to `0` and clears the value bytes. The slot remains
+in the scope arena and can be reassigned at any time. Memory is reclaimed
+automatically when the scope exits — `nil` does not trigger an early free.
+
+### `err` — Failure
+
+A fallible value enters the error state in two ways:
+
+1. **Automatically** — the language processor sets `err` when an operation
+   produces a failure, such as division by zero or a failed foreign call:
+
+```lucid
+let i int! = 8 / 0    -- language processor sets tag to 2, stores the error
+```
+
+2. **Manually** — the user signals failure explicitly with a reason:
+
+```lucid
+let result int! = err(DivisionByZero)   -- explicit failure
+let ratio  int! = err(InvalidInput)     -- user-defined error case
+```
+
+`err(...)` always requires a reason — bare `err` without a value is not valid.
+This keeps error states meaningful: an error always carries information about
+what went wrong, not just that it did.
+
+Like `nil`, assigning `err(...)` is a semantic operation. The language processor
+manages the memory — the slot is reclaimed when the scope exits.
+
+### Combined `T?!` — Three States
+
+A `T?!` slot can hold three distinct states and the user can move between all of
+them explicitly:
+
+```lucid
+let x int?! = compute()    -- may arrive as value, nil, or err
+
+x = 42                     -- set to value       (tag 1)
+x = nil                    -- set to absent      (tag 0)
+x = err(SomeError)         -- set to failed      (tag 2)
+
+-- Checking all three states
+if x == nil {
+    -- absent
+} else if x == err {
+    -- failed — can inspect the error
+} else {
+    -- has a value
+}
+```
+
+> [!NOTE]
+> `T?!` is the most flexible slot type but also the most demanding to handle
+> correctly — all three states must be considered. Prefer `T?` when absence is
+> the only concern, and `T!` when failure is the only concern.
+
 ---
 
 ## Statements
@@ -3566,54 +3679,97 @@ const result string = #str_from_ptr(buf, size)
 
 #### Memory Management
 
-Lucid manages memory across three regions:
+**Lucid manages all memory automatically for ordinary code.** The user never
+calls `#alloc`, `#free`, or any arena intrinsic when writing pure Lucid. Memory
+intrinsics exist for one purpose: **bridging into C and other foreign code** that
+operates outside Lucid's control.
 
-- **Static** — non-nullable, non-fallible values with program lifetime. The
-  language processor allocates these once. `#free` and `#alloc` are illegal on them.
-- **Nullable / Fallible slots** — `T?` and `T!` values. The language processor
-  allocates a tagged slot `[ tag: 1 byte | value: sizeof(T) bytes ]` per
-  declaration and frees it when it goes out of scope. Fully automatic, not
-  user-visible.
-- **Explicit pointer heap** — `*T` values. The user manages these via `#alloc`
-  and `#free`, mediated by the language processor which tracks allocation state
-  to prevent double-free and null-free.
+---
 
-For performance-critical or bulk-allocation patterns, use an **arena** — allocate
-into a named region and free the whole region at once. Individual slots inside an
-arena are never freed separately.
+**Automatic — Scope Arena**
 
-| Intrinsic                   | Args                     | Returns  | Notes                                                                           |
-| --------------------------- | ------------------------ | -------- | ------------------------------------------------------------------------------- |
-| `#alloc(T, count)`          | type, `uint64`           | `*T`     | Allocate `count` elements of type `T`; language processor tracks the allocation |
-| `#free(ptr)`                | `*T`                     | —        | Free a `#alloc`-ed pointer; language processor checks for double-free and null  |
-| `#arena_create(size)`       | `uint64`                 | `*Arena` | Create an arena with an initial byte capacity                                   |
-| `#arena_alloc(arena, T, n)` | `*Arena`, type, `uint64` | `*T`     | Allocate `n` elements of type `T` from the arena                                |
-| `#arena_reset(arena)`       | `*Arena`                 | —        | Release all arena allocations; the arena itself remains usable                  |
-| `#arena_free(arena)`        | `*Arena`                 | —        | Destroy the arena and all allocations within it                                 |
+Every block has its own scope arena. The language processor pushes a new arena
+on entry and pops it on exit, releasing everything inside. Every local value —
+non-nullable, nullable, fallible, dynamic array, struct — lives in this arena.
+No annotation, no manual free, no lifetime management needed.
 
-```lucid
--- Explicit heap allocation
-const buf *uint8 = #alloc(uint8, 1024)
-#memset(buf, 0, 1024)
--- ... use buf ...
-#free(buf)   -- language processor verifies this is the first and only free
-
--- Arena allocation: bulk allocate, bulk free
-const arena *Arena   = #arena_create(4096)
-const nodes *Node    = #arena_alloc(arena, Node, 128)
-const edges *Edge    = #arena_alloc(arena, Edge, 256)
-
--- ... build a graph using nodes and edges ...
-
-#arena_free(arena)   -- frees nodes, edges, and the arena in one call
-                     -- no double-free possible at the individual level
+```
+main() entered           → push scope arena
+  if block entered       → push scope arena
+    let x int    = 10   → allocated in if-block arena
+    let y int?   = nil  → tagged slot in if-block arena
+    let z [*]int = []   → dynamic array in if-block arena
+  if block exited        → pop arena: x, y, z all released
+main() returned          → pop scope arena
 ```
 
-> [!NOTE]
-> Dynamic arrays `[*]T` in ordinary Lucid code are managed automatically by the
-> language processor using scope-based cleanup — you do not call `#alloc` or
-> `#free` for them. These intrinsics are for explicit pointer management and
-> interop with foreign functions that expect raw allocations.
+`nil` and `err(...)` are semantic signals — they change the tag on a slot, not
+the memory. The scope arena reclaims the slot at scope exit regardless.
+
+---
+
+**Foreign Interop — Explicit Heap and Arena**
+
+When C or another foreign language allocates memory, Lucid has no knowledge of
+it. That memory follows C's rules and must be freed the C way. Lucid provides
+two tools for working with foreign or explicitly managed memory:
+
+*Lucid-tracked heap* — `#alloc` / `#free`. The language processor knows about
+this allocation and catches double-free and null-free. Use this when you need a
+raw pointer that Lucid allocates but passes into foreign code:
+
+```lucid
+@[foreign("C")] const c_process (buf *uint8, len uint64) = {}
+
+const buf *uint8 = #alloc(uint8, 1024)   -- Lucid allocates, Lucid tracks
+#memset(buf, 0, 1024)
+c_process(buf, 1024)                     -- C reads it
+#free(buf)                               -- Lucid frees, double-free caught
+```
+
+*C-owned memory* — when C allocates and returns a pointer, Lucid cannot track
+it. You must free it using the matching C function:
+
+```lucid
+@[foreign("C")] const c_malloc (size uint64) -> *uint8 = {}
+@[foreign("C")] const c_free   (ptr  *uint8)           = {}
+
+const buf *uint8 = c_malloc(1024)   -- C's memory, Lucid has no knowledge of it
+-- ... work with buf via intrinsics ...
+c_free(buf)                         -- must use C's free, not #free
+```
+
+*Named arena* — for bulk allocation patterns where you want to free everything
+at once. Useful when building data structures that are handed to foreign code or
+when you need predictable allocation layout:
+
+```lucid
+const arena *Arena = #arena_create(4096)
+const nodes *Node  = #arena_alloc(arena, Node, 128)
+const edges *Edge  = #arena_alloc(arena, Edge, 256)
+-- ... build a graph, pass to foreign code ...
+#arena_free(arena)   -- releases everything at once, no per-slot free needed
+```
+
+---
+
+**Ownership at a Glance**
+
+| Memory origin                   | Lucid tracks it?         | How it is freed              |
+| ------------------------------- | ------------------------ | ---------------------------- |
+| Any local value, `[*]T`, struct | Yes — fully automatic    | Scope exit                   |
+| `#alloc`                        | Yes — language processor | `#free` — double-free caught |
+| `#arena_alloc`                  | Yes — language processor | `#arena_free`                |
+| C `malloc` / foreign library    | No                       | Matching C free function     |
+
+| Intrinsic                   | Args                     | Returns  | Notes                                  |
+| --------------------------- | ------------------------ | -------- | -------------------------------------- |
+| `#alloc(T, count)`          | type, `uint64`           | `*T`     | Lucid-tracked heap allocation          |
+| `#free(ptr)`                | `*T`                     | —        | Rejects double-free and null-free      |
+| `#arena_create(size)`       | `uint64`                 | `*Arena` | Create a named arena                   |
+| `#arena_alloc(arena, T, n)` | `*Arena`, type, `uint64` | `*T`     | Allocate from arena                    |
+| `#arena_reset(arena)`       | `*Arena`                 | —        | Release contents; arena remains usable |
+| `#arena_free(arena)`        | `*Arena`                 | —        | Destroy arena and all contents         |
 
 ---
 
