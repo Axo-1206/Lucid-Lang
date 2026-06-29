@@ -35,41 +35,7 @@ enum class DiagCode : uint32_t {
     E1104,          ///< Expected attribute argument literal
     E1105,          ///< Unexpected trailing '+' in generic constraints
 
-    // E1105,          ///< Invalid context: 'use' declaration is not allowed inside a block
-    // E1106,          ///< Invalid argument for attribute
-    // E1107,          ///< Unexpected tralling comma
-    // E1108,          ///< Invalid enum variant integer literal
-    // E1109,          ///< Type can't be used as generic argument
-
-
-    // E1001 = 1000,   ///< Expected token '%s' but found '%s'.
-    // E1002,          ///< Unexpected token '%s'.
-    
-    // E1004,          ///< Expected 'in' in for-loop.
-    // E1005,          ///< Expected a type annotation.
-    // E1006,          ///< Invalid context for statement or expression.
-    // E1007,          ///< Malformed literal.
-    // E1008,          ///< Expected expression.
-    // E1009,          ///< Expected '->' in from entry.
-    // E1010,          ///< Expected '=' before function body.
-    // E1011,          ///< Missing ')' in parameter group.
-    // E1012,          ///< Missing ']' in array type.
-    // E1013,          ///< Missing '>' in generic arguments.
-    // E1014,          ///< Misplaced visibility modifier (pub/export inside block).
-    // E1015,          ///< Qualifier on anonymous function.
-    // E1016,          ///< Unknown qualifier '~%s'.
-    // E1017,          ///< Qualifier on non‑function type.
-    // E1018,          ///< Duplicate qualifier.
-    // E1019,          ///< '?' not allowed on inline function type (use alias or ~nullable).
-    // E1020,          ///< '!' not allowed on inline function type (use alias).
-    // E1021,          ///< Nested '!' in type (use alias).
-    // E1022,          ///< Chained comparison (use 'and').
-    // E1023,          ///< Mismatched parentheses in curry type.
-    // E1024,          ///< Invalid context for generic array
-    // E1025,          ///< Missing type annotation in function type parameter (e.g., `(T) -> U` instead of `(t T) -> U`)
-    // E1026,          ///< Generic argument cannot be a reference type (&T).
-    // E1027,          ///< Generic argument cannot be a pointer type (*T).
-    // E1028,          ///< Missing package declaration
+   
 
     // ========== 2000–2999: Semantic ==========
     E2001 = 2000,   ///< Undeclared identifier '%s'.

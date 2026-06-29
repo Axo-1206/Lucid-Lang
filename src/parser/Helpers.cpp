@@ -829,47 +829,245 @@ ArenaSpan<TypePtr> parseGenericArgs(TokenStream& stream, ParserContext& ctx) {
 }
 
 // =============================================================================
+// parseParamList - Parse a list of function parameters
+// =============================================================================
+
+/**
+ * @brief Parse a list of function parameters.
+ * 
+ * Grammar: `'(' [ param { ',' param } [ ',' variadic_param ] ] ')'`
+ * 
+ * This function consumes the opening '(' and closing ')' parentheses.
+ * 
+ * ## Parameter Forms
+ * 
+ * - `IDENTIFIER type`                   → pass by value
+ * - `const IDENTIFIER type`             → read-only reference parameter
+ * - `IDENTIFIER ... type`               → variadic parameter (must be last)
+ * 
+ * ## Examples
+ * 
+ * ```lucid
+ * (a int, b int)                       → [a: int, b: int]
+ * (name string, age int)               → [name: string, age: int]
+ * (nums ...int)                        → [nums: ...int] (variadic)
+ * (const v Vector2)                    → [v: const Vector2] (read-only ref)
+ * (a int, b int, rest ...string)       → [a: int, b: int, rest: ...string]
+ * ()                                   → [] (empty parameter list)
+ * ```
+ * 
+ * ## Error Handling
+ * 
+ * - Empty parentheses `()` → valid, returns empty list
+ * - Missing type after comma → reports E1009
+ * - Trailing comma `(a, )` → reports E1103
+ * - Missing `)` at EOF → reports E1005
+ * - Variadic not last → reports appropriate error
+ * 
+ * @param stream The token stream for the current file
+ * @param ctx The parsing context
+ * @return std::vector<ParamPtr> The parsed parameters (empty for void)
+ *
+ * @note this function consume `)`, the caller must not consume `)`
+ */
+std::vector<ParamPtr> parseParamList(TokenStream& stream, ParserContext& ctx) {
+    LOG_PARSER_DETAIL("parseParamList: parsing parameter list");
+    
+    std::vector<ParamPtr> params;
+    
+    // Expect '(' to start the parameter list
+    if (!stream.check(TokenType::LPAREN)) {
+        ctx.error(stream, DiagCode::E1004, "(", "parameter list", stream.peekValue());
+        return params;
+    }
+    stream.advance(); // Consume '('
+    
+    // Check for empty parameter list: ()
+    if (stream.check(TokenType::RPAREN)) {
+        stream.advance(); // Consume ')'
+        return params;
+    }
+    
+    // Parse parameters until we hit ')'
+    bool hasVariadic = false;
+    
+    while (!stream.isAtEnd()) {
+        SourceLocation loc = stream.currentLoc();
+        
+        // ─── 1. Check for 'const' modifier ──────────────────────────────
+        bool isConst = stream.match(TokenType::CONST);
+        
+        // ─── 2. Parse parameter name ─────────────────────────────────────
+        if (!stream.check(TokenType::IDENTIFIER)) {
+            ctx.error(stream, DiagCode::E1002, "parameter name", stream.peekValue());
+            synchronizeTo(stream, ctx, {TokenType::COMMA, TokenType::RPAREN});
+            if (stream.check(TokenType::COMMA)) {
+                stream.advance();
+            } else if (stream.check(TokenType::RPAREN)) {
+                stream.advance(); // Consume ')' and exit
+                break;
+            }
+            continue;
+        }
+        
+        Token nameTok = stream.advance();
+        InternedString name = ctx.pool.intern(nameTok.value);
+        
+        // ─── 3. Check for variadic modifier ─────────────────────────────
+        bool isVariadic = stream.match(TokenType::VARIADIC);
+        
+        if (isVariadic && hasVariadic) {
+            ctx.error(stream, DiagCode::E1010, "parameter group", "only one variadic parameter is allowed on each group");
+            synchronizeTo(stream, ctx, {TokenType::RPAREN});
+            if (stream.check(TokenType::RPAREN)) {
+                stream.advance();
+            }
+            break;
+        }
+        
+        // ─── 4. Parse parameter type ─────────────────────────────────────
+        TypePtr type = parseType(stream, ctx);
+        if (!type) {
+            ctx.error(stream, DiagCode::E1009, "parameter type", stream.peekValue());
+            synchronizeTo(stream, ctx, {TokenType::COMMA, TokenType::RPAREN});
+            if (stream.check(TokenType::COMMA)) {
+                stream.advance();
+            } else if (stream.check(TokenType::RPAREN)) {
+                stream.advance(); // Consume ')' and exit
+                break;
+            }
+            continue;
+        }
+        
+        // ─── 5. Create the parameter node ────────────────────────────────
+        auto* param = ctx.arena.make<ParamAST>();
+        param->loc = loc;
+        param->name = name;
+        param->type = type;
+        param->isConst = isConst;
+        param->isVariadic = isVariadic;
+        params.push_back(param);
+        
+        if (isVariadic) {
+            hasVariadic = true;
+        }
+        
+        // ─── 6. Check for comma separator ───────────────────────────────
+        if (stream.check(TokenType::COMMA)) {
+            if (hasVariadic) {
+                ctx.error(stream, DiagCode::E1010, "parameter group", "variadic parameter must be the last parameter");
+                synchronizeTo(stream, ctx, {TokenType::RPAREN});
+                if (stream.check(TokenType::RPAREN)) {
+                    stream.advance();
+                }
+                break;
+            }
+            stream.advance(); // Consume comma
+            
+            // Check for trailing comma: (a int, b int, )
+            if (stream.check(TokenType::RPAREN)) {
+                ctx.error(stream, DiagCode::E1103); // Unexpected trailing comma
+                stream.advance(); // Consume ')'
+                break;
+            }
+            
+            // Check if we're at EOF after comma
+            if (stream.isAtEnd()) {
+                ctx.error(stream, DiagCode::E1005, ")", "parameter list", "<EOF>");
+                break;
+            }
+            
+            // Continue to parse next parameter
+        } else if (stream.check(TokenType::RPAREN)) {
+            // End of parameter list
+            stream.advance(); // Consume ')'
+            break;
+        } else {
+            // Unexpected token
+            ctx.error(stream, DiagCode::E1008, stream.peekValue(), "',' or ')'");
+            synchronizeTo(stream, ctx, {TokenType::RPAREN});
+            if (stream.check(TokenType::RPAREN)) {
+                stream.advance(); // Consume ')' and exit
+            }
+            break;
+        }
+    }
+    
+    // ─── Check if we exited because of EOF ──────────────────────────────
+    if (stream.isAtEnd()) {
+        ctx.error(stream, DiagCode::E1005, ")", "parameter list", "<EOF>");
+    }
+    
+    LOG_PARSER_DETAIL("parseParamList: parsed ", params.size(), " parameters");
+    
+    return params;
+}
+
+// =============================================================================
 // parseArgList - Parse a list of arguments
 // =============================================================================
 
 /**
  * @brief Parse a list of arguments for a function call.
+ * @note this function consume `)`, the caller must not consume `)`
  * 
- * Grammar: `expr { ',' expr }`
+ * Grammar: `'(' [ expr { ',' expr } ] ')'`
+ * 
+ * This function consumes the opening '(' and closing ')' parentheses.
  * 
  * ## Examples
  * 
  * ```lucid
  * add(1, 2, 3)                    → [1, 2, 3]
  * process("hello", 42, true)      → ["hello", 42, true]
- * foo()                           → []
+ * foo()                           → [] (empty arguments)
  * ```
+ * 
+ * ## Error Handling
+ * 
+ * - Empty parentheses `()` → valid, returns empty list
+ * - Missing expression after comma → reports E1006
+ * - Trailing comma `(1, )` → reports E1103
+ * - Missing `)` at EOF → reports E1005
  * 
  * @param stream The token stream for the current file
  * @param ctx The parsing context
- * @return ArenaSpan<ExprAST*> The parsed arguments (empty if no arguments)
+ * @return ArenaSpan<ExprAST*> The parsed arguments (empty for no arguments)
  */
 ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx) {
     LOG_PARSER_DETAIL("parseArgList: parsing argument list");
     
     std::vector<ExprPtr> args;
     
-    // Check if we have arguments (if we see ')' immediately, it's empty)
+    // Expect '(' to start the argument list
+    if (!stream.check(TokenType::LPAREN)) {
+        ctx.error(stream, DiagCode::E1004, "(", "argument list", stream.peekValue());
+        return ctx.arena.makeBuilder<ExprPtr>().build();
+    }
+    stream.advance(); // Consume '('
+    
+    // Check for empty argument list: ()
     if (stream.check(TokenType::RPAREN)) {
+        stream.advance(); // Consume ')'
         return ctx.arena.makeBuilder<ExprPtr>().build();
     }
     
-    // Parse arguments until we hit ')' or end of stream
-    while (!stream.check(TokenType::RPAREN) && !stream.isAtEnd()) {
+    // Parse arguments until we hit ')'
+    while (!stream.isAtEnd()) {
         ExprPtr arg = parseExpr(stream, ctx);
         if (arg) {
             args.push_back(arg);
         } else {
-            ctx.error(stream.currentLoc(), "Expected expression in argument list");
+            // Error already reported by parseExpr, try to recover
+            ctx.error(stream, DiagCode::E1006, stream.peekValue());
             synchronizeTo(stream, ctx, {TokenType::COMMA, TokenType::RPAREN});
-            // Skip to next argument or closing paren
             if (stream.check(TokenType::COMMA)) {
                 stream.advance();
+            } else if (stream.check(TokenType::RPAREN)) {
+                stream.advance(); // Consume ')' and exit
+                break;
+            } else {
+                break;
             }
             continue;
         }
@@ -877,11 +1075,39 @@ ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx) {
         // Check for comma separator
         if (stream.check(TokenType::COMMA)) {
             stream.advance(); // Consume comma
-        } else if (!stream.check(TokenType::RPAREN)) {
-            ctx.error(stream.currentLoc(), "Expected ',' or ')' in argument list");
+            
+            // Check for trailing comma: (1, 2, )
+            if (stream.check(TokenType::RPAREN)) {
+                ctx.error(stream, DiagCode::E1103); // Unexpected trailing comma
+                stream.advance(); // Consume ')'
+                break;
+            }
+            
+            // Check if we're at EOF after comma
+            if (stream.isAtEnd()) {
+                ctx.error(stream, DiagCode::E1005, ")", "argument list", "<EOF>");
+                break;
+            }
+            
+            // Continue to parse next argument
+        } else if (stream.check(TokenType::RPAREN)) {
+            // End of argument list
+            stream.advance(); // Consume ')'
+            break;
+        } else {
+            // Unexpected token
+            ctx.error(stream, DiagCode::E1008, stream.peekValue(), "',' or ')'");
             synchronizeTo(stream, ctx, {TokenType::RPAREN});
+            if (stream.check(TokenType::RPAREN)) {
+                stream.advance(); // Consume ')' and exit
+            }
             break;
         }
+    }
+    
+    // ─── Check if we exited because of EOF ──────────────────────────────
+    if (stream.isAtEnd()) {
+        ctx.error(stream, DiagCode::E1005, ")", "argument list", "<EOF>");
     }
     
     // Build the ArenaSpan
@@ -907,11 +1133,18 @@ ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx) {
  * ## Examples
  * 
  * ```lucid
- * -> int                    → [int]
- * -> (int, bool)            → [int, bool]
+ * -> int                    → [int]          (single type, no parentheses)
+ * -> (int, bool)            → [int, bool]    (multiple types, parentheses)
  * -> (string, int, float)   → [string, int, float]
- * -> (void)                 → [] (empty)
+ * -> ()                     → []             (void, empty parentheses)
  * ```
+ * 
+ * ## Error Handling
+ * 
+ * - Empty parentheses `()` → void (empty return list)
+ * - Missing type after comma → reports E1009
+ * - Trailing comma `(int, )` → reports E1103
+ * - Missing `)` at EOF → reports E1005
  * 
  * @param stream The token stream for the current file
  * @param ctx The parsing context
@@ -922,26 +1155,32 @@ ArenaSpan<TypeAST*> parseReturnList(TokenStream& stream, ParserContext& ctx) {
     
     std::vector<TypePtr> returnTypes;
     
-    // Check if we have a parenthesized return list
+    // ─── Check if we have a parenthesized return list ────────────────────
     if (stream.check(TokenType::LPAREN)) {
         stream.advance(); // Consume '('
         
-        // Check for empty parentheses (void)
+        // Check for empty parentheses (void): ()
         if (stream.check(TokenType::RPAREN)) {
             stream.advance(); // Consume ')'
             return ctx.arena.makeBuilder<TypePtr>().build();
         }
         
         // Parse types until we hit ')'
-        while (!stream.check(TokenType::RPAREN) && !stream.isAtEnd()) {
+        while (!stream.isAtEnd()) {
             TypePtr type = parseType(stream, ctx);
             if (type) {
                 returnTypes.push_back(type);
             } else {
-                ctx.error(stream.currentLoc(), "Expected type in return list");
+                // Error already reported by parseType, try to recover
+                ctx.error(stream, DiagCode::E1009, "type in return list", stream.peekValue());
                 synchronizeTo(stream, ctx, {TokenType::COMMA, TokenType::RPAREN});
                 if (stream.check(TokenType::COMMA)) {
                     stream.advance();
+                } else if (stream.check(TokenType::RPAREN)) {
+                    stream.advance(); // Consume ')' and exit
+                    break;
+                } else {
+                    break;
                 }
                 continue;
             }
@@ -949,27 +1188,49 @@ ArenaSpan<TypeAST*> parseReturnList(TokenStream& stream, ParserContext& ctx) {
             // Check for comma separator
             if (stream.check(TokenType::COMMA)) {
                 stream.advance(); // Consume comma
-            } else if (!stream.check(TokenType::RPAREN)) {
-                ctx.error(stream.currentLoc(), "Expected ',' or ')' in return list");
+                
+                // Check for trailing comma: (int, string, )
+                if (stream.check(TokenType::RPAREN)) {
+                    ctx.error(stream, DiagCode::E1103); // Unexpected trailing comma
+                    stream.advance(); // Consume ')'
+                    break;
+                }
+                
+                // Check if we're at EOF after comma
+                if (stream.isAtEnd()) {
+                    ctx.error(stream, DiagCode::E1005, ")", "return list", "<EOF>");
+                    break;
+                }
+                
+                // Continue to parse next type
+            } else if (stream.check(TokenType::RPAREN)) {
+                // End of return list
+                stream.advance(); // Consume ')'
+                break;
+            } else {
+                // Unexpected token
+                ctx.error(stream, DiagCode::E1008, stream.peekValue(), "',' or ')'");
                 synchronizeTo(stream, ctx, {TokenType::RPAREN});
+                if (stream.check(TokenType::RPAREN)) {
+                    stream.advance(); // Consume ')' and exit
+                }
                 break;
             }
         }
         
-        // Expect ')' to close the return list
-        if (!stream.check(TokenType::RPAREN)) {
-            ctx.error(stream.currentLoc(), "Expected ')' to close return list");
-            synchronizeTo(stream, ctx, {TokenType::RPAREN});
-        } else {
-            stream.advance(); // Consume ')'
+        // ─── Check if we exited because of EOF ──────────────────────────
+        if (stream.isAtEnd()) {
+            ctx.error(stream, DiagCode::E1005, ")", "return list", "<EOF>");
         }
+        
     } else {
-        // Single return type (no parentheses)
+        // ─── Single return type (no parentheses) ──────────────────────────
         TypePtr type = parseType(stream, ctx);
         if (type) {
             returnTypes.push_back(type);
         } else {
-            ctx.error(stream.currentLoc(), "Expected return type");
+            ctx.error(stream, DiagCode::E1009, "return type", stream.peekValue());
+            synchronize(stream, ctx);
         }
     }
     
@@ -982,136 +1243,6 @@ ArenaSpan<TypeAST*> parseReturnList(TokenStream& stream, ParserContext& ctx) {
     LOG_PARSER_DETAIL("parseReturnList: parsed ", returnTypes.size(), " return types");
     
     return builder.build();
-}
-
-// =============================================================================
-// parseParamList - Parse a list of function parameters
-// =============================================================================
-
-/**
- * @brief Parse a list of function parameters.
- * 
- * Grammar: `param { ',' param } [ ',' variadic_param ] | variadic_param`
- * 
- * ## Parameter Forms
- * 
- * - `IDENTIFIER type`                   → pass by value
- * - `const IDENTIFIER type`             → read-only reference parameter
- * - `IDENTIFIER ... type`               → variadic parameter (must be last)
- * 
- * ## Examples
- * 
- * ```lucid
- * (a int, b int)                       → [a: int, b: int]
- * (name string, age int)               → [name: string, age: int]
- * (nums ...int)                        → [nums: ...int] (variadic)
- * (const v Vector2)                    → [v: const Vector2] (read-only ref)
- * (a int, b int, rest ...string)       → [a: int, b: int, rest: ...string]
- * ```
- * 
- * @param stream The token stream for the current file
- * @param ctx The parsing context
- * @return std::vector<ParamPtr> The parsed parameters
- */
-std::vector<ParamPtr> parseParamList(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER_DETAIL("parseParamList: parsing parameter list");
-    
-    std::vector<ParamPtr> params;
-    
-    // Expect '(' to start the parameter list
-    if (!stream.check(TokenType::LPAREN)) {
-        ctx.error(stream.currentLoc(), "Expected '(' for parameter list");
-        return params;
-    }
-    stream.advance(); // Consume '('
-    
-    // Check for empty parameter list
-    if (stream.check(TokenType::RPAREN)) {
-        stream.advance(); // Consume ')'
-        return params;
-    }
-    
-    // Parse parameters until we hit ')'
-    bool hasVariadic = false;
-    
-    while (!stream.check(TokenType::RPAREN) && !stream.isAtEnd()) {
-        SourceLocation loc = stream.currentLoc();
-        
-        // ─── 1. Check for 'const' modifier ──────────────────────────────
-        bool isConst = stream.match(TokenType::CONST);
-        
-        // ─── 2. Parse parameter name ─────────────────────────────────────
-        if (!stream.check(TokenType::IDENTIFIER)) {
-            ctx.error(loc, "Expected parameter name");
-            synchronizeTo(stream, ctx, {TokenType::COMMA, TokenType::RPAREN});
-            if (stream.check(TokenType::COMMA)) {
-                stream.advance();
-            }
-            continue;
-        }
-        
-        Token nameTok = stream.advance();
-        InternedString name = ctx.pool.intern(nameTok.value);
-        
-        // ─── 3. Check for variadic modifier ─────────────────────────────
-        bool isVariadic = stream.match(TokenType::VARIADIC);
-        
-        if (isVariadic && hasVariadic) {
-            ctx.error(loc, "Only one variadic parameter allowed per parameter group");
-            synchronizeTo(stream, ctx, {TokenType::RPAREN});
-            break;
-        }
-        
-        // ─── 4. Parse parameter type ─────────────────────────────────────
-        TypePtr type = parseType(stream, ctx);
-        if (!type) {
-            ctx.error(stream.currentLoc(), "Expected parameter type");
-            synchronizeTo(stream, ctx, {TokenType::COMMA, TokenType::RPAREN});
-            if (stream.check(TokenType::COMMA)) {
-                stream.advance();
-            }
-            continue;
-        }
-        
-        // ─── 5. Create the parameter node ────────────────────────────────
-        auto* param = ctx.arena.make<ParamAST>();
-        param->loc = loc;
-        param->name = name;
-        param->type = type;
-        param->isConst = isConst;
-        param->isVariadic = isVariadic;
-        params.push_back(param);
-        
-        if (isVariadic) {
-            hasVariadic = true;
-        }
-        
-        // ─── 6. Check for comma separator ───────────────────────────────
-        if (stream.check(TokenType::COMMA)) {
-            if (hasVariadic) {
-                ctx.error(stream.currentLoc(), "Variadic parameter must be the last parameter");
-                synchronizeTo(stream, ctx, {TokenType::RPAREN});
-                break;
-            }
-            stream.advance(); // Consume comma
-        } else if (!stream.check(TokenType::RPAREN)) {
-            ctx.error(stream.currentLoc(), "Expected ',' or ')' in parameter list");
-            synchronizeTo(stream, ctx, {TokenType::RPAREN});
-            break;
-        }
-    }
-    
-    // Expect ')' to close the parameter list
-    if (!stream.check(TokenType::RPAREN)) {
-        ctx.error(stream.currentLoc(), "Expected ')' to close parameter list");
-        synchronizeTo(stream, ctx, {TokenType::RPAREN});
-    } else {
-        stream.advance(); // Consume ')'
-    }
-    
-    LOG_PARSER_DETAIL("parseParamList: parsed ", params.size(), " parameters");
-    
-    return params;
 }
 
 // =============================================================================
