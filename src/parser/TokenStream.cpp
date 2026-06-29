@@ -158,20 +158,6 @@ bool TokenStream::check(TokenType type) const {
 }
 
 /**
- * @brief Check if the current token matches any of the given types.
- * 
- * @param types A list of token types to check against.
- * @return true if the current token matches any of the given types.
- */
-bool TokenStream::checkAny(std::initializer_list<TokenType> types) const {
-    TokenType current = peek().type;
-    for (auto t : types) {
-        if (current == t) return true;
-    }
-    return false;
-}
-
-/**
  * @brief If the current token matches the given type, consume and return it.
  * 
  * This is a convenient combination of `check()` and `advance()`.

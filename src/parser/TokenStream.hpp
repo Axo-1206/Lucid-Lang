@@ -46,8 +46,32 @@ struct TokenStream {
     /** @brief Check if the current token is of the given type. */
     bool check(TokenType type) const;
     
-    /** @brief Check if the current token matches any of the given types. */
-    bool checkAny(std::initializer_list<TokenType> types) const;
+    /**
+    * @brief Check if the current token matches any of the given types.
+    * 
+    * @tparam Types The token types to check against (variadic)
+    * @param types The token types to check against
+    * @return true if the current token matches any of the given types
+    * 
+    * ## Usage Examples
+    * 
+    * ```cpp
+    * // Check against two types
+    * if (stream.checkAny(TokenType::LET, TokenType::CONST)) { ... }
+    * 
+    * // Check against multiple types
+    * if (stream.checkAny(TokenType::STRUCT, TokenType::ENUM, TokenType::TRAIT)) { ... }
+    * 
+    * // Check against a single type
+    * if (stream.checkAny(TokenType::IDENTIFIER)) { ... }
+    * ```
+    */
+    template<typename... Types>
+    bool checkAny(Types... types) {
+        TokenType current = peek().type;
+        // Use a fold expression (C++17) or manual expansion (C++11/14)
+        return ((types == current) || ...);
+    }
     
     /** @brief If the current token matches, consume and return it. */
     bool match(TokenType type);
