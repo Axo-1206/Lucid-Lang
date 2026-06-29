@@ -3446,8 +3446,8 @@ attr_arg        = STRING_LIT | INT_LIT | FLOAT_LIT | BOOL_LIT | IDENTIFIER
 Intrinsics are direct calls into the language processor's backend — a layer shared
 between the interpreter and the compiler. They exist because some operations cannot
 be expressed as ordinary Lucid functions: querying a type's memory layout, emitting
-a specific hardware instruction, performing atomic operations, or crossing the safe
-memory boundary all require the language processor itself to handle the call.
+a specific hardware instruction, performing atomic operations, or managing memory
+all require the language processor itself to handle the call.
 
 Unlike a standard library function, an intrinsic has no Lucid body. The language
 processor resolves it entirely — the interpreter executes a built-in implementation,
@@ -3459,45 +3459,168 @@ This gives Lucid a clean two-layer model:
 
 - **Lucid code** — safe, expressive, high-level logic. The language processor
   handles memory safety, type checking, and abstractions.
-- **Intrinsics** — direct hardware access, zero overhead, no safety guarantees.
-  You opted in explicitly with `#`.
+- **Intrinsics** — direct hardware and memory access, zero overhead. You opted
+  in explicitly with `#`.
 
 > [!NOTE]
 > The `#` prefix is intentional: it signals to the reader that this call steps
 > outside what ordinary Lucid code can do. If you see `#`, the language processor
-> is doing something on your behalf that you could not write yourself. A `#` in a
-> hot loop is a performance tool; a `#` outside one is a code smell worth
-> questioning.
+> is doing something on your behalf that you could not write yourself.
 
 ```ebnf
-intrinsic_call  = '#' IDENTIFIER '(' [ intrinsic_arg_list ] ')'
-
+intrinsic_call     = '#' IDENTIFIER '(' [ intrinsic_arg_list ] ')'
 intrinsic_arg_list = intrinsic_arg { ',' intrinsic_arg }
-
-intrinsic_arg   = expr
-                | type
+intrinsic_arg      = expr | type
 ```
 
-#### Compile-Time Type Queries
+---
 
-Resolved entirely at compile time (or interpreter load time). The result is always
-a constant — no runtime cost.
+#### Type & Value Inspection
 
-| Intrinsic     | Returns  | Notes                                              |
-| ------------- | -------- | -------------------------------------------------- |
-| `#sizeof(T)`  | `uint64` | Byte size of type T — compile-time constant        |
-| `#alignof(T)` | `uint64` | Alignment requirement of T — compile-time constant |
+Available everywhere — these are read-only observations and carry no safety
+concern. They do not manipulate memory, dereference pointers, or escape any
+safety boundary.
+
+| Intrinsic     | Returns  | Notes                                                                                                                                                                          |
+| ------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `#tostr(x)`   | `string` | Human-readable value. Primitives and enums by value; structs as `Name{ field: value, ... }`; functions as their declared name. Calls the `str` field if the struct defines one |
+| `#typeof(x)`  | `string` | For any value: its type name. For function types: full signature e.g. `(int, string) -> bool`                                                                                  |
+| `#nameof(x)`  | `string` | The declared name of `x` at the call site — variable name, function name, or field name. Resolved entirely at compile time                                                     |
+| `#ptrstr(x)`  | `string` | Memory address of `x` as a hex string e.g. `"0x7ffd91a2"`. Read-only, the address itself is not manipulable                                                                    |
+| `#addrof(x)`  | `*T`     | Raw memory address of `x`. The pointer is inert until passed to an intrinsic that acts on it                                                                                   |
+| `#sizeof(T)`  | `uint64` | Byte size of type `T` — compile-time constant                                                                                                                                  |
+| `#alignof(T)` | `uint64` | Alignment requirement of `T` — compile-time constant                                                                                                                           |
 
 ```lucid
-const size  uint64 = #sizeof(Vertex)
-const align uint64 = #alignof(Vec2)
+-- Generic logger: works on any type T
+const Log<T> (prefix string, values ...T) = {
+    for v in values {
+        io:printl(prefix ++ ": " ++ #tostr(v))
+    }
+}
+
+-- Inspecting a function
+const add (a int, b int) -> int = a + b
+
+io:printl(#nameof(add))   -- "add"
+io:printl(#typeof(add))   -- "(int, int) -> int"
+io:printl(#ptrstr(add))   -- "0x7ffd91a2"
+
+-- Struct with custom str field — #tostr calls it automatically
+struct Point = {
+    x float
+    y float
+    const str () -> string = { return "(" ++ #tostr(x) ++ ", " ++ #tostr(y) ++ ")" }
+}
+
+const p Point = Point{ x: 1.5, y: 3.0 }
+io:printl(#tostr(p))      -- "(1.5, 3.0)"
+io:printl(#typeof(p))     -- "Point"
+io:printl(#nameof(p))     -- "p"
 ```
+
+> [!NOTE]
+> `#nameof` reads the source name at the call site, never the runtime value.
+> `#addrof` returns a `*T` — the pointer is inert on its own. To act on it you
+> must pass it to a pointer intrinsic, which is where the safety boundary sits.
+
+---
+
+#### String Operations
+
+Strings in Lucid are immutable UTF-8 sequences managed by the language processor.
+These intrinsics expose low-level string operations the standard library builds on.
+
+| Intrinsic                 | Args                         | Returns  | Notes                                                                            |
+| ------------------------- | ---------------------------- | -------- | -------------------------------------------------------------------------------- |
+| `#str_len(s)`             | `string`                     | `uint64` | Byte length of the string (not codepoint count)                                  |
+| `#str_ptr(s)`             | `string`                     | `*uint8` | Pointer to the raw UTF-8 bytes — read-only                                       |
+| `#str_from_ptr(ptr, len)` | `*uint8`, `uint64`           | `string` | Construct a string from raw bytes; language processor copies and validates UTF-8 |
+| `#str_concat(a, b)`       | `string`, `string`           | `string` | Concatenate two strings; language processor manages the allocation               |
+| `#str_slice(s, from, to)` | `string`, `uint64`, `uint64` | `string` | Byte-range slice; language processor validates bounds and UTF-8 boundaries       |
+| `#str_eq(a, b)`           | `string`, `string`           | `bool`   | Byte-exact equality                                                              |
+| `#str_byte_at(s, i)`      | `string`, `uint64`           | `uint8`  | Raw byte at position i                                                           |
+
+```lucid
+const greet string = "Hello, world!"
+
+io:printl(#tostr(#str_len(greet)))         -- "13"
+io:printl(#tostr(#str_byte_at(greet, 0)))  -- "72"  (ASCII 'H')
+
+-- Build a string from a raw byte buffer received via foreign function
+@[foreign("C")] const get_buf (out *uint8, len *uint64) = {}
+
+let buf  *uint8 = #alloc(256)
+let size uint64 = 0
+get_buf(buf, #addrof(size))
+const result string = #str_from_ptr(buf, size)
+#free(buf)
+```
+
+> [!NOTE]
+> The `++` operator in Lucid desugars to `#str_concat`. Prefer `++` in ordinary
+> code; use `#str_concat` only when building strings in generic or low-level
+> contexts where the operator is not available.
+
+---
+
+#### Memory Management
+
+Lucid manages memory across three regions:
+
+- **Static** — non-nullable, non-fallible values with program lifetime. The
+  language processor allocates these once. `#free` and `#alloc` are illegal on them.
+- **Nullable / Fallible slots** — `T?` and `T!` values. The language processor
+  allocates a tagged slot `[ tag: 1 byte | value: sizeof(T) bytes ]` per
+  declaration and frees it when it goes out of scope. Fully automatic, not
+  user-visible.
+- **Explicit pointer heap** — `*T` values. The user manages these via `#alloc`
+  and `#free`, mediated by the language processor which tracks allocation state
+  to prevent double-free and null-free.
+
+For performance-critical or bulk-allocation patterns, use an **arena** — allocate
+into a named region and free the whole region at once. Individual slots inside an
+arena are never freed separately.
+
+| Intrinsic                   | Args                     | Returns  | Notes                                                                           |
+| --------------------------- | ------------------------ | -------- | ------------------------------------------------------------------------------- |
+| `#alloc(T, count)`          | type, `uint64`           | `*T`     | Allocate `count` elements of type `T`; language processor tracks the allocation |
+| `#free(ptr)`                | `*T`                     | —        | Free a `#alloc`-ed pointer; language processor checks for double-free and null  |
+| `#arena_create(size)`       | `uint64`                 | `*Arena` | Create an arena with an initial byte capacity                                   |
+| `#arena_alloc(arena, T, n)` | `*Arena`, type, `uint64` | `*T`     | Allocate `n` elements of type `T` from the arena                                |
+| `#arena_reset(arena)`       | `*Arena`                 | —        | Release all arena allocations; the arena itself remains usable                  |
+| `#arena_free(arena)`        | `*Arena`                 | —        | Destroy the arena and all allocations within it                                 |
+
+```lucid
+-- Explicit heap allocation
+const buf *uint8 = #alloc(uint8, 1024)
+#memset(buf, 0, 1024)
+-- ... use buf ...
+#free(buf)   -- language processor verifies this is the first and only free
+
+-- Arena allocation: bulk allocate, bulk free
+const arena *Arena   = #arena_create(4096)
+const nodes *Node    = #arena_alloc(arena, Node, 128)
+const edges *Edge    = #arena_alloc(arena, Edge, 256)
+
+-- ... build a graph using nodes and edges ...
+
+#arena_free(arena)   -- frees nodes, edges, and the arena in one call
+                     -- no double-free possible at the individual level
+```
+
+> [!NOTE]
+> Dynamic arrays `[*]T` in ordinary Lucid code are managed automatically by the
+> language processor using scope-based cleanup — you do not call `#alloc` or
+> `#free` for them. These intrinsics are for explicit pointer management and
+> interop with foreign functions that expect raw allocations.
+
+---
 
 #### Floating-Point Math
 
 Maps directly to hardware floating-point instructions (e.g. `FSQRT`, `FMADD` on
-modern ISAs). Faster and more precise than a software implementation in the
-standard library.
+modern ISAs). Faster and more precise than a software implementation.
 
 | Intrinsic         | Args         | Returns | Notes                                 |
 | ----------------- | ------------ | ------- | ------------------------------------- |
@@ -3514,8 +3637,10 @@ standard library.
 ```lucid
 const hyp     float = #sqrt(x*x + y*y)
 const rounded float = #round(value)
-const maxVal  int   = #min(a, b)
+const clamped float = #max(0.0, #min(1.0, value))
 ```
+
+---
 
 #### Bit Manipulation (Integer Types Only)
 
@@ -3536,30 +3661,32 @@ const bits     uint32 = #popcount(mask)
 const swapped  uint32 = #bswap(networkOrder)
 ```
 
+---
+
 #### SIMD / Vector
 
 Operate on fixed-width vector registers (e.g. SSE/AVX on x86-64, NEON on ARM).
 Write scalar Lucid logic for clarity; drop to SIMD explicitly in hot loops for
 throughput. The type `vec<T, N>` represents an N-wide vector of element type `T`.
 
-| Intrinsic                   | Args                   | Returns    | Notes                              |
-| --------------------------- | ---------------------- | ---------- | ---------------------------------- |
-| `#simd_load(ptr)`           | `ptr<T>`               | `vec<T,N>` | Load N elements from memory        |
-| `#simd_store(ptr, v)`       | `ptr<T>`, `vec<T,N>`   | `void`     | Store N elements to memory         |
-| `#simd_add(a, b)`           | `vec<T,N>`, `vec<T,N>` | `vec<T,N>` | Lane-wise addition                 |
-| `#simd_sub(a, b)`           | `vec<T,N>`, `vec<T,N>` | `vec<T,N>` | Lane-wise subtraction              |
-| `#simd_mul(a, b)`           | `vec<T,N>`, `vec<T,N>` | `vec<T,N>` | Lane-wise multiplication           |
-| `#simd_div(a, b)`           | `vec<T,N>`, `vec<T,N>` | `vec<T,N>` | Lane-wise division                 |
-| `#simd_fma(a, b, c)`        | `vec<T,N>` × 3         | `vec<T,N>` | Lane-wise fused multiply-add       |
-| `#simd_min(a, b)`           | `vec<T,N>`, `vec<T,N>` | `vec<T,N>` | Lane-wise minimum                  |
-| `#simd_max(a, b)`           | `vec<T,N>`, `vec<T,N>` | `vec<T,N>` | Lane-wise maximum                  |
-| `#simd_splat(T, N, scalar)` | type, int, `T`         | `vec<T,N>` | Broadcast scalar to all lanes      |
-| `#simd_extract(v, i)`       | `vec<T,N>`, int        | `T`        | Extract lane i                     |
-| `#simd_insert(v, i, x)`     | `vec<T,N>`, int, `T`   | `vec<T,N>` | Return v with lane i replaced by x |
+| Intrinsic                   | Args                 | Returns    | Notes                              |
+| --------------------------- | -------------------- | ---------- | ---------------------------------- |
+| `#simd_load(ptr)`           | `*T`                 | `vec<T,N>` | Load N elements from memory        |
+| `#simd_store(ptr, v)`       | `*T`, `vec<T,N>`     | —          | Store N elements to memory         |
+| `#simd_add(a, b)`           | `vec<T,N>` × 2       | `vec<T,N>` | Lane-wise addition                 |
+| `#simd_sub(a, b)`           | `vec<T,N>` × 2       | `vec<T,N>` | Lane-wise subtraction              |
+| `#simd_mul(a, b)`           | `vec<T,N>` × 2       | `vec<T,N>` | Lane-wise multiplication           |
+| `#simd_div(a, b)`           | `vec<T,N>` × 2       | `vec<T,N>` | Lane-wise division                 |
+| `#simd_fma(a, b, c)`        | `vec<T,N>` × 3       | `vec<T,N>` | Lane-wise fused multiply-add       |
+| `#simd_min(a, b)`           | `vec<T,N>` × 2       | `vec<T,N>` | Lane-wise minimum                  |
+| `#simd_max(a, b)`           | `vec<T,N>` × 2       | `vec<T,N>` | Lane-wise maximum                  |
+| `#simd_splat(T, N, scalar)` | type, int, `T`       | `vec<T,N>` | Broadcast scalar to all lanes      |
+| `#simd_extract(v, i)`       | `vec<T,N>`, int      | `T`        | Extract lane i                     |
+| `#simd_insert(v, i, x)`     | `vec<T,N>`, int, `T` | `vec<T,N>` | Return v with lane i replaced by x |
 
 ```lucid
 -- Sum an array of floats using 4-wide SIMD
-const sumFloats (data ptr<float32>, len uint64) -> float32 = {
+const sumFloats (data *float32, len uint64) -> float32 = {
     let acc vec<float32, 4> = #simd_splat(float32, 4, 0.0)
     let i   uint64          = 0
 
@@ -3569,14 +3696,12 @@ const sumFloats (data ptr<float32>, len uint64) -> float32 = {
         i = i + 4
     }
 
-    -- Horizontal reduce the 4 lanes
-    const a float32 = #simd_extract(acc, 0)
-    const b float32 = #simd_extract(acc, 1)
-    const c float32 = #simd_extract(acc, 2)
-    const d float32 = #simd_extract(acc, 3)
-    return a + b + c + d
+    return #simd_extract(acc, 0) + #simd_extract(acc, 1)
+         + #simd_extract(acc, 2) + #simd_extract(acc, 3)
 }
 ```
+
+---
 
 #### Atomics
 
@@ -3589,39 +3714,40 @@ ordering argument.
 | `relaxed` | No synchronization — only atomicity of the operation itself  |
 | `acquire` | Subsequent reads/writes in this thread see prior releases    |
 | `release` | Prior reads/writes in this thread are visible before this op |
-| `acq_rel` | Both acquire and release (read-modify-write operations)      |
+| `acq_rel` | Both acquire and release — for read-modify-write operations  |
 | `seq_cst` | Total sequential consistency across all threads              |
 
-| Intrinsic                         | Args                         | Returns | Notes                                     |
-| --------------------------------- | ---------------------------- | ------- | ----------------------------------------- |
-| `#atomic_load(ptr, ord)`          | `ptr<T>`, ordering           | `T`     | Atomic read                               |
-| `#atomic_store(ptr, val, ord)`    | `ptr<T>`, `T`, ordering      | `void`  | Atomic write                              |
-| `#atomic_add(ptr, val, ord)`      | `ptr<T>`, `T`, ordering      | `T`     | Fetch-and-add; returns previous value     |
-| `#atomic_sub(ptr, val, ord)`      | `ptr<T>`, `T`, ordering      | `T`     | Fetch-and-sub; returns previous value     |
-| `#atomic_and(ptr, val, ord)`      | `ptr<T>`, `T`, ordering      | `T`     | Fetch-and-and; returns previous value     |
-| `#atomic_or(ptr, val, ord)`       | `ptr<T>`, `T`, ordering      | `T`     | Fetch-and-or; returns previous value      |
-| `#atomic_xor(ptr, val, ord)`      | `ptr<T>`, `T`, ordering      | `T`     | Fetch-and-xor; returns previous value     |
-| `#atomic_cas(ptr, exp, val, ord)` | `ptr<T>`, `T`, `T`, ordering | `bool`  | Compare-and-swap; returns true if swapped |
+| Intrinsic                         | Args                     | Returns | Notes                                     |
+| --------------------------------- | ------------------------ | ------- | ----------------------------------------- |
+| `#atomic_load(ptr, ord)`          | `*T`, ordering           | `T`     | Atomic read                               |
+| `#atomic_store(ptr, val, ord)`    | `*T`, `T`, ordering      | —       | Atomic write                              |
+| `#atomic_add(ptr, val, ord)`      | `*T`, `T`, ordering      | `T`     | Fetch-and-add; returns previous value     |
+| `#atomic_sub(ptr, val, ord)`      | `*T`, `T`, ordering      | `T`     | Fetch-and-sub; returns previous value     |
+| `#atomic_and(ptr, val, ord)`      | `*T`, `T`, ordering      | `T`     | Fetch-and-and; returns previous value     |
+| `#atomic_or(ptr, val, ord)`       | `*T`, `T`, ordering      | `T`     | Fetch-and-or; returns previous value      |
+| `#atomic_xor(ptr, val, ord)`      | `*T`, `T`, ordering      | `T`     | Fetch-and-xor; returns previous value     |
+| `#atomic_cas(ptr, exp, val, ord)` | `*T`, `T`, `T`, ordering | `bool`  | Compare-and-swap; returns true if swapped |
 
 ```lucid
--- Lock-free reference counter increment
-const retain (refcount ptr<uint32>) -> void = {
+-- Lock-free reference counter
+const retain (refcount *uint32) = {
     #atomic_add(refcount, 1, relaxed)
 }
 
--- Lock-free reference counter decrement; returns true when count hits zero
-const release (refcount ptr<uint32>) -> bool = {
+const release (refcount *uint32) -> bool = {
     const prev uint32 = #atomic_sub(refcount, 1, acq_rel)
-    return prev == 1
+    return prev == 1   -- true means count hit zero
 }
 
--- Compare-and-swap loop (spin until success)
-const claimSlot (flag ptr<uint32>) -> void = {
+-- CAS spin loop
+const claimSlot (flag *uint32) = {
     while not #atomic_cas(flag, 0, 1, acq_rel) {
         #pause()
     }
 }
 ```
+
+---
 
 #### CPU Hints
 
@@ -3631,21 +3757,19 @@ the hint has no equivalent instruction.
 
 | Intrinsic          | Args     | Returns | Notes                                              |
 | ------------------ | -------- | ------- | -------------------------------------------------- |
-| `#prefetch(ptr)`   | `ptr<T>` | `void`  | Hint CPU to load cache line into L1                |
-| `#prefetch_w(ptr)` | `ptr<T>` | `void`  | Prefetch for write                                 |
-| `#fence(ord)`      | ordering | `void`  | Explicit memory barrier                            |
-| `#pause()`         | —        | `void`  | Spin-wait hint; reduces power in busy-wait loops   |
+| `#prefetch(ptr)`   | `*T`     | —       | Hint CPU to load cache line into L1                |
+| `#prefetch_w(ptr)` | `*T`     | —       | Prefetch for write                                 |
+| `#fence(ord)`      | ordering | —       | Explicit memory barrier                            |
+| `#pause()`         | —        | —       | Spin-wait hint; reduces power in busy-wait loops   |
 | `#likely(expr)`    | `bool`   | `bool`  | Hint that expr is usually true (branch prediction) |
 | `#unlikely(expr)`  | `bool`   | `bool`  | Hint that expr is usually false                    |
 
 ```lucid
--- Prefetch the next element while processing the current one
 for i uint64 in 0..len {
-    #prefetch(#ptrOffset(data, i + 8))
+    #prefetch(#ptrOffset(data, i + 8))   -- prefetch ahead
     process(data[i])
 }
 
--- Branch prediction hints in a hot path
 if #likely(cache_hit) {
     return cached
 } else {
@@ -3653,51 +3777,58 @@ if #likely(cache_hit) {
 }
 ```
 
-#### Memory Operations
+---
 
-Operate directly on raw memory. Required for bulk data movement at the lowest
-level. All memory intrinsics operate on raw pointers (`ptr<T>`) and are only
-valid inside `@[foreign("C")]`-decorated functions or other intrinsic calls.
+#### Raw Memory Operations
 
-| Intrinsic                 | Args               | Returns | Notes                        |
-| ------------------------- | ------------------ | ------- | ---------------------------- |
-| `#memcpy(dst, src, len)`  | ptr, ptr, uint64   | `void`  | Copy bytes — no overlap      |
-| `#memmove(dst, src, len)` | ptr, ptr, uint64   | `void`  | Copy bytes — handles overlap |
-| `#memset(dst, val, len)`  | ptr, ubyte, uint64 | `void`  | Fill bytes with value        |
+Bulk memory operations on raw pointers. Used primarily in interop with foreign
+functions or when building low-level data structures.
+
+| Intrinsic                 | Args                    | Returns | Notes                                          |
+| ------------------------- | ----------------------- | ------- | ---------------------------------------------- |
+| `#memcpy(dst, src, len)`  | `*T`, `*T`, `uint64`    | —       | Copy `len` bytes — regions must not overlap    |
+| `#memmove(dst, src, len)` | `*T`, `*T`, `uint64`    | —       | Copy `len` bytes — handles overlapping regions |
+| `#memset(dst, val, len)`  | `*T`, `uint8`, `uint64` | —       | Fill `len` bytes with `val`                    |
 
 ```lucid
-#memcpy(dest, src, #sizeof(Buffer))
-#memset(ptr, 0, size)
+const dst *uint8 = #alloc(uint8, #sizeof(Buffer))
+#memcpy(dst, src, #sizeof(Buffer))
+#memset(dst, 0, #sizeof(Buffer))
+#free(dst)
 ```
+
+---
 
 #### Pointer Operations
 
-The only way to cross the sealed conduit boundary or perform pointer arithmetic.
+Cross the safe/pointer boundary or perform pointer arithmetic. All pointer
+operations go through intrinsics — there is no implicit pointer arithmetic or
+automatic dereference.
 
-| Intrinsic            | Args               | Returns  | Notes                                 |
-| -------------------- | ------------------ | -------- | ------------------------------------- |
-| `#toRef(ptr)`        | `ptr<T>`           | `&T`     | Assert valid, cross to safe reference |
-| `#toPtr(ref)`        | `&T`               | `ptr<T>` | Convert reference to raw pointer      |
-| `#ptrOffset(ptr, n)` | `ptr<T>`, int      | `ptr<T>` | Pointer arithmetic (element offset)   |
-| `#ptrDiff(p1, p2)`   | `ptr<T>`, `ptr<T>` | `int64`  | Distance between pointers in elements |
+| Intrinsic            | Args          | Returns | Notes                                           |
+| -------------------- | ------------- | ------- | ----------------------------------------------- |
+| `#toRef(ptr)`        | `*T`          | `&T`    | Assert non-null and convert to a safe reference |
+| `#toPtr(ref)`        | `&T`          | `*T`    | Convert a safe reference to a raw pointer       |
+| `#ptrOffset(ptr, n)` | `*T`, `int64` | `*T`    | Advance pointer by n elements                   |
+| `#ptrDiff(p1, p2)`   | `*T`, `*T`    | `int64` | Distance between two pointers in elements       |
 
 ```lucid
-const buf  ptr<uint8> = malloc(1024)
-let ref  &uint8       = #toRef(buf)
+const buf  *uint8 = #alloc(uint8, 1024)
+const ref  &uint8 = #toRef(buf)       -- assert non-null, enter safe world
 ref = 0xFF
 
-const next     ptr<uint8> = #ptrOffset(buf, 1)
-const distance int64      = #ptrDiff(next, buf)
+const next     *uint8 = #ptrOffset(buf, 1)
+const distance int64  = #ptrDiff(next, buf)   -- 1
+#free(buf)
 ```
 
-#### Unsafe / Bit Reinterpretation
+---
 
-| Intrinsic        | Args        | Returns | Notes                                             |
-| ---------------- | ----------- | ------- | ------------------------------------------------- |
-| `#bitcast(T, x)` | type, value | `T`     | Reinterpret bits of x as type T; sizes must match |
+#### Bit Reinterpretation
 
-Valid only inside `@[foreign("C")]`-decorated functions or when the language flag
-`--unsafe` is enabled.
+| Intrinsic        | Args        | Returns | Notes                                                                       |
+| ---------------- | ----------- | ------- | --------------------------------------------------------------------------- |
+| `#bitcast(T, x)` | type, value | `T`     | Reinterpret the bits of `x` as type `T`. Both types must have the same size |
 
 ```lucid
 const bits uint32  = 0x3F800000
