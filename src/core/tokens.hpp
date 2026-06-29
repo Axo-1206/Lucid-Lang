@@ -226,14 +226,148 @@ struct Token {
     bool is_operator() const;
     bool is_literal() const;
     bool is_keyword() const;
+    bool is_primitive_type() const;
+    bool is_integer_type() const;
+    bool is_float_type() const;
+    bool is_numeric_type() const;
+    bool is_control_flow() const;
+    bool is_declaration_keyword() const;
+    bool is_concurrency_keyword() const;
+    bool is_type_keyword() const;
     std::string to_string() const;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Token Utility Functions (implementation)
+// Token Category Functions (Global, No Parser Dependency)
 // ─────────────────────────────────────────────────────────────────────────────
 
-inline bool Token::is_operator() const {
+inline bool is_primitive_type(TokenType type) {
+    switch (type) {
+        case TokenType::TYPE_BOOL:
+        case TokenType::TYPE_INT8:
+        case TokenType::TYPE_INT16:
+        case TokenType::TYPE_INT32:
+        case TokenType::TYPE_INT64:
+        case TokenType::TYPE_UINT8:
+        case TokenType::TYPE_UINT16:
+        case TokenType::TYPE_UINT32:
+        case TokenType::TYPE_UINT64:
+        case TokenType::TYPE_BYTE:
+        case TokenType::TYPE_SHORT:
+        case TokenType::TYPE_INT:
+        case TokenType::TYPE_LONG:
+        case TokenType::TYPE_UBYTE:
+        case TokenType::TYPE_USHORT:
+        case TokenType::TYPE_UINT:
+        case TokenType::TYPE_ULONG:
+        case TokenType::TYPE_FLOAT:
+        case TokenType::TYPE_DOUBLE:
+        case TokenType::TYPE_DECIMAL:
+        case TokenType::TYPE_STRING:
+        case TokenType::TYPE_CHAR:
+            return true;
+        default:
+            return false;
+    }
+}
+
+inline bool is_integer_type(TokenType type) {
+    switch (type) {
+        case TokenType::TYPE_INT8:
+        case TokenType::TYPE_INT16:
+        case TokenType::TYPE_INT32:
+        case TokenType::TYPE_INT64:
+        case TokenType::TYPE_UINT8:
+        case TokenType::TYPE_UINT16:
+        case TokenType::TYPE_UINT32:
+        case TokenType::TYPE_UINT64:
+        case TokenType::TYPE_BYTE:
+        case TokenType::TYPE_SHORT:
+        case TokenType::TYPE_INT:
+        case TokenType::TYPE_LONG:
+        case TokenType::TYPE_UBYTE:
+        case TokenType::TYPE_USHORT:
+        case TokenType::TYPE_UINT:
+        case TokenType::TYPE_ULONG:
+            return true;
+        default:
+            return false;
+    }
+}
+
+inline bool is_float_type(TokenType type) {
+    switch (type) {
+        case TokenType::TYPE_FLOAT:
+        case TokenType::TYPE_DOUBLE:
+        case TokenType::TYPE_DECIMAL:
+            return true;
+        default:
+            return false;
+    }
+}
+
+inline bool is_numeric_type(TokenType type) {
+    return is_integer_type(type) || is_float_type(type);
+}
+
+inline bool is_control_flow(TokenType type) {
+    switch (type) {
+        case TokenType::IF:
+        case TokenType::ELSE:
+        case TokenType::SWITCH:
+        case TokenType::CASE:
+        case TokenType::DEFAULT:
+        case TokenType::WHILE:
+        case TokenType::FOR:
+        case TokenType::IN:
+        case TokenType::DO:
+        case TokenType::RETURN:
+        case TokenType::BREAK:
+        case TokenType::CONTINUE:
+            return true;
+        default:
+            return false;
+    }
+}
+
+inline bool is_declaration_keyword(TokenType type) {
+    switch (type) {
+        case TokenType::LET:
+        case TokenType::CONST:
+        case TokenType::STRUCT:
+        case TokenType::ENUM:
+        case TokenType::TRAIT:
+        case TokenType::USE:
+            return true;
+        default:
+            return false;
+    }
+}
+
+inline bool is_concurrency_keyword(TokenType type) {
+    switch (type) {
+        case TokenType::SPAWN:
+        case TokenType::JOIN:
+        case TokenType::ASYNC:
+        case TokenType::AWAIT:
+            return true;
+        default:
+            return false;
+    }
+}
+
+inline bool is_type_keyword(TokenType type) {
+    switch (type) {
+        case TokenType::STRUCT:
+        case TokenType::ENUM:
+        case TokenType::TRAIT:
+            return true;
+        default:
+            return false;
+    }
+}
+
+inline bool is_operator(TokenType type) {
     switch (type) {
         case TokenType::PLUS:
         case TokenType::MINUS:
@@ -282,7 +416,7 @@ inline bool Token::is_operator() const {
     }
 }
 
-inline bool Token::is_literal() const {
+inline bool is_literal(TokenType type) {
     switch (type) {
         case TokenType::INT_LITERAL:
         case TokenType::FLOAT_LITERAL:
@@ -301,7 +435,7 @@ inline bool Token::is_literal() const {
     }
 }
 
-inline bool Token::is_keyword() const {
+inline bool is_keyword(TokenType type) {
     switch (type) {
         case TokenType::USE:
         case TokenType::AS:
@@ -359,6 +493,52 @@ inline bool Token::is_keyword() const {
         default:
             return false;
     }
+}
+
+// ─── Token Method Implementations ─────────────────────────────────────────
+
+inline bool Token::is_operator() const {
+    return ::is_operator(type);
+}
+
+inline bool Token::is_literal() const {
+    return ::is_literal(type);
+}
+
+inline bool Token::is_keyword() const {
+    return ::is_keyword(type);
+}
+
+inline bool Token::is_primitive_type() const {
+    return ::is_primitive_type(type);
+}
+
+inline bool Token::is_integer_type() const {
+    return ::is_integer_type(type);
+}
+
+inline bool Token::is_float_type() const {
+    return ::is_float_type(type);
+}
+
+inline bool Token::is_numeric_type() const {
+    return ::is_numeric_type(type);
+}
+
+inline bool Token::is_control_flow() const {
+    return ::is_control_flow(type);
+}
+
+inline bool Token::is_declaration_keyword() const {
+    return ::is_declaration_keyword(type);
+}
+
+inline bool Token::is_concurrency_keyword() const {
+    return ::is_concurrency_keyword(type);
+}
+
+inline bool Token::is_type_keyword() const {
+    return ::is_type_keyword(type);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -502,8 +682,7 @@ inline std::string Token::to_string() const {
     result += token_type_name(type);
     result += ", '" + value + "', ";
     result += std::to_string(line);
-    result += ":";
-    result += std::to_string(column);
+    result += ":" + std::to_string(column);
     result += ")";
     return result;
 }
