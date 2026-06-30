@@ -138,7 +138,7 @@ ExprAST* parseComposeExpr(TokenStream& stream, ParserContext& ctx, ExprPtr lhs);
 PipelineStepAST* parsePipelineStep(TokenStream& stream, ParserContext& ctx);
 ComposeOperandAST* parseComposeOperand(TokenStream& stream, ParserContext& ctx);
 
-// ─── Types ────────────────────────────────────────────────────────────────── // X
+// ─── Types ──────────────────────────────────────────────────────────────────
 
 TypeAST* parseType(TokenStream& stream, ParserContext& ctx);
 TypeAST* parseBaseType(TokenStream& stream, ParserContext& ctx);
@@ -173,15 +173,11 @@ ExprPtr parseFuncRef(TokenStream& stream, ParserContext& ctx); // X
 
 // ─── Lookahead Helpers ──────────────────────────────────────────────────── // X
 
-bool isStartOfDeclaration(TokenStream& stream, ParserContext& ctx);
-bool isStartOfStatement(TokenStream& stream, ParserContext& ctx);
-bool isStartOfType(TokenStream& stream, ParserContext& ctx);
-bool looksLikeType(TokenStream& stream, ParserContext& ctx);
 bool looksLikeFuncDecl(TokenStream& stream, ParserContext& ctx);
 bool looksLikeAnonFunc(TokenStream& stream, ParserContext& ctx);
-bool looksLikeStructLiteral(TokenStream& stream, ParserContext& ctx);
 bool looksLikeMultiAssignStart(TokenStream& stream, ParserContext& ctx);
 bool isFunctionTypeAfterParen(TokenStream& stream, ParserContext& ctx, size_t startPos);
+// bool looksLikeStructLiteral(TokenStream& stream, ParserContext& ctx);
 
 // ─── Precedence Helpers ──────────────────────────────────────────────────── // X
 

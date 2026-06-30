@@ -316,16 +316,16 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
             return nullptr;
         }
         
-        ExprPtr expr = parseExpr(stream, ctx);
-        if (expr) {
-            auto* returnStmt = ctx.arena.make<ReturnStmtAST>();
-            returnStmt->expr = expr;
-            body = returnStmt;
-        } else {
-            ctx.error(stream, DiagCode::E1006, stream.peekValue());
-            synchronize(stream, ctx);
-            return nullptr;
-        }
+        // ExprPtr expr = parseExpr(stream, ctx);
+        // if (expr) {
+        //     auto* returnStmt = ctx.arena.make<ReturnStmtAST>();
+        //     returnStmt->expr = expr;
+        //     body = returnStmt;
+        // } else {
+        //     ctx.error(stream, DiagCode::E1006, stream.peekValue());
+        //     synchronize(stream, ctx);
+        //     return nullptr;
+        // }
     }
     
     auto* funcDecl = ctx.arena.make<FuncDeclAST>();

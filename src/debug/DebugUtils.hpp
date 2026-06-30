@@ -40,7 +40,6 @@ inline std::string kindToString(ASTKind kind) {
         case ASTKind::PrimitiveType:    return "PrimitiveType";
         case ASTKind::NamedType:        return "NamedType";
         case ASTKind::ArrayType:        return "ArrayType";
-        case ASTKind::GenericParamRef:  return "GenericParamRef";
         case ASTKind::NullableType:     return "NullableType";
         case ASTKind::FallibleType:     return "FallibleType";
         case ASTKind::CombinedType:     return "CombinedType";
