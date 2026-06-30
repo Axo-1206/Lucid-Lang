@@ -120,10 +120,10 @@ RangeExprAST* parseRangeExpr(TokenStream& stream, ParserContext& ctx, ExprPtr lo
 
 // ─── Concurrency ─────────────────────────────────────────────────────────── // X
 
-AsyncExprAST* parseAsyncExpr(TokenStream& stream, ParserContext& ctx);
-AwaitExprAST* parseAwaitExpr(TokenStream& stream, ParserContext& ctx);
-SpawnExprAST* parseSpawnExpr(TokenStream& stream, ParserContext& ctx);
-JoinExprAST* parseJoinExpr(TokenStream& stream, ParserContext& ctx);
+AsyncStmtAST* parseAsyncStmt(TokenStream& stream, ParserContext& ctx);
+AwaitStmtAST* parseAwaitStmt(TokenStream& stream, ParserContext& ctx);
+SpawnStmtAST* parseSpawnStmt(TokenStream& stream, ParserContext& ctx);
+JoinStmtAST* parseJoinStmt(TokenStream& stream, ParserContext& ctx);
 
 // ─── Call & Index ────────────────────────────────────────────────────────── // X
 

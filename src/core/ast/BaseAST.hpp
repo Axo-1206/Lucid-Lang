@@ -89,10 +89,10 @@ struct IfExprAST;
 struct RangeExprAST;
 
 // Concurrency
-struct AsyncExprAST;
-struct AwaitExprAST;
-struct SpawnExprAST;
-struct JoinExprAST;
+struct AsyncStmtAST;
+struct AwaitStmtAST;
+struct SpawnStmtAST;
+struct JoinStmtAST;
 
 // StmtAST.hpp
 struct BlockStmtAST;

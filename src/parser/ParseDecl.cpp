@@ -252,7 +252,7 @@ VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
 FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
     
-    // Parse keyword (let or const)
+    // ─── 1. Parse keyword (let or const) ──────────────────────────────────
     bool isConst = stream.match(TokenType::CONST);
     if (!isConst) {
         if (!stream.match(TokenType::LET)) {
@@ -262,7 +262,7 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
         }
     }
     
-    // Parse name
+    // ─── 2. Parse function name ──────────────────────────────────────────
     if (!stream.check(TokenType::IDENTIFIER)) {
         ctx.error(stream, DiagCode::E1002, "function name", stream.peekValue());
         synchronize(stream, ctx);
@@ -271,63 +271,72 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     Token nameTok = stream.advance();
     InternedString name = ctx.pool.intern(nameTok.value);
     
-    // Parse generic parameters (optional)
+    // ─── 3. Parse generic parameters (optional) ──────────────────────────
     ArenaSpan<GenericParamDeclPtr> genericParams;
     if (stream.check(TokenType::LESS)) {
         genericParams = parseGenericParamDecls(stream, ctx);
     }
     
-    // Parse parameter groups
-    std::vector<ParamGroup> paramGroups;
-    while (stream.check(TokenType::LPAREN)) {
-        auto params = parseParamList(stream, ctx);
-        paramGroups.push_back(params);
-    }
-    
-    if (paramGroups.empty()) {
-        ctx.error(stream, DiagCode::E1004, "(", "function parameter list", stream.peekValue());
-        synchronize(stream, ctx);
-        return nullptr;
-    }
-    
-    // Build function type (recursive structure)
-    FuncTypeAST* funcType = buildFuncType(stream, ctx, paramGroups);
-    if (!funcType) {
+    // ─── 4. Parse the function type (parameter groups + return types) ────
+    TypeAST* type = parseFuncType(stream, ctx);
+    if (!type) {
         ctx.error(stream, DiagCode::E1003, "function type", stream.peekValue());
         synchronize(stream, ctx);
         return nullptr;
     }
     
-    // Parse body
+    // Ensure it's a function type
+    if (!type->isa<FuncTypeAST>()) {
+        ctx.error(stream, DiagCode::E1003, "function type", stream.peekValue());
+        synchronize(stream, ctx);
+        return nullptr;
+    }
+    FuncTypeAST* funcType = type->as<FuncTypeAST>();
+    
+    // ─── 5. Check for '=' before body ────────────────────────────────────
+    if (!stream.match(TokenType::ASSIGN)) {
+        ctx.error(stream, DiagCode::E1006, stream.peekValue());
+        synchronize(stream, ctx);
+        return nullptr;
+    }
+    
+    // ─── 6. Parse function body ──────────────────────────────────────────
     StmtPtr body = nullptr;
-    if (stream.match(TokenType::LBRACE)) {
+    
+    // Check for block body: { ... }
+    if (stream.check(TokenType::LBRACE)) {
+        stream.advance(); // Consume '{'
         body = parseBlock(stream, ctx);
         if (!stream.check(TokenType::RBRACE)) {
             ctx.error(stream, DiagCode::E1005, "}", "function body", stream.peekValue());
-            synchronize(stream, ctx);
+            synchronizeTo(stream, ctx, TokenType::RBRACE);
+            if (stream.check(TokenType::RBRACE)) {
+                stream.advance(); // Consume '}' to recover
+            }
         } else {
             stream.advance(); // Consume '}'
         }
     } else {
-        // Single-expression body: `= expr`
-        if (!stream.match(TokenType::ASSIGN)) {
-            ctx.error(stream, DiagCode::E1006, stream.peekValue());
+        // Parse expression body
+        ExprPtr expr = parseExpr(stream, ctx);
+        if (!expr) {
+            ctx.error(stream, DiagCode::E1105, stream.peekValue());
             synchronize(stream, ctx);
             return nullptr;
         }
         
-        // ExprPtr expr = parseExpr(stream, ctx);
-        // if (expr) {
-        //     auto* returnStmt = ctx.arena.make<ReturnStmtAST>();
-        //     returnStmt->expr = expr;
-        //     body = returnStmt;
-        // } else {
-        //     ctx.error(stream, DiagCode::E1006, stream.peekValue());
-        //     synchronize(stream, ctx);
-        //     return nullptr;
-        // }
+        // Wrap the expression in a return statement
+        auto* returnStmt = ctx.arena.make<ReturnStmtAST>();
+        returnStmt->loc = expr->loc;
+        
+        auto builder = ctx.arena.makeBuilder<ExprPtr>();
+        builder.push_back(expr);
+        returnStmt->values = builder.build();
+        
+        body = returnStmt;
     }
     
+    // ─── 7. Build the AST node ──────────────────────────────────────────
     auto* funcDecl = ctx.arena.make<FuncDeclAST>();
     funcDecl->loc = loc;
     funcDecl->name = name;
@@ -336,6 +345,7 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     funcDecl->funcType = funcType;
     funcDecl->body = body;
     funcDecl->isConst = isConst;
+    funcDecl->valueType = funcType;
     
     LOG_PARSER_DETAIL("Parsed function declaration: ", ctx.toString(name));
     return funcDecl;
@@ -421,7 +431,7 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
                 if (traitRef) {
                     traitRefs.push_back(traitRef);
                 } else {
-                    ctx.error(stream, DiagCode::E1009, "trait reference", stream.peekValue());
+                    ctx.error(stream, DiagCode::E1003, "trait reference", stream.peekValue());
                     synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::LBRACE);
                     if (stream.check(TokenType::COMMA)) {
                         stream.advance();
@@ -697,7 +707,7 @@ EnumDeclAST* parseEnumDecl(TokenStream& stream, ParserContext& ctx) {
             // Verify it's an integer type
             // TODO: Check that backingType is an integer type
         } else {
-            ctx.error(stream, DiagCode::E1009, "integer type", stream.peekValue());
+            ctx.error(stream, DiagCode::E1003, "integer", stream.peekValue());
             synchronize(stream, ctx);
             return nullptr;
         }
@@ -834,7 +844,7 @@ EnumVariantPtr parseEnumVariant(TokenStream& stream, ParserContext& ctx) {
     if (!stream.check(TokenType::INT_LITERAL) &&
         !stream.check(TokenType::HEX_LITERAL) &&
         !stream.check(TokenType::BINARY_LITERAL)) {
-        ctx.error(stream, DiagCode::E1009, "integer literal", stream.peekValue());
+        ctx.error(stream, DiagCode::E1003, "integer literal", stream.peekValue());
         synchronize(stream, ctx);
         return nullptr;
     }
@@ -1111,62 +1121,6 @@ TraitRefPtr parseTraitRef(TokenStream& stream, ParserContext& ctx) {
                        "' with ", traitRef->genericArgs.size(), " generic args");
     
     return traitRef;
-}
-
-// =============================================================================
-// Helper: buildFuncType - Build a function type from parameter groups
-// =============================================================================
-
-/**
- * @brief Build a function type from parameter groups.
- * 
- * This builds the recursive FuncTypeAST structure for a function declaration.
- * 
- * @param stream The token stream
- * @param ctx The parsing context
- * @param paramGroups The parameter groups
- * @return FuncTypeAST* The built function type, or nullptr on error
- */
-FuncTypeAST* buildFuncType(TokenStream& stream, ParserContext& ctx, 
-                           const std::vector<ParamGroup>& paramGroups) {
-    if (paramGroups.empty()) {
-        return nullptr;
-    }
-    
-    // Parse return types (optional)
-    ArenaSpan<TypePtr> returnTypes;
-    if (stream.match(TokenType::ARROW)) {
-        returnTypes = parseReturnList(stream, ctx);
-    }
-    
-    // Build from the innermost function type outward
-    FuncTypeAST* current = nullptr;
-    
-    // Start with the last parameter group (innermost)
-    for (int i = static_cast<int>(paramGroups.size()) - 1; i >= 0; --i) {
-        auto* funcType = ctx.arena.make<FuncTypeAST>();
-        
-        // Build params span
-        auto paramBuilder = ctx.arena.makeBuilder<ParamPtr>();
-        for (auto* p : paramGroups[i]) {
-            paramBuilder.push_back(p);
-        }
-        funcType->params = paramBuilder.build();
-        
-        // For the innermost function, use the return types
-        if (i == static_cast<int>(paramGroups.size()) - 1) {
-            funcType->returnTypes = returnTypes;
-        } else {
-            // For outer functions, the return type is the inner function
-            auto returnBuilder = ctx.arena.makeBuilder<TypePtr>();
-            returnBuilder.push_back(current);
-            funcType->returnTypes = returnBuilder.build();
-        }
-        
-        current = funcType;
-    }
-    
-    return current;
 }
 
 } // namespace parser

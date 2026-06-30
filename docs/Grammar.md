@@ -861,51 +861,57 @@ return_type     = type
 
 func_body       = '{' { statement } '}'         (* declaration only — see WARNING below;
                                                      invalid as the RHS of a reassignment *)
-                | expr                           (* single-expression body *)
-                | func_ref                       (* bind to an existing function value —
-                                                     anonymous literal or named reference,
-                                                     see Function Body as a Reference *)
-
-func_ref        = func_literal                  (* anonymous function value *)
-                | IDENTIFIER [ generic_args ]    (* named function, optionally instantiated *)
-                | IDENTIFIER ':' IDENTIFIER [ generic_args ]
-                                                  (* module-qualified function reference *)
+                | expr                           (* a function body may be ANY expr that
+                                                     evaluates to a function value: a single
+                                                     computed result, an anonymous func_literal,
+                                                     a named reference, a generic instantiation,
+                                                     or a call that returns a function — see
+                                                     Function Body as an Expression *)
 
 generic_args    = '<' type_arg { ',' type_arg } '>'
                   (* instantiates a generic function as a VALUE — no call parens.
                      Distinct from generic_expr, which calls the function:
-                     'Foo<int>' is a reference; 'Foo<int>(42)' is a call. *)
+                     'Foo<int>' is a reference (an IDENTIFIER-headed expr);
+                     'Foo<int>(42)' is a call_expr. Both are 'expr'. *)
 
 func_type       = param_group '->' return_type
                   (* a function type is always a single param group *)
 ```
 
-**`func_body` accepts a function reference, not just a block.** A `func_decl`
-can be bound directly to an existing function value — an anonymous literal or a
-named function, optionally a generic instantiation — instead of writing a new
-body. This is the same `'='` used for an ordinary body, so the two forms read
-consistently:
+**`func_body`'s second form is just `expr` — nothing narrower.** Earlier drafts
+of this grammar introduced a separate `func_ref` production to describe "an
+anonymous function or a named reference," but that was a hand-rolled subset of
+something `expr` already covers: `IDENTIFIER`, `call_expr`, `module_expr`, and
+`generic_expr` are already alternatives of `expr` (see **Expressions**). A
+`func_decl` whose body is not a literal block is therefore bound to whatever
+`expr` evaluates to, as long as the result's type matches the declared
+`func_type`. This means the body can be:
 
 ```lucid
--- anonymous function as the body
+-- a func_literal (anonymous function value)
 let f () -> () = () -> () { ... }
-
--- reassign by using another anonymous function
 f = () -> () { ... }
 
--- named generic function as the body — no call, just a reference
+-- a named function reference — no call, IDENTIFIER alone
 const sq<T> (v T) -> T = { return v * v }
 let g (a int) -> int = sq<int>
+g = myModule:sq<int>          -- module-qualified, still just an expr
 
--- reassign by a generic function from another module
-g = myModule:sq<int>
+-- a call_expr that itself RETURNS a function value
+const getHandler (kind string) -> (int) -> int = { ... }
+let h (a int) -> int = getHandler("double")
+h = getHandler("triple")      -- reassignment from a call is equally valid
 ```
 
+The last case is the one easy to miss: the right-hand side does not have to be
+the function value written out directly — it can be any expression, including a
+call, as long as evaluating it produces a value of the matching `func_type`.
+`getHandler("double")` is a `call_expr`; `call_expr` is an `expr`; `expr` is what
+`func_body`'s second form accepts. No special-casing needed beyond that.
+
 Reassignment (`f = ...`) follows ordinary `assign_stmt` rules — `f` must be
-`let`, and the right-hand side must have a type matching `f`'s declared
-`func_type`. Binding `g` to `sq<int>` is checked the same way: `sq<T>`
-instantiated at `T = int` must produce `(int) -> int`, matching `g`'s declared
-signature exactly.
+`let`, and the right-hand side `expr` must evaluate to a value whose type
+matches `f`'s declared `func_type` exactly.
 
 > [!WARNING]
 > **A block body (`{ ... }`) is only valid at the declaration, never at
@@ -914,9 +920,10 @@ signature exactly.
 > from the surrounding `func_decl` header (`param_group`, `return_type`). At
 > reassignment there is no such header to borrow from: `f = { ... }` would
 > leave both the parser and the reader unable to tell what parameters `f`
-> takes inside that block. Reassignment must therefore use a `func_ref` — a
-> full `func_literal` (which carries its own `param_group` and `return_type`)
-> or a named/module-qualified reference — never a bare block.
+> takes inside that block. Reassignment must therefore use an `expr` that
+> already carries or produces its own signature — a `func_literal`, a named or
+> module-qualified reference, or a call returning a function value — never a
+> bare block.
 >
 > ```lucid
 > -- declaration: bare block is valid — header supplies the signature
@@ -931,6 +938,11 @@ signature exactly.
 > -- reassignment: named reference — OK, signature comes from the reference
 > const addTwo (a int) -> int = { return a + 2 }
 > f = addTwo
+>
+> -- reassignment: call returning a function — OK, signature comes from the
+> -- call's return type
+> const pickAdder (n int) -> (int) -> int = { ... }
+> f = pickAdder(2)
 > ```
 
 **Multiple return values** are grouped by `()`, NOTE: this is not a tuple but a way

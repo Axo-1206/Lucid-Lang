@@ -20,13 +20,13 @@ enum class DiagCode : uint32_t {
     // General codes
     E1001 = 1000,   ///< Expected keyword
     E1002,          ///< Expected an identifier.
-    E1003,          ///< Expected type annotation
+    E1003,          ///< Expected type
     E1004,          ///< Expected '{, [, <, ('
     E1005,          ///< Expected '}, ], >, )'
     E1006,          ///< Expected expression after '='
     E1007,          ///< Expected token
     E1008,          ///< Unexpected token
-    E1009,          ///< Expected type
+    // E1009,          ///< Expected type
     E1010,          ///< Invalid context
 
     // Speicalize codes
@@ -34,6 +34,8 @@ enum class DiagCode : uint32_t {
     E1102,          ///< Expected name alias after keyword 'as'
     E1103,          ///< Trailing tokens
     E1104,          ///< Expected attribute argument literal
+    E1105,          ///< Expected anon func or ref func
+
     // E1105,          ///< Unexpected trailing '+' in generic constraints
     // E1106,          ///< Unexpected trailing '.' in path
 

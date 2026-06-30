@@ -490,7 +490,7 @@ AttributeArgPtr parseAttributeArgLiteral(TokenStream& stream, ParserContext& ctx
  * 
  * ## Error Handling
  * 
- * - Empty list `<>` → reports E1009
+ * - Empty list `<>` → reports E1003
  * - Trailing comma `<T, >` → reports E1103
  * - Trailing plus `<T : Vector2 + >` → reports E1105
  * - Missing `>` at EOF → reports E1005
@@ -525,7 +525,7 @@ ArenaSpan<GenericParamDeclPtr> parseGenericParamDecls(TokenStream& stream, Parse
     
     // Check for empty generic parameter list: <>
     if (stream.check(TokenType::GREATER)) {
-        ctx.error(stream, DiagCode::E1009, "generic parameter", ">");
+        ctx.error(stream, DiagCode::E1003, "generic parameter", ">");
         stream.advance(); // Consume '>'
         return ctx.arena.makeBuilder<GenericParamDeclPtr>().build();
     }
@@ -621,7 +621,7 @@ ArenaSpan<GenericParamDeclPtr> parseGenericParamDecls(TokenStream& stream, Parse
  * ## Error Handling
  * 
  * - Trailing '+' (e.g., `T : Vector2 +`) → reports E1105
- * - Missing trait after '+' → reports E1009
+ * - Missing trait after '+' → reports E1003
  * 
  * @param stream The token stream for the current file
  * @param ctx The parsing context
@@ -686,7 +686,7 @@ GenericParamDeclPtr parseGenericParamDecl(TokenStream& stream, ParserContext& ct
                 constraints.push_back(traitRef);
                 hasConstraint = true;
             } else {
-                ctx.error(stream, DiagCode::E1009, "trait reference after ':' or '+'", stream.peekValue());
+                ctx.error(stream, DiagCode::E1003, "trait reference after ':' or '+'", stream.peekValue());
                 synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::GREATER);
                 break;
             }
@@ -730,7 +730,7 @@ GenericParamDeclPtr parseGenericParamDecl(TokenStream& stream, ParserContext& ct
  * 
  * ## Error Handling
  * 
- * - Empty list `<>` → reports E1009
+ * - Empty list `<>` → reports E1003
  * - Trailing comma `<int, >` → reports E1103
  * - Missing `>` at EOF → reports E1005
  * - Invalid argument → parseType handles the error
@@ -753,7 +753,7 @@ ArenaSpan<TypePtr> parseGenericArgs(TokenStream& stream, ParserContext& ctx) {
     
     // Check for empty generic argument list: <>
     if (stream.check(TokenType::GREATER)) {
-        ctx.error(stream, DiagCode::E1009, "generic argument", ">");
+        ctx.error(stream, DiagCode::E1003, "generic argument", ">");
         stream.advance(); // Consume '>'
         return ctx.arena.makeBuilder<TypePtr>().build();
     }
@@ -859,7 +859,7 @@ ArenaSpan<TypePtr> parseGenericArgs(TokenStream& stream, ParserContext& ctx) {
  * ## Error Handling
  * 
  * - Empty parentheses `()` → valid, returns empty list
- * - Missing type after comma → reports E1009
+ * - Missing type after comma → reports E1003
  * - Trailing comma `(a, )` → reports E1103
  * - Missing `)` at EOF → reports E1005
  * - Variadic not last → reports appropriate error
@@ -928,7 +928,7 @@ std::vector<ParamPtr> parseParamList(TokenStream& stream, ParserContext& ctx) {
         // ─── 4. Parse parameter type ─────────────────────────────────────
         TypePtr type = parseType(stream, ctx);
         if (!type) {
-            ctx.error(stream, DiagCode::E1009, "parameter type", stream.peekValue());
+            ctx.error(stream, DiagCode::E1003, "parameter type", stream.peekValue());
             synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN);
             if (stream.check(TokenType::COMMA)) {
                 stream.advance();
@@ -1122,7 +1122,7 @@ ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx) {
 }
 
 // =============================================================================
-// parseReturnList - Parse a list of return types
+// parseReturnList() - Parse a list of return types
 // =============================================================================
 
 /**
@@ -1142,7 +1142,8 @@ ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx) {
  * ## Error Handling
  * 
  * - Empty parentheses `()` → void (empty return list)
- * - Missing type after comma → reports E1009
+ * - Missing type after comma → reports E1003 with "type in return list"
+ * - Missing type after `->` → reports E1003 with "return type after '->'"
  * - Trailing comma `(int, )` → reports E1103
  * - Multiple consecutive commas `(int,,,string)` → reports E1103 once
  * - Only commas `(,,,)` → reports E1103, returns empty list
@@ -1168,8 +1169,6 @@ ArenaSpan<TypeAST*> parseReturnList(TokenStream& stream, ParserContext& ctx) {
         }
         
         // ─── Parse types until we hit ')' ──────────────────────────────────
-        bool hasType = false;
-        
         while (!stream.isAtEnd()) {
             // ─── Skip consecutive separators ────────────────────────────────
             int separatorCount = 0;
@@ -1196,10 +1195,10 @@ ArenaSpan<TypeAST*> parseReturnList(TokenStream& stream, ParserContext& ctx) {
             TypePtr type = parseType(stream, ctx);
             if (type) {
                 returnTypes.push_back(type);
-                hasType = true;
             } else {
                 // Error already reported by parseType, try to recover
-                ctx.error(stream, DiagCode::E1009, "type in return list", stream.peekValue());
+                // Use E1003 with context: "Expected type in return list, but found '%s'"
+                ctx.error(stream, DiagCode::E1003, "in return list", stream.peekValue());
                 synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN);
                 if (stream.check(TokenType::COMMA)) {
                     stream.advance();
@@ -1226,11 +1225,13 @@ ArenaSpan<TypeAST*> parseReturnList(TokenStream& stream, ParserContext& ctx) {
         
     } else {
         // ─── Single return type (no parentheses) ──────────────────────────
+        // This is the case: `-> int`
         TypePtr type = parseType(stream, ctx);
         if (type) {
             returnTypes.push_back(type);
         } else {
-            ctx.error(stream, DiagCode::E1009, "return type", stream.peekValue());
+            // Use E1003 with specific context: "Expected return type after '->', but found '%s'"
+            ctx.error(stream, DiagCode::E1003, "(return type) after '->'", stream.peekValue());
             synchronize(stream, ctx);
         }
     }
@@ -1443,7 +1444,7 @@ ExprPtr parseLvalue(TokenStream& stream, ParserContext& ctx) {
             stream.consume(TokenType::COLON);
             
             if (!stream.check(TokenType::IDENTIFIER)) {
-                ctx.error(stream.currentLoc(), "Expected member name after ':'");
+                ctx.error(stream, DiagCode::E1002, "member name after ':'", stream.peekValue());
                 return nullptr;
             }
             
@@ -1489,7 +1490,7 @@ ExprPtr parseLvalue(TokenStream& stream, ParserContext& ctx) {
             stream.advance(); // Consume '.'
             
             if (!stream.check(TokenType::IDENTIFIER)) {
-                ctx.error(stream.currentLoc(), "Expected field name after '.'");
+                ctx.error(stream, DiagCode::E1002, "field name", stream.peekValue());
                 break;
             }
             
@@ -1519,7 +1520,7 @@ ExprPtr parseLvalue(TokenStream& stream, ParserContext& ctx) {
             }
             
             if (!stream.check(TokenType::RBRACKET)) {
-                ctx.error(stream.currentLoc(), "Expected ']' to close index");
+                ctx.error(stream, DiagCode::E1005, "]", stream.peekValue());
                 synchronizeTo(stream, ctx, TokenType::RBRACKET);
             } else {
                 stream.advance(); // Consume ']'
@@ -1566,6 +1567,7 @@ ExprPtr parseLvalue(TokenStream& stream, ParserContext& ctx) {
  * add                    → Function "add"
  * math:sqrt              → ModuleAccess "math" "sqrt"
  * map<int, string>       → Generic function "map" with args [int, string]
+ * math:special<int>      → Special operation
  * ```
  * 
  * @param stream The token stream for the current file
@@ -1587,7 +1589,7 @@ ExprPtr parseFuncRef(TokenStream& stream, ParserContext& ctx) {
             stream.consume(TokenType::COLON);
             
             if (!stream.check(TokenType::IDENTIFIER)) {
-                ctx.error(stream.currentLoc(), "Expected function name after ':'");
+                ctx.error(stream, DiagCode::E1002, "function name after ':'", stream.peekValue());
                 return nullptr;
             }
             
@@ -1618,7 +1620,7 @@ ExprPtr parseFuncRef(TokenStream& stream, ParserContext& ctx) {
     
     // ─── 2. Parse as a regular function reference ───────────────────────
     if (!stream.check(TokenType::IDENTIFIER)) {
-        ctx.error(loc, "Expected function name");
+        ctx.error(stream, DiagCode::E1002, "function name", stream.peekValue());
         synchronize(stream, ctx);
         return nullptr;
     }
