@@ -859,12 +859,79 @@ variadic_param  = IDENTIFIER '...' type
 return_type     = type
                 | '(' type ',' type { ',' type } ')'   (* multiple return values *)
 
-func_body       = '{' { statement } '}'
+func_body       = '{' { statement } '}'         (* declaration only — see WARNING below;
+                                                     invalid as the RHS of a reassignment *)
                 | expr                           (* single-expression body *)
+                | func_ref                       (* bind to an existing function value —
+                                                     anonymous literal or named reference,
+                                                     see Function Body as a Reference *)
+
+func_ref        = func_literal                  (* anonymous function value *)
+                | IDENTIFIER [ generic_args ]    (* named function, optionally instantiated *)
+                | IDENTIFIER ':' IDENTIFIER [ generic_args ]
+                                                  (* module-qualified function reference *)
+
+generic_args    = '<' type_arg { ',' type_arg } '>'
+                  (* instantiates a generic function as a VALUE — no call parens.
+                     Distinct from generic_expr, which calls the function:
+                     'Foo<int>' is a reference; 'Foo<int>(42)' is a call. *)
 
 func_type       = param_group '->' return_type
                   (* a function type is always a single param group *)
 ```
+
+**`func_body` accepts a function reference, not just a block.** A `func_decl`
+can be bound directly to an existing function value — an anonymous literal or a
+named function, optionally a generic instantiation — instead of writing a new
+body. This is the same `'='` used for an ordinary body, so the two forms read
+consistently:
+
+```lucid
+-- anonymous function as the body
+let f () -> () = () -> () { ... }
+
+-- reassign by using another anonymous function
+f = () -> () { ... }
+
+-- named generic function as the body — no call, just a reference
+const sq<T> (v T) -> T = { return v * v }
+let g (a int) -> int = sq<int>
+
+-- reassign by a generic function from another module
+g = myModule:sq<int>
+```
+
+Reassignment (`f = ...`) follows ordinary `assign_stmt` rules — `f` must be
+`let`, and the right-hand side must have a type matching `f`'s declared
+`func_type`. Binding `g` to `sq<int>` is checked the same way: `sq<T>`
+instantiated at `T = int` must produce `(int) -> int`, matching `g`'s declared
+signature exactly.
+
+> [!WARNING]
+> **A block body (`{ ... }`) is only valid at the declaration, never at
+> reassignment.** A bare block carries no parameter list, no parameter types,
+> and no return type of its own — at declaration time it borrows all of that
+> from the surrounding `func_decl` header (`param_group`, `return_type`). At
+> reassignment there is no such header to borrow from: `f = { ... }` would
+> leave both the parser and the reader unable to tell what parameters `f`
+> takes inside that block. Reassignment must therefore use a `func_ref` — a
+> full `func_literal` (which carries its own `param_group` and `return_type`)
+> or a named/module-qualified reference — never a bare block.
+>
+> ```lucid
+> -- declaration: bare block is valid — header supplies the signature
+> let f (a int) -> int = { return a + 1 }
+>
+> -- reassignment: bare block is REJECTED — no header to borrow from
+> f = { return a + 2 }    -- ERROR: block body not allowed outside declaration
+>
+> -- reassignment: anonymous function — OK, carries its own signature
+> f = (a int) -> int { return a + 2 }
+>
+> -- reassignment: named reference — OK, signature comes from the reference
+> const addTwo (a int) -> int = { return a + 2 }
+> f = addTwo
+> ```
 
 **Multiple return values** are grouped by `()`, NOTE: this is not a tuple but a way
 to allow parser to differentiate them with a `param_group`
