@@ -72,6 +72,7 @@
  */
 
 #include "Parser.hpp"
+#include "core/Tokens.hpp"
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/StmtAST.hpp"
 #include "core/ast/TypeAST.hpp"
@@ -98,9 +99,17 @@ namespace parser {
  */
 ExprAST* parseExpr(TokenStream& stream, ParserContext& ctx) {
     LOG_PARSER_DETAIL("parseExpr: parsing expression");
-    // TODO: Implement
-    return nullptr;
+    
+    // If we're at EOF, there's nothing to parse
+    if (stream.isAtEnd()) {
+        ctx.error(stream, DiagCode::E1006, stream.peekValue());
+        return nullptr;
+    }
+    
+    // Parse with the lowest precedence level (0)
+    return parsePrattExpr(stream, ctx, 0);
 }
+
 
 /**
  * @brief Parse an expression using the Pratt parser.
@@ -112,9 +121,83 @@ ExprAST* parseExpr(TokenStream& stream, ParserContext& ctx) {
  */
 ExprAST* parsePrattExpr(TokenStream& stream, ParserContext& ctx, int minPrec) {
     LOG_PARSER_DETAIL("parsePrattExpr: parsing expression with min precedence: ", minPrec);
-    // TODO: Implement
-    return nullptr;
+    
+    // ─── 1. Parse the prefix expression ──────────────────────────────────
+    ExprPtr lhs = parsePrefixExpr(stream, ctx);
+    if (!lhs) {
+        return nullptr;
+    }
+    
+    // ─── 2. Parse infix/postfix expressions while precedence allows ────
+    while (!stream.isAtEnd()) {
+        TokenType current = stream.peekType();
+        int prec = infixPrec(current);
+        
+        // If the operator has lower precedence than our minimum, stop
+        if (prec < minPrec) {
+            break;
+        }
+        
+        // Check for assignment operators (right-associative)
+        if (current == TokenType::ASSIGN) {
+            // For assignment, we need to parse the RHS with lower precedence
+            // to handle right-associativity: a = b = c → a = (b = c)
+            stream.advance(); // Consume the assignment operator
+            lhs = parseInfixAssign(stream, ctx, lhs);
+            if (!lhs) {
+                return nullptr;
+            }
+            continue;
+        }
+        
+        // Check for `is` operator (special handling)
+        if (current == TokenType::IS) {
+            stream.advance(); // Consume 'is'
+            lhs = parseInfixIs(stream, ctx, lhs);
+            if (!lhs) {
+                return nullptr;
+            }
+            continue;
+        }
+        
+        // Check for `??` operator (null coalesce)
+        if (current == TokenType::QUESTION_QUESTION) {
+            stream.advance(); // Consume '??'
+            lhs = parseInfixNullCoalesce(stream, ctx, lhs);
+            if (!lhs) {
+                return nullptr;
+            }
+            continue;
+        }
+        
+        // Handle binary operators
+        if (prec >= 0) {
+            stream.advance(); // Consume the operator
+            lhs = parseInfixBinary(stream, ctx, lhs, current, prec);
+            if (!lhs) {
+                return nullptr;
+            }
+            continue;
+        }
+        
+        // Handle postfix expressions (call, index, slice, pipeline)
+        if (current == TokenType::LPAREN ||
+            current == TokenType::LBRACKET ||
+            current == TokenType::PIPELINE) {
+            lhs = parsePostfixExpr(stream, ctx, lhs);
+            if (!lhs) {
+                return nullptr;
+            }
+            continue;
+        }
+        
+        // If we get here, we have an unexpected token
+        break;
+    }
+    
+    return lhs;
 }
+
 
 /**
  * @brief Parse a prefix expression.
@@ -129,8 +212,40 @@ ExprAST* parsePrattExpr(TokenStream& stream, ParserContext& ctx, int minPrec) {
  */
 ExprAST* parsePrefixExpr(TokenStream& stream, ParserContext& ctx) {
     LOG_PARSER_DETAIL("parsePrefixExpr: parsing prefix expression");
-    // TODO: Implement
-    return nullptr;
+    
+    SourceLocation loc = stream.currentLoc();
+    TokenType current = stream.peekType();
+    
+    // ─── 1. Handle unary operators ──────────────────────────────────────
+    if (current == TokenType::MINUS ||
+        current == TokenType::NOT ||
+        current == TokenType::BIT_NOT) {
+        
+        Token opTok = stream.advance();
+        UnaryOp op;
+        switch (opTok.type) {
+            case TokenType::MINUS:   op = UnaryOp::Neg; break;
+            case TokenType::NOT:     op = UnaryOp::Not; break;
+            case TokenType::BIT_NOT: op = UnaryOp::BitNot; break;
+            default:
+                ctx.error(stream, DiagCode::E1007, "unary operator( '-', '~', 'not' )", stream.peekValue());
+                return nullptr;
+        }
+        
+        ExprPtr operand = parsePrattExpr(stream, ctx, infixPrec(current) + 1);
+        if (!operand) {
+            return nullptr;
+        }
+        
+        auto* unary = ctx.arena.make<UnaryExprAST>();
+        unary->op = op;
+        unary->operand = operand;
+        unary->loc = loc;
+        return unary;
+    }
+    
+    // ─── 2. Parse primary expression ────────────────────────────────────
+    return parsePrimaryExpr(stream, ctx);
 }
 
 /**
@@ -152,7 +267,92 @@ ExprAST* parsePrefixExpr(TokenStream& stream, ParserContext& ctx) {
  */
 ExprAST* parsePrimaryExpr(TokenStream& stream, ParserContext& ctx) {
     LOG_PARSER_DETAIL("parsePrimaryExpr: parsing primary expression");
-    // TODO: Implement
+    
+    SourceLocation loc = stream.currentLoc();
+    TokenType current = stream.peekType();
+    
+    // ─── 1. Literals ─────────────────────────────────────────────────────
+    if (is_literal(current)) {
+        return parseLiteralExpr(stream, ctx);
+    }
+    
+    // ─── 2. Intrinsic call: #sizeof(T) ──────────────────────────────────
+    if (current == TokenType::HASH) {
+        return parseIntrinsicCallExpr(stream, ctx);
+    }
+    
+    // ─── 3. Array literal: [1, 2, 3] ────────────────────────────────────
+    if (current == TokenType::LBRACKET) {
+        // Need to distinguish between array literal and array type
+        // Array literal: `[1, 2, 3]` - contains expressions
+        // Array type: `[*]int` - contains type specifiers
+        // For now, try array literal first
+        return parseArrayLiteralExpr(stream, ctx);
+    }
+    
+    // ─── 4. If expression: if cond ?? expr else expr ────────────────────
+    if (current == TokenType::IF) {
+        return parseIfExpr(stream, ctx);
+    }
+    
+    // ─── 5. Parenthesized expression: (expr) ────────────────────────────
+    if (current == TokenType::LPAREN) {
+        stream.advance(); // Consume '('
+        
+        // Check if it's an empty tuple or group
+        if (stream.check(TokenType::RPAREN)) {
+            stream.advance(); // Consume ')'
+            ctx.error(stream, DiagCode::E1106, stream.peekValue());
+            return nullptr;
+        }
+        
+        ExprPtr expr = parseExpr(stream, ctx);
+        if (!expr) {
+            return nullptr;
+        }
+        
+        if (!stream.check(TokenType::RPAREN)) {
+            ctx.error(stream, DiagCode::E1005, ")", "parenthesized expression", stream.peekValue());
+            synchronizeTo(stream, ctx, TokenType::RPAREN);
+            return expr;
+        }
+        stream.advance(); // Consume ')'
+        
+        return expr;
+    }
+    
+    // ─── 6. Anonymous function: (a int) -> int { ... } ──────────────────
+    if (looksLikeAnonFunc(stream, ctx)) {
+        return parseAnonFuncExpr(stream, ctx);
+    }
+    
+    // ─── 7. Struct literal: Point { x = 1, y = 2 } ─────────────────────
+    if (looksLikeStructLiteral(stream, ctx)) {
+        // Parse the identifier
+        if (!stream.check(TokenType::IDENTIFIER)) {
+            ctx.error(stream, DiagCode::E1002, "struct type name", stream.peekValue());
+            return nullptr;
+        }
+        Token nameTok = stream.advance();
+        InternedString typeName = ctx.pool.intern(nameTok.value);
+        
+        // Parse generic arguments if present
+        ArenaSpan<TypePtr> genericArgs;
+        if (stream.check(TokenType::LESS)) {
+            genericArgs = parseGenericArgs(stream, ctx);
+        }
+        
+        // Parse the struct body
+        if (!stream.check(TokenType::LBRACE)) {
+            ctx.error(stream, DiagCode::E1004, "{", "struct literal", stream.peekValue());
+            return nullptr;
+        }
+        return parseStructLiteralExpr(stream, ctx, typeName, genericArgs);
+    }
+    
+    // ─── 9. Unknown primary expression ──────────────────────────────────
+    ctx.error(stream, DiagCode::E1006, stream.peekValue());
+    synchronize(stream, ctx);
     return nullptr;
 }
 
@@ -176,7 +376,65 @@ ExprAST* parsePrimaryExpr(TokenStream& stream, ParserContext& ctx) {
  */
 ExprAST* parsePostfixExpr(TokenStream& stream, ParserContext& ctx, ExprPtr lhs) {
     LOG_PARSER_DETAIL("parsePostfixExpr: parsing postfix expression");
-    // TODO: Implement
+    
+    if (!lhs) {
+        return nullptr;
+    }
+    
+    TokenType current = stream.peekType();
+    
+    // ─── 1. Function call: f() ───────────────────────────────────────────
+    if (current == TokenType::LPAREN) {
+        // Check for generic arguments before the call: f<int>(42)
+        // The generic args would have been parsed already in parsePrimaryExpr
+        return parseCallExpr(stream, ctx, lhs, ArenaSpan<TypeAST*>());
+    }
+    
+    // ─── 2. Index or slice: arr[0] or arr[1..3] ─────────────────────────
+    if (current == TokenType::LBRACKET) {
+        // Need to look ahead to determine if it's an index or slice
+        size_t savedPos = stream.getPos();
+        stream.advance(); // Consume '['
+        
+        // Check for slice: expr [ start .. end ]
+        bool isSlice = false;
+        if (!stream.isAtEnd()) {
+            // Skip expressions until we see '..' or '..<'
+            int parenDepth = 0;
+            int bracketDepth = 0;
+            while (!stream.isAtEnd()) {
+                if (stream.check(TokenType::LPAREN)) parenDepth++;
+                if (stream.check(TokenType::RPAREN)) parenDepth--;
+                if (stream.check(TokenType::LBRACKET)) bracketDepth++;
+                if (stream.check(TokenType::RBRACKET)) bracketDepth--;
+                if (parenDepth == 0 && bracketDepth == 0) {
+                    if (stream.check(TokenType::RANGE) || stream.check(TokenType::RANGE_EXCLUSIVE)) {
+                        isSlice = true;
+                        break;
+                    }
+                    if (stream.check(TokenType::RBRACKET)) {
+                        break;
+                    }
+                }
+                stream.advance();
+            }
+        }
+        
+        stream.setPos(savedPos);
+        
+        if (isSlice) {
+            return parseSliceExpr(stream, ctx, lhs);
+        } else {
+            return parseIndexExpr(stream, ctx, lhs);
+        }
+    }
+    
+    // ─── 3. Pipeline: expr |> step ──────────────────────────────────────
+    if (current == TokenType::PIPELINE) {
+        return parsePipelineExpr(stream, ctx, lhs);
+    }
+    
+    // No more postfix operators
     return lhs;
 }
 
@@ -368,17 +626,6 @@ BinaryOp tokenToBinaryOp(TokenType type) {
 AssignOp tokenToAssignOp(TokenType type) {
     // TODO: Implement
     return AssignOp::Assign;
-}
-
-/**
- * @brief Check if a token type is an assignment operator.
- * 
- * @param type The token type
- * @return true if the token is an assignment operator
- */
-bool isAssignOp(TokenType type) {
-    // TODO: Implement
-    return false;
 }
 
 // =============================================================================

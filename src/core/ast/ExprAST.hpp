@@ -105,7 +105,6 @@ enum class UnaryOp {
     Neg,    // -x       arithmetic negation
     Not,    // not x    logical negation
     BitNot, // ~        bitwise NOT
-    Ref,    // &x       take a reference (only valid on lvalues)
 };
 
 /**
@@ -462,7 +461,6 @@ struct BinaryExprAST : ExprAST {
  *   -x      → op = Neg
  *   not x   → op = Not
  *   ~x      → op = BitNot
- *   &x      → op = Ref (take a reference, only valid on lvalues)
  *
  * ─── Semantic Analysis Notes ──────────────────────────────────────────────
  * 1. **Ref Operator**: `&x` takes a reference to `x`. `x` must be an lvalue.

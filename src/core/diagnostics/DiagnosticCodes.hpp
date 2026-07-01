@@ -35,6 +35,7 @@ enum class DiagCode : uint32_t {
     E1103,          ///< Trailing tokens
     E1104,          ///< Expected attribute argument literal
     E1105,          ///< Expected anon func or ref func
+    E1106,          ///< Empty expression group
 
     // E1105,          ///< Unexpected trailing '+' in generic constraints
     // E1106,          ///< Unexpected trailing '.' in path

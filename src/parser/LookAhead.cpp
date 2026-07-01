@@ -365,4 +365,99 @@ bool looksLikeMultiAssignStart(TokenStream& stream, ParserContext& ctx) {
     return result;
 }
 
+// =============================================================================
+// looksLikeStructLiteral() - Check if current position looks like a struct literal
+// =============================================================================
+
+/**
+ * @brief Check if the current position looks like a struct literal.
+ * 
+ * A struct literal looks like:
+ *   - `TypeName { ... }`
+ *   - `TypeName<T> { ... }`
+ *   - `TypeName<T, U> { ... }`
+ * 
+ * ## Detection Logic
+ * 
+ * 1. Check for an identifier (the type name)
+ * 2. Check for optional generic arguments `<T, ...>`
+ * 3. Check for `{` (body start)
+ * 
+ * ## Examples
+ * 
+ * ```lucid
+ * Point { x = 1, y = 2 }       → true
+ * Box<int> { value = 42 }      → true
+ * Vec2 { x = 1, y = 2 }        → true
+ * add(5)                       → false (function call)
+ * Point                        → false (no {)
+ * ```
+ * 
+ * @param stream The token stream (non-consuming)
+ * @param ctx The parsing context
+ * @return true if it looks like a struct literal
+ */
+bool looksLikeStructLiteral(TokenStream& stream, ParserContext& ctx) {
+    LOG_PARSER_DETAIL("looksLikeStructLiteral: checking");
+    
+    size_t savedPos = stream.getPos();
+    bool result = false;
+    
+    // ─── 1. Check for identifier (type name) ────────────────────────────
+    if (!stream.check(TokenType::IDENTIFIER)) {
+        stream.setPos(savedPos);
+        return false;
+    }
+    stream.advance(); // Skip identifier
+    
+    // ─── 2. Check for optional generic arguments ─────────────────────────
+    if (stream.check(TokenType::LESS)) {
+        stream.advance(); // Skip '<'
+        int angleDepth = 1;
+        
+        // Skip through generic arguments until we find matching '>'
+        // or we hit a token that can't be in generic args
+        while (!stream.isAtEnd() && angleDepth > 0) {
+            if (stream.check(TokenType::LESS)) {
+                angleDepth++;
+            } else if (stream.check(TokenType::GREATER)) {
+                angleDepth--;
+                if (angleDepth == 0) {
+                    stream.advance(); // Skip '>'
+                    break;
+                }
+            }
+            stream.advance();
+        }
+        
+        if (angleDepth > 0) {
+            // Unterminated generic args - not a struct literal
+            stream.setPos(savedPos);
+            return false;
+        }
+        
+        // ─── 3. Check for '{' after generic arguments ────────────────────
+        if (stream.check(TokenType::LBRACE)) {
+            result = true;
+            LOG_PARSER_DETAIL("looksLikeStructLiteral: true - found generic args and {");
+        } else {
+            LOG_PARSER_DETAIL("looksLikeStructLiteral: false - no { after generic args");
+        }
+        
+        stream.setPos(savedPos);
+        return result;
+    }
+    
+    // ─── 4. Check for '{' after identifier (no generic args) ────────────
+    if (stream.check(TokenType::LBRACE)) {
+        result = true;
+        LOG_PARSER_DETAIL("looksLikeStructLiteral: true - found {");
+    } else {
+        LOG_PARSER_DETAIL("looksLikeStructLiteral: false - no {");
+    }
+    
+    stream.setPos(savedPos);
+    return result;
+}
+
 } // namespace parser

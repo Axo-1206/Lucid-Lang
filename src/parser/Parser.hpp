@@ -177,14 +177,14 @@ bool looksLikeFuncDecl(TokenStream& stream, ParserContext& ctx);
 bool looksLikeAnonFunc(TokenStream& stream, ParserContext& ctx);
 bool looksLikeMultiAssignStart(TokenStream& stream, ParserContext& ctx);
 bool isFunctionTypeAfterParen(TokenStream& stream, ParserContext& ctx, size_t startPos);
-// bool looksLikeStructLiteral(TokenStream& stream, ParserContext& ctx);
+bool looksLikeStructLiteral(TokenStream& stream, ParserContext& ctx);
 
 // ─── Precedence Helpers ──────────────────────────────────────────────────── // X
 
 int infixPrec(TokenType type);
 BinaryOp tokenToBinaryOp(TokenType type);
 AssignOp tokenToAssignOp(TokenType type);
-bool isAssignOp(TokenType type);
+// bool isAssignOp(TokenType type);
 
 // ─── Infix Dispatch ─────────────────────────────────────────────────────── // X
 
