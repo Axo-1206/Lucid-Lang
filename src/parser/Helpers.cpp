@@ -520,6 +520,27 @@ ArenaSpan<GenericParamDeclPtr> parseGenericParamDecls(TokenStream& stream, Parse
     
     // Parse parameters until we hit '>'
     while (!stream.isAtEnd()) {
+        // ─── Skip consecutive separators ────────────────────────────────
+        int separatorCount = 0;
+        while (stream.check(TokenType::COMMA)) {
+            separatorCount++;
+            stream.advance(); // Consume the separator
+        }
+        
+        if (separatorCount > 0) {
+            ctx.error(stream, DiagCode::E1009, ",", "generic parameters"); // Unexpected trailing comma
+        }
+        
+        // ─── Check if we've reached a terminator ──────────────────────
+        if (stream.check(TokenType::GREATER)) {
+            break; // End of generic parameter list
+        }
+        
+        if (stream.isAtEnd()) {
+            ctx.error(stream, DiagCode::E1005, ">", "generic parameter list", "<EOF>");
+            break;
+        }
+        
         // ─── Parse a single generic parameter ───────────────────────────
         GenericParamDeclPtr param = parseGenericParamDecl(stream, ctx);
         if (param) {
@@ -529,53 +550,24 @@ ArenaSpan<GenericParamDeclPtr> parseGenericParamDecls(TokenStream& stream, Parse
             synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::GREATER);
             if (stream.check(TokenType::COMMA)) {
                 stream.advance();
+                continue;
             } else if (stream.check(TokenType::GREATER)) {
-                // We found the closing '>', consume it and exit
-                stream.advance();
                 break;
             } else {
-                // No recovery token found - break to avoid infinite loop
                 break;
             }
-            continue;
-        }
-        
-        // ─── Check for comma separator ──────────────────────────────────
-        if (stream.check(TokenType::COMMA)) {
-            stream.advance(); // Consume comma
-            
-            // Check for trailing comma: <T, U, >
-            if (stream.check(TokenType::GREATER)) {
-                ctx.error(stream, DiagCode::E1009, ",", "generic parameters"); // Unexpected trailing comma
-                stream.advance(); // Consume '>'
-                break;
-            }
-            
-            // Check if we're at EOF after comma
-            if (stream.isAtEnd()) {
-                ctx.error(stream, DiagCode::E1005, ">", "generic parameter list", "<EOF>");
-                break;
-            }
-            
-            // Continue to parse next parameter
-        } else if (stream.check(TokenType::GREATER)) {
-            // End of generic parameter list
-            stream.advance(); // Consume '>'
-            break;
-        } else {
-            // Unexpected token
-            ctx.error(stream, DiagCode::E1008, stream.peekValue(), "',' or '>'");
-            synchronizeTo(stream, ctx, TokenType::GREATER);
-            if (stream.check(TokenType::GREATER)) {
-                stream.advance(); // Consume '>' and exit
-            }
-            break;
         }
     }
     
-    // ─── Check if we exited because of EOF ──────────────────────────────
-    if (stream.isAtEnd()) {
-        ctx.error(stream, DiagCode::E1005, ">", "generic parameter list", "<EOF>");
+    // ─── Consume closing bracket ────────────────────────────────────────
+    if (!stream.check(TokenType::GREATER)) {
+        ctx.error(stream, DiagCode::E1005, ">", "generic parameter list", stream.peekValue());
+        synchronizeTo(stream, ctx, TokenType::GREATER);
+        if (stream.check(TokenType::GREATER)) {
+            stream.advance(); // Consume '>' to recover
+        }
+    } else {
+        stream.advance(); // Consume '>'
     }
     
     // Build the ArenaSpan
@@ -644,28 +636,24 @@ GenericParamDeclPtr parseGenericParamDecl(TokenStream& stream, ParserContext& ct
         while (!stream.isAtEnd()) {
             // ─── Check for trailing '+' ────────────────────────────────
             if (stream.check(TokenType::PLUS)) {
-                if (!hasConstraint) {
-                    // find '+' before any trait aka trailing plus error
+                stream.advance(); // Consume '+'
+                
+                // If we're at EOF, '>', or ',', it's a trailing plus
+                if (stream.isAtEnd()) {
                     ctx.error(stream, DiagCode::E1009, '+', "generic constraints");
-                    stream.advance(); // Consume '+'
-                    continue;
-                } else {
-                    // '+' after a trait - check if it's a trailing plus
-                    stream.advance(); // Consume '+'
-                    
-                    // If we're at EOF, '>', or ',', it's a trailing plus
-                    if (stream.isAtEnd()) {
-                        break;
-                    } else if (stream.checkAny(TokenType::GREATER, TokenType::COMMA, TokenType::SEMICOLON)) {
-                        ctx.error(stream, DiagCode::E1009, '+', "generic constraints");
-                        // IMPORTANT: We DO NOT consume '>' or ',' here.
-                        // The caller (parseGenericParamDecls) will handle the closing '>'
-                        // or the next parameter after ','.
-                        break;
-                    }
-                    // Otherwise, continue to parse next trait
-                    continue;
+                    break;
                 }
+                
+                if (stream.checkAny(TokenType::GREATER, TokenType::COMMA)) {
+                    ctx.error(stream, DiagCode::E1009, '+', "generic constraints");
+                    // IMPORTANT: We DO NOT consume '>' or ',' here.
+                    // The caller (parseGenericParamDecls) will handle the closing '>'
+                    // or the next parameter after ','.
+                    break;
+                }
+                
+                // Continue to parse next trait
+                continue;
             }
             
             // Parse a trait reference
@@ -683,6 +671,11 @@ GenericParamDeclPtr parseGenericParamDecl(TokenStream& stream, ParserContext& ct
             if (!stream.check(TokenType::PLUS)) {
                 break;
             }
+        }
+        
+        // ─── Check if we have constraints but they're empty ──────────────
+        if (!hasConstraint) {
+            ctx.error(stream, DiagCode::E1003, "trait constraint after ':'", stream.peekValue());
         }
         
         // Build the constraints span
@@ -748,6 +741,27 @@ ArenaSpan<TypePtr> parseGenericArgs(TokenStream& stream, ParserContext& ctx) {
     
     // Parse arguments until we hit '>'
     while (!stream.isAtEnd()) {
+        // ─── Skip consecutive separators ────────────────────────────────
+        int separatorCount = 0;
+        while (stream.check(TokenType::COMMA)) {
+            separatorCount++;
+            stream.advance(); // Consume the separator
+        }
+        
+        if (separatorCount > 0) {
+            ctx.error(stream, DiagCode::E1009, ",", "generic arguments"); // Unexpected trailing comma
+        }
+        
+        // ─── Check if we've reached a terminator ──────────────────────
+        if (stream.check(TokenType::GREATER)) {
+            break; // End of generic argument list
+        }
+        
+        if (stream.isAtEnd()) {
+            ctx.error(stream, DiagCode::E1005, ">", "generic argument list", "<EOF>");
+            break;
+        }
+        
         // Parse a type as the generic argument
         TypePtr arg = parseType(stream, ctx);
         if (arg) {
@@ -757,52 +771,24 @@ ArenaSpan<TypePtr> parseGenericArgs(TokenStream& stream, ParserContext& ctx) {
             synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::GREATER);
             if (stream.check(TokenType::COMMA)) {
                 stream.advance();
+                continue;
             } else if (stream.check(TokenType::GREATER)) {
-                stream.advance(); // Consume '>' and exit
                 break;
             } else {
-                // No recovery token found - break to avoid infinite loop
                 break;
             }
-            continue;
-        }
-        
-        // Check for comma separator
-        if (stream.check(TokenType::COMMA)) {
-            stream.advance(); // Consume comma
-            
-            // Check for trailing comma: <int, string, >
-            if (stream.check(TokenType::GREATER)) {
-                ctx.error(stream, DiagCode::E1009, ",", "generic arguments"); // Unexpected trailing comma
-                stream.advance(); // Consume '>'
-                break;
-            }
-            
-            // Check if we're at EOF after comma
-            if (stream.isAtEnd()) {
-                ctx.error(stream, DiagCode::E1005, ">", "generic argument list", "<EOF>");
-                break;
-            }
-            
-            // Continue to parse next argument
-        } else if (stream.check(TokenType::GREATER)) {
-            // End of generic argument list
-            stream.advance(); // Consume '>'
-            break;
-        } else {
-            // Unexpected token
-            ctx.error(stream, DiagCode::E1008, stream.peekValue(), "',' or '>'");
-            synchronizeTo(stream, ctx, TokenType::GREATER);
-            if (stream.check(TokenType::GREATER)) {
-                stream.advance(); // Consume '>' and exit
-            }
-            break;
         }
     }
     
-    // ─── Check if we exited because of EOF ──────────────────────────────
-    if (stream.isAtEnd()) {
-        ctx.error(stream, DiagCode::E1005, ">", "generic argument list", "<EOF>");
+    // ─── Consume closing bracket ────────────────────────────────────────
+    if (!stream.check(TokenType::GREATER)) {
+        ctx.error(stream, DiagCode::E1005, ">", "generic argument list", stream.peekValue());
+        synchronizeTo(stream, ctx, TokenType::GREATER);
+        if (stream.check(TokenType::GREATER)) {
+            stream.advance(); // Consume '>' to recover
+        }
+    } else {
+        stream.advance(); // Consume '>'
     }
     
     // Build the ArenaSpan
@@ -880,6 +866,27 @@ std::vector<ParamPtr> parseParamList(TokenStream& stream, ParserContext& ctx) {
     bool hasVariadic = false;
     
     while (!stream.isAtEnd()) {
+        // ─── Skip consecutive separators ────────────────────────────────
+        int separatorCount = 0;
+        while (stream.check(TokenType::COMMA)) {
+            separatorCount++;
+            stream.advance(); // Consume the separator
+        }
+        
+        if (separatorCount > 0) {
+            ctx.error(stream, DiagCode::E1009, ",", "parameter list"); // Unexpected trailing comma
+        }
+        
+        // ─── Check if we've reached a terminator ──────────────────────
+        if (stream.check(TokenType::RPAREN)) {
+            break; // End of parameter list
+        }
+        
+        if (stream.isAtEnd()) {
+            ctx.error(stream, DiagCode::E1005, ")", "parameter list", "<EOF>");
+            break;
+        }
+        
         SourceLocation loc = stream.currentLoc();
         
         // ─── 1. Check for 'const' modifier ──────────────────────────────
@@ -891,11 +898,12 @@ std::vector<ParamPtr> parseParamList(TokenStream& stream, ParserContext& ctx) {
             synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN);
             if (stream.check(TokenType::COMMA)) {
                 stream.advance();
+                continue;
             } else if (stream.check(TokenType::RPAREN)) {
-                stream.advance(); // Consume ')' and exit
+                break;
+            } else {
                 break;
             }
-            continue;
         }
         
         Token nameTok = stream.advance();
@@ -906,11 +914,7 @@ std::vector<ParamPtr> parseParamList(TokenStream& stream, ParserContext& ctx) {
         
         if (isVariadic && hasVariadic) {
             ctx.error(stream, DiagCode::E1010, "parameter group", "only one variadic parameter is allowed on each group");
-            synchronizeTo(stream, ctx, TokenType::RPAREN);
-            if (stream.check(TokenType::RPAREN)) {
-                stream.advance();
-            }
-            break;
+            // Don't break here, continue to parse the type so we can recover
         }
         
         // ─── 4. Parse parameter type ─────────────────────────────────────
@@ -920,11 +924,12 @@ std::vector<ParamPtr> parseParamList(TokenStream& stream, ParserContext& ctx) {
             synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN);
             if (stream.check(TokenType::COMMA)) {
                 stream.advance();
+                continue;
             } else if (stream.check(TokenType::RPAREN)) {
-                stream.advance(); // Consume ')' and exit
+                break;
+            } else {
                 break;
             }
-            continue;
         }
         
         // ─── 5. Create the parameter node ────────────────────────────────
@@ -940,50 +945,26 @@ std::vector<ParamPtr> parseParamList(TokenStream& stream, ParserContext& ctx) {
             hasVariadic = true;
         }
         
-        // ─── 6. Check for comma separator ───────────────────────────────
-        if (stream.check(TokenType::COMMA)) {
-            if (hasVariadic) {
-                ctx.error(stream, DiagCode::E1010, "parameter group", "variadic parameter must be the last parameter");
-                synchronizeTo(stream, ctx, TokenType::RPAREN);
-                if (stream.check(TokenType::RPAREN)) {
-                    stream.advance();
-                }
-                break;
-            }
-            stream.advance(); // Consume comma
-            
-            // Check for trailing comma: (a int, b int, )
-            if (stream.check(TokenType::RPAREN)) {
-                ctx.error(stream, DiagCode::E1009, ",", "parameter list"); // Unexpected trailing comma
-                stream.advance(); // Consume ')'
-                break;
-            }
-            
-            // Check if we're at EOF after comma
-            if (stream.isAtEnd()) {
-                ctx.error(stream, DiagCode::E1005, ")", "parameter list", "<EOF>");
-                break;
-            }
-            
-            // Continue to parse next parameter
-        } else if (stream.check(TokenType::RPAREN)) {
-            // End of parameter list
-            stream.advance(); // Consume ')'
-            break;
-        } else {
-            // Unexpected token
-            ctx.error(stream, DiagCode::E1008, stream.peekValue(), "',' or ')'");
-            synchronizeTo(stream, ctx, TokenType::RPAREN);
-            if (stream.check(TokenType::RPAREN)) {
-                stream.advance(); // Consume ')' and exit
-            }
-            break;
+        // ─── Check if variadic is last ──────────────────────────────────
+        // If we have a variadic parameter, check if there's another parameter after it
+        if (isVariadic && stream.check(TokenType::COMMA)) {
+            ctx.error(stream, DiagCode::E1010, "parameter group", "variadic parameter must be the last parameter");
+            // Skip the comma and continue to parse the next parameter
+            stream.advance();
+            // But we should still continue parsing to recover
+            continue;
         }
     }
     
-    // ─── Check if we exited because of EOF ──────────────────────────────
-    if (stream.isAtEnd()) {
-        ctx.error(stream, DiagCode::E1005, ")", "parameter list", "<EOF>");
+    // ─── Consume closing parenthesis ────────────────────────────────────
+    if (!stream.check(TokenType::RPAREN)) {
+        ctx.error(stream, DiagCode::E1005, ")", "parameter list", stream.peekValue());
+        synchronizeTo(stream, ctx, TokenType::RPAREN);
+        if (stream.check(TokenType::RPAREN)) {
+            stream.advance(); // Consume ')' to recover
+        }
+    } else {
+        stream.advance(); // Consume ')'
     }
     
     LOG_PARSER_DETAIL("parseParamList: parsed ", params.size(), " parameters");
@@ -1169,7 +1150,7 @@ ArenaSpan<TypeAST*> parseReturnList(TokenStream& stream, ParserContext& ctx) {
             }
             
             if (separatorCount > 0) {
-                ctx.error(stream, DiagCode::E1009); // Unexpected trailing comma
+                ctx.error(stream, DiagCode::E1009, ",", "return list"); // Unexpected trailing comma
             }
             
             // ─── Check if we've reached a terminator ────────────────────────
@@ -1285,31 +1266,66 @@ std::vector<InternedString> parseUsePath(TokenStream& stream, ParserContext& ctx
     pathParts.push_back(ctx.pool.intern(tok.value));
     
     // Parse additional identifiers separated by '.'
-    while (stream.check(TokenType::DOT)) {
+    while (!stream.isAtEnd()) {
+        // ─── Check for '.' separator ─────────────────────────────────────
+        if (!stream.check(TokenType::DOT)) {
+            break; // No more path components
+        }
+        
         stream.advance(); // Consume '.'
         
         // ─── Check for trailing '.' ─────────────────────────────────────
-        // If we see EOF, 'as', or something that can't start an identifier,
-        // it's a trailing dot error
-        if (stream.isAtEnd()) {
-            ctx.error(stream, DiagCode::E1009, ".", "module path"); // Unexpected trailing '.'
-            break;
-        }
-        
-        // Check for 'as' after dot - this means trailing dot before alias
-        if (stream.check(TokenType::AS)) {
-            ctx.error(stream, DiagCode::E1009, ".", "module path"); // Unexpected trailing '.'
-            // Don't consume 'as' - let the caller handle it
-            break;
-        }
-        
-        // Error if no identifier was found after '.'
-        if (!stream.check(TokenType::IDENTIFIER)) {
+        // This handles cases like: "std.io." or "std..io"
+        if (stream.isAtEnd() || 
+            stream.check(TokenType::AS) || 
+            stream.check(TokenType::SEMICOLON) ||
+            stream.check(TokenType::DOT) ||  // Consecutive dots
+            !stream.check(TokenType::IDENTIFIER)) {
+            
+            // Check for consecutive dots
+            if (stream.check(TokenType::DOT)) {
+                ctx.error(stream, DiagCode::E1009, ".", "module path"); // Consecutive dots
+                // Consume the extra dot(s) to recover
+                while (stream.check(TokenType::DOT)) {
+                    stream.advance();
+                }
+                // Check if we have a valid identifier after the dots
+                if (stream.check(TokenType::IDENTIFIER)) {
+                    tok = stream.advance();
+                    pathParts.push_back(ctx.pool.intern(tok.value));
+                    continue;
+                }
+                break;
+            }
+            
+            // Check if we're at end of file or a terminator
+            if (stream.isAtEnd()) {
+                ctx.error(stream, DiagCode::E1009, ".", "module path"); // Unexpected trailing '.'
+                break;
+            }
+            
+            // Check for 'as' after dot - this means trailing dot before alias
+            if (stream.check(TokenType::AS)) {
+                ctx.error(stream, DiagCode::E1009, ".", "module path"); // Unexpected trailing '.'
+                // Don't consume 'as' - let the caller handle it
+                break;
+            }
+            
+            // Check for semicolon after dot - this means trailing dot before semicolon
+            if (stream.check(TokenType::SEMICOLON)) {
+                ctx.error(stream, DiagCode::E1009, ".", "module path"); // Unexpected trailing '.'
+                // Don't consume ';' - let the caller handle it
+                break;
+            }
+            
+            // If we get here, we have a token that's not an identifier, not a dot, not a terminator
+            // This is an error - expected identifier after '.'
             ctx.error(stream, DiagCode::E1002, "identifier after '.'", stream.peekValue());
             synchronizeTo(stream, ctx, TokenType::AS, TokenType::SEMICOLON);
             break;
         }
         
+        // We have a valid identifier after the dot
         tok = stream.advance();
         pathParts.push_back(ctx.pool.intern(tok.value));
     }
