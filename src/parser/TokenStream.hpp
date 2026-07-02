@@ -88,6 +88,9 @@ struct TokenStream {
     /** @brief Get the file path this stream represents. */
     InternedString getFilePath() const { return filePath_; }
     
+    /** @brief Consume all consecutive tokens of the given type. */
+    int consumeTrailing(TokenType type);
+    
     // ─── Lookahead ──────────────────────────────────────────────────────
     
     TokenType peekType() const { return peek().type; }     // Get the token type(kind)

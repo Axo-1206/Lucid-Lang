@@ -220,6 +220,67 @@ SourceLocation TokenStream::currentLoc() const {
 }
 
 // =============================================================================
+// Trailing Token Consumption
+// =============================================================================
+
+/**
+ * @brief Consume all consecutive tokens of the given type.
+ * 
+ * This method consumes ALL consecutive tokens of the specified type.
+ * It is useful for handling optional trailing tokens like semicolons.
+ * 
+ * ## Usage
+ * 
+ * ```cpp
+ * // Consume all trailing semicolons
+ * int count = stream.consumeTrailing(TokenType::SEMICOLON);
+ * 
+ * // Consume all trailing commas (useful for array/list parsing)
+ * int count = stream.consumeTrailing(TokenType::COMMA);
+ * ```
+ * 
+ * ## Examples
+ * 
+ * Input: `struct Point { ... };;;;;`
+ * - `consumeTrailing(TokenType::SEMICOLON)` → consumes all 5 semicolons
+ * 
+ * Input: `[1, 2, 3,,,,]`
+ * - `consumeTrailing(TokenType::COMMA)` → consumes all 4 commas
+ * 
+ * ## Why consume all?
+ * 
+ * 1. **Resilience**: Users may write extra tokens by mistake
+ * 2. **No Infinite Loops**: Prevents parser from getting stuck on the same token
+ * 3. **Clean Recovery**: Allows parser to move to the next meaningful token
+ * 
+ * ## Error Handling
+ * 
+ * This method does NOT report errors when the token is missing. It silently
+ * returns 0. This is by design because trailing tokens are optional.
+ * 
+ * @param type The token type to consume.
+ * @return The number of tokens consumed (0 if none).
+ * 
+ * @note This method skips comments before checking for the token.
+ * @note Tokens are consumed ONLY if they're the next non-comment token(s).
+ */
+int TokenStream::consumeTrailing(TokenType type) {
+    int count = 0;
+    while (check(type)) {
+        LOG_PARSER_DETAIL("consumeTrailing: consuming token #", count + 1, 
+                          " of type ", debug::tokenTypeToString(type));
+        advance();
+        count++;
+    }
+    if (count > 0) {
+        LOG_PARSER_DETAIL("consumeTrailing: consumed ", count, 
+                          " consecutive tokens of type ", 
+                          debug::tokenTypeToString(type));
+    }
+    return count;
+}
+
+// =============================================================================
 // Lookahead
 // =============================================================================
 
