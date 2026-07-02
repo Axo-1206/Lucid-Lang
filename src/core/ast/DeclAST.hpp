@@ -363,14 +363,14 @@ using EnumDeclPtr = EnumDeclAST*;
  *       actual values. The semantic pass uses them to verify that implementing
  *       structs declare all required fields with matching names, types, and const-ness.
  */
-struct TraitFieldDeclAST : BaseAST {
+struct TraitFieldDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::TraitFieldDecl;
 
     InternedString name;
     TypePtr type;          // required field type (must not be nullable/fallible)
     bool isConst = false;  // true if implementing struct must declare as const
 
-    TraitFieldDeclAST() : BaseAST(ASTKind::TraitFieldDecl) {}
+    TraitFieldDeclAST() : DeclAST(ASTKind::TraitFieldDecl) {}
 };
 using TraitFieldPtr = TraitFieldDeclAST*;
 

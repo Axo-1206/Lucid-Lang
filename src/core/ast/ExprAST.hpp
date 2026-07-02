@@ -326,7 +326,6 @@ struct ModuleAccessExprAST : ExprAST {
  *   f(1, 2, 3)                              → callee is IdentifierExprAST
  *   Buffer<int>(capacity)                   → genericArgs = [Int]
  *   math:sqrt(x)                            → callee is ModuleAccessExprAST
- *   obj:method(a, b)                        → callee is FieldAccessExprAST (for methods)
  *   x |> map<int, string>(stringFromInt)!   → hasArgPack = true
  *
  * ─── Generic Instantiation ──────────────────────────────────────────────────

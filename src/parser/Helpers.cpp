@@ -212,13 +212,7 @@ ArenaSpan<AttributePtr> parseAttributes(TokenStream& stream, ParserContext& ctx)
     // Parse attributes until we hit ']'
     while (!stream.isAtEnd()) {
         // ─── Skip consecutive separators ────────────────────────────────
-        int separatorCount = 0;
-        while (stream.check(TokenType::COMMA)) {
-            separatorCount++;
-            stream.advance(); // Consume the separator
-        }
-        
-        if (separatorCount > 0) {
+        if (stream.consumeTrailing(TokenType::COMMA) > 0) {
             ctx.error(stream, DiagCode::E1009, ",", "attribute list"); // Unexpected trailing comma
         }
         
@@ -315,13 +309,7 @@ AttributePtr parseAttribute(TokenStream& stream, ParserContext& ctx) {
         // Parse arguments until we hit ')'
         while (!stream.isAtEnd()) {
             // ─── Skip consecutive separators ────────────────────────────────
-            int separatorCount = 0;
-            while (stream.check(TokenType::COMMA)) {
-                separatorCount++;
-                stream.advance(); // Consume the separator
-            }
-            
-            if (separatorCount > 0) {
+            if (stream.consumeTrailing(TokenType::COMMA) > 0) {
                 ctx.error(stream, DiagCode::E1009, ",", "attribute arguments"); // Unexpected trailing comma
             }
             
@@ -521,13 +509,7 @@ ArenaSpan<GenericParamDeclPtr> parseGenericParamDecls(TokenStream& stream, Parse
     // Parse parameters until we hit '>'
     while (!stream.isAtEnd()) {
         // ─── Skip consecutive separators ────────────────────────────────
-        int separatorCount = 0;
-        while (stream.check(TokenType::COMMA)) {
-            separatorCount++;
-            stream.advance(); // Consume the separator
-        }
-        
-        if (separatorCount > 0) {
+        if (stream.consumeTrailing(TokenType::COMMA) > 0) {
             ctx.error(stream, DiagCode::E1009, ",", "generic parameters"); // Unexpected trailing comma
         }
         
@@ -742,13 +724,7 @@ ArenaSpan<TypePtr> parseGenericArgs(TokenStream& stream, ParserContext& ctx) {
     // Parse arguments until we hit '>'
     while (!stream.isAtEnd()) {
         // ─── Skip consecutive separators ────────────────────────────────
-        int separatorCount = 0;
-        while (stream.check(TokenType::COMMA)) {
-            separatorCount++;
-            stream.advance(); // Consume the separator
-        }
-        
-        if (separatorCount > 0) {
+        if (stream.consumeTrailing(TokenType::COMMA) > 0) {
             ctx.error(stream, DiagCode::E1009, ",", "generic arguments"); // Unexpected trailing comma
         }
         
@@ -867,13 +843,7 @@ std::vector<ParamPtr> parseParamList(TokenStream& stream, ParserContext& ctx) {
     
     while (!stream.isAtEnd()) {
         // ─── Skip consecutive separators ────────────────────────────────
-        int separatorCount = 0;
-        while (stream.check(TokenType::COMMA)) {
-            separatorCount++;
-            stream.advance(); // Consume the separator
-        }
-        
-        if (separatorCount > 0) {
+        if (stream.consumeTrailing(TokenType::COMMA) > 0) {
             ctx.error(stream, DiagCode::E1009, ",", "parameter list"); // Unexpected trailing comma
         }
         
@@ -1010,13 +980,7 @@ ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx) {
     // ─── 3. Parse arguments until we hit ')' ─────────────────────────────
     while (!stream.isAtEnd()) {
         // Skip consecutive separators
-        int separatorCount = 0;
-        while (stream.check(TokenType::COMMA)) {
-            separatorCount++;
-            stream.advance();
-        }
-        
-        if (separatorCount > 0) {
+        if (stream.consumeTrailing(TokenType::COMMA) > 0) {
             ctx.error(stream, DiagCode::E1009, ",", "argument list"); // Unexpected trailing comma
         }
         
@@ -1143,13 +1107,7 @@ ArenaSpan<TypeAST*> parseReturnList(TokenStream& stream, ParserContext& ctx) {
         // ─── Parse types until we hit ')' ──────────────────────────────────
         while (!stream.isAtEnd()) {
             // ─── Skip consecutive separators ────────────────────────────────
-            int separatorCount = 0;
-            while (stream.check(TokenType::COMMA)) {
-                separatorCount++;
-                stream.advance(); // Consume the separator
-            }
-            
-            if (separatorCount > 0) {
+            if (stream.consumeTrailing(TokenType::COMMA) > 0) {
                 ctx.error(stream, DiagCode::E1009, ",", "return list"); // Unexpected trailing comma
             }
             
@@ -1286,9 +1244,7 @@ std::vector<InternedString> parseUsePath(TokenStream& stream, ParserContext& ctx
             if (stream.check(TokenType::DOT)) {
                 ctx.error(stream, DiagCode::E1009, ".", "module path"); // Consecutive dots
                 // Consume the extra dot(s) to recover
-                while (stream.check(TokenType::DOT)) {
-                    stream.advance();
-                }
+                stream.consumeTrailing(TokenType::DOT);
                 // Check if we have a valid identifier after the dots
                 if (stream.check(TokenType::IDENTIFIER)) {
                     tok = stream.advance();

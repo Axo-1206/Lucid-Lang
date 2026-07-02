@@ -491,44 +491,51 @@ bool parseInternal(TokenStream& stream, ParserContext& ctx, std::vector<DeclPtr>
 // =============================================================================
 
 DeclAST* parseDecl(TokenStream& stream, ParserContext& ctx) {
-    // Check for USE declaration first (imports module)
+    // ─── 1. Skip stray semicolons ─────────────────────────────────────────
+    // We use consumeTrailing here to skip all consecutive semicolons
+    // at the start of a declaration (empty statements)
+    stream.consumeTrailing(TokenType::SEMICOLON);
+    
+    if (stream.isAtEnd()) {
+        return nullptr;
+    }
+    
+    // ─── 2. Parse attributes ──────────────────────────────────────────────
+    ArenaSpan<AttributePtr> attrs = parseAttributes(stream, ctx);
+    
+    // ─── 3. Parse declaration ─────────────────────────────────────────────
+    DeclAST* decl = nullptr;
+    
     if (stream.check(TokenType::USE)) {
-        return parseUseDecl(stream, ctx);
-    }
-    
-    // Other declarations...
-    if (stream.check(TokenType::STRUCT)) {
-        return parseStructDecl(stream, ctx);
-    }
-    
-    if (stream.check(TokenType::ENUM)) {
-        return parseEnumDecl(stream, ctx);
-    }
-    
-    if (stream.check(TokenType::TRAIT)) {
-        return parseTraitDecl(stream, ctx);
-    }
-    
-    if (stream.check(TokenType::LET) || stream.check(TokenType::CONST)) {
-        // Need lookahead to distinguish var from func
-        // For now, try var first
+        decl = parseUseDecl(stream, ctx);  // consumes ';' (required)
+    } else if (stream.check(TokenType::STRUCT)) {
+        decl = parseStructDecl(stream, ctx);
+        if (decl) stream.consumeTrailing(TokenType::SEMICOLON);  // optional ';'s
+    } else if (stream.check(TokenType::ENUM)) {
+        decl = parseEnumDecl(stream, ctx);
+        if (decl) stream.consumeTrailing(TokenType::SEMICOLON);  // optional ';'s
+    } else if (stream.check(TokenType::TRAIT)) {
+        decl = parseTraitDecl(stream, ctx);
+        if (decl) stream.consumeTrailing(TokenType::SEMICOLON);  // optional ';'s
+    } else if (stream.check(TokenType::LET) || stream.check(TokenType::CONST)) {
         if (looksLikeFuncDecl(stream, ctx)) {
-            return parseFuncDecl(stream, ctx);
+            decl = parseFuncDecl(stream, ctx);
+            if (decl) stream.consumeTrailing(TokenType::SEMICOLON);  // optional ';'s
+        } else {
+            decl = parseVarDecl(stream, ctx);  // consumes ';' (required)
         }
-        return parseVarDecl(stream, ctx);
-    }
-
-    // ─── Consume semicolon ────────────────────────────────────────────────
-    if (!stream.match(TokenType::SEMICOLON)) {
-        ctx.error(stream, DiagCode::E1007, ";", stream.peekValue());
+    } else {
+        ctx.error(stream, DiagCode::E1008, stream.peekValue());
         synchronize(stream, ctx);
-        // Continue anyway - return the declaration
+        return nullptr;
     }
     
-    // Unknown declaration
-    ctx.error(stream, DiagCode::E1008, stream.peekValue());
-    synchronize(stream, ctx);
-    return nullptr;
+    // ─── 4. Attach attributes ──────────────────────────────────────────────
+    if (decl) {
+        decl->attributes = attrs;
+    }
+    
+    return decl;
 }
 
 } // namespace parser

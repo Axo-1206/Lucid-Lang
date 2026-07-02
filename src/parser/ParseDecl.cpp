@@ -406,13 +406,7 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
             // Parse trait references separated by ','
             while (!stream.isAtEnd()) {
                 // ─── Skip consecutive separators ────────────────────────
-                int separatorCount = 0;
-                while (stream.check(TokenType::COMMA)) {
-                    separatorCount++;
-                    stream.advance(); // Consume the separator
-                }
-                
-                if (separatorCount > 0) {
+                if (stream.consumeTrailing(TokenType::COMMA) > 0) {
                     ctx.error(stream, DiagCode::E1009, stream.peekValue(), "struct traits");
                 }
                 
@@ -488,13 +482,7 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
     // ─── 7. Parse fields ──────────────────────────────────────────────────
     while (!stream.isAtEnd()) {
         // ─── Skip consecutive separators ────────────────────────────────
-        int separatorCount = 0;
-        while (stream.checkAny(TokenType::COMMA, TokenType::SEMICOLON)) {
-            separatorCount++;
-            stream.advance(); // Consume the separator
-        }
-        
-        if (separatorCount > 0) {
+        if (stream.consumeTrailing(TokenType::SEMICOLON) > 0) {
             ctx.error(stream, DiagCode::E1009, stream.peekValue(), "field declaration");
         }
         
@@ -514,8 +502,8 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
             fields.push_back(field);
         } else {
             // Error already reported, try to recover
-            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::SEMICOLON, TokenType::RBRACE);
-            if (stream.checkAny(TokenType::COMMA, TokenType::SEMICOLON)) {
+            synchronizeTo(stream, ctx, TokenType::SEMICOLON, TokenType::RBRACE);
+            if (stream.check(TokenType::SEMICOLON)) {
                 stream.advance();
                 continue;
             } else if (stream.check(TokenType::RBRACE)) {
@@ -571,21 +559,25 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
 /**
  * @brief Parse a struct field declaration.
  * 
- * Grammar: [ 'const' ] IDENTIFIER type [ '=' expr ]
+ * Grammar: [ '@[' attr { ',' attr } ']' ] [ 'const' ] IDENTIFIER type [ '=' expr ]
  * 
  * @param stream The token stream
  * @param ctx The parsing context
  * @return FieldDeclAST* The parsed field declaration, or nullptr on error
  *
- * @note parseStructDecl already consume extra ',' and ';'
+ * @note parseStructDecl already consumes extra ',' and ';'
+ * @note Attributes are parsed and attached to the field declaration.
  */
 FieldDeclPtr parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
     
-    // Parse 'const' modifier (optional)
+    // ─── 1. Parse attributes (if any) ─────────────────────────────────────
+    ArenaSpan<AttributePtr> attrs = parseAttributes(stream, ctx);
+    
+    // ─── 2. Parse 'const' modifier (optional) ────────────────────────────
     bool isConst = stream.match(TokenType::CONST);
     
-    // Parse name
+    // ─── 3. Parse name ──────────────────────────────────────────────────
     if (!stream.check(TokenType::IDENTIFIER)) {
         ctx.error(stream, DiagCode::E1002, "field name", stream.peekValue());
         synchronize(stream, ctx);
@@ -594,7 +586,7 @@ FieldDeclPtr parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
     Token nameTok = stream.advance();
     InternedString name = ctx.pool.intern(nameTok.value);
     
-    // Parse type
+    // ─── 4. Parse type ──────────────────────────────────────────────────
     TypePtr type = parseType(stream, ctx);
     if (!type) {
         ctx.error(stream, DiagCode::E1003, stream.peekValue());
@@ -602,7 +594,7 @@ FieldDeclPtr parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
         return nullptr;
     }
     
-    // Parse default value (optional)
+    // ─── 5. Parse default value (optional) ──────────────────────────────
     ExprPtr defaultVal = nullptr;
     if (stream.match(TokenType::ASSIGN)) {
         defaultVal = parseExpr(stream, ctx);
@@ -613,18 +605,18 @@ FieldDeclPtr parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
         }
     }
     
-    // Const fields without default value should be required
-    // The semantic pass will enforce this
-    
+    // ─── 6. Build the AST node ───────────────────────────────────────────
     auto* fieldDecl = ctx.arena.make<FieldDeclAST>();
     fieldDecl->loc = loc;
     fieldDecl->name = name;
     fieldDecl->type = type;
     fieldDecl->defaultVal = defaultVal;
     fieldDecl->isConst = isConst;
+    fieldDecl->attributes = attrs;  // Attach attributes to the field
     
     LOG_PARSER_DETAIL("Parsed field: ", ctx.toString(name), 
-                      (isConst ? " const" : ""));
+                      (isConst ? " const" : ""),
+                      " with ", attrs.size(), " attributes");
     return fieldDecl;
 }
 
@@ -740,13 +732,7 @@ EnumDeclAST* parseEnumDecl(TokenStream& stream, ParserContext& ctx) {
     // ─── 6. Parse variants ────────────────────────────────────────────────
     while (!stream.isAtEnd()) {
         // ─── Skip consecutive separators ────────────────────────────────
-        int separatorCount = 0;
-        while (stream.check(TokenType::COMMA)) {
-            separatorCount++;
-            stream.advance(); // Consume the separator
-        }
-        
-        if (separatorCount > 0) {
+        if (stream.consumeTrailing(TokenType::COMMA) > 0) {
             ctx.error(stream, DiagCode::E1009, stream.peekValue(), "enum variant");
         }
         
@@ -815,7 +801,7 @@ EnumDeclAST* parseEnumDecl(TokenStream& stream, ParserContext& ctx) {
 /**
  * @brief Parse an enum variant.
  * 
- * Grammar: IDENTIFIER '=' INT_LIT
+ * Grammar: [ '@[' attr { ',' attr } ']' ] IDENTIFIER '=' INT_LIT
  * 
  * @param stream The token stream
  * @param ctx The parsing context
@@ -824,7 +810,10 @@ EnumDeclAST* parseEnumDecl(TokenStream& stream, ParserContext& ctx) {
 EnumVariantPtr parseEnumVariant(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
     
-    // Parse name
+    // ─── 1. Parse attributes (if any) ─────────────────────────────────────
+    ArenaSpan<AttributePtr> attrs = parseAttributes(stream, ctx);
+    
+    // ─── 2. Parse name ──────────────────────────────────────────────────
     if (!stream.check(TokenType::IDENTIFIER)) {
         ctx.error(stream, DiagCode::E1002, "variant name", stream.peekValue());
         synchronize(stream, ctx);
@@ -833,14 +822,14 @@ EnumVariantPtr parseEnumVariant(TokenStream& stream, ParserContext& ctx) {
     Token nameTok = stream.advance();
     InternedString name = ctx.pool.intern(nameTok.value);
     
-    // Expect '='
+    // ─── 3. Expect '=' ────────────────────────────────────────────────────
     if (!stream.match(TokenType::ASSIGN)) {
         ctx.error(stream, DiagCode::E1006, stream.peekValue());
         synchronize(stream, ctx);
         return nullptr;
     }
     
-    // Parse value (must be integer literal)
+    // ─── 4. Parse value (must be integer literal) ────────────────────────
     if (!stream.check(TokenType::INT_LITERAL) &&
         !stream.check(TokenType::HEX_LITERAL) &&
         !stream.check(TokenType::BINARY_LITERAL)) {
@@ -852,11 +841,14 @@ EnumVariantPtr parseEnumVariant(TokenStream& stream, ParserContext& ctx) {
     Token valueTok = stream.advance();
     int64_t value = std::stoll(valueTok.value);
     
+    // ─── 5. Build the AST node ───────────────────────────────────────────
     auto* variant = ctx.arena.make<EnumVariantAST>(name, value);
     variant->loc = loc;
+    variant->attributes = attrs;  // Attach attributes to the variant
     
     LOG_PARSER_DETAIL("Parsed enum variant: ", ctx.toString(name), 
-                      " = ", value);
+                      " = ", value,
+                      " with ", attrs.size(), " attributes");
     return variant;
 }
 
@@ -963,13 +955,7 @@ TraitDeclAST* parseTraitDecl(TokenStream& stream, ParserContext& ctx) {
     // ─── 6. Parse fields ──────────────────────────────────────────────────
     while (!stream.isAtEnd()) {
         // ─── Skip consecutive separators ────────────────────────────────
-        int separatorCount = 0;
-        while (stream.checkAny(TokenType::COMMA, TokenType::SEMICOLON)) {
-            separatorCount++;
-            stream.advance(); // Consume the separator
-        }
-        
-        if (separatorCount > 0) {
+        if (stream.consumeTrailing(TokenType::SEMICOLON) > 0) {
             ctx.error(stream, DiagCode::E1009, stream.peekValue(), "trait field");
         }
         
@@ -1038,7 +1024,7 @@ TraitDeclAST* parseTraitDecl(TokenStream& stream, ParserContext& ctx) {
 /**
  * @brief Parse a trait field declaration.
  * 
- * Grammar: [ 'const' ] IDENTIFIER type
+ * Grammar: [ '@[' attr { ',' attr } ']' ] [ 'const' ] IDENTIFIER type
  * 
  * @param stream The token stream
  * @param ctx The parsing context
@@ -1047,10 +1033,13 @@ TraitDeclAST* parseTraitDecl(TokenStream& stream, ParserContext& ctx) {
 TraitFieldPtr parseTraitField(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
     
-    // Parse 'const' modifier (optional)
+    // ─── 1. Parse attributes (if any) ─────────────────────────────────────
+    ArenaSpan<AttributePtr> attrs = parseAttributes(stream, ctx);
+    
+    // ─── 2. Parse 'const' modifier (optional) ────────────────────────────
     bool isConst = stream.match(TokenType::CONST);
     
-    // Parse name
+    // ─── 3. Parse name ──────────────────────────────────────────────────
     if (!stream.check(TokenType::IDENTIFIER)) {
         ctx.error(stream, DiagCode::E1002, "trait field name", stream.peekValue());
         synchronize(stream, ctx);
@@ -1059,7 +1048,7 @@ TraitFieldPtr parseTraitField(TokenStream& stream, ParserContext& ctx) {
     Token nameTok = stream.advance();
     InternedString name = ctx.pool.intern(nameTok.value);
     
-    // Parse type
+    // ─── 4. Parse type ──────────────────────────────────────────────────
     TypePtr type = parseType(stream, ctx);
     if (!type) {
         ctx.error(stream, DiagCode::E1003, stream.peekValue());
@@ -1070,57 +1059,18 @@ TraitFieldPtr parseTraitField(TokenStream& stream, ParserContext& ctx) {
     // Trait fields cannot be nullable or fallible
     // The semantic pass will enforce this
     
+    // ─── 5. Build the AST node ───────────────────────────────────────────
     auto* traitField = ctx.arena.make<TraitFieldDeclAST>();
     traitField->loc = loc;
     traitField->name = name;
     traitField->type = type;
     traitField->isConst = isConst;
+    traitField->attributes = attrs;  // Attach attributes to the trait field
     
     LOG_PARSER_DETAIL("Parsed trait field: ", ctx.toString(name), 
-                      (isConst ? " const" : ""));
+                      (isConst ? " const" : ""),
+                      " with ", attrs.size(), " attributes");
     return traitField;
-}
-
-// =============================================================================
-// parseTraitRef() – Parses a trait reference
-// =============================================================================
-
-/**
- * @brief Parse a trait reference.
- * 
- * Grammar: IDENTIFIER [ '<' type { ',' type } '>' ]
- * 
- * @param stream The token stream
- * @param ctx The parsing context
- * @return TraitRefPtr The parsed trait reference, or nullptr on error
- */
-TraitRefPtr parseTraitRef(TokenStream& stream, ParserContext& ctx) {
-    SourceLocation loc = stream.currentLoc();
-    
-    // Expect an identifier for the trait name
-    if (!stream.check(TokenType::IDENTIFIER)) {
-        ctx.error(stream, DiagCode::E1002, "trait name", stream.peekValue());
-        synchronize(stream, ctx);
-        return nullptr;
-    }
-    
-    Token nameTok = stream.advance();
-    InternedString name = ctx.pool.intern(nameTok.value);
-    
-    // Create the trait reference node
-    auto* traitRef = ctx.arena.make<TraitRefAST>();
-    traitRef->loc = loc;
-    traitRef->name = name;
-    
-    // Check for generic arguments (optional)
-    if (stream.check(TokenType::LESS)) {
-        traitRef->genericArgs = parseGenericArgs(stream, ctx);
-    }
-    
-    LOG_PARSER_DETAIL("parseTraitRef: parsed trait '", ctx.toString(name), 
-                       "' with ", traitRef->genericArgs.size(), " generic args");
-    
-    return traitRef;
 }
 
 } // namespace parser

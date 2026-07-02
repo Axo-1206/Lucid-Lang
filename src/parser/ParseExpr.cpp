@@ -445,7 +445,16 @@ ExprAST* parsePostfixExpr(TokenStream& stream, ParserContext& ctx, ExprPtr lhs) 
 /**
  * @brief Parse a function call expression.
  * 
- * Grammar: `'(' [ arg_list ] ')'`
+ * Grammar: `'(' [ arg_list ] ')' [ '!' ]`
+ * 
+ * ## Examples
+ * 
+ * ```lucid
+ * f(1, 2, 3)                              → regular call
+ * Buffer<int>(capacity)                   → generic call
+ * math:sqrt(x)                            → module function call
+ * x |> map<int, string>(stringFromInt)!   → argument pack call
+ * ```
  * 
  * @param stream The token stream
  * @param ctx The parsing context
@@ -453,10 +462,45 @@ ExprAST* parsePostfixExpr(TokenStream& stream, ParserContext& ctx, ExprPtr lhs) 
  * @param genericArgs The generic arguments (if any)
  * @return CallExprAST* The parsed call expression, or nullptr on error
  */
-CallExprAST* parseCallExpr(TokenStream& stream, ParserContext& ctx, ExprPtr callee, ArenaSpan<TypeAST*> genericArgs) {
+CallExprAST* parseCallExpr(TokenStream& stream, ParserContext& ctx, 
+                            ExprPtr callee, ArenaSpan<TypeAST*> genericArgs) {
+    SourceLocation loc = stream.currentLoc();
+    
     LOG_PARSER_DETAIL("parseCallExpr: parsing call expression");
-    // TODO: Implement
-    return nullptr;
+    
+    if (!callee) {
+        ctx.error(stream, DiagCode::E1006, "function to call", stream.peekValue());
+        return nullptr;
+    }
+    
+    // ─── 1. Expect '(' ────────────────────────────────────────────────────
+    if (!stream.check(TokenType::LPAREN)) {
+        ctx.error(stream, DiagCode::E1004, "(", "function call", stream.peekValue());
+        synchronize(stream, ctx);
+        return nullptr;
+    }
+    
+    // ─── 2. Parse arguments ──────────────────────────────────────────────
+    // parseArgList consumes '(' and ')' and returns the arguments
+    // It handles empty argument lists: f()
+    ArenaSpan<ExprPtr> args = parseArgList(stream, ctx);
+    
+    // ─── 3. Check for argument pack (!) ──────────────────────────────────
+    bool hasArgPack = stream.match(TokenType::BANG);
+    
+    // ─── 4. Build the call expression node ───────────────────────────────
+    auto* call = ctx.arena.make<CallExprAST>();
+    call->loc = loc;
+    call->callee = callee;
+    call->genericArgs = genericArgs;
+    call->args = args;
+    call->hasArgPack = hasArgPack;
+    
+    LOG_PARSER_DETAIL("parseCallExpr: parsed call expression with ", 
+                      args.size(), " arguments",
+                      hasArgPack ? " (with argument pack)" : "");
+    
+    return call;
 }
 
 /**
