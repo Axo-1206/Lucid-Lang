@@ -151,14 +151,14 @@ ExprAST* parsePrattExpr(TokenStream& stream, ParserContext& ctx, int minPrec) {
         }
         
         // Check for `is` operator (special handling)
-        if (current == TokenType::IS) {
-            stream.advance(); // Consume 'is'
-            lhs = parseInfixIs(stream, ctx, lhs);
-            if (!lhs) {
-                return nullptr;
-            }
-            continue;
-        }
+        // if (current == TokenType::IS) {
+        //     stream.advance(); // Consume 'is'
+        //     lhs = parseInfixIs(stream, ctx, lhs);
+        //     if (!lhs) {
+        //         return nullptr;
+        //     }
+        //     continue;
+        // }
         
         // Check for `??` operator (null coalesce)
         if (current == TokenType::QUESTION_QUESTION) {
@@ -506,16 +506,81 @@ CallExprAST* parseCallExpr(TokenStream& stream, ParserContext& ctx,
 /**
  * @brief Parse an intrinsic call expression.
  * 
- * Grammar: `'#' IDENTIFIER '(' [ intrinsic_arg_list ] ')'`
+ * Grammar: `'#' IDENTIFIER '(' [ arg_list ] ')'`
+ * 
+ * ## Examples
+ * 
+ * ```lucid
+ * #sizeof(T)         → intrinsicName = "sizeof", args = [T] (type argument)
+ * #toRef(ptr)        → intrinsicName = "toRef", args = [ptr]
+ * #toPtr(ref)        → intrinsicName = "toPtr", args = [ref]
+ * #ptrOffset(ptr, 4) → intrinsicName = "ptrOffset", args = [ptr, 4]
+ * #ptrDiff(p1, p2)   → intrinsicName = "ptrDiff", args = [p1, p2]
+ * #memcpy(dst, src, n) → intrinsicName = "memcpy", args = [dst, src, n]
+ * #sqrt(x)           → intrinsicName = "sqrt", args = [x]
+ * ```
+ * 
+ * ## Intrinsic Categories
+ * 
+ * 1. **Pointer Operations**: `#toRef`, `#toPtr`, `#ptrOffset`, `#ptrDiff`
+ * 2. **Memory Operations**: `#memcpy`, `#memset`, `#memmove`
+ * 3. **Math Operations**: `#sqrt`, `#sin`, `#cos`, `#tan`, `#abs`, `#pow`, etc.
+ * 4. **Type Operations**: `#sizeof`, `#alignof`, `#offsetof`
+ * 5. **Debug/Assert**: `#assert`, `#panic`, `#print`
+ * 6. **Atomic Operations**: `#atomicLoad`, `#atomicStore`, `#atomicCAS`, etc.
+ * 
+ * ## Argument Types
+ * 
+ * Intrinsic arguments can be:
+ * - Expressions (value arguments)
+ * - Type names (type arguments like `T` in `#sizeof(T)`)
+ * 
+ * The semantic pass validates the argument count and types for each intrinsic.
+ * Type arguments are parsed as regular expressions (identifiers) and the
+ * semantic pass will distinguish them based on the intrinsic being called.
  * 
  * @param stream The token stream
  * @param ctx The parsing context
  * @return IntrinsicCallExprAST* The parsed intrinsic call, or nullptr on error
  */
 IntrinsicCallExprAST* parseIntrinsicCallExpr(TokenStream& stream, ParserContext& ctx) {
+    SourceLocation loc = stream.currentLoc();
+    
     LOG_PARSER_DETAIL("parseIntrinsicCallExpr: parsing intrinsic call");
-    // TODO: Implement
-    return nullptr;
+    
+    // ─── 1. Parse '#' token ──────────────────────────────────────────────
+    if (!stream.check(TokenType::HASH)) {
+        ctx.error(stream, DiagCode::E1001, "#", stream.peekValue());
+        synchronize(stream, ctx);
+        return nullptr;
+    }
+    stream.advance(); // Consume '#'
+    
+    // ─── 2. Parse intrinsic name ──────────────────────────────────────────
+    if (!stream.check(TokenType::IDENTIFIER)) {
+        ctx.error(stream, DiagCode::E1002, "intrinsic name", stream.peekValue());
+        synchronize(stream, ctx);
+        return nullptr;
+    }
+    Token nameTok = stream.advance();
+    InternedString intrinsicName = ctx.pool.intern(nameTok.value);
+    
+    // ─── 3. Parse arguments using parseArgList ───────────────────────────
+    // parseArgList consumes '(' and ')' and returns the arguments as expressions
+    // For type arguments like #sizeof(T), T is parsed as an IdentifierExprAST
+    // The semantic pass will distinguish type arguments from value arguments
+    ArenaSpan<ExprPtr> args = parseArgList(stream, ctx);
+    
+    // ─── 4. Build the AST node ───────────────────────────────────────────
+    auto* intrinsic = ctx.arena.make<IntrinsicCallExprAST>();
+    intrinsic->loc = loc;
+    intrinsic->intrinsicName = intrinsicName;
+    intrinsic->args = args;
+    
+    LOG_PARSER_DETAIL("parseIntrinsicCallExpr: parsed intrinsic '#", 
+                      ctx.toString(intrinsicName), "' with ", args.size(), " arguments");
+    
+    return intrinsic;
 }
 
 /**
@@ -523,15 +588,95 @@ IntrinsicCallExprAST* parseIntrinsicCallExpr(TokenStream& stream, ParserContext&
  * 
  * Grammar: `'[' expr ']'`
  * 
+ * ## Examples
+ * 
+ * ```lucid
+ * nums[2]         → index = 2
+ * arr[i + 1]      → index = i + 1
+ * matrix[row][col] → nested indexing
+ * ```
+ * 
+ * ## Semantic Analysis Notes
+ * 
+ * 1. **Runtime Check**: Indexing a slice (`[_]T`) or dynamic array (`[*]T`)
+ *    is always runtime-checked. A literal index does not prove in-bounds
+ *    against a slice of unknown length.
+ * 
+ * 2. **Compile-Time Check**: Indexing a fixed-size array (`[N]T`) with a
+ *    literal index that is provably less than `N` is checked at compile time.
+ * 
+ * 3. **Panic Handling**: Out-of-bounds access panics unless guarded with `??`.
+ * 
+ * 4. **Type**: The result type is the element type of the array.
+ * 
+ * 5. **String Indexing**: Indexing a string returns a character (char).
+ * 
  * @param stream The token stream
  * @param ctx The parsing context
- * @param target The target expression
+ * @param target The target expression (the array being indexed)
  * @return IndexExprAST* The parsed index expression, or nullptr on error
  */
 IndexExprAST* parseIndexExpr(TokenStream& stream, ParserContext& ctx, ExprPtr target) {
+    SourceLocation loc = stream.currentLoc();
+    
     LOG_PARSER_DETAIL("parseIndexExpr: parsing index expression");
-    // TODO: Implement
-    return nullptr;
+    
+    if (!target) {
+        ctx.error(stream, DiagCode::E1006,"none for index expression");
+        return nullptr;
+    }
+    
+    // ─── 1. Expect '[' ────────────────────────────────────────────────────
+    if (!stream.check(TokenType::LBRACKET)) {
+        ctx.error(stream, DiagCode::E1004, "[", "index expression", stream.peekValue());
+        synchronize(stream, ctx);
+        return nullptr;
+    }
+    stream.advance(); // Consume '['
+    
+    // ─── 2. Check for empty index: [] ────────────────────────────────────
+    if (stream.check(TokenType::RBRACKET)) {
+        ctx.error(stream, DiagCode::E1006, "none, aka no expression to index array");
+        stream.advance(); // Consume ']'
+        return nullptr;
+    }
+    
+    // ─── 3. Parse the index expression ────────────────────────────────────
+    ExprPtr index = parseExpr(stream, ctx);
+    if (!index) {
+        ctx.error(stream, DiagCode::E1006, "none, failed to parse expression for indexing");
+        synchronizeTo(stream, ctx, TokenType::RBRACKET);
+        if (stream.check(TokenType::RBRACKET)) {
+            stream.advance(); // Consume ']' to recover
+        }
+        return nullptr;
+    }
+    
+    // ─── 4. Expect ']' ────────────────────────────────────────────────────
+    if (!stream.check(TokenType::RBRACKET)) {
+        ctx.error(stream, DiagCode::E1005, "]", "index expression", stream.peekValue());
+        synchronizeTo(stream, ctx, TokenType::RBRACKET);
+        if (stream.check(TokenType::RBRACKET)) {
+            stream.advance(); // Consume ']' to recover
+        }
+        // Return the expression anyway (error recovery)
+        auto* indexExpr = ctx.arena.make<IndexExprAST>();
+        indexExpr->loc = loc;
+        indexExpr->target = target;
+        indexExpr->index = index;
+        return indexExpr;
+    }
+    stream.advance(); // Consume ']'
+    
+    // ─── 5. Build the AST node ───────────────────────────────────────────
+    auto* indexExpr = ctx.arena.make<IndexExprAST>();
+    indexExpr->loc = loc;
+    indexExpr->target = target;
+    indexExpr->index = index;
+    
+    LOG_PARSER_DETAIL("parseIndexExpr: parsed index expression");
+    
+    return indexExpr;
 }
 
 /**
@@ -539,17 +684,252 @@ IndexExprAST* parseIndexExpr(TokenStream& stream, ParserContext& ctx, ExprPtr ta
  * 
  * Grammar: `'[' [ expr ] range_op [ expr ] ']'`
  * 
+ * ## Examples
+ * 
+ * ```lucid
+ * nums[1..3]     → start = 1, end = 3,   isExclusive = false
+ * nums[1..<3]    → start = 1, end = 3,   isExclusive = true  (end excluded)
+ * nums[..<2]     → start = nullptr, end = 2, isExclusive = true
+ * nums[3..]      → start = 3, end = nullptr, isExclusive = false
+ * nums[..]       → start = nullptr, end = nullptr, isExclusive = false
+ * nums[..<]      → start = nullptr, end = nullptr, isExclusive = true (full range exclusive)
+ * ```
+ * 
+ * ## Range Operators
+ * 
+ * - `..`  : Inclusive range (end is included)
+ * - `..<` : Exclusive range (end is excluded)
+ * 
+ * ## Slice Rules
+ * 
+ * 1. **Borrowed View**: A slice `[_]T` is a borrowed view – it does not own
+ *    the underlying memory. The backing array must outlive the slice.
+ * 
+ * 2. **Bounds**: Start defaults to 0, end defaults to the array's length.
+ * 
+ * 3. **Runtime Check**: Slice bounds are runtime-checked. Out-of-bounds
+ *    access panics unless guarded with `??`.
+ * 
+ * 4. **Inclusive/Exclusive**: `..` is inclusive, `..<` is exclusive.
+ * 
+ * ## Semantic Analysis Notes
+ * 
+ * 1. **Start Default**: If start is omitted, it defaults to 0.
+ * 2. **End Default**: If end is omitted, it defaults to the array length.
+ * 3. **Type**: The result type is a slice (`[_]T`) of the same element type.
+ * 4. **String Slicing**: Slicing a string returns a string slice.
+ * 
  * @param stream The token stream
  * @param ctx The parsing context
- * @param target The target expression
+ * @param target The target expression (the array being sliced)
  * @return SliceExprAST* The parsed slice expression, or nullptr on error
  */
 SliceExprAST* parseSliceExpr(TokenStream& stream, ParserContext& ctx, ExprPtr target) {
+    SourceLocation loc = stream.currentLoc();
+    
     LOG_PARSER_DETAIL("parseSliceExpr: parsing slice expression");
-    // TODO: Implement
-    return nullptr;
+    
+    if (!target) {
+        ctx.error(stream, DiagCode::E1006, "target", stream.peekValue());
+        return nullptr;
+    }
+    
+    // ─── 1. Expect '[' ────────────────────────────────────────────────────
+    if (!stream.check(TokenType::LBRACKET)) {
+        ctx.error(stream, DiagCode::E1004, "[", "slice expression", stream.peekValue());
+        synchronize(stream, ctx);
+        return nullptr;
+    }
+    stream.advance(); // Consume '['
+    
+    // ─── 2. Parse the slice components ────────────────────────────────────
+    ExprPtr start = nullptr;
+    ExprPtr end = nullptr;
+    bool isExclusive = false;
+    bool hasRangeOp = false;
+    
+    // ─── 3. Check for empty slice: [] ────────────────────────────────────
+    if (stream.check(TokenType::RBRACKET)) {
+        ctx.error(stream, DiagCode::E1006, "none for slice expression");
+        stream.advance(); // Consume ']'
+        return nullptr;
+    }
+    
+    // ─── 4. Parse the slice ──────────────────────────────────────────────
+    // First, check if we have a range operator at the start: [..] or [..<]
+    if (stream.check(TokenType::RANGE) || stream.check(TokenType::RANGE_EXCLUSIVE)) {
+        // Start is omitted: [..end] or [..<end]
+        hasRangeOp = true;
+        isExclusive = stream.match(TokenType::RANGE_EXCLUSIVE);
+        if (!isExclusive) {
+            stream.match(TokenType::RANGE); // Consume '..'
+        }
+        
+        // Check for end expression
+        if (!stream.check(TokenType::RBRACKET)) {
+            end = parseExpr(stream, ctx);
+            if (!end) {
+                ctx.error(stream, DiagCode::E1006, "slice end expression", stream.peekValue());
+                synchronizeTo(stream, ctx, TokenType::RBRACKET);
+                if (stream.check(TokenType::RBRACKET)) {
+                    stream.advance(); // Consume ']' to recover
+                }
+                // Return what we have so far
+                auto* slice = ctx.arena.make<SliceExprAST>();
+                slice->loc = loc;
+                slice->target = target;
+                slice->start = nullptr;
+                slice->end = end;
+                slice->isExclusive = isExclusive;
+                return slice;
+            }
+        }
+        // If we're at ']', end remains nullptr (defaults to array length)
+        
+    } else {
+        // Parse start expression
+        start = parseExpr(stream, ctx);
+        if (!start) {
+            ctx.error(stream, DiagCode::E1006, stream.peek());
+            synchronizeTo(stream, ctx, TokenType::RANGE, TokenType::RANGE_EXCLUSIVE, TokenType::RBRACKET);
+            if (stream.checkAny(TokenType::RANGE, TokenType::RANGE_EXCLUSIVE)) {
+                // We have a range operator, continue parsing
+                hasRangeOp = true;
+            } else if (stream.check(TokenType::RBRACKET)) {
+                stream.advance(); // Consume ']' to recover
+                // Return what we have so far
+                auto* slice = ctx.arena.make<SliceExprAST>();
+                slice->loc = loc;
+                slice->target = target;
+                slice->start = start;
+                slice->end = nullptr;
+                slice->isExclusive = false;
+                return slice;
+            } else {
+                synchronizeTo(stream, ctx, TokenType::RBRACKET);
+                if (stream.check(TokenType::RBRACKET)) {
+                    stream.advance();
+                }
+                return nullptr;
+            }
+        }
+        
+        // Check for range operator: [start..end] or [start..<end]
+        if (stream.check(TokenType::RANGE) || stream.check(TokenType::RANGE_EXCLUSIVE)) {
+            hasRangeOp = true;
+            isExclusive = stream.match(TokenType::RANGE_EXCLUSIVE);
+            if (!isExclusive) {
+                stream.match(TokenType::RANGE); // Consume '..'
+            }
+            
+            // Check for end expression
+            if (!stream.check(TokenType::RBRACKET)) {
+                end = parseExpr(stream, ctx);
+                if (!end) {
+                    ctx.error(stream, DiagCode::E1006, stream.peekValue());
+                    synchronizeTo(stream, ctx, TokenType::RBRACKET);
+                    if (stream.check(TokenType::RBRACKET)) {
+                        stream.advance(); // Consume ']' to recover
+                    }
+                    // Return what we have so far
+                    auto* slice = ctx.arena.make<SliceExprAST>();
+                    slice->loc = loc;
+                    slice->target = target;
+                    slice->start = start;
+                    slice->end = nullptr;
+                    slice->isExclusive = isExclusive;
+                    return slice;
+                }
+            }
+            // If we're at ']', end remains nullptr (defaults to array length)
+            
+        } else if (stream.check(TokenType::RBRACKET)) {
+            // Just a single expression in brackets: [expr]
+            // This is actually an index expression, not a slice
+            // But we're in parseSliceExpr, so we should handle it gracefully
+            ctx.error(stream, DiagCode::E1008, stream.peekValue(), "slice requires a range operator (.. or ..<)");
+            // Consume ']' and return an index expression (treat as index)
+            stream.advance(); // Consume ']'
+            
+            // Create an index expression instead
+            auto* indexExpr = ctx.arena.make<IndexExprAST>();
+            indexExpr->loc = loc;
+            indexExpr->target = target;
+            indexExpr->index = start;
+            // We can't return an IndexExprAST from a function returning SliceExprAST*
+            // So we'll create a slice with start only and let the caller handle it
+            auto* slice = ctx.arena.make<SliceExprAST>();
+            slice->loc = loc;
+            slice->target = target;
+            slice->start = start;
+            slice->end = nullptr;
+            slice->isExclusive = false;
+            return slice;
+        } else {
+            // Unexpected token
+            ctx.error(stream, DiagCode::E1008, stream.peekValue(), "'..' or '..<' or ]");
+            synchronizeTo(stream, ctx, TokenType::RBRACKET);
+            if (stream.check(TokenType::RBRACKET)) {
+                stream.advance(); // Consume ']'
+            }
+            // Return what we have
+            auto* slice = ctx.arena.make<SliceExprAST>();
+            slice->loc = loc;
+            slice->target = target;
+            slice->start = start;
+            slice->end = nullptr;
+            slice->isExclusive = false;
+            return slice;
+        }
+    }
+    
+    // ─── 5. Expect ']' ────────────────────────────────────────────────────
+    if (!stream.check(TokenType::RBRACKET)) {
+        ctx.error(stream, DiagCode::E1005, "]", "slice expression", stream.peekValue());
+        synchronizeTo(stream, ctx, TokenType::RBRACKET);
+        if (stream.check(TokenType::RBRACKET)) {
+            stream.advance(); // Consume ']' to recover
+        }
+        // Return the expression anyway (error recovery)
+        auto* slice = ctx.arena.make<SliceExprAST>();
+        slice->loc = loc;
+        slice->target = target;
+        slice->start = start;
+        slice->end = end;
+        slice->isExclusive = isExclusive;
+        return slice;
+    }
+    stream.advance(); // Consume ']'
+    
+    // ─── 6. Validate the slice ───────────────────────────────────────────
+    // A slice must have at least one bound, or be a full range [..]
+    if (!start && !end && !hasRangeOp) {
+        ctx.error(stream, DiagCode::E1003, "slice bounds", stream.peekValue());
+        // Return what we have
+        auto* slice = ctx.arena.make<SliceExprAST>();
+        slice->loc = loc;
+        slice->target = target;
+        slice->start = nullptr;
+        slice->end = nullptr;
+        slice->isExclusive = false;
+        return slice;
+    }
+    
+    // ─── 7. Build the AST node ───────────────────────────────────────────
+    auto* slice = ctx.arena.make<SliceExprAST>();
+    slice->loc = loc;
+    slice->target = target;
+    slice->start = start;
+    slice->end = end;
+    slice->isExclusive = isExclusive;
+    
+    LOG_PARSER_DETAIL("parseSliceExpr: parsed slice expression",
+                      (start ? " with start" : ""),
+                      (end ? " with end" : ""),
+                      (isExclusive ? " (exclusive)" : " (inclusive)"));
+    
+    return slice;
 }
-
 // =============================================================================
 // Pipeline & Composition
 // =============================================================================

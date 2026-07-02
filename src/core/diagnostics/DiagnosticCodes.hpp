@@ -23,7 +23,7 @@ enum class DiagCode : uint32_t {
     E1003,          ///< Expected type
     E1004,          ///< Expected '{, [, <, ('
     E1005,          ///< Expected '}, ], >, )'
-    E1006,          ///< Expected expression after '='
+    E1006,          ///< Expected expression
     E1007,          ///< Expected token
     E1008,          ///< Unexpected token
     E1009,          ///< Trailing tokens

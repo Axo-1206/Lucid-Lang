@@ -189,7 +189,7 @@ AssignOp tokenToAssignOp(TokenType type);
 // ─── Infix Dispatch ─────────────────────────────────────────────────────── // X
 
 ExprPtr parseInfixAssign(TokenStream& stream, ParserContext& ctx, ExprPtr lhs);
-ExprPtr parseInfixIs(TokenStream& stream, ParserContext& ctx, ExprPtr lhs);
+// ExprPtr parseInfixIs(TokenStream& stream, ParserContext& ctx, ExprPtr lhs);
 ExprPtr parseInfixNullCoalesce(TokenStream& stream, ParserContext& ctx, ExprPtr lhs);
 ExprPtr parseInfixBinary(TokenStream& stream, ParserContext& ctx, ExprPtr lhs, TokenType opTok, int prec);
 
