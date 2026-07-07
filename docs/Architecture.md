@@ -89,6 +89,31 @@ path writes it to an object file and invokes the system linker.
 
 ---
 
+> **NOTE — LLVM is statically bundled, not a user-installed dependency.**
+> Because the compiler ships inside the Engine SDK and a game developer is
+> never expected to have LLVM on their machine, `lucid` links LLVM
+> statically rather than against a system install. This makes the binary
+> itself the main thing worth watching for size — the same levers used to
+> keep `luc_kernel.dll` lean apply here instead of a separate build doc:
+> - **Target backend count** is the single biggest driver. Supporting only
+>   the platforms actually shipped to (e.g. one X86 backend covering both
+>   Windows/COFF and Linux/ELF object emission) keeps this small; each
+>   additional backend (AArch64 for future mobile/Apple Silicon) adds real
+>   weight.
+> - **JIT (ORC) and AOT share the same IR lowering** and most of the same
+>   LLVM codegen, so supporting both `run` and `build` costs far less than
+>   the first backend does — it's not roughly double.
+> - Standard `-ffunction-sections -fdata-sections` + `--gc-sections`/`/OPT:REF`
+>   and symbol stripping apply to this binary exactly as they do to the
+>   kernel — LLVM is one more static library being linked, not a special case.
+> - If `luc_langserver` ends up as a separate binary from `lucid`, it only
+>   needs the frontend (lexer/parser/sema) for diagnostics and autocomplete —
+>   it never touches `IRLowering`, so it doesn't need to link LLVM at all.
+>   Keeping it LLVM-free is worth preserving as a deliberate constraint,
+>   not just an implementation detail.
+
+---
+
 ## 2. Execution Pipeline
 
 A complete walk through what happens when the user runs `lucid run main.luc`:
