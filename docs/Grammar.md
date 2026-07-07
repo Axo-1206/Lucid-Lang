@@ -4,8 +4,12 @@
 > function types, currying, generics, pipeline, composition, result-based error
 > handling, and foreign-function communication — while removing `impl`, `from`,
 > traits, and method dispatch entirely. All behavior is expressed as plain
-> functions. The language is designed to be visual-first: every construct maps
-> cleanly to a visual block or graph node.
+> functions.
+
+> [!NOTE]
+> the language was design to be visual but the design was impractical
+> so the visual design was discarded. A better visual design for the
+> game engine will be made as a replacement
 
 ---
 
@@ -42,9 +46,9 @@ not a relaxed or scripting subset of compiled Lucid. They are identical.
 
 ## Implementation Notes
 
-This section documents the intended architecture of the Lucid language processor.
+This section documents the intended architecture of the Lucid compiler.
 It is not part of the language specification — source code that conforms to the
-grammar is valid Lucid regardless of how the processor implements it internally.
+grammar is valid Lucid regardless of how the compiler implements it internally.
 This section exists to record design intent and guide the implementation.
 
 ---
@@ -161,7 +165,7 @@ The practical implication for `@[foreign("C")]` users:
 | Shared library (`"libfoo.so"`)      | linked dynamically               | loaded via `dlopen`                    |
 
 A C or C++ source file path in `@[link(...)]` works in compiler mode — the
-language processor compiles it as part of the build. In interpreter mode, source
+compiler compiles it as part of the build. In interpreter mode, source
 files cannot be compiled on the fly — they must be pre-compiled to a shared
 library and the path updated accordingly.
 
@@ -169,7 +173,7 @@ library and the path updated accordingly.
 
 ### Memory Model Implementation
 
-The three allocation strategies described in the language map to standard
+The three allocation strategies described in the compiler map to standard
 implementation patterns:
 
 **Scope arena** — implemented as a stack of bump-pointer arenas, one per block.
@@ -181,7 +185,7 @@ no additional runtime mechanism needed.
 
 **`#alloc` / `#free`** — implemented as calls to the system allocator (`malloc`/
 `free`) with an additional allocation registry (a hash map of live addresses)
-that the language processor maintains to catch double-free and null-free. The
+that the compiler maintains to catch double-free and null-free. The
 registry check is a single hash lookup on every `#free` call.
 
 **`#arena_create` / `#arena_alloc` / `#arena_free`** — implemented as a simple
@@ -201,7 +205,7 @@ The frontend lowers `T?` and `T!` declarations to a struct in IR:
 ```
 
 Tag reads and writes are ordinary IR load/store instructions on the first field.
-The language processor generates these at every nullable/fallible access point —
+The compiler generates these at every nullable/fallible access point —
 no runtime library needed.
 
 ---
@@ -496,7 +500,7 @@ let len   int       = parts.length;    -- OK: . for struct field
 | `module:mem`  | module name    | never      | `math:sqrt(x)`  |
 | `value.field` | struct value   | if `let`   | `player.health` |
 
-The language rejects `module:member = ...` at the assignment site regardless
+The compiler rejects `module:member = ...` at the assignment site regardless
 of the member's internal mutability. This is enforced syntactically —
 `:` never produces an l-value.
 
@@ -975,7 +979,7 @@ enum_decl       = { attribute_list } 'enum' IDENTIFIER [ ':' int_type ]
 
 enum_variant    = { attribute_list } IDENTIFIER '=' INT_LIT
                   (* value is required — no auto-increment. Omitting it and
-                     letting the language infer previous + 1 would be the
+                     letting the compiler infer previous + 1 would be the
                      same category of guess this grammar rejects for var_decl
                      and for-loop types; an enum is no exception. *)
 ```
@@ -1243,14 +1247,14 @@ addTen(3);    -- 13
 
 ### Form 2 — `()()` Shorthand
 
-Think of Form 2 as a multi-parameter function that the language automatically
+Think of Form 2 as a multi-parameter function that the compiler automatically
 makes curriable. You write the function exactly as if all the arguments arrive
 at once — the body is flat, all parameters are in scope, the logic reads left
 to right. The only difference from a plain multi-param function is that `()()`
-groups instead of `(,)` commas, which tells the language to make each group
+groups instead of `(,)` commas, which tells the compiler to make each group
 independently callable.
 
-The language processor expands Form 2 recursively and exhaustively into Form 1
+The compiler expands Form 2 recursively and exhaustively into Form 1
 before semantic analysis. The written body is never modified — only wrapper
 layers are generated around it.
 
@@ -1260,7 +1264,7 @@ const add (a int)(b int) -> int = {
     return a + b;
 }
 
--- the language expands to
+-- the compiler expands to
 const add (a int) -> (b int) -> int = {
     return (b int) -> int {
         return a + b;
@@ -1270,7 +1274,7 @@ const add (a int) -> (b int) -> int = {
 
 ### Currying and Partial Application
 
-Form 2 (`()()`) is pure textual shorthand for Form 1. The language processor
+Form 2 (`()()`) is pure textual shorthand for Form 1. The compiler
 expands it recursively before semantic analysis. The body is never modified.
 
 The core idea:
@@ -1281,7 +1285,7 @@ The core idea:
 
 ```lucid
 -- Form 1: code runs between groups
-const makeProcessor (config Config) -> (data string) -> string = {
+const makeCompiler (config Config) -> (data string) -> string = {
     const compiled CompiledConfig = compile(config);    -- runs once at partial application
     return (data string) -> string { return apply(compiled, data) }
 }
@@ -1292,7 +1296,7 @@ const process (a int)(b int) -> (c int) -> int = {
     return (c int) -> int { return sum + c }
 }
 
--- Form 2: flat body, language handles the wrapping
+-- Form 2: flat body, compiler handles the wrapping
 const clamp (lo int)(hi int)(v int) -> int = {
     if v < lo { return lo }
     if v > hi { return hi }
@@ -1326,9 +1330,9 @@ clamp0to100(200);    -- 100
 ## Function Overloading
 
 Two or more declaration with the same name but different parameter signatures are
-overloads. The language picks the correct overload at the call site based on
+overloads. The compiler picks the correct overload at the call site based on
 argument types. Overloads that differ only in return type are a compile error —
-the language cannot resolve them from the call site alone.
+the compiler cannot resolve them from the call site alone.
 
 ```ebnf
 (* overloading is not a grammar construct — it falls out of the ordinary
@@ -1428,7 +1432,7 @@ generic_args    = '<' type { ',' type } '>'
 - Type parameters are resolved strictly at the call/instantiation site —
   there is no type inference across call boundaries.
 - Generic functions and concrete overloads of the same name coexist — the
-  language picks the concrete overload first if types match exactly, then
+  compiler picks the concrete overload first if types match exactly, then
   falls back to the generic.
 - A generic function body must be valid for **any** `T` — no `if T is X`
   branching. Type-specific logic is passed in as a callback parameter.
@@ -1503,7 +1507,7 @@ to return — `T`'s complete field set is unknown inside the generic function
 body (a constrained `T` only guarantees the trait's fields exist, nothing
 else). A generic function constrained this way can read and use the trait's
 fields, but it can only ever **build and return the trait type itself** — a
-fresh value of the language-generated minimal struct for that trait, never a
+fresh value of the compiler-generated minimal struct for that trait, never a
 reconstructed `T`:
 
 ```lucid
@@ -1677,7 +1681,7 @@ The tag encodes the state of the slot:
 | `1` | value present                           | `T?`, `T!`, `T?!` |
 | `2` | `err` — slot failed, carries error info | `T!`, `T?!`       |
 
-The language processor allocates the slot when the declaration is entered and
+The compiler allocates the slot when the declaration is entered and
 releases it automatically when the scope exits. The user never calls `#alloc` or
 `#free` on these — the scope arena manages them.
 
@@ -1702,7 +1706,7 @@ const compute () -> int? = {
 
 `nil` is a **semantic signal**, not a memory operation. It means "there is no
 value here" — a domain concept the programmer expresses intentionally. The
-language processor handles the memory automatically regardless; `nil` only
+compiler handles the memory automatically regardless; `nil` only
 changes the tag.
 
 ```lucid
@@ -1713,7 +1717,7 @@ target = nil;    -- cleared — not an error, just absent
 if target == nil {
     -- no target
 } else {
-    -- target is Player here (narrowed by the language processor)
+    -- target is Player here (narrowed by the compiler)
 }
 ```
 
@@ -1725,11 +1729,11 @@ automatically when the scope exits — `nil` does not trigger an early free.
 
 A fallible value enters the error state in two ways:
 
-1. **Automatically** — the language processor sets `err` when an operation
+1. **Automatically** — the compiler sets `err` when an operation
    produces a failure, such as division by zero or a failed foreign call:
 
 ```lucid
-let i int! = 8 / 0;    -- language processor sets tag to 2, stores the error
+let i int! = 8 / 0;    -- compiler sets tag to 2, stores the error
 ```
 
 2. **Manually** — the user signals failure explicitly with a reason:
@@ -1743,7 +1747,7 @@ let ratio  int! = err(InvalidInput);    -- user-defined error case
 This keeps error states meaningful: an error always carries information about
 what went wrong, not just that it did.
 
-Like `nil`, assigning `err(...)` is a semantic operation. The language processor
+Like `nil`, assigning `err(...)` is a semantic operation. The compiler
 manages the memory — the slot is reclaimed when the scope exits.
 
 ### Combined `T?!` — Three States
@@ -1840,7 +1844,7 @@ range_iter      = expr range_op expr
 switch_stmt     = 'switch' expr '{' { case_clause } [ default_clause ] '}'
                   (* no ';' — block already closes the statement.
                      exhaustiveness: if expr is an enum type and no
-                     default_clause is present, the language errors on
+                     default_clause is present, the compiler errors on
                      missing variants *)
 
 case_clause     = 'case' case_value { ',' case_value } ':' block
@@ -1906,11 +1910,11 @@ if x > 0 {
 
 #### If / Else Narrowing
 
-The language applies **type narrowing** inside branches based on the condition.
+The compiler applies **type narrowing** inside branches based on the condition.
 
 **Standard Narrowing — Inside the Block:**
 
-When the condition checks a nullable variable, the language narrows its type inside the then-branch:
+When the condition checks a nullable variable, the compiler narrows its type inside the then-branch:
 
 ```lucid
 const a int? = getValue();
@@ -1924,11 +1928,11 @@ if a != nil {
 
 **Inverse Narrowing — Early Exit Pattern:**
 
-When a **standalone `if` with no `else`** contains a control flow exit (`return`, `break`, or `continue`), the language applies the **inverse** of the condition to the rest of the enclosing scope.
+When a **standalone `if` with no `else`** contains a control flow exit (`return`, `break`, or `continue`), the compiler applies the **inverse** of the condition to the rest of the enclosing scope.
 
 > [!WARNING]
 > Inverse narrowing only applies to standalone `if` — no `else`
-> The moment an `else` or `else if` is present, the language cannot guarantee which branch ran. The exit may have come from the `if` branch or never fired at all. Inverse narrowing is therefore **not applied** after an `if-else` chain.
+> The moment an `else` or `else if` is present, the compiler cannot guarantee which branch ran. The exit may have come from the `if` branch or never fired at all. Inverse narrowing is therefore **not applied** after an `if-else` chain.
 >
 > ```lucid
 >    -- VALID: standalone if — inverse narrowing applies
@@ -1941,7 +1945,7 @@ When a **standalone `if` with no `else`** contains a control flow exit (`return`
 >
 >    -- INVALID: chained else-if — inverse narrowing NOT applied after the chain
 > if a == nil { return } else if b == nil { return }
->    -- a and b are still nullable here — language cannot know which branch ran
+>    -- a and b are still nullable here — compiler cannot know which branch ran
 >```
 
 The condition determines what gets narrowed and in which direction:
@@ -1976,7 +1980,7 @@ if a == nil or b == nil or c == nil { return }
 
 **`and` at the top level — narrowing is unsound, not applied:**
 
-When conditions are joined by `and`, the exit fires only if ALL are true. The inverse is `or` — at least one condition is false, but the language cannot know which. Narrowing any single variable would be unsound:
+When conditions are joined by `and`, the exit fires only if ALL are true. The inverse is `or` — at least one condition is false, but the compiler cannot know which. Narrowing any single variable would be unsound:
 
 ```lucid
 if a == nil and b == nil { return }
@@ -2054,8 +2058,8 @@ do {
 every loop variable.** Lucid does not infer a loop variable's type from
 context — not from a range's literal bounds, and not from a collection's
 already-known element type. This matches **Variable Declaration**: a type is
-always written, even where the answer looks unambiguous, because the language
-processor does not guess.
+always written, even where the answer looks unambiguous, because the compiler 
+does not guess.
 
 **Form 1 — range iteration.** A single variable receives the *current value*
 at each step. There is no backing collection and therefore no index to expose
@@ -2118,12 +2122,12 @@ for i int, v int in 0..10..2 { ... }    -- ERROR: step ranges use Form 1 (single
 ### `switch`
 
 `switch` dispatches on a single value. Arms are matched top to bottom and the
-first matching arm executes — fall-through is disabled by default. The language
+first matching arm executes — fall-through is disabled by default. The compiler
 emits a jump table where possible (integer and enum types), guaranteeing O(1)
 dispatch.
 
 **Enum exhaustiveness** — when the switched value is an enum type and no
-`default` clause is present, the language errors on any missing variant. This
+`default` clause is present, the compiler errors on any missing variant. This
 ensures all variants are explicitly handled:
 
 ```lucid
@@ -2234,7 +2238,7 @@ if a < b {
 
 This is the same narrowing `case_value` already applies to a single literal
 or enum variant — a comparison or a `??` fallback simply never appears in the
-`case_value` production at all, so the language rejects them at parse time,
+`case_value` production at all, so the compiler rejects them at parse time,
 not as a later semantic check.
 
 ---
@@ -2366,7 +2370,7 @@ and `not` is always `bool`.
 
 Using `and`/`or`/`not` to coerce a fallible or nullable-and-fallible value is
 a truthiness check only — it is **not** a narrowing operation. `if x { }`
-tells you whether `x` is currently `T`, but does not let the language treat
+tells you whether `x` is currently `T`, but does not let the compiler treat
 `x` as plain `T` inside the block the way `if x != err { }` does (see
 **Narrowing a Fallible Value**). Prefer explicit `== err` / `== nil` guards
 when the block needs to use the underlying value.
@@ -2408,7 +2412,7 @@ if not x { }    -- x is nullable: nil treated as false, not flips to true
 ```
 
 > [!NOTE]
-> Coercing a non-nullable operand is never a runtime branch — the language
+> Coercing a non-nullable operand is never a runtime branch — the compiler
 > already knows the answer. Writing `and`/`or`/`not` against a non-nullable
 > operand is legal but the check folds away entirely; it is only useful when
 > mixed with a nullable operand in the same expression, as in `name and user`
@@ -2643,7 +2647,7 @@ function that can fail marks its return type with `!`. A value of a fallible
 type holds exactly one of two things at any moment: a plain `T`, or the bare
 sentinel `err`. This mirrors `T?`, which holds either a plain `T` or the bare
 sentinel `nil`. Both are resolved the same way — narrowing with `if` — and
-both are **inert** until narrowed: the language forbids using an un-narrowed
+both are **inert** until narrowed: the compiler forbids using an un-narrowed
 fallible or nullable value as a plain `T`.
 
 There are no exceptions and no registered handlers. The one narrow exception
@@ -2757,7 +2761,7 @@ if b == nil or b == err { return }
 > [!WARNING]
 > Exactly as with `nil`, inverse narrowing for `err` only applies after a
 > **standalone `if` with no `else`** that exits. The moment an `else` or
-> `else if` is present, the language cannot guarantee which branch ran, and
+> `else if` is present, the compiler cannot guarantee which branch ran, and
 > narrowing is not applied. See **If / Else Narrowing** for the full rule —
 > it applies identically here, with `err` and `nil` checks treated the same
 > way `and`/`or` combinations are already analyzed for soundness.
@@ -2799,7 +2803,7 @@ type `rhs` actually produces, checked against `x`'s own type:
   something in between — a retry, a log, a side effect) rather than fully
   resolving the value. In that case the result of the whole `?? ` expression
   is still `T!`, not `T` — the failure is preserved, not silently erased.
-- The language checks the block's result type against `x`'s declared type the
+- The compiler checks the block's result type against `x`'s declared type the
   same way it checks any other assignment: a `T!` left-hand side accepts a
   block that produces `T` **or** `err`; a plain non-fallible `T` left-hand
   side (where `??` is closer to dead code, but still legal) only accepts a
@@ -2880,7 +2884,7 @@ production.
 
 A single `??` always runs the same right-hand side regardless of whether the
 failure was `nil` or `err` — there is no way to ask, inside one `??`, "which
-sentinel was this" the way a language with several `catch` clauses per
+sentinel was this" the way a compiler with several `catch` clauses per
 exception type can dispatch on the exception's type. There is no dedicated
 multi-branch syntax for `??` — only `expr '??' expr` and `expr '??' block`
 exist (see **`??` Fallback**).
@@ -2937,7 +2941,7 @@ typed declaration.
 > live-or-dead ambiguity, and there is no clean syntactic line between "a
 > call that happens to return a fallible type" and "a block"). The
 > intermediate-declaration convention above is a recommendation, not a rule the
-> language enforces.
+> compiler enforces.
 
 The block after `??` is an ordinary `block` — it can contain any statement,
 including `if` or `switch`, exactly like a function body. This is not the
@@ -3113,7 +3117,7 @@ const process (url string) -> string! = {
 
 ```lucid
 -- INVALID: returning an un-narrowed fallible value, even with a matching
--- signature, is forbidden — the language cannot tell this apart from
+-- signature, is forbidden — the compiler cannot tell this apart from
 -- forgetting to handle the failure
 const badProcess (url string) -> string! = {
     const raw string! = fetch(url);
@@ -3134,7 +3138,7 @@ package-level reporting function, or a struct returned through a different
 mechanism (e.g. a `let` out-parameter, or a wrapping struct holding both a
 status and a value). This keeps the type system simple: `!` only ever answers
 "did this fail," and any richer detail is modeled with the same struct/enum
-tools used everywhere else in the language, not folded into the fallible-type
+tools used everywhere else in the compiler, not folded into the fallible-type
 syntax itself:
 
 ```lucid
@@ -3527,10 +3531,10 @@ const q *Node? = findNode();   -- pointer itself may be nil; nil-check required 
 ```
 
 > [!NOTE]
-> Unannotated `@[foreign("C")]` pointer returns default to `*T` (non-nullable). Use `*T?` only when you know the C function may return `NULL`. The foreign declaration on the Lucid side is the sole nullability contract — the Lucid language does not parse C headers.
+> Unannotated `@[foreign("C")]` pointer returns default to `*T` (non-nullable). Use `*T?` only when you know the C function may return `NULL`. The foreign declaration on the Lucid side is the sole nullability contract — the compiler does not parse C headers.
 
 > [!CAUTION]
-> **`*T` is a programmer-level contract, not a language-verified proof.**
+> **`*T` is a programmer-level contract, not a compiler-verified proof.**
 >
 > The type system guarantees that a non-nullable `*T` will never be *statically assigned* `nil`. It does **not** and **cannot** guarantee that the pointed-to memory remains valid at runtime. External code — foreign calls (e.g. `free`), manual pointer arithmetic via `#ptrOffset`, or aliased ownership — can release or corrupt that memory *after* the pointer was set, producing a **dangling pointer**: non-nil in value, invalid in content.
 >
@@ -3598,7 +3602,7 @@ const next *uint8? = #ptrOffset(buf, 1);    -- pointer arithmetic
 When a C binary exposes data at a known address (e.g. a hardware register, a shared memory region, or a C struct field), the idiomatic Lucid pattern is to declare a `@[foreign("C")]` function that accepts a raw pointer and returns the value by copy — **never by reference**.
 
 > [!IMPORTANT]
-> Foreign functions **must not** return `&T`. The Downward Flow Rule forbids reference returns from all functions, including foreign ones — returning a `&T` from C would produce a reference with no Lucid-owned backing variable, which is undefined behaviour. The language rejects any foreign declaration with `-> &T` as a return type.
+> Foreign functions **must not** return `&T`. The Downward Flow Rule forbids reference returns from all functions, including foreign ones — returning a `&T` from C would produce a reference with no Lucid-owned backing variable, which is undefined behaviour. The compiler rejects any foreign declaration with `-> &T` as a return type.
 >
 > The correct pattern is to return an **owned value** (a primitive, struct, or raw pointer). The caller then uses `#toRef` to enter the safe reference world if needed.
 
@@ -3708,9 +3712,9 @@ corresponding argument to a separate parsing pass over the string's
 contents, decoupled from where the argument is actually written. That
 relationship is then either checked at runtime (a class of bug this grammar
 has consistently avoided — see **Variable Declaration**'s no-inference rule
-for the same reasoning applied elsewhere) or requires the language to
+for the same reasoning applied elsewhere) or requires the compiler to
 specially parse string-literal contents as if they were a second grammar,
-which both `\(expr)` interpolation and the rest of this language avoid:
+which both `\(expr)` interpolation and the rest of this compiler avoid:
 every expression embedded in a literal is checked exactly where it's
 written, by the same type checker that checks everything else.
 
@@ -3803,9 +3807,9 @@ const len float = vector2Length(c);
 
 ---
 
-## Language Directives: Attributes `@` and Intrinsics `#`
+## Compiler Directives: Attributes `@` and Intrinsics `#`
 
-Attributes `@[]` and intrinsics `#` provide instructions to the language processor or execute operations.
+Attributes `@[]` and intrinsics `#` provide instructions to the compiler or execute operations.
 
 ### 1. Attributes `@[]`
 
@@ -3824,9 +3828,9 @@ attr_arg        = STRING_LIT | INT_LIT | FLOAT_LIT | BOOL_LIT | IDENTIFIER
 | Attribute              | Valid on                  | Meaning                                                  |
 | ---------------------- | ------------------------- | -------------------------------------------------------- |
 | `@[export]`            | any top-level declaration | Visible outside this module                              |
-| `@[foreign("abi")]`    | function declaration      | Implemented in a foreign language; ABI string e.g. `"C"` |
+| `@[foreign("abi")]`    | function declaration      | Implemented in a foreign compiler; ABI string e.g. `"C"` |
 | `@[link("name")]`      | module or declaration     | Link against this native library                         |
-| `@[deprecated("msg")]` | any declaration           | Language warning at use sites                            |
+| `@[deprecated("msg")]` | any declaration           | Compiler warning at use sites                            |
 | `@[inline]`            | function declaration      | Hint to inline at call sites                             |
 | `@[noinline]`          | function declaration      | Prevent inlining                                         |
 
@@ -3838,28 +3842,28 @@ attr_arg        = STRING_LIT | INT_LIT | FLOAT_LIT | BOOL_LIT | IDENTIFIER
 
 ### 2. Intrinsics `#`
 
-Intrinsics are direct calls into the language processor's backend — a layer shared
+Intrinsics are direct calls into the compiler's backend — a layer shared
 between the interpreter and the compiler. They exist because some operations cannot
 be expressed as ordinary Lucid functions: querying a type's memory layout, emitting
 a specific hardware instruction, performing atomic operations, or managing memory
-all require the language processor itself to handle the call.
+all require the compiler itself to handle the call.
 
-Unlike a standard library function, an intrinsic has no Lucid body. The language
-processor resolves it entirely — the interpreter executes a built-in implementation,
+Unlike a standard library function, an intrinsic has no Lucid body. The compiler 
+resolves it entirely — the interpreter executes a built-in implementation,
 the compiler emits the corresponding machine instruction or computation directly.
 The result is zero-overhead access to hardware capabilities without leaving the
 language.
 
 This gives Lucid a clean two-layer model:
 
-- **Lucid code** — safe, expressive, high-level logic. The language processor
+- **Lucid code** — safe, expressive, high-level logic. The compiler
   handles memory safety, type checking, and abstractions.
 - **Intrinsics** — direct hardware and memory access, zero overhead. You opted
   in explicitly with `#`.
 
 > [!NOTE]
 > The `#` prefix is intentional: it signals to the reader that this call steps
-> outside what ordinary Lucid code can do. If you see `#`, the language processor
+> outside what ordinary Lucid code can do. If you see `#`, the compiler
 > is doing something on your behalf that you could not write yourself.
 
 ```ebnf
@@ -3923,18 +3927,18 @@ io:printl(#nameof(p));    -- "p"
 
 #### String Operations
 
-Strings in Lucid are immutable UTF-8 sequences managed by the language processor.
+Strings in Lucid are immutable UTF-8 sequences managed by the compiler.
 These intrinsics expose low-level string operations the standard library builds on.
 
-| Intrinsic                 | Args                         | Returns  | Notes                                                                            |
-| ------------------------- | ---------------------------- | -------- | -------------------------------------------------------------------------------- |
-| `#str_len(s)`             | `string`                     | `uint64` | Byte length of the string (not codepoint count)                                  |
-| `#str_ptr(s)`             | `string`                     | `*uint8` | Pointer to the raw UTF-8 bytes — read-only                                       |
-| `#str_from_ptr(ptr, len)` | `*uint8`, `uint64`           | `string` | Construct a string from raw bytes; language processor copies and validates UTF-8 |
-| `#str_concat(a, b)`       | `string`, `string`           | `string` | Concatenate two strings; language processor manages the allocation               |
-| `#str_slice(s, from, to)` | `string`, `uint64`, `uint64` | `string` | Byte-range slice; language processor validates bounds and UTF-8 boundaries       |
-| `#str_eq(a, b)`           | `string`, `string`           | `bool`   | Byte-exact equality                                                              |
-| `#str_byte_at(s, i)`      | `string`, `uint64`           | `uint8`  | Raw byte at position i                                                           |
+| Intrinsic                 | Args                         | Returns  | Notes                                                                  |
+| ------------------------- | ---------------------------- | -------- | ---------------------------------------------------------------------- |
+| `#str_len(s)`             | `string`                     | `uint64` | Byte length of the string (not codepoint count)                        |
+| `#str_ptr(s)`             | `string`                     | `*uint8` | Pointer to the raw UTF-8 bytes — read-only                             |
+| `#str_from_ptr(ptr, len)` | `*uint8`, `uint64`           | `string` | Construct a string from raw bytes; compiler copies and validates UTF-8 |
+| `#str_concat(a, b)`       | `string`, `string`           | `string` | Concatenate two strings; compiler manages the allocation               |
+| `#str_slice(s, from, to)` | `string`, `uint64`, `uint64` | `string` | Byte-range slice; compiler validates bounds and UTF-8 boundaries       |
+| `#str_eq(a, b)`           | `string`, `string`           | `bool`   | Byte-exact equality                                                    |
+| `#str_byte_at(s, i)`      | `string`, `uint64`           | `uint8`  | Raw byte at position i                                                 |
 
 ```lucid
 const greet string = "Hello, world!";
@@ -3970,7 +3974,7 @@ operates outside Lucid's control.
 
 **Automatic — Scope Arena**
 
-Every block has its own scope arena. The language processor pushes a new arena
+Every block has its own scope arena. The compiler pushes a new arena
 on entry and pops it on exit, releasing everything inside. Every local value —
 non-nullable, nullable, fallible, dynamic array, struct — lives in this arena.
 No annotation, no manual free, no lifetime management needed.
@@ -3992,11 +3996,11 @@ the memory. The scope arena reclaims the slot at scope exit regardless.
 
 **Foreign Interop — Explicit Heap and Arena**
 
-When C or another foreign language allocates memory, Lucid has no knowledge of
+When C or another foreign compiler allocates memory, Lucid has no knowledge of
 it. That memory follows C's rules and must be freed the C way. Lucid provides
 two tools for working with foreign or explicitly managed memory:
 
-*Lucid-tracked heap* — `#alloc` / `#free`. The language processor knows about
+*Lucid-tracked heap* — `#alloc` / `#free`. The compiler knows about
 this allocation and catches double-free and null-free. Use this when you need a
 raw pointer that Lucid allocates but passes into foreign code:
 
@@ -4046,7 +4050,7 @@ const edges *Edge  = #arena_alloc(arena, Edge, 256)
 
 `ArenaDescriptor` carries only `base` and `size` — the two values needed to
 answer the ownership question "did this pointer come from this arena?" The
-allocation cursor (`used`) is tracked internally by the language processor and
+allocation cursor (`used`) is tracked internally by the compiler and
 is not exposed in the descriptor. C never needs to know the cursor — it only
 needs the boundaries.
 
@@ -4054,12 +4058,12 @@ needs the boundaries.
 
 **Ownership at a Glance**
 
-| Memory origin                   | Lucid tracks it?         | How it is freed              | C can verify ownership?              |
-| ------------------------------- | ------------------------ | ---------------------------- | ------------------------------------ |
-| Any local value, `[*]T`, struct | Yes — fully automatic    | Scope exit                   | N/A — stack memory, never share      |
-| `#alloc`                        | Yes — language processor | `#free` — double-free caught | No — pass size explicitly (Rule 3)   |
-| `#arena_alloc`                  | Yes — language processor | `#arena_free`                | Yes — via `ArenaDescriptor` (Rule 4) |
-| C `malloc` / foreign library    | No                       | Matching C free function     | N/A — C owns it entirely             |
+| Memory origin                   | Lucid tracks it?      | How it is freed              | C can verify ownership?              |
+| ------------------------------- | --------------------- | ---------------------------- | ------------------------------------ |
+| Any local value, `[*]T`, struct | Yes — fully automatic | Scope exit                   | N/A — stack memory, never share      |
+| `#alloc`                        | Yes — compiler        | `#free` — double-free caught | No — pass size explicitly (Rule 3)   |
+| `#arena_alloc`                  | Yes — compiler        | `#arena_free`                | Yes — via `ArenaDescriptor` (Rule 4) |
+| C `malloc` / foreign library    | No                    | Matching C free function     | N/A — C owns it entirely             |
 
 | Intrinsic                   | Args                              | Returns           | Notes                                  |
 | --------------------------- | --------------------------------- | ----------------- | -------------------------------------- |
@@ -4207,7 +4211,7 @@ const claimSlot (flag *uint32) = {
 #### CPU Hints
 
 Hints to the CPU or memory subsystem. Do not affect correctness — they only
-influence performance. The language processor may ignore them on targets where
+influence performance. The compiler may ignore them on targets where
 the hint has no equivalent instruction.
 
 | Intrinsic          | Args     | Returns | Notes                                              |
@@ -4477,7 +4481,7 @@ accessing it through a stable, predictable door.
 > [!WARNING]
 > The C++ object is an opaque `*uint8` on the Lucid side. Lucid has no knowledge
 > of its layout, ownership, or lifetime. `kernel_destroy` must be called exactly
-> once, and `k` must not be used after that point. The language processor cannot
+> once, and `k` must not be used after that point. The compiler cannot
 > catch these violations.
 
 ---
@@ -4486,17 +4490,17 @@ accessing it through a stable, predictable door.
 
 Lucid guarantees memory safety within its own code. That guarantee **ends at the
 foreign boundary**. A C or C++ function that receives a Lucid pointer can corrupt
-Lucid's memory in ways the language processor cannot detect or prevent:
+Lucid's memory in ways the compiler cannot detect or prevent:
 
 - **Premature free** — C calls `free(ptr)` on a pointer Lucid still owns,
   producing a dangling pointer inside Lucid's scope arena or heap.
 - **Double free** — C frees a `#alloc`-ed pointer; Lucid later calls `#free` on
-  the same address. The language processor catches the second `#free`, but the
+  the same address. The compiler catches the second `#free`, but the
   window between C's free and Lucid's attempted free is a dangling pointer.
 - **Buffer overrun** — C writes beyond the end of its allocation into adjacent
   Lucid memory.
 
-These are not language bugs — they are the known cost of crossing into unmanaged
+These are not compiler bugs — they are the known cost of crossing into unmanaged
 territory. Lucid addresses them through four rules and one pattern:
 
 **Rule 1 — Never pass a scope arena address to foreign code that outlives the call**
@@ -4627,7 +4631,7 @@ void c_build_graph(uint8_t* nodes, uint8_t* edges,
 > `ArenaDescriptor.base` and `ArenaDescriptor.size` are set once at
 > `#arena_create` and never change. They are safe to read from C at any point
 > during the arena's lifetime. The allocation cursor is managed internally by
-> the language processor and is not exposed in the descriptor — C does not need
+> the compiler and is not exposed in the descriptor — C does not need
 > it and must not attempt to track it.
 
 > [!WARNING]
@@ -4771,7 +4775,7 @@ io:printl(user.name + ": " + profile.bio);
 **If `await` is never called**, the async operation runs until the main thread terminates — at which point all unawaited async operations are also terminated. The variables bound by `async` remain unset if `await` is never reached.
 
 > [!WARNING]
-> The language processor **warns** about unawaited async operations when the scope exits:
+> The compiler **warns** about unawaited async operations when the scope exits:
 >
 > ```lucid
 > const process () -> () = {
@@ -5144,7 +5148,7 @@ spawn result = heavyWork();    -- Clearly: I'll join this eventually
 
 ### Compiler Enforcement
 
-The language processor **warns** about named spawns that are never joined:
+The compiler **warns** about named spawns that are never joined:
 
 ```lucid
 const process () -> int = {
@@ -5257,7 +5261,7 @@ const processImages (images [*]Image) -> [*]ProcessedImage = {
     -- Spawn a thread for each image
     for _, img Image in images {
         let processed ProcessedImage;
-        spawn processed = imageProcessor(img);
+        spawn processed = imageCompiler(img);
         arr:append<ProcessedImage>(results)(processed);
     }
 
