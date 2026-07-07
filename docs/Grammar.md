@@ -649,7 +649,7 @@ the storage decision behind it.
 primitive_type  = int_type | float_type | 'bool' | 'byte'
                 | 'string' | 'char' | 'nil'
                 (* 'any' is intentionally absent — all types are explicit in Lucid.
-                   Raw foreign memory uses ptr<byte> instead. *)
+                   Raw foreign memory uses *uint8 instead. *)
 
 int_type        = 'int8'  | 'int16'  | 'int32'  | 'int64'
                 | 'uint8' | 'uint16' | 'uint32' | 'uint64'
@@ -684,7 +684,8 @@ array_size      = '*'       (* owned heap array — Lucid owns the memory *)
                 | '_'       (* slice — borrowed view, Lucid does not own *)
                 | INT_LIT   (* fixed-size stack array *)
 
-ptr_type        = 'ptr' '<' type '>'        (* raw pointer — FFI use only *)
+ptr_type        = '*' type                  (* raw pointer — FFI use only *)
+                | '*' func_type             (* pointer to a C function — callback parameters *)
 
 generic_type    = IDENTIFIER '<' type_arg { ',' type_arg } '>'
 type_arg        = type | INT_LIT
@@ -725,7 +726,7 @@ struct Point {
 
 struct Node<T> {
     value T
-    next  ptr<Node<T>>?    -- nullable pointer to next node
+    next  *Node<T>?    -- nullable pointer to next node
 }
 
 struct Player {
@@ -3492,11 +3493,11 @@ Because references (`&T`) cannot be stored inside structs, building circular or 
        next  int    -- index of the next node in an array / arena
    }
 ```
-2. **Raw Pointers (`ptr<T>`):** For manual memory management (e.g., building low-level systems or C integrations), use raw pointers. Raw pointers are "sealed conduits" and require explicit `#toRef` conversion to use, signaling unsafe operations. Type conversion syntax (e.g., `ptr<T>(val)` or `&T(val)`) is forbidden for raw pointers and references; the `#toRef` and `#toPtr` intrinsics must be used instead to cross the unsafe boundary.
+2. **Raw Pointers (`*T`):** For manual memory management (e.g., building low-level systems or C integrations), use raw pointers. Raw pointers are "sealed conduits" and require explicit `#toRef` conversion to use, signaling unsafe operations. Type conversion syntax (e.g., `*T(val)` or `&T(val)`) is forbidden for raw pointers and references; the `#toRef` and `#toPtr` intrinsics must be used instead to cross the unsafe boundary.
    ```lucid
    struct Node {
        value int
-       next  ptr<Node>?    -- raw pointer, nullable. Requires manual lifecycle tracking.
+       next  *Node?    -- raw pointer, nullable. Requires manual lifecycle tracking.
    }
 ```
 3. **Smart Pointers (Standard Library):** For safe shared heap state, use standard library reference-counted wrappers like `Shared<T>` and `Weak<T>` (which auto-nulls when the owner is destroyed). These incur a small runtime cost.
@@ -3509,41 +3510,41 @@ Named functions are plain function pointers — no captured state. Closures (par
 
 ## The Sealed Conduit Model (Raw Pointers)
 
-Raw pointers (`ptr<T>`) are sealed conduits — carry them, pass them to foreign functions, check for nil, but never dereference directly.
+Raw pointers (`*T`) are sealed conduits — carry them, pass them to foreign functions, check for nil, but never dereference directly.
 
-### Pointer Nullability Semantics (`ptr<T>` vs `ptr<T>?`)
+### Pointer Nullability Semantics (`*T` vs `*T?`)
 
 `?` on a raw pointer always binds to the **whole pointer type**, not to the element type:
 
-| Type      | Meaning                                                                   | C equivalent                  |
-| --------- | ------------------------------------------------------------------------- | ----------------------------- |
-| `ptr<T>`  | Non-nullable — the pointer address is always valid (programmer assertion) | `T* __attribute__((nonnull))` |
-| `ptr<T>?` | Nullable — `(ptr<T>)?` — the pointer itself may be nil                    | `T*` that may be `NULL`       |
+| Type  | Meaning                                                                   | C equivalent                  |
+| ----- | ------------------------------------------------------------------------- | ----------------------------- |
+| `*T`  | Non-nullable — the pointer address is always valid (programmer assertion) | `T* __attribute__((nonnull))` |
+| `*T?` | Nullable — `(*T)?` — the pointer itself may be nil                        | `T*` that may be `NULL`       |
 
 ```lucid
-const p ptr<Node>  = getNode();    -- programmer asserts: address is always valid
-const q ptr<Node>? = findNode();    -- pointer itself may be nil; nil-check required before use
+const p *Node  = getNode();    -- programmer asserts: address is always valid
+const q *Node? = findNode();   -- pointer itself may be nil; nil-check required before use
 ```
 
 > [!NOTE]
-> Unannotated `@[foreign("C")]` pointer returns default to `ptr<T>` (non-nullable). Use `ptr<T>?` only when you know the C function may return `NULL`. The foreign declaration on the Lucid side is the sole nullability contract — the Lucid language does not parse C headers.
+> Unannotated `@[foreign("C")]` pointer returns default to `*T` (non-nullable). Use `*T?` only when you know the C function may return `NULL`. The foreign declaration on the Lucid side is the sole nullability contract — the Lucid language does not parse C headers.
 
 > [!CAUTION]
-> **`ptr<T>` is a programmer-level contract, not a language-verified proof.**
+> **`*T` is a programmer-level contract, not a language-verified proof.**
 >
-> The type system guarantees that a non-nullable `ptr<T>` will never be *statically assigned* `nil`. It does **not** and **cannot** guarantee that the pointed-to memory remains valid at runtime. External code — foreign calls (e.g. `free`), manual pointer arithmetic via `#ptrOffset`, or aliased ownership — can release or corrupt that memory *after* the pointer was set, producing a **dangling pointer**: non-nil in value, invalid in content.
+> The type system guarantees that a non-nullable `*T` will never be *statically assigned* `nil`. It does **not** and **cannot** guarantee that the pointed-to memory remains valid at runtime. External code — foreign calls (e.g. `free`), manual pointer arithmetic via `#ptrOffset`, or aliased ownership — can release or corrupt that memory *after* the pointer was set, producing a **dangling pointer**: non-nil in value, invalid in content.
 >
 > A nil check (`== nil`, `!= nil`) guards against a null address. It does **not** detect a dangling pointer.
 >
-> **Responsibilities when using non-nullable `ptr<T>`:**
+> **Responsibilities when using non-nullable `*T`:**
 > - You assert that the pointer's target is valid for the duration you hold the pointer.
 > - You own or have a clear understanding of the pointed-to memory's lifetime.
-> - No other owner will free that memory while your `ptr<T>` is live.
+> - No other owner will free that memory while your `*T` is live.
 >
-> **Preferred mitigation — wrap `ptr<T>` in a cleanup struct:**
+> **Preferred mitigation — wrap `*T` in a cleanup struct:**
 > ```lucid
 > struct OwnedBuffer {
->     ptr  ptr<uint8>    -- non-nullable: asserts validity at construction
+>     ptr  *uint8    -- non-nullable: asserts validity at construction
 >     size uint64
 > }
 >
@@ -3568,28 +3569,28 @@ const q ptr<Node>? = findNode();    -- pointer itself may be nil; nil-check requ
 - Indexing: `ptr[i]`
 - Arithmetic: `ptr + 4` — use `#ptrOffset` instead
 - Assignment: `*ptr = value`
-- Type casting/conversion: e.g., `ptr<float>(x)` or `&float(x)` (must use `#toRef` or `#toPtr` to cross safety boundaries)
+- Type casting/conversion: e.g., `*float(x)` or `&float(x)` (must use `#toRef` or `#toPtr` to cross safety boundaries)
 
 ### Boundary Crossing (Intrinsics)
 
 ```lucid
-#toRef(ptr);    -- ptr<T> → &T  (assert validity, cross to safe reference)
-#toPtr(ref);    -- &T → ptr<T>  (convert back to raw pointer)
-#ptrOffset(ptr, n);    -- pointer arithmetic, returns new ptr<T>
+#toRef(ptr);         -- *T → &T  (assert validity, cross to safe reference)
+#toPtr(ref);         -- &T → *T  (convert back to raw pointer)
+#ptrOffset(ptr, n);  -- pointer arithmetic, returns new *T
 #ptrDiff(p1, p2);    -- distance between two pointers as int64
 ```
 
 ```lucid
 @[foreign("C")]
-const malloc (size uint64) -> ptr<uint8>?;
+const malloc (size uint64) -> *uint8? = {}
 
-const buf ptr<uint8>? = malloc(1024);
+const buf *uint8? = malloc(1024);
 if buf == nil { return 1 }
 
 let ref &uint8 = #toRef(buf);    -- cross the boundary
 ref = 0xFF;    -- work with it safely
 
-const next ptr<uint8>? = #ptrOffset(buf, 1);    -- pointer arithmetic
+const next *uint8? = #ptrOffset(buf, 1);    -- pointer arithmetic
 ```
 
 ### Reading Values Through a Pointer (C → Lucid)
@@ -3612,10 +3613,10 @@ int getValue(int* address) {
 ```lucid
 -- main.luc — Lucid side
 @[foreign("C")]
-const getValue (address ptr<int>) -> int;    -- returns owned int, never &int
+const getValue (address *int) -> int = {}    -- returns owned int, never &int
 
-const addr ptr<int> = getAddressFromSomewhere();
-const n    int      = getValue(addr);    -- safe: int is owned, fully copied
+const addr *int = getAddressFromSomewhere();
+const n    int  = getValue(addr);    -- safe: int is owned, fully copied
 ```
 
 If the value at the address is large (a struct), return a raw pointer from C and cross the boundary with `#toRef` on the Lucid side:
@@ -3630,9 +3631,9 @@ Player* getPlayer(PlayerStore* store, int id) {
 ```lucid
 -- Lucid side
 @[foreign("C")]
-const getPlayer (store ptr<PlayerStore>, id int) -> ptr<Player>?;    -- nullable: id may not exist
+const getPlayer (store *PlayerStore, id int) -> *Player? = {}    -- nullable: id may not exist
 
-const p ptr<Player>? = getPlayer(store, 42);
+const p *Player? = getPlayer(store, 42);
 if p == nil { return }
 
 const ref   &Player = #toRef(p);    -- assert validity, enter safe world
@@ -4022,35 +4023,52 @@ c_free(buf);    -- must use C's free, not #free
 
 *Named arena* — for bulk allocation patterns where you want to free everything
 at once. Useful when building data structures that are handed to foreign code or
-when you need predictable allocation layout:
+when you need predictable allocation layout. The arena is described by an
+`ArenaDescriptor` — a plain POD struct that both Lucid and C can read, giving
+both sides unambiguous knowledge of the arena's boundaries without any
+per-pointer tagging:
 
 ```lucid
-const arena *Arena = #arena_create(4096);
-const nodes *Node  = #arena_alloc(arena, Node, 128);
-const edges *Edge  = #arena_alloc(arena, Edge, 256);
--- ... build a graph, pass to foreign code ...
-#arena_free(arena);    -- releases everything at once, no per-slot free needed
+-- ArenaDescriptor is a built-in POD struct — identical layout on Lucid and C sides
+-- Fields are read-only after creation; only the intrinsics may mutate them
+const ArenaDescriptor = struct {
+    base *uint8   -- start address of the arena region (never changes after create)
+    size uint64   -- total byte capacity (never changes after create)
+}
+
+-- usage
+let arena ArenaDescriptor = #arena_create(4096)
+const nodes *Node  = #arena_alloc(arena, Node, 128)
+const edges *Edge  = #arena_alloc(arena, Edge, 256)
+-- ... build a graph, pass descriptor + pointers to foreign code ...
+#arena_free(arena)    -- releases everything at once, no per-slot free needed
 ```
+
+`ArenaDescriptor` carries only `base` and `size` — the two values needed to
+answer the ownership question "did this pointer come from this arena?" The
+allocation cursor (`used`) is tracked internally by the language processor and
+is not exposed in the descriptor. C never needs to know the cursor — it only
+needs the boundaries.
 
 ---
 
 **Ownership at a Glance**
 
-| Memory origin                   | Lucid tracks it?         | How it is freed              |
-| ------------------------------- | ------------------------ | ---------------------------- |
-| Any local value, `[*]T`, struct | Yes — fully automatic    | Scope exit                   |
-| `#alloc`                        | Yes — language processor | `#free` — double-free caught |
-| `#arena_alloc`                  | Yes — language processor | `#arena_free`                |
-| C `malloc` / foreign library    | No                       | Matching C free function     |
+| Memory origin                   | Lucid tracks it?         | How it is freed              | C can verify ownership?              |
+| ------------------------------- | ------------------------ | ---------------------------- | ------------------------------------ |
+| Any local value, `[*]T`, struct | Yes — fully automatic    | Scope exit                   | N/A — stack memory, never share      |
+| `#alloc`                        | Yes — language processor | `#free` — double-free caught | No — pass size explicitly (Rule 3)   |
+| `#arena_alloc`                  | Yes — language processor | `#arena_free`                | Yes — via `ArenaDescriptor` (Rule 4) |
+| C `malloc` / foreign library    | No                       | Matching C free function     | N/A — C owns it entirely             |
 
-| Intrinsic                   | Args                     | Returns  | Notes                                  |
-| --------------------------- | ------------------------ | -------- | -------------------------------------- |
-| `#alloc(T, count)`          | type, `uint64`           | `*T`     | Lucid-tracked heap allocation          |
-| `#free(ptr)`                | `*T`                     | —        | Rejects double-free and null-free      |
-| `#arena_create(size)`       | `uint64`                 | `*Arena` | Create a named arena                   |
-| `#arena_alloc(arena, T, n)` | `*Arena`, type, `uint64` | `*T`     | Allocate from arena                    |
-| `#arena_reset(arena)`       | `*Arena`                 | —        | Release contents; arena remains usable |
-| `#arena_free(arena)`        | `*Arena`                 | —        | Destroy arena and all contents         |
+| Intrinsic                   | Args                              | Returns           | Notes                                  |
+| --------------------------- | --------------------------------- | ----------------- | -------------------------------------- |
+| `#alloc(T, count)`          | type, `uint64`                    | `*T`              | Lucid-tracked heap allocation          |
+| `#free(ptr)`                | `*T`                              | —                 | Rejects double-free and null-free      |
+| `#arena_create(size)`       | `uint64`                          | `ArenaDescriptor` | Create a named arena                   |
+| `#arena_alloc(arena, T, n)` | `ArenaDescriptor`, type, `uint64` | `*T`              | Allocate from arena                    |
+| `#arena_reset(arena)`       | `ArenaDescriptor`                 | —                 | Release contents; arena remains usable |
+| `#arena_free(arena)`        | `ArenaDescriptor`                 | —                 | Destroy arena and all contents         |
 
 ---
 
@@ -4307,8 +4325,12 @@ you use the library — it is a translation layer, not a reimplementation.
 ```
 
 > [!NOTE]
-> **Interpreter Mode:** `@[foreign]` functions are resolved through dynamic
-> linking (`dlopen`/`dlsym`) at runtime. The compiler resolves them at link time.
+> **Interpreter Mode:** `@[foreign]` functions are resolved by the LLVM ORC JIT's
+> built-in dynamic linker. Libraries named in `@[link(...)]` are loaded via
+> `dlopen` / `LoadLibrary` at startup and their symbols are registered with the
+> JIT's symbol table. LLVM codegen handles calling conventions — no separate
+> marshaling layer is needed. The compiler resolves them via the system linker
+> at link time instead.
 
 ```ebnf
 foreign_decl    = '@[' foreign_attr { ',' link_attr } ']' func_decl
@@ -4395,9 +4417,9 @@ C++ that exposes a flat C surface, then declare that wrapper in Lucid using
 `@[foreign("C")]` as normal. The wrapper translates every C++ mechanism into
 something Lucid can see:
 
-- C++ class → opaque pointer passed as `*uint8`
+- C++ class → opaque `*uint8` handle (pass-through only — never dereference on the Lucid side)
 - Constructor/destructor → explicit `_create` / `_destroy` functions
-- Member functions → free functions with explicit `self *uint8` parameter
+- Member functions → free functions with an explicit `self *uint8` first parameter
 - C++ exceptions → caught in the wrapper, converted to a nullable return
 
 ```cpp
@@ -4475,7 +4497,7 @@ Lucid's memory in ways the language processor cannot detect or prevent:
   Lucid memory.
 
 These are not language bugs — they are the known cost of crossing into unmanaged
-territory. Lucid addresses them through three rules and one pattern:
+territory. Lucid addresses them through four rules and one pattern:
 
 **Rule 1 — Never pass a scope arena address to foreign code that outlives the call**
 
@@ -4529,24 +4551,89 @@ c_fill(buf, 1024);   -- size passed explicitly — C knows its bounds
 #free(buf);
 ```
 
-**Pattern — Arena as a C sandbox**
+**Rule 4 — Use `ArenaDescriptor` when sharing arena memory with C**
 
-The safest pattern for giving C a region to work in is a named arena. Allocate a
-dedicated arena, hand it to C, and let C allocate from it freely. When C is done,
-Lucid frees the whole arena at once. C never touches Lucid's scope arena or heap,
-individual slot frees are impossible, and the lifetime is unambiguous:
+Passing a bare pointer into arena-allocated memory gives C no way to know where
+the arena begins or ends, and no way to verify whether a pointer belongs to it.
+Always pass the `ArenaDescriptor` alongside any arena-allocated pointer given to
+C. The descriptor gives C unambiguous boundary information — `base` and `size`
+are enough to answer "is this pointer mine to free?" with a single range check.
+Never pass a raw `*uint8` into arena memory to C without its descriptor:
 
 ```lucid
--- give C a dedicated sandbox arena
-const arena *Arena  = #arena_create(65536);
-const nodes *uint8  = #arena_alloc(arena, uint8, 4096);
-const edges *uint8  = #arena_alloc(arena, uint8, 8192);
+-- WRONG: C receives arena memory but has no boundary information
+let arena ArenaDescriptor = #arena_create(65536)
+const data *uint8 = #arena_alloc(arena, uint8, 4096)
+c_process(data)    -- C has no way to verify ownership or bounds
 
-c_build_graph(nodes, edges, arena);   -- C works entirely within the arena
-                                       -- C may not call free() on arena memory
-
-#arena_free(arena);   -- Lucid frees everything at once when C is done
+-- CORRECT: C receives both the data and the descriptor
+let arena ArenaDescriptor = #arena_create(65536)
+const data *uint8 = #arena_alloc(arena, uint8, 4096)
+c_process(data, #addrof(arena))    -- C can verify: is data inside arena?
 ```
+
+**Pattern — Arena as a C sandbox**
+
+The safest pattern for giving C a region to work in is a named arena backed by
+an `ArenaDescriptor`. Lucid allocates slices from the arena and passes both the
+slices and the descriptor to C. C receives a complete picture of the arena's
+boundaries — it can verify that any pointer it holds falls within the region and
+must not call `free()` on arena memory. When C is done, Lucid frees the whole
+arena at once.
+
+```lucid
+-- Lucid side: create arena and allocate slices from it
+let arena ArenaDescriptor = #arena_create(65536)
+const nodes *uint8 = #arena_alloc(arena, uint8, 4096)
+const edges *uint8 = #arena_alloc(arena, uint8, 8192)
+
+-- pass both the slices and the descriptor to C
+-- C receives: the data pointers AND the arena's base + size
+-- C can verify ownership: is this pointer inside arena.base .. arena.base + arena.size?
+-- C must not call free() on nodes or edges — they are not malloc-ed addresses
+c_build_graph(nodes, edges, #addrof(arena))
+
+#arena_free(arena)    -- Lucid frees everything at once when C is done
+```
+
+On the C side, the descriptor arrives as a plain POD struct with an identical
+layout — no vtable, no padding surprises, no hidden fields:
+
+```c
+// C side — ArenaDescriptor layout matches the Lucid definition exactly
+typedef struct {
+    uint8_t* base;   // start of the arena region
+    uint64_t size;   // total byte capacity
+} LGE_ArenaDescriptor;
+
+// Ownership check — call this before doing anything risky with a pointer
+static int lge_arena_contains(const LGE_ArenaDescriptor* arena, const void* ptr) {
+    return (uint8_t*)ptr >= arena->base &&
+           (uint8_t*)ptr <  arena->base + arena->size;
+}
+
+void c_build_graph(uint8_t* nodes, uint8_t* edges,
+                   const LGE_ArenaDescriptor* arena)
+{
+    // verify before use — cheap range check, no hash lookup
+    assert(lge_arena_contains(arena, nodes));
+    assert(lge_arena_contains(arena, edges));
+
+    // work with nodes and edges freely — never call free() on them
+}
+```
+
+> [!IMPORTANT]
+> `ArenaDescriptor.base` and `ArenaDescriptor.size` are set once at
+> `#arena_create` and never change. They are safe to read from C at any point
+> during the arena's lifetime. The allocation cursor is managed internally by
+> the language processor and is not exposed in the descriptor — C does not need
+> it and must not attempt to track it.
+
+> [!WARNING]
+> Passing `#addrof(arena)` to C is only safe when the `ArenaDescriptor` variable
+> outlives the C call. Declare arena descriptors at the outermost scope that
+> needs them — never as a short-lived local inside a loop that calls C.
 
 ---
 
