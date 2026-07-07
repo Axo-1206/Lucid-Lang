@@ -535,19 +535,19 @@ lucid/
     │   ├── Parser.cpp
     │   ├── ModuleResolver.hpp/cpp -- multi-file resolution, cyclic import detection
     │   ├── lexer/
-    │   │   ├── Lexer.hpp/cpp     -- character stream → token stream
-    │   │   └── TokenStream.hpp/cpp -- buffered lookahead over token stream
-    │   ├── rules/                -- grammar rule implementations
-    │   │   ├── ParserDecl.cpp    -- const, let, struct, enum, trait, fn
-    │   │   ├── ParserStmt.cpp    -- if, for, while, return, block
-    │   │   ├── ParserExpr.cpp    -- Pratt parser: all expressions
-    │   │   ├── ParserType.cpp    -- type annotations: *T, T?, generics
-    │   │   └── ParserConcurrency.cpp -- async, parallel, await, spawn, join
-    │   └── support/              -- parser infrastructure
-    │       ├── ParserContext.hpp -- shared parse state
-    │       ├── Lookahead.cpp     -- disambiguation helpers
-    │       ├── Helpers.cpp       -- attribute parsing, doc-comment handling
-    │       └── ErrorRecovery.cpp -- sync points for error recovery
+    │   │   └── Lexer.hpp/cpp           -- character stream → token stream
+    │   ├── rules/                      -- grammar rule implementations
+    │   │   ├── ParserDecl.cpp          -- const, let, struct, enum, trait, fn
+    │   │   ├── ParserStmt.cpp          -- if, for, while, return, block
+    │   │   ├── ParserExpr.cpp          -- Pratt parser: all expressions
+    │   │   ├── ParserType.cpp          -- type annotations: *T, T?, generics
+    │   │   └── ParserConcurrency.cpp   -- async, parallel, await, spawn, join
+    │   └── support/                    -- parser infrastructure
+    │       ├── ParserContext.hpp       -- shared parse state
+    │       ├── Lookahead.cpp           -- disambiguation helpers
+    │       ├── Helpers.cpp             -- attribute parsing, doc-comment handling
+│   │       ├── TokenStream.hpp/cpp     -- Track stream of tokens when parsing a file
+    │       └── ErrorRecovery.cpp       -- sync points for error recovery
     │
     ├── sema/                     -- frontend stage 2: AST → validated AST
     │   ├── Sema.hpp/cpp          -- entry point: Sema::analyze(Module*)

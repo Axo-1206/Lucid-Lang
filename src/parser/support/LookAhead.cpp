@@ -23,7 +23,7 @@
  * ```
  */
 
-#include "Parser.hpp"
+#include "../Parser.hpp"
 #include "debug/DebugMacros.hpp"
 #include "debug/DebugUtils.hpp"
 #include "core/diagnostics/DiagnosticCodes.hpp"

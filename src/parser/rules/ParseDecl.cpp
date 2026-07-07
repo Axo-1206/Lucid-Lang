@@ -18,7 +18,7 @@
  * The caller (parseDecl) is responsible for consuming it.
  */
 
-#include "Parser.hpp"
+#include "../Parser.hpp"
 #include "core/Tokens.hpp"
 #include "debug/DebugMacros.hpp"
 #include "debug/DebugUtils.hpp"

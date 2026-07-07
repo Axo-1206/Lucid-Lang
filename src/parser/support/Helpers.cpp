@@ -9,7 +9,7 @@
  * - parseAttributeArgLiteral: Parses attribute argument literals
  */
 
-#include "Parser.hpp"
+#include "../Parser.hpp"
 #include "core/Tokens.hpp"
 #include "core/diagnostics/DiagnosticCodes.hpp"
 #include "debug/DebugMacros.hpp"

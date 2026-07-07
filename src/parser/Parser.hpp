@@ -15,8 +15,8 @@
 #include "core/memory/StringPool.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
 #include "ModuleResolver.hpp"
-#include "ParserContext.hpp"
-#include "TokenStream.hpp"
+#include "support/ParserContext.hpp"
+#include "support/TokenStream.hpp"
 
 #include <vector>
 #include <string>
