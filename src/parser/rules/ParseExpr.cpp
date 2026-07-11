@@ -71,7 +71,7 @@
  * 
  */
 
-#include "Parser.hpp"
+#include "../Parser.hpp"
 #include "core/Tokens.hpp"
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/StmtAST.hpp"
@@ -138,6 +138,17 @@ ExprAST* parsePrattExpr(TokenStream& stream, ParserContext& ctx, int minPrec) {
             break;
         }
         
+        // ─── Handle composition operator (+>) ────────────────────────────
+        if (current == TokenType::COMPOSE) {
+            // Composition has higher precedence than assignment and null coalesce
+            // but lower than function calls
+            lhs = parseComposeExpr(stream, ctx, lhs);
+            if (!lhs) {
+                return nullptr;
+            }
+            continue;
+        }
+        
         // Check for assignment operators (right-associative)
         if (current == TokenType::ASSIGN) {
             // For assignment, we need to parse the RHS with lower precedence
@@ -149,16 +160,6 @@ ExprAST* parsePrattExpr(TokenStream& stream, ParserContext& ctx, int minPrec) {
             }
             continue;
         }
-        
-        // Check for `is` operator (special handling)
-        // if (current == TokenType::IS) {
-        //     stream.advance(); // Consume 'is'
-        //     lhs = parseInfixIs(stream, ctx, lhs);
-        //     if (!lhs) {
-        //         return nullptr;
-        //     }
-        //     continue;
-        // }
         
         // Check for `??` operator (null coalesce)
         if (current == TokenType::QUESTION_QUESTION) {
@@ -197,7 +198,6 @@ ExprAST* parsePrattExpr(TokenStream& stream, ParserContext& ctx, int minPrec) {
     
     return lhs;
 }
-
 
 /**
  * @brief Parse a prefix expression.
@@ -385,9 +385,41 @@ ExprAST* parsePostfixExpr(TokenStream& stream, ParserContext& ctx, ExprPtr lhs) 
     
     // ─── 1. Function call: f() ───────────────────────────────────────────
     if (current == TokenType::LPAREN) {
-        // Check for generic arguments before the call: f<int>(42)
-        // The generic args would have been parsed already in parsePrimaryExpr
-        return parseCallExpr(stream, ctx, lhs, ArenaSpan<TypeAST*>());
+        // Generic arguments should have been parsed already in parsePrimaryExpr
+        // For calls like `Buffer<int>(capacity)`, the generic args are parsed
+        // before the '(' in parsePrimaryExpr when it sees `Buffer<int>`
+        // 
+        // However, we also need to handle the case where the callee is already
+        // an IdentifierExprAST with genericArgs set (from parseFuncRef)
+        //
+        // We also need to handle the case where the callee is a FieldAccessExprAST
+        // with genericArgs set (from parseFuncRef on a field access)
+        ArenaSpan<TypePtr> genericArgs;
+        
+        // Check if the callee already has generic arguments (from parsePrimaryExpr)
+        if (lhs->isa<IdentifierExprAST>()) {
+            auto* idExpr = lhs->as<IdentifierExprAST>();
+            if (idExpr->genericArgs.size() > 0) {
+                genericArgs = idExpr->genericArgs;
+                // Clear the genericArgs from the identifier to avoid double storage
+                // We'll move them to the call expression
+                // Note: ArenaSpan doesn't have a clear, so we'll just use them and
+                // the identifier will keep them (they'll be ignored later)
+            }
+        } else if (lhs->isa<FieldAccessExprAST>()) {
+            auto* fieldAccess = lhs->as<FieldAccessExprAST>();
+            if (fieldAccess->genericArgs.size() > 0) {
+                genericArgs = fieldAccess->genericArgs;
+            }
+        } else if (lhs->isa<ModuleAccessExprAST>()) {
+            auto* moduleAccess = lhs->as<ModuleAccessExprAST>();
+            if (moduleAccess->genericArgs.size() > 0) {
+                genericArgs = moduleAccess->genericArgs;
+            }
+        }
+        
+        // Parse the call with the collected generic arguments
+        return parseCallExpr(stream, ctx, lhs, genericArgs);
     }
     
     // ─── 2. Index or slice: arr[0] or arr[1..3] ─────────────────────────
@@ -437,7 +469,6 @@ ExprAST* parsePostfixExpr(TokenStream& stream, ParserContext& ctx, ExprPtr lhs) 
     // No more postfix operators
     return lhs;
 }
-
 // =============================================================================
 // Call & Index
 // =============================================================================
@@ -455,6 +486,29 @@ ExprAST* parsePostfixExpr(TokenStream& stream, ParserContext& ctx, ExprPtr lhs) 
  * math:sqrt(x)                            → module function call
  * x |> map<int, string>(stringFromInt)!   → argument pack call
  * ```
+ * 
+ * ## Generic Arguments
+ * 
+ * Generic arguments are parsed BEFORE the call parentheses in parsePrimaryExpr:
+ * - `Buffer<int>` is parsed as an IdentifierExprAST with genericArgs = [Int]
+ * - The call `(capacity)` is then parsed as a CallExprAST with the genericArgs
+ *   from the callee
+ * 
+ * ## Generic Call Resolution
+ * 
+ * For a call like `Buffer<int>(capacity)`:
+ * 1. parsePrimaryExpr sees `Buffer` and `<int>`
+ * 2. It creates an IdentifierExprAST with genericArgs = [Int]
+ * 3. parsePostfixExpr sees `(` and calls parseCallExpr
+ * 4. parseCallExpr extracts the genericArgs from the callee and stores them
+ *    in the CallExprAST
+ * 
+ * ## Argument Pack (!)
+ * 
+ * `fn(args)!` is not a function call – `!` marks an intentionally incomplete
+ * argument list. The upstream value is injected as the **first** argument when
+ * `|>` fires. The semantic pass verifies that `hasArgPack` is only true when
+ * the call is inside a pipeline step.
  * 
  * @param stream The token stream
  * @param ctx The parsing context
@@ -479,6 +533,7 @@ CallExprAST* parseCallExpr(TokenStream& stream, ParserContext& ctx,
         synchronize(stream, ctx);
         return nullptr;
     }
+    // We don't consume '(' here - parseArgList does that
     
     // ─── 2. Parse arguments ──────────────────────────────────────────────
     // parseArgList consumes '(' and ')' and returns the arguments
@@ -498,6 +553,7 @@ CallExprAST* parseCallExpr(TokenStream& stream, ParserContext& ctx,
     
     LOG_PARSER_DETAIL("parseCallExpr: parsed call expression with ", 
                       args.size(), " arguments",
+                      genericArgs.size() > 0 ? " and " + std::to_string(genericArgs.size()) + " generic args" : "",
                       hasArgPack ? " (with argument pack)" : "");
     
     return call;
@@ -930,6 +986,7 @@ SliceExprAST* parseSliceExpr(TokenStream& stream, ParserContext& ctx, ExprPtr ta
     
     return slice;
 }
+
 // =============================================================================
 // Pipeline & Composition
 // =============================================================================
@@ -939,31 +996,100 @@ SliceExprAST* parseSliceExpr(TokenStream& stream, ParserContext& ctx, ExprPtr ta
  * 
  * Grammar: `seed '|>' step { '|>' step }`
  * 
+ * ## Examples
+ * 
+ * ```lucid
+ * 42 |> float |> sqrt
+ * getUser(id) |> validate |> save
+ * v |> Vec2:normalize |> scale(2.0)!
+ * x |> map<int, string>(stringFromInt)!
+ * ```
+ * 
+ * ## Error Handling
+ * 
+ * - Trailing `|>` (e.g., `42 |> float |>`) → reports error and stops
+ * - Missing step after `|>` → parsePipelineStep reports error
+ * - Invalid step → parsePipelineStep reports error and skips
+ * 
  * @param stream The token stream
  * @param ctx The parsing context
- * @param seed The seed expression
+ * @param seed The seed expression (the initial value)
  * @return ExprAST* The parsed pipeline expression, or nullptr on error
  */
 ExprAST* parsePipelineExpr(TokenStream& stream, ParserContext& ctx, ExprPtr seed) {
+    SourceLocation loc = stream.currentLoc();
+    
     LOG_PARSER_DETAIL("parsePipelineExpr: parsing pipeline expression");
-    // TODO: Implement
-    return seed;
-}
-
-/**
- * @brief Parse a composition expression.
- * 
- * Grammar: `lhs '+>' operand`
- * 
- * @param stream The token stream
- * @param ctx The parsing context
- * @param lhs The left-hand side expression
- * @return ExprAST* The parsed composition expression, or nullptr on error
- */
-ExprAST* parseComposeExpr(TokenStream& stream, ParserContext& ctx, ExprPtr lhs) {
-    LOG_PARSER_DETAIL("parseComposeExpr: parsing composition expression");
-    // TODO: Implement
-    return nullptr;
+    
+    if (!seed) {
+        ctx.error(stream, DiagCode::E1107, stream.peekValue());
+        return nullptr;
+    }
+    
+    // ─── 1. Parse pipeline steps ──────────────────────────────────────────
+    std::vector<PipelineStepPtr> steps;
+    
+    while (stream.check(TokenType::PIPELINE)) {
+        SourceLocation opLoc = stream.currentLoc();
+        stream.advance(); // Consume '|>'
+        
+        // ─── Check for trailing `|>` ─────────────────────────────────────
+        // If we're at EOF after consuming '|>', we have a trailing pipeline
+        if (stream.isAtEnd()) {
+            ctx.errorAt(opLoc, DiagCode::E1006, "expected pipeline step after '|>'");
+            ctx.error(stream, DiagCode::E1006, "missing pipeline step after '|>'", "<EOF>");
+            break;
+        }
+        
+        // ─── Check for consecutive `|>` operators ──────────────────────
+        // If we see another '|>' immediately, that's a missing step
+        if (stream.check(TokenType::PIPELINE)) {
+            ctx.errorAt(opLoc, DiagCode::E1006, "missing pipeline step between '|>' operators");
+            // Skip the extra '|>' and continue to try parsing the next step
+            stream.advance();
+            continue;
+        }
+        
+        // ─── Parse the pipeline step ──────────────────────────────────────
+        // parsePipelineStep handles errors and reports them
+        PipelineStepPtr step = parsePipelineStep(stream, ctx);
+        if (!step) {
+            // Error already reported by parsePipelineStep
+            // Stop parsing this pipeline - we can't recover from a bad step
+            break;
+        }
+        steps.push_back(step);
+    }
+    
+    // ─── 2. Check for trailing `|>` at the end ──────────────────────────
+    // This is a safety check in case the loop exited unexpectedly
+    if (stream.check(TokenType::PIPELINE)) {
+        ctx.error(stream, DiagCode::E1006, "trailing '|>' with no following step");
+        // Consume the extra '|>' to avoid infinite loops
+        stream.advance();
+    }
+    
+    // ─── 3. Validate that we have at least one step ──────────────────────
+    if (steps.empty()) {
+        ctx.error(stream, DiagCode::E1006, "at least one pipeline step is required");
+        return seed;
+    }
+    
+    // ─── 4. Build the pipeline expression ────────────────────────────────
+    auto* pipeline = ctx.arena.make<PipelineExprAST>();
+    pipeline->loc = loc;
+    pipeline->seed = seed;
+    
+    auto builder = ctx.arena.makeBuilder<PipelineStepPtr>();
+    for (auto* s : steps) {
+        builder.push_back(s);
+    }
+    pipeline->steps = builder.build();
+    
+    LOG_PARSER_DETAIL("parsePipelineExpr: parsed pipeline expression with ", 
+                      steps.size(), " steps");
+    
+    return pipeline;
 }
 
 /**
@@ -974,14 +1100,268 @@ ExprAST* parseComposeExpr(TokenStream& stream, ParserContext& ctx, ExprPtr lhs) 
  * - A single expression: `expr`
  * - An anonymous function: `(a int) -> int { ... }`
  * 
+ * ## Grammar
+ * 
+ * ```ebnf
+ * pipeline_step := expr [ '(' arg_list ')' '!' ] | func_literal
+ * ```
+ * 
+ * ## Examples
+ * 
+ * ```lucid
+ * float                    → simple expression
+ * sqrt                     → function reference
+ * scale(2.0)!              → function call with argument pack
+ * (x int) -> int { return x * 2 }  → anonymous function
+ * ```
+ * 
+ * ## Error Handling
+ * 
+ * This function handles the following errors:
+ * - Invalid expression: reports error and returns nullptr
+ * - Missing arguments: reports error and returns nullptr
+ * - Unclosed parentheses: reports error and returns nullptr
+ * 
  * @param stream The token stream
  * @param ctx The parsing context
  * @return PipelineStepAST* The parsed pipeline step, or nullptr on error
  */
 PipelineStepAST* parsePipelineStep(TokenStream& stream, ParserContext& ctx) {
+    SourceLocation loc = stream.currentLoc();
+    
     LOG_PARSER_DETAIL("parsePipelineStep: parsing pipeline step");
-    // TODO: Implement
-    return nullptr;
+    
+    // ─── 1. Check for EOF ─────────────────────────────────────────────────
+    if (stream.isAtEnd()) {
+        ctx.error(stream, DiagCode::E1006, "pipeline step", "<EOF>");
+        return nullptr;
+    }
+    
+    // ─── 2. Check for anonymous function ─────────────────────────────────
+    if (looksLikeAnonFunc(stream, ctx)) {
+        ExprPtr anonFunc = parseAnonFuncExpr(stream, ctx);
+        if (!anonFunc) {
+            return nullptr;
+        }
+        
+        auto* step = ctx.arena.make<PipelineStepAST>();
+        step->loc = loc;
+        step->callable = anonFunc;
+        step->packArgs = ctx.arena.makeBuilder<ExprPtr>().build();
+        
+        LOG_PARSER_DETAIL("parsePipelineStep: parsed anonymous function step");
+        return step;
+    }
+    
+    // ─── 3. Parse a function reference or expression ─────────────────────
+    ExprPtr callable = parseExpr(stream, ctx);
+    if (!callable) {
+        ctx.error(stream, DiagCode::E1006, "pipeline step expression", stream.peekValue());
+        synchronize(stream, ctx);
+        return nullptr;
+    }
+    
+    // ─── 4. Check for argument pack step: fn(args)! ─────────────────────
+    ArenaSpan<ExprPtr> packArgs;
+    bool hasPackArgs = false;
+    
+    // Check if we have a function call with argument pack
+    if (stream.check(TokenType::LPAREN)) {
+        // Save position in case this isn't an argument pack
+        size_t savedPos = stream.getPos();
+        
+        // Try to parse as a call expression with argument pack
+        // Parse arguments
+        std::vector<ExprPtr> args;
+        
+        // Consume '('
+        stream.advance();
+        
+        if (!stream.check(TokenType::RPAREN)) {
+            while (!stream.isAtEnd()) {
+                // Skip consecutive separators
+                if (stream.consumeTrailing(TokenType::COMMA) > 0) {
+                    ctx.error(stream, DiagCode::E1009, ",", "pipeline arguments");
+                }
+                
+                if (stream.check(TokenType::RPAREN)) {
+                    break;
+                }
+                
+                if (stream.isAtEnd()) {
+                    ctx.error(stream, DiagCode::E1005, ")", "pipeline arguments", "<EOF>");
+                    break;
+                }
+                
+                ExprPtr arg = parseExpr(stream, ctx);
+                if (arg) {
+                    args.push_back(arg);
+                } else {
+                    ctx.error(stream, DiagCode::E1006, "pipeline argument", stream.peekValue());
+                    synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN);
+                    if (stream.check(TokenType::COMMA)) {
+                        stream.advance();
+                        continue;
+                    } else if (stream.check(TokenType::RPAREN)) {
+                        break;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+        
+        // Consume closing parenthesis
+        if (!stream.check(TokenType::RPAREN)) {
+            ctx.error(stream, DiagCode::E1005, ")", "pipeline arguments", stream.peekValue());
+            synchronizeTo(stream, ctx, TokenType::RPAREN);
+            if (stream.check(TokenType::RPAREN)) {
+                stream.advance();
+            }
+        } else {
+            stream.advance(); // Consume ')'
+        }
+        
+        // Check for argument pack (!)
+        if (stream.check(TokenType::BANG)) {
+            stream.advance(); // Consume '!'
+            hasPackArgs = true;
+            
+            // Build the pack args span
+            auto builder = ctx.arena.makeBuilder<ExprPtr>();
+            for (auto* arg : args) {
+                builder.push_back(arg);
+            }
+            packArgs = builder.build();
+        } else {
+            // No '!' - this is a regular function call
+            // Restore position and treat as regular expression
+            stream.setPos(savedPos);
+            // The callable already includes the function name
+            // Just return it as a step without pack args
+            auto* step = ctx.arena.make<PipelineStepAST>();
+            step->loc = loc;
+            step->callable = callable;
+            step->packArgs = ctx.arena.makeBuilder<ExprPtr>().build();
+            
+            LOG_PARSER_DETAIL("parsePipelineStep: parsed regular expression step");
+            return step;
+        }
+    }
+    
+    // ─── 5. Build the pipeline step ──────────────────────────────────────
+    auto* step = ctx.arena.make<PipelineStepAST>();
+    step->loc = loc;
+    step->callable = callable;
+    step->packArgs = packArgs;
+    
+    LOG_PARSER_DETAIL("parsePipelineStep: parsed pipeline step",
+                      hasPackArgs ? " with argument pack" : "");
+    
+    return step;
+}
+
+
+/**
+ * @brief Parse a composition expression.
+ * 
+ * Grammar: `lhs '+>' operand { '+>' operand }`
+ * 
+ * ## Examples
+ * 
+ * ```lucid
+ * const process = validate +> transform +> render
+ * const intToString = identity<int> +> toString<int> +> trim
+ * const pipeline = normalize +> clamp(0, 1)!
+ * ```
+ * 
+ * ## Composition Rules
+ * 
+ * 1. **Single Parameter Group**: Both operands must have exactly one
+ *    parameter group. Curry functions are forbidden on either side.
+ * 
+ * 2. **Type Matching**: The output type of the left operand must exactly
+ *    match the input type of the right operand.
+ * 
+ * 3. **Generic Instantiation**: Generic functions must be instantiated
+ *    with explicit type arguments before composition.
+ * 
+ * 4. **Nullable/Fallible Forbidden**: `~[nullable]` and `~[fallible]`
+ *    functions are forbidden as composition operands.
+ * 
+ * 5. **Async Composition**: When any operand is `~[async]`, the composed
+ *    function must be declared `~[async]` and awaited at the call site.
+ * 
+ * ## Key Characteristics
+ * 
+ * - Compile-time: Produces a new function without executing anything.
+ * - Type Matching: Strict – output type of left must exactly match input type of right.
+ * - No Qualifiers: `~[async]` or `~[nullable]` operands are forbidden.
+ * - Generic Instantiation: Explicit type arguments required for generic functions.
+ * 
+ * @param stream The token stream
+ * @param ctx The parsing context
+ * @param lhs The left-hand side expression
+ * @return ExprAST* The parsed composition expression, or nullptr on error
+ */
+ExprAST* parseComposeExpr(TokenStream& stream, ParserContext& ctx, ExprPtr lhs) {
+    SourceLocation loc = stream.currentLoc();
+    
+    LOG_PARSER_DETAIL("parseComposeExpr: parsing composition expression");
+    
+    if (!lhs) {
+        ctx.error(stream, DiagCode::E1006, "left-hand side", stream.peekValue());
+        return nullptr;
+    }
+    
+    // ─── 1. Expect '+>' ──────────────────────────────────────────────────
+    if (!stream.check(TokenType::COMPOSE)) {
+        ctx.error(stream, DiagCode::E1004, "+>", "composition", stream.peekValue());
+        synchronize(stream, ctx);
+        return nullptr;
+    }
+    stream.advance(); // Consume '+>'
+    
+    // ─── 2. Parse at least one operand ───────────────────────────────────
+    std::vector<ComposeOperandPtr> operands;
+    
+    // Parse the first operand
+    ComposeOperandPtr operand = parseComposeOperand(stream, ctx);
+    if (!operand) {
+        ctx.error(stream, DiagCode::E1006, "composition operand", stream.peekValue());
+        synchronize(stream, ctx);
+        return lhs;
+    }
+    operands.push_back(operand);
+    
+    // ─── 3. Parse additional operands ────────────────────────────────────
+    while (stream.check(TokenType::COMPOSE)) {
+        stream.advance(); // Consume '+>'
+        
+        operand = parseComposeOperand(stream, ctx);
+        if (!operand) {
+            ctx.error(stream, DiagCode::E1006, "composition operand", stream.peekValue());
+            synchronize(stream, ctx);
+            break;
+        }
+        operands.push_back(operand);
+    }
+    
+    // ─── 4. Build the composition expression ─────────────────────────────
+    auto* compose = ctx.arena.make<ComposeExprAST>();
+    compose->loc = loc;
+    compose->left = lhs;
+    
+    auto builder = ctx.arena.makeBuilder<ComposeOperandPtr>();
+    for (auto* op : operands) {
+        builder.push_back(op);
+    }
+    compose->operands = builder.build();
+    
+    LOG_PARSER_DETAIL("parseComposeExpr: parsed composition expression with ", 
+                      operands.size(), " operands");
+    
+    return compose;
 }
 
 /**
@@ -991,14 +1371,73 @@ PipelineStepAST* parsePipelineStep(TokenStream& stream, ParserContext& ctx) {
  * function's output as input. Both operands must have exactly
  * one parameter group.
  * 
+ * ## Grammar
+ * 
+ * ```ebnf
+ * compose_operand := expr [ '<' type { ',' type } '>' ]
+ * ```
+ * 
+ * The callable expression can be:
+ * - IdentifierExprAST (plain function name)
+ * - FieldAccessExprAST (dotted path)
+ * - ModuleAccessExprAST (module:function)
+ * 
+ * Generic arguments are applied to the callable (e.g., `toString<int>` becomes
+ * callable = IdentifierExprAST("toString") with genericArgs = [int]).
+ * 
  * @param stream The token stream
  * @param ctx The parsing context
  * @return ComposeOperandAST* The parsed composition operand, or nullptr on error
  */
 ComposeOperandAST* parseComposeOperand(TokenStream& stream, ParserContext& ctx) {
+    SourceLocation loc = stream.currentLoc();
+    
     LOG_PARSER_DETAIL("parseComposeOperand: parsing composition operand");
-    // TODO: Implement
-    return nullptr;
+    
+    // ─── 1. Parse the callable expression ────────────────────────────────
+    // A composition operand is a function reference, which is an expression
+    // that evaluates to a function
+    ExprPtr callable = parseExpr(stream, ctx);
+    if (!callable) {
+        ctx.error(stream, DiagCode::E1006, "composition operand", stream.peekValue());
+        synchronize(stream, ctx);
+        return nullptr;
+    }
+    
+    // ─── 2. Check for generic arguments ──────────────────────────────────
+    // Generic arguments can be attached to the callable:
+    // - IdentifierExprAST: `toString<int>`
+    // - FieldAccessExprAST: `myModule.toString<int>`
+    // - ModuleAccessExprAST: `math:sqrt<float>`
+    ArenaSpan<TypePtr> genericArgs;
+    
+    if (callable->isa<IdentifierExprAST>()) {
+        auto* idExpr = callable->as<IdentifierExprAST>();
+        if (idExpr->genericArgs.size() > 0) {
+            genericArgs = idExpr->genericArgs;
+        }
+    } else if (callable->isa<FieldAccessExprAST>()) {
+        auto* fieldAccess = callable->as<FieldAccessExprAST>();
+        if (fieldAccess->genericArgs.size() > 0) {
+            genericArgs = fieldAccess->genericArgs;
+        }
+    } else if (callable->isa<ModuleAccessExprAST>()) {
+        auto* moduleAccess = callable->as<ModuleAccessExprAST>();
+        if (moduleAccess->genericArgs.size() > 0) {
+            genericArgs = moduleAccess->genericArgs;
+        }
+    }
+    
+    // ─── 3. Build the composition operand ────────────────────────────────
+    auto* operand = ctx.arena.make<ComposeOperandAST>();
+    operand->loc = loc;
+    operand->callable = callable;
+    operand->genericArgs = genericArgs;
+    
+    LOG_PARSER_DETAIL("parseComposeOperand: parsed composition operand",
+                      genericArgs.size() > 0 ? " with generic args" : "");
+    
+    return operand;
 }
 
 // =============================================================================

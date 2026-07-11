@@ -56,7 +56,7 @@ UseDeclAST* parseUseDecl(TokenStream& stream, ParserContext& ctx) {
     // ─── 1. Parse 'use' keyword ─────────────────────────────────────────
     if (!stream.check(TokenType::USE)) {
         ctx.error(stream, DiagCode::E1001, "use", stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     stream.advance(); // Consume 'use'
@@ -65,7 +65,7 @@ UseDeclAST* parseUseDecl(TokenStream& stream, ParserContext& ctx) {
     auto pathParts = parseUsePath(stream, ctx);
     if (pathParts.empty()) {
         ctx.error(stream, DiagCode::E1102, stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -89,7 +89,7 @@ UseDeclAST* parseUseDecl(TokenStream& stream, ParserContext& ctx) {
             aliasStr = std::string(ctx.pool.lookup(alias));
         } else {
             ctx.error(stream, DiagCode::E1102, stream.peekValue());
-            synchronize(stream, ctx);
+            synchronizeToContext(stream, ctx);
             return nullptr;
         }
     } else {
@@ -112,12 +112,12 @@ UseDeclAST* parseUseDecl(TokenStream& stream, ParserContext& ctx) {
         InternedString filePath = ctx.resolver->resolveUsePath(usePath);
         if (!filePath.isValid()) {
             ctx.errorAt(loc, DiagCode::E0003);
-            synchronize(stream, ctx);
+            synchronizeToContext(stream, ctx);
             return useDecl;
         }
         
         // Check if already parsed
-        ProgramAST* importedModule = ctx.resolver->getParsedModule(filePath);
+        ModuleAST* importedModule = ctx.resolver->getParsedModule(filePath);
         
         if (!importedModule) {
             // Read the source file
@@ -133,12 +133,14 @@ UseDeclAST* parseUseDecl(TokenStream& stream, ParserContext& ctx) {
             
             if (!importedModule) {
                 ctx.error(stream, DiagCode::E0004, usePath);
-                synchronize(stream, ctx);
+                synchronizeToContext(stream, ctx);
                 return useDecl;
             }
             
-            // Cache the module
-            ctx.resolver->cacheModule(filePath, importedModule);
+            // No cacheModule() call here — parse() already caches on success,
+            // guarded by !ctx.hasErrors. Caching unconditionally here would
+            // cache a module that had parse errors, which parse()'s own
+            // guard exists specifically to prevent.
         }
         
         // Imported declarations are automatically collected by parse()
@@ -146,7 +148,7 @@ UseDeclAST* parseUseDecl(TokenStream& stream, ParserContext& ctx) {
         
     } else {
         ctx.error(stream, DiagCode::E0004, usePath);
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return useDecl;
     }
     
@@ -179,7 +181,7 @@ VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
     if (!isConst) {
         if (!stream.match(TokenType::LET)) {
             ctx.error(stream, DiagCode::E1001, "let/const", stream.peekValue());
-            synchronize(stream, ctx);
+            synchronizeToContext(stream, ctx);
             return nullptr;
         }
     }
@@ -187,7 +189,7 @@ VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
     // Parse name
     if (!stream.check(TokenType::IDENTIFIER)) {
         ctx.error(stream, DiagCode::E1002, "variable name", stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     Token nameTok = stream.advance();
@@ -197,7 +199,7 @@ VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
     TypePtr type = parseType(stream, ctx);
     if (!type) {
         ctx.error(stream, DiagCode::E1003, stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -207,13 +209,13 @@ VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
         init = parseExpr(stream, ctx);
         if (!init) {
             ctx.error(stream, DiagCode::E1006, stream.peekValue());
-            synchronize(stream, ctx);
+            synchronizeToContext(stream, ctx);
             return nullptr;
         }
     } else if (isConst) {
         // const requires an initializer
         ctx.error(stream, DiagCode::E1006, stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -257,7 +259,7 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     if (!isConst) {
         if (!stream.match(TokenType::LET)) {
             ctx.error(stream, DiagCode::E1001, "let/const", stream.peekValue());
-            synchronize(stream, ctx);
+            synchronizeToContext(stream, ctx);
             return nullptr;
         }
     }
@@ -265,7 +267,7 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     // ─── 2. Parse function name ──────────────────────────────────────────
     if (!stream.check(TokenType::IDENTIFIER)) {
         ctx.error(stream, DiagCode::E1002, "function name", stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     Token nameTok = stream.advance();
@@ -281,14 +283,14 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     TypeAST* type = parseFuncType(stream, ctx);
     if (!type) {
         ctx.error(stream, DiagCode::E1003, "function type", stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
     // Ensure it's a function type
     if (!type->isa<FuncTypeAST>()) {
         ctx.error(stream, DiagCode::E1003, "function type", stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     FuncTypeAST* funcType = type->as<FuncTypeAST>();
@@ -296,7 +298,7 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     // ─── 5. Check for '=' before body ────────────────────────────────────
     if (!stream.match(TokenType::ASSIGN)) {
         ctx.error(stream, DiagCode::E1006, stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -320,8 +322,8 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
         // Parse expression body
         ExprPtr expr = parseExpr(stream, ctx);
         if (!expr) {
-            ctx.error(stream, DiagCode::E1105, stream.peekValue());
-            synchronize(stream, ctx);
+            ctx.error(stream, DiagCode::E1006, stream.peekValue());
+            synchronizeToContext(stream, ctx);
             return nullptr;
         }
         
@@ -376,7 +378,7 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
     // ─── 1. Parse 'struct' keyword ──────────────────────────────────────
     if (!stream.check(TokenType::STRUCT)) {
         ctx.error(stream, DiagCode::E1001, "struct", stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     stream.advance(); // Consume 'struct'
@@ -384,7 +386,7 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
     // ─── 2. Parse struct name ────────────────────────────────────────────
     if (!stream.check(TokenType::IDENTIFIER)) {
         ctx.error(stream, DiagCode::E1002, "struct name", stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     Token nameTok = stream.advance();
@@ -452,7 +454,7 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
     // ─── 5. Parse struct body ────────────────────────────────────────────
     if (!stream.check(TokenType::LBRACE)) {
         ctx.error(stream, DiagCode::E1004, "{", "struct body", stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     stream.advance(); // Consume '{'
@@ -580,7 +582,7 @@ FieldDeclPtr parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
     // ─── 3. Parse name ──────────────────────────────────────────────────
     if (!stream.check(TokenType::IDENTIFIER)) {
         ctx.error(stream, DiagCode::E1002, "field name", stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     Token nameTok = stream.advance();
@@ -590,7 +592,7 @@ FieldDeclPtr parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
     TypePtr type = parseType(stream, ctx);
     if (!type) {
         ctx.error(stream, DiagCode::E1003, stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -600,7 +602,7 @@ FieldDeclPtr parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
         defaultVal = parseExpr(stream, ctx);
         if (!defaultVal) {
             ctx.error(stream, DiagCode::E1006, stream.peekValue());
-            synchronize(stream, ctx);
+            synchronizeToContext(stream, ctx);
             return nullptr;
         }
     }
@@ -676,7 +678,7 @@ EnumDeclAST* parseEnumDecl(TokenStream& stream, ParserContext& ctx) {
     // ─── 1. Parse 'enum' keyword ──────────────────────────────────────
     if (!stream.check(TokenType::ENUM)) {
         ctx.error(stream, DiagCode::E1001, "enum", stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     stream.advance(); // Consume 'enum'
@@ -684,7 +686,7 @@ EnumDeclAST* parseEnumDecl(TokenStream& stream, ParserContext& ctx) {
     // ─── 2. Parse enum name ──────────────────────────────────────────────
     if (!stream.check(TokenType::IDENTIFIER)) {
         ctx.error(stream, DiagCode::E1002, "enum name", stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     Token nameTok = stream.advance();
@@ -700,7 +702,7 @@ EnumDeclAST* parseEnumDecl(TokenStream& stream, ParserContext& ctx) {
             // TODO: Check that backingType is an integer type
         } else {
             ctx.error(stream, DiagCode::E1003, "integer", stream.peekValue());
-            synchronize(stream, ctx);
+            synchronizeToContext(stream, ctx);
             return nullptr;
         }
     }
@@ -708,7 +710,7 @@ EnumDeclAST* parseEnumDecl(TokenStream& stream, ParserContext& ctx) {
     // ─── 4. Parse enum body ──────────────────────────────────────────────
     if (!stream.check(TokenType::LBRACE)) {
         ctx.error(stream, DiagCode::E1004, "{", "enum body", stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     stream.advance(); // Consume '{'
@@ -816,7 +818,7 @@ EnumVariantPtr parseEnumVariant(TokenStream& stream, ParserContext& ctx) {
     // ─── 2. Parse name ──────────────────────────────────────────────────
     if (!stream.check(TokenType::IDENTIFIER)) {
         ctx.error(stream, DiagCode::E1002, "variant name", stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     Token nameTok = stream.advance();
@@ -825,7 +827,7 @@ EnumVariantPtr parseEnumVariant(TokenStream& stream, ParserContext& ctx) {
     // ─── 3. Expect '=' ────────────────────────────────────────────────────
     if (!stream.match(TokenType::ASSIGN)) {
         ctx.error(stream, DiagCode::E1006, stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -834,7 +836,7 @@ EnumVariantPtr parseEnumVariant(TokenStream& stream, ParserContext& ctx) {
         !stream.check(TokenType::HEX_LITERAL) &&
         !stream.check(TokenType::BINARY_LITERAL)) {
         ctx.error(stream, DiagCode::E1003, "integer literal", stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -908,7 +910,7 @@ TraitDeclAST* parseTraitDecl(TokenStream& stream, ParserContext& ctx) {
     // ─── 1. Parse 'trait' keyword ──────────────────────────────────────
     if (!stream.check(TokenType::TRAIT)) {
         ctx.error(stream, DiagCode::E1001, "trait", stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     stream.advance(); // Consume 'trait'
@@ -916,7 +918,7 @@ TraitDeclAST* parseTraitDecl(TokenStream& stream, ParserContext& ctx) {
     // ─── 2. Parse trait name ──────────────────────────────────────────────
     if (!stream.check(TokenType::IDENTIFIER)) {
         ctx.error(stream, DiagCode::E1002, "trait name", stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     Token nameTok = stream.advance();
@@ -931,7 +933,7 @@ TraitDeclAST* parseTraitDecl(TokenStream& stream, ParserContext& ctx) {
     // ─── 4. Parse trait body ──────────────────────────────────────────────
     if (!stream.check(TokenType::LBRACE)) {
         ctx.error(stream, DiagCode::E1004, "{", "trait body", stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     stream.advance(); // Consume '{'
@@ -1042,7 +1044,7 @@ TraitFieldPtr parseTraitField(TokenStream& stream, ParserContext& ctx) {
     // ─── 3. Parse name ──────────────────────────────────────────────────
     if (!stream.check(TokenType::IDENTIFIER)) {
         ctx.error(stream, DiagCode::E1002, "trait field name", stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     Token nameTok = stream.advance();
@@ -1052,7 +1054,7 @@ TraitFieldPtr parseTraitField(TokenStream& stream, ParserContext& ctx) {
     TypePtr type = parseType(stream, ctx);
     if (!type) {
         ctx.error(stream, DiagCode::E1003, stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     

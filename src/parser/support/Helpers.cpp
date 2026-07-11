@@ -204,37 +204,38 @@ ArenaSpan<AttributePtr> parseAttributes(TokenStream& stream, ParserContext& ctx)
     // Expect '[' after '@'
     if (!stream.check(TokenType::LBRACKET)) {
         ctx.error(stream, DiagCode::E1004, "[", "attribute list", stream.peekValue());
-        synchronize(stream, ctx);
+        // '[' never opened, so no Attribute context to push — recover using
+        // whatever context we were already in (e.g. the enclosing declaration).
+        synchronizeToContext(stream, ctx);
         return ctx.arena.makeBuilder<AttributePtr>().build();
     }
     stream.advance(); // Consume '['
+
+    // From here on the parser is inside an attribute list — push once, and
+    // every return path below (including the early ones further down) pops
+    // automatically when this function returns.
+    ScopedContext attrGuard(ctx, SyntacticContext::Attribute, stream.currentLoc());
+
+    // Skip initial consecutive comma ','
+    // Ex: @[,,,, FirstAttribute ...]
+    if (stream.consumeTrailing(TokenType::COMMA) > 0) {
+        ctx.error(stream, DiagCode::E1009, ",", "attribute list"); // Unexpected trailing comma
+    }
     
     // Parse attributes until we hit ']'
-    while (!stream.isAtEnd()) {
-        // ─── Skip consecutive separators ────────────────────────────────
-        if (stream.consumeTrailing(TokenType::COMMA) > 0) {
-            ctx.error(stream, DiagCode::E1009, ",", "attribute list"); // Unexpected trailing comma
-        }
-        
-        // ─── Check if we've reached a terminator ']' ─────────────────────
-        if (stream.check(TokenType::RBRACKET)) {
-            break; // End of attribute list
-        }
-        
-        if (stream.isAtEnd()) {
-            ctx.error(stream, DiagCode::E1005, "]", "attribute list", "<EOF>");
-            break;
-        }
-        
+    while (!stream.isAtEnd() || stream.check(TokenType::RBRACKET)) {
         // Parse a single attribute
         AttributePtr attr = parseAttribute(stream, ctx);
         if (attr) {
             attrs.push_back(attr);
         } else {
-            // Error already reported, try to recover
-            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RBRACKET);
-            if (stream.check(TokenType::COMMA)) {
-                stream.advance();
+            // Error already reported, try to recover. currentContext() is
+            // Attribute here (attrGuard is still on the stack), so this
+            // stops at ',' or ']' — it will not run past the closing ']'
+            // into whatever declaration follows.
+            synchronizeToContext(stream, ctx);
+            if (stream.consumeTrailing(TokenType::COMMA) > 1) {
+                ctx.error(stream, DiagCode::E1009, ",", "attribute list"); // Unexpected trailing comma
                 continue;
             } else if (stream.check(TokenType::RBRACKET)) {
                 break;
@@ -242,11 +243,21 @@ ArenaSpan<AttributePtr> parseAttributes(TokenStream& stream, ParserContext& ctx)
                 break;
             }
         }
+
+        // Consume at least 1 consecutive comma and Skip consecutive commna
+        if (stream.consumeTrailing(TokenType::COMMA) > 1) {
+            ctx.error(stream, DiagCode::E1009, ",", "attribute list"); // Unexpected trailing comma
+        }
     }
     
     // ─── Consume closing bracket ────────────────────────────────────────
     if (!stream.check(TokenType::RBRACKET)) {
-        ctx.error(stream, DiagCode::E1005, "]", "attribute list", stream.peekValue());
+        if (stream.isAtEnd()) {
+            ctx.error(stream, DiagCode::E1005, "]", "attribute list", "<EOF>");
+        } else {
+            ctx.error(stream, DiagCode::E1005, "]", "attribute list", stream.peekValue());
+        }
+        
         synchronizeTo(stream, ctx, TokenType::RBRACKET);
         if (stream.check(TokenType::RBRACKET)) {
             stream.advance(); // Consume ']' to recover
@@ -291,7 +302,10 @@ AttributePtr parseAttribute(TokenStream& stream, ParserContext& ctx) {
     // Expect an identifier for the attribute name
     if (!stream.check(TokenType::IDENTIFIER)) {
         ctx.error(stream, DiagCode::E1002, "attribute name", stream.peekValue());
-        synchronize(stream, ctx);
+        // parseAttribute is only ever called from inside parseAttributes'
+        // Attribute guard, so this stays bounded to ',' / ']' rather than
+        // scanning for an unrelated global token set.
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     

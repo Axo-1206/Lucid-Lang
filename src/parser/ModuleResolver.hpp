@@ -46,20 +46,19 @@ namespace parser {
  * 
  * ```cpp
  * ModuleResolver resolver(packageRoot, pool);
- * resolver.addSearchPath("./lib");
  * 
  * // Resolve import
  * InternedString filePath = resolver.resolveUsePath("std.io");
  * 
  * // Check cache
  * if (resolver.isModuleParsed(filePath)) {
- *     ProgramAST* ast = resolver.getParsedModule(filePath);
+ *     ModuleAST* ast = resolver.getParsedModule(filePath);
  * }
  * 
- * // Track circular imports
- * resolver.pushParsing(filePath);
- * ProgramAST* ast = parseModule(filePath);
- * resolver.popParsing();
+ * // Track circular imports — prefer ScopedParsingGuard over calling
+ * // pushParsing/popParsing directly; see its own doc comment below.
+ * ScopedParsingGuard guard(&resolver, filePath);
+ * ModuleAST* ast = parseModule(filePath);
  * resolver.cacheModule(filePath, ast);
  * ```
  */
@@ -99,16 +98,6 @@ public:
     std::filesystem::path getModuleFilePath(InternedString modulePath) const;
     
     /**
-     * @brief Add a search path for module resolution.
-     * 
-     * Search paths are checked in order when resolving use paths.
-     * The package root is always the first search path.
-     * 
-     * @param path Directory to search for modules
-     */
-    void addSearchPath(const std::filesystem::path& path);
-    
-    /**
      * @brief Check if a use path is valid (resolves to an existing file).
      * 
      * @param usePath The import path to check
@@ -126,9 +115,9 @@ public:
     /**
      * @brief Get a parsed module AST by its path.
      * 
-     * @return ProgramAST* The parsed AST, or nullptr if not parsed
+     * @return ModuleAST* The parsed AST, or nullptr if not parsed
      */
-    ProgramAST* getParsedModule(InternedString modulePath) const;
+    ModuleAST* getParsedModule(InternedString modulePath) const;
     
     /**
      * @brief Store a parsed module AST.
@@ -136,7 +125,7 @@ public:
      * @param modulePath The resolved module path (e.g., "std/io.lucid")
      * @param ast The parsed AST (owned by the session's arena)
      */
-    void cacheModule(InternedString modulePath, ProgramAST* ast);
+    void cacheModule(InternedString modulePath, ModuleAST* ast);
     
     // ─── Circular Import Detection ───────────────────────────────────────
     
@@ -159,11 +148,6 @@ public:
      */
     void popParsing();
     
-    /**
-     * @brief Get the current parsing stack (for debugging).
-     */
-    const std::vector<InternedString>& getParsingStack() const { return parsingStack_; }
-    
     // ─── File Operations ──────────────────────────────────────────────────
     
     /**
@@ -182,30 +166,6 @@ public:
      */
     bool moduleFileExists(InternedString filePath) const;
     
-    // ─── Module Registration ─────────────────────────────────────────────
-    
-    /**
-     * @brief Register a mapping from use path to file path.
-     * 
-     * This is used to support explicit module mappings from the build manifest.
-     */
-    void registerModuleMapping(InternedString usePath, InternedString filePath);
-    
-    /**
-     * @brief Get all parsed module paths.
-     */
-    std::vector<InternedString> getParsedModulePaths() const;
-    
-    /**
-     * @brief Get the package root.
-     */
-    const std::filesystem::path& getPackageRoot() const { return packageRoot_; }
-    
-    /**
-     * @brief Get the total number of parsed modules.
-     */
-    size_t getParsedModuleCount() const { return parsedModules_.size(); }
-    
 private:
     std::filesystem::path packageRoot_;
     StringPool& pool_;
@@ -214,7 +174,7 @@ private:
     std::unordered_map<InternedString, InternedString> usePathToFile_;
     
     // Map from resolved file path to parsed AST
-    std::unordered_map<InternedString, ProgramAST*> parsedModules_;
+    std::unordered_map<InternedString, ModuleAST*> parsedModules_;
     
     // Stack of modules currently being parsed (for circular detection)
     std::vector<InternedString> parsingStack_;
@@ -236,14 +196,6 @@ private:
     InternedString normalizePath(std::string_view path) const;
     
     /**
-     * @brief Find a file in the search paths.
-     * 
-     * @param relativePath The relative path to find
-     * @return std::filesystem::path The full path, or empty if not found
-     */
-    std::filesystem::path findFileInSearchPaths(const std::string& relativePath) const;
-    
-    /**
      * @brief Convert a use path to a relative file path.
      * 
      * @param usePath The use path (e.g., "std.io")
@@ -258,6 +210,60 @@ private:
      * @return std::filesystem::path The absolute path, or empty if not found
      */
     std::filesystem::path resolveRelativePath(const std::string& relativePath) const;
+};
+
+/**
+ * @brief RAII guard for ModuleResolver's circular-import tracking.
+ *
+ * Pushes `filePath` onto the resolver's parsing stack on construction and
+ * pops it on destruction — on every exit path, including early returns.
+ * Without this, pushParsing()/popParsing() must be balanced by hand across
+ * every early return in parse() (it currently is, across four separate
+ * exit points), and a future exit path that forgets the matching pop would
+ * silently corrupt circular-import detection for every file parsed
+ * afterward, with no crash to flag it.
+ *
+ * `resolver` may be null (parsing without a resolver is valid — see
+ * parse()'s existing `if (ctx.resolver)` checks); the guard no-ops in
+ * that case rather than requiring every call site to branch on it.
+ *
+ * ## Usage
+ *
+ * ```cpp
+ * if (ctx.resolver && ctx.resolver->isParsing(filePath)) {
+ *     // circular import — report and return before constructing the guard,
+ *     // since nothing should be pushed for a parse that never starts
+ *     return nullptr;
+ * }
+ * ScopedParsingGuard parsingGuard(ctx.resolver, filePath);
+ * // every return below this point pops correctly, automatically
+ * ```
+ *
+ * Non-copyable, non-movable, for the same reason as ScopedContext: its
+ * identity is tied to one specific parse() activation.
+ */
+struct ScopedParsingGuard {
+    ScopedParsingGuard(ModuleResolver* resolver, InternedString filePath)
+        : resolver_(resolver)
+    {
+        if (resolver_) {
+            resolver_->pushParsing(filePath);
+        }
+    }
+
+    ~ScopedParsingGuard() {
+        if (resolver_) {
+            resolver_->popParsing();
+        }
+    }
+
+    ScopedParsingGuard(const ScopedParsingGuard&) = delete;
+    ScopedParsingGuard& operator=(const ScopedParsingGuard&) = delete;
+    ScopedParsingGuard(ScopedParsingGuard&&) = delete;
+    ScopedParsingGuard& operator=(ScopedParsingGuard&&) = delete;
+
+private:
+    ModuleResolver* resolver_;
 };
 
 } // namespace parser

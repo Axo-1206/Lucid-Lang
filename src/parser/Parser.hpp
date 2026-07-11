@@ -37,9 +37,9 @@ namespace parser {
  * @param path The file path
  * @param source The source code
  * @param ctx The parsing context (shared across all files)
- * @return ProgramAST* The complete AST, or nullptr on error
+ * @return ModuleAST* The complete AST, or nullptr on error
  */
-ProgramAST* parse(const std::string& path, 
+ModuleAST* parse(const std::string& path, 
                   const std::string& source,
                   ParserContext& ctx);
 
@@ -47,10 +47,13 @@ ProgramAST* parse(const std::string& path,
 // Error Recovery
 // =============================================================================
 
-void synchronize(TokenStream& stream, ParserContext& ctx);
+template<typename Predicate>
+void synchronizeUntil(TokenStream& stream, ParserContext& ctx, Predicate stopAt);
 
 template<typename... StopTokens>
 void synchronizeTo(TokenStream& stream, ParserContext& ctx, StopTokens... stopTokens);
+
+void synchronizeToContext(TokenStream& stream, ParserContext& ctx);
 
 // =============================================================================
 // Internal Parser Functions

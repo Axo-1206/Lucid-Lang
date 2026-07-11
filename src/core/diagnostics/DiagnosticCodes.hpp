@@ -32,10 +32,11 @@ enum class DiagCode : uint32_t {
     // Speicalize codes
     E1101,          ///< Expected module path after keyword 'use'
     E1102,          ///< Expected name alias after keyword 'as'
-    // E1103,          ///< Trailing tokens
+    E1103,          ///< Missing `]` to close attribute list before declaration
     E1104,          ///< Expected attribute argument literal
-    E1105,          ///< Expected anon func or ref func
+    // E1105,          ///< Expected anon func or ref func
     E1106,          ///< Empty expression group
+    E1107,          ///< Expected pipeline seed (expression)          
 
     // E1105,          ///< Unexpected trailing '+' in generic constraints
     // E1106,          ///< Unexpected trailing '.' in path

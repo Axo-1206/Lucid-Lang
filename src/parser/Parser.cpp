@@ -5,14 +5,14 @@
  * This file implements the core parsing infrastructure:
  * - TokenStream: Safe token consumption with comment skipping
  * - ParserContext: Shared context across all files
- * - Error Recovery: synchronize() and synchronizeTo()
+ * - Error Recovery: synchronizeUntil(), synchronizeTo(), synchronizeToContext()
  * - parse(): Single entry point - parses the root file and all imports
  * - parseInternal(): Parses internal declarations of a file
  * - parseUseDecl(): Parses use declaration and imports the module
  */
 
 #include "Parser.hpp"
-#include "Lexer.hpp"
+#include "lexer/Lexer.hpp"
 #include "core/ast/BaseAST.hpp"
 #include "debug/DebugMacros.hpp"
 #include "debug/DebugUtils.hpp"
@@ -29,89 +29,181 @@ namespace parser {
 // =============================================================================
 
 /**
- * @brief Synchronize the parser to the next statement or declaration boundary.
- * 
- * This function implements panic-mode error recovery. When a parsing error
- * occurs, the parser skips tokens until it finds a token that could start a
- * new statement or declaration. This prevents cascading errors and allows
- * the parser to continue parsing the rest of the file.
- * 
- * ## Synchronization Tokens
- * 
- * The parser synchronizes to the following tokens:
- * - Control flow: `if`, `switch`, `for`, `while`, `do`, `return`, `break`,
- *   `continue`
- * - Declarations: `let`, `const`, `struct`, `enum`, `trait`, `use`
- * - Blocks: `{`
- * - Special: `;` (statement terminator)
- * 
- * @param stream The token stream for the current file
- * @param ctx The parsing context
+ * @brief Skip tokens until `stopAt(currentTokenType)` is true, without
+ * consuming or crossing a delimiter that belongs to an enclosing construct.
+ *
+ * This is panic-mode error recovery, but unlike a plain forward scan it is
+ * bracket-aware: it tracks the delimiters (`(` `)`, `[` `]`, `{` `}`) opened
+ * *while skipping* and only treats a closing delimiter as consumable if it
+ * matches the most recently opened one. A closing delimiter that does not
+ * match anything opened during the skip is assumed to belong to whatever
+ * construct called this function — it is left unconsumed and the function
+ * returns immediately, so the caller (not this function) decides what to
+ * do with it.
+ *
+ * ## Why bracket TYPE matters, not just nesting depth
+ *
+ * A scalar depth counter ("increment on any opener, decrement on any
+ * closer") cannot tell delimiter kinds apart, so it will happily consume
+ * a `]` it thinks closes an unrelated stray `(`. For example, recovering
+ * through `foo(1, (2 ]` with a naive depth counter incorrectly eats the
+ * `]`, leaving the caller (e.g. `parseAttributes`, which owns that `]`)
+ * with nothing left to consume for its own closing bracket. Tracking the
+ * *expected* closer for each opener — not just a count — is what prevents
+ * this: at `]`, the expected closer is `)` (from the stray `(`), so `]`
+ * is correctly left alone.
+ *
+ * ## Stop condition semantics
+ *
+ * `stopAt` is only consulted when no delimiter opened during this call is
+ * still awaiting its match (i.e. we are not "inside" something we opened
+ * while skipping). This means `stopAt` will never fire on a token that is
+ * lexically nested inside a bracketed region this function skipped over —
+ * only on a token that is a true sibling of where skipping began.
+ *
+ * @tparam Predicate Callable with signature `bool(TokenType)`.
+ * @param stream The token stream for the current file.
+ * @param ctx The parsing context (used for logging; reserved for future
+ *        diagnostics such as reporting the unmatched delimiter's location).
+ * @param stopAt Predicate returning true for a token type that should end
+ *        the skip. May combine literal comparisons and semantic category
+ *        checks (e.g. `t == SEMICOLON || is_declaration_keyword(t)`) —
+ *        this is why the parameter is a predicate rather than a fixed
+ *        token list; see `synchronizeTo` for the fixed-list convenience
+ *        wrapper built on top of this function.
+ *
+ * ## Postconditions
+ *
+ * - On success: the current token satisfies `stopAt` and has NOT been
+ *   consumed — the caller decides whether/how to consume it.
+ * - On reaching an enclosing, non-matching closer: the current token is
+ *   that closer, NOT consumed, even if it happens to satisfy `stopAt`.
+ * - On EOF: the stream is left at EOF; nothing further to consume.
+ *
+ * ## Example
+ *
+ * ```lucid
+ * @[foo(1, (2 ]     -- stray unmatched '(' inside the attribute args
+ * ```
+ * ```cpp
+ * // Recovering from the malformed argument list with
+ * // synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN):
+ * //   '(' → not a stop token, no closer expected yet → push RPAREN, skip
+ * //   '2' → plain skip
+ * //   ']' → does not match the expected RPAREN → left unconsumed, return
+ * // Control returns to parseAttributes still positioned at ']', which is
+ * // the only function that consumes it, exactly once.
+ * ```
  */
-void synchronize(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER("Synchronizing parser");
-    
+template<typename Predicate>
+void synchronizeUntil(TokenStream& stream, ParserContext& ctx, Predicate stopAt) {
+    LOG_PARSER("Synchronizing");
+    std::vector<TokenType> expectedClosers;   // matches bracket TYPE, not just count
+
+    auto isOpener = [](TokenType t) {
+        return t == TokenType::LPAREN || t == TokenType::LBRACKET || t == TokenType::LBRACE;
+    };
+    auto isCloser = [](TokenType t) {
+        return t == TokenType::RPAREN || t == TokenType::RBRACKET || t == TokenType::RBRACE;
+    };
+    auto matchingCloser = [](TokenType opener) {
+        switch (opener) {
+            case TokenType::LPAREN:   return TokenType::RPAREN;
+            case TokenType::LBRACKET: return TokenType::RBRACKET;
+            default:                  return TokenType::RBRACE;
+        }
+    };
+
     while (!stream.isAtEnd()) {
         TokenType current = stream.peekType();
-        
-        switch (current) {
-            case TokenType::IF:
-            case TokenType::SWITCH:
-            case TokenType::FOR:
-            case TokenType::WHILE:
-            case TokenType::DO:
-            case TokenType::RETURN:
-            case TokenType::BREAK:
-            case TokenType::CONTINUE:
-            case TokenType::LET:
-            case TokenType::CONST:
-            case TokenType::STRUCT:
-            case TokenType::ENUM:
-            case TokenType::TRAIT:
-            case TokenType::USE:
-            case TokenType::LBRACE:
-            case TokenType::SEMICOLON:
+
+        if (isCloser(current)) {
+            if (!expectedClosers.empty() && expectedClosers.back() == current) {
+                // Closes something we opened while skipping — part of
+                // the malformed region, consume it and keep scanning.
+                expectedClosers.pop_back();
+                stream.advance();
+                continue;
+            }
+            if (expectedClosers.empty() && stopAt(current)) {
                 LOG_PARSER_DETAIL("Synchronized at token: ", debug::tokenTypeToString(current));
                 return;
-            default:
-                break;
+            }
+            // Doesn't match anything we opened, and isn't our stop token —
+            // belongs to an enclosing construct. Stop, don't consume.
+            LOG_PARSER_DETAIL("Synchronization stopped before enclosing closer: ",
+                               debug::tokenTypeToString(current));
+            return;
         }
-        
+
+        if (expectedClosers.empty() && stopAt(current)) {
+            LOG_PARSER_DETAIL("Synchronized at token: ", debug::tokenTypeToString(current));
+            return;
+        }
+
+        if (isOpener(current)) expectedClosers.push_back(matchingCloser(current));
         stream.advance();
     }
-    
+
     LOG_PARSER("Synchronization reached EOF");
 }
 
 /**
- * @brief Synchronize the parser to one of a specific set of tokens.
- * 
- * This function skips tokens until it finds a token that matches any of the
- * specified stop tokens. This is useful for more targeted error recovery,
- * such as synchronizing to a closing brace or a specific keyword.
- * 
- * @tparam StopTokens The token types to stop at (variadic)
- * @param stream The token stream for the current file
- * @param ctx The parsing context
- * @param stopTokens The token types to stop at
+ * @brief Synchronize to any of a fixed set of token types.
+ *
+ * Thin wrapper over synchronizeUntil — kept so existing call sites
+ * (synchronizeTo(stream, ctx, TokenType::RBRACKET)) don't need to change,
+ * while gaining depth-safety for free.
  */
 template<typename... StopTokens>
 void synchronizeTo(TokenStream& stream, ParserContext& ctx, StopTokens... stopTokens) {
-    LOG_PARSER("Synchronizing to stop tokens");
-    
-    while (!stream.isAtEnd()) {
-        TokenType current = stream.peekType();
-        
-        // Check if current token matches any stop token
-        if (((current == stopTokens) || ...)) {
-            LOG_PARSER_DETAIL("Synchronized at token: ", debug::tokenTypeToString(current));
+    synchronizeUntil(stream, ctx, [&](TokenType t) {
+        return ((t == stopTokens) || ...);
+    });
+}
+
+/**
+ * @brief Synchronize using the follow-set implied by the parser's current
+ * SyntacticContext, instead of a fixed/blind token set.
+ *
+ * Replaces the old untargeted synchronize(): rather than scanning for
+ * one global set of "looks like a new statement" tokens regardless of
+ * what's currently open, this looks at ctx.currentContext() (pushed by
+ * ScopedContext) and picks the right follow-set for that construct.
+ */
+void synchronizeToContext(TokenStream& stream, ParserContext& ctx) {
+    switch (ctx.currentContext()) {
+        case SyntacticContext::Attribute:
+            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RBRACKET);
             return;
-        }
-        
-        stream.advance();
+
+        case SyntacticContext::GenericParams:
+        case SyntacticContext::GenericArgs:
+            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::GREATER);
+            return;
+
+        case SyntacticContext::FuncParams:
+            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN);
+            return;
+
+        case SyntacticContext::FuncBody:
+        case SyntacticContext::StructBody:
+        case SyntacticContext::EnumBody:
+        case SyntacticContext::TraitBody:
+            synchronizeUntil(stream, ctx, [](TokenType t) {
+                return t == TokenType::SEMICOLON
+                    || t == TokenType::RBRACE
+                    || is_declaration_keyword(t);
+            });
+            return;
+
+        case SyntacticContext::TopLevel:
+        default:
+            synchronizeUntil(stream, ctx, [](TokenType t) {
+                return t == TokenType::SEMICOLON || is_declaration_keyword(t);
+            });
+            return;
     }
-    
-    LOG_PARSER("Synchronization reached EOF");
 }
 
 // =============================================================================
@@ -119,39 +211,88 @@ void synchronizeTo(TokenStream& stream, ParserContext& ctx, StopTokens... stopTo
 // =============================================================================
 
 /**
- * @brief Parse a single source file and all its imports.
- * 
- * This is the ONE and ONLY entry point for parsing. It:
- * 1. Lexes the source
- * 2. Creates a TokenStream for the file
- * 3. Checks cyclic dependencies via ModuleResolver
- * 4. Parses the file's internal declarations
- * 5. Recursively parses all imported files via parseUseDecl()
- * 6. Returns the complete AST with all declarations
- * 
- * ## Visual Flow
- * 
- * parse("main.lucid")
- *     │
- *     ├── parseInternal(stream, ctx) → collects main.lucid decls
- *     │
- *     ├── parseUseDecl() → "use std.math"
- *     │   │
- *     │   ├── parse("std.math") → collects std.math decls
- *     │   │   └── resolver->cacheModule("std/math.lucid", ast)
- *     │   │
- *     │   └── ctx.importedDecls += std.math->decls
- *     │
- *     └── rootProgram = merge(fileDecls + importedDecls)
- *         │
- *         └── All declarations from main.lucid + std.math
- * 
+ * @brief Parse a single source file into a ModuleAST, recursively resolving
+ * its `use` imports as needed.
+ *
+ * This is the ONE and ONLY entry point for parsing — the driver calls it
+ * once for main.luc, and it is re-entered recursively (via parseUseDecl)
+ * once per not-yet-parsed imported file.
+ *
+ * ## Model: modules, not a flat merge
+ *
+ * Each call returns a ModuleAST containing only THIS file's own top-level
+ * declarations. Imported files are NOT inlined/flattened into it — a
+ * `use path [as alias]` becomes a UseDeclAST that stores a reference
+ * (path + alias) to another module. That referenced module is resolved to
+ * its own ModuleAST separately, via ModuleResolver's cache, and symbol
+ * lookup across the reference (e.g. `math.sqrt`) is the semantic/binder
+ * pass's job, not parse()'s. This preserves per-file namespacing — two
+ * modules may each declare a `Point` without colliding — which a flat,
+ * single-Program merge would not.
+ *
+ * The "whole program" is therefore not one object parse() builds and
+ * returns. It's the graph formed by the root ModuleAST plus every module
+ * transitively reachable from it through ModuleResolver's cache — walked
+ * by later compiler stages, not assembled here.
+ *
+ * ## Flow
+ *
+ * ```
+ * 1. Driver calls parse(main.luc, source, ctx)
+ *       → the one true entry point; re-entered recursively for every `use`
+ *
+ * 2. parse(path, source, ctx):
+ *    a. Intern path, ctx.currentFilePath = path
+ *    b. ScopedFileContext   — save this file's caller's contextStack and
+ *                             error-tracking fields, reset both for this
+ *                             file (this file starts at TopLevel with no
+ *                             errors yet), restore the caller's on return
+ *                             (draining this file's own errors into
+ *                             ctx.allDiagnostics first)
+ *    c. Push filePath onto resolver's "in progress" stack (ScopedParsingGuard);
+ *       if it's already on that stack → circular import, reject
+ *    d. Lex source → tokens; construct TokenStream for this file
+ *    e. Loop: parseDecl() until EOF                    ─┐
+ *         │                                              │ (step 3, expanded)
+ *         └── every declaration goes into                │
+ *             this file's own decl list                  │
+ *    f. Build ModuleAST from that decl list
+ *    g. resolver->cacheModule(path, thisModule)   — memoize, so a second
+ *                                                    `use` of this file is
+ *                                                    a cache hit, not a
+ *                                                    re-parse
+ *    h. Pop this file off the "in progress" stack (ScopedParsingGuard),
+ *       restore the caller's contextStack/errors (ScopedFileContext)
+ *    i. return ModuleAST*
+ *
+ * 3. Inside the loop (2e), whenever parseDecl() hits a
+ *    `use path [as alias]`:
+ *    a. Resolve `path` → file path
+ *    b. resolver->getParsedModule(filePath):
+ *         cache HIT  → reuse existing ModuleAST, done, no recursion
+ *         cache MISS → GOTO STEP 2 (recursive call:
+ *                       parse(filePath, source, ctx))
+ *                       → returns the child ModuleAST, already cached
+ *                         by that call's own step 2g (not repeated here —
+ *                         a second cacheModule() call here would bypass
+ *                         parse()'s own !ctx.hasErrors guard)
+ *    c. UseDeclAST stores {path, alias} — a REFERENCE to the module,
+ *       not its inlined content.
+ *    d. Control returns to 3, continues the CURRENT file's loop at 2e
+ *
+ * 4. Root parse() call returns the root ModuleAST.
+ *    The full "program" = root ModuleAST + resolver's cache of every
+ *    module reachable from it — a dependency graph, not a flat list.
+ * ```
+ *
  * @param path The file path
  * @param source The source code
  * @param ctx The parsing context (shared across all files)
- * @return ProgramAST* The complete AST, or nullptr on error
+ * @return ModuleAST* This file's own declarations, or nullptr on error.
+ *         Does NOT include imported files' declarations — see them via
+ *         their own ModuleAST, reachable through ctx.resolver.
  */
-ProgramAST* parse(const std::string& path, 
+ModuleAST* parse(const std::string& path, 
                   const std::string& source,
                   ParserContext& ctx) {
     LOG_PARSER_MINIMAL("Parsing file: ", path);
@@ -159,25 +300,30 @@ ProgramAST* parse(const std::string& path,
     // ─── 1. Intern the file path ────────────────────────────────────────
     InternedString filePath = ctx.pool.intern(path);
     ctx.currentFilePath = filePath;
-    ctx.clearErrors();
+
+    // Save the importing file's contextStack and error-tracking fields
+    // (if any), reset both for this file, and restore them on return —
+    // on every exit path below, including the early returns. This also
+    // owns the clearErrors() reset directly; see ScopedFileContext's doc
+    // comment for why that can't safely be a separate call site anymore.
+    ScopedFileContext fileContext(ctx);
     
     // ─── 2. Check for Cyclic Dependencies ───────────────────────────────
     // We put the file that currently parsing into a stack, if the next
     // file is already in the stack then it's a Cyclic Dependencies
-    if (ctx.resolver) {
-        if (ctx.resolver->isParsing(filePath)) {
-            LOG_PARSER("ERROR: Circular import detected: ", path);
-            return nullptr;
-        }
-        ctx.resolver->pushParsing(filePath);
-        LOG_PARSER_DETAIL("Pushed to parsing stack: ", path);
+    if (ctx.resolver && ctx.resolver->isParsing(filePath)) {
+        LOG_PARSER("ERROR: Circular import detected: ", path);
+        return nullptr;
     }
+    // Push filePath onto the parsing stack for cycle detection; popped
+    // automatically on every return path below, including the lex-failure
+    // and parseInternal-failure early returns further down.
+    ScopedParsingGuard parsingGuard(ctx.resolver, filePath);
     
     // ─── 3. Lex the Source ──────────────────────────────────────────────
     auto tokens = lexer::tokenize(source, path);
     if (tokens.empty()) {
         LOG_PARSER_MINIMAL("Lexer produced no tokens for: ", path);
-        if (ctx.resolver) ctx.resolver->popParsing();
         return nullptr;
     }
     
@@ -185,7 +331,6 @@ ProgramAST* parse(const std::string& path,
     for (const auto& tok : tokens) {
         if (tok.type == TokenType::UNKNOWN) {
             LOG_PARSER_MINIMAL("Lexer error in: ", path);
-            if (ctx.resolver) ctx.resolver->popParsing();
             return nullptr;
         }
     }
@@ -197,35 +342,30 @@ ProgramAST* parse(const std::string& path,
     std::vector<DeclPtr> allDecls;
     
     if (!parseInternal(stream, ctx, allDecls)) {
-        if (ctx.resolver) ctx.resolver->popParsing();
         return nullptr;
     }
     
-    // ─── 6. Build the root ProgramAST ────────────────────────────────────
-    auto* rootProgram = ctx.arena.make<ProgramAST>();
-    rootProgram->filePath = filePath;
+    // ─── 6. Build this file's ModuleAST ──────────────────────────────────
+    auto* thisModule = ctx.arena.make<ModuleAST>();
+    thisModule->filePath = filePath;
     
     auto builder = ctx.arena.makeBuilder<DeclPtr>();
     for (auto* d : allDecls) {
         builder.push_back(d);
     }
-    rootProgram->decls = builder.build();
+    thisModule->decls = builder.build();
     
-    // ─── 7. Pop from Parsing Stack ──────────────────────────────────────
-    if (ctx.resolver) {
-        ctx.resolver->popParsing();
-        LOG_PARSER_DETAIL("Popped from parsing stack: ", path);
-    }
-    
-    // ─── 8. Cache the result ─────────────────────────────────────────────
+    // ─── 7. Cache the result ─────────────────────────────────────────────
+    // (parsingGuard pops this file off the parsing stack automatically
+    // when parse() returns, below — no manual popParsing() needed here.)
     if (ctx.resolver && !ctx.hasErrors) {
-        ctx.resolver->cacheModule(filePath, rootProgram);
+        ctx.resolver->cacheModule(filePath, thisModule);
         LOG_PARSER_DETAIL("Cached module: ", path);
     }
     
     LOG_PARSER_MINIMAL("Parse completed: ", allDecls.size(), " total declarations");
     
-    return rootProgram;
+    return thisModule;
 }
 
 // =============================================================================
@@ -281,7 +421,7 @@ ProgramAST* parse(const std::string& path,
  *     │       │   │   ├── Log stuck token
  *     │       │   │   ├── Force consume token if not at EOF
  *     │       │   │   └── if (consecutiveFailures > 5)
- *     │       │   │       └── synchronize() → aggressive recovery
+ *     │       │   │       └── synchronizeToContext() → aggressive recovery
  *     │       │   │
  *     │       │   ├── else if (decl != nullptr)
  *     │       │   │   ├── declCount++
@@ -327,8 +467,11 @@ ProgramAST* parse(const std::string& path,
  * - Prevents infinite loops on malformed input
  * 
  * ### Level 3: Panic Recovery
- * - After 5 consecutive failures, call `synchronize()`
- * - Skips tokens until a statement/declaration boundary is found
+ * - After 5 consecutive failures, call `synchronizeToContext()`
+ * - Skips tokens until the follow-set implied by the current
+ *   SyntacticContext is reached (a declaration boundary at TopLevel,
+ *   a matching delimiter inside a bracketed construct, etc.), without
+ *   crossing a delimiter owned by an enclosing construct
  * 
  * ### Level 4: Abort
  * - After 100 consecutive failures, abort parsing
@@ -439,7 +582,13 @@ bool parseInternal(TokenStream& stream, ParserContext& ctx, std::vector<DeclPtr>
             
             if (consecutiveFailures > 5) {
                 LOG_PARSER("Too many consecutive failures, aggressive recovery");
-                synchronize(stream, ctx);
+                // No ScopedContext should be open here — parseDecl's own
+                // constructs (attributes, generics, bodies) pop themselves
+                // on every return path before control gets back up to this
+                // loop. currentContext() is therefore TopLevel, so this
+                // scans for the next ';' or declaration-starting keyword
+                // rather than a blind, unbounded token set.
+                synchronizeToContext(stream, ctx);
             }
         } else if (decl) {
             declCount++;
@@ -526,7 +675,12 @@ DeclAST* parseDecl(TokenStream& stream, ParserContext& ctx) {
         }
     } else {
         ctx.error(stream, DiagCode::E1008, stream.peekValue());
-        synchronize(stream, ctx);
+        // Same reasoning as parseInternal's recovery call: parseDecl is
+        // only ever invoked at TopLevel (or, via the same dispatch, at the
+        // start of a body's declaration list), and nothing has been opened
+        // yet at this point, so synchronizeToContext lands on the correct
+        // follow-set for wherever we actually are instead of a fixed one.
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     

@@ -105,12 +105,6 @@ std::filesystem::path ModuleResolver::getModuleFilePath(InternedString modulePat
     return result;
 }
 
-void ModuleResolver::addSearchPath(const std::filesystem::path& path) {
-    if (std::filesystem::exists(path)) {
-        searchPaths_.push_back(path);
-    }
-}
-
 bool ModuleResolver::isValidUsePath(InternedString usePath) const {
     // Try to resolve without caching
     std::string relativePath = usePathToRelativePath(usePath);
@@ -128,7 +122,7 @@ bool ModuleResolver::isModuleParsed(InternedString modulePath) const {
     return parsedModules_.find(modulePath) != parsedModules_.end();
 }
 
-ProgramAST* ModuleResolver::getParsedModule(InternedString modulePath) const {
+ModuleAST* ModuleResolver::getParsedModule(InternedString modulePath) const {
     auto it = parsedModules_.find(modulePath);
     if (it != parsedModules_.end()) {
         return it->second;
@@ -136,7 +130,7 @@ ProgramAST* ModuleResolver::getParsedModule(InternedString modulePath) const {
     return nullptr;
 }
 
-void ModuleResolver::cacheModule(InternedString modulePath, ProgramAST* ast) {
+void ModuleResolver::cacheModule(InternedString modulePath, ModuleAST* ast) {
     parsedModules_[modulePath] = ast;
 }
 
@@ -192,23 +186,6 @@ bool ModuleResolver::moduleFileExists(InternedString filePath) const {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Module Registration
-// ─────────────────────────────────────────────────────────────────────────────
-
-void ModuleResolver::registerModuleMapping(InternedString usePath, InternedString filePath) {
-    customMappings_[usePath] = filePath;
-}
-
-std::vector<InternedString> ModuleResolver::getParsedModulePaths() const {
-    std::vector<InternedString> paths;
-    paths.reserve(parsedModules_.size());
-    for (const auto& [path, ast] : parsedModules_) {
-        paths.push_back(path);
-    }
-    return paths;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Private Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -224,25 +201,6 @@ InternedString ModuleResolver::normalizePath(std::string_view path) const {
         }
     }
     return pool_.intern(normalized);
-}
-
-std::filesystem::path ModuleResolver::findFileInSearchPaths(const std::string& relativePath) const {
-    // Check package root first
-    std::filesystem::path rootPath = packageRoot_ / relativePath;
-    if (std::filesystem::exists(rootPath)) {
-        return rootPath;
-    }
-    
-    // Check additional search paths
-    for (const auto& searchPath : searchPaths_) {
-        std::filesystem::path fullPath = searchPath / relativePath;
-        if (std::filesystem::exists(fullPath)) {
-            return fullPath;
-        }
-    }
-    
-    // Not found
-    return {};
 }
 
 std::string ModuleResolver::usePathToRelativePath(InternedString usePath) const {

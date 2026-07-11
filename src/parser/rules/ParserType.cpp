@@ -17,7 +17,7 @@
  * - parseTypeWithQualifier() handles postfix modifiers
  */
 
-#include "Parser.hpp"
+#include "../Parser.hpp"
 #include "core/Tokens.hpp"
 #include "core/ast/TypeAST.hpp"
 #include "core/ast/DeclAST.hpp"

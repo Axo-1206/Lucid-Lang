@@ -111,7 +111,7 @@ struct MultiVarDeclAST;
 struct MultiAssignStmtAST;
 
 // Root
-struct ProgramAST;
+struct ModuleAST;
 
 // Special
 struct ValueDeclAST;
@@ -253,7 +253,7 @@ struct DocComment {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SourceLocation — packed into 32 bits (20 bits line, 12 bits column).
-// File path is stored once in ProgramAST, not per node.
+// File path is stored once in ModuleAST, not per node.
 // ─────────────────────────────────────────────────────────────────────────────
 
 struct SourceLocation {
@@ -456,7 +456,7 @@ using ExprPtr    = ExprAST*;
 using StmtPtr    = StmtAST*;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ProgramAST — root node for a single translation unit.
+// ModuleAST — root node for a single translation unit.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -489,15 +489,15 @@ using StmtPtr    = StmtAST*;
  * @field filePath    Relative path from package root (e.g., "math/vec2.luc").
  * @field decls       Top‑level declarations in source order.
  */
-struct ProgramAST : BaseAST {
+struct ModuleAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::Program;
 
     InternedString     filePath;
     ArenaSpan<DeclPtr> decls;
 
-    ProgramAST() : BaseAST(ASTKind::Program) {}
+    ModuleAST() : BaseAST(ASTKind::Program) {}
 };
-using ProgramASTPtr = ProgramAST*;
+using ModuleASTPtr = ModuleAST*;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GenericParamDeclAST — a generic type parameter declaration.
