@@ -21,7 +21,7 @@
 #include "core/diagnostics/Diagnostic.hpp"
 #include "core/diagnostics/DiagnosticCodes.hpp"
 #include "TokenStream.hpp"
-#include "ModuleResolver.hpp"
+#include "../ModuleResolver.hpp"
 
 #include <vector>
 #include <string>
@@ -30,6 +30,60 @@
 #include <type_traits>
 
 namespace parser {
+
+/**
+ * @brief The kind of syntactic construct currently being parsed.
+ *
+ * Pushed/popped as the parser enters and leaves nested constructs
+ * (attribute lists, generic parameter/argument lists, function bodies,
+ * struct/enum/trait bodies, etc). This is grammar-level state — it has
+ * no place in TokenStream, which only knows about tokens, not what
+ * construct they belong to.
+ *
+ * Used by error recovery (`synchronizeUntil` and friends) to pick a
+ * sensible follow-set without each call site having to hardcode one,
+ * and to avoid skipping past a delimiter that belongs to an enclosing
+ * construct rather than the one currently failing to parse.
+ */
+enum class SyntacticContext {
+    TopLevel,       // File-level declarations
+    Attribute,      // @[ ... ]
+    GenericParams,  // < ... >  (declaration site: struct<T>, func<T>)
+    GenericArgs,    // < ... >  (use site: map<int, string>)
+    FuncParams,     // ( ... )  parameter list
+    FuncBody,       // { ... }  function body, including nested/anonymous functions
+    StructBody,     // struct { ... }
+    EnumBody,       // enum { ... }
+    TraitBody,      // trait { ... }
+};
+
+/// Human-readable name for a SyntacticContext, for diagnostics/logging.
+inline const char* syntacticContextName(SyntacticContext kind) {
+    switch (kind) {
+        case SyntacticContext::TopLevel:      return "top level";
+        case SyntacticContext::Attribute:     return "attribute list";
+        case SyntacticContext::GenericParams: return "generic parameter list";
+        case SyntacticContext::GenericArgs:   return "generic argument list";
+        case SyntacticContext::FuncParams:    return "function parameter list";
+        case SyntacticContext::FuncBody:      return "function body";
+        case SyntacticContext::StructBody:    return "struct body";
+        case SyntacticContext::EnumBody:      return "enum body";
+        case SyntacticContext::TraitBody:     return "trait body";
+    }
+    return "unknown context";
+}
+
+/**
+ * @brief One frame of the syntactic context stack.
+ *
+ * Records not just what kind of construct is open, but where it was
+ * opened — so a diagnostic like "unclosed attribute list" can point
+ * back at the '@[' rather than only at wherever the parser gave up.
+ */
+struct ContextFrame {
+    SyntacticContext kind;
+    SourceLocation openedAt;
+};
 
 /**
  * @brief Shared parsing context across all files.
@@ -101,6 +155,19 @@ struct ParserContext {
     
     /// Consecutive error count (used to prevent infinite loops in lists)
     int consecutiveErrors = 0;
+
+    /**
+     * @brief Diagnostics from every file parsed so far in this session.
+     *
+     * Unlike `errors` (which is per-file scratch state, reset by
+     * ScopedFileContext for each file), this accumulates across the whole
+     * recursive parse — every file's `errors` gets drained into this right
+     * before ScopedFileContext restores the importer's state, so a nested
+     * `use`'s diagnostics survive instead of being discarded along with
+     * that file's scratch error list. This is what the driver should read
+     * for a complete picture of every error found across every file.
+     */
+    std::vector<Diagnostic> allDiagnostics;
     
     // ─────────────────────────────────────────────────────────────────────────
     // Context Tracking (shared across all files)
@@ -132,7 +199,51 @@ struct ParserContext {
         Async,      // Inside an async operation (await allowed)
     };
     Context context = Context::TopLevel;
-    
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Syntactic Context Stack (attribute / generic / function / declaration nesting)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * @brief Stack of currently-open syntactic constructs.
+     *
+     * Pushed by ScopedContext (RAII) when a parse function enters a
+     * construct like an attribute list or generic argument list, and
+     * popped automatically when that function returns — on every exit
+     * path, including early returns and exceptions.
+     *
+     * Prefer ScopedContext over calling pushContext/popContext by hand.
+     */
+    std::vector<ContextFrame> contextStack;
+
+    /// Push a new syntactic context frame. Prefer ScopedContext instead of calling this directly.
+    void pushContext(SyntacticContext kind, const SourceLocation& loc) {
+        contextStack.push_back({kind, loc});
+    }
+
+    /// Pop the innermost syntactic context frame. Prefer ScopedContext instead of calling this directly.
+    void popContext() {
+        if (!contextStack.empty()) {
+            contextStack.pop_back();
+        }
+    }
+
+    /// The innermost currently-open syntactic context (TopLevel if none).
+    SyntacticContext currentContext() const {
+        return contextStack.empty() ? SyntacticContext::TopLevel : contextStack.back().kind;
+    }
+
+    /// True if `kind` is open anywhere on the current stack (not just innermost).
+    bool isInsideContext(SyntacticContext kind) const {
+        for (const auto& frame : contextStack) {
+            if (frame.kind == kind) return true;
+        }
+        return false;
+    }
+
+    /// Current nesting depth, i.e. how many constructs are currently open.
+    size_t contextDepth() const { return contextStack.size(); }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Doc Comment Harvesting
     // ─────────────────────────────────────────────────────────────────────────
@@ -358,7 +469,150 @@ public:
         errors.clear();
         hasErrors = false;
         consecutiveErrors = 0;
+        // contextStack is NOT touched here — see ScopedFileContext. Clearing
+        // it in clearErrors() would run before anything had a chance to save
+        // the importing file's stack when parse() recurses for a `use`, and
+        // that state would be lost with no way back, not just reset.
     }
+};
+
+/**
+ * @brief RAII guard for syntactic context tracking.
+ *
+ * Pushes a SyntacticContext frame on construction and pops it on
+ * destruction — automatically, on every exit path of the enclosing
+ * function (normal return, early return, or an exception unwinding
+ * through it). This is what makes the push/pop balanced without every
+ * early-return site in a parse function having to remember to pop.
+ *
+ * Construct exactly one of these at the top of the parse function that
+ * *owns* the construct (e.g. inside parseAttributes, not at each of its
+ * call sites) — see Grammar.md discussion on error recovery for why
+ * the context belongs to the callee, not the caller.
+ *
+ * ## Usage
+ *
+ * ```cpp
+ * ArenaSpan<AttributePtr> parseAttributes(TokenStream& stream, ParserContext& ctx) {
+ *     if (!stream.check(TokenType::AT_SIGN)) {
+ *         return ctx.arena.makeBuilder<AttributePtr>().build();
+ *     }
+ *     stream.advance(); // consume '@'
+ *     stream.advance(); // consume '['
+ *     ScopedContext guard(ctx, SyntacticContext::Attribute, stream.currentLoc());
+ *     // every return below — however many there are — pops correctly
+ *     ...
+ * }
+ * ```
+ *
+ * Non-copyable, non-movable: a guard's identity is tied to the specific
+ * stack frame that created it, so copying or moving it would make the
+ * push/pop pairing ambiguous.
+ */
+struct ScopedContext {
+    ScopedContext(ParserContext& ctx, SyntacticContext kind, const SourceLocation& loc)
+        : ctx_(ctx)
+    {
+        ctx_.pushContext(kind, loc);
+    }
+
+    ~ScopedContext() {
+        ctx_.popContext();
+    }
+
+    ScopedContext(const ScopedContext&) = delete;
+    ScopedContext& operator=(const ScopedContext&) = delete;
+    ScopedContext(ScopedContext&&) = delete;
+    ScopedContext& operator=(ScopedContext&&) = delete;
+
+private:
+    ParserContext& ctx_;
+};
+
+/**
+ * @brief RAII guard for entering a fresh file's parsing state.
+ *
+ * ParserContext is shared across the whole parse — including every
+ * recursively-parsed `use`d file — so parse() needs each file to start
+ * with a clean slate (empty contextStack, empty error list) without
+ * permanently discarding whatever the importing file had accumulated.
+ * This guard saves the importer's contextStack and error-tracking fields
+ * on construction, resets them so the new file starts clean, and restores
+ * the saved values on destruction — on every exit path of parse(),
+ * including its early returns (cyclic import, lexer failure,
+ * parseInternal failure).
+ *
+ * Before restoring, the destructor drains this file's own `errors` into
+ * `ctx.allDiagnostics`. Without this step, a plain restore would make a
+ * nested file's diagnostics vanish the moment its guard restores the
+ * importer's state — they'd never make it anywhere the driver could see
+ * them. Draining into a durable, whole-compile list is what lets every
+ * file's errors survive regardless of how deep it was `use`d from.
+ *
+ * This guard owns the per-file reset entirely — it calls ctx.clearErrors()
+ * itself, after saving, so callers of parse() no longer need (or should
+ * make) a separate clearErrors() call. Doing that reset outside the guard
+ * would run before anything had a chance to save the importer's state,
+ * silently discarding it instead of merely resetting it for the new file.
+ *
+ * Today the contextStack restore is defensive rather than load-bearing —
+ * Lucid's grammar only allows `use` at file top level, so parse() is only
+ * ever re-entered while the importing file's stack is already empty — but
+ * relying on that invariant forever, rather than having the recursive
+ * entry point actually preserve state, is exactly the kind of assumption
+ * that silently breaks if the grammar changes. The error-state restore,
+ * by contrast, is load-bearing today: without it, any file with an error
+ * before a `use` loses that error the moment the import is parsed.
+ *
+ * ## Usage
+ *
+ * ```cpp
+ * ModuleAST* parse(const std::string& path, const std::string& source, ParserContext& ctx) {
+ *     ctx.currentFilePath = ctx.pool.intern(path);
+ *     ScopedFileContext fileContext(ctx);  // resets + saves; this file starts
+ *                                           // clean, importer's state restored
+ *                                           // (and this file's errors preserved
+ *                                           // in ctx.allDiagnostics) on return
+ *     ...
+ * }
+ * ```
+ *
+ * Non-copyable, non-movable, for the same reason as ScopedContext: its
+ * identity is tied to one specific parse() activation.
+ */
+struct ScopedFileContext {
+    explicit ScopedFileContext(ParserContext& ctx)
+        : ctx_(ctx)
+        , savedContextStack_(std::move(ctx.contextStack))
+        , savedErrors_(std::move(ctx.errors))
+        , savedHasErrors_(ctx.hasErrors)
+        , savedConsecutiveErrors_(ctx.consecutiveErrors)
+    {
+        ctx_.contextStack.clear();
+        ctx_.clearErrors();
+    }
+
+    ~ScopedFileContext() {
+        ctx_.allDiagnostics.insert(ctx_.allDiagnostics.end(),
+                                    ctx_.errors.begin(), ctx_.errors.end());
+
+        ctx_.contextStack      = std::move(savedContextStack_);
+        ctx_.errors            = std::move(savedErrors_);
+        ctx_.hasErrors         = savedHasErrors_;
+        ctx_.consecutiveErrors = savedConsecutiveErrors_;
+    }
+
+    ScopedFileContext(const ScopedFileContext&) = delete;
+    ScopedFileContext& operator=(const ScopedFileContext&) = delete;
+    ScopedFileContext(ScopedFileContext&&) = delete;
+    ScopedFileContext& operator=(ScopedFileContext&&) = delete;
+
+private:
+    ParserContext& ctx_;
+    std::vector<ContextFrame> savedContextStack_;
+    std::vector<Diagnostic> savedErrors_;
+    bool savedHasErrors_;
+    int savedConsecutiveErrors_;
 };
 
 } // namespace parser
