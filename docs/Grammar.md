@@ -710,8 +710,16 @@ struct_decl     = 'struct' IDENTIFIER [ generic_params ]
 struct_field    = { attribute_list } IDENTIFIER type [ '=' expr ]
                   (* mutable field by default — same as let *)
                 | { attribute_list } IDENTIFIER 'const' type [ '=' expr ]
-                  (* const field — cannot be reassigned after construction *)
-                  (* name then type, optional default value *)
+                  (* const field — cannot be reassigned after construction.
+                     name then type, optional default value. One rule governs
+                     both: a const field's value must exist by the end of the
+                     struct literal. If a default is declared, the literal may
+                     omit it (falls back to the default) or override it (the
+                     explicit value wins). If no default is declared, the
+                     literal must supply a value — there is nothing to fall
+                     back to. Either way, whatever value the field holds when
+                     construction finishes is fixed for the lifetime of the
+                     value — see Const Fields, below. *)
 
 trait_ref       = IDENTIFIER
                 | IDENTIFIER '<' type_arg { ',' type_arg } '>'
@@ -782,7 +790,40 @@ const p Point = Point { x = 3.0, y = 4.0 }
 -- omit fields that have defaults
 const origin Point = Point {}    -- x=3.0, y=4.0 from defaults
 const shifted Point = Point { x = 5.0 }    -- x=5.0, y=4.0 from default
+```
 
+> [!NOTE]
+> This rule applies the same way to `const` fields — a default declared on a
+> `const` field is a fallback, not a fixed value baked into the type.
+> Omitting it at the literal takes the default; supplying it overrides the
+> default. Either way, whatever the field holds once the literal finishes
+> evaluating is what it holds for the value's entire lifetime — `const` only
+> ever governs what happens *after* construction, never *how* construction
+> fills the field in. A `const` field with **no** declared default has no
+> fallback to take, so the literal must supply one:
+>
+> ```lucid
+> struct Counter {
+>     const step int = 1;    -- has a default — literal may omit or override
+>     total      int
+> }
+>
+> let a Counter = Counter { total = 0 }              -- step = 1 (default)
+> let b Counter = Counter { step = 5, total = 0 }    -- step = 5 (override)
+> a.step = 2;    -- ERROR: step is const — fixed once construction finished
+>
+> struct Validator {
+>     const check (int) -> bool;    -- no default — literal MUST supply one
+> }
+>
+> const v Validator = Validator { }    -- ERROR: check has no default and
+>                                             -- was not supplied
+> const v2 Validator = Validator {
+>     check = (n int) -> bool { return n > 0 }    -- OK: required, now fixed
+> }
+> ```
+
+```lucid
 -- nested struct
 struct Rect {
     origin Point
@@ -836,7 +877,7 @@ if e2.target != nil {
 
 ### Const Fields and Function-Typed Fields
 
-A field is declared with `const` cannot be reassigned through `field_expr`, even
+A field declared with `const` cannot be reassigned through `field_expr`, even
 when the containing variable is itself `let`. Field-level `const` is
 part of the struct's own definition, not something the holder of a mutable
 variable can override — `player Player` makes `player`'s *mutable*
@@ -845,25 +886,50 @@ itself declared `const` stays read-only regardless:
 
 ```lucid
 struct Counter {
-    const step int;    -- fixed for the lifetime of every Counter value
+    const step int = 1;    -- has a default — see Struct Initialization
     total      int
 }
 
-let c Counter = Counter { step = 1  total = 0 }
+let c Counter = Counter { total = 0 }    -- step = 1, taken from the default
 c.total = 5;    -- OK: total is let
-c.step  = 2;    -- ERROR: step is — read-only even though c is let
+c.step  = 2;    -- ERROR: step is const — read-only even though c is let
 ```
+
+Whether a `const` field's fixed value came from a declared default or an
+explicit value at the literal makes no difference here — `const` only
+governs what happens *after* construction (see **Struct Initialization** for
+the default/override/required rule that governs construction itself).
+
+> [!NOTE]
+> **When to reach for a `const` field.** If a value is genuinely the same
+> for every instance of a struct, a per-instance `const` field stores a
+> redundant copy in every value — prefer a module-level `const` or an `enum`
+> variant instead, and reference it from a default if one is still useful
+> (`const step int = Defaults.STEP;`). A `const` field earns its per-instance
+> storage when the value is expected to legitimately differ between
+> instances — which is most often true of behavior, not plain data. This is
+> why `const` fields of **function type** (below) are the most common
+> legitimate use: each instance can be constructed with different, fixed
+> behavior, and a function value is a single pointer-sized slot regardless
+> of how complex that behavior is, so there is no duplication cost the way
+> there is for a repeated scalar.
 
 This applies the same way to a field of **function type**. Luc introduced
 `impl` partly to prevent a struct's behavior from being reassigned after
 construction — Lucid has no `impl` and no methods at all (see the opening
 note on removed features), so this concern only ever applies to an ordinary
 field that happens to hold a function value, and `const` already covers it
-with no further mechanism needed:
+with no further mechanism needed. A behavior field like this is also the
+clearest case for a `const` field with **no** default — every instance is
+expected to supply its own behavior, so there is no sensible fallback to
+declare, and the literal is required to provide one (see **Struct
+Initialization**):
 
 ```lucid
 struct Validator {
-    const check (int) -> bool;    -- fixed behavior, set once at construction
+    const check (int) -> bool;    -- no default — every instance supplies its
+                                          -- own behavior; fixed once construction
+                                          -- finishes
 }
 
 const positive Validator = Validator {
@@ -877,6 +943,7 @@ const result bool = positive.check(5);    -- OK: calling through a
                                                   -- only reassignment is blocked
 ```
 
+
 A field left `let` (the default, same as any other declaration) can be
 reassigned freely, including to a different function value — useful for
 genuinely swappable behavior, like a configurable callback:
@@ -889,6 +956,67 @@ struct Logger {
 let log Logger = Logger { }
 log.sink = (msg string) -> () { system:writeToFile("app.log", msg) }    -- OK
 ```
+
+### Security Considerations for Function-Typed Fields
+
+A function-typed field is the closest thing Lucid has to an injectable
+dependency — construction can supply different behavior per instance, similar
+in spirit to an interface. The compiler only guarantees the **shape** of what
+gets supplied (the exact `func_type`, checked at every assignment); it
+guarantees nothing about what that function actually *does* when called — a
+correctly-shaped function can still perform arbitrary I/O, foreign calls, or
+side effects. There is no capability or whitelist mechanism in the language
+that restricts *which* functions may be supplied beyond matching the
+declared shape, so the following are the practical mitigations available:
+
+- **Use `const`, not `let`, for any function field where "was this changed
+  later" is a security question, not just a convenience one** (auth checks,
+  validators, permission callbacks). A `let` function field — the `Logger`
+  pattern above — is reassignable for the entire lifetime of the value by
+  anyone holding a mutable reference to it, not just whoever constructed it;
+  a function taking `&T` can rewrite it through the reference, silently
+  changing behavior for the original owner too (see **Borrowed Types —
+  Scoped References**). `const` closes that window entirely: whatever was
+  supplied at construction is fixed for the value's lifetime, as shown by
+  `Validator.check` above. `const` only closes the *reassignment* window —
+  it does not vet the function supplied at construction; that trust decision
+  still has to happen at the call site that builds the value.
+
+- **Prefer a closed `enum` dispatched with `switch` over an open function
+  parameter whenever the set of valid behaviors is small and known ahead of
+  time.** `switch` on an enum is exhaustiveness-checked by the compiler (see
+  **`switch`** — **Enum exhaustiveness**): every variant must be explicitly
+  handled or the build fails. This gives a closed, auditable, compiler-
+  verified set of possible behaviors, which a function-typed parameter
+  fundamentally cannot — the space of "any function with this shape" is
+  unbounded, the space of enum variants is not.
+
+  ```lucid
+  -- avoid: caller supplies arbitrary behavior matching the shape
+  const runCallback (call () -> ()) -> () = { call() }
+
+  -- prefer: caller selects from a closed, exhaustively-checked set;
+  -- the actual behavior is never exposed as a parameter at all
+  enum Action { Save = 0  Reload = 1  Discard = 2 }
+
+  const constructAndRunAction (kind Action)(arg1 T)(arg2 U) -> () = {
+      switch kind {
+          case Action.Save:    { doSave(arg1, arg2) }
+          case Action.Reload:  { doReload(arg1) }
+          case Action.Discard: { doDiscard() }
+      }
+  }
+  ```
+
+  Keep the concrete handlers (`doSave`, `doReload`, `doDiscard`) un-exported
+  so they are unreachable by name from outside the module — the dispatcher
+  is then the only entry point, and the compiler proves no case was missed.
+
+- **Reserve genuinely open, caller-supplied behavior for cases where it is
+  the actual point of the API** (plugins, strategy objects). There, the
+  mitigation is not prevention — the API needs the injection point — but
+  bounding the window (`const`) and controlling who is trusted to construct
+  the value in the first place.
 
 ---
 
@@ -1736,18 +1864,20 @@ A fallible value enters the error state in two ways:
 let i int! = 8 / 0;    -- compiler sets tag to 2, stores the error
 ```
 
-2. **Manually** — the user signals failure explicitly with a reason:
+2. **Manually** — the user signals failure explicitly:
 
 ```lucid
-let result int! = err(DivisionByZero);    -- explicit failure
-let ratio  int! = err(InvalidInput);    -- user-defined error case
+let result int! = err;    -- explicit failure
+let ratio  int! = err;    -- explicit failure
 ```
 
-`err(...)` always requires a reason — bare `err` without a value is not valid.
-This keeps error states meaningful: an error always carries information about
-what went wrong, not just that it did.
+`err` is a bare sentinel — it carries no payload and takes no argument. This
+keeps `!` simple: it only ever answers "did this fail," never "why." A
+function that needs to communicate a reason does so with a separate
+out-parameter (see **Error Detail Without a Payload**), not through `err`
+itself.
 
-Like `nil`, assigning `err(...)` is a semantic operation. The compiler
+Like `nil`, assigning `err` is a semantic operation. The compiler
 manages the memory — the slot is reclaimed when the scope exits.
 
 ### Combined `T?!` — Three States
@@ -1760,7 +1890,7 @@ let x int?! = compute();    -- may arrive as value, nil, or err
 
 x = 42;    -- set to value       (tag 1)
 x = nil;    -- set to absent      (tag 0)
-x = err(SomeError);    -- set to failed      (tag 2)
+x = err;    -- set to failed      (tag 2)
 
 -- Checking all three states
 if x == nil {
@@ -2257,7 +2387,6 @@ expr            = literal
                 | func_literal
                 | struct_literal
                 | array_literal
-                | tuple_expr
                 | pipeline_expr
                 | compose_expr
                 | fallback_expr
@@ -2306,8 +2435,6 @@ struct_literal  = IDENTIFIER '{' { field_init } '}'
 field_init      = IDENTIFIER '=' expr
 
 array_literal   = '[' [ expr { ',' expr } ] ']'
-
-tuple_expr      = '(' expr ',' expr { ',' expr } ')'
 
 generic_expr    = IDENTIFIER '<' type_arg { ',' type_arg } '>' '(' [ arg_list ] ')'
 ```
@@ -3506,11 +3633,33 @@ Because references (`&T`) cannot be stored inside structs, building circular or 
 ```
 3. **Smart Pointers (Standard Library):** For safe shared heap state, use standard library reference-counted wrappers like `Shared<T>` and `Weak<T>` (which auto-nulls when the owner is destroyed). These incur a small runtime cost.
 
+> [!CAUTION]
+> **Storing `*T` in a struct field or array element does not carry any extra
+> compiler protection over a local `*T`** — see **The Sealed Conduit
+> Model** below for the full caveat. Storage duration makes the underlying
+> risk worse, not neutral: a local raw pointer's exposure is bounded by the
+> function call that holds it, but a stored one persists for as long as the
+> struct or array does, with no lifetime tracking at all. A struct holding a
+> `*T` field also copies as a **pointer copy**, not a deep clone (see the
+> Owned Types table) — two "independent" deep-copied structs can silently
+> alias the same pointee through their raw-pointer fields.
+>
+> **A stored `*func_type` deserves extra caution beyond a stored data
+> pointer.** Dereferencing a dangling `*uint8` corrupts a read; *calling*
+> through a dangling or aliased `*func_type` transfers control flow to
+> whatever now occupies that address — the same failure class as a C
+> vtable-smash, not a data bug. Prefer an ordinary Lucid function value
+> (named function or closure, see **Function Values and Closures** below) for
+> any struct or array field meant to hold callable behavior — those are
+> compiler-tracked, not sealed conduits, and have none of this risk. Reserve
+> `*func_type` storage strictly for genuine FFI/C-interop callback slots.
+
 ### Function Values and Closures
 
 Named functions are plain function pointers — no captured state. Closures (partial applications, anonymous functions capturing variables) hold a heap-allocated environment. Assigning a closure copies the reference to that environment.
 
 ---
+
 
 ## The Sealed Conduit Model (Raw Pointers)
 
@@ -3544,6 +3693,10 @@ const q *Node? = findNode();   -- pointer itself may be nil; nil-check required 
 > - You assert that the pointer's target is valid for the duration you hold the pointer.
 > - You own or have a clear understanding of the pointed-to memory's lifetime.
 > - No other owner will free that memory while your `*T` is live.
+> - If the `*T` is stored in a struct field or array element rather than
+>   held locally, this responsibility extends for as long as that struct or
+>   array exists — see **Modeling Complex Data Structures** above, which
+>   also covers the added risk of a stored `*func_type`.
 >
 > **Preferred mitigation — wrap `*T` in a cleanup struct:**
 > ```lucid
@@ -3989,7 +4142,7 @@ main() entered           → push scope arena
 main() returned          → pop scope arena
 ```
 
-`nil` and `err(...)` are semantic signals — they change the tag on a slot, not
+`nil` and `err` are semantic signals — they change the tag on a slot, not
 the memory. The scope arena reclaims the slot at scope exit regardless.
 
 ---
