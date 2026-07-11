@@ -218,8 +218,8 @@ enum TokenType {
 struct Token {
     TokenType type;
     std::string value;     // raw lexeme
-    int line;
-    int column;
+    unsigned int line;     // 0 to 4,294,967,295
+    unsigned short column; // 0 to 65,535
     
     // ─── Helper Methods ──────────────────────────────────────────────────
     

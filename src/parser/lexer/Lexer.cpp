@@ -16,8 +16,8 @@ struct LexerState {
     const std::string& source;
     std::string filename;
     size_t position;
-    int line;
-    int column;
+    unsigned int line;
+    unsigned short column;
     bool hadErrors = false;
     
     LexerState(const std::string& src, const std::string& file)
@@ -124,8 +124,8 @@ void skip_whitespace(LexerState& state) {
 
 Token lex_identifier(LexerState& state) {
     std::string value;
-    int start_line = state.line;
-    int start_col = state.column;
+    unsigned int start_line = state.line;
+    unsigned short start_col = state.column;
     
     while (!is_at_end(state) && is_identifier_char(current_char(state))) {
         value += current_char(state);
@@ -144,8 +144,8 @@ Token lex_identifier(LexerState& state) {
 
 Token lex_number(LexerState& state) {
     std::string value;
-    int start_line = state.line;
-    int start_col = state.column;
+    unsigned int start_line = state.line;
+    unsigned short start_col = state.column;
     char c = current_char(state);
     
     // Hexadecimal: 0x...
@@ -252,8 +252,8 @@ Token lex_number(LexerState& state) {
 
 Token lex_string(LexerState& state) {
     std::string value;
-    int start_line = state.line;
-    int start_col = state.column;
+    unsigned int start_line = state.line;
+    unsigned short start_col = state.column;
     
     advance(state); // consume opening "
     
@@ -318,8 +318,8 @@ Token lex_string(LexerState& state) {
 
 Token lex_raw_string(LexerState& state) {
     std::string value;
-    int start_line = state.line;
-    int start_col = state.column;
+    unsigned int start_line = state.line;
+    unsigned short start_col = state.column;
     
     // Consume """
     advance(state);
@@ -347,8 +347,8 @@ Token lex_raw_string(LexerState& state) {
 
 Token lex_char(LexerState& state) {
     std::string value;
-    int start_line = state.line;
-    int start_col = state.column;
+    unsigned int start_line = state.line;
+    unsigned short start_col = state.column;
     
     advance(state); // consume opening '
     
@@ -394,8 +394,8 @@ Token lex_char(LexerState& state) {
 
 Token lex_comment(LexerState& state) {
     std::string value;
-    int start_line = state.line;
-    int start_col = state.column;
+    unsigned int start_line = state.line;
+    unsigned short start_col = state.column;
     
     // Consume /-
     advance(state);
@@ -419,8 +419,8 @@ Token lex_comment(LexerState& state) {
 
 Token lex_doc_comment(LexerState& state) {
     std::string value;
-    int start_line = state.line;
-    int start_col = state.column;
+    unsigned int start_line = state.line;
+    unsigned short start_col = state.column;
     
     // Consume /--
     advance(state);
@@ -446,8 +446,8 @@ Token lex_doc_comment(LexerState& state) {
 
 Token lex_block_comment(LexerState& state) {
     std::string value;
-    int start_line = state.line;
-    int start_col = state.column;
+    unsigned int start_line = state.line;
+    unsigned short start_col = state.column;
     int nesting_depth = 1;  // We're already inside one /- ...
     
     // Consume /-
@@ -498,8 +498,8 @@ Token lex_block_comment(LexerState& state) {
 // ─── Lex Operators and Punctuation ──────────────────────────────────
 
 Token lex_operator_or_punctuation(LexerState& state) {
-    int start_line = state.line;
-    int start_col = state.column;
+    unsigned int start_line = state.line;
+    unsigned short start_col = state.column;
     char c = current_char(state);
     
     // ─── Two-character operators ────────────────────────────────────
