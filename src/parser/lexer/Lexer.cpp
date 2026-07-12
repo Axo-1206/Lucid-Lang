@@ -800,7 +800,7 @@ Token next_token(detail::LexerState& state) {
     detail::skip_whitespace(state);
     
     if (detail::is_at_end(state)) {
-        return Token{TokenType::EOF_TOKEN, "", state.line, state.column};
+        return Token{TokenType::EOF_TOKEN, "EOF", state.line, state.column};
     }
     
     char c = detail::current_char(state);

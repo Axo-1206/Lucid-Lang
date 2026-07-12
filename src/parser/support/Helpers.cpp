@@ -192,7 +192,7 @@ std::optional<DocComment> harvestDocComment(TokenStream& stream, ParserContext& 
  *     │
  *     ├── 5. Main Attribute Parsing Loop
  *     │   │
- *     │   └── while (!stream.isAtEnd() || stream.check(TokenType::RBRACKET))
+ *     │   └── while (!stream.isAtEnd() && !stream.check(TokenType::RBRACKET))
  *     │       │
  *     │       ├── 5.1 Parse Single Attribute
  *     │       │   └── parseAttribute(stream, ctx) → AttributePtr
@@ -204,10 +204,9 @@ std::optional<DocComment> harvestDocComment(TokenStream& stream, ParserContext& 
  *     │       │           ├── Error already reported by parseAttribute
  *     │       │           ├── synchronizeToContext(stream, ctx)
  *     │       │           │   // Stops at ',' or ']' — bounded by Attribute context
- *     │       │           ├── if (stream.check(TokenType::RBRACKET))
- *     │       │           │   └── break
- *     │       │           └── else
- *     │       │               └── break
+ *     │       │           └── // The loop condition handles ']' and EOF naturally.
+ *     │       │               // If we're at a comma, the comma handling below will consume it.
+ *     │       │               // If we're at some other token, break to avoid infinite loop.
  *     │       │
  *     │       └── 5.2 Comma Separator Handling
  *     │           └── if (stream.consumeTrailing(TokenType::COMMA) > 1)
@@ -216,16 +215,11 @@ std::optional<DocComment> harvestDocComment(TokenStream& stream, ParserContext& 
  *     │
  *     ├── 6. Closing Bracket Phase
  *     │   │
- *     │   └── if (!stream.check(TokenType::RBRACKET))
- *     │       ├── if (stream.isAtEnd())
- *     │       │   └── ctx.error(stream, DiagCode::E1005, "]", "attribute list", "<EOF>")
- *     │       ├── else
- *     │       │   └── ctx.error(stream, DiagCode::E1005, "]", "attribute list", got)
- *     │       ├── synchronizeTo(stream, ctx, TokenType::RBRACKET)
- *     │       └── if (stream.check(TokenType::RBRACKET))
- *     │           └── stream.advance()  // consume ']' to recover
+ *     │   └── if (stream.isAtEnd())
+ *     │       ├── ctx.error(stream, DiagCode::E1005, "]", "attribute list", "<EOF>")
+ *     │       └── // Return with whatever attrs we have (missing ']')
  *     │   └── else
- *     │       └── stream.advance()  // consume ']'
+ *     │       └── stream.advance()  // Consume ']' (we know it's there from loop condition)
  *     │
  *     ├── 7. Build Result
  *     │   └── ctx.arena.makeBuilder<AttributePtr>()
@@ -244,16 +238,14 @@ std::optional<DocComment> harvestDocComment(TokenStream& stream, ParserContext& 
  * ### Level 2: Malformed Attribute Within List
  * - parseAttribute() reports its own error and returns nullptr
  * - synchronizeToContext() skips to next ',' or ']' (bounded by Attribute guard)
- * - Trailing commas after error → E1009 reported
  * 
  * ### Level 3: Missing Closing Bracket
- * - E1005 reported with actual token or "<EOF>"
- * - synchronizeTo() seeks ']' and consumes it if found
+ * - E1005 reported at EOF
+ * - No recovery needed since we're already at EOF
  * 
  * ### Level 4: Consecutive Commas
  * - Leading commas before first attribute → E1009 once
  * - Multiple commas between attributes → E1009 once per gap
- * - Commas after failed parse → E1009 if >1, silent if exactly 1
  * 
  * ## Context Stack Interaction
  * 
@@ -266,8 +258,7 @@ std::optional<DocComment> harvestDocComment(TokenStream& stream, ParserContext& 
  * 
  * After this function completes:
  * - Position is AFTER ']' (normal case)
- * - Position is at recovery point (if errors occurred)
- * - Position is at EOF (if ']' never found)
+ * - Position is at EOF (if ']' was missing)
  * 
  * ## Examples
  * 
@@ -320,7 +311,7 @@ ArenaSpan<AttributePtr> parseAttributes(TokenStream& stream, ParserContext& ctx)
     }
     
     // Parse attributes until we hit ']'
-    while (!stream.isAtEnd() || stream.check(TokenType::RBRACKET)) {
+    while (!stream.isAtEnd() && !stream.check(TokenType::RBRACKET)) {
         // Parse a single attribute
         AttributePtr attr = parseAttribute(stream, ctx);
         if (attr) {
@@ -331,9 +322,10 @@ ArenaSpan<AttributePtr> parseAttributes(TokenStream& stream, ParserContext& ctx)
             // stops at ',' or ']' — it will not run past the closing ']'
             // into whatever declaration follows.
             synchronizeToContext(stream, ctx);
-            if (stream.check(TokenType::RBRACKET)) {
-                break;
-            } else {
+            // The loop condition will handle ']' and EOF naturally.
+            // If we're at a comma, the comma handling below will consume it.
+            // If we're at some other token, break to avoid infinite loop.
+            if (!stream.check(TokenType::COMMA) && !stream.check(TokenType::RBRACKET) && !stream.isAtEnd()) {
                 break;
             }
         }
@@ -345,17 +337,11 @@ ArenaSpan<AttributePtr> parseAttributes(TokenStream& stream, ParserContext& ctx)
     }
     
     // ─── Consume closing bracket ────────────────────────────────────────
-    if (!stream.check(TokenType::RBRACKET)) {
-        if (stream.isAtEnd()) {
-            ctx.error(stream, DiagCode::E1005, "]", "attribute list", "<EOF>");
-        } else {
-            ctx.error(stream, DiagCode::E1005, "]", "attribute list", stream.peekValue());
-        }
-        synchronizeTo(stream, ctx, TokenType::RBRACKET);
-        if (stream.check(TokenType::RBRACKET)) {
-            stream.advance(); // Consume ']' to recover
-        }
+    // The loop condition guarantees we're either at ']' or at EOF.
+    if (stream.isAtEnd()) {
+        ctx.error(stream, DiagCode::E1005, "]", "attribute list", stream.peekValue());
     } else {
+        // We must be at ']' (loop condition guaranteed !stream.check(RBRACKET) is false)
         stream.advance(); // Consume ']'
     }
     
@@ -413,7 +399,7 @@ ArenaSpan<AttributePtr> parseAttributes(TokenStream& stream, ParserContext& ctx)
  *     │       │
  *     │       ├── 4.2 Argument Parsing Loop
  *     │       │   │
- *     │       │   └── while (!stream.isAtEnd() || stream.check(TokenType::RPAREN))
+ *     │       │   └── while (!stream.isAtEnd() && !stream.check(TokenType::RPAREN))
  *     │       │       │
  *     │       │       ├── 4.2.1 Parse Argument Literal
  *     │       │       │   └── parseAttributeArgLiteral(stream, ctx) → AttributeArgPtr
@@ -424,31 +410,22 @@ ArenaSpan<AttributePtr> parseAttributes(TokenStream& stream, ParserContext& ctx)
  *     │       │       │       └── else
  *     │       │       │           ├── Error already reported by parseAttributeArgLiteral
  *     │       │       │           ├── synchronizeTo(stream, ctx, COMMA, RPAREN)
- *     │       │       │           ├── if (stream.check(TokenType::COMMA))
- *     │       │       │           │   ├── stream.advance()
- *     │       │       │           │   └── continue
- *     │       │       │           ├── else if (stream.check(TokenType::RPAREN))
- *     │       │       │           │   └── break
- *     │       │       │           └── else
- *     │       │       │               └── break
+ *     │       │       │           └── // The loop condition handles ')' and EOF naturally.
+ *     │       │       │               // If we're at a comma, the comma handling below will consume it.
+ *     │       │       │               // If we're at some other token, break to avoid infinite loop.
  *     │       │       │
  *     │       │       └── 4.2.2 Comma Separator Handling
  *     │       │           └── if (stream.consumeTrailing(TokenType::COMMA) > 1)
  *     │       │               └── ctx.error(stream, DiagCode::E1009, ",", "attribute arguments")
  *     │       │                   // Reports once for multiple consecutive commas between args
  *     │       │
- *     │       └── 4.3 Closing Parenthesis
+ *     │       └── 4.3 Closing Parenthesis Phase
  *     │           │
- *     │           └── if (!stream.check(TokenType::RPAREN))
- *     │               ├── if (stream.isAtEnd())
- *     │               │   └── ctx.error(stream, DiagCode::E1005, ")", "attribute arguments", "<EOF>")
- *     │               ├── else
- *     │               │   └── ctx.error(stream, DiagCode::E1005, ")", "attribute arguments", got)
- *     │               ├── synchronizeTo(stream, ctx, TokenType::RPAREN)
- *     │               └── if (stream.check(TokenType::RPAREN))
- *     │                   └── stream.advance()  // consume ')' to recover
+ *     │           └── if (stream.isAtEnd())
+ *     │               ├── ctx.error(stream, DiagCode::E1005, ")", "attribute arguments", "<EOF>")
+ *     │               └── // Return with whatever args we have (missing ')')
  *     │           └── else
- *     │               └── stream.advance()  // consume ')'
+ *     │               └── stream.advance()  // Consume ')' (we know it's there from loop condition)
  *     │
  *     ├── 5. Build Arguments Span
  *     │   └── ctx.arena.makeBuilder<AttributeArgPtr>()
@@ -472,12 +449,13 @@ ArenaSpan<AttributePtr> parseAttributes(TokenStream& stream, ParserContext& ctx)
  * ### Level 2: Malformed Argument
  * - parseAttributeArgLiteral() reports E1104 for invalid literal type
  * - synchronizeTo(COMMA, RPAREN) seeks next separator or end
- * - Single comma → skip and continue
- * - ')' → break out of loop
+ * - The loop condition handles ')' and EOF naturally
+ * - If we're at a comma, the comma handling below will consume it
+ * - If we're at some other token, break to avoid infinite loop
  * 
  * ### Level 3: Missing Closing Parenthesis
- * - E1005 reported with actual token or "<EOF>"
- * - synchronizeTo(RPAREN) seeks ')' and consumes if found
+ * - E1005 reported at EOF
+ * - No recovery needed since we're already at EOF
  * 
  * ### Level 4: Consecutive Commas in Arguments
  * - Leading commas before first arg → E1009 once
@@ -497,6 +475,7 @@ ArenaSpan<AttributePtr> parseAttributes(TokenStream& stream, ParserContext& ctx)
  * - Position is AFTER attribute name (no args, normal case)
  * - Position is AFTER ')' (with args, normal case)
  * - Position is at recovery point (if error in name)
+ * - Position is at EOF (if ')' was missing)
  * - Position is at ',' or ']' (if argument error and recovered)
  * 
  * ## Examples
@@ -556,8 +535,7 @@ AttributePtr parseAttribute(TokenStream& stream, ParserContext& ctx) {
         }
 
         // Parse arguments until we hit ')'
-        while (!stream.isAtEnd() || stream.check(TokenType::RPAREN)) {
-            
+        while (!stream.isAtEnd() && !stream.check(TokenType::RPAREN)) {
             // Parse an argument
             AttributeArgPtr arg = parseAttributeArgLiteral(stream, ctx);
             if (arg) {
@@ -565,12 +543,10 @@ AttributePtr parseAttribute(TokenStream& stream, ParserContext& ctx) {
             } else {
                 // Error already reported, try to recover
                 synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN);
-                if (stream.check(TokenType::COMMA)) {
-                    stream.advance();
-                    continue;
-                } else if (stream.check(TokenType::RPAREN)) {
-                    break;
-                } else {
+                // The loop condition will handle ')' and EOF naturally.
+                // If we're at a comma, the comma handling below will consume it.
+                // If we're at some other token, break to avoid infinite loop.
+                if (!stream.check(TokenType::COMMA) && !stream.check(TokenType::RPAREN) && !stream.isAtEnd()) {
                     break;
                 }
             }
@@ -582,17 +558,11 @@ AttributePtr parseAttribute(TokenStream& stream, ParserContext& ctx) {
         }
         
         // ─── Consume closing parenthesis ────────────────────────────────────
-        if (!stream.check(TokenType::RPAREN)) {
-            if (stream.isAtEnd()) {
-                ctx.error(stream, DiagCode::E1005, ")", "attribute arguments", "<EOF>");
-            } else {
-                ctx.error(stream, DiagCode::E1005, ")", "attribute arguments", stream.peekValue());
-            }
-            synchronizeTo(stream, ctx, TokenType::RPAREN);
-            if (stream.check(TokenType::RPAREN)) {
-                stream.advance(); // Consume ')' to recover
-            }
+        // The loop condition guarantees we're either at ')' or at EOF.
+        if (stream.isAtEnd()) {
+            ctx.error(stream, DiagCode::E1005, ")", "attribute arguments", "<EOF>");
         } else {
+            // We must be at ')' (loop condition guaranteed !stream.check(RPAREN) is false)
             stream.advance(); // Consume ')'
         }
     }
@@ -696,107 +666,194 @@ AttributeArgPtr parseAttributeArgLiteral(TokenStream& stream, ParserContext& ctx
 /**
  * @brief Parse a list of generic parameters.
  * 
- * Grammar: `'<' generic_param { ',' generic_param } '>'`
+ * This function parses a generic parameter list that follows a declaration name.
+ * It consumes the full `<...>` construct and produces zero or more GenericParamDeclAST nodes.
+ * 
+ * ## Program Flow
+ * 
+ * ```
+ * parseGenericParamDecls()
+ *     │
+ *     ├── 1. Opening Delimiter Phase
+ *     │   │
+ *     │   └── if (!stream.check(TokenType::LESS))
+ *     │       ├── ctx.error(stream, DiagCode::E1004, "<", "generic parameter list", got)
+ *     │       └── return empty ArenaSpan<GenericParamDeclPtr>
+ *     │   └── else
+ *     │       └── stream.advance()  // Consume '<'
+ *     │
+ *     ├── 2. Empty List Check
+ *     │   └── if (stream.check(TokenType::GREATER))
+ *     │       ├── ctx.error(stream, DiagCode::E1003, "generic parameter", ">")
+ *     │       ├── stream.advance()  // Consume '>'
+ *     │       └── return empty ArenaSpan<GenericParamDeclPtr>
+ *     │
+ *     ├── 3. Scoped Context Push
+ *     │   └── ScopedContext guard(ctx, SyntacticContext::GenericParams, loc)
+ *     │       └── Pushes GenericParams context once; auto-pops on every return path
+ *     │
+ *     ├── 4. Leading Comma Recovery
+ *     │   └── if (stream.consumeTrailing(TokenType::COMMA) > 0)
+ *     │       └── ctx.error(stream, DiagCode::E1009, ",", "generic parameters")
+ *     │           // <,,,, T ...> — reports once for all leading commas
+ *     │
+ *     ├── 5. Main Parameter Parsing Loop
+ *     │   │
+ *     │   └── while (!stream.isAtEnd() && !stream.check(TokenType::GREATER))
+ *     │       │
+ *     │       ├── 5.1 Parse Single Parameter
+ *     │       │   └── parseGenericParamDecl(stream, ctx) → GenericParamDeclPtr
+ *     │       │       │
+ *     │       │       ├── if (param != nullptr)
+ *     │       │       │   └── params.push_back(param)
+ *     │       │       │
+ *     │       │       └── else
+ *     │       │           ├── Error already reported by parseGenericParamDecl
+ *     │       │           ├── synchronizeTo(stream, ctx, COMMA, GREATER)
+ *     │       │           │   // Bounded by GenericParams context → stops at ',' or '>'
+ *     │       │           └── // The loop condition handles '>' and EOF naturally.
+ *     │       │               // If we're at a comma, the comma handling below will consume it.
+ *     │       │               // If we're at some other token, break to avoid infinite loop.
+ *     │       │
+ *     │       └── 5.2 Comma Separator Handling
+ *     │           └── if (stream.consumeTrailing(TokenType::COMMA) > 1)
+ *     │               └── ctx.error(stream, DiagCode::E1009, ",", "generic parameters")
+ *     │                   // Reports once for multiple consecutive commas between params
+ *     │
+ *     ├── 6. Closing Bracket Phase
+ *     │   │
+ *     │   └── if (stream.isAtEnd())
+ *     │       ├── ctx.error(stream, DiagCode::E1005, ">", "generic parameter list", "<EOF>")
+ *     │       └── // Return with whatever params we have (missing '>')
+ *     │   └── else
+ *     │       └── stream.advance()  // Consume '>' (we know it's there from loop condition)
+ *     │
+ *     ├── 7. Build Result
+ *     │   └── ctx.arena.makeBuilder<GenericParamDeclPtr>()
+ *     │       └── push_back each param → build() → ArenaSpan<GenericParamDeclPtr>
+ *     │
+ *     └── 8. Return
+ *         └── return ArenaSpan<GenericParamDeclPtr> (possibly empty)
+ * ```
+ * 
+ * ## Error Recovery Strategy
+ * 
+ * ### Level 1: Missing '<'
+ * - E1004 reported, return empty
+ * 
+ * ### Level 2: Empty Generic Parameter List
+ * - `<>` → E1003, consume '>', return empty
+ * 
+ * ### Level 3: Malformed Parameter Within List
+ * - parseGenericParamDecl() reports its own error and returns nullptr
+ * - synchronizeTo(COMMA, GREATER) skips to next separator or terminator
+ *   (bounded by GenericParams guard)
+ * 
+ * ### Level 4: Missing Closing Bracket
+ * - E1005 reported at EOF
+ * - No recovery needed since we're already at EOF
+ * 
+ * ### Level 5: Consecutive Commas
+ * - Leading commas before first parameter → E1009 once
+ * - Multiple commas between parameters → E1009 once per gap
+ * 
+ * ## Context Stack Interaction
+ * 
+ * The ScopedContext guard ensures:
+ * - synchronizeToContext() stops at ',' or '>' (GenericParams follow-set)
+ * - Does NOT scan past '>' into the enclosing declaration
+ * - Auto-pops on every return path (including early returns)
+ * 
+ * ## Token Stream State
+ * 
+ * After this function completes:
+ * - Position is AFTER '>' (normal case)
+ * - Position is at EOF (if '>' was missing)
  * 
  * ## Examples
  * 
  * ```lucid
- * struct Box<T> { ... }                    // <T>
- * struct Pair<A, B> { ... }                // <A, B>
- * const process<T : Vector2, U> (v T) ...  // <T : Vector2, U>
+ * <T>                                    → [T]
+ * <A, B>                                 → [A, B]
+ * <T : Vector2, U>                       → [T: Vector2, U]
+ * <T : Named + Serializable>             → [T: Named + Serializable]
+ * <,,,T>                                 → [T] + E1009 (leading commas)
+ * <T,,,U>                                → [T, U] + E1009 (gap)
+ * <T,                                    → [T] + E1005 (missing '>')
+ * <>                                     → [] + E1003 (empty list)
  * ```
- * 
- * ## Error Handling
- * 
- * - Empty list `<>` → reports E1003
- * - Trailing comma `<T, >` → reports E1009
- * - Trailing plus `<T : Vector2 + >` → reports E1105
- * - Missing `>` at EOF → reports E1005
- * 
- * parseGenericParamDecls()
- *  ├── Consumes '<'
- *  ├── parseGenericParamDecl()
- *  │   ├── Parses "T"
- *  │   ├── Consumes ':'
- *  │   ├── Parses "Vector2"
- *  │   ├── Consumes '+'
- *  │   ├── Sees '>' → reports E1105, breaks (does NOT consume '>')
- *  │   └── Returns param
- *  ├── Sees '>' → consumes '>'
- *  └── Returns
  * 
  * @param stream The token stream for the current file
  * @param ctx The parsing context
  * @return ArenaSpan<GenericParamDeclPtr> The parsed generic parameters (empty on error)
  *
- * @note this function consume '>' the caller must not consume '>'
+ * @note This function consumes '>'. The caller must NOT consume '>'.
  */
 ArenaSpan<GenericParamDeclPtr> parseGenericParamDecls(TokenStream& stream, ParserContext& ctx) {
     LOG_PARSER_DETAIL("parseGenericParamDecls: parsing generic parameters");
     
     std::vector<GenericParamDeclPtr> params;
     
-    // Expect '<' to start the list
+    // ─── 1. Expect '<' to start the list ─────────────────────────────────
     if (!stream.check(TokenType::LESS)) {
         ctx.error(stream, DiagCode::E1004, "<", "generic parameter list", stream.peekValue());
         return ctx.arena.makeBuilder<GenericParamDeclPtr>().build();
     }
     stream.advance(); // Consume '<'
     
-    // Check for empty generic parameter list: <>
+    // ─── 2. Check for empty generic parameter list: <> ───────────────────
     if (stream.check(TokenType::GREATER)) {
         ctx.error(stream, DiagCode::E1003, "generic parameter", ">");
         stream.advance(); // Consume '>'
         return ctx.arena.makeBuilder<GenericParamDeclPtr>().build();
     }
     
-    // Parse parameters until we hit '>'
-    while (!stream.isAtEnd()) {
-        // ─── Skip consecutive separators ────────────────────────────────
-        if (stream.consumeTrailing(TokenType::COMMA) > 0) {
-            ctx.error(stream, DiagCode::E1009, ",", "generic parameters"); // Unexpected trailing comma
-        }
-        
-        // ─── Check if we've reached a terminator ──────────────────────
-        if (stream.check(TokenType::GREATER)) {
-            break; // End of generic parameter list
-        }
-        
-        if (stream.isAtEnd()) {
-            ctx.error(stream, DiagCode::E1005, ">", "generic parameter list", "<EOF>");
-            break;
-        }
-        
-        // ─── Parse a single generic parameter ───────────────────────────
+    // ─── 3. Push GenericParams context — auto-pops on every return path ──
+    ScopedContext guard(ctx, SyntacticContext::GenericParams, stream.currentLoc());
+    
+    // ─── 4. Skip initial consecutive commas ────────────────────────────
+    // Ex: <,,,, T ...>
+    if (stream.consumeTrailing(TokenType::COMMA) > 0) {
+        ctx.error(stream, DiagCode::E1009, ",", "generic parameters");
+    }
+    
+    // ─── 5. Parse parameters until we hit '>' ──────────────────────────
+    while (!stream.isAtEnd() && !stream.check(TokenType::GREATER)) {
+        // Parse a single generic parameter
         GenericParamDeclPtr param = parseGenericParamDecl(stream, ctx);
         if (param) {
             params.push_back(param);
         } else {
-            // Error already reported, try to recover
+            // Error already reported, try to recover. currentContext() is
+            // GenericParams here (guard is still on the stack), so this
+            // stops at ',' or '>' — it will not run past the closing '>'
+            // into whatever declaration follows.
             synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::GREATER);
-            if (stream.check(TokenType::COMMA)) {
-                stream.advance();
-                continue;
-            } else if (stream.check(TokenType::GREATER)) {
-                break;
-            } else {
+            // The loop condition will handle '>' and EOF naturally.
+            // If we're at a comma, the comma handling below will consume it.
+            // If we're at some other token, break to avoid infinite loop.
+            if (!stream.check(TokenType::COMMA) && !stream.check(TokenType::GREATER) && !stream.isAtEnd()) {
                 break;
             }
         }
+
+        // ─── 5.2 Comma Separator Handling ────────────────────────────────
+        // Consume at least 1 comma and skip consecutive commas
+        if (stream.consumeTrailing(TokenType::COMMA) > 1) {
+            ctx.error(stream, DiagCode::E1009, ",", "generic parameters");
+        }
     }
     
-    // ─── Consume closing bracket ────────────────────────────────────────
-    if (!stream.check(TokenType::GREATER)) {
+    // ─── 6. Consume closing bracket ──────────────────────────────────────
+    // The loop condition guarantees we're either at '>' or at EOF.
+    if (stream.isAtEnd()) {
         ctx.error(stream, DiagCode::E1005, ">", "generic parameter list", stream.peekValue());
-        synchronizeTo(stream, ctx, TokenType::GREATER);
-        if (stream.check(TokenType::GREATER)) {
-            stream.advance(); // Consume '>' to recover
-        }
     } else {
+        // We must be at '>' (loop condition guaranteed !stream.check(GREATER) is false)
         stream.advance(); // Consume '>'
     }
     
-    // Build the ArenaSpan
+    // ─── 7. Build the ArenaSpan ────────────────────────────────────────
     auto builder = ctx.arena.makeBuilder<GenericParamDeclPtr>();
     for (auto* p : params) {
         builder.push_back(p);
@@ -814,34 +871,180 @@ ArenaSpan<GenericParamDeclPtr> parseGenericParamDecls(TokenStream& stream, Parse
 /**
  * @brief Parse a single generic parameter declaration.
  * 
- * Grammar: `IDENTIFIER [ ':' trait_ref { '+' trait_ref } ]`
+ * This function parses one generic parameter within a generic parameter list.
+ * It expects to be called only from inside parseGenericParamDecls()'s
+ * ScopedContext guard (SyntacticContext::GenericParams).
+ * 
+ * ## Program Flow
+ * 
+ * ```
+ * parseGenericParamDecl()
+ *     │
+ *     ├── 1. Capture Location
+ *     │   └── SourceLocation loc = stream.currentLoc()
+ *     │
+ *     ├── 2. Parse Parameter Name
+ *     │   │
+ *     │   └── if (!stream.check(TokenType::IDENTIFIER))
+ *     │       ├── ctx.error(stream, DiagCode::E1002, "generic parameter name", got)
+ *     │       ├── synchronizeToContext(stream, ctx)
+ *     │       │   // Bounded by GenericParams context → stops at ',' or '>'
+ *     │       └── return nullptr
+ *     │   └── else
+ *     │       ├── Token nameTok = stream.advance()
+ *     │       └── InternedString name = ctx.pool.intern(nameTok.value)
+ *     │
+ *     ├── 3. Allocate Parameter Node
+ *     │   └── auto* param = ctx.arena.make<GenericParamDeclAST>(name)
+ *     │       ├── param->loc = loc
+ *     │       └── param->name = name
+ *     │
+ *     ├── 4. Optional Constraints Phase
+ *     │   │
+ *     │   └── if (stream.match(TokenType::COLON))
+ *     │       │   // ':' was present — parse constraint list
+ *     │       │
+ *     │       ├── 4.1 Leading Plus Recovery
+ *     │       │   └── if (stream.consumeTrailing(TokenType::PLUS) > 0)
+ *     │       │       └── ctx.error(stream, DiagCode::E1009, "+", "generic constraints")
+ *     │       │           // <T : +++ Named> — reports once for all leading pluses
+ *     │       │           // <T : + > — reports once, next iteration hits terminator
+ *     │       │
+ *     │       ├── 4.2 Constraint Parsing Loop
+ *     │       │   │
+ *     │       │   └── while (!stream.isAtEnd() && 
+ *     │       │       │      !stream.check(TokenType::GREATER) &&
+ *     │       │       │      !stream.check(TokenType::COMMA))
+ *     │       │       │
+ *     │       │       ├── 4.2.1 Parse Trait Reference
+ *     │       │       │   └── parseTraitRef(stream, ctx) → TraitRefPtr
+ *     │       │       │       │
+ *     │       │       │       ├── if (traitRef != nullptr)
+ *     │       │       │       │   ├── constraints.push_back(traitRef)
+ *     │       │       │       │   └── hasConstraint = true
+ *     │       │       │       │
+ *     │       │       │       └── else
+ *     │       │       │           ├── ctx.error(stream, DiagCode::E1003,
+ *     │       │       │           │           "trait reference after ':' or '+'", got)
+ *     │       │       │           ├── synchronizeTo(stream, ctx, COMMA, GREATER)
+ *     │       │       │           └── break
+ *     │       │       │
+ *     │       │       └── 4.2.2 Trailing Plus Check
+ *     │       │           ├── int plusCount = stream.consumeTrailing(TokenType::PLUS)
+ *     │       │           │
+ *     │       │           ├── if (plusCount == 1)
+ *     │       │           │   ├── Ambiguous: could be separator (A + B) or trailing (A + >)
+ *     │       │           │   ├── if (stream.check(GREATER) || stream.check(COMMA))
+ *     │       │           │   │   └── ctx.error(E1009)  // Single '+' before terminator → trailing
+ *     │       │           │   └── else
+ *     │       │           │       └── No error  // Single '+' before trait name → valid separator
+ *     │       │           │
+ *     │       │           ├── else if (plusCount > 1)
+ *     │       │           │   └── ctx.error(E1009)  // Multiple '+' always an error
+ *     │       │           │
+ *     │       │           └── else (plusCount == 0)
+ *     │       │               └── No plus found, loop continues normally
+ *     │       │
+ *     │       │           // Loop continues; next iteration either parses next trait or hits terminator
+ *     │       │
+ *     │       └── 4.3 Empty Constraint Check
+ *     │           └── if (!hasConstraint)
+ *     │               └── ctx.error(stream, DiagCode::E1003,
+ *     │                               "trait constraint after ':'", stream.peekValue())
+ *     │           // Note: constraints vector may still be non-empty if only
+ *     │           // trailing/leading plus errors were reported
+ *     │
+ *     ├── 5. Build Constraints Span
+ *     │   └── ctx.arena.makeBuilder<TraitRefPtr>()
+ *     │       ├── push_back each constraint
+ *     │       └── build() → param->constraints
+ *     │
+ *     ├── 6. Logging
+ *     │   └── LOG_PARSER_DETAIL("parsed parameter 'name' with N constraints")
+ *     │
+ *     └── 7. Return
+ *         └── return param  (or nullptr if error occurred at step 2)
+ * ```
+ * 
+ * ## Error Recovery Strategy
+ * 
+ * ### Level 1: Missing Parameter Name
+ * - E1002 reported
+ * - synchronizeToContext() skips to ',' or '>' (bounded by GenericParams guard)
+ * - Returns nullptr; parseGenericParamDecls handles the gap
+ * 
+ * ### Level 2: Empty Constraints (T :)
+ * - No trait refs parsed, hasConstraint stays false
+ * - E1003 reported at step 4.3
+ * 
+ * ### Level 3: Leading Plus(es) (T : +++Named)
+ * - All leading pluses consumed by consumeTrailing
+ * - E1009 reported once
+ * - Loop continues; trait ref parsed on next iteration
+ * 
+ * ### Level 4: Trailing Plus(es) (T : Vector2 +++)
+ * - All trailing pluses consumed by consumeTrailing
+ * - E1009 reported once
+ * - Loop continues; if more traits follow, they're parsed; else terminator check exits
+ * 
+ * ### Level 5: Malformed Trait Reference
+ * - parseTraitRef() returns nullptr
+ * - E1003 reported, synchronizeTo(COMMA, GREATER)
+ * 
+ * ## Context Stack Interaction
+ * 
+ * This function relies on parseGenericParamDecls() having pushed
+ * SyntacticContext::GenericParams. synchronizeToContext() uses this to
+ * bound recovery:
+ * - Follow-set: {COMMA, GREATER}
+ * - Does NOT scan past '>' into declaration
+ * 
+ * ## Token Stream State
+ * 
+ * After this function completes:
+ * - Position is AFTER parameter name (no constraints)
+ * - Position is at ',' or '>' (constraints parsed normally)
+ * - Position is at recovery point (if error in name)
+ * - Position is at ',' or '>' (if constraint error and recovered)
  * 
  * ## Examples
  * 
  * ```lucid
- * struct Box<T> { ... }                    // T (unconstrained)
- * const magnitude<T : Vector2> (v T) ...   // T constrained by Vector2
- * struct Pair<A : Named + Serializable>    // A constrained by Named and Serializable
+ * T                                      → name="T", constraints={}
+ * T : Vector2                            → name="T", constraints=[Vector2]
+ * T : Named + Serializable               → name="T", constraints=[Named, Serializable]
+ * : Vector2                              → nullptr + E1002 (missing name)
+ * T :                                    → name="T", constraints={} + E1003 (empty)
+ * T : +                                  → name="T", constraints={} + E1009 (leading +)
+ * T : Vector2 +                          → name="T", constraints=[Vector2] + E1009 (trailing +)
+ * T : Vector2 + + + Named                → name="T", constraints=[Vector2, Named] + E1009 (gap +++)
+ * T : Vector2 + >                        → name="T", constraints=[Vector2] + E1009 (trailing +)
+ * T : Vector2 + Serializable             → name="T", constraints=[Vector2, Serializable] (valid)
+ * T : Vector2 + + + Named              → name="T", constraints=[Vector2, Named] + E1009 (multiple +)
  * ```
- * 
- * ## Error Handling
- * 
- * - Trailing '+' (e.g., `T : Vector2 +`) → reports E1105
- * - Missing trait after '+' → reports E1003
  * 
  * @param stream The token stream for the current file
  * @param ctx The parsing context
  * @return GenericParamDeclPtr The parsed generic parameter, or nullptr on error
  * 
- * @note This function does NOT consume `>` or `,`. That is handled by
+ * @note This function does NOT consume '>' or ','. That is handled by
  *       the caller (parseGenericParamDecls).
+ * 
+ * @note This function is only ever called from inside parseGenericParamDecls()'s
+ *       GenericParams ScopedContext guard. The synchronizeToContext() call
+ *       stays bounded to ',' / '>' rather than scanning for unrelated
+ *       global tokens.
  */
 GenericParamDeclPtr parseGenericParamDecl(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
     
-    // Expect an identifier for the parameter name
+    // ─── 1. Expect an identifier for the parameter name ──────────────────
     if (!stream.check(TokenType::IDENTIFIER)) {
         ctx.error(stream, DiagCode::E1002, "generic parameter name", stream.peekValue());
+        // parseGenericParamDecl is only ever called from inside
+        // parseGenericParamDecls' GenericParams guard, so this stays
+        // bounded to ',' / '>' rather than scanning for an unrelated
+        // global token set.
         synchronizeToContext(stream, ctx);
         return nullptr;
     }
@@ -849,62 +1052,63 @@ GenericParamDeclPtr parseGenericParamDecl(TokenStream& stream, ParserContext& ct
     Token nameTok = stream.advance();
     InternedString name = ctx.pool.intern(nameTok.value);
     
-    // Create the generic parameter node
+    // ─── 2. Create the generic parameter node ────────────────────────────
     auto* param = ctx.arena.make<GenericParamDeclAST>(name);
     param->loc = loc;
     
-    // Check for constraints (optional)
+    // ─── 3. Check for constraints (optional) ───────────────────────────
     if (stream.match(TokenType::COLON)) {
         std::vector<TraitRefPtr> constraints;
         bool hasConstraint = false;
         
-        // Parse trait references separated by '+'
-        while (!stream.isAtEnd()) {
-            // ─── Check for trailing '+' ────────────────────────────────
-            if (stream.check(TokenType::PLUS)) {
-                stream.advance(); // Consume '+'
-                
-                // If we're at EOF, '>', or ',', it's a trailing plus
-                if (stream.isAtEnd()) {
-                    ctx.error(stream, DiagCode::E1009, '+', "generic constraints");
-                    break;
-                }
-                
-                if (stream.checkAny(TokenType::GREATER, TokenType::COMMA)) {
-                    ctx.error(stream, DiagCode::E1009, '+', "generic constraints");
-                    // IMPORTANT: We DO NOT consume '>' or ',' here.
-                    // The caller (parseGenericParamDecls) will handle the closing '>'
-                    // or the next parameter after ','.
-                    break;
-                }
-                
-                // Continue to parse next trait
-                continue;
-            }
+        // ─── 3.1 Leading plus recovery ─────────────────────────────────
+        // Ex: <T : +++ Named> or <T : + >
+        if (stream.consumeTrailing(TokenType::PLUS) > 0) {
+            ctx.error(stream, DiagCode::E1009, "+", "generic constraints");
+        }
+        
+        // ─── 3.2 Parse constraints until terminator ──────────────────────
+        while (!stream.isAtEnd() && 
+               !stream.check(TokenType::GREATER) && 
+               !stream.check(TokenType::COMMA)) {
             
-            // Parse a trait reference
+            // ─── Parse a trait reference ─────────────────────────────────
             TraitRefPtr traitRef = parseTraitRef(stream, ctx);
             if (traitRef) {
                 constraints.push_back(traitRef);
                 hasConstraint = true;
             } else {
-                ctx.error(stream, DiagCode::E1003, "trait reference after ':' or '+'", stream.peekValue());
+                // Error already reported by parseTraitRef
                 synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::GREATER);
                 break;
             }
             
-            // Check if we've reached the end of constraints
-            if (!stream.check(TokenType::PLUS)) {
-                break;
+            // ─── Trailing plus check ───────────────────────────────────
+            // A single '+' is ambiguous: it could separate traits (Named + Serializable)
+            // or be trailing (Vector2 + >). We only know it's trailing if the next
+            // token after '+' is '>' or ',' (terminator). Multiple consecutive '+'
+            // are always an error regardless of what follows.
+            int plusCount = stream.consumeTrailing(TokenType::PLUS);
+            if (plusCount == 1) {
+                // Ambiguous: could be separator or trailing. Check what follows.
+                if (stream.check(TokenType::GREATER) || stream.check(TokenType::COMMA)) {
+                    // Single '+' before terminator → definitely trailing
+                    ctx.error(stream, DiagCode::E1009, "+", "generic constraints");
+                }
+                // else: single '+' before a trait name → valid separator, no error
+            } else if (plusCount > 1) {
+                // Multiple consecutive '+' → always an error
+                ctx.error(stream, DiagCode::E1009, "+", "generic constraints");
             }
         }
         
-        // ─── Check if we have constraints but they're empty ──────────────
+        // ─── 3.3 Check if we have constraints but they're empty ──────
         if (!hasConstraint) {
-            ctx.error(stream, DiagCode::E1003, "trait constraint after ':'", stream.peekValue());
+            ctx.error(stream, DiagCode::E1003, 
+                      "trait constraint after ':'", stream.peekValue());
         }
         
-        // Build the constraints span
+        // ─── 3.4 Build the constraints span ──────────────────────────
         auto builder = ctx.arena.makeBuilder<TraitRefPtr>();
         for (auto* tr : constraints) {
             builder.push_back(tr);
@@ -913,7 +1117,7 @@ GenericParamDeclPtr parseGenericParamDecl(TokenStream& stream, ParserContext& ct
     }
     
     LOG_PARSER_DETAIL("parseGenericParamDecl: parsed parameter '", 
-                       ctx.toString(name), "' with ", param->constraints.size(), " constraints");
+                      ctx.toString(name), "' with ", param->constraints.size(), " constraints");
     
     return param;
 }
@@ -924,103 +1128,208 @@ GenericParamDeclPtr parseGenericParamDecl(TokenStream& stream, ParserContext& ct
 
 /**
  * @brief Parse a list of generic arguments.
- * 
+ *
  * Grammar: `'<' type { ',' type } '>'`
- * 
- * ## Examples
- * 
- * ```lucid
- * Box<int>                          → <int>
- * Buffer<Vec2>                      → <Vec2>
- * Map<string, int>                  → <string, int>
+ *
+ * This function parses a generic argument list that follows a type name
+ * (e.g., `Map<string, int>`) or a function call (e.g., `foo<int>(...)`).
+ * It consumes the full `<...>` construct and produces a span of type nodes.
+ *
+ * ## Program Flow
+ *
  * ```
- * 
- * ## Error Handling
- * 
- * - Empty list `<>` → reports E1003
- * - Trailing comma `<int, >` → reports E1009
- * - Missing `>` at EOF → reports E1005
- * - Invalid argument → parseType handles the error
- * 
+ * parseGenericArgs()
+ *     │
+ *     ├── 1. Opening Delimiter Phase
+ *     │   │
+ *     │   └── if (!stream.check(TokenType::LESS))
+ *     │       ├── ctx.error(stream, DiagCode::E1004, "<", "generic argument list", got)
+ *     │       └── return empty ArenaSpan<TypePtr>
+ *     │   └── else
+ *     │       └── stream.advance()  // Consume '<'
+ *     │
+ *     ├── 2. Empty List Check
+ *     │   └── if (stream.check(TokenType::GREATER))
+ *     │       ├── ctx.error(stream, DiagCode::E1003, "generic argument", ">")
+ *     │       ├── stream.advance()  // Consume '>'
+ *     │       └── return empty ArenaSpan<TypePtr>
+ *     │
+ *     ├── 3. Scoped Context Push
+ *     │   └── ScopedContext guard(ctx, SyntacticContext::GenericArgs, loc)
+ *     │       └── Pushes GenericArgs context once; auto-pops on every return path
+ *     │
+ *     ├── 4. Leading Comma Recovery
+ *     │   └── if (stream.consumeTrailing(TokenType::COMMA) > 0)
+ *     │       └── ctx.error(stream, DiagCode::E1009, ",", "generic arguments")
+ *     │           // <,,,, int> — reports once for all leading commas
+ *     │
+ *     ├── 5. Main Argument Parsing Loop
+ *     │   │
+ *     │   └── while (!stream.isAtEnd() && !stream.check(TokenType::GREATER))
+ *     │       │
+ *     │       ├── 5.1 Parse Single Type
+ *     │       │   └── parseType(stream, ctx) → TypePtr
+ *     │       │       │
+ *     │       │       ├── if (type != nullptr)
+ *     │       │       │   └── args.push_back(type)
+ *     │       │       │
+ *     │       │       └── else
+ *     │       │           ├── Error already reported by parseType
+ *     │       │           ├── synchronizeTo(stream, ctx, COMMA, GREATER)
+ *     │       │           │   // Bounded by GenericArgs context → stops at ',' or '>'
+ *     │       │           └── // The loop condition handles '>' and EOF naturally.
+ *     │       │               // If we're at a comma, the comma handling below will consume it.
+ *     │       │               // If we're at some other token, break to avoid infinite loop.
+ *     │       │
+ *     │       └── 5.2 Comma Separator Handling
+ *     │           └── if (stream.consumeTrailing(TokenType::COMMA) > 1)
+ *     │               └── ctx.error(stream, DiagCode::E1009, ",", "generic arguments")
+ *     │                   // Reports once for multiple consecutive commas between args
+ *     │
+ *     ├── 6. Closing Bracket Phase
+ *     │   │
+ *     │   └── if (stream.isAtEnd())
+ *     │       ├── ctx.error(stream, DiagCode::E1005, ">", "generic argument list", "<EOF>")
+ *     │       └── // Return with whatever args we have (missing '>')
+ *     │   └── else
+ *     │       └── stream.advance()  // Consume '>' (we know it's there from loop condition)
+ *     │
+ *     ├── 7. Build Result
+ *     │   └── ctx.arena.makeBuilder<TypePtr>()
+ *     │       └── push_back each arg → build() → ArenaSpan<TypePtr>
+ *     │
+ *     └── 8. Return
+ *         └── return ArenaSpan<TypePtr> (possibly empty)
+ * ```
+ *
+ * ## Error Recovery Strategy
+ *
+ * ### Level 1: Missing '<'
+ * - E1004 reported, return empty
+ *
+ * ### Level 2: Empty Generic Argument List (`<>`)
+ * - E1003 reported, consume '>', return empty
+ *
+ * ### Level 3: Malformed Type Argument
+ * - parseType() reports its own error and returns nullptr
+ * - synchronizeTo(COMMA, GREATER) skips to next separator or terminator
+ *   (bounded by GenericArgs guard)
+ *
+ * ### Level 4: Missing Closing Bracket
+ * - E1005 reported at EOF
+ * - No recovery needed since we're already at EOF
+ *
+ * ### Level 5: Consecutive Commas
+ * - Leading commas before first argument → E1009 once
+ * - Multiple commas between arguments → E1009 once per gap
+ *
+ * ## Context Stack Interaction
+ *
+ * The ScopedContext guard ensures:
+ * - synchronizeToContext() stops at ',' or '>' (GenericArgs follow-set)
+ * - Does NOT scan past '>' into the enclosing construct
+ * - Auto-pops on every return path (including early returns)
+ *
+ * ## Token Stream State
+ *
+ * After this function completes:
+ * - Position is AFTER '>' (normal case)
+ * - Position is at EOF (if '>' was missing)
+ *
+ * ## Examples
+ *
+ * ```lucid
+ * <int>                                  → [int]
+ * <string, int>                          → [string, int]
+ * <Map<string, int>>                     → [Map<string, int>]
+ * <,,,int>                               → [int] + E1009 (leading commas)
+ * <int,,,string>                         → [int, string] + E1009 (gap)
+ * <int,                                  → [int] + E1005 (missing '>')
+ * <int, >                                → [int] + E1009 (trailing comma)
+ * <int, string, >                        → [int, string] + E1009 (trailing comma)
+ * <>                                     → [] + E1003 (empty list)
+ * ```
+ *
  * @param stream The token stream for the current file
  * @param ctx The parsing context
  * @return ArenaSpan<TypePtr> The parsed generic arguments (empty on error)
+ *
+ * @note This function consumes '>'. The caller must NOT consume '>'.
  */
 ArenaSpan<TypePtr> parseGenericArgs(TokenStream& stream, ParserContext& ctx) {
     LOG_PARSER_DETAIL("parseGenericArgs: parsing generic arguments");
-    
+
     std::vector<TypePtr> args;
-    
-    // Expect '<' to start the list
+
+    // ─── 1. Expect '<' to start the list ─────────────────────────────────
     if (!stream.check(TokenType::LESS)) {
         ctx.error(stream, DiagCode::E1004, "<", "generic argument list", stream.peekValue());
         return ctx.arena.makeBuilder<TypePtr>().build();
     }
     stream.advance(); // Consume '<'
-    
-    // Check for empty generic argument list: <>
+
+    // ─── 2. Check for empty generic argument list: <> ───────────────────
     if (stream.check(TokenType::GREATER)) {
         ctx.error(stream, DiagCode::E1003, "generic argument", ">");
         stream.advance(); // Consume '>'
         return ctx.arena.makeBuilder<TypePtr>().build();
     }
-    
-    // Parse arguments until we hit '>'
-    while (!stream.isAtEnd()) {
-        // ─── Skip consecutive separators ────────────────────────────────
-        if (stream.consumeTrailing(TokenType::COMMA) > 0) {
-            ctx.error(stream, DiagCode::E1009, ",", "generic arguments"); // Unexpected trailing comma
-        }
-        
-        // ─── Check if we've reached a terminator ──────────────────────
-        if (stream.check(TokenType::GREATER)) {
-            break; // End of generic argument list
-        }
-        
-        if (stream.isAtEnd()) {
-            ctx.error(stream, DiagCode::E1005, ">", "generic argument list", "<EOF>");
-            break;
-        }
-        
-        // Parse a type as the generic argument
-        TypePtr arg = parseType(stream, ctx);
-        if (arg) {
-            args.push_back(arg);
+
+    // ─── 3. Push GenericArgs context — auto-pops on every return path ──
+    ScopedContext guard(ctx, SyntacticContext::GenericArgs, stream.currentLoc());
+
+    // ─── 4. Skip initial consecutive commas ──────────────────────────────
+    // Ex: <,,,, int ...>
+    if (stream.consumeTrailing(TokenType::COMMA) > 0) {
+        ctx.error(stream, DiagCode::E1009, ",", "generic arguments");
+    }
+
+    // ─── 5. Parse arguments until we hit '>' ────────────────────────────
+    while (!stream.isAtEnd() && !stream.check(TokenType::GREATER)) {
+        // ─── 5.1 Parse a type as the generic argument ──────────────────
+        TypePtr type = parseType(stream, ctx);
+        if (type) {
+            args.push_back(type);
         } else {
             // Error already reported by parseType, try to recover
+            // currentContext() is GenericArgs (guard is still on the stack),
+            // so synchronizeTo(COMMA, GREATER) stays bounded.
             synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::GREATER);
-            if (stream.check(TokenType::COMMA)) {
-                stream.advance();
-                continue;
-            } else if (stream.check(TokenType::GREATER)) {
-                break;
-            } else {
+            // The loop condition will handle '>' and EOF naturally.
+            // If we're at a comma, the comma handling below will consume it.
+            // If we're at some other token, break to avoid infinite loop.
+            if (!stream.check(TokenType::COMMA) && !stream.check(TokenType::GREATER) && !stream.isAtEnd()) {
                 break;
             }
         }
-    }
-    
-    // ─── Consume closing bracket ────────────────────────────────────────
-    if (!stream.check(TokenType::GREATER)) {
-        ctx.error(stream, DiagCode::E1005, ">", "generic argument list", stream.peekValue());
-        synchronizeTo(stream, ctx, TokenType::GREATER);
-        if (stream.check(TokenType::GREATER)) {
-            stream.advance(); // Consume '>' to recover
+
+        // ─── 5.2 Comma Separator Handling ────────────────────────────────
+        // Consume at least 1 comma and skip consecutive commas
+        if (stream.consumeTrailing(TokenType::COMMA) > 1) {
+            ctx.error(stream, DiagCode::E1009, ",", "generic arguments");
         }
+    }
+
+    // ─── 6. Consume closing bracket ──────────────────────────────────────
+    // The loop condition guarantees we're either at '>' or at EOF.
+    if (stream.isAtEnd()) {
+        ctx.error(stream, DiagCode::E1005, ">", "generic argument list", stream.peekValue());
     } else {
+        // We must be at '>' (loop condition guaranteed !stream.check(GREATER) is false)
         stream.advance(); // Consume '>'
     }
-    
-    // Build the ArenaSpan
+
+    // ─── 7. Build the ArenaSpan ──────────────────────────────────────────
     auto builder = ctx.arena.makeBuilder<TypePtr>();
     for (auto* arg : args) {
         builder.push_back(arg);
     }
-    
+
     LOG_PARSER_DETAIL("parseGenericArgs: parsed ", args.size(), " generic arguments");
-    
+
     return builder.build();
 }
+
 
 // =============================================================================
 // parseParamList - Parse a list of function parameters
@@ -1097,7 +1406,7 @@ std::vector<ParamPtr> parseParamList(TokenStream& stream, ParserContext& ctx) {
         }
         
         if (stream.isAtEnd()) {
-            ctx.error(stream, DiagCode::E1005, ")", "parameter list", "<EOF>");
+            ctx.error(stream, DiagCode::E1005, ")", "parameter list", stream.peekValue());
             break;
         }
         
@@ -1234,7 +1543,7 @@ ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx) {
         }
         
         if (stream.isAtEnd()) {
-            ctx.error(stream, DiagCode::E1005, ")", "argument list", "<EOF>");
+            ctx.error(stream, DiagCode::E1005, ")", "argument list", stream.peekValue());
             break;
         }
         
@@ -1361,7 +1670,7 @@ ArenaSpan<TypeAST*> parseReturnList(TokenStream& stream, ParserContext& ctx) {
             }
             
             if (stream.isAtEnd()) {
-                ctx.error(stream, DiagCode::E1005, ")", "return list", "<EOF>");
+                ctx.error(stream, DiagCode::E1005, ")", "return list", stream.peekValue());
                 break;
             }
             
