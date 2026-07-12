@@ -494,6 +494,7 @@ struct ModuleAST : BaseAST {
 
     InternedString     filePath;
     ArenaSpan<DeclPtr> decls;
+    bool               hasErrors = false;
 
     ModuleAST() : BaseAST(ASTKind::Program) {}
 };

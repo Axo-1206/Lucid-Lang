@@ -232,8 +232,24 @@ void synchronizeToContext(TokenStream& stream, ParserContext& ctx) {
  *
  * The "whole program" is therefore not one object parse() builds and
  * returns. It's the graph formed by the root ModuleAST plus every module
- * transitively reachable from it through ModuleResolver's cache — walked
- * by later compiler stages, not assembled here.
+ * transitively reachable from it through ModuleResolver's cache. The
+ * driver gets the full set, in a dependency-safe order, via
+ * `ctx.resolver->getModuleOrder()` after the root parse() call returns —
+ * see below.
+ *
+ * ## Every attempted file produces a real ModuleAST — never nullptr
+ *
+ * parse() always returns a non-null ModuleAST*, even for a file that
+ * couldn't be meaningfully parsed at all (empty/failed lex, a circular
+ * import). Check `ModuleAST::hasErrors` to tell a clean parse from one
+ * that didn't fully succeed — don't check the return value for null.
+ * This is what lets callers (parseUseDecl in particular) always call
+ * parse() unconditionally, without a nullptr branch to handle.
+ *
+ * The one exception: a circular import returns an uncached dummy (see
+ * step 3 below) rather than nothing, specifically so the in-progress
+ * parse further up the call stack — which owns the real module — is
+ * left alone to finish and cache the actual result.
  *
  * ## Flow
  *
@@ -242,55 +258,72 @@ void synchronizeToContext(TokenStream& stream, ParserContext& ctx) {
  *       → the one true entry point; re-entered recursively for every `use`
  *
  * 2. parse(path, source, ctx):
- *    a. Intern path, ctx.currentFilePath = path
- *    b. ScopedFileContext   — save this file's caller's contextStack and
+ *    a. Intern path
+ *    b. Cache check — resolver->getParsedModule(filePath):
+ *         HIT  → return the cached ModuleAST immediately, done. This is
+ *                what makes "always call parse()" safe for callers: a
+ *                second `use` of an already-attempted file (successful
+ *                or not) never re-lexes/re-parses it.
+ *         MISS → continue below
+ *    c. ctx.currentFilePath = path
+ *    d. ScopedFileContext   — save this file's caller's contextStack and
  *                             error-tracking fields, reset both for this
  *                             file (this file starts at TopLevel with no
  *                             errors yet), restore the caller's on return
  *                             (draining this file's own errors into
  *                             ctx.allDiagnostics first)
- *    c. Push filePath onto resolver's "in progress" stack (ScopedParsingGuard);
- *       if it's already on that stack → circular import, reject
- *    d. Lex source → tokens; construct TokenStream for this file
- *    e. Loop: parseDecl() until EOF                    ─┐
- *         │                                              │ (step 3, expanded)
- *         └── every declaration goes into                │
- *             this file's own decl list                  │
- *    f. Build ModuleAST from that decl list
- *    g. resolver->cacheModule(path, thisModule)   — memoize, so a second
- *                                                    `use` of this file is
- *                                                    a cache hit, not a
- *                                                    re-parse
- *    h. Pop this file off the "in progress" stack (ScopedParsingGuard),
- *       restore the caller's contextStack/errors (ScopedFileContext)
- *    i. return ModuleAST*
+ *    e. Circular-import check — resolver->isParsing(filePath):
+ *         if already on the "in progress" stack → build an uncached
+ *         dummy ModuleAST (hasErrors = true), return it immediately.
+ *         No diagnostic here — parseUseDecl checks isParsing() itself
+ *         before calling parse(), and reports it there, against the
+ *         `use` statement's real location.
+ *    f. ScopedParsingGuard  — push filePath onto the "in progress" stack
+ *    g. Lex source → tokens
+ *         empty, or contains an UNKNOWN token → build a ModuleAST with
+ *         hasErrors = true and no decls, cache it, return it (still a
+ *         real, cached module — not nullptr, not a special case for
+ *         callers to handle)
+ *    h. Construct TokenStream; loop parseDecl() until EOF     ─┐
+ *         │                                                    │ step 3
+ *         └── every declaration goes into this file's own list │
+ *    i. Build ModuleAST from that decl list; hasErrors = ctx.hasErrors
+ *    j. resolver->cacheModule(path, thisModule) — unconditional now,
+ *       including when hasErrors is true; see step 2's cache check for
+ *       why a broken module still needs to be cached, not just skipped
+ *    k. [guards destruct: pop "in progress" stack, restore caller's
+ *       contextStack/errors]
+ *    l. return thisModule
  *
- * 3. Inside the loop (2e), whenever parseDecl() hits a
+ * 3. Inside the loop (2h), whenever parseDecl() hits a
  *    `use path [as alias]`:
  *    a. Resolve `path` → file path
- *    b. resolver->getParsedModule(filePath):
- *         cache HIT  → reuse existing ModuleAST, done, no recursion
- *         cache MISS → GOTO STEP 2 (recursive call:
- *                       parse(filePath, source, ctx))
- *                       → returns the child ModuleAST, already cached
- *                         by that call's own step 2g (not repeated here —
- *                         a second cacheModule() call here would bypass
- *                         parse()'s own !ctx.hasErrors guard)
- *    c. UseDeclAST stores {path, alias} — a REFERENCE to the module,
- *       not its inlined content.
- *    d. Control returns to 3, continues the CURRENT file's loop at 2e
+ *    b. If resolver->isParsing(filePath) → report circular-import error
+ *       here (this location, not parse()'s)
+ *    c. Call parse(filePath, source, ctx) unconditionally — cache-checked
+ *       internally at step 2b, so this never redoes real work
+ *    d. UseDeclAST stores {path, alias} — a REFERENCE to the module,
+ *       not its inlined content or a pointer to it
+ *    e. Control returns to 3, continues the CURRENT file's loop at 2h
  *
  * 4. Root parse() call returns the root ModuleAST.
- *    The full "program" = root ModuleAST + resolver's cache of every
- *    module reachable from it — a dependency graph, not a flat list.
+ *    The full "program" = ctx.resolver->getModuleOrder(), a flat list of
+ *    every attempted module's path in POST-order (completion order): a
+ *    module is appended the moment its own parse() finishes, which is
+ *    after everything it `use`s has already finished and been appended.
+ *    The root/main module — depending, transitively, on everything else
+ *    — is therefore always LAST. This is what makes the list safe for
+ *    single-pass semantic analysis: walking it front-to-back, everything
+ *    to the left of a given module has already been fully processed.
  * ```
  *
  * @param path The file path
  * @param source The source code
  * @param ctx The parsing context (shared across all files)
- * @return ModuleAST* This file's own declarations, or nullptr on error.
- *         Does NOT include imported files' declarations — see them via
- *         their own ModuleAST, reachable through ctx.resolver.
+ * @return ModuleAST* Never nullptr. This file's own declarations only —
+ *         does NOT include imported files' declarations; see them via
+ *         their own ModuleAST, reachable through ctx.resolver. Check
+ *         `->hasErrors` rather than the pointer to detect failure.
  */
 ModuleAST* parse(const std::string& path, 
                   const std::string& source,
@@ -299,6 +332,19 @@ ModuleAST* parse(const std::string& path,
     
     // ─── 1. Intern the file path ────────────────────────────────────────
     InternedString filePath = ctx.pool.intern(path);
+
+    // ─── 2. Cache check — parse() is safe to call unconditionally ───────
+    // Callers (parseUseDecl in particular) always call parse() rather than
+    // checking the cache themselves first; this is where that's actually
+    // honored without redoing real work. A module that already finished —
+    // successfully or not; see ModuleAST::hasErrors — is never re-lexed
+    // or re-parsed just because a second file also `use`s it.
+    if (ctx.resolver) {
+        if (auto* cached = ctx.resolver->getParsedModule(filePath)) {
+            return cached;
+        }
+    }
+
     ctx.currentFilePath = filePath;
 
     // Save the importing file's contextStack and error-tracking fields
@@ -308,44 +354,72 @@ ModuleAST* parse(const std::string& path,
     // comment for why that can't safely be a separate call site anymore.
     ScopedFileContext fileContext(ctx);
     
-    // ─── 2. Check for Cyclic Dependencies ───────────────────────────────
+    // ─── 3. Check for Cyclic Dependencies ───────────────────────────────
     // We put the file that currently parsing into a stack, if the next
-    // file is already in the stack then it's a Cyclic Dependencies
+    // file is already in the stack then it's a Cyclic Dependencies.
+    //
+    // No diagnostic is reported here on purpose: this function has no
+    // meaningful source location for a file that's already mid-parse
+    // further up the call stack. parseUseDecl checks isParsing() itself,
+    // before calling parse(), and reports the error there against the
+    // `use` statement's own location. This branch only needs to return a
+    // real (but deliberately uncached) ModuleAST so the in-progress parse
+    // further up the stack can finish and cache the actual result.
     if (ctx.resolver && ctx.resolver->isParsing(filePath)) {
-        LOG_PARSER("ERROR: Circular import detected: ", path);
-        return nullptr;
+        LOG_PARSER("Circular import detected, returning uncached dummy: ", path);
+        auto* dummy = ctx.arena.make<ModuleAST>();
+        dummy->filePath = filePath;
+        dummy->hasErrors = true;
+        return dummy;
     }
     // Push filePath onto the parsing stack for cycle detection; popped
     // automatically on every return path below, including the lex-failure
-    // and parseInternal-failure early returns further down.
+    // early returns further down.
     ScopedParsingGuard parsingGuard(ctx.resolver, filePath);
     
-    // ─── 3. Lex the Source ──────────────────────────────────────────────
+    // ─── 4. Lex the Source ──────────────────────────────────────────────
     auto tokens = lexer::tokenize(source, path);
+
     if (tokens.empty()) {
         LOG_PARSER_MINIMAL("Lexer produced no tokens for: ", path);
-        return nullptr;
+        // No dedicated code for this exact case; E0001 is the generic
+        // fallback. Zero %s placeholders in its template — no args.
+        ctx.errorAt(SourceLocation(1, 1), DiagCode::E0001);
+        auto* mod = ctx.arena.make<ModuleAST>();
+        mod->filePath = filePath;
+        mod->hasErrors = true;
+        if (ctx.resolver) ctx.resolver->cacheModule(filePath, mod);
+        return mod;
     }
-    
-    // Check for lexer errors
+
     for (const auto& tok : tokens) {
         if (tok.type == TokenType::UNKNOWN) {
             LOG_PARSER_MINIMAL("Lexer error in: ", path);
-            return nullptr;
+            // E0105 "Unknown character." — lexical-category fit; zero %s
+            // placeholders in its template, so no args (tok.value is only
+            // recoverable from the location, not the message text, given
+            // the current message set).
+            ctx.errorAt(SourceLocation(tok.line, tok.column), DiagCode::E0105);
+            auto* mod = ctx.arena.make<ModuleAST>();
+            mod->filePath = filePath;
+            mod->hasErrors = true;
+            if (ctx.resolver) ctx.resolver->cacheModule(filePath, mod);
+            return mod;
         }
     }
     
-    // ─── 4. Create TokenStream ──────────────────────────────────────────
+    // ─── 5. Create TokenStream ──────────────────────────────────────────
     TokenStream stream(std::move(tokens), filePath);
     
-    // ─── 5. Parse Internal Declarations ─────────────────────────────────
+    // ─── 6. Parse Internal Declarations ─────────────────────────────────
+    // parseInternal() is void — it always retains whatever declarations it
+    // managed to collect before stopping, fatal threshold or not, rather
+    // than signaling failure and discarding partial progress. This file
+    // still produces a real ModuleAST either way; see its own doc comment.
     std::vector<DeclPtr> allDecls;
+    parseInternal(stream, ctx, allDecls);
     
-    if (!parseInternal(stream, ctx, allDecls)) {
-        return nullptr;
-    }
-    
-    // ─── 6. Build this file's ModuleAST ──────────────────────────────────
+    // ─── 7. Build this file's ModuleAST ──────────────────────────────────
     auto* thisModule = ctx.arena.make<ModuleAST>();
     thisModule->filePath = filePath;
     
@@ -354,11 +428,17 @@ ModuleAST* parse(const std::string& path,
         builder.push_back(d);
     }
     thisModule->decls = builder.build();
+    thisModule->hasErrors = ctx.hasErrors;
     
-    // ─── 7. Cache the result ─────────────────────────────────────────────
+    // ─── 8. Cache the result ─────────────────────────────────────────────
+    // Cached unconditionally now — including when thisModule->hasErrors is
+    // true. This is what lets a second `use` of a broken file hit the
+    // cache-check in step 2 instead of re-lexing/re-parsing it from
+    // scratch; error status travels with the module via hasErrors instead
+    // of being encoded as "not present in the cache."
     // (parsingGuard pops this file off the parsing stack automatically
     // when parse() returns, below — no manual popParsing() needed here.)
-    if (ctx.resolver && !ctx.hasErrors) {
+    if (ctx.resolver) {
         ctx.resolver->cacheModule(filePath, thisModule);
         LOG_PARSER_DETAIL("Cached module: ", path);
     }
@@ -442,16 +522,14 @@ ModuleAST* parse(const std::string& path,
  *     │
  *     ├── 3. Error Handling
  *     │   │
- *     │   ├── if (consecutiveFailures >= MAX)
- *     │   │   ├── ctx.error(stream, DiagCode::E0002, MAX)
- *     │   │   └── return false
- *     │   │
- *     │   └── if (stream.isAtEnd() && ctx.hasErrors)
- *     │       └── Log that errors occurred (safety net)
+ *     │   └── if (consecutiveFailures >= MAX)
+ *     │       ├── ctx.error(stream, DiagCode::E0002, MAX)
+ *     │       └── return  (outDecls keeps whatever was collected so far —
+ *     │                     no signal is sent up; parse() still builds a
+ *     │                     real ModuleAST and flags it via ctx.hasErrors)
  *     │
  *     └── 4. Return
- *         ├── LOG_PARSER_MINIMAL("Parsed N declarations")
- *         └── return true
+ *         └── LOG_PARSER_MINIMAL("Parsed N declarations")
  * ```
  * 
  * ## Error Recovery Strategy
@@ -502,19 +580,17 @@ ModuleAST* parse(const std::string& path,
  * @param outDecls Output vector to collect successfully parsed declarations.
  *                Each declaration will have its doc comment attached.
  *                The vector is cleared by the caller before calling this function.
- * 
- * @return true if parsing succeeded (including with recoverable errors).
- *         false if a fatal error occurred and parsing was aborted.
+ *                Always contains whatever was successfully collected, even
+ *                if the fatal-failure threshold was hit — see below.
  * 
  * ## Usage Example
  * 
  * ```cpp
  * std::vector<DeclPtr> decls;
- * if (!parseInternal(stream, ctx, decls)) {
- *     // Fatal error - cannot continue
- *     return nullptr;
- * }
- * // All declarations are in decls
+ * parseInternal(stream, ctx, decls);
+ * // decls contains everything collected, whether or not ctx.hasErrors —
+ * // parse() always builds a ModuleAST from it and flags errors via
+ * // ModuleAST::hasErrors, rather than this function signaling failure.
  * ```
  * 
  * @note This function does NOT handle imports directly. Imports are handled
@@ -522,11 +598,14 @@ ModuleAST* parse(const std::string& path,
  *       The imported module's declarations are collected recursively
  *       when parseUseDecl() calls parse() on the imported file.
  * 
- * @warning If this function returns false, the token stream may be in an
- *          inconsistent state. The caller should not attempt to continue
- *          parsing the same file.
+ * @note This function has no return value on purpose: every file that is
+ *       attempted must produce a real ModuleAST (see parse()'s design),
+ *       including one that hit the consecutive-failure threshold partway
+ *       through. Check ctx.hasErrors (or the resulting ModuleAST::hasErrors)
+ *       to tell a clean parse from one that stopped early, not a boolean
+ *       return from this function.
  */
-bool parseInternal(TokenStream& stream, ParserContext& ctx, std::vector<DeclPtr>& outDecls) {
+void parseInternal(TokenStream& stream, ParserContext& ctx, std::vector<DeclPtr>& outDecls) {
     LOG_PARSER_MINIMAL("Parsing internal declarations of: ", 
                        debug::internedToString(ctx.pool, ctx.currentFilePath));
     
@@ -628,11 +707,14 @@ bool parseInternal(TokenStream& stream, ParserContext& ctx, std::vector<DeclPtr>
     if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
         ctx.error(stream, DiagCode::E0002, MAX_CONSECUTIVE_FAILURES);
         LOG_PARSER("ERROR: Too many consecutive failures (", MAX_CONSECUTIVE_FAILURES, "), aborting");
-        return false;
+        // No `return false` — outDecls keeps whatever was collected before
+        // this threshold was hit. The caller (parse()) still builds a real
+        // ModuleAST from it and flags hasErrors via ctx.hasErrors, rather
+        // than discarding partial progress and signaling total failure.
+        return;
     }
     
     LOG_PARSER_MINIMAL("Parsed ", declCount, " internal declarations");
-    return true;
 }
 
 // =============================================================================

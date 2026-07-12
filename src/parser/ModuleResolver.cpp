@@ -131,7 +131,10 @@ ModuleAST* ModuleResolver::getParsedModule(InternedString modulePath) const {
 }
 
 void ModuleResolver::cacheModule(InternedString modulePath, ModuleAST* ast) {
-    parsedModules_[modulePath] = ast;
+    if (parsedModules_.find(modulePath) == parsedModules_.end()) {
+        parsedModules_[modulePath] = ast;
+        moduleOrder_.push_back(modulePath);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

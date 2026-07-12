@@ -159,34 +159,131 @@ std::optional<DocComment> harvestDocComment(TokenStream& stream, ParserContext& 
 /**
  * @brief Parse a list of attributes.
  * 
- * Grammar: `@[ attr_item { ',' attr_item } ]`
+ * This function parses an attribute list annotation that precedes a declaration.
+ * It consumes the full `@[...]` construct and produces zero or more AttributeAST nodes.
  * 
- * Attributes precede the declaration they annotate and use a bracket-list
- * syntax so muLESSiple items share one delimiter pair.
+ * ## Program Flow
  * 
- * ## BuiLESS-in Attributes (from Grammar.md)
+ * ```
+ * parseAttributes()
+ *     │
+ *     ├── 1. Quick Check Phase
+ *     │   └── if (!stream.check(TokenType::AT_SIGN))
+ *     │       └── return empty ArenaSpan<AttributePtr> immediately
+ *     │
+ *     ├── 2. Opening Delimiter Phase
+ *     │   ├── stream.advance()  // Consume '@'
+ *     │   │
+ *     │   └── if (!stream.check(TokenType::LBRACKET))
+ *     │       ├── ctx.error(stream, DiagCode::E1004, "[", "attribute list", got)
+ *     │       ├── synchronizeToContext(stream, ctx)  // recover using enclosing context
+ *     │       └── return empty ArenaSpan<AttributePtr>
+ *     │   └── else
+ *     │       └── stream.advance()  // Consume '['
+ *     │
+ *     ├── 3. Scoped Context Push
+ *     │   └── ScopedContext attrGuard(ctx, SyntacticContext::Attribute, loc)
+ *     │       └── Pushes Attribute context once; auto-pops on every return path
+ *     │
+ *     ├── 4. Leading Comma Recovery
+ *     │   └── if (stream.consumeTrailing(TokenType::COMMA) > 0)
+ *     │       └── ctx.error(stream, DiagCode::E1009, ",", "attribute list")
+ *     │           // @[,,,, FirstAttribute ...] — reports once for all leading commas
+ *     │
+ *     ├── 5. Main Attribute Parsing Loop
+ *     │   │
+ *     │   └── while (!stream.isAtEnd() || stream.check(TokenType::RBRACKET))
+ *     │       │
+ *     │       ├── 5.1 Parse Single Attribute
+ *     │       │   └── parseAttribute(stream, ctx) → AttributePtr
+ *     │       │       │
+ *     │       │       ├── if (attr != nullptr)
+ *     │       │       │   └── attrs.push_back(attr)
+ *     │       │       │
+ *     │       │       └── else
+ *     │       │           ├── Error already reported by parseAttribute
+ *     │       │           ├── synchronizeToContext(stream, ctx)
+ *     │       │           │   // Stops at ',' or ']' — bounded by Attribute context
+ *     │       │           ├── if (stream.check(TokenType::RBRACKET))
+ *     │       │           │   └── break
+ *     │       │           └── else
+ *     │       │               └── break
+ *     │       │
+ *     │       └── 5.2 Comma Separator Handling
+ *     │           └── if (stream.consumeTrailing(TokenType::COMMA) > 1)
+ *     │               └── ctx.error(stream, DiagCode::E1009, ",", "attribute list")
+ *     │                   // Reports once for multiple consecutive commas between attrs
+ *     │
+ *     ├── 6. Closing Bracket Phase
+ *     │   │
+ *     │   └── if (!stream.check(TokenType::RBRACKET))
+ *     │       ├── if (stream.isAtEnd())
+ *     │       │   └── ctx.error(stream, DiagCode::E1005, "]", "attribute list", "<EOF>")
+ *     │       ├── else
+ *     │       │   └── ctx.error(stream, DiagCode::E1005, "]", "attribute list", got)
+ *     │       ├── synchronizeTo(stream, ctx, TokenType::RBRACKET)
+ *     │       └── if (stream.check(TokenType::RBRACKET))
+ *     │           └── stream.advance()  // consume ']' to recover
+ *     │   └── else
+ *     │       └── stream.advance()  // consume ']'
+ *     │
+ *     ├── 7. Build Result
+ *     │   └── ctx.arena.makeBuilder<AttributePtr>()
+ *     │       └── push_back each attr → build() → ArenaSpan<AttributePtr>
+ *     │
+ *     └── 8. Return
+ *         └── return ArenaSpan<AttributePtr> (possibly empty)
+ * ```
  * 
- * | Attribute              | Valid on                  | Meaning                                        |
- * | ---------------------- | ------------------------- | ---------------------------------------------- |
- * | `@[export]`            | any top-level declaration | Visible outside this module                    |
- * | `@[foreign("abi")]`    | function declaration      | Implemented in a foreign language              |
- * | `@[link("name")]`      | module or declaration     | Link against this native library               |
- * | `@[deprecated("msg")]` | any declaration           | Language warning at use sites                  |
- * | `@[inline]`            | function declaration      | Hint to inline at call sites                   |
- * | `@[noinline]`          | function declaration      | Prevent inlining                               |
- *
- * @param stream The token stream for the current file
- * @param ctx The parsing context
- * @return ArenaSpan<AttributePtr> The parsed attributes (empty if none)
+ * ## Error Recovery Strategy
+ * 
+ * ### Level 1: Missing '@[' or '@' not followed by '['
+ * - Missing '@' → silent return (caller assumes no attributes)
+ * - '@' without '[' → E1004, synchronizeToContext(), return empty
+ * 
+ * ### Level 2: Malformed Attribute Within List
+ * - parseAttribute() reports its own error and returns nullptr
+ * - synchronizeToContext() skips to next ',' or ']' (bounded by Attribute guard)
+ * - Trailing commas after error → E1009 reported
+ * 
+ * ### Level 3: Missing Closing Bracket
+ * - E1005 reported with actual token or "<EOF>"
+ * - synchronizeTo() seeks ']' and consumes it if found
+ * 
+ * ### Level 4: Consecutive Commas
+ * - Leading commas before first attribute → E1009 once
+ * - Multiple commas between attributes → E1009 once per gap
+ * - Commas after failed parse → E1009 if >1, silent if exactly 1
+ * 
+ * ## Context Stack Interaction
+ * 
+ * The ScopedContext guard ensures:
+ * - synchronizeToContext() stops at ',' or ']' (Attribute follow-set)
+ * - Does NOT scan past ']' into the enclosing declaration
+ * - Auto-pops on every return path (including early returns)
+ * 
+ * ## Token Stream State
+ * 
+ * After this function completes:
+ * - Position is AFTER ']' (normal case)
+ * - Position is at recovery point (if errors occurred)
+ * - Position is at EOF (if ']' never found)
  * 
  * ## Examples
  * 
  * ```lucid
- * @[export] const main () -> int = { return 0 }
- * @[foreign("C")] const malloc (size uint64) -> ptr<byte>? = {}
- * @[deprecated("use maxConnections instead")] const max_conn int = 100
- * @[inline] const add (a int)(b int) -> int = { return a + b }
+ * @[export]                              → [export]
+ * @[foreign("C")]                         → [foreign("C")]
+ * @[deprecated("msg"), inline]          → [deprecated("msg"), inline]
+ * @[,,export]                            → [export] + E1009 (leading commas)
+ * @[export,,,inline]                     → [export, inline] + E1009 (gap)
+ * @[export,                             → [export] + E1005 (missing ']')
+ * @export                                → [] + E1004 (missing '[')
  * ```
+ * 
+ * @param stream The token stream for the current file
+ * @param ctx The parsing context
+ * @return ArenaSpan<AttributePtr> The parsed attributes (empty if none or error)
  */
 ArenaSpan<AttributePtr> parseAttributes(TokenStream& stream, ParserContext& ctx) {
     LOG_PARSER("parseAttributes: checking for attributes");
@@ -234,10 +331,7 @@ ArenaSpan<AttributePtr> parseAttributes(TokenStream& stream, ParserContext& ctx)
             // stops at ',' or ']' — it will not run past the closing ']'
             // into whatever declaration follows.
             synchronizeToContext(stream, ctx);
-            if (stream.consumeTrailing(TokenType::COMMA) > 1) {
-                ctx.error(stream, DiagCode::E1009, ",", "attribute list"); // Unexpected trailing comma
-                continue;
-            } else if (stream.check(TokenType::RBRACKET)) {
+            if (stream.check(TokenType::RBRACKET)) {
                 break;
             } else {
                 break;
@@ -257,7 +351,6 @@ ArenaSpan<AttributePtr> parseAttributes(TokenStream& stream, ParserContext& ctx)
         } else {
             ctx.error(stream, DiagCode::E1005, "]", "attribute list", stream.peekValue());
         }
-        
         synchronizeTo(stream, ctx, TokenType::RBRACKET);
         if (stream.check(TokenType::RBRACKET)) {
             stream.advance(); // Consume ']' to recover
@@ -281,20 +374,156 @@ ArenaSpan<AttributePtr> parseAttributes(TokenStream& stream, ParserContext& ctx)
 /**
  * @brief Parse a single attribute.
  * 
- * Grammar: `IDENTIFIER [ '(' attr_args ')' ]`
+ * This function parses one attribute within an attribute list. It expects to be
+ * called only from inside parseAttributes()'s ScopedContext guard (SyntacticContext::Attribute).
+ * 
+ * ## Program Flow
+ * 
+ * ```
+ * parseAttribute()
+ *     │
+ *     ├── 1. Capture Location
+ *     │   └── SourceLocation loc = stream.currentLoc()
+ *     │
+ *     ├── 2. Parse Attribute Name
+ *     │   │
+ *     │   └── if (!stream.check(TokenType::IDENTIFIER))
+ *     │       ├── ctx.error(stream, DiagCode::E1002, "attribute name", got)
+ *     │       ├── synchronizeToContext(stream, ctx)
+ *     │       │   // Bounded by Attribute context → stops at ',' or ']'
+ *     │       └── return nullptr
+ *     │   └── else
+ *     │       ├── Token nameTok = stream.advance()
+ *     │       └── InternedString name = ctx.pool.intern(nameTok.value)
+ *     │
+ *     ├── 3. Allocate Attribute Node
+ *     │   └── auto* attr = ctx.arena.make<AttributeAST>()
+ *     │       ├── attr->loc = loc
+ *     │       └── attr->name = name
+ *     │
+ *     ├── 4. Optional Arguments Phase
+ *     │   │
+ *     │   └── if (stream.match(TokenType::LPAREN))
+ *     │       │   // '(' was present — parse argument list
+ *     │       │
+ *     │       ├── 4.1 Leading Comma Recovery
+ *     │       │   └── if (stream.consumeTrailing(TokenType::COMMA) > 0)
+ *     │       │       └── ctx.error(stream, DiagCode::E1009, ",", "attribute arguments")
+ *     │       │           // @[foo(,,,, "arg" ...)] — reports once for all leading commas
+ *     │       │
+ *     │       ├── 4.2 Argument Parsing Loop
+ *     │       │   │
+ *     │       │   └── while (!stream.isAtEnd() || stream.check(TokenType::RPAREN))
+ *     │       │       │
+ *     │       │       ├── 4.2.1 Parse Argument Literal
+ *     │       │       │   └── parseAttributeArgLiteral(stream, ctx) → AttributeArgPtr
+ *     │       │       │       │
+ *     │       │       │       ├── if (arg != nullptr)
+ *     │       │       │       │   └── args.push_back(arg)
+ *     │       │       │       │
+ *     │       │       │       └── else
+ *     │       │       │           ├── Error already reported by parseAttributeArgLiteral
+ *     │       │       │           ├── synchronizeTo(stream, ctx, COMMA, RPAREN)
+ *     │       │       │           ├── if (stream.check(TokenType::COMMA))
+ *     │       │       │           │   ├── stream.advance()
+ *     │       │       │           │   └── continue
+ *     │       │       │           ├── else if (stream.check(TokenType::RPAREN))
+ *     │       │       │           │   └── break
+ *     │       │       │           └── else
+ *     │       │       │               └── break
+ *     │       │       │
+ *     │       │       └── 4.2.2 Comma Separator Handling
+ *     │       │           └── if (stream.consumeTrailing(TokenType::COMMA) > 1)
+ *     │       │               └── ctx.error(stream, DiagCode::E1009, ",", "attribute arguments")
+ *     │       │                   // Reports once for multiple consecutive commas between args
+ *     │       │
+ *     │       └── 4.3 Closing Parenthesis
+ *     │           │
+ *     │           └── if (!stream.check(TokenType::RPAREN))
+ *     │               ├── if (stream.isAtEnd())
+ *     │               │   └── ctx.error(stream, DiagCode::E1005, ")", "attribute arguments", "<EOF>")
+ *     │               ├── else
+ *     │               │   └── ctx.error(stream, DiagCode::E1005, ")", "attribute arguments", got)
+ *     │               ├── synchronizeTo(stream, ctx, TokenType::RPAREN)
+ *     │               └── if (stream.check(TokenType::RPAREN))
+ *     │                   └── stream.advance()  // consume ')' to recover
+ *     │           └── else
+ *     │               └── stream.advance()  // consume ')'
+ *     │
+ *     ├── 5. Build Arguments Span
+ *     │   └── ctx.arena.makeBuilder<AttributeArgPtr>()
+ *     │       ├── push_back each arg
+ *     │       └── build() → attr->args
+ *     │
+ *     ├── 6. Logging
+ *     │   └── LOG_PARSER("parsed attribute 'name' with N args")
+ *     │
+ *     └── 7. Return
+ *         └── return attr  (or nullptr if error occurred at step 2)
+ * ```
+ * 
+ * ## Error Recovery Strategy
+ * 
+ * ### Level 1: Missing Attribute Name
+ * - E1002 reported
+ * - synchronizeToContext() skips to ',' or ']' (bounded by Attribute guard)
+ * - Returns nullptr; parseAttributes handles the gap
+ * 
+ * ### Level 2: Malformed Argument
+ * - parseAttributeArgLiteral() reports E1104 for invalid literal type
+ * - synchronizeTo(COMMA, RPAREN) seeks next separator or end
+ * - Single comma → skip and continue
+ * - ')' → break out of loop
+ * 
+ * ### Level 3: Missing Closing Parenthesis
+ * - E1005 reported with actual token or "<EOF>"
+ * - synchronizeTo(RPAREN) seeks ')' and consumes if found
+ * 
+ * ### Level 4: Consecutive Commas in Arguments
+ * - Leading commas before first arg → E1009 once
+ * - Multiple commas between args → E1009 once per gap
+ * - Handles `@[foo(,,,)]` and `@[foo(a,,,b)]`
+ * 
+ * ## Context Stack Interaction
+ * 
+ * This function relies on parseAttributes() having pushed SyntacticContext::Attribute.
+ * synchronizeToContext() uses this to bound recovery:
+ * - Follow-set: {COMMA, RBRACKET}
+ * - Does NOT scan past ']' into declaration
+ * 
+ * ## Token Stream State
+ * 
+ * After this function completes:
+ * - Position is AFTER attribute name (no args, normal case)
+ * - Position is AFTER ')' (with args, normal case)
+ * - Position is at recovery point (if error in name)
+ * - Position is at ',' or ']' (if argument error and recovered)
  * 
  * ## Examples
  * 
  * ```lucid
- * @[export]                         → name = "export", args = {}
- * @[foreign("C")]                   → name = "foreign", args = ["C"]
- * @[deprecated("use maxConnections")] → name = "deprecated", args = ["use maxConnections"]
- * @[link("opengl", "m")]            → name = "link", args = ["opengl", "m"]
+ * export                               → name="export", args={}
+ * foreign("C")                         → name="foreign", args=["C"]
+ * deprecated("use new instead")        → name="deprecated", args=["use new instead"]
+ * link("opengl", "m")                  → name="link", args=["opengl", "m"]
+ * 123                                  → nullptr + E1002 (not identifier)
+ * foo(,)                               → name="foo", args={} + E1009
+ * foo("a",,,"b")                       → name="foo", args=["a","b"] + E1009
+ * foo("a"                              → name="foo", args=["a"] + E1005
  * ```
  * 
  * @param stream The token stream for the current file
  * @param ctx The parsing context
  * @return AttributePtr The parsed attribute node, or nullptr on error
+ * 
+ * @note This function is only ever called from inside parseAttributes()'s
+ *       Attribute ScopedContext guard. The synchronizeToContext() call
+ *       stays bounded to ',' / ']' rather than scanning for unrelated
+ *       global tokens.
+ * 
+ * @note The closing ')' check is guarded by stream.match(LPAREN). If no
+ *       '(' follows the attribute name, no arguments are parsed and no
+ *       ')' is expected — the function returns immediately after step 3.
  */
 AttributePtr parseAttribute(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
@@ -320,22 +549,14 @@ AttributePtr parseAttribute(TokenStream& stream, ParserContext& ctx) {
     // Check for arguments
     std::vector<AttributeArgPtr> args;
     if (stream.match(TokenType::LPAREN)) {
+        // ─── Skip initial consecutive comma ',' before first arg
+        // Ex: @[foo(,,,, "arg" ...)]
+        if (stream.consumeTrailing(TokenType::COMMA) > 0) {
+            ctx.error(stream, DiagCode::E1009, ",", "attribute arguments");
+        }
+
         // Parse arguments until we hit ')'
-        while (!stream.isAtEnd()) {
-            // ─── Skip consecutive separators ────────────────────────────────
-            if (stream.consumeTrailing(TokenType::COMMA) > 0) {
-                ctx.error(stream, DiagCode::E1009, ",", "attribute arguments"); // Unexpected trailing comma
-            }
-            
-            // ─── Check if we've reached a terminator ')' ─────────────────────
-            if (stream.check(TokenType::RPAREN)) {
-                break; // End of arguments
-            }
-            
-            if (stream.isAtEnd()) {
-                ctx.error(stream, DiagCode::E1005, ")", "attribute arguments", "<EOF>");
-                break;
-            }
+        while (!stream.isAtEnd() || stream.check(TokenType::RPAREN)) {
             
             // Parse an argument
             AttributeArgPtr arg = parseAttributeArgLiteral(stream, ctx);
@@ -353,18 +574,27 @@ AttributePtr parseAttribute(TokenStream& stream, ParserContext& ctx) {
                     break;
                 }
             }
+
+            // Consume at least 1 comma and skip consecutive commas
+            if (stream.consumeTrailing(TokenType::COMMA) > 1) {
+                ctx.error(stream, DiagCode::E1009, ",", "attribute arguments");
+            }
         }
-    }
-    
-    // ─── Consume closing parenthesis ────────────────────────────────────
-    if (!stream.check(TokenType::RPAREN)) {
-        ctx.error(stream, DiagCode::E1005, ")", "attribute arguments", stream.peekValue());
-        synchronizeTo(stream, ctx, TokenType::RPAREN);
-        if (stream.check(TokenType::RPAREN)) {
-            stream.advance(); // Consume ')' to recover
+        
+        // ─── Consume closing parenthesis ────────────────────────────────────
+        if (!stream.check(TokenType::RPAREN)) {
+            if (stream.isAtEnd()) {
+                ctx.error(stream, DiagCode::E1005, ")", "attribute arguments", "<EOF>");
+            } else {
+                ctx.error(stream, DiagCode::E1005, ")", "attribute arguments", stream.peekValue());
+            }
+            synchronizeTo(stream, ctx, TokenType::RPAREN);
+            if (stream.check(TokenType::RPAREN)) {
+                stream.advance(); // Consume ')' to recover
+            }
+        } else {
+            stream.advance(); // Consume ')'
         }
-    } else {
-        stream.advance(); // Consume ')'
     }
     
     // Build the args span
@@ -446,7 +676,7 @@ AttributeArgPtr parseAttributeArgLiteral(TokenStream& stream, ParserContext& ctx
             
         default:
             ctx.error(stream, DiagCode::E1104, stream.peekValue());
-            synchronize(stream, ctx);
+            synchronizeToContext(stream, ctx);
             return nullptr;
     }
     
@@ -612,7 +842,7 @@ GenericParamDeclPtr parseGenericParamDecl(TokenStream& stream, ParserContext& ct
     // Expect an identifier for the parameter name
     if (!stream.check(TokenType::IDENTIFIER)) {
         ctx.error(stream, DiagCode::E1002, "generic parameter name", stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -1176,7 +1406,7 @@ ArenaSpan<TypeAST*> parseReturnList(TokenStream& stream, ParserContext& ctx) {
         } else {
             // Use E1003 with specific context: "Expected return type after '->', but found '%s'"
             ctx.error(stream, DiagCode::E1003, "(return type) after '->'", stream.peekValue());
-            synchronize(stream, ctx);
+            synchronizeToContext(stream, ctx);
         }
     }
     
@@ -1345,7 +1575,7 @@ TraitRefPtr parseTraitRef(TokenStream& stream, ParserContext& ctx) {
     // Expect an identifier for the trait name
     if (!stream.check(TokenType::IDENTIFIER)) {
         ctx.error(stream, DiagCode::E1002, "trait name", stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -1455,8 +1685,8 @@ ExprPtr parseLvalue(TokenStream& stream, ParserContext& ctx) {
             LOG_PARSER_DETAIL("parseLvalue: parsed identifier '", ctx.toString(varName), "'");
         }
     } else {
-        ctx.error(loc, "Expected lvalue (identifier, field access, or index)");
-        synchronize(stream, ctx);
+        // ctx.error(loc, "Expected lvalue (identifier, field access, or index)"); TODO: Fix when diagnostic code for this is ready
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -1490,7 +1720,7 @@ ExprPtr parseLvalue(TokenStream& stream, ParserContext& ctx) {
             
             ExprPtr index = parseExpr(stream, ctx);
             if (!index) {
-                ctx.error(stream.currentLoc(), "Expected index expression");
+                // ctx.error(stream.currentLoc(), "Expected index expression"); TODO: Fix when diagnostic code for this is ready
                 synchronizeTo(stream, ctx, TokenType::RBRACKET);
                 stream.advance(); // Consume ']' to recover
                 break;
@@ -1598,7 +1828,7 @@ ExprPtr parseFuncRef(TokenStream& stream, ParserContext& ctx) {
     // ─── 2. Parse as a regular function reference ───────────────────────
     if (!stream.check(TokenType::IDENTIFIER)) {
         ctx.error(stream, DiagCode::E1002, "function name", stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     

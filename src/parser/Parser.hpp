@@ -67,7 +67,7 @@ void synchronizeToContext(TokenStream& stream, ParserContext& ctx);
  * @param outDecls Output vector to collect declarations
  * @return true if parsing succeeded, false on fatal error
  */
-bool parseInternal(TokenStream& stream, ParserContext& ctx, std::vector<DeclPtr>& outDecls);
+void parseInternal(TokenStream& stream, ParserContext& ctx, std::vector<DeclPtr>& outDecls);
 
 // @NOTE '// X' means not fully implemented or still need to be finalize(bug free)
 

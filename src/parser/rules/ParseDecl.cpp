@@ -107,49 +107,52 @@ UseDeclAST* parseUseDecl(TokenStream& stream, ParserContext& ctx) {
     useDecl->alias = alias;
     
     // ─── 5. Import the module ────────────────────────────────────────────
-    if (ctx.resolver) {
-        // Resolve the use path to a file path
-        InternedString filePath = ctx.resolver->resolveUsePath(usePath);
-        if (!filePath.isValid()) {
-            ctx.errorAt(loc, DiagCode::E0003);
-            synchronizeToContext(stream, ctx);
-            return useDecl;
-        }
-        
-        // Check if already parsed
-        ModuleAST* importedModule = ctx.resolver->getParsedModule(filePath);
-        
-        if (!importedModule) {
-            // Read the source file
-            std::string source = ctx.resolver->readModuleSource(filePath);
-            if (source.empty()) {
-                // Empty module - just return the declaration
-                return useDecl;
-            }
-            
-            // Parse the module (recursive call!)
-            std::string pathStr = std::string(ctx.pool.lookup(filePath));
-            importedModule = parse(pathStr, source, ctx);
-            
-            if (!importedModule) {
-                ctx.error(stream, DiagCode::E0004, usePath);
-                synchronizeToContext(stream, ctx);
-                return useDecl;
-            }
-            
-            // No cacheModule() call here — parse() already caches on success,
-            // guarded by !ctx.hasErrors. Caching unconditionally here would
-            // cache a module that had parse errors, which parse()'s own
-            // guard exists specifically to prevent.
-        }
-        
-        // Imported declarations are automatically collected by parse()
-        // when it parses the imported module.
-        
-    } else {
+    if (!ctx.resolver) {
         ctx.error(stream, DiagCode::E0004, usePath);
-        synchronizeToContext(stream, ctx);
         return useDecl;
+    }
+
+    // Resolve the use path to a file path
+    InternedString filePath = ctx.resolver->resolveUsePath(usePath);
+    if (!filePath.isValid()) {
+        ctx.errorAt(loc, DiagCode::E0003);
+        // No file to parse — nothing to hand to parse(), so no ModuleAST
+        // is created for this path at all. useDecl is still returned;
+        // the semantic pass will find nothing at ctx.resolver for this
+        // path and can report accordingly.
+        return useDecl;
+    }
+
+    std::string pathStr = std::string(ctx.pool.lookup(filePath));
+
+    if (ctx.resolver->isParsing(filePath)) {
+        // Circular import. Reported here rather than inside parse() —
+        // this is the only place with a real source location (this `use`
+        // statement) to point the diagnostic at.
+        // E0005 "Cyclic module dependency." has no %s placeholder — no args.
+        ctx.errorAt(loc, DiagCode::E0005);
+        // Still call parse() — it detects the same condition and returns
+        // an uncached dummy without touching `source` at all (its own
+        // isParsing check runs before source is ever used), so passing an
+        // empty string here is safe and avoids an unnecessary disk read.
+        parse(pathStr, "", ctx);
+        return useDecl;
+    }
+
+    // Perf only, not correctness: parse() itself cache-checks internally
+    // and would no-op safely either way, but there's no reason to pay for
+    // a disk read just to hand parse() a result it will immediately
+    // discard because the cache already has it.
+    if (!ctx.resolver->getParsedModule(filePath)) {
+        std::string source = ctx.resolver->readModuleSource(filePath);
+        // Always call parse(), even for an empty (but existing) file —
+        // an empty module is still a real, valid ModuleAST that needs to
+        // exist and be cached/ordered, not a case to special-case away.
+        parse(pathStr, source, ctx);
+        // Return value intentionally discarded: parseUseDecl only needs
+        // {path, alias} in UseDeclAST (see step 4 above). The semantic
+        // pass resolves the actual ModuleAST* later via ctx.resolver,
+        // by path — parse() has already cached it as a side effect.
     }
     
     LOG_PARSER_MINIMAL("Parsed use declaration: '", fullPath, "' as '", aliasStr, "'");

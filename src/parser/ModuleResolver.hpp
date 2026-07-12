@@ -122,10 +122,40 @@ public:
     /**
      * @brief Store a parsed module AST.
      * 
+     * On the first cache of a given path, also appends it to the module
+     * order (see getModuleOrder()). A later cacheModule() call for the
+     * same, already-cached path is a no-op — this only happens if a caller
+     * calls parse() directly instead of going through the cache-check at
+     * the top of parse(), and is intentionally ignored rather than
+     * overwriting or re-ordering an already-completed module.
+     * 
      * @param modulePath The resolved module path (e.g., "std/io.lucid")
      * @param ast The parsed AST (owned by the session's arena)
      */
     void cacheModule(InternedString modulePath, ModuleAST* ast);
+    
+    /**
+     * @brief Get every module path in completion (post-)order.
+     *
+     * A module's path is appended here the first time it is cached — i.e.
+     * the moment its own parse() call finishes, which is after every
+     * module it `use`s has already finished and been appended. This means
+     * the order is a valid dependency order: for any module M, every
+     * module M depends on appears before M in this list. In particular,
+     * the root/main file — which depends (transitively) on everything
+     * else — is always last.
+     *
+     * This is what the driver should use to get the full set of parsed
+     * modules in an order safe for single-pass semantic analysis:
+     *
+     * ```cpp
+     * for (InternedString path : resolver.getModuleOrder()) {
+     *     ModuleAST* mod = resolver.getParsedModule(path);
+     *     analyze(mod);  // every module `mod` imports has already run
+     * }
+     * ```
+     */
+    const std::vector<InternedString>& getModuleOrder() const { return moduleOrder_; }
     
     // ─── Circular Import Detection ───────────────────────────────────────
     
@@ -175,6 +205,11 @@ private:
     
     // Map from resolved file path to parsed AST
     std::unordered_map<InternedString, ModuleAST*> parsedModules_;
+    
+    // Paths in the order they were first cached (post-order / dependency
+    // order — see getModuleOrder()). A parallel index to parsedModules_,
+    // kept in sync exclusively by cacheModule().
+    std::vector<InternedString> moduleOrder_;
     
     // Stack of modules currently being parsed (for circular detection)
     std::vector<InternedString> parsingStack_;
