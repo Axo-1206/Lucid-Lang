@@ -94,10 +94,56 @@ namespace parser {
  * // Control returns to parseAttributes still positioned at ']', which is
  * // the only function that consumes it, exactly once.
  * ```
+ *
+ * ## Limitation: '<' and '>' are NOT tracked as brackets
+ *
+ * Only `(` `)`, `[` `]`, `{` `}` participate in expectedClosers — `<` and
+ * `>` are deliberately excluded and are treated as ordinary tokens,
+ * identical in status to an IDENTIFIER. This is not an oversight: unlike
+ * the other three pairs, `<`/`>` are lexically ambiguous in Lucid (as in
+ * C++) — `a<b>(c)` could be a generic call or `(a<b)>c` as chained
+ * comparisons — so there is no reliable way for a token-level skip loop
+ * to know whether a given `<` starts a real delimiter pair at all. See
+ * the parser's own design discussion on generic-call-vs-comparison
+ * disambiguation for why this can't be resolved without deeper lookahead
+ * or backtracking, which this recovery function intentionally does not
+ * attempt.
+ *
+ * The consequence: `<...>` never opens or closes anything as far as this
+ * function is concerned, but that's harmless whenever it appears INSIDE
+ * an already-open `(`/`[`/`{` region, because expectedClosers being
+ * non-empty already suppresses `stopAt` on every token in between,
+ * `<`/`>` included — see the worked example below.
+ *
+ * ```lucid
+ * b [Point<T, U> get_default()], c int      -- inside a param list
+ * ```
+ * ```cpp
+ * // Recovering with FuncParams' follow-set {COMMA, RPAREN, LBRACE, ...}:
+ * //   '['              → opener, push RBRACKET, skip
+ * //   'Point'          → expectedClosers non-empty → stopAt not even
+ * //                       checked → plain skip
+ * //   '<'              → not tracked as a bracket at all → plain skip
+ * //   'T'              → plain skip
+ * //   ','              → expectedClosers non-empty → NOT a stop, even
+ * //                       though COMMA is in the follow-set — plain skip
+ * //   'U', '>'         → plain skip ('>' untracked, same as '<')
+ * //   'get_default'    → plain skip
+ * //   '('              → opener, push RPAREN (stack: [RBRACKET, RPAREN])
+ * //   ')'              → matches top (RPAREN) → pop, consume, continue
+ * //   ']'              → matches top (RBRACKET) → pop, consume, continue
+ * //   ','              → expectedClosers now EMPTY → stopAt(COMMA) →
+ * //                       true → stop, unconsumed
+ * // The whole '[Point<T, U> get_default()]' is skipped as one atomic
+ * // unit — nested call, comma inside '<T, U>', and all — and recovery
+ * // resurfaces exactly at the comma separating parameters.
+ * ```
  */
 template<typename Predicate>
 void synchronizeUntil(TokenStream& stream, ParserContext& ctx, Predicate stopAt) {
     LOG_PARSER("Synchronizing");
+    // NOTE: '<'/'>' intentionally absent — see this function's doc
+    // comment ("Limitation: '<' and '>' are NOT tracked as brackets").
     std::vector<TokenType> expectedClosers;   // matches bracket TYPE, not just count
 
     auto isOpener = [](TokenType t) {
@@ -130,12 +176,18 @@ void synchronizeUntil(TokenStream& stream, ParserContext& ctx, Predicate stopAt)
                 return;
             }
             // Doesn't match anything we opened, and isn't our stop token —
-            // belongs to an enclosing construct. Stop, don't consume.
+            // belongs to an enclosing construct (a "foreign closer" — see
+            // this function's first doc example). Stop, don't consume.
             LOG_PARSER_DETAIL("Synchronization stopped before enclosing closer: ",
                                debug::tokenTypeToString(current));
             return;
         }
 
+        // stopAt is deliberately gated on expectedClosers being empty:
+        // this is what makes an entire opened region — including a
+        // COMMA that would otherwise match the caller's own follow-set —
+        // get skipped atomically instead of stopping partway through it.
+        // See "Limitation: '<' and '>'" above for the worked trace.
         if (expectedClosers.empty() && stopAt(current)) {
             LOG_PARSER_DETAIL("Synchronized at token: ", debug::tokenTypeToString(current));
             return;
@@ -170,26 +222,125 @@ void synchronizeTo(TokenStream& stream, ParserContext& ctx, StopTokens... stopTo
  * one global set of "looks like a new statement" tokens regardless of
  * what's currently open, this looks at ctx.currentContext() (pushed by
  * ScopedContext) and picks the right follow-set for that construct.
+ *
+ * ## Why each follow-set has more than just "the matching closer"
+ *
+ * synchronizeUntil() is bracket-TYPE-aware (see its own doc comment): a
+ * closer only stops the scan if it matches what was actually opened
+ * while skipping. That solves the case where recovery runs INTO an
+ * unrelated foreign closer. It does NOT solve the opposite case: recovery
+ * running PAST a missing closer, by treating what comes after it as
+ * legitimate nested content to skip over instead of a signal that the
+ * closer was never written at all. Each follow-set below therefore
+ * includes not just its own structural delimiter, but also whatever
+ * token naturally follows this construct when it's well-formed — seeing
+ * that token means "the closer that should have preceded this is
+ * missing," not "descend further."
+ *
+ * Two concrete cases this fixes:
+ *
+ * ```lucid
+ * func add(a int, b int {      -- missing ')' before '{'
+ *     return a + b;
+ * }
+ * ```
+ * A follow-set of just {COMMA, RPAREN} would treat '{' as an opener to
+ * skip into, consume the whole function body looking for a ')' that
+ * isn't coming, and only resurface after ANOTHER function's '{' or EOF.
+ * Adding LBRACE to FuncParams' follow-set stops recovery right at the
+ * missing ')' instead.
+ *
+ * ```lucid
+ * let result = compute<int, string(5, "x");   -- missing '>' before '('
+ * ```
+ * Same failure shape: {COMMA, GREATER} treats the call's '(' as nested
+ * content, consumes the whole call, then hunts for a '>' that's never
+ * coming. Adding LPAREN to GenericArgs' follow-set (specifically the
+ * call-site case, not the declaration-site GenericParams) stops at the
+ * missing '>' instead.
+ *
+ * A third case can't be fixed by widening the bracket set at all, because
+ * there's no bracket for bracket-matching to reason about:
+ *
+ * ```lucid
+ * @[inline, deprecated("old")     -- missing ']'
+ * let x int = 42;
+ * ```
+ * Nothing in `let x int = 42;` is a delimiter, so a purely
+ * bracket-shaped follow-set has nothing to stop at and would run
+ * indefinitely. This is why every context below also includes SEMICOLON
+ * and is_declaration_keyword — the same semantic escape valve
+ * StructBody/EnumBody/TraitBody/FuncBody/TopLevel already relied on —
+ * so recovery always has a way out even when the surrounding tokens
+ * happen to contain no brackets at all.
  */
 void synchronizeToContext(TokenStream& stream, ParserContext& ctx) {
     switch (ctx.currentContext()) {
         case SyntacticContext::Attribute:
-            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RBRACKET);
+            // @[...]. Structural: ',' (next attribute) or ']' (list ends).
+            // Semantic escape: a stray declaration after a malformed
+            // attribute, with no bracket in between to catch it (see the
+            // @[inline, deprecated("old") \n let x ... example above).
+            synchronizeUntil(stream, ctx, [](TokenType t) {
+                return t == TokenType::COMMA
+                    || t == TokenType::RBRACKET
+                    || t == TokenType::SEMICOLON
+                    || is_declaration_keyword(t);
+            });
             return;
 
         case SyntacticContext::GenericParams:
+            // Declaration site: struct Point<T> { ... } / func f<T>(...).
+            // Structural: ',' or '>'. Natural continuation: '{' (struct/
+            // trait/enum body) or '(' (function params) immediately after
+            // a missing '>' — either signals the '>' was dropped, not
+            // that we're still inside the generic parameter list.
+            synchronizeUntil(stream, ctx, [](TokenType t) {
+                return t == TokenType::COMMA
+                    || t == TokenType::GREATER
+                    || t == TokenType::LBRACE
+                    || t == TokenType::LPAREN
+                    || t == TokenType::SEMICOLON
+                    || is_declaration_keyword(t);
+            });
+            return;
+
         case SyntacticContext::GenericArgs:
-            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::GREATER);
+            // Use site: compute<int, string>(...). Structural: ',' or
+            // '>'. Natural continuation: '(' — a call's argument list
+            // starting right where '>' should have closed the generic
+            // args is exactly the missing-'>' case worked through above.
+            synchronizeUntil(stream, ctx, [](TokenType t) {
+                return t == TokenType::COMMA
+                    || t == TokenType::GREATER
+                    || t == TokenType::LPAREN
+                    || t == TokenType::SEMICOLON
+                    || is_declaration_keyword(t);
+            });
             return;
 
         case SyntacticContext::FuncParams:
-            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN);
+            // (a int, b int). Structural: ',' or ')'. Natural
+            // continuation: '{' — a function body starting right where
+            // ')' should have closed the parameter list is the missing-
+            // ')' case worked through above.
+            synchronizeUntil(stream, ctx, [](TokenType t) {
+                return t == TokenType::COMMA
+                    || t == TokenType::RPAREN
+                    || t == TokenType::LBRACE
+                    || t == TokenType::SEMICOLON
+                    || is_declaration_keyword(t);
+            });
             return;
 
         case SyntacticContext::FuncBody:
         case SyntacticContext::StructBody:
         case SyntacticContext::EnumBody:
         case SyntacticContext::TraitBody:
+            // { ... } bodies. Structural: '}'. Semantic escape: ';' or
+            // the start of a new member/statement — this was the
+            // original case this design was built around (see
+            // synchronizeUntil's own doc comment).
             synchronizeUntil(stream, ctx, [](TokenType t) {
                 return t == TokenType::SEMICOLON
                     || t == TokenType::RBRACE
@@ -199,6 +350,8 @@ void synchronizeToContext(TokenStream& stream, ParserContext& ctx) {
 
         case SyntacticContext::TopLevel:
         default:
+            // Nothing bracketed is open at all — only the semantic
+            // escape valve applies.
             synchronizeUntil(stream, ctx, [](TokenType t) {
                 return t == TokenType::SEMICOLON || is_declaration_keyword(t);
             });

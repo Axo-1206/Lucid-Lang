@@ -205,35 +205,113 @@ struct ParserContext {
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
-     * @brief Stack of currently-open syntactic constructs.
+     * @brief Stack of currently-open syntactic constructs, innermost last.
      *
-     * Pushed by ScopedContext (RAII) when a parse function enters a
-     * construct like an attribute list or generic argument list, and
-     * popped automatically when that function returns — on every exit
-     * path, including early returns and exceptions.
+     * ## What this represents
      *
-     * Prefer ScopedContext over calling pushContext/popContext by hand.
+     * As recursive-descent parsing descends into nested constructs —
+     * an attribute list, a generic argument list, a function body, a
+     * struct/enum/trait body — each of those parse functions pushes a
+     * ContextFrame recording *what* it's parsing and *where* it started
+     * (see SyntacticContext / ContextFrame above). The stack is therefore
+     * a live trace of the parser's current nesting, e.g. while parsing
+     * `@[foo(1, <T>)]`, the stack would read (outermost to innermost):
+     * `[Attribute]` while inside `foo(...)`'s own args, then briefly
+     * `[Attribute, GenericArgs]` while inside `<T>`.
+     *
+     * It is a stack (not a flat flag or a single "current context" field)
+     * specifically because these constructs nest: knowing only "we are
+     * currently inside a GenericArgs" isn't enough on its own — recovery
+     * may also need to know what encloses it (an Attribute, a FuncParams
+     * list, TopLevel) if the innermost recovery attempt fails and control
+     * needs to fall back to the next level out.
+     *
+     * ## Why this exists: bounded, context-aware error recovery
+     *
+     * This is what fixed the original bug this stack was introduced for:
+     * a blind, untargeted `synchronize()` skipping past a malformed
+     * attribute list's closing `]` because it had no idea it was inside
+     * one. `synchronizeToContext()` consults `currentContext()` to pick
+     * a follow-set bounded to whatever's actually open — `,`/`]` inside
+     * an Attribute, `,`/`)` inside FuncParams, and so on — instead of one
+     * fixed token set applied everywhere regardless of nesting.
+     *
+     * ## How it's kept correct: RAII, not manual push/pop
+     *
+     * Pushed and popped by ScopedContext, constructed once at the top of
+     * whichever parse function *owns* a construct (e.g. inside
+     * parseAttributes itself, not at each of its call sites). Its
+     * destructor pops on every exit path of that function — normal
+     * return, any of its early returns, or an exception unwinding through
+     * it — so the stack can never desync from the actual call stack by a
+     * forgotten pop. pushContext()/popContext() below exist for
+     * ScopedContext to call; prefer ScopedContext over calling them by
+     * hand for the same reason — see ScopedContext's own doc comment.
+     *
+     * ## Per-file, not whole-session
+     *
+     * ParserContext is shared across every file parse() recursively
+     * visits, so this stack is saved and reset to empty at the start of
+     * each file and restored on return by ScopedFileContext — a nested
+     * `use` starts fresh at TopLevel rather than inheriting whatever the
+     * importing file happened to have open (today this restore is
+     * defensive: Lucid only allows `use` at file top level, so the stack
+     * is always already empty at that point — but relying on that
+     * invariant forever, instead of the entry point actually preserving
+     * state, is exactly the kind of assumption that quietly breaks if the
+     * grammar changes later).
      */
     std::vector<ContextFrame> contextStack;
 
-    /// Push a new syntactic context frame. Prefer ScopedContext instead of calling this directly.
+    /**
+     * @brief Push a new syntactic context frame.
+     *
+     * Prefer constructing a ScopedContext instead of calling this
+     * directly — see contextStack's doc comment for why: a bare call
+     * here needs a manually-paired popContext() on every exit path of
+     * the caller, which is exactly the kind of easy-to-forget bookkeeping
+     * RAII exists to make unnecessary.
+     */
     void pushContext(SyntacticContext kind, const SourceLocation& loc) {
         contextStack.push_back({kind, loc});
     }
 
-    /// Pop the innermost syntactic context frame. Prefer ScopedContext instead of calling this directly.
+    /**
+     * @brief Pop the innermost syntactic context frame.
+     *
+     * Prefer letting a ScopedContext's destructor call this over calling
+     * it directly — same reasoning as pushContext().
+     */
     void popContext() {
         if (!contextStack.empty()) {
             contextStack.pop_back();
         }
     }
 
-    /// The innermost currently-open syntactic context (TopLevel if none).
+    /**
+     * @brief The innermost currently-open syntactic context.
+     *
+     * Returns SyntacticContext::TopLevel when the stack is empty — an
+     * empty stack *is* TopLevel by convention, the same way spawnDepth
+     * == 0 means "not in a spawn." No explicit TopLevel frame is ever
+     * pushed; there's nothing to push for "nothing is open."
+     *
+     * This is what synchronizeToContext() reads to pick a follow-set —
+     * see its own doc comment for how each SyntacticContext maps to a
+     * bounded set of recovery tokens.
+     */
     SyntacticContext currentContext() const {
         return contextStack.empty() ? SyntacticContext::TopLevel : contextStack.back().kind;
     }
 
-    /// True if `kind` is open anywhere on the current stack (not just innermost).
+    /**
+     * @brief True if `kind` is open anywhere on the stack, not just innermost.
+     *
+     * Useful for checks that care about "am I nested inside a FuncBody at
+     * all" (e.g. for detecting a nested/anonymous function) rather than
+     * "is a FuncBody the *specific* thing directly enclosing me right
+     * now" — the latter is what currentContext() answers instead.
+     */
     bool isInsideContext(SyntacticContext kind) const {
         for (const auto& frame : contextStack) {
             if (frame.kind == kind) return true;
@@ -243,6 +321,51 @@ struct ParserContext {
 
     /// Current nesting depth, i.e. how many constructs are currently open.
     size_t contextDepth() const { return contextStack.size(); }
+
+    /**
+     * @brief Visual trace of contextStack over an actual nested parse.
+     *
+     * Two things worth seeing concretely, since they're easy to get
+     * wrong by imagining the stack rather than tracing it:
+     *
+     * 1. The vector itself never contains TopLevel — an empty vector IS
+     *    TopLevel, so there's nothing to push for it.
+     * 2. Constructs that appear one-after-another in source (e.g. an
+     *    attribute, then a generic param list, then a body) are usually
+     *    SIBLINGS — each pops before the next pushes — not simultaneous
+     *    nesting. Real simultaneous nesting requires one construct to
+     *    start while an earlier one is still open, e.g. a nested/
+     *    anonymous function, or an attribute on a local declaration.
+     *
+     * ```lucid
+     * func outer() {
+     *     @[inline]
+     *     let helper = func(x int) int {
+     *         return x * 2;
+     *     };
+     * }
+     * ```
+     *
+     * ```
+     * parsing outer()'s params '()'      push FuncParams   [FuncParams]
+     * done with params                   pop                []
+     * parsing outer()'s body '{'         push FuncBody      [FuncBody]
+     * parsing '@[inline]'                push Attribute      [FuncBody, Attribute]
+     * done with the attribute            pop                [FuncBody]
+     * parsing helper's params '(x int)'  push FuncParams     [FuncBody, FuncParams]
+     * done with those params             pop                [FuncBody]
+     * parsing helper's body '{'          push FuncBody       [FuncBody, FuncBody]  ← genuine nesting
+     * done with helper's body            pop                [FuncBody]
+     * done with outer()'s body           pop                []   ← back to TopLevel
+     * ```
+     *
+     * The `[FuncBody, FuncBody]` line is the one genuinely-nested moment
+     * in this example — it's also exactly the case isInsideContext()
+     * exists for: currentContext() only reports the innermost FuncBody,
+     * but isInsideContext(FuncBody) is what would tell you "yes, we're
+     * inside a function body at all," regardless of how many are
+     * currently stacked.
+     */
 
     // ─────────────────────────────────────────────────────────────────────────
     // Doc Comment Harvesting
@@ -614,5 +737,64 @@ private:
     bool savedHasErrors_;
     int savedConsecutiveErrors_;
 };
+
+/**
+ * @brief ScopedContext vs. ScopedFileContext — how they differ.
+ *
+ * Both are RAII save/reset/restore guards over ParserContext state, both
+ * non-copyable/non-movable for the same reason (identity tied to one
+ * specific activation), and both exist to eliminate the same class of
+ * bug: state that must be manually balanced across multiple exit paths,
+ * where one forgotten `pop`/restore silently corrupts everything parsed
+ * afterward. Beyond that, they operate at different granularities and
+ * solve different problems:
+ *
+ * **ScopedContext:**
+ * 1. Guards `contextStack` only.
+ * 2. Operation: *pushes* one frame, pops it on exit.
+ * 3. Constructed by whichever parse function owns a construct
+ *    (`parseAttributes`, a struct/enum/trait/func body parser).
+ * 4. Frequency per file: many — one per attribute list, generic arg
+ *    list, function body, nested body, etc.
+ * 5. On exit: the *previous* frame becomes innermost again (stack
+ *    shrinks by one).
+ * 6. Answers: "What syntactic construct is the parser inside *right
+ *    now*, within this one file?"
+ * 7. Consumed by `synchronizeToContext()`, via `ctx.currentContext()`.
+ *
+ * **ScopedFileContext:**
+ * 1. Guards `contextStack` **and** `errors` / `hasErrors` /
+ *    `consecutiveErrors`.
+ * 2. Operation: *saves the whole field*, resets it to empty/clean,
+ *    *restores* it on exit.
+ * 3. Constructed by `parse()` only — exactly once per file, including
+ *    recursive calls for `use`.
+ * 4. Frequency per file: exactly one — the whole file is one
+ *    activation.
+ * 5. On exit: the *importing* file's entire state comes back (stack/
+ *    errors as if the nested file was never touched).
+ * 6. Answers: "Whose file's state is currently live in `ctx`, given
+ *    `ctx` is shared across every file in the recursive parse?"
+ * 7. Nothing reads its effect directly — it's what keeps
+ *    ScopedContext's own bookkeeping, and diagnostics, from leaking
+ *    between files.
+ *
+ * The relationship between them: ScopedContext frames are always
+ * *relative to whichever file is currently being parsed*. ScopedFileContext
+ * is what makes "currently being parsed" a well-defined, isolated notion
+ * in the first place — without it, a `ScopedContext` pushed while parsing
+ * an imported file could end up sitting on the same stack as frames from
+ * the file that imported it, and a syntax error discovered before a
+ * `use` statement would be silently discarded the moment that `use`
+ * triggers a nested `parse()` call (see ScopedFileContext's own doc
+ * comment for why the error-state save/restore is load-bearing, not just
+ * defensive, unlike the contextStack half of the same guard).
+ *
+ * A useful mental model: ScopedContext nests *within* a single
+ * ScopedFileContext activation, potentially many levels deep and many
+ * times over the course of one file. ScopedFileContext itself nests
+ * across *recursive parse() calls*, at most as deep as the `use` import
+ * chain — one activation per file, full stop.
+ */
 
 } // namespace parser
