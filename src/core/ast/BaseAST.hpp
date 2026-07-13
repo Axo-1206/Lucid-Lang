@@ -16,7 +16,9 @@
 
 #pragma once
 
+#include "core/diagnostics/Diagnostic.hpp"
 #include "debug/DebugMacros.hpp"
+#include "../SourceLocation.hpp"
 #include "../memory//ASTArena.hpp"
 #include "../memory/InternedString.hpp"
 #include "../memory//ArenaSpan.hpp"
@@ -252,36 +254,6 @@ struct DocComment {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SourceLocation — packed into 32 bits (20 bits line, 12 bits column).
-// File path is stored once in ModuleAST, not per node.
-// ─────────────────────────────────────────────────────────────────────────────
-
-struct SourceLocation {
-    uint32_t value = 0;  // line in high 20 bits, column in low 12 bits
-
-    SourceLocation() = default;
-    SourceLocation(uint32_t line, uint32_t column) {
-        value = (line << 12) | (column & 0xFFF);
-    }
-
-    uint32_t line()   const { return value >> 12; }
-    uint32_t column() const { return value & 0xFFF; }
-    bool isKnown()    const { return value > 0; }
-};
-
-// ─── Stream operator for SourceLocation ────────────────────────────────────
-// Allows SourceLocation to be used with std::ostringstream and operator<<
-// in variadic error reporting.
-inline std::ostream& operator<<(std::ostream& os, const SourceLocation& loc) {
-    if (loc.isKnown()) {
-        os << loc.line() << ":" << loc.column();
-    } else {
-        os << "<unknown location>";
-    }
-    return os;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // BaseAST — root of the entire AST hierarchy.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -492,9 +464,10 @@ using StmtPtr    = StmtAST*;
 struct ModuleAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::Program;
 
-    InternedString     filePath;
-    ArenaSpan<DeclPtr> decls;
-    bool               hasErrors = false;
+    InternedString       filePath;
+    ArenaSpan<DeclPtr>   decls;
+    std::vector<Diagnostic> errors;
+    bool hasErrors = false;
 
     ModuleAST() : BaseAST(ASTKind::Program) {}
 };
