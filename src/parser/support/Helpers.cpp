@@ -203,10 +203,12 @@ std::optional<DocComment> harvestDocComment(TokenStream& stream, ParserContext& 
  *     │       │       └── else
  *     │       │           ├── Error already reported by parseAttribute
  *     │       │           ├── synchronizeToContext(stream, ctx)
- *     │       │           │   // Stops at ',' or ']' — bounded by Attribute context
- *     │       │           └── // The loop condition handles ']' and EOF naturally.
- *     │       │               // If we're at a comma, the comma handling below will consume it.
- *     │       │               // If we're at some other token, break to avoid infinite loop.
+ *     │       │           │   // Bounded by Attribute context → stops at ',' or ']'
+ *     │       │           ├── if (synchronizeToContext returns SyncOutcome::Abandoned)
+ *     │       │           │   └── break  // Landed on escape valve or EOF
+ *     │       │           └── // SyncOutcome::Continuable: we're at ',' or ']'
+ *     │       │               // The loop condition handles ']'; the comma
+ *     │       │               // handling below consumes ','.
  *     │       │
  *     │       └── 5.2 Comma Separator Handling
  *     │           └── if (stream.consumeTrailing(TokenType::COMMA) > 1)
@@ -237,7 +239,14 @@ std::optional<DocComment> harvestDocComment(TokenStream& stream, ParserContext& 
  * 
  * ### Level 2: Malformed Attribute Within List
  * - parseAttribute() reports its own error and returns nullptr
- * - synchronizeToContext() skips to next ',' or ']' (bounded by Attribute guard)
+ * - synchronizeToContext() attempts to recover using the Attribute follow-set
+ *   ({COMMA, RBRACKET} with semantic escape valves SEMICOLON and declaration
+ *   keywords)
+ * - If sync returns SyncOutcome::Continuable, we're at ',' or ']':
+ *   - ']' → loop condition exits naturally
+ *   - ',' → comma handling below consumes it and loop continues
+ * - If sync returns SyncOutcome::Abandoned, we hit a semantic escape valve
+ *   (SEMICOLON or declaration keyword) or EOF - break the loop
  * 
  * ### Level 3: Missing Closing Bracket
  * - E1005 reported at EOF
@@ -246,6 +255,23 @@ std::optional<DocComment> harvestDocComment(TokenStream& stream, ParserContext& 
  * ### Level 4: Consecutive Commas
  * - Leading commas before first attribute → E1009 once
  * - Multiple commas between attributes → E1009 once per gap
+ * 
+ * ## SyncOutcome Interaction
+ * 
+ * The parser uses SyncOutcome to distinguish between two cases after recovery:
+ * 
+ * - **SyncOutcome::Continuable**: Recovery landed on a structural delimiter
+ *   that's part of the current construct's grammar (',' or ']' for Attribute
+ *   context). The caller can safely continue parsing more items.
+ * 
+ * - **SyncOutcome::Abandoned**: Recovery landed on a semantic escape valve
+ *   (SEMICOLON or a declaration-starting keyword) or EOF. This means the
+ *   current construct cannot be meaningfully continued - the caller should
+ *   break out of its parsing loop.
+ * 
+ * This distinction is what allows parseAttributes' main loop to avoid the
+ * old pattern of manually re-checking COMMA/RBRACKET after synchronizeToContext,
+ * which duplicated the follow-set logic and created a maintenance burden.
  * 
  * ## Context Stack Interaction
  * 
@@ -319,15 +345,25 @@ ArenaSpan<AttributePtr> parseAttributes(TokenStream& stream, ParserContext& ctx)
         } else {
             // Error already reported, try to recover. currentContext() is
             // Attribute here (attrGuard is still on the stack), so this
-            // stops at ',' or ']' — it will not run past the closing ']'
-            // into whatever declaration follows.
-            synchronizeToContext(stream, ctx);
-            // The loop condition will handle ']' and EOF naturally.
-            // If we're at a comma, the comma handling below will consume it.
-            // If we're at some other token, break to avoid infinite loop.
-            if (!stream.check(TokenType::COMMA) && !stream.check(TokenType::RBRACKET) && !stream.isAtEnd()) {
+            // stays bounded to ',' or ']' — it will not run past the
+            // closing ']' into whatever declaration follows.
+            //
+            // We ask synchronizeToContext what it actually landed on
+            // rather than re-checking COMMA/RBRACKET ourselves — that
+            // would duplicate the exact follow-set synchronizeToContext
+            // already picked for Attribute, and the two would need to be
+            // kept in sync by hand every time that follow-set changes.
+            if (synchronizeToContext(stream, ctx) == SyncOutcome::Abandoned) {
+                // Landed on the semantic escape valve (';' or a
+                // declaration keyword) or hit EOF — this attribute list
+                // cannot be continued at all. The loop condition below
+                // will exit naturally (isAtEnd(), or not RBRACKET so it
+                // keeps trying and immediately hits this same branch
+                // again — break avoids that spin).
                 break;
             }
+            // Continuable: we're at ',' or ']'. The loop condition
+            // handles ']'; the comma handling right below consumes ','.
         }
 
         // Consume at least 1 consecutive comma and Skip consecutive commna
@@ -709,11 +745,13 @@ AttributeArgPtr parseAttributeArgLiteral(TokenStream& stream, ParserContext& ctx
  *     │       │       │
  *     │       │       └── else
  *     │       │           ├── Error already reported by parseGenericParamDecl
- *     │       │           ├── synchronizeTo(stream, ctx, COMMA, GREATER)
+ *     │       │           ├── synchronizeToContext(stream, ctx)
  *     │       │           │   // Bounded by GenericParams context → stops at ',' or '>'
- *     │       │           └── // The loop condition handles '>' and EOF naturally.
- *     │       │               // If we're at a comma, the comma handling below will consume it.
- *     │       │               // If we're at some other token, break to avoid infinite loop.
+ *     │       │           ├── if (synchronizeToContext returns SyncOutcome::Abandoned)
+ *     │       │           │   └── break  // Landed on escape valve or EOF
+ *     │       │           └── // SyncOutcome::Continuable: we're at ',' or '>'
+ *     │       │               // The loop condition handles '>'; the comma
+ *     │       │               // handling below consumes ','.
  *     │       │
  *     │       └── 5.2 Comma Separator Handling
  *     │           └── if (stream.consumeTrailing(TokenType::COMMA) > 1)
@@ -746,8 +784,14 @@ AttributeArgPtr parseAttributeArgLiteral(TokenStream& stream, ParserContext& ctx
  * 
  * ### Level 3: Malformed Parameter Within List
  * - parseGenericParamDecl() reports its own error and returns nullptr
- * - synchronizeTo(COMMA, GREATER) skips to next separator or terminator
- *   (bounded by GenericParams guard)
+ * - synchronizeTo(COMMA, GREATER) attempts to recover using the GenericParams
+ *   follow-set ({COMMA, GREATER} with semantic escape valves LBRACE, LPAREN,
+ *   SEMICOLON, and declaration keywords)
+ * - If sync returns SyncOutcome::Continuable, we're at ',' or '>':
+ *   - '>' → loop condition exits naturally
+ *   - ',' → comma handling below consumes it and loop continues
+ * - If sync returns SyncOutcome::Abandoned, we hit a semantic escape valve
+ *   (LBRACE, LPAREN, SEMICOLON, or declaration keyword) or EOF - break the loop
  * 
  * ### Level 4: Missing Closing Bracket
  * - E1005 reported at EOF
@@ -756,6 +800,23 @@ AttributeArgPtr parseAttributeArgLiteral(TokenStream& stream, ParserContext& ctx
  * ### Level 5: Consecutive Commas
  * - Leading commas before first parameter → E1009 once
  * - Multiple commas between parameters → E1009 once per gap
+ * 
+ * ## SyncOutcome Interaction
+ * 
+ * The parser uses SyncOutcome to distinguish between two cases after recovery:
+ * 
+ * - **SyncOutcome::Continuable**: Recovery landed on a structural delimiter
+ *   that's part of the current construct's grammar (',' or '>' for GenericParams
+ *   context). The caller can safely continue parsing more items.
+ * 
+ * - **SyncOutcome::Abandoned**: Recovery landed on a semantic escape valve
+ *   (LBRACE, LPAREN, SEMICOLON, or a declaration-starting keyword) or EOF.
+ *   This means the current construct cannot be meaningfully continued - the
+ *   caller should break out of its parsing loop.
+ * 
+ * This distinction is what allows parseGenericParamDecls' main loop to avoid
+ * the old pattern of manually re-checking COMMA/GREATER after synchronizeTo,
+ * which duplicated the follow-set logic and created a maintenance burden.
  * 
  * ## Context Stack Interaction
  * 
@@ -826,15 +887,25 @@ ArenaSpan<GenericParamDeclPtr> parseGenericParamDecls(TokenStream& stream, Parse
         } else {
             // Error already reported, try to recover. currentContext() is
             // GenericParams here (guard is still on the stack), so this
-            // stops at ',' or '>' — it will not run past the closing '>'
-            // into whatever declaration follows.
-            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::GREATER);
-            // The loop condition will handle '>' and EOF naturally.
-            // If we're at a comma, the comma handling below will consume it.
-            // If we're at some other token, break to avoid infinite loop.
-            if (!stream.check(TokenType::COMMA) && !stream.check(TokenType::GREATER) && !stream.isAtEnd()) {
+            // stays bounded to ',' or '>' — it will not run past the
+            // closing '>' into whatever declaration follows.
+            //
+            // We ask synchronizeTo what it actually landed on rather than
+            // re-checking COMMA/GREATER ourselves — that would duplicate
+            // the exact follow-set synchronizeTo already uses, and the two
+            // would need to be kept in sync by hand every time that
+            // follow-set changes.
+            if (synchronizeToContext(stream, ctx) == SyncOutcome::Abandoned) {
+                // Landed on the semantic escape valve (LBRACE, LPAREN,
+                // SEMICOLON, or a declaration keyword) or hit EOF — this
+                // generic parameter list cannot be continued at all. The
+                // loop condition below will exit naturally (isAtEnd(), or
+                // not GREATER so it keeps trying and immediately hits this
+                // same branch again — break avoids that spin).
                 break;
             }
+            // Continuable: we're at ',' or '>'. The loop condition
+            // handles '>'; the comma handling right below consumes ','.
         }
 
         // ─── 5.2 Comma Separator Handling ────────────────────────────────
@@ -1175,11 +1246,13 @@ GenericParamDeclPtr parseGenericParamDecl(TokenStream& stream, ParserContext& ct
  *     │       │       │
  *     │       │       └── else
  *     │       │           ├── Error already reported by parseType
- *     │       │           ├── synchronizeTo(stream, ctx, COMMA, GREATER)
+ *     │       │           ├── synchronizeToContext(stream, ctx)
  *     │       │           │   // Bounded by GenericArgs context → stops at ',' or '>'
- *     │       │           └── // The loop condition handles '>' and EOF naturally.
- *     │       │               // If we're at a comma, the comma handling below will consume it.
- *     │       │               // If we're at some other token, break to avoid infinite loop.
+ *     │       │           ├── if (synchronizeToContext returns SyncOutcome::Abandoned)
+ *     │       │           │   └── break  // Landed on escape valve or EOF
+ *     │       │           └── // SyncOutcome::Continuable: we're at ',' or '>'
+ *     │       │               // The loop condition handles '>'; the comma
+ *     │       │               // handling below consumes ','.
  *     │       │
  *     │       └── 5.2 Comma Separator Handling
  *     │           └── if (stream.consumeTrailing(TokenType::COMMA) > 1)
@@ -1212,8 +1285,14 @@ GenericParamDeclPtr parseGenericParamDecl(TokenStream& stream, ParserContext& ct
  *
  * ### Level 3: Malformed Type Argument
  * - parseType() reports its own error and returns nullptr
- * - synchronizeTo(COMMA, GREATER) skips to next separator or terminator
- *   (bounded by GenericArgs guard)
+ * - synchronizeTo(COMMA, GREATER) attempts to recover using the GenericArgs
+ *   follow-set ({COMMA, GREATER} with semantic escape valves LPAREN,
+ *   SEMICOLON, and declaration keywords)
+ * - If sync returns SyncOutcome::Continuable, we're at ',' or '>':
+ *   - '>' → loop condition exits naturally
+ *   - ',' → comma handling below consumes it and loop continues
+ * - If sync returns SyncOutcome::Abandoned, we hit a semantic escape valve
+ *   (LPAREN, SEMICOLON, or declaration keyword) or EOF - break the loop
  *
  * ### Level 4: Missing Closing Bracket
  * - E1005 reported at EOF
@@ -1222,6 +1301,23 @@ GenericParamDeclPtr parseGenericParamDecl(TokenStream& stream, ParserContext& ct
  * ### Level 5: Consecutive Commas
  * - Leading commas before first argument → E1009 once
  * - Multiple commas between arguments → E1009 once per gap
+ *
+ * ## SyncOutcome Interaction
+ *
+ * The parser uses SyncOutcome to distinguish between two cases after recovery:
+ *
+ * - **SyncOutcome::Continuable**: Recovery landed on a structural delimiter
+ *   that's part of the current construct's grammar (',' or '>' for GenericArgs
+ *   context). The caller can safely continue parsing more items.
+ *
+ * - **SyncOutcome::Abandoned**: Recovery landed on a semantic escape valve
+ *   (LPAREN, SEMICOLON, or a declaration-starting keyword) or EOF. This means
+ *   the current construct cannot be meaningfully continued - the caller should
+ *   break out of its parsing loop.
+ *
+ * This distinction is what allows parseGenericArgs' main loop to avoid the
+ * old pattern of manually re-checking COMMA/GREATER after synchronizeTo,
+ * which duplicated the follow-set logic and created a maintenance burden.
  *
  * ## Context Stack Interaction
  *
@@ -1294,13 +1390,23 @@ ArenaSpan<TypePtr> parseGenericArgs(TokenStream& stream, ParserContext& ctx) {
             // Error already reported by parseType, try to recover
             // currentContext() is GenericArgs (guard is still on the stack),
             // so synchronizeTo(COMMA, GREATER) stays bounded.
-            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::GREATER);
-            // The loop condition will handle '>' and EOF naturally.
-            // If we're at a comma, the comma handling below will consume it.
-            // If we're at some other token, break to avoid infinite loop.
-            if (!stream.check(TokenType::COMMA) && !stream.check(TokenType::GREATER) && !stream.isAtEnd()) {
+            //
+            // We ask synchronizeTo what it actually landed on rather than
+            // re-checking COMMA/GREATER ourselves — that would duplicate
+            // the exact follow-set synchronizeTo already uses, and the two
+            // would need to be kept in sync by hand every time that
+            // follow-set changes.
+            if (synchronizeToContext(stream, ctx) == SyncOutcome::Abandoned) {
+                // Landed on the semantic escape valve (LPAREN, SEMICOLON,
+                // or a declaration keyword) or hit EOF — this generic
+                // argument list cannot be continued at all. The loop
+                // condition below will exit naturally (isAtEnd(), or not
+                // GREATER so it keeps trying and immediately hits this
+                // same branch again — break avoids that spin).
                 break;
             }
+            // Continuable: we're at ',' or '>'. The loop condition
+            // handles '>'; the comma handling right below consumes ','.
         }
 
         // ─── 5.2 Comma Separator Handling ────────────────────────────────
@@ -1330,7 +1436,6 @@ ArenaSpan<TypePtr> parseGenericArgs(TokenStream& stream, ParserContext& ctx) {
     return builder.build();
 }
 
-
 // =============================================================================
 // parseParamList - Parse a list of function parameters
 // =============================================================================
@@ -1348,6 +1453,119 @@ ArenaSpan<TypePtr> parseGenericArgs(TokenStream& stream, ParserContext& ctx) {
  * - `const IDENTIFIER type`             → read-only reference parameter
  * - `IDENTIFIER ... type`               → variadic parameter (must be last)
  * 
+ * ## Program Flow
+ * 
+ * ```
+ * parseParamList()
+ *     │
+ *     ├── 1. Opening Delimiter Phase
+ *     │   │
+ *     │   └── if (!stream.check(TokenType::LPAREN))
+ *     │       ├── ctx.error(stream, DiagCode::E1004, "(", "parameter list", got)
+ *     │       └── return empty vector
+ *     │   └── else
+ *     │       └── stream.advance()  // Consume '('
+ *     │
+ *     ├── 2. Empty List Check
+ *     │   └── if (stream.check(TokenType::RPAREN))
+ *     │       ├── stream.advance()  // Consume ')'
+ *     │       └── return empty vector
+ *     │
+ *     ├── 3. Leading Comma Recovery
+ *     │   └── if (stream.consumeTrailing(TokenType::COMMA) > 0)
+ *     │       └── ctx.error(stream, DiagCode::E1009, ",", "parameter list")
+ *     │           // (,,,, a int ...) — reports once for all leading commas
+ *     │
+ *     ├── 4. Main Parameter Parsing Loop
+ *     │   │
+ *     │   └── while (!stream.isAtEnd() && !stream.check(TokenType::RPAREN))
+ *     │       │
+ *     │       ├── 4.1 Parse 'const' Modifier
+ *     │       │   └── bool isConst = stream.match(TokenType::CONST)
+ *     │       │
+ *     │       ├── 4.2 Parse Parameter Name
+ *     │       │   │
+ *     │       │   └── if (!stream.check(TokenType::IDENTIFIER))
+ *     │       │       ├── ctx.error(stream, DiagCode::E1002, "parameter name", got)
+ *     │       │       ├── synchronizeTo(stream, ctx, COMMA, RPAREN)
+ *     │       │       └── // The loop condition handles ')' and EOF naturally.
+ *     │       │           // If we're at a comma, the comma handling below will consume it.
+ *     │       │           // If we're at some other token, break to avoid infinite loop.
+ *     │       │   └── else
+ *     │       │       └── Token nameTok = stream.advance()
+ *     │       │
+ *     │       ├── 4.3 Parse Variadic Modifier
+ *     │       │   └── bool isVariadic = stream.match(TokenType::VARIADIC)
+ *     │       │
+ *     │       ├── 4.4 Parse Parameter Type
+ *     │       │   │
+ *     │       │   └── TypePtr type = parseType(stream, ctx)
+ *     │       │       │
+ *     │       │       ├── if (type != nullptr)
+ *     │       │       │   └── Create ParamAST and push to params
+ *     │       │       │
+ *     │       │       └── else
+ *     │       │           ├── ctx.error(stream, DiagCode::E1003, "parameter type", got)
+ *     │       │           ├── synchronizeTo(stream, ctx, COMMA, RPAREN)
+ *     │       │           └── // The loop condition handles ')' and EOF naturally.
+ *     │       │               // If we're at a comma, the comma handling below will consume it.
+ *     │       │               // If we're at some other token, break to avoid infinite loop.
+ *     │       │
+ *     │       ├── 4.5 Variadic Last Check
+ *     │       │   └── if (isVariadic && stream.check(TokenType::COMMA))
+ *     │       │       ├── ctx.error(stream, DiagCode::E1010, "parameter group",
+ *     │       │       │              "variadic parameter must be the last parameter")
+ *     │       │       └── // The comma will be consumed by the comma handling below
+ *     │       │
+ *     │       └── 4.6 Comma Separator Handling
+ *     │           └── if (stream.consumeTrailing(TokenType::COMMA) > 1)
+ *     │               └── ctx.error(stream, DiagCode::E1009, ",", "parameter list")
+ *     │                   // Reports once for multiple consecutive commas between params
+ *     │
+ *     ├── 5. Closing Parenthesis Phase
+ *     │   │
+ *     │   └── if (stream.isAtEnd())
+ *     │       ├── ctx.error(stream, DiagCode::E1005, ")", "parameter list", "<EOF>")
+ *     │       └── // Return with whatever params we have (missing ')')
+ *     │   └── else
+ *     │       └── stream.advance()  // Consume ')' (we know it's there from loop condition)
+ *     │
+ *     └── 6. Return
+ *         └── return params
+ * ```
+ * 
+ * ## Error Recovery Strategy
+ * 
+ * ### Level 1: Missing '('
+ * - E1004 reported, return empty
+ * 
+ * ### Level 2: Missing Parameter Name
+ * - E1002 reported
+ * - synchronizeTo(COMMA, RPAREN) skips to next separator or terminator
+ * 
+ * ### Level 3: Missing Parameter Type
+ * - E1003 reported
+ * - synchronizeTo(COMMA, RPAREN) skips to next separator or terminator
+ * 
+ * ### Level 4: Variadic Not Last
+ * - E1010 reported when variadic is followed by a comma
+ * - The comma handling below consumes the comma to allow recovery
+ * 
+ * ### Level 5: Missing Closing Parenthesis
+ * - E1005 reported at EOF
+ * - No recovery needed since we're already at EOF
+ * 
+ * ### Level 6: Consecutive Commas
+ * - Leading commas before first parameter → E1009 once
+ * - Multiple commas between parameters → E1009 once per gap
+ * 
+ * ## Token Stream State
+ * 
+ * After this function completes:
+ * - Position is AFTER ')' (normal case)
+ * - Position is at EOF (if ')' was missing)
+ * - Position is at recovery point (if errors occurred)
+ * 
  * ## Examples
  * 
  * ```lucid
@@ -1357,105 +1575,85 @@ ArenaSpan<TypePtr> parseGenericArgs(TokenStream& stream, ParserContext& ctx) {
  * (const v Vector2)                    → [v: const Vector2] (read-only ref)
  * (a int, b int, rest ...string)       → [a: int, b: int, rest: ...string]
  * ()                                   → [] (empty parameter list)
+ * (a int, b int,)                      → [a: int, b: int] + E1009 (trailing comma)
+ * (a int,,,b int)                      → [a: int, b: int] + E1009 (gap)
+ * (a int,                              → [a: int] + E1005 (missing ')')
+ * (a int, b int, rest ...string,       → [a: int, b: int, rest: ...string] + E1010 (variadic not last) + E1005 (missing ')')
  * ```
- * 
- * ## Error Handling
- * 
- * - Empty parentheses `()` → valid, returns empty list
- * - Missing type after comma → reports E1003
- * - Trailing comma `(a, )` → reports E1009
- * - Missing `)` at EOF → reports E1005
- * - Variadic not last → reports appropriate error
  * 
  * @param stream The token stream for the current file
  * @param ctx The parsing context
  * @return std::vector<ParamPtr> The parsed parameters (empty for void)
  *
- * @note this function consume `)`, the caller must not consume `)`
+ * @note This function consumes ')'. The caller must NOT consume ')'.
  */
 std::vector<ParamPtr> parseParamList(TokenStream& stream, ParserContext& ctx) {
     LOG_PARSER_DETAIL("parseParamList: parsing parameter list");
     
     std::vector<ParamPtr> params;
     
-    // Expect '(' to start the parameter list
+    // ─── 1. Expect '(' to start the parameter list ──────────────────────
     if (!stream.check(TokenType::LPAREN)) {
         ctx.error(stream, DiagCode::E1004, "(", "parameter list", stream.peekValue());
         return params;
     }
     stream.advance(); // Consume '('
     
-    // Check for empty parameter list: ()
+    // ─── 2. Check for empty parameter list: () ──────────────────────────
     if (stream.check(TokenType::RPAREN)) {
         stream.advance(); // Consume ')'
         return params;
     }
     
-    // Parse parameters until we hit ')'
+    // ─── 3. Skip initial consecutive commas ──────────────────────────────
+    // Ex: (,,,, a int ...)
+    if (stream.consumeTrailing(TokenType::COMMA) > 0) {
+        ctx.error(stream, DiagCode::E1009, ",", "parameter list");
+    }
+    
+    // ─── 4. Parse parameters until we hit ')' ──────────────────────────
     bool hasVariadic = false;
     
-    while (!stream.isAtEnd()) {
-        // ─── Skip consecutive separators ────────────────────────────────
-        if (stream.consumeTrailing(TokenType::COMMA) > 0) {
-            ctx.error(stream, DiagCode::E1009, ",", "parameter list"); // Unexpected trailing comma
-        }
-        
-        // ─── Check if we've reached a terminator ──────────────────────
-        if (stream.check(TokenType::RPAREN)) {
-            break; // End of parameter list
-        }
-        
-        if (stream.isAtEnd()) {
-            ctx.error(stream, DiagCode::E1005, ")", "parameter list", stream.peekValue());
-            break;
-        }
-        
+    while (!stream.isAtEnd() && !stream.check(TokenType::RPAREN)) {
         SourceLocation loc = stream.currentLoc();
         
-        // ─── 1. Check for 'const' modifier ──────────────────────────────
+        // ─── 4.1 Check for 'const' modifier ──────────────────────────────
         bool isConst = stream.match(TokenType::CONST);
         
-        // ─── 2. Parse parameter name ─────────────────────────────────────
+        // ─── 4.2 Parse parameter name ─────────────────────────────────────
         if (!stream.check(TokenType::IDENTIFIER)) {
             ctx.error(stream, DiagCode::E1002, "parameter name", stream.peekValue());
             synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN);
-            if (stream.check(TokenType::COMMA)) {
-                stream.advance();
-                continue;
-            } else if (stream.check(TokenType::RPAREN)) {
-                break;
-            } else {
+            // The loop condition will handle ')' and EOF naturally.
+            // If we're at a comma, the comma handling below will consume it.
+            // If we're at some other token, break to avoid infinite loop.
+            if (!stream.check(TokenType::COMMA) && !stream.check(TokenType::RPAREN) && !stream.isAtEnd()) {
                 break;
             }
+            continue;
         }
         
         Token nameTok = stream.advance();
         InternedString name = ctx.pool.intern(nameTok.value);
         
-        // ─── 3. Check for variadic modifier ─────────────────────────────
+        // ─── 4.3 Check for variadic modifier ─────────────────────────────
         bool isVariadic = stream.match(TokenType::VARIADIC);
         
-        if (isVariadic && hasVariadic) {
-            ctx.error(stream, DiagCode::E1010, "parameter group", "only one variadic parameter is allowed on each group");
-            // Don't break here, continue to parse the type so we can recover
-        }
-        
-        // ─── 4. Parse parameter type ─────────────────────────────────────
+        // ─── 4.4 Parse parameter type ─────────────────────────────────────
         TypePtr type = parseType(stream, ctx);
         if (!type) {
             ctx.error(stream, DiagCode::E1003, "parameter type", stream.peekValue());
             synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN);
-            if (stream.check(TokenType::COMMA)) {
-                stream.advance();
-                continue;
-            } else if (stream.check(TokenType::RPAREN)) {
-                break;
-            } else {
+            // The loop condition will handle ')' and EOF naturally.
+            // If we're at a comma, the comma handling below will consume it.
+            // If we're at some other token, break to avoid infinite loop.
+            if (!stream.check(TokenType::COMMA) && !stream.check(TokenType::RPAREN) && !stream.isAtEnd()) {
                 break;
             }
+            continue;
         }
         
-        // ─── 5. Create the parameter node ────────────────────────────────
+        // ─── 4.5 Create the parameter node ────────────────────────────────
         auto* param = ctx.arena.make<ParamAST>();
         param->loc = loc;
         param->name = name;
@@ -1468,25 +1666,26 @@ std::vector<ParamPtr> parseParamList(TokenStream& stream, ParserContext& ctx) {
             hasVariadic = true;
         }
         
-        // ─── Check if variadic is last ──────────────────────────────────
+        // ─── 4.6 Check if variadic is last ─────────────────────────────────
         // If we have a variadic parameter, check if there's another parameter after it
         if (isVariadic && stream.check(TokenType::COMMA)) {
             ctx.error(stream, DiagCode::E1010, "parameter group", "variadic parameter must be the last parameter");
-            // Skip the comma and continue to parse the next parameter
-            stream.advance();
-            // But we should still continue parsing to recover
-            continue;
+            // The comma will be consumed by the comma handling below
+        }
+        
+        // ─── 4.7 Comma Separator Handling ────────────────────────────────
+        // Consume at least 1 comma and skip consecutive commas
+        if (stream.consumeTrailing(TokenType::COMMA) > 1) {
+            ctx.error(stream, DiagCode::E1009, ",", "parameter list");
         }
     }
     
-    // ─── Consume closing parenthesis ────────────────────────────────────
-    if (!stream.check(TokenType::RPAREN)) {
-        ctx.error(stream, DiagCode::E1005, ")", "parameter list", stream.peekValue());
-        synchronizeTo(stream, ctx, TokenType::RPAREN);
-        if (stream.check(TokenType::RPAREN)) {
-            stream.advance(); // Consume ')' to recover
-        }
+    // ─── 5. Consume closing parenthesis ────────────────────────────────────
+    // The loop condition guarantees we're either at ')' or at EOF.
+    if (stream.isAtEnd()) {
+        ctx.error(stream, DiagCode::E1005, ")", "parameter list", "<EOF>");
     } else {
+        // We must be at ')' (loop condition guaranteed !stream.check(RPAREN) is false)
         stream.advance(); // Consume ')'
     }
     
@@ -1506,11 +1705,108 @@ std::vector<ParamPtr> parseParamList(TokenStream& stream, ParserContext& ctx) {
  * 
  * This function consumes the opening '(' and closing ')' parentheses.
  * 
+ * ## Program Flow
+ * 
+ * ```
+ * parseArgList()
+ *     │
+ *     ├── 1. Opening Delimiter Phase
+ *     │   │
+ *     │   └── if (!stream.check(TokenType::LPAREN))
+ *     │       ├── ctx.error(stream, DiagCode::E1004, "(", "argument list", got)
+ *     │       └── return empty ArenaSpan<ExprPtr>
+ *     │   └── else
+ *     │       └── stream.advance()  // Consume '('
+ *     │
+ *     ├── 2. Empty List Check
+ *     │   └── if (stream.check(TokenType::RPAREN))
+ *     │       ├── stream.advance()  // Consume ')'
+ *     │       └── return empty ArenaSpan<ExprPtr>
+ *     │
+ *     ├── 3. Leading Comma Recovery
+ *     │   └── if (stream.consumeTrailing(TokenType::COMMA) > 0)
+ *     │       └── ctx.error(stream, DiagCode::E1009, ",", "argument list")
+ *     │           // (,,,, arg1 ...) — reports once for all leading commas
+ *     │
+ *     ├── 4. Main Argument Parsing Loop
+ *     │   │
+ *     │   └── while (!stream.isAtEnd() && !stream.check(TokenType::RPAREN))
+ *     │       │
+ *     │       ├── 4.1 Parse Argument Expression
+ *     │       │   │
+ *     │       │   └── ExprPtr arg = parseExpr(stream, ctx)
+ *     │       │       │
+ *     │       │       ├── if (arg != nullptr)
+ *     │       │       │   └── args.push_back(arg)
+ *     │       │       │
+ *     │       │       └── else
+ *     │       │           ├── ctx.error(stream, DiagCode::E1006, got)
+ *     │       │           ├── synchronizeTo(stream, ctx, COMMA, RPAREN)
+ *     │       │           └── // The loop condition handles ')' and EOF naturally.
+ *     │       │               // If we're at a comma, the comma handling below will consume it.
+ *     │       │               // If we're at some other token, break to avoid infinite loop.
+ *     │       │
+ *     │       └── 4.2 Comma Separator Handling
+ *     │           └── if (stream.consumeTrailing(TokenType::COMMA) > 1)
+ *     │               └── ctx.error(stream, DiagCode::E1009, ",", "argument list")
+ *     │                   // Reports once for multiple consecutive commas between args
+ *     │
+ *     ├── 5. Closing Parenthesis Phase
+ *     │   │
+ *     │   └── if (stream.isAtEnd())
+ *     │       ├── ctx.error(stream, DiagCode::E1005, ")", "argument list", "<EOF>")
+ *     │       └── // Return with whatever args we have (missing ')')
+ *     │   └── else
+ *     │       └── stream.advance()  // Consume ')' (we know it's there from loop condition)
+ *     │
+ *     ├── 6. Build Result
+ *     │   └── ctx.arena.makeBuilder<ExprPtr>()
+ *     │       └── push_back each arg → build() → ArenaSpan<ExprPtr>
+ *     │
+ *     └── 7. Return
+ *         └── return ArenaSpan<ExprPtr> (possibly empty)
+ * ```
+ * 
+ * ## Error Recovery Strategy
+ * 
+ * ### Level 1: Missing '('
+ * - E1004 reported, return empty
+ * 
+ * ### Level 2: Malformed Argument Expression
+ * - parseExpr() reports its own error and returns nullptr
+ * - synchronizeTo(COMMA, RPAREN) skips to next separator or terminator
+ * 
+ * ### Level 3: Missing Closing Parenthesis
+ * - E1005 reported at EOF
+ * - No recovery needed since we're already at EOF
+ * 
+ * ### Level 4: Consecutive Commas
+ * - Leading commas before first argument → E1009 once
+ * - Multiple commas between arguments → E1009 once per gap
+ * 
+ * ## Token Stream State
+ * 
+ * After this function completes:
+ * - Position is AFTER ')' (normal case)
+ * - Position is at EOF (if ')' was missing)
+ * - Position is at recovery point (if errors occurred)
+ * 
+ * ## Examples
+ * 
+ * ```lucid
+ * ()                                   → []
+ * (1, 2, 3)                            → [1, 2, 3]
+ * (a, b, c)                            → [a, b, c]
+ * (1, 2, 3,)                           → [1, 2, 3] + E1009 (trailing comma)
+ * (1,,,2)                              → [1, 2] + E1009 (gap)
+ * (1, 2                               → [1, 2] + E1005 (missing ')')
+ * ```
+ * 
  * @param stream The token stream
  * @param ctx The parsing context
  * @return ArenaSpan<ExprAST*> The parsed arguments (empty for no arguments)
  *
- * @note this function consume `)`, the caller must not consume `)`
+ * @note This function consumes ')'. The caller must NOT consume ')'.
  */
 ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx) {
     LOG_PARSER_DETAIL("parseArgList: parsing argument list");
@@ -1530,24 +1826,15 @@ ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx) {
         return ctx.arena.makeBuilder<ExprPtr>().build();
     }
     
-    // ─── 3. Parse arguments until we hit ')' ─────────────────────────────
-    while (!stream.isAtEnd()) {
-        // Skip consecutive separators
-        if (stream.consumeTrailing(TokenType::COMMA) > 0) {
-            ctx.error(stream, DiagCode::E1009, ",", "argument list"); // Unexpected trailing comma
-        }
-        
-        // Check if we've reached the end
-        if (stream.check(TokenType::RPAREN)) {
-            break;
-        }
-        
-        if (stream.isAtEnd()) {
-            ctx.error(stream, DiagCode::E1005, ")", "argument list", stream.peekValue());
-            break;
-        }
-        
-        // Parse an argument
+    // ─── 3. Skip initial consecutive commas ──────────────────────────────
+    // Ex: (,,,, arg1 ...)
+    if (stream.consumeTrailing(TokenType::COMMA) > 0) {
+        ctx.error(stream, DiagCode::E1009, ",", "argument list");
+    }
+    
+    // ─── 4. Parse arguments until we hit ')' ─────────────────────────────
+    while (!stream.isAtEnd() && !stream.check(TokenType::RPAREN)) {
+        // ─── 4.1 Parse an argument ────────────────────────────────────────
         ExprPtr arg = parseExpr(stream, ctx);
         if (arg) {
             args.push_back(arg);
@@ -1555,47 +1842,28 @@ ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx) {
             // Error already reported by parseExpr, try to recover
             ctx.error(stream, DiagCode::E1006, stream.peekValue());
             synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN);
-            if (stream.check(TokenType::COMMA)) {
-                stream.advance();
-                continue;
-            } else if (stream.check(TokenType::RPAREN)) {
-                stream.advance();
-                break;
-            } else {
+            // The loop condition will handle ')' and EOF naturally.
+            // If we're at a comma, the comma handling below will consume it.
+            // If we're at some other token, break to avoid infinite loop.
+            if (!stream.check(TokenType::COMMA) && !stream.check(TokenType::RPAREN) && !stream.isAtEnd()) {
                 break;
             }
+            continue;
         }
         
-        // Check for comma separator
-        if (stream.check(TokenType::COMMA)) {
-            stream.advance();
-            // Check for trailing comma
-            if (stream.check(TokenType::RPAREN)) {
-                ctx.error(stream, DiagCode::E1009, ",", "argument list"); // Unexpected trailing comma
-                stream.advance(); // Consume ')'
-                break;
-            }
-            // Continue to next argument
-        } else if (stream.check(TokenType::RPAREN)) {
-            break;
-        } else {
-            ctx.error(stream, DiagCode::E1008, stream.peekValue(), "',' or ')'");
-            synchronizeTo(stream, ctx, TokenType::RPAREN);
-            if (stream.check(TokenType::RPAREN)) {
-                stream.advance();
-            }
-            break;
+        // ─── 4.2 Comma Separator Handling ────────────────────────────────
+        // Consume at least 1 comma and skip consecutive commas
+        if (stream.consumeTrailing(TokenType::COMMA) > 1) {
+            ctx.error(stream, DiagCode::E1009, ",", "argument list");
         }
     }
     
-    // ─── 4. Consume closing parenthesis ───────────────────────────────────
-    if (!stream.check(TokenType::RPAREN)) {
-        ctx.error(stream, DiagCode::E1005, ")", "argument list", stream.peekValue());
-        synchronizeTo(stream, ctx, TokenType::RPAREN);
-        if (stream.check(TokenType::RPAREN)) {
-            stream.advance(); // Consume ')' to recover
-        }
+    // ─── 5. Consume closing parenthesis ───────────────────────────────────
+    // The loop condition guarantees we're either at ')' or at EOF.
+    if (stream.isAtEnd()) {
+        ctx.error(stream, DiagCode::E1005, ")", "argument list", "<EOF>");
     } else {
+        // We must be at ')' (loop condition guaranteed !stream.check(RPAREN) is false)
         stream.advance(); // Consume ')'
     }
     
@@ -1628,19 +1896,129 @@ ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx) {
  * -> ()                     → []             (void, empty parentheses)
  * ```
  * 
- * ## Error Handling
+ * ## Program Flow
  * 
- * - Empty parentheses `()` → void (empty return list)
- * - Missing type after comma → reports E1003 with "type in return list"
- * - Missing type after `->` → reports E1003 with "return type after '->'"
- * - Trailing comma `(int, )` → reports E1009
- * - Multiple consecutive commas `(int,,,string)` → reports E1009 once
- * - Only commas `(,,,)` → reports E1009, returns empty list
- * - Missing `)` at EOF → reports E1005
+ * ```
+ * parseReturnList()
+ *     │
+ *     ├── 1. Check for Parenthesized Return List
+ *     │   │
+ *     │   └── if (stream.check(TokenType::LPAREN))
+ *     │       │
+ *     │       ├── 1.1 Opening Delimiter Phase
+ *     │       │   └── stream.advance()  // Consume '('
+ *     │       │
+ *     │       ├── 1.2 Empty List Check: ()
+ *     │       │   └── if (stream.check(TokenType::RPAREN))
+ *     │       │       ├── stream.advance()  // Consume ')'
+ *     │       │       └── return empty ArenaSpan<TypePtr>
+ *     │       │
+ *     │       ├── 1.3 Leading Comma Recovery
+ *     │       │   └── if (stream.consumeTrailing(TokenType::COMMA) > 0)
+ *     │       │       └── ctx.error(stream, DiagCode::E1009, ",", "return list")
+ *     │       │
+ *     │       ├── 1.4 Main Type Parsing Loop
+ *     │       │   │
+ *     │       │   └── while (!stream.isAtEnd() && !stream.check(TokenType::RPAREN))
+ *     │       │       │
+ *     │       │       ├── 1.4.1 Parse Type
+ *     │       │       │   │
+ *     │       │       │   └── TypePtr type = parseType(stream, ctx)
+ *     │       │       │       │
+ *     │       │       │       ├── if (type != nullptr)
+ *     │       │       │       │   └── returnTypes.push_back(type)
+ *     │       │       │       │
+ *     │       │       │       └── else
+ *     │       │       │           ├── ctx.error(stream, DiagCode::E1003, "in return list", got)
+ *     │       │       │           ├── synchronizeTo(stream, ctx, COMMA, RPAREN)
+ *     │       │       │           └── // The loop condition handles ')' and EOF naturally.
+ *     │       │       │               // If we're at a comma, the comma handling below will consume it.
+ *     │       │       │               // If we're at some other token, break to avoid infinite loop.
+ *     │       │       │
+ *     │       │       └── 1.4.2 Comma Separator Handling
+ *     │       │           └── if (stream.consumeTrailing(TokenType::COMMA) > 1)
+ *     │       │               └── ctx.error(stream, DiagCode::E1009, ",", "return list")
+ *     │       │                   // Reports once for multiple consecutive commas between types
+ *     │       │
+ *     │       └── 1.5 Closing Parenthesis Phase
+ *     │           │
+ *     │           └── if (stream.isAtEnd())
+ *     │               ├── ctx.error(stream, DiagCode::E1005, ")", "return list", "<EOF>")
+ *     │               └── // Return with whatever types we have (missing ')')
+ *     │           └── else
+ *     │               └── stream.advance()  // Consume ')' (we know it's there from loop condition)
+ *     │
+ *     └── 2. Single Return Type (no parentheses)
+ *         │
+ *         └── TypePtr type = parseType(stream, ctx)
+ *             │
+ *             ├── if (type != nullptr)
+ *             │   └── returnTypes.push_back(type)
+ *             │
+ *             └── else
+ *                 └── ctx.error(stream, DiagCode::E1003, "(return type) after '->'", got)
+ *                     synchronizeToContext(stream, ctx)
+ *     
+ *     ├── 3. Build Result
+ *     │   └── ctx.arena.makeBuilder<TypePtr>()
+ *     │       └── push_back each type → build() → ArenaSpan<TypePtr>
+ *     │
+ *     └── 4. Return
+ *         └── return ArenaSpan<TypePtr> (possibly empty)
+ * ```
+ * 
+ * ## Error Recovery Strategy
+ * 
+ * ### Level 1: Parenthesized Return List
+ * 
+ * #### Level 1.1: Missing '(' (handled by caller)
+ * - The caller (parseType) handles the case where '(' is expected but not found
+ * 
+ * #### Level 1.2: Malformed Type in Return List
+ * - parseType() reports its own error and returns nullptr
+ * - synchronizeTo(COMMA, RPAREN) skips to next separator or terminator
+ * 
+ * #### Level 1.3: Missing Closing Parenthesis
+ * - E1005 reported at EOF
+ * - No recovery needed since we're already at EOF
+ * 
+ * #### Level 1.4: Consecutive Commas
+ * - Leading commas before first type → E1009 once
+ * - Multiple commas between types → E1009 once per gap
+ * 
+ * ### Level 2: Single Return Type
+ * - Missing type after `->` → E1003 reported
+ * - synchronizeToContext() recovers
+ * 
+ * ## Token Stream State
+ * 
+ * After this function completes:
+ * - Position is AFTER ')' (normal case for parenthesized list)
+ * - Position is after the single type (normal case for single type)
+ * - Position is at EOF (if ')' was missing)
+ * - Position is at recovery point (if errors occurred)
+ * 
+ * ## Examples
+ * 
+ * ```lucid
+ * -> int                    → [int]
+ * -> (int, bool)            → [int, bool]
+ * -> (string, int, float)   → [string, int, float]
+ * -> ()                     → []
+ * -> (int,,,bool)           → [int, bool] + E1009 (gap)
+ * -> (int, )                → [int] + E1009 (trailing comma)
+ * -> (int,                  → [int] + E1005 (missing ')')
+ * -> (,int)                 → [int] + E1009 (leading comma)
+ * -> (,,,)                  → [] + E1009 (only commas)
+ * ```
  * 
  * @param stream The token stream for the current file
  * @param ctx The parsing context
  * @return ArenaSpan<TypeAST*> The parsed return types (empty for void)
+ * 
+ * @note This function consumes ')' if a parenthesized list is present.
+ *       The caller must NOT consume ')'. For single return types, this
+ *       function does NOT consume a closing parenthesis.
  */
 ArenaSpan<TypeAST*> parseReturnList(TokenStream& stream, ParserContext& ctx) {
     LOG_PARSER_DETAIL("parseReturnList: parsing return types");
@@ -1651,58 +2029,50 @@ ArenaSpan<TypeAST*> parseReturnList(TokenStream& stream, ParserContext& ctx) {
     if (stream.check(TokenType::LPAREN)) {
         stream.advance(); // Consume '('
         
-        // Check for empty parentheses (void): ()
+        // ─── Check for empty parentheses (void): () ──────────────────────
         if (stream.check(TokenType::RPAREN)) {
             stream.advance(); // Consume ')'
             return ctx.arena.makeBuilder<TypePtr>().build();
         }
         
+        // ─── Skip initial consecutive commas ──────────────────────────────
+        // Ex: (,,,, int ...)
+        if (stream.consumeTrailing(TokenType::COMMA) > 0) {
+            ctx.error(stream, DiagCode::E1009, ",", "return list");
+        }
+        
         // ─── Parse types until we hit ')' ──────────────────────────────────
-        while (!stream.isAtEnd()) {
-            // ─── Skip consecutive separators ────────────────────────────────
-            if (stream.consumeTrailing(TokenType::COMMA) > 0) {
-                ctx.error(stream, DiagCode::E1009, ",", "return list"); // Unexpected trailing comma
-            }
-            
-            // ─── Check if we've reached a terminator ────────────────────────
-            if (stream.check(TokenType::RPAREN)) {
-                break; // End of return list
-            }
-            
-            if (stream.isAtEnd()) {
-                ctx.error(stream, DiagCode::E1005, ")", "return list", stream.peekValue());
-                break;
-            }
-            
+        while (!stream.isAtEnd() && !stream.check(TokenType::RPAREN)) {
             // Parse a type
             TypePtr type = parseType(stream, ctx);
             if (type) {
                 returnTypes.push_back(type);
             } else {
                 // Error already reported by parseType, try to recover
-                // Use E1003 with context: "Expected type in return list, but found '%s'"
                 ctx.error(stream, DiagCode::E1003, "in return list", stream.peekValue());
                 synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN);
-                if (stream.check(TokenType::COMMA)) {
-                    stream.advance();
-                    continue;
-                } else if (stream.check(TokenType::RPAREN)) {
-                    stream.advance(); // Consume ')' and exit
-                    break;
-                } else {
+                // The loop condition will handle ')' and EOF naturally.
+                // If we're at a comma, the comma handling below will consume it.
+                // If we're at some other token, break to avoid infinite loop.
+                if (!stream.check(TokenType::COMMA) && !stream.check(TokenType::RPAREN) && !stream.isAtEnd()) {
                     break;
                 }
+                continue;
+            }
+            
+            // ─── Comma Separator Handling ────────────────────────────────────
+            // Consume at least 1 comma and skip consecutive commas
+            if (stream.consumeTrailing(TokenType::COMMA) > 1) {
+                ctx.error(stream, DiagCode::E1009, ",", "return list");
             }
         }
         
         // ─── Consume closing parenthesis ────────────────────────────────────
-        if (!stream.check(TokenType::RPAREN)) {
-            ctx.error(stream, DiagCode::E1005, ")", "return list", stream.peekValue());
-            synchronizeTo(stream, ctx, TokenType::RPAREN);
-            if (stream.check(TokenType::RPAREN)) {
-                stream.advance(); // Consume ')' to recover
-            }
+        // The loop condition guarantees we're either at ')' or at EOF.
+        if (stream.isAtEnd()) {
+            ctx.error(stream, DiagCode::E1005, ")", "return list", "<EOF>");
         } else {
+            // We must be at ')' (loop condition guaranteed !stream.check(RPAREN) is false)
             stream.advance(); // Consume ')'
         }
         
@@ -1730,126 +2100,190 @@ ArenaSpan<TypeAST*> parseReturnList(TokenStream& stream, ParserContext& ctx) {
     return builder.build();
 }
 
-// =============================================================================
-// parseUsePath - Parse a use path
-// =============================================================================
-
 /**
- * @brief Parse a use path.
+ * @brief Parse a use declaration and import the module.
  * 
- * Grammar: `IDENTIFIER { '.' IDENTIFIER }`
+ * Grammar: `use path [as alias]`
+ * 
+ * ## Path Styles
+ * 
+ * ### Current: Dot-Separated (Module Style)
+ * 
+ * The parser currently supports **dot-separated** paths exclusively:
+ * 
+ * ```lucid
+ * use std.io                    → path = "std.io", alias = std.io
+ * use std.math as math          → path = "std.math", alias = math
+ * use graphics.gl               → path = "graphics.gl", alias = graphics.gl
+ * use mylib                     → path = "mylib", alias = mylib
+ * ```
+ * 
+ * This style is inspired by Java, Python, and C# package systems where:
+ * - Dots (`.`) act as namespace separators
+ * - Paths are **always absolute** from the package root
+ * - No relative navigation (`./`, `../`) is supported
+ * - Resolution converts dots to filesystem paths internally
+ *   (e.g., `std.io` → `std/io.lucid` or `std/io/__init__.luc`)
+ * 
+ * ### Future: Quoted Filesystem Paths
+ * 
+ * Support for **quoted filesystem paths** is planned as a future feature:
+ * 
+ * ```lucid
+ * use "../folderA/moduleB" as b   // Relative filesystem path (future)
+ * use "/usr/lib/mymod"            // Absolute filesystem path (future)
+ * use "./local/helper" as helper  // Current directory (future)
+ * ```
+ * 
+ * ## Why Quoted Paths?
+ * 
+ * Filesystem paths contain characters (`/`, `\`, `.`, `..`) that conflict with
+ * the dot-separated module syntax. Wrapping them in quotes (`""`) makes them
+ * unambiguous and allows:
+ * 
+ * - **Relative paths**: `"../folderA/moduleB"` - go up one directory
+ * - **Absolute paths**: `"/usr/lib/mymod"` - from filesystem root
+ * - **Path traversal**: `"./local/helper"` - current directory
+ * - **Mixed usage**: `"../lib/math.vector"` - combine relative and dot style
+ * 
+ * ## Current Resolution Strategy
+ * 
+ * For dot-separated paths, the `ModuleResolver`:
+ * 1. Splits the path on `.` (e.g., `"std.io"` → `["std", "io"]`)
+ * 2. Replaces `.` with `/` for filesystem lookup
+ * 3. Searches in the package root and additional search paths
  * 
  * ## Examples
  * 
  * ```lucid
- * use std.io                    → ["std", "io"]
- * use std.math as math          → ["std", "math"]
- * use graphics.gl               → ["graphics", "gl"]
- * use mylib                     → ["mylib"]
+ * // Current: Dot-separated (supported)
+ * use std.io                      // Imports std/io.lucid from package root
+ * use std.math as math            // Imports std/math.lucid as "math"
+ * use graphics.gl                 // Imports graphics/gl.lucid
+ * use mylib                       // Imports mylib.lucid from package root
+ * 
+ * // Future: Quoted filesystem paths (not yet implemented)
+ * use "../folderA/moduleB" as b   // Imports ../folderA/moduleB.lucid
+ * use "/usr/lib/mymod"            // Imports /usr/lib/mymod.lucid
+ * use "./local/helper" as helper  // Imports ./local/helper.lucid
  * ```
  * 
  * ## Error Handling
  * 
- * - Trailing '.' (e.g., `std.io.`) → reports E1106
- * - Missing identifier after '.' → reports E1002
- * - Empty path → reports E1002
+ * - Missing `use` keyword → E1004
+ * - Empty or malformed path → E1002, E1009
+ * - Missing semicolon → E1005
+ * - Module not found → E0004 (reported by ModuleResolver)
+ * - Circular import → E0003
  * 
  * @param stream The token stream for the current file
  * @param ctx The parsing context
- * @return std::vector<InternedString> The path components (empty on error)
- *
- * @note this function does not consume `;`, the top level function already
- *       does it
+ * @return UseDeclAST* The parsed use declaration, or nullptr on error
+ * 
+ * @note This function consumes the terminating ';'. The caller must NOT
+ *       consume ';'.
+ * 
+ * @note For dot-separated paths, `parseUsePath()` handles the parsing.
+ *       The alias is optional and parsed here if the `as` keyword is present.
+ * 
+ * @note Filesystem paths with `"` are NOT yet supported. When implemented,
+ *       they will be detected by `stream.check(TokenType::STRING_LITERAL)`
+ *       and parsed as a quoted string containing the path.
  */
-std::vector<InternedString> parseUsePath(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER_DETAIL("parseUsePath: parsing use path");
+UseDeclAST* parseUseDecl(TokenStream& stream, ParserContext& ctx) {
+    SourceLocation loc = stream.currentLoc();
     
-    std::vector<InternedString> pathParts;
-    
-    // Expect at least one identifier
-    if (!stream.check(TokenType::IDENTIFIER)) {
-        ctx.error(stream, DiagCode::E1002, "identifier in use path", stream.peekValue());
-        return pathParts;
+    // ─── 1. Expect 'use' keyword ────────────────────────────────────────
+    if (!stream.match(TokenType::USE)) {
+        ctx.error(stream, DiagCode::E1004, "use", "use declaration", stream.peekValue());
+        synchronizeToContext(stream, ctx);
+        return nullptr;
     }
     
-    // Parse the first identifier
-    Token tok = stream.advance();
-    pathParts.push_back(ctx.pool.intern(tok.value));
-    
-    // Parse additional identifiers separated by '.'
-    while (!stream.isAtEnd()) {
-        // ─── Check for '.' separator ─────────────────────────────────────
-        if (!stream.check(TokenType::DOT)) {
-            break; // No more path components
-        }
-        
-        stream.advance(); // Consume '.'
-        
-        // ─── Check for trailing '.' ─────────────────────────────────────
-        // This handles cases like: "std.io." or "std..io"
-        if (stream.isAtEnd() || 
-            stream.check(TokenType::AS) || 
-            stream.check(TokenType::SEMICOLON) ||
-            stream.check(TokenType::DOT) ||  // Consecutive dots
-            !stream.check(TokenType::IDENTIFIER)) {
-            
-            // Check for consecutive dots
-            if (stream.check(TokenType::DOT)) {
-                ctx.error(stream, DiagCode::E1009, ".", "module path"); // Consecutive dots
-                // Consume the extra dot(s) to recover
-                stream.consumeTrailing(TokenType::DOT);
-                // Check if we have a valid identifier after the dots
-                if (stream.check(TokenType::IDENTIFIER)) {
-                    tok = stream.advance();
-                    pathParts.push_back(ctx.pool.intern(tok.value));
-                    continue;
-                }
-                break;
-            }
-            
-            // Check if we're at end of file or a terminator
-            if (stream.isAtEnd()) {
-                ctx.error(stream, DiagCode::E1009, ".", "module path"); // Unexpected trailing '.'
-                break;
-            }
-            
-            // Check for 'as' after dot - this means trailing dot before alias
-            if (stream.check(TokenType::AS)) {
-                ctx.error(stream, DiagCode::E1009, ".", "module path"); // Unexpected trailing '.'
-                // Don't consume 'as' - let the caller handle it
-                break;
-            }
-            
-            // Check for semicolon after dot - this means trailing dot before semicolon
-            if (stream.check(TokenType::SEMICOLON)) {
-                ctx.error(stream, DiagCode::E1009, ".", "module path"); // Unexpected trailing '.'
-                // Don't consume ';' - let the caller handle it
-                break;
-            }
-            
-            // If we get here, we have a token that's not an identifier, not a dot, not a terminator
-            // This is an error - expected identifier after '.'
-            ctx.error(stream, DiagCode::E1002, "identifier after '.'", stream.peekValue());
-            synchronizeTo(stream, ctx, TokenType::AS, TokenType::SEMICOLON);
-            break;
-        }
-        
-        // We have a valid identifier after the dot
-        tok = stream.advance();
-        pathParts.push_back(ctx.pool.intern(tok.value));
+    // ─── 2. Parse the path ──────────────────────────────────────────────
+    // ─── 2.1 Current: Dot-separated path ───────────────────────────────
+    // This is the primary path style for now.
+    std::vector<InternedString> pathParts = parseUsePath(stream, ctx);
+    if (pathParts.empty()) {
+        // Error already reported by parseUsePath
+        synchronizeTo(stream, ctx, TokenType::SEMICOLON);
+        stream.consume(TokenType::SEMICOLON);
+        return nullptr;
     }
     
-    // Build the full path string for logging
-    std::string fullPath;
+    // Build the full path string (e.g., "std.io")
+    std::string pathStr;
     for (size_t i = 0; i < pathParts.size(); ++i) {
-        if (i > 0) fullPath += ".";
-        fullPath += std::string(ctx.pool.lookup(pathParts[i]));
+        if (i > 0) pathStr += ".";
+        pathStr += std::string(ctx.pool.lookup(pathParts[i]));
+    }
+    InternedString path = ctx.pool.intern(pathStr);
+    
+    // ─── 2.2 Future: Quoted filesystem path ────────────────────────────
+    // TODO: Support quoted paths like use "../folder/module" as b
+    // if (stream.check(TokenType::STRING_LITERAL)) {
+    //     Token pathTok = stream.advance();
+    //     InternedString path = ctx.pool.intern(pathTok.value);
+    //     // Path is already a filesystem path - pass directly to resolver
+    // }
+    
+    // ─── 3. Parse optional alias ────────────────────────────────────────
+    InternedString alias = path;  // Default alias is the full path
+    
+    if (stream.match(TokenType::AS)) {
+        // Expect an identifier for the alias
+        if (!stream.check(TokenType::IDENTIFIER)) {
+            ctx.error(stream, DiagCode::E1002, "alias name after 'as'", stream.peekValue());
+            synchronizeTo(stream, ctx, TokenType::SEMICOLON);
+            stream.consume(TokenType::SEMICOLON);
+            return nullptr;
+        }
+        
+        Token aliasTok = stream.advance();
+        alias = ctx.pool.intern(aliasTok.value);
     }
     
-    LOG_PARSER_DETAIL("parseUsePath: parsed path '", fullPath, "' with ", 
-                      pathParts.size(), " components");
+    // ─── 4. Consume semicolon ────────────────────────────────────────────
+    if (!stream.match(TokenType::SEMICOLON)) {
+        ctx.error(stream, DiagCode::E1005, ";", stream.peekValue());
+        synchronizeTo(stream, ctx, TokenType::SEMICOLON);
+        if (!stream.check(TokenType::SEMICOLON)) {
+            // Can't recover - return nullptr
+            return nullptr;
+        }
+        stream.advance(); // Consume semicolon
+    }
     
-    return pathParts;
+    // ─── 5. Resolve and import the module ──────────────────────────────
+    InternedString filePath = ctx.resolver ? ctx.resolver->resolveUsePath(path) : InternedString();
+    
+    if (ctx.resolver) {
+        // ─── 5.1 Check for circular import ──────────────────────────────
+        if (ctx.resolver->isParsing(filePath)) {
+            ctx.error(stream, DiagCode::E0003, ctx.toString(path));
+            // Return a use declaration even on error so we can continue
+        } else {
+            // ─── 5.2 Import the module ────────────────────────────────────
+            // Always call parse() - it handles caching internally
+            std::string source = ctx.resolver->readModuleSource(filePath);
+            if (source.empty()) {
+                // The file path exists but source is empty
+                // parse() will handle this and return a module with errors
+            }
+            parser::parse(ctx.toString(filePath), source, ctx);
+        }
+    }
+    
+    // ─── 6. Create and return the UseDeclAST node ──────────────────────
+    auto* useDecl = ctx.arena.make<UseDeclAST>();
+    useDecl->loc = loc;
+    useDecl->path = path;
+    useDecl->alias = alias;
+    
+    LOG_PARSER("parseUseDecl: parsed use '", ctx.toString(path), 
+               "' as '", ctx.toString(alias), "'");
+    
+    return useDecl;
 }
 
 // =============================================================================
