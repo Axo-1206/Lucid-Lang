@@ -37,7 +37,11 @@ namespace parser {
  * @param path The file path
  * @param source The source code
  * @param ctx The parsing context (shared across all files)
- * @return ModuleAST* The complete AST, or nullptr on error
+ * @return ModuleAST* Never nullptr — even a file that couldn't be
+ *         meaningfully parsed (failed lex, circular import) still
+ *         produces a real ModuleAST. Check ->hasErrors, not the
+ *         pointer, to detect failure. See parse()'s own doc comment
+ *         in Parser.cpp for the full design.
  */
 ModuleAST* parse(const std::string& path, 
                   const std::string& source,
@@ -53,7 +57,21 @@ void synchronizeUntil(TokenStream& stream, ParserContext& ctx, Predicate stopAt)
 template<typename... StopTokens>
 void synchronizeTo(TokenStream& stream, ParserContext& ctx, StopTokens... stopTokens);
 
-void synchronizeToContext(TokenStream& stream, ParserContext& ctx);
+/**
+ * @brief What kind of token synchronizeToContext() actually stopped at.
+ *
+ * See synchronizeToContext()'s own doc comment (in Parser.cpp) for the
+ * full explanation. Short version: Continuable means it landed on the
+ * current construct's own comma/closer (safe to keep parsing more list
+ * items); Abandoned means it hit the semantic escape valve (';' or a
+ * declaration keyword) or EOF (this construct cannot continue at all).
+ */
+enum class SyncOutcome {
+    Continuable,
+    Abandoned,
+};
+
+SyncOutcome synchronizeToContext(TokenStream& stream, ParserContext& ctx);
 
 // =============================================================================
 // Internal Parser Functions
@@ -64,8 +82,10 @@ void synchronizeToContext(TokenStream& stream, ParserContext& ctx);
  * 
  * @param stream The token stream for the file
  * @param ctx The parsing context
- * @param outDecls Output vector to collect declarations
- * @return true if parsing succeeded, false on fatal error
+ * @param outDecls Output vector to collect declarations. Always contains
+ *        whatever was successfully collected, even if a fatal-failure
+ *        threshold was hit partway through — check ctx.hasErrors, not a
+ *        return value, to tell a clean parse from one that stopped early.
  */
 void parseInternal(TokenStream& stream, ParserContext& ctx, std::vector<DeclPtr>& outDecls);
 

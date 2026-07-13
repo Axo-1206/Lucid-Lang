@@ -223,6 +223,13 @@ void synchronizeTo(TokenStream& stream, ParserContext& ctx, StopTokens... stopTo
  * what's currently open, this looks at ctx.currentContext() (pushed by
  * ScopedContext) and picks the right follow-set for that construct.
  *
+ * @return SyncOutcome — see its own doc comment. Callers that don't need
+ * to distinguish the two (most don't — they just `return nullptr;`
+ * afterward regardless of which token was hit) can ignore the return
+ * value entirely; only a caller that loops and needs to know whether
+ * it's safe to keep parsing more items (e.g. parseAttributes' main
+ * loop) needs to check it.
+ *
  * ## Why each follow-set has more than just "the matching closer"
  *
  * synchronizeUntil() is bracket-TYPE-aware (see its own doc comment): a
@@ -272,11 +279,12 @@ void synchronizeTo(TokenStream& stream, ParserContext& ctx, StopTokens... stopTo
  * and is_declaration_keyword — the same semantic escape valve
  * StructBody/EnumBody/TraitBody/FuncBody/TopLevel already relied on —
  * so recovery always has a way out even when the surrounding tokens
- * happen to contain no brackets at all.
+ * happen to contain no brackets at all. Landing on one of these is
+ * exactly what SyncOutcome::Abandoned reports back to the caller.
  */
-void synchronizeToContext(TokenStream& stream, ParserContext& ctx) {
+SyncOutcome synchronizeToContext(TokenStream& stream, ParserContext& ctx) {
     switch (ctx.currentContext()) {
-        case SyntacticContext::Attribute:
+        case SyntacticContext::Attribute: {
             // @[...]. Structural: ',' (next attribute) or ']' (list ends).
             // Semantic escape: a stray declaration after a malformed
             // attribute, with no bracket in between to catch it (see the
@@ -287,9 +295,16 @@ void synchronizeToContext(TokenStream& stream, ParserContext& ctx) {
                     || t == TokenType::SEMICOLON
                     || is_declaration_keyword(t);
             });
-            return;
+            if (!stream.isAtEnd()) {
+                TokenType t = stream.peekType();
+                if (t == TokenType::COMMA || t == TokenType::RBRACKET) {
+                    return SyncOutcome::Continuable;
+                }
+            }
+            return SyncOutcome::Abandoned;
+        }
 
-        case SyntacticContext::GenericParams:
+        case SyntacticContext::GenericParams: {
             // Declaration site: struct Point<T> { ... } / func f<T>(...).
             // Structural: ',' or '>'. Natural continuation: '{' (struct/
             // trait/enum body) or '(' (function params) immediately after
@@ -303,9 +318,16 @@ void synchronizeToContext(TokenStream& stream, ParserContext& ctx) {
                     || t == TokenType::SEMICOLON
                     || is_declaration_keyword(t);
             });
-            return;
+            if (!stream.isAtEnd()) {
+                TokenType t = stream.peekType();
+                if (t == TokenType::COMMA || t == TokenType::GREATER) {
+                    return SyncOutcome::Continuable;
+                }
+            }
+            return SyncOutcome::Abandoned;
+        }
 
-        case SyntacticContext::GenericArgs:
+        case SyntacticContext::GenericArgs: {
             // Use site: compute<int, string>(...). Structural: ',' or
             // '>'. Natural continuation: '(' — a call's argument list
             // starting right where '>' should have closed the generic
@@ -317,9 +339,16 @@ void synchronizeToContext(TokenStream& stream, ParserContext& ctx) {
                     || t == TokenType::SEMICOLON
                     || is_declaration_keyword(t);
             });
-            return;
+            if (!stream.isAtEnd()) {
+                TokenType t = stream.peekType();
+                if (t == TokenType::COMMA || t == TokenType::GREATER) {
+                    return SyncOutcome::Continuable;
+                }
+            }
+            return SyncOutcome::Abandoned;
+        }
 
-        case SyntacticContext::FuncParams:
+        case SyntacticContext::FuncParams: {
             // (a int, b int). Structural: ',' or ')'. Natural
             // continuation: '{' — a function body starting right where
             // ')' should have closed the parameter list is the missing-
@@ -331,7 +360,14 @@ void synchronizeToContext(TokenStream& stream, ParserContext& ctx) {
                     || t == TokenType::SEMICOLON
                     || is_declaration_keyword(t);
             });
-            return;
+            if (!stream.isAtEnd()) {
+                TokenType t = stream.peekType();
+                if (t == TokenType::COMMA || t == TokenType::RPAREN) {
+                    return SyncOutcome::Continuable;
+                }
+            }
+            return SyncOutcome::Abandoned;
+        }
 
         case SyntacticContext::FuncBody:
         case SyntacticContext::StructBody:
@@ -340,22 +376,27 @@ void synchronizeToContext(TokenStream& stream, ParserContext& ctx) {
             // { ... } bodies. Structural: '}'. Semantic escape: ';' or
             // the start of a new member/statement — this was the
             // original case this design was built around (see
-            // synchronizeUntil's own doc comment).
+            // synchronizeUntil's own doc comment). No caller currently
+            // needs to distinguish "hit '}'" from "hit the escape valve"
+            // here — both mean "this body-parsing loop should stop" —
+            // so this always reports Abandoned rather than adding a
+            // distinction nothing consumes yet.
             synchronizeUntil(stream, ctx, [](TokenType t) {
                 return t == TokenType::SEMICOLON
                     || t == TokenType::RBRACE
                     || is_declaration_keyword(t);
             });
-            return;
+            return SyncOutcome::Abandoned;
 
         case SyntacticContext::TopLevel:
         default:
             // Nothing bracketed is open at all — only the semantic
-            // escape valve applies.
+            // escape valve applies. Always Abandoned, for the same
+            // reason as the body-context case above.
             synchronizeUntil(stream, ctx, [](TokenType t) {
                 return t == TokenType::SEMICOLON || is_declaration_keyword(t);
             });
-            return;
+            return SyncOutcome::Abandoned;
     }
 }
 
