@@ -43,17 +43,17 @@
  * 
  * ## Precedence Levels
  * 
- * | Level | Operators | Associativity |
- * |-------|-----------|---------------|
- * | 8     | `+>` (composition) | left |
- * | 7     | unary `-` `not` `~` | right |
- * | 6     | `*` `/` `%` `**` | left |
- * | 5     | `+` `-` | left |
- * | 4     | `..` `..<` (range) | left |
- * | 3     | `==` `!=` `<` `<=` `>` `>=` | left |
- * | 2     | `and` | left |
- * | 1     | `or` | left |
- * | 0     | `|>` (pipeline) | left |
+ * | Level | Operators                                    | Associativity |
+ * | ----- | -------------------------------------------- | ------------- |
+ * | 8     | `+>` (composition)                           | left          |
+ * | 7     | unary `-` `not` `~`                          | right         |
+ * | 6     | `*` `/` `%` `**`                             | left          |
+ * | 5     | `+` `-`                                      | left          |
+ * | 4     | `..` `..<` (range)                           | left          |
+ * | 3     | `==` `!=` `<` `<=` `>` `>=`                  | left          |
+ * | 2     | `and`                                        | left          |
+ * | 1     | `or`                                         | left          |
+ * | 0     | `|>` (pipeline)                              | left          |
  * 
  * @see Parser.hpp for function declarations
  * @see Grammar.md for language grammar
@@ -93,6 +93,136 @@ namespace parser {
  * This is the main entry point for expression parsing.
  * It calls the Pratt parser with the lowest precedence level.
  * 
+ * ## Program Flow
+ * 
+ * ```
+ * parseExpr()
+ *     │
+ *     ├── 1. Quick Check Phase
+ *     │   └── if (stream.isAtEnd())
+ *     │       ├── ctx.error(stream, DiagCode::E1006, stream.peekValue())
+ *     │       └── return nullptr
+ *     │
+ *     └── 2. Parse Expression
+ *         └── return parsePrattExpr(stream, ctx, 0)
+ *             │
+ *             ├── parsePrefixExpr()
+ *             │   │
+ *             │   ├── 1. Handle Unary Operators
+ *             │   │   └── `-`, `not`, `~`
+ *             │   │       ├── Consume operator
+ *             │   │       ├── Parse operand with prec + 1 (right-associative)
+ *             │   │       └── Return UnaryExprAST
+ *             │   │
+ *             │   └── 2. Parse Primary Expression
+ *             │       │
+ *             │       ├── LiteralExprAST
+ *             │       │   └── `42`, `3.14`, `"hello"`, `true`, `false`, `nil`, `err`
+ *             │       │
+ *             │       ├── IntrinsicCallExprAST
+ *             │       │   └── `#sizeof(T)`, `#sqrt(x)`
+ *             │       │
+ *             │       ├── ArrayLiteralExprAST
+ *             │       │   └── `[1, 2, 3]`
+ *             │       │
+ *             │       ├── IfExprAST
+ *             │       │   └── `if cond ?? expr else expr`
+ *             │       │
+ *             │       ├── Parenthesized Expression
+ *             │       │   └── `(expr)`
+ *             │       │
+ *             │       ├── AnonFuncExprAST
+ *             │       │   └── `(a int) -> int { ... }`
+ *             │       │
+ *             │       ├── StructLiteralExprAST
+ *             │       │   └── `Point { x = 1, y = 2 }`
+ *             │       │
+ *             │       └── Unknown Expression
+ *             │           └── ctx.error(DiagCode::E1006)
+ *             │
+ *             └── While (prec >= minPrec)
+ *                 │
+ *                 ├── ─── Composition ──────────────────────────────────────
+ *                 │   └── `+>`
+ *                 │       ├── parseComposeExpr()
+ *                 │       └── Continue
+ *                 │
+ *                 ├── ─── Assignment Operators ────────────────────────────
+ *                 │   └── `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `**=`, `&=`, `|=`, `^=`, `<<=`, `>>=`
+ *                 │       ├── stream.advance()
+ *                 │       ├── parseInfixAssign()
+ *                 │       └── Continue
+ *                 │
+ *                 ├── ─── Null Coalesce ────────────────────────────────────
+ *                 │   └── `??`
+ *                 │       ├── stream.advance()
+ *                 │       ├── parseInfixNullCoalesce()
+ *                 │       └── Continue
+ *                 │
+ *                 ├── ─── Binary Operators ────────────────────────────────
+ *                 │   ├── Level 6: `*` `/` `%` `**` (multiplicative)
+ *                 │   ├── Level 5: `+` `-` (additive)
+ *                 │   ├── Level 4: `..` `..<` (range)
+ *                 │   ├── Level 3: `==` `!=` `<` `<=` `>` `>=` (comparison)
+ *                 │   ├── Level 2: `and` (logical AND)
+ *                 │   └── Level 1: `or` (logical OR)
+ *                 │       ├── stream.advance()
+ *                 │       ├── parseInfixBinary()
+ *                 │       └── Continue
+ *                 │
+ *                 ├── ─── Postfix Expressions ──────────────────────────────
+ *                 │   ├── `(` → parseCallExpr()
+ *                 │   ├── `[` → parseIndexExpr() or parseSliceExpr()
+ *                 │   └── `|>` → parsePipelineExpr()
+ *                 │       ├── parsePostfixExpr()
+ *                 │       └── Continue
+ *                 │
+ *                 └── ─── Unexpected Token ─────────────────────────────────
+ *                     └── break (exit loop)
+ * ```
+ * 
+ * ## Precedence Table
+ * 
+ * | Level | Operators                   | Associativity | Handler                           |
+ * | ----- | --------------------------- | ------------- | --------------------------------- |
+ * | 8     | `+>`                        | Left          | parseComposeExpr()                |
+ * | 7     | unary `-` `not` `~`         | Right         | parsePrefixExpr()                 |
+ * | 6     | `*` `/` `%` `**`            | Left          | parseInfixBinary()                |
+ * | 5     | `+` `-`                     | Left          | parseInfixBinary()                |
+ * | 4     | `..` `..<`                  | Left          | parseInfixBinary() → RangeExprAST |
+ * | 3     | `==` `!=` `<` `<=` `>` `>=` | Left          | parseInfixBinary()                |
+ * | 2     | `and`                       | Left          | parseInfixBinary()                |
+ * | 1     | `or`                        | Left          | parseInfixBinary()                |
+ * | 0     | `??`                        | Left          | parseInfixNullCoalesce()          |
+ * | -1    | `|>`                        | Left          | parsePipelineExpr()               |
+ * 
+ * ## Token Stream State
+ * 
+ * After this function completes:
+ * - Position is AFTER the parsed expression (normal case)
+ * - Position is at EOF (if expression consumed all remaining tokens)
+ * - Position is at recovery point (if errors occurred)
+ * 
+ * ## Error Handling
+ * 
+ * - **EOF**: Reports E1006 and returns nullptr
+ * - **Malformed Expression**: Reports appropriate diagnostic and attempts recovery
+ * - **Unexpected Token**: Break out of loop and return whatever was parsed
+ * 
+ * ## Examples
+ * 
+ * ```lucid
+ * 42                    → LiteralExprAST(Int, "42")
+ * x + y                 → BinaryExprAST(Add, "x", "y")
+ * x = 5                 → AssignExprAST("x", 5)
+ * a ?? b                → NullCoalesceExprAST("a", "b")
+ * f(1, 2)               → CallExprAST("f", [1, 2])
+ * arr[0]                → IndexExprAST("arr", 0)
+ * 1..10                 → RangeExprAST(1, 10)
+ * x |> y |> z           → PipelineExprAST("x", ["y", "z"])
+ * f +> g                → ComposeExprAST("f", ["g"])
+ * ```
+ * 
  * @param stream The token stream
  * @param ctx The parsing context
  * @return ExprAST* The parsed expression, or nullptr on error
@@ -100,19 +230,57 @@ namespace parser {
 ExprAST* parseExpr(TokenStream& stream, ParserContext& ctx) {
     LOG_PARSER_DETAIL("parseExpr: parsing expression");
     
+    // ─── 1. Quick Check Phase ─────────────────────────────────────────────
     // If we're at EOF, there's nothing to parse
     if (stream.isAtEnd()) {
         ctx.error(stream, DiagCode::E1006, stream.peekValue());
         return nullptr;
     }
     
-    // Parse with the lowest precedence level (0)
-    return parsePrattExpr(stream, ctx, 0);
+    // ─── 2. Parse Expression ─────────────────────────────────────────────
+    // Parse with the lowest precedence level (-1 for pipeline)
+    // Pipeline has the lowest precedence (-1), so we start with -1
+    // to ensure all operators are parsed within the expression
+    return parsePrattExpr(stream, ctx, -1);
 }
-
 
 /**
  * @brief Parse an expression using the Pratt parser.
+ * 
+ * This is the core of the Pratt parser implementation. It uses a top-down
+ * operator precedence parsing algorithm to parse expressions with correct
+ * precedence and associativity.
+ * 
+ * ## Pratt Parser Algorithm
+ * 
+ * 1. Parse a prefix expression (literal, identifier, parenthesized, etc.)
+ * 2. While the next token is an infix operator with precedence >= minPrec:
+ *    a. Parse the operator using its associated handler
+ *    b. Set lhs to the result
+ * 3. Return the parsed expression
+ * 
+ * ## Operator Handlers
+ * 
+ * | Token Type                                                     | Handler                             | Precedence  |
+ * | ---------------------------------------------------------------| ----------------------------------- | ----------- |
+ * | `+>`                                                           | parseComposeExpr()                  | 8           |
+ * | `=` `+=` `-=` `*=` `/=` `%=` `**=` `&=` ` |=` `^=` `<<=` `>>=` | parseInfixAssign()                  | Right-assoc |
+ * | `??`                                                           | parseInfixNullCoalesce()            | 0           |
+ * | `*` `/` `%` `**`                                               | parseInfixBinary()                  | 6           |
+ * | `+` `-`                                                        | parseInfixBinary()                  | 5           |
+ * | `..` `..<`                                                     | parseInfixBinary() → RangeExprAST   | 4           |
+ * | `==` `!=` `<` `<=` `>` `>=`                                    | parseInfixBinary()                  | 3           |
+ * | `and`                                                          | parseInfixBinary()                  | 2           |
+ * | `or`                                                           | parseInfixBinary()                  | 1           |
+ * | `(`                                                            | parseCallExpr()                     | Postfix     |
+ * | `[`                                                            | parseIndexExpr() / parseSliceExpr() | Postfix     |
+ * | `|>`                                                           | parsePipelineExpr()                 | -1          |
+ * 
+ * ## Error Recovery
+ * 
+ * If an unexpected token is encountered, the loop breaks and returns
+ * whatever expression has been parsed so far. This allows the caller
+ * to continue parsing.
  * 
  * @param stream The token stream
  * @param ctx The parsing context
@@ -123,6 +291,7 @@ ExprAST* parsePrattExpr(TokenStream& stream, ParserContext& ctx, int minPrec) {
     LOG_PARSER_DETAIL("parsePrattExpr: parsing expression with min precedence: ", minPrec);
     
     // ─── 1. Parse the prefix expression ──────────────────────────────────
+    // This handles literals, identifiers, unary operators, parenthesized expressions, etc.
     ExprPtr lhs = parsePrefixExpr(stream, ctx);
     if (!lhs) {
         return nullptr;
@@ -139,6 +308,7 @@ ExprAST* parsePrattExpr(TokenStream& stream, ParserContext& ctx, int minPrec) {
         }
         
         // ─── Handle composition operator (+>) ────────────────────────────
+        // Composition has the highest precedence (8)
         if (current == TokenType::COMPOSE) {
             lhs = parseComposeExpr(stream, ctx, lhs);
             if (!lhs) {
@@ -171,6 +341,7 @@ ExprAST* parsePrattExpr(TokenStream& stream, ParserContext& ctx, int minPrec) {
         }
         
         // ─── Handle `??` operator (null coalesce) ──────────────────────
+        // Null coalesce has precedence 0 (between 'or' at 1 and pipeline at -1)
         if (current == TokenType::QUESTION_QUESTION) {
             stream.advance(); // Consume '??'
             lhs = parseInfixNullCoalesce(stream, ctx, lhs);
@@ -181,6 +352,7 @@ ExprAST* parsePrattExpr(TokenStream& stream, ParserContext& ctx, int minPrec) {
         }
         
         // ─── Handle binary operators ──────────────────────────────────────
+        // All other infix operators (arithmetic, comparison, logical, range)
         if (prec >= 0) {
             stream.advance(); // Consume the operator
             lhs = parseInfixBinary(stream, ctx, lhs, current, prec);
@@ -191,6 +363,7 @@ ExprAST* parsePrattExpr(TokenStream& stream, ParserContext& ctx, int minPrec) {
         }
         
         // ─── Handle postfix expressions (call, index, slice, pipeline) ──
+        // These are applied after the left-hand side expression
         if (current == TokenType::LPAREN ||
             current == TokenType::LBRACKET ||
             current == TokenType::PIPELINE) {
@@ -201,7 +374,9 @@ ExprAST* parsePrattExpr(TokenStream& stream, ParserContext& ctx, int minPrec) {
             continue;
         }
         
-        // If we get here, we have an unexpected token
+        // ─── Unexpected token ─────────────────────────────────────────────
+        // If we get here, we have an unexpected token that's not an operator
+        // Break out of the loop and return what we have
         break;
     }
     

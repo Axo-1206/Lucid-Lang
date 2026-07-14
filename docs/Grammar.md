@@ -5473,3 +5473,16 @@ const processImages (images [*]Image) -> [*]ProcessedImage = {
 | Join with       | `join`                   | `await`                     |
 | Fire and forget | `spawn _ =`              | N/A (must await or warning) |
 | Data sharing    | Needs locks              | Safe at yield points        |
+
+| Level | Operators                   | Associativity | Handler                           |
+| ----- | --------------------------- | ------------- | --------------------------------- |
+| 8     | `+>`                        | Left          | parseComposeExpr()                |
+| 7     | unary `-` `not` `~`         | Right         | parsePrefixExpr()                 |
+| 6     | `*` `/` `%` `**`            | Left          | parseInfixBinary()                |
+| 5     | `+` `-`                     | Left          | parseInfixBinary()                |
+| 4     | `..` `..<`                  | Left          | parseInfixBinary() → RangeExprAST |
+| 3     | `==` `!=` `<` `<=` `>` `>=` | Left          | parseInfixBinary()                |
+| 2     | `and`                       | Left          | parseInfixBinary()                |
+| 1     | `or`                        | Left          | parseInfixBinary()                |
+| 0     | `??`                        | Left          | parseInfixNullCoalesce()          |
+| -1    | `\|>`                       | Left          | parsePipelineExpr()               |
