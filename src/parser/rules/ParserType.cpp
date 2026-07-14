@@ -107,28 +107,6 @@ TypeAST* parseBaseType(TokenStream& stream, ParserContext& ctx) {
         return parseFuncType(stream, ctx);
     }
     
-    // // Check for parenthesized type: (type)
-    // if (stream.check(TokenType::LPAREN)) {
-    //     SourceLocation loc = stream.currentLoc();
-    //     stream.advance(); // Consume '('
-        
-    //     TypePtr inner = parseType(stream, ctx);
-    //     if (!inner) {
-    //         ctx.error(stream, DiagCode::E1003, "type", stream.peekValue());
-    //         synchronize(stream, ctx);
-    //         return nullptr;
-    //     }
-        
-    //     if (!stream.check(TokenType::RPAREN)) {
-    //         ctx.error(stream, DiagCode::E1005, ")", "parenthesized type", stream.peekValue());
-    //         synchronizeTo(stream, ctx, TokenType::RPAREN);
-    //         return inner;
-    //     }
-    //     stream.advance(); // Consume ')'
-        
-    //     return inner;
-    // }
-    
     // Parse as named type (identifier)
     if (stream.check(TokenType::IDENTIFIER)) {
         return parseNamedType(stream, ctx);
@@ -136,7 +114,7 @@ TypeAST* parseBaseType(TokenStream& stream, ParserContext& ctx) {
     
     // Unknown type
     ctx.error(stream, DiagCode::E1003, "type", stream.peekValue());
-    synchronize(stream, ctx);
+    synchronizeToContext(stream, ctx);
     return nullptr;
 }
 
@@ -159,7 +137,7 @@ TypeAST* parsePrimitiveType(TokenStream& stream, ParserContext& ctx) {
     // Use the new helper to check for primitive type
     if (!stream.isPrimitiveTypeToken(stream.peekType())) {
         ctx.error(stream, DiagCode::E1003, "primitive type", stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -225,7 +203,7 @@ TypeAST* parseNamedType(TokenStream& stream, ParserContext& ctx) {
     
     if (!stream.check(TokenType::IDENTIFIER)) {
         ctx.error(stream, DiagCode::E1002, "type name", stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -274,7 +252,7 @@ TypeAST* parseArrayType(TokenStream& stream, ParserContext& ctx) {
     
     if (!stream.check(TokenType::LBRACKET)) {
         ctx.error(stream, DiagCode::E1004, "[", "array type", stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     stream.advance(); // Consume '['
@@ -319,7 +297,7 @@ TypeAST* parseArrayType(TokenStream& stream, ParserContext& ctx) {
     TypePtr element = parseType(stream, ctx);
     if (!element) {
         ctx.error(stream, DiagCode::E1003, "array element type", stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -352,7 +330,7 @@ TypeAST* parseRefType(TokenStream& stream, ParserContext& ctx) {
     
     if (!stream.check(TokenType::AMPERSAND)) {
         ctx.error(stream, DiagCode::E1007, "&", stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     stream.advance(); // Consume '&'
@@ -360,7 +338,7 @@ TypeAST* parseRefType(TokenStream& stream, ParserContext& ctx) {
     TypePtr inner = parseType(stream, ctx);
     if (!inner) {
         ctx.error(stream, DiagCode::E1003, "reference target type", stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -393,7 +371,7 @@ TypeAST* parsePtrType(TokenStream& stream, ParserContext& ctx) {
     // Check for '*' operator
     if (!stream.check(TokenType::MUL)) {
         ctx.error(stream, DiagCode::E1007, "*", stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     stream.advance(); // Consume '*'
@@ -402,7 +380,7 @@ TypeAST* parsePtrType(TokenStream& stream, ParserContext& ctx) {
     TypePtr inner = parseType(stream, ctx);
     if (!inner) {
         ctx.error(stream, DiagCode::E1003, "pointer target type", stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -463,6 +441,7 @@ TypeAST* parseFuncType(TokenStream& stream, ParserContext& ctx) {
     
     // ─── 3. Parse return types (optional) ─────────────────────────────────
     if (stream.match(TokenType::ARROW)) {
+        funcType->hasArrow = true;
         // parseReturnList handles:
         // - Single type: `int`
         // - Multiple types: `(int, string)`

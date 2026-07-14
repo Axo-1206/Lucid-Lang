@@ -354,6 +354,8 @@ struct FuncTypeAST : TypeAST {
 
     ArenaSpan<ParamAST*> params;      // parameters for this group
     ArenaSpan<TypePtr>  returnTypes;  // return types (may contain FuncTypeAST)
+    bool hasArrow = false;            // semantic enforce return statement inside the body
+                                      // and codegen will automatically wrap function
 
     explicit FuncTypeAST() : TypeAST(ASTKind::FuncType) {}
     
