@@ -224,6 +224,8 @@ struct Token {
     // ─── Helper Methods ──────────────────────────────────────────────────
     
     bool is_operator() const;
+    bool is_assignment_op() const;
+    bool is_binary_op() const;
     bool is_literal() const;
     bool is_keyword() const;
     bool is_primitive_type() const;
@@ -416,6 +418,60 @@ inline bool is_operator(TokenType type) {
     }
 }
 
+inline bool is_assignment_op(TokenType type) {
+    switch (type) {
+        case TokenType::ASSIGN:
+        case TokenType::PLUS_ASSIGN:
+        case TokenType::MINUS_ASSIGN:
+        case TokenType::MUL_ASSIGN:
+        case TokenType::DIV_ASSIGN:
+        case TokenType::MOD_ASSIGN:
+        case TokenType::POW_ASSIGN:
+        case TokenType::BIT_AND_ASSIGN:
+        case TokenType::BIT_OR_ASSIGN:
+        case TokenType::BIT_XOR_ASSIGN:
+        case TokenType::SHL_ASSIGN:
+        case TokenType::SHR_ASSIGN:
+            return true;
+        default:
+            return false;
+    }
+}
+
+inline bool is_binary_op(TokenType type) {
+    switch (type) {
+        // Arithmetic
+        case TokenType::PLUS:
+        case TokenType::MINUS:
+        case TokenType::MUL:
+        case TokenType::DIV:
+        case TokenType::POW:
+        case TokenType::MOD:
+        // Comparison
+        case TokenType::EQUAL_EQUAL:
+        case TokenType::NOT_EQUAL:
+        case TokenType::LESS:
+        case TokenType::LESS_EQUAL:
+        case TokenType::GREATER:
+        case TokenType::GREATER_EQUAL:
+        // Logical
+        case TokenType::AND:
+        case TokenType::OR:
+        // Bitwise
+        case TokenType::BIT_AND:
+        case TokenType::BIT_OR:
+        case TokenType::BIT_XOR:
+        case TokenType::SHL:
+        case TokenType::SHR:
+        // Range
+        case TokenType::RANGE:
+        case TokenType::RANGE_EXCLUSIVE:
+            return true;
+        default:
+            return false;
+    }
+}
+
 inline bool is_literal(TokenType type) {
     switch (type) {
         case TokenType::INT_LITERAL:
@@ -499,6 +555,14 @@ inline bool is_keyword(TokenType type) {
 
 inline bool Token::is_operator() const {
     return ::is_operator(type);
+}
+
+inline bool Token::is_assignment_op() const {
+    return ::is_assignment_op(type);
+}
+
+inline bool Token::is_binary_op() const {
+    return ::is_binary_op(type);
 }
 
 inline bool Token::is_literal() const {

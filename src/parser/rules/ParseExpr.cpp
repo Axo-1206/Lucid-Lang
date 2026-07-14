@@ -140,8 +140,6 @@ ExprAST* parsePrattExpr(TokenStream& stream, ParserContext& ctx, int minPrec) {
         
         // ─── Handle composition operator (+>) ────────────────────────────
         if (current == TokenType::COMPOSE) {
-            // Composition has higher precedence than assignment and null coalesce
-            // but lower than function calls
             lhs = parseComposeExpr(stream, ctx, lhs);
             if (!lhs) {
                 return nullptr;
@@ -149,19 +147,30 @@ ExprAST* parsePrattExpr(TokenStream& stream, ParserContext& ctx, int minPrec) {
             continue;
         }
         
-        // Check for assignment operators (right-associative)
-        if (current == TokenType::ASSIGN) {
-            // For assignment, we need to parse the RHS with lower precedence
-            // to handle right-associativity: a = b = c → a = (b = c)
+        // ─── Handle assignment operators (right-associative) ─────────────
+        // Assignment operators are right-associative: a = b = c → a = (b = c)
+        if (current == TokenType::ASSIGN ||
+            current == TokenType::PLUS_ASSIGN ||
+            current == TokenType::MINUS_ASSIGN ||
+            current == TokenType::MUL_ASSIGN ||
+            current == TokenType::DIV_ASSIGN ||
+            current == TokenType::MOD_ASSIGN ||
+            current == TokenType::POW_ASSIGN ||
+            current == TokenType::BIT_AND_ASSIGN ||
+            current == TokenType::BIT_OR_ASSIGN ||
+            current == TokenType::BIT_XOR_ASSIGN ||
+            current == TokenType::SHL_ASSIGN ||
+            current == TokenType::SHR_ASSIGN) {
+            
             stream.advance(); // Consume the assignment operator
-            lhs = parseInfixAssign(stream, ctx, lhs);
+            lhs = parseInfixAssign(stream, ctx, lhs, current);
             if (!lhs) {
                 return nullptr;
             }
             continue;
         }
         
-        // Check for `??` operator (null coalesce)
+        // ─── Handle `??` operator (null coalesce) ──────────────────────
         if (current == TokenType::QUESTION_QUESTION) {
             stream.advance(); // Consume '??'
             lhs = parseInfixNullCoalesce(stream, ctx, lhs);
@@ -171,7 +180,7 @@ ExprAST* parsePrattExpr(TokenStream& stream, ParserContext& ctx, int minPrec) {
             continue;
         }
         
-        // Handle binary operators
+        // ─── Handle binary operators ──────────────────────────────────────
         if (prec >= 0) {
             stream.advance(); // Consume the operator
             lhs = parseInfixBinary(stream, ctx, lhs, current, prec);
@@ -181,7 +190,7 @@ ExprAST* parsePrattExpr(TokenStream& stream, ParserContext& ctx, int minPrec) {
             continue;
         }
         
-        // Handle postfix expressions (call, index, slice, pipeline)
+        // ─── Handle postfix expressions (call, index, slice, pipeline) ──
         if (current == TokenType::LPAREN ||
             current == TokenType::LBRACKET ||
             current == TokenType::PIPELINE) {
@@ -352,7 +361,7 @@ ExprAST* parsePrimaryExpr(TokenStream& stream, ParserContext& ctx) {
     
     // ─── 9. Unknown primary expression ──────────────────────────────────
     ctx.error(stream, DiagCode::E1006, stream.peekValue());
-    synchronize(stream, ctx);
+    synchronizeToContext(stream, ctx);
     return nullptr;
 }
 
@@ -530,7 +539,7 @@ CallExprAST* parseCallExpr(TokenStream& stream, ParserContext& ctx,
     // ─── 1. Expect '(' ────────────────────────────────────────────────────
     if (!stream.check(TokenType::LPAREN)) {
         ctx.error(stream, DiagCode::E1004, "(", "function call", stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     // We don't consume '(' here - parseArgList does that
@@ -607,7 +616,7 @@ IntrinsicCallExprAST* parseIntrinsicCallExpr(TokenStream& stream, ParserContext&
     // ─── 1. Parse '#' token ──────────────────────────────────────────────
     if (!stream.check(TokenType::HASH)) {
         ctx.error(stream, DiagCode::E1001, "#", stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     stream.advance(); // Consume '#'
@@ -615,7 +624,7 @@ IntrinsicCallExprAST* parseIntrinsicCallExpr(TokenStream& stream, ParserContext&
     // ─── 2. Parse intrinsic name ──────────────────────────────────────────
     if (!stream.check(TokenType::IDENTIFIER)) {
         ctx.error(stream, DiagCode::E1002, "intrinsic name", stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     Token nameTok = stream.advance();
@@ -685,7 +694,7 @@ IndexExprAST* parseIndexExpr(TokenStream& stream, ParserContext& ctx, ExprPtr ta
     // ─── 1. Expect '[' ────────────────────────────────────────────────────
     if (!stream.check(TokenType::LBRACKET)) {
         ctx.error(stream, DiagCode::E1004, "[", "index expression", stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     stream.advance(); // Consume '['
@@ -793,7 +802,7 @@ SliceExprAST* parseSliceExpr(TokenStream& stream, ParserContext& ctx, ExprPtr ta
     // ─── 1. Expect '[' ────────────────────────────────────────────────────
     if (!stream.check(TokenType::LBRACKET)) {
         ctx.error(stream, DiagCode::E1004, "[", "slice expression", stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     stream.advance(); // Consume '['
@@ -1157,7 +1166,7 @@ PipelineStepAST* parsePipelineStep(TokenStream& stream, ParserContext& ctx) {
     ExprPtr callable = parseExpr(stream, ctx);
     if (!callable) {
         ctx.error(stream, DiagCode::E1006, "pipeline step expression", stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -1317,7 +1326,7 @@ ExprAST* parseComposeExpr(TokenStream& stream, ParserContext& ctx, ExprPtr lhs) 
     // ─── 1. Expect '+>' ──────────────────────────────────────────────────
     if (!stream.check(TokenType::COMPOSE)) {
         ctx.error(stream, DiagCode::E1004, "+>", "composition", stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     stream.advance(); // Consume '+>'
@@ -1329,7 +1338,7 @@ ExprAST* parseComposeExpr(TokenStream& stream, ParserContext& ctx, ExprPtr lhs) 
     ComposeOperandPtr operand = parseComposeOperand(stream, ctx);
     if (!operand) {
         ctx.error(stream, DiagCode::E1006, "composition operand", stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return lhs;
     }
     operands.push_back(operand);
@@ -1341,7 +1350,7 @@ ExprAST* parseComposeExpr(TokenStream& stream, ParserContext& ctx, ExprPtr lhs) 
         operand = parseComposeOperand(stream, ctx);
         if (!operand) {
             ctx.error(stream, DiagCode::E1006, "composition operand", stream.peekValue());
-            synchronize(stream, ctx);
+            synchronizeToContext(stream, ctx);
             break;
         }
         operands.push_back(operand);
@@ -1400,7 +1409,7 @@ ComposeOperandAST* parseComposeOperand(TokenStream& stream, ParserContext& ctx) 
     ExprPtr callable = parseExpr(stream, ctx);
     if (!callable) {
         ctx.error(stream, DiagCode::E1006, "composition operand", stream.peekValue());
-        synchronize(stream, ctx);
+        synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
@@ -1452,21 +1461,73 @@ ComposeOperandAST* parseComposeOperand(TokenStream& stream, ParserContext& ctx) 
  * 
  * ## Precedence Levels
  * 
- * | Level | Operators |
- * |-------|-----------|
- * | 8     | `+>` (composition) |
- * | 7     | unary `-` `not` `~` |
- * | 6     | `*` `/` `%` `**` |
- * | 5     | `+` `-` |
- * | 4     | `..` `..<` (range) |
- * | 3     | `==` `!=` `<` `<=` `>` `>=` |
- * | 2     | `and` |
- * | 1     | `or` |
- * | 0     | `|>` (pipeline) |
+ * | Level | Operators | Associativity |
+ * |-------|-----------|---------------|
+ * | 8     | `+>` (composition) | Left |
+ * | 7     | unary `-` `not` `~` | Right |
+ * | 6     | `*` `/` `%` `**` | Left |
+ * | 5     | `+` `-` | Left |
+ * | 4     | `..` `..<` (range) | Left |
+ * | 3     | `==` `!=` `<` `<=` `>` `>=` | Left |
+ * | 2     | `and` | Left |
+ * | 1     | `or` | Left |
+ * | 0     | `??` (null coalesce) | Left |
+ * | -1    | `|>` (pipeline) | Left |
+ * 
+ * @note The `??` operator has the lowest precedence of all operators that
+ *       produce a value, but higher than pipeline which is a separator.
  */
 int infixPrec(TokenType type) {
-    // TODO: Implement
-    return -1;
+    switch (type) {
+        // ─── Composition (highest precedence for binary operators) ────
+        case TokenType::COMPOSE:
+            return 8;
+            
+        // ─── Multiplicative ─────────────────────────────────────────────
+        case TokenType::MUL:
+        case TokenType::DIV:
+        case TokenType::MOD:
+        case TokenType::POW:
+            return 6;
+            
+        // ─── Additive ───────────────────────────────────────────────────
+        case TokenType::PLUS:
+        case TokenType::MINUS:
+            return 5;
+            
+        // ─── Range ──────────────────────────────────────────────────────
+        case TokenType::RANGE:
+        case TokenType::RANGE_EXCLUSIVE:
+            return 4;
+            
+        // ─── Comparison ─────────────────────────────────────────────────
+        case TokenType::EQUAL_EQUAL:
+        case TokenType::NOT_EQUAL:
+        case TokenType::LESS:
+        case TokenType::LESS_EQUAL:
+        case TokenType::GREATER:
+        case TokenType::GREATER_EQUAL:
+            return 3;
+            
+        // ─── Logical AND ────────────────────────────────────────────────
+        case TokenType::AND:
+            return 2;
+            
+        // ─── Logical OR ─────────────────────────────────────────────────
+        case TokenType::OR:
+            return 1;
+            
+        // ─── Null Coalesce ─────────────────────────────────────────────
+        case TokenType::QUESTION_QUESTION:
+            return 0;
+            
+        // ─── Pipeline (acts as a separator, not a value operator) ─────
+        case TokenType::PIPELINE:
+            return -1;
+            
+        default:
+            return -2;
+    }
 }
 
 /**
@@ -1476,8 +1537,38 @@ int infixPrec(TokenType type) {
  * @return BinaryOp The corresponding binary operation
  */
 BinaryOp tokenToBinaryOp(TokenType type) {
-    // TODO: Implement
-    return BinaryOp::Add;
+    switch (type) {
+        // Arithmetic
+        case TokenType::PLUS:   return BinaryOp::Add;
+        case TokenType::MINUS:  return BinaryOp::Sub;
+        case TokenType::MUL:    return BinaryOp::Mul;
+        case TokenType::DIV:    return BinaryOp::Div;
+        case TokenType::POW:    return BinaryOp::Pow;
+        case TokenType::MOD:    return BinaryOp::Mod;
+        
+        // Comparison
+        case TokenType::EQUAL_EQUAL:    return BinaryOp::Eq;
+        case TokenType::NOT_EQUAL:      return BinaryOp::Ne;
+        case TokenType::LESS:           return BinaryOp::Lt;
+        case TokenType::LESS_EQUAL:     return BinaryOp::Le;
+        case TokenType::GREATER:        return BinaryOp::Gt;
+        case TokenType::GREATER_EQUAL:  return BinaryOp::Ge;
+        
+        // Logical
+        case TokenType::AND:    return BinaryOp::And;
+        case TokenType::OR:     return BinaryOp::Or;
+        
+        // Bitwise
+        case TokenType::BIT_AND: return BinaryOp::BitAnd;
+        case TokenType::BIT_OR:  return BinaryOp::BitOr;
+        case TokenType::BIT_XOR: return BinaryOp::BitXor;
+        case TokenType::SHL:     return BinaryOp::Shl;
+        case TokenType::SHR:     return BinaryOp::Shr;
+        
+        default:
+            // Should never happen if called correctly
+            return BinaryOp::Add;
+    }
 }
 
 /**
@@ -1487,8 +1578,23 @@ BinaryOp tokenToBinaryOp(TokenType type) {
  * @return AssignOp The corresponding assignment operation
  */
 AssignOp tokenToAssignOp(TokenType type) {
-    // TODO: Implement
-    return AssignOp::Assign;
+    switch (type) {
+        case TokenType::ASSIGN:         return AssignOp::Assign;
+        case TokenType::PLUS_ASSIGN:    return AssignOp::AddAssign;
+        case TokenType::MINUS_ASSIGN:   return AssignOp::SubAssign;
+        case TokenType::MUL_ASSIGN:     return AssignOp::MulAssign;
+        case TokenType::DIV_ASSIGN:     return AssignOp::DivAssign;
+        case TokenType::POW_ASSIGN:     return AssignOp::PowAssign;
+        case TokenType::MOD_ASSIGN:     return AssignOp::ModAssign;
+        case TokenType::BIT_AND_ASSIGN: return AssignOp::BitAndAssign;
+        case TokenType::BIT_OR_ASSIGN:  return AssignOp::BitOrAssign;
+        case TokenType::BIT_XOR_ASSIGN: return AssignOp::BitXorAssign;
+        case TokenType::SHL_ASSIGN:     return AssignOp::ShlAssign;
+        case TokenType::SHR_ASSIGN:     return AssignOp::ShrAssign;
+        default:
+            // Should never happen if called correctly
+            return AssignOp::Assign;
+    }
 }
 
 // =============================================================================
@@ -1498,33 +1604,50 @@ AssignOp tokenToAssignOp(TokenType type) {
 /**
  * @brief Parse an assignment expression.
  * 
- * Grammar: `lvalue '=' expr`
+ * Grammar: `lvalue assign_op expr`
  * 
  * @param stream The token stream
  * @param ctx The parsing context
  * @param lhs The left-hand side expression
+ * @param opTok The assignment operator token type
  * @return ExprPtr The parsed assignment expression, or nullptr on error
  */
-ExprPtr parseInfixAssign(TokenStream& stream, ParserContext& ctx, ExprPtr lhs) {
+ExprPtr parseInfixAssign(TokenStream& stream, ParserContext& ctx, ExprPtr lhs, TokenType opTok) {
+    SourceLocation loc = stream.currentLoc();
+    
     LOG_PARSER_DETAIL("parseInfixAssign: parsing assignment expression");
-    // TODO: Implement
-    return nullptr;
-}
-
-/**
- * @brief Parse an `is` expression.
- * 
- * Grammar: `expr 'is' type`
- * 
- * @param stream The token stream
- * @param ctx The parsing context
- * @param lhs The left-hand side expression
- * @return ExprPtr The parsed is expression, or nullptr on error
- */
-ExprPtr parseInfixIs(TokenStream& stream, ParserContext& ctx, ExprPtr lhs) {
-    LOG_PARSER_DETAIL("parseInfixIs: parsing is expression");
-    // TODO: Implement
-    return nullptr;
+    
+    if (!lhs) {
+        ctx.error(stream, DiagCode::E1006, "left-hand side", stream.peekValue());
+        return nullptr;
+    }
+    
+    // ─── 1. Verify LHS is an lvalue ──────────────────────────────────────
+    // The semantic pass will do more thorough checking, but we can do a basic check
+    // For now, we just parse the RHS and let the semantic pass handle validation
+    
+    // ─── 2. Parse the right-hand side ────────────────────────────────────
+    // For assignment, we parse the RHS with the same precedence level as the
+    // assignment operator (right-associative)
+    ExprPtr rhs = parsePrattExpr(stream, ctx, infixPrec(opTok));
+    if (!rhs) {
+        ctx.error(stream, DiagCode::E1006, "right-hand side of assignment", stream.peekValue());
+        synchronizeToContext(stream, ctx);
+        return nullptr;
+    }
+    
+    // ─── 3. Build the assignment expression ──────────────────────────────
+    AssignOp op = tokenToAssignOp(opTok);
+    
+    auto* assign = ctx.arena.make<AssignExprAST>();
+    assign->loc = loc;
+    assign->op = op;
+    assign->lhs = lhs;
+    assign->rhs = rhs;
+    
+    LOG_PARSER_DETAIL("parseInfixAssign: parsed assignment expression");
+    
+    return assign;
 }
 
 /**
@@ -1532,21 +1655,104 @@ ExprPtr parseInfixIs(TokenStream& stream, ParserContext& ctx, ExprPtr lhs) {
  * 
  * Grammar: `expr '??' expr`
  * 
+ * ## Examples
+ * 
+ * ```lucid
+ * value ?? fallback
+ * riskyOp() ?? -1
+ * lookup() ?? User { id = 0, name = "guest" }
+ * player?.weapon?.damage ?? 0
+ * ```
+ * 
+ * ## Semantic Analysis Notes
+ * 
+ * 1. **Sentinel Coverage**: `??` triggers when the left-hand side is `nil`,
+ *    `err`, or both (for `T?!` types).
+ * 
+ * 2. **Result Type**: The result type is whatever type `rhs` produces,
+ *    checked against `lhs`'s own type.
+ * 
+ * 3. **Block Form**: The right-hand side may be a block, which can re-raise
+ *    `err` instead of fully resolving the value.
+ * 
+ * 4. **Short-Circuit**: The right-hand side is only evaluated if the left-hand
+ *    side is `nil` or `err`.
+ * 
  * @param stream The token stream
  * @param ctx The parsing context
  * @param lhs The left-hand side expression
  * @return ExprPtr The parsed null coalesce expression, or nullptr on error
  */
 ExprPtr parseInfixNullCoalesce(TokenStream& stream, ParserContext& ctx, ExprPtr lhs) {
+    SourceLocation loc = stream.currentLoc();
+    
     LOG_PARSER_DETAIL("parseInfixNullCoalesce: parsing null coalesce expression");
-    // TODO: Implement
-    return nullptr;
+    
+    if (!lhs) {
+        ctx.error(stream, DiagCode::E1006, "left-hand side", stream.peekValue());
+        return nullptr;
+    }
+    
+    // ─── 1. Parse the right-hand side ────────────────────────────────────
+    // The '??' operator has low precedence (between 'or' and assignment)
+    // We parse the RHS with the same precedence level as the operator
+    ExprPtr rhs = parsePrattExpr(stream, ctx, infixPrec(TokenType::QUESTION_QUESTION));
+    if (!rhs) {
+        ctx.error(stream, DiagCode::E1006, "right-hand side of '?\?'", stream.peekValue());
+        synchronizeToContext(stream, ctx);
+        return nullptr;
+    }
+    
+    // ─── 2. Build the null coalesce expression ───────────────────────────
+    auto* coalesce = ctx.arena.make<NullCoalesceExprAST>();
+    coalesce->loc = loc;
+    coalesce->value = lhs;
+    coalesce->fallback = rhs;
+    
+    LOG_PARSER_DETAIL("parseInfixNullCoalesce: parsed null coalesce expression");
+    
+    return coalesce;
 }
 
 /**
  * @brief Parse a binary expression.
  * 
  * Grammar: `lhs operator rhs`
+ * 
+ * ## Examples
+ * 
+ * ```lucid
+ * a + b
+ * x == y
+ * p and q
+ * a & b
+ * 1..10
+ * ```
+ * 
+ * ## Operator Precedence
+ * 
+ * | Level | Operators | Associativity |
+ * |-------|-----------|---------------|
+ * | 6     | `*` `/` `%` `**` | Left |
+ * | 5     | `+` `-` | Left |
+ * | 4     | `..` `..<` (range) | Left |
+ * | 3     | `==` `!=` `<` `<=` `>` `>=` | Left |
+ * | 2     | `and` | Left |
+ * | 1     | `or` | Left |
+ * 
+ * ## Semantic Analysis Notes
+ * 
+ * 1. **Logical Operators**: `and` and `or` are short-circuiting and accept
+ *    any type (coerced to bool). Result is always bool.
+ * 
+ * 2. **Bitwise Operators**: `&`, `|`, `^`, `<<`, `>>` are integer-only.
+ * 
+ * 3. **Comparison**: `==` and `!=` compare values. Reference equality is
+ *    not a separate operator (use `&` and compare addresses).
+ * 
+ * 4. **Arithmetic**: `+`, `-`, `*`, `/`, `%`, `**` are numeric-only.
+ * 
+ * 5. **Range**: `..` is inclusive, `..<` is exclusive.
  * 
  * @param stream The token stream
  * @param ctx The parsing context
@@ -1556,9 +1762,62 @@ ExprPtr parseInfixNullCoalesce(TokenStream& stream, ParserContext& ctx, ExprPtr 
  * @return ExprPtr The parsed binary expression, or nullptr on error
  */
 ExprPtr parseInfixBinary(TokenStream& stream, ParserContext& ctx, ExprPtr lhs, TokenType opTok, int prec) {
-    LOG_PARSER_DETAIL("parseInfixBinary: parsing binary expression");
-    // TODO: Implement
-    return nullptr;
+    SourceLocation loc = stream.currentLoc();
+    
+    LOG_PARSER_DETAIL("parseInfixBinary: parsing binary expression with operator: ", 
+                      token_type_name(opTok));
+    
+    if (!lhs) {
+        ctx.error(stream, DiagCode::E1006, "left-hand side", stream.peekValue());
+        return nullptr;
+    }
+    
+    // ─── 1. Convert token type to BinaryOp ──────────────────────────────
+    BinaryOp op = tokenToBinaryOp(opTok);
+    
+    // ─── 2. Parse the right-hand side ────────────────────────────────────
+    // For left-associative operators, we parse the RHS with precedence + 1
+    // to ensure left-associativity: a + b + c → (a + b) + c
+    // 
+    // For range operators, we use the same precedence to allow chaining:
+    // 1..10..2 → (1..10)..2 (but range chaining is not allowed semantically)
+    bool isRangeOp = (opTok == TokenType::RANGE || opTok == TokenType::RANGE_EXCLUSIVE);
+    int rhsPrec = isRangeOp ? prec : prec + 1;
+    
+    ExprPtr rhs = parsePrattExpr(stream, ctx, rhsPrec);
+    if (!rhs) {
+        ctx.error(stream, DiagCode::E1006, "right-hand side of binary operator", stream.peekValue());
+        synchronizeToContext(stream, ctx);
+        return nullptr;
+    }
+    
+    // ─── 3. Special handling for range operators ────────────────────────
+    // Range expressions are parsed as binary expressions but stored as
+    // RangeExprAST nodes
+    if (isRangeOp) {
+        auto* range = ctx.arena.make<RangeExprAST>();
+        range->loc = loc;
+        range->lo = lhs;
+        range->hi = rhs;
+        range->isExclusive = (opTok == TokenType::RANGE_EXCLUSIVE);
+        
+        LOG_PARSER_DETAIL("parseInfixBinary: parsed range expression",
+                          range->isExclusive ? " (exclusive)" : " (inclusive)");
+        
+        return range;
+    }
+    
+    // ─── 4. Build the binary expression ──────────────────────────────────
+    auto* binary = ctx.arena.make<BinaryExprAST>();
+    binary->loc = loc;
+    binary->op = op;
+    binary->left = lhs;
+    binary->right = rhs;
+    
+    LOG_PARSER_DETAIL("parseInfixBinary: parsed binary expression with op: ", 
+                      token_type_name(opTok));
+    
+    return binary;
 }
 
 } // namespace parser
