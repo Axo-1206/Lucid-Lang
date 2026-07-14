@@ -17,10 +17,6 @@
 
 namespace parser {
 
-// =============================================================================
-// harvestDocComment - Collect documentation comments
-// =============================================================================
-
 /**
  * @brief Harvests documentation comments attached to the upcoming declaration.
  * 
@@ -151,10 +147,6 @@ std::optional<DocComment> harvestDocComment(TokenStream& stream, ParserContext& 
     
     return std::nullopt;
 }
-
-// =============================================================================
-// parseAttributes - Parse attribute lists
-// =============================================================================
 
 /**
  * @brief Parse a list of attributes.
@@ -389,10 +381,6 @@ ArenaSpan<AttributePtr> parseAttributes(TokenStream& stream, ParserContext& ctx)
     return builder.build();
 }
 
-// =============================================================================
-// parseAttribute - Parse a single attribute
-// =============================================================================
-
 /**
  * @brief Parse a single attribute.
  * 
@@ -616,10 +604,6 @@ AttributePtr parseAttribute(TokenStream& stream, ParserContext& ctx) {
     return attr;
 }
 
-// =============================================================================
-// parseAttributeArgLiteral - Parse an attribute argument literal
-// =============================================================================
-
 /**
  * @brief Parse an attribute argument literal.
  * 
@@ -694,10 +678,6 @@ AttributeArgPtr parseAttributeArgLiteral(TokenStream& stream, ParserContext& ctx
     
     return arg;
 }
-
-// =============================================================================
-// parseGenericParamDecls - Parse a list of generic parameters
-// =============================================================================
 
 /**
  * @brief Parse a list of generic parameters.
@@ -934,10 +914,6 @@ ArenaSpan<GenericParamDeclPtr> parseGenericParamDecls(TokenStream& stream, Parse
     
     return builder.build();
 }
-
-// =============================================================================
-// parseGenericParamDecl - Parse a single generic parameter declaration
-// =============================================================================
 
 /**
  * @brief Parse a single generic parameter declaration.
@@ -1193,10 +1169,6 @@ GenericParamDeclPtr parseGenericParamDecl(TokenStream& stream, ParserContext& ct
     return param;
 }
 
-// =============================================================================
-// parseGenericArgs - Parse a list of generic arguments
-// =============================================================================
-
 /**
  * @brief Parse a list of generic arguments.
  *
@@ -1435,10 +1407,6 @@ ArenaSpan<TypePtr> parseGenericArgs(TokenStream& stream, ParserContext& ctx) {
 
     return builder.build();
 }
-
-// =============================================================================
-// parseParamList - Parse a list of function parameters
-// =============================================================================
 
 /**
  * @brief Parse a list of function parameters.
@@ -1694,10 +1662,6 @@ std::vector<ParamPtr> parseParamList(TokenStream& stream, ParserContext& ctx) {
     return params;
 }
 
-// =============================================================================
-// parseArgList - Parse a list of arguments
-// =============================================================================
-
 /**
  * @brief Parse a list of arguments for a function call.
  * 
@@ -1877,10 +1841,6 @@ ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx) {
     
     return builder.build();
 }
-
-// =============================================================================
-// parseReturnList() - Parse a list of return types
-// =============================================================================
 
 /**
  * @brief Parse a list of return types.
@@ -2101,9 +2061,9 @@ ArenaSpan<TypeAST*> parseReturnList(TokenStream& stream, ParserContext& ctx) {
 }
 
 /**
- * @brief Parse a use declaration and import the module.
+ * @brief Parse a import declaration and import the module.
  * 
- * Grammar: `use path [as alias]`
+ * Grammar: `import path [as alias]`
  * 
  * ## Path Styles
  * 
@@ -2112,10 +2072,10 @@ ArenaSpan<TypeAST*> parseReturnList(TokenStream& stream, ParserContext& ctx) {
  * The parser currently supports **dot-separated** paths exclusively:
  * 
  * ```lucid
- * use std.io                    → path = "std.io", alias = std.io
- * use std.math as math          → path = "std.math", alias = math
- * use graphics.gl               → path = "graphics.gl", alias = graphics.gl
- * use mylib                     → path = "mylib", alias = mylib
+ * import std.io                    → path = "std.io", alias = std.io
+ * import std.math as math          → path = "std.math", alias = math
+ * import graphics.gl               → path = "graphics.gl", alias = graphics.gl
+ * import mylib                     → path = "mylib", alias = mylib
  * ```
  * 
  * This style is inspired by Java, Python, and C# package systems where:
@@ -2130,9 +2090,9 @@ ArenaSpan<TypeAST*> parseReturnList(TokenStream& stream, ParserContext& ctx) {
  * Support for **quoted filesystem paths** is planned as a future feature:
  * 
  * ```lucid
- * use "../folderA/moduleB" as b   // Relative filesystem path (future)
- * use "/usr/lib/mymod"            // Absolute filesystem path (future)
- * use "./local/helper" as helper  // Current directory (future)
+ * import "../folderA/moduleB" as b   // Relative filesystem path (future)
+ * import "/usr/lib/mymod"            // Absolute filesystem path (future)
+ * import "./local/helper" as helper  // Current directory (future)
  * ```
  * 
  * ## Why Quoted Paths?
@@ -2157,20 +2117,20 @@ ArenaSpan<TypeAST*> parseReturnList(TokenStream& stream, ParserContext& ctx) {
  * 
  * ```lucid
  * // Current: Dot-separated (supported)
- * use std.io                      // Imports std/io.lucid from package root
- * use std.math as math            // Imports std/math.lucid as "math"
- * use graphics.gl                 // Imports graphics/gl.lucid
- * use mylib                       // Imports mylib.lucid from package root
+ * import std.io                      // Imports std/io.lucid from package root
+ * import std.math as math            // Imports std/math.lucid as "math"
+ * import graphics.gl                 // Imports graphics/gl.lucid
+ * import mylib                       // Imports mylib.lucid from package root
  * 
  * // Future: Quoted filesystem paths (not yet implemented)
- * use "../folderA/moduleB" as b   // Imports ../folderA/moduleB.lucid
- * use "/usr/lib/mymod"            // Imports /usr/lib/mymod.lucid
- * use "./local/helper" as helper  // Imports ./local/helper.lucid
+ * import "../folderA/moduleB" as b   // Imports ../folderA/moduleB.lucid
+ * import "/usr/lib/mymod"            // Imports /usr/lib/mymod.lucid
+ * import "./local/helper" as helper  // Imports ./local/helper.lucid
  * ```
  * 
  * ## Error Handling
  * 
- * - Missing `use` keyword → E1004
+ * - Missing `import` keyword → E1004
  * - Empty or malformed path → E1002, E1009
  * - Missing semicolon → E1005
  * - Module not found → E0004 (reported by ModuleResolver)
@@ -2178,24 +2138,24 @@ ArenaSpan<TypeAST*> parseReturnList(TokenStream& stream, ParserContext& ctx) {
  * 
  * @param stream The token stream for the current file
  * @param ctx The parsing context
- * @return UseDeclAST* The parsed use declaration, or nullptr on error
+ * @return ImportDeclAST* The parsed import declaration, or nullptr on error
  * 
  * @note This function consumes the terminating ';'. The caller must NOT
  *       consume ';'.
  * 
- * @note For dot-separated paths, `parseUsePath()` handles the parsing.
+ * @note For dot-separated paths, `parseImportPath()` handles the parsing.
  *       The alias is optional and parsed here if the `as` keyword is present.
  * 
  * @note Filesystem paths with `"` are NOT yet supported. When implemented,
  *       they will be detected by `stream.check(TokenType::STRING_LITERAL)`
  *       and parsed as a quoted string containing the path.
  */
-UseDeclAST* parseUseDecl(TokenStream& stream, ParserContext& ctx) {
+ImportDeclAST* parseImportDecl(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
     
-    // ─── 1. Expect 'use' keyword ────────────────────────────────────────
-    if (!stream.match(TokenType::USE)) {
-        ctx.error(stream, DiagCode::E1004, "use", "use declaration", stream.peekValue());
+    // ─── 1. Expect 'import' keyword ────────────────────────────────────────
+    if (!stream.match(TokenType::IMPORT)) {
+        ctx.error(stream, DiagCode::E1004, "import", "import declaration", stream.peekValue());
         synchronizeToContext(stream, ctx);
         return nullptr;
     }
@@ -2203,9 +2163,9 @@ UseDeclAST* parseUseDecl(TokenStream& stream, ParserContext& ctx) {
     // ─── 2. Parse the path ──────────────────────────────────────────────
     // ─── 2.1 Current: Dot-separated path ───────────────────────────────
     // This is the primary path style for now.
-    std::vector<InternedString> pathParts = parseUsePath(stream, ctx);
+    std::vector<InternedString> pathParts = parseImportPath(stream, ctx);
     if (pathParts.empty()) {
-        // Error already reported by parseUsePath
+        // Error already reported by parseImportPath
         synchronizeTo(stream, ctx, TokenType::SEMICOLON);
         stream.consume(TokenType::SEMICOLON);
         return nullptr;
@@ -2220,7 +2180,7 @@ UseDeclAST* parseUseDecl(TokenStream& stream, ParserContext& ctx) {
     InternedString path = ctx.pool.intern(pathStr);
     
     // ─── 2.2 Future: Quoted filesystem path ────────────────────────────
-    // TODO: Support quoted paths like use "../folder/module" as b
+    // TODO: Support quoted paths like import "../folder/module" as b
     // if (stream.check(TokenType::STRING_LITERAL)) {
     //     Token pathTok = stream.advance();
     //     InternedString path = ctx.pool.intern(pathTok.value);
@@ -2261,7 +2221,7 @@ UseDeclAST* parseUseDecl(TokenStream& stream, ParserContext& ctx) {
         // ─── 5.1 Check for circular import ──────────────────────────────
         if (ctx.resolver->isParsing(filePath)) {
             ctx.error(stream, DiagCode::E0003, ctx.toString(path));
-            // Return a use declaration even on error so we can continue
+            // Return a import declaration even on error so we can continue
         } else {
             // ─── 5.2 Import the module ────────────────────────────────────
             // Always call parse() - it handles caching internally
@@ -2274,21 +2234,17 @@ UseDeclAST* parseUseDecl(TokenStream& stream, ParserContext& ctx) {
         }
     }
     
-    // ─── 6. Create and return the UseDeclAST node ──────────────────────
-    auto* useDecl = ctx.arena.make<UseDeclAST>();
+    // ─── 6. Create and return the ImportDeclAST node ──────────────────────
+    auto* useDecl = ctx.arena.make<ImportDeclAST>();
     useDecl->loc = loc;
     useDecl->path = path;
     useDecl->alias = alias;
     
-    LOG_PARSER("parseUseDecl: parsed use '", ctx.toString(path), 
+    LOG_PARSER("parseImportDecl: parsed import '", ctx.toString(path), 
                "' as '", ctx.toString(alias), "'");
     
     return useDecl;
 }
-
-// =============================================================================
-// parseTraitRef - Parse a trait reference
-// =============================================================================
 
 /**
  * @brief Parse a trait reference.
@@ -2340,10 +2296,6 @@ TraitRefPtr parseTraitRef(TokenStream& stream, ParserContext& ctx) {
     
     return traitRef;
 }
-
-// =============================================================================
-// parseLvalue - Parse an lvalue (left-hand side of assignment)
-// =============================================================================
 
 /**
  * @brief Parse an lvalue (left-hand side of an assignment).
@@ -2493,10 +2445,6 @@ ExprPtr parseLvalue(TokenStream& stream, ParserContext& ctx) {
     
     return expr;
 }
-
-// =============================================================================
-// parseFuncRef - Parse a function reference
-// =============================================================================
 
 /**
  * @brief Parse a function reference.

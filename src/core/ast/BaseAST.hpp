@@ -53,7 +53,7 @@ struct FuncTypeAST;
 struct TupleTypeAST;
 
 // DeclAST.hpp
-struct UseDeclAST;
+struct ImportDeclAST;
 struct VarDeclAST;
 struct ParamAST;
 struct GenericParamDeclAST;
@@ -169,7 +169,7 @@ enum class ASTKind : uint16_t {
     TupleType,
 
     // Declaration nodes
-    UseDecl,
+    ImportDecl,
     VarDecl,
     Param,
     GenericParamDecl,

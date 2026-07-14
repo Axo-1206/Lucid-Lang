@@ -99,7 +99,7 @@ struct DeclStmtAST : StmtAST {
     bool isStruct()  const { return decl && decl->isa<StructDeclAST>(); }
     bool isEnum()    const { return decl && decl->isa<EnumDeclAST>(); }
     bool isTrait()   const { return decl && decl->isa<TraitDeclAST>(); }
-    bool isUseDecl() const { return decl && decl->isa<UseDeclAST>(); }
+    bool isUseDecl() const { return decl && decl->isa<ImportDeclAST>(); }
 };
 
 /**

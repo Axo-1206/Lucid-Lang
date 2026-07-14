@@ -94,7 +94,7 @@ void parseInternal(TokenStream& stream, ParserContext& ctx, std::vector<DeclPtr>
 // ─── Declarations ──────────────────────────────────────────────────────────
 
 DeclAST* parseDecl(TokenStream& stream, ParserContext& ctx);
-UseDeclAST* parseUseDecl(TokenStream& stream, ParserContext& ctx);
+ImportDeclAST* parseImportDecl(TokenStream& stream, ParserContext& ctx);
 VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx);
 FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx);
 EnumDeclAST* parseEnumDecl(TokenStream& stream, ParserContext& ctx);
@@ -187,7 +187,7 @@ ArenaSpan<TypePtr> parseGenericArgs(TokenStream& stream, ParserContext& ctx);
 ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx);
 ArenaSpan<TypeAST*> parseReturnList(TokenStream& stream, ParserContext& ctx); // Use when parse function type
 std::vector<ParamPtr> parseParamList(TokenStream& stream, ParserContext& ctx);
-std::vector<InternedString> parseUsePath(TokenStream& stream, ParserContext& ctx);
+std::vector<InternedString> parseImportPath(TokenStream& stream, ParserContext& ctx);
 
 TraitRefPtr parseTraitRef(TokenStream& stream, ParserContext& ctx);
 

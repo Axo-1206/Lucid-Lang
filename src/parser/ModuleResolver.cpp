@@ -44,7 +44,7 @@ InternedString ModuleResolver::resolveUsePath(InternedString usePath) {
         return cacheIt->second;
     }
     
-    // 3. Convert use path to relative file path
+    // 3. Convert import path to relative file path
     std::string relativePath = usePathToRelativePath(usePath);
     if (relativePath.empty()) {
         return InternedString();

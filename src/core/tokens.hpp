@@ -29,7 +29,7 @@ enum TokenType {
     EOF_TOKEN,
 
     // ─── Keywords: Top Level ───────────────────────────────────────────
-    USE,      // use std.io
+    IMPORT,      // import std.io
     AS,       // as math
     STRUCT,   // struct Vec2 { x float, y float }
     ENUM,     // enum Direction { North = 0, South = 1 }
@@ -337,7 +337,7 @@ inline bool is_declaration_keyword(TokenType type) {
         case TokenType::STRUCT:
         case TokenType::ENUM:
         case TokenType::TRAIT:
-        case TokenType::USE:
+        case TokenType::IMPORT:
             return true;
         default:
             return false;
@@ -437,7 +437,7 @@ inline bool is_literal(TokenType type) {
 
 inline bool is_keyword(TokenType type) {
     switch (type) {
-        case TokenType::USE:
+        case TokenType::IMPORT:
         case TokenType::AS:
         case TokenType::STRUCT:
         case TokenType::ENUM:
@@ -548,7 +548,7 @@ inline bool Token::is_type_keyword() const {
 inline std::string token_type_name(TokenType type) {
     static const std::unordered_map<TokenType, std::string> names = {
         {TokenType::EOF_TOKEN, "EOF"},
-        {TokenType::USE, "use"},
+        {TokenType::IMPORT, "import"},
         {TokenType::AS, "as"},
         {TokenType::STRUCT, "struct"},
         {TokenType::ENUM, "enum"},
@@ -693,7 +693,7 @@ inline std::string Token::to_string() const {
 
 inline bool is_keyword(const std::string& str) {
     static const std::unordered_set<std::string> keywords = {
-        "use", "as", "struct", "enum", "trait",
+        "import", "as", "struct", "enum", "trait",
         "let", "const",
         "if", "else", "switch", "case", "default",
         "while", "for", "in", "do",
@@ -714,7 +714,7 @@ inline bool is_keyword(const std::string& str) {
 
 inline TokenType keyword_to_type(const std::string& str) {
     static const std::unordered_map<std::string, TokenType> keyword_map = {
-        {"use", TokenType::USE},
+        {"import", TokenType::IMPORT},
         {"as", TokenType::AS},
         {"struct", TokenType::STRUCT},
         {"enum", TokenType::ENUM},

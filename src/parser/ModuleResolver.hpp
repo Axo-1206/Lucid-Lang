@@ -28,7 +28,7 @@ namespace parser {
  * @brief Resolves module imports and caches parsed modules.
  * 
  * The ModuleResolver handles:
- * - Converting use paths to file paths (e.g., "std.io" → "std/io.lucid")
+ * - Converting import paths to file paths (e.g., "std.io" → "std/io.lucid")
  * - Caching parsed modules to avoid re-parsing
  * - Detecting circular imports
  * - Managing module search paths
@@ -37,7 +37,7 @@ namespace parser {
  * 
  * 1. Check custom mappings (from build manifest)
  * 2. Check cache for previously resolved paths
- * 3. Convert use path to file path (replace '.' with '/')
+ * 3. Convert import path to file path (replace '.' with '/')
  * 4. Try with .lucid extension
  * 5. Search in package root and additional search paths
  * 6. Try without extension
@@ -77,7 +77,7 @@ public:
     // ─── Path Resolution ──────────────────────────────────────────────────
     
     /**
-     * @brief Resolve a use path to a file path.
+     * @brief Resolve a import path to a file path.
      * 
      * Converts:
      *   "std.io"         → "std/io.lucid"
@@ -98,7 +98,7 @@ public:
     std::filesystem::path getModuleFilePath(InternedString modulePath) const;
     
     /**
-     * @brief Check if a use path is valid (resolves to an existing file).
+     * @brief Check if a import path is valid (resolves to an existing file).
      * 
      * @param usePath The import path to check
      * @return true if the path resolves to an existing file
@@ -139,13 +139,13 @@ public:
      *
      * A module's path is appended here the first time it is cached — i.e.
      * the moment its own parse() call finishes, which is after every
-     * module it `use`s has already finished and been appended. This means
+     * module it `import`s has already finished and been appended. This means
      * the order is a valid dependency order: for any module M, every
      * module M depends on appears before M in this list. In particular,
      * the root/main file — which depends (transitively) on everything
      * else — is always last.
      *
-     * This is what the driver should use to get the full set of parsed
+     * This is what the driver should import to get the full set of parsed
      * modules in an order safe for single-pass semantic analysis:
      *
      * ```cpp
@@ -200,7 +200,7 @@ private:
     std::filesystem::path packageRoot_;
     StringPool& pool_;
     
-    // Map from use path (e.g., "std.io") to resolved file path (e.g., "std/io.lucid")
+    // Map from import path (e.g., "std.io") to resolved file path (e.g., "std/io.lucid")
     std::unordered_map<InternedString, InternedString> usePathToFile_;
     
     // Map from resolved file path to parsed AST
@@ -231,9 +231,9 @@ private:
     InternedString normalizePath(std::string_view path) const;
     
     /**
-     * @brief Convert a use path to a relative file path.
+     * @brief Convert a import path to a relative file path.
      * 
-     * @param usePath The use path (e.g., "std.io")
+     * @param usePath The import path (e.g., "std.io")
      * @return std::string The relative file path (e.g., "std/io.lucid")
      */
     std::string usePathToRelativePath(InternedString usePath) const;

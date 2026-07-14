@@ -278,7 +278,7 @@ COMMENT     = '--' { ANY_CHAR } NEWLINE     (* line comment *)
 ## Keywords
 
 ```
-let         const       struct      enum        trait       use
+let         const       struct      enum        trait       import
 as          if          else        switch      case        default
 return      break       continue    while       for         in
 do          await       async       spawn       join        and         
@@ -409,7 +409,7 @@ structure to delimit constructs. The parser accepts them but never requires them
 program         = { top_level_item }
 
 top_level_item  = { attribute_list } top_level_decl
-                | use_decl
+                | import_decl
 
 top_level_decl  = struct_decl
                 | enum_decl
@@ -427,15 +427,15 @@ to the package root. The package name and root are declared in the build manifes
 Modules are flat — nesting is not supported.
 
 ```ebnf
-use_decl    = 'use' use_path [ 'as' IDENTIFIER ]
+import_decl    = 'import' use_path [ 'as' IDENTIFIER ]
 
 use_path    = IDENTIFIER { '.' IDENTIFIER }
 ```
 
 ```lucid
-use std.io
-use std.math as math
-use graphics.gl as gl
+import std.io
+import std.math as math
+import graphics.gl as gl
 ```
 
 ### Exported Name Immutability
@@ -451,7 +451,7 @@ is `let` or `const` internally:
 @[export] const PI float = 3.14;    -- immutable everywhere
 
 -- inside another module
-use mymod
+import mymod
 
 mymod:counter = 1;    -- ERROR: exported names are read-only from outside the module
 mymod:PI      = 3.0;    -- ERROR: same rule
@@ -475,8 +475,8 @@ module_expr = IDENTIFIER ':' IDENTIFIER          (* module:member *)
 ```
 
 ```lucid
-use std.math as math
-use std.io   as io
+import std.math as math
+import std.io   as io
 
 -- reading an exported value
 let tau float = math:TAU;
@@ -565,7 +565,7 @@ let current Config = Config { threshold = 10 }    -- NOT exported
 
 ```lucid
 -- from outside the module
-use config
+import config
 
 const t int = config:getThreshold();
 config:setThreshold(20);
@@ -2222,7 +2222,7 @@ only a single variable is a semantic error, because there is no way to tell
 from context whether the programmer meant the index or the value:
 
 ```lucid
-use std.array as arr
+import std.array as arr
 
 const nums [*]int = [1, 2, 3, 4, 5];
 
@@ -3415,7 +3415,7 @@ All array manipulation is done through the standard library, which provides
 plain functions that accept the array and a user callback where needed:
 
 ```lucid
-use std.array as arr
+import std.array as arr
 
 const nums  [*]int = [3, 1, 4, 1, 5, 9, 2, 6];
 
@@ -3449,7 +3449,7 @@ Since the std array library functions are plain curried functions, they compose
 naturally with pipeline and composition:
 
 ```lucid
-use std.array as arr
+import std.array as arr
 
 const result [*]string =
     [3, 1, 4, 1, 5, 9, 2, 6]
@@ -5108,8 +5108,8 @@ await light;    -- CORRECT: wait for the async operation
 ### Complete Example
 
 ```lucid
-use std.io as io
-use std.http as http
+import std.io as io
+import std.http as http
 
 -- Fetch multiple URLs concurrently
 const fetchAll (urls [*]string) -> [*]string = {
@@ -5404,8 +5404,8 @@ join result;
 ### Complete Example
 
 ```lucid
-use std.io as io
-use std.http as http
+import std.io as io
+import std.http as http
 
 -- Parallel processing with results
 const processImages (images [*]Image) -> [*]ProcessedImage = {

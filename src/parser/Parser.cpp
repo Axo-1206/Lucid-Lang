@@ -8,7 +8,7 @@
  * - Error Recovery: synchronizeUntil(), synchronizeTo(), synchronizeToContext()
  * - parse(): Single entry point - parses the root file and all imports
  * - parseInternal(): Parses internal declarations of a file
- * - parseUseDecl(): Parses use declaration and imports the module
+ * - parseImportDecl(): Parses import declaration and imports the module
  */
 
 #include "Parser.hpp"
@@ -328,7 +328,7 @@ SyncOutcome synchronizeToContext(TokenStream& stream, ParserContext& ctx) {
         }
 
         case SyntacticContext::GenericArgs: {
-            // Use site: compute<int, string>(...). Structural: ',' or
+            // Import site: compute<int, string>(...). Structural: ',' or
             // '>'. Natural continuation: '(' — a call's argument list
             // starting right where '>' should have closed the generic
             // args is exactly the missing-'>' case worked through above.
@@ -406,17 +406,17 @@ SyncOutcome synchronizeToContext(TokenStream& stream, ParserContext& ctx) {
 
 /**
  * @brief Parse a single source file into a ModuleAST, recursively resolving
- * its `use` imports as needed.
+ * its `import` imports as needed.
  *
  * This is the ONE and ONLY entry point for parsing — the driver calls it
- * once for main.luc, and it is re-entered recursively (via parseUseDecl)
+ * once for main.luc, and it is re-entered recursively (via parseImportDecl)
  * once per not-yet-parsed imported file.
  *
  * ## Model: modules, not a flat merge
  *
  * Each call returns a ModuleAST containing only THIS file's own top-level
  * declarations. Imported files are NOT inlined/flattened into it — a
- * `use path [as alias]` becomes a UseDeclAST that stores a reference
+ * `import path [as alias]` becomes a UseDeclAST that stores a reference
  * (path + alias) to another module. That referenced module is resolved to
  * its own ModuleAST separately, via ModuleResolver's cache, and symbol
  * lookup across the reference (e.g. `math.sqrt`) is the semantic/binder
@@ -437,7 +437,7 @@ SyncOutcome synchronizeToContext(TokenStream& stream, ParserContext& ctx) {
  * couldn't be meaningfully parsed at all (empty/failed lex, a circular
  * import). Check `ModuleAST::hasErrors` to tell a clean parse from one
  * that didn't fully succeed — don't check the return value for null.
- * This is what lets callers (parseUseDecl in particular) always call
+ * This is what lets callers (parseImportDecl in particular) always call
  * parse() unconditionally, without a nullptr branch to handle.
  *
  * The one exception: a circular import returns an uncached dummy (see
@@ -449,14 +449,14 @@ SyncOutcome synchronizeToContext(TokenStream& stream, ParserContext& ctx) {
  *
  * ```
  * 1. Driver calls parse(main.luc, source, ctx)
- *       → the one true entry point; re-entered recursively for every `use`
+ *       → the one true entry point; re-entered recursively for every `import`
  *
  * 2. parse(path, source, ctx):
  *    a. Intern path
  *    b. Cache check — resolver->getParsedModule(filePath):
  *         HIT  → return the cached ModuleAST immediately, done. This is
  *                what makes "always call parse()" safe for callers: a
- *                second `use` of an already-attempted file (successful
+ *                second `import` of an already-attempted file (successful
  *                or not) never re-lexes/re-parses it.
  *         MISS → continue below
  *    c. ctx.currentFilePath = path
@@ -469,9 +469,9 @@ SyncOutcome synchronizeToContext(TokenStream& stream, ParserContext& ctx) {
  *    e. Circular-import check — resolver->isParsing(filePath):
  *         if already on the "in progress" stack → build an uncached
  *         dummy ModuleAST (hasErrors = true), return it immediately.
- *         No diagnostic here — parseUseDecl checks isParsing() itself
+ *         No diagnostic here — parseImportDecl checks isParsing() itself
  *         before calling parse(), and reports it there, against the
- *         `use` statement's real location.
+ *         `import` statement's real location.
  *    f. ScopedParsingGuard  — push filePath onto the "in progress" stack
  *    g. Lex source → tokens
  *         empty, or contains an UNKNOWN token → build a ModuleAST with
@@ -490,7 +490,7 @@ SyncOutcome synchronizeToContext(TokenStream& stream, ParserContext& ctx) {
  *    l. return thisModule
  *
  * 3. Inside the loop (2h), whenever parseDecl() hits a
- *    `use path [as alias]`:
+ *    `import path [as alias]`:
  *    a. Resolve `path` → file path
  *    b. If resolver->isParsing(filePath) → report circular-import error
  *       here (this location, not parse()'s)
@@ -504,7 +504,7 @@ SyncOutcome synchronizeToContext(TokenStream& stream, ParserContext& ctx) {
  *    The full "program" = ctx.resolver->getModuleOrder(), a flat list of
  *    every attempted module's path in POST-order (completion order): a
  *    module is appended the moment its own parse() finishes, which is
- *    after everything it `use`s has already finished and been appended.
+ *    after everything it `import`s has already finished and been appended.
  *    The root/main module — depending, transitively, on everything else
  *    — is therefore always LAST. This is what makes the list safe for
  *    single-pass semantic analysis: walking it front-to-back, everything
@@ -528,11 +528,11 @@ ModuleAST* parse(const std::string& path,
     InternedString filePath = ctx.pool.intern(path);
 
     // ─── 2. Cache check — parse() is safe to call unconditionally ───────
-    // Callers (parseUseDecl in particular) always call parse() rather than
+    // Callers (parseImportDecl in particular) always call parse() rather than
     // checking the cache themselves first; this is where that's actually
     // honored without redoing real work. A module that already finished —
     // successfully or not; see ModuleAST::hasErrors — is never re-lexed
-    // or re-parsed just because a second file also `use`s it.
+    // or re-parsed just because a second file also `import`s it.
     if (ctx.resolver) {
         if (auto* cached = ctx.resolver->getParsedModule(filePath)) {
             return cached;
@@ -554,9 +554,9 @@ ModuleAST* parse(const std::string& path,
     //
     // No diagnostic is reported here on purpose: this function has no
     // meaningful source location for a file that's already mid-parse
-    // further up the call stack. parseUseDecl checks isParsing() itself,
+    // further up the call stack. parseImportDecl checks isParsing() itself,
     // before calling parse(), and reports the error there against the
-    // `use` statement's own location. This branch only needs to return a
+    // `import` statement's own location. This branch only needs to return a
     // real (but deliberately uncached) ModuleAST so the in-progress parse
     // further up the stack can finish and cache the actual result.
     if (ctx.resolver && ctx.resolver->isParsing(filePath)) {
@@ -626,7 +626,7 @@ ModuleAST* parse(const std::string& path,
     
     // ─── 8. Cache the result ─────────────────────────────────────────────
     // Cached unconditionally now — including when thisModule->hasErrors is
-    // true. This is what lets a second `use` of a broken file hit the
+    // true. This is what lets a second `import` of a broken file hit the
     // cache-check in step 2 instead of re-lexing/re-parsing it from
     // scratch; error status travels with the module via hasErrors instead
     // of being encoded as "not present in the cache."
@@ -677,7 +677,7 @@ ModuleAST* parse(const std::string& path,
  *     │       ├── 2.3 Parse Declaration
  *     │       │   └── parseDecl()
  *     │       │       │
- *     │       │       ├── USE → parseUseDecl()
+ *     │       │       ├── IMPORT → parseImportDecl()
  *     │       │       │   └── Imports module (recursive)
  *     │       │       │
  *     │       │       ├── STRUCT → parseStructDecl()
@@ -754,7 +754,7 @@ ModuleAST* parse(const std::string& path,
  * All successfully parsed declarations are collected into `outDecls`:
  * - Each declaration has its doc comment attached (if any)
  * - Declarations are stored in source order
- * - Imported modules are parsed recursively via `parseUseDecl()`
+ * - Imported modules are parsed recursively via `parseImportDecl()`
  * 
  * ## Token Stream State
  * 
@@ -788,9 +788,9 @@ ModuleAST* parse(const std::string& path,
  * ```
  * 
  * @note This function does NOT handle imports directly. Imports are handled
- *       by parseUseDecl() which is called from parseDecl().
+ *       by parseImportDecl() which is called from parseDecl().
  *       The imported module's declarations are collected recursively
- *       when parseUseDecl() calls parse() on the imported file.
+ *       when parseImportDecl() calls parse() on the imported file.
  * 
  * @note This function has no return value on purpose: every file that is
  *       attempted must produce a real ModuleAST (see parse()'s design),
@@ -917,7 +917,7 @@ void parseInternal(TokenStream& stream, ParserContext& ctx, std::vector<DeclPtr>
 
 DeclAST* parseDecl(TokenStream& stream, ParserContext& ctx) {
     // ─── 1. Skip stray semicolons ─────────────────────────────────────────
-    // We use consumeTrailing here to skip all consecutive semicolons
+    // We import consumeTrailing here to skip all consecutive semicolons
     // at the start of a declaration (empty statements)
     stream.consumeTrailing(TokenType::SEMICOLON);
     
@@ -931,8 +931,8 @@ DeclAST* parseDecl(TokenStream& stream, ParserContext& ctx) {
     // ─── 3. Parse declaration ─────────────────────────────────────────────
     DeclAST* decl = nullptr;
     
-    if (stream.check(TokenType::USE)) {
-        decl = parseUseDecl(stream, ctx);  // consumes ';' (required)
+    if (stream.check(TokenType::IMPORT)) {
+        decl = parseImportDecl(stream, ctx);  // consumes ';' (required)
     } else if (stream.check(TokenType::STRUCT)) {
         decl = parseStructDecl(stream, ctx);
         if (decl) stream.consumeTrailing(TokenType::SEMICOLON);  // optional ';'s

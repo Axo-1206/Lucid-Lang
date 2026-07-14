@@ -62,12 +62,12 @@ enum class DeclKeyword {
 };
 
 /**
- * @brief Represents a `use` declaration – imports symbols from another module.
+ * @brief Represents a `import` declaration – imports symbols from another module.
  *
  * @example
- *   use std.io                → path = "std.io",      alias = std::io
- *   use std.math as math      → path = "std.math",    alias = "math"
- *   use graphics.gl as gl     → path = "graphics.gl", alias = "gl"
+ *   import std.io                → path = "std.io",      alias = std::io
+ *   import std.math as math      → path = "std.math",    alias = "math"
+ *   import graphics.gl as gl     → path = "graphics.gl", alias = "gl"
  *
  * Path segments are split on '.'. The semantic pass joins them back when
  * resolving against the package root.
@@ -75,15 +75,15 @@ enum class DeclKeyword {
  * @note NOT a ValueDeclAST or TypeDeclAST – imports are handled by the
  *       module loader, not by normal scope lookup.
  */
-struct UseDeclAST : DeclAST {
-    static constexpr ASTKind staticKind = ASTKind::UseDecl;
+struct ImportDeclAST : DeclAST {
+    static constexpr ASTKind staticKind = ASTKind::ImportDecl;
 
     InternedString path;
     InternedString alias;
 
-    UseDeclAST() : DeclAST(ASTKind::UseDecl) {}
+    ImportDeclAST() : DeclAST(ASTKind::ImportDecl) {}
 };
-using UseDeclPtr = UseDeclAST*;
+using ImportDeclPtr = ImportDeclAST*;
 
 /**
  * @brief Represents a variable declaration with an explicit type annotation.
@@ -450,7 +450,7 @@ using TraitRefPtr = TraitRefAST*;
 // Aliases for common pointer types.
 // ─────────────────────────────────────────────────────────────────────────────
 
-using UseDeclPtr = UseDeclAST*;
+using ImportDeclPtr = ImportDeclAST*;
 using VarDeclPtr = VarDeclAST*;
 using ParamPtr = ParamAST*;
 using FuncDeclPtr = FuncDeclAST*;
