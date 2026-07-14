@@ -432,6 +432,10 @@ ExprAST* parsePrefixExpr(TokenStream& stream, ParserContext& ctx) {
     return parsePrimaryExpr(stream, ctx);
 }
 
+// =============================================================================
+// Literal & Primary Expressions
+// =============================================================================
+
 /**
  * @brief Parse a primary expression.
  * 
@@ -538,6 +542,441 @@ ExprAST* parsePrimaryExpr(TokenStream& stream, ParserContext& ctx) {
     ctx.error(stream, DiagCode::E1006, stream.peekValue());
     synchronizeToContext(stream, ctx);
     return nullptr;
+}
+
+/**
+ * @brief Parse a literal expression.
+ * 
+ * Grammar: `INT_LITERAL | FLOAT_LITERAL | STRING_LITERAL | RAW_STRING_LITERAL | 
+ *           CHAR_LITERAL | HEX_LITERAL | BINARY_LITERAL | TRUE | FALSE | NIL | ERR`
+ * 
+ * ## Examples
+ * 
+ * ```lucid
+ * 42          → LiteralKind::Int
+ * 3.14        → LiteralKind::Float
+ * "hello"     → LiteralKind::String
+ * """raw"""   → LiteralKind::RawString
+ * 'a'         → LiteralKind::Char
+ * 0xFF        → LiteralKind::Hex
+ * 0b1010      → LiteralKind::Binary
+ * true        → LiteralKind::True
+ * false       → LiteralKind::False
+ * nil         → LiteralKind::Nil
+ * err         → LiteralKind::Err
+ * ```
+ * 
+ * @param stream The token stream
+ * @param ctx The parsing context
+ * @return LiteralExprAST* The parsed literal expression, or nullptr on error
+ */
+LiteralExprAST* parseLiteralExpr(TokenStream& stream, ParserContext& ctx) {
+    SourceLocation loc = stream.currentLoc();
+    Token tok = stream.peek();
+    
+    LiteralKind kind;
+    switch (tok.type) {
+        case TokenType::INT_LITERAL:
+            kind = LiteralKind::Int;
+            break;
+        case TokenType::FLOAT_LITERAL:
+            kind = LiteralKind::Float;
+            break;
+        case TokenType::STRING_LITERAL:
+            kind = LiteralKind::String;
+            break;
+        case TokenType::RAW_STRING_LITERAL:
+            kind = LiteralKind::RawString;
+            break;
+        case TokenType::CHAR_LITERAL:
+            kind = LiteralKind::Char;
+            break;
+        case TokenType::HEX_LITERAL:
+            kind = LiteralKind::Hex;
+            break;
+        case TokenType::BINARY_LITERAL:
+            kind = LiteralKind::Binary;
+            break;
+        case TokenType::TRUE:
+            kind = LiteralKind::True;
+            break;
+        case TokenType::FALSE:
+            kind = LiteralKind::False;
+            break;
+        case TokenType::NIL:
+            kind = LiteralKind::Nil;
+            break;
+        case TokenType::ERR:
+            kind = LiteralKind::Err;
+            break;
+        default:
+            ctx.error(stream, DiagCode::E1006, stream.peekValue());
+            synchronizeToContext(stream, ctx);
+            return nullptr;
+    }
+    
+    InternedString value = ctx.pool.intern(tok.value);
+    stream.advance(); // Consume the literal token
+    
+    auto* literal = ctx.arena.make<LiteralExprAST>(kind, value);
+    literal->loc = loc;
+    
+    LOG_PARSER_DETAIL("parseLiteralExpr: parsed literal of kind ", static_cast<int>(kind));
+    
+    return literal;
+}
+
+/**
+ * @brief Parse an array literal expression.
+ * 
+ * Grammar: `'[' [ expr { ',' expr } ] ']'`
+ * 
+ * ## Token Stream State
+ * 
+ * After this function completes:
+ * - Position is AFTER ']' (normal case)
+ * - Position is at EOF (if ']' was missing)
+ * - Position is at recovery point (if errors occurred)
+ * 
+ * ## Examples
+ * 
+ * ```lucid
+ * [1, 2, 3]              → [1, 2, 3]
+ * [1, 2, 3,]             → [1, 2, 3] + E1009 (trailing comma)
+ * [1,,,2]                → [1, 2] + E1009 (gap)
+ * [,,,1, 2]              → [1, 2] + E1009 (leading commas)
+ * []                     → [] (empty array)
+ * [1, 2                  → [1, 2] + E1005 (missing ']')
+ * ```
+ * 
+ * @param stream The token stream
+ * @param ctx The parsing context
+ * @return ArrayLiteralExprAST* The parsed array literal expression, or nullptr on error
+ */
+ArrayLiteralExprAST* parseArrayLiteralExpr(TokenStream& stream, ParserContext& ctx) {
+    SourceLocation loc = stream.currentLoc();
+    
+    LOG_PARSER_DETAIL("parseArrayLiteralExpr: parsing array literal");
+    
+    // ─── 1. Expect '[' ────────────────────────────────────────────────────
+    if (!stream.check(TokenType::LBRACKET)) {
+        ctx.error(stream, DiagCode::E1004, "[", "array literal", stream.peekValue());
+        synchronizeToContext(stream, ctx);
+        return nullptr;
+    }
+    stream.advance(); // Consume '['
+    
+    // ─── 2. Check for empty array literal: [] ────────────────────────────
+    if (stream.check(TokenType::RBRACKET)) {
+        stream.advance(); // Consume ']'
+        auto* array = ctx.arena.make<ArrayLiteralExprAST>();
+        array->loc = loc;
+        array->elements = ctx.arena.makeBuilder<ExprPtr>().build();
+        
+        LOG_PARSER_DETAIL("parseArrayLiteralExpr: parsed empty array literal");
+        return array;
+    }
+    
+    // ─── 3. Skip leading commas ──────────────────────────────────────────
+    // Ex: [,,,, 1, 2, 3]
+    if (stream.consumeTrailing(TokenType::COMMA) > 0) {
+        ctx.error(stream, DiagCode::E1009, ",", "array literal");
+    }
+    
+    // ─── 4. Parse elements ─────────────────────────────────────────────────
+    std::vector<ExprPtr> elements;
+    
+    while (!stream.isAtEnd() && !stream.check(TokenType::RBRACKET)) {
+        // ─── 4.1 Parse an element expression ─────────────────────────────
+        ExprPtr elem = parseExpr(stream, ctx);
+        if (elem) {
+            elements.push_back(elem);
+        } else {
+            // Error already reported by parseExpr, try to recover
+            ctx.error(stream, DiagCode::E1006, stream.peekValue());
+            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RBRACKET);
+            // The loop condition will handle ']' and EOF naturally.
+            // If we're at a comma, the comma handling below will consume it.
+            // If we're at some other token, break to avoid infinite loop.
+            if (!stream.check(TokenType::COMMA) && !stream.check(TokenType::RBRACKET) && !stream.isAtEnd()) {
+                break;
+            }
+            continue;
+        }
+        
+        // ─── 4.2 Comma Separator Handling ────────────────────────────────
+        // Consume at least 1 comma and skip consecutive commas
+        if (stream.consumeTrailing(TokenType::COMMA) > 1) {
+            ctx.error(stream, DiagCode::E1009, ",", "array literal");
+        }
+    }
+    
+    // ─── 5. Consume closing bracket ──────────────────────────────────────
+    // The loop condition guarantees we're either at ']' or at EOF.
+    if (stream.isAtEnd()) {
+        ctx.error(stream, DiagCode::E1005, "]", "array literal", "<EOF>");
+    } else {
+        // We must be at ']' (loop condition guaranteed !stream.check(RBRACKET) is false)
+        stream.advance(); // Consume ']'
+    }
+    
+    // ─── 6. Build the AST node ────────────────────────────────────────────
+    auto* array = ctx.arena.make<ArrayLiteralExprAST>();
+    array->loc = loc;
+    
+    auto builder = ctx.arena.makeBuilder<ExprPtr>();
+    for (auto* e : elements) {
+        builder.push_back(e);
+    }
+    array->elements = builder.build();
+    
+    LOG_PARSER_DETAIL("parseArrayLiteralExpr: parsed array literal with ", 
+                      elements.size(), " elements");
+    
+    return array;
+}
+
+/**
+ * @brief Parse a struct literal expression.
+ * 
+ * Grammar: `IDENTIFIER [ '<' type { ',' type } '>' ] '{' [ field_init { ',' field_init } ] '}'`
+ * 
+ * ## Examples
+ * 
+ * ```lucid
+ * Vec2 { x = 1.0, y = 2.0 }
+ * Point {}
+ * Pair<int, string> { first = 1, second = "one" }
+ * Color { r = 255, g = 128, b = 0 }
+ * ```
+ * 
+ * ## Const Field Rules
+ * 
+ * 1. **Const Fields with Default**: If a const field has a default value,
+ *    it can be omitted during initialization.
+ * 
+ * 2. **Const Fields without Default**: If a const field does NOT have a
+ *    default value, it must be provided during initialization.
+ * 
+ * 3. **Override Allowed**: A const field with a default value may be
+ *    overridden during initialization (providing a different value is allowed).
+ * 
+ * 4. **Mutable Fields**: Follow the same rules – if they have defaults,
+ *    they can be omitted; if not, they must be provided.
+ * 
+ * @param stream The token stream
+ * @param ctx The parsing context
+ * @param typeName The struct type name
+ * @param genericArgs Generic arguments (if any)
+ * @return StructLiteralExprAST* The parsed struct literal expression, or nullptr on error
+ */
+StructLiteralExprAST* parseStructLiteralExpr(TokenStream& stream, ParserContext& ctx,
+                                              InternedString typeName, ArenaSpan<TypePtr> genericArgs) {
+    SourceLocation loc = stream.currentLoc();
+    
+    LOG_PARSER_DETAIL("parseStructLiteralExpr: parsing struct literal for ", 
+                      ctx.toString(typeName));
+    
+    // ─── 1. Expect '{' ────────────────────────────────────────────────────
+    if (!stream.check(TokenType::LBRACE)) {
+        ctx.error(stream, DiagCode::E1004, "{", "struct literal", stream.peekValue());
+        synchronizeToContext(stream, ctx);
+        return nullptr;
+    }
+    stream.advance(); // Consume '{'
+    
+    // ─── 2. Check for empty struct literal: Type {} ──────────────────────
+    if (stream.check(TokenType::RBRACE)) {
+        stream.advance(); // Consume '}'
+        auto* structLit = ctx.arena.make<StructLiteralExprAST>();
+        structLit->loc = loc;
+        structLit->typeName = typeName;
+        structLit->genericArgs = genericArgs;
+        structLit->inits = ctx.arena.makeBuilder<FieldInitPtr>().build();
+        structLit->instantiatedType = nullptr;
+        
+        LOG_PARSER_DETAIL("parseStructLiteralExpr: parsed empty struct literal");
+        return structLit;
+    }
+    
+    // ─── 3. Skip leading commas ──────────────────────────────────────────
+    // Ex: Point {,,,, x = 1, y = 2 }
+    if (stream.consumeTrailing(TokenType::COMMA) > 0) {
+        ctx.error(stream, DiagCode::E1009, ",", "struct literal");
+    }
+    
+    // ─── 4. Parse field initializers ─────────────────────────────────────
+    std::vector<FieldInitPtr> inits;
+    
+    while (!stream.isAtEnd() && !stream.check(TokenType::RBRACE)) {
+        // ─── 4.1 Parse field name ────────────────────────────────────────
+        if (!stream.check(TokenType::IDENTIFIER)) {
+            ctx.error(stream, DiagCode::E1002, "field name", stream.peekValue());
+            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RBRACE);
+            // The loop condition will handle '}' and EOF naturally.
+            // If we're at a comma, the comma handling below will consume it.
+            // If we're at some other token, break to avoid infinite loop.
+            if (!stream.check(TokenType::COMMA) && !stream.check(TokenType::RBRACE) && !stream.isAtEnd()) {
+                break;
+            }
+            continue;
+        }
+        
+        Token fieldTok = stream.advance();
+        InternedString fieldName = ctx.pool.intern(fieldTok.value);
+        
+        // ─── 4.2 Expect '=' ──────────────────────────────────────────────
+        if (!stream.match(TokenType::ASSIGN)) {
+            ctx.error(stream, DiagCode::E1006, stream.peekValue());
+            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RBRACE);
+            if (!stream.check(TokenType::COMMA) && !stream.check(TokenType::RBRACE) && !stream.isAtEnd()) {
+                break;
+            }
+            continue;
+        }
+        
+        // ─── 4.3 Parse field value expression ─────────────────────────────
+        ExprPtr value = parseExpr(stream, ctx);
+        if (!value) {
+            ctx.error(stream, DiagCode::E1006, "field value", stream.peekValue());
+            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RBRACE);
+            if (!stream.check(TokenType::COMMA) && !stream.check(TokenType::RBRACE) && !stream.isAtEnd()) {
+                break;
+            }
+            continue;
+        }
+        
+        // ─── 4.4 Create field initializer node ────────────────────────────
+        auto* init = ctx.arena.make<FieldInitAST>(fieldName, value);
+        init->loc = stream.currentLoc();
+        inits.push_back(init);
+        
+        // ─── 4.5 Comma Separator Handling ────────────────────────────────
+        // Consume at least 1 comma and skip consecutive commas
+        if (stream.consumeTrailing(TokenType::COMMA) > 1) {
+            ctx.error(stream, DiagCode::E1009, ",", "struct literal");
+        }
+    }
+    
+    // ─── 5. Consume closing brace ────────────────────────────────────────
+    // The loop condition guarantees we're either at '}' or at EOF.
+    if (stream.isAtEnd()) {
+        ctx.error(stream, DiagCode::E1005, "}", "struct literal", "<EOF>");
+    } else {
+        // We must be at '}' (loop condition guaranteed !stream.check(RBRACE) is false)
+        stream.advance(); // Consume '}'
+    }
+    
+    // ─── 6. Build the AST node ────────────────────────────────────────────
+    auto* structLit = ctx.arena.make<StructLiteralExprAST>();
+    structLit->loc = loc;
+    structLit->typeName = typeName;
+    structLit->genericArgs = genericArgs;
+    structLit->instantiatedType = nullptr;
+    
+    auto builder = ctx.arena.makeBuilder<FieldInitPtr>();
+    for (auto* init : inits) {
+        builder.push_back(init);
+    }
+    structLit->inits = builder.build();
+    
+    LOG_PARSER_DETAIL("parseStructLiteralExpr: parsed struct literal with ", 
+                      inits.size(), " field initializers");
+    
+    return structLit;
+}
+
+/**
+ * @brief Parse an anonymous function expression.
+ * 
+ * Grammar: `'(' [ param_list ] ')' [ '->' return_list ] '{' stmt_list '}'`
+ * 
+ * ## Examples
+ * 
+ * ```lucid
+ * (x int) -> int { return x * 2 }
+ * (a int)(b int) -> int { return a + b }   – curried (Form 2)
+ * (x int) -> (y int) -> int { return x + y } – explicit currying
+ * () -> int { return 42 }
+ * ```
+ * 
+ * ## Form 2 Desugaring
+ * 
+ * The parser desugars Form 2 `()()` shorthand into nested Form 1 functions
+ * before building the AST. For example:
+ * 
+ * `(a int)(b int) -> int { return a + b }`
+ * 
+ * Desugars to:
+ * 
+ * `(a int) -> (b int) -> int { return a + b }`
+ * 
+ * The `funcType` captures the full curried structure as a nested FuncTypeAST.
+ * 
+ * ## Semantic Analysis Notes
+ * 
+ * 1. **Form 1**: Explicit intermediate `->` return – code runs between groups.
+ * 2. **Form 2**: `()()` shorthand – compiler expands to nested Form 1 functions.
+ * 3. **Type**: The anonymous function's type is captured in `funcType`.
+ * 
+ * @param stream The token stream
+ * @param ctx The parsing context
+ * @return AnonFuncExprAST* The parsed anonymous function expression, or nullptr on error
+ */
+AnonFuncExprAST* parseAnonFuncExpr(TokenStream& stream, ParserContext& ctx) {
+    SourceLocation loc = stream.currentLoc();
+    
+    LOG_PARSER_DETAIL("parseAnonFuncExpr: parsing anonymous function");
+    
+    // ─── 1. Parse the function type ──────────────────────────────────────
+    // parseFuncType consumes all parameter groups and returns a FuncTypeAST
+    // It handles both Form 1 (explicit ->) and Form 2 (nested groups)
+    TypeAST* type = parseFuncType(stream, ctx);
+    if (!type) {
+        ctx.error(stream, DiagCode::E1003, "function type", stream.peekValue());
+        synchronizeToContext(stream, ctx);
+        return nullptr;
+    }
+    
+    if (!type->isa<FuncTypeAST>()) {
+        ctx.error(stream, DiagCode::E1003, "function type", stream.peekValue());
+        synchronizeToContext(stream, ctx);
+        return nullptr;
+    }
+    
+    FuncTypeAST* funcType = type->as<FuncTypeAST>();
+    
+    // ─── 2. Expect '{' for the body ──────────────────────────────────────
+    // Anonymous functions must have a body
+    if (!stream.check(TokenType::LBRACE)) {
+        ctx.error(stream, DiagCode::E1004, "{", "anonymous function body", stream.peekValue());
+        synchronizeToContext(stream, ctx);
+        return nullptr;
+    }
+    
+    // ─── 3. Parse the function body ──────────────────────────────────────
+    stream.advance(); // Consume '{'
+    StmtPtr body = parseBlock(stream, ctx);
+    
+    if (!stream.check(TokenType::RBRACE)) {
+        ctx.error(stream, DiagCode::E1005, "}", "anonymous function body", stream.peekValue());
+        synchronizeTo(stream, ctx, TokenType::RBRACE);
+        if (stream.check(TokenType::RBRACE)) {
+            stream.advance(); // Consume '}' to recover
+        }
+    } else {
+        stream.advance(); // Consume '}'
+    }
+    
+    // ─── 4. Build the AST node ────────────────────────────────────────────
+    auto* anonFunc = ctx.arena.make<AnonFuncExprAST>();
+    anonFunc->loc = loc;
+    anonFunc->funcType = funcType;
+    anonFunc->body = body;
+    
+    LOG_PARSER_DETAIL("parseAnonFuncExpr: parsed anonymous function");
+    
+    return anonFunc;
 }
 
 // =============================================================================
