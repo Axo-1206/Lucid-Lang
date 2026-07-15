@@ -2337,6 +2337,15 @@ ExprPtr parseLvalue(TokenStream& stream, ParserContext& ctx) {
     
     // ─── 2. Parse any trailing field accesses or index expressions ──────
     while (!stream.isAtEnd()) {
+        // Capture a fresh location for THIS trailer (the '.' or '[' that
+        // starts it), rather than reusing the base lvalue's starting
+        // 'loc' from step 1. Reusing the outer 'loc' here would make
+        // every node in a chained lvalue (e.g. player.stats.hp[0]) report
+        // the same source position as the very first token, which is
+        // wrong for error locations, hover/go-to-definition, and any
+        // future diagnostics on individual multi-assign targets.
+        SourceLocation trailerLoc = stream.currentLoc();
+
         if (stream.check(TokenType::DOT)) {
             // Field access: expr.field
             stream.advance(); // Consume '.'
@@ -2350,7 +2359,7 @@ ExprPtr parseLvalue(TokenStream& stream, ParserContext& ctx) {
             InternedString fieldName = ctx.pool.intern(fieldTok.value);
             
             auto* fieldAccess = ctx.arena.make<FieldAccessExprAST>();
-            fieldAccess->loc = loc;
+            fieldAccess->loc = trailerLoc;
             fieldAccess->object = expr;
             fieldAccess->fieldName = fieldName;
             
@@ -2379,7 +2388,7 @@ ExprPtr parseLvalue(TokenStream& stream, ParserContext& ctx) {
             }
             
             auto* indexExpr = ctx.arena.make<IndexExprAST>();
-            indexExpr->loc = loc;
+            indexExpr->loc = trailerLoc;
             indexExpr->target = expr;
             indexExpr->index = index;
             

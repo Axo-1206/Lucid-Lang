@@ -60,8 +60,6 @@ StmtAST* parseStmt(TokenStream& stream, ParserContext& ctx) {
     
     // Check if we're at a statement terminator - skip it
     if (isStatementTerminator(stream)) {
-        // This is an error - unexpected terminator
-        ctx.error(stream, DiagCode::E1006, stream.peekValue());
         stream.advance(); // Consume the terminator to avoid infinite loop
         return nullptr;
     }
@@ -113,6 +111,16 @@ StmtAST* parseStmt(TokenStream& stream, ParserContext& ctx) {
             
         // ─── Expression Statement (default) ─────────────────────────────
         default:
+            // Check if this is a multi-assign to existing variables:
+            // `value, ok = parseInt("42");`. Ordinary single-target
+            // assignment (`x = 5;`) is intentionally NOT matched here —
+            // it is already handled inside parseExpr()/parsePrattExpr()
+            // via the right-associative ASSIGN infix operator
+            // (parseInfixAssign), so it keeps going through
+            // parseExprStmt() below exactly as before.
+            if (looksLikeMultiAssignTargets(stream, ctx)) {
+                return parseMultiAssignStmt(stream, ctx);
+            }
             // Try to parse as an expression statement
             return parseExprStmt(stream, ctx);
     }
@@ -209,7 +217,7 @@ IfStmtAST* parseIfStmt(TokenStream& stream, ParserContext& ctx) {
     // ─── 2. Parse condition ────────────────────────────────────────────────
     ExprPtr condition = parseExpr(stream, ctx);
     if (!condition) {
-        ctx.error(stream, DiagCode::E1006, "if condition");
+        ctx.error(stream, DiagCode::E1006, "if condition", stream.peekValue());
         // Try to recover by skipping to the then branch
         synchronizeToContext(stream, ctx);
         // If we can't recover, return what we have
@@ -377,7 +385,7 @@ SwitchCaseAST* parseSwitchCase(TokenStream& stream, ParserContext& ctx) {
         if (value) {
             valueBuilder.push_back(value);
         } else {
-            ctx.error(stream, DiagCode::E1006, "case value");
+            ctx.error(stream, DiagCode::E1006, "case value", stream.peekValue());
             synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::COLON);
             break;
         }
@@ -499,7 +507,7 @@ ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
     // For collection loops: this is a collection expression
     ExprPtr iterable = parseExpr(stream, ctx);
     if (!iterable) {
-        ctx.error(stream, DiagCode::E1006, "iterable expression");
+        ctx.error(stream, DiagCode::E1006, "iterable expression", stream.peekValue());
         synchronizeToContext(stream, ctx);
         return forStmt;
     }
@@ -513,7 +521,7 @@ ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
         if (step) {
             forStmt->step = step;
         } else {
-            ctx.error(stream, DiagCode::E1006, "step expression");
+            ctx.error(stream, DiagCode::E1006, "for-loop step expression", stream.peekValue());
             synchronizeToContext(stream, ctx);
         }
     } else {
@@ -554,7 +562,7 @@ WhileStmtAST* parseWhileStmt(TokenStream& stream, ParserContext& ctx) {
     // ─── 2. Parse condition ────────────────────────────────────────────────
     ExprPtr condition = parseExpr(stream, ctx);
     if (!condition) {
-        ctx.error(stream, DiagCode::E1006, "while condition");
+        ctx.error(stream, DiagCode::E1006, "while condition", stream.peekValue());
         synchronizeToContext(stream, ctx);
         return whileStmt;
     }
@@ -610,7 +618,7 @@ DoWhileStmtAST* parseDoWhileStmt(TokenStream& stream, ParserContext& ctx) {
     // ─── 4. Parse condition ────────────────────────────────────────────────
     ExprPtr condition = parseExpr(stream, ctx);
     if (!condition) {
-        ctx.error(stream, DiagCode::E1006, "do-while condition");
+        ctx.error(stream, DiagCode::E1006, "do-while condition", stream.peekValue());
         synchronizeToContext(stream, ctx);
         return doWhileStmt;
     }
@@ -648,7 +656,7 @@ ReturnStmtAST* parseReturnStmt(TokenStream& stream, ParserContext& ctx) {
             if (value) {
                 valueBuilder.push_back(value);
             } else {
-                ctx.error(stream, DiagCode::E1006, "return value");
+                ctx.error(stream, DiagCode::E1006, "return value", stream.peekValue());
                 synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::SEMICOLON);
                 break;
             }
@@ -720,7 +728,7 @@ ExprStmtAST* parseExprStmt(TokenStream& stream, ParserContext& ctx) {
     // ─── 1. Parse an expression ────────────────────────────────────────────
     ExprPtr expr = parseExpr(stream, ctx);
     if (!expr) {
-        ctx.error(stream, DiagCode::E1006, "expression statement");
+        ctx.error(stream, DiagCode::E1006, "expression statement", stream.peekValue());
         synchronizeToContext(stream, ctx);
         return ctx.arena.make<ExprStmtAST>(nullptr);
     }
@@ -818,7 +826,7 @@ MultiVarDeclAST* parseMultiVarDecl(TokenStream& stream, ParserContext& ctx) {
     // ─── 4. Parse RHS expression ──────────────────────────────────────────
     ExprPtr rhs = parseExpr(stream, ctx);
     if (!rhs) {
-        ctx.error(stream, DiagCode::E1006, "right-hand side of multi-variable declaration");
+        ctx.error(stream, DiagCode::E1006, "right-hand side of multi-variable declaration", stream.peekValue());
         synchronizeToContext(stream, ctx);
         multiDecl->vars = varBuilder.build();
         return multiDecl;
@@ -851,7 +859,7 @@ MultiAssignStmtAST* parseMultiAssignStmt(TokenStream& stream, ParserContext& ctx
         if (lhs) {
             lhsBuilder.push_back(lhs);
         } else {
-            ctx.error(stream, DiagCode::E1006, "left-hand side of assignment");
+            ctx.error(stream, DiagCode::E1006, "left-hand side of assignment", stream.peekValue());
             synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::ASSIGN);
             break;
         }
@@ -859,7 +867,7 @@ MultiAssignStmtAST* parseMultiAssignStmt(TokenStream& stream, ParserContext& ctx
     
     // ─── 2. Expect ASSIGN ──────────────────────────────────────────────────
     if (!stream.match(TokenType::ASSIGN)) {
-        ctx.error(stream, DiagCode::E1004, "=", "multi-assignment", stream.peekValue());
+        ctx.error(stream, DiagCode::E1007, "=", stream.peekValue());
         synchronizeToContext(stream, ctx);
         multiAssign->lhs = lhsBuilder.build();
         return multiAssign;
@@ -868,7 +876,7 @@ MultiAssignStmtAST* parseMultiAssignStmt(TokenStream& stream, ParserContext& ctx
     // ─── 3. Parse RHS expression ──────────────────────────────────────────
     ExprPtr rhs = parseExpr(stream, ctx);
     if (!rhs) {
-        ctx.error(stream, DiagCode::E1006, "right-hand side of multi-assignment");
+        ctx.error(stream, DiagCode::E1006, "right-hand side of multi-assignment", stream.peekValue());
         synchronizeToContext(stream, ctx);
         multiAssign->lhs = lhsBuilder.build();
         return multiAssign;

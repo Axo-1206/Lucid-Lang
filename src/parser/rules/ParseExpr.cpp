@@ -233,7 +233,7 @@ ExprAST* parseExpr(TokenStream& stream, ParserContext& ctx) {
     // ─── 1. Quick Check Phase ─────────────────────────────────────────────
     // If we're at EOF, there's nothing to parse
     if (stream.isAtEnd()) {
-        ctx.error(stream, DiagCode::E1006, stream.peekValue());
+        ctx.error(stream, DiagCode::E1006, "any", stream.peekValue());
         return nullptr;
     }
     
@@ -539,7 +539,7 @@ ExprAST* parsePrimaryExpr(TokenStream& stream, ParserContext& ctx) {
     }
     
     // ─── 9. Unknown primary expression ──────────────────────────────────
-    ctx.error(stream, DiagCode::E1006, stream.peekValue());
+    ctx.error(stream, DiagCode::E1006, "any", stream.peekValue());
     synchronizeToContext(stream, ctx);
     return nullptr;
 }
@@ -610,7 +610,7 @@ LiteralExprAST* parseLiteralExpr(TokenStream& stream, ParserContext& ctx) {
             kind = LiteralKind::Err;
             break;
         default:
-            ctx.error(stream, DiagCode::E1006, stream.peekValue());
+            ctx.error(stream, DiagCode::E1006, "literal", stream.peekValue());
             synchronizeToContext(stream, ctx);
             return nullptr;
     }
@@ -693,7 +693,7 @@ ArrayLiteralExprAST* parseArrayLiteralExpr(TokenStream& stream, ParserContext& c
             elements.push_back(elem);
         } else {
             // Error already reported by parseExpr, try to recover
-            ctx.error(stream, DiagCode::E1006, stream.peekValue());
+            ctx.error(stream, DiagCode::E1006, "array element", stream.peekValue());
             synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RBRACKET);
             // The loop condition will handle ']' and EOF naturally.
             // If we're at a comma, the comma handling below will consume it.
@@ -714,7 +714,7 @@ ArrayLiteralExprAST* parseArrayLiteralExpr(TokenStream& stream, ParserContext& c
     // ─── 5. Consume closing bracket ──────────────────────────────────────
     // The loop condition guarantees we're either at ']' or at EOF.
     if (stream.isAtEnd()) {
-        ctx.error(stream, DiagCode::E1005, "]", "array literal", "<EOF>");
+        ctx.error(stream, DiagCode::E1005, "]", "array literal", stream.peekValue());
     } else {
         // We must be at ']' (loop condition guaranteed !stream.check(RBRACKET) is false)
         stream.advance(); // Consume ']'
@@ -774,7 +774,7 @@ IfExprAST* parseIfExpr(TokenStream& stream, ParserContext& ctx) {
     
     // ─── 3. Expect '??' separator ──────────────────────────────────────
     if (!stream.match(TokenType::QUESTION_QUESTION)) {
-        ctx.error(stream, DiagCode::E1004, "??", "if expression", stream.peekValue());
+        ctx.error(stream, DiagCode::E1007, "??", stream.peekValue());
         synchronizeToContext(stream, ctx);
         return nullptr;
     }
@@ -782,7 +782,7 @@ IfExprAST* parseIfExpr(TokenStream& stream, ParserContext& ctx) {
     // ─── 4. Parse then branch ─────────────────────────────────────────────
     ExprPtr thenBranch = parseExpr(stream, ctx);
     if (!thenBranch) {
-        ctx.error(stream, DiagCode::E1006, "then branch", stream.peekValue());
+        ctx.error(stream, DiagCode::E1006, "then branch of 'if expression'", stream.peekValue());
         synchronizeToContext(stream, ctx);
         return nullptr;
     }
@@ -798,7 +798,7 @@ IfExprAST* parseIfExpr(TokenStream& stream, ParserContext& ctx) {
     // Else branch can be an expression or another if expression (chained)
     ExprPtr elseBranch = parseExpr(stream, ctx);
     if (!elseBranch) {
-        ctx.error(stream, DiagCode::E1006, "else branch", stream.peekValue());
+        ctx.error(stream, DiagCode::E1006, "else branch of 'if expression'", stream.peekValue());
         synchronizeToContext(stream, ctx);
         return nullptr;
     }
@@ -906,7 +906,7 @@ StructLiteralExprAST* parseStructLiteralExpr(TokenStream& stream, ParserContext&
         
         // ─── 4.2 Expect '=' ──────────────────────────────────────────────
         if (!stream.match(TokenType::ASSIGN)) {
-            ctx.error(stream, DiagCode::E1006, stream.peekValue());
+            ctx.error(stream, DiagCode::E1007, "=", stream.peekValue());
             synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RBRACE);
             if (!stream.check(TokenType::COMMA) && !stream.check(TokenType::RBRACE) && !stream.isAtEnd()) {
                 break;
@@ -940,7 +940,7 @@ StructLiteralExprAST* parseStructLiteralExpr(TokenStream& stream, ParserContext&
     // ─── 5. Consume closing brace ────────────────────────────────────────
     // The loop condition guarantees we're either at '}' or at EOF.
     if (stream.isAtEnd()) {
-        ctx.error(stream, DiagCode::E1005, "}", "struct literal", "<EOF>");
+        ctx.error(stream, DiagCode::E1005, "}", "struct literal", stream.peekValue());
     } else {
         // We must be at '}' (loop condition guaranteed !stream.check(RBRACE) is false)
         stream.advance(); // Consume '}'
@@ -1386,7 +1386,7 @@ IndexExprAST* parseIndexExpr(TokenStream& stream, ParserContext& ctx, ExprPtr ta
     LOG_PARSER_DETAIL("parseIndexExpr: parsing index expression");
     
     if (!target) {
-        ctx.error(stream, DiagCode::E1006,"none for index expression");
+        ctx.error(stream, DiagCode::E1006, "any","none for index expression");
         return nullptr;
     }
     
@@ -1400,7 +1400,7 @@ IndexExprAST* parseIndexExpr(TokenStream& stream, ParserContext& ctx, ExprPtr ta
     
     // ─── 2. Check for empty index: [] ────────────────────────────────────
     if (stream.check(TokenType::RBRACKET)) {
-        ctx.error(stream, DiagCode::E1006, "none, aka no expression to index array");
+        ctx.error(stream, DiagCode::E1006, "any", "none, aka no expression to index array");
         stream.advance(); // Consume ']'
         return nullptr;
     }
@@ -1408,7 +1408,7 @@ IndexExprAST* parseIndexExpr(TokenStream& stream, ParserContext& ctx, ExprPtr ta
     // ─── 3. Parse the index expression ────────────────────────────────────
     ExprPtr index = parseExpr(stream, ctx);
     if (!index) {
-        ctx.error(stream, DiagCode::E1006, "none, failed to parse expression for indexing");
+        ctx.error(stream, DiagCode::E1006, "any", "none, failed to parse expression for indexing");
         synchronizeTo(stream, ctx, TokenType::RBRACKET);
         if (stream.check(TokenType::RBRACKET)) {
             stream.advance(); // Consume ']' to recover
@@ -1494,7 +1494,7 @@ SliceExprAST* parseSliceExpr(TokenStream& stream, ParserContext& ctx, ExprPtr ta
     LOG_PARSER_DETAIL("parseSliceExpr: parsing slice expression");
     
     if (!target) {
-        ctx.error(stream, DiagCode::E1006, "target", stream.peekValue());
+        ctx.error(stream, DiagCode::E1006, "slice expression", stream.peekValue());
         return nullptr;
     }
     
@@ -1514,7 +1514,7 @@ SliceExprAST* parseSliceExpr(TokenStream& stream, ParserContext& ctx, ExprPtr ta
     
     // ─── 3. Check for empty slice: [] ────────────────────────────────────
     if (stream.check(TokenType::RBRACKET)) {
-        ctx.error(stream, DiagCode::E1006, "none for slice expression");
+        ctx.error(stream, DiagCode::E1006, "any", "none for slice expression");
         stream.advance(); // Consume ']'
         return nullptr;
     }
@@ -1554,7 +1554,7 @@ SliceExprAST* parseSliceExpr(TokenStream& stream, ParserContext& ctx, ExprPtr ta
         // Parse start expression
         start = parseExpr(stream, ctx);
         if (!start) {
-            ctx.error(stream, DiagCode::E1006, stream.peek());
+            ctx.error(stream, DiagCode::E1006, "'start_index' expression of slice", stream.peek());
             synchronizeTo(stream, ctx, TokenType::RANGE, TokenType::RANGE_EXCLUSIVE, TokenType::RBRACKET);
             if (stream.checkAny(TokenType::RANGE, TokenType::RANGE_EXCLUSIVE)) {
                 // We have a range operator, continue parsing
@@ -1590,7 +1590,7 @@ SliceExprAST* parseSliceExpr(TokenStream& stream, ParserContext& ctx, ExprPtr ta
             if (!stream.check(TokenType::RBRACKET)) {
                 end = parseExpr(stream, ctx);
                 if (!end) {
-                    ctx.error(stream, DiagCode::E1006, stream.peekValue());
+                    ctx.error(stream, DiagCode::E1006, "'end_index' expression of slice", stream.peekValue());
                     synchronizeTo(stream, ctx, TokenType::RBRACKET);
                     if (stream.check(TokenType::RBRACKET)) {
                         stream.advance(); // Consume ']' to recover
@@ -1738,21 +1738,19 @@ ExprAST* parsePipelineExpr(TokenStream& stream, ParserContext& ctx, ExprPtr seed
     std::vector<PipelineStepPtr> steps;
     
     while (stream.check(TokenType::PIPELINE)) {
-        SourceLocation opLoc = stream.currentLoc();
         stream.advance(); // Consume '|>'
         
         // ─── Check for trailing `|>` ─────────────────────────────────────
         // If we're at EOF after consuming '|>', we have a trailing pipeline
         if (stream.isAtEnd()) {
-            ctx.errorAt(opLoc, DiagCode::E1006, "expected pipeline step after '|>'");
-            ctx.error(stream, DiagCode::E1006, "missing pipeline step after '|>'", "<EOF>");
+            ctx.error(stream, DiagCode::E1006, "pipeline step after '|>'", stream.peekValue());
             break;
         }
         
         // ─── Check for consecutive `|>` operators ──────────────────────
         // If we see another '|>' immediately, that's a missing step
-        if (stream.check(TokenType::PIPELINE)) {
-            ctx.errorAt(opLoc, DiagCode::E1006, "missing pipeline step between '|>' operators");
+        if (stream.consumeTrailing(TokenType::PIPELINE) > 1) {
+            ctx.error(stream, DiagCode::E1009, "|>", "pipeline");
             // Skip the extra '|>' and continue to try parsing the next step
             stream.advance();
             continue;
@@ -1769,21 +1767,13 @@ ExprAST* parsePipelineExpr(TokenStream& stream, ParserContext& ctx, ExprPtr seed
         steps.push_back(step);
     }
     
-    // ─── 2. Check for trailing `|>` at the end ──────────────────────────
-    // This is a safety check in case the loop exited unexpectedly
-    if (stream.check(TokenType::PIPELINE)) {
-        ctx.error(stream, DiagCode::E1006, "trailing '|>' with no following step");
-        // Consume the extra '|>' to avoid infinite loops
-        stream.advance();
-    }
-    
-    // ─── 3. Validate that we have at least one step ──────────────────────
+    // ─── 2. Validate that we have at least one step ──────────────────────
     if (steps.empty()) {
-        ctx.error(stream, DiagCode::E1006, "at least one pipeline step is required");
+        ctx.error(stream, DiagCode::E1006, "at least one pipeline step is required", stream.peekValue());
         return seed;
     }
     
-    // ─── 4. Build the pipeline expression ────────────────────────────────
+    // ─── 3. Build the pipeline expression ────────────────────────────────
     auto* pipeline = ctx.arena.make<PipelineExprAST>();
     pipeline->loc = loc;
     pipeline->seed = seed;
@@ -1841,7 +1831,7 @@ PipelineStepAST* parsePipelineStep(TokenStream& stream, ParserContext& ctx) {
     
     // ─── 1. Check for EOF ─────────────────────────────────────────────────
     if (stream.isAtEnd()) {
-        ctx.error(stream, DiagCode::E1006, "pipeline step", "<EOF>");
+        ctx.error(stream, DiagCode::E1006, "pipeline step", stream.peekValue());
         return nullptr;
     }
     
@@ -1897,7 +1887,7 @@ PipelineStepAST* parsePipelineStep(TokenStream& stream, ParserContext& ctx) {
                 }
                 
                 if (stream.isAtEnd()) {
-                    ctx.error(stream, DiagCode::E1005, ")", "pipeline arguments", "<EOF>");
+                    ctx.error(stream, DiagCode::E1005, ")", "pipeline arguments", stream.peekValue());
                     break;
                 }
                 

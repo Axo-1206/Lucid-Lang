@@ -211,13 +211,13 @@ VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
     if (stream.match(TokenType::ASSIGN)) {
         init = parseExpr(stream, ctx);
         if (!init) {
-            ctx.error(stream, DiagCode::E1006, stream.peekValue());
+            ctx.error(stream, DiagCode::E1006, "initializer", stream.peekValue());
             synchronizeToContext(stream, ctx);
             return nullptr;
         }
     } else if (isConst) {
         // const requires an initializer
-        ctx.error(stream, DiagCode::E1006, stream.peekValue());
+        ctx.error(stream, DiagCode::E1006, "initializer", stream.peekValue());
         synchronizeToContext(stream, ctx);
         return nullptr;
     }
@@ -300,7 +300,7 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     
     // ─── 5. Check for '=' before body ────────────────────────────────────
     if (!stream.match(TokenType::ASSIGN)) {
-        ctx.error(stream, DiagCode::E1006, stream.peekValue());
+        ctx.error(stream, DiagCode::E1007, "=", stream.peekValue());
         synchronizeToContext(stream, ctx);
         return nullptr;
     }
@@ -331,7 +331,7 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
         // Parse expression body
         ExprPtr expr = parseExpr(stream, ctx);
         if (!expr) {
-            ctx.error(stream, DiagCode::E1006, stream.peekValue());
+            ctx.error(stream, DiagCode::E1006, "function reference", stream.peekValue());
             synchronizeToContext(stream, ctx);
             return nullptr;
         }
@@ -615,7 +615,7 @@ FieldDeclPtr parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
     if (stream.match(TokenType::ASSIGN)) {
         defaultVal = parseExpr(stream, ctx);
         if (!defaultVal) {
-            ctx.error(stream, DiagCode::E1006, stream.peekValue());
+            ctx.error(stream, DiagCode::E1006, "default value", stream.peekValue());
             synchronizeToContext(stream, ctx);
             return nullptr;
         }
@@ -845,7 +845,7 @@ EnumVariantPtr parseEnumVariant(TokenStream& stream, ParserContext& ctx) {
     
     // ─── 3. Expect '=' ────────────────────────────────────────────────────
     if (!stream.match(TokenType::ASSIGN)) {
-        ctx.error(stream, DiagCode::E1006, stream.peekValue());
+        ctx.error(stream, DiagCode::E1007, "=", stream.peekValue());
         synchronizeToContext(stream, ctx);
         return nullptr;
     }

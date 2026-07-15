@@ -31,10 +31,6 @@
 
 namespace parser {
 
-// =============================================================================
-// looksLikeFuncDecl() - Check if current position looks like a function declaration
-// =============================================================================
-
 /**
  * @brief Check if the current position looks like a function declaration.
  * 
@@ -111,10 +107,6 @@ bool looksLikeFuncDecl(TokenStream& stream, ParserContext& ctx) {
     stream.setPos(savedPos);
     return result;
 }
-
-// =============================================================================
-// looksLikeAnonFunc() - Check if current position looks like an anonymous function
-// =============================================================================
 
 /**
  * @brief Check if the current position looks like an anonymous function.
@@ -286,10 +278,6 @@ bool looksLikeAnonFunc(TokenStream& stream, ParserContext& ctx) {
     return result;
 }
 
-// =============================================================================
-// looksLikeMultiAssignStart() - Check if current position starts a multi-assignment
-// =============================================================================
-
 /**
  * @brief Check if the current position looks like a multi-assignment.
  * 
@@ -365,9 +353,123 @@ bool looksLikeMultiAssignStart(TokenStream& stream, ParserContext& ctx) {
     return result;
 }
 
-// =============================================================================
-// looksLikeStructLiteral() - Check if current position looks like a struct literal
-// =============================================================================
+/**
+ * @brief Lookahead: does the statement starting at the current position
+ *        look like a multi-assign target list — `lvalue { ',' lvalue } '='`?
+ *
+ * This is the assignment-side counterpart of `looksLikeMultiAssignStart`
+ * (which gates `let`/`const` toward `parseMultiVarDecl`). Without this
+ * check, a statement like `value, ok = parseInt("42");` never starts with
+ * LET/CONST, so parseStmt's dispatcher would fall through to
+ * parseExprStmt(), which parses a single expression and leaves the `,`
+ * unconsumed — producing a spurious parse error instead of a
+ * MultiAssignStmtAST.
+ *
+ * The scan is purely read-only: it walks the raw token buffer
+ * (stream.getTokens() / stream.getPos()) without advancing the stream,
+ * exactly like harvestDocComment() does. It bails out to `false` the
+ * moment the shape stops matching an lvalue-list-then-'=', so ordinary
+ * expression statements — including plain single-target `x = 5`, which
+ * is handled entirely inside the Pratt parser via parseInfixAssign — are
+ * left completely untouched and keep going through parseExprStmt().
+ *
+ * A single comma-free target (`x = 5`) deliberately does NOT match here
+ * (see the `sawComma` gate below): parseMultiAssignStmt's own loop would
+ * happily accept it too, but routing every ordinary assignment through
+ * this path would bypass the Pratt parser's right-associative chaining
+ * (`a = b = c`) for no benefit. Only genuinely comma-separated target
+ * lists are rerouted.
+ *
+ * ## Grammar covered per target
+ * ```
+ * target  = IDENTIFIER [ ':' IDENTIFIER ]     (* plain var, or module access *)
+ *           { '.' IDENTIFIER | '[' ... ']' }  (* field/index trailers *)
+ * ```
+ *
+ * ## Examples
+ * ```lucid
+ * value, ok = parseInt("42");                → true
+ * player.stats.hp, player.stats.mp = a, b;    → true  (single shared RHS in practice)
+ * arr[i], arr[j] = arr[j], arr[i];            → true
+ * x = 5;                                      → false (no comma — ordinary assign)
+ * x + y;                                      → false (not an lvalue list at all)
+ * f(a, b);                                    → false (never reaches '=')
+ * ```
+ *
+ * @param stream The token stream for the current file
+ * @param ctx The parsing context (unused today, kept for symmetry with
+ *            looksLikeMultiAssignStart and to allow future diagnostics)
+ * @return true if the upcoming tokens form a comma-separated lvalue list
+ *         terminated by a bare '='; false otherwise. Never advances the
+ *         stream.
+ */
+bool looksLikeMultiAssignTargets(TokenStream& stream, ParserContext& ctx) {
+    (void)ctx;
+
+    const auto& tokens = stream.getTokens();
+    size_t i = stream.getPos();
+    const size_t n = tokens.size();
+
+    bool sawComma = false;
+
+    while (true) {
+        // Each target must start with an identifier.
+        if (i >= n || tokens[i].type != TokenType::IDENTIFIER) {
+            return false;
+        }
+        ++i;
+
+        // Optional module access base: IDENTIFIER ':' IDENTIFIER
+        // (module:member is not assignable, but that's a semantic check,
+        // not a parse-time shape check — parseLvalue already tolerates it.)
+        if (i + 1 < n && tokens[i].type == TokenType::COLON &&
+            tokens[i + 1].type == TokenType::IDENTIFIER) {
+            i += 2;
+        }
+
+        // Trailers: '.' IDENTIFIER, or '[' expr ']' (bracket-depth aware,
+        // since the index expression may itself contain nested brackets).
+        while (i < n) {
+            if (tokens[i].type == TokenType::DOT) {
+                if (i + 1 >= n || tokens[i + 1].type != TokenType::IDENTIFIER) {
+                    return false; // malformed — let the real parser report it
+                }
+                i += 2;
+                continue;
+            }
+
+            if (tokens[i].type == TokenType::LBRACKET) {
+                int depth = 1;
+                ++i;
+                while (i < n && depth > 0) {
+                    if (tokens[i].type == TokenType::LBRACKET) {
+                        ++depth;
+                    } else if (tokens[i].type == TokenType::RBRACKET) {
+                        --depth;
+                    }
+                    ++i;
+                }
+                if (depth != 0) {
+                    return false; // unbalanced — bail, don't guess
+                }
+                continue;
+            }
+
+            break;
+        }
+
+        // Another target follows a comma; otherwise the list is done.
+        if (i < n && tokens[i].type == TokenType::COMMA) {
+            sawComma = true;
+            ++i;
+            continue;
+        }
+
+        break;
+    }
+
+    return sawComma && i < n && tokens[i].type == TokenType::ASSIGN;
+}
 
 /**
  * @brief Check if the current position looks like a struct literal.

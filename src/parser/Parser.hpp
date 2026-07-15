@@ -89,7 +89,7 @@ SyncOutcome synchronizeToContext(TokenStream& stream, ParserContext& ctx);
  */
 void parseInternal(TokenStream& stream, ParserContext& ctx, std::vector<DeclPtr>& outDecls);
 
-// @NOTE '// X' means not fully implemented or still need to be finalize(bug free)
+// @NOTE '// X' means not fully implemented or still need to be finalized aka bug free
 
 // ─── Declarations ──────────────────────────────────────────────────────────
 
@@ -105,7 +105,7 @@ FieldDeclPtr parseFieldDecl(TokenStream& stream, ParserContext& ctx);
 EnumVariantPtr parseEnumVariant(TokenStream& stream, ParserContext& ctx);
 TraitFieldPtr parseTraitField(TokenStream& stream, ParserContext& ctx);
 
-// ─── Statements ──────────────────────────────────────────────────────────── // X
+// ─── Statements ────────────────────────────────────────────────────────────
 
 StmtAST* parseStmt(TokenStream& stream, ParserContext& ctx);
 BlockStmtAST* parseBlock(TokenStream& stream, ParserContext& ctx);
@@ -197,6 +197,7 @@ ExprPtr parseLvalue(TokenStream& stream, ParserContext& ctx); // X
 bool looksLikeFuncDecl(TokenStream& stream, ParserContext& ctx);
 bool looksLikeAnonFunc(TokenStream& stream, ParserContext& ctx);
 bool looksLikeMultiAssignStart(TokenStream& stream, ParserContext& ctx);
+bool looksLikeMultiAssignTargets(TokenStream& stream, ParserContext& ctx);
 bool looksLikeStructLiteral(TokenStream& stream, ParserContext& ctx);
 
 // ─── Precedence Helpers ────────────────────────────────────────────────────
