@@ -329,7 +329,7 @@ TypeAST* parseRefType(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
     
     if (!stream.check(TokenType::AMPERSAND)) {
-        ctx.error(stream, DiagCode::E1007, "&", stream.peekValue());
+        ctx.error(stream, DiagCode::E1007, "'&'", stream.peekValue());
         synchronizeToContext(stream, ctx);
         return nullptr;
     }
@@ -370,7 +370,7 @@ TypeAST* parsePtrType(TokenStream& stream, ParserContext& ctx) {
     
     // Check for '*' operator
     if (!stream.check(TokenType::MUL)) {
-        ctx.error(stream, DiagCode::E1007, "*", stream.peekValue());
+        ctx.error(stream, DiagCode::E1007, "'*'", stream.peekValue());
         synchronizeToContext(stream, ctx);
         return nullptr;
     }

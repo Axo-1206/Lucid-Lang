@@ -28,17 +28,17 @@ enum class DiagCode : uint32_t {
     E1008,          ///< Unexpected token
     E1009,          ///< Trailing tokens
     E1010,          ///< Invalid context
+    E1011,          ///< Expected body (block)
 
     // Speicalize codes
     E1101,          ///< Expected module path after keyword 'use'
-    E1102,          ///< Expected branch after condition
-    E1103,          ///< Expected else branch
+    // E1102,          ///< Expected branch after condition
+    // E1103,          ///< Expected else branchs
     E1104,          ///< Expected attribute argument literal
     E1105,          ///< Expected switch subject
     E1106,          ///< Empty expression group
     E1107,          ///< Expected pipeline seed (expression)
     E1108,          ///< Multiple default clauses in switch
-    E1109,          ///< Expected default clause body
 
     // E1105,          ///< Unexpected trailing '+' in generic constraints
     // E1106,          ///< Unexpected trailing '.' in path

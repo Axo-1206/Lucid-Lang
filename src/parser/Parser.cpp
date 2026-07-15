@@ -17,6 +17,7 @@
 #include "debug/DebugMacros.hpp"
 #include "debug/DebugUtils.hpp"
 #include "core/diagnostics/DiagnosticCodes.hpp"
+#include "support/ParserContext.hpp"
 
 #include <filesystem>
 #include <fstream>
@@ -924,6 +925,8 @@ DeclAST* parseDecl(TokenStream& stream, ParserContext& ctx) {
     if (stream.isAtEnd()) {
         return nullptr;
     }
+
+    auto doc = harvestDocComment(stream, ctx);
     
     // ─── 2. Parse attributes ──────────────────────────────────────────────
     ArenaSpan<AttributePtr> attrs = parseAttributes(stream, ctx);
@@ -932,6 +935,10 @@ DeclAST* parseDecl(TokenStream& stream, ParserContext& ctx) {
     DeclAST* decl = nullptr;
     
     if (stream.check(TokenType::IMPORT)) {
+        // Prevent import in function body
+        if (ctx.currentContext() == SyntacticContext::FuncBody) {
+            return nullptr;
+        }
         decl = parseImportDecl(stream, ctx);  // consumes ';' (required)
     } else if (stream.check(TokenType::STRUCT)) {
         decl = parseStructDecl(stream, ctx);
@@ -963,6 +970,11 @@ DeclAST* parseDecl(TokenStream& stream, ParserContext& ctx) {
     // ─── 4. Attach attributes ──────────────────────────────────────────────
     if (decl) {
         decl->attributes = attrs;
+
+        // Attach doc comment to the declaration
+        if (doc.has_value()) {
+            decl->doc = doc;
+        }
     }
     
     return decl;
