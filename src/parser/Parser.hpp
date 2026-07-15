@@ -123,7 +123,7 @@ DeclStmtAST* parseDeclStmt(TokenStream& stream, ParserContext& ctx);
 MultiVarDeclAST* parseMultiVarDecl(TokenStream& stream, ParserContext& ctx);
 MultiAssignStmtAST* parseMultiAssignStmt(TokenStream& stream, ParserContext& ctx);
 
-// ─── Expressions ─────────────────────────────────────────────────────────── // X
+// ─── Expressions ───────────────────────────────────────────────────────────
 
 ExprAST* parseExpr(TokenStream& stream, ParserContext& ctx);
 ExprAST* parsePrattExpr(TokenStream& stream, ParserContext& ctx, int minPrec);
@@ -147,14 +147,14 @@ AwaitStmtAST* parseAwaitStmt(TokenStream& stream, ParserContext& ctx);
 SpawnStmtAST* parseSpawnStmt(TokenStream& stream, ParserContext& ctx);
 JoinStmtAST* parseJoinStmt(TokenStream& stream, ParserContext& ctx);
 
-// ─── Call & Index ────────────────────────────────────────────────────────── // X
+// ─── Call & Index ──────────────────────────────────────────────────────────
 
 CallExprAST* parseCallExpr(TokenStream& stream, ParserContext& ctx, ExprPtr callee, ArenaSpan<TypeAST*> genericArgs);
 IntrinsicCallExprAST* parseIntrinsicCallExpr(TokenStream& stream, ParserContext& ctx);
 IndexExprAST* parseIndexExpr(TokenStream& stream, ParserContext& ctx, ExprPtr target);
 SliceExprAST* parseSliceExpr(TokenStream& stream, ParserContext& ctx, ExprPtr target);
 
-// ─── Pipeline & Composition ─────────────────────────────────────────────── // X
+// ─── Pipeline & Composition ───────────────────────────────────────────────
 
 ExprAST* parsePipelineExpr(TokenStream& stream, ParserContext& ctx, ExprPtr seed);
 ExprAST* parseComposeExpr(TokenStream& stream, ParserContext& ctx, ExprPtr lhs);
@@ -192,14 +192,13 @@ std::vector<InternedString> parseImportPath(TokenStream& stream, ParserContext& 
 TraitRefPtr parseTraitRef(TokenStream& stream, ParserContext& ctx);
 
 ExprPtr parseLvalue(TokenStream& stream, ParserContext& ctx); // X
-ExprPtr parseFuncRef(TokenStream& stream, ParserContext& ctx); // X
 
-// ─── Lookahead Helpers ──────────────────────────────────────────────────── // X
+// ─── Lookahead Helpers ────────────────────────────────────────────────────
 
 bool looksLikeFuncDecl(TokenStream& stream, ParserContext& ctx);
 bool looksLikeAnonFunc(TokenStream& stream, ParserContext& ctx);
-bool looksLikeMultiAssignStart(TokenStream& stream, ParserContext& ctx);
-bool isFunctionTypeAfterParen(TokenStream& stream, ParserContext& ctx, size_t startPos);
+bool looksLikeMultiAssignStart(TokenStream& stream, ParserContext& ctx); // X
+// bool isFunctionTypeAfterParen(TokenStream& stream, ParserContext& ctx, size_t startPos);
 bool looksLikeStructLiteral(TokenStream& stream, ParserContext& ctx);
 
 // ─── Precedence Helpers ──────────────────────────────────────────────────── // X
@@ -209,7 +208,7 @@ BinaryOp tokenToBinaryOp(TokenType type);
 AssignOp tokenToAssignOp(TokenType type);
 // bool isAssignOp(TokenType type);
 
-// ─── Infix Dispatch ─────────────────────────────────────────────────────── // X
+// ─── Infix Dispatch ───────────────────────────────────────────────────────
 
 ExprPtr parseInfixAssign(TokenStream& stream, ParserContext& ctx, ExprPtr lhs,  TokenType opTok);
 ExprPtr parseInfixNullCoalesce(TokenStream& stream, ParserContext& ctx, ExprPtr lhs);

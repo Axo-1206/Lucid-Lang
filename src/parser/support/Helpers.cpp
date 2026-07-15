@@ -2060,191 +2060,149 @@ ArenaSpan<TypeAST*> parseReturnList(TokenStream& stream, ParserContext& ctx) {
     return builder.build();
 }
 
+// =============================================================================
+// parseImportPath - Parse a import path
+// =============================================================================
+
 /**
- * @brief Parse a import declaration and import the module.
+ * @brief Parse a import path.
  * 
- * Grammar: `import path [as alias]`
- * 
- * ## Path Styles
- * 
- * ### Current: Dot-Separated (Module Style)
- * 
- * The parser currently supports **dot-separated** paths exclusively:
- * 
- * ```lucid
- * import std.io                    → path = "std.io", alias = std.io
- * import std.math as math          → path = "std.math", alias = math
- * import graphics.gl               → path = "graphics.gl", alias = graphics.gl
- * import mylib                     → path = "mylib", alias = mylib
- * ```
- * 
- * This style is inspired by Java, Python, and C# package systems where:
- * - Dots (`.`) act as namespace separators
- * - Paths are **always absolute** from the package root
- * - No relative navigation (`./`, `../`) is supported
- * - Resolution converts dots to filesystem paths internally
- *   (e.g., `std.io` → `std/io.lucid` or `std/io/__init__.luc`)
- * 
- * ### Future: Quoted Filesystem Paths
- * 
- * Support for **quoted filesystem paths** is planned as a future feature:
- * 
- * ```lucid
- * import "../folderA/moduleB" as b   // Relative filesystem path (future)
- * import "/usr/lib/mymod"            // Absolute filesystem path (future)
- * import "./local/helper" as helper  // Current directory (future)
- * ```
- * 
- * ## Why Quoted Paths?
- * 
- * Filesystem paths contain characters (`/`, `\`, `.`, `..`) that conflict with
- * the dot-separated module syntax. Wrapping them in quotes (`""`) makes them
- * unambiguous and allows:
- * 
- * - **Relative paths**: `"../folderA/moduleB"` - go up one directory
- * - **Absolute paths**: `"/usr/lib/mymod"` - from filesystem root
- * - **Path traversal**: `"./local/helper"` - current directory
- * - **Mixed usage**: `"../lib/math.vector"` - combine relative and dot style
- * 
- * ## Current Resolution Strategy
- * 
- * For dot-separated paths, the `ModuleResolver`:
- * 1. Splits the path on `.` (e.g., `"std.io"` → `["std", "io"]`)
- * 2. Replaces `.` with `/` for filesystem lookup
- * 3. Searches in the package root and additional search paths
+ * Grammar: `IDENTIFIER { '.' IDENTIFIER }`
  * 
  * ## Examples
  * 
  * ```lucid
- * // Current: Dot-separated (supported)
- * import std.io                      // Imports std/io.lucid from package root
- * import std.math as math            // Imports std/math.lucid as "math"
- * import graphics.gl                 // Imports graphics/gl.lucid
- * import mylib                       // Imports mylib.lucid from package root
- * 
- * // Future: Quoted filesystem paths (not yet implemented)
- * import "../folderA/moduleB" as b   // Imports ../folderA/moduleB.lucid
- * import "/usr/lib/mymod"            // Imports /usr/lib/mymod.lucid
- * import "./local/helper" as helper  // Imports ./local/helper.lucid
+ * import std.io                    → ["std", "io"], stream at ';'
+ * import std.math as math          → ["std", "math"], stream at 'as'
+ * import graphics.gl               → ["graphics", "gl"], stream at ';'
+ * import mylib                     → ["mylib"], stream at ';'
  * ```
  * 
- * ## Error Handling
+ * ## Program Flow
  * 
- * - Missing `import` keyword → E1004
- * - Empty or malformed path → E1002, E1009
- * - Missing semicolon → E1005
- * - Module not found → E0004 (reported by ModuleResolver)
- * - Circular import → E0003
+ * ```
+ * parseImportPath()
+ *     │
+ *     ├── 1. Main Parsing Loop
+ *     │   │
+ *     │   └── while (!stream.isAtEnd())
+ *     │       │
+ *     │       ├── 1.1 Parse Identifier
+ *     │       │   │
+ *     │       │   └── if (!stream.check(TokenType::IDENTIFIER))
+ *     │       │       ├── ctx.error(stream, DiagCode::E1002, "identifier in import path", got)
+ *     │       │       ├── synchronizeTo(stream, ctx, AS, SEMICOLON)
+ *     │       │       └── return pathParts (with whatever we have)
+ *     │       │   └── else
+ *     │       │       └── Token tok = stream.advance()
+ *     │       │           pathParts.push_back(ctx.pool.intern(tok.value))
+ *     │       │
+ *     │       ├── 1.2 Check for '.' separator
+ *     │       │   │
+ *     │       │   └── if (stream.check(TokenType::DOT))
+ *     │       │       ├── stream.advance()  // Consume '.'
+ *     │       │       └── continue  // Parse next identifier
+ *     │       │
+ *     │       └── 1.3 No more path components
+ *     │           └── break  // We're at 'as', ';', or some other token
+ *     │
+ *     ├── 2. Error Recovery for 'as' keyword
+ *     │   └── // If we encounter 'as', we stop and let the caller handle it
+ *     │       // This is NOT an error - it's a valid terminator for the path
+ *     │
+ *     └── 3. Return pathParts
+ *         └── return pathParts
+ * ```
+ * 
+ * ## Error Recovery Strategy
+ * 
+ * ### Level 1: Missing Identifier
+ * - E1002 reported
+ * - synchronizeTo(AS, SEMICOLON) skips to the next terminator
+ * - Returns whatever path parts were collected
+ * 
+ * ### Level 2: Consecutive Dots
+ * - `std..io` → After consuming first dot, next token is another dot
+ * - The loop attempts to parse an identifier, fails with E1002
+ * - synchronizeTo(AS, SEMICOLON) recovers
+ * 
+ * ### Level 3: Trailing Dot
+ * - `std.io.` → After consuming dot, next token is EOF or terminator
+ * - The loop attempts to parse an identifier, fails with E1002
+ * - synchronizeTo(AS, SEMICOLON) recovers
+ * 
+ * ## Token Stream State
+ * 
+ * After this function completes:
+ * - Position is after the last identifier in the path (normal case)
+ * - Position is at 'as' (if 'as' follows the path)
+ * - Position is at ';' (if ';' follows the path)
+ * - Position is at a recovery point (if errors occurred)
+ * 
+ * ## Examples
+ * 
+ * ```lucid
+ * import std.io                    → ["std", "io"], stream at ';'
+ * import std.io as io              → ["std", "io"], stream at 'as'
+ * import mylib                     → ["mylib"], stream at ';'
+ * import std..io                   → ["std"] + E1002 (missing identifier after dot)
+ * import std.io.                   → ["std", "io"] + E1002 (missing identifier after dot)
+ * import std.                      → ["std"] + E1002 (missing identifier after dot)
+ * import .io                       → [] + E1002 (missing identifier)
+ * ```
  * 
  * @param stream The token stream for the current file
  * @param ctx The parsing context
- * @return ImportDeclAST* The parsed import declaration, or nullptr on error
- * 
- * @note This function consumes the terminating ';'. The caller must NOT
- *       consume ';'.
- * 
- * @note For dot-separated paths, `parseImportPath()` handles the parsing.
- *       The alias is optional and parsed here if the `as` keyword is present.
- * 
- * @note Filesystem paths with `"` are NOT yet supported. When implemented,
- *       they will be detected by `stream.check(TokenType::STRING_LITERAL)`
- *       and parsed as a quoted string containing the path.
+ * @return std::vector<InternedString> The path components (empty on error)
+ *
+ * @note This function does NOT consume ';' or 'as'. The caller handles those.
+ *       This function stops at 'as' so the caller can consume it and parse the alias.
  */
-ImportDeclAST* parseImportDecl(TokenStream& stream, ParserContext& ctx) {
-    SourceLocation loc = stream.currentLoc();
+std::vector<InternedString> parseImportPath(TokenStream& stream, ParserContext& ctx) {
+    LOG_PARSER_DETAIL("parseImportPath: parsing import path");
     
-    // ─── 1. Expect 'import' keyword ────────────────────────────────────────
-    if (!stream.match(TokenType::IMPORT)) {
-        ctx.error(stream, DiagCode::E1004, "import", "import declaration", stream.peekValue());
-        synchronizeToContext(stream, ctx);
-        return nullptr;
-    }
+    std::vector<InternedString> pathParts;
     
-    // ─── 2. Parse the path ──────────────────────────────────────────────
-    // ─── 2.1 Current: Dot-separated path ───────────────────────────────
-    // This is the primary path style for now.
-    std::vector<InternedString> pathParts = parseImportPath(stream, ctx);
-    if (pathParts.empty()) {
-        // Error already reported by parseImportPath
-        synchronizeTo(stream, ctx, TokenType::SEMICOLON);
-        stream.consume(TokenType::SEMICOLON);
-        return nullptr;
-    }
-    
-    // Build the full path string (e.g., "std.io")
-    std::string pathStr;
-    for (size_t i = 0; i < pathParts.size(); ++i) {
-        if (i > 0) pathStr += ".";
-        pathStr += std::string(ctx.pool.lookup(pathParts[i]));
-    }
-    InternedString path = ctx.pool.intern(pathStr);
-    
-    // ─── 2.2 Future: Quoted filesystem path ────────────────────────────
-    // TODO: Support quoted paths like import "../folder/module" as b
-    // if (stream.check(TokenType::STRING_LITERAL)) {
-    //     Token pathTok = stream.advance();
-    //     InternedString path = ctx.pool.intern(pathTok.value);
-    //     // Path is already a filesystem path - pass directly to resolver
-    // }
-    
-    // ─── 3. Parse optional alias ────────────────────────────────────────
-    InternedString alias = path;  // Default alias is the full path
-    
-    if (stream.match(TokenType::AS)) {
-        // Expect an identifier for the alias
+    // ─── 1. Main parsing loop ─────────────────────────────────────────────
+    while (!stream.isAtEnd()) {
+        // ─── 1.1 Parse identifier ──────────────────────────────────────
         if (!stream.check(TokenType::IDENTIFIER)) {
-            ctx.error(stream, DiagCode::E1002, "alias name after 'as'", stream.peekValue());
-            synchronizeTo(stream, ctx, TokenType::SEMICOLON);
-            stream.consume(TokenType::SEMICOLON);
-            return nullptr;
+            ctx.error(stream, DiagCode::E1002, "identifier in import path", stream.peekValue());
+            synchronizeTo(stream, ctx, TokenType::AS, TokenType::SEMICOLON);
+            // Return whatever we have - caller will handle recovery
+            break;
         }
         
-        Token aliasTok = stream.advance();
-        alias = ctx.pool.intern(aliasTok.value);
-    }
-    
-    // ─── 4. Consume semicolon ────────────────────────────────────────────
-    if (!stream.match(TokenType::SEMICOLON)) {
-        ctx.error(stream, DiagCode::E1005, ";", stream.peekValue());
-        synchronizeTo(stream, ctx, TokenType::SEMICOLON);
-        if (!stream.check(TokenType::SEMICOLON)) {
-            // Can't recover - return nullptr
-            return nullptr;
+        Token tok = stream.advance();
+        pathParts.push_back(ctx.pool.intern(tok.value));
+        
+        // ─── 1.2 Check for '.' separator ──────────────────────────────
+        if (stream.check(TokenType::DOT)) {
+            stream.advance(); // Consume '.'
+            continue; // Parse next identifier
         }
-        stream.advance(); // Consume semicolon
+        
+        // ─── 1.3 No more path components ──────────────────────────────
+        // We're at 'as', ';', or some other token. Stop parsing.
+        break;
     }
     
-    // ─── 5. Resolve and import the module ──────────────────────────────
-    InternedString filePath = ctx.resolver ? ctx.resolver->resolveUsePath(path) : InternedString();
-    
-    if (ctx.resolver) {
-        // ─── 5.1 Check for circular import ──────────────────────────────
-        if (ctx.resolver->isParsing(filePath)) {
-            ctx.error(stream, DiagCode::E0003, ctx.toString(path));
-            // Return a import declaration even on error so we can continue
-        } else {
-            // ─── 5.2 Import the module ────────────────────────────────────
-            // Always call parse() - it handles caching internally
-            std::string source = ctx.resolver->readModuleSource(filePath);
-            if (source.empty()) {
-                // The file path exists but source is empty
-                // parse() will handle this and return a module with errors
-            }
-            parser::parse(ctx.toString(filePath), source, ctx);
-        }
+    // ─── 2. Build the full path string for logging ──────────────────────
+    std::string fullPath;
+    for (size_t i = 0; i < pathParts.size(); ++i) {
+        if (i > 0) fullPath += ".";
+        fullPath += std::string(ctx.pool.lookup(pathParts[i]));
     }
     
-    // ─── 6. Create and return the ImportDeclAST node ──────────────────────
-    auto* useDecl = ctx.arena.make<ImportDeclAST>();
-    useDecl->loc = loc;
-    useDecl->path = path;
-    useDecl->alias = alias;
+    LOG_PARSER_DETAIL("parseImportPath: parsed path '", fullPath, "' with ", 
+                      pathParts.size(), " components");
     
-    LOG_PARSER("parseImportDecl: parsed import '", ctx.toString(path), 
-               "' as '", ctx.toString(alias), "'");
-    
-    return useDecl;
+    return pathParts;
 }
+
+// =============================================================================
+// parseTraitRef - Parse a trait reference
+// =============================================================================
 
 /**
  * @brief Parse a trait reference.
@@ -2444,104 +2402,6 @@ ExprPtr parseLvalue(TokenStream& stream, ParserContext& ctx) {
     }
     
     return expr;
-}
-
-/**
- * @brief Parse a function reference.
- * 
- * A function reference is an identifier that refers to a function, optionally
- * with generic arguments.
- * 
- * ## Grammar
- * 
- * ```ebnf
- * func_ref = IDENTIFIER [ '<' type { ',' type } '>' ]
- *          | module_expr
- * ```
- * 
- * ## Examples
- * 
- * ```lucid
- * add                    → Function "add"
- * math:sqrt              → ModuleAccess "math" "sqrt"
- * map<int, string>       → Generic function "map" with args [int, string]
- * math:special<int>      → Special operation
- * ```
- * 
- * @param stream The token stream for the current file
- * @param ctx The parsing context
- * @return ExprPtr The function reference expression, or nullptr on error
- */
-ExprPtr parseFuncRef(TokenStream& stream, ParserContext& ctx) {
-    SourceLocation loc = stream.currentLoc();
-    
-    // ─── 1. Check for module access ─────────────────────────────────────
-    if (stream.check(TokenType::IDENTIFIER)) {
-        Token moduleTok = stream.peek();
-        // Look ahead to see if it's followed by ':'
-        if (stream.peekNextType() == TokenType::COLON) {
-            // It's a module function access: module:func
-            stream.advance(); // Consume module name
-            InternedString moduleName = ctx.pool.intern(moduleTok.value);
-            
-            stream.consume(TokenType::COLON);
-            
-            if (!stream.check(TokenType::IDENTIFIER)) {
-                ctx.error(stream, DiagCode::E1002, "function name after ':'", stream.peekValue());
-                return nullptr;
-            }
-            
-            Token funcTok = stream.advance();
-            InternedString funcName = ctx.pool.intern(funcTok.value);
-            
-            // Check for generic arguments on the function
-            ArenaSpan<TypePtr> genericArgs;
-            if (stream.check(TokenType::LESS)) {
-                genericArgs = parseGenericArgs(stream, ctx);
-            }
-            
-            // Create module access expression
-            auto* moduleAccess = ctx.arena.make<ModuleAccessExprAST>();
-            moduleAccess->loc = loc;
-            moduleAccess->moduleName = moduleName;
-            moduleAccess->memberName = funcName;
-            moduleAccess->genericArgs = genericArgs;
-            moduleAccess->isModuleMember = true;
-            
-            LOG_PARSER_DETAIL("parseFuncRef: parsed module function '", 
-                              ctx.toString(moduleName), ":", ctx.toString(funcName), 
-                              "' with ", genericArgs.size(), " generic args");
-            
-            return moduleAccess;
-        }
-    }
-    
-    // ─── 2. Parse as a regular function reference ───────────────────────
-    if (!stream.check(TokenType::IDENTIFIER)) {
-        ctx.error(stream, DiagCode::E1002, "function name", stream.peekValue());
-        synchronizeToContext(stream, ctx);
-        return nullptr;
-    }
-    
-    Token funcTok = stream.advance();
-    InternedString funcName = ctx.pool.intern(funcTok.value);
-    
-    // Check for generic arguments
-    ArenaSpan<TypePtr> genericArgs;
-    if (stream.check(TokenType::LESS)) {
-        genericArgs = parseGenericArgs(stream, ctx);
-    }
-    
-    // Create identifier expression
-    auto* identifier = ctx.arena.make<IdentifierExprAST>();
-    identifier->loc = loc;
-    identifier->name = funcName;
-    identifier->genericArgs = genericArgs;
-    
-    LOG_PARSER_DETAIL("parseFuncRef: parsed function '", ctx.toString(funcName), 
-                      "' with ", genericArgs.size(), " generic args");
-    
-    return identifier;
 }
 
 } // namespace parser
