@@ -3,7 +3,7 @@
  * @brief Implementation of declaration parsers.
  * 
  * This file implements all declaration parsers:
- * - Use declarations
+ * - Import declarations
  * - Variable declarations
  * - Function declarations
  * - Struct declarations
@@ -29,47 +29,47 @@
 namespace parser {
 
 // =============================================================================
-// parseUseDecl() – Parses a 'use' declaration
+// parseImportDecl() – Parses a 'import' declaration
 // =============================================================================
 
 /**
- * @brief Parse a `use` declaration.
+ * @brief Parse a `import` declaration.
  * 
- * Grammar: `use path [as alias]`
+ * Grammar: `import path [as alias]`
  * 
  * Alias rules:
- * 1. If `as alias` is present, use the specified alias
- * 2. Otherwise, use the last component of the path as the alias
+ * 1. If `as alias` is present, import the specified alias
+ * 2. Otherwise, import the last component of the path as the alias
  * 
  * @param stream The token stream
  * @param ctx The parsing context
- * @return UseDeclAST* The parsed use declaration, or nullptr on error
+ * @return ImportDeclAST* The parsed import declaration, or nullptr on error
  * 
  * @note This function does NOT consume the terminating semicolon.
  *       The caller (parseDecl) consumes it.
  */
-UseDeclAST* parseUseDecl(TokenStream& stream, ParserContext& ctx) {
+ImportDeclAST* parseImportDecl(TokenStream& stream, ParserContext& ctx) {
     LOG_PARSER("Enter UseDecl");
 
     SourceLocation loc = stream.currentLoc();
 
-    // ─── 1. Parse 'use' keyword ─────────────────────────────────────────
-    if (!stream.check(TokenType::USE)) {
-        ctx.error(stream, DiagCode::E1001, "use", stream.peekValue());
+    // ─── 1. Parse 'import' keyword ─────────────────────────────────────────
+    if (!stream.check(TokenType::IMPORT)) {
+        ctx.error(stream, DiagCode::E1001, "import", stream.peekValue());
         synchronizeToContext(stream, ctx);
         return nullptr;
     }
-    stream.advance(); // Consume 'use'
+    stream.advance(); // Consume 'import'
     
-    // ─── 2. Parse the use path ───────────────────────────────────────────
-    auto pathParts = parseUsePath(stream, ctx);
+    // ─── 2. Parse the import path ───────────────────────────────────────────
+    auto pathParts = parseImportPath(stream, ctx);
     if (pathParts.empty()) {
         ctx.error(stream, DiagCode::E1102, stream.peekValue());
         synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
-    // Build the full use path string (dot-separated)
+    // Build the full import path string (dot-separated)
     std::string fullPath;
     for (size_t i = 0; i < pathParts.size(); ++i) {
         if (i > 0) fullPath += ".";
@@ -82,7 +82,7 @@ UseDeclAST* parseUseDecl(TokenStream& stream, ParserContext& ctx) {
     std::string aliasStr;
     
     if (stream.match(TokenType::AS)) {
-        // Explicit alias: `use path as alias`
+        // Explicit alias: `import path as alias`
         Token aliasTok = stream.consume(TokenType::IDENTIFIER);
         if (aliasTok.type != TokenType::EOF_TOKEN) {
             alias = ctx.pool.intern(aliasTok.value);
@@ -93,15 +93,15 @@ UseDeclAST* parseUseDecl(TokenStream& stream, ParserContext& ctx) {
             return nullptr;
         }
     } else {
-        // Implicit alias: use the last component of the path
+        // Implicit alias: import the last component of the path
         // e.g., "std.math" → alias = "math"
         InternedString lastPart = pathParts.back();
         alias = lastPart;
         aliasStr = std::string(ctx.pool.lookup(alias));
     }
     
-    // ─── 4. Create the UseDeclAST ────────────────────────────────────────
-    auto* useDecl = ctx.arena.make<UseDeclAST>();
+    // ─── 4. Create the ImportDeclAST ────────────────────────────────────────
+    auto* useDecl = ctx.arena.make<ImportDeclAST>();
     useDecl->loc = loc;
     useDecl->path = usePath;
     useDecl->alias = alias;
@@ -112,7 +112,7 @@ UseDeclAST* parseUseDecl(TokenStream& stream, ParserContext& ctx) {
         return useDecl;
     }
 
-    // Resolve the use path to a file path
+    // Resolve the import path to a file path
     InternedString filePath = ctx.resolver->resolveUsePath(usePath);
     if (!filePath.isValid()) {
         ctx.errorAt(loc, DiagCode::E0003);
@@ -127,7 +127,7 @@ UseDeclAST* parseUseDecl(TokenStream& stream, ParserContext& ctx) {
 
     if (ctx.resolver->isParsing(filePath)) {
         // Circular import. Reported here rather than inside parse() —
-        // this is the only place with a real source location (this `use`
+        // this is the only place with a real source location (this `import`
         // statement) to point the diagnostic at.
         // E0005 "Cyclic module dependency." has no %s placeholder — no args.
         ctx.errorAt(loc, DiagCode::E0005);
@@ -149,13 +149,13 @@ UseDeclAST* parseUseDecl(TokenStream& stream, ParserContext& ctx) {
         // an empty module is still a real, valid ModuleAST that needs to
         // exist and be cached/ordered, not a case to special-case away.
         parse(pathStr, source, ctx);
-        // Return value intentionally discarded: parseUseDecl only needs
-        // {path, alias} in UseDeclAST (see step 4 above). The semantic
+        // Return value intentionally discarded: parseImportDecl only needs
+        // {path, alias} in ImportDeclAST (see step 4 above). The semantic
         // pass resolves the actual ModuleAST* later via ctx.resolver,
         // by path — parse() has already cached it as a side effect.
     }
     
-    LOG_PARSER_MINIMAL("Parsed use declaration: '", fullPath, "' as '", aliasStr, "'");
+    LOG_PARSER_MINIMAL("Parsed import declaration: '", fullPath, "' as '", aliasStr, "'");
     
     return useDecl;
 }
@@ -311,6 +311,12 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     // Check for block body: { ... }
     if (stream.check(TokenType::LBRACE)) {
         stream.advance(); // Consume '{'
+
+        // From here on the parser is inside the function body — push once,
+        // and it pops automatically when this if-block ends below,
+        // regardless of which of the '}' recovery paths is taken.
+        ScopedContext bodyGuard(ctx, SyntacticContext::FuncBody, stream.currentLoc());
+
         body = parseBlock(stream, ctx);
         if (!stream.check(TokenType::RBRACE)) {
             ctx.error(stream, DiagCode::E1005, "}", "function body", stream.peekValue());
@@ -461,7 +467,12 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
         return nullptr;
     }
     stream.advance(); // Consume '{'
-    
+
+    // From here on the parser is inside the struct body — push once, and
+    // every return path below (including the empty-body early return)
+    // pops automatically when this function returns.
+    ScopedContext bodyGuard(ctx, SyntacticContext::StructBody, stream.currentLoc());
+
     std::vector<FieldDeclPtr> fields;
     
     // ─── 6. Check for empty body ─────────────────────────────────────────
@@ -717,7 +728,12 @@ EnumDeclAST* parseEnumDecl(TokenStream& stream, ParserContext& ctx) {
         return nullptr;
     }
     stream.advance(); // Consume '{'
-    
+
+    // From here on the parser is inside the enum body — push once, and
+    // every return path below (including the empty-body early return)
+    // pops automatically when this function returns.
+    ScopedContext bodyGuard(ctx, SyntacticContext::EnumBody, stream.currentLoc());
+
     std::vector<EnumVariantPtr> variants;
     
     // ─── 5. Check for empty body ─────────────────────────────────────────
@@ -940,7 +956,12 @@ TraitDeclAST* parseTraitDecl(TokenStream& stream, ParserContext& ctx) {
         return nullptr;
     }
     stream.advance(); // Consume '{'
-    
+
+    // From here on the parser is inside the trait body — push once, and
+    // every return path below (including the empty-body early return)
+    // pops automatically when this function returns.
+    ScopedContext bodyGuard(ctx, SyntacticContext::TraitBody, stream.currentLoc());
+
     std::vector<TraitFieldPtr> fields;
     
     // ─── 5. Check for empty body ─────────────────────────────────────────

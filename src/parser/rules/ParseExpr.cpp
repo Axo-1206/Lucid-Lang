@@ -953,6 +953,11 @@ AnonFuncExprAST* parseAnonFuncExpr(TokenStream& stream, ParserContext& ctx) {
         synchronizeToContext(stream, ctx);
         return nullptr;
     }
+
+    // From here on the parser is inside the function body — push once,
+    // and it pops automatically when this if-block ends below,
+    // regardless of which of the '}' recovery paths is taken.
+    ScopedContext bodyGuard(ctx, SyntacticContext::FuncBody, stream.currentLoc());
     
     // ─── 3. Parse the function body ──────────────────────────────────────
     stream.advance(); // Consume '{'
