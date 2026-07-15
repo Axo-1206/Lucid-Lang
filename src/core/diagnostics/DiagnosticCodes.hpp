@@ -31,12 +31,14 @@ enum class DiagCode : uint32_t {
 
     // Speicalize codes
     E1101,          ///< Expected module path after keyword 'use'
-    E1102,          ///< Expected name alias after keyword 'as'
-    E1103,          ///< Missing `]` to close attribute list before declaration
+    E1102,          ///< Expected branch after condition
+    E1103,          ///< Expected else branch
     E1104,          ///< Expected attribute argument literal
-    // E1105,          ///< Expected anon func or ref func
+    E1105,          ///< Expected switch subject
     E1106,          ///< Empty expression group
-    E1107,          ///< Expected pipeline seed (expression)          
+    E1107,          ///< Expected pipeline seed (expression)
+    E1108,          ///< Multiple default clauses in switch
+    E1109,          ///< Expected default clause body
 
     // E1105,          ///< Unexpected trailing '+' in generic constraints
     // E1106,          ///< Unexpected trailing '.' in path
@@ -55,7 +57,7 @@ enum class DiagCode : uint32_t {
     // ========== 6000–6999: Warnings ==========
     W0001 = 6000,   ///< Unknown Warning
     W0002,          ///< Unreachable code.
-    // W6002,          ///< Unused variable '%s'.
+    // W0003,          ///< Stray semnicolon;
     // W6003,          ///< Unused parameter '%s' (consider `_` or @phantom).
     // W6004,          ///< Unused function '%s'.
     // W6005,          ///< Deprecated item used: %s.

@@ -33,15 +33,15 @@ std::string_view getMessage(DiagCode code) {
         
 
         case DiagCode::E1101: return "Expected module path after keyword 'use', but found %s"; 
-        case DiagCode::E1102: return "Expected name alias after keyword 'as', but found %s";
-        case DiagCode::E1103: return "Missing `]` to close attribute list before declaration";
+        case DiagCode::E1102: return "Expected branch (code block) after condition, but found %s";
+        case DiagCode::E1103: return "Expected 'else' branch (code block), but found %s";
         case DiagCode::E1104: return "Expected argument literal (string, integer, float, bool, or identifier), but found %s";
-        // case DiagCode::E1105: return "Expected anonymous function or function reference, but found %s";
+        case DiagCode::E1105: return "Expected switch subject, but found %s";
         case DiagCode::E1106: return "Empty expression group '()'";
-        // case DiagCode::E1105: return "Unexpected trailing '+' in generic constraints";
-        // case DiagCode::E1106: return "Unexpected trailing '.' in path";
         case DiagCode::E1107: return "Expected pipeline seed, but found %s";
-
+        case DiagCode::E1108: return "Multiple default clauses in switch";
+        case DiagCode::E1109: return "Expected default clause body (block)";
+        
         // case DiagCode::E1104: return "Visibility modifier '%s' not allowed in local declaration";
         // // case DiagCode::E1105: return "Invalid context: 'use' declaration is not allowed inside a block";
         // case DiagCode::E1106: return "Expected string, integer, boolean, or identifier in attribute argument, but found %s";

@@ -64,7 +64,7 @@ ImportDeclAST* parseImportDecl(TokenStream& stream, ParserContext& ctx) {
     // ─── 2. Parse the import path ───────────────────────────────────────────
     auto pathParts = parseImportPath(stream, ctx);
     if (pathParts.empty()) {
-        ctx.error(stream, DiagCode::E1102, stream.peekValue());
+        ctx.error(stream, DiagCode::E1101, stream.peekValue()); // Expected module path
         synchronizeToContext(stream, ctx);
         return nullptr;
     }
@@ -88,7 +88,7 @@ ImportDeclAST* parseImportDecl(TokenStream& stream, ParserContext& ctx) {
             alias = ctx.pool.intern(aliasTok.value);
             aliasStr = std::string(ctx.pool.lookup(alias));
         } else {
-            ctx.error(stream, DiagCode::E1102, stream.peekValue());
+            ctx.error(stream, DiagCode::E1001, "name alias after keyword 'as'", stream.peekValue());
             synchronizeToContext(stream, ctx);
             return nullptr;
         }
