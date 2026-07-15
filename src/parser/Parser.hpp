@@ -131,14 +131,13 @@ ExprAST* parsePrefixExpr(TokenStream& stream, ParserContext& ctx);
 ExprAST* parsePrimaryExpr(TokenStream& stream, ParserContext& ctx);
 ExprAST* parsePostfixExpr(TokenStream& stream, ParserContext& ctx, ExprPtr lhs);
 
-// ─── Literals ────────────────────────────────────────────────────────────── // X
+// ─── Literals ──────────────────────────────────────────────────────────────
 
 LiteralExprAST* parseLiteralExpr(TokenStream& stream, ParserContext& ctx);
 ArrayLiteralExprAST* parseArrayLiteralExpr(TokenStream& stream, ParserContext& ctx);
 StructLiteralExprAST* parseStructLiteralExpr(TokenStream& stream, ParserContext& ctx, InternedString typeName, ArenaSpan<TypeAST*> genericArgs);
 AnonFuncExprAST* parseAnonFuncExpr(TokenStream& stream, ParserContext& ctx);
 IfExprAST* parseIfExpr(TokenStream& stream, ParserContext& ctx);
-RangeExprAST* parseRangeExpr(TokenStream& stream, ParserContext& ctx, ExprPtr lo);
 
 // ─── Concurrency ─────────────────────────────────────────────────────────── // X
 
@@ -197,16 +196,14 @@ ExprPtr parseLvalue(TokenStream& stream, ParserContext& ctx); // X
 
 bool looksLikeFuncDecl(TokenStream& stream, ParserContext& ctx);
 bool looksLikeAnonFunc(TokenStream& stream, ParserContext& ctx);
-bool looksLikeMultiAssignStart(TokenStream& stream, ParserContext& ctx); // X
-// bool isFunctionTypeAfterParen(TokenStream& stream, ParserContext& ctx, size_t startPos);
+bool looksLikeMultiAssignStart(TokenStream& stream, ParserContext& ctx);
 bool looksLikeStructLiteral(TokenStream& stream, ParserContext& ctx);
 
-// ─── Precedence Helpers ──────────────────────────────────────────────────── // X
+// ─── Precedence Helpers ────────────────────────────────────────────────────
 
 int infixPrec(TokenType type);
 BinaryOp tokenToBinaryOp(TokenType type);
 AssignOp tokenToAssignOp(TokenType type);
-// bool isAssignOp(TokenType type);
 
 // ─── Infix Dispatch ───────────────────────────────────────────────────────
 

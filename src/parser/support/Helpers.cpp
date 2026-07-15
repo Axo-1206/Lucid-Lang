@@ -2060,10 +2060,6 @@ ArenaSpan<TypeAST*> parseReturnList(TokenStream& stream, ParserContext& ctx) {
     return builder.build();
 }
 
-// =============================================================================
-// parseImportPath - Parse a import path
-// =============================================================================
-
 /**
  * @brief Parse a import path.
  * 
@@ -2199,10 +2195,6 @@ std::vector<InternedString> parseImportPath(TokenStream& stream, ParserContext& 
     
     return pathParts;
 }
-
-// =============================================================================
-// parseTraitRef - Parse a trait reference
-// =============================================================================
 
 /**
  * @brief Parse a trait reference.

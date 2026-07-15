@@ -487,7 +487,7 @@ ExprAST* parsePrimaryExpr(TokenStream& stream, ParserContext& ctx) {
     if (current == TokenType::LPAREN) {
         stream.advance(); // Consume '('
         
-        // Check if it's an empty tuple or group
+        // Check if it's an empty group
         if (stream.check(TokenType::RPAREN)) {
             stream.advance(); // Consume ')'
             ctx.error(stream, DiagCode::E1106, stream.peekValue());
@@ -734,6 +734,85 @@ ArrayLiteralExprAST* parseArrayLiteralExpr(TokenStream& stream, ParserContext& c
                       elements.size(), " elements");
     
     return array;
+}
+
+/**
+ * @brief Parse an if expression.
+ * 
+ * Grammar: `'if' expr '??' expr 'else' expr`
+ * 
+ * ## Examples
+ * 
+ * ```lucid
+ * if score >= 60 ?? "pass" else "fail"
+ * if n < 0 ?? "negative" else if n == 0 ?? "zero" else "positive"
+ * ```
+ * 
+ * @param stream The token stream
+ * @param ctx The parsing context
+ * @return IfExprAST* The parsed if expression, or nullptr on error
+ */
+IfExprAST* parseIfExpr(TokenStream& stream, ParserContext& ctx) {
+    SourceLocation loc = stream.currentLoc();
+    
+    LOG_PARSER_DETAIL("parseIfExpr: parsing if expression");
+    
+    // ─── 1. Expect 'if' keyword ──────────────────────────────────────────
+    if (!stream.match(TokenType::IF)) {
+        ctx.error(stream, DiagCode::E1001, "if", stream.peekValue());
+        synchronizeToContext(stream, ctx);
+        return nullptr;
+    }
+    
+    // ─── 2. Parse condition ──────────────────────────────────────────────
+    ExprPtr condition = parseExpr(stream, ctx);
+    if (!condition) {
+        ctx.error(stream, DiagCode::E1006, "if condition", stream.peekValue());
+        synchronizeToContext(stream, ctx);
+        return nullptr;
+    }
+    
+    // ─── 3. Expect '??' separator ──────────────────────────────────────
+    if (!stream.match(TokenType::QUESTION_QUESTION)) {
+        ctx.error(stream, DiagCode::E1004, "??", "if expression", stream.peekValue());
+        synchronizeToContext(stream, ctx);
+        return nullptr;
+    }
+    
+    // ─── 4. Parse then branch ─────────────────────────────────────────────
+    ExprPtr thenBranch = parseExpr(stream, ctx);
+    if (!thenBranch) {
+        ctx.error(stream, DiagCode::E1006, "then branch", stream.peekValue());
+        synchronizeToContext(stream, ctx);
+        return nullptr;
+    }
+    
+    // ─── 5. Expect 'else' keyword ──────────────────────────────────────
+    if (!stream.match(TokenType::ELSE)) {
+        ctx.error(stream, DiagCode::E1001, "else", stream.peekValue());
+        synchronizeToContext(stream, ctx);
+        return nullptr;
+    }
+    
+    // ─── 6. Parse else branch ─────────────────────────────────────────────
+    // Else branch can be an expression or another if expression (chained)
+    ExprPtr elseBranch = parseExpr(stream, ctx);
+    if (!elseBranch) {
+        ctx.error(stream, DiagCode::E1006, "else branch", stream.peekValue());
+        synchronizeToContext(stream, ctx);
+        return nullptr;
+    }
+    
+    // ─── 7. Build the AST node ───────────────────────────────────────────
+    auto* ifExpr = ctx.arena.make<IfExprAST>();
+    ifExpr->loc = loc;
+    ifExpr->condition = condition;
+    ifExpr->thenBranch = thenBranch;
+    ifExpr->elseBranch = elseBranch;
+    
+    LOG_PARSER_DETAIL("parseIfExpr: parsed if expression");
+    
+    return ifExpr;
 }
 
 /**
@@ -1097,6 +1176,7 @@ ExprAST* parsePostfixExpr(TokenStream& stream, ParserContext& ctx, ExprPtr lhs) 
     // No more postfix operators
     return lhs;
 }
+
 // =============================================================================
 // Call & Index
 // =============================================================================
@@ -2437,153 +2517,6 @@ ExprPtr parseInfixBinary(TokenStream& stream, ParserContext& ctx, ExprPtr lhs, T
                       token_type_name(opTok));
     
     return binary;
-}
-
-// =============================================================================
-// Control Flow Expressions
-// =============================================================================
-
-/**
- * @brief Parse an if expression.
- * 
- * Grammar: `'if' expr '??' expr 'else' expr`
- * 
- * ## Examples
- * 
- * ```lucid
- * if score >= 60 ?? "pass" else "fail"
- * if n < 0 ?? "negative" else if n == 0 ?? "zero" else "positive"
- * ```
- * 
- * @param stream The token stream
- * @param ctx The parsing context
- * @return IfExprAST* The parsed if expression, or nullptr on error
- */
-IfExprAST* parseIfExpr(TokenStream& stream, ParserContext& ctx) {
-    SourceLocation loc = stream.currentLoc();
-    
-    LOG_PARSER_DETAIL("parseIfExpr: parsing if expression");
-    
-    // ─── 1. Expect 'if' keyword ──────────────────────────────────────────
-    if (!stream.match(TokenType::IF)) {
-        ctx.error(stream, DiagCode::E1001, "if", stream.peekValue());
-        synchronizeToContext(stream, ctx);
-        return nullptr;
-    }
-    
-    // ─── 2. Parse condition ──────────────────────────────────────────────
-    ExprPtr condition = parseExpr(stream, ctx);
-    if (!condition) {
-        ctx.error(stream, DiagCode::E1006, "if condition", stream.peekValue());
-        synchronizeToContext(stream, ctx);
-        return nullptr;
-    }
-    
-    // ─── 3. Expect '??' separator ──────────────────────────────────────
-    if (!stream.match(TokenType::QUESTION_QUESTION)) {
-        ctx.error(stream, DiagCode::E1004, "??", "if expression", stream.peekValue());
-        synchronizeToContext(stream, ctx);
-        return nullptr;
-    }
-    
-    // ─── 4. Parse then branch ─────────────────────────────────────────────
-    ExprPtr thenBranch = parseExpr(stream, ctx);
-    if (!thenBranch) {
-        ctx.error(stream, DiagCode::E1006, "then branch", stream.peekValue());
-        synchronizeToContext(stream, ctx);
-        return nullptr;
-    }
-    
-    // ─── 5. Expect 'else' keyword ──────────────────────────────────────
-    if (!stream.match(TokenType::ELSE)) {
-        ctx.error(stream, DiagCode::E1001, "else", stream.peekValue());
-        synchronizeToContext(stream, ctx);
-        return nullptr;
-    }
-    
-    // ─── 6. Parse else branch ─────────────────────────────────────────────
-    // Else branch can be an expression or another if expression (chained)
-    ExprPtr elseBranch = parseExpr(stream, ctx);
-    if (!elseBranch) {
-        ctx.error(stream, DiagCode::E1006, "else branch", stream.peekValue());
-        synchronizeToContext(stream, ctx);
-        return nullptr;
-    }
-    
-    // ─── 7. Build the AST node ───────────────────────────────────────────
-    auto* ifExpr = ctx.arena.make<IfExprAST>();
-    ifExpr->loc = loc;
-    ifExpr->condition = condition;
-    ifExpr->thenBranch = thenBranch;
-    ifExpr->elseBranch = elseBranch;
-    
-    LOG_PARSER_DETAIL("parseIfExpr: parsed if expression");
-    
-    return ifExpr;
-}
-
-/**
- * @brief Parse a range expression.
- * 
- * Grammar: `lo range_op hi`
- * 
- * ## Examples
- * 
- * ```lucid
- * 0..10      → lo = 0, hi = 10, isExclusive = false
- * 0..<10     → lo = 0, hi = 10, isExclusive = true
- * ```
- * 
- * @param stream The token stream
- * @param ctx The parsing context
- * @param lo The left-hand side expression (start of range)
- * @return RangeExprAST* The parsed range expression, or nullptr on error
- */
-RangeExprAST* parseRangeExpr(TokenStream& stream, ParserContext& ctx, ExprPtr lo) {
-    SourceLocation loc = stream.currentLoc();
-    
-    LOG_PARSER_DETAIL("parseRangeExpr: parsing range expression");
-    
-    if (!lo) {
-        ctx.error(stream, DiagCode::E1006, "range start", stream.peekValue());
-        return nullptr;
-    }
-    
-    // ─── 1. Parse range operator ─────────────────────────────────────────
-    bool isExclusive = false;
-    
-    if (stream.check(TokenType::RANGE_EXCLUSIVE)) {
-        stream.advance(); // Consume '..<'
-        isExclusive = true;
-    } else if (stream.check(TokenType::RANGE)) {
-        stream.advance(); // Consume '..'
-        isExclusive = false;
-    } else {
-        ctx.error(stream, DiagCode::E1004, ".. or ..<", "range expression", stream.peekValue());
-        synchronizeToContext(stream, ctx);
-        return nullptr;
-    }
-    
-    // ─── 2. Parse the right-hand side ────────────────────────────────────
-    // RHS precedence is the same as the range operator itself (level 4)
-    ExprPtr hi = parsePrattExpr(stream, ctx, infixPrec(TokenType::RANGE));
-    if (!hi) {
-        ctx.error(stream, DiagCode::E1006, "range end", stream.peekValue());
-        synchronizeToContext(stream, ctx);
-        return nullptr;
-    }
-    
-    // ─── 3. Build the AST node ───────────────────────────────────────────
-    auto* range = ctx.arena.make<RangeExprAST>();
-    range->loc = loc;
-    range->lo = lo;
-    range->hi = hi;
-    range->isExclusive = isExclusive;
-    
-    LOG_PARSER_DETAIL("parseRangeExpr: parsed range expression",
-                      isExclusive ? " (exclusive)" : " (inclusive)");
-    
-    return range;
 }
 
 } // namespace parser
