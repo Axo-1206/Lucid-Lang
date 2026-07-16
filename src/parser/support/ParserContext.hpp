@@ -168,37 +168,6 @@ struct ParserContext {
      * for a complete picture of every error found across every file.
      */
     std::vector<Diagnostic> allDiagnostics;
-    
-    // ─────────────────────────────────────────────────────────────────────────
-    // Context Tracking (shared across all files)
-    // ─────────────────────────────────────────────────────────────────────────
-    
-    /**
-     * @brief Depth of spawn/join nesting (OS thread parallelism).
-     * 
-     * Tracks how deeply we're nested in spawn/join operations.
-     * Used to enforce thread-safety rules.
-     */
-    int spawnDepth = 0;
-    
-    /**
-     * @brief True if currently parsing inside an async context.
-     * 
-     * Tracks that we're in a function that can use await.
-     * Used to validate async/await pairing.
-     */
-    bool inAsyncContext = false;
-    
-    /// Current declaration context
-    enum class Context {
-        TopLevel,   // File-level declarations
-        Local,      // Inside a block (function body, etc.)
-        Function,   // Inside a function body (return allowed)
-        Loop,       // Inside a loop body (break/continue allowed)
-        Spawn,      // Inside a spawned thread (spawn restrictions)
-        Async,      // Inside an async operation (await allowed)
-    };
-    Context context = Context::TopLevel;
 
     // ─────────────────────────────────────────────────────────────────────────
     // Syntactic Context Stack (attribute / generic / function / declaration nesting)
@@ -574,16 +543,6 @@ public:
     bool canContinue() const {
         return consecutiveErrors < 10;
     }
-    
-    /**
-     * @brief Check if we're in a spawn context (parallelism).
-     */
-    bool isSpawnContext() const { return spawnDepth > 0; }
-    
-    /**
-     * @brief Check if we're in an async context (concurrency).
-     */
-    bool isAsyncContext() const { return inAsyncContext; }
     
     /**
      * @brief Clear errors for a new file.

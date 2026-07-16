@@ -1987,14 +1987,10 @@ PipelineStepAST* parsePipelineStep(TokenStream& stream, ParserContext& ctx) {
  * 4. **Nullable/Fallible Forbidden**: `~[nullable]` and `~[fallible]`
  *    functions are forbidden as composition operands.
  * 
- * 5. **Async Composition**: When any operand is `~[async]`, the composed
- *    function must be declared `~[async]` and awaited at the call site.
- * 
  * ## Key Characteristics
  * 
  * - Compile-time: Produces a new function without executing anything.
  * - Type Matching: Strict – output type of left must exactly match input type of right.
- * - No Qualifiers: `~[async]` or `~[nullable]` operands are forbidden.
  * - Generic Instantiation: Explicit type arguments required for generic functions.
  * 
  * @param stream The token stream
