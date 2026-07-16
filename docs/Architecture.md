@@ -541,18 +541,17 @@ lucid/
     │   │   ├── ParserStmt.cpp          -- if, for, while, return, block
     │   │   ├── ParserExpr.cpp          -- Pratt parser: all expressions
     │   │   ├── ParserType.cpp          -- type annotations: *T, T?, generics
-    │   │   └── ParserConcurrency.cpp   -- async, parallel, await, spawn, join
+    │   │   └── Concurrency.cpp   -- async, parallel, await, spawn, join
     │   └── support/                    -- parser infrastructure
     │       ├── ParserContext.hpp       -- shared parse state
     │       ├── Lookahead.cpp           -- disambiguation helpers
     │       ├── Helpers.cpp             -- attribute parsing, doc-comment handling
-│   │       ├── TokenStream.hpp/cpp     -- Track stream of tokens when parsing a file
+    │       ├── TokenStream.hpp/cpp     -- Track stream of tokens when parsing a file
     │       └── ErrorRecovery.cpp       -- sync points for error recovery
     │
     ├── sema/                     -- frontend stage 2: AST → validated AST
     │   ├── Sema.hpp/cpp          -- entry point: Sema::analyze(Module*)
     │   ├── NameResolver.hpp/cpp  -- resolve identifiers to declarations
-    │   ├── ScopeManager.hpp/cpp  -- lexical scope stack
     │   ├── TypeChecker.hpp/cpp   -- type inference and validation
     │   ├── FFIValidator.hpp/cpp  -- validate @[foreign("C")] against lge_ffi.lfi
     │   └── SemaContext.hpp       -- shared state for all sema passes

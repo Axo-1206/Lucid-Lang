@@ -284,7 +284,7 @@ struct RefTypeAST : TypeAST {
  *
  * ## The Sealed Conduit Model
  *
- * Raw pointers (`ptr<T>`) are sealed conduits. You can carry them, pass them to
+ * Raw pointers (`*T`) are sealed conduits. You can carry them, pass them to
  * `@[foreign("C")]` functions, check for nil, but never dereference directly.
  *
  * **Allowed operations:**
@@ -304,8 +304,8 @@ struct RefTypeAST : TypeAST {
  *
  * **Boundary crossing (intrinsics):**
  *   - `#toRef(ptr) -> &T`   (assert validity, cross to safe reference)
- *   - `#toPtr(ref) -> ptr<T>` (convert back to raw pointer)
- *   - `#ptrOffset(ptr, n) -> ptr<T>` (pointer arithmetic)
+ *   - `#toPtr(ref) -> *T` (convert back to raw pointer)
+ *   - `#ptrOffset(ptr, n) -> *T` (pointer arithmetic)
  *   - `#ptrDiff(p1, p2) -> int64` (distance between pointers)
  *
  * **Valid contexts for `PtrTypeAST`:**
