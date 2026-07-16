@@ -17,7 +17,6 @@
 #include "BaseAST.hpp"
 #include "TypeAST.hpp"
 #include "DeclAST.hpp"
-#include "ExprAST.hpp"
 
 #include <string>
 #include <memory>
@@ -471,13 +470,13 @@ struct ContinueStmtAST : StmtAST {
  * @field target         The variables being assigned to.
  * @field call           The async call expression.
  */
-struct AsyncStmtAST : ExprAST {
+struct AsyncStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::AsyncExpr;
 
     ArenaSpan<ExprPtr> target;   // variables to bind (must be lvalues)
     ExprPtr call;                // the async call
 
-    AsyncStmtAST() : ExprAST(ASTKind::AsyncExpr) {}
+    AsyncStmtAST() : StmtAST(ASTKind::AsyncExpr) {}
 };
 
 /**
@@ -502,12 +501,12 @@ struct AsyncStmtAST : ExprAST {
  *
  * @field targets        The variables to await (must be `Future<T>`).
  */
-struct AwaitStmtAST : ExprAST {
+struct AwaitStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::AwaitExpr;
 
     ArenaSpan<ExprPtr> targets;   // variables to await (must be Future<T>)
 
-    AwaitStmtAST() : ExprAST(ASTKind::AwaitExpr) {}
+    AwaitStmtAST() : StmtAST(ASTKind::AwaitExpr) {}
 };
 
 /**
@@ -541,13 +540,13 @@ struct AwaitStmtAST : ExprAST {
  * @field targets        The variables being assigned to (`_` means discard).
  * @field call           The spawn call expression.
  */
-struct SpawnStmtAST : ExprAST {
+struct SpawnStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::SpawnExpr;
 
     ArenaSpan<ExprPtr> targets;   // variables to bind (`_` for discard)
     ExprPtr call;                // the spawn call
 
-    SpawnStmtAST() : ExprAST(ASTKind::SpawnExpr) {}
+    SpawnStmtAST() : StmtAST(ASTKind::SpawnExpr) {}
 };
 
 /**
@@ -573,12 +572,12 @@ struct SpawnStmtAST : ExprAST {
  *
  * @field targets        The variables to join (must be `Future<T>` from spawn).
  */
-struct JoinStmtAST : ExprAST {
+struct JoinStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::JoinExpr;
 
     ArenaSpan<ExprPtr> targets;   // variables to join (must be Future<T> from spawn)
 
-    JoinStmtAST() : ExprAST(ASTKind::JoinExpr) {}
+    JoinStmtAST() : StmtAST(ASTKind::JoinExpr) {}
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -108,6 +108,16 @@ StmtAST* parseStmt(TokenStream& stream, ParserContext& ctx) {
             ctx.error(stream, DiagCode::E1010, "importing", "the keyword 'import' is only valid at top level");
             return nullptr;
 
+        case TokenType::ASYNC:
+            return parseAsyncStmt(stream, ctx);
+        case TokenType::AWAIT:
+            return parseAwaitStmt(stream, ctx);
+
+        case TokenType::SPAWN:
+            return parseSpawnStmt(stream, ctx);
+        case TokenType::JOIN:
+            return parseJoinStmt(stream, ctx);
+
             
         // ─── Expression Statement (default) ─────────────────────────────
         default:
@@ -205,7 +215,7 @@ IfStmtAST* parseIfStmt(TokenStream& stream, ParserContext& ctx) {
     
     SourceLocation loc = stream.currentLoc();
     
-    // ─── 1. Expect IF token ─────────────────────────────────────────────────
+    // ─── 1. Expect IF keyword ─────────────────────────────────────────────────
     if (!stream.match(TokenType::IF)) {
         ctx.error(stream, DiagCode::E1001, "if", stream.peekValue());
         return ctx.arena.make<IfStmtAST>();
@@ -273,7 +283,7 @@ SwitchStmtAST* parseSwitchStmt(TokenStream& stream, ParserContext& ctx) {
     
     SourceLocation loc = stream.currentLoc();
     
-    // ─── 1. Expect SWITCH token ────────────────────────────────────────────
+    // ─── 1. Expect SWITCH keyword ────────────────────────────────────────────
     if (!stream.match(TokenType::SWITCH)) {
         ctx.error(stream, DiagCode::E1001, "switch", stream.peekValue());
         return ctx.arena.make<SwitchStmtAST>();
@@ -368,7 +378,7 @@ SwitchCaseAST* parseSwitchCase(TokenStream& stream, ParserContext& ctx) {
     
     SourceLocation loc = stream.currentLoc();
     
-    // ─── 1. Expect CASE token ──────────────────────────────────────────────
+    // ─── 1. Expect CASE keyword ──────────────────────────────────────────────
     if (!stream.match(TokenType::CASE)) {
         ctx.error(stream, DiagCode::E1001, "case", stream.peekValue());
         return ctx.arena.make<SwitchCaseAST>();
@@ -423,7 +433,7 @@ ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
     
     SourceLocation loc = stream.currentLoc();
     
-    // ─── 1. Expect FOR token ──────────────────────────────────────────────
+    // ─── 1. Expect FOR keyword ──────────────────────────────────────────────
     if (!stream.match(TokenType::FOR)) {
         ctx.error(stream, DiagCode::E1001, "for", stream.peekValue());
         return ctx.arena.make<ForStmtAST>();
@@ -550,7 +560,7 @@ WhileStmtAST* parseWhileStmt(TokenStream& stream, ParserContext& ctx) {
     
     SourceLocation loc = stream.currentLoc();
     
-    // ─── 1. Expect WHILE token ─────────────────────────────────────────────
+    // ─── 1. Expect WHILE keyword ─────────────────────────────────────────────
     if (!stream.match(TokenType::WHILE)) {
         ctx.error(stream, DiagCode::E1001, "while", stream.peekValue());
         return ctx.arena.make<WhileStmtAST>();
@@ -590,7 +600,7 @@ DoWhileStmtAST* parseDoWhileStmt(TokenStream& stream, ParserContext& ctx) {
     
     SourceLocation loc = stream.currentLoc();
     
-    // ─── 1. Expect DO token ─────────────────────────────────────────────────
+    // ─── 1. Expect DO keyword ─────────────────────────────────────────────────
     if (!stream.match(TokenType::DO)) {
         ctx.error(stream, DiagCode::E1001, "do", stream.peekValue());
         return ctx.arena.make<DoWhileStmtAST>();
@@ -637,7 +647,7 @@ ReturnStmtAST* parseReturnStmt(TokenStream& stream, ParserContext& ctx) {
     
     SourceLocation loc = stream.currentLoc();
     
-    // ─── 1. Expect RETURN token ────────────────────────────────────────────
+    // ─── 1. Expect RETURN keyword ────────────────────────────────────────────
     if (!stream.match(TokenType::RETURN)) {
         ctx.error(stream, DiagCode::E1001, "return", stream.peekValue());
         return ctx.arena.make<ReturnStmtAST>();
@@ -679,7 +689,7 @@ BreakStmtAST* parseBreakStmt(TokenStream& stream, ParserContext& ctx) {
     
     SourceLocation loc = stream.currentLoc();
     
-    // ─── 1. Expect BREAK token ─────────────────────────────────────────────
+    // ─── 1. Expect BREAK keyword ─────────────────────────────────────────────
     if (!stream.match(TokenType::BREAK)) {
         ctx.error(stream, DiagCode::E1001, "break", stream.peekValue());
         return ctx.arena.make<BreakStmtAST>();
@@ -702,7 +712,7 @@ ContinueStmtAST* parseContinueStmt(TokenStream& stream, ParserContext& ctx) {
     
     SourceLocation loc = stream.currentLoc();
     
-    // ─── 1. Expect CONTINUE token ──────────────────────────────────────────
+    // ─── 1. Expect CONTINUE keyword ──────────────────────────────────────────
     if (!stream.match(TokenType::CONTINUE)) {
         ctx.error(stream, DiagCode::E1001, "continue", stream.peekValue());
         return ctx.arena.make<ContinueStmtAST>();
@@ -775,7 +785,7 @@ MultiVarDeclAST* parseMultiVarDecl(TokenStream& stream, ParserContext& ctx) {
     
     SourceLocation loc = stream.currentLoc();
     
-    // ─── 1. Expect LET or CONST token ──────────────────────────────────────
+    // ─── 1. Expect LET or CONST keyword ──────────────────────────────────────
     Token keywordTok = stream.peek();
     if (keywordTok.type != TokenType::LET && keywordTok.type != TokenType::CONST) {
         ctx.error(stream, DiagCode::E1001, "let or const", stream.peekValue());

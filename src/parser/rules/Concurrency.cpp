@@ -35,7 +35,7 @@ AsyncStmtAST* parseAsyncStmt(TokenStream& stream, ParserContext& ctx) {
 
     SourceLocation loc = stream.currentLoc();
 
-    // ─── 1. Expect ASYNC token ──────────────────────────────────────────────
+    // ─── 1. Expect ASYNC keyword ──────────────────────────────────────────────
     if (!stream.match(TokenType::ASYNC)) {
         ctx.error(stream, DiagCode::E1001, "async", stream.peekValue());
         return ctx.arena.make<AsyncStmtAST>();
@@ -96,7 +96,7 @@ AwaitStmtAST* parseAwaitStmt(TokenStream& stream, ParserContext& ctx) {
 
     SourceLocation loc = stream.currentLoc();
 
-    // ─── 1. Expect AWAIT token ──────────────────────────────────────────────
+    // ─── 1. Expect AWAIT keyword ──────────────────────────────────────────────
     if (!stream.match(TokenType::AWAIT)) {
         ctx.error(stream, DiagCode::E1001, "await", stream.peekValue());
         return ctx.arena.make<AwaitStmtAST>();
@@ -150,7 +150,7 @@ SpawnStmtAST* parseSpawnStmt(TokenStream& stream, ParserContext& ctx) {
 
     SourceLocation loc = stream.currentLoc();
 
-    // ─── 1. Expect SPAWN token ───────────────────────────────────────────────
+    // ─── 1. Expect SPAWN keyword ───────────────────────────────────────────────
     if (!stream.match(TokenType::SPAWN)) {
         ctx.error(stream, DiagCode::E1001, "spawn", stream.peekValue());
         return ctx.arena.make<SpawnStmtAST>();
@@ -217,7 +217,7 @@ JoinStmtAST* parseJoinStmt(TokenStream& stream, ParserContext& ctx) {
 
     SourceLocation loc = stream.currentLoc();
 
-    // ─── 1. Expect JOIN token ────────────────────────────────────────────────
+    // ─── 1. Expect JOIN keyword ────────────────────────────────────────────────
     if (!stream.match(TokenType::JOIN)) {
         ctx.error(stream, DiagCode::E1001, "join", stream.peekValue());
         return ctx.arena.make<JoinStmtAST>();
