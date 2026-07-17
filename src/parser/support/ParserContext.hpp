@@ -436,9 +436,15 @@ private:
             severity == DiagnosticSeverity::Fatal) {
             hasErrors = true;
             consecutiveErrors++;
-        } else if (severity == DiagnosticSeverity::Warning) {
-            consecutiveErrors++;
         }
+        // Warning/Note intentionally do NOT touch consecutiveErrors: this
+        // counter exists so canContinue() can detect a parser that's
+        // failing catastrophically on real errors, not one that's merely
+        // emitting warnings — the field is named "consecutive ERRORS" for
+        // a reason. This mirrors Diagnostic.cpp's own global tracker, which
+        // keeps errorCount and warningCount as two separate counters for
+        // exactly the same reason (only Error/Fatal increment errorCount
+        // there; Warning only ever increments warningCount).
     }
     
 public:

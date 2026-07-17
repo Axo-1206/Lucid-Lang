@@ -531,7 +531,7 @@ lucid/
     │       └── StringPool.hpp/cpp
     │
     ├── parser/                   -- frontend stage 1: source → AST
-    │   ├── Parser.hpp            -- public interface: parse(), parseFile()
+    │   ├── Parser.hpp            -- public interface: parse()
     │   ├── Parser.cpp
     │   ├── ModuleResolver.hpp/cpp -- multi-file resolution, cyclic import detection
     │   ├── lexer/
@@ -566,6 +566,7 @@ lucid/
     │       └── Linker.hpp/cpp    -- system linker invocation from @[link] annotations
     │
     ├── interpreter/              -- ORC JIT backend (lucid run)
+    │   ├── Interpreter.hpp       -- Main interpreter engine
     │   ├── JIT.hpp/cpp           -- LLVM ORC JIT session: setup, load, hot-reload
     │   └── DynLink.hpp/cpp       -- dlopen/LoadLibrary; registers symbols with JIT
     │
