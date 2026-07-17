@@ -47,6 +47,69 @@ ModuleAST* parse(const std::string& path,
                   const std::string& source,
                   ParserContext& ctx);
 
+/**
+ * @brief Parse a root file and every module it transitively imports,
+ *        returning the whole program as one dependency-ordered array.
+ *
+ * This is NOT a second entry point with its own parsing logic — it is a
+ * thin, non-recursive wrapper around `parse()`: it calls `parse()` exactly
+ * once, for `rootPath`, and lets that call recurse through `import`s
+ * exactly as it always has (see `parse()`'s own doc comment for that
+ * recursive flow). Everything this function adds is what happens
+ * *after* `parse()` returns:
+ *
+ * ```cpp
+ * ModuleAST* root = parse(rootPath, rootSource, ctx);
+ * // ctx.resolver now holds every module `parse()` visited — root and all
+ * // of its transitive imports — cached and in dependency (post-)order via
+ * // ModuleResolver::getModuleOrder(). This function just reads that back
+ * // into a plain vector.
+ * ```
+ *
+ * ## Why this exists instead of changing parse()'s return type
+ *
+ * `parse()` is re-entered once per `import`, not once per program — a
+ * recursive call for an imported file has no use for "the whole program",
+ * only for "did this path resolve to a module." Returning a
+ * `std::vector<ModuleAST*>` from `parse()` itself would mean every one of
+ * those recursive calls also returns a vector, which either wraps a single
+ * element every time or duplicates the transitive set at every nesting
+ * level — neither matches how the return value is actually used today
+ * (`parseImportDecl` discards it once the module is cached; only `path` +
+ * `alias` are stored in the resulting `ImportDeclAST`). Making `parse()`
+ * return `void` instead has the opposite problem: every resolver access in
+ * `parse()` is already `if (ctx.resolver)`-guarded, meaning single-file
+ * parsing with no resolver is a supported mode today (tests, snippets) —
+ * `void` would leave that mode with no way to get its `ModuleAST*` back at
+ * all. Layering this function on top, rather than changing `parse()`,
+ * keeps both of those working exactly as before.
+ *
+ * ## Relationship to ModuleResolver
+ *
+ * This does not introduce a new place to store modules — it reads
+ * `ctx.resolver->getModuleOrder()` / `getParsedModule()`, which `parse()`
+ * already populates via `cacheModule()` on every call, recursive or not.
+ * There is exactly one array of "every module in the program" — the
+ * resolver's own cache — and this function's return value is a copy of it
+ * at a single point in time (immediately after the root parse completes),
+ * not a second source of truth.
+ *
+ * @param rootPath   The root/main file's path.
+ * @param rootSource The root file's source code.
+ * @param ctx        The parsing context. If `ctx.resolver` is null, there is
+ *        no import graph to walk — the returned vector contains only the
+ *        root module, exactly what a resolver-less `parse()` call would
+ *        have returned on its own.
+ * @return Every module `parse()` visited while parsing the root file and
+ *         its transitive imports, in dependency order (see
+ *         `ModuleResolver::getModuleOrder()` — a module's imports always
+ *         precede it; the root module is always last). Suitable to pass
+ *         directly to `SemaContext`'s constructor.
+ */
+std::vector<ModuleAST*> parseProgram(const std::string& rootPath,
+                                      const std::string& rootSource,
+                                      ParserContext& ctx);
+
 // =============================================================================
 // Error Recovery
 // =============================================================================
@@ -88,8 +151,6 @@ SyncOutcome synchronizeToContext(TokenStream& stream, ParserContext& ctx);
  *        return value, to tell a clean parse from one that stopped early.
  */
 void parseInternal(TokenStream& stream, ParserContext& ctx, std::vector<DeclPtr>& outDecls);
-
-// @NOTE '// X' means not fully implemented or still need to be finalized aka bug free
 
 // ─── Declarations ──────────────────────────────────────────────────────────
 
@@ -139,7 +200,7 @@ StructLiteralExprAST* parseStructLiteralExpr(TokenStream& stream, ParserContext&
 AnonFuncExprAST* parseAnonFuncExpr(TokenStream& stream, ParserContext& ctx);
 IfExprAST* parseIfExpr(TokenStream& stream, ParserContext& ctx);
 
-// ─── Concurrency ─────────────────────────────────────────────────────────── // X
+// ─── Concurrency ───────────────────────────────────────────────────────────
 
 AsyncStmtAST* parseAsyncStmt(TokenStream& stream, ParserContext& ctx);
 AwaitStmtAST* parseAwaitStmt(TokenStream& stream, ParserContext& ctx);

@@ -519,6 +519,40 @@ SyncOutcome synchronizeToContext(TokenStream& stream, ParserContext& ctx) {
  *         does NOT include imported files' declarations; see them via
  *         their own ModuleAST, reachable through ctx.resolver. Check
  *         `->hasErrors` rather than the pointer to detect failure.
+ *
+ * ## Three RAII guards, three disjoint pieces of state
+ *
+ * This function constructs a ScopedFileContext and a ScopedParsingGuard
+ * back to back (step 2d and 2f/3f below), and every parse function it
+ * calls into may construct ScopedContext internally (e.g. parseAttributes,
+ * a struct/enum/trait/func body parser). It's easy to assume three RAII
+ * guards showing up around the same call must overlap in what they do —
+ * they don't. Each guards a different member of a different object, at a
+ * different granularity, and none of them reads or writes what either of
+ * the others touches:
+ *
+ * | Guard                | Guards                                                                       | Lives on                        | Frequency per file                               | Answers                                                                |
+ * | -------------------- | ---------------------------------------------------------------------------- | ------------------------------- | -------------------------------------------------| -----------------------------------------------------------------------|
+ * | `ScopedContext`      | one `ContextFrame` (push one, pop one)                                       | `ParserContext::contextStack`   | many — one per attribute list, generic-arg list, | "What syntactic construct is the parser                                |
+ * |                      |                                                                              |                                 | function/struct/enum/trait body, etc.            | inside *right now*, within this file?"                                 |
+ * | `ScopedFileContext`  | the whole `contextStack`, plus `errors` / `hasErrors` /                      | `ParserContext`                 | exactly one — the whole file is one activation   | "Whose file's syntax-nesting/error                                     |
+ * |                      | `consecutiveErrors` (save → reset → restore, draining into `allDiagnostics`) |                                 |                                                  |  state is currently live in `ctx`?"                                    |
+ * | `ScopedParsingGuard` | one entry in `parsingStack_` (push one path, pop one path)                   | `ModuleResolver::parsingStack_` | exactly one — the whole file is one activation   | "Which file paths are currently mid-parse,                             |
+ * |                      |                                                                              |                                 |                                                  |  up the *entire* call stack (including files that imported this one)?" |
+ *
+ * `ScopedContext` frames nest *inside* a single `ScopedFileContext`
+ * activation, potentially many levels deep, over the course of one file —
+ * see ScopedContext's own doc comment in ParserContext.hpp. `ScopedFileContext`
+ * and `ScopedParsingGuard` are both constructed once per `parse()` call
+ * (steps 2d and 2f/3f) precisely because a single file-parsing activation
+ * genuinely needs both kinds of isolation at once: reset this file's own
+ * syntax/error bookkeeping so it doesn't see the importer's leftover state
+ * (`ScopedFileContext`), *and* mark this file's path as "in progress" so a
+ * nested `import` back to it is caught as a cycle rather than infinite
+ * recursion (`ScopedParsingGuard`). They sit on entirely different objects
+ * (`ParserContext ctx` vs. `ModuleResolver* ctx.resolver`) — dropping either
+ * one breaks a different thing, which is the tell that they were never
+ * redundant with each other in the first place.
  */
 ModuleAST* parse(const std::string& path, 
                   const std::string& source,
@@ -577,12 +611,9 @@ ModuleAST* parse(const std::string& path,
 
     if (tokens.empty()) {
         LOG_PARSER_MINIMAL("Lexer produced no tokens for: ", path);
-        // No dedicated code for this exact case; E0001 is the generic
-        // fallback. Zero %s placeholders in its template — no args.
-        ctx.errorAt(SourceLocation(1, 1), DiagCode::E0001);
         auto* mod = ctx.arena.make<ModuleAST>();
         mod->filePath = filePath;
-        mod->hasErrors = true;
+        mod->hasErrors = false; // Empty file is not consider an error
         if (ctx.resolver) ctx.resolver->cacheModule(filePath, mod);
         return mod;
     }
@@ -641,6 +672,59 @@ ModuleAST* parse(const std::string& path,
     LOG_PARSER_MINIMAL("Parse completed: ", allDecls.size(), " total declarations");
     
     return thisModule;
+}
+
+// =============================================================================
+// parseProgram() - Whole-program convenience wrapper over parse()
+// =============================================================================
+
+/**
+ * @brief Parse the root file, then read back every module `parse()` visited.
+ *
+ * See this function's own doc comment in Parser.hpp for the full design
+ * rationale (why this sits on top of `parse()` rather than changing
+ * `parse()`'s own signature). Implementation is intentionally small: all
+ * the real work already happened inside `parse()`/`ModuleResolver` by the
+ * time this function's second half runs.
+ */
+std::vector<ModuleAST*> parseProgram(const std::string& rootPath,
+                                      const std::string& rootSource,
+                                      ParserContext& ctx) {
+    // ─── 1. Parse the root file (recurses through every `import`) ───────
+    ModuleAST* root = parse(rootPath, rootSource, ctx);
+
+    // ─── 2. No resolver → no import graph to walk ────────────────────────
+    // Every module `parse()` could have visited beyond the root file itself
+    // is only tracked via ctx.resolver (see step 2/3/8 of parse()'s own
+    // doc comment, all `if (ctx.resolver)`-guarded) — so without one, the
+    // root module IS the whole program as far as this call can know.
+    if (!ctx.resolver) {
+        LOG_PARSER_MINIMAL("parseProgram: no resolver, returning root module only");
+        return { root };
+    }
+
+    // ─── 3. Read back the resolver's own cache, in dependency order ─────
+    // getModuleOrder() already guarantees: for any module M, every module
+    // M imports appears before M — so this vector is immediately safe to
+    // walk front-to-back for single-pass semantic analysis (see
+    // ModuleResolver::getModuleOrder()'s own doc comment). Nothing here
+    // re-derives or re-checks that ordering; it is simply read back.
+    const auto& order = ctx.resolver->getModuleOrder();
+    std::vector<ModuleAST*> modules;
+    modules.reserve(order.size());
+    for (InternedString path : order) {
+        if (ModuleAST* mod = ctx.resolver->getParsedModule(path)) {
+            modules.push_back(mod);
+        }
+        // A path in getModuleOrder() with no corresponding cached module
+        // would mean cacheModule() and moduleOrder_ desynced — see
+        // ModuleResolver::cacheModule()'s own invariant. Not expected;
+        // silently skipped rather than asserted here, so a release build
+        // still returns the modules it CAN account for.
+    }
+
+    LOG_PARSER_MINIMAL("parseProgram: ", modules.size(), " module(s) in program");
+    return modules;
 }
 
 // =============================================================================
