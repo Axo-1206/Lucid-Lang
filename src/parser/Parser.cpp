@@ -482,7 +482,8 @@ SyncOutcome synchronizeToContext(TokenStream& stream, ParserContext& ctx) {
  *    h. Construct TokenStream; loop parseDecl() until EOF     ─┐
  *         │                                                    │ step 3
  *         └── every declaration goes into this file's own list │
- *    i. Build ModuleAST from that decl list; hasErrors = ctx.hasErrors
+ *    i. Build ModuleAST from that decl list; errors = ctx.errors (copied
+ *       while still populated), hasErrors = ctx.hasErrors
  *    j. resolver->cacheModule(path, thisModule) — unconditional now,
  *       including when hasErrors is true; see step 2's cache check for
  *       why a broken module still needs to be cached, not just skipped
@@ -628,6 +629,11 @@ ModuleAST* parse(const std::string& path,
             ctx.errorAt(SourceLocation(tok.line, tok.column), DiagCode::E0105);
             auto* mod = ctx.arena.make<ModuleAST>();
             mod->filePath = filePath;
+            mod->errors = ctx.errors;    // this file's diagnostics (just the E0105 above,
+                                          // plus anything earlier) — copied now, before
+                                          // ScopedFileContext's destructor drains ctx.errors
+                                          // into ctx.allDiagnostics and restores the
+                                          // importer's own error list.
             mod->hasErrors = true;
             if (ctx.resolver) ctx.resolver->cacheModule(filePath, mod);
             return mod;
@@ -654,6 +660,13 @@ ModuleAST* parse(const std::string& path,
         builder.push_back(d);
     }
     thisModule->decls = builder.build();
+    thisModule->errors = ctx.errors;    // this file's own diagnostics — copied now, while
+                                         // ctx.errors still holds them, before
+                                         // ScopedFileContext's destructor drains them into
+                                         // ctx.allDiagnostics and restores the importer's
+                                         // own error list (see this function's own doc
+                                         // comment table above for why that restore
+                                         // doesn't touch this module's copy).
     thisModule->hasErrors = ctx.hasErrors;
     
     // ─── 8. Cache the result ─────────────────────────────────────────────
