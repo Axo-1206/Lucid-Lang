@@ -1654,11 +1654,17 @@ llvm::Function* IRLowering::getOrCreateForeignFunction(const std::string& name,
 llvm::CallInst* IRLowering::createIntrinsicCall(const std::string& intrinsicName,
                                                 const std::vector<llvm::Value*>& args,
                                                 llvm::Type* returnType) {
-    // Get the intrinsic declaration
+    // Convert string to intrinsic ID
+    auto id = llvm::Intrinsic::lookupIntrinsicID(intrinsicName);
+    if (id == llvm::Intrinsic::not_intrinsic) {
+        throw IRLoweringError(IRLoweringError::Kind::IntrinsicNotFound,
+                              "Intrinsic not found: " + intrinsicName);
+    }
+    
     auto* intrinsicFunc = llvm::Intrinsic::getDeclaration(
         m_module.get(),
-        llvm::StringRef(intrinsicName),
-        {}
+        id,  // Now passing the correct type
+        {}   // Type parameters
     );
 
     if (!intrinsicFunc) {
