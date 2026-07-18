@@ -21,6 +21,33 @@ namespace diagnostic {
 // multi-threaded compiler would need to change here.
 // =============================================================================
 
+/**
+ * @brief The one and only place any diagnostic is ever stored.
+ *
+ * Every error/warning/note reported anywhere in the compiler — lexer,
+ * parser, every file, every module — ends up as one entry in this single
+ * flat, append-only vector, in the order it was reported. There is no
+ * separate `file → diagnostics` map anywhere in this file: file
+ * association is carried entirely on each individual `Diagnostic::file`
+ * field (see Diagnostic.hpp), not by which container it's stored in.
+ *
+ * "This file's diagnostics" is therefore always a VIEW over this vector,
+ * computed on demand, never a second copy:
+ *   - `getAllForFile(file)` scans this vector and keeps entries whose
+ *     `.file` matches — works for any file, at any time, scope or no scope.
+ *   - `currentSourceDiagnostics()` takes a slice of this vector from the
+ *     innermost open `SourceFrame`'s remembered `startIndex` to the end —
+ *     see the source-scope stack right below this for how that index is
+ *     tracked without ever touching this vector's contents.
+ *
+ * Entries are appended in `add()`/`note()` and never reordered or removed
+ * (except by `clear()`, for test isolation between independent runs — see
+ * its own doc comment). Nothing here indexes by file for lookup speed;
+ * given this is compiler-scale data (thousands, not millions, of
+ * diagnostics per run), a linear scan per query is cheap enough that a
+ * second indexing structure would only be complexity without a measured
+ * need for it.
+ */
 static std::vector<Diagnostic> diagnostics;
 static int errorCount = 0;
 static int warningCount = 0;

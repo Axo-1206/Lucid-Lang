@@ -5,10 +5,26 @@
  * ParserContext holds state that is shared across all files being parsed:
  * - StringPool and ASTArena (shared memory)
  * - ModuleResolver (module coordination)
- * - Error reporting (variadic template functions)
+ * - Error reporting (variadic template functions that forward into the
+ *   shared `diagnostic::` namespace — see Diagnostic.hpp)
  * - Context tracking (spawnDepth, inAsyncContext)
  * 
  * This is passed by reference to all parsing functions.
+ *
+ * @architectural_note Error state moved to `diagnostic::`
+ *   ParserContext used to maintain its own `errors`/`hasErrors`/
+ *   `consecutiveErrors`/`allDiagnostics` — the same bookkeeping
+ *   `SemaContext` independently maintained too, and the lexer would have
+ *   needed a third copy of. That's all gone now: `error()`/`errorAt()`/
+ *   `warning()`/`warningAt()`/`note()` below are thin wrappers over
+ *   `diagnostic::error()` etc., `canContinue()` forwards to
+ *   `diagnostic::canContinue()`, and per-file isolation comes from
+ *   `ScopedFileContext` holding a `diagnostic::ScopedSource` member instead
+ *   of hand-saving/restoring three fields. ParserContext's OWN state is now
+ *   limited to what's genuinely parser-specific: the syntactic context
+ *   stack (`contextStack`), the current file path, and doc-comment
+ *   harvesting — see Diagnostic.hpp's "source-scope stack" architecture
+ *   note for the full rationale behind the split.
  */
 
 #pragma once
@@ -140,34 +156,18 @@ struct ParserContext {
     /// Module resolver (for imports, caching, circular detection)
     ModuleResolver* resolver = nullptr;
 
-    /// File path of the current file being parsed (for error reporting)
+    /// File path of the current file being parsed. Set once by parse()
+    /// before constructing this file's ScopedFileContext (which uses it to
+    /// seed a diagnostic::ScopedSource — see ScopedFileContext's own doc
+    /// comment). Also used to stamp ModuleAST::filePath.
     InternedString currentFilePath;
-    
-    // ─────────────────────────────────────────────────────────────────────────
-    // Error Tracking
-    // ─────────────────────────────────────────────────────────────────────────
-    
-    /// True if any error has been reported during parsing
-    bool hasErrors = false;
-    
-    /// Collected diagnostic messages for this file
-    std::vector<Diagnostic> errors;
-    
-    /// Consecutive error count (used to prevent infinite loops in lists)
-    int consecutiveErrors = 0;
 
-    /**
-     * @brief Diagnostics from every file parsed so far in this session.
-     *
-     * Unlike `errors` (which is per-file scratch state, reset by
-     * ScopedFileContext for each file), this accumulates across the whole
-     * recursive parse — every file's `errors` gets drained into this right
-     * before ScopedFileContext restores the importer's state, so a nested
-     * `use`'s diagnostics survive instead of being discarded along with
-     * that file's scratch error list. This is what the driver should read
-     * for a complete picture of every error found across every file.
-     */
-    std::vector<Diagnostic> allDiagnostics;
+    // Error tracking (errors / hasErrors / consecutiveErrors /
+    // allDiagnostics) used to live here. It's gone — see this file's
+    // "Error state moved to `diagnostic::`" architecture note above for
+    // where it went and why. `error()`/`errorAt()`/`warning()`/
+    // `warningAt()`/`note()`/`canContinue()` below all forward into
+    // `diagnostic::` directly.
 
     // ─────────────────────────────────────────────────────────────────────────
     // Syntactic Context Stack (attribute / generic / function / declaration nesting)
@@ -419,38 +419,20 @@ private:
         }
     }
     
-    void addDiagnostic(DiagnosticSeverity severity, 
-                       DiagnosticCategory category,
-                       const SourceLocation& loc,
-                       DiagCode code,
-                       const std::string& message) {
-        errors.push_back({
-            severity,
-            category,
-            currentFilePath,
-            loc,
-            code,
-            {message}
-        });
-        if (severity == DiagnosticSeverity::Error || 
-            severity == DiagnosticSeverity::Fatal) {
-            hasErrors = true;
-            consecutiveErrors++;
-        }
-        // Warning/Note intentionally do NOT touch consecutiveErrors: this
-        // counter exists so canContinue() can detect a parser that's
-        // failing catastrophically on real errors, not one that's merely
-        // emitting warnings — the field is named "consecutive ERRORS" for
-        // a reason. This mirrors Diagnostic.cpp's own global tracker, which
-        // keeps errorCount and warningCount as two separate counters for
-        // exactly the same reason (only Error/Fatal increment errorCount
-        // there; Warning only ever increments warningCount).
-    }
-    
 public:
     // ─────────────────────────────────────────────────────────────────────────
     // Public Error Reporting API
     // ─────────────────────────────────────────────────────────────────────────
+    //
+    // Every function below builds ONE composed message string from its
+    // heterogeneous variadic args (via buildMessage() above — this is
+    // unchanged from before), then forwards it as a single diagnostic to
+    // `diagnostic::`. `file` is never passed explicitly: it comes from
+    // whichever `diagnostic::ScopedSource` is currently open (pushed by
+    // this file's `ScopedFileContext` — see its own doc comment), the same
+    // way `currentFilePath` used to be read directly inside the old
+    // `addDiagnostic()`. Category is always `DiagnosticCategory::Syntax`
+    // here — this is the parser, it only ever reports syntax diagnostics.
 
     /**
      * @brief Report an error at the current token location with optional format args.
@@ -476,11 +458,7 @@ public:
     template<typename... Args>
     void error(TokenStream& stream, DiagCode code, Args&&... args) {
         std::string message = buildMessage(std::forward<Args>(args)...);
-        addDiagnostic(DiagnosticSeverity::Error, 
-                      DiagnosticCategory::Syntax,
-                      stream.currentLoc(),
-                      code,
-                      message);
+        diagnostic::error(DiagnosticCategory::Syntax, stream.currentLoc(), code, {message});
     }
       
     /**
@@ -494,11 +472,7 @@ public:
     template<typename... Args>
     void errorAt(const SourceLocation& loc, DiagCode code, Args&&... args) {
         std::string message = buildMessage(std::forward<Args>(args)...);
-        addDiagnostic(DiagnosticSeverity::Error, 
-                      DiagnosticCategory::Syntax,
-                      loc,
-                      code,
-                      message);
+        diagnostic::error(DiagnosticCategory::Syntax, loc, code, {message});
     }
     
     /**
@@ -512,11 +486,7 @@ public:
     template<typename... Args>
     void warning(TokenStream& stream, DiagCode code, Args&&... args) {
         std::string message = buildMessage(std::forward<Args>(args)...);
-        addDiagnostic(DiagnosticSeverity::Warning, 
-                      DiagnosticCategory::Syntax,
-                      stream.currentLoc(),
-                      code,
-                      message);
+        diagnostic::warning(DiagnosticCategory::Syntax, stream.currentLoc(), code, {message});
     }
     
     // ─── Warning at Specific Location ────────────────────────────────────
@@ -532,11 +502,28 @@ public:
     template<typename... Args>
     void warningAt(const SourceLocation& loc, DiagCode code, Args&&... args) {
         std::string message = buildMessage(std::forward<Args>(args)...);
-        addDiagnostic(DiagnosticSeverity::Warning, 
-                      DiagnosticCategory::Syntax,
-                      loc,
-                      code,
-                      message);
+        diagnostic::warning(DiagnosticCategory::Syntax, loc, code, {message});
+    }
+
+    /**
+     * @brief Report a free-text note at the current token location.
+     *
+     * @tparam Args The types of the format arguments (can be empty)
+     * @param stream The token stream to get the current location from
+     * @param args Pieces to stream together into the note's message —
+     *        e.g. `ctx.note(stream, "Consider using '", alternative, "' instead")`
+     */
+    template<typename... Args>
+    void note(TokenStream& stream, Args&&... args) {
+        std::string message = buildMessage(std::forward<Args>(args)...);
+        diagnostic::note(stream.currentLoc(), message);
+    }
+
+    /// Report a free-text note at a specific location.
+    template<typename... Args>
+    void noteAt(const SourceLocation& loc, Args&&... args) {
+        std::string message = buildMessage(std::forward<Args>(args)...);
+        diagnostic::note(loc, message);
     }
     
     // ─────────────────────────────────────────────────────────────────────────
@@ -545,22 +532,16 @@ public:
     
     /**
      * @brief Check if we can safely continue parsing.
+     *
+     * Forwards to `diagnostic::canContinue()`, which reads the consecutive-
+     * error count of whichever `diagnostic::ScopedSource` is currently open
+     * for this file (pushed by this file's `ScopedFileContext`). See
+     * Diagnostic.hpp's docs on `consecutiveErrorsInCurrentSource()` /
+     * `resetStreak()` for exactly what "consecutive" means here and how to
+     * get true back-to-back-only semantics if a caller wants them.
      */
     bool canContinue() const {
-        return consecutiveErrors < 10;
-    }
-    
-    /**
-     * @brief Clear errors for a new file.
-     */
-    void clearErrors() {
-        errors.clear();
-        hasErrors = false;
-        consecutiveErrors = 0;
-        // contextStack is NOT touched here — see ScopedFileContext. Clearing
-        // it in clearErrors() would run before anything had a chance to save
-        // the importing file's stack when parse() recurses for a `use`, and
-        // that state would be lost with no way back, not just reset.
+        return diagnostic::canContinue();
     }
 };
 
@@ -622,46 +603,52 @@ private:
  *
  * ParserContext is shared across the whole parse — including every
  * recursively-parsed `use`d file — so parse() needs each file to start
- * with a clean slate (empty contextStack, empty error list) without
+ * with a clean slate (empty contextStack, a fresh diagnostic scope) without
  * permanently discarding whatever the importing file had accumulated.
- * This guard saves the importer's contextStack and error-tracking fields
- * on construction, resets them so the new file starts clean, and restores
- * the saved values on destruction — on every exit path of parse(),
- * including its early returns (cyclic import, lexer failure,
- * parseInternal failure).
+ * This guard saves the importer's contextStack on construction, resets it
+ * so the new file starts clean, and restores the saved value on
+ * destruction — on every exit path of parse(), including its early returns
+ * (cyclic import, lexer failure, parseInternal failure).
  *
- * Before restoring, the destructor drains this file's own `errors` into
- * `ctx.allDiagnostics`. Without this step, a plain restore would make a
- * nested file's diagnostics vanish the moment its guard restores the
- * importer's state — they'd never make it anywhere the driver could see
- * them. Draining into a durable, whole-compile list is what lets every
- * file's errors survive regardless of how deep it was `use`d from.
+ * The diagnostic half of this used to be hand-rolled here too (save
+ * `errors`/`hasErrors`/`consecutiveErrors`, reset them, drain into
+ * `allDiagnostics` before restoring). That's gone: this guard now simply
+ * owns a `diagnostic::ScopedSource` member for `ctx.currentFilePath`,
+ * declared FIRST so it's constructed before `contextStack` is touched and
+ * destroyed LAST (member destruction order is the reverse of declaration
+ * order) — meaning the diagnostic scope for this file wraps the guard's
+ * entire lifetime, start to finish. Nothing needs to be drained into
+ * anywhere anymore: `diagnostic::`'s global list already IS the durable,
+ * whole-compile record (see Diagnostic.hpp's "source-scope stack"
+ * architecture note) — popping a `ScopedSource` doesn't delete anything,
+ * it just closes the index range that counted as "this file."
  *
- * This guard owns the per-file reset entirely — it calls ctx.clearErrors()
- * itself, after saving, so callers of parse() no longer need (or should
- * make) a separate clearErrors() call. Doing that reset outside the guard
- * would run before anything had a chance to save the importer's state,
- * silently discarding it instead of merely resetting it for the new file.
+ * This guard owns the per-file reset entirely — callers of parse() no
+ * longer need (and shouldn't make) any separate reset call; constructing
+ * this guard is the only step required.
  *
  * Today the contextStack restore is defensive rather than load-bearing —
  * Lucid's grammar only allows `use` at file top level, so parse() is only
  * ever re-entered while the importing file's stack is already empty — but
  * relying on that invariant forever, rather than having the recursive
  * entry point actually preserve state, is exactly the kind of assumption
- * that silently breaks if the grammar changes. The error-state restore,
- * by contrast, is load-bearing today: without it, any file with an error
- * before a `use` loses that error the moment the import is parsed.
+ * that silently breaks if the grammar changes. The diagnostic-scope half,
+ * by contrast, is load-bearing today: without it, an error reported before
+ * a `use` would get attributed to whichever file's frame happened to be on
+ * top when it was reported, rather than staying correctly scoped to the
+ * importer.
  *
  * ## Usage
  *
  * ```cpp
  * ModuleAST* parse(const std::string& path, const std::string& source, ParserContext& ctx) {
  *     ctx.currentFilePath = ctx.pool.intern(path);
- *     ScopedFileContext fileContext(ctx);  // resets + saves; this file starts
- *                                           // clean, importer's state restored
- *                                           // (and this file's errors preserved
- *                                           // in ctx.allDiagnostics) on return
+ *     ScopedFileContext fileContext(ctx);  // resets contextStack + opens this
+ *                                           // file's diagnostic::ScopedSource;
+ *                                           // both restore/close on return
  *     ...
+ *     mod->hasErrors = diagnostic::hasErrorsInCurrentSource();
+ *     return mod;
  * }
  * ```
  *
@@ -671,23 +658,17 @@ private:
 struct ScopedFileContext {
     explicit ScopedFileContext(ParserContext& ctx)
         : ctx_(ctx)
+        , sourceScope_(ctx.currentFilePath)
         , savedContextStack_(std::move(ctx.contextStack))
-        , savedErrors_(std::move(ctx.errors))
-        , savedHasErrors_(ctx.hasErrors)
-        , savedConsecutiveErrors_(ctx.consecutiveErrors)
     {
         ctx_.contextStack.clear();
-        ctx_.clearErrors();
     }
 
     ~ScopedFileContext() {
-        ctx_.allDiagnostics.insert(ctx_.allDiagnostics.end(),
-                                    ctx_.errors.begin(), ctx_.errors.end());
-
-        ctx_.contextStack      = std::move(savedContextStack_);
-        ctx_.errors            = std::move(savedErrors_);
-        ctx_.hasErrors         = savedHasErrors_;
-        ctx_.consecutiveErrors = savedConsecutiveErrors_;
+        ctx_.contextStack = std::move(savedContextStack_);
+        // sourceScope_ is destroyed after this (declared first ⇒ destroyed
+        // last), closing this file's diagnostic scope only once everything
+        // else about leaving this file is already done.
     }
 
     ScopedFileContext(const ScopedFileContext&) = delete;
@@ -697,10 +678,77 @@ struct ScopedFileContext {
 
 private:
     ParserContext& ctx_;
+    diagnostic::ScopedSource sourceScope_;
     std::vector<ContextFrame> savedContextStack_;
-    std::vector<Diagnostic> savedErrors_;
-    bool savedHasErrors_;
-    int savedConsecutiveErrors_;
 };
+
+/**
+ * @brief ScopedContext vs. ScopedFileContext — how they differ.
+ *
+ * Both are RAII save/reset/restore guards over ParserContext state, both
+ * non-copyable/non-movable for the same reason (identity tied to one
+ * specific activation), and both exist to eliminate the same class of
+ * bug: state that must be manually balanced across multiple exit paths,
+ * where one forgotten `pop`/restore silently corrupts everything parsed
+ * afterward. Beyond that, they operate at different granularities and
+ * solve different problems:
+ *
+ * **ScopedContext:**
+ * 1. Guards `contextStack` only.
+ * 2. Operation: *pushes* one frame, pops it on exit.
+ * 3. Constructed by whichever parse function owns a construct
+ *    (`parseAttributes`, a struct/enum/trait/func body parser).
+ * 4. Frequency per file: many — one per attribute list, generic arg
+ *    list, function body, nested body, etc.
+ * 5. On exit: the *previous* frame becomes innermost again (stack
+ *    shrinks by one).
+ * 6. Answers: "What syntactic construct is the parser inside *right
+ *    now*, within this one file?"
+ * 7. Consumed by `synchronizeToContext()`, via `ctx.currentContext()`.
+ *
+ * **ScopedFileContext:**
+ * 1. Guards `contextStack` directly, and (via an embedded
+ *    `diagnostic::ScopedSource` member) this file's diagnostic scope —
+ *    see Diagnostic.hpp's "source-scope stack" architecture note for what
+ *    that actually tracks (an index range into the shared diagnostic list,
+ *    plus this file's own error count/streak).
+ * 2. Operation: *saves* `contextStack`, resets it to empty; *pushes* a new
+ *    diagnostic scope (rather than saving/resetting a field, since there's
+ *    no local field to save anymore — the diagnostic system owns that
+ *    state itself now). Both undo symmetrically on exit: `contextStack` is
+ *    restored, the diagnostic scope is popped.
+ * 3. Constructed by `parse()` only — exactly once per file, including
+ *    recursive calls for `use`.
+ * 4. Frequency per file: exactly one — the whole file is one
+ *    activation.
+ * 5. On exit: the *importing* file's `contextStack` comes back exactly as
+ *    it was; the importing file's diagnostic scope (if any) reappears
+ *    underneath as the new innermost one, automatically, just by virtue of
+ *    being a stack — see `diagnostic::pushSource()`'s own doc comment.
+ * 6. Answers: "Whose file's state is currently live in `ctx` (and in
+ *    `diagnostic::`), given both are shared across every file in the
+ *    recursive parse?"
+ * 7. Nothing reads its effect directly — it's what keeps
+ *    ScopedContext's own bookkeeping, and diagnostics, from leaking
+ *    between files.
+ *
+ * The relationship between them: ScopedContext frames are always
+ * *relative to whichever file is currently being parsed*. ScopedFileContext
+ * is what makes "currently being parsed" a well-defined, isolated notion
+ * in the first place — without it, a `ScopedContext` pushed while parsing
+ * an imported file could end up sitting on the same stack as frames from
+ * the file that imported it, and a syntax error discovered before a
+ * `use` statement could get attributed to the wrong file's diagnostic
+ * scope the moment that `use` triggers a nested `parse()` call (see
+ * ScopedFileContext's own doc comment for why the diagnostic-scope half is
+ * load-bearing, not just defensive, unlike the contextStack half of the
+ * same guard).
+ *
+ * A useful mental model: ScopedContext nests *within* a single
+ * ScopedFileContext activation, potentially many levels deep and many
+ * times over the course of one file. ScopedFileContext itself nests
+ * across *recursive parse() calls*, at most as deep as the `use` import
+ * chain — one activation per file, full stop.
+ */
 
 } // namespace parser
