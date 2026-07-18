@@ -556,19 +556,21 @@ lucid/
     │   ├── FFIValidator.hpp/cpp  -- validate @[foreign("C")] against lge_ffi.lfi
     │   └── SemaContext.hpp       -- shared state for all sema passes
     │
-    ├── compiler/                 -- IR lowering + AOT backend
+    ├── codegen/                  -- Shared LLVM IR generation
     │   ├── IRLowering.hpp/cpp    -- validated AST → LLVM IR (shared by JIT + AOT)
     │   ├── TypeMapping.hpp/cpp   -- Lucid types → LLVM types
     │   ├── Intrinsics.hpp/cpp    -- #intrinsics → llvm.* calls
-    │   ├── ForeignDecl.hpp/cpp   -- @[foreign("C")] → LLVM declare + call
-    │   └── aot/                  -- AOT-only backend
-    │       ├── AOT.hpp/cpp       -- optimisation pipeline + object file emission
-    │       └── Linker.hpp/cpp    -- system linker invocation from @[link] annotations
+    │   └── ForeignDecl.hpp/cpp   -- @[foreign("C")] → LLVM declare + call
     │
     ├── interpreter/              -- ORC JIT backend (lucid run)
-    │   ├── Interpreter.hpp       -- Main interpreter engine
-    │   ├── JIT.hpp/cpp           -- LLVM ORC JIT session: setup, load, hot-reload
-    │   └── DynLink.hpp/cpp       -- dlopen/LoadLibrary; registers symbols with JIT
+    │   ├── Interpreter.hpp/cpp   -- Main interpreter engine
+    │   ├── JIT.hpp/cpp           -- LLVM ORC JIT session
+    │   └── DynLink.hpp/cpp       -- dlopen/LoadLibrary
+    │
+    ├── compiler/                 -- AOT backend (lucid build)
+    │   └── aot/                  -- AOT-only backend
+    │       ├── AOT.hpp/cpp       -- optimisation pipeline + object file emission
+    │       └── Linker.hpp/cpp    -- system linker invocation
     │
     ├── runtime/                  -- services that run alongside the program
     │   ├── memory.hpp/cpp        -- #alloc/#free registry, ArenaDescriptor management

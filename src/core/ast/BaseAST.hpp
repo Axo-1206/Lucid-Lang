@@ -49,7 +49,6 @@ struct CombinedTypeAST;
 struct RefTypeAST;
 struct PtrTypeAST;
 struct FuncTypeAST;
-struct TupleTypeAST;
 
 // DeclAST.hpp
 struct ImportDeclAST;
@@ -165,7 +164,6 @@ enum class ASTKind : uint16_t {
     RefType,
     PtrType,
     FuncType,
-    TupleType,
 
     // Declaration nodes
     ImportDecl,
@@ -204,7 +202,6 @@ enum class ASTKind : uint16_t {
     AnonFuncExpr,
     IfExpr,
     RangeExpr,
-    TupleExpr,
 
     // Concurrency
     AsyncExpr,
