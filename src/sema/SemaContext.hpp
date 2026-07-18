@@ -64,7 +64,7 @@
  *   ```lucid
  *   struct Node<T> {
  *       value T,
- *       next  *Node<T>?
+ *       next  ptr<Node<T>>?
  *   }
  *   ```
  *   `Node`'s own field list mentions `Node`. This works with no AST changes
@@ -86,6 +86,19 @@
  *   only exposes the "am I mid-definition" fact.
  *
  *   The context is passed by reference to all semantic passes.
+ *
+ * @architectural_note Diagnostics moved to `diagnostic::`
+ *   SemaContext used to maintain its own `errors`/`hasErrors`/
+ *   `consecutiveErrors`/`allDiagnostics` — the exact same bookkeeping
+ *   ParserContext independently maintained on the parser side. That's
+ *   gone: `error()`/`errorAt()`/`warning()`/`warningAt()`/`note()` below
+ *   are thin wrappers over `diagnostic::error()` etc., `canContinue()`
+ *   forwards to `diagnostic::canContinue()`, and per-module isolation
+ *   comes from `ScopedModuleContext` holding a `diagnostic::ScopedSource`
+ *   member instead of hand-saving/restoring three fields and draining them
+ *   into a session-wide list on the way out. See Diagnostic.hpp's
+ *   "source-scope stack" architecture note for the full rationale, and
+ *   ParserContext.hpp for the parser-side twin of this same change.
  */
 
 #pragma once
@@ -427,31 +440,14 @@ struct SemaContext {
      */
     std::vector<TypeDeclAST*> definingTypeStack;
 
-    // ─────────────────────────────────────────────────────────────────────
-    // Diagnostics — mirrors ParserContext's API for a consistent feel
-    // across the two frontend stages.
-    // ─────────────────────────────────────────────────────────────────────
-
-    /// True if any error has been reported while analyzing the current module.
-    bool hasErrors = false;
-
-    /// Collected diagnostic messages for the current module.
-    std::vector<Diagnostic> errors;
-
-    /// Consecutive error count (used to prevent infinite loops in recovery).
-    int consecutiveErrors = 0;
-
-    /**
-     * @brief Diagnostics from every module analyzed so far in this session.
-     *
-     * Unlike `errors` (per-module scratch state, reset by
-     * ScopedModuleContext for each module), this accumulates across the
-     * whole semantic phase — every module's `errors` gets drained into
-     * this right before ScopedModuleContext restores the previous module's
-     * state. This is what the driver should read for a complete picture of
-     * every semantic error found across every module.
-     */
-    std::vector<Diagnostic> allDiagnostics;
+    // Diagnostics (errors/hasErrors/consecutiveErrors/allDiagnostics) used
+    // to live here, duplicating exactly what ParserContext independently
+    // maintained too. That's gone — see this file's "Diagnostics moved to
+    // `diagnostic::`" architecture note above. `error()`/`errorAt()`/
+    // `warning()`/`warningAt()`/`note()`/`canContinue()` below all forward
+    // into `diagnostic::` directly; per-module isolation comes from
+    // `ScopedModuleContext` holding a `diagnostic::ScopedSource` member
+    // instead of hand-saving/restoring three fields.
 
     // ─────────────────────────────────────────────────────────────────────
     // Constructor
@@ -528,8 +524,9 @@ struct SemaContext {
      *
      * Prefer ScopedModuleContext over calling this directly — see its own
      * doc comment for why: a bare call here needs the caller to also reset
-     * `scopes`/`contextStack`/`definingTypeStack`/errors by hand, which is
-     * exactly the kind of easy-to-forget bookkeeping RAII exists to avoid.
+     * `scopes`/`contextStack`/`definingTypeStack` and open this module's
+     * own `diagnostic::ScopedSource` by hand, which is exactly the kind of
+     * easy-to-forget bookkeeping RAII exists to avoid.
      */
     void enterModule(ModuleAST* module) {
         currentModule = module;
@@ -988,30 +985,22 @@ private:
         }
     }
 
-    void addDiagnostic(DiagnosticSeverity severity,
-                        DiagnosticCategory category,
-                        const SourceLocation& loc,
-                        DiagCode code,
-                        const std::string& message) {
-        InternedString file = currentModule ? currentModule->filePath : InternedString{};
-        errors.push_back({
-            severity,
-            category,
-            file,
-            loc,
-            code,
-            {message}
-        });
-        if (severity == DiagnosticSeverity::Error ||
-            severity == DiagnosticSeverity::Fatal) {
-            hasErrors = true;
-            consecutiveErrors++;
-        } else if (severity == DiagnosticSeverity::Warning) {
-            consecutiveErrors++;
-        }
-    }
-
 public:
+    // ─────────────────────────────────────────────────────────────────────
+    // Public Error Reporting API
+    // ─────────────────────────────────────────────────────────────────────
+    //
+    // Every function below builds ONE composed message string from its
+    // heterogeneous variadic args (via buildMessage() above — unchanged),
+    // then forwards it as a single diagnostic to `diagnostic::`. `file` is
+    // never passed explicitly: it comes from whichever
+    // `diagnostic::ScopedSource` is currently open (pushed by
+    // ScopedModuleContext for `currentModule` — see its own doc comment),
+    // the same way `currentModule->filePath` used to be read directly
+    // inside the old `addDiagnostic()`. Category is always
+    // `DiagnosticCategory::Semantic` here — this is the semantic phase, it
+    // only ever reports semantic diagnostics.
+
     /**
      * @brief Report an error at an AST node's location, with optional
      *        format args.
@@ -1019,76 +1008,67 @@ public:
      * ```cpp
      * ctx.error(useSite, DiagCode::E2001, "undefined type", ctx.toString(name));
      * ```
-     *
-     * @note Category is hard-coded to `DiagnosticCategory::Semantic` here —
-     *       adjust the category name if the shared enum in
-     *       DiagnosticCodes.hpp spells it differently.
      */
     template<typename... Args>
     void error(const BaseAST* node, DiagCode code, Args&&... args) {
         std::string message = buildMessage(std::forward<Args>(args)...);
-        addDiagnostic(DiagnosticSeverity::Error,
-                      DiagnosticCategory::Semantic,
-                      node ? node->loc : SourceLocation{},
-                      code,
-                      message);
+        diagnostic::error(DiagnosticCategory::Semantic,
+                           node ? node->loc : SourceLocation{},
+                           code, {message});
     }
 
     /// Report an error at a specific location with optional format args.
     template<typename... Args>
     void errorAt(const SourceLocation& loc, DiagCode code, Args&&... args) {
         std::string message = buildMessage(std::forward<Args>(args)...);
-        addDiagnostic(DiagnosticSeverity::Error,
-                      DiagnosticCategory::Semantic,
-                      loc,
-                      code,
-                      message);
+        diagnostic::error(DiagnosticCategory::Semantic, loc, code, {message});
     }
 
     /// Report a warning at an AST node's location with optional format args.
     template<typename... Args>
     void warning(const BaseAST* node, DiagCode code, Args&&... args) {
         std::string message = buildMessage(std::forward<Args>(args)...);
-        addDiagnostic(DiagnosticSeverity::Warning,
-                      DiagnosticCategory::Semantic,
-                      node ? node->loc : SourceLocation{},
-                      code,
-                      message);
+        diagnostic::warning(DiagnosticCategory::Semantic,
+                             node ? node->loc : SourceLocation{},
+                             code, {message});
     }
 
     /// Report a warning at a specific location with optional format args.
     template<typename... Args>
     void warningAt(const SourceLocation& loc, DiagCode code, Args&&... args) {
         std::string message = buildMessage(std::forward<Args>(args)...);
-        addDiagnostic(DiagnosticSeverity::Warning,
-                      DiagnosticCategory::Semantic,
-                      loc,
-                      code,
-                      message);
+        diagnostic::warning(DiagnosticCategory::Semantic, loc, code, {message});
+    }
+
+    /// Report a free-text note at an AST node's location.
+    template<typename... Args>
+    void note(const BaseAST* node, Args&&... args) {
+        std::string message = buildMessage(std::forward<Args>(args)...);
+        diagnostic::note(node ? node->loc : SourceLocation{}, message);
+    }
+
+    /// Report a free-text note at a specific location.
+    template<typename... Args>
+    void noteAt(const SourceLocation& loc, Args&&... args) {
+        std::string message = buildMessage(std::forward<Args>(args)...);
+        diagnostic::note(loc, message);
     }
 
     // ─────────────────────────────────────────────────────────────────────
     // Context Queries
     // ─────────────────────────────────────────────────────────────────────
 
-    /// True if analysis can safely continue (bounded consecutive-error count).
-    bool canContinue() const {
-        return consecutiveErrors < 10;
-    }
-
     /**
-     * @brief Clear per-module error-tracking state.
+     * @brief True if analysis can safely continue (bounded consecutive-error count).
      *
-     * Does NOT touch `scopes`, `contextStack`, or `definingTypeStack` —
-     * those are reset by ScopedModuleContext alongside this, not here, for
-     * the same reason ParserContext::clearErrors() leaves contextStack
-     * alone: clearing them here would run before anything had a chance to
-     * save the previous module's state.
+     * Forwards to `diagnostic::canContinue()`, which reads the consecutive-
+     * error count of whichever `diagnostic::ScopedSource` is currently open
+     * for `currentModule` (pushed by `ScopedModuleContext`). See
+     * Diagnostic.hpp's docs on `consecutiveErrorsInCurrentSource()` /
+     * `resetStreak()` for exactly what "consecutive" means here.
      */
-    void clearErrors() {
-        errors.clear();
-        hasErrors = false;
-        consecutiveErrors = 0;
+    bool canContinue() const {
+        return diagnostic::canContinue();
     }
 };
 
@@ -1204,21 +1184,22 @@ private:
  * accumulated. This guard:
  *
  *   1. Saves the previous `currentModule`/`currentModuleTable` and all
- *      transient state.
+ *      transient state (`scopes`/`contextStack`/`definingTypeStack`).
  *   2. Calls `ctx.enterModule(module)` — switching (and, if needed,
  *      creating) the persistent ModuleTable for `module`.
- *   3. Resets `scopes`, `contextStack`, `definingTypeStack`, and the
- *      per-module error-tracking fields so `module` starts clean.
- *   4. On destruction: drains this module's `errors` into
- *      `ctx.allDiagnostics` (so they survive instead of vanishing when the
- *      previous module's state is restored), then restores everything
- *      saved in step 1.
+ *   3. Resets `scopes`, `contextStack`, `definingTypeStack` so `module`
+ *      starts clean, and opens a fresh diagnostic scope for `module` via
+ *      an embedded `diagnostic::ScopedSource`.
+ *   4. On destruction: restores everything saved in step 1. The
+ *      diagnostic scope needs no separate drain step — `diagnostic::`'s
+ *      global list already IS the durable, whole-session record (see
+ *      Diagnostic.hpp's "source-scope stack" architecture note); popping
+ *      the `ScopedSource` just closes the index range that counted as
+ *      "this module," it doesn't delete anything.
  *
  * This is the direct semantic-phase counterpart of the parser's
  * ScopedFileContext — see that struct's doc comment in ParserContext.hpp
- * for the fuller discussion of why the drain-then-restore ordering matters
- * (in short: restoring first would silently discard this module's
- * diagnostics before they were ever saved anywhere durable).
+ * for the fuller discussion of the same embedded-`ScopedSource` pattern.
  *
  * ## Usage
  *
@@ -1226,7 +1207,8 @@ private:
  * void analyze(SemaContext& ctx) {
  *     for (ModuleAST* mod : ctx.modules) {
  *         ScopedModuleContext moduleContext(ctx, mod);
- *         analyzeModule(mod, ctx);   // starts clean; errors preserved on exit
+ *         analyzeModule(mod, ctx);   // starts clean
+ *         mod->hasErrors = diagnostic::hasErrorsInCurrentSource();
  *     }
  * }
  * ```
@@ -1236,34 +1218,28 @@ private:
 struct ScopedModuleContext {
     ScopedModuleContext(SemaContext& ctx, ModuleAST* module)
         : ctx_(ctx)
+        , sourceScope_(module ? module->filePath : InternedString{})
         , savedModule_(ctx.currentModule)
         , savedModuleTable_(ctx.currentModuleTable)
         , savedScopes_(std::move(ctx.scopes))
         , savedContextStack_(std::move(ctx.contextStack))
         , savedDefiningTypeStack_(std::move(ctx.definingTypeStack))
-        , savedErrors_(std::move(ctx.errors))
-        , savedHasErrors_(ctx.hasErrors)
-        , savedConsecutiveErrors_(ctx.consecutiveErrors)
     {
         ctx_.scopes.clear();
         ctx_.contextStack.clear();
         ctx_.definingTypeStack.clear();
-        ctx_.clearErrors();
         ctx_.enterModule(module);
     }
 
     ~ScopedModuleContext() {
-        ctx_.allDiagnostics.insert(ctx_.allDiagnostics.end(),
-                                    ctx_.errors.begin(), ctx_.errors.end());
-
         ctx_.currentModule      = savedModule_;
         ctx_.currentModuleTable = savedModuleTable_;
         ctx_.scopes             = std::move(savedScopes_);
         ctx_.contextStack       = std::move(savedContextStack_);
         ctx_.definingTypeStack  = std::move(savedDefiningTypeStack_);
-        ctx_.errors             = std::move(savedErrors_);
-        ctx_.hasErrors          = savedHasErrors_;
-        ctx_.consecutiveErrors  = savedConsecutiveErrors_;
+        // sourceScope_ is destroyed after this (declared first ⇒ destroyed
+        // last), closing this module's diagnostic scope only once
+        // everything else about leaving this module is already done.
     }
 
     ScopedModuleContext(const ScopedModuleContext&) = delete;
@@ -1273,14 +1249,12 @@ struct ScopedModuleContext {
 
 private:
     SemaContext& ctx_;
+    diagnostic::ScopedSource sourceScope_;
     ModuleAST* savedModule_;
     ModuleTable* savedModuleTable_;
     std::vector<Scope> savedScopes_;
     std::vector<SemanticFrame> savedContextStack_;
     std::vector<TypeDeclAST*> savedDefiningTypeStack_;
-    std::vector<Diagnostic> savedErrors_;
-    bool savedHasErrors_;
-    int savedConsecutiveErrors_;
 };
 
 /**
@@ -1315,16 +1289,18 @@ private:
  * 5. Answers: "is `return`/`break`/`await` legal right here?"
  *
  * **ScopedModuleContext:**
- * 1. Guards `currentModule`/`currentModuleTable` **and** `scopes`/
- *    `contextStack`/`definingTypeStack`/`errors`/`hasErrors`/
- *    `consecutiveErrors` — i.e. everything transient, all at once.
+ * 1. Guards `currentModule`/`currentModuleTable` and `scopes`/
+ *    `contextStack`/`definingTypeStack` directly, plus this module's
+ *    diagnostic tracking via an embedded `diagnostic::ScopedSource`.
  * 2. Saves the whole set of fields, resets them to a clean state for the
- *    new module, restores the saved values on exit.
+ *    new module, restores the saved values on exit; the diagnostic scope
+ *    is pushed on construction and popped on destruction alongside that.
  * 3. Constructed by the analysis driver only — exactly once per module.
  * 4. Frequency per module: exactly one — the whole module is one
  *    activation.
- * 5. Answers: "whose module's transient state is currently live in `ctx`,
- *    given `ctx` is shared across every module in the semantic phase?"
+ * 5. Answers: "whose module's transient state — and which module's
+ *    diagnostic scope — is currently live in `ctx`, given `ctx` is shared
+ *    across every module in the semantic phase?"
  *
  * The relationship: ScopedScope and ScopedSemanticContext frames are
  * always relative to whichever module is currently being analyzed.

@@ -323,7 +323,6 @@ TypeAST* resolveCombinedType(CombinedTypeAST* type, SemaContext& ctx);
 TypeAST* resolveRefType(RefTypeAST* type, SemaContext& ctx);
 TypeAST* resolvePtrType(PtrTypeAST* type, SemaContext& ctx);
 TypeAST* resolveFuncType(FuncTypeAST* type, SemaContext& ctx);
-TypeAST* resolveTupleType(TupleTypeAST* type, SemaContext& ctx);
 
 // =============================================================================
 // Generics & Traits
