@@ -16,7 +16,6 @@
 
 #pragma once
 
-#include "core/diagnostics/Diagnostic.hpp"
 #include "debug/DebugMacros.hpp"
 #include "../SourceLocation.hpp"
 #include "../memory//ASTArena.hpp"
@@ -460,13 +459,31 @@ using StmtPtr    = StmtAST*;
  * @field packageName The package name declared by `package foo` at file start.
  * @field filePath    Relative path from package root (e.g., "math/vec2.luc").
  * @field decls       Top‑level declarations in source order.
+ *
+ * @note Diagnostics for this module are NOT stored here. They live in the
+ *       `diagnostic` namespace's own whole-session list (see
+ *       Diagnostic.hpp), keyed by `filePath` — get them with
+ *       `diagnostic::getAllForFile(module->filePath)`. Storing a second
+ *       copy on the node itself was removed once the diagnostic system
+ *       started tracking file association on its own (see
+ *       `diagnostic::pushSource()`/`getAllForFile()`); keeping one here
+ *       too would just be the same data living in two places again, the
+ *       exact duplication the diagnostic-system rewrite was meant to
+ *       eliminate.
+ *
+ *       `hasErrors` remains as a cheap cached bool — a single flag, set
+ *       once from `diagnostic::hasErrorsInCurrentSource()` right after
+ *       this module finishes parsing/analysis, so callers that only need
+ *       "did this succeed" don't have to make a lookup (or pull in
+ *       Diagnostic.hpp at all) just to check a yes/no. That's a small
+ *       derived snapshot, not a duplicate store, which is why it stayed
+ *       while `errors` didn't.
  */
 struct ModuleAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::Program;
 
     InternedString       filePath;
     ArenaSpan<DeclPtr>   decls;
-    std::vector<Diagnostic> errors;
     bool hasErrors = false;
 
     ModuleAST() : BaseAST(ASTKind::Program) {}
