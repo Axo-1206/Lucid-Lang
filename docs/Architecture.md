@@ -550,17 +550,34 @@ lucid/
     │       └── ErrorRecovery.cpp       -- sync points for error recovery
     │
     ├── sema/                     -- frontend stage 2: AST → validated AST
-    │   ├── Sema.hpp/cpp          -- entry point: Sema::analyze(Module*)
-    │   ├── NameResolver.hpp/cpp  -- resolve identifiers to declarations
-    │   ├── TypeChecker.hpp/cpp   -- type inference and validation
-    │   ├── FFIValidator.hpp/cpp  -- validate @[foreign("C")] against lge_ffi.lfi
-    │   └── SemaContext.hpp       -- shared state for all sema passes
+    │   ├── Sema.hpp/cpp           -- public interface: Sema::analyze()/analyzeAll(), analyzeModuleDecls()
+    │   ├── SemaContext.hpp        -- shared state for all sema passes
+    │   ├── rules/                        -- single-traversal analysis: name resolution + type
+    │   │   │                                checking happen together (see Sema.hpp's "One
+    │   │   │                                traversal, not two" note), not as separate passes
+    │   │   ├── SemaDecl.cpp              -- const, let, struct, enum, trait, fn, fields, params
+    │   │   ├── SemaStmt.cpp              -- if, for, while, switch, return, block
+    │   │   ├── SemaExpr.cpp              -- literals, binary/unary, calls, pipeline, compose
+    │   │   ├── SemaType.cpp              -- resolve named/array/nullable/fallible/ptr/ref/func types
+    │   │   ├── Generics.cpp              -- generic param usage, trait implementation, self-reference
+    │   │   ├── Concurrency.cpp           -- async, await, spawn, join
+    │   │   └── FFIValidator.hpp/cpp      -- validate @[foreign("C")] against lge_ffi.lfi
+    │   └── support/                      -- sema infrastructure
+    │       ├── Resolution.cpp            -- resolveValueOrError/resolveTypeNameOrError/
+    │       │                                resolveCalleeOrError/selfTypeOf
+    │       ├── TypeCompat.cpp            -- typesEqual/isAssignable/nullable-fallible helpers
+    │       └── Attributes.cpp            -- validateAttributes/validateAttribute
     │
-    ├── codegen/                  -- Shared LLVM IR generation
-    │   ├── IRLowering.hpp/cpp    -- validated AST → LLVM IR (shared by JIT + AOT)
-    │   ├── TypeMapping.hpp/cpp   -- Lucid types → LLVM types
-    │   ├── Intrinsics.hpp/cpp    -- #intrinsics → llvm.* calls
-    │   └── ForeignDecl.hpp/cpp   -- @[foreign("C")] → LLVM declare + call
+    ├── codegen/
+    │   ├── IRLowering.hpp                     # Single unified header (all declarations)
+    │   ├── IRLowering.cpp                     # Main entry point + orchestration
+    │   ├── IRLoweringDecl.cpp                 # Declaration lowering (functions, vars, structs, enums)
+    │   ├── IRLoweringStmt.cpp                 # Statement lowering (if, for, while, return, etc.)
+    │   ├── IRLoweringExpr.cpp                 # Expression lowering (literals, binary, calls, etc.)
+    │   ├── IRLoweringIntrinsic.cpp            # Intrinsic lowering (#sqrt, #memcpy, #ptrDiff, etc.)
+    │   ├── IRLoweringBuilder.cpp              # Helper builders for common IR patterns
+    │   ├── TypeMapping.hpp/cpp                # Lucid → LLVM type mapping (stays single file)
+    │   └── IntrinsicRegistry.hpp/cpp          # Maps Lucid intrinsic names → LLVM IDs
     │
     ├── interpreter/              -- ORC JIT backend (lucid run)
     │   ├── Interpreter.hpp/cpp   -- Main interpreter engine
@@ -605,8 +622,11 @@ tests/
 │   ├── test_lexer.cpp
 │   └── test_parser.cpp
 ├── sema/
-│   ├── test_name_resolver.cpp
-│   ├── test_type_checker.cpp
+│   ├── test_decl.cpp
+│   ├── test_stmt.cpp
+│   ├── test_expr.cpp
+│   ├── test_type.cpp
+│   ├── test_generics.cpp
 │   └── test_ffi_validator.cpp
 ├── interpreter/
 │   └── test_jit.cpp
