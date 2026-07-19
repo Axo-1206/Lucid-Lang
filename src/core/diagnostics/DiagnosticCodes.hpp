@@ -61,7 +61,7 @@ enum class DiagCode : uint32_t {
     // (file I/O, module resolution, CLI/config, cross-cutting compiler
     //  failures that aren't specific to any one source-processing phase)
     // ═══════════════════════════════════════════════════════════════════════
-    E0001 = 0,      ///< Unknown Error
+    E0001 = 1,      ///< Unknown Error
     E0002,          ///< Too many consecutive errors. Aborting...
     E0003,          ///< File not found or inaccessible.
     E0004,          ///< Module resolution failed.
@@ -72,7 +72,7 @@ enum class DiagCode : uint32_t {
     // 0100–0999: Lexical
     // (character stream → token stream; the scanner)
     // ═══════════════════════════════════════════════════════════════════════
-    E0101 = 100,    ///< Invalid character in source (only ASCII allowed).
+    E0101 = 101,    ///< Invalid character in source (only ASCII allowed).
     E0102,          ///< Unterminated string literal.
     E0103,          ///< Unterminated raw string literal.
     E0104,          ///< Unterminated block comment.
@@ -95,7 +95,7 @@ enum class DiagCode : uint32_t {
     // ═══════════════════════════════════════════════════════════════════════
 
     // ── 1000–1099: General ──
-    E1001 = 1000,   ///< Expected keyword
+    E1001 = 1001,   ///< Expected keyword
     E1002,          ///< Expected an identifier.
     E1003,          ///< Expected type
     E1004,          ///< Expected '{, [, <, ('
@@ -163,7 +163,7 @@ enum class DiagCode : uint32_t {
     // 5000–5999: Backend / Linker
     // (IR generation, optimization, linking)
     // ═══════════════════════════════════════════════════════════════════════
-    E5001 = 5000,   ///< Unresolved external symbol '%s'.
+    E5001 = 5001,   ///< Unresolved external symbol '%s'.
     E5002,          ///< Linker search path does not exist.
     E5003,          ///< Library format not recognised.
     E5004,          ///< Code generation failed (LLVM error).
@@ -174,7 +174,7 @@ enum class DiagCode : uint32_t {
     // 6000–6999: Warnings (cross-cutting — see architecture note above for
     // why this range isn't split by phase the way Semantic is)
     // ═══════════════════════════════════════════════════════════════════════
-    W0001 = 6000,   ///< Unknown Warning
+    W0001 = 6001,   ///< Unknown Warning
     W0002,          ///< Unreachable code.
     // 0003–0999 reserved for more warnings. The commented-out codes below
     // are placeholders for known future warnings, renumbered here to

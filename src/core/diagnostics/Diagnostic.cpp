@@ -319,18 +319,6 @@ static const char* severityLabel(DiagnosticSeverity severity) {
 /**
  * @brief Build the "E1002"/"W0002"-style label shown after the severity.
  *
- * The displayed 4-digit number is the code's position within its own
- * range as named in DiagnosticCodes.hpp — NOT the raw `DiagCode` integer.
- * Every E-range in DiagnosticCodes.hpp is constructed so that
- * `symbolicNumber == rawValue + 1` (e.g. `E1001 = 1000` → symbolic 1001),
- * which holds uniformly across every E-range regardless of where that
- * range starts. The single exception is the Warning range, which starts
- * its own numbering back at `W0001` despite `W0001`'s raw value being
- * 6000 — so warnings need the one explicit offset below; nothing else
- * does. This replaces the previous version's incorrect assumption that
- * warnings lived at 5000+ (see dumpAll()'s git history / this file's own
- * earlier revision) with an offset actually derived from
- * DiagnosticCodes.hpp's real layout.
  */
 static std::string codeLabel(const Diagnostic& diag) {
     uint32_t raw = static_cast<uint32_t>(diag.code);
@@ -339,10 +327,10 @@ static std::string codeLabel(const Diagnostic& diag) {
 
     if (diag.severity == DiagnosticSeverity::Warning) {
         prefix = 'W';
-        symbolic = raw - 6000 + 1;
+        symbolic = raw - 6000;
     } else {
         prefix = 'E';
-        symbolic = raw + 1;
+        symbolic = raw;
     }
 
     std::ostringstream oss;
