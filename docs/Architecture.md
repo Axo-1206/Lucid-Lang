@@ -76,7 +76,7 @@ path writes it to an object file and invokes the system linker.
                              │
               ┌──────────────┴──────────────┐
               │                             │
-   ┌──────────▼──────────┐     ┌────────────▼────────────┐
+   ┌──────────▼──────────┐     ┌────────────▼─────────────┐
    │    ORC JIT          │     │    AOT Compiler          │
    │  (lucid run)        │     │  (lucid build)           │
    │                     │     │                          │
@@ -580,7 +580,7 @@ lucid/
     │   ├── IRLoweringExpr.cpp                 # Expression lowering (literals, binary, calls, etc.)
     │   ├── IRLoweringIntrinsic.cpp            # Intrinsic lowering (#sqrt, #memcpy, #ptrDiff, etc.)
     │   │                                        -- consumes sema/support/IntrinsicRegistry.hpp
-    │   ├── IRLoweringBuilder.cpp              # Helper builders for common IR patterns
+    │   ├── IRLoweringBuilder.hpp/cpp              # Helper builders for common IR patterns
     │   └── TypeMapping.hpp/cpp                # Lucid → LLVM type mapping (stays single file)
     │
     ├── interpreter/              -- ORC JIT backend (lucid run)

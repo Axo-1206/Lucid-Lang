@@ -13,6 +13,7 @@
  */
 
 #include "IRLowering.hpp"
+#include "IRLoweringBuilder.hpp"
 
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
