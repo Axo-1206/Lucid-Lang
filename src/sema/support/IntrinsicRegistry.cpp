@@ -30,8 +30,10 @@ void IntrinsicRegistry::registerIntrinsics() {
         return;
     }
 
-    // ─── Floating-Point Intrinsics ──────────────────────────────────────────
-    // These map directly to LLVM intrinsic functions
+    // ─── Floating-Point Math Intrinsics ─────────────────────────────────────
+    // Grammar.md "Floating-Point Math" table — these map directly to LLVM
+    // intrinsic functions. NOTE: exp/log/log10/sin/cos/tan/atan2/fmod are
+    // NOT part of the Lucid grammar and must not be registered here.
 
     registerLLVMIntrinsic("sqrt", llvm::Intrinsic::sqrt, 1);
     registerLLVMIntrinsic("abs", llvm::Intrinsic::fabs, 1);
@@ -40,15 +42,14 @@ void IntrinsicRegistry::registerIntrinsics() {
     registerLLVMIntrinsic("floor", llvm::Intrinsic::floor, 1);
     registerLLVMIntrinsic("round", llvm::Intrinsic::round, 1);
     registerLLVMIntrinsic("pow", llvm::Intrinsic::pow, 2);
-    registerLLVMIntrinsic("exp", llvm::Intrinsic::exp, 1);
-    registerLLVMIntrinsic("log", llvm::Intrinsic::log, 1);
-    registerLLVMIntrinsic("log10", llvm::Intrinsic::log10, 1);
-    registerLLVMIntrinsic("sin", llvm::Intrinsic::sin, 1);
-    registerLLVMIntrinsic("cos", llvm::Intrinsic::cos, 1);
-    // NOTE: tan, atan2, fmod are NOT LLVM intrinsics - they are C library functions
-    // These will be handled as compiler-handled intrinsics
+    // min/max apply to "same type" per the grammar (int or float), so there
+    // is no single LLVM intrinsic ID that covers every case — handled by the
+    // compiler, which picks minnum/maxnum vs smin/smax/umin/umax by operand
+    // type during lowering.
+    registerCompilerIntrinsic("min", 2);
+    registerCompilerIntrinsic("max", 2);
 
-    // ─── Memory Intrinsics ──────────────────────────────────────────────────
+    // ─── Memory Intrinsics (Raw Memory Operations) ──────────────────────────
 
     registerLLVMIntrinsic("memcpy", llvm::Intrinsic::memcpy, 3);
     registerLLVMIntrinsic("memmove", llvm::Intrinsic::memmove, 3);
@@ -64,6 +65,7 @@ void IntrinsicRegistry::registerIntrinsics() {
     // ─── CPU Hints ──────────────────────────────────────────────────────────
 
     registerLLVMIntrinsic("prefetch", llvm::Intrinsic::prefetch, 1);
+    registerLLVMIntrinsic("prefetch_w", llvm::Intrinsic::prefetch, 1);
     // pause is x86-specific, use a different approach
     // fence is an instruction, not an intrinsic
 
@@ -77,7 +79,9 @@ void IntrinsicRegistry::registerIntrinsics() {
     registerCompilerIntrinsic("sizeof", 1);
     registerCompilerIntrinsic("alignof", 1);
     registerCompilerIntrinsic("typeof", 1);
+    registerCompilerIntrinsic("nameof", 1);
     registerCompilerIntrinsic("tostr", 1);
+    registerCompilerIntrinsic("ptrstr", 1);
     registerCompilerIntrinsic("addrof", 1);
     registerCompilerIntrinsic("ptrOffset", 2);
     registerCompilerIntrinsic("ptrDiff", 2);
@@ -86,15 +90,27 @@ void IntrinsicRegistry::registerIntrinsics() {
     registerCompilerIntrinsic("bitcast", 2, 2);  // (T, value) - T is a type
     registerCompilerIntrinsic("likely", 1);
     registerCompilerIntrinsic("unlikely", 1);
-
-    // ─── C Library Functions (not LLVM intrinsics) ────────────────────────
-    // These are not LLVM intrinsics - they are C standard library functions
-    // They will be handled by emitting calls to the C library
-    registerCompilerIntrinsic("tan", 1);
-    registerCompilerIntrinsic("atan2", 2);
-    registerCompilerIntrinsic("fmod", 2);
     registerCompilerIntrinsic("pause", 0);
-    registerCompilerIntrinsic("fence", 0);
+    registerCompilerIntrinsic("fence", 1);  // (ordering)
+
+    // ─── String Operations ─────────────────────────────────────────────────
+    // Low-level string intrinsics the standard library builds on
+    registerCompilerIntrinsic("str_len", 1);
+    registerCompilerIntrinsic("str_ptr", 1);
+    registerCompilerIntrinsic("str_from_ptr", 2);
+    registerCompilerIntrinsic("str_concat", 2);
+    registerCompilerIntrinsic("str_slice", 3);
+    registerCompilerIntrinsic("str_eq", 2);
+    registerCompilerIntrinsic("str_byte_at", 2);
+
+    // ─── Memory Management ──────────────────────────────────────────────────
+    // Foreign-interop allocation only — never used in ordinary Lucid code
+    registerCompilerIntrinsic("alloc", 2);          // (T, count)
+    registerCompilerIntrinsic("free", 1);           // (ptr)
+    registerCompilerIntrinsic("arena_create", 1);   // (size)
+    registerCompilerIntrinsic("arena_alloc", 3);    // (arena, T, n)
+    registerCompilerIntrinsic("arena_reset", 1);    // (arena)
+    registerCompilerIntrinsic("arena_free", 1);     // (arena)
 
     // ─── Atomics (LLVM instructions, not intrinsics) ──────────────────────
     registerCompilerIntrinsic("atomic_load", 2);

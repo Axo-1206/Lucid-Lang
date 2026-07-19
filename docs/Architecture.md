@@ -566,7 +566,11 @@ lucid/
     │       ├── Resolution.cpp            -- resolveValueOrError/resolveTypeNameOrError/
     │       │                                resolveCalleeOrError/selfTypeOf
     │       ├── TypeCompat.cpp            -- typesEqual/isAssignable/nullable-fallible helpers
-    │       └── Attributes.cpp            -- validateAttributes/validateAttribute
+    │       ├── AttributesRegistry.hpp    -- validateAttributes/validateAttribute (header-only:
+    │       │                                thin delegation into SemaContext, no data table)
+    │       └── IntrinsicRegistry.hpp/cpp -- Lucid intrinsic name → LLVM ID map + arg-count
+    │                                        validation; used here to set the intrinsic flag
+    │                                        during Sema, and by IRLoweringIntrinsic.cpp later
     │
     ├── codegen/
     │   ├── IRLowering.hpp                     # Single unified header (all declarations)
@@ -575,9 +579,9 @@ lucid/
     │   ├── IRLoweringStmt.cpp                 # Statement lowering (if, for, while, return, etc.)
     │   ├── IRLoweringExpr.cpp                 # Expression lowering (literals, binary, calls, etc.)
     │   ├── IRLoweringIntrinsic.cpp            # Intrinsic lowering (#sqrt, #memcpy, #ptrDiff, etc.)
+    │   │                                        -- consumes sema/support/IntrinsicRegistry.hpp
     │   ├── IRLoweringBuilder.cpp              # Helper builders for common IR patterns
-    │   ├── TypeMapping.hpp/cpp                # Lucid → LLVM type mapping (stays single file)
-    │   └── IntrinsicRegistry.hpp/cpp          # Maps Lucid intrinsic names → LLVM IDs
+    │   └── TypeMapping.hpp/cpp                # Lucid → LLVM type mapping (stays single file)
     │
     ├── interpreter/              -- ORC JIT backend (lucid run)
     │   ├── Interpreter.hpp/cpp   -- Main interpreter engine

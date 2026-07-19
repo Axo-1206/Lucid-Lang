@@ -8,7 +8,8 @@
  * 
  * @related_files
  *   - src/codegen/IRLoweringIntrinsic.cpp - uses IntrinsicRegistry for lowering
- *   - src/sema/IntrinsicValidator.cpp - uses IntrinsicRegistry for validation
+ *   - src/sema/rules/SemaExpr.cpp - uses IntrinsicRegistry to validate
+ *     #intrinsic() calls and set the intrinsic flag during Sema
  *   - src/ast/ExprAST.hpp - IntrinsicCallExprAST node
  */
 
