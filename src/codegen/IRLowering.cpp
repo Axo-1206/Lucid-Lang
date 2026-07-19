@@ -1096,24 +1096,59 @@ llvm::Value* IRLowering::lowerIntrinsic(IntrinsicCallExprAST* intrinsic) {
         return nullptr;
     }
 
+    // ─── LLVM Intrinsics (have an enum) ─────────────────────────────────────
+    if (intrinsic->intrinsicID.has_value()) {
+        auto id = intrinsic->intrinsicID.value();
+        
+        // Lower all arguments
+        std::vector<llvm::Value*> args;
+        for (ExprPtr arg : intrinsic->args) {
+            auto* value = lowerExpr(arg);
+            if (value) {
+                args.push_back(value);
+            }
+        }
+        
+        // Build type parameters from argument types
+        std::vector<llvm::Type*> typeParams;
+        for (auto* arg : args) {
+            typeParams.push_back(arg->getType());
+        }
+        
+        // Get the intrinsic declaration
+        auto* func = llvm::Intrinsic::getDeclaration(
+            m_module.get(),
+            id,
+            typeParams
+        );
+        
+        if (!func) {
+            std::string name = internedToString(intrinsic->intrinsicName);
+            throw IRLoweringError(IRLoweringError::Kind::IntrinsicNotFound,
+                                  "Failed to get declaration for intrinsic: " + name);
+        }
+        
+        std::string name = internedToString(intrinsic->intrinsicName);
+        return m_builder.CreateCall(func, args, name);
+    }
+    
+    // ─── Compiler-Handled Intrinsics (no LLVM enum) ──────────────────────
     std::string name = internedToString(intrinsic->intrinsicName);
-
+    
     if (name == "sizeof") {
         return lowerIntrinsicSizeof(intrinsic);
     } else if (name == "typeof") {
         return lowerIntrinsicTypeof(intrinsic);
     } else if (name == "tostr") {
         return lowerIntrinsicTostr(intrinsic);
-    } else if (name == "sqrt") {
-        return lowerIntrinsicSqrt(intrinsic);
-    } else if (name == "memcpy") {
-        return lowerIntrinsicMemcpy(intrinsic);
     } else if (name == "addrof") {
         return lowerIntrinsicAddrof(intrinsic);
     } else if (name == "ptrOffset") {
         return lowerIntrinsicPtrOffset(intrinsic);
+    } else if (name == "ptrDiff") {
+        return lowerIntrinsicPtrDiff(intrinsic);
     }
-
+    
     throw IRLoweringError(IRLoweringError::Kind::IntrinsicNotFound,
                           "Unknown intrinsic: " + name);
 }
@@ -1152,63 +1187,6 @@ llvm::Value* IRLowering::lowerIntrinsicTostr(IntrinsicCallExprAST* intrinsic) {
         }
     }
     return m_builder.CreateGlobalStringPtr(str, "tostr");
-}
-
-llvm::Value* IRLowering::lowerIntrinsicSqrt(IntrinsicCallExprAST* intrinsic) {
-    // #sqrt(x) - call llvm.sqrt intrinsic
-    if (intrinsic->args.empty()) {
-        throw IRLoweringError(IRLoweringError::Kind::IntrinsicNotFound,
-                              "sqrt requires one argument");
-    }
-
-    auto* value = lowerExpr(intrinsic->args[0]);
-    if (!value) {
-        throw IRLoweringError(IRLoweringError::Kind::IntrinsicNotFound,
-                              "Failed to lower sqrt argument");
-    }
-
-    // Get the llvm.sqrt intrinsic
-    auto* sqrtFunc = llvm::Intrinsic::getDeclaration(
-        m_module.get(),
-        llvm::Intrinsic::sqrt,
-        {value->getType()}
-    );
-
-    return m_builder.CreateCall(sqrtFunc, {value}, "sqrt");
-}
-
-llvm::Value* IRLowering::lowerIntrinsicMemcpy(IntrinsicCallExprAST* intrinsic) {
-    // #memcpy(dst, src, len) - call llvm.memcpy intrinsic
-    if (intrinsic->args.size() < 3) {
-        throw IRLoweringError(IRLoweringError::Kind::IntrinsicNotFound,
-                              "memcpy requires three arguments");
-    }
-
-    auto* dst = lowerExpr(intrinsic->args[0]);
-    auto* src = lowerExpr(intrinsic->args[1]);
-    auto* len = lowerExpr(intrinsic->args[2]);
-
-    if (!dst || !src || !len) {
-        throw IRLoweringError(IRLoweringError::Kind::IntrinsicNotFound,
-                              "Failed to lower memcpy arguments");
-    }
-
-    // Get the llvm.memcpy intrinsic - use the specific ID
-    auto* memcpyFunc = llvm::Intrinsic::getDeclaration(
-        m_module.get(),
-        llvm::Intrinsic::memcpy,
-        {dst->getType(), src->getType()}
-    );
-
-    // Create the call
-    std::vector<llvm::Value*> args = {
-        dst,
-        src,
-        len,
-        llvm::ConstantInt::get(llvm::Type::getInt1Ty(m_context), 0) // isVolatile
-    };
-
-    return m_builder.CreateCall(memcpyFunc, args, "memcpy");
 }
 
 llvm::Value* IRLowering::lowerIntrinsicAddrof(IntrinsicCallExprAST* intrinsic) {
@@ -1256,6 +1234,29 @@ llvm::Value* IRLowering::lowerIntrinsicPtrOffset(IntrinsicCallExprAST* intrinsic
 
     // Use GEP for pointer arithmetic
     return m_builder.CreateGEP(ptr->getType(), ptr, offset, "ptroffset");
+}
+
+llvm::Value* IRLowering::lowerIntrinsicPtrDiff(IntrinsicCallExprAST* intrinsic) {
+    // #ptrDiff(p1, p2) - returns distance between two pointers
+    if (intrinsic->args.size() < 2) {
+        throw IRLoweringError(IRLoweringError::Kind::IntrinsicNotFound,
+                              "ptrDiff requires two arguments");
+    }
+
+    auto* p1 = lowerExpr(intrinsic->args[0]);
+    auto* p2 = lowerExpr(intrinsic->args[1]);
+
+    if (!p1 || !p2) {
+        throw IRLoweringError(IRLoweringError::Kind::IntrinsicNotFound,
+                              "Failed to lower ptrDiff arguments");
+    }
+
+    // Convert both pointers to integers
+    auto* intPtr1 = m_builder.CreatePtrToInt(p1, llvm::Type::getInt64Ty(m_context));
+    auto* intPtr2 = m_builder.CreatePtrToInt(p2, llvm::Type::getInt64Ty(m_context));
+
+    // Subtract and return
+    return m_builder.CreateSub(intPtr1, intPtr2, "ptrdiff");
 }
 
 llvm::Value* IRLowering::lowerNullCoalesce(NullCoalesceExprAST* coalesce) {

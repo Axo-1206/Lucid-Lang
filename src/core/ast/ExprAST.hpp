@@ -17,6 +17,7 @@
 #include "BaseAST.hpp"
 #include "TypeAST.hpp"
 #include "DeclAST.hpp"
+#include "llvm/IR/Intrinsics.h"
 
 #include <string>
 #include <optional>
@@ -818,13 +819,19 @@ struct RangeExprAST : ExprAST {
  * Codegen maps intrinsicName to the corresponding intrinsic operation.
  *
  * @field intrinsicName  The intrinsic name ("sizeof", "memcpy", "sqrt", etc.).
+ * @field intrinsicID    The LLVM intrinsic ID (set during semantic analysis).
  * @field args           Value arguments in order.
  */
 struct IntrinsicCallExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::IntrinsicCallExpr;
 
-    InternedString intrinsicName; // "sizeof", "memcpy", "sqrt", etc.
-    ArenaSpan<ExprPtr> args;      // value arguments in order
+    InternedString intrinsicName;                 // "sizeof", "memcpy", "sqrt", etc.
+    ArenaSpan<ExprPtr> args;                      // value arguments in order
+    
+    // LLVM intrinsic ID - set during semantic analysis
+    // Use std::optional because not all intrinsics map to LLVM intrinsics
+    // (e.g., #sizeof, #typeof, #tostr are handled by the compiler directly)
+    std::optional<llvm::Intrinsic::ID> intrinsicID = std::nullopt;
 
     IntrinsicCallExprAST() : ExprAST(ASTKind::IntrinsicCallExpr) {}
 };
