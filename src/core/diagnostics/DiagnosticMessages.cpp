@@ -42,9 +42,34 @@ std::string_view getMessage(DiagCode code) {
         case DiagCode::E1107: return "Expected pipeline seed, but found %s";
         case DiagCode::E1108: return "Multiple default clauses in switch";
         // case DiagCode::E1109: return "Expected default clause body (block), but found %s";
-        
-        
-        
+
+        // ========== 2001-3000: Semantic -- Name Resolution ==========
+        // NOTE: unlike the Syntax codes above, every Semantic-phase code's
+        // template from here through the end of this function is a bare
+        // "%s". SemaContext::error() (see its doc comment in
+        // SemaContext.hpp) folds ALL of a call's variadic arguments into
+        // one string via buildMessage() before it ever reaches this
+        // template -- a Sema call site composes its own full sentence out
+        // of several literal + InternedString pieces, and that one
+        // composed string fills this single placeholder. A template with
+        // more than one "%s" here would never get its later placeholders
+        // filled. See AttributesRegistry.hpp's own architectural note for
+        // a worked example of this at a call site.
+        case DiagCode::E2001: return "%s";  // e.g. "undefined value 'foo'"
+        case DiagCode::E2002: return "%s";  // e.g. "undefined type 'Foo'"
+        case DiagCode::E2003: return "%s";  // e.g. "'foo' is not callable"
+
+        // ========== 3001-4000: Semantic -- Type Checking ==========
+        case DiagCode::E3001: return "%s";  // e.g. "wrong number of arguments to 'f': expected 1, found 2"
+
+        case DiagCode::E3101: return "%s";  // e.g. "unknown intrinsic 'foo'"
+
+        // ========== 4001-5000: Semantic -- Generics, Traits & FFI ==========
+        case DiagCode::E4001: return "%s";  // e.g. "attribute 'export' is not legal here"
+        case DiagCode::E4002: return "%s";  // e.g. "wrong number of arguments for attribute 'foreign': expected 1, found 2"
+        case DiagCode::E4003: return "%s";  // e.g. "unknown attribute 'foo'"
+
+        case DiagCode::E4101: return "%s";  // e.g. "unsupported foreign ABI 'C++' -- only \"C\" is supported"
 
         default: return "Unknown diagnostic code.";
     }

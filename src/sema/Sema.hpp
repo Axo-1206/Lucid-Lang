@@ -46,10 +46,6 @@
  *   `checkRecursiveFieldType()` can tell (via `ctx.isDefiningType()`)
  *   whether a field's use of the enclosing type is direct (illegal,
  *   infinite size) or indirect through `ptr`/`&`/`?` (legal).
- *
- * @note '// X' marks a function whose full behavior depends on a sibling
- *       file that isn't finalized yet (e.g. FFIValidator's manifest format)
- *       — signature and intent are settled, implementation is not.
  */
 
 #pragma once

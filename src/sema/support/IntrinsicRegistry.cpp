@@ -9,11 +9,19 @@
 #include <algorithm>
 
 // ─────────────────────────────────────────────────────────────────────────────
-// IntrinsicRegistry - Singleton
+// IntrinsicRegistry - Singleton, bound to one StringPool
 // ─────────────────────────────────────────────────────────────────────────────
 
-IntrinsicRegistry& IntrinsicRegistry::getInstance() {
-    static IntrinsicRegistry instance;
+IntrinsicRegistry& IntrinsicRegistry::getInstance(StringPool& pool) {
+    static IntrinsicRegistry instance(pool);
+
+    // See IntrinsicRegistry.hpp's "Bound to one StringPool" note: every
+    // call after the first one that constructed `instance` must pass the
+    // exact same pool, or its InternedString keys silently mean nothing.
+    assert(&instance.m_pool == &pool &&
+           "IntrinsicRegistry::getInstance() called with a different "
+           "StringPool than the one it was first bound to");
+
     return instance;
 }
 
@@ -21,7 +29,7 @@ IntrinsicRegistry& IntrinsicRegistry::getInstance() {
 // IntrinsicRegistry - Construction
 // ─────────────────────────────────────────────────────────────────────────────
 
-IntrinsicRegistry::IntrinsicRegistry() {
+IntrinsicRegistry::IntrinsicRegistry(StringPool& pool) : m_pool(pool) {
     registerIntrinsics();
 }
 
@@ -43,9 +51,9 @@ void IntrinsicRegistry::registerIntrinsics() {
     registerLLVMIntrinsic("round", llvm::Intrinsic::round, 1);
     registerLLVMIntrinsic("pow", llvm::Intrinsic::pow, 2);
     // min/max apply to "same type" per the grammar (int or float), so there
-    // is no single LLVM intrinsic ID that covers every case — handled by the
-    // compiler, which picks minnum/maxnum vs smin/smax/umin/umax by operand
-    // type during lowering.
+    // is no single LLVM intrinsic ID that covers every case — handled by
+    // the compiler, which picks minnum/maxnum vs smin/smax/umin/umax by
+    // operand type during lowering.
     registerCompilerIntrinsic("min", 2);
     registerCompilerIntrinsic("max", 2);
 
@@ -144,38 +152,40 @@ void IntrinsicRegistry::registerIntrinsics() {
 // IntrinsicRegistry - Registration Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-void IntrinsicRegistry::registerLLVMIntrinsic(const std::string& lucidName,
-                                              llvm::Intrinsic::ID llvmID,
-                                              size_t minArgs,
-                                              size_t maxArgs,
-                                              bool isVarArg) {
+void IntrinsicRegistry::registerLLVMIntrinsic(std::string_view lucidName,
+                                               llvm::Intrinsic::ID llvmID,
+                                               size_t minArgs,
+                                               size_t maxArgs,
+                                               bool isVarArg) {
     if (maxArgs == 0) {
         maxArgs = minArgs;
     }
-    
-    IntrinsicInfo info(llvmID, lucidName, minArgs, maxArgs, isVarArg);
-    m_intrinsicMap[lucidName] = info;
-    m_llvmIntrinsics.insert(lucidName);
+
+    InternedString name = m_pool.intern(lucidName);
+    IntrinsicInfo info(llvmID, name, minArgs, maxArgs, isVarArg);
+    m_intrinsicMap[name] = info;
+    m_llvmIntrinsics.insert(name);
 }
 
-void IntrinsicRegistry::registerCompilerIntrinsic(const std::string& name,
-                                                  size_t minArgs,
-                                                  size_t maxArgs,
-                                                  bool isVarArg) {
+void IntrinsicRegistry::registerCompilerIntrinsic(std::string_view name,
+                                                   size_t minArgs,
+                                                   size_t maxArgs,
+                                                   bool isVarArg) {
     if (maxArgs == 0) {
         maxArgs = minArgs;
     }
-    
-    IntrinsicInfo info(llvm::Intrinsic::not_intrinsic, name, minArgs, maxArgs, isVarArg);
-    m_intrinsicMap[name] = info;
-    m_compilerIntrinsics.insert(name);
+
+    InternedString id = m_pool.intern(name);
+    IntrinsicInfo info(llvm::Intrinsic::not_intrinsic, id, minArgs, maxArgs, isVarArg);
+    m_intrinsicMap[id] = info;
+    m_compilerIntrinsics.insert(id);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // IntrinsicRegistry - Queries
 // ─────────────────────────────────────────────────────────────────────────────
 
-std::optional<llvm::Intrinsic::ID> IntrinsicRegistry::getLLVMIntrinsicID(const std::string& name) const {
+std::optional<llvm::Intrinsic::ID> IntrinsicRegistry::getLLVMIntrinsicID(InternedString name) const {
     auto it = m_intrinsicMap.find(name);
     if (it != m_intrinsicMap.end() && it->second.isValid()) {
         return it->second.id;
@@ -183,7 +193,7 @@ std::optional<llvm::Intrinsic::ID> IntrinsicRegistry::getLLVMIntrinsicID(const s
     return std::nullopt;
 }
 
-const IntrinsicInfo* IntrinsicRegistry::getIntrinsicInfo(const std::string& name) const {
+const IntrinsicInfo* IntrinsicRegistry::getIntrinsicInfo(InternedString name) const {
     auto it = m_intrinsicMap.find(name);
     if (it != m_intrinsicMap.end()) {
         return &it->second;
@@ -191,41 +201,41 @@ const IntrinsicInfo* IntrinsicRegistry::getIntrinsicInfo(const std::string& name
     return nullptr;
 }
 
-bool IntrinsicRegistry::isCompilerIntrinsic(const std::string& name) const {
+bool IntrinsicRegistry::isCompilerIntrinsic(InternedString name) const {
     return m_compilerIntrinsics.find(name) != m_compilerIntrinsics.end();
 }
 
-bool IntrinsicRegistry::isLLVMIntrinsic(const std::string& name) const {
+bool IntrinsicRegistry::isLLVMIntrinsic(InternedString name) const {
     return m_llvmIntrinsics.find(name) != m_llvmIntrinsics.end();
 }
 
-bool IntrinsicRegistry::validateArgCount(const std::string& name, size_t argCount) const {
+bool IntrinsicRegistry::validateArgCount(InternedString name, size_t argCount) const {
     auto* info = getIntrinsicInfo(name);
     if (!info) {
         return false;
     }
-    
+
     if (info->isVarArg) {
         return argCount >= info->minArgs;
     }
-    
+
     return argCount >= info->minArgs && argCount <= info->maxArgs;
 }
 
-std::optional<size_t> IntrinsicRegistry::getExpectedArgCount(const std::string& name) const {
+std::optional<size_t> IntrinsicRegistry::getExpectedArgCount(InternedString name) const {
     auto* info = getIntrinsicInfo(name);
     if (!info) {
         return std::nullopt;
     }
-    
+
     if (info->isVarArg) {
         return std::nullopt;  // Variable arguments
     }
-    
+
     if (info->minArgs == info->maxArgs) {
         return info->minArgs;
     }
-    
+
     // Range of possible counts
     return std::nullopt;
 }
@@ -234,7 +244,7 @@ std::vector<std::string> IntrinsicRegistry::getAllIntrinsicNames() const {
     std::vector<std::string> names;
     names.reserve(m_intrinsicMap.size());
     for (const auto& pair : m_intrinsicMap) {
-        names.push_back(pair.first);
+        names.emplace_back(m_pool.lookup(pair.first));
     }
     std::sort(names.begin(), names.end());
     return names;
@@ -244,7 +254,7 @@ std::vector<std::string> IntrinsicRegistry::getLLVMIntrinsicNames() const {
     std::vector<std::string> names;
     names.reserve(m_llvmIntrinsics.size());
     for (const auto& name : m_llvmIntrinsics) {
-        names.push_back(name);
+        names.emplace_back(m_pool.lookup(name));
     }
     std::sort(names.begin(), names.end());
     return names;
@@ -254,7 +264,7 @@ std::vector<std::string> IntrinsicRegistry::getCompilerIntrinsicNames() const {
     std::vector<std::string> names;
     names.reserve(m_compilerIntrinsics.size());
     for (const auto& name : m_compilerIntrinsics) {
-        names.push_back(name);
+        names.emplace_back(m_pool.lookup(name));
     }
     std::sort(names.begin(), names.end());
     return names;
