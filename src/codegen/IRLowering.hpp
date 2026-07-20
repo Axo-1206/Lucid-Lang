@@ -2,18 +2,155 @@
  * @file IRLowering.hpp
  * @brief Unified header for AST to LLVM IR lowering.
  * 
- * @responsibility Provides the main interface for lowering Lucid AST to LLVM IR.
- *                 Implementation is split across multiple .cpp files:
- *   - IRLowering.cpp       : Main entry point + orchestration
- *   - IRLoweringDecl.cpp   : Declaration lowering
- *   - IRLoweringStmt.cpp   : Statement lowering
- *   - IRLoweringExpr.cpp   : Expression lowering
- *   - IRLoweringIntrinsic.cpp : Intrinsic lowering
- *   - IRLoweringBuilder.cpp   : Helper builders
+ * @responsibility Provides the main interface for lowering Lucid AST(s) to LLVM IR.
+ *                 Supports both single-module and multi-module compilation.
  * 
- * @related_files
+ * ─────────────────────────────────────────────────────────────────────────────
+ * PROGRAM FLOW
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 
+ * The IR Lowering module is the bridge between Lucid's AST(s) and LLVM IR.
+ * It takes one or more validated ModuleASTs from the semantic phase and produces
+ * an llvm::Module containing LLVM IR that can be JIT-compiled (interpreter)
+ * or AOT-compiled (compiler backend).
+ * 
+ * ─── Module Handling ──────────────────────────────────────────────────────
+ * 
+ *   The Lucid compiler supports multi-file programs through imports.
+ *   After semantic analysis, each source file becomes a ModuleAST.
+ *   The IRLowering can operate in two modes:
+ * 
+ *   1. Single Module Mode:
+ *      - Used for simple programs or REPL evaluation
+ *      - One ModuleAST → one llvm::Module
+ *      - Entry point resolved within the single module
+ * 
+ *   2. Multi-Module Mode:
+ *      - Used for full programs with imports
+ *      - All ModuleASTs are lowered into a single llvm::Module
+ *      - Dependencies are resolved across modules
+ *      - Entry point found in the main module
+ * 
+ * ─── Complete Flow ──────────────────────────────────────────────────────────
+ * 
+ *   1. INPUT: One or more ModuleASTs (validated by semantic phase)
+ *      - Each module represents a source file with resolved imports
+ *      - Modules have dependencies on other modules
+ *      - All modules share the same StringPool and TypeMapping
+ * 
+ *   2. Module Resolution Order:
+ *      - Modules must be processed in dependency order
+ *      - Imported modules are processed before the importing module
+ *      - This ensures types and functions are available when referenced
+ * 
+ *   3. IRLowering::lower() - Main Entry Point
+ *      - Accepts either a single ModuleAST or a list of ModuleASTs
+ *      - Creates a single LLVM Module
+ *      - Sets target triple from host
+ *      - Creates runtime functions (panic, bounds check)
+ *      - Resets state (scopes, function stack, loop stack)
+ *      - Delegates to IRDeclLowering for each module
+ *      - Verifies the generated LLVM module
+ * 
+ *   4. Cross-Module Symbol Resolution:
+ *      - Functions from imported modules are available as external declarations
+ *      - Structs and enums are registered globally
+ *      - Module access expressions ('module:member') are resolved
+ * 
+ *   5. OUTPUT: Single llvm::Module
+ *      - Contains all functions and types from all modules
+ *      - Verified LLVM IR
+ *      - Ready for JIT (Interpreter) or AOT (Compiler)
+ * 
+ * ─────────────────────────────────────────────────────────────────────────────
+ * USAGE EXAMPLES
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 
+ *   // Single module (simple program)
+ *   ModuleAST* module = parseAndValidate("main.luc");
+ *   auto ir = lowerer.lower(module, "main");
+ * 
+ *   // Multiple modules (program with imports)
+ *   std::vector<ModuleAST*> modules = parseAndValidateAll({
+ *       "main.luc",
+ *       "math.luc",
+ *       "io.luc"
+ *   });
+ *   auto ir = lowerer.lower(modules, "main");
+ * 
+ * ─────────────────────────────────────────────────────────────────────────────
+ * STATE MANAGEMENT
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 
+ *   Scope Stack (m_scopeStack)
+ *     - Tracks LLVM-level scopes for local variables
+ *     - Enter scope when entering a block, exit when leaving
+ * 
+ *   Function Context (m_functionStack)
+ *     - Tracks the current function being lowered
+ *     - Stores function, entry block, function type, parameters
+ * 
+ *   Loop Context (m_loopStack)
+ *     - Tracks active loops for break/continue
+ * 
+ * ─────────────────────────────────────────────────────────────────────────────
+ * TYPE CONVERSION FLOW
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 
+ *   Lucid Type          →    LLVM Type
+ *   ──────────────────────────────────────────────────────────────────────────
+ *   bool                →    i1
+ *   int, int32          →    i32
+ *   int64, long         →    i64
+ *   float               →    float
+ *   double              →    double
+ *   string              →    i8*
+ *   char                →    i8
+ * 
+ *   int?                →    %nullable_int = type { i8, i32 }
+ *   int!                →    %fallible_int = type { i8, i32 }
+ *   int?!               →    %combined_int = type { i8, i32 }
+ * 
+ *   [N]T                →    [N x T]
+ *   [_]T                →    { T*, i64, i64 }
+ *   [*]T                →    { T*, i64, i64 }
+ * 
+ *   &T                  →    T*  (typed pointer)
+ *   *T                  →    i8* (opaque pointer)
+ * 
+ * ─────────────────────────────────────────────────────────────────────────────
+ * IMPLEMENTATION SPLIT
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 
+ *   File                  Responsibility
+ *   ──────────────────────────────────────────────────────────────────────────
+ *   IRLowering.cpp        Main entry point, orchestration, state management
+ *   IRLoweringDecl.cpp    Declaration lowering (functions, vars, structs, enums)
+ *   IRLoweringStmt.cpp    Statement lowering (blocks, if, loops, return)
+ *   IRLoweringExpr.cpp    Expression lowering (literals, ops, calls, field access)
+ *   IRLoweringIntrinsic.cpp Intrinsic lowering (LLVM + compiler-handled)
+ *   IRLoweringBuilder.cpp Helper builders (IRBuilderHelper)
+ * 
+ * ─────────────────────────────────────────────────────────────────────────────
+ * KEY DESIGN DECISIONS
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 
+ *   1. Single LLVM Module for All Source Modules
+ *   2. Type Mapping is Separate from Semantic Analysis
+ *   3. Intrinsic IDs from Semantic Phase (no runtime string lookup)
+ *   4. Multiple Return Values Packed into Structs
+ *   5. Tagged Types for Nullable/Fallible
+ *   6. Builder Pattern for Common Operations
+ * 
+ * ─────────────────────────────────────────────────────────────────────────────
+ * RELATED FILES
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 
  *   - src/codegen/TypeMapping.hpp - Lucid → LLVM type conversion
- *   - src/codegen/IntrinsicRegistry.hpp - Intrinsic name → LLVM ID mapping
+ *   - src/sema/support/IntrinsicRegistry.hpp - Intrinsic name → LLVM ID mapping
+ *   - src/core/ast/ModuleAST.hpp - AST root node
+ *   - src/interpreter/Interpreter.hpp - JIT execution (uses IRLowering)
+ *   - src/compiler/aot/AOT.hpp - AOT compilation (uses IRLowering)
  */
 
 #pragma once
@@ -75,27 +212,45 @@ private:
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * @brief Lowers Lucid AST to LLVM IR.
+ * @brief Lowers Lucid AST(s) to LLVM IR.
  * 
  * Walks the AST and emits LLVM IR instructions. Uses TypeMapping to convert
- * Lucid types to LLVM types.
- * 
- * Implementation is split across multiple .cpp files for maintainability.
+ * Lucid types to LLVM types. Supports both single-module and multi-module
+ * compilation.
  */
 class IRLowering {
 public:
+    // ─── Construction ──────────────────────────────────────────────────────
+
     IRLowering(llvm::LLVMContext& context, TypeMapping& typeMapper, StringPool& stringPool);
     ~IRLowering() = default;
 
+    // ─── Main Entry Points ────────────────────────────────────────────────
+
     /**
-     * @brief Lower a ModuleAST to LLVM IR.
+     * @brief Lower a single ModuleAST to LLVM IR.
      * 
      * @param module The ModuleAST to lower
      * @param moduleName The name for the LLVM module
-     * @return std::unique_ptr<llvm::Module> The LLVM module, or nullptr on failure
+     * @return std::unique_ptr<llvm::Module> The LLVM module
      * @throws IRLoweringError if lowering fails
      */
-    std::unique_ptr<llvm::Module> lower(ModuleAST* module, const std::string& moduleName);
+    std::unique_ptr<llvm::Module> lower(ModuleAST* module, 
+                                        const std::string& moduleName);
+
+    /**
+     * @brief Lower multiple ModuleASTs to a single LLVM module.
+     * 
+     * Modules are processed in order. Dependencies must be resolved
+     * before calling this method (imported modules first).
+     * 
+     * @param modules The ModuleASTs to lower (in dependency order)
+     * @param moduleName The name for the LLVM module
+     * @return std::unique_ptr<llvm::Module> The LLVM module
+     * @throws IRLoweringError if lowering fails
+     */
+    std::unique_ptr<llvm::Module> lower(const std::vector<ModuleAST*>& modules,
+                                        const std::string& moduleName);
 
     // ─── Accessors ──────────────────────────────────────────────────────────
 
@@ -155,6 +310,13 @@ public:
     llvm::Type* toLLVMType(TypeAST* type);
     llvm::FunctionType* toLLVMFunctionType(FuncTypeAST* funcType);
 
+    // ─── Module Tracking ──────────────────────────────────────────────────
+
+    /**
+     * @brief Get the current module being processed.
+     */
+    ModuleAST* getCurrentModule() const { return m_currentModule; }
+
 private:
     // ─── Friends ────────────────────────────────────────────────────────────
     // The implementation files need access to private members
@@ -164,6 +326,18 @@ private:
     friend struct IRStmtLowering;
     friend struct IRExprLowering;
     friend struct IRIntrinsicLowering;
+
+    // ─── Internal Lowering ─────────────────────────────────────────────────
+
+    /**
+     * @brief Internal lower implementation for both single and multi-module.
+     * 
+     * @param modules The modules to lower (must not be empty)
+     * @param moduleName The name for the LLVM module
+     * @return std::unique_ptr<llvm::Module> The LLVM module
+     */
+    std::unique_ptr<llvm::Module> lowerImpl(const std::vector<ModuleAST*>& modules,
+                                            const std::string& moduleName);
 
     // ─── Scope ─────────────────────────────────────────────────────────────
 
@@ -194,6 +368,7 @@ private:
     llvm::Function* m_panicFunction = nullptr;
     llvm::Function* m_checkBoundsFunction = nullptr;
 
+    ModuleAST* m_currentModule = nullptr;
     std::string m_moduleName;
 };
 
@@ -290,8 +465,6 @@ struct IRIntrinsicLowering {
     static llvm::Value* lowerIntrinsicPtrDiff(IRLowering& lowerer, IntrinsicCallExprAST* intrinsic);
     static llvm::Value* lowerIntrinsicToRef(IRLowering& lowerer, IntrinsicCallExprAST* intrinsic);
     static llvm::Value* lowerIntrinsicToPtr(IRLowering& lowerer, IntrinsicCallExprAST* intrinsic);
-    
-    // ─── ADD THESE DECLARATIONS ─────────────────────────────────────────────
     static llvm::Value* lowerIntrinsicAlignof(IRLowering& lowerer, IntrinsicCallExprAST* intrinsic);
     static llvm::Value* lowerIntrinsicBitcast(IRLowering& lowerer, IntrinsicCallExprAST* intrinsic);
     static llvm::Value* lowerIntrinsicLikely(IRLowering& lowerer, IntrinsicCallExprAST* intrinsic);

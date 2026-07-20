@@ -59,8 +59,15 @@ std::string_view getMessage(DiagCode code) {
         case DiagCode::E2002: return "%s";  // e.g. "undefined type 'Foo'"
         case DiagCode::E2003: return "%s";  // e.g. "'foo' is not callable"
 
+        case DiagCode::E2101: return "%s";  // e.g. "redeclaration of 'foo'"
+
         // ========== 3001-4000: Semantic -- Type Checking ==========
         case DiagCode::E3001: return "%s";  // e.g. "wrong number of arguments to 'f': expected 1, found 2"
+        case DiagCode::E3002: return "%s";  // e.g. "'PI' must have an initializer"
+        case DiagCode::E3003: return "%s";  // e.g. "type mismatch for 'x'"
+        case DiagCode::E3004: return "%s";  // e.g. "'timeout' must not be nullable or fallible"
+        case DiagCode::E3005: return "%s";  // e.g. "function 'sum' is missing a return"
+        case DiagCode::E3006: return "%s";  // e.g. "duplicate enum value 2"
 
         case DiagCode::E3101: return "%s";  // e.g. "unknown intrinsic 'foo'"
 

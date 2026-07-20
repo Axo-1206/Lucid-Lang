@@ -29,12 +29,22 @@ namespace interpreter {
 // JITSession - Construction / Destruction
 // ─────────────────────────────────────────────────────────────────────────────
 
-JITSession::JITSession()
-    : m_context(std::make_unique<llvm::LLVMContext>()) {
+JITSession::JITSession(StringPool& stringPool)
+    : m_stringPool(stringPool)
+    , m_context(std::make_unique<llvm::LLVMContext>()) {
 }
 
 JITSession::~JITSession() {
     // Resource trackers will be cleaned up by LLJIT destruction
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// JITSession - Helper Methods
+// ─────────────────────────────────────────────────────────────────────────────
+
+std::string JITSession::internedToString(InternedString name) const {
+    std::string_view view = m_stringPool.lookup(name);
+    return std::string(view);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -166,26 +176,27 @@ void JITSession::registerLibrarySymbols(const std::string& libraryPath,
         throw JITError(JITError::Kind::InitFailed, ss.str());
     }
 
-    // FIX: LoadLibraryPermanently with nullptr adds the host process
     llvm::sys::DynamicLibrary::LoadLibraryPermanently(nullptr);
     
-    // FIX: Use the single-argument version of Load
-    auto dylib = llvm::orc::DynamicLibrarySearchGenerator::Load(
-        libraryPath.c_str()
+    auto dylibOrError = llvm::orc::DynamicLibrarySearchGenerator::Load(
+        libraryPath.c_str(),
+        '\0'
     );
     
-    if (!dylib) {
-        throw JITError(JITError::Kind::InitFailed,
-                       "Failed to create search generator for: " + libraryPath);
+    if (!dylibOrError) {
+        handleError(dylibOrError.takeError(), JITError::Kind::InitFailed,
+                    "Failed to create search generator for: " + libraryPath);
+        return;
     }
     
-    if (auto error = m_jit->getMainJITDylib().addGenerator(std::move(*dylib))) {
-        throw JITError(JITError::Kind::InitFailed,
-                       "Failed to register library symbols: " + 
-                       llvm::toString(std::move(error)));
+    auto dylib = std::move(*dylibOrError);
+    
+    if (auto error = m_jit->getMainJITDylib().addGenerator(std::move(dylib))) {
+        handleError(std::move(error), JITError::Kind::InitFailed,
+                    "Failed to register library symbols");
     }
 
-#else // POSIX (Linux, macOS, etc.)
+#else // POSIX
     void* handle = dlopen(libraryPath.c_str(), RTLD_NOW | RTLD_GLOBAL);
     if (!handle) {
         const char* error = dlerror();
@@ -194,23 +205,24 @@ void JITSession::registerLibrarySymbols(const std::string& libraryPath,
                        "': " + (error ? error : "unknown error"));
     }
 
-    // FIX: Same fix for POSIX
     llvm::sys::DynamicLibrary::LoadLibraryPermanently(nullptr);
     
-    // FIX: Use the single-argument version of Load
-    auto dylib = llvm::orc::DynamicLibrarySearchGenerator::Load(
-        libraryPath.c_str()
+    auto dylibOrError = llvm::orc::DynamicLibrarySearchGenerator::Load(
+        libraryPath.c_str(),
+        '\0'
     );
     
-    if (!dylib) {
-        throw JITError(JITError::Kind::InitFailed,
-                       "Failed to create search generator for: " + libraryPath);
+    if (!dylibOrError) {
+        handleError(dylibOrError.takeError(), JITError::Kind::InitFailed,
+                    "Failed to create search generator for: " + libraryPath);
+        return;
     }
     
-    if (auto error = m_jit->getMainJITDylib().addGenerator(std::move(*dylib))) {
-        throw JITError(JITError::Kind::InitFailed,
-                       "Failed to register library symbols: " + 
-                       llvm::toString(std::move(error)));
+    auto dylib = std::move(*dylibOrError);
+    
+    if (auto error = m_jit->getMainJITDylib().addGenerator(std::move(dylib))) {
+        handleError(std::move(error), JITError::Kind::InitFailed,
+                    "Failed to register library symbols");
     }
 #endif
 }
@@ -220,7 +232,7 @@ void JITSession::registerLibrarySymbols(const std::string& libraryPath,
 // ─────────────────────────────────────────────────────────────────────────────
 
 bool JITSession::addModule(std::unique_ptr<llvm::Module> module,
-                           const std::string& moduleName) {
+                           InternedString moduleName) {
     if (!m_initialized) {
         throw JITError(JITError::Kind::ModuleAddFailed,
                        "JIT not initialized");
@@ -249,23 +261,30 @@ bool JITSession::addModule(std::unique_ptr<llvm::Module> module,
     auto error = m_jit->addIRModule(tracker, std::move(threadSafeModule));
     
     if (error) {
+        std::string nameStr = internedToString(moduleName);
         throw JITError(JITError::Kind::ModuleAddFailed,
-                       "Failed to add module '" + moduleName + "': " +
+                       "Failed to add module '" + nameStr + "': " +
                        llvm::toString(std::move(error)));
     }
 
-    // Store the tracker for later removal
-    m_trackers[moduleName] = std::move(tracker);
+    // Store the tracker for later removal (using the interned ID as key)
+    m_trackers[moduleName.id] = std::move(tracker);
 
     return true;
 }
 
-bool JITSession::removeModule(const std::string& moduleName) {
+bool JITSession::addModule(std::unique_ptr<llvm::Module> module,
+                           const std::string& moduleName) {
+    InternedString name = m_stringPool.intern(moduleName);
+    return addModule(std::move(module), name);
+}
+
+bool JITSession::removeModule(InternedString moduleName) {
     if (!m_initialized) {
         return false;
     }
 
-    auto it = m_trackers.find(moduleName);
+    auto it = m_trackers.find(moduleName.id);
     if (it == m_trackers.end()) {
         return false; // Module not found, not an error
     }
@@ -273,8 +292,9 @@ bool JITSession::removeModule(const std::string& moduleName) {
     // Remove the module using its resource tracker
     auto error = it->second->remove();
     if (error) {
+        std::string nameStr = internedToString(moduleName);
         throw JITError(JITError::Kind::ModuleRemoveFailed,
-                       "Failed to remove module '" + moduleName + "': " +
+                       "Failed to remove module '" + nameStr + "': " +
                        llvm::toString(std::move(error)));
     }
 
@@ -284,8 +304,18 @@ bool JITSession::removeModule(const std::string& moduleName) {
     return true;
 }
 
+bool JITSession::removeModule(const std::string& moduleName) {
+    InternedString name = m_stringPool.intern(moduleName);
+    return removeModule(name);
+}
+
+bool JITSession::hasModule(InternedString moduleName) const {
+    return m_trackers.find(moduleName.id) != m_trackers.end();
+}
+
 bool JITSession::hasModule(const std::string& moduleName) const {
-    return m_trackers.find(moduleName) != m_trackers.end();
+    InternedString name = m_stringPool.intern(moduleName);
+    return hasModule(name);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -303,7 +333,7 @@ void* JITSession::lookupSymbol(const std::string& symbolName) {
     if (auto error = symbolOrError.takeError()) {
         std::string errMsg = llvm::toString(std::move(error));
         
-        // FIX: Check for "symbol not found" by message content
+        // Check for "symbol not found" by message content
         if (errMsg.find("symbol not found") != std::string::npos ||
             errMsg.find("Symbol not found") != std::string::npos) {
             return nullptr;
@@ -314,9 +344,14 @@ void* JITSession::lookupSymbol(const std::string& symbolName) {
                        "Failed to lookup symbol '" + symbolName + "': " + errMsg);
     }
 
-    // FIX: Use getValue() instead of getAddress()
+    // Use getValue() instead of getAddress()
     auto symbol = symbolOrError.get();
     return reinterpret_cast<void*>(symbol.getValue());
+}
+
+void* JITSession::lookupSymbol(InternedString symbolName) {
+    std::string nameStr = internedToString(symbolName);
+    return lookupSymbol(nameStr);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -3,9 +3,9 @@
  * @brief Main interpreter engine for the Lucid compiler.
  * 
  * @responsibility Orchestrates the entire interpreter pipeline:
- *                 - Receives ModuleAST from the frontend
+ *                 - Receives ModuleAST(s) from the frontend
  *                 - Registers foreign libraries
- *                 - Lowers AST to LLVM IR via IRLowering
+ *                 - Lowers AST(s) to LLVM IR via IRLowering
  *                 - JIT compiles via ORC
  *                 - Executes entry point
  *                 - Handles hot-reload
@@ -13,18 +13,34 @@
  * @related_files
  *   - src/interpreter/JIT.hpp - JIT session management
  *   - src/interpreter/DynLink.hpp - Foreign library loading
- *   - src/compiler/IRLowering.hpp - AST → LLVM IR lowering
- *   - src/compiler/TypeMapping.hpp - Lucid → LLVM type mapping
- *   - src/ast/BaseAST.hpp - AST root node
+ *   - src/codegen/IRLowering.hpp - AST → LLVM IR lowering
+ *   - src/codegen/TypeMapping.hpp - Lucid → LLVM type mapping
+ *   - src/core/ast/BaseAST.hpp - AST root node
  *   - src/runtime/ - Runtime support (panics, memory, threading)
+ * 
+ * ─────────────────────────────────────────────────────────────────────────────
+ * MODULE HANDLING
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 
+ * The interpreter supports both single-module and multi-module programs:
+ * 
+ *   1. Single Module Mode:
+ *      - One ModuleAST → one execution
+ *      - Used for simple programs or REPL
+ * 
+ *   2. Multi-Module Mode:
+ *      - Multiple ModuleASTs → single execution
+ *      - Modules are processed in dependency order
+ *      - Entry point is found in the main module
+ *      - All modules are lowered into a single LLVM module
  */
 
 #pragma once
 
 #include "JIT.hpp"
 #include "DynLink.hpp"
-#include "../compiler/IRLowering.hpp"
-#include "../compiler/TypeMapping.hpp"
+#include "../codegen/IRLowering.hpp"
+#include "../codegen/TypeMapping.hpp"
 #include "../core/ast/BaseAST.hpp"
 #include "../core/ast/DeclAST.hpp"
 #include "../core/diagnostics/Diagnostic.hpp"
@@ -49,6 +65,7 @@ public:
         ExecutionFailed,     // Runtime execution failed
         HotReloadFailed,     // Hot-reload operation failed
         LibraryLoadFailed,   // Foreign library load failed
+        EmptyModuleList,     // No modules provided
     };
 
     InterpreterError(Kind kind, const std::string& msg)
@@ -71,6 +88,7 @@ struct InterpreterOptions {
     std::vector<std::string> libraryPaths; // Additional library search paths
     bool enableHotReload = false;         // Enable hot-reload support
     bool verbose = false;                 // Enable verbose output
+    bool singleModuleMode = false;        // Force single-module mode
 };
 
 /**
@@ -81,36 +99,32 @@ struct ExecutionResult {
     bool success = true;                  // Whether execution succeeded
     std::string errorMessage;             // Error message if execution failed
     double executionTimeMs = 0.0;         // Execution time in milliseconds
+    std::string entryPointUsed;           // The entry point that was executed
 };
 
 /**
  * @brief Main interpreter engine.
  * 
- * Orchestrates the entire pipeline from ModuleAST to execution.
+ * Orchestrates the entire pipeline from ModuleAST(s) to execution.
+ * Supports both single-module and multi-module compilation.
  * 
- * @par Usage Example
+ * @par Single Module Usage
  * @code
- *   Interpreter interpreter;
- *   InterpreterOptions opts;
- *   opts.entryPoint = "main";
- *   opts.enableOptimizations = true;
- *   
- *   if (!interpreter.initialize(opts)) {
- *       // Handle initialization failure
- *   }
- *   
- *   // Parse and semantically analyze the module (frontend)
  *   ModuleAST* module = parseAndAnalyze("main.luc");
- *   
- *   // Run the module
  *   auto result = interpreter.runModule(module);
- *   if (result.success) {
- *       std::cout << "Exit code: " << result.exitCode << "\n";
- *   }
+ * @endcode
+ * 
+ * @par Multi-Module Usage
+ * @code
+ *   std::vector<ModuleAST*> modules = parseAndAnalyzeAll({
+ *       "main.luc",
+ *       "math.luc",
+ *       "io.luc"
+ *   });
+ *   auto result = interpreter.runModules(modules);
  * @endcode
  * 
  * @par Hot-Reload Support
- * The interpreter supports hot-reloading modules when source files change:
  * @code
  *   // On file change:
  *   ModuleAST* newModule = parseAndAnalyze("main.luc");
@@ -130,6 +144,8 @@ public:
     Interpreter(Interpreter&&) = default;
     Interpreter& operator=(Interpreter&&) = default;
 
+    // ─── Initialization ──────────────────────────────────────────────────────
+
     /**
      * @brief Initialize the interpreter with the given options.
      * 
@@ -139,8 +155,10 @@ public:
      */
     bool initialize(const InterpreterOptions& options = InterpreterOptions{});
 
+    // ─── Single Module Execution ───────────────────────────────────────────
+
     /**
-     * @brief Run a module with an entry point.
+     * @brief Run a single module with an entry point.
      * 
      * @param module The ModuleAST to run (must be semantically validated)
      * @param entryPoint Override the entry point name (uses options if empty)
@@ -148,6 +166,24 @@ public:
      * @throws InterpreterError if execution fails
      */
     ExecutionResult runModule(ModuleAST* module, const std::string& entryPoint = "");
+
+    // ─── Multi-Module Execution ────────────────────────────────────────────
+
+    /**
+     * @brief Run multiple modules with an entry point.
+     * 
+     * Modules must be in dependency order (imported modules first).
+     * All modules are lowered into a single LLVM module.
+     * 
+     * @param modules The ModuleASTs to run (must be semantically validated)
+     * @param entryPoint Override the entry point name (uses options if empty)
+     * @return ExecutionResult with exit code and status
+     * @throws InterpreterError if execution fails
+     */
+    ExecutionResult runModules(const std::vector<ModuleAST*>& modules,
+                               const std::string& entryPoint = "");
+
+    // ─── Module Loading ────────────────────────────────────────────────────
 
     /**
      * @brief Load a module without executing it.
@@ -161,6 +197,17 @@ public:
     bool loadModule(ModuleAST* module);
 
     /**
+     * @brief Load multiple modules without executing them.
+     * 
+     * @param modules The ModuleASTs to load (in dependency order)
+     * @return true on success
+     * @throws InterpreterError if loading fails
+     */
+    bool loadModules(const std::vector<ModuleAST*>& modules);
+
+    // ─── Hot-Reload ─────────────────────────────────────────────────────────
+
+    /**
      * @brief Hot-reload a module from updated AST.
      * 
      * Replaces an existing module with a new version while the program runs.
@@ -171,6 +218,8 @@ public:
      * @throws InterpreterError if hot-reload fails
      */
     bool hotReload(ModuleAST* module, const std::string& moduleName);
+
+    // ─── Function Execution ────────────────────────────────────────────────
 
     /**
      * @brief Execute a function by name.
@@ -197,8 +246,8 @@ public:
     /**
      * @brief Execute a function with a signature.
      * 
+     * @tparam Func The function signature
      * @param name The function name
-     * @param signature The function signature (for validation)
      * @return The function pointer
      * @throws InterpreterError if the function is not found
      */
@@ -212,6 +261,8 @@ public:
         return reinterpret_cast<Func>(fnPtr);
     }
 
+    // ─── Foreign Libraries ─────────────────────────────────────────────────
+
     /**
      * @brief Register a foreign library with the interpreter.
      * 
@@ -222,39 +273,26 @@ public:
     bool registerForeignLibrary(const std::string& libraryName);
 
     /**
-     * @brief Register foreign libraries from a module's @[link] attributes.
+     * @brief Register foreign libraries from one or more modules.
+     * 
+     * @param modules The modules to scan for @[link] attributes
+     */
+    void registerForeignLibraries(const std::vector<ModuleAST*>& modules);
+
+    /**
+     * @brief Register foreign libraries from a single module.
      * 
      * @param module The module to scan for @[link] attributes
      */
     void registerForeignLibraries(ModuleAST* module);
 
-    /**
-     * @brief Get the JIT session.
-     * 
-     * @return Reference to the JIT session
-     */
+    // ─── Accessors ─────────────────────────────────────────────────────────
+
     JITSession& getJIT() { return m_jit; }
-
-    /**
-     * @brief Get the dynamic linker.
-     * 
-     * @return Reference to the dynamic linker
-     */
     DynLink& getDynLink() { return m_dynLink; }
-
-    /**
-     * @brief Check if the interpreter is initialized.
-     * 
-     * @return true if initialized
-     */
     bool isInitialized() const { return m_initialized; }
-
-    /**
-     * @brief Get the current options.
-     * 
-     * @return The current interpreter options
-     */
     const InterpreterOptions& getOptions() const { return m_options; }
+    const std::vector<ModuleAST*>& getLoadedModules() const { return m_loadedModulesList; }
 
     /**
      * @brief Set a custom IRLowering instance.
@@ -266,8 +304,10 @@ public:
     void setIRLowerer(std::unique_ptr<IRLowering> lowerer);
 
 private:
+    // ─── Internal Helpers ──────────────────────────────────────────────────
+
     /**
-     * @brief Generate a unique module name with version.
+     * @brief Generate a unique module name from a ModuleAST.
      * 
      * @param module The module to generate a name for
      * @return The generated name
@@ -283,13 +323,31 @@ private:
     std::string generateVersionedName(const std::string& baseName);
 
     /**
-     * @brief Find the entry point in a module.
+     * @brief Find the entry point in a collection of modules.
+     * 
+     * @param modules The modules to search
+     * @param entryPoint The suggested entry point name
+     * @return The name of the entry point, or empty if not found
+     */
+    std::string findEntryPoint(const std::vector<ModuleAST*>& modules, 
+                               const std::string& entryPoint);
+
+    /**
+     * @brief Find the entry point in a single module.
      * 
      * @param module The module to search
      * @param entryPoint The suggested entry point name
      * @return The name of the entry point, or empty if not found
      */
     std::string findEntryPoint(ModuleAST* module, const std::string& entryPoint);
+
+    /**
+     * @brief Check if any module has semantic errors.
+     * 
+     * @param modules The modules to check
+     * @return true if any module has errors
+     */
+    bool hasErrors(const std::vector<ModuleAST*>& modules) const;
 
     /**
      * @brief Check if a module has semantic errors.
@@ -300,12 +358,30 @@ private:
     bool hasErrors(const ModuleAST* module) const;
 
     /**
+     * @brief Report errors from modules.
+     * 
+     * @param modules The modules with errors
+     * @return Number of errors reported
+     */
+    size_t reportErrors(const std::vector<ModuleAST*>& modules) const;
+
+    /**
      * @brief Report errors from a module.
      * 
      * @param module The module with errors
      * @return Number of errors reported
      */
     size_t reportErrors(const ModuleAST* module) const;
+
+    /**
+     * @brief Internal run implementation for both single and multi-module.
+     * 
+     * @param modules The modules to run (must not be empty)
+     * @param entryPoint The entry point to execute
+     * @return ExecutionResult with exit code and status
+     */
+    ExecutionResult runImpl(const std::vector<ModuleAST*>& modules,
+                            const std::string& entryPoint);
 
     /**
      * @brief Setup LLVM optimization passes.
@@ -332,7 +408,8 @@ private:
     
     // Module version tracking for hot-reload
     std::unordered_map<std::string, std::string> m_moduleVersions;
-    std::unordered_map<std::string, ModuleAST*> m_loadedModules;
+    std::unordered_map<std::string, ModuleAST*> m_loadedModulesMap;
+    std::vector<ModuleAST*> m_loadedModulesList;
     
     bool m_initialized = false;
     bool m_hasActiveModule = false;

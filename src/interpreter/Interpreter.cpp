@@ -1,16 +1,15 @@
 /**
  * @file Interpreter.cpp
  * @brief Implementation of the main interpreter engine.
+ * 
+ * @responsibility Provides the main orchestration for executing Lucid programs
+ *                 via JIT compilation. Supports both single-module and
+ *                 multi-module execution.
  */
 
 #include "Interpreter.hpp"
 
-#include "../compiler/TypeMapping.hpp"
-#include "../core/diagnostics/Diagnostic.hpp"
-
 #include "llvm/IR/LegacyPassManager.h"
-#include "llvm/Passes/PassBuilder.h"
-#include "llvm/Passes/StandardInstrumentations.h"
 #include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Transforms/Scalar/GVN.h"
 #include "llvm/Transforms/Scalar/Reassociate.h"
@@ -21,8 +20,10 @@
 
 #include <iostream>
 #include <chrono>
+#include <llvm/Passes/PassBuilder.h>
 #include <sstream>
 #include <algorithm>
+#include <string>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -34,11 +35,9 @@ namespace interpreter {
 // Interpreter - Construction / Destruction
 // ─────────────────────────────────────────────────────────────────────────────
 
-Interpreter::Interpreter() = default;
-
 Interpreter::~Interpreter() {
-    // Clean up loaded modules
-    m_loadedModules.clear();
+    m_loadedModulesList.clear();
+    m_loadedModulesMap.clear();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -59,15 +58,11 @@ bool Interpreter::initialize(const InterpreterOptions& options) {
                                    "Failed to initialize JIT session");
         }
 
-        // 2. Initialize type mapping
-        m_typeMapper = std::make_unique<TypeMapping>(m_jit.getContext());
+        // 2. Initialize type mapping with string pool from JIT
+        m_typeMapper = std::make_unique<TypeMapping>(m_jit.getContext(), m_jit.getStringPool());
 
-        // 3. Initialize IR lowerer
-        m_irLowerer = std::make_unique<IRLowering>(m_jit.getContext(), *m_typeMapper);
-
-        // 4. Register core libraries
-        // The kernel library is loaded by JITSession::setupPlatformLibraries()
-        // Additional libraries will be loaded via registerForeignLibrary()
+        // 3. Initialize IR lowerer with string pool from JIT
+        m_irLowerer = std::make_unique<IRLowering>(m_jit.getContext(), *m_typeMapper, m_jit.getStringPool());
 
         m_initialized = true;
 
@@ -91,44 +86,77 @@ void Interpreter::setIRLowerer(std::unique_ptr<IRLowering> lowerer) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Interpreter - Module Management
+// Interpreter - Single Module Execution
 // ─────────────────────────────────────────────────────────────────────────────
 
 ExecutionResult Interpreter::runModule(ModuleAST* module, const std::string& entryPoint) {
-    if (!m_initialized) {
-        throw InterpreterError(InterpreterError::Kind::InitFailed,
-                               "Interpreter not initialized");
-    }
-
     if (!module) {
         throw InterpreterError(InterpreterError::Kind::ModuleLoadFailed,
                                "Cannot run null module");
     }
 
-    // Check for frontend errors
-    if (hasErrors(module)) {
-        reportErrors(module);
-        return ExecutionResult{1, false, "Module has semantic errors"};
+    // Delegate to multi-module implementation
+    return runModules(std::vector<ModuleAST*>{module}, entryPoint);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Interpreter - Multi-Module Execution
+// ─────────────────────────────────────────────────────────────────────────────
+
+ExecutionResult Interpreter::runModules(const std::vector<ModuleAST*>& modules,
+                                        const std::string& entryPoint) {
+    if (!m_initialized) {
+        throw InterpreterError(InterpreterError::Kind::InitFailed,
+                               "Interpreter not initialized");
     }
 
+    if (modules.empty()) {
+        throw InterpreterError(InterpreterError::Kind::EmptyModuleList,
+                               "Cannot run empty module list");
+    }
+
+    // Validate all modules
+    for (ModuleAST* module : modules) {
+        if (!module) {
+            throw InterpreterError(InterpreterError::Kind::ModuleLoadFailed,
+                                   "Cannot run null module in list");
+        }
+    }
+
+    // Check for frontend errors
+    if (hasErrors(modules)) {
+        reportErrors(modules);
+        return ExecutionResult{1, false, "Modules have semantic errors"};
+    }
+
+    return runImpl(modules, entryPoint);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Interpreter - Internal Implementation
+// ─────────────────────────────────────────────────────────────────────────────
+
+ExecutionResult Interpreter::runImpl(const std::vector<ModuleAST*>& modules,
+                                     const std::string& entryPoint) {
     auto startTime = std::chrono::high_resolution_clock::now();
 
     try {
-        // 1. Register foreign libraries
-        registerForeignLibraries(module);
+        // 1. Register foreign libraries from all modules
+        registerForeignLibraries(modules);
 
-        // 2. Generate module name
-        std::string moduleName = generateModuleName(module);
+        // 2. Determine the main module name (use the first module's name)
+        std::string mainModuleName = generateModuleName(modules[0]);
+        std::string fullModuleName = mainModuleName;
 
-        // 3. Lower AST to LLVM IR
+        // 3. Lower all modules to a single LLVM module
         if (m_options.verbose) {
-            std::cout << "Lowering module '" << moduleName << "' to LLVM IR...\n";
+            std::cout << "Lowering " << modules.size() << " module(s) to LLVM IR...\n";
         }
 
-        auto irModule = m_irLowerer->lower(module, moduleName);
+        auto irModule = m_irLowerer->lower(modules, fullModuleName);
         if (!irModule) {
             throw InterpreterError(InterpreterError::Kind::ModuleLoadFailed,
-                                   "Failed to lower module to LLVM IR");
+                                   "Failed to lower modules to LLVM IR");
         }
 
         // 4. Setup optimizations if enabled
@@ -136,31 +164,36 @@ ExecutionResult Interpreter::runModule(ModuleAST* module, const std::string& ent
             setupOptimizations(irModule.get());
         }
 
-        // 5. Add module to JIT
+        // 5. Add module to JIT using InternedString
         if (m_options.verbose) {
             std::cout << "Adding module to JIT...\n";
         }
 
-        if (!m_jit.addModule(std::move(irModule), moduleName)) {
+        // Use InternedString for module name
+        InternedString modName = m_jit.getStringPool().intern(fullModuleName);
+        if (!m_jit.addModule(std::move(irModule), modName)) {
             throw InterpreterError(InterpreterError::Kind::ModuleLoadFailed,
                                    "Failed to add module to JIT");
         }
 
-        // 6. Track loaded module
-        m_loadedModules[moduleName] = module;
-        m_activeModuleName = moduleName;
+        // 6. Track loaded modules
+        for (ModuleAST* module : modules) {
+            std::string name = generateModuleName(module);
+            m_loadedModulesMap[name] = module;
+            m_loadedModulesList.push_back(module);
+        }
+        m_activeModuleName = fullModuleName;
         m_hasActiveModule = true;
 
         // 7. Find and execute entry point
         std::string actualEntry = entryPoint.empty() ? m_options.entryPoint : entryPoint;
-        std::string foundEntry = findEntryPoint(module, actualEntry);
+        std::string foundEntry = findEntryPoint(modules, actualEntry);
 
         if (foundEntry.empty()) {
-            // No entry point found - maybe it's a library module
             if (m_options.verbose) {
-                std::cout << "No entry point found in module '" << moduleName << "'\n";
+                std::cout << "No entry point found in modules\n";
             }
-            return ExecutionResult{0, true, ""};
+            return ExecutionResult{0, true, "", 0.0, ""};
         }
 
         if (m_options.verbose) {
@@ -170,19 +203,16 @@ ExecutionResult Interpreter::runModule(ModuleAST* module, const std::string& ent
         // 8. Execute the entry point
         int exitCode = 0;
         try {
-            // Try different common signatures
             auto* fnPtr = m_jit.lookupSymbol(foundEntry);
             if (!fnPtr) {
                 throw InterpreterError(InterpreterError::Kind::EntryPointNotFound,
                                        "Entry point not found: " + foundEntry);
             }
 
-            // Try int main() first
             auto main0 = reinterpret_cast<int(*)()>(fnPtr);
             exitCode = main0();
 
         } catch (const std::exception& e) {
-            // Runtime panic occurred
             exitCode = handlePanic(e);
         }
 
@@ -193,6 +223,7 @@ ExecutionResult Interpreter::runModule(ModuleAST* module, const std::string& ent
         result.exitCode = exitCode;
         result.success = true;
         result.executionTimeMs = duration.count() / 1000.0;
+        result.entryPointUsed = foundEntry;
 
         if (m_options.verbose) {
             std::cout << "Execution completed in " << result.executionTimeMs << "ms\n";
@@ -202,7 +233,6 @@ ExecutionResult Interpreter::runModule(ModuleAST* module, const std::string& ent
         return result;
 
     } catch (const InterpreterError& e) {
-        // Re-throw interpreter errors
         throw;
     } catch (const JITError& e) {
         throw InterpreterError(InterpreterError::Kind::ModuleLoadFailed,
@@ -216,34 +246,56 @@ ExecutionResult Interpreter::runModule(ModuleAST* module, const std::string& ent
     }
 }
 
-bool Interpreter::loadModule(ModuleAST* module) {
-    if (!m_initialized) {
-        throw InterpreterError(InterpreterError::Kind::InitFailed,
-                               "Interpreter not initialized");
-    }
+// ─────────────────────────────────────────────────────────────────────────────
+// Interpreter - Module Loading
+// ─────────────────────────────────────────────────────────────────────────────
 
+bool Interpreter::loadModule(ModuleAST* module) {
     if (!module) {
         throw InterpreterError(InterpreterError::Kind::ModuleLoadFailed,
                                "Cannot load null module");
     }
 
-    if (hasErrors(module)) {
-        reportErrors(module);
+    return loadModules(std::vector<ModuleAST*>{module});
+}
+
+bool Interpreter::loadModules(const std::vector<ModuleAST*>& modules) {
+    if (!m_initialized) {
+        throw InterpreterError(InterpreterError::Kind::InitFailed,
+                               "Interpreter not initialized");
+    }
+
+    if (modules.empty()) {
+        throw InterpreterError(InterpreterError::Kind::EmptyModuleList,
+                               "Cannot load empty module list");
+    }
+
+    // Validate all modules
+    for (ModuleAST* module : modules) {
+        if (!module) {
+            throw InterpreterError(InterpreterError::Kind::ModuleLoadFailed,
+                                   "Cannot load null module in list");
+        }
+    }
+
+    if (hasErrors(modules)) {
+        reportErrors(modules);
         return false;
     }
 
     try {
         // 1. Register foreign libraries
-        registerForeignLibraries(module);
+        registerForeignLibraries(modules);
 
         // 2. Generate module name
-        std::string moduleName = generateModuleName(module);
+        std::string mainModuleName = generateModuleName(modules[0]);
+        std::string fullModuleName = mainModuleName;
 
-        // 3. Lower AST to LLVM IR
-        auto irModule = m_irLowerer->lower(module, moduleName);
+        // 3. Lower all modules to a single LLVM module
+        auto irModule = m_irLowerer->lower(modules, fullModuleName);
         if (!irModule) {
             throw InterpreterError(InterpreterError::Kind::ModuleLoadFailed,
-                                   "Failed to lower module to LLVM IR");
+                                   "Failed to lower modules to LLVM IR");
         }
 
         // 4. Setup optimizations if enabled
@@ -251,14 +303,19 @@ bool Interpreter::loadModule(ModuleAST* module) {
             setupOptimizations(irModule.get());
         }
 
-        // 5. Add module to JIT
-        if (!m_jit.addModule(std::move(irModule), moduleName)) {
+        // 5. Add module to JIT using InternedString
+        InternedString modName = m_jit.getStringPool().intern(fullModuleName);
+        if (!m_jit.addModule(std::move(irModule), modName)) {
             throw InterpreterError(InterpreterError::Kind::ModuleLoadFailed,
                                    "Failed to add module to JIT");
         }
 
-        // 6. Track loaded module
-        m_loadedModules[moduleName] = module;
+        // 6. Track loaded modules
+        for (ModuleAST* module : modules) {
+            std::string name = generateModuleName(module);
+            m_loadedModulesMap[name] = module;
+            m_loadedModulesList.push_back(module);
+        }
 
         return true;
 
@@ -267,6 +324,10 @@ bool Interpreter::loadModule(ModuleAST* module) {
                                "Module load failed: " + std::string(e.what()));
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Interpreter - Hot-Reload
+// ─────────────────────────────────────────────────────────────────────────────
 
 bool Interpreter::hotReload(ModuleAST* module, const std::string& moduleName) {
     if (!m_initialized) {
@@ -293,11 +354,12 @@ bool Interpreter::hotReload(ModuleAST* module, const std::string& moduleName) {
         // 1. Register foreign libraries (new ones)
         registerForeignLibraries(module);
 
-        // 2. Generate versioned name
-        std::string versionedName = generateVersionedName(moduleName);
+        // 2. Generate versioned name using InternedString
+        std::string versionedNameStr = generateVersionedName(moduleName);
+        InternedString versionedName = m_jit.getStringPool().intern(versionedNameStr);
 
         // 3. Lower AST to LLVM IR
-        auto irModule = m_irLowerer->lower(module, versionedName);
+        auto irModule = m_irLowerer->lower(module, versionedNameStr);
         if (!irModule) {
             throw InterpreterError(InterpreterError::Kind::HotReloadFailed,
                                    "Failed to lower module to LLVM IR");
@@ -308,14 +370,13 @@ bool Interpreter::hotReload(ModuleAST* module, const std::string& moduleName) {
             setupOptimizations(irModule.get());
         }
 
-        // 5. Check if old version exists
-        auto it = m_moduleVersions.find(moduleName);
-        if (it != m_moduleVersions.end()) {
-            // Remove old version
+        // 5. Check if old version exists (using InternedString)
+        InternedString oldName = m_jit.getStringPool().intern(moduleName);
+        if (m_jit.hasModule(oldName)) {
             if (m_options.verbose) {
-                std::cout << "Removing old version: " << it->second << "\n";
+                std::cout << "Removing old version: " << moduleName << "\n";
             }
-            m_jit.removeModule(it->second);
+            m_jit.removeModule(oldName);
         }
 
         // 6. Add new version
@@ -325,16 +386,22 @@ bool Interpreter::hotReload(ModuleAST* module, const std::string& moduleName) {
         }
 
         // 7. Update tracking
-        m_moduleVersions[moduleName] = versionedName;
-        m_loadedModules[versionedName] = module;
+        m_moduleVersions[moduleName] = versionedNameStr;
+        m_loadedModulesMap[versionedNameStr] = module;
+
+        // Update the list if this module is in it
+        auto itList = std::find(m_loadedModulesList.begin(), m_loadedModulesList.end(), 
+                                m_loadedModulesMap[moduleName]);
+        if (itList != m_loadedModulesList.end()) {
+            *itList = module;
+        }
 
         if (m_hasActiveModule && m_activeModuleName == moduleName) {
-            // Update active module
-            m_activeModuleName = versionedName;
+            m_activeModuleName = versionedNameStr;
         }
 
         if (m_options.verbose) {
-            std::cout << "Hot-reload successful: " << moduleName << " -> " << versionedName << "\n";
+            std::cout << "Hot-reload successful: " << moduleName << " -> " << versionedNameStr << "\n";
         }
 
         return true;
@@ -370,27 +437,32 @@ bool Interpreter::registerForeignLibrary(const std::string& libraryName) {
     }
 }
 
-void Interpreter::registerForeignLibraries(ModuleAST* module) {
-    if (!module) {
+void Interpreter::registerForeignLibraries(const std::vector<ModuleAST*>& modules) {
+    if (modules.empty()) {
         return;
     }
 
-    // Collect all @[link] attributes from declarations
     std::vector<std::string> libraries;
 
-    for (DeclPtr decl : module->decls) {
-        for (AttributePtr attr : decl->attributes) {
-            if (attr->name.toString() == "link") {
-                for (AttributeArgPtr arg : attr->args) {
-                    if (arg->kind == AttributeArgKind::StringLit) {
-                        std::string libName = arg->value.toString();
-                        // Check if it's a path or just a library name
-                        bool isPath = libName.find('/') != std::string::npos ||
-                                      libName.find('\\') != std::string::npos ||
-                                      libName.find('.') != std::string::npos;
-                        
-                        if (!isPath) {
-                            libraries.push_back(libName);
+    for (ModuleAST* module : modules) {
+        if (!module) {
+            continue;
+        }
+
+        for (DeclPtr decl : module->decls) {
+            for (AttributePtr attr : decl->attributes) {
+                std::string_view attrName = m_jit.getStringPool().lookup(attr->name);
+                if (attrName == "link") {
+                    for (AttributeArgPtr arg : attr->args) {
+                        if (arg->kind == AttributeArgKind::StringLit) {
+                            std::string_view libName = m_jit.getStringPool().lookup(arg->value);
+                            bool isPath = libName.find('/') != std::string::npos ||
+                                          libName.find('\\') != std::string::npos ||
+                                          libName.find('.') != std::string::npos;
+                            
+                            if (!isPath) {
+                                libraries.push_back(std::string(libName));
+                            }
                         }
                     }
                 }
@@ -403,7 +475,6 @@ void Interpreter::registerForeignLibraries(ModuleAST* module) {
         try {
             registerForeignLibrary(libName);
         } catch (const std::exception& e) {
-            // Log but continue - the library might be loaded elsewhere
             if (m_options.verbose) {
                 std::cerr << "Warning: " << e.what() << "\n";
             }
@@ -411,22 +482,28 @@ void Interpreter::registerForeignLibraries(ModuleAST* module) {
     }
 }
 
+void Interpreter::registerForeignLibraries(ModuleAST* module) {
+    if (!module) {
+        return;
+    }
+    registerForeignLibraries(std::vector<ModuleAST*>{module});
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Interpreter - Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
 std::string Interpreter::generateModuleName(ModuleAST* module) {
-    if (!module || module->filePath.isEmpty()) {
+    if (!module || !module->filePath.isValid()) {
         return "module_" + std::to_string(reinterpret_cast<uintptr_t>(module));
     }
     
-    std::string name = module->filePath.toString();
-    // Replace path separators and extension with underscores
+    std::string_view name = m_jit.getStringPool().lookup(module->filePath);
     std::replace(name.begin(), name.end(), '/', '_');
     std::replace(name.begin(), name.end(), '\\', '_');
     std::replace(name.begin(), name.end(), '.', '_');
     
-    return name;
+    return std::string(name);
 }
 
 std::string Interpreter::generateVersionedName(const std::string& baseName) {
@@ -436,40 +513,65 @@ std::string Interpreter::generateVersionedName(const std::string& baseName) {
     return ss.str();
 }
 
-std::string Interpreter::findEntryPoint(ModuleAST* module, const std::string& entryPoint) {
-    if (!module) {
+std::string Interpreter::findEntryPoint(const std::vector<ModuleAST*>& modules,
+                                        const std::string& entryPoint) {
+    if (modules.empty()) {
         return "";
     }
 
-    // Check if the entry point exists
-    for (DeclPtr decl : module->decls) {
-        if (auto* funcDecl = decl->as<FuncDeclAST>()) {
-            if (funcDecl->name.toString() == entryPoint) {
-                // Check if it has the @[export] attribute
-                bool isExported = false;
-                for (AttributePtr attr : funcDecl->attributes) {
-                    if (attr->name.toString() == "export") {
-                        isExported = true;
-                        break;
-                    }
-                }
-                
-                // In the interpreter, we can execute non-exported functions too
-                // But the entry point should be exported by convention
-                if (isExported || m_options.verbose) {
-                    return entryPoint;
-                }
-            }
+    // First, check the first module (usually the main module)
+    if (!modules.empty()) {
+        std::string found = findEntryPoint(modules[0], entryPoint);
+        if (!found.empty()) {
+            return found;
+        }
+    }
+
+    // Then check all other modules
+    for (size_t i = 1; i < modules.size(); ++i) {
+        std::string found = findEntryPoint(modules[i], entryPoint);
+        if (!found.empty()) {
+            return found;
         }
     }
 
     // Try alternative entry point names
     std::vector<std::string> alternatives = {"main", "start", "run"};
     for (const auto& alt : alternatives) {
-        for (DeclPtr decl : module->decls) {
-            if (auto* funcDecl = decl->as<FuncDeclAST>()) {
-                if (funcDecl->name.toString() == alt) {
-                    return alt;
+        if (alt == entryPoint) continue;
+        
+        for (ModuleAST* module : modules) {
+            std::string found = findEntryPoint(module, alt);
+            if (!found.empty()) {
+                return found;
+            }
+        }
+    }
+
+    return "";
+}
+
+std::string Interpreter::findEntryPoint(ModuleAST* module, const std::string& entryPoint) {
+    if (!module) {
+        return "";
+    }
+
+    for (DeclPtr decl : module->decls) {
+        if (auto* funcDecl = decl->as<FuncDeclAST>()) {
+            std::string_view funcName = m_jit.getStringPool().lookup(funcDecl->name);
+            if (funcName == entryPoint) {
+                // Check if it has the @[export] attribute
+                bool isExported = false;
+                for (AttributePtr attr : funcDecl->attributes) {
+                    std::string_view attrName = m_jit.getStringPool().lookup(attr->name);
+                    if (attrName == "export") {
+                        isExported = true;
+                        break;
+                    }
+                }
+                
+                if (isExported || m_options.verbose) {
+                    return entryPoint;
                 }
             }
         }
@@ -478,8 +580,25 @@ std::string Interpreter::findEntryPoint(ModuleAST* module, const std::string& en
     return "";
 }
 
+bool Interpreter::hasErrors(const std::vector<ModuleAST*>& modules) const {
+    for (const ModuleAST* module : modules) {
+        if (hasErrors(module)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool Interpreter::hasErrors(const ModuleAST* module) const {
     return module && module->hasErrors;
+}
+
+size_t Interpreter::reportErrors(const std::vector<ModuleAST*>& modules) const {
+    size_t count = 0;
+    for (const ModuleAST* module : modules) {
+        count += reportErrors(module);
+    }
+    return count;
 }
 
 size_t Interpreter::reportErrors(const ModuleAST* module) const {
@@ -500,37 +619,30 @@ void Interpreter::setupOptimizations(llvm::Module* module) {
         return;
     }
 
-    // Create optimization pipeline
     llvm::PassBuilder passBuilder;
     llvm::LoopAnalysisManager loopAM;
     llvm::FunctionAnalysisManager funcAM;
     llvm::CGSCCAnalysisManager cgsccAM;
     llvm::ModuleAnalysisManager modAM;
 
-    // Register analysis managers
     passBuilder.registerModuleAnalyses(modAM);
     passBuilder.registerCGSCCAnalyses(cgsccAM);
     passBuilder.registerFunctionAnalyses(funcAM);
     passBuilder.registerLoopAnalyses(loopAM);
     passBuilder.crossRegisterProxies(loopAM, funcAM, cgsccAM, modAM);
 
-    // Create optimization level
     auto optLevel = static_cast<llvm::OptimizationLevel>(
         std::min(m_options.optimizationLevel, 3)
     );
 
-    // Build optimization pipeline
     llvm::ModulePassManager modulePassManager;
     modulePassManager = passBuilder.buildPerModuleDefaultPipeline(optLevel);
-
-    // Run optimizations
     modulePassManager.run(*module, modAM);
 }
 
 int Interpreter::handlePanic(const std::exception& exception) {
     std::cerr << "Runtime panic: " << exception.what() << "\n";
     
-    // Check for specific panic types
     std::string msg = exception.what();
     if (msg.find("division by zero") != std::string::npos) {
         std::cerr << "  Division by zero occurred\n";

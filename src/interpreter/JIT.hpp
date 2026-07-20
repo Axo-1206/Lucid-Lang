@@ -8,7 +8,8 @@
  * @related_files
  *   - src/interpreter/Interpreter.hpp - uses JITSession for execution
  *   - src/interpreter/DynLink.hpp - registers foreign symbols
- *   - src/compiler/IRLowering.hpp - produces IR modules for this JIT
+ *   - src/codegen/IRLowering.hpp - produces IR modules for this JIT
+ *   - src/core/memory/StringPool.hpp - String interning for names
  */
 
 #pragma once
@@ -17,6 +18,9 @@
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/Error.h"
+
+#include "../core/memory/StringPool.hpp"
+#include "../core/memory/InternedString.hpp"
 
 #include <memory>
 #include <string>
@@ -52,9 +56,15 @@ private:
  * Owns the LLVM context, the JIT instance, and tracks loaded modules
  * with resource trackers for hot-reload support.
  * 
+ * @par String Pool Integration
+ * The JITSession shares a StringPool with the rest of the compiler.
+ * All symbol and module names are stored as InternedString for efficient
+ * lookup and comparison.
+ * 
  * @par Usage Example
  * @code
- *   JITSession jit;
+ *   StringPool stringPool;
+ *   JITSession jit(stringPool);
  *   if (!jit.initialize()) {
  *       // Handle initialization failure
  *   }
@@ -62,7 +72,8 @@ private:
  *   auto module = std::make_unique<llvm::Module>("mymod", jit.getContext());
  *   // ... populate module with IR ...
  *   
- *   if (jit.addModule(std::move(module), "mymod")) {
+ *   InternedString moduleName = stringPool.intern("mymod");
+ *   if (jit.addModule(std::move(module), moduleName)) {
  *       auto* fn = jit.lookupSymbol("main");
  *       if (fn) {
  *           auto main = reinterpret_cast<int(*)()>(fn);
@@ -80,7 +91,12 @@ private:
  */
 class JITSession {
 public:
-    JITSession();
+    /**
+     * @brief Construct a JITSession with a StringPool.
+     * 
+     * @param stringPool The string pool for name interning
+     */
+    explicit JITSession(StringPool& stringPool);
     ~JITSession();
 
     // Non-copyable
@@ -89,7 +105,7 @@ public:
 
     // Moveable
     JITSession(JITSession&&) = default;
-    JITSession& operator=(JITSession&&) = default;
+    JITSession& operator=(JITSession&&) = delete;
 
     /**
      * @brief Initialize the JIT with the host target.
@@ -109,7 +125,20 @@ public:
      * safe removal during hot-reload.
      * 
      * @param module The LLVM module to add (takes ownership)
-     * @param moduleName Unique name for the module (used for tracking)
+     * @param moduleName The module name as an InternedString
+     * @return true on success
+     * @throws JITError if module addition fails
+     */
+    bool addModule(std::unique_ptr<llvm::Module> module,
+                   InternedString moduleName);
+
+    /**
+     * @brief Add a compiled LLVM module to the JIT with a string name.
+     * 
+     * Convenience wrapper that interns the name automatically.
+     * 
+     * @param module The LLVM module to add (takes ownership)
+     * @param moduleName The module name as a string
      * @return true on success
      * @throws JITError if module addition fails
      */
@@ -122,7 +151,18 @@ public:
      * Uses the stored ResourceTracker to safely remove the module
      * and all its compiled code from the JIT.
      * 
-     * @param moduleName The module to remove
+     * @param moduleName The module name as an InternedString
+     * @return true if the module was found and removed
+     * @throws JITError if removal fails
+     */
+    bool removeModule(InternedString moduleName);
+
+    /**
+     * @brief Remove a module by name with a string.
+     * 
+     * Convenience wrapper that interns the name automatically.
+     * 
+     * @param moduleName The module name as a string
      * @return true if the module was found and removed
      * @throws JITError if removal fails
      */
@@ -131,7 +171,17 @@ public:
     /**
      * @brief Check if a module is loaded.
      * 
-     * @param moduleName The module name to check
+     * @param moduleName The module name as an InternedString
+     * @return true if the module is loaded
+     */
+    bool hasModule(InternedString moduleName) const;
+
+    /**
+     * @brief Check if a module is loaded with a string.
+     * 
+     * Convenience wrapper that interns the name automatically.
+     * 
+     * @param moduleName The module name as a string
      * @return true if the module is loaded
      */
     bool hasModule(const std::string& moduleName) const;
@@ -141,11 +191,22 @@ public:
      * 
      * Searches all loaded modules and foreign symbols for the symbol.
      * 
-     * @param symbolName The symbol name (mangled or unmangled)
+     * @param symbolName The symbol name (mangled or unmangled) as a string
      * @return Pointer to the symbol, or nullptr if not found
      * @throws JITError if the lookup operation fails
      */
     void* lookupSymbol(const std::string& symbolName);
+
+    /**
+     * @brief Look up a symbol in the JIT.
+     * 
+     * Searches all loaded modules and foreign symbols for the symbol.
+     * 
+     * @param symbolName The symbol name as an InternedString
+     * @return Pointer to the symbol, or nullptr if not found
+     * @throws JITError if the lookup operation fails
+     */
+    void* lookupSymbol(InternedString symbolName);
 
     /**
      * @brief Get the LLVM context.
@@ -160,6 +221,13 @@ public:
      * @return Reference to the LLJIT instance
      */
     llvm::orc::LLJIT& getJIT() { return *m_jit; }
+
+    /**
+     * @brief Get the string pool.
+     * 
+     * @return Reference to the string pool
+     */
+    StringPool& getStringPool() { return m_stringPool; }
 
     /**
      * @brief Check if the JIT is initialized.
@@ -180,6 +248,14 @@ private:
     template <typename T = void>
     T handleError(llvm::Error error, JITError::Kind errorKind,
                   const std::string& message = "");
+
+    /**
+     * @brief Convert InternedString to std::string for LLVM operations.
+     * 
+     * @param name The interned string
+     * @return std::string The string representation
+     */
+    std::string internedToString(InternedString name) const;
 
     /**
      * @brief Setup the host target machine.
@@ -207,9 +283,10 @@ private:
 
     // ─── Members ─────────────────────────────────────────────────────────────
 
+    StringPool& m_stringPool;
     std::unique_ptr<llvm::LLVMContext> m_context;
     std::unique_ptr<llvm::orc::LLJIT> m_jit;
-    std::unordered_map<std::string, llvm::orc::ResourceTrackerSP> m_trackers;
+    std::unordered_map<uint32_t, llvm::orc::ResourceTrackerSP> m_trackers;
     bool m_initialized = false;
 };
 

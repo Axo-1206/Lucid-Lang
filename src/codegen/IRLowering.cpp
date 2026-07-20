@@ -2,8 +2,9 @@
  * @file IRLowering.cpp
  * @brief Main entry point for IR lowering.
  * 
- * @responsibility Provides the main orchestration for lowering AST to LLVM IR.
+ * @responsibility Provides the main orchestration for lowering AST(s) to LLVM IR.
  *                 Delegates specific lowering tasks to specialized modules.
+ *                 Supports both single-module and multi-module compilation.
  * 
  * @related_files
  *   - IRLoweringDecl.cpp   - Declaration lowering
@@ -38,7 +39,7 @@ std::string IRLowering::internedToString(InternedString name) const {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// IRLowering - Main Entry Point
+// IRLowering - Main Entry Points
 // ─────────────────────────────────────────────────────────────────────────────
 
 std::unique_ptr<llvm::Module> IRLowering::lower(ModuleAST* module,
@@ -48,6 +49,34 @@ std::unique_ptr<llvm::Module> IRLowering::lower(ModuleAST* module,
                               "Cannot lower null module");
     }
 
+    // Delegate to the vector version
+    return lower(std::vector<ModuleAST*>{module}, moduleName);
+}
+
+std::unique_ptr<llvm::Module> IRLowering::lower(const std::vector<ModuleAST*>& modules,
+                                                const std::string& moduleName) {
+    if (modules.empty()) {
+        throw IRLoweringError(IRLoweringError::Kind::UnsupportedNode,
+                              "Cannot lower empty module list");
+    }
+
+    // Validate all modules
+    for (ModuleAST* module : modules) {
+        if (!module) {
+            throw IRLoweringError(IRLoweringError::Kind::UnsupportedNode,
+                                  "Cannot lower null module in list");
+        }
+    }
+
+    return lowerImpl(modules, moduleName);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IRLowering - Internal Implementation
+// ─────────────────────────────────────────────────────────────────────────────
+
+std::unique_ptr<llvm::Module> IRLowering::lowerImpl(const std::vector<ModuleAST*>& modules,
+                                                    const std::string& moduleName) {
     m_moduleName = moduleName;
 
     // Create the LLVM module
@@ -55,8 +84,6 @@ std::unique_ptr<llvm::Module> IRLowering::lower(ModuleAST* module,
 
     // Set target triple
     m_module->setTargetTriple(llvm::sys::getDefaultTargetTriple());
-
-    // Set data layout (will be set by the backend)
 
     // Create runtime functions
     createPanicFunction(m_module.get());
@@ -67,15 +94,24 @@ std::unique_ptr<llvm::Module> IRLowering::lower(ModuleAST* module,
     m_functionStack.clear();
     m_loopStack.clear();
 
-    // Lower each top-level declaration using IRDeclLowering
-    for (DeclPtr decl : module->decls) {
-        try {
-            IRDeclLowering::lowerDecl(*this, decl);
-        } catch (const IRLoweringError& e) {
-            // Log and continue with other declarations
-            std::cerr << "Warning: Failed to lower declaration: " << e.what() << "\n";
+    // Lower each module's declarations
+    // Modules are processed in dependency order (imported first)
+    for (ModuleAST* module : modules) {
+        m_currentModule = module;
+
+        // Lower each top-level declaration
+        for (DeclPtr decl : module->decls) {
+            try {
+                IRDeclLowering::lowerDecl(*this, decl);
+            } catch (const IRLoweringError& e) {
+                // Log and continue with other declarations
+                std::cerr << "Warning: Failed to lower declaration in module "
+                          << internedToString(module->filePath) << ": " << e.what() << "\n";
+            }
         }
     }
+
+    m_currentModule = nullptr;
 
     // Verify the module
     std::string errorMsg;

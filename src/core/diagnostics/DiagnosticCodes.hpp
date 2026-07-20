@@ -149,8 +149,18 @@ enum class DiagCode : uint32_t {
     // resolveXOrError()-shaped checks get wired up.
 
     // ── 2101–3000: Specialized ──
-    // No codes defined yet -- redeclaration, ambiguous reference, and
-    // use-outside-scope all belong here once their callers exist.
+    E2101 = 2101,   ///< Redeclaration of a name already declared in this
+                    ///< same tier (folded into one %s) -- see
+                    ///< Resolution.cpp's note on why this is scoped to
+                    ///< the CURRENT tier only, not ctx.lookupValue()'s
+                    ///< full outer-scope search (legitimate shadowing is
+                    ///< not redeclaration). Reused across every "two
+                    ///< sibling declarations, same name" case: struct
+                    ///< fields, trait fields, enum variants, generic
+                    ///< params, and top-level values/types -- see
+                    ///< SemaDecl.cpp.
+    // 2102–3000 reserved for ambiguous-reference / use-outside-scope codes
+    // as those checks get wired up.
 
     // ═══════════════════════════════════════════════════════════════════════
     // 3001–4000: Semantic — Type Checking
@@ -173,9 +183,25 @@ enum class DiagCode : uint32_t {
 
     // ── 3001–3100: General ──
     E3001 = 3001,   ///< Wrong number of arguments to a call (name + counts folded into one %s by ctx.error() — see AttributesRegistry.hpp's note)
-    // 3002–3100 reserved for more general type-checking codes (type
-    // mismatch, non-callable called, missing return, ...) as those callers
-    // get wired up.
+    E3002,          ///< Missing a required initializer (e.g. a `const` var
+                    ///< with no `= expr`) -- see SemaDecl.cpp's analyzeVarDecl()
+    E3003,          ///< Type mismatch -- deliberately generic (folded into
+                    ///< one %s), reused for var/field initializers, and
+                    ///< eventually arguments, assignments, and returns as
+                    ///< those callers get wired up. See TypeCompat.cpp's
+                    ///< isAssignable(), which is what decides this.
+    E3004,          ///< Invalid const + nullable/fallible combination --
+                    ///< reused for both FieldDeclAST and TraitFieldDeclAST,
+                    ///< which document the identical rule separately.
+    E3005,          ///< Missing return on a path through a non-void function
+                    ///< -- see analyzeStmt()'s control-flow-reachability
+                    ///< return value, which is what decides this.
+    E3006,          ///< Duplicate value (e.g. two enum variants with the
+                    ///< same explicit integer value) -- distinct from
+                    ///< E2101, which is about duplicate NAMES, not values.
+    // 3007–3100 reserved for more general type-checking codes (invalid
+    // implicit conversion, nullable/fallible without narrowing, non-callable
+    // called, ...) as those callers get wired up.
 
     // ── 3101–4000: Specialized (per checkExpr rule) ──
     E3101 = 3101,   ///< Unknown intrinsic (name folded into the single %s)
@@ -280,7 +306,7 @@ static_assert(static_cast<uint32_t>(DiagCode::E0105) < 1000,  "Lexical range (10
 static_assert(static_cast<uint32_t>(DiagCode::E1011) < 1100,  "Syntax/General sub-range (1000-1099) overflow");
 static_assert(static_cast<uint32_t>(DiagCode::E1108) < 2000,  "Syntax range (1000-1999) overflow");
 static_assert(static_cast<uint32_t>(DiagCode::E2003) < 2100,  "Semantic/NameResolution General sub-range (2000-2099) overflow");
-static_assert(static_cast<uint32_t>(DiagCode::E2003) < 3000,  "Semantic/NameResolution range (2000-2999) overflow");
+static_assert(static_cast<uint32_t>(DiagCode::E2101) < 3000,  "Semantic/NameResolution range (2000-2999) overflow");
 static_assert(static_cast<uint32_t>(DiagCode::E3001) < 3100,  "Semantic/TypeChecking General sub-range (3000-3099) overflow");
 static_assert(static_cast<uint32_t>(DiagCode::E3101) < 4000,  "Semantic/TypeChecking range (3000-3999) overflow");
 static_assert(static_cast<uint32_t>(DiagCode::E4003) < 4100,  "Semantic/GenericsTraitsFFI General sub-range (4000-4099) overflow");
