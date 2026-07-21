@@ -1,11 +1,21 @@
 /**
  * @file Diagnostic.cpp
  * @brief Implementation of the procedural diagnostic interface.
+ *
+ * This is the SINGLE implementation file for all diagnostic functionality.
+ * It combines:
+ *   - Global state management
+ *   - Diagnostic data types (Diagnostic, Summary)
+ *   - Reporting API (error, warning, note, hint)
+ *   - Source scope management (ScopedSource, pushSource, etc.)
+ *   - Query API (hasErrors, totalErrorCount, summarize, etc.)
+ *   - Formatting API (formatOneLine, dumpAll, etc.)
  */
 
 #include "Diagnostic.hpp"
 #include "DiagnosticMessages.hpp"
 #include "../memory/StringPool.hpp"
+
 #include <iostream>
 #include <unordered_set>
 #include <sstream>
@@ -14,266 +24,35 @@
 namespace diagnostic {
 
 // =============================================================================
-// Global state – plain statics, not thread-local, because the compiler's
-// pipeline is single-threaded and strictly sequential (parse fully finishes
-// before analysis begins). See Diagnostic.hpp's "Single-threaded, on
-// purpose" architecture note for the full reasoning and what a future
-// multi-threaded compiler would need to change here.
+// Helper: Category from Code Range
 // =============================================================================
 
-/**
- * @brief The one and only place any diagnostic is ever stored.
- *
- * Every error/warning/note reported anywhere in the compiler — lexer,
- * parser, every file, every module — ends up as one entry in this single
- * flat, append-only vector, in the order it was reported. There is no
- * separate `file → diagnostics` map anywhere in this file: file
- * association is carried entirely on each individual `Diagnostic::file`
- * field (see Diagnostic.hpp), not by which container it's stored in.
- *
- * "This file's diagnostics" is therefore always a VIEW over this vector,
- * computed on demand, never a second copy:
- *   - `getAllForFile(file)` scans this vector and keeps entries whose
- *     `.file` matches — works for any file, at any time, scope or no scope.
- *   - `currentSourceDiagnostics()` takes a slice of this vector from the
- *     innermost open `SourceFrame`'s remembered `startIndex` to the end —
- *     see the source-scope stack right below this for how that index is
- *     tracked without ever touching this vector's contents.
- *
- * Entries are appended in `add()`/`note()` and never reordered or removed
- * (except by `clear()`, for test isolation between independent runs — see
- * its own doc comment). Nothing here indexes by file for lookup speed;
- * given this is compiler-scale data (thousands, not millions, of
- * diagnostics per run), a linear scan per query is cheap enough that a
- * second indexing structure would only be complexity without a measured
- * need for it.
- */
-static std::vector<Diagnostic> diagnostics;
-static int errorCount = 0;
-static int warningCount = 0;
-
-// -----------------------------------------------------------------------------
-// Source-scope stack — see Diagnostic.hpp's "source-scope stack"
-// architectural note for the full rationale. Each frame remembers only an
-// index into `diagnostics` (where it started) plus its own counters; the
-// diagnostics themselves are never copied or moved anywhere.
-// -----------------------------------------------------------------------------
-
-namespace {
-struct SourceFrame {
-    InternedString file;
-    size_t startIndex = 0;        // index into `diagnostics` at push time
-    int errorCount = 0;           // Error reports since push/resetStreak
-    int consecutiveErrors = 0;    // see resetStreak()'s doc comment
-};
-} // namespace
-
-static std::vector<SourceFrame> sourceStack;
-
-// =============================================================================
-// Helper: Add a diagnostic to the global list, update whole-session
-// counters, and update the innermost open source frame (if any).
-// =============================================================================
-
-static void add(DiagnosticSeverity severity, DiagnosticCategory category,
-                InternedString file, SourceLocation loc, DiagCode code,
-                std::initializer_list<std::string> args) {
-    diagnostics.push_back({
-        severity,
-        category,
-        file,
-        loc,
-        code,
-        std::vector<std::string>(args.begin(), args.end())
-    });
-
-    if (severity == DiagnosticSeverity::Error) {
-        ++errorCount;
-        if (!sourceStack.empty()) {
-            SourceFrame& frame = sourceStack.back();
-            ++frame.errorCount;
-            ++frame.consecutiveErrors;
-        }
-    } else if (severity == DiagnosticSeverity::Warning) {
-        ++warningCount;
-        // Deliberately does NOT touch any frame's consecutiveErrors — this
-        // is the fix for the bug that started this rewrite: a warning is
-        // neither a failure nor a break in an error streak. See
-        // Diagnostic.hpp's "What 'consecutive' means here" note.
-    }
-    // Note (severity == DiagnosticSeverity::Note) affects neither the
-    // whole-session counters nor any frame's bookkeeping.
+std::string_view Diagnostic::category() const {
+    uint32_t raw = static_cast<uint32_t>(code);
+    if (raw < 100) return "Environment";
+    if (raw < 1000) return "Lexical";
+    if (raw < 2000) return "Syntax";
+    if (raw < 3000) return "Semantic/NameResolution";
+    if (raw < 4000) return "Semantic/TypeChecking";
+    if (raw < 5000) return "Semantic/GenericsTraitsFFI";
+    if (raw < 6000) return "Backend";
+    if (raw < 7000) return "Warning";
+    return "Unknown";
 }
 
 // =============================================================================
-// Public reporting — explicit file
+// Helper: Summary
 // =============================================================================
 
-void error(DiagnosticCategory category, InternedString file,
-           SourceLocation loc, DiagCode code,
-           std::initializer_list<std::string> args) {
-    add(DiagnosticSeverity::Error, category, file, loc, code, args);
-}
-
-void warning(DiagnosticCategory category, InternedString file,
-             SourceLocation loc, DiagCode code,
-             std::initializer_list<std::string> args) {
-    add(DiagnosticSeverity::Warning, category, file, loc, code, args);
-}
-
-void note(InternedString file, SourceLocation loc, const std::string& msg) {
-    diagnostics.push_back({
-        DiagnosticSeverity::Note,
-        DiagnosticCategory::General,
-        file,
-        loc,
-        DiagCode::E0001,  // Never actually consulted for its template — see
-                          // dumpAll(): a Note's message is printed verbatim
-                          // from `args[0]`, not looked up by code. This is
-                          // just a placeholder value to satisfy the field.
-        {msg}
-    });
-    // Notes do NOT affect error/warning counts or any frame's bookkeeping.
+size_t Summary::totalFilesWithDiagnostics() const {
+    std::unordered_set<InternedString> all;
+    all.insert(filesWithErrors.begin(), filesWithErrors.end());
+    all.insert(filesWithWarnings.begin(), filesWithWarnings.end());
+    return all.size();
 }
 
 // =============================================================================
-// Public reporting — implicit current source
-// =============================================================================
-
-void error(DiagnosticCategory category, SourceLocation loc, DiagCode code,
-           std::initializer_list<std::string> args) {
-    error(category, currentFile(), loc, code, args);
-}
-
-void warning(DiagnosticCategory category, SourceLocation loc, DiagCode code,
-             std::initializer_list<std::string> args) {
-    warning(category, currentFile(), loc, code, args);
-}
-
-void note(SourceLocation loc, const std::string& msg) {
-    note(currentFile(), loc, msg);
-}
-
-// =============================================================================
-// Whole-session queries
-// =============================================================================
-
-bool hasErrors() {
-    return errorCount > 0;
-}
-
-bool hasWarnings() {
-    return warningCount > 0;
-}
-
-int totalErrorCount() {
-    return errorCount;
-}
-
-int totalWarningCount() {
-    return warningCount;
-}
-
-DiagnosticSummary summarize() {
-    DiagnosticSummary summary;
-    summary.errorCount = errorCount;
-    summary.warningCount = warningCount;
-
-    std::unordered_set<InternedString> seenErrorFiles;
-    std::unordered_set<InternedString> seenWarningFiles;
-
-    for (const auto& d : diagnostics) {
-        if (d.severity == DiagnosticSeverity::Error) {
-            if (seenErrorFiles.insert(d.file).second) {
-                summary.filesWithErrors.push_back(d.file);
-            }
-        } else if (d.severity == DiagnosticSeverity::Warning) {
-            if (seenWarningFiles.insert(d.file).second) {
-                summary.filesWithWarnings.push_back(d.file);
-            }
-        }
-    }
-
-    return summary;
-}
-
-void clear() {
-    diagnostics.clear();
-    errorCount = 0;
-    warningCount = 0;
-    // See clear()'s own doc comment in Diagnostic.hpp: forcibly cleared
-    // rather than left holding now-invalid start indices, but calling this
-    // out from under a live ScopedSource is a caller error this function
-    // cannot detect.
-    sourceStack.clear();
-}
-
-const std::vector<Diagnostic>& getAll() {
-    return diagnostics;
-}
-
-std::vector<Diagnostic> getAllForFile(InternedString file) {
-    std::vector<Diagnostic> result;
-    for (const auto& d : diagnostics) {
-        if (d.file == file) {
-            result.push_back(d);
-        }
-    }
-    return result;
-}
-
-// =============================================================================
-// Source scope
-// =============================================================================
-
-void pushSource(InternedString file) {
-    SourceFrame frame;
-    frame.file = file;
-    frame.startIndex = diagnostics.size();
-    frame.errorCount = 0;
-    frame.consecutiveErrors = 0;
-    sourceStack.push_back(frame);
-}
-
-void popSource() {
-    if (!sourceStack.empty()) {
-        sourceStack.pop_back();
-    }
-}
-
-InternedString currentFile() {
-    return sourceStack.empty() ? InternedString{} : sourceStack.back().file;
-}
-
-bool hasErrorsInCurrentSource() {
-    return !sourceStack.empty() && sourceStack.back().errorCount > 0;
-}
-
-int consecutiveErrorsInCurrentSource() {
-    return sourceStack.empty() ? 0 : sourceStack.back().consecutiveErrors;
-}
-
-bool canContinue(int threshold) {
-    return consecutiveErrorsInCurrentSource() < threshold;
-}
-
-void resetStreak() {
-    if (!sourceStack.empty()) {
-        sourceStack.back().consecutiveErrors = 0;
-    }
-}
-
-std::vector<Diagnostic> currentSourceDiagnostics() {
-    if (sourceStack.empty()) {
-        return {};
-    }
-    const SourceFrame& frame = sourceStack.back();
-    return std::vector<Diagnostic>(diagnostics.begin() + frame.startIndex,
-                                    diagnostics.end());
-}
-
-// =============================================================================
-// Helper: Format a single diagnostic's message with its arguments.
+// Helper: Format a diagnostic's message with its arguments.
 // =============================================================================
 
 static std::string formatMessage(const Diagnostic& diag) {
@@ -300,32 +79,15 @@ static std::string formatMessage(const Diagnostic& diag) {
 }
 
 // =============================================================================
-// Output: Print all diagnostics to the given stream.
+// Helper: Code label (E1002, W0002, etc.)
 // =============================================================================
 
-// =============================================================================
-// Helper: Human-readable severity label and code label for formatOneLine().
-// =============================================================================
-
-static const char* severityLabel(DiagnosticSeverity severity) {
-    switch (severity) {
-        case DiagnosticSeverity::Note:    return "NOTE";
-        case DiagnosticSeverity::Warning: return "WARNING";
-        case DiagnosticSeverity::Error:   return "ERROR";
-    }
-    return "UNKNOWN";
-}
-
-/**
- * @brief Build the "E1002"/"W0002"-style label shown after the severity.
- *
- */
 static std::string codeLabel(const Diagnostic& diag) {
     uint32_t raw = static_cast<uint32_t>(diag.code);
     char prefix;
     uint32_t symbolic;
 
-    if (diag.severity == DiagnosticSeverity::Warning) {
+    if (diag.severity == Severity::Warning) {
         prefix = 'W';
         symbolic = raw - 6000;
     } else {
@@ -339,52 +101,368 @@ static std::string codeLabel(const Diagnostic& diag) {
 }
 
 // =============================================================================
-// Output
+// Helper: Get StringPool instance
 // =============================================================================
 
-std::string formatOneLine(const Diagnostic& diag, const StringPool& pool) {
+static StringPool& pool() {
+    return StringPool::instance();
+}
+
+// =============================================================================
+// Global state – plain statics, not thread-local
+// =============================================================================
+
+static std::vector<Diagnostic> g_diagnostics;
+static int g_errorCount = 0;
+static int g_warningCount = 0;
+static int g_noteCount = 0;
+static int g_hintCount = 0;
+
+// ─── Source-scope stack ────────────────────────────────────────────────────
+
+namespace {
+struct SourceFrame {
+    InternedString file;
+    size_t startIndex = 0;
+    int errorCount = 0;
+    int warningCount = 0;
+    int noteCount = 0;
+    int hintCount = 0;
+    int consecutiveErrors = 0;
+};
+} // namespace
+
+static std::vector<SourceFrame> g_sourceStack;
+
+// =============================================================================
+// Helper: Add a diagnostic
+// =============================================================================
+
+static void add(Severity severity, InternedString file,
+                SourceLocation loc, DiagCode code,
+                std::initializer_list<std::string> args) {
+    g_diagnostics.push_back({
+        severity,
+        file,
+        loc,
+        code,
+        std::vector<std::string>(args.begin(), args.end())
+    });
+
+    // Update session counters
+    switch (severity) {
+        case Severity::Error:
+        case Severity::Fatal:
+            ++g_errorCount;
+            break;
+        case Severity::Warning:
+            ++g_warningCount;
+            break;
+        case Severity::Note:
+            ++g_noteCount;
+            break;
+        case Severity::Hint:
+            ++g_hintCount;
+            break;
+    }
+
+    // Update current source frame
+    if (!g_sourceStack.empty()) {
+        SourceFrame& frame = g_sourceStack.back();
+        switch (severity) {
+            case Severity::Error:
+            case Severity::Fatal:
+                ++frame.errorCount;
+                ++frame.consecutiveErrors;
+                break;
+            case Severity::Warning:
+                ++frame.warningCount;
+                break;
+            case Severity::Note:
+                ++frame.noteCount;
+                break;
+            case Severity::Hint:
+                ++frame.hintCount;
+                break;
+        }
+    }
+}
+
+// =============================================================================
+// Public reporting — explicit file
+// =============================================================================
+
+void error(InternedString file, SourceLocation loc, DiagCode code,
+           std::initializer_list<std::string> args) {
+    add(Severity::Error, file, loc, code, args);
+}
+
+void warning(InternedString file, SourceLocation loc, DiagCode code,
+             std::initializer_list<std::string> args) {
+    add(Severity::Warning, file, loc, code, args);
+}
+
+void note(InternedString file, SourceLocation loc, const std::string& msg) {
+    add(Severity::Note, file, loc, DiagCode::E0001, {msg});
+}
+
+void hint(InternedString file, SourceLocation loc, const std::string& msg) {
+    add(Severity::Hint, file, loc, DiagCode::E0001, {msg});
+}
+
+// =============================================================================
+// Public reporting — implicit current source
+// =============================================================================
+
+void error(SourceLocation loc, DiagCode code,
+           std::initializer_list<std::string> args) {
+    error(currentFile(), loc, code, args);
+}
+
+void warning(SourceLocation loc, DiagCode code,
+             std::initializer_list<std::string> args) {
+    warning(currentFile(), loc, code, args);
+}
+
+void note(SourceLocation loc, const std::string& msg) {
+    note(currentFile(), loc, msg);
+}
+
+void hint(SourceLocation loc, const std::string& msg) {
+    hint(currentFile(), loc, msg);
+}
+
+// =============================================================================
+// Whole-session queries
+// =============================================================================
+
+bool hasErrors() {
+    return g_errorCount > 0;
+}
+
+bool hasWarnings() {
+    return g_warningCount > 0;
+}
+
+int totalErrorCount() {
+    return g_errorCount;
+}
+
+int totalWarningCount() {
+    return g_warningCount;
+}
+
+int totalNoteCount() {
+    return g_noteCount;
+}
+
+int totalHintCount() {
+    return g_hintCount;
+}
+
+Summary summarize() {
+    Summary summary;
+    summary.errorCount = g_errorCount;
+    summary.warningCount = g_warningCount;
+    summary.noteCount = g_noteCount;
+    summary.hintCount = g_hintCount;
+
+    std::unordered_set<InternedString> seenErrors;
+    std::unordered_set<InternedString> seenWarnings;
+
+    for (const auto& d : g_diagnostics) {
+        if (d.severity == Severity::Error || d.severity == Severity::Fatal) {
+            if (seenErrors.insert(d.file).second) {
+                summary.filesWithErrors.push_back(d.file);
+            }
+        } else if (d.severity == Severity::Warning) {
+            if (seenWarnings.insert(d.file).second) {
+                summary.filesWithWarnings.push_back(d.file);
+            }
+        }
+    }
+
+    return summary;
+}
+
+void clear() {
+    g_diagnostics.clear();
+    g_errorCount = 0;
+    g_warningCount = 0;
+    g_noteCount = 0;
+    g_hintCount = 0;
+    g_sourceStack.clear();
+}
+
+const std::vector<Diagnostic>& getAll() {
+    return g_diagnostics;
+}
+
+std::vector<Diagnostic> getAllForFile(InternedString file) {
+    std::vector<Diagnostic> result;
+    for (const auto& d : g_diagnostics) {
+        if (d.file == file) {
+            result.push_back(d);
+        }
+    }
+    return result;
+}
+
+// =============================================================================
+// Source scope
+// =============================================================================
+
+void pushSource(InternedString file) {
+    SourceFrame frame;
+    frame.file = file;
+    frame.startIndex = g_diagnostics.size();
+    frame.errorCount = 0;
+    frame.warningCount = 0;
+    frame.noteCount = 0;
+    frame.hintCount = 0;
+    frame.consecutiveErrors = 0;
+    g_sourceStack.push_back(frame);
+}
+
+void popSource() {
+    if (!g_sourceStack.empty()) {
+        g_sourceStack.pop_back();
+    }
+}
+
+InternedString currentFile() {
+    return g_sourceStack.empty() ? InternedString{} : g_sourceStack.back().file;
+}
+
+bool hasErrorsInCurrentSource() {
+    return !g_sourceStack.empty() && g_sourceStack.back().errorCount > 0;
+}
+
+int consecutiveErrorsInCurrentSource() {
+    return g_sourceStack.empty() ? 0 : g_sourceStack.back().consecutiveErrors;
+}
+
+bool canContinue(int threshold) {
+    return consecutiveErrorsInCurrentSource() < threshold;
+}
+
+void resetStreak() {
+    if (!g_sourceStack.empty()) {
+        g_sourceStack.back().consecutiveErrors = 0;
+    }
+}
+
+std::vector<Diagnostic> currentSourceDiagnostics() {
+    if (g_sourceStack.empty()) {
+        return {};
+    }
+    const SourceFrame& frame = g_sourceStack.back();
+    return std::vector<Diagnostic>(
+        g_diagnostics.begin() + static_cast<ptrdiff_t>(frame.startIndex),
+        g_diagnostics.end()
+    );
+}
+
+// =============================================================================
+// ScopedSource
+// =============================================================================
+
+ScopedSource::ScopedSource(InternedString file) : m_file(file) {
+    pushSource(file);
+}
+
+ScopedSource::~ScopedSource() {
+    popSource();
+}
+
+// =============================================================================
+// Formatting
+// =============================================================================
+
+std::string formatOneLine(const Diagnostic& diag) {
     std::ostringstream oss;
 
-    oss << "[" << severityLabel(diag.severity) << "] ";
+    oss << "[" << severityName(diag.severity) << "] ";
 
-    // Notes never carry a real code (see note()'s own doc comment — the
-    // DiagCode stored alongside one is a placeholder), so the "CODE: "
-    // segment is only shown for Error/Warning.
-    if (diag.severity != DiagnosticSeverity::Note) {
+    // Notes and hints don't carry a real code
+    if (diag.severity != Severity::Note && diag.severity != Severity::Hint) {
         oss << codeLabel(diag) << ": ";
     }
 
-    // Message: Notes are raw text, everything else goes through the
-    // templated formatter (see note()'s own doc comment for why).
-    if (diag.severity == DiagnosticSeverity::Note) {
+    // Format the message
+    if (diag.severity == Severity::Note || diag.severity == Severity::Hint) {
         oss << (diag.args.empty() ? std::string() : diag.args[0]);
     } else {
         oss << formatMessage(diag);
     }
 
-    oss << "  " << pool.lookup(diag.file) << ":" << diag.location;
+    oss << "  " << pool().lookup(diag.file) << ":" << diag.location;
 
     return oss.str();
 }
 
-void dumpAll(const StringPool& pool, std::ostream& os) {
-    for (const auto& diag : diagnostics) {
-        os << formatOneLine(diag, pool) << "\n";
+std::string formatOneLineWithColor(const Diagnostic& diag) {
+    const char* reset = "\033[0m";
+    const char* color;
+
+    switch (diag.severity) {
+        case Severity::Fatal:
+        case Severity::Error:   color = "\033[31m"; break;  // Red
+        case Severity::Warning: color = "\033[33m"; break;  // Yellow
+        case Severity::Note:    color = "\033[36m"; break;  // Cyan
+        case Severity::Hint:    color = "\033[90m"; break;  // Gray
+        default:                color = reset; break;
     }
 
-    // Trailing summary line, in the spirit of rustc/tsc's "N errors
-    // generated" — built from summarize() rather than re-tallying here, so
-    // there's exactly one place that counts diagnostics.
-    DiagnosticSummary summary = summarize();
+    std::string plain = formatOneLine(diag);
+    return std::string(color) + plain + reset;
+}
+
+std::string formatJSON(const Diagnostic& diag) {
+    std::ostringstream oss;
+    oss << "{";
+    oss << "\"severity\":\"" << severityName(diag.severity) << "\",";
+    oss << "\"severityLevel\":" << static_cast<int>(diag.severity) << ",";
+    oss << "\"code\":\"" << codeLabel(diag) << "\",";
+    oss << "\"message\":\"" << formatMessage(diag) << "\",";
+    oss << "\"file\":\"" << pool().lookup(diag.file) << "\",";
+    oss << "\"line\":" << diag.location.line() << ",";
+    oss << "\"column\":" << diag.location.column();
+    oss << "}";
+    return oss.str();
+}
+
+void dumpAll(std::ostream& os) {
+    for (const auto& diag : g_diagnostics) {
+        os << formatOneLine(diag) << "\n";
+    }
+
+    Summary summary = summarize();
     if (summary.errorCount > 0 || summary.warningCount > 0) {
         os << "\n" << summary.errorCount << " error(s), "
            << summary.warningCount << " warning(s) generated";
-        if (!summary.filesWithErrors.empty() || !summary.filesWithWarnings.empty()) {
-            std::unordered_set<InternedString> distinctFiles(
-                summary.filesWithErrors.begin(), summary.filesWithErrors.end());
-            distinctFiles.insert(summary.filesWithWarnings.begin(),
-                                  summary.filesWithWarnings.end());
-            os << " across " << distinctFiles.size() << " file(s)";
+        size_t totalFiles = summary.totalFilesWithDiagnostics();
+        if (totalFiles > 0) {
+            os << " across " << totalFiles << " file(s)";
+        }
+        os << "\n";
+    }
+}
+
+void dumpAllWithColor(std::ostream& os) {
+    for (const auto& diag : g_diagnostics) {
+        os << formatOneLineWithColor(diag) << "\n";
+    }
+
+    Summary summary = summarize();
+    if (summary.errorCount > 0 || summary.warningCount > 0) {
+        const char* color = summary.errorCount > 0 ? "\033[31m" : "\033[33m";
+        const char* reset = "\033[0m";
+        os << "\n" << color << summary.errorCount << " error(s), "
+           << summary.warningCount << " warning(s) generated" << reset;
+        size_t totalFiles = summary.totalFilesWithDiagnostics();
+        if (totalFiles > 0) {
+            os << " across " << totalFiles << " file(s)";
         }
         os << "\n";
     }

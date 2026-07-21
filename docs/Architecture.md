@@ -549,28 +549,33 @@ lucid/
     │       ├── TokenStream.hpp/cpp     -- Track stream of tokens when parsing a file
     │       └── ErrorRecovery.cpp       -- sync points for error recovery
     │
-    ├── sema/                     -- frontend stage 2: AST → validated AST
-    │   ├── Sema.hpp/cpp           -- public interface: Sema::analyze()/analyzeAll(), analyzeModuleDecls()
-    │   ├── SemaContext.hpp        -- shared state for all sema passes
-    │   ├── rules/                        -- single-traversal analysis: name resolution + type
-    │   │   │                                checking happen together (see Sema.hpp's "One
-    │   │   │                                traversal, not two" note), not as separate passes
-    │   │   ├── SemaDecl.cpp              -- const, let, struct, enum, trait, fn, fields, params
-    │   │   ├── SemaStmt.cpp              -- if, for, while, switch, return, block
-    │   │   ├── SemaExpr.cpp              -- literals, binary/unary, calls, pipeline, compose
-    │   │   ├── SemaType.cpp              -- resolve named/array/nullable/fallible/ptr/ref/func types
-    │   │   ├── Generics.cpp              -- generic param usage, trait implementation, self-reference
-    │   │   ├── Concurrency.cpp           -- async, await, spawn, join
-    │   │   └── FFIValidator.hpp/cpp      -- validate @[foreign("C")] against lge_ffi.lfi
-    │   └── support/                      -- sema infrastructure
-    │       ├── Resolution.cpp            -- resolveValueOrError/resolveTypeNameOrError/
-    │       │                                resolveCalleeOrError/selfTypeOf
-    │       ├── TypeCompat.cpp            -- typesEqual/isAssignable/nullable-fallible helpers
-    │       ├── AttributesRegistry.hpp    -- validateAttributes/validateAttribute (header-only:
-    │       │                                thin delegation into SemaContext, no data table)
-    │       └── IntrinsicRegistry.hpp/cpp -- Lucid intrinsic name → LLVM ID map + arg-count
-    │                                        validation; used here to set the intrinsic flag
-    │                                        during Sema, and by IRLoweringIntrinsic.cpp later
+    ├── src/sema/
+    │   ├── Sema.hpp                      # Public API (namespace sema)
+    │   ├── Sema.cpp                      # Public API implementation
+    │   │
+    │   ├── context/                      # Context components
+    │   │   ├── SemanticResources.hpp     # Shared resources
+    │   │   ├── SymbolStorage.hpp         # Two-tier symbol storage
+    │   │   ├── SymbolStorage.cpp         # Symbol storage implementation
+    │   │   ├── SemanticContextStack.hpp  # Semantic nesting tracking
+    │   │   ├── SemanticContextStack.cpp  # Context stack implementation
+    │   │   ├── DefiningTypeStack.hpp     # Self-reference support
+    │   │   └── SemaContext.hpp           # Unified context (composition)
+    │   │
+    │   ├── rules/                        # Analysis rules (unchanged)
+    │   │   ├── SemaDecl.cpp            -- const, let, struct, enum, trait, fn, fields, params
+    │   │   ├── SemaStmt.cpp            -- if, for, while, switch, return, block
+    │   │   ├── SemaExpr.cpp            -- literals, binary/unary, calls, pipeline, compose
+    │   │   ├── SemaType.cpp            -- resolve named/array/nullable/fallible/ptr/ref/func types
+    │   │   ├── Generics.cpp            -- generic param usage, trait implementation, self-reference
+    │   │   ├── Concurrency.cpp         -- async, await, spawn, join
+    │   │   └── FFIValidator.hpp/cpp    -- validate @[foreign("C")] against lge_ffi.lfi
+    │   │
+    │   └── support/                      # Helpers (unchanged)
+    │       ├── Resolution.cpp          
+    │       ├── TypeCompat.cpp
+    │       ├── AttributesRegistry.hpp
+    │       └── IntrinsicRegistry.hpp
     │
     ├── codegen/
     │   ├── IRLowering.hpp                     # Single unified header (all declarations)
@@ -614,10 +619,6 @@ lucid/
     │   ├── run.hpp               -- lucid run
     │   ├── build.hpp             -- lucid build
     │   └── repl.hpp              -- lucid repl
-    │
-    ├── lsp/                      -- Server Protocol
-    │   ├── server.hpp/cpp        -- JSON-RPC server, incremental re-analysis
-    │   └── handlers.hpp          -- LSP request handlers (hover, complete, goto)
     │
     └── debug/                    -- developer tools (not user-facing)
 
