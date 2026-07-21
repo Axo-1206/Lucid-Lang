@@ -541,7 +541,7 @@ lucid/
     │   │   ├── ParserStmt.cpp          -- if, for, while, return, block
     │   │   ├── ParserExpr.cpp          -- Pratt parser: all expressions
     │   │   ├── ParserType.cpp          -- type annotations: *T, T?, generics
-    │   │   └── Concurrency.cpp   -- async, parallel, await, spawn, join
+    │   │   └── Concurrency.cpp         -- async, await, spawn, join
     │   └── support/                    -- parser infrastructure
     │       ├── ParserContext.hpp       -- shared parse state
     │       ├── Lookahead.cpp           -- disambiguation helpers
