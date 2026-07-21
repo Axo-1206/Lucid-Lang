@@ -1,0 +1,257 @@
+/**
+ * @file SemaContext.hpp
+ * @brief Unified semantic context - composes all sub-contexts.
+ *
+ * This is the main context passed to all semantic analysis functions.
+ * It composes the smaller, focused contexts into a single interface.
+ *
+ * @architectural_note Composition over inheritance
+ *   Each sub-context has a single responsibility. SemaContext composes
+ *   them and provides a unified interface for the semantic phase.
+ *
+ * @architectural_note No toString() needed
+ *   StringPool::lookup() now returns std::string directly, so callers
+ *   can use pool.lookup(name) without an intermediate conversion step.
+ */
+#pragma once
+
+#include "SemanticResources.hpp"
+#include "SymbolStorage.hpp"
+#include "SemanticContextStack.hpp"
+#include "DefiningTypeStack.hpp"
+
+#include "core/diagnostics/Diagnostic.hpp"
+#include "core/diagnostics/DiagnosticCodes.hpp"
+
+#include <unordered_map>
+#include <vector>
+#include <sstream>
+#include <type_traits>
+
+namespace sema {
+
+/**
+ * @brief Unified semantic context for all analysis passes.
+ *
+ * Composes:
+ *   - SemanticResources (shared, immutable)
+ *   - SymbolStorage (two-tier symbol tables)
+ *   - SemanticContextStack (semantic nesting)
+ *   - DefiningTypeStack (self-reference support)
+ *
+ * Also provides:
+ *   - Module management (modules list, path lookup)
+ *   - Diagnostic forwarding
+ */
+struct SemaContext {
+    // ─── Sub-Contexts ──────────────────────────────────────────────────
+
+    /// Shared, immutable resources
+    SemanticResources resources;
+
+    /// Two-tier symbol storage
+    SymbolStorage symbols;
+
+    /// Semantic context stack
+    SemanticContextStack contexts;
+
+    /// Self-reference support
+    DefiningTypeStack definingTypes;
+
+    // ─── Modules ────────────────────────────────────────────────────────
+
+    /// Every module being analyzed, in the order provided
+    std::vector<ModuleAST*> modules;
+
+    /// Fast path: module path → module AST
+    std::unordered_map<InternedString, ModuleAST*> modulesByPath;
+
+    // ─── Constructor ────────────────────────────────────────────────────
+
+    /**
+     * @brief Construct the semantic context for a whole compilation.
+     *
+     * @param p   Shared string interner (same one used by the parser).
+     * @param a   Shared AST allocator (same one used by the parser).
+     * @param mods Every module produced by the parse phase, in dependency order.
+     */
+    SemaContext(StringPool& p, ASTArena& a, std::vector<ModuleAST*> mods)
+        : resources(p, a)
+        , modules(std::move(mods))
+    {
+        for (ModuleAST* m : modules) {
+            if (m) modulesByPath[m->filePath] = m;
+        }
+    }
+
+    // Non-copyable (contains references)
+    SemaContext(const SemaContext&) = delete;
+    SemaContext& operator=(const SemaContext&) = delete;
+
+    // Move is allowed
+    SemaContext(SemaContext&&) = delete;
+    SemaContext& operator=(SemaContext&&) = delete;
+
+    // ─── Convenience Accessors ──────────────────────────────────────────
+
+    StringPool& pool() { return resources.pool; }
+    const StringPool& pool() const { return resources.pool; }
+
+    ASTArena& arena() { return resources.arena; }
+    const ASTArena& arena() const { return resources.arena; }
+
+    // ─── Module Lookup ──────────────────────────────────────────────────
+
+    /**
+     * @brief Resolve a module by its interned file/package path.
+     *
+     * Used when processing an `import` statement: the path string must be
+     * turned into a ModuleAST before an alias can be registered.
+     */
+    ModuleAST* findModuleByPath(InternedString path) const {
+        auto it = modulesByPath.find(path);
+        return it != modulesByPath.end() ? it->second : nullptr;
+    }
+
+    // ─── String Conversion ──────────────────────────────────────────────
+
+    /**
+     * @brief Convert an InternedString to a display string.
+     * 
+     * @deprecated Use pool().lookup(name) directly instead.
+     *             StringPool::lookup() now returns std::string.
+     */
+    // REMOVED: toString() is no longer needed
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Diagnostic Forwarding
+    // ─────────────────────────────────────────────────────────────────────
+
+private:
+    // ─── Internal Streaming Helpers ─────────────────────────────────────
+
+    template<typename T>
+    struct is_interned_string : std::false_type {};
+
+    template<>
+    struct is_interned_string<InternedString> : std::true_type {};
+
+    template<>
+    struct is_interned_string<InternedString&> : std::true_type {};
+
+    template<>
+    struct is_interned_string<const InternedString&> : std::true_type {};
+
+    template<typename T>
+    typename std::enable_if<!is_interned_string<typename std::decay<T>::type>::value>::type
+    streamTo(std::ostringstream& oss, T&& value) const {
+        oss << std::forward<T>(value);
+    }
+
+    /**
+     * @brief Stream an InternedString by converting it to std::string.
+     * 
+     * Since StringPool::lookup() now returns std::string, we can stream
+     * InternedString directly by looking it up in the pool.
+     */
+    void streamTo(std::ostringstream& oss, InternedString s) const {
+        oss << resources.pool.lookup(s);
+    }
+
+    template<typename T>
+    void buildMessageImpl(std::ostringstream& oss, T&& value) const {
+        streamTo(oss, std::forward<T>(value));
+    }
+
+    template<typename T, typename... Rest>
+    void buildMessageImpl(std::ostringstream& oss, T&& first, Rest&&... rest) const {
+        streamTo(oss, std::forward<T>(first));
+        buildMessageImpl(oss, std::forward<Rest>(rest)...);
+    }
+
+    template<typename... Args>
+    std::string buildMessage(Args&&... args) const {
+        if constexpr (sizeof...(Args) == 0) {
+            return "";
+        } else {
+            std::ostringstream oss;
+            buildMessageImpl(oss, std::forward<Args>(args)...);
+            return oss.str();
+        }
+    }
+
+public:
+    // ─── Public Error Reporting API ────────────────────────────────────
+
+    /**
+     * @brief Report an error at an AST node's location.
+     *
+     * Example usage with InternedString:
+     * ```cpp
+     * ctx.error(useSite, DiagCode::E2001, "undefined type '", ctx.pool().lookup(name), "'");
+     * ```
+     * 
+     * Or, since InternedString is streamable through the diagnostic system:
+     * ```cpp
+     * ctx.error(useSite, DiagCode::E2001, "undefined type '", name, "'");
+     * ```
+     */
+    template<typename... Args>
+    void error(const BaseAST* node, DiagCode code, Args&&... args) {
+        std::string message = buildMessage(std::forward<Args>(args)...);
+        diagnostic::error(DiagnosticCategory::Semantic,
+                           node ? node->loc : SourceLocation{},
+                           code, {message});
+    }
+
+    /// Report an error at a specific location.
+    template<typename... Args>
+    void errorAt(const SourceLocation& loc, DiagCode code, Args&&... args) {
+        std::string message = buildMessage(std::forward<Args>(args)...);
+        diagnostic::error(DiagnosticCategory::Semantic, loc, code, {message});
+    }
+
+    /// Report a warning at an AST node's location.
+    template<typename... Args>
+    void warning(const BaseAST* node, DiagCode code, Args&&... args) {
+        std::string message = buildMessage(std::forward<Args>(args)...);
+        diagnostic::warning(DiagnosticCategory::Semantic,
+                             node ? node->loc : SourceLocation{},
+                             code, {message});
+    }
+
+    /// Report a warning at a specific location.
+    template<typename... Args>
+    void warningAt(const SourceLocation& loc, DiagCode code, Args&&... args) {
+        std::string message = buildMessage(std::forward<Args>(args)...);
+        diagnostic::warning(DiagnosticCategory::Semantic, loc, code, {message});
+    }
+
+    /// Report a free-text note at an AST node's location.
+    template<typename... Args>
+    void note(const BaseAST* node, Args&&... args) {
+        std::string message = buildMessage(std::forward<Args>(args)...);
+        diagnostic::note(node ? node->loc : SourceLocation{}, message);
+    }
+
+    /// Report a free-text note at a specific location.
+    template<typename... Args>
+    void noteAt(const SourceLocation& loc, Args&&... args) {
+        std::string message = buildMessage(std::forward<Args>(args)...);
+        diagnostic::note(loc, message);
+    }
+
+    // ─── Context Queries ────────────────────────────────────────────────
+
+    /**
+     * @brief True if analysis can safely continue.
+     *
+     * Forwards to `diagnostic::canContinue()`, which checks the
+     * consecutive-error threshold for the current diagnostic scope.
+     */
+    bool canContinue() const {
+        return diagnostic::canContinue();
+    }
+};
+
+} // namespace sema
