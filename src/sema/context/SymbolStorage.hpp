@@ -30,13 +30,6 @@
 #include <vector>
 #include <cassert>
 
-// Forward declarations
-struct ModuleAST;
-struct ValueDeclAST;
-struct TypeDeclAST;
-struct GenericParamDeclAST;
-struct FuncDeclAST;
-
 namespace sema {
 
 /**

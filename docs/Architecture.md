@@ -553,14 +553,12 @@ lucid/
     │   ├── Sema.hpp                      # Public API (namespace sema)
     │   ├── Sema.cpp                      # Public API implementation
     │   │
-    │   ├── context/                      # Context components
-    │   │   ├── SemanticResources.hpp     # Shared resources
-    │   │   ├── SymbolStorage.hpp         # Two-tier symbol storage
-    │   │   ├── SymbolStorage.cpp         # Symbol storage implementation
-    │   │   ├── SemanticContextStack.hpp  # Semantic nesting tracking
-    │   │   ├── SemanticContextStack.cpp  # Context stack implementation
-    │   │   ├── DefiningTypeStack.hpp     # Self-reference support
-    │   │   └── SemaContext.hpp           # Unified context (composition)
+    │   ├── context/                            # Context components
+    │   │   ├── SemanticResources.hpp           # Shared resources
+    │   │   ├── SymbolStorage.hpp/cpp           # Two-tier symbol storage
+    │   │   ├── SemanticContextStack.hpp/cpp    # Semantic nesting tracking
+    │   │   ├── DefiningTypeStack.hpp/cpp       # Self-reference support
+    │   │   └── SemaContext.hpp/cpp             # Unified context (composition)
     │   │
     │   ├── rules/                        # Analysis rules (unchanged)
     │   │   ├── SemaDecl.cpp            -- const, let, struct, enum, trait, fn, fields, params

@@ -12,6 +12,10 @@
  * @architectural_note No toString() needed
  *   StringPool::lookup() now returns std::string directly, so callers
  *   can use pool.lookup(name) without an intermediate conversion step.
+ *
+ * @architectural_note Diagnostic integration
+ *   Uses the consolidated diagnostic:: API directly. No DiagnosticCategory
+ *   is needed - the category is derived from the error code range.
  */
 #pragma once
 
@@ -88,7 +92,7 @@ struct SemaContext {
     SemaContext(const SemaContext&) = delete;
     SemaContext& operator=(const SemaContext&) = delete;
 
-    // Move is allowed
+    // Move is not allowed (contains references)
     SemaContext(SemaContext&&) = delete;
     SemaContext& operator=(SemaContext&&) = delete;
 
@@ -112,16 +116,6 @@ struct SemaContext {
         auto it = modulesByPath.find(path);
         return it != modulesByPath.end() ? it->second : nullptr;
     }
-
-    // ─── String Conversion ──────────────────────────────────────────────
-
-    /**
-     * @brief Convert an InternedString to a display string.
-     * 
-     * @deprecated Use pool().lookup(name) directly instead.
-     *             StringPool::lookup() now returns std::string.
-     */
-    // REMOVED: toString() is no longer needed
 
     // ─────────────────────────────────────────────────────────────────────
     // Diagnostic Forwarding
@@ -195,36 +189,35 @@ public:
      * ```cpp
      * ctx.error(useSite, DiagCode::E2001, "undefined type '", name, "'");
      * ```
+     * 
+     * @note The diagnostic category is derived from the error code range.
+     *       No DiagnosticCategory parameter is needed.
      */
     template<typename... Args>
     void error(const BaseAST* node, DiagCode code, Args&&... args) {
         std::string message = buildMessage(std::forward<Args>(args)...);
-        diagnostic::error(DiagnosticCategory::Semantic,
-                           node ? node->loc : SourceLocation{},
-                           code, {message});
+        diagnostic::error(node ? node->loc : SourceLocation{}, code, {message});
     }
 
     /// Report an error at a specific location.
     template<typename... Args>
     void errorAt(const SourceLocation& loc, DiagCode code, Args&&... args) {
         std::string message = buildMessage(std::forward<Args>(args)...);
-        diagnostic::error(DiagnosticCategory::Semantic, loc, code, {message});
+        diagnostic::error(loc, code, {message});
     }
 
     /// Report a warning at an AST node's location.
     template<typename... Args>
     void warning(const BaseAST* node, DiagCode code, Args&&... args) {
         std::string message = buildMessage(std::forward<Args>(args)...);
-        diagnostic::warning(DiagnosticCategory::Semantic,
-                             node ? node->loc : SourceLocation{},
-                             code, {message});
+        diagnostic::warning(node ? node->loc : SourceLocation{}, code, {message});
     }
 
     /// Report a warning at a specific location.
     template<typename... Args>
     void warningAt(const SourceLocation& loc, DiagCode code, Args&&... args) {
         std::string message = buildMessage(std::forward<Args>(args)...);
-        diagnostic::warning(DiagnosticCategory::Semantic, loc, code, {message});
+        diagnostic::warning(loc, code, {message});
     }
 
     /// Report a free-text note at an AST node's location.
@@ -239,6 +232,20 @@ public:
     void noteAt(const SourceLocation& loc, Args&&... args) {
         std::string message = buildMessage(std::forward<Args>(args)...);
         diagnostic::note(loc, message);
+    }
+
+    /// Report a free-text hint at an AST node's location.
+    template<typename... Args>
+    void hint(const BaseAST* node, Args&&... args) {
+        std::string message = buildMessage(std::forward<Args>(args)...);
+        diagnostic::hint(node ? node->loc : SourceLocation{}, message);
+    }
+
+    /// Report a free-text hint at a specific location.
+    template<typename... Args>
+    void hintAt(const SourceLocation& loc, Args&&... args) {
+        std::string message = buildMessage(std::forward<Args>(args)...);
+        diagnostic::hint(loc, message);
     }
 
     // ─── Context Queries ────────────────────────────────────────────────
