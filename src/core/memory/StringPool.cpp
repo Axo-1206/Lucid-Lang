@@ -4,21 +4,26 @@
 
 /**
  * @brief Constructs the pool with ID 0 reserved for the empty string.
- *
- * ID 0 always maps to "" so that InternedString() (id=0) behaves
- * consistently with lookup().
  */
 StringPool::StringPool() {
-    // Reserve ID 0 for the empty/invalid InternedString
     strings.push_back(std::string_view(""));
 }
 
 /**
- * @brief Copies `s` into the current bump-allocated block, allocating a new
- *        block if necessary.
- *
- * Returns a stable `std::string_view` pointing into the block. The caller
- * must ensure the pool outlives the returned view (the pool owns the block).
+ * @brief Clear the pool for testing.
+ */
+void StringPool::clear() {
+    internMap.clear();
+    strings.clear();
+    blocks.clear();
+    currentBlock = nullptr;
+    currentOffset = 0;
+    // Reserve ID 0 for empty string
+    strings.push_back(std::string_view(""));
+}
+
+/**
+ * @brief Copies `s` into the current bump-allocated block.
  */
 std::string_view StringPool::allocateString(std::string_view s) {
     if (s.empty()) return std::string_view("");
@@ -39,10 +44,6 @@ std::string_view StringPool::allocateString(std::string_view s) {
 
 /**
  * @brief Returns the InternedString ID for `s`, allocating if new.
- *
- * - Empty string → ID 0
- * - Already interned → existing ID
- * - New string → allocated, given the next sequential ID
  */
 InternedString StringPool::intern(std::string_view s) {
     if (s.empty()) return InternedString(0);
@@ -62,12 +63,20 @@ InternedString StringPool::intern(std::string_view s) {
 
 /**
  * @brief Retrieves the string data for a previously interned ID.
- *
- * Returns "" for ID 0 or any out-of-range ID.
  */
 std::string StringPool::lookup(InternedString s) const {
     if (s.id == 0 || s.id >= strings.size()) {
         return std::string("");
     }
     return std::string(strings[s.id]);
+}
+
+/**
+ * @brief Retrieves the string data as a view.
+ */
+std::string_view StringPool::lookupView(InternedString s) const {
+    if (s.id == 0 || s.id >= strings.size()) {
+        return std::string_view("");
+    }
+    return strings[s.id];
 }
