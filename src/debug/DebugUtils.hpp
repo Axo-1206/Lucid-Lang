@@ -46,10 +46,9 @@ inline std::string kindToString(ASTKind kind) {
         case ASTKind::RefType:          return "RefType";
         case ASTKind::PtrType:          return "PtrType";
         case ASTKind::FuncType:         return "FuncType";
-        case ASTKind::TupleType:        return "TupleType";
 
         // Declarations
-        case ASTKind::UseDecl:          return "UseDecl";
+        case ASTKind::ImportDecl:          return "ImportDecl";
         case ASTKind::VarDecl:          return "VarDecl";
         case ASTKind::Param:            return "Param";
         case ASTKind::GenericParamDecl: return "GenericParamDecl";
@@ -143,7 +142,7 @@ inline std::string tokenTypeToString(TokenType type) {
         case TokenType::UNDERSCORE:     return "_";
         
         // Keywords
-        case TokenType::USE:            return "use";
+        case TokenType::IMPORT:         return "import";
         case TokenType::AS:             return "as";
         case TokenType::STRUCT:         return "struct";
         case TokenType::ENUM:           return "enum";
