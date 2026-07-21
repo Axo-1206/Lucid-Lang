@@ -84,7 +84,7 @@ std::filesystem::path ModuleResolver::getModuleFilePath(InternedString modulePat
     }
     
     // Build path from package root
-    std::string_view pathStr = pool_.lookup(modulePath);
+    std::string pathStr = pool_.lookup(modulePath);
     std::filesystem::path result = packageRoot_;
     
     // Split path by '/' and append each component
@@ -192,7 +192,7 @@ bool ModuleResolver::moduleFileExists(InternedString filePath) const {
 // Private Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-InternedString ModuleResolver::normalizePath(std::string_view path) const {
+InternedString ModuleResolver::normalizePath(std::string path) const {
     // Convert Windows backslashes to forward slashes
     std::string normalized;
     normalized.reserve(path.size());
@@ -207,7 +207,7 @@ InternedString ModuleResolver::normalizePath(std::string_view path) const {
 }
 
 std::string ModuleResolver::usePathToRelativePath(InternedString usePath) const {
-    std::string_view useStr = pool_.lookup(usePath);
+    std::string useStr = pool_.lookup(usePath);
     if (useStr.empty()) {
         return "";
     }

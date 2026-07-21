@@ -20,7 +20,7 @@
 #include <unordered_map>
 #include <vector>
 #include <filesystem>
-#include <string_view>
+#include <string>
 
 namespace parser {
 
@@ -228,7 +228,7 @@ private:
     /**
      * @brief Normalize path separators to forward slashes.
      */
-    InternedString normalizePath(std::string_view path) const;
+    InternedString normalizePath(std::string path) const;
     
     /**
      * @brief Convert a import path to a relative file path.
