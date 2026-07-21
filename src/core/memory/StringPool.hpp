@@ -1,6 +1,7 @@
 #pragma once
 
 #include "InternedString.hpp"
+#include <string>
 #include <string_view>
 #include <vector>
 #include <unordered_map>
@@ -74,5 +75,15 @@ public:
     StringPool& operator=(const StringPool&) = delete;
 
     InternedString intern(std::string_view s);
-    std::string_view lookup(InternedString s) const;
+    
+    /**
+     * @brief Retrieves the string data for a previously interned ID.
+     * 
+     * Returns an empty string for ID 0 or any out-of-range ID.
+     * 
+     * @note This allocates a new std::string each call. For performance-critical
+     *       paths, consider keeping the InternedString and only converting
+     *       when actually needed (e.g., for diagnostics).
+     */
+    std::string lookup(InternedString s) const;
 };

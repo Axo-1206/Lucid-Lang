@@ -65,9 +65,9 @@ InternedString StringPool::intern(std::string_view s) {
  *
  * Returns "" for ID 0 or any out-of-range ID.
  */
-std::string_view StringPool::lookup(InternedString s) const {
+std::string StringPool::lookup(InternedString s) const {
     if (s.id == 0 || s.id >= strings.size()) {
-        return std::string_view("");
+        return std::string("");
     }
-    return strings[s.id];
+    return std::string(strings[s.id]);
 }
