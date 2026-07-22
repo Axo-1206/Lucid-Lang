@@ -13,13 +13,15 @@
  *   later resolved representation turns out to be, it isn't part of the
  *   files this was written against, so this file compares TypeAST nodes
  *   directly and structurally: same ASTKind, then same kind-specific
- *   payload, recursively for any nested type. This is exactly what
- *   `NamedTypeAST`'s own comparison relies on — see typesEqual()'s
- *   `NamedType` case below for the resulting limitation.
+ *   payload, recursively for any nested type.
  *
+ * @note Refactored to use the new SemaContext sub-contexts where needed.
  */
 
 #include "../Sema.hpp"
+#include "../context/SemaContext.hpp"
+
+namespace sema {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // typesEqual
@@ -410,11 +412,11 @@ bool isAssignable(const TypeAST* target, const TypeAST* source, SemaContext& ctx
     // assignable if `source`'s struct declaration lists that trait in its
     // own `traitRefs` (see StructDeclAST's doc comment in DeclAST.hpp).
     // Deciding that requires resolving `target`/`source` down to their
-    // TypeDeclAST (via resolveTypeNameOrError()/ctx.lookupType()) and
+    // TypeDeclAST (via resolveTypeNameOrError()/ctx.symbols.lookupType()) and
     // walking `traitRefs`, plus knowing how validateTraitImplementation()
     // exposes its result for reuse here — neither is settled by the files
     // this was written against, so it's intentionally unhandled rather
-    // than guessed at.                                                // X
+    // than guessed at.
     (void)ctx;  // reserved for the trait-conformance case above
 
     // Arrays, references, and pointers are invariant in Lucid — nothing in
@@ -422,3 +424,5 @@ bool isAssignable(const TypeAST* target, const TypeAST* source, SemaContext& ctx
     // `&T`, or `*T`, so anything past this point is a genuine mismatch.
     return false;
 }
+
+} // namespace sema

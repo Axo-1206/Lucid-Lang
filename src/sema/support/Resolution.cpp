@@ -17,9 +17,15 @@
  * @note '// X' marks resolveCalleeOrError()'s handling of a callee that
  *       isn't a plain identifier or `module:member` access — see that
  *       function's own comment for why it's out of scope here.
+ *
+ * @note Refactored to use the new diagnostic API (no DiagnosticCategory)
+ *       and the new SemaContext sub-contexts (symbols, resources).
  */
 
 #include "../Sema.hpp"
+#include "../context/SemaContext.hpp"
+
+namespace sema {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // resolveValueOrError
@@ -51,10 +57,10 @@
  *         case — callers do not need to report their own).
  */
 ValueDeclAST* resolveValueOrError(IdentifierExprAST* expr, SemaContext& ctx) {
-    if (ValueDeclAST* decl = ctx.lookupValue(expr->name)) {
+    if (ValueDeclAST* decl = ctx.symbols.lookupValue(expr->name)) {
         return decl;
     }
-    ctx.error(expr, DiagCode::E2001, "undefined value '", ctx.toString(expr->name), "'");
+    ctx.error(expr, DiagCode::E2001, "undefined value '", ctx.pool().lookup(expr->name), "'");
     return nullptr;
 }
 
@@ -100,7 +106,7 @@ ValueDeclAST* resolveValueOrError(IdentifierExprAST* expr, SemaContext& ctx) {
  *         because it's genuinely undefined (E2002 reported).
  */
 TypeDeclAST* resolveTypeNameOrError(NamedTypeAST* type, SemaContext& ctx) {
-    if (TypeDeclAST* decl = ctx.lookupType(type->name)) {
+    if (TypeDeclAST* decl = ctx.symbols.lookupType(type->name)) {
         return decl;
     }
 
@@ -108,15 +114,13 @@ TypeDeclAST* resolveTypeNameOrError(NamedTypeAST* type, SemaContext& ctx) {
     // valid (see GenericParamDeclAST's own doc comment: generic params are
     // a separate hierarchy from TypeDeclAST, so there's no TypeDeclAST to
     // hand back here), but NOT an error. The caller distinguishes this
-    // case from genuine failure by calling ctx.lookupGenericParam() itself
-    // when it needs to know which case a nullptr return means — e.g.
-    // resolveNamedType() in sema/rules/SemaType.cpp setting
-    // NamedTypeAST::isGenericParam.
-    if (ctx.lookupGenericParam(type->name) != nullptr) {
+    // case from genuine failure by calling ctx.symbols.lookupGenericParam()
+    // itself when it needs to know which case a nullptr return means.
+    if (ctx.symbols.lookupGenericParam(type->name) != nullptr) {
         return nullptr;
     }
 
-    ctx.error(type, DiagCode::E2002, "undefined type '", ctx.toString(type->name), "'");
+    ctx.error(type, DiagCode::E2002, "undefined type '", ctx.pool().lookup(type->name), "'");
     return nullptr;
 }
 
@@ -171,13 +175,13 @@ FuncDeclAST* resolveCalleeOrError(ExprAST* callee, SemaContext& ctx) {
     // Plain call: `foo(...)`.
     if (callee->isa<IdentifierExprAST>()) {
         InternedString name = callee->as<IdentifierExprAST>()->name;
-        ValueDeclAST* value = ctx.lookupValue(name);
+        ValueDeclAST* value = ctx.symbols.lookupValue(name);
         if (!value) {
-            ctx.error(callee, DiagCode::E2001, "undefined value '", ctx.toString(name), "'");
+            ctx.error(callee, DiagCode::E2001, "undefined value '", ctx.pool().lookup(name), "'");
             return nullptr;
         }
         if (!value->isa<FuncDeclAST>()) {
-            ctx.error(callee, DiagCode::E2003, "'", ctx.toString(name), "' is not callable");
+            ctx.error(callee, DiagCode::E2003, "'", ctx.pool().lookup(name), "' is not callable");
             return nullptr;
         }
         return value->as<FuncDeclAST>();
@@ -188,8 +192,8 @@ FuncDeclAST* resolveCalleeOrError(ExprAST* callee, SemaContext& ctx) {
     if (callee->isa<ModuleAccessExprAST>()) {
         ModuleAccessExprAST* access = callee->as<ModuleAccessExprAST>();
 
-        ModuleAST* mod = ctx.lookupImport(access->moduleName);
-        ModuleTable* table = mod ? ctx.findModuleTable(mod) : nullptr;
+        ModuleAST* mod = ctx.symbols.lookupImport(access->moduleName);
+        ModuleTable* table = mod ? ctx.symbols.findModuleTable(mod) : nullptr;
         ValueDeclAST* value = nullptr;
         if (table) {
             auto it = table->values.find(access->memberName);
@@ -200,12 +204,12 @@ FuncDeclAST* resolveCalleeOrError(ExprAST* callee, SemaContext& ctx) {
 
         if (!value) {
             ctx.error(callee, DiagCode::E2001, "undefined value '",
-                       ctx.toString(access->moduleName), ":", ctx.toString(access->memberName), "'");
+                       ctx.pool().lookup(access->moduleName), ":", ctx.pool().lookup(access->memberName), "'");
             return nullptr;
         }
         if (!value->isa<FuncDeclAST>()) {
-            ctx.error(callee, DiagCode::E2003, "'", ctx.toString(access->moduleName), ":",
-                       ctx.toString(access->memberName), "' is not callable");
+            ctx.error(callee, DiagCode::E2003, "'", ctx.pool().lookup(access->moduleName), ":",
+                       ctx.pool().lookup(access->memberName), "' is not callable");
             return nullptr;
         }
         return value->as<FuncDeclAST>();
@@ -220,9 +224,7 @@ FuncDeclAST* resolveCalleeOrError(ExprAST* callee, SemaContext& ctx) {
     // a FuncTypeAST, which is checkExpr's job (it must already have type-
     // checked `callee` before calling this), not a lookup this function
     // can do. checkCallExpr() is expected to fall back to that type-based
-    // check itself when this returns nullptr for a non-named callee — see
-    // FuncTypeAST's own doc comment in TypeAST.hpp for the curried shape
-    // such a check would be looking for.                              // X
+    // check itself when this returns nullptr for a non-named callee.
     return nullptr;
 }
 
@@ -268,10 +270,12 @@ NamedTypeAST* selfTypeOf(TypeDeclAST* decl, SemaContext& ctx) {
         return decl->selfType;
     }
 
-    NamedTypeAST* self = ctx.arena.makeType<NamedTypeAST>(decl->name);
+    NamedTypeAST* self = ctx.arena().makeType<NamedTypeAST>(decl->name);
     self->loc = decl->loc;  // point diagnostics at the declaration itself
     decl->selfType = self;  // TypeDeclAST::selfType is `mutable` — cached
                              // lazily by design, see its own doc comment
                              // in BaseAST.hpp.
     return self;
 }
+
+}; // namespace sema
