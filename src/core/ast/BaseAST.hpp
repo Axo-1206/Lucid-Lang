@@ -260,6 +260,8 @@ struct BaseAST {
     explicit BaseAST(ASTKind k) : kind(k) {}
     virtual ~BaseAST() = default;
 
+    // ─── Type Checking ──────────────────────────────────────────────────────
+
     template<typename T>
     bool isa() const { return kind == T::staticKind; }
 
@@ -274,6 +276,15 @@ struct BaseAST {
         assert(kind == T::staticKind && "ASTKind mismatch in as<T>()");
         return static_cast<const T*>(this);
     }
+
+    bool isBoolType() const { return kind == ASTKind::PrimitiveType; }
+    bool isIntType() const { return kind == ASTKind::PrimitiveType; }
+    bool isFloatType() const { return kind == ASTKind::PrimitiveType; }
+    bool isStringType() const { return kind == ASTKind::PrimitiveType; }
+    bool isCharType() const { return kind == ASTKind::PrimitiveType; }
+    bool isNumericType() const { return kind == ASTKind::PrimitiveType; }
+    bool isIntegerType() const { return kind == ASTKind::PrimitiveType; }
+    bool isPrimitiveType() const { return kind == ASTKind::PrimitiveType; }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -335,6 +346,7 @@ struct DeclAST : BaseAST {
     ArenaSpan<AttributePtr>   attributes;
     InternedString            file;
     bool                      isConst = false;
+    InternedString            name;
 
     explicit DeclAST(ASTKind k) : BaseAST(k) {}
     bool hasDoc() const { return doc.has_value(); }
@@ -370,8 +382,7 @@ struct DeclAST : BaseAST {
 struct ValueDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::ValueDecl;
 
-    TypeAST* declaredType = nullptr;
-    InternedString name;
+    TypeAST* type = nullptr;
     
     explicit ValueDeclAST(ASTKind k) : DeclAST(k) {}
 };
@@ -401,8 +412,6 @@ struct ValueDeclAST : DeclAST {
  */
 struct TypeDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::TypeDecl;
-
-    InternedString name;
     
     explicit TypeDeclAST(ASTKind k) : DeclAST(k) {}
 };
@@ -521,14 +530,14 @@ using ModuleASTPtr = ModuleAST*;
  *       The semantic pass verifies that all constraint types resolve to traits
  *       and that the traits are compatible.
  */
-struct GenericParamDeclAST : BaseAST {
+struct GenericParamDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::GenericParamDecl;
 
     InternedString name;
     ArenaSpan<NamedTypeAST*> constraints;   // empty = unconstrained
 
     explicit GenericParamDeclAST(InternedString n)
-        : BaseAST(ASTKind::GenericParamDecl), name(n) {}
+        : DeclAST(ASTKind::GenericParamDecl), name(n) {}
 };
 
 using ParamPtr          = ParamAST*;

@@ -214,7 +214,6 @@ struct StructLiteralExprAST : ExprAST {
     InternedString typeName;               // "Vec2", "Color", "Pair"
     ArenaSpan<TypePtr> genericArgs;        // empty if non‑generic
     ArenaSpan<FieldInitPtr> inits;          // field = expr entries
-    NamedTypeAST* instantiatedType;         // semantic cache (raw pointer)
 
     StructLiteralExprAST() : ExprAST(ASTKind::StructLiteralExpr) {}
 };

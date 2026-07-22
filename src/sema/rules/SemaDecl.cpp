@@ -86,7 +86,7 @@ void analyzeImportDecl(const ImportDeclAST* decl, SemaContext& ctx) {
  * @brief Register a variable declaration.
  *
  * REGISTRATION:
- *   - `ctx.symbols.insertValue(decl->name, decl)` - registers in value namespace
+ *   - `ctx.symbols.insertValue(decl)` - registers in value namespace
  *   - For const declarations, marks isConst = true
  */
 void analyzeVarDecl(const VarDeclAST* decl, SemaContext& ctx) {
@@ -96,7 +96,7 @@ void analyzeVarDecl(const VarDeclAST* decl, SemaContext& ctx) {
     TypeAST* declaredType = resolveType(decl->type, ctx);
 
     // Check value redeclaration in current tier only (shadowing is allowed)
-    if (reportValueRedeclaration(decl->name, decl, ctx)) {
+    if (reportValueRedeclaration(decl, ctx)) {
         return;
     }
 
@@ -151,14 +151,14 @@ void analyzeVarDecl(const VarDeclAST* decl, SemaContext& ctx) {
  *
  * REGISTRATION:
  *   - Parameters are registered in the function's scope
- *   - `ctx.symbols.insertValue(param->name, param)` - registers in value namespace
+ *   - `ctx.symbols.insertValue(param)` - registers in value namespace
  *   - Parameters shadow outer variables
  */
 void analyzeParam(const ParamAST* param, SemaContext& ctx) {
     validateAttributes(param->attributes, param, ctx);
 
     // Check value redeclaration in current scope only
-    if (reportValueRedeclaration(param->name, param, ctx)) {
+    if (reportValueRedeclaration(param, ctx)) {
         return;
     }
 
@@ -189,12 +189,12 @@ void analyzeGenericParamDecl(const GenericParamDeclAST* param, SemaContext& ctx)
     }
 
     // Check generic param redeclaration in current scope only
-    if (reportGenericParamRedeclaration(param->name, param, ctx)) {
+    if (reportGenericParamRedeclaration(param, ctx)) {
         return;
     }
 
     // Register in genericParams map (highest lookup priority)
-    ctx.symbols.insertGenericParam(param->name, param);
+    ctx.symbols.insertGenericParam(param);
 }
 
 
@@ -202,7 +202,7 @@ void analyzeGenericParamDecl(const GenericParamDeclAST* param, SemaContext& ctx)
  * @brief Register an enum declaration and analyze its variants.
  *
  * REGISTRATION:
- *   - `ctx.symbols.insertType(decl->name, decl)` - registers in type namespace
+ *   - `ctx.symbols.insertType(decl)` - registers in type namespace
  *   - Variants are registered as values in the enum's scope
  */
 void analyzeEnumDecl(const EnumDeclAST* decl, SemaContext& ctx) {
@@ -210,7 +210,7 @@ void analyzeEnumDecl(const EnumDeclAST* decl, SemaContext& ctx) {
 
     // Register enum name BEFORE analyzing variants - enables self-reference
     // for variant types (e.g., `Direction.North` resolves to enum type)
-    if (reportTypeRedeclaration(decl->name, decl, ctx)) {
+    if (reportTypeRedeclaration(decl, ctx)) {
         return;
     }
     ctx.symbols.insertType(decl);
@@ -247,14 +247,14 @@ void analyzeEnumDecl(const EnumDeclAST* decl, SemaContext& ctx) {
  * @brief Register a trait declaration and analyze its fields.
  *
  * REGISTRATION:
- *   - `ctx.symbols.insertType(decl->name, decl)` - registers in type namespace
+ *   - `ctx.symbols.insertType(decl)` - registers in type namespace
  *   - Generic params registered via analyzeGenericParamDecl() BEFORE fields
  */
 void analyzeTraitDecl(const TraitDeclAST* decl, SemaContext& ctx) {
     validateAttributes(decl->attributes, decl, ctx);
 
     // Register trait name BEFORE analyzing fields - enables self-reference
-    if (reportTypeRedeclaration(decl->name, decl, ctx)) {
+    if (reportTypeRedeclaration(decl, ctx)) {
         return;
     }
     ctx.symbols.insertType(decl);
@@ -301,7 +301,7 @@ void analyzeTraitDecl(const TraitDeclAST* decl, SemaContext& ctx) {
  * @brief Register a struct declaration and analyze its fields.
  *
  * REGISTRATION:
- *   - `ctx.symbols.insertType(decl->name, decl)` - registers in type namespace
+ *   - `ctx.symbols.insertType(decl)` - registers in type namespace
  *   - Generic params registered via analyzeGenericParamDecl() BEFORE fields
  *   - Pushes ScopedTypeDefinition for self-reference detection
  *
@@ -317,7 +317,7 @@ void analyzeStructDecl(const StructDeclAST* decl, SemaContext& ctx) {
 
     // Register struct name BEFORE analyzing fields - enables self-reference
     // (e.g., `next ptr<Node<T>>?` can resolve Node while still being defined)
-    if (reportTypeRedeclaration(decl->name, decl, ctx)) {
+    if (reportTypeRedeclaration(decl, ctx)) {
         return;
     }
     ctx.symbols.insertType(decl);

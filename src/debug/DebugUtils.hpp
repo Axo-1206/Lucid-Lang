@@ -60,7 +60,6 @@ inline std::string kindToString(ASTKind kind) {
         case ASTKind::EnumDecl:         return "EnumDecl";
         case ASTKind::TraitFieldDecl:   return "TraitFieldDecl";
         case ASTKind::TraitDecl:        return "TraitDecl";
-        case ASTKind::TraitRef:         return "TraitRef";
 
         // Expressions
         case ASTKind::LiteralExpr:        return "LiteralExpr";

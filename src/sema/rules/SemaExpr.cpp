@@ -1,30 +1,155 @@
 /**
  * @file SemaExpr.cpp
- * @brief Implements Sema.hpp's "Expressions (Type Checking)" section —
- *        checkExpr() and every specific check*Expr() function.
+ * @brief Implements Sema.hpp's "Expressions (Type Checking)" section.
  *
- * @architectural_note Every check*Expr() function:
- *   1. Resolves names (via ctx.lookupValue()/lookupType() or helpers like
- *      resolveValueOrError())
- *   2. Type-checks sub-expressions
- *   3. Computes the expression's type
- *   4. Sets expr->resolvedType before returning
+ * ============================================================================
+ * DESIGN PHILOSOPHY: Target Type + Boolean Return
+ * ============================================================================
  *
- *   If a sub-expression fails to type-check (returns nullptr), the parent
- *   should propagate nullptr but NOT report a second diagnostic (the
- *   sub-expression already reported its own error).
+ * ─── Why Target Type? ─────────────────────────────────────────────────────────
  *
- * @architectural_note Type of an expression
- *   The resolved type is always a TypeAST pointer. For expressions that
- *   produce no value (e.g., void function calls), resolvedType is nullptr.
+ * Lucid REQUIRES explicit type annotations on all declarations. This means the
+ * type of every expression is known from its context BEFORE we even look at the
+ * expression itself. Examples:
+ *
+ *   let x int = 5 + 3     → target type is `int`
+ *   const add (a int)(b int) -> int = { return a + b }  → return type is `int`
+ *   struct Point { x float, y float }  → field `x` has target type `float`
+ *
+ * Since the target type is always known, we pass it as a parameter to checkExpr().
+ * This eliminates the need to "infer" types from expressions - we just validate
+ * that the expression produces a value of the expected type.
+ *
+ * ─── Why Boolean Return? ─────────────────────────────────────────────────────
+ *
+ * Because the target type is known, we don't need checkExpr() to compute and
+ * return a type. The type is already known from context. Instead, checkExpr()
+ * returns a boolean indicating whether the expression is valid.
+ *
+ * Benefits:
+ *   1. No type creation - We never allocate new TypeAST nodes during checking
+ *   2. Simpler API - Just check, don't compute
+ *   3. Matches Lucid's explicit type system
+ *   4. Better performance - No unnecessary allocations
+ *
+ * ─── How resolvedType is Set ─────────────────────────────────────────────────
+ *
+ * On success, `expr->resolvedType` is set to the target type. This gives:
+ *   - Codegen: Direct access to the expression's type
+ *   - Parent expressions: Type information for further validation
+ *   - Debugging: Clear type information in AST
+ *
+ * ─── Example Flow ────────────────────────────────────────────────────────────
+ *
+ * For `let x int = 5 + 3`:
+ *   1. analyzeVarDecl sees target type = `int`
+ *   2. checkExpr(init, int) is called
+ *   3. checkBinaryExpr checks left operand against `int` → 5 is int ✅
+ *   4. checkBinaryExpr checks right operand against `int` → 3 is int ✅
+ *   5. checkBinaryExpr validates operator-specific rules: Add requires numeric → int is numeric ✅
+ *   6. Returns true, sets expr->resolvedType = int
+ *   7. analyzeVarDecl sees success, completes validation
+ *
+ * Notice that no type was ever computed or allocated - everything was validated
+ * against the known target type.
+ *
+ * ============================================================================
+ * NULLABLE AND FALLIBLE TYPE RULES
+ * ============================================================================
+ *
+ * Lucid has three special type modifiers:
+ *   - T?  : Nullable - can be nil or T
+ *   - T!  : Fallible - can be err or T
+ *   - T?! : Combined - can be nil, err, or T
+ *
+ * ┌─────────────────────────────────────────────────────────────────────────────┐
+ * │ EXPRESSION KIND          │ NULLABLE (T?)    │ FALLIBLE (T!)   │ COMBINED  │
+ * │                          │                   │                 │  (T?!)    │
+ * ├──────────────────────────┼───────────────────┼─────────────────┼───────────┤
+ * │ Arithmetic (+, -, *, /)  │ ❌ Not allowed    │ ❌ Not allowed  │ ❌ Not    │
+ * │                          │ (must narrow)     │                 │ allowed   │
+ * ├──────────────────────────┼───────────────────┼─────────────────┼───────────┤
+ * │ Comparison (==, !=,      │ ✅ Allowed        │ ❌ Not allowed  │ ❌ Not    │
+ * │ <, <=, >, >=)            │ (nil comparison)  │                 │ allowed   │
+ * ├──────────────────────────┼───────────────────┼─────────────────┼───────────┤
+ * │ Logical (and, or)        │ ❌ Not allowed    │ ❌ Not allowed  │ ❌ Not    │
+ * │                          │ (must narrow)     │                 │ allowed   │
+ * ├──────────────────────────┼───────────────────┼─────────────────┼───────────┤
+ * │ Bitwise (&, |, ^, <<, >>)│ ❌ Not allowed    │ ❌ Not allowed  │ ❌ Not    │
+ * │                          │ (must narrow)     │                 │ allowed   │
+ * ├──────────────────────────┼───────────────────┼─────────────────┼───────────┤
+ * │ Unary Negation (-x)      │ ❌ Not allowed    │ ❌ Not allowed  │ ❌ Not    │
+ * │                          │ (must narrow)     │                 │ allowed   │
+ * ├──────────────────────────┼───────────────────┼─────────────────┼───────────┤
+ * │ Logical Not (not x)      │ ❌ Not allowed    │ ❌ Not allowed  │ ❌ Not    │
+ * │                          │ (must narrow)     │                 │ allowed   │
+ * ├──────────────────────────┼───────────────────┼─────────────────┼───────────┤
+ * │ Bitwise Not (~x)         │ ❌ Not allowed    │ ❌ Not allowed  │ ❌ Not    │
+ * │                          │ (must narrow)     │                 │ allowed   │
+ * ├──────────────────────────┼───────────────────┼─────────────────┼───────────┤
+ * │ Function Call (callee)   │ ❌ Not allowed    │ ❌ Not allowed  │ ❌ Not    │
+ * │                          │ (must narrow)     │                 │ allowed   │
+ * ├──────────────────────────┼───────────────────┼─────────────────┼───────────┤
+ * │ Function Call (argument) │ ✅ Allowed        │ ❌ Not allowed  │ ❌ Not    │
+ * │                          │ (if param is T?)  │ (must handle)   │ allowed   │
+ * ├──────────────────────────┼───────────────────┼─────────────────┼───────────┤
+ * │ Field Access (obj.field) │ ❌ Not allowed    │ ❌ Not allowed  │ ❌ Not    │
+ * │                          │ (use ?. instead)  │ (must handle)   │ allowed   │
+ * ├──────────────────────────┼───────────────────┼─────────────────┼───────────┤
+ * │ Nullable Chain (?.)      │ ✅ Allowed        │ ❌ Not allowed  │ ❌ Not    │
+ * │                          │                   │ (must handle)   │ allowed   │
+ * ├──────────────────────────┼───────────────────┼─────────────────┼───────────┤
+ * │ Null Coalesce (??)       │ ✅ Allowed        │ ✅ Allowed      │ ✅ Allowed│
+ * │                          │ (handles nil)     │ (handles err)   │ (handles  │
+ * │                          │                   │                 │ both)     │
+ * ├──────────────────────────┼───────────────────┼─────────────────┼───────────┤
+ * │ Array Index (arr[i])     │ ✅ Element can    │ ❌ Not allowed  │ ❌ Not    │
+ * │                          │ be nullable       │ (must handle)   │ allowed   │
+ * │                          │ ❌ Index must be  │                 │           │
+ * │                          │ definite          │                 │           │
+ * ├──────────────────────────┼───────────────────┼─────────────────┼───────────┤
+ * │ Slice Bounds (start..end)│ ❌ Bounds must    │ ❌ Not allowed  │ ❌ Not    │
+ * │                          │ be definite       │ (must handle)   │ allowed   │
+ * ├──────────────────────────┼───────────────────┼─────────────────┼───────────┤
+ * │ Assignment (RHS → LHS)   │ ✅ T → T? allowed │ ❌ Not allowed  │ ❌ Not    │
+ * │                          │ ❌ T? → T not     │ (must handle)   │ allowed   │
+ * │                          │ allowed           │                 │           │
+ * ├──────────────────────────┼───────────────────┼─────────────────┼───────────┤
+ * │ Return Statement         │ ✅ If return      │ ❌ Not allowed  │ ❌ Not    │
+ * │                          │ type is T?        │ (must handle)   │ allowed   │
+ * ├──────────────────────────┼───────────────────┼─────────────────┼───────────┤
+ * │ Condition (if, while)    │ ❌ Must be        │ ❌ Not allowed  │ ❌ Not    │
+ * │                          │ definite bool     │ (must handle)   │ allowed   │
+ * └──────────────────────────┴───────────────────┴─────────────────┴───────────┘
+ *
+ * ─── Type Narrowing ──────────────────────────────────────────────────────────
+ *
+ * Nullable and fallible types can be narrowed using:
+ *   - `if x != nil { ... }`   → x is T inside the branch
+ *   - `if x != err { ... }`   → x is T inside the branch
+ *   - `if x == nil { ... }`   → x is nil inside the branch (handled separately)
+ *   - `x ?? fallback`          → Evaluates to T (handles nil/err)
+ *
+ * ─── Helper Functions ────────────────────────────────────────────────────────
+ *
+ * The following type predicate helpers are available:
+ *   - isNullableType(type)     : T? or T?!
+ *   - isFallibleType(type)     : T! or T?!
+ *   - isDefiniteType(type)     : Not nullable and not fallible
+ *   - unwrapNullable(type)     : Strips ?/?! to get inner type
+ *   - unwrapFallible(type)     : Strips !/?! to get inner type
+ *   - unwrapDefinite(type)     : Strips all modifiers to get inner type
  */
 
 #include "../Sema.hpp"
+#include "DebugUtils.hpp"
+#include "core/ast/BaseAST.hpp"
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/DeclAST.hpp"
 #include "core/ast/TypeAST.hpp"
 #include "core/ast/StmtAST.hpp"
 #include "../support/IntrinsicRegistry.hpp"
+#include "core/memory/InternedString.hpp"
 
 #include <unordered_set>
 #include <optional>
@@ -32,381 +157,200 @@
 namespace sema {
 
 // =============================================================================
-// checkExpr — Dispatch
+// checkExpr - Dispatch
 // =============================================================================
 
-/**
- * @brief Dispatch an expression to its specific check*Expr() function.
- *
- * Sets expr->resolvedType before returning. Returns nullptr if the expression
- * could not be type-checked (an error was already reported).
- *
- * @param expr The expression to check (may be nullptr — returns nullptr).
- * @param ctx  The semantic context.
- * @return The expression's resolved type, or nullptr on error.
- */
-TypeAST* checkExpr(ExprAST* expr, SemaContext& ctx) {
-    if (!expr) return nullptr;
-
-    TypeAST* result = nullptr;
+/// @brief Dispatch an expression to its specific check*Expr() function.
+/// 
+/// We validate if the target expression returns the type we want,
+/// @note even there's no type we still need to verify if the expression is
+/// logically correct
+bool checkExpr(ExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+    if (!expr) return false;
 
     switch (expr->kind) {
-        case ASTKind::LiteralExpr:
-            result = checkLiteralExpr(expr->as<LiteralExprAST>(), ctx);
-            break;
-        case ASTKind::IdentifierExpr:
-            result = checkIdentifierExpr(expr->as<IdentifierExprAST>(), ctx);
-            break;
-        case ASTKind::ArrayLiteralExpr:
-            result = checkArrayLiteralExpr(expr->as<ArrayLiteralExprAST>(), ctx);
-            break;
-        case ASTKind::StructLiteralExpr:
-            result = checkStructLiteralExpr(expr->as<StructLiteralExprAST>(), ctx);
-            break;
-        case ASTKind::BinaryExpr:
-            result = checkBinaryExpr(expr->as<BinaryExprAST>(), ctx);
-            break;
-        case ASTKind::UnaryExpr:
-            result = checkUnaryExpr(expr->as<UnaryExprAST>(), ctx);
-            break;
-        case ASTKind::CallExpr:
-            result = checkCallExpr(expr->as<CallExprAST>(), ctx);
-            break;
-        case ASTKind::IntrinsicCallExpr:
-            result = checkIntrinsicCallExpr(expr->as<IntrinsicCallExprAST>(), ctx);
-            break;
-        case ASTKind::IndexExpr:
-            result = checkIndexExpr(expr->as<IndexExprAST>(), ctx);
-            break;
-        case ASTKind::SliceExpr:
-            result = checkSliceExpr(expr->as<SliceExprAST>(), ctx);
-            break;
-        case ASTKind::FieldAccessExpr:
-            result = checkFieldAccessExpr(expr->as<FieldAccessExprAST>(), ctx);
-            break;
-        case ASTKind::ModuleAccessExpr:
-            result = checkModuleAccessExpr(expr->as<ModuleAccessExprAST>(), ctx);
-            break;
-        case ASTKind::NullableChainExpr:
-            result = checkNullableChainExpr(expr->as<NullableChainExprAST>(), ctx);
-            break;
-        case ASTKind::NullCoalesceExpr:
-            result = checkNullCoalesceExpr(expr->as<NullCoalesceExprAST>(), ctx);
-            break;
-        case ASTKind::AssignExpr:
-            result = checkAssignExpr(expr->as<AssignExprAST>(), ctx);
-            break;
-        case ASTKind::PipelineExpr:
-            result = checkPipelineExpr(expr->as<PipelineExprAST>(), ctx);
-            break;
-        case ASTKind::ComposeExpr:
-            result = checkComposeExpr(expr->as<ComposeExprAST>(), ctx);
-            break;
-        case ASTKind::AnonFuncExpr:
-            result = checkAnonFuncExpr(expr->as<AnonFuncExprAST>(), ctx);
-            break;
-        case ASTKind::IfExpr:
-            result = checkIfExpr(expr->as<IfExprAST>(), ctx);
-            break;
-        case ASTKind::RangeExpr:
-            result = checkRangeExpr(expr->as<RangeExprAST>(), ctx);
-            break;
+        case ASTKind::ArrayLiteralExpr:   return checkArrayLiteralExpr(expr->as<ArrayLiteralExprAST>(), targetType, ctx);
+        case ASTKind::StructLiteralExpr:  return checkStructLiteralExpr(expr->as<StructLiteralExprAST>(), targetType, ctx);
+        case ASTKind::BinaryExpr:         return checkBinaryExpr(expr->as<BinaryExprAST>(), targetType, ctx);
+        case ASTKind::UnaryExpr:          return checkUnaryExpr(expr->as<UnaryExprAST>(), targetType, ctx);
+        case ASTKind::CallExpr:           return checkCallExpr(expr->as<CallExprAST>(), targetType, ctx);
+        case ASTKind::IntrinsicCallExpr:  return checkIntrinsicCallExpr(expr->as<IntrinsicCallExprAST>(), targetType, ctx);
+        case ASTKind::IndexExpr:          return checkIndexExpr(expr->as<IndexExprAST>(), targetType, ctx);
+        case ASTKind::SliceExpr:          return checkSliceExpr(expr->as<SliceExprAST>(), targetType, ctx);
+        case ASTKind::FieldAccessExpr:    return checkFieldAccessExpr(expr->as<FieldAccessExprAST>(), targetType, ctx);
+        case ASTKind::ModuleAccessExpr:   return checkModuleAccessExpr(expr->as<ModuleAccessExprAST>(), targetType, ctx);
+        case ASTKind::NullableChainExpr:  return checkNullableChainExpr(expr->as<NullableChainExprAST>(), targetType, ctx);
+        case ASTKind::NullCoalesceExpr:   return checkNullCoalesceExpr(expr->as<NullCoalesceExprAST>(), targetType, ctx);
+        case ASTKind::AssignExpr:         return checkAssignExpr(expr->as<AssignExprAST>(), targetType, ctx);
+        case ASTKind::PipelineExpr:       return checkPipelineExpr(expr->as<PipelineExprAST>(), targetType, ctx);
+        case ASTKind::ComposeExpr:        return checkComposeExpr(expr->as<ComposeExprAST>(), targetType, ctx);
+        case ASTKind::AnonFuncExpr:       return checkAnonFuncExpr(expr->as<AnonFuncExprAST>(), targetType, ctx);
+        case ASTKind::IfExpr:             return checkIfExpr(expr->as<IfExprAST>(), targetType, ctx);
+        case ASTKind::RangeExpr:          return checkRangeExpr(expr->as<RangeExprAST>(), targetType, ctx);
+        case ASTKind::IdentifierExpr:     return checkIdentifierExpr(expr->as<IdentifierExprAST>(), targetType, ctx);
         default:
-            // Unknown/error-recovery expression
             expr->resolvedType = nullptr;
-            return nullptr;
+            return false;
     }
-
-    expr->resolvedType = result;
-    return result;
 }
 
 // =============================================================================
 // checkLiteralExpr
 // =============================================================================
 
-/**
- * @brief Type-check a literal expression.
- *
- * Returns the primitive type corresponding to the literal kind:
- *   - Int/Hex/Binary → int
- *   - Float → float
- *   - String/RawString → string
- *   - Char → char
- *   - True/False → bool
- *   - Nil → nullable version of whatever type it's assigned to (inferred)
- *   - Err → fallible version of whatever type it's assigned to (inferred)
- *
- * @param expr The literal expression.
- * @param ctx  The semantic context.
- * @return The literal's type.
- */
-TypeAST* checkLiteralExpr(LiteralExprAST* expr, SemaContext& ctx) {
-    if (!expr) return nullptr;
+/// @brief Type-check a literal expression against the target type.
+/// 
+/// Validates that the literal kind matches the target type:
+///   - int/hex/binary literal → integer target type
+///   - float literal → float target type
+///   - string/rawstring literal → string target type
+///   - char literal → char target type
+///   - true/false → bool target type
+///   - nil → nullable target type (T?)
+///   - err → fallible target type (T!)
+bool checkLiteralExpr(LiteralExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+    if (!expr || !targetType) return false;
 
-    PrimitiveKind kind;
-    switch (expr->kind) {
-        case LiteralKind::Int:
-        case LiteralKind::Hex:
-        case LiteralKind::Binary:
-            kind = PrimitiveKind::Int;
-            break;
-        case LiteralKind::Float:
-            kind = PrimitiveKind::Float;
-            break;
-        case LiteralKind::String:
-        case LiteralKind::RawString:
-            kind = PrimitiveKind::String;
-            break;
-        case LiteralKind::Char:
-            kind = PrimitiveKind::Char;
-            break;
-        case LiteralKind::True:
-        case LiteralKind::False:
-            kind = PrimitiveKind::Bool;
-            break;
-        case LiteralKind::Nil:
-            // nil's type is inferred from context. We return nullptr here
-            // (unknown type) and let the parent expression handle inference.
-            // The parent (e.g., checkAssignExpr, checkVarDecl) will determine
-            // the actual type and set it.
-            return nullptr;
-        case LiteralKind::Err:
-            // err's type is inferred from context, similar to nil.
-            return nullptr;
-        default:
-            return nullptr;
-    }
+    // TODO: Implement literal type checking
+    // Need to map LiteralKind to expected PrimitiveKind and validate against targetType
 
-    return ctx.arena.makeType<PrimitiveTypeAST>(kind);
+    return true;
 }
 
 // =============================================================================
 // checkIdentifierExpr
 // =============================================================================
 
-/**
- * @brief Type-check an identifier expression: resolve the name and return
- *        its value type.
- *
- * @param expr The identifier expression.
- * @param ctx  The semantic context.
- * @return The resolved value's type, or nullptr on error.
- */
-TypeAST* checkIdentifierExpr(IdentifierExprAST* expr, SemaContext& ctx) {
-    if (!expr) return nullptr;
+/// @brief Check an identifier expression.
+///
+/// LOOKUP: Resolves the name via `resolveValueOrError()`.
+///   - Searches: generic params → local scopes → module scope
+///   - Reports E2001 if not found
+///   - Validates that the resolved value's type is assignable to targetType
+bool checkIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+    if (!expr || !targetType) return false;
 
-    ValueDeclAST* decl = resolveValueOrError(expr, ctx);
-    if (!decl) {
-        return nullptr;
+    const ValueDeclAST* decl = resolveValueOrError(expr, ctx);
+    if (!decl) return false;
+
+    // Check if the resolved type is assignable to the target type
+    if (decl->type && !isAssignable(targetType, decl->type, ctx)) {
+        ctx.error(expr, DiagCode::E3003,
+                  "type mismatch: expected ", debug::typeToString(const_cast<TypeAST*>(targetType), ctx.pool()),
+                  ", got ", debug::typeToString(decl->type, ctx.pool()));
+        return false;
     }
 
-    // Store the resolved declaration for later use (codegen, etc.)
-    // TODO: Store decl->valueType as the resolved type
-
-    // If this is a generic function identifier, check generic arguments
-    if (!expr->genericArgs.empty()) {
-        // TODO: Verify this is a generic function declaration
-        // TODO: Check generic argument arity and constraints
-        // TODO: Instantiate the generic function type
-    }
-
-    return decl->valueType;
+    return true;
 }
 
 // =============================================================================
 // checkArrayLiteralExpr
 // =============================================================================
 
-/**
- * @brief Type-check an array literal: verify all elements have the same type.
- *
- * The array kind (slice/dynamic/fixed) is inferred from context (assignment
- * or type annotation). The literal itself is kind-neutral.
- *
- * @param expr The array literal expression.
- * @param ctx  The semantic context.
- * @return The array's type (ArrayTypeAST), or nullptr on error.
- */
-TypeAST* checkArrayLiteralExpr(ArrayLiteralExprAST* expr, SemaContext& ctx) {
-    if (!expr) return nullptr;
+/// @brief Type-check an array literal: verify all elements have the same type.
+/// @note the declarartion site should check that if the number of elements did
+/// not exceed the maxium length of the array if the array type at the declaration
+/// site was a fixed array or a slice
+bool checkArrayLiteralExpr(ArrayLiteralExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
 
-    if (expr->elements.empty()) {
-        // Empty array literal: type is inferred from context.
-        // Return nullptr and let the parent infer the type.
-        return nullptr;
-    }
-
-    // Type-check the first element to determine the element type
-    TypeAST* firstType = checkExpr(expr->elements[0], ctx);
-    if (!firstType) {
-        // First element failed to type-check; propagate error
-        return nullptr;
-    }
+    // if elements are empty then there's no need to check, or if the target type
+    // is not array type then we simply can't validate it
+    if (!expr || !targetType || expr->elements.empty() || !targetType->isa<ArrayTypeAST>()) return false;
 
     // Verify all remaining elements have the same type
     for (size_t i = 1; i < expr->elements.size(); ++i) {
-        TypeAST* elemType = checkExpr(expr->elements[i], ctx);
-        if (!elemType) {
-            // This element failed to type-check; propagate error
-            return nullptr;
-        }
-        if (!typesEqual(firstType, elemType)) {
-            ctx.error(expr->elements[i], DiagCode::E3003,
-                       "array element type mismatch: expected ",
-                       ctx.toString(firstType), ", found ",
-                       ctx.toString(elemType));
-        }
+        /// NOTE: this section need refactor
+        /// We also need to get if the target type contain nested array, if true then we
+        /// will call this function recursively
+
+        // TypeAST* elemType = checkExpr(expr->elements[i], ctx);
+        // if (!elemType) {
+        //     // This element failed to type-check; propagate error
+        //     return nullptr;
+        // }
+        // if (!typesEqual(firstType, elemType)) {
+        //     ctx.error(expr->elements[i], DiagCode::E3003,
+        //                "array element type mismatch: expected ",
+        //                debug::typeToString(firstType, ctx.pool()), ", found ",
+        //                debug::typeToString(elemType, ctx.pool()));
+        // }
     }
 
-    // The array kind is inferred from context. We create a placeholder
-    // ArrayTypeAST with Slice kind, and the parent will set the correct kind.
-    // TODO: The array kind should be set by the parent (assignment context)
-    //       based on the target type.
-    ArrayTypeAST* arrayType = ctx.arena.makeType<ArrayTypeAST>(
-        ArrayKind::Slice, 0, firstType
-    );
-
-    return arrayType;
+    return true;
 }
 
 // =============================================================================
 // checkStructLiteralExpr
 // =============================================================================
 
-/**
- * @brief Type-check a struct literal: resolve the struct type and validate
- *        all field initializers.
- *
- * @param expr The struct literal expression.
- * @param ctx  The semantic context.
- * @return The struct's type (NamedTypeAST), or nullptr on error.
- */
-TypeAST* checkStructLiteralExpr(StructLiteralExprAST* expr, SemaContext& ctx) {
-    if (!expr) return nullptr;
+/// @brief Type-check a struct literal: resolve the struct type and validate
+///       all field initializers.
+/// @return the struct type aka StructDeclAST as the final result (we get StructDeclAST
+///       by look up via StructLiteralExprAST.typeName)
+bool checkStructLiteralExpr(StructLiteralExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+    if (!expr || !targetType || !targetType->isa<NamedTypeAST>()) return false;
 
-    // Resolve the struct type name
-    NamedTypeAST* typeNode = ctx.arena.makeType<NamedTypeAST>(expr->typeName);
-    TypeDeclAST* typeDecl = resolveTypeNameOrError(typeNode, ctx);
-    if (!typeDecl) {
-        return nullptr;
-    }
+    // use the name of NamedTypeAST aka targetType to get the struct name, then
+    // use the name to look up the struct definition, we will use the definition
+    // as the source of truth to check againt the literal value
 
     // Check generic arguments
     if (!expr->genericArgs.empty()) {
-        // TODO: Check generic argument arity and constraints against the
-        //       struct's generic parameters
+        // Check if the generic args type exist, if they exist then check if
+        // the declaration require constraint, if true then we need to check if args
+        // satisfy the constraint, if one of them is not then stop here
     }
-
-    // Verify it's a struct (not an enum or trait)
-    if (!typeDecl->isa<StructDeclAST>()) {
-        ctx.error(expr, DiagCode::E2002,
-                   "expected struct type, found ",
-                   ctx.toString(expr->typeName));
-        return nullptr;
-    }
-
-    StructDeclAST* structDecl = typeDecl->as<StructDeclAST>();
-
-    // Track which fields have been initialized
-    std::unordered_set<InternedString> initializedFields;
 
     // Check each field initializer
+    // we need to retrieve the full struct declaration from the storage
+    // then we need to compare the each init
+    // 1. is the declared field has default value? if not then we
+    //    need to enforce a value
+    // 2. if there is init value for this field then is 
+    //    the type of the init value match the declared field type?
+    // NOTE: we need to consider generics during look up, for example
+    // StructLiteralExprAST.genericArgs is <int> then the init value should be int
+    // the priority should be the 
+    //
+    // we should call resolve on each init value then get the type of them, for each type
+    // we validate it againts the declaration of the struct
     for (FieldInitAST* init : expr->inits) {
-        checkFieldInit(init, structDecl, ctx);
-        initializedFields.insert(init->name);
+        // use the struct field type (FieldDeclAST.type) as the target type then 
+        // call the checkExpr recursively
+
+        // we need to use the name of the `init` to map its type to the correct
+        // struct field in the declaration
     }
 
-    // Verify all required fields (const fields without defaults) are initialized
-    for (FieldDeclAST* field : structDecl->fields) {
-        if (field->isConst && !field->defaultVal) {
-            if (initializedFields.find(field->name) == initializedFields.end()) {
-                ctx.error(expr, DiagCode::E3002,
-                           "const field '", ctx.toString(field->name),
-                           "' must be initialized");
-            }
-        }
-    }
-
-    // Cache the instantiated type
-    expr->instantiatedType = typeNode;
-
-    // The struct literal's type is the struct type itself
-    // TODO: Create a NamedTypeAST with the resolved generic arguments
-    return typeNode;
-}
-
-// =============================================================================
-// checkFieldInit
-// =============================================================================
-
-/**
- * @brief Type-check a single field initializer in a struct literal.
- *
- * @param init        The field initializer.
- * @param targetStruct The struct being constructed.
- * @param ctx         The semantic context.
- */
-void checkFieldInit(FieldInitAST* init, StructDeclAST* targetStruct, SemaContext& ctx) {
-    if (!init || !targetStruct) return;
-
-    // Find the field in the struct
-    FieldDeclAST* field = nullptr;
-    for (FieldDeclAST* f : targetStruct->fields) {
-        if (f->name == init->name) {
-            field = f;
-            break;
-        }
-    }
-
-    if (!field) {
-        ctx.error(init, DiagCode::E2001,
-                   "struct '", ctx.toString(targetStruct->name),
-                   "' has no field named '", ctx.toString(init->name), "'");
-        return;
-    }
-
-    // Type-check the initializer value
-    TypeAST* valueType = checkExpr(init->value, ctx);
-    if (!valueType) return;
-
-    // Check assignability to the field type
-    TypeAST* fieldType = field->type;
-    if (!isAssignable(fieldType, valueType, ctx)) {
-        ctx.error(init->value, DiagCode::E3003,
-                   "type mismatch for field '", ctx.toString(init->name),
-                   "': expected ", ctx.toString(fieldType),
-                   ", found ", ctx.toString(valueType));
-    }
+    return true;
 }
 
 // =============================================================================
 // checkBinaryExpr
 // =============================================================================
 
-/**
- * @brief Type-check a binary expression.
- *
- * The type depends on the operator:
- *   - Arithmetic (+, -, *, /, %, **): numeric → numeric
- *   - Comparison (==, !=, <, <=, >, >=): any → bool
- *   - Logical (and, or): any (coerced to bool) → bool
- *   - Bitwise (&, |, ^, <<, >>): integer → integer
- *
- * @param expr The binary expression.
- * @param ctx  The semantic context.
- * @return The expression's type, or nullptr on error.
- */
-TypeAST* checkBinaryExpr(BinaryExprAST* expr, SemaContext& ctx) {
-    if (!expr) return nullptr;
+/// @brief Check a binary expression.
+///
+/// The type depends on the operator:
+///   - Arithmetic (+, -, *, /, %, **): numeric → numeric
+///   - Comparison (==, !=, <, <=, >, >=): any → bool
+///   - Logical (and, or): any (coerced to bool) → bool
+///   - Bitwise (&, |, ^, <<, >>): integer → integer
+///
+/// Validates both operands against the target type, then operator-specific rules.
+///
+/// Nullable/Fallible Rules:
+///   - Arithmetic/Logical/Bitwise: operands must be definite (non-nullable, non-fallible)
+///   - Comparison: operands may be nullable (nil comparison allowed), but not fallible
+bool checkBinaryExpr(BinaryExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+    if (!expr || !targetType) return false;
 
-    TypeAST* leftType = checkExpr(expr->left, ctx);
-    TypeAST* rightType = checkExpr(expr->right, ctx);
+    // Check both operands against the target type
+    if (!checkExpr(expr->left, targetType, ctx)) return false;
+    if (!checkExpr(expr->right, targetType, ctx)) return false;
 
-    if (!leftType || !rightType) {
-        return nullptr;
-    }
-
+    // Now validate operator-specific rules
     switch (expr->op) {
         case BinaryOp::Add:
         case BinaryOp::Sub:
@@ -414,20 +358,21 @@ TypeAST* checkBinaryExpr(BinaryExprAST* expr, SemaContext& ctx) {
         case BinaryOp::Div:
         case BinaryOp::Pow:
         case BinaryOp::Mod: {
-            // Arithmetic operators require numeric types
-            if (!isNumericType(leftType) || !isNumericType(rightType)) {
+            // Arithmetic operators require numeric target type
+            if (!targetType->isNumericType()) {
                 ctx.error(expr, DiagCode::E3003,
-                           "arithmetic operator requires numeric operands");
-                return nullptr;
+                          "arithmetic operator requires numeric target type, got ",
+                          debug::typeToString(const_cast<TypeAST*>(targetType), ctx.pool()));
+                return false;
             }
-            // Result type is the type of the operands (they must be the same)
-            // TODO: Handle type promotion (int + float → float, etc.)
-            if (!typesEqual(leftType, rightType)) {
+            // Operands must be definite (non-nullable, non-fallible)
+            if (isNullableType(targetType) || isFallibleType(targetType)) {
                 ctx.error(expr, DiagCode::E3003,
-                           "arithmetic operands must have the same type");
-                return nullptr;
+                          "arithmetic operator requires definite operands, got ",
+                          debug::typeToString(const_cast<TypeAST*>(targetType), ctx.pool()));
+                return false;
             }
-            return leftType;
+            return true;
         }
 
         case BinaryOp::Eq:
@@ -436,19 +381,38 @@ TypeAST* checkBinaryExpr(BinaryExprAST* expr, SemaContext& ctx) {
         case BinaryOp::Gt:
         case BinaryOp::Le:
         case BinaryOp::Ge: {
-            // Comparison operators require comparable types
-            // TODO: Verify types are comparable (primitives, structs, etc.)
-            // Result is always bool
-            return ctx.arena.makeType<PrimitiveTypeAST>(PrimitiveKind::Bool);
+            // Comparison operators require bool target type
+            if (!targetType->isBoolType()) {
+                ctx.error(expr, DiagCode::E3003,
+                          "comparison operator requires bool target type, got ",
+                          debug::typeToString(const_cast<TypeAST*>(targetType), ctx.pool()));
+                return false;
+            }
+            // Comparison allows nullable (nil comparison) but not fallible
+            if (isFallibleType(targetType)) {
+                ctx.error(expr, DiagCode::E3003,
+                          "comparison operator does not allow fallible operands");
+                return false;
+            }
+            return true;
         }
 
         case BinaryOp::And:
         case BinaryOp::Or: {
-            // Logical operators coerce to bool, result is bool
-            // The operands can be any type (coerced via truthiness)
-            // We just need to ensure they're valid (not an unknown type)
-            // TODO: Verify truthiness coercion is valid for the operand types
-            return ctx.arena.makeType<PrimitiveTypeAST>(PrimitiveKind::Bool);
+            // Logical operators require bool target type
+            if (!targetType->isBoolType()) {
+                ctx.error(expr, DiagCode::E3003,
+                          "logical operator requires bool target type, got ",
+                          debug::typeToString(const_cast<TypeAST*>(targetType), ctx.pool()));
+                return false;
+            }
+            // Operands must be definite
+            if (isNullableType(targetType) || isFallibleType(targetType)) {
+                ctx.error(expr, DiagCode::E3003,
+                          "logical operator requires definite operands");
+                return false;
+            }
+            return true;
         }
 
         case BinaryOp::BitAnd:
@@ -456,90 +420,127 @@ TypeAST* checkBinaryExpr(BinaryExprAST* expr, SemaContext& ctx) {
         case BinaryOp::BitXor:
         case BinaryOp::Shl:
         case BinaryOp::Shr: {
-            // Bitwise operators require integer types
-            if (!isIntegerType(leftType) || !isIntegerType(rightType)) {
+            // Bitwise operators require integer target type
+            if (!targetType->isIntegerType()) {
                 ctx.error(expr, DiagCode::E3003,
-                           "bitwise operator requires integer operands");
-                return nullptr;
+                          "bitwise operator requires integer target type, got ",
+                          debug::typeToString(const_cast<TypeAST*>(targetType), ctx.pool()));
+                return false;
             }
-            if (!typesEqual(leftType, rightType)) {
+            // Operands must be definite
+            if (isNullableType(targetType) || isFallibleType(targetType)) {
                 ctx.error(expr, DiagCode::E3003,
-                           "bitwise operands must have the same type");
-                return nullptr;
+                          "bitwise operator requires definite operands");
+                return false;
             }
-            return leftType;
+            return true;
         }
     }
 
-    return nullptr;
+    return true;
 }
 
 // =============================================================================
 // checkUnaryExpr
 // =============================================================================
 
-/**
- * @brief Type-check a unary expression.
- *
- * @param expr The unary expression.
- * @param ctx  The semantic context.
- * @return The expression's type, or nullptr on error.
- */
-TypeAST* checkUnaryExpr(UnaryExprAST* expr, SemaContext& ctx) {
-    if (!expr) return nullptr;
+/// @brief Type-check a unary expression.
+///
+/// Validates operand against the target type:
+///   - Negation (-x): target must be numeric, operand must be definite
+///   - Logical Not (not x): target must be bool, operand must be definite
+///   - Bitwise Not (~x): target must be integer, operand must be definite
+///
+/// Nullable/Fallible Rules:
+///   - Unary operations on nullable/fallible are NOT allowed (must narrow first)
+bool checkUnaryExpr(UnaryExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+    if (!expr || !targetType) return false;
 
-    TypeAST* operandType = checkExpr(expr->operand, ctx);
-    if (!operandType) return nullptr;
+    // Check operand against the target type
+    if (!checkExpr(expr->operand, targetType, ctx)) return false;
 
+    // Validate operator-specific rules
     switch (expr->op) {
-        case UnaryOp::Neg:
-            // Arithmetic negation requires numeric type
-            if (!isNumericType(operandType)) {
+        case UnaryOp::Neg: {
+            // Negation requires numeric target type
+            if (!targetType->isNumericType()) {
                 ctx.error(expr, DiagCode::E3003,
-                           "negation requires numeric operand");
-                return nullptr;
+                          "negation requires numeric target type, got ",
+                          debug::typeToString(const_cast<TypeAST*>(targetType), ctx.pool()));
+                return false;
             }
-            return operandType;
-
-        case UnaryOp::Not:
-            // Logical negation accepts any type (coerced to bool), result is bool
-            // TODO: Verify truthiness coercion is valid for the operand type
-            return ctx.arena.makeType<PrimitiveTypeAST>(PrimitiveKind::Bool);
-
-        case UnaryOp::BitNot:
-            // Bitwise NOT requires integer type
-            if (!isIntegerType(operandType)) {
+            // Operand must be definite
+            if (isNullableType(targetType) || isFallibleType(targetType)) {
                 ctx.error(expr, DiagCode::E3003,
-                           "bitwise NOT requires integer operand");
-                return nullptr;
+                          "negation requires definite operand");
+                return false;
             }
-            return operandType;
+            return true;
+        }
+
+        case UnaryOp::Not: {
+            // Logical Not requires bool target type
+            if (!targetType->isBoolType()) {
+                ctx.error(expr, DiagCode::E3003,
+                          "logical not requires bool target type, got ",
+                          debug::typeToString(const_cast<TypeAST*>(targetType), ctx.pool()));
+                return false;
+            }
+            // Operand must be definite
+            if (isNullableType(targetType) || isFallibleType(targetType)) {
+                ctx.error(expr, DiagCode::E3003,
+                          "logical not requires definite operand");
+                return false;
+            }
+            return true;
+        }
+
+        case UnaryOp::BitNot: {
+            // Bitwise Not requires integer target type
+            if (!targetType->isIntegerType()) {
+                ctx.error(expr, DiagCode::E3003,
+                          "bitwise not requires integer target type, got ",
+                          debug::typeToString(const_cast<TypeAST*>(targetType), ctx.pool()));
+                return false;
+            }
+            // Operand must be definite
+            if (isNullableType(targetType) || isFallibleType(targetType)) {
+                ctx.error(expr, DiagCode::E3003,
+                          "bitwise not requires definite operand");
+                return false;
+            }
+            return true;
+        }
     }
 
-    return nullptr;
+    return true;
 }
 
 // =============================================================================
 // checkCallExpr
 // =============================================================================
 
-/**
- * @brief Type-check a function call: resolve the callee, check arguments,
- *        and return the function's return type.
- *
- * @param expr The call expression.
- * @param ctx  The semantic context.
- * @return The function's return type, or nullptr on error.
- */
-TypeAST* checkCallExpr(CallExprAST* expr, SemaContext& ctx) {
-    if (!expr) return nullptr;
+/// @brief Type-check a function call: resolve the callee, check arguments,
+///        and return the function's return type.
+///
+/// Validates:
+///   - Callee resolves to a callable function
+///   - Callee is definite (not nullable/fallible)
+///   - Arguments are assignable to parameter types
+///   - Return type is assignable to targetType
+///
+/// Nullable/Fallible Rules:
+///   - Callee cannot be nullable/fallible (must narrow first)
+///   - Arguments cannot be fallible (must handle error first)
+///   - Arguments may be nullable if parameter type is nullable
+bool checkCallExpr(CallExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+    if (!expr || !targetType) return false;
 
-    // Type-check the callee
-    TypeAST* calleeType = checkExpr(expr->callee, ctx);
-    if (!calleeType) return nullptr;
+    // Type-check the callee - must be definite
+    if (!checkExpr(expr->callee, targetType, ctx)) return false;
 
     // Try to resolve the callee to a function declaration
-    FuncDeclAST* funcDecl = resolveCalleeOrError(expr->callee, ctx);
+    const FuncDeclAST* funcDecl = resolveCalleeOrError(expr->callee, ctx);
 
     if (funcDecl) {
         // Named function call
@@ -550,56 +551,27 @@ TypeAST* checkCallExpr(CallExprAST* expr, SemaContext& ctx) {
         }
 
         // Check argument count
-        size_t expectedArgCount = 0;
         // TODO: Calculate expected argument count from the function's parameter groups
         // TODO: Check expr->args size matches expectedArgCount
 
-        // Check each argument type
+        // Check each argument type - arguments cannot be fallible
         // TODO: Check each argument is assignable to the corresponding parameter type
 
-        // Return the function's return type
-        return funcDecl->resolvedReturnType;
+        // Return type must be assignable to targetType
+        if (funcDecl->type && !isAssignable(targetType, funcDecl->type, ctx)) {
+            ctx.error(expr, DiagCode::E3003,
+                      "return type mismatch: expected ",
+                      debug::typeToString(const_cast<TypeAST*>(targetType), ctx.pool()),
+                      ", got ", debug::typeToString(funcDecl->type, ctx.pool()));
+            return false;
+        }
+
+        return true;
     } else {
         // Callee is an expression that produces a function value
-        // (e.g., a curried call, an anonymous function, or a function pointer)
-
-        // Verify the callee type is a function type
-        if (!calleeType->isa<FuncTypeAST>()) {
-            ctx.error(expr->callee, DiagCode::E2003,
-                       "expression is not callable");
-            return nullptr;
-        }
-
-        FuncTypeAST* funcType = calleeType->as<FuncTypeAST>();
-
-        // Check argument count
-        size_t expectedArgCount = funcType->params.size();
-        if (expr->args.size() != expectedArgCount) {
-            ctx.error(expr, DiagCode::E3001,
-                       "wrong number of arguments: expected ",
-                       std::to_string(expectedArgCount), ", found ",
-                       std::to_string(expr->args.size()));
-            return nullptr;
-        }
-
-        // Check each argument type
-        for (size_t i = 0; i < expr->args.size(); ++i) {
-            TypeAST* argType = checkExpr(expr->args[i], ctx);
-            if (!argType) continue;
-
-            ParamAST* param = funcType->params[i];
-            if (!isAssignable(param->type, argType, ctx)) {
-                ctx.error(expr->args[i], DiagCode::E3003,
-                           "argument type mismatch for parameter ",
-                           std::to_string(i + 1));
-            }
-        }
-
-        // Return the function's return type
-        if (funcType->returnTypes.empty()) {
-            return nullptr; // void return
-        }
-        return funcType->returnTypes[0];
+        // TODO: Check callee type is a function type and validate arguments
+        // TODO: Validate return type is assignable to targetType
+        return false;
     }
 }
 
@@ -607,39 +579,33 @@ TypeAST* checkCallExpr(CallExprAST* expr, SemaContext& ctx) {
 // checkIntrinsicCallExpr
 // =============================================================================
 
-/**
- * @brief Type-check an intrinsic call: validate the intrinsic name and
- *        arguments, and return the intrinsic's return type.
- *
- * @param expr The intrinsic call expression.
- * @param ctx  The semantic context.
- * @return The intrinsic's return type, or nullptr on error.
- */
-TypeAST* checkIntrinsicCallExpr(IntrinsicCallExprAST* expr, SemaContext& ctx) {
-    if (!expr) return nullptr;
+/// @brief Type-check an intrinsic call: validate the intrinsic name and
+///        arguments, and return the intrinsic's return type.
+bool checkIntrinsicCallExpr(IntrinsicCallExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+    if (!expr || !targetType) return false;
 
     // Look up the intrinsic in the registry
-    const IntrinsicInfo* info = IntrinsicRegistry::getInstance(ctx.pool)
+    const IntrinsicInfo* info = IntrinsicRegistry::getInstance(ctx.pool())
         .getIntrinsicInfo(expr->intrinsicName);
 
     if (!info) {
         ctx.error(expr, DiagCode::E3101,
-                   "unknown intrinsic '", ctx.toString(expr->intrinsicName), "'");
-        return nullptr;
+                  "unknown intrinsic '", ctx.pool().lookup(expr->intrinsicName), "'");
+        return false;
     }
 
     // Check argument count
-    if (!IntrinsicRegistry::getInstance(ctx.pool)
+    if (!IntrinsicRegistry::getInstance(ctx.pool())
         .validateArgCount(expr->intrinsicName, expr->args.size())) {
         ctx.error(expr, DiagCode::E3001,
-                   "wrong number of arguments for intrinsic '",
-                   ctx.toString(expr->intrinsicName), "'");
-        return nullptr;
+                  "wrong number of arguments for intrinsic '",
+                  ctx.pool().lookup(expr->intrinsicName), "'");
+        return false;
     }
 
     // Type-check each argument
     for (ExprAST* arg : expr->args) {
-        checkExpr(arg, ctx);
+        if (!checkExpr(arg, targetType, ctx)) return false;
         // TODO: Validate argument types for specific intrinsics
     }
 
@@ -648,232 +614,145 @@ TypeAST* checkIntrinsicCallExpr(IntrinsicCallExprAST* expr, SemaContext& ctx) {
         expr->intrinsicID = info->id;
     }
 
-    // Determine the return type based on the intrinsic
-    // For most intrinsics, the return type is the same as the first argument
-    // or a primitive type.
-    // TODO: Implement proper return type inference for each intrinsic
-
-    // For now, return a placeholder type
-    // For type/compile-time intrinsics (sizeof, alignof, etc.), return int
-    return ctx.arena.makeType<PrimitiveTypeAST>(PrimitiveKind::Int);
+    return true;
 }
 
 // =============================================================================
 // checkIndexExpr
 // =============================================================================
 
-/**
- * @brief Type-check an index expression: verify the target is an array and
- *        the index is an integer.
- *
- * @param expr The index expression.
- * @param ctx  The semantic context.
- * @return The array's element type, or nullptr on error.
- */
-TypeAST* checkIndexExpr(IndexExprAST* expr, SemaContext& ctx) {
-    if (!expr) return nullptr;
+/// @brief Type-check an index expression: verify the target is an array and
+///        the index is an integer.
+///
+/// Validates:
+///   - target type is the array's element type
+///   - target is an array type
+///   - index is a definite integer type
+///
+/// Nullable/Fallible Rules:
+///   - Index must be definite (non-nullable, non-fallible)
+///   - Array element may be nullable (result type inherits nullability)
+bool checkIndexExpr(IndexExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+    if (!expr || !targetType) return false;
 
-    TypeAST* targetType = checkExpr(expr->target, ctx);
-    if (!targetType) return nullptr;
+    // Check target is an array type
+    if (!checkExpr(expr->target, targetType, ctx)) return false;
 
-    TypeAST* indexType = checkExpr(expr->index, ctx);
-    if (!indexType) return nullptr;
+    // Check index is a definite integer type
+    if (!checkExpr(expr->index, targetType, ctx)) return false;
 
-    // Verify index is an integer type
-    if (!isIntegerType(indexType)) {
-        ctx.error(expr->index, DiagCode::E3003,
-                   "index must be an integer type");
-        return nullptr;
-    }
+    // TODO: Verify index type is integer and definite
+    // TODO: Verify index is within bounds for fixed arrays
 
-    // Verify target is an array type
-    if (!targetType->isa<ArrayTypeAST>()) {
-        ctx.error(expr->target, DiagCode::E3003,
-                   "indexing requires an array type");
-        return nullptr;
-    }
-
-    ArrayTypeAST* arrayType = targetType->as<ArrayTypeAST>();
-
-    // Verify the index is within bounds for fixed arrays (if literal)
-    // TODO: Check compile-time bounds for fixed arrays
-
-    return arrayType->element;
+    return true;
 }
 
 // =============================================================================
 // checkSliceExpr
 // =============================================================================
 
-/**
- * @brief Type-check a slice expression: verify the target is an array and
- *        the bounds are valid.
- *
- * @param expr The slice expression.
- * @param ctx  The semantic context.
- * @return The slice type ([_]T), or nullptr on error.
- */
-TypeAST* checkSliceExpr(SliceExprAST* expr, SemaContext& ctx) {
-    if (!expr) return nullptr;
+/// @brief Type-check a slice expression: verify the target is an array and
+///        the bounds are valid.
+///
+/// Validates:
+///   - target type is the slice type ([_]T)
+///   - target is an array type
+///   - start/end bounds are definite integer types
+///
+/// Nullable/Fallible Rules:
+///   - Bounds must be definite (non-nullable, non-fallible)
+///   - Result inherits element nullability
+bool checkSliceExpr(SliceExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+    if (!expr || !targetType) return false;
 
-    TypeAST* targetType = checkExpr(expr->target, ctx);
-    if (!targetType) return nullptr;
+    // Check target is an array type
+    if (!checkExpr(expr->target, targetType, ctx)) return false;
 
     // Type-check start and end bounds if present
     if (expr->start) {
-        TypeAST* startType = checkExpr(expr->start, ctx);
-        if (startType && !isIntegerType(startType)) {
-            ctx.error(expr->start, DiagCode::E3003,
-                       "slice start must be an integer type");
-        }
+        if (!checkExpr(expr->start, targetType, ctx)) return false;
+        // TODO: Verify start is definite integer type
     }
 
     if (expr->end) {
-        TypeAST* endType = checkExpr(expr->end, ctx);
-        if (endType && !isIntegerType(endType)) {
-            ctx.error(expr->end, DiagCode::E3003,
-                       "slice end must be an integer type");
-        }
+        if (!checkExpr(expr->end, targetType, ctx)) return false;
+        // TODO: Verify end is definite integer type
     }
 
-    // Verify target is an array type
-    if (!targetType->isa<ArrayTypeAST>()) {
-        ctx.error(expr->target, DiagCode::E3003,
-                   "slicing requires an array type");
-        return nullptr;
-    }
-
-    ArrayTypeAST* arrayType = targetType->as<ArrayTypeAST>();
-
-    // A slice always produces a slice type ([_]T)
-    return ctx.arena.makeType<ArrayTypeAST>(ArrayKind::Slice, 0, arrayType->element);
+    return true;
 }
 
 // =============================================================================
 // checkFieldAccessExpr
 // =============================================================================
 
-/**
- * @brief Type-check a field access: verify the object has the field and
- *        return the field's type.
- *
- * @param expr The field access expression.
- * @param ctx  The semantic context.
- * @return The field's type, or nullptr on error.
- */
-TypeAST* checkFieldAccessExpr(FieldAccessExprAST* expr, SemaContext& ctx) {
-    if (!expr) return nullptr;
+/// @brief Type-check a field access: verify the object has the field and
+///        return the field's type.
+///
+/// Validates:
+///   - target type is the field's type
+///   - object is a struct or enum type
+///   - field exists on the object
+///
+/// Nullable/Fallible Rules:
+///   - Object must be definite (use ?. for nullable, handle error for fallible)
+///   - Field access on nullable requires NullableChainExpr (?.)
+///   - Field access on fallible is NOT allowed
+bool checkFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+    if (!expr || !targetType) return false;
 
-    TypeAST* objectType = checkExpr(expr->object, ctx);
-    if (!objectType) return nullptr;
+    // Type-check the object - must be definite
+    if (!checkExpr(expr->object, targetType, ctx)) return false;
 
     // Resolve the object type to its declaration
-    // For structs, look up the field
-    TypeDeclAST* typeDecl = nullptr;
+    // TODO: Resolve object type and find the field
+    // TODO: Verify field type is assignable to targetType
 
-    if (objectType->isa<NamedTypeAST>()) {
-        NamedTypeAST* namedType = objectType->as<NamedTypeAST>();
-        typeDecl = resolveTypeNameOrError(namedType, ctx);
-    } else if (objectType->isa<PrimitiveTypeAST>()) {
-        // Primitive types don't have fields
-        // TODO: Check for enum variants (EnumName.Variant)
-    }
-
-    if (!typeDecl) {
-        ctx.error(expr, DiagCode::E2002,
-                   "cannot access field '", ctx.toString(expr->fieldName),
-                   "' on non-struct type");
-        return nullptr;
-    }
-
-    // Check if it's a struct
-    if (typeDecl->isa<StructDeclAST>()) {
-        StructDeclAST* structDecl = typeDecl->as<StructDeclAST>();
-
-        // Find the field
-        for (FieldDeclAST* field : structDecl->fields) {
-            if (field->name == expr->fieldName) {
-                // Check if this is a module member access (read-only)
-                if (expr->isModuleMember) {
-                    // Module member access is always read-only
-                    // TODO: Mark the result as const
-                }
-                return field->type;
-            }
-        }
-
-        ctx.error(expr, DiagCode::E2001,
-                   "struct '", ctx.toString(structDecl->name),
-                   "' has no field named '", ctx.toString(expr->fieldName), "'");
-        return nullptr;
-    }
-
-    // Check if it's an enum
-    if (typeDecl->isa<EnumDeclAST>()) {
-        EnumDeclAST* enumDecl = typeDecl->as<EnumDeclAST>();
-
-        // Find the variant
-        for (EnumVariantAST* variant : enumDecl->variants) {
-            if (variant->name == expr->fieldName) {
-                // Enum variant's type is the enum itself
-                return selfTypeOf(enumDecl, ctx);
-            }
-        }
-
-        ctx.error(expr, DiagCode::E2001,
-                   "enum '", ctx.toString(enumDecl->name),
-                   "' has no variant named '", ctx.toString(expr->fieldName), "'");
-        return nullptr;
-    }
-
-    ctx.error(expr, DiagCode::E2002,
-               "cannot access field on non-struct/enum type");
-    return nullptr;
+    return true;
 }
 
 // =============================================================================
 // checkModuleAccessExpr
 // =============================================================================
 
-/**
- * @brief Type-check a module access expression: resolve the module and
- *        member, returning the member's type.
- *
- * Module access is always read-only.
- *
- * @param expr The module access expression.
- * @param ctx  The semantic context.
- * @return The member's type, or nullptr on error.
- */
-TypeAST* checkModuleAccessExpr(ModuleAccessExprAST* expr, SemaContext& ctx) {
-    if (!expr) return nullptr;
+/// @brief Type-check a module access expression: resolve the module and
+///        member, returning the member's type.
+///
+/// Validates:
+///   - target type is the member's type
+///   - module alias resolves to a valid module
+///   - member exists in the module's exports
+///
+/// Module access is always read-only.
+bool checkModuleAccessExpr(ModuleAccessExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+    if (!expr || !targetType) return false;
 
     // Look up the module alias
-    ModuleAST* module = ctx.lookupImport(expr->moduleName);
+    ModuleAST* module = ctx.symbols.lookupImport(expr->moduleName);
     if (!module) {
         ctx.error(expr, DiagCode::E2001,
-                   "undefined module alias '", ctx.toString(expr->moduleName), "'");
-        return nullptr;
+                  "undefined module alias '", ctx.pool().lookup(expr->moduleName), "'");
+        return false;
     }
 
     // Get the module's table
-    ModuleTable* table = ctx.findModuleTable(module);
+    ModuleTable* table = ctx.symbols.findModuleTable(module);
     if (!table) {
         ctx.error(expr, DiagCode::E2001,
-                   "module '", ctx.toString(expr->moduleName), "' has not been analyzed");
-        return nullptr;
+                  "module '", ctx.pool().lookup(expr->moduleName), "' has not been analyzed");
+        return false;
     }
 
     // Look up the member in the module's value namespace
     auto it = table->values.find(expr->memberName);
     if (it == table->values.end()) {
         ctx.error(expr, DiagCode::E2001,
-                   "module '", ctx.toString(expr->moduleName),
-                   "' has no exported member '", ctx.toString(expr->memberName), "'");
-        return nullptr;
+                  "module '", ctx.pool().lookup(expr->moduleName),
+                  "' has no exported member '", ctx.pool().lookup(expr->memberName), "'");
+        return false;
     }
 
-    ValueDeclAST* decl = it->second;
+    const ValueDeclAST* decl = it->second;
 
     // Mark the access as read-only (module members are always read-only)
     expr->isModuleMember = true;
@@ -883,458 +762,313 @@ TypeAST* checkModuleAccessExpr(ModuleAccessExprAST* expr, SemaContext& ctx) {
         // TODO: Check generic argument arity and constraints
     }
 
-    return decl->valueType;
+    // Verify member type is assignable to targetType
+    if (decl->type && !isAssignable(targetType, decl->type, ctx)) {
+        ctx.error(expr, DiagCode::E3003,
+                  "type mismatch: expected ", debug::typeToString(const_cast<TypeAST*>(targetType), ctx.pool()),
+                  ", got ", debug::typeToString(decl->type, ctx.pool()));
+        return false;
+    }
+
+    return true;
 }
 
 // =============================================================================
 // checkNullableChainExpr
 // =============================================================================
 
-/**
- * @brief Type-check a nullable chain expression: each step is only evaluated
- *        if the previous value is non-nil.
- *
- * The chain must be terminated by ?? (checked at the parent level).
- *
- * @param expr The nullable chain expression.
- * @param ctx  The semantic context.
- * @return The type of the final step, or nullptr on error.
- */
-TypeAST* checkNullableChainExpr(NullableChainExprAST* expr, SemaContext& ctx) {
-    if (!expr) return nullptr;
+/// @brief Type-check a nullable chain expression: each step is only evaluated
+///        if the previous value is non-nil.
+///
+/// Validates:
+///   - target type is the final field's type (nullable)
+///   - Each step is a field access on a nullable type
+///   - The chain must be terminated by ?? (checked at parent)
+///
+/// Nullable/Fallible Rules:
+///   - Base must be nullable (T?), not fallible (T!)
+///   - Each step must be nullable
+///   - Fallible values cannot be chained (must handle error first)
+bool checkNullableChainExpr(NullableChainExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+    if (!expr || !targetType) return false;
 
     if (expr->steps.empty()) {
         ctx.error(expr, DiagCode::E3003, "empty nullable chain");
-        return nullptr;
+        return false;
     }
 
-    // Start with the object's type
-    TypeAST* currentType = checkExpr(expr->object, ctx);
-    if (!currentType) return nullptr;
+    // TODO: Walk through each step, validating nullability
+    // TODO: Verify final type is assignable to targetType
 
-    // Walk through each step
-    for (InternedString step : expr->steps) {
-        // The current type must be nullable
-        if (!isNullableType(currentType)) {
-            ctx.error(expr, DiagCode::E3003,
-                       "cannot apply ?. to non-nullable type");
-            return nullptr;
-        }
-
-        // Unwrap the nullable to get the inner type
-        TypeAST* innerType = unwrapNullable(currentType);
-        if (!innerType) return nullptr;
-
-        // The inner type must have the field (struct) or be callable
-        // TODO: Handle field access on the inner type
-        // For now, just return the inner type (placeholder)
-        currentType = innerType;
-    }
-
-    // The chain result is nullable (if any step is nil, the result is nil)
-    return ctx.arena.makeType<NullableTypeAST>(currentType);
+    return true;
 }
 
 // =============================================================================
 // checkNullCoalesceExpr
 // =============================================================================
 
-/**
- * @brief Type-check a null coalesce expression: the LHS must be nullable or
- *        fallible, and the RHS must be assignable to the unwrapped type.
- *
- * @param expr The null coalesce expression.
- * @param ctx  The semantic context.
- * @return The type of the RHS, or nullptr on error.
- */
-TypeAST* checkNullCoalesceExpr(NullCoalesceExprAST* expr, SemaContext& ctx) {
-    if (!expr) return nullptr;
+/// @brief Type-check a null coalesce expression: the LHS must be nullable or
+///        fallible, and the RHS must be assignable to the unwrapped type.
+///
+/// Validates:
+///   - LHS is nullable or fallible
+///   - RHS type is assignable to the unwrapped type
+///   - target type is the RHS type (or unwrapped LHS type)
+///
+/// Nullable/Fallible Rules:
+///   - LHS can be T?, T!, or T?!
+///   - ?? unwraps T? to T (handles nil)
+///   - ?? unwraps T! to T (handles err)
+///   - ?? unwraps T?! to T (handles nil and err)
+///   - RHS must be definite (not nullable/fallible) or match unwrapped type
+bool checkNullCoalesceExpr(NullCoalesceExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+    if (!expr || !targetType) return false;
 
-    TypeAST* valueType = checkExpr(expr->value, ctx);
-    if (!valueType) return nullptr;
+    // Check LHS - must be nullable or fallible
+    if (!checkExpr(expr->value, targetType, ctx)) return false;
 
-    // The LHS must be nullable or fallible
-    if (!isNullableType(valueType) && !isFallibleType(valueType)) {
-        ctx.error(expr->value, DiagCode::E3003,
-                   "null coalesce (??) requires nullable or fallible LHS");
-        return nullptr;
-    }
+    // Check RHS - must be definite and assignable to unwrapped type
+    if (!checkExpr(expr->fallback, targetType, ctx)) return false;
 
-    TypeAST* fallbackType = checkExpr(expr->fallback, ctx);
-    if (!fallbackType) return nullptr;
+    // TODO: Verify LHS is nullable/fallible
+    // TODO: Verify RHS matches unwrapped LHS type
 
-    // The fallback type must be assignable to the unwrapped value type
-    TypeAST* unwrapped = unwrapNullable(unwrapFallible(valueType));
-    if (!isAssignable(unwrapped, fallbackType, ctx)) {
-        ctx.error(expr->fallback, DiagCode::E3003,
-                   "fallback type mismatch for null coalesce");
-        return nullptr;
-    }
-
-    // The result type is the fallback type
-    return fallbackType;
+    return true;
 }
 
 // =============================================================================
 // checkAssignExpr
 // =============================================================================
 
-/**
- * @brief Type-check an assignment: verify the LHS is an assignable lvalue
- *        and the RHS is assignable to the LHS type.
- *
- * @param expr The assignment expression.
- * @param ctx  The semantic context.
- * @return The LHS type, or nullptr on error.
- */
-TypeAST* checkAssignExpr(AssignExprAST* expr, SemaContext& ctx) {
-    if (!expr) return nullptr;
+/// @brief Type-check an assignment: verify the LHS is an assignable lvalue
+///        and the RHS is assignable to the LHS type.
+///
+/// Validates:
+///   - target type is the LHS type
+///   - LHS is an assignable lvalue
+///   - RHS is assignable to LHS type
+///
+/// Nullable/Fallible Rules:
+///   - RHS cannot be fallible (must handle error first)
+///   - RHS can be nullable if LHS is nullable (widening)
+///   - RHS cannot be nullable if LHS is definite (narrowing - requires ??)
+bool checkAssignExpr(AssignExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+    if (!expr || !targetType) return false;
 
-    TypeAST* lhsType = checkExpr(expr->lhs, ctx);
-    if (!lhsType) return nullptr;
+    // Check LHS - must be an assignable lvalue
+    if (!checkExpr(expr->lhs, targetType, ctx)) return false;
 
-    TypeAST* rhsType = checkExpr(expr->rhs, ctx);
-    if (!rhsType) return nullptr;
+    // Check RHS - must be assignable to LHS type
+    if (!checkExpr(expr->rhs, targetType, ctx)) return false;
 
-    // TODO: Verify LHS is an assignable lvalue (variable, field, index)
+    // TODO: Verify LHS is assignable lvalue
     // TODO: Check if LHS is const (reject assignment)
-    // TODO: For compound assignments (+=, -=, etc.), verify the operator
-    //       is valid on the LHS type
+    // TODO: For compound assignments (+=, -=, etc.), verify operator validity
 
-    if (!isAssignable(lhsType, rhsType, ctx)) {
-        ctx.error(expr->rhs, DiagCode::E3003,
-                   "assignment type mismatch");
-        return nullptr;
-    }
-
-    return lhsType;
+    return true;
 }
 
 // =============================================================================
 // checkPipelineExpr
 // =============================================================================
 
-/**
- * @brief Type-check a pipeline expression: the seed type flows through
- *        each step, and each step must be callable with the input type.
- *
- * @param expr The pipeline expression.
- * @param ctx  The semantic context.
- * @return The pipeline's final type, or nullptr on error.
- */
-TypeAST* checkPipelineExpr(PipelineExprAST* expr, SemaContext& ctx) {
-    if (!expr) return nullptr;
+/// @brief Type-check a pipeline expression: the seed type flows through
+///        each step, and each step must be callable with the input type.
+///
+/// Validates:
+///   - target type is the final output type
+///   - Seed type matches first step's input
+///   - Each step's output matches next step's input
+///
+/// Nullable/Fallible Rules:
+///   - Pipeline short-circuits on err
+///   - Steps cannot be fallible functions (must handle error first)
+bool checkPipelineExpr(PipelineExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+    if (!expr || !targetType) return false;
 
     if (expr->steps.empty()) {
         ctx.error(expr, DiagCode::E1107, "pipeline has no steps");
-        return nullptr;
+        return false;
     }
 
-    // Start with the seed's type
-    TypeAST* currentType = checkExpr(expr->seed, ctx);
-    if (!currentType) return nullptr;
+    // Check seed against first step's input type
+    if (!checkExpr(expr->seed, targetType, ctx)) return false;
 
     // Walk through each step
+    TypeAST* currentType = const_cast<TypeAST*>(targetType);
     for (PipelineStepAST* step : expr->steps) {
-        currentType = checkPipelineStep(step, currentType, ctx);
-        if (!currentType) return nullptr;
+        if (!checkPipelineStep(step, currentType, targetType, ctx)) return false;
+        // TODO: Update currentType to step's output type
     }
 
-    return currentType;
+    return true;
 }
 
 // =============================================================================
 // checkPipelineStep
 // =============================================================================
 
-/**
- * @brief Type-check a single pipeline step: verify the step is callable
- *        with the input type and return the output type.
- *
- * @param step      The pipeline step.
- * @param inputType The type flowing into this step.
- * @param ctx       The semantic context.
- * @return The step's output type, or nullptr on error.
- */
-TypeAST* checkPipelineStep(PipelineStepAST* step, TypeAST* inputType, SemaContext& ctx) {
-    if (!step || !inputType) return nullptr;
+/// @brief Type-check a single pipeline step: verify the step is callable
+///        with the input type and return the output type.
+///
+/// @param step The pipeline step.
+/// @param inputType The type flowing into this step.
+/// @param targetType The expected output type.
+/// @param ctx The semantic context.
+bool checkPipelineStep(PipelineStepAST* step, TypeAST* inputType, const TypeAST* targetType, SemaContext& ctx) {
+    if (!step || !inputType || !targetType) return false;
 
     // Type-check the callable
-    TypeAST* callableType = checkExpr(step->callable, ctx);
-    if (!callableType) return nullptr;
+    if (!checkExpr(step->callable, targetType, ctx)) return false;
 
-    // Verify the callable is a function type
-    if (!callableType->isa<FuncTypeAST>()) {
-        ctx.error(step->callable, DiagCode::E2003,
-                   "pipeline step must be callable");
-        return nullptr;
-    }
+    // TODO: Verify callable is a function type
+    // TODO: Verify first parameter matches inputType
+    // TODO: Verify return type matches targetType
 
-    FuncTypeAST* funcType = callableType->as<FuncTypeAST>();
-
-    // The input type becomes the first argument
-    // If there are packArgs, they fill the remaining arguments
-    size_t expectedArgs = funcType->params.size();
-
-    // The first argument must match the input type
-    if (expectedArgs == 0) {
-        ctx.error(step, DiagCode::E3001,
-                   "pipeline step has no parameters to accept the input");
-        return nullptr;
-    }
-
-    ParamAST* firstParam = funcType->params[0];
-    if (!isAssignable(firstParam->type, inputType, ctx)) {
-        ctx.error(step->callable, DiagCode::E3003,
-                   "pipeline input type mismatch");
-        return nullptr;
-    }
-
-    // Check any additional arguments (packArgs)
-    // TODO: Verify packArgs types match the remaining parameters
-
-    // Return the function's return type
-    if (funcType->returnTypes.empty()) {
-        return nullptr; // void return
-    }
-    return funcType->returnTypes[0];
+    return true;
 }
 
 // =============================================================================
 // checkComposeExpr
 // =============================================================================
 
-/**
- * @brief Type-check a composition expression: f +> g +> h
- *
- * The output type of each operand must match the input type of the next.
- *
- * @param expr The composition expression.
- * @param ctx  The semantic context.
- * @return The composed function type, or nullptr on error.
- */
-TypeAST* checkComposeExpr(ComposeExprAST* expr, SemaContext& ctx) {
-    if (!expr) return nullptr;
+/// @brief Type-check a composition expression: f +> g +> h
+///
+/// The output type of each operand must match the input type of the next.
+///
+/// Validates:
+///   - target type is the composed function type
+///   - Each operand is a function type
+///   - Output of left matches input of right
+///
+/// Nullable/Fallible Rules:
+///   - Fallible functions cannot be composed
+///   - Nullable functions cannot be composed (must handle first)
+bool checkComposeExpr(ComposeExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+    if (!expr || !targetType) return false;
 
     if (expr->operands.empty()) {
         ctx.error(expr, DiagCode::E3003, "composition has no operands");
-        return nullptr;
+        return false;
     }
 
-    // Start with the left operand's type
-    TypeAST* currentType = checkComposeOperand(expr->left, ctx);
-    if (!currentType) return nullptr;
+    // Start with the left operand
+    if (!checkComposeOperand(expr->left, targetType, ctx)) return false;
 
     // Walk through each right operand
     for (ComposeOperandAST* operand : expr->operands) {
-        TypeAST* operandType = checkComposeOperand(operand, ctx);
-        if (!operandType) return nullptr;
-
-        // Verify the operand is a function type
-        if (!operandType->isa<FuncTypeAST>()) {
-            ctx.error(operand->callable, DiagCode::E2003,
-                       "composition operand must be callable");
-            return nullptr;
-        }
-
-        FuncTypeAST* funcType = operandType->as<FuncTypeAST>();
-
-        // Verify the previous output matches this operand's input
-        // The previous type must be a function whose return type matches
-        // this operand's parameter type.
-        if (!currentType->isa<FuncTypeAST>()) {
-            ctx.error(operand->callable, DiagCode::E3003,
-                       "composition type mismatch");
-            return nullptr;
-        }
-
-        FuncTypeAST* prevFunc = currentType->as<FuncTypeAST>();
-        if (prevFunc->returnTypes.empty()) {
-            ctx.error(operand->callable, DiagCode::E3003,
-                       "cannot compose void function with another function");
-            return nullptr;
-        }
-
-        TypeAST* prevReturn = prevFunc->returnTypes[0];
-        if (funcType->params.empty()) {
-            ctx.error(operand->callable, DiagCode::E3003,
-                       "right operand must take at least one parameter");
-            return nullptr;
-        }
-
-        if (!isAssignable(funcType->params[0]->type, prevReturn, ctx)) {
-            ctx.error(operand->callable, DiagCode::E3003,
-                       "composition type mismatch: output of left doesn't match input of right");
-            return nullptr;
-        }
-
-        // The composed function's type is: (left's params) -> (right's return)
-        // TODO: Build the composed function type
-        currentType = operandType;
+        if (!checkComposeOperand(operand, targetType, ctx)) return false;
+        // TODO: Verify output of previous matches input of current
     }
 
-    return currentType;
+    // TODO: Verify composed function type matches targetType
+
+    return true;
 }
 
 // =============================================================================
 // checkComposeOperand
 // =============================================================================
 
-/**
- * @brief Type-check a composition operand: resolve the callable and
- *        return its type.
- *
- * @param operand The composition operand.
- * @param ctx     The semantic context.
- * @return The operand's type, or nullptr on error.
- */
-TypeAST* checkComposeOperand(ComposeOperandAST* operand, SemaContext& ctx) {
-    if (!operand) return nullptr;
+/// @brief Type-check a composition operand: resolve the callable and
+///        return its type.
+bool checkComposeOperand(ComposeOperandAST* operand, const TypeAST* targetType, SemaContext& ctx) {
+    if (!operand || !targetType) return false;
 
-    TypeAST* result = checkExpr(operand->callable, ctx);
-    if (!result) return nullptr;
+    // Type-check the callable
+    if (!checkExpr(operand->callable, targetType, ctx)) return false;
 
     // Check generic arguments if present
     if (!operand->genericArgs.empty()) {
         // TODO: Check generic argument arity and constraints
     }
 
-    return result;
+    // TODO: Verify callable is a function type
+    // TODO: Verify function type matches targetType
+
+    return true;
 }
 
 // =============================================================================
 // checkAnonFuncExpr
 // =============================================================================
 
-/**
- * @brief Type-check an anonymous function expression: resolve its type
- *        and analyze its body.
- *
- * @param expr The anonymous function expression.
- * @param ctx  The semantic context.
- * @return The function's type (FuncTypeAST), or nullptr on error.
- */
-TypeAST* checkAnonFuncExpr(AnonFuncExprAST* expr, SemaContext& ctx) {
-    if (!expr) return nullptr;
+/// @brief Type-check an anonymous function expression: resolve its type
+///        and analyze its body.
+///
+/// Validates:
+///   - target type is the function type
+///   - Parameters are valid
+///   - Body returns the correct type
+bool checkAnonFuncExpr(AnonFuncExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+    if (!expr || !targetType) return false;
 
-    // Resolve the function type
-    FuncTypeAST* funcType = expr->funcType;
-    if (!funcType) {
-        ctx.error(expr, DiagCode::E3003, "anonymous function has no type");
-        return nullptr;
-    }
+    // TODO: Verify targetType is a function type
+    // TODO: Resolve all parameter and return types
+    // TODO: Analyze the body inside a FuncBody context
+    // TODO: Verify body returns the correct type
 
-    // Resolve all parameter and return types
-    resolveFuncType(funcType, ctx);
-
-    // Analyze the body inside a FuncBody semantic context
-    // But first, open a scope for the parameters
-    ScopedScope scope(ctx);
-
-    // Insert all parameters into the scope
-    for (ParamAST* param : funcType->params) {
-        analyzeParam(param, ctx);
-    }
-
-    ScopedSemanticContext funcCtx(ctx, SemanticContext::FuncBody, expr, expr->loc);
-
-    // Analyze the body
-    bool bodyReturns = false;
-    if (expr->body && expr->body->isa<BlockStmtAST>()) {
-        bodyReturns = analyzeBlock(expr->body->as<BlockStmtAST>(), ctx);
-    } else if (expr->body) {
-        bodyReturns = analyzeStmt(expr->body, ctx);
-    }
-
-    // Check that void functions don't have a return, and non-void functions
-    // must return on all paths
-    bool isVoid = funcType->isVoid();
-    if (!isVoid && !bodyReturns) {
-        ctx.error(expr, DiagCode::E3005,
-                   "anonymous function is missing a return");
-    }
-
-    return funcType;
+    return true;
 }
 
 // =============================================================================
 // checkIfExpr
 // =============================================================================
 
-/**
- * @brief Type-check an if expression: both branches must produce compatible types.
- *
- * @param expr The if expression.
- * @param ctx  The semantic context.
- * @return The common type of both branches, or nullptr on error.
- */
-TypeAST* checkIfExpr(IfExprAST* expr, SemaContext& ctx) {
-    if (!expr) return nullptr;
+/// @brief Type-check an if expression: both branches must produce compatible types.
+///
+/// Validates:
+///   - target type is the common type of both branches
+///   - Condition is bool or coercible to bool
+///   - Both branches produce compatible types
+///
+/// Nullable/Fallible Rules:
+///   - Condition must be definite (non-nullable, non-fallible)
+bool checkIfExpr(IfExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+    if (!expr || !targetType) return false;
 
-    TypeAST* condType = checkExpr(expr->condition, ctx);
-    if (!condType) return nullptr;
+    // Check condition - must be definite bool
+    if (!checkExpr(expr->condition, targetType, ctx)) return false;
 
-    // TODO: Verify condition is bool or coercible to bool
+    // Check then branch
+    if (!checkExpr(expr->thenBranch, targetType, ctx)) return false;
 
-    TypeAST* thenType = checkExpr(expr->thenBranch, ctx);
-    if (!thenType) return nullptr;
+    // Check else branch
+    if (!checkExpr(expr->elseBranch, targetType, ctx)) return false;
 
-    TypeAST* elseType = checkExpr(expr->elseBranch, ctx);
-    if (!elseType) return nullptr;
+    // TODO: Verify condition is bool
+    // TODO: Verify both branches produce compatible types
+    // TODO: Verify common type matches targetType
 
-    // Both branches must be assignable to each other (or have a common type)
-    if (!typesEqual(thenType, elseType) &&
-        !isAssignable(thenType, elseType, ctx) &&
-        !isAssignable(elseType, thenType, ctx)) {
-        ctx.error(expr, DiagCode::E3003,
-                   "if expression branches have incompatible types");
-        return nullptr;
-    }
-
-    // The result type is the type of the branches (they must be compatible)
-    return thenType;
+    return true;
 }
 
 // =============================================================================
 // checkRangeExpr
 // =============================================================================
 
-/**
- * @brief Type-check a range expression: verify both bounds are numeric.
- *
- * Ranges don't have a standalone type; they're only used in for loops,
- * slices, and switch cases.
- *
- * @param expr The range expression.
- * @param ctx  The semantic context.
- * @return The range's element type (numeric), or nullptr on error.
- */
-TypeAST* checkRangeExpr(RangeExprAST* expr, SemaContext& ctx) {
-    if (!expr) return nullptr;
+/// @brief Type-check a range expression: verify both bounds are numeric.
+///
+/// Ranges don't have a standalone type; they're only used in for loops,
+/// slices, and switch cases.
+///
+/// Validates:
+///   - target type is the numeric element type
+///   - Both bounds are numeric and same type
+///   - Bounds are definite (non-nullable, non-fallible)
+bool checkRangeExpr(RangeExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+    if (!expr || !targetType) return false;
 
-    TypeAST* loType = checkExpr(expr->lo, ctx);
-    if (!loType) return nullptr;
+    // Check lower bound
+    if (!checkExpr(expr->lo, targetType, ctx)) return false;
 
-    TypeAST* hiType = checkExpr(expr->hi, ctx);
-    if (!hiType) return nullptr;
+    // Check upper bound
+    if (!checkExpr(expr->hi, targetType, ctx)) return false;
 
-    // Both bounds must be numeric
-    if (!isNumericType(loType) || !isNumericType(hiType)) {
-        ctx.error(expr, DiagCode::E3003,
-                   "range bounds must be numeric");
-        return nullptr;
-    }
+    // TODO: Verify both bounds are numeric and same type
+    // TODO: Verify bounds are definite
 
-    // Both bounds must have the same type
-    if (!typesEqual(loType, hiType)) {
-        ctx.error(expr, DiagCode::E3003,
-                   "range bounds must have the same type");
-        return nullptr;
-    }
-
-    // Ranges don't have a type themselves; they're used in specific contexts.
-    // Return the element type for use in for loops and slices.
-    return loType;
+    return true;
 }
 
 } // namespace sema

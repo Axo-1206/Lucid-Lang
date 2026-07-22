@@ -1,42 +1,49 @@
-/**
- * @file Sema.hpp
- * @brief Lucid semantic analyzer – validates and annotates parsed ASTs.
- *
- * @architectural_note Two distinct operations: REGISTER vs LOOKUP
- *
- *   REGISTER (insert into symbol table):
- *     - Called when we encounter a declaration that defines a new name
- *     - Happens BEFORE analyzing the declaration's internals (for self-reference)
- *     - Examples: struct, enum, trait, function, variable, generic parameter
- *     - Registration order matters: insert name first, then analyze internals
- *
- *   LOOKUP (search for an existing name):
- *     - Called when we encounter a reference to a name
- *     - Searches: generic params → local scopes → module scope
- *     - Examples: type name in annotation, function call, variable reference
- *     - Reports E2001/E2002 if not found
- *
- * @architectural_note Registering generic parameters
- *   Generic parameters are registered in the current scope's `genericParams` map
- *   BEFORE analyzing the declaration's body. This allows `T` in `struct Box<T>`
- *   to be found when resolving field types like `value T`.
- *
- * @architectural_note Type declaration registration order
- *   For `struct Node<T> { value T, next ptr<Node<T>>? }`:
- *   1. Register `Node` in type namespace (so `Node` can reference itself)
- *   2. Register `T` in genericParams (so `T` can be used in fields)
- *   3. Analyze fields (now both `Node` and `T` are findable)
- *
- * @architectural_note Self-reference via DefiningTypeStack
- *   After registering `Node`, we push it onto DefiningTypeStack. This allows
- *   `isDirectSelfReference()` to detect that `next ptr<Node<T>>?` is an
- *   indirect self-reference (legal) vs `value Node<T>` (illegal, infinite size).
- *
- * @architectural_note AST nodes are read-only
- *   The parser creates and populates all AST nodes. Semantic analysis reads
- *   from them and adds semantic annotations (resolved types, etc.). We never
- *   modify the structure of the AST, only annotate existing nodes.
- */
+/// @file Sema.hpp
+/// @brief Lucid semantic analyzer – validates and annotates parsed ASTs.
+/// 
+/// @architectural_note Two distinct operations: REGISTER vs LOOKUP
+/// 
+///   REGISTER (insert into symbol table):
+///     - Called when we encounter a declaration that defines a new name
+///     - Happens BEFORE analyzing the declaration's internals (for self-reference)
+///     - Examples: struct, enum, trait, function, variable, generic parameter
+///     - Registration order matters: insert name first, then analyze internals
+/// 
+///   LOOKUP (search for an existing name):
+///     - Called when we encounter a reference to a name
+///     - Searches: generic params → local scopes → module scope
+///     - Examples: type name in annotation, function call, variable reference
+///     - Reports E2001/E2002 if not found
+/// 
+/// @architectural_note Registering generic parameters
+///   Generic parameters are registered in the current scope's `genericParams` map
+///   BEFORE analyzing the declaration's body. This allows `T` in `struct Box<T>`
+///   to be found when resolving field types like `value T`.
+/// 
+/// @architectural_note Type declaration registration order
+///   For `struct Node<T> { value T, next ptr<Node<T>>? }`:
+///   1. Register `Node` in type namespace (so `Node` can reference itself)
+///   2. Register `T` in genericParams (so `T` can be used in fields)
+///   3. Analyze fields (now both `Node` and `T` are findable)
+/// 
+/// @architectural_note Self-reference via DefiningTypeStack
+///   After registering `Node`, we push it onto DefiningTypeStack. This allows
+///   `isDirectSelfReference()` to detect that `next ptr<Node<T>>?` is an
+///   indirect self-reference (legal) vs `value Node<T>` (illegal, infinite size).
+/// 
+/// @architectural_note AST nodes are read-only
+///   The parser creates and populates all AST nodes. Semantic analysis reads
+///   from them and adds semantic annotations (resolved types, etc.). We never
+///   modify the structure of the AST, only annotate existing nodes.
+/// 
+
+/// IMPORTANT: IMPORTANT: IMPORTANT: IMPORTANT: IMPORTANT: IMPORTANT:
+/// @warning @warning @warning @warning @warning @warning @warning
+/// README: README: README: README: README: README: README: README:
+///
+/// @note the parser already set the data (node fields) for the ast node.
+/// The semantic phase will NOT MODIFY the node and only READ the node to
+/// make validations
 
 #pragma once
 
@@ -56,16 +63,10 @@
 
 namespace sema {
 
-// =============================================================================
-// Public API - Single Entry Point
-// =============================================================================
-
-/**
- * @brief Analyze all modules in the program.
- *
- * The ONLY entry point for semantic analysis. Processes modules in
- * dependency order (imports before dependents).
- */
+/// @brief Analyze all modules in the program.
+/// 
+/// The ONLY entry point for semantic analysis. Processes modules in
+/// dependency order (imports before dependents). 
 void analyze(std::vector<ModuleAST*>& modules, SemaContext& ctx);
 
 // =============================================================================
@@ -122,74 +123,322 @@ bool analyzeSpawnStmt(const SpawnStmtAST* stmt, SemaContext& ctx);
 bool analyzeJoinStmt(const JoinStmtAST* stmt, SemaContext& ctx);
 
 // =============================================================================
-// EXPRESSIONS - Type checking (LOOKUP names)
+// EXPRESSIONS - Type checking
 // =============================================================================
 
 /**
- * @brief Type-check an expression.
+ * @brief Type-check an expression against a required target type.
  *
- * For identifier expressions, this LOOKS UP the name in the symbol table.
- * Sets expr->resolvedType.
+ * Since Lucid requires explicit type annotations, the target type is always known.
+ * This function validates that the expression is valid and its type is assignable
+ * to the target type.
+ *
+ * @param expr The expression to check.
+ * @param targetType The required target type (must not be nullptr).
+ * @param ctx The semantic context.
+ * @return true if the expression is valid and assignable to targetType.
+ *
+ * @note The `resolvedType` field is set to targetType for all valid expressions.
+ *       This matches Lucid's explicit type system where every expression's type
+ *       is known from context.
  */
-TypeAST* checkExpr(const ExprAST* expr, SemaContext& ctx);
+bool checkExpr(ExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
 
-TypeAST* checkLiteralExpr(const LiteralExprAST* expr, SemaContext& ctx);
+// ─── Literal Expressions ─────────────────────────────────────────────────
+
+/**
+ * @brief Check a literal expression against the target type.
+ * 
+ * Validates that the literal kind matches the target type:
+ *   - int literal → integer target type
+ *   - float literal → float target type
+ *   - string literal → string target type
+ *   - char literal → char target type
+ *   - true/false → bool target type
+ *   - nil → nullable target type (T?)
+ *   - err → fallible target type (T!)
+ */
+bool checkLiteralExpr(LiteralExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
+
+// ─── Identifier Expressions ──────────────────────────────────────────────
 
 /**
  * @brief Check an identifier expression.
  *
- * LOOKUP: `ctx.symbols.lookupValue(expr->name)`
+ * LOOKUP: Resolves the name via `resolveValueOrError()`.
  *   - Searches: generic params → local scopes → module scope
  *   - Reports E2001 if not found
- *   - Sets resolvedType to the declaration's valueType
+ *   - Validates that the resolved value's type is assignable to targetType
  */
-TypeAST* checkIdentifierExpr(const IdentifierExprAST* expr, SemaContext& ctx);
+bool checkIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
 
-TypeAST* checkArrayLiteralExpr(const ArrayLiteralExprAST* expr, SemaContext& ctx);
-TypeAST* checkStructLiteralExpr(const StructLiteralExprAST* expr, SemaContext& ctx);
-TypeAST* checkBinaryExpr(const BinaryExprAST* expr, SemaContext& ctx);
-TypeAST* checkUnaryExpr(const UnaryExprAST* expr, SemaContext& ctx);
+// ─── Array and Struct Literals ───────────────────────────────────────────
+
+/**
+ * @brief Check an array literal against the target array type.
+ *
+ * Validates:
+ *   - targetType must be ArrayTypeAST
+ *   - Each element is assignable to the array's element type
+ *   - For fixed arrays: element count ≤ size
+ *   - For nested arrays: recursively checks inner arrays
+ */
+bool checkArrayLiteralExpr(ArrayLiteralExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
+
+/**
+ * @brief Check a struct literal against the target struct type.
+ *
+ * Validates:
+ *   - targetType must be NamedTypeAST resolving to a StructDeclAST
+ *   - All required fields (const without default) are initialized
+ *   - Each field initializer is assignable to the field's type
+ *   - No unknown fields are present
+ */
+bool checkStructLiteralExpr(StructLiteralExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
+
+// ─── Binary Expressions ──────────────────────────────────────────────────
+
+/**
+ * @brief Check a binary expression.
+ *
+ * Validates both operands against the target type, then operator-specific rules:
+ *   - Arithmetic (+, -, *, /, %, **): target must be numeric
+ *   - Comparison (==, !=, <, <=, >, >=): target must be bool
+ *   - Logical (and, or): target must be bool
+ *   - Bitwise (&, |, ^, <<, >>): target must be integer
+ *
+ * Nullable/Fallible Rules:
+ *   - Arithmetic/Logical/Bitwise: operands must be definite (non-nullable, non-fallible)
+ *   - Comparison: operands may be nullable (nil comparison allowed), but not fallible
+ *   - Comparison: fallible operands are not allowed (must handle error first)
+ */
+bool checkBinaryExpr(BinaryExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
+
+// ─── Unary Expressions ───────────────────────────────────────────────────
+
+/**
+ * @brief Check a unary expression.
+ *
+ * Validates operand against the target type:
+ *   - Negation (-x): target must be numeric, operand must be definite
+ *   - Logical Not (not x): target must be bool, operand must be definite
+ *   - Bitwise Not (~x): target must be integer, operand must be definite
+ *
+ * Nullable/Fallible Rules:
+ *   - Unary operations on nullable/fallible are NOT allowed (must narrow first)
+ */
+bool checkUnaryExpr(UnaryExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
+
+// ─── Call Expressions ────────────────────────────────────────────────────
 
 /**
  * @brief Check a function call.
  *
- * LOOKUP: Uses resolveCalleeOrError() to find the function declaration.
- *   - Plain call: LOOKUP name in value namespace
- *   - Module call: LOOKUP module alias, then LOOKUP member in module's table
- *   - Other callees: Check callee's resolvedType is a FuncTypeAST
+ * Validates:
+ *   - Callee resolves to a callable function
+ *   - Callee is definite (not nullable/fallible)
+ *   - Arguments are assignable to parameter types
+ *   - Return type is assignable to targetType
+ *
+ * Nullable/Fallible Rules:
+ *   - Callee cannot be nullable/fallible (must narrow first)
+ *   - Arguments cannot be fallible (must handle error first)
+ *   - Arguments may be nullable if parameter type is nullable
  */
-TypeAST* checkCallExpr(const CallExprAST* expr, SemaContext& ctx);
-
-TypeAST* checkIntrinsicCallExpr(const IntrinsicCallExprAST* expr, SemaContext& ctx);
-TypeAST* checkIndexExpr(const IndexExprAST* expr, SemaContext& ctx);
-TypeAST* checkSliceExpr(const SliceExprAST* expr, SemaContext& ctx);
+bool checkCallExpr(CallExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
 
 /**
- * @brief Check field access.
+ * @brief Check an intrinsic call.
  *
- * LOOKUP: Resolve object's type, then LOOKUP field name in that type's scope.
- *   - For structs: LOOKUP field in struct's fields
- *   - For enums: LOOKUP variant in enum's variants
+ * Validates the intrinsic name exists and arguments are correct.
+ * The target type is the intrinsic's expected return type.
  */
-TypeAST* checkFieldAccessExpr(const FieldAccessExprAST* expr, SemaContext& ctx);
+bool checkIntrinsicCallExpr(IntrinsicCallExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
+
+// ─── Index and Slice Expressions ─────────────────────────────────────────
 
 /**
- * @brief Check module access (module:member).
+ * @brief Check an index expression: arr[index].
  *
- * LOOKUP:
- *   1. `ctx.symbols.lookupImport(moduleName)` - find imported module
- *   2. `moduleTable->values.find(memberName)` - LOOKUP member in module's table
+ * Validates:
+ *   - target type is the array's element type
+ *   - target is an array type
+ *   - index is a definite integer type
+ *
+ * Nullable/Fallible Rules:
+ *   - Index must be definite (non-nullable, non-fallible)
+ *   - Array element may be nullable (result type inherits nullability)
  */
-TypeAST* checkModuleAccessExpr(const ModuleAccessExprAST* expr, SemaContext& ctx);
+bool checkIndexExpr(IndexExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
 
-TypeAST* checkNullableChainExpr(const NullableChainExprAST* expr, SemaContext& ctx);
-TypeAST* checkNullCoalesceExpr(const NullCoalesceExprAST* expr, SemaContext& ctx);
-TypeAST* checkAssignExpr(const AssignExprAST* expr, SemaContext& ctx);
-TypeAST* checkPipelineExpr(const PipelineExprAST* expr, SemaContext& ctx);
-TypeAST* checkComposeExpr(const ComposeExprAST* expr, SemaContext& ctx);
-TypeAST* checkAnonFuncExpr(const AnonFuncExprAST* expr, SemaContext& ctx);
-TypeAST* checkIfExpr(const IfExprAST* expr, SemaContext& ctx);
-TypeAST* checkRangeExpr(const RangeExprAST* expr, SemaContext& ctx);
+/**
+ * @brief Check a slice expression: arr[start..end].
+ *
+ * Validates:
+ *   - target type is the slice type ([_]T)
+ *   - target is an array type
+ *   - start/end bounds are definite integer types
+ *
+ * Nullable/Fallible Rules:
+ *   - Bounds must be definite (non-nullable, non-fallible)
+ *   - Result inherits element nullability
+ */
+bool checkSliceExpr(SliceExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
+
+// ─── Field Access Expressions ────────────────────────────────────────────
+
+/**
+ * @brief Check a field access: obj.field.
+ *
+ * Validates:
+ *   - target type is the field's type
+ *   - object is a struct or enum type
+ *   - field exists on the object
+ *
+ * Nullable/Fallible Rules:
+ *   - Object must be definite (use ?. for nullable, handle error for fallible)
+ *   - Field access on nullable requires NullableChainExpr (?.)
+ *   - Field access on fallible is NOT allowed
+ */
+bool checkFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
+
+// ─── Module Access Expressions ───────────────────────────────────────────
+
+/**
+ * @brief Check a module access: module:member.
+ *
+ * Validates:
+ *   - target type is the member's type
+ *   - module alias resolves to a valid module
+ *   - member exists in the module's exports
+ *
+ * Module access is always read-only.
+ */
+bool checkModuleAccessExpr(ModuleAccessExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
+
+// ─── Nullable Chain ──────────────────────────────────────────────────────
+
+/**
+ * @brief Check a nullable chain: obj?.field?.field.
+ *
+ * Validates:
+ *   - target type is the final field's type (nullable)
+ *   - Each step is a field access on a nullable type
+ *   - The chain must be terminated by ?? (checked at parent)
+ *
+ * Nullable/Fallible Rules:
+ *   - Base must be nullable (T?), not fallible (T!)
+ *   - Each step must be nullable
+ *   - Fallible values cannot be chained (must handle error first)
+ */
+bool checkNullableChainExpr(NullableChainExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
+
+// ─── Null Coalesce ───────────────────────────────────────────────────────
+
+/**
+ * @brief Check a null coalesce: value ?? fallback.
+ *
+ * Validates:
+ *   - LHS is nullable or fallible
+ *   - RHS type is assignable to the unwrapped type
+ *   - target type is the RHS type (or unwrapped LHS type)
+ *
+ * Nullable/Fallible Rules:
+ *   - LHS can be T?, T!, or T?!
+ *   - ?? unwraps T? to T (handles nil)
+ *   - ?? unwraps T! to T (handles err)
+ *   - ?? unwraps T?! to T (handles nil and err)
+ *   - RHS must be definite (not nullable/fallible) or match unwrapped type
+ */
+bool checkNullCoalesceExpr(NullCoalesceExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
+
+// ─── Assignment ──────────────────────────────────────────────────────────
+
+/**
+ * @brief Check an assignment: lhs = rhs.
+ *
+ * Validates:
+ *   - target type is the LHS type
+ *   - LHS is an assignable lvalue
+ *   - RHS is assignable to LHS type
+ *
+ * Nullable/Fallible Rules:
+ *   - RHS cannot be fallible (must handle error first)
+ *   - RHS can be nullable if LHS is nullable (widening)
+ *   - RHS cannot be nullable if LHS is definite (narrowing - requires ??)
+ */
+bool checkAssignExpr(AssignExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
+
+// ─── Pipeline ────────────────────────────────────────────────────────────
+
+/**
+ * @brief Check a pipeline expression: seed |> step |> step.
+ *
+ * Validates:
+ *   - target type is the final output type
+ *   - Seed type matches first step's input
+ *   - Each step's output matches next step's input
+ *
+ * Nullable/Fallible Rules:
+ *   - Pipeline short-circuits on err
+ *   - Steps cannot be fallible functions (must handle error first)
+ */
+bool checkPipelineExpr(PipelineExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
+
+// ─── Composition ─────────────────────────────────────────────────────────
+
+/**
+ * @brief Check a composition expression: f +> g +> h.
+ *
+ * Validates:
+ *   - target type is the composed function type
+ *   - Each operand is a function type
+ *   - Output of left matches input of right
+ *
+ * Nullable/Fallible Rules:
+ *   - Fallible functions cannot be composed
+ *   - Nullable functions cannot be composed (must handle first)
+ */
+bool checkComposeExpr(ComposeExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
+
+// ─── Anonymous Function ──────────────────────────────────────────────────
+
+/**
+ * @brief Check an anonymous function expression.
+ *
+ * Validates:
+ *   - target type is the function type
+ *   - Parameters are valid
+ *   - Body returns the correct type
+ */
+bool checkAnonFuncExpr(AnonFuncExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
+
+// ─── If Expression ──────────────────────────────────────────────────────
+
+/**
+ * @brief Check an if expression.
+ *
+ * Validates:
+ *   - target type is the common type of both branches
+ *   - Condition is bool or coercible to bool
+ *   - Both branches produce compatible types
+ *
+ * Nullable/Fallible Rules:
+ *   - Condition must be definite (non-nullable, non-fallible)
+ */
+bool checkIfExpr(IfExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
+
+// ─── Range Expression ────────────────────────────────────────────────────
+
+/**
+ * @brief Check a range expression: lo..hi or lo..<hi.
+ *
+ * Validates:
+ *   - target type is the numeric element type
+ *   - Both bounds are numeric and same type
+ *   - Bounds are definite (non-nullable, non-fallible)
+ */
+bool checkRangeExpr(RangeExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
 
 // =============================================================================
 // TYPES - LOOKUP names in type namespace
@@ -384,9 +633,9 @@ bool isTypeRedeclared(InternedString name, SemaContext& ctx);
 bool isGenericParamRedeclared(InternedString name, SemaContext& ctx);
 bool isImportAliasRedeclared(InternedString alias, SemaContext& ctx);
 
-bool reportValueRedeclaration(InternedString name, const BaseAST* node, SemaContext& ctx);
-bool reportTypeRedeclaration(InternedString name, const BaseAST* node, SemaContext& ctx);
-bool reportGenericParamRedeclaration(InternedString name, const BaseAST* node, SemaContext& ctx);
+bool reportValueRedeclaration(const DeclAST* node, SemaContext& ctx);
+bool reportTypeRedeclaration(const DeclAST* node, SemaContext& ctx);
+bool reportGenericParamRedeclaration(const DeclAST* node, SemaContext& ctx);
 bool reportImportAliasRedeclaration(InternedString alias, const BaseAST* node, SemaContext& ctx);
 
 // ─── Module Member Lookup ─────────────────────────────────────────────────
