@@ -20,7 +20,6 @@
  */
 
 #include "../Sema.hpp"
-#include "../SemaContext.hpp"
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/DeclAST.hpp"
 #include "core/ast/TypeAST.hpp"
@@ -29,6 +28,8 @@
 
 #include <unordered_set>
 #include <optional>
+
+namespace sema {
 
 // =============================================================================
 // checkExpr — Dispatch
@@ -1335,3 +1336,5 @@ TypeAST* checkRangeExpr(RangeExprAST* expr, SemaContext& ctx) {
     // Return the element type for use in for loops and slices.
     return loType;
 }
+
+} // namespace sema

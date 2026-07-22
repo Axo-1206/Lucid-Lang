@@ -52,30 +52,30 @@ const Scope& SymbolStorage::currentScope() const {
 
 // ─── Insertion ──────────────────────────────────────────────────────────
 
-void SymbolStorage::insertValue(InternedString name, ValueDeclAST* decl) {
+void SymbolStorage::insertValue(const ValueDeclAST* decl) {
     if (isAtModuleLevel()) {
-        m_currentModuleTable->values[name] = decl;
+        m_currentModuleTable->values[decl->name] = decl;
     } else {
-        currentScope().values[name] = decl;
+        currentScope().values[decl->name] = decl;
     }
 }
 
-void SymbolStorage::insertType(InternedString name, TypeDeclAST* decl) {
+void SymbolStorage::insertType(const TypeDeclAST* decl) {
     if (isAtModuleLevel()) {
-        m_currentModuleTable->types[name] = decl;
+        m_currentModuleTable->types[decl->name] = decl;
     } else {
-        currentScope().types[name] = decl;
+        currentScope().types[decl->name] = decl;
     }
 }
 
-void SymbolStorage::insertGenericParam(InternedString name, GenericParamDeclAST* param) {
+void SymbolStorage::insertGenericParam(const GenericParamDeclAST* param) {
     assert(!isAtModuleLevel() && "insertGenericParam() requires an open Scope");
-    currentScope().genericParams[name] = param;
+    currentScope().genericParams[param->name] = param;
 }
 
 // ─── Lookup ─────────────────────────────────────────────────────────────
 
-ValueDeclAST* SymbolStorage::lookupValue(InternedString name) const {
+const ValueDeclAST* SymbolStorage::lookupValue(InternedString name) const {
     // Search scopes from innermost to outermost
     for (auto it = m_scopes.rbegin(); it != m_scopes.rend(); ++it) {
         auto found = it->values.find(name);
@@ -95,12 +95,12 @@ ValueDeclAST* SymbolStorage::lookupValue(InternedString name) const {
     return nullptr;
 }
 
-FuncDeclAST* SymbolStorage::lookupFunction(InternedString name) const {
-    ValueDeclAST* v = lookupValue(name);
+const FuncDeclAST* SymbolStorage::lookupFunction(InternedString name) const {
+    const ValueDeclAST* v = lookupValue(name);
     return (v && v->isa<FuncDeclAST>()) ? v->as<FuncDeclAST>() : nullptr;
 }
 
-TypeDeclAST* SymbolStorage::lookupType(InternedString name) const {
+const TypeDeclAST* SymbolStorage::lookupType(InternedString name) const {
     // Search scopes from innermost to outermost
     for (auto it = m_scopes.rbegin(); it != m_scopes.rend(); ++it) {
         // Generic parameters shadow type names
@@ -127,7 +127,7 @@ TypeDeclAST* SymbolStorage::lookupType(InternedString name) const {
     return nullptr;
 }
 
-GenericParamDeclAST* SymbolStorage::lookupGenericParam(InternedString name) const {
+const GenericParamDeclAST* SymbolStorage::lookupGenericParam(InternedString name) const {
     // Generic parameters are always transient, so only search scopes
     for (auto it = m_scopes.rbegin(); it != m_scopes.rend(); ++it) {
         auto found = it->genericParams.find(name);

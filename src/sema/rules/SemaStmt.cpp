@@ -29,13 +29,14 @@
  */
 
 #include "../Sema.hpp"
-#include "../SemaContext.hpp"
 #include "core/ast/StmtAST.hpp"
 #include "core/ast/DeclAST.hpp"
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/TypeAST.hpp"
 
 #include <unordered_set>
+
+namespace sema {
 
 // =============================================================================
 // analyzeStmt — Dispatch
@@ -57,38 +58,22 @@ bool analyzeStmt(StmtAST* stmt, SemaContext& ctx) {
     switch (stmt->kind) {
         case ASTKind::BlockStmt:
             return analyzeBlock(stmt->as<BlockStmtAST>(), ctx);
-        case ASTKind::ExprStmt:
-            return analyzeExprStmt(stmt->as<ExprStmtAST>(), ctx);
-        case ASTKind::DeclStmt:
-            return analyzeDeclStmt(stmt->as<DeclStmtAST>(), ctx);
-        case ASTKind::IfStmt:
-            return analyzeIfStmt(stmt->as<IfStmtAST>(), ctx);
-        case ASTKind::SwitchStmt:
-            return analyzeSwitchStmt(stmt->as<SwitchStmtAST>(), ctx);
-        case ASTKind::ForStmt:
-            return analyzeForStmt(stmt->as<ForStmtAST>(), ctx);
-        case ASTKind::WhileStmt:
-            return analyzeWhileStmt(stmt->as<WhileStmtAST>(), ctx);
-        case ASTKind::DoWhileStmt:
-            return analyzeDoWhileStmt(stmt->as<DoWhileStmtAST>(), ctx);
-        case ASTKind::ReturnStmt:
-            return analyzeReturnStmt(stmt->as<ReturnStmtAST>(), ctx);
-        case ASTKind::BreakStmt:
-            return analyzeBreakStmt(stmt->as<BreakStmtAST>(), ctx);
-        case ASTKind::ContinueStmt:
-            return analyzeContinueStmt(stmt->as<ContinueStmtAST>(), ctx);
-        case ASTKind::MultiVarDecl:
-            return analyzeMultiVarDecl(stmt->as<MultiVarDeclAST>(), ctx);
-        case ASTKind::MultiAssignStmt:
-            return analyzeMultiAssignStmt(stmt->as<MultiAssignStmtAST>(), ctx);
-        case ASTKind::AsyncExpr:
-            return analyzeAsyncStmt(stmt->as<AsyncStmtAST>(), ctx);
-        case ASTKind::AwaitExpr:
-            return analyzeAwaitStmt(stmt->as<AwaitStmtAST>(), ctx);
-        case ASTKind::SpawnExpr:
-            return analyzeSpawnStmt(stmt->as<SpawnStmtAST>(), ctx);
-        case ASTKind::JoinExpr:
-            return analyzeJoinStmt(stmt->as<JoinStmtAST>(), ctx);
+        case ASTKind::ExprStmt:         return analyzeExprStmt(stmt->as<ExprStmtAST>(), ctx);
+        case ASTKind::DeclStmt:         return analyzeDeclStmt(stmt->as<DeclStmtAST>(), ctx);
+        case ASTKind::IfStmt:           return analyzeIfStmt(stmt->as<IfStmtAST>(), ctx);
+        case ASTKind::SwitchStmt:       return analyzeSwitchStmt(stmt->as<SwitchStmtAST>(), ctx);
+        case ASTKind::ForStmt:          return analyzeForStmt(stmt->as<ForStmtAST>(), ctx);
+        case ASTKind::WhileStmt:        return analyzeWhileStmt(stmt->as<WhileStmtAST>(), ctx);
+        case ASTKind::DoWhileStmt:      return analyzeDoWhileStmt(stmt->as<DoWhileStmtAST>(), ctx);
+        case ASTKind::ReturnStmt:       return analyzeReturnStmt(stmt->as<ReturnStmtAST>(), ctx);
+        case ASTKind::BreakStmt:        return analyzeBreakStmt(stmt->as<BreakStmtAST>(), ctx);
+        case ASTKind::ContinueStmt:     return analyzeContinueStmt(stmt->as<ContinueStmtAST>(), ctx);
+        case ASTKind::MultiVarDecl:     return analyzeMultiVarDecl(stmt->as<MultiVarDeclAST>(), ctx);
+        case ASTKind::MultiAssignStmt:  return analyzeMultiAssignStmt(stmt->as<MultiAssignStmtAST>(), ctx);
+        case ASTKind::AsyncExpr:        return analyzeAsyncStmt(stmt->as<AsyncStmtAST>(), ctx);
+        case ASTKind::AwaitExpr:        return analyzeAwaitStmt(stmt->as<AwaitStmtAST>(), ctx);
+        case ASTKind::SpawnExpr:        return analyzeSpawnStmt(stmt->as<SpawnStmtAST>(), ctx);
+        case ASTKind::JoinExpr:         return analyzeJoinStmt(stmt->as<JoinStmtAST>(), ctx);
         default:
             // Unknown/error-recovery statement — doesn't diverge
             return false;
@@ -823,5 +808,6 @@ bool analyzeJoinStmt(JoinStmtAST* stmt, SemaContext& ctx) {
         //       This is a semantic effect that needs to be recorded.
     }
 
-    return false;
-}
+    return false;   
+
+} // namespace sema

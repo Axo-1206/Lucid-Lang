@@ -25,21 +25,11 @@ namespace sema {
 // Generic Parameter Lookup
 // =============================================================================
 
-/**
- * @brief Check if a name is a generic parameter in the current scope.
- *
- * Generic parameters have the HIGHEST priority and shadow type names.
- */
 bool isGenericParam(InternedString name, SemaContext& ctx) {
     return ctx.symbols.lookupGenericParam(name) != nullptr;
 }
 
-/**
- * @brief Look up a generic parameter by name.
- *
- * @return The GenericParamDeclAST if found, nullptr otherwise.
- */
-GenericParamDeclAST* lookupGenericParam(InternedString name, SemaContext& ctx) {
+const GenericParamDeclAST* lookupGenericParam(InternedString name, SemaContext& ctx) {
     return ctx.symbols.lookupGenericParam(name);
 }
 
@@ -47,25 +37,12 @@ GenericParamDeclAST* lookupGenericParam(InternedString name, SemaContext& ctx) {
 // Value Lookup (variables, functions, parameters, fields, enum variants)
 // =============================================================================
 
-/**
- * @brief Look up a value declaration by name.
- *
- * Searches: generic params → local scopes → module scope
- * Generic params are NOT values, so they don't match here.
- *
- * @return The ValueDeclAST if found, nullptr otherwise.
- */
-ValueDeclAST* lookupValue(InternedString name, SemaContext& ctx) {
+const ValueDeclAST* lookupValue(InternedString name, SemaContext& ctx) {
     return ctx.symbols.lookupValue(name);
 }
 
-/**
- * @brief Look up a value and report E2001 if not found.
- *
- * This is the main function for value resolution.
- */
-ValueDeclAST* resolveValueOrError(IdentifierExprAST* expr, SemaContext& ctx) {
-    if (ValueDeclAST* decl = lookupValue(expr->name, ctx)) {
+const ValueDeclAST* resolveValueOrError(IdentifierExprAST* expr, SemaContext& ctx) {
+    if (const ValueDeclAST* decl = lookupValue(expr->name, ctx)) {
         return decl;
     }
     ctx.error(expr, DiagCode::E2001, 
@@ -73,13 +50,8 @@ ValueDeclAST* resolveValueOrError(IdentifierExprAST* expr, SemaContext& ctx) {
     return nullptr;
 }
 
-/**
- * @brief Look up a function by name.
- *
- * Convenience wrapper that checks the resolved value is a FuncDeclAST.
- */
-FuncDeclAST* lookupFunction(InternedString name, SemaContext& ctx) {
-    ValueDeclAST* value = lookupValue(name, ctx);
+const FuncDeclAST* lookupFunction(InternedString name, SemaContext& ctx) {
+    const ValueDeclAST* value = lookupValue(name, ctx);
     return (value && value->isa<FuncDeclAST>()) ? value->as<FuncDeclAST>() : nullptr;
 }
 
@@ -87,37 +59,18 @@ FuncDeclAST* lookupFunction(InternedString name, SemaContext& ctx) {
 // Type Lookup (structs, enums, traits)
 // =============================================================================
 
-/**
- * @brief Look up a type declaration by name.
- *
- * Searches: local scopes → module scope
- * Generic parameters are NOT type declarations (they shadow, but are separate).
- *
- * @return The TypeDeclAST if found, nullptr otherwise.
- */
-TypeDeclAST* lookupType(InternedString name, SemaContext& ctx) {
+const TypeDeclAST* lookupType(InternedString name, SemaContext& ctx) {
     return ctx.symbols.lookupType(name);
 }
 
-/**
- * @brief Look up a type with proper priority (generic params shadow types).
- *
- * This is the main type resolution function. It handles:
- *   1. Check if it's a generic parameter (returns nullptr, no error)
- *   2. Look up as concrete type (returns TypeDeclAST*)
- *   3. Not found (reports E2002, returns nullptr)
- *
- * @note Callers must check isGenericParam() separately if they need to
- *       distinguish "generic parameter" from "not found".
- */
-TypeDeclAST* resolveTypeOrError(NamedTypeAST* type, SemaContext& ctx) {
+const TypeDeclAST* resolveTypeOrError(NamedTypeAST* type, SemaContext& ctx) {
     // Generic parameters have highest priority - they shadow type names
     if (isGenericParam(type->name, ctx)) {
         return nullptr; // Valid, just not a TypeDeclAST
     }
 
     // Look up as concrete type (local → module)
-    if (TypeDeclAST* decl = lookupType(type->name, ctx)) {
+    if (const TypeDeclAST* decl = lookupType(type->name, ctx)) {
         return decl;
     }
 
@@ -127,25 +80,89 @@ TypeDeclAST* resolveTypeOrError(NamedTypeAST* type, SemaContext& ctx) {
     return nullptr;
 }
 
-/**
- * @brief Resolve a named type reference, reporting E2002 on failure.
- *
- * Alias for resolveTypeOrError() for consistency with resolveValueOrError().
- */
-TypeDeclAST* resolveTypeNameOrError(NamedTypeAST* type, SemaContext& ctx) {
+const TypeDeclAST* resolveTypeNameOrError(NamedTypeAST* type, SemaContext& ctx) {
     return resolveTypeOrError(type, ctx);
+}
+
+// =============================================================================
+// REDECLARATION HELPERS - Check only the current tier (not outer scopes)
+// =============================================================================
+
+bool isValueRedeclared(InternedString name, SemaContext& ctx) {
+    if (ctx.symbols.isAtModuleLevel()) {
+        ModuleTable* table = ctx.symbols.currentModuleTable();
+        return table && table->values.find(name) != table->values.end();
+    } else {
+        const Scope& current = ctx.symbols.currentScope();
+        return current.values.find(name) != current.values.end();
+    }
+}
+
+bool isTypeRedeclared(InternedString name, SemaContext& ctx) {
+    if (ctx.symbols.isAtModuleLevel()) {
+        ModuleTable* table = ctx.symbols.currentModuleTable();
+        return table && table->types.find(name) != table->types.end();
+    } else {
+        const Scope& current = ctx.symbols.currentScope();
+        return current.types.find(name) != current.types.end();
+    }
+}
+
+bool isGenericParamRedeclared(InternedString name, SemaContext& ctx) {
+    if (ctx.symbols.isAtModuleLevel()) {
+        return false; // Generic params are never at module level
+    }
+    const Scope& current = ctx.symbols.currentScope();
+    return current.genericParams.find(name) != current.genericParams.end();
+}
+
+bool isImportAliasRedeclared(InternedString alias, SemaContext& ctx) {
+    ModuleTable* table = ctx.symbols.currentModuleTable();
+    if (!table) return false;
+    return table->importAliases.find(alias) != table->importAliases.end();
+}
+
+bool reportValueRedeclaration(InternedString name, BaseAST* node, SemaContext& ctx) {
+    if (isValueRedeclared(name, ctx)) {
+        ctx.error(node, DiagCode::E2101,
+                  "redeclaration of '", ctx.pool().lookup(name), "' in the same scope");
+        return true;
+    }
+    return false;
+}
+
+bool reportTypeRedeclaration(InternedString name, BaseAST* node, SemaContext& ctx) {
+    if (isTypeRedeclared(name, ctx)) {
+        ctx.error(node, DiagCode::E2101,
+                  "redeclaration of '", ctx.pool().lookup(name), "' in the same scope");
+        return true;
+    }
+    return false;
+}
+
+bool reportGenericParamRedeclaration(InternedString name, BaseAST* node, SemaContext& ctx) {
+    if (isGenericParamRedeclared(name, ctx)) {
+        ctx.error(node, DiagCode::E2101,
+                  "redeclaration of generic parameter '", ctx.pool().lookup(name), "' in the same scope");
+        return true;
+    }
+    return false;
+}
+
+bool reportImportAliasRedeclaration(InternedString alias, BaseAST* node, SemaContext& ctx) {
+    if (isImportAliasRedeclared(alias, ctx)) {
+        ctx.error(node, DiagCode::E2101,
+                  "redeclaration of import alias '", ctx.pool().lookup(alias), "'");
+        return true;
+    }
+    return false;
 }
 
 // =============================================================================
 // Module Member Lookup (module:member)
 // =============================================================================
 
-/**
- * @brief Look up a member in a module's table.
- *
- * Used for module:member access. The module must already be resolved.
- */
-ValueDeclAST* lookupModuleMember(ModuleAST* module, InternedString memberName, SemaContext& ctx) {
+const ValueDeclAST* lookupModuleMember(ModuleAST* module, InternedString memberName, SemaContext& ctx) {
     if (!module) return nullptr;
     
     ModuleTable* table = ctx.symbols.findModuleTable(module);
@@ -155,10 +172,7 @@ ValueDeclAST* lookupModuleMember(ModuleAST* module, InternedString memberName, S
     return it != table->values.end() ? it->second : nullptr;
 }
 
-/**
- * @brief Resolve a module alias and look up a member, with error reporting.
- */
-ValueDeclAST* resolveModuleMemberOrError(ModuleAccessExprAST* access, SemaContext& ctx) {
+const ValueDeclAST* resolveModuleMemberOrError(ModuleAccessExprAST* access, SemaContext& ctx) {
     ModuleAST* mod = ctx.symbols.lookupImport(access->moduleName);
     if (!mod) {
         ctx.error(access, DiagCode::E2001,
@@ -166,7 +180,7 @@ ValueDeclAST* resolveModuleMemberOrError(ModuleAccessExprAST* access, SemaContex
         return nullptr;
     }
     
-    ValueDeclAST* member = lookupModuleMember(mod, access->memberName, ctx);
+    const ValueDeclAST* member = lookupModuleMember(mod, access->memberName, ctx);
     if (!member) {
         ctx.error(access, DiagCode::E2001,
                    "undefined member '", ctx.pool().lookup(access->moduleName), ":",
@@ -181,21 +195,11 @@ ValueDeclAST* resolveModuleMemberOrError(ModuleAccessExprAST* access, SemaContex
 // Callee Resolution (for function calls)
 // =============================================================================
 
-/**
- * @brief Resolve a call expression's callee to the FuncDeclAST it names.
- *
- * Handles two callee shapes:
- *   - IdentifierExprAST: Look up in value namespace
- *   - ModuleAccessExprAST: Look up module alias, then member
- *
- * Any other callee shape (curried call, function literal) returns nullptr
- * silently - the caller must check the callee's resolved type instead.
- */
-FuncDeclAST* resolveCalleeOrError(ExprAST* callee, SemaContext& ctx) {
+const FuncDeclAST* resolveCalleeOrError(ExprAST* callee, SemaContext& ctx) {
     // Plain call: `foo(...)`
     if (callee->isa<IdentifierExprAST>()) {
         IdentifierExprAST* id = callee->as<IdentifierExprAST>();
-        ValueDeclAST* value = lookupValue(id->name, ctx);
+        const ValueDeclAST* value = lookupValue(id->name, ctx);
         
         if (!value) {
             ctx.error(callee, DiagCode::E2001,
@@ -215,7 +219,7 @@ FuncDeclAST* resolveCalleeOrError(ExprAST* callee, SemaContext& ctx) {
     // Cross-module call: `module:member(...)`
     if (callee->isa<ModuleAccessExprAST>()) {
         ModuleAccessExprAST* access = callee->as<ModuleAccessExprAST>();
-        ValueDeclAST* value = resolveModuleMemberOrError(access, ctx);
+        const ValueDeclAST* value = resolveModuleMemberOrError(access, ctx);
         
         if (!value) {
             return nullptr; // Error already reported
@@ -234,27 +238,6 @@ FuncDeclAST* resolveCalleeOrError(ExprAST* callee, SemaContext& ctx) {
     // Any other callee shape - doesn't name a declaration
     // Caller must check callee's resolved type
     return nullptr;
-}
-
-// =============================================================================
-// Self-Type Cache
-// =============================================================================
-
-/**
- * @brief Get (creating if necessary) the cached self-type reference for decl.
- *
- * Lazy cache: TypeDeclAST::selfType starts nullptr and is populated on first access.
- * Used when a type name appears as a value (e.g., `int("42")`).
- */
-NamedTypeAST* selfTypeOf(TypeDeclAST* decl, SemaContext& ctx) {
-    if (decl->selfType) {
-        return decl->selfType;
-    }
-
-    NamedTypeAST* self = ctx.arena().makeType<NamedTypeAST>(decl->name);
-    self->loc = decl->loc;
-    decl->selfType = self;
-    return self;
 }
 
 } // namespace sema

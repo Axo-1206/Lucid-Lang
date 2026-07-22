@@ -62,7 +62,7 @@ struct EnumVariantAST;
 struct EnumDeclAST;
 struct TraitFieldDeclAST;
 struct TraitDeclAST;
-struct TraitRefAST;
+// struct TraitRefAST;
 
 // ExprAST.hpp
 struct LiteralExprAST;
@@ -177,7 +177,7 @@ enum class ASTKind : uint16_t {
     EnumDecl,
     TraitFieldDecl,
     TraitDecl,
-    TraitRef,
+    // TraitRef,
 
     // Expression nodes
     LiteralExpr,
@@ -370,9 +370,7 @@ struct DeclAST : BaseAST {
 struct ValueDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::ValueDecl;
 
-    // Cached resolved type of this value (set during type resolution)
-    // For functions, this points to funcType
-    TypeAST* valueType = nullptr;
+    TypeAST* declaredType = nullptr;
     InternedString name;
     
     explicit ValueDeclAST(ASTKind k) : DeclAST(k) {}
@@ -403,11 +401,6 @@ struct ValueDeclAST : DeclAST {
  */
 struct TypeDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::TypeDecl;
-
-    // Self-type reference (e.g., "Point" as a NamedTypeAST)
-    // Used when the type name appears as a value (e.g., `int("42")`)
-    // Mutable because it's set lazily during semantic analysis
-    mutable NamedTypeAST* selfType = nullptr;
 
     InternedString name;
     
@@ -522,7 +515,7 @@ using ModuleASTPtr = ModuleAST*;
  * @field name        The identifier of the type parameter (e.g., "T", "K", "V").
  * @field constraints Trait types that this parameter must satisfy.
  *                    Empty span means the parameter is unconstrained.
- *                    Each constraint is a TraitRefAST node.
+ *                    Each constraint is a NamedTypeAST node.
  *
  * @note Multiple constraints are joined with `+` in source (e.g., `T : Vector2 + Named`).
  *       The semantic pass verifies that all constraint types resolve to traits
@@ -532,7 +525,7 @@ struct GenericParamDeclAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::GenericParamDecl;
 
     InternedString name;
-    ArenaSpan<TraitRefAST*> constraints;   // trait refs (empty = unconstrained)
+    ArenaSpan<NamedTypeAST*> constraints;   // empty = unconstrained
 
     explicit GenericParamDeclAST(InternedString n)
         : BaseAST(ASTKind::GenericParamDecl), name(n) {}

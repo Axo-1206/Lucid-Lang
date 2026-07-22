@@ -564,8 +564,6 @@ lucid/
     │   │   ├── SemaDecl.cpp            -- const, let, struct, enum, trait, fn, fields, params
     │   │   ├── SemaStmt.cpp            -- if, for, while, switch, return, block
     │   │   ├── SemaExpr.cpp            -- literals, binary/unary, calls, pipeline, compose
-    │   │   ├── SemaType.cpp            -- resolve named/array/nullable/fallible/ptr/ref/func types
-    │   │   ├── Generics.cpp            -- generic param usage, trait implementation, self-reference
     │   │   ├── Concurrency.cpp         -- async, await, spawn, join
     │   │   └── FFIValidator.hpp/cpp    -- validate @[foreign("C")] against lge_ffi.lfi
     │   │

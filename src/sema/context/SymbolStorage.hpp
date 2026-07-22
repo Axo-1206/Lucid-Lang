@@ -19,6 +19,12 @@
  *   1. Scopes from innermost to outermost
  *   2. Current module's persistent ModuleTable
  *   3. Does NOT cross into other modules automatically
+ *
+ * @architectural_note Const-correctness
+ *   - AST nodes are read-only (const). The parser created them.
+ *   - We store const pointers to read-only AST nodes.
+ *   - Insertion takes const pointers, lookup returns const pointers.
+ *   - The only exception is selfType which is a semantic annotation.
  */
 #pragma once
 
@@ -47,10 +53,10 @@ struct ModuleTable {
     ModuleAST* module = nullptr;
 
     /// Top-level value namespace: variables, functions.
-    std::unordered_map<InternedString, ValueDeclAST*> values;
+    std::unordered_map<InternedString, const ValueDeclAST*> values;
 
     /// Top-level type namespace: structs, enums, traits.
-    std::unordered_map<InternedString, TypeDeclAST*> types;
+    std::unordered_map<InternedString, const TypeDeclAST*> types;
 
     /// Import aliases declared by this module.
     /// Example: `import std.io as io` → importAliases["io"] = module_ast_for_std_io
@@ -66,13 +72,13 @@ struct ModuleTable {
  */
 struct Scope {
     /// Value namespace: variables, functions, parameters, fields, enum variants
-    std::unordered_map<InternedString, ValueDeclAST*> values;
+    std::unordered_map<InternedString, const ValueDeclAST*> values;
 
     /// Type namespace: structs, enums, traits
-    std::unordered_map<InternedString, TypeDeclAST*> types;
+    std::unordered_map<InternedString, const TypeDeclAST*> types;
 
     /// Generic parameter names (shadow type lookups)
-    std::unordered_map<InternedString, GenericParamDeclAST*> genericParams;
+    std::unordered_map<InternedString, const GenericParamDeclAST*> genericParams;
 };
 
 /**
@@ -173,14 +179,14 @@ public:
      * If no scope is open: goes into currentModuleTable (persistent).
      * Otherwise: goes into the innermost Scope (transient).
      */
-    void insertValue(InternedString name, ValueDeclAST* decl);
+    void insertValue(const ValueDeclAST* decl);
 
     /**
      * @brief Insert a type declaration at the current level.
      *
      * Same tiering rule as insertValue().
      */
-    void insertType(InternedString name, TypeDeclAST* decl);
+    void insertType(const TypeDeclAST* decl);
 
     /**
      * @brief Insert a generic parameter into the innermost open scope.
@@ -189,7 +195,7 @@ public:
      * the innermost Scope.
      * @pre !isAtModuleLevel()
      */
-    void insertGenericParam(InternedString name, GenericParamDeclAST* param);
+    void insertGenericParam(const GenericParamDeclAST* param);
 
     // ─── Lookup ───────────────────────────────────────────────────────────
 
@@ -199,13 +205,13 @@ public:
      * Does NOT cross into other modules automatically.
      * @return The ValueDeclAST if found, nullptr otherwise.
      */
-    ValueDeclAST* lookupValue(InternedString name) const;
+    const ValueDeclAST* lookupValue(InternedString name) const;
 
     /**
      * @brief Look up a function: narrowed version of lookupValue().
      * @return The FuncDeclAST if found, nullptr otherwise.
      */
-    FuncDeclAST* lookupFunction(InternedString name) const;
+    const FuncDeclAST* lookupFunction(InternedString name) const;
 
     /**
      * @brief Look up a type: scopes then current module table.
@@ -213,7 +219,7 @@ public:
      * Generic parameters shadow type names in scopes.
      * @return The TypeDeclAST if found, nullptr otherwise.
      */
-    TypeDeclAST* lookupType(InternedString name) const;
+    const TypeDeclAST* lookupType(InternedString name) const;
 
     /**
      * @brief Look up a generic parameter in the open scope stack.
@@ -221,7 +227,7 @@ public:
      * Generic parameters are always transient, so this only searches scopes.
      * @return The GenericParamDeclAST if found, nullptr otherwise.
      */
-    GenericParamDeclAST* lookupGenericParam(InternedString name) const;
+    const GenericParamDeclAST* lookupGenericParam(InternedString name) const;
 
     // ─── Import Aliases ──────────────────────────────────────────────────
 

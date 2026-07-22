@@ -5,13 +5,7 @@
  *
  * @responsibility Implements the two functions Sema.hpp declares under its
  *                 "Attributes" section — `validateAttributes()` and
- *                 `validateAttribute()`. Header-only: unlike IntrinsicRegistry
- *                 (a ~60-entry table checked on every intrinsic call, worth
- *                 pre-interning once — see IntrinsicRegistry.hpp's own note),
- *                 this validates against five fixed attribute names, checked
- *                 once per `@[...]` seen — re-interning through `ctx.pool`
- *                 on each call is cheap enough that caching adds complexity
- *                 without a measured need for it.
+ *                 `validateAttribute()`.
  *
  * @attribute_table (Grammar.md, "Compiler Directives: Attributes `@[]`")
  *   | Attribute               | Legal on                    | Notes                       |
@@ -23,59 +17,67 @@
  *   | `@[inline]`              | function declaration         | hint only, never rejects use |
  *
  * @architectural_note Comparing InternedString, not text
- *   `attr->name` is already an `InternedString`, interned by the parser
- *   against the session's `StringPool` (`ctx.pool` — see SemaContext.hpp).
- *   Each attribute name below is interned into `ctx.pool` and compared as
- *   an `InternedString` — a single `uint32_t` equality check, not a text
- *   compare — matching InternedString.hpp's whole reason for existing.
- *   `ctx.pool.intern()` is idempotent and hash-map backed (see
- *   StringPool.hpp's "Deduplication" note), so repeated calls for the same
- *   literal text are cheap and always resolve to the same ID within one
- *   pool.
+ *   `attr->name` is already an `InternedString`. We intern each attribute
+ *   name once per call and compare as uint32_t equality.
  *
- * @architectural_note Composing multi-part messages
- *   `SemaContext::error()` (see its doc comment in SemaContext.hpp) folds
- *   every variadic argument into ONE string via `buildMessage()` before it
- *   ever reaches a `DiagCode`'s template — so a `DiagCode` used from Sema
- *   only ever fills a single `%s`. Every diagnostic below therefore passes
- *   several small literal + InternedString pieces to `ctx.error()`, which
- *   concatenates them (no separators inserted — each piece supplies its own
- *   spacing/punctuation), rather than relying on a template with several
- *   independent `%s` slots the way Parser-phase codes do.
+ * @architectural_note Const-correctness
+ *   Attributes and declarations are read-only. The parser created them.
+ *   We only validate, never modify.
  */
 
 #pragma once
 
 #include "core/ast/BaseAST.hpp"
 #include "core/ast/DeclAST.hpp"
-#include "../SemaContext.hpp"
+#include "../Sema.hpp"
+#include "../context/SemaContext.hpp"
+
+namespace sema {
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Attribute Name Constants (interned once per call)
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace attr {
+
+inline InternedString exportAttr(SemaContext& ctx) {
+    return ctx.pool().intern("export");
+}
+
+inline InternedString foreignAttr(SemaContext& ctx) {
+    return ctx.pool().intern("foreign");
+}
+
+inline InternedString linkAttr(SemaContext& ctx) {
+    return ctx.pool().intern("link");
+}
+
+inline InternedString deprecatedAttr(SemaContext& ctx) {
+    return ctx.pool().intern("deprecated");
+}
+
+inline InternedString inlineAttr(SemaContext& ctx) {
+    return ctx.pool().intern("inline");
+}
+
+} // namespace attr
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public API
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Forward-declared so validateAttributes() can call it before its own
-// definition below — mirrors how Sema.hpp declares both together.
-inline void validateAttribute(AttributeAST* attr, DeclAST* owner, SemaContext& ctx);
-
 /**
- * @brief Validate every attribute in `attrs` against what's legal on
- *        `owner`'s kind of declaration.
+ * @brief Validate every attribute in `attrs` against what's legal on `owner`.
  *
- * Just forwards to validateAttribute() per entry. Deliberately does NOT
- * check for duplicates (e.g. `@[inline, inline]`) — a repeated attribute is
- * inert at lowering time, not a language rule, so rejecting it would be
- * noise rather than a real diagnostic.
- *
- * @param attrs The attribute list as parsed (see Parser.hpp's
- *        `parseAttributes()`).
- * @param owner The declaration the attributes are attached to. May be
- *        nullptr for a module-level `@[link(...)]` that isn't attached to
- *        any single declaration — see validateAttribute()'s handling of
- *        `@[link(...)]` below.
+ * @param attrs The attribute list as parsed.
+ * @param owner The declaration the attributes are attached to.
+ *              May be nullptr for module-level `@[link(...)]`.
+ * @param ctx The semantic context.
  */
-inline void validateAttributes(ArenaSpan<AttributePtr> attrs, DeclAST* owner, SemaContext& ctx) {
-    for (AttributeAST* attr : attrs) {
+inline void validateAttributes(ArenaSpan<AttributePtr> attrs,
+                               const DeclAST* owner,
+                               SemaContext& ctx) {
+    for (const AttributeAST* attr : attrs) {
         validateAttribute(attr, owner, ctx);
     }
 }
@@ -83,88 +85,101 @@ inline void validateAttributes(ArenaSpan<AttributePtr> attrs, DeclAST* owner, Se
 /**
  * @brief Validate one attribute against `owner`'s declaration kind.
  *
- * Each branch checks two things: is this attribute legal on this *kind* of
- * declaration (Grammar.md's "Legal on" column), and are its arguments
- * shaped the way that attribute requires. Unrecognized attribute names are
- * themselves an error — Lucid does not silently ignore an unknown `@[...]`.
+ * Each branch checks:
+ *   1. Is this attribute legal on this kind of declaration?
+ *   2. Are its arguments shaped correctly?
+ *
+ * Unknown attribute names are an error.
  */
-inline void validateAttribute(AttributeAST* attr, DeclAST* owner, SemaContext& ctx) {
+inline void validateAttribute(const AttributeAST* attr,
+                              const DeclAST* owner,
+                              SemaContext& ctx) {
+    if (!attr) return;
+
     const InternedString name = attr->name;
 
-    // Every "legal on a function declaration" rule below reduces to this
-    // one check — DeclAST has no separate "declaration kind" enum beyond
-    // BaseAST::kind, so isa<FuncDeclAST>() (not RTTI/dynamic_cast — see
-    // BaseAST::isa()'s own definition) is how the codebase asks this.
+    // Check if owner is a function (used by multiple attribute rules)
     const bool ownerIsFunc = (owner != nullptr) && owner->isa<FuncDeclAST>();
 
     // ─── @[export] — top-level only ─────────────────────────────────────
-    if (name == ctx.pool.intern("export")) {
-        // The parser already rejects `@[export]` inside a block (see
-        // Grammar.md's "Visibility inside blocks" note) — this check is a
-        // second line of defense, not the primary enforcement point, in
-        // case that parser-level rule ever regresses.
-        if (!ctx.isAtModuleLevel()) {
-            ctx.error(attr, DiagCode::E4001, "attribute '", ctx.toString(name), "' is not legal here");
+    if (name == attr::exportAttr(ctx)) {
+        // The parser already rejects `@[export]` inside a block.
+        // This is a second line of defense.
+        if (!ctx.symbols.isAtModuleLevel()) {
+            ctx.error(attr, DiagCode::E4001,
+                      "attribute '@[export]' is not legal inside a block");
         }
+        // @[export] takes no arguments - already enforced by parser
         return;
     }
 
-    // ─── @[foreign("abi")] — function declarations, ABI must be "C" ────
-    if (name == ctx.pool.intern("foreign")) {
+    // ─── @[foreign("abi")] — function declarations only ──────────────────
+    if (name == attr::foreignAttr(ctx)) {
         if (!ownerIsFunc) {
-            ctx.error(attr, DiagCode::E4001, "attribute '", ctx.toString(name), "' is not legal here");
+            ctx.error(attr, DiagCode::E4001,
+                      "attribute '@[foreign]' is only legal on function declarations");
             return;
         }
+
         if (attr->args.size() != 1) {
-            ctx.error(attr, DiagCode::E4002, "wrong number of arguments for attribute '",
-                       ctx.toString(name), "': expected 1, found ", std::to_string(attr->args.size()));
+            ctx.error(attr, DiagCode::E4002,
+                      "attribute '@[foreign]' expects exactly 1 argument (the ABI), got ",
+                      std::to_string(attr->args.size()));
             return;
         }
-        // Only "C" is supported — see Grammar.md's "Foreign Function
-        // Interface" section for why "C++" is deliberately rejected here
-        // rather than accepted and mishandled.
-        const std::string abi = ctx.toString(attr->args[0]->value);
+
+        // Only "C" is supported - see Grammar.md's FFI section
+        const std::string abi = ctx.pool().lookup(attr->args[0]->value);
         if (abi != "C") {
-            ctx.error(attr, DiagCode::E4101, "unsupported foreign ABI '", abi, "' — only \"C\" is supported");
+            ctx.error(attr, DiagCode::E4101,
+                      "unsupported foreign ABI '", abi, "' — only \"C\" is supported");
         }
         return;
     }
 
-    // ─── @[link(...)] — module level or a function declaration ─────────
-    if (name == ctx.pool.intern("link")) {
-        // `owner == nullptr` covers a module-level @[link(...)] that isn't
-        // attached to any single declaration (see Grammar.md's `@[link(...)]`
-        // examples).
+    // ─── @[link("name", ...)] — module level or function declaration ────
+    if (name == attr::linkAttr(ctx)) {
+        // owner == nullptr covers module-level @[link(...)]
         if (owner != nullptr && !ownerIsFunc) {
-            ctx.error(attr, DiagCode::E4001, "attribute '", ctx.toString(name), "' is not legal here");
+            ctx.error(attr, DiagCode::E4001,
+                      "attribute '@[link]' is only legal at module level or on function declarations");
             return;
         }
+
         if (attr->args.empty()) {
-            ctx.error(attr, DiagCode::E4002, "wrong number of arguments for attribute '",
-                       ctx.toString(name), "': expected at least 1, found 0");
+            ctx.error(attr, DiagCode::E4002,
+                      "attribute '@[link]' expects at least 1 argument (library name), got 0");
         }
+        // Arguments must be string literals - enforced by parser
         return;
     }
 
     // ─── @[deprecated("msg")] — legal everywhere ────────────────────────
-    if (name == ctx.pool.intern("deprecated")) {
-        // Legal on any declaration per Grammar.md's table. The message
-        // argument's shape is already enforced by the parser
-        // (parseAttributeArgLiteral) — nothing left to validate here.
-        // Emitting the actual "use of deprecated X" warning happens at
-        // *use* sites (resolveValueOrError / resolveTypeNameOrError), not
-        // here at the declaration site.
-        return;
-    }
-
-    // ─── @[inline] — function declarations only, hint-only ─────────────
-    if (name == ctx.pool.intern("inline")) {
-        if (!ownerIsFunc) {
-            ctx.error(attr, DiagCode::E4001, "attribute '", ctx.toString(name), "' is not legal here");
+    if (name == attr::deprecatedAttr(ctx)) {
+        // Legal on any declaration. The message is optional (0 or 1 args).
+        // If present, it must be a string literal - enforced by parser.
+        // Warning emission happens at use sites, not here.
+        if (attr->args.size() > 1) {
+            ctx.error(attr, DiagCode::E4002,
+                      "attribute '@[deprecated]' expects at most 1 argument (the message), got ",
+                      std::to_string(attr->args.size()));
         }
         return;
     }
 
+    // ─── @[inline] — function declarations only, hint-only ──────────────
+    if (name == attr::inlineAttr(ctx)) {
+        if (!ownerIsFunc) {
+            ctx.error(attr, DiagCode::E4001,
+                      "attribute '@[inline]' is only legal on function declarations");
+        }
+        // @[inline] takes no arguments - enforced by parser
+        return;
+    }
+
     // ─── Unknown attribute ───────────────────────────────────────────────
-    ctx.error(attr, DiagCode::E4003, "unknown attribute '", ctx.toString(name), "'");
+    ctx.error(attr, DiagCode::E4003,
+              "unknown attribute '@", ctx.pool().lookup(name), "'");
 }
+
+} // namespace sema

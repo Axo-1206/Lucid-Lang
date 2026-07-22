@@ -305,7 +305,7 @@ struct StructDeclAST : TypeDeclAST {
 
     ArenaSpan<GenericParamDeclPtr> genericParams;
     ArenaSpan<FieldDeclPtr> fields;
-    ArenaSpan<TraitRefAST*> traitRefs;   // traits this struct implements
+    ArenaSpan<NamedTypeAST*> traitRefs;   // traits this struct implements
 
     StructDeclAST() : TypeDeclAST(ASTKind::StructDecl) {}
 };
@@ -436,15 +436,15 @@ using TraitDeclPtr = TraitDeclAST*;
  *   - Generic constraints: `<T : Vector2 + Named>`
  *   - Where clauses (future)
  */
-struct TraitRefAST : BaseAST {
-    static constexpr ASTKind staticKind = ASTKind::TraitRef;
+// struct TraitRefAST : BaseAST {
+//     static constexpr ASTKind staticKind = ASTKind::TraitRef;
 
-    InternedString name;
-    ArenaSpan<TypePtr> genericArgs;
+//     InternedString name;
+//     ArenaSpan<TypePtr> genericArgs;
 
-    TraitRefAST() : BaseAST(ASTKind::TraitRef) {}
-};
-using TraitRefPtr = TraitRefAST*;
+//     TraitRefAST() : BaseAST(ASTKind::TraitRef) {}
+// };
+// using TraitRefPtr = TraitRefAST*;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Aliases for common pointer types.
@@ -460,4 +460,4 @@ using EnumVariantPtr = EnumVariantAST*;
 using EnumDeclPtr = EnumDeclAST*;
 using TraitFieldPtr = TraitFieldDeclAST*;
 using TraitDeclPtr = TraitDeclAST*;
-using TraitRefPtr = TraitRefAST*;
+// using TraitRefPtr = TraitRefAST*;
