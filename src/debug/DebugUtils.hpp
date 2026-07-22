@@ -16,6 +16,7 @@
 #include "core/Tokens.hpp"
 #include "core/memory/StringPool.hpp"
 #include <string>
+#include <sstream>
 
 namespace debug {
 
@@ -48,7 +49,7 @@ inline std::string kindToString(ASTKind kind) {
         case ASTKind::FuncType:         return "FuncType";
 
         // Declarations
-        case ASTKind::ImportDecl:          return "ImportDecl";
+        case ASTKind::ImportDecl:       return "ImportDecl";
         case ASTKind::VarDecl:          return "VarDecl";
         case ASTKind::Param:            return "Param";
         case ASTKind::GenericParamDecl: return "GenericParamDecl";
@@ -84,7 +85,6 @@ inline std::string kindToString(ASTKind kind) {
         case ASTKind::AnonFuncExpr:       return "AnonFuncExpr";
         case ASTKind::IfExpr:             return "IfExpr";
         case ASTKind::RangeExpr:          return "RangeExpr";
-        case ASTKind::TupleExpr:          return "TupleExpr";
 
         // Concurrency
         case ASTKind::AsyncExpr:          return "AsyncExpr";
@@ -298,17 +298,32 @@ inline std::string primitiveKindToString(PrimitiveKind kind) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Type to String
+// Type to String - Full Type Signature
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * @brief Convert a TypeAST to a human-readable string representation.
+ * 
+ * Supports full type signatures including:
+ *   - Primitive types: int, float, string, etc.
+ *   - Named types: Vec2, Buffer<int>, etc.
+ *   - Array types: [*]int, [_]float, [4]Vec2
+ *   - Nullable/Fallible/Combined: T?, T!, T?!
+ *   - Reference: &T
+ *   - Pointer: *T (shown as ptr<T>)
+ *   - Function types: (int, string) -> bool
+ *   - Struct and enum types with their fields
+ */
 inline std::string typeToString(TypeAST* type, const StringPool& pool) {
     if (!type) return "<null>";
 
+    // ─── PrimitiveType ──────────────────────────────────────────────────────
     if (type->isa<PrimitiveTypeAST>()) {
         auto* prim = type->as<PrimitiveTypeAST>();
         return primitiveKindToString(prim->primitiveKind);
     }
 
+    // ─── NamedType ──────────────────────────────────────────────────────────
     if (type->isa<NamedTypeAST>()) {
         auto* named = type->as<NamedTypeAST>();
         std::string result = std::string(pool.lookup(named->name));
@@ -323,48 +338,196 @@ inline std::string typeToString(TypeAST* type, const StringPool& pool) {
         return result;
     }
 
+    // ─── ArrayType ──────────────────────────────────────────────────────────
     if (type->isa<ArrayTypeAST>()) {
         auto* arr = type->as<ArrayTypeAST>();
         std::string result = "[";
-        if (arr->isFixed()) result += std::to_string(arr->size);
-        else if (arr->isSlice()) result += "_";
-        else result += "*";
+        if (arr->isFixed()) {
+            result += std::to_string(arr->size);
+        } else if (arr->isSlice()) {
+            result += "_";
+        } else {
+            result += "*";
+        }
         result += "]";
         result += typeToString(arr->element, pool);
         return result;
     }
 
+    // ─── NullableType ──────────────────────────────────────────────────────
     if (type->isa<NullableTypeAST>()) {
         auto* nullable = type->as<NullableTypeAST>();
         return typeToString(nullable->inner, pool) + "?";
     }
 
+    // ─── FallibleType ──────────────────────────────────────────────────────
     if (type->isa<FallibleTypeAST>()) {
         auto* fallible = type->as<FallibleTypeAST>();
         return typeToString(fallible->inner, pool) + "!";
     }
 
+    // ─── CombinedType ──────────────────────────────────────────────────────
     if (type->isa<CombinedTypeAST>()) {
         auto* combined = type->as<CombinedTypeAST>();
         return typeToString(combined->inner, pool) + "?!";
     }
 
+    // ─── RefType ────────────────────────────────────────────────────────────
     if (type->isa<RefTypeAST>()) {
         auto* ref = type->as<RefTypeAST>();
         return "&" + typeToString(ref->inner, pool);
     }
 
+    // ─── PtrType ────────────────────────────────────────────────────────────
     if (type->isa<PtrTypeAST>()) {
         auto* ptr = type->as<PtrTypeAST>();
-        return "ptr<" + typeToString(ptr->inner, pool) + ">";
+        return "*" + typeToString(ptr->inner, pool);
     }
 
+    // ─── FuncType ───────────────────────────────────────────────────────────
     if (type->isa<FuncTypeAST>()) {
-        // Simplified representation for debug
-        return "FunctionType";
+        auto* func = type->as<FuncTypeAST>();
+        std::string result = "(";
+        
+        // Parameters
+        for (size_t i = 0; i < func->params.size(); ++i) {
+            if (i > 0) result += ", ";
+            ParamAST* param = func->params[i];
+            if (param->isVariadic) result += "...";
+            if (param->isConst) result += "const ";
+            result += typeToString(param->type, pool);
+        }
+        result += ")";
+        
+        // Only add "->" if hasArrow is true
+        // This correctly handles both forms:
+        //   - Form 1: (a int) -> int           → hasArrow = true  → "(a int) -> int"
+        //   - Form 2: (a int)(b int) -> int     → first group hasArrow = false, second hasArrow = true
+        //     → "(a int)(b int) -> int"  (the first group shows no arrow)
+        //   - Void: (a int)                    → hasArrow = false → "(a int)"
+        if (func->hasArrow) {
+            result += " -> ";
+            
+            // Return types
+            if (func->returnTypes.empty()) {
+                result += "void";
+            } else if (func->isCurried()) {
+                // For curried functions, show the inner function type
+                // The inner function's hasArrow determines its own arrow display
+                result += typeToString(func->returnTypes[0], pool);
+            } else if (func->returnTypes.size() == 1) {
+                result += typeToString(func->returnTypes[0], pool);
+            } else {
+                // Multiple return values
+                result += "(";
+                for (size_t i = 0; i < func->returnTypes.size(); ++i) {
+                    if (i > 0) result += ", ";
+                    result += typeToString(func->returnTypes[i], pool);
+                }
+                result += ")";
+            }
+        }
+        return result;
     }
 
+    // ─── Unknown ────────────────────────────────────────────────────────────
     return kindToString(type->kind);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Type Decl to String - Includes field/param names
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @brief Convert a TypeDeclAST to a human-readable string with full structure.
+ * 
+ * Shows struct/enum/trait definitions with their fields/variants.
+ */
+inline std::string typeDeclToString(TypeDeclAST* decl, const StringPool& pool) {
+    if (!decl) return "<null>";
+
+    if (decl->isa<StructDeclAST>()) {
+        auto* structDecl = decl->as<StructDeclAST>();
+        std::string result = "struct " + std::string(pool.lookup(structDecl->name));
+        
+        // Generic parameters
+        if (!structDecl->genericParams.empty()) {
+            result += "<";
+            for (size_t i = 0; i < structDecl->genericParams.size(); ++i) {
+                if (i > 0) result += ", ";
+                result += std::string(pool.lookup(structDecl->genericParams[i]->name));
+            }
+            result += ">";
+        }
+        
+        // Trait implementations
+        if (!structDecl->traitRefs.empty()) {
+            result += " : ";
+            for (size_t i = 0; i < structDecl->traitRefs.size(); ++i) {
+                if (i > 0) result += ", ";
+                result += std::string(pool.lookup(structDecl->traitRefs[i]->name));
+            }
+        }
+        
+        // Fields
+        result += " { ";
+        for (size_t i = 0; i < structDecl->fields.size(); ++i) {
+            if (i > 0) result += ", ";
+            FieldDeclAST* field = structDecl->fields[i];
+            if (field->isConst) result += "const ";
+            result += std::string(pool.lookup(field->name)) + " ";
+            result += typeToString(field->type, pool);
+        }
+        result += " }";
+        
+        return result;
+    }
+
+    if (decl->isa<EnumDeclAST>()) {
+        auto* enumDecl = decl->as<EnumDeclAST>();
+        std::string result = "enum " + std::string(pool.lookup(enumDecl->name));
+        if (enumDecl->backingType) {
+            result += " : " + typeToString(enumDecl->backingType, pool);
+        }
+        result += " { ";
+        for (size_t i = 0; i < enumDecl->variants.size(); ++i) {
+            if (i > 0) result += ", ";
+            EnumVariantAST* variant = enumDecl->variants[i];
+            result += std::string(pool.lookup(variant->name)) + " = " + std::to_string(variant->value);
+        }
+        result += " }";
+        return result;
+    }
+
+    if (decl->isa<TraitDeclAST>()) {
+        auto* traitDecl = decl->as<TraitDeclAST>();
+        std::string result = "trait " + std::string(pool.lookup(traitDecl->name));
+        
+        // Generic parameters
+        if (!traitDecl->genericParams.empty()) {
+            result += "<";
+            for (size_t i = 0; i < traitDecl->genericParams.size(); ++i) {
+                if (i > 0) result += ", ";
+                result += std::string(pool.lookup(traitDecl->genericParams[i]->name));
+            }
+            result += ">";
+        }
+        
+        // Fields
+        result += " { ";
+        for (size_t i = 0; i < traitDecl->fields.size(); ++i) {
+            if (i > 0) result += ", ";
+            TraitFieldDeclAST* field = traitDecl->fields[i];
+            if (field->isConst) result += "const ";
+            result += std::string(pool.lookup(field->name)) + " ";
+            result += typeToString(field->type, pool);
+        }
+        result += " }";
+        
+        return result;
+    }
+
+    return "UnknownTypeDecl(" + kindToString(decl->kind) + ")";
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -376,4 +539,4 @@ inline std::string internedToString(const StringPool& pool, const InternedString
     return std::string(pool.lookup(s));
 }
 
-} // namespace Debug
+} // namespace debug
