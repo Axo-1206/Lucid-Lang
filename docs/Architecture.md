@@ -573,7 +573,7 @@ lucid/
     │       ├── Resolution.cpp          
     │       ├── TypeCompat.cpp
     │       ├── AttributesRegistry.hpp
-    │       └── IntrinsicRegistry.hpp
+    │       └── IntrinsicRegistry.hpp/cpp
     │
     ├── codegen/
     │   ├── IRLowering.hpp                     # Single unified header (all declarations)

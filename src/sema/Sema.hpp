@@ -2,45 +2,35 @@
  * @file Sema.hpp
  * @brief Lucid semantic analyzer – validates and annotates parsed ASTs.
  *
- * @architectural_note Namespace design
- *   The semantic phase follows the same namespace + context pattern as the
- *   parser: `sema::analyze()` is the entry point, and `SemaContext` holds
- *   the shared state. This is deliberate and consistent with the parser's
- *   `parser::parse()` / `ParserContext` design.
+ * @architectural_note Two distinct operations: REGISTER vs LOOKUP
  *
- * @architectural_note Single entry point
- *   `sema::analyze(modules, ctx)` is the ONE entry point for semantic
- *   analysis. It processes every module in `modules` in the order provided
- *   (which should be dependency order - imports before dependents). Each
- *   module is analyzed in its own `ScopedModuleContext`, ensuring transient
- *   state doesn't leak between modules.
+ *   REGISTER (insert into symbol table):
+ *     - Called when we encounter a declaration that defines a new name
+ *     - Happens BEFORE analyzing the declaration's internals (for self-reference)
+ *     - Examples: struct, enum, trait, function, variable, generic parameter
+ *     - Registration order matters: insert name first, then analyze internals
  *
- * @architectural_note Relationship to SemaContext
- *   Sema.hpp is to SemaContext.hpp what Parser.hpp is to ParserContext.hpp:
- *   SemaContext holds the shared state (persistent per-module symbol tables,
- *   the transient scope stack, the semantic context stack, diagnostics) and
- *   the tools to read/write it. Every function declared here drives that
- *   state — deciding, for a given AST node, when to insert, when to look up,
- *   what a missing lookup means, and which language rule was or wasn't
- *   satisfied.
+ *   LOOKUP (search for an existing name):
+ *     - Called when we encounter a reference to a name
+ *     - Searches: generic params → local scopes → module scope
+ *     - Examples: type name in annotation, function call, variable reference
+ *     - Reports E2001/E2002 if not found
  *
- * @architectural_note One traversal, not two
- *   Lucid requires an explicit type annotation on every declaration, so there
- *   is no structural need for name resolution and type checking to be separate
- *   passes. Every `analyze*`/`check*` function resolves names AND checks types
- *   in the same single traversal.
+ * @architectural_note Registering generic parameters
+ *   Generic parameters are registered in the current scope's `genericParams` map
+ *   BEFORE analyzing the declaration's body. This allows `T` in `struct Box<T>`
+ *   to be found when resolving field types like `value T`.
  *
- * @architectural_note Per-module flow
- *   `sema::analyze()` wraps each module's analysis in a ScopedModuleContext,
- *   then walks that module's top-level declarations in source order, calling
- *   `analyzeDecl()` for each — which inserts the declaration's own name before
- *   recursing into its internals.
+ * @architectural_note Type declaration registration order
+ *   For `struct Node<T> { value T, next ptr<Node<T>>? }`:
+ *   1. Register `Node` in type namespace (so `Node` can reference itself)
+ *   2. Register `T` in genericParams (so `T` can be used in fields)
+ *   3. Analyze fields (now both `Node` and `T` are findable)
  *
- * @architectural_note Self-reference
- *   `analyzeStructDecl()` (and symmetrically `analyzeEnumDecl()` /
- *   `analyzeTraitDecl()`) call `ctx.symbols.insertType()` for their own name,
- *   then open a `ScopedTypeDefinition` guard, THEN walk their fields/variants —
- *   so `Node`'s own `next ptr<Node>?` field resolves correctly.
+ * @architectural_note Self-reference via DefiningTypeStack
+ *   After registering `Node`, we push it onto DefiningTypeStack. This allows
+ *   `isDirectSelfReference()` to detect that `next ptr<Node<T>>?` is an
+ *   indirect self-reference (legal) vs `value Node<T>` (illegal, infinite size).
  */
 
 #pragma once
@@ -58,114 +48,199 @@
 #include <vector>
 #include <optional>
 
+namespace sema {
+
 // =============================================================================
 // Public API - Single Entry Point
 // =============================================================================
 
-namespace sema {
-
 /**
  * @brief Analyze all modules in the program.
  *
- * This is the ONE entry point for semantic analysis. It processes every
- * module in `modules` in the order provided (which should be dependency
- * order - imports before dependents), using `ctx` for shared state.
- *
- * Each module is analyzed in its own `ScopedModuleContext`, ensuring
- * transient state (scopes, context stack, defining-type stack) doesn't
- * leak between modules, while persistent state (ModuleTable) is preserved
- * across the whole compilation.
- *
- * @param modules The modules to analyze (in dependency order - imports first).
- * @param ctx     The semantic context (shared across all modules).
- *
- * @note If module A imports module B, the caller is responsible for ensuring
- *       B appears before A in `modules`. The semantic phase does not reorder
- *       modules or resolve inter-module dependencies.
+ * The ONLY entry point for semantic analysis. Processes modules in
+ * dependency order (imports before dependents).
  */
 void analyze(std::vector<ModuleAST*>& modules, SemaContext& ctx);
 
 // =============================================================================
-// Module-Level Analysis (internal - declared for implementation)
+// Module-Level Analysis
 // =============================================================================
 
-/**
- * @brief Walk a single module's top-level declarations in source order.
- *
- * Internal function used by `sema::analyze()` for each module.
- *
- * @param module The module whose `decls` span is walked.
- * @param ctx    The semantic context. Caller (`sema::analyze`) is
- *        responsible for having already entered `module` via
- *        ScopedModuleContext — this function assumes `ctx.symbols.currentModule()`
- *        and `ctx.symbols.currentModuleTable()` are already correct.
- *
- * Always processes every declaration it can, even after individual
- * declarations report errors — check `ctx.canContinue()`, not a return value,
- * to tell a clean analysis from one that hit errors along the way. Stops
- * early only if `ctx.canContinue()` becomes false (too many consecutive
- * errors), mirroring the parser's own fatal-failure threshold.
- */
+/** Analyze a module's top-level declarations in source order. */
 void analyzeModuleDecls(ModuleAST* module, SemaContext& ctx);
 
 // =============================================================================
-// Declarations
+// DECLARATIONS - REGISTER names, then analyze internals
 // =============================================================================
 
 /**
- * @brief Dispatch a single declaration to its specific `analyze*` function.
+ * @brief Dispatch a declaration to its specific analyzer.
  *
- * This is the function that performs the "insert this name, THEN recurse
- * into its internals" ordering that makes self-reference and
- * declare-before-use both work.
+ * IMPORTANT: Every declaration analyzer follows this pattern:
+ *   1. REGISTER the declaration's name in the symbol table
+ *   2. Push appropriate context guard (ScopedTypeDefinition for types)
+ *   3. Analyze the declaration's internals (fields, body, etc.)
+ *   4. Pop context guard
+ *
+ * This ordering enables self-reference: the name is findable while analyzing
+ * the declaration's own internals.
  */
 void analyzeDecl(DeclAST* decl, SemaContext& ctx);
 
-void analyzeImportDecl(ImportDeclAST* decl, SemaContext& ctx);
-void analyzeVarDecl(VarDeclAST* decl, SemaContext& ctx);
-void analyzeFuncDecl(FuncDeclAST* decl, SemaContext& ctx);
-void analyzeEnumDecl(EnumDeclAST* decl, SemaContext& ctx);
-void analyzeTraitDecl(TraitDeclAST* decl, SemaContext& ctx);
+// ─── Type Declarations (REGISTER in type namespace) ──────────────────────
+
+/**
+ * @brief Register a struct declaration and analyze its fields.
+ *
+ * REGISTRATION:
+ *   - `ctx.symbols.insertType(decl->name, decl)` - registers in type namespace
+ *   - Generic params registered via analyzeGenericParamDecl() BEFORE fields
+ *   - Pushes ScopedTypeDefinition for self-reference detection
+ *
+ * ORDER:
+ *   1. Register struct name (for self-reference)
+ *   2. Register generic parameters (for use in fields)
+ *   3. Push ScopedTypeDefinition
+ *   4. Analyze fields (now can find both struct and generic params)
+ *   5. Pop ScopedTypeDefinition
+ */
 void analyzeStructDecl(StructDeclAST* decl, SemaContext& ctx);
 
 /**
- * @brief Analyze one field of a struct.
+ * @brief Register an enum declaration and analyze its variants.
  *
- * @param field The field being analyzed.
- * @param owner The struct that declares it — needed for duplicate-name
- *        checking and `checkRecursiveFieldType()`'s self-reference check.
+ * REGISTRATION:
+ *   - `ctx.symbols.insertType(decl->name, decl)` - registers in type namespace
+ *   - Variants are registered as values in the enum's scope
+ */
+void analyzeEnumDecl(EnumDeclAST* decl, SemaContext& ctx);
+
+/**
+ * @brief Register a trait declaration and analyze its fields.
+ *
+ * REGISTRATION:
+ *   - `ctx.symbols.insertType(decl->name, decl)` - registers in type namespace
+ *   - Generic params registered via analyzeGenericParamDecl() BEFORE fields
+ */
+void analyzeTraitDecl(TraitDeclAST* decl, SemaContext& ctx);
+
+// ─── Value Declarations (REGISTER in value namespace) ────────────────────
+
+/**
+ * @brief Register a variable declaration.
+ *
+ * REGISTRATION:
+ *   - `ctx.symbols.insertValue(decl->name, decl)` - registers in value namespace
+ *   - For const declarations, marks isConst = true
+ */
+void analyzeVarDecl(VarDeclAST* decl, SemaContext& ctx);
+
+/**
+ * @brief Register a function declaration.
+ *
+ * REGISTRATION:
+ *   - `ctx.symbols.insertValue(decl->name, decl)` - registers in value namespace
+ *   - Generic params registered via analyzeGenericParamDecl() BEFORE body
+ *
+ * ORDER:
+ *   1. Register function name (for recursion)
+ *   2. Register generic parameters (for use in params/return/body)
+ *   3. Push ScopedSemanticContext(FuncBody)
+ *   4. Analyze parameters, return type, and body
+ *   5. Pop context
+ */
+void analyzeFuncDecl(FuncDeclAST* decl, SemaContext& ctx);
+
+/**
+ * @brief Register an import declaration.
+ *
+ * REGISTRATION:
+ *   - `ctx.symbols.addImportAlias(alias, module)` - registers import alias
+ *   - This allows `module:member` syntax in expressions
+ */
+void analyzeImportDecl(ImportDeclAST* decl, SemaContext& ctx);
+
+// ─── Field/Variant/Param (REGISTER in their parent's scope) ──────────────
+
+/**
+ * @brief Analyze a struct field.
+ *
+ * REGISTRATION:
+ *   - Fields are registered in the struct's own scope
+ *   - `ctx.symbols.insertValue(field->name, field)` - registers in value namespace
+ *
+ * SELF-REFERENCE:
+ *   - Uses ctx.definingTypes.isDefining(owner) to detect direct self-reference
+ *   - `value Node<T>` → illegal (infinite size)
+ *   - `next ptr<Node<T>>?` → legal (ptr breaks the cycle)
  */
 void analyzeFieldDecl(FieldDeclAST* field, StructDeclAST* owner, SemaContext& ctx);
 
-/// @param owner The enum this variant belongs to (duplicate-value checking).
+/**
+ * @brief Analyze an enum variant.
+ *
+ * REGISTRATION:
+ *   - Variants are registered in the enum's scope
+ *   - `ctx.symbols.insertValue(variant->name, variant)` - registers in value namespace
+ *
+ * DUPLICATE CHECK:
+ *   - Verifies no two variants have the same value
+ */
 void analyzeEnumVariant(EnumVariantAST* variant, EnumDeclAST* owner, SemaContext& ctx);
 
-/// @param owner The trait this field requirement belongs to.
+/**
+ * @brief Analyze a trait field requirement.
+ *
+ * REGISTRATION:
+ *   - Trait fields are NOT registered in any namespace
+ *   - They are requirements, not actual values
+ *   - Only stored in the trait's fields span
+ */
 void analyzeTraitField(TraitFieldDeclAST* field, TraitDeclAST* owner, SemaContext& ctx);
 
+/**
+ * @brief Analyze a function parameter.
+ *
+ * REGISTRATION:
+ *   - Parameters are registered in the function's scope
+ *   - `ctx.symbols.insertValue(param->name, param)` - registers in value namespace
+ *   - Parameters shadow outer variables
+ */
 void analyzeParam(ParamAST* param, SemaContext& ctx);
+
+// ─── Generic Parameters (REGISTER in genericParams map) ───────────────────
+
+/**
+ * @brief Register a generic parameter.
+ *
+ * REGISTRATION:
+ *   - `ctx.symbols.insertGenericParam(param->name, param)` - registers in
+ *     the current scope's genericParams map (transient, not module-level)
+ *
+ * PRIORITY:
+ *   - Generic parameters have the HIGHEST lookup priority
+ *   - They shadow type names in the current scope
+ *   - Example: In `struct Box<T>`, `T` shadows any global type named `T`
+ *
+ * SCOPE:
+ *   - Generic parameters are only valid in the scope they're registered in
+ *   - They are popped when the scope is popped
+ */
 void analyzeGenericParamDecl(GenericParamDeclAST* param, SemaContext& ctx);
 
 // =============================================================================
-// Statements
+// STATEMENTS - Control flow analysis
 // =============================================================================
 
 /**
  * @brief Analyze a statement.
  *
- * @return true if this statement is guaranteed to transfer control out of
- *         the enclosing block on every path (`return`, `break`, `continue`,
- *         or a block whose own last statement guarantees it) — false
- *         otherwise. This is what `analyzeFuncDecl()` reads to decide
- *         whether a non-void function is missing a return.
+ * @return true if this statement guarantees control transfer out of the block
+ *         (return, break, continue, or a block with such a last statement).
  */
 bool analyzeStmt(StmtAST* stmt, SemaContext& ctx);
 
-/**
- * @brief Analyze a block. Opens and closes exactly one `ScopedScope`.
- */
 bool analyzeBlock(BlockStmtAST* block, SemaContext& ctx);
-
 bool analyzeIfStmt(IfStmtAST* stmt, SemaContext& ctx);
 bool analyzeSwitchStmt(SwitchStmtAST* stmt, SemaContext& ctx);
 bool analyzeSwitchCase(SwitchCaseAST* switchCase, SemaContext& ctx);
@@ -188,42 +263,63 @@ bool analyzeSpawnStmt(SpawnStmtAST* stmt, SemaContext& ctx);
 bool analyzeJoinStmt(JoinStmtAST* stmt, SemaContext& ctx);
 
 // =============================================================================
-// Expressions (Type Checking)
+// EXPRESSIONS - Type checking (LOOKUP names)
 // =============================================================================
 
 /**
- * @brief Resolve and type-check an expression.
+ * @brief Type-check an expression.
  *
- * Every `check*` function below sets `expr->resolvedType` before returning.
- *
- * @return The expression's resolved type, or nullptr if it could not be
- *         determined (an error was already reported; callers should treat
- *         nullptr as "already handled").
+ * For identifier expressions, this LOOKS UP the name in the symbol table.
+ * Sets expr->resolvedType.
  */
 TypeAST* checkExpr(ExprAST* expr, SemaContext& ctx);
 
 TypeAST* checkLiteralExpr(LiteralExprAST* expr, SemaContext& ctx);
+
+/**
+ * @brief Check an identifier expression.
+ *
+ * LOOKUP: `ctx.symbols.lookupValue(expr->name)`
+ *   - Searches: generic params → local scopes → module scope
+ *   - Reports E2001 if not found
+ *   - Sets resolvedType to the declaration's valueType
+ */
 TypeAST* checkIdentifierExpr(IdentifierExprAST* expr, SemaContext& ctx);
+
 TypeAST* checkArrayLiteralExpr(ArrayLiteralExprAST* expr, SemaContext& ctx);
 TypeAST* checkStructLiteralExpr(StructLiteralExprAST* expr, SemaContext& ctx);
-
-/// @param targetStruct The struct type this initializer is constructing.
-void checkFieldInit(FieldInitAST* init, StructDeclAST* targetStruct, SemaContext& ctx);
-
 TypeAST* checkBinaryExpr(BinaryExprAST* expr, SemaContext& ctx);
 TypeAST* checkUnaryExpr(UnaryExprAST* expr, SemaContext& ctx);
+
+/**
+ * @brief Check a function call.
+ *
+ * LOOKUP: Uses resolveCalleeOrError() to find the function declaration.
+ *   - Plain call: LOOKUP name in value namespace
+ *   - Module call: LOOKUP module alias, then LOOKUP member in module's table
+ *   - Other callees: Check callee's resolvedType is a FuncTypeAST
+ */
 TypeAST* checkCallExpr(CallExprAST* expr, SemaContext& ctx);
+
 TypeAST* checkIntrinsicCallExpr(IntrinsicCallExprAST* expr, SemaContext& ctx);
 TypeAST* checkIndexExpr(IndexExprAST* expr, SemaContext& ctx);
 TypeAST* checkSliceExpr(SliceExprAST* expr, SemaContext& ctx);
+
+/**
+ * @brief Check field access.
+ *
+ * LOOKUP: Resolve object's type, then LOOKUP field name in that type's scope.
+ *   - For structs: LOOKUP field in struct's fields
+ *   - For enums: LOOKUP variant in enum's variants
+ */
 TypeAST* checkFieldAccessExpr(FieldAccessExprAST* expr, SemaContext& ctx);
 
 /**
- * @brief Type-check `module:member` access.
+ * @brief Check module access (module:member).
  *
- * Resolves `expr`'s module alias via `ctx.symbols.lookupImport()` against the
- * *current* module's table, then looks the member up in the target
- * module's own persistent `ModuleTable`.
+ * LOOKUP:
+ *   1. `ctx.symbols.lookupImport(moduleName)` - find imported module
+ *   2. `moduleTable->values.find(memberName)` - LOOKUP member in module's table
  */
 TypeAST* checkModuleAccessExpr(ModuleAccessExprAST* expr, SemaContext& ctx);
 
@@ -231,164 +327,290 @@ TypeAST* checkNullableChainExpr(NullableChainExprAST* expr, SemaContext& ctx);
 TypeAST* checkNullCoalesceExpr(NullCoalesceExprAST* expr, SemaContext& ctx);
 TypeAST* checkAssignExpr(AssignExprAST* expr, SemaContext& ctx);
 TypeAST* checkPipelineExpr(PipelineExprAST* expr, SemaContext& ctx);
-
-/// @param inputType The type flowing into this step from the previous one.
-TypeAST* checkPipelineStep(PipelineStepAST* step, TypeAST* inputType, SemaContext& ctx);
-
 TypeAST* checkComposeExpr(ComposeExprAST* expr, SemaContext& ctx);
-TypeAST* checkComposeOperand(ComposeOperandAST* operand, SemaContext& ctx);
 TypeAST* checkAnonFuncExpr(AnonFuncExprAST* expr, SemaContext& ctx);
 TypeAST* checkIfExpr(IfExprAST* expr, SemaContext& ctx);
 TypeAST* checkRangeExpr(RangeExprAST* expr, SemaContext& ctx);
 
 // =============================================================================
-// Types (Type Resolution)
+// TYPES - LOOKUP names in type namespace
 // =============================================================================
 
 /**
- * @brief Resolve a type annotation as written in source.
+ * @brief Resolve a type annotation.
  *
- * Confirms every named type exists in the current context, tags
- * `NamedTypeAST::isGenericParam` when a name shadows a generic parameter,
- * and recurses into compound types.
+ * For NamedTypeAST: LOOKUP the name.
+ * For compound types: recursively resolve inner types.
+ *
+ * The parser already created all TypeAST nodes. This just validates they exist.
  */
 TypeAST* resolveType(TypeAST* type, SemaContext& ctx);
 
+/** Primitive types are always valid (built-in). */
 TypeAST* resolvePrimitiveType(PrimitiveTypeAST* type, SemaContext& ctx);
 
 /**
- * @brief Resolve a named type reference.
+ * @brief Resolve a named type.
  *
- * Checks `ctx.symbols.lookupGenericParam()` first (a name shadows a real type
- * while it's an in-scope generic parameter) before falling back to
- * `ctx.symbols.lookupType()`. Reports an error via `resolveTypeNameOrError()`
- * if neither resolves.
+ * LOOKUP PRIORITY (highest to lowest):
+ *   1. `ctx.symbols.lookupGenericParam(name)` - generic parameter in current scope
+ *   2. `ctx.symbols.lookupType(name)` - type in local scopes
+ *   3. `ctx.symbols.lookupType(name)` - type in module scope (fallback)
+ *
+ * Reports E2002 if not found in any tier.
+ *
+ * @note Generic parameters have highest priority and shadow type names.
+ *       Example: In `struct Box<T>`, `T` is a generic param, not a type.
  */
 TypeAST* resolveNamedType(NamedTypeAST* type, SemaContext& ctx);
 
+/** Recursively resolve array element type. */
 TypeAST* resolveArrayType(ArrayTypeAST* type, SemaContext& ctx);
+
+/** Recursively resolve inner type. */
 TypeAST* resolveNullableType(NullableTypeAST* type, SemaContext& ctx);
 TypeAST* resolveFallibleType(FallibleTypeAST* type, SemaContext& ctx);
 TypeAST* resolveCombinedType(CombinedTypeAST* type, SemaContext& ctx);
+
+/**
+ * @brief Resolve reference type.
+ *
+ * Checks Downward Flow Rule:
+ *   - Cannot store &T in struct fields (uses ctx.definingTypes.current())
+ *   - Cannot store &T in arrays
+ *   - Cannot return &T from functions
+ */
 TypeAST* resolveRefType(RefTypeAST* type, SemaContext& ctx);
+
+/** Resolve pointer type - always valid (sealed conduit). */
 TypeAST* resolvePtrType(PtrTypeAST* type, SemaContext& ctx);
+
+/** Recursively resolve parameter and return types. */
 TypeAST* resolveFuncType(FuncTypeAST* type, SemaContext& ctx);
 
 // =============================================================================
-// Generics & Traits
+// GENERICS & TRAITS - Validation
 // =============================================================================
 
-/// Resolve a trait reference to its declaration.
-TraitDeclAST* resolveTraitRef(TraitRefAST* ref, SemaContext& ctx);
+/** Resolve a trait reference via LOOKUP in type namespace. */
+TraitDeclAST* resolveTraitRef(NamedTypeAST* ref, SemaContext& ctx);
 
-/**
- * @brief Verify every generic parameter of `owner` is used by at least one
- *        field/param type. Unused parameters are a compile error.
- */
+/** Verify all generic parameters are used. */
 void validateGenericParamUsage(ArenaSpan<GenericParamDeclPtr> params,
                                 DeclAST* owner,
                                 SemaContext& ctx);
 
-/**
- * @brief Verify `structDecl` satisfies every field `traitRef` requires:
- *        matching name, matching type, matching const-ness.
- *
- * @return true if the struct fully implements the trait.
- */
+/** Verify struct implements all trait fields. */
 bool validateTraitImplementation(StructDeclAST* structDecl,
-                                  TraitRefAST* traitRef,
+                                  NamedTypeAST* traitRef,
                                   SemaContext& ctx);
 
-/// Verify a generic argument list's arity and constraints against `params`.
+/** Check generic argument arity matches parameters. */
 void checkGenericArgs(ArenaSpan<TypePtr> args,
                        ArenaSpan<GenericParamDeclPtr> params,
                        BaseAST* useSite,
                        SemaContext& ctx);
 
 // =============================================================================
-// Self-Reference / Recursive Type Validation
+// SELF-REFERENCE DETECTION - Uses DefiningTypeStack
 // =============================================================================
 
 /**
- * @brief True if `fieldType` refers directly to `owner`'s own type — i.e.
- *        by value, with no `ptr`/`&`/array/nullable indirection breaking
- *        the cycle — which would make `owner` an infinite-size type.
+ * @brief True if fieldType refers directly to owner's own type (by value).
+ *
+ * Uses ctx.definingTypes.isDefining(owner) to detect if the owner is
+ * currently being defined. This works for any depth of nesting because
+ * DefiningTypeStack tracks the entire chain of types being defined.
+ *
+ * Example:
+ *   struct Node<T> {
+ *       value Node<T>          → true (illegal, infinite size)
+ *       next ptr<Node<T>>?     → false (ptr breaks the cycle)
+ *       children [*]Node<T>    → true (array is direct storage)
+ *       parent &Node<T>        → false (reference breaks the cycle)
+ *   }
  */
 bool isDirectSelfReference(TypeAST* fieldType, TypeDeclAST* owner, SemaContext& ctx);
 
-/**
- * @brief Resolve `field`'s type and reject it if `isDirectSelfReference()`
- *        holds — the one validation step specific to fields of a type
- *        that's still being defined.
- */
+/** Resolve field type and reject direct self-references. */
 void checkRecursiveFieldType(FieldDeclAST* field, TypeDeclAST* owner, SemaContext& ctx);
 
 // =============================================================================
-// FFI Validation
+// FFI VALIDATION
 // =============================================================================
 
-/**
- * @brief Validate an `@[foreign("C")]`-attributed function against the
- *        foreign function manifest.
- */
+/** Validate @[foreign("C")] function against FFI manifest. */
 void validateForeignFunc(FuncDeclAST* decl, AttributeAST* foreignAttr, SemaContext& ctx);
 
-/// True if `type` is legal at an FFI boundary.
+/** True if type is legal at FFI boundary. */
 bool isValidFFIType(TypeAST* type, SemaContext& ctx);
 
 // =============================================================================
-// Attributes
+// ATTRIBUTES
 // =============================================================================
 
-/// Validate every attribute in `attrs` against what's legal on `owner`'s kind.
+/** Validate attributes on a declaration. */
 void validateAttributes(ArenaSpan<AttributePtr> attrs, DeclAST* owner, SemaContext& ctx);
 void validateAttribute(AttributeAST* attr, DeclAST* owner, SemaContext& ctx);
 
 // =============================================================================
-// Resolution Helpers (lookup + diagnostic on failure)
+// LOOKUP HELPERS - All name lookup logic
 // =============================================================================
 
+// ─── Generic Parameter Lookup ─────────────────────────────────────────────
+
 /**
- * @brief Resolve an identifier expression to its declaration, reporting an
- *        "undefined value" diagnostic if it doesn't resolve.
+ * @brief Check if a name is a generic parameter in the current scope.
+ *
+ * Generic parameters have the HIGHEST priority and shadow type names.
+ */
+bool isGenericParam(InternedString name, SemaContext& ctx);
+
+/**
+ * @brief Look up a generic parameter by name.
+ *
+ * @return The GenericParamDeclAST if found, nullptr otherwise.
+ */
+GenericParamDeclAST* lookupGenericParam(InternedString name, SemaContext& ctx);
+
+// ─── Value Lookup ─────────────────────────────────────────────────────────
+
+/**
+ * @brief Look up a value declaration by name.
+ *
+ * Searches: generic params → local scopes → module scope
+ * Generic params are NOT values, so they don't match here.
+ */
+ValueDeclAST* lookupValue(InternedString name, SemaContext& ctx);
+
+/**
+ * @brief Look up a value and report E2001 if not found.
  */
 ValueDeclAST* resolveValueOrError(IdentifierExprAST* expr, SemaContext& ctx);
 
-/// Resolve a named type reference, reporting an "undefined type" diagnostic.
-TypeDeclAST* resolveTypeNameOrError(NamedTypeAST* type, SemaContext& ctx);
+/**
+ * @brief Look up a function by name.
+ *
+ * Convenience wrapper that checks the resolved value is a FuncDeclAST.
+ */
+FuncDeclAST* lookupFunction(InternedString name, SemaContext& ctx);
 
-/// Resolve a call's callee to the function it names, reporting a
-/// "not callable" diagnostic if it resolves to a non-function value.
-FuncDeclAST* resolveCalleeOrError(ExprAST* callee, SemaContext& ctx);
+// ─── Type Lookup ──────────────────────────────────────────────────────────
 
 /**
- * @brief Get (creating if necessary) the cached self-type reference for `decl`.
+ * @brief Look up a type declaration by name.
+ *
+ * Searches: local scopes → module scope
+ * Generic parameters are NOT type declarations (they shadow, but are separate).
+ */
+TypeDeclAST* lookupType(InternedString name, SemaContext& ctx);
+
+/**
+ * @brief Look up a type with proper priority (generic params shadow types).
+ *
+ * This is the main type resolution function. It handles:
+ *   1. Check if it's a generic parameter (returns nullptr, no error)
+ *   2. Look up as concrete type (returns TypeDeclAST*)
+ *   3. Not found (reports E2002, returns nullptr)
+ */
+TypeDeclAST* resolveTypeOrError(NamedTypeAST* type, SemaContext& ctx);
+
+/**
+ * @brief Resolve a named type reference, reporting E2002 on failure.
+ *
+ * Alias for resolveTypeOrError() for consistency.
+ */
+TypeDeclAST* resolveTypeNameOrError(NamedTypeAST* type, SemaContext& ctx);
+
+// ─── Module Member Lookup ─────────────────────────────────────────────────
+
+/**
+ * @brief Look up a member in a module's table.
+ *
+ * Used for module:member access. The module must already be resolved.
+ */
+ValueDeclAST* lookupModuleMember(ModuleAST* module, InternedString memberName, SemaContext& ctx);
+
+/**
+ * @brief Resolve a module alias and look up a member, with error reporting.
+ */
+ValueDeclAST* resolveModuleMemberOrError(ModuleAccessExprAST* access, SemaContext& ctx);
+
+// ─── Callee Resolution ────────────────────────────────────────────────────
+
+/**
+ * @brief Resolve a call expression's callee to the FuncDeclAST it names.
+ *
+ * Handles two callee shapes:
+ *   - IdentifierExprAST: Look up in value namespace
+ *   - ModuleAccessExprAST: Look up module alias, then member
+ *
+ * Any other callee shape (curried call, function literal) returns nullptr
+ * silently - the caller must check the callee's resolved type instead.
+ */
+FuncDeclAST* resolveCalleeOrError(ExprAST* callee, SemaContext& ctx);
+
+// ─── Self-Type Cache ──────────────────────────────────────────────────────
+
+/**
+ * @brief Get (creating if necessary) the cached self-type reference for decl.
+ *
+ * Cached in TypeDeclAST::selfType. Lazy-created on first access.
+ * Used when a type name appears as a value (e.g., `int("42")`).
  */
 NamedTypeAST* selfTypeOf(TypeDeclAST* decl, SemaContext& ctx);
 
 // =============================================================================
-// Type Compatibility Helpers
+// TYPE COMPATIBILITY HELPERS
 // =============================================================================
 
-/// Structural equality of two resolved types.
+/** Structural equality of two types. */
 bool typesEqual(const TypeAST* a, const TypeAST* b);
 
-/**
- * @brief True if a value of type `source` may be used where `target` is
- *        expected (assignment, argument passing, return).
- */
+/** True if source value can be used where target is expected. */
 bool isAssignable(const TypeAST* target, const TypeAST* source, SemaContext& ctx);
 
 bool isNullableType(const TypeAST* type);
 bool isFallibleType(const TypeAST* type);
 
-/// Strip one layer of `?`/`?!`, returning the inner type.
+/** Strip ?/?!, return inner type. */
 TypeAST* unwrapNullable(TypeAST* type);
-
-/// Strip one layer of `!`/`?!`, returning the inner type.
 TypeAST* unwrapFallible(TypeAST* type);
 
 bool isNumericType(const TypeAST* type);
 bool isIntegerType(const TypeAST* type);
+
+// ─── Type Validation ──────────────────────────────────────────────────────
+
+/**
+ * @brief Validate that a const field's type is not nullable or fallible.
+ *
+ * From DeclAST.hpp:
+ *   A const field may NOT be nullable (T?) or fallible (T!).
+ */
+bool validateConstFieldType(TypeAST* type, SemaContext& ctx);
+
+/**
+ * @brief Validate that a trait field is not nullable or fallible.
+ *
+ * From DeclAST.hpp:
+ *   Trait fields must not be nullable or fallible.
+ */
+bool validateTraitFieldType(TypeAST* type, SemaContext& ctx);
+
+/**
+ * @brief Validate reference type context (Downward Flow Rule).
+ *
+ * From TypeAST.hpp:
+ *   References (&T) can only appear as:
+ *     - Function parameters
+ *     - Local variable aliases
+ *
+ *   Invalid contexts:
+ *     - Struct fields (infinite size)
+ *     - Array/Slice storage
+ *     - Function returns
+ */
+bool validateRefContext(RefTypeAST* type, SemaContext& ctx);
 
 } // namespace sema

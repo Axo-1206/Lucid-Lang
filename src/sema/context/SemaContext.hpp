@@ -261,4 +261,74 @@ public:
     }
 };
 
+/**
+ * @brief RAII guard for semantic context tracking.
+ *
+ * Pushes a SemanticContext frame on construction and pops it on
+ * destruction — automatically, on every exit path.
+ *
+ * ```cpp
+ * void visitFunction(FuncDeclAST* func, SemaContext& ctx) {
+ *     ScopedSemanticContext guard(ctx, SemanticContext::FuncBody,
+ *                                   func, func->loc);
+ *     // ctx.contexts.current() now returns FuncBody
+ *     // return is legal inside the body
+ * }
+ * ```
+ *
+ * Non-copyable, non-movable: identity is tied to one specific activation.
+ */
+struct ScopedSemanticContext {
+    explicit ScopedSemanticContext(SemaContext& ctx, SemanticContext kind,
+                                    BaseAST* node, const SourceLocation& loc)
+        : ctx_(ctx) {
+        ctx_.contexts.push(kind, node, loc);
+    }
+
+    ~ScopedSemanticContext() {
+        ctx_.contexts.pop();
+    }
+
+    ScopedSemanticContext(const ScopedSemanticContext&) = delete;
+    ScopedSemanticContext& operator=(const ScopedSemanticContext&) = delete;
+    ScopedSemanticContext(ScopedSemanticContext&&) = delete;
+    ScopedSemanticContext& operator=(ScopedSemanticContext&&) = delete;
+
+private:
+    SemaContext& ctx_;
+};
+
+/**
+ * @brief RAII guard marking a TypeDeclAST as "currently being defined".
+ *
+ * ```cpp
+ * void visitStruct(StructDeclAST* s, SemaContext& ctx) {
+ *     ctx.symbols.insertType(s->name, s);
+ *     ScopedTypeDefinition defining(ctx, s);
+ *     // ctx.definingTypes.isDefining(s) returns true
+ *     for (auto* f : s->fields) checkRecursiveFieldType(f, ctx);
+ * }
+ * ```
+ *
+ * Non-copyable, non-movable: identity is tied to one specific activation.
+ */
+struct ScopedTypeDefinition {
+    explicit ScopedTypeDefinition(SemaContext& ctx, TypeDeclAST* decl)
+        : ctx_(ctx) {
+        ctx_.definingTypes.beginDefining(decl);
+    }
+
+    ~ScopedTypeDefinition() {
+        ctx_.definingTypes.endDefining();
+    }
+
+    ScopedTypeDefinition(const ScopedTypeDefinition&) = delete;
+    ScopedTypeDefinition& operator=(const ScopedTypeDefinition&) = delete;
+    ScopedTypeDefinition(ScopedTypeDefinition&&) = delete;
+    ScopedTypeDefinition& operator=(ScopedTypeDefinition&&) = delete;
+
+private:
+    SemaContext& ctx_;
+};
+
 } // namespace sema
