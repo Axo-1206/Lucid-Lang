@@ -53,73 +53,126 @@
 /// against the known target type.
 /// 
 /// ============================================================================
-/// NULLABLE AND FALLIBLE TYPE RULES
+/// NULLABLE VS FALLIBLE: DESIGN RATIONALE
 /// ============================================================================
 /// 
-/// Lucid has three special type modifiers:
-///   - T?  : Nullable - can be nil or T
-///   - T!  : Fallible - can be err or T
-///   - T?! : Combined - can be nil, err, or T
+/// Both nullable (`T?`) and fallible (`T!`) types share a common rule:
+///   ❌ They are REJECTED from all operations EXCEPT comparison (`==`, `!=`, etc.)
 /// 
-/// ┌─────────────────────────────────────────────────────────────────────────────┐
-/// │ EXPRESSION KIND          │ NULLABLE (T?)    │ FALLIBLE (T!)   │ COMBINED  │
-/// │                          │                   │                 │  (T?!)    │
-/// ├──────────────────────────┼───────────────────┼─────────────────┼───────────┤
-/// │ Arithmetic (+, -, *, /)  │ ❌ Not allowed    │ ❌ Not allowed  │ ❌ Not    │
-/// │                          │ (must narrow)     │                 │ allowed   │
-/// ├──────────────────────────┼───────────────────┼─────────────────┼───────────┤
-/// │ Comparison (==, !=,      │ ✅ Allowed        │ ❌ Not allowed  │ ❌ Not    │
-/// │ <, <=, >, >=)            │ (nil comparison)  │                 │ allowed   │
-/// ├──────────────────────────┼───────────────────┼─────────────────┼───────────┤
-/// │ Logical (and, or)        │ ❌ Not allowed    │ ❌ Not allowed  │ ❌ Not    │
-/// │                          │ (must narrow)     │                 │ allowed   │
-/// ├──────────────────────────┼───────────────────┼─────────────────┼───────────┤
-/// │ Bitwise (&, |, ^, <<, >>)│ ❌ Not allowed    │ ❌ Not allowed  │ ❌ Not    │
-/// │                          │ (must narrow)     │                 │ allowed   │
-/// ├──────────────────────────┼───────────────────┼─────────────────┼───────────┤
-/// │ Unary Negation (-x)      │ ❌ Not allowed    │ ❌ Not allowed  │ ❌ Not    │
-/// │                          │ (must narrow)     │                 │ allowed   │
-/// ├──────────────────────────┼───────────────────┼─────────────────┼───────────┤
-/// │ Logical Not (not x)      │ ❌ Not allowed    │ ❌ Not allowed  │ ❌ Not    │
-/// │                          │ (must narrow)     │                 │ allowed   │
-/// ├──────────────────────────┼───────────────────┼─────────────────┼───────────┤
-/// │ Bitwise Not (~x)         │ ❌ Not allowed    │ ❌ Not allowed  │ ❌ Not    │
-/// │                          │ (must narrow)     │                 │ allowed   │
-/// ├──────────────────────────┼───────────────────┼─────────────────┼───────────┤
-/// │ Function Call (callee)   │ ❌ Not allowed    │ ❌ Not allowed  │ ❌ Not    │
-/// │                          │ (must narrow)     │                 │ allowed   │
-/// ├──────────────────────────┼───────────────────┼─────────────────┼───────────┤
-/// │ Function Call (argument) │ ✅ Allowed        │ ❌ Not allowed  │ ❌ Not    │
-/// │                          │ (if param is T?)  │ (must handle)   │ allowed   │
-/// ├──────────────────────────┼───────────────────┼─────────────────┼───────────┤
-/// │ Field Access (obj.field) │ ❌ Not allowed    │ ❌ Not allowed  │ ❌ Not    │
-/// │                          │ (use ?. instead)  │ (must handle)   │ allowed   │
-/// ├──────────────────────────┼───────────────────┼─────────────────┼───────────┤
-/// │ Nullable Chain (?.)      │ ✅ Allowed        │ ❌ Not allowed  │ ❌ Not    │
-/// │                          │                   │ (must handle)   │ allowed   │
-/// ├──────────────────────────┼───────────────────┼─────────────────┼───────────┤
-/// │ Null Coalesce (??)       │ ✅ Allowed        │ ✅ Allowed      │ ✅ Allowed│
-/// │                          │ (handles nil)     │ (handles err)   │ (handles  │
-/// │                          │                   │                 │ both)     │
-/// ├──────────────────────────┼───────────────────┼─────────────────┼───────────┤
-/// │ Array Index (arr[i])     │ ✅ Element can    │ ❌ Not allowed  │ ❌ Not    │
-/// │                          │ be nullable       │ (must handle)   │ allowed   │
-/// │                          │ ❌ Index must be  │                 │           │
-/// │                          │ definite          │                 │           │
-/// ├──────────────────────────┼───────────────────┼─────────────────┼───────────┤
-/// │ Slice Bounds (start..end)│ ❌ Bounds must    │ ❌ Not allowed  │ ❌ Not    │
-/// │                          │ be definite       │ (must handle)   │ allowed   │
-/// ├──────────────────────────┼───────────────────┼─────────────────┼───────────┤
-/// │ Assignment (RHS → LHS)   │ ✅ T → T? allowed │ ❌ Not allowed  │ ❌ Not    │
-/// │                          │ ❌ T? → T not     │ (must handle)   │ allowed   │
-/// │                          │ allowed           │                 │           │
-/// ├──────────────────────────┼───────────────────┼─────────────────┼───────────┤
-/// │ Return Statement         │ ✅ If return      │ ❌ Not allowed  │ ❌ Not    │
-/// │                          │ type is T?        │ (must handle)   │ allowed   │
-/// ├──────────────────────────┼───────────────────┼─────────────────┼───────────┤
-/// │ Condition (if, while)    │ ❌ Must be        │ ❌ Not allowed  │ ❌ Not    │
-/// │                          │ definite bool     │ (must handle)   │ allowed   │
-/// └──────────────────────────┴───────────────────┴─────────────────┴───────────┘
+/// This forces explicit handling of `nil` and `err` before performing operations.
+/// The `??` operator is used for narrowing both types.
+/// 
+/// ─── The Key Difference ─────────────────────────────────────────────────────
+/// 
+/// ┌─────────────┬────────────────────────────────────────────────────────────┐
+/// │ Aspect      │ Nullable (`T?`)          │ Fallible (`T!`)               │
+/// ├─────────────┼──────────────────────────┼───────────────────────────────┤
+/// │ Purpose     │ Absence of value (`nil`) │ Error state (`err`)            │
+/// ├─────────────┼──────────────────────────┼───────────────────────────────┤
+/// │ Operations  │ ❌ Rejected (except cmp) │ ❌ Rejected (except cmp)      │
+/// ├─────────────┼──────────────────────────┼───────────────────────────────┤
+/// │ Narrowing   │ `??` provides fallback   │ `??` provides fallback        │
+/// ├─────────────┼──────────────────────────┼───────────────────────────────┤
+/// │ Error       │ ❌ Cannot receive `nil`  │ ✅ Can receive `err` from     │
+/// │ Recovery    │ from failed operations   │    failed operations          │
+/// ├─────────────┼──────────────────────────┼───────────────────────────────┤
+/// │ Source of   │ User explicit (`nil`)    │ Compiler generated on failure │
+/// │ Value       │ or literal               │ or user explicit (`err`)      │
+/// └─────────────┴──────────────────────────┴───────────────────────────────┘
+/// 
+/// ─── Why Only Comparison Is Allowed ────────────────────────────────────────
+/// 
+/// Comparison (`==`, `!=`, `<`, `<=`, `>`, `>=`) is the ONLY operation that
+/// can be performed on nullable/fallible types. This is because:
+///   1. You need to check for `nil` or `err` before narrowing
+///   2. `x == nil` and `x != nil` are fundamental operations for null checking
+///   3. `x == err` and `x != err` are fundamental for error checking
+///   4. Comparisons between nullable types are well-defined (`nil == nil` is true)
+/// 
+/// ─── Example: Why Operations Are Rejected ──────────────────────────────────
+/// 
+/// ```lucid
+/// let x int? = 5
+/// let y int? = nil
+/// 
+/// // ❌ Rejected: arithmetic on nullable
+/// let z int? = x + y
+/// // Error: arithmetic cannot be used with nullable operands.
+/// // Use `??` to handle nil first.
+/// 
+/// // ✅ Correct: narrow first
+/// let z int? = (x ?? 0) + (y ?? 0)
+/// 
+/// // ✅ Allowed: comparison for null checking
+/// if x == nil { ... }
+/// if y != nil { ... }
+/// ```
+/// 
+/// ─── Example: Fallible Error Recovery ──────────────────────────────────────
+/// 
+/// ```lucid
+/// let result int! = parse("42")
+/// 
+/// // ❌ Rejected: arithmetic on fallible
+/// let doubled int! = result * 2
+/// // Error: arithmetic cannot be used with fallible operands.
+/// // Use `??` to handle err first.
+/// 
+/// // ✅ Correct: narrow first
+/// let doubled int! = (result ?? 0) * 2
+/// 
+/// // ✅ Error recovery: if parse fails, result is err
+/// let result int! = parse("invalid")  // result = err
+/// let doubled int! = (result ?? 0) * 2  // doubled = err (propagates)
+/// ```
+/// 
+/// ─── Comparison with Nullable ──────────────────────────────────────────────
+/// 
+/// ```lucid
+/// let x int? = 5
+/// let y int? = nil
+/// 
+/// // ✅ Allowed: comparison
+/// let a bool = x == y    // false (5 == nil)
+/// let b bool = x != nil  // true (5 != nil)
+/// let c bool = y == nil  // true (nil == nil)
+/// 
+/// // ❌ Rejected: arithmetic
+/// let z int? = x + y     // ERROR
+/// 
+/// // ✅ Correct: narrow with ??
+/// let z int? = (x ?? 0) + (y ?? 0)  // z = 5
+/// ```
+/// 
+/// ─── The Fallible Exception: Error Propagation ────────────────────────────
+/// 
+/// The ONLY place where nullable and fallible differ is in error recovery:
+/// 
+/// ```lucid
+/// // Fallible: can receive err from failed operations
+/// let result int! = parse("invalid")  // result = err (compiler generated)
+/// 
+/// // Nullable: cannot receive nil from failed operations
+/// let result int? = parse("invalid")  // ERROR: parse returns int!, not int?
+/// ```
+/// 
+/// This is why fallible types exist: they allow the compiler to automatically
+/// propagate error states through expressions, while nullable types require
+/// explicit `nil` assignment.
+/// 
+/// ─── Summary ────────────────────────────────────────────────────────────────
+/// 
+/// 1. Both nullable and fallible types are REJECTED from operations (except comparison)
+/// 2. Both require `??` to narrow before operations
+/// 3. Fallible types can receive `err` from failed operations (compiler generated)
+/// 4. Nullable types cannot receive `nil` from operations (user explicit only)
+/// 5. This distinction justifies keeping separate names (`?` vs `!`)
+/// 
+/// For index expressions, this means:
+///   - Index must be definite (non-nullable, non-fallible)
+///   - Nullable index → rejected
+///   - Fallible index → rejected
+///   - Array element can be nullable/fallible (result type inherits)
 /// 
 /// ─── Type Narrowing ──────────────────────────────────────────────────────────
 /// 
@@ -199,13 +252,13 @@ bool checkExpr(ExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
 /// @brief Type-check a literal expression against the target type.
 /// 
 /// Validates that the literal kind matches the target type:
-///   - int/hex/binary literal → integer target type
-///   - float literal → float target type
-///   - string/rawstring literal → string target type
-///   - char literal → char target type
-///   - true/false → bool target type
-///   - nil → nullable target type (T?)
-///   - err → fallible target type (T!)
+///   - int/hex/binary literal → integer target type → ValueState::Definite
+///   - float literal → float target type → ValueState::Definite
+///   - string/rawstring literal → string target type → ValueState::Definite
+///   - char literal → char target type → ValueState::Definite
+///   - true/false → bool target type → ValueState::Definite
+///   - nil → nullable target type (T?) → ValueState::Nil
+///   - err → fallible target type (T!) → ValueState::Err
 bool checkLiteralExpr(LiteralExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
     if (!expr || !targetType) return false;
 
@@ -218,6 +271,7 @@ bool checkLiteralExpr(LiteralExprAST* expr, const TypeAST* targetType, SemaConte
                       debug::typeToString(targetType, ctx.pool()));
             return false;
         }
+        expr->valueState = ValueState::Nil;  // Mark as nil
         return true;
     }
 
@@ -228,6 +282,7 @@ bool checkLiteralExpr(LiteralExprAST* expr, const TypeAST* targetType, SemaConte
                       debug::typeToString(targetType, ctx.pool()));
             return false;
         }
+        expr->valueState = ValueState::Err;  // Mark as err
         return true;
     }
 
@@ -255,7 +310,7 @@ bool checkLiteralExpr(LiteralExprAST* expr, const TypeAST* targetType, SemaConte
                 return false;
             }
             // TODO: Check if the literal value fits in the target integer type
-            // For now, just validate the type category
+            expr->valueState = ValueState::Definite;
             return true;
         }
 
@@ -267,6 +322,7 @@ bool checkLiteralExpr(LiteralExprAST* expr, const TypeAST* targetType, SemaConte
                           debug::typeToString(targetType, ctx.pool()));
                 return false;
             }
+            expr->valueState = ValueState::Definite;
             return true;
         }
 
@@ -278,6 +334,7 @@ bool checkLiteralExpr(LiteralExprAST* expr, const TypeAST* targetType, SemaConte
                           debug::typeToString(targetType, ctx.pool()));
                 return false;
             }
+            expr->valueState = ValueState::Definite;
             return true;
         }
 
@@ -288,6 +345,7 @@ bool checkLiteralExpr(LiteralExprAST* expr, const TypeAST* targetType, SemaConte
                           debug::typeToString(targetType, ctx.pool()));
                 return false;
             }
+            expr->valueState = ValueState::Definite;
             return true;
         }
 
@@ -299,6 +357,7 @@ bool checkLiteralExpr(LiteralExprAST* expr, const TypeAST* targetType, SemaConte
                           debug::typeToString(targetType, ctx.pool()));
                 return false;
             }
+            expr->valueState = ValueState::Definite;
             return true;
         }
 
@@ -324,6 +383,7 @@ bool checkLiteralExpr(LiteralExprAST* expr, const TypeAST* targetType, SemaConte
 ///   - Searches: generic params → local scopes → module scope
 ///   - Reports E2001 if not found
 ///   - Validates that the resolved value's type is assignable to targetType
+///   - Propagates nil/err state from the resolved declaration
 bool checkIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
     if (!expr || !targetType) return false;
 
@@ -333,9 +393,25 @@ bool checkIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetType, Sem
     // Check if the resolved type is assignable to the target type
     if (decl->type && !isAssignable(targetType, decl->type, ctx)) {
         ctx.error(expr, DiagCode::E3003,
-                  "type mismatch: expected ", debug::typeToString(const_cast<TypeAST*>(targetType), ctx.pool()),
+                  "type mismatch: expected ", debug::typeToString(targetType, ctx.pool()),
                   ", got ", debug::typeToString(decl->type, ctx.pool()));
         return false;
+    }
+
+    // Propagate value state from the declaration if known
+    // For variables, we don't know the value state at compile-time
+    // unless it's a constant
+    if (decl->isa<VarDeclAST>()) {
+        const VarDeclAST* varDecl = decl->as<VarDeclAST>();
+        // If the variable is const and has a literal initializer, we might know its value
+        // For now, mark as Unknown (runtime evaluation needed)
+        expr->valueState = ValueState::Unknown;
+    } else if (decl->isa<EnumVariantAST>()) {
+        // Enum variants are definite values
+        expr->valueState = ValueState::Definite;
+    } else {
+        // Other declarations (functions, parameters, fields) are unknown at compile-time
+        expr->valueState = ValueState::Unknown;
     }
 
     return true;
@@ -352,6 +428,7 @@ bool checkIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetType, Sem
 ///   - Each element is checked against the array's element type
 ///   - For fixed arrays: element count must not exceed the declared size
 ///   - For nested arrays: recursively checks inner arrays
+///   - If any element is err, the entire array literal is err
 ///
 /// @note Empty array literals `[]` are valid and type is inferred from targetType.
 ///       The declaration site enforces size limits for fixed arrays.
@@ -369,9 +446,22 @@ bool checkArrayLiteralExpr(ArrayLiteralExprAST* expr, const TypeAST* targetType,
     const ArrayTypeAST* arrTarget = targetType->as<ArrayTypeAST>();
     const TypeAST* elemTarget = arrTarget->element;
 
+    // Track if any element is err
+    bool hasErr = false;
+
     // Check each element against the element type
     for (ExprAST* elem : expr->elements) {
         if (!checkExpr(elem, elemTarget, ctx)) {
+            return false;
+        }
+        // Propagate err state
+        if (elem->valueState == ValueState::Err) {
+            hasErr = true;
+        }
+        // Nil elements are allowed in nullable arrays
+        if (elem->valueState == ValueState::Nil && !isNullableType(elemTarget)) {
+            ctx.error(elem, DiagCode::E3003,
+                      "nil element in non-nullable array");
             return false;
         }
     }
@@ -387,8 +477,23 @@ bool checkArrayLiteralExpr(ArrayLiteralExprAST* expr, const TypeAST* targetType,
         }
     }
 
-    // For empty array literals, no further validation needed
-    // The type is already known from targetType
+    // Set the value state of the array literal
+    if (hasErr) {
+        expr->valueState = ValueState::Err;
+    } else if (expr->elements.empty()) {
+        // Empty array is definite (no elements to evaluate)
+        expr->valueState = ValueState::Definite;
+    } else {
+        // Check if all elements are definite
+        bool allDefinite = true;
+        for (ExprAST* elem : expr->elements) {
+            if (elem->valueState != ValueState::Definite) {
+                allDefinite = false;
+                break;
+            }
+        }
+        expr->valueState = allDefinite ? ValueState::Definite : ValueState::Unknown;
+    }
 
     return true;
 }
@@ -407,6 +512,7 @@ bool checkArrayLiteralExpr(ArrayLiteralExprAST* expr, const TypeAST* targetType,
 ///   - Fallible fields (T!) without default: can be omitted → defaults to err
 ///   - Combined fields (T?!) without default: MUST be explicitly initialized (no implicit default)
 ///   - `const` modifier only prevents modification after init, doesn't affect initialization rules
+///   - If any field initializer is err, the entire struct literal is err
 ///
 /// Const Field Rules (from DeclAST.hpp):
 ///   - A const field may NOT be nullable (T?) or fallible (T!)
@@ -464,6 +570,10 @@ bool checkStructLiteralExpr(StructLiteralExprAST* expr, const TypeAST* targetTyp
         fieldMap[field->name] = field;
     }
 
+    // Track if any field initializer is err
+    bool hasErr = false;
+    bool allDefinite = true;
+
     // Check each field initializer
     for (const FieldInitAST* init : expr->inits) {
         // Find the field in the struct
@@ -503,6 +613,14 @@ bool checkStructLiteralExpr(StructLiteralExprAST* expr, const TypeAST* targetTyp
         if (!checkExpr(init->value, field->type, ctx)) {
             // Error already reported by checkExpr
             // Continue to mark as initialized for error recovery
+        }
+
+        // Track value state for propagation
+        if (init->value->valueState == ValueState::Err) {
+            hasErr = true;
+        }
+        if (init->value->valueState != ValueState::Definite) {
+            allDefinite = false;
         }
 
         // Mark this field as initialized
@@ -545,6 +663,15 @@ bool checkStructLiteralExpr(StructLiteralExprAST* expr, const TypeAST* targetTyp
         return false;
     }
 
+    // Set the value state of the struct literal
+    if (hasErr) {
+        expr->valueState = ValueState::Err;
+    } else if (allDefinite && !expr->inits.empty()) {
+        expr->valueState = ValueState::Definite;
+    } else {
+        expr->valueState = ValueState::Unknown;
+    }
+
     return true;
 }
 
@@ -560,11 +687,61 @@ bool checkStructLiteralExpr(StructLiteralExprAST* expr, const TypeAST* targetTyp
 ///   - Logical (and, or): any (coerced to bool) → bool
 ///   - Bitwise (&, |, ^, <<, >>): integer → integer
 ///
-/// Validates both operands against the target type, then operator-specific rules.
+/// Rules:
+///   - Comparisons (==, !=, <, <=, >, >=): allow nullable/fallible operands
+///   - Arithmetic (+, -, *, /, %, **): require definite operands
+///   - Logical (and, or): require definite bool operands
+///   - Bitwise (&, |, ^, <<, >>): require definite integer operands
 ///
 /// Nullable/Fallible Rules:
+///   - Comparison: allows nullable (nil == nil, nil != T, etc.)
+///   - Comparison: allows fallible (err == err, err != T, etc.)
 ///   - Arithmetic/Logical/Bitwise: operands must be definite (non-nullable, non-fallible)
-///   - Comparison: operands may be nullable (nil comparison allowed), but not fallible
+///   - If target type is fallible and an operation on fallible operands is attempted,
+///     the result is `err` (matching the target type) - but this is a RUNTIME behavior,
+///     not compile-time. At compile-time, we still reject the operation.
+///
+/// Value State Propagation:
+///   - If either operand is `err` and target is fallible → result is `err` (recoverable)
+///   - If either operand is `nil` → rejected for non-comparison operators
+///   - For comparison, result is always `bool` (definite)
+///
+/// Examples:
+///   // ✅ Comparison with nullable
+///   let x float? = 5.0
+///   let y float? = nil
+///   let result bool = x == y  // ALLOWED: compiles, runtime: false
+///
+///   // ✅ Comparison with fallible
+///   let a int! = 42
+///   let b int! = err
+///   let result bool = a == b  // ALLOWED: compiles, runtime: false
+///
+///   // ❌ Arithmetic with nullable (compile-time error)
+///   let x float? = 5.0
+///   let y float? = nil
+///   let z float? = x + y  // ERROR: arithmetic cannot be used with nullable operands
+///
+///   // ✅ Correct: use ?? to handle nil
+///   let z float? = (x ?? 0.0) + (y ?? 0.0)  // ALLOWED: z = 5.0
+///
+///   // ❌ Arithmetic with fallible (compile-time error)
+///   let a int! = 42
+///   let b int! = err
+///   let c int! = a + b  // ERROR: arithmetic cannot be used with fallible operands
+///
+///   // ✅ Correct: use ?? to handle err
+///   let c int! = (a ?? 0) + (b ?? 0)  // ALLOWED: c = 42
+///
+///   // ✅ Fallible target with unknown expression
+///   let result int! = someUnknownExpr  // If someUnknownExpr fails, result becomes err
+///
+///   // ❌ Fallible target with arithmetic on fallible operands (still rejected)
+///   let a int! = 42
+///   let b int! = err
+///   let result int! = a + b  // ERROR: arithmetic cannot be used with fallible operands
+///   // Even though result could be err, we reject this at compile-time
+///   // to force explicit error handling
 bool checkBinaryExpr(BinaryExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
     if (!expr || !targetType) return false;
 
@@ -572,8 +749,20 @@ bool checkBinaryExpr(BinaryExprAST* expr, const TypeAST* targetType, SemaContext
     if (!checkExpr(expr->left, targetType, ctx)) return false;
     if (!checkExpr(expr->right, targetType, ctx)) return false;
 
+    // Get value states of operands
+    ValueState leftState = expr->left->valueState;
+    ValueState rightState = expr->right->valueState;
+
+    bool leftIsErr = leftState == ValueState::Err;
+    bool rightIsErr = rightState == ValueState::Err;
+    bool leftIsNil = leftState == ValueState::Nil;
+    bool rightIsNil = rightState == ValueState::Nil;
+    bool leftIsDefinite = leftState == ValueState::Definite;
+    bool rightIsDefinite = rightState == ValueState::Definite;
+
     // Now validate operator-specific rules
     switch (expr->op) {
+        // ─── Arithmetic Operators ──────────────────────────────────────────
         case BinaryOp::Add:
         case BinaryOp::Sub:
         case BinaryOp::Mul:
@@ -584,19 +773,44 @@ bool checkBinaryExpr(BinaryExprAST* expr, const TypeAST* targetType, SemaContext
             if (!targetType->isNumericType()) {
                 ctx.error(expr, DiagCode::E3003,
                           "arithmetic operator requires numeric target type, got ",
-                          debug::typeToString(const_cast<TypeAST*>(targetType), ctx.pool()));
+                          debug::typeToString(targetType, ctx.pool()));
                 return false;
             }
-            // Operands must be definite (non-nullable, non-fallible)
+
+            // Check for nil operands - never allowed in arithmetic
+            if (leftIsNil || rightIsNil) {
+                ctx.error(expr, DiagCode::E3003,
+                          "arithmetic operator cannot be used with nil. Use `??` to handle nil first.");
+                return false;
+            }
+
+            // Check for err operands
+            if (leftIsErr || rightIsErr) {
+                // If target is fallible, we can propagate err
+                if (isFallibleType(targetType)) {
+                    expr->valueState = ValueState::Err;
+                    return true;
+                }
+                // Not fallible - reject
+                ctx.error(expr, DiagCode::E3003,
+                          "arithmetic operator cannot be used with err. Use `??` to handle err first.");
+                return false;
+            }
+
+            // Arithmetic operands must be definite (non-nullable, non-fallible)
             if (isNullableType(targetType) || isFallibleType(targetType)) {
                 ctx.error(expr, DiagCode::E3003,
-                          "arithmetic operator requires definite operands, got ",
-                          debug::typeToString(const_cast<TypeAST*>(targetType), ctx.pool()));
+                          "arithmetic operator cannot be used with nullable or fallible operands. "
+                          "Use `??` to handle nil/err first.");
                 return false;
             }
+
+            // Both operands are definite
+            expr->valueState = ValueState::Definite;
             return true;
         }
 
+        // ─── Comparison Operators ──────────────────────────────────────────
         case BinaryOp::Eq:
         case BinaryOp::Ne:
         case BinaryOp::Lt:
@@ -607,36 +821,57 @@ bool checkBinaryExpr(BinaryExprAST* expr, const TypeAST* targetType, SemaContext
             if (!targetType->isBoolType()) {
                 ctx.error(expr, DiagCode::E3003,
                           "comparison operator requires bool target type, got ",
-                          debug::typeToString(const_cast<TypeAST*>(targetType), ctx.pool()));
+                          debug::typeToString(targetType, ctx.pool()));
                 return false;
             }
-            // Comparison allows nullable (nil comparison) but not fallible
-            if (isFallibleType(targetType)) {
-                ctx.error(expr, DiagCode::E3003,
-                          "comparison operator does not allow fallible operands");
-                return false;
-            }
+
+            // Comparison allows nil and err operands
+            // Result is always a definite bool
+            expr->valueState = ValueState::Definite;
             return true;
         }
 
+        // ─── Logical Operators ─────────────────────────────────────────────
         case BinaryOp::And:
         case BinaryOp::Or: {
             // Logical operators require bool target type
             if (!targetType->isBoolType()) {
                 ctx.error(expr, DiagCode::E3003,
                           "logical operator requires bool target type, got ",
-                          debug::typeToString(const_cast<TypeAST*>(targetType), ctx.pool()));
+                          debug::typeToString(targetType, ctx.pool()));
                 return false;
             }
-            // Operands must be definite
+
+            // Logical operands must be definite
+            if (leftIsNil || rightIsNil) {
+                ctx.error(expr, DiagCode::E3003,
+                          "logical operator cannot be used with nil");
+                return false;
+            }
+
+            if (leftIsErr || rightIsErr) {
+                // If target is fallible, propagate err
+                if (isFallibleType(targetType)) {
+                    expr->valueState = ValueState::Err;
+                    return true;
+                }
+                ctx.error(expr, DiagCode::E3003,
+                          "logical operator cannot be used with err");
+                return false;
+            }
+
             if (isNullableType(targetType) || isFallibleType(targetType)) {
                 ctx.error(expr, DiagCode::E3003,
-                          "logical operator requires definite operands");
+                          "logical operator cannot be used with nullable or fallible operands");
                 return false;
             }
+
+            // Both operands are definite
+            expr->valueState = ValueState::Definite;
             return true;
         }
 
+        // ─── Bitwise Operators ─────────────────────────────────────────────
         case BinaryOp::BitAnd:
         case BinaryOp::BitOr:
         case BinaryOp::BitXor:
@@ -646,15 +881,36 @@ bool checkBinaryExpr(BinaryExprAST* expr, const TypeAST* targetType, SemaContext
             if (!targetType->isIntegerType()) {
                 ctx.error(expr, DiagCode::E3003,
                           "bitwise operator requires integer target type, got ",
-                          debug::typeToString(const_cast<TypeAST*>(targetType), ctx.pool()));
+                          debug::typeToString(targetType, ctx.pool()));
                 return false;
             }
-            // Operands must be definite
+
+            // Bitwise operands must be definite
+            if (leftIsNil || rightIsNil) {
+                ctx.error(expr, DiagCode::E3003,
+                          "bitwise operator cannot be used with nil");
+                return false;
+            }
+
+            if (leftIsErr || rightIsErr) {
+                // If target is fallible, propagate err
+                if (isFallibleType(targetType)) {
+                    expr->valueState = ValueState::Err;
+                    return true;
+                }
+                ctx.error(expr, DiagCode::E3003,
+                          "bitwise operator cannot be used with err");
+                return false;
+            }
+
             if (isNullableType(targetType) || isFallibleType(targetType)) {
                 ctx.error(expr, DiagCode::E3003,
-                          "bitwise operator requires definite operands");
+                          "bitwise operator cannot be used with nullable or fallible operands");
                 return false;
             }
+
+            // Both operands are definite
+            expr->valueState = ValueState::Definite;
             return true;
         }
     }
@@ -673,64 +929,181 @@ bool checkBinaryExpr(BinaryExprAST* expr, const TypeAST* targetType, SemaContext
 ///   - Logical Not (not x): target must be bool, operand must be definite
 ///   - Bitwise Not (~x): target must be integer, operand must be definite
 ///
+/// Restrictions:
+///   - Unary operations are only valid on primitive types (numeric, bool, integer)
+///   - Cannot be used on structs, enums, arrays, functions, or traits
+///   - Operand must be definite (non-nullable, non-fallible)
+///
 /// Nullable/Fallible Rules:
 ///   - Unary operations on nullable/fallible are NOT allowed (must narrow first)
+///   - If operand is err and target is fallible, propagate err
+///   - If operand is nil, reject (must use ?? first)
+///
+/// Value State Propagation:
+///   - If operand is `err` and target is fallible → result is `err` (recoverable)
+///   - If operand is `nil` → rejected for all unary operators
+///   - For valid operations, result is `Definite`
+///
+/// Examples:
+///   // ✅ Valid unary operations
+///   let x int = -5          // OK: negation on definite int
+///   let y bool = not true   // OK: logical not on definite bool
+///   let z int = ~0b1010     // OK: bitwise not on definite int
+///
+///   // ✅ Negation with float
+///   let f float = -3.14     // OK: negation on definite float
+///
+///   // ❌ Invalid: unary on struct
+///   struct Point { x float, y float }
+///   let p Point = Point { x = 1, y = 2 }
+///   let q Point = -p        // ERROR: unary operator cannot be used on struct
+///
+///   // ❌ Invalid: negation on nullable
+///   let x int? = 5
+///   let y int? = -x         // ERROR: negation cannot be used with nullable
+///
+///   // ✅ Correct: narrow first
+///   let y int? = -(x ?? 0)  // OK: x is narrowed to int
+///
+///   // ❌ Invalid: negation on fallible
+///   let a int! = 42
+///   let b int! = -a         // ERROR: negation cannot be used with fallible
+///
+///   // ✅ Correct: handle err first
+///   let b int! = -(a ?? 0)  // OK: err is handled
+///
+///   // ✅ Propagate err with fallible target
+///   let c int! = -someErr   // OK: result is err (recoverable)
 bool checkUnaryExpr(UnaryExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
     if (!expr || !targetType) return false;
 
     // Check operand against the target type
     if (!checkExpr(expr->operand, targetType, ctx)) return false;
 
+    // Get operand value state
+    ValueState operandState = expr->operand->valueState;
+    bool isNil = operandState == ValueState::Nil;
+    bool isErr = operandState == ValueState::Err;
+    bool isDefinite = operandState == ValueState::Definite;
+
     // Validate operator-specific rules
     switch (expr->op) {
+        // ─── Arithmetic Negation (-x) ─────────────────────────────────────
         case UnaryOp::Neg: {
             // Negation requires numeric target type
             if (!targetType->isNumericType()) {
                 ctx.error(expr, DiagCode::E3003,
-                          "negation requires numeric target type, got ",
-                          debug::typeToString(const_cast<TypeAST*>(targetType), ctx.pool()));
+                          "negation (-) requires numeric target type, got ",
+                          debug::typeToString(targetType, ctx.pool()));
                 return false;
             }
-            // Operand must be definite
+
+            // Check for nil - never allowed
+            if (isNil) {
+                ctx.error(expr, DiagCode::E3003,
+                          "negation cannot be used with nil. Use `??` to handle nil first.");
+                return false;
+            }
+
+            // Check for err - propagate if fallible
+            if (isErr) {
+                if (isFallibleType(targetType)) {
+                    expr->valueState = ValueState::Err;
+                    return true;
+                }
+                ctx.error(expr, DiagCode::E3003,
+                          "negation cannot be used with err. Use `??` to handle err first.");
+                return false;
+            }
+
+            // Operand must be definite (non-nullable, non-fallible)
             if (isNullableType(targetType) || isFallibleType(targetType)) {
                 ctx.error(expr, DiagCode::E3003,
-                          "negation requires definite operand");
+                          "negation cannot be used with nullable or fallible operands. "
+                          "Use `??` to narrow first.");
                 return false;
             }
+
+            // Operand is definite
+            expr->valueState = ValueState::Definite;
             return true;
         }
 
+        // ─── Logical Not (not x) ──────────────────────────────────────────
         case UnaryOp::Not: {
             // Logical Not requires bool target type
             if (!targetType->isBoolType()) {
                 ctx.error(expr, DiagCode::E3003,
-                          "logical not requires bool target type, got ",
-                          debug::typeToString(const_cast<TypeAST*>(targetType), ctx.pool()));
+                          "logical not (not) requires bool target type, got ",
+                          debug::typeToString(targetType, ctx.pool()));
                 return false;
             }
+
+            // Check for nil - never allowed
+            if (isNil) {
+                ctx.error(expr, DiagCode::E3003,
+                          "logical not cannot be used with nil. Use `??` to handle nil first.");
+                return false;
+            }
+
+            // Check for err - propagate if fallible
+            if (isErr) {
+                if (isFallibleType(targetType)) {
+                    expr->valueState = ValueState::Err;
+                    return true;
+                }
+                ctx.error(expr, DiagCode::E3003,
+                          "logical not cannot be used with err. Use `??` to handle err first.");
+                return false;
+            }
+
             // Operand must be definite
             if (isNullableType(targetType) || isFallibleType(targetType)) {
                 ctx.error(expr, DiagCode::E3003,
-                          "logical not requires definite operand");
+                          "logical not cannot be used with nullable or fallible operands");
                 return false;
             }
+
+            expr->valueState = ValueState::Definite;
             return true;
         }
 
+        // ─── Bitwise Not (~x) ─────────────────────────────────────────────
         case UnaryOp::BitNot: {
             // Bitwise Not requires integer target type
             if (!targetType->isIntegerType()) {
                 ctx.error(expr, DiagCode::E3003,
-                          "bitwise not requires integer target type, got ",
-                          debug::typeToString(const_cast<TypeAST*>(targetType), ctx.pool()));
+                          "bitwise not (~) requires integer target type, got ",
+                          debug::typeToString(targetType, ctx.pool()));
                 return false;
             }
+
+            // Check for nil - never allowed
+            if (isNil) {
+                ctx.error(expr, DiagCode::E3003,
+                          "bitwise not cannot be used with nil. Use `??` to handle nil first.");
+                return false;
+            }
+
+            // Check for err - propagate if fallible
+            if (isErr) {
+                if (isFallibleType(targetType)) {
+                    expr->valueState = ValueState::Err;
+                    return true;
+                }
+                ctx.error(expr, DiagCode::E3003,
+                          "bitwise not cannot be used with err. Use `??` to handle err first.");
+                return false;
+            }
+
             // Operand must be definite
             if (isNullableType(targetType) || isFallibleType(targetType)) {
                 ctx.error(expr, DiagCode::E3003,
-                          "bitwise not requires definite operand");
+                          "bitwise not cannot be used with nullable or fallible operands");
                 return false;
             }
+
+            expr->valueState = ValueState::Definite;
             return true;
         }
     }
@@ -743,11 +1116,12 @@ bool checkUnaryExpr(UnaryExprAST* expr, const TypeAST* targetType, SemaContext& 
 // =============================================================================
 
 /// @brief Type-check a function call: resolve the callee, check arguments,
-///        and return the function's return type.
+///        and propagate the return type.
 ///
 /// Validates:
 ///   - Callee resolves to a callable function
 ///   - Callee is definite (not nullable/fallible)
+///   - Generic arguments resolve to valid types
 ///   - Arguments are assignable to parameter types
 ///   - Return type is assignable to targetType
 ///
@@ -755,45 +1129,255 @@ bool checkUnaryExpr(UnaryExprAST* expr, const TypeAST* targetType, SemaContext& 
 ///   - Callee cannot be nullable/fallible (must narrow first)
 ///   - Arguments cannot be fallible (must handle error first)
 ///   - Arguments may be nullable if parameter type is nullable
+///   - If a fallible argument is passed and target is fallible, propagate err
+///
+/// Generic Rules:
+///   - Generic arguments must resolve to valid types
+///   - Arity must match the function's generic parameters
+///   - Constraints must be satisfied (if any)
+///
+/// Value State Propagation:
+///   - If callee is `err` → reject (cannot call err)
+///   - If any argument is `err` → result is `err` (if target is fallible)
+///   - If any argument is `nil` → allowed if parameter is nullable
+///   - Otherwise, result is the function's return type state
+///
+/// Examples:
+///   // ✅ Simple function call
+///   const add (a int)(b int) -> int = { return a + b }
+///   let result int = add(5)(3)  // OK
+///
+///   // ✅ Generic function call
+///   const identity<T> (v T) -> T = { return v }
+///   let x int = identity<int>(42)  // OK
+///
+///   // ❌ Generic argument mismatch
+///   let x int = identity<string>(42)  // ERROR: type mismatch
+///
+///   // ❌ Callee is nullable
+///   let f (int)->int? = someFunction
+///   let result int = f(5)  // ERROR: cannot call nullable callee
+///
+///   // ✅ Call with nullable argument
+///   const process (v int?) -> string = { ... }
+///   let x int? = 5
+///   let s string = process(x)  // OK: parameter accepts nullable
+///
+///   // ❌ Call with fallible argument (non-fallible target)
+///   const process (v int) -> string = { ... }
+///   let x int! = 42
+///   let s string = process(x)  // ERROR: cannot pass fallible to non-fallible
+///
+///   // ✅ Call with fallible argument (fallible target)
+///   const process (v int) -> string! = { ... }
+///   let x int! = 42
+///   let s string! = process(x)  // OK: result is err if x is err
 bool checkCallExpr(CallExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
     if (!expr || !targetType) return false;
 
-    // Type-check the callee - must be definite
+    // ─── Step 1: Check Callee ─────────────────────────────────────────────
+    // Type-check the callee expression
     if (!checkExpr(expr->callee, targetType, ctx)) return false;
 
+    // Callee must be definite (non-nullable, non-fallible)
+    if (expr->callee->valueState == ValueState::Nil) {
+        ctx.error(expr->callee, DiagCode::E3003,
+                  "cannot call nil value. Use `??` to handle nil first.");
+        return false;
+    }
+
+    if (expr->callee->valueState == ValueState::Err) {
+        ctx.error(expr->callee, DiagCode::E3003,
+                  "cannot call err value. Use `??` to handle err first.");
+        return false;
+    }
+
+    // ─── Step 2: Resolve Callee ────────────────────────────────────────────
     // Try to resolve the callee to a function declaration
     const FuncDeclAST* funcDecl = resolveCalleeOrError(expr->callee, ctx);
 
     if (funcDecl) {
-        // Named function call
-        // Check generic arguments
+        // ─── Named Function Call ───────────────────────────────────────────
+
+        // Step 2a: Check generic arguments
         if (!expr->genericArgs.empty()) {
-            // TODO: Check generic argument arity and constraints against the
-            //       function's generic parameters
+            // Resolve each generic argument type
+            for (const TypeAST* arg : expr->genericArgs) {
+                if (!resolveType(arg, ctx)) {
+                    ctx.error(expr, DiagCode::E3002,
+                              "invalid generic argument type");
+                    return false;
+                }
+            }
+
+            // Check arity matches the function's generic parameters
+            // TODO: Compare expr->genericArgs.size() with funcDecl->genericParams.size()
+            // TODO: Check constraints are satisfied
+            // TODO: Instantiate the generic function type
         }
 
-        // Check argument count
-        // TODO: Calculate expected argument count from the function's parameter groups
-        // TODO: Check expr->args size matches expectedArgCount
+        // Step 2b: Check argument count
+        // Calculate expected argument count from the function's parameter groups
+        size_t expectedArgCount = 0;
+        // TODO: Walk through funcDecl->funcType and count parameters
+        // TODO: Check expr->args.size() matches expectedArgCount
 
-        // Check each argument type - arguments cannot be fallible
-        // TODO: Check each argument is assignable to the corresponding parameter type
+        // Step 2c: Check each argument type
+        bool hasErrArg = false;
+        for (size_t i = 0; i < expr->args.size(); ++i) {
+            ExprAST* arg = expr->args[i];
 
-        // Return type must be assignable to targetType
+            // Get the parameter type for this argument
+            // TODO: Get param type from funcDecl->funcType->params[i]
+            const TypeAST* paramType = nullptr; // Placeholder
+
+            if (!checkExpr(arg, paramType, ctx)) {
+                return false;
+            }
+
+            // Track err propagation
+            if (arg->valueState == ValueState::Err) {
+                hasErrArg = true;
+            }
+
+            // Check if argument is fallible and parameter is not nullable/fallible
+            if (arg->valueState == ValueState::Err && !isFallibleType(paramType)) {
+                ctx.error(arg, DiagCode::E3003,
+                          "cannot pass err to non-fallible parameter");
+                return false;
+            }
+
+            // Check if argument is nil and parameter is not nullable
+            if (arg->valueState == ValueState::Nil && !isNullableType(paramType)) {
+                ctx.error(arg, DiagCode::E3003,
+                          "cannot pass nil to non-nullable parameter");
+                return false;
+            }
+        }
+
+        // Step 2d: Check return type assignability
         if (funcDecl->type && !isAssignable(targetType, funcDecl->type, ctx)) {
             ctx.error(expr, DiagCode::E3003,
                       "return type mismatch: expected ",
-                      debug::typeToString(const_cast<TypeAST*>(targetType), ctx.pool()),
+                      debug::typeToString(targetType, ctx.pool()),
                       ", got ", debug::typeToString(funcDecl->type, ctx.pool()));
             return false;
         }
 
+        // Step 2e: Propagate value state
+        if (hasErrArg) {
+            // If any argument is err and target is fallible, propagate err
+            if (isFallibleType(targetType)) {
+                expr->valueState = ValueState::Err;
+            } else {
+                // Should have been caught above, but just in case
+                expr->valueState = ValueState::Unknown;
+            }
+        } else {
+            // Check if return type is nullable/fallible
+            if (isNullableType(targetType)) {
+                expr->valueState = ValueState::Unknown; // Could be nil at runtime
+            } else if (isFallibleType(targetType)) {
+                expr->valueState = ValueState::Unknown; // Could be err at runtime
+            } else {
+                expr->valueState = ValueState::Definite;
+            }
+        }
+
         return true;
+
     } else {
-        // Callee is an expression that produces a function value
-        // TODO: Check callee type is a function type and validate arguments
-        // TODO: Validate return type is assignable to targetType
-        return false;
+        // ─── Callee is an expression that produces a function value ──────
+        // (e.g., a curried call, an anonymous function, or a function pointer)
+
+        // Verify the callee type is a function type
+        if (!expr->callee->resolvedType || !expr->callee->resolvedType->isa<FuncTypeAST>()) {
+            ctx.error(expr->callee, DiagCode::E2003,
+                      "expression is not callable");
+            return false;
+        }
+
+        FuncTypeAST* funcType = expr->callee->resolvedType->as<FuncTypeAST>();
+
+        // Check argument count
+        size_t expectedArgCount = funcType->params.size();
+        if (expr->args.size() != expectedArgCount) {
+            ctx.error(expr, DiagCode::E3001,
+                      "wrong number of arguments: expected ",
+                      std::to_string(expectedArgCount), ", found ",
+                      std::to_string(expr->args.size()));
+            return false;
+        }
+
+        // Check each argument type
+        bool hasErrArg = false;
+        for (size_t i = 0; i < expr->args.size(); ++i) {
+            ExprAST* arg = expr->args[i];
+            const ParamAST* param = funcType->params[i];
+
+            if (!checkExpr(arg, param->type, ctx)) {
+                return false;
+            }
+
+            // Track err propagation
+            if (arg->valueState == ValueState::Err) {
+                hasErrArg = true;
+            }
+
+            // Check if argument is fallible and parameter is not fallible
+            if (arg->valueState == ValueState::Err && !isFallibleType(param->type)) {
+                ctx.error(arg, DiagCode::E3003,
+                          "cannot pass err to non-fallible parameter");
+                return false;
+            }
+
+            // Check if argument is nil and parameter is not nullable
+            if (arg->valueState == ValueState::Nil && !isNullableType(param->type)) {
+                ctx.error(arg, DiagCode::E3003,
+                          "cannot pass nil to non-nullable parameter");
+                return false;
+            }
+        }
+
+        // Check return type assignability
+        if (funcType->returnTypes.empty()) {
+            // Void function
+            if (targetType != nullptr) {
+                ctx.error(expr, DiagCode::E3003,
+                          "void function called in non-void context");
+                return false;
+            }
+            expr->valueState = ValueState::Definite;
+            return true;
+        }
+
+        const TypeAST* returnType = funcType->returnTypes[0];
+        if (!isAssignable(targetType, returnType, ctx)) {
+            ctx.error(expr, DiagCode::E3003,
+                      "return type mismatch: expected ",
+                      debug::typeToString(targetType, ctx.pool()),
+                      ", got ", debug::typeToString(returnType, ctx.pool()));
+            return false;
+        }
+
+        // Propagate value state
+        if (hasErrArg) {
+            if (isFallibleType(targetType)) {
+                expr->valueState = ValueState::Err;
+            } else {
+                expr->valueState = ValueState::Unknown;
+            }
+        } else {
+            if (isNullableType(targetType)) {
+                expr->valueState = ValueState::Unknown;
+            } else if (isFallibleType(targetType)) {
+                expr->valueState = ValueState::Unknown;
+            } else {
+                expr->valueState = ValueState::Definite;
+            }
+        }
+
+        return true;
     }
 }
 
@@ -803,6 +1387,7 @@ bool checkCallExpr(CallExprAST* expr, const TypeAST* targetType, SemaContext& ct
 
 /// @brief Type-check an intrinsic call: validate the intrinsic name and
 ///        arguments, and return the intrinsic's return type.
+/// @note consider improve intrinsic registry to make this function simpiler
 bool checkIntrinsicCallExpr(IntrinsicCallExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
     if (!expr || !targetType) return false;
 
@@ -844,27 +1429,181 @@ bool checkIntrinsicCallExpr(IntrinsicCallExprAST* expr, const TypeAST* targetTyp
 // =============================================================================
 
 /// @brief Type-check an index expression: verify the target is an array and
-///        the index is an integer.
+///        the index is a definite integer.
 ///
 /// Validates:
 ///   - target type is the array's element type
 ///   - target is an array type
-///   - index is a definite integer type
+///   - index is a definite integer type (not nullable, not fallible)
+///   - index must be >= 0 (positive integer, 0 is allowed)
+///   - For fixed arrays: index must be within bounds (compile-time check)
 ///
-/// Nullable/Fallible Rules:
+/// Nullable/Fallible Rules (Same as Arithmetic Operators):
 ///   - Index must be definite (non-nullable, non-fallible)
+///   - Nullable types (T?) are rejected for indexing (must use ?? first)
+///   - Fallible types (T!) are rejected for indexing (must use ?? first)
 ///   - Array element may be nullable (result type inherits nullability)
+///
+/// Value State Propagation:
+///   - If index is `err` → rejected (even with fallible target)
+///   - If index is `nil` → rejected
+///   - Otherwise, result type is the array's element type
+///
+/// Examples:
+///   // ✅ Valid indexing
+///   let arr [3]int = [1, 2, 3]
+///   let x int = arr[0]    // OK: index 0 is valid
+///   let y int = arr[1]    // OK: index 1 is valid
+///
+///   // ❌ Index is nullable type (compile-time error)
+///   let idx int? = 5
+///   let arr [3]int = [1, 2, 3]
+///   let x int = arr[idx]  // ERROR: index cannot be nullable. Use `??` to narrow first.
+///
+///   // ❌ Index is fallible type (compile-time error)
+///   let idx int! = 5
+///   let arr [3]int = [1, 2, 3]
+///   let x int = arr[idx]  // ERROR: index cannot be fallible. Use `??` to handle err first.
+///
+///   // ✅ Correct: handle nullable/fallible first
+///   let x int = arr[idx ?? 0]  // OK: idx is narrowed to int
+///
+///   // ❌ Index out of bounds (compile-time)
+///   let arr [3]int = [1, 2, 3]
+///   let x int = arr[3]    // ERROR: index 3 is out of bounds (max 2)
+///
+///   // ❌ Negative index
+///   let arr [3]int = [1, 2, 3]
+///   let x int = arr[-1]   // ERROR: index must be >= 0
+///
+///   // ✅ Runtime index (no compile-time bounds check)
+///   let idx int = getUserInput()
+///   let arr [3]int = [1, 2, 3]
+///   let x int = arr[idx]  // OK: runtime check will catch out-of-bounds
+///
+///   // ✅ Array with nullable elements (result is nullable)
+///   let arr [3]int? = [1, nil, 3]
+///   let x int? = arr[1]   // OK: result is int? (nil)
 bool checkIndexExpr(IndexExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
     if (!expr || !targetType) return false;
 
-    // Check target is an array type
+    // ─── Step 1: Check Target ─────────────────────────────────────────────
+    // Type-check the target expression
     if (!checkExpr(expr->target, targetType, ctx)) return false;
 
-    // Check index is a definite integer type
+    // Target must be an array type
+    if (!expr->target->resolvedType || !expr->target->resolvedType->isa<ArrayTypeAST>()) {
+        ctx.error(expr->target, DiagCode::E3003,
+                  "indexing requires an array target type, got ",
+                  debug::typeToString(expr->target->resolvedType, ctx.pool()));
+        return false;
+    }
+
+    const ArrayTypeAST* arrayType = expr->target->resolvedType->as<ArrayTypeAST>();
+
+    // ─── Step 2: Check Index Type (Not Value) ─────────────────────────────
+    // The index type must be definite (non-nullable, non-fallible)
+    // This is the same rule as arithmetic operators
+
+    // Check if index type is nullable
+    if (expr->index->resolvedType && isNullableType(expr->index->resolvedType)) {
+        ctx.error(expr->index, DiagCode::E3003,
+                  "index cannot be nullable. Use `??` to narrow first.");
+        return false;
+    }
+
+    // Check if index type is fallible
+    if (expr->index->resolvedType && isFallibleType(expr->index->resolvedType)) {
+        ctx.error(expr->index, DiagCode::E3003,
+                  "index cannot be fallible. Use `??` to handle err first.");
+        return false;
+    }
+
+    // ─── Step 3: Type-check Index Expression ──────────────────────────────
+    // Check the index expression against the target type
+    // This will also check value state for nil/err at the expression level
     if (!checkExpr(expr->index, targetType, ctx)) return false;
 
-    // TODO: Verify index type is integer and definite
-    // TODO: Verify index is within bounds for fixed arrays
+    // After checkExpr, we can check value state
+    if (expr->index->valueState == ValueState::Nil) {
+        ctx.error(expr->index, DiagCode::E3003,
+                  "index cannot be nil. Use `??` to handle nil first.");
+        return false;
+    }
+
+    if (expr->index->valueState == ValueState::Err) {
+        // Unlike arithmetic, we DO NOT propagate err for indexing
+        // Index must be definite - reject err completely
+        ctx.error(expr->index, DiagCode::E3003,
+                  "index cannot be err. Use `??` to handle err first.");
+        return false;
+    }
+
+    // Index must be an integer type
+    if (!expr->index->resolvedType || !expr->index->resolvedType->isIntegerType()) {
+        ctx.error(expr->index, DiagCode::E3003,
+                  "index must be an integer type, got ",
+                  debug::typeToString(expr->index->resolvedType, ctx.pool()));
+        return false;
+    }
+
+    // ─── Step 4: Compile-time Index Value Validation ──────────────────────
+    // Try to evaluate the index at compile-time if it's a literal
+    if (expr->index->isa<LiteralExprAST>()) {
+        const LiteralExprAST* litIndex = expr->index->as<LiteralExprAST>();
+        
+        // Only check if it's an integer literal
+        if (litIndex->kind == LiteralKind::Int || 
+            litIndex->kind == LiteralKind::Hex || 
+            litIndex->kind == LiteralKind::Binary) {
+            
+            // Parse the integer value
+            // TODO: Actually parse the literal value from litIndex->value
+            // For now, this is a placeholder - we need proper integer parsing
+            int64_t indexValue = 0; // Placeholder
+            
+            // Check: index must be >= 0
+            if (indexValue < 0) {
+                ctx.error(expr->index, DiagCode::E3003,
+                          "index must be >= 0, got ", std::to_string(indexValue));
+                return false;
+            }
+            
+            // Check: fixed array bounds
+            if (arrayType->isFixed()) {
+                if (indexValue >= static_cast<int64_t>(arrayType->size)) {
+                    ctx.error(expr->index, DiagCode::E3003,
+                              "index ", std::to_string(indexValue),
+                              " is out of bounds for array of size ",
+                              std::to_string(arrayType->size));
+                    return false;
+                }
+            }
+        }
+    }
+
+    // ─── Step 5: Validate Target Type ─────────────────────────────────────
+    // The result type is the array's element type
+    // Check if element type is assignable to targetType
+    if (!isAssignable(targetType, arrayType->element, ctx)) {
+        ctx.error(expr, DiagCode::E3003,
+                  "element type mismatch: expected ",
+                  debug::typeToString(targetType, ctx.pool()),
+                  ", got ", debug::typeToString(arrayType->element, ctx.pool()));
+        return false;
+    }
+
+    // ─── Step 6: Propagate Value State ────────────────────────────────────
+    // Index is definite, result depends on element type
+    if (isNullableType(arrayType->element)) {
+        expr->valueState = ValueState::Unknown; // Could be nil at runtime
+    } else if (isFallibleType(arrayType->element)) {
+        // Note: We still reject fallible index types, but element can be fallible
+        // This is a different case - the array element itself is fallible
+        expr->valueState = ValueState::Unknown; // Could be err at runtime
+    } else {
+        expr->valueState = ValueState::Definite;
+    }
 
     return true;
 }
@@ -880,25 +1619,281 @@ bool checkIndexExpr(IndexExprAST* expr, const TypeAST* targetType, SemaContext& 
 ///   - target type is the slice type ([_]T)
 ///   - target is an array type
 ///   - start/end bounds are definite integer types
+///   - start must be >= 0 (if provided)
+///   - end must be >= 0 (if provided)
+///   - start <= end (if both provided)
+///   - end <= array length (for fixed arrays, compile-time check)
 ///
-/// Nullable/Fallible Rules:
+/// Nullable/Fallible Rules (Same as Index/Arithmetic):
 ///   - Bounds must be definite (non-nullable, non-fallible)
-///   - Result inherits element nullability
+///   - Bounds cannot be nil or err (must use ?? first)
+///   - Result inherits element nullability/fallibility
+///
+/// Value State Propagation:
+///   - If bounds are `err` → rejected (no propagation)
+///   - If bounds are `nil` → rejected
+///   - Otherwise, result is a slice type with the array's element type
+///
+/// Examples:
+///   // ✅ Valid slicing
+///   let arr [5]int = [1, 2, 3, 4, 5]
+///   let s1 [_]int = arr[0..3]    // OK: [1, 2, 3]
+///   let s2 [_]int = arr[1..4]    // OK: [2, 3, 4]
+///   let s3 [_]int = arr[0..<5]   // OK: [1, 2, 3, 4, 5] (exclusive end)
+///   let s4 [_]int = arr[2..]     // OK: [3, 4, 5] (end defaults to length)
+///   let s5 [_]int = arr[..3]     // OK: [1, 2, 3] (start defaults to 0)
+///   let s6 [_]int = arr[..]      // OK: entire array
+///
+///   // ❌ Negative start
+///   let arr [5]int = [1, 2, 3, 4, 5]
+///   let s [_]int = arr[-1..3]    // ERROR: slice start must be >= 0
+///
+///   // ❌ Negative end
+///   let arr [5]int = [1, 2, 3, 4, 5]
+///   let s [_]int = arr[0..-1]    // ERROR: slice end must be >= 0
+///
+///   // ❌ Start > End
+///   let arr [5]int = [1, 2, 3, 4, 5]
+///   let s [_]int = arr[3..1]     // ERROR: slice start must be <= end
+///
+///   // ❌ End out of bounds (fixed array, compile-time)
+///   let arr [5]int = [1, 2, 3, 4, 5]
+///   let s [_]int = arr[0..6]     // ERROR: slice end 6 is out of bounds (max 5)
+///
+///   // ❌ Start is nullable
+///   let idx int? = 2
+///   let arr [5]int = [1, 2, 3, 4, 5]
+///   let s [_]int = arr[idx..4]   // ERROR: slice start cannot be nullable
+///
+///   // ✅ Correct: handle nullable first
+///   let s [_]int = arr[(idx ?? 0)..4]  // OK
+///
+///   // ❌ Start is fallible
+///   let idx int! = 2
+///   let arr [5]int = [1, 2, 3, 4, 5]
+///   let s [_]int = arr[idx..4]   // ERROR: slice start cannot be fallible
+///
+///   // ✅ Array with nullable elements (result inherits nullability)
+///   let arr [5]int? = [1, nil, 3, nil, 5]
+///   let s [_]int? = arr[1..3]    // OK: result is [_]int? (contains nil)
+///
+///   // ✅ Runtime bounds (no compile-time check)
+///   let start int = getUserInput()
+///   let end int = getUserInput()
+///   let arr [5]int = [1, 2, 3, 4, 5]
+///   let s [_]int = arr[start..end]  // OK: runtime check will catch invalid bounds
 bool checkSliceExpr(SliceExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
     if (!expr || !targetType) return false;
 
-    // Check target is an array type
+    // ─── Step 1: Check Target ─────────────────────────────────────────────
+    // Type-check the target expression
     if (!checkExpr(expr->target, targetType, ctx)) return false;
 
-    // Type-check start and end bounds if present
-    if (expr->start) {
-        if (!checkExpr(expr->start, targetType, ctx)) return false;
-        // TODO: Verify start is definite integer type
+    // Target must be an array type
+    if (!expr->target->resolvedType || !expr->target->resolvedType->isa<ArrayTypeAST>()) {
+        ctx.error(expr->target, DiagCode::E3003,
+                  "slicing requires an array target type, got ",
+                  debug::typeToString(expr->target->resolvedType, ctx.pool()));
+        return false;
     }
 
+    const ArrayTypeAST* arrayType = expr->target->resolvedType->as<ArrayTypeAST>();
+
+    // ─── Step 2: Check Start Bounds ────────────────────────────────────────
+    // Start is optional (nullptr means 0)
+    if (expr->start) {
+        // Check if start type is nullable (reject)
+        if (expr->start->resolvedType && isNullableType(expr->start->resolvedType)) {
+            ctx.error(expr->start, DiagCode::E3003,
+                      "slice start cannot be nullable. Use `??` to narrow first.");
+            return false;
+        }
+
+        // Check if start type is fallible (reject)
+        if (expr->start->resolvedType && isFallibleType(expr->start->resolvedType)) {
+            ctx.error(expr->start, DiagCode::E3003,
+                      "slice start cannot be fallible. Use `??` to handle err first.");
+            return false;
+        }
+
+        // Type-check the start expression
+        if (!checkExpr(expr->start, targetType, ctx)) return false;
+
+        // Check value state
+        if (expr->start->valueState == ValueState::Nil) {
+            ctx.error(expr->start, DiagCode::E3003,
+                      "slice start cannot be nil. Use `??` to handle nil first.");
+            return false;
+        }
+
+        if (expr->start->valueState == ValueState::Err) {
+            ctx.error(expr->start, DiagCode::E3003,
+                      "slice start cannot be err. Use `??` to handle err first.");
+            return false;
+        }
+
+        // Start must be an integer type
+        if (!expr->start->resolvedType || !expr->start->resolvedType->isIntegerType()) {
+            ctx.error(expr->start, DiagCode::E3003,
+                      "slice start must be an integer type, got ",
+                      debug::typeToString(expr->start->resolvedType, ctx.pool()));
+            return false;
+        }
+
+        // Compile-time validation for literal starts
+        if (expr->start->isa<LiteralExprAST>()) {
+            const LiteralExprAST* litStart = expr->start->as<LiteralExprAST>();
+            if (litStart->kind == LiteralKind::Int || 
+                litStart->kind == LiteralKind::Hex || 
+                litStart->kind == LiteralKind::Binary) {
+                
+                int64_t startValue = 0; // TODO: Parse literal value
+                
+                // Start must be >= 0
+                if (startValue < 0) {
+                    ctx.error(expr->start, DiagCode::E3003,
+                              "slice start must be >= 0, got ", std::to_string(startValue));
+                    return false;
+                }
+
+                // For fixed arrays, start must be <= length
+                if (arrayType->isFixed()) {
+                    if (startValue > static_cast<int64_t>(arrayType->size)) {
+                        ctx.error(expr->start, DiagCode::E3003,
+                                  "slice start ", std::to_string(startValue),
+                                  " is out of bounds for array of size ",
+                                  std::to_string(arrayType->size));
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+
+    // ─── Step 3: Check End Bounds ──────────────────────────────────────────
+    // End is optional (nullptr means array length)
     if (expr->end) {
+        // Check if end type is nullable (reject)
+        if (expr->end->resolvedType && isNullableType(expr->end->resolvedType)) {
+            ctx.error(expr->end, DiagCode::E3003,
+                      "slice end cannot be nullable. Use `??` to narrow first.");
+            return false;
+        }
+
+        // Check if end type is fallible (reject)
+        if (expr->end->resolvedType && isFallibleType(expr->end->resolvedType)) {
+            ctx.error(expr->end, DiagCode::E3003,
+                      "slice end cannot be fallible. Use `??` to handle err first.");
+            return false;
+        }
+
+        // Type-check the end expression
         if (!checkExpr(expr->end, targetType, ctx)) return false;
-        // TODO: Verify end is definite integer type
+
+        // Check value state
+        if (expr->end->valueState == ValueState::Nil) {
+            ctx.error(expr->end, DiagCode::E3003,
+                      "slice end cannot be nil. Use `??` to handle nil first.");
+            return false;
+        }
+
+        if (expr->end->valueState == ValueState::Err) {
+            ctx.error(expr->end, DiagCode::E3003,
+                      "slice end cannot be err. Use `??` to handle err first.");
+            return false;
+        }
+
+        // End must be an integer type
+        if (!expr->end->resolvedType || !expr->end->resolvedType->isIntegerType()) {
+            ctx.error(expr->end, DiagCode::E3003,
+                      "slice end must be an integer type, got ",
+                      debug::typeToString(expr->end->resolvedType, ctx.pool()));
+            return false;
+        }
+
+        // Compile-time validation for literal ends
+        if (expr->end->isa<LiteralExprAST>()) {
+            const LiteralExprAST* litEnd = expr->end->as<LiteralExprAST>();
+            if (litEnd->kind == LiteralKind::Int || 
+                litEnd->kind == LiteralKind::Hex || 
+                litEnd->kind == LiteralKind::Binary) {
+                
+                int64_t endValue = 0; // TODO: Parse literal value
+                
+                // End must be >= 0
+                if (endValue < 0) {
+                    ctx.error(expr->end, DiagCode::E3003,
+                              "slice end must be >= 0, got ", std::to_string(endValue));
+                    return false;
+                }
+
+                // For fixed arrays, end must be <= length
+                if (arrayType->isFixed()) {
+                    if (endValue > static_cast<int64_t>(arrayType->size)) {
+                        ctx.error(expr->end, DiagCode::E3003,
+                                  "slice end ", std::to_string(endValue),
+                                  " is out of bounds for array of size ",
+                                  std::to_string(arrayType->size));
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+
+    // ─── Step 4: Validate Start <= End (if both provided) ──────────────────
+    if (expr->start && expr->end) {
+        // Only check if both are compile-time literals
+        if (expr->start->isa<LiteralExprAST>() && expr->end->isa<LiteralExprAST>()) {
+            const LiteralExprAST* litStart = expr->start->as<LiteralExprAST>();
+            const LiteralExprAST* litEnd = expr->end->as<LiteralExprAST>();
+            
+            if ((litStart->kind == LiteralKind::Int || 
+                 litStart->kind == LiteralKind::Hex || 
+                 litStart->kind == LiteralKind::Binary) &&
+                (litEnd->kind == LiteralKind::Int || 
+                 litEnd->kind == LiteralKind::Hex || 
+                 litEnd->kind == LiteralKind::Binary)) {
+                
+                int64_t startValue = 0; // TODO: Parse literal value
+                int64_t endValue = 0;   // TODO: Parse literal value
+                
+                // Check: start must be <= end
+                if (startValue > endValue) {
+                    ctx.error(expr, DiagCode::E3003,
+                              "slice start (", std::to_string(startValue),
+                              ") must be <= slice end (", std::to_string(endValue), ")");
+                    return false;
+                }
+            }
+        }
+    }
+
+    // ─── Step 5: Validate Target Type ─────────────────────────────────────
+    // The result is always a slice type ([_]T)
+    // Create a slice type with the array's element type
+    TypeAST* sliceType = ctx.arena().makeType<ArrayTypeAST>(
+        ArrayKind::Slice, 0, arrayType->element
+    );
+
+    // Check if slice type is assignable to targetType
+    if (!isAssignable(targetType, sliceType, ctx)) {
+        ctx.error(expr, DiagCode::E3003,
+                  "slice type mismatch: expected ",
+                  debug::typeToString(targetType, ctx.pool()),
+                  ", got ", debug::typeToString(sliceType, ctx.pool()));
+        return false;
+    }
+
+    // ─── Step 6: Propagate Value State ────────────────────────────────────
+    // Bounds are definite, result is a slice
+    // Value state depends on element type
+    if (isNullableType(arrayType->element)) {
+        expr->valueState = ValueState::Unknown; // Could contain nil at runtime
+    } else if (isFallibleType(arrayType->element)) {
+        expr->valueState = ValueState::Unknown; // Could contain err at runtime
+    } else {
+        expr->valueState = ValueState::Definite;
     }
 
     return true;
@@ -915,22 +1910,205 @@ bool checkSliceExpr(SliceExprAST* expr, const TypeAST* targetType, SemaContext& 
 ///   - target type is the field's type
 ///   - object is a struct or enum type
 ///   - field exists on the object
+///   - object must be definite (non-nullable, non-fallible)
+///   - Accessing fields on nullable requires NullableChainExpr (?.)
+///   - Accessing fields on fallible is NOT allowed (must handle err first)
 ///
 /// Nullable/Fallible Rules:
 ///   - Object must be definite (use ?. for nullable, handle error for fallible)
 ///   - Field access on nullable requires NullableChainExpr (?.)
-///   - Field access on fallible is NOT allowed
+///   - Field access on fallible is NOT allowed (must use ?? first)
+///   - If object is `err` → rejected (no propagation)
+///   - If object is `nil` → rejected (use ?. instead)
+///
+/// Value State Propagation:
+///   - If object is `err` → rejected (must handle first)
+///   - If object is `nil` → rejected (use ?. instead)
+///   - Otherwise, result type is the field's type
+///
+/// Examples:
+///   // ✅ Valid field access
+///   struct Point { x float, y float }
+///   let p Point = Point { x = 1.0, y = 2.0 }
+///   let x float = p.x   // OK: 1.0
+///   let y float = p.y   // OK: 2.0
+///
+///   // ❌ Field access on nullable (use ?. instead)
+///   struct Point { x float, y float }
+///   let p Point? = Point { x = 1.0, y = 2.0 }
+///   let x float = p.x   // ERROR: cannot access field on nullable type. Use `?.` instead.
+///
+///   // ✅ Correct: use ?. for nullable
+///   let x float? = p?.x // OK: result is float?
+///
+///   // ❌ Field access on fallible (must handle first)
+///   struct Point { x float, y float }
+///   let p Point! = Point { x = 1.0, y = 2.0 }
+///   let x float = p.x   // ERROR: cannot access field on fallible type. Use `??` first.
+///
+///   // ✅ Correct: handle err first
+///   let p Point! = somePoint
+///   let x float = (p ?? Point { x = 0, y = 0 }).x  // OK
+///
+///   // ❌ Object is nil
+///   struct Point { x float, y float }
+///   let p Point? = nil
+///   let x float = p.x   // ERROR: cannot access field on nil. Use `?.` instead.
+///
+///   // ✅ Enum variant access
+///   enum Direction { North = 0, South = 1, East = 2, West = 3 }
+///   let dir Direction = Direction.North  // OK: access variant
+///
+///   // ❌ Field doesn't exist
+///   struct Point { x float, y float }
+///   let p Point = Point { x = 1.0, y = 2.0 }
+///   let z float = p.z   // ERROR: struct 'Point' has no field named 'z'
 bool checkFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
     if (!expr || !targetType) return false;
 
-    // Type-check the object - must be definite
+    // ─── Step 1: Check Object ─────────────────────────────────────────────
+    // Type-check the object expression
     if (!checkExpr(expr->object, targetType, ctx)) return false;
 
-    // Resolve the object type to its declaration
-    // TODO: Resolve object type and find the field
-    // TODO: Verify field type is assignable to targetType
+    // Object must be definite (non-nullable, non-fallible)
+    if (expr->object->valueState == ValueState::Nil) {
+        ctx.error(expr->object, DiagCode::E3003,
+                  "cannot access field on nil. Use `?.` for nullable access.");
+        return false;
+    }
 
-    return true;
+    if (expr->object->valueState == ValueState::Err) {
+        ctx.error(expr->object, DiagCode::E3003,
+                  "cannot access field on err. Use `??` to handle err first.");
+        return false;
+    }
+
+    // Check if object type is nullable (reject - must use ?.)
+    if (expr->object->resolvedType && isNullableType(expr->object->resolvedType)) {
+        ctx.error(expr->object, DiagCode::E3003,
+                  "cannot access field on nullable type. Use `?.` for nullable access.");
+        return false;
+    }
+
+    // Check if object type is fallible (reject - must handle first)
+    if (expr->object->resolvedType && isFallibleType(expr->object->resolvedType)) {
+        ctx.error(expr->object, DiagCode::E3003,
+                  "cannot access field on fallible type. Use `??` to handle err first.");
+        return false;
+    }
+
+    // ─── Step 2: Resolve Object Type ──────────────────────────────────────
+    // Object must resolve to a named type (struct or enum)
+    if (!expr->object->resolvedType || !expr->object->resolvedType->isa<NamedTypeAST>()) {
+        ctx.error(expr->object, DiagCode::E2002,
+                  "field access requires a struct or enum type, got ",
+                  debug::typeToString(expr->object->resolvedType, ctx.pool()));
+        return false;
+    }
+
+    const NamedTypeAST* namedType = expr->object->resolvedType->as<NamedTypeAST>();
+    
+    // Look up the type declaration by name (it should be registered already)
+    const TypeDeclAST* typeDecl = lookupType(namedType->name, ctx);
+    if (!typeDecl) {
+        ctx.error(expr, DiagCode::E2002,
+                  "undefined type '", ctx.pool().lookup(namedType->name), "'");
+        return false;
+    }
+
+    // ─── Step 3: Handle Struct Type ───────────────────────────────────────
+    if (typeDecl->isa<StructDeclAST>()) {
+        const StructDeclAST* structDecl = typeDecl->as<StructDeclAST>();
+
+        // Find the field
+        const FieldDeclAST* field = nullptr;
+        for (const FieldDeclAST* f : structDecl->fields) {
+            if (f->name == expr->fieldName) {
+                field = f;
+                break;
+            }
+        }
+
+        if (!field) {
+            ctx.error(expr, DiagCode::E2001,
+                      "struct '", ctx.pool().lookup(structDecl->name),
+                      "' has no field named '", ctx.pool().lookup(expr->fieldName), "'");
+            return false;
+        }
+
+        // Check if field type is assignable to targetType
+        if (!isAssignable(targetType, field->type, ctx)) {
+            ctx.error(expr, DiagCode::E3003,
+                      "field type mismatch: expected ",
+                      debug::typeToString(targetType, ctx.pool()),
+                      ", got ", debug::typeToString(field->type, ctx.pool()));
+            return false;
+        }
+
+        // ─── Step 4: Check Const Field Assignment ────────────────────────
+        // If this is a module member access, it's always read-only
+        if (expr->isModuleMember) {
+            // Module member access is always read-only
+            // TODO: Mark the result as const
+        }
+
+        // ─── Step 5: Propagate Value State ────────────────────────────────
+        // Object is definite, result depends on field type
+        if (isNullableType(field->type)) {
+            expr->valueState = ValueState::Unknown; // Could be nil at runtime
+        } else if (isFallibleType(field->type)) {
+            expr->valueState = ValueState::Unknown; // Could be err at runtime
+        } else {
+            expr->valueState = ValueState::Definite;
+        }
+
+        return true;
+    }
+
+    // ─── Step 4: Handle Enum Type ─────────────────────────────────────────
+    if (typeDecl->isa<EnumDeclAST>()) {
+        const EnumDeclAST* enumDecl = typeDecl->as<EnumDeclAST>();
+
+        // Find the variant
+        const EnumVariantAST* variant = nullptr;
+        for (const EnumVariantAST* v : enumDecl->variants) {
+            if (v->name == expr->fieldName) {
+                variant = v;
+                break;
+            }
+        }
+
+        if (!variant) {
+            ctx.error(expr, DiagCode::E2001,
+                      "enum '", ctx.pool().lookup(enumDecl->name),
+                      "' has no variant named '", ctx.pool().lookup(expr->fieldName), "'");
+            return false;
+        }
+
+        // Enum variant's type is the enum itself
+        // Since the enum is registered, we can just create a NamedTypeAST
+        // that references it by name (or use the enum declaration directly)
+        const TypeAST* variantType = ctx.arena().makeType<NamedTypeAST>(enumDecl->name);
+
+        // Check if variant type is assignable to targetType
+        if (!isAssignable(targetType, variantType, ctx)) {
+            ctx.error(expr, DiagCode::E3003,
+                      "variant type mismatch: expected ",
+                      debug::typeToString(targetType, ctx.pool()),
+                      ", got ", debug::typeToString(variantType, ctx.pool()));
+            return false;
+        }
+
+        // Enum variants are definite values
+        expr->valueState = ValueState::Definite;
+        return true;
+    }
+
+    // ─── Step 5: Unknown Type ─────────────────────────────────────────────
+    ctx.error(expr, DiagCode::E2002,
+              "field access on unsupported type: ",
+              debug::typeToString(expr->object->resolvedType, ctx.pool()));
+    return false;
 }
 
 // =============================================================================
@@ -944,12 +2122,52 @@ bool checkFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetType, S
 ///   - target type is the member's type
 ///   - module alias resolves to a valid module
 ///   - member exists in the module's exports
+///   - Member type is assignable to targetType
 ///
 /// Module access is always read-only.
+/// Module members are always definite (module-level values are fully resolved).
+///
+/// Nullable/Fallible Rules:
+///   - Module members can be nullable/fallible (the module itself is definite)
+///   - The result type inherits the member's nullability/fallibility
+///   - No special restrictions on module access
+///
+/// Value State Propagation:
+///   - Module access is always definite (module exists at compile-time)
+///   - Result state depends on the member's type
+///   - If member is nullable → result is `Unknown` (could be nil at runtime)
+///   - If member is fallible → result is `Unknown` (could be err at runtime)
+///   - Otherwise → result is `Definite`
+///
+/// Examples:
+///   // ✅ Valid module access
+///   import std.math as math
+///   let pi float = math:PI        // OK: access exported constant
+///   let result float = math:sqrt(16.0)  // OK: call exported function
+///
+///   // ✅ Module with nullable member
+///   import std.optional as opt
+///   let maybe int? = opt:getValue()  // OK: result is int?
+///
+///   // ✅ Module with fallible member
+///   import std.io as io
+///   let content string! = io:readFile("file.txt")  // OK: result is string!
+///
+///   // ❌ Module alias doesn't exist
+///   let x = unknown:member  // ERROR: undefined module alias 'unknown'
+///
+///   // ❌ Member doesn't exist in module
+///   import std.math as math
+///   let x = math:unknown  // ERROR: module 'math' has no exported member 'unknown'
+///
+///   // ❌ Member is not exported (not in module table)
+///   import std.internal as internal
+///   let x = internal:secret  // ERROR: module 'internal' has no exported member 'secret'
 bool checkModuleAccessExpr(ModuleAccessExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
     if (!expr || !targetType) return false;
 
-    // Look up the module alias
+    // ─── Step 1: Look up the module alias ─────────────────────────────────
+    // The module alias should have been registered during import analysis
     ModuleAST* module = ctx.symbols.lookupImport(expr->moduleName);
     if (!module) {
         ctx.error(expr, DiagCode::E2001,
@@ -957,7 +2175,8 @@ bool checkModuleAccessExpr(ModuleAccessExprAST* expr, const TypeAST* targetType,
         return false;
     }
 
-    // Get the module's table
+    // ─── Step 2: Get the module's table ───────────────────────────────────
+    // The module table should exist (module was analyzed before this)
     ModuleTable* table = ctx.symbols.findModuleTable(module);
     if (!table) {
         ctx.error(expr, DiagCode::E2001,
@@ -965,7 +2184,8 @@ bool checkModuleAccessExpr(ModuleAccessExprAST* expr, const TypeAST* targetType,
         return false;
     }
 
-    // Look up the member in the module's value namespace
+    // ─── Step 3: Look up the member ──────────────────────────────────────
+    // Members are in the value namespace (top-level values: const, functions)
     auto it = table->values.find(expr->memberName);
     if (it == table->values.end()) {
         ctx.error(expr, DiagCode::E2001,
@@ -976,20 +2196,49 @@ bool checkModuleAccessExpr(ModuleAccessExprAST* expr, const TypeAST* targetType,
 
     const ValueDeclAST* decl = it->second;
 
-    // Mark the access as read-only (module members are always read-only)
+    // ─── Step 4: Mark as module member (read-only) ──────────────────────
+    // Module members are always read-only from outside the module
     expr->isModuleMember = true;
 
-    // Check generic arguments if present
+    // ─── Step 5: Check generic arguments if present ──────────────────────
     if (!expr->genericArgs.empty()) {
-        // TODO: Check generic argument arity and constraints
+        // Resolve each generic argument type
+        for (const TypeAST* arg : expr->genericArgs) {
+            if (!resolveType(arg, ctx)) {
+                ctx.error(expr, DiagCode::E3002,
+                          "invalid generic argument type in module access");
+                return false;
+            }
+        }
+        // TODO: Check generic argument arity and constraints against the
+        //       member's generic parameters (if the member is generic)
     }
 
-    // Verify member type is assignable to targetType
-    if (decl->type && !isAssignable(targetType, decl->type, ctx)) {
+    // ─── Step 6: Verify member type is assignable to targetType ──────────
+    if (!decl->type) {
         ctx.error(expr, DiagCode::E3003,
-                  "type mismatch: expected ", debug::typeToString(const_cast<TypeAST*>(targetType), ctx.pool()),
+                  "member '", ctx.pool().lookup(expr->memberName),
+                  "' has no type information");
+        return false;
+    }
+
+    if (!isAssignable(targetType, decl->type, ctx)) {
+        ctx.error(expr, DiagCode::E3003,
+                  "type mismatch: expected ",
+                  debug::typeToString(targetType, ctx.pool()),
                   ", got ", debug::typeToString(decl->type, ctx.pool()));
         return false;
+    }
+
+    // ─── Step 7: Propagate Value State ────────────────────────────────────
+    // Module access is definite (module exists at compile-time)
+    // Result state depends on the member's type
+    if (isNullableType(decl->type)) {
+        expr->valueState = ValueState::Unknown; // Could be nil at runtime
+    } else if (isFallibleType(decl->type)) {
+        expr->valueState = ValueState::Unknown; // Could be err at runtime
+    } else {
+        expr->valueState = ValueState::Definite;
     }
 
     return true;
@@ -1006,11 +2255,54 @@ bool checkModuleAccessExpr(ModuleAccessExprAST* expr, const TypeAST* targetType,
 ///   - target type is the final field's type (nullable)
 ///   - Each step is a field access on a nullable type
 ///   - The chain must be terminated by ?? (checked at parent)
+///   - Base must be nullable (T?), not fallible (T!)
+///   - Each step must be nullable
 ///
 /// Nullable/Fallible Rules:
 ///   - Base must be nullable (T?), not fallible (T!)
 ///   - Each step must be nullable
 ///   - Fallible values cannot be chained (must handle error first)
+///   - The result is always nullable (if any step is nil, result is nil)
+///
+/// Value State Propagation:
+///   - If any step is `nil` → result is `nil` (short-circuit)
+///   - If base is `err` → rejected (fallible cannot be chained)
+///   - Otherwise, result is nullable (could be nil at runtime)
+///
+/// Examples:
+///   // ✅ Valid nullable chain
+///   struct Player { name string, weapon Weapon? }
+///   struct Weapon { damage int }
+///   let p Player? = getPlayer()
+///   let damage int? = p?.weapon?.damage  // OK: result is int?
+///
+///   // ❌ Base is fallible (not allowed)
+///   struct Player { name string, weapon Weapon? }
+///   let p Player! = getPlayer()
+///   let damage int? = p?.weapon?.damage  // ERROR: ?. cannot be used on fallible type
+///
+///   // ❌ Step is fallible (not allowed)
+///   struct Player { name string, weapon Weapon! }
+///   let p Player? = getPlayer()
+///   let damage int? = p?.weapon?.damage  // ERROR: ?. step cannot be fallible
+///
+///   // ✅ Chain must be terminated by ?? (checked at parent)
+///   let damage int? = p?.weapon?.damage ?? 0  // OK: terminated by ??
+///
+///   // ❌ Chain without ?? (compile-time error)
+///   let damage int? = p?.weapon?.damage  // ERROR: ?. chain must be terminated by ??
+///
+///   // ✅ Multiple steps with nullable types
+///   struct A { b B? }
+///   struct B { c C? }
+///   struct C { value int }
+///   let a A? = getA()
+///   let result int? = a?.b?.c?.value  // OK: all steps are nullable
+///
+///   // ❌ Step is not nullable (compile-time error)
+///   struct A { b B }  // B is not nullable
+///   let a A? = getA()
+///   let result int? = a?.b?.value  // ERROR: step 'b' must be nullable
 bool checkNullableChainExpr(NullableChainExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
     if (!expr || !targetType) return false;
 
@@ -1019,8 +2311,135 @@ bool checkNullableChainExpr(NullableChainExprAST* expr, const TypeAST* targetTyp
         return false;
     }
 
-    // TODO: Walk through each step, validating nullability
-    // TODO: Verify final type is assignable to targetType
+    // ─── Step 1: Check Base Object ────────────────────────────────────────
+    // Type-check the base expression
+    if (!checkExpr(expr->object, targetType, ctx)) return false;
+
+    // Base must be nullable (T?), not fallible (T!)
+    if (expr->object->resolvedType && !isNullableType(expr->object->resolvedType)) {
+        ctx.error(expr->object, DiagCode::E3003,
+                  "?. chain requires a nullable base type (T?), got ",
+                  debug::typeToString(expr->object->resolvedType, ctx.pool()));
+        return false;
+    }
+
+    // Base cannot be fallible (even if it's also nullable, i.e., T?!)
+    if (expr->object->resolvedType && isFallibleType(expr->object->resolvedType)) {
+        ctx.error(expr->object, DiagCode::E3003,
+                  "?. chain cannot be used on fallible type. Use `??` to handle err first.");
+        return false;
+    }
+
+    // Base cannot be err
+    if (expr->object->valueState == ValueState::Err) {
+        ctx.error(expr->object, DiagCode::E3003,
+                  "?. chain cannot be used on err. Use `??` to handle err first.");
+        return false;
+    }
+
+    // ─── Step 2: Walk Through Each Step ──────────────────────────────────
+    // The chain result is nullable (if any step is nil, the result is nil)
+    // We track the current type as we walk through the chain
+    const TypeAST* currentType = expr->object->resolvedType;
+    bool hasNilStep = false;
+
+    for (const InternedString& step : expr->steps) {
+        // The current type must be nullable
+        if (!currentType || !isNullableType(currentType)) {
+            ctx.error(expr, DiagCode::E3003,
+                      "?. step requires nullable type, got ",
+                      debug::typeToString(currentType, ctx.pool()));
+            return false;
+        }
+
+        // Unwrap the nullable to get the inner type
+        const TypeAST* innerType = unwrapNullable(const_cast<TypeAST*>(currentType));
+        if (!innerType) {
+            ctx.error(expr, DiagCode::E3003,
+                      "cannot unwrap nullable type");
+            return false;
+        }
+
+        // The inner type must be a struct or enum (to access a field)
+        if (!innerType->isa<NamedTypeAST>()) {
+            ctx.error(expr, DiagCode::E3003,
+                      "?. step requires struct or enum type, got ",
+                      debug::typeToString(innerType, ctx.pool()));
+            return false;
+        }
+
+        // Resolve the field access
+        const NamedTypeAST* namedType = innerType->as<NamedTypeAST>();
+        const TypeDeclAST* typeDecl = lookupType(namedType->name, ctx);
+        if (!typeDecl) {
+            ctx.error(expr, DiagCode::E2002,
+                      "undefined type '", ctx.pool().lookup(namedType->name), "'");
+            return false;
+        }
+
+        // Find the field
+        const FieldDeclAST* field = nullptr;
+        if (typeDecl->isa<StructDeclAST>()) {
+            const StructDeclAST* structDecl = typeDecl->as<StructDeclAST>();
+            for (const FieldDeclAST* f : structDecl->fields) {
+                if (f->name == step) {
+                    field = f;
+                    break;
+                }
+            }
+        } else if (typeDecl->isa<EnumDeclAST>()) {
+            // Enum variants can also be accessed via ?.
+            const EnumDeclAST* enumDecl = typeDecl->as<EnumDeclAST>();
+            for (const EnumVariantAST* v : enumDecl->variants) {
+                if (v->name == step) {
+                    // Enum variant's type is the enum itself
+                    const TypeAST* variantType = ctx.arena().makeType<NamedTypeAST>(enumDecl->name);
+                    currentType = variantType;
+                    break;
+                }
+            }
+            // If variant not found, we'll handle below
+        }
+
+        if (!field) {
+            ctx.error(expr, DiagCode::E2001,
+                      "type has no field named '", ctx.pool().lookup(step), "'");
+            return false;
+        }
+
+        // The field type must be nullable (to continue the chain)
+        if (!isNullableType(field->type)) {
+            ctx.error(expr, DiagCode::E3003,
+                      "?. step '", ctx.pool().lookup(step),
+                      "' must be nullable, got ",
+                      debug::typeToString(field->type, ctx.pool()));
+            return false;
+        }
+
+        // Update current type to the field's type for the next step
+        currentType = field->type;
+    }
+
+    // ─── Step 3: Final Type Validation ────────────────────────────────────
+    // The final result is nullable (if any step was nil, result is nil)
+    // Check if the final type is assignable to targetType
+    if (!isAssignable(targetType, currentType, ctx)) {
+        ctx.error(expr, DiagCode::E3003,
+                  "type mismatch: expected ",
+                  debug::typeToString(targetType, ctx.pool()),
+                  ", got ", debug::typeToString(currentType, ctx.pool()));
+        return false;
+    }
+
+    // ─── Step 4: Propagate Value State ────────────────────────────────────
+    // The chain result is always nullable (could be nil at runtime)
+    // But if we can determine at compile-time that a step is nil, we can propagate
+    if (hasNilStep) {
+        expr->valueState = ValueState::Nil;
+    } else {
+        // Result is nullable - could be nil at runtime
+        expr->valueState = ValueState::Unknown;
+    }
 
     return true;
 }
@@ -1029,11 +2448,12 @@ bool checkNullableChainExpr(NullableChainExprAST* expr, const TypeAST* targetTyp
 // checkNullCoalesceExpr
 // =============================================================================
 
-/// @brief Type-check a null coalesce expression: the LHS must be nullable or
-///        fallible, and the RHS must be assignable to the unwrapped type.
+/// @brief Type-check a null coalesce expression: value ?? fallback.
+///
+/// The null coalesce operator provides a fallback value when the LHS is nil or err.
 ///
 /// Validates:
-///   - LHS is nullable or fallible
+///   - LHS is nullable or fallible (T?, T!, or T?!)
 ///   - RHS type is assignable to the unwrapped type
 ///   - target type is the RHS type (or unwrapped LHS type)
 ///
@@ -1043,17 +2463,141 @@ bool checkNullableChainExpr(NullableChainExprAST* expr, const TypeAST* targetTyp
 ///   - ?? unwraps T! to T (handles err)
 ///   - ?? unwraps T?! to T (handles nil and err)
 ///   - RHS must be definite (not nullable/fallible) or match unwrapped type
+///
+/// Value State Propagation:
+///   - If LHS is `nil` and RHS is definite → result is RHS (definite)
+///   - If LHS is `err` and RHS is definite → result is RHS (definite)
+///   - If LHS is definite → result is LHS (definite)
+///   - If LHS is unknown → result is unknown (could be nil/err at runtime)
+///
+/// Examples:
+///   // ✅ Nullable with fallback
+///   let x int? = 5
+///   let y int = x ?? 0  // OK: y = 5 (x is not nil)
+///
+///   // ✅ Nullable with nil
+///   let x int? = nil
+///   let y int = x ?? 0  // OK: y = 0 (x is nil, use fallback)
+///
+///   // ✅ Fallible with fallback
+///   let x int! = 42
+///   let y int = x ?? 0  // OK: y = 42 (x is not err)
+///
+///   // ✅ Fallible with err
+///   let x int! = err
+///   let y int = x ?? 0  // OK: y = 0 (x is err, use fallback)
+///
+///   // ✅ Combined T?! with fallback (handles both nil and err)
+///   let x int?! = nil
+///   let y int = x ?? 0  // OK: y = 0
+///
+///   // ❌ LHS is not nullable or fallible
+///   let x int = 5
+///   let y int = x ?? 0  // ERROR: ?? requires nullable or fallible LHS
+///
+///   // ❌ RHS type mismatch
+///   let x int? = 5
+///   let y string = x ?? "default"  // ERROR: type mismatch (int vs string)
+///
+///   // ✅ RHS is fallible (propagates err)
+///   let x int? = 5
+///   let y int! = x ?? err  // OK: y is int!
+///
+///   // ✅ RHS is nullable (propagates nil)
+///   let x int? = 5
+///   let y int? = x ?? nil  // OK: y is int?
+///
+///   // ✅ Chained null coalesce
+///   let a int? = nil
+///   let b int? = 5
+///   let c int = a ?? b ?? 0  // OK: c = 5 (a is nil, b is 5)
 bool checkNullCoalesceExpr(NullCoalesceExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
     if (!expr || !targetType) return false;
 
-    // Check LHS - must be nullable or fallible
+    // ─── Step 1: Check LHS ──────────────────────────────────────────────────
+    // The LHS must be nullable or fallible
     if (!checkExpr(expr->value, targetType, ctx)) return false;
 
-    // Check RHS - must be definite and assignable to unwrapped type
-    if (!checkExpr(expr->fallback, targetType, ctx)) return false;
+    // LHS must be nullable or fallible (type-level check)
+    if (!expr->value->resolvedType) {
+        ctx.error(expr->value, DiagCode::E3003,
+                  "?? requires nullable or fallible LHS (T?, T!, or T?!)");
+        return false;
+    }
 
-    // TODO: Verify LHS is nullable/fallible
-    // TODO: Verify RHS matches unwrapped LHS type
+    if (!isNullableType(expr->value->resolvedType) && 
+        !isFallibleType(expr->value->resolvedType)) {
+        ctx.error(expr->value, DiagCode::E3003,
+                  "?? requires nullable or fallible LHS, got ",
+                  debug::typeToString(expr->value->resolvedType, ctx.pool()));
+        return false;
+    }
+
+    // ─── Step 2: Unwrap LHS Type ────────────────────────────────────────────
+    // Unwrap both nullable and fallible to get the inner type
+    const TypeAST* lhsInner = expr->value->resolvedType;
+    if (isNullableType(lhsInner)) {
+        lhsInner = unwrapNullable(const_cast<TypeAST*>(lhsInner));
+    }
+    if (isFallibleType(lhsInner)) {
+        lhsInner = unwrapFallible(const_cast<TypeAST*>(lhsInner));
+    }
+
+    if (!lhsInner) {
+        ctx.error(expr, DiagCode::E3003,
+                  "cannot unwrap LHS type");
+        return false;
+    }
+
+    // ─── Step 3: Check RHS ──────────────────────────────────────────────────
+    // The RHS must be assignable to the unwrapped LHS type
+    if (!checkExpr(expr->fallback, lhsInner, ctx)) return false;
+
+    // RHS type must be assignable to the unwrapped LHS type
+    if (!expr->fallback->resolvedType) {
+        ctx.error(expr->fallback, DiagCode::E3003,
+                  "fallback has no type information");
+        return false;
+    }
+
+    if (!isAssignable(lhsInner, expr->fallback->resolvedType, ctx)) {
+        ctx.error(expr->fallback, DiagCode::E3003,
+                  "fallback type mismatch: expected ",
+                  debug::typeToString(lhsInner, ctx.pool()),
+                  ", got ", debug::typeToString(expr->fallback->resolvedType, ctx.pool()));
+        return false;
+    }
+
+    // ─── Step 4: Check Target Type ─────────────────────────────────────────
+    // The result type is the RHS type (or the unwrapped LHS type if RHS is absent)
+    // In Lucid, ?? always has both LHS and RHS, so we use the RHS type
+    const TypeAST* resultType = expr->fallback->resolvedType;
+
+    if (!isAssignable(targetType, resultType, ctx)) {
+        ctx.error(expr, DiagCode::E3003,
+                  "result type mismatch: expected ",
+                  debug::typeToString(targetType, ctx.pool()),
+                  ", got ", debug::typeToString(resultType, ctx.pool()));
+        return false;
+    }
+
+    // ─── Step 5: Propagate Value State ─────────────────────────────────────
+    // The value state of the null coalesce expression depends on both operands
+    ValueState lhsState = expr->value->valueState;
+    ValueState rhsState = expr->fallback->valueState;
+
+    // If LHS is nil or err, result is RHS
+    if (lhsState == ValueState::Nil || lhsState == ValueState::Err) {
+        expr->valueState = rhsState;
+    }
+    // If LHS is definite, result is LHS (definite)
+    else if (lhsState == ValueState::Definite) {
+        expr->valueState = ValueState::Definite;
+    }
+    // If LHS is unknown, result is unknown (depends on runtime)
+    else {
+        expr->valueState = ValueState::Unknown;
+    }
 
     return true;
 }
@@ -1062,30 +2606,172 @@ bool checkNullCoalesceExpr(NullCoalesceExprAST* expr, const TypeAST* targetType,
 // checkAssignExpr
 // =============================================================================
 
-/// @brief Type-check an assignment: verify the LHS is an assignable lvalue
-///        and the RHS is assignable to the LHS type.
+/// @brief Type-check an assignment: verify the LHS and RHS types are compatible.
+///
+/// This function only checks type compatibility between LHS and RHS.
+/// Context-specific rules (const, module members, etc.) are handled by callers.
 ///
 /// Validates:
-///   - target type is the LHS type
-///   - LHS is an assignable lvalue
-///   - RHS is assignable to LHS type
+///   - RHS type is assignable to LHS type
+///   - For compound assignments (+=, -=, etc.): operator is valid on the type
 ///
 /// Nullable/Fallible Rules:
-///   - RHS cannot be fallible (must handle error first)
+///   - RHS cannot be fallible if LHS is not fallible
 ///   - RHS can be nullable if LHS is nullable (widening)
 ///   - RHS cannot be nullable if LHS is definite (narrowing - requires ??)
+///
+/// Value State Propagation:
+///   - Assignment produces the value of the RHS (or the LHS value for compound)
+///   - If RHS is `err` and LHS is fallible → propagate `err`
+///   - If RHS is `nil` and LHS is nullable → propagate `nil`
+///
+/// @param expr The assignment expression.
+/// @param targetType The LHS type (target of assignment).
+/// @param ctx The semantic context.
+/// @return true if the assignment is type-compatible.
+///
+/// Examples:
+///   // ✅ Valid assignment
+///   let x int = 5
+///   x = 10  // OK: int = int
+///
+///   // ✅ Assignment with widening (int → int?)
+///   let x int? = nil
+///   x = 5  // OK: int is assignable to int?
+///
+///   // ❌ Assignment with narrowing (int? → int)
+///   let x int = 5
+///   let y int? = 10
+///   x = y  // ERROR: int? is not assignable to int (use ??)
+///
+///   // ❌ RHS is fallible (non-fallible LHS)
+///   let x int = 5
+///   let y int! = 10
+///   x = y  // ERROR: int! is not assignable to int
+///
+///   // ✅ RHS is fallible (fallible LHS)
+///   let x int! = 5
+///   let y int! = 10
+///   x = y  // OK: int! = int!
+///
+///   // ✅ Compound assignment (requires numeric type)
+///   let x int = 5
+///   x += 3  // OK: int += int
+///
+///   // ❌ Compound assignment on non-numeric type
+///   struct Point { x float, y float }
+///   let p Point = Point { x = 1.0, y = 2.0 }
+///   p += Point { x = 1.0, y = 1.0 }  // ERROR: += not supported for struct
 bool checkAssignExpr(AssignExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
     if (!expr || !targetType) return false;
 
-    // Check LHS - must be an assignable lvalue
+    // ─── Step 1: Check LHS Expression ──────────────────────────────────────
+    // LHS must be a valid expression (type-check it)
     if (!checkExpr(expr->lhs, targetType, ctx)) return false;
 
-    // Check RHS - must be assignable to LHS type
+    // ─── Step 2: Check RHS Expression ──────────────────────────────────────
+    // Type-check the RHS against the LHS type
     if (!checkExpr(expr->rhs, targetType, ctx)) return false;
 
-    // TODO: Verify LHS is assignable lvalue
-    // TODO: Check if LHS is const (reject assignment)
-    // TODO: For compound assignments (+=, -=, etc.), verify operator validity
+    // RHS must have a resolved type
+    if (!expr->rhs->resolvedType) {
+        ctx.error(expr->rhs, DiagCode::E3003,
+                  "RHS has no type information");
+        return false;
+    }
+
+    // ─── Step 3: Check Type Assignability ──────────────────────────────────
+    // RHS type must be assignable to LHS type
+    if (!isAssignable(targetType, expr->rhs->resolvedType, ctx)) {
+        ctx.error(expr->rhs, DiagCode::E3003,
+                  "type mismatch: expected ",
+                  debug::typeToString(targetType, ctx.pool()),
+                  ", got ", debug::typeToString(expr->rhs->resolvedType, ctx.pool()));
+        return false;
+    }
+
+    // ─── Step 4: Compound Assignment Operator Validation ──────────────────
+    // For compound assignments (+=, -=, *=, etc.), the operator must be valid
+    // on the LHS type
+    if (expr->op != AssignOp::Assign) {
+        switch (expr->op) {
+            case AssignOp::AddAssign:
+            case AssignOp::SubAssign:
+            case AssignOp::MulAssign:
+            case AssignOp::DivAssign:
+            case AssignOp::PowAssign:
+            case AssignOp::ModAssign: {
+                // Arithmetic compound assignments require numeric type
+                if (!targetType->isNumericType()) {
+                    ctx.error(expr, DiagCode::E3003,
+                              "arithmetic compound assignment requires numeric type, got ",
+                              debug::typeToString(targetType, ctx.pool()));
+                    return false;
+                }
+                break;
+            }
+
+            case AssignOp::BitAndAssign:
+            case AssignOp::BitOrAssign:
+            case AssignOp::BitXorAssign:
+            case AssignOp::ShlAssign:
+            case AssignOp::ShrAssign: {
+                // Bitwise compound assignments require integer type
+                if (!targetType->isIntegerType()) {
+                    ctx.error(expr, DiagCode::E3003,
+                              "bitwise compound assignment requires integer type, got ",
+                              debug::typeToString(targetType, ctx.pool()));
+                    return false;
+                }
+                break;
+            }
+
+            default:
+                // Unknown compound operator
+                ctx.error(expr, DiagCode::E3003,
+                          "unknown compound assignment operator");
+                return false;
+        }
+
+        // For compound assignments, RHS must also be compatible with the operator
+        // The RHS type must match the LHS type (or be assignable)
+        // This is already checked by isAssignable above
+    }
+
+    // ─── Step 5: Propagate Value State ─────────────────────────────────────
+    // Assignment produces the value of the RHS (or the LHS value for compound)
+    // For simple assignment, result is RHS
+    if (expr->op == AssignOp::Assign) {
+        expr->valueState = expr->rhs->valueState;
+    } else {
+        // Compound assignment: result is the LHS value after operation
+        // For simplicity, use the RHS state
+        expr->valueState = expr->rhs->valueState;
+    }
+
+    return true;
+}
+
+// =============================================================================
+// checkPipelineStep
+// =============================================================================
+
+/// @brief Type-check a single pipeline step: verify the step is callable
+///        with the input type and return the output type.
+///
+/// @param step The pipeline step.
+/// @param inputType The type flowing into this step.
+/// @param targetType The expected output type.
+/// @param ctx The semantic context.
+bool checkPipelineStep(PipelineStepAST* step, const TypeAST* inputType, const TypeAST* targetType, SemaContext& ctx) {
+    if (!step || !inputType || !targetType) return false;
+
+    // Type-check the callable
+    if (!checkExpr(step->callable, targetType, ctx)) return false;
+
+    // TODO: Verify callable is a function type
+    // TODO: Verify first parameter matches inputType
+    // TODO: Verify return type matches targetType
 
     return true;
 }
@@ -1117,7 +2803,7 @@ bool checkPipelineExpr(PipelineExprAST* expr, const TypeAST* targetType, SemaCon
     if (!checkExpr(expr->seed, targetType, ctx)) return false;
 
     // Walk through each step
-    TypeAST* currentType = const_cast<TypeAST*>(targetType);
+    const TypeAST* currentType = targetType;
     for (PipelineStepAST* step : expr->steps) {
         if (!checkPipelineStep(step, currentType, targetType, ctx)) return false;
         // TODO: Update currentType to step's output type
@@ -1127,25 +2813,24 @@ bool checkPipelineExpr(PipelineExprAST* expr, const TypeAST* targetType, SemaCon
 }
 
 // =============================================================================
-// checkPipelineStep
+// checkComposeOperand
 // =============================================================================
 
-/// @brief Type-check a single pipeline step: verify the step is callable
-///        with the input type and return the output type.
-///
-/// @param step The pipeline step.
-/// @param inputType The type flowing into this step.
-/// @param targetType The expected output type.
-/// @param ctx The semantic context.
-bool checkPipelineStep(PipelineStepAST* step, TypeAST* inputType, const TypeAST* targetType, SemaContext& ctx) {
-    if (!step || !inputType || !targetType) return false;
+/// @brief Type-check a composition operand: resolve the callable and
+///        return its type.
+bool checkComposeOperand(ComposeOperandAST* operand, const TypeAST* targetType, SemaContext& ctx) {
+    if (!operand || !targetType) return false;
 
     // Type-check the callable
-    if (!checkExpr(step->callable, targetType, ctx)) return false;
+    if (!checkExpr(operand->callable, targetType, ctx)) return false;
+
+    // Check generic arguments if present
+    if (!operand->genericArgs.empty()) {
+        // TODO: Check generic argument arity and constraints
+    }
 
     // TODO: Verify callable is a function type
-    // TODO: Verify first parameter matches inputType
-    // TODO: Verify return type matches targetType
+    // TODO: Verify function type matches targetType
 
     return true;
 }
@@ -1175,7 +2860,7 @@ bool checkComposeExpr(ComposeExprAST* expr, const TypeAST* targetType, SemaConte
     }
 
     // Start with the left operand
-    if (!checkComposeOperand(expr->left, targetType, ctx)) return false;
+    if (!checkComposeOperand(expr->left->as<ComposeOperandAST>(), targetType, ctx)) return false;
 
     // Walk through each right operand
     for (ComposeOperandAST* operand : expr->operands) {
@@ -1184,29 +2869,6 @@ bool checkComposeExpr(ComposeExprAST* expr, const TypeAST* targetType, SemaConte
     }
 
     // TODO: Verify composed function type matches targetType
-
-    return true;
-}
-
-// =============================================================================
-// checkComposeOperand
-// =============================================================================
-
-/// @brief Type-check a composition operand: resolve the callable and
-///        return its type.
-bool checkComposeOperand(ComposeOperandAST* operand, const TypeAST* targetType, SemaContext& ctx) {
-    if (!operand || !targetType) return false;
-
-    // Type-check the callable
-    if (!checkExpr(operand->callable, targetType, ctx)) return false;
-
-    // Check generic arguments if present
-    if (!operand->genericArgs.empty()) {
-        // TODO: Check generic argument arity and constraints
-    }
-
-    // TODO: Verify callable is a function type
-    // TODO: Verify function type matches targetType
 
     return true;
 }

@@ -328,13 +328,27 @@ struct TypeAST : BaseAST {
     explicit TypeAST(ASTKind k) : BaseAST(k) {}
 };
 
+enum class ValueState {
+    Definite,   // Produces a definite value (T)
+    Nil,        // Produces nil (T?)
+    Err,        // Produces err (T!)
+    Unknown,    // Unknown at compile-time (needs runtime evaluation)
+};
+
 struct ExprAST : BaseAST {
     TypeAST* resolvedType = nullptr;
+    ValueState valueState = ValueState::Unknown;  // track value state
     bool isModuleMember   = false;
     bool isConst          = false;
 
     explicit ExprAST(ASTKind k) : BaseAST(k) {}
     bool hasType() const { return resolvedType != nullptr; }
+    
+    // Convenience methods
+    bool isDefinite() const { return valueState == ValueState::Definite; }
+    bool isNil() const { return valueState == ValueState::Nil; }
+    bool isErr() const { return valueState == ValueState::Err; }
+    bool isUnknown() const { return valueState == ValueState::Unknown; }
 };
 
 struct StmtAST : BaseAST {

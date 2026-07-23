@@ -384,6 +384,7 @@ bool checkAssignExpr(AssignExprAST* expr, const TypeAST* targetType, SemaContext
  *   - Steps cannot be fallible functions (must handle error first)
  */
 bool checkPipelineExpr(PipelineExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
+bool checkPipelineStep(PipelineStepAST* step, const TypeAST* inputType, const TypeAST* targetType, SemaContext& ctx);
 
 // ─── Composition ─────────────────────────────────────────────────────────
 
@@ -400,6 +401,7 @@ bool checkPipelineExpr(PipelineExprAST* expr, const TypeAST* targetType, SemaCon
  *   - Nullable functions cannot be composed (must handle first)
  */
 bool checkComposeExpr(ComposeExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
+bool checkComposeOperand(ComposeOperandAST* operand, const TypeAST* targetType, SemaContext& ctx);
 
 // ─── Anonymous Function ──────────────────────────────────────────────────
 

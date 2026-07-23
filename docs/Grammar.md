@@ -2777,11 +2777,28 @@ and indexing being the two built-in cases. Even there, the only way to
 prevent termination is `??` written at the risky expression itself, never a
 handler somewhere else up the call stack.
 
-### Fallible Types
+### Fallible Types (`T!`)
 
 `!` is a postfix fallible, not an infix operator. It carries no payload —
-there is no separate error type to declare. A function either succeeds with
-`T` or fails with the bare `err` sentinel:
+there is no separate error type to declare. A fallible type `T!` holds either 
+`T` or `err`. When an operation fails, it produces `err` instead of panicking.
+
+**Rule:** `err` can only be assigned to a fallible target. 
+Non-fallible targets reject `err` at compile time.
+
+```lucid
+let x int! = 5 + nil   -- ✅ recoverable: err → int!
+let y int  = 5 + nil   -- ❌ non-recoverable error: err → int (not fallible)
+let z int? = 5 + nil   -- ❌ non-recoverable error: err → int? (not fallible)
+```
+
+**Principle:** 
+- `T!` recovers errors → returns `err`
+- `T?` cannot accept `err`
+- `T` cannot accept `err`
+
+Only fallible contexts propagate errors. Non-fallible contexts must 
+handle `err` before use.
 
 ```lucid
 int!    -- holds either int or err
