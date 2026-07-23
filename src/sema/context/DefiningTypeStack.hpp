@@ -24,6 +24,8 @@ namespace sema {
  *
  * Pushed when a pass begins resolving a struct/enum/trait's own
  * internals (fields, variants), popped when it finishes.
+ * 
+ * @note Stores const pointers because AST nodes are read-only.
  */
 class DefiningTypeStack {
 public:
@@ -38,7 +40,7 @@ public:
      *
      * Prefer ScopedTypeDefinition over calling this directly.
      */
-    void beginDefining(TypeDeclAST* decl);
+    void beginDefining(const TypeDeclAST* decl);
 
     /**
      * @brief Mark the current type as finished being defined.
@@ -56,28 +58,28 @@ public:
      * type is the struct's own (still-being-defined) type from a field
      * whose type is some other, already-fully-analyzed type.
      */
-    bool isDefining(TypeDeclAST* decl) const;
+    bool isDefining(const TypeDeclAST* decl) const;
 
     /**
      * @brief Get the innermost type currently being defined.
      * @return The innermost TypeDeclAST, or nullptr if none.
      */
-    TypeDeclAST* current() const;
+    const TypeDeclAST* current() const;
 
     /**
      * @brief Get the stack (for saving/restoring).
      */
-    const std::vector<TypeDeclAST*>& stack() const { return m_stack; }
+    const std::vector<const TypeDeclAST*>& stack() const { return m_stack; }
 
     /**
      * @brief Set the stack (for restoring).
      */
-    void setStack(std::vector<TypeDeclAST*> stack) { m_stack = std::move(stack); }
+    void setStack(std::vector<const TypeDeclAST*> stack) { m_stack = std::move(stack); }
 
 private:
     // ─── Members ─────────────────────────────────────────────────────────
 
-    std::vector<TypeDeclAST*> m_stack;
+    std::vector<const TypeDeclAST*> m_stack;
 };
 
 } // namespace sema

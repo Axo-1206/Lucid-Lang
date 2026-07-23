@@ -2,7 +2,7 @@
  * @file Lookup.cpp
  * @brief Implements all name lookup with proper priority and diagnostics.
  *
- * @architectural_note Lookup Priority (per LUCID_GRAMMAR.md)
+ * @architectural_note Lookup Priority
  *   1. Generic parameters in current scope (highest priority, shadow everything)
  *   2. Value/Type declarations in local scopes (innermost to outermost)
  *   3. Value/Type declarations in module scope (global)
@@ -41,7 +41,7 @@ const ValueDeclAST* lookupValue(InternedString name, SemaContext& ctx) {
     return ctx.symbols.lookupValue(name);
 }
 
-const ValueDeclAST* resolveValueOrError(IdentifierExprAST* expr, SemaContext& ctx) {
+const ValueDeclAST* resolveValueOrError(const IdentifierExprAST* expr, SemaContext& ctx) {
     if (const ValueDeclAST* decl = lookupValue(expr->name, ctx)) {
         return decl;
     }

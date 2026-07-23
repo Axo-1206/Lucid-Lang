@@ -1,15 +1,13 @@
-/**
- * @file TypeCompat.cpp
- * @brief Type comparison, predicates, assignability, and validation.
- *
- * @architectural_note Structural equality over TypeAST
- *   These functions compare TypeAST nodes structurally (same shape,
- *   same payload, recursively). No separate "resolved Type" exists yet.
- *
- * @architectural_note Validation helpers
- *   Additional helpers for const field validation, trait field validation,
- *   reference scoping, and FFI compatibility.
- */
+/// @file TypeCompat.cpp
+/// @brief Type comparison, predicates, assignability, and validation.
+/// 
+/// @architectural_note Structural equality over TypeAST
+///   These functions compare TypeAST nodes structurally (same shape,
+///   same payload, recursively). No separate "resolved Type" exists yet.
+/// 
+/// @architectural_note Validation helpers
+///   Additional helpers for const field validation, trait field validation,
+///   reference scoping, and FFI compatibility.
 
 #include "../Sema.hpp"
 #include "../context/SemaContext.hpp"
@@ -20,11 +18,9 @@ namespace sema {
 // Structural Type Equality
 // =============================================================================
 
-/**
- * @brief Structural equality of two TypeAST nodes.
- *
- * Same shape, same payload, recursively. Not the same pointer.
- */
+/// @brief Structural equality of two TypeAST nodes.
+/// 
+/// Same shape, same payload, recursively. Not the same pointer.
 bool typesEqual(const TypeAST* a, const TypeAST* b) {
     if (a == b) return true;   // Same pointer or both null
     if (!a || !b) return false;
@@ -52,9 +48,6 @@ bool typesEqual(const TypeAST* a, const TypeAST* b) {
         case ASTKind::RefType:
         case ASTKind::PtrType: {
             // All are "one wrapper, one inner type"
-            const auto* wa = static_cast<const TypeAST*>(a);
-            const auto* wb = static_cast<const TypeAST*>(b);
-            // Get inner via as<> then ->inner
             TypeAST* innerA = nullptr;
             TypeAST* innerB = nullptr;
             
@@ -115,37 +108,27 @@ bool typesEqual(const TypeAST* a, const TypeAST* b) {
 // Type Predicates
 // =============================================================================
 
-/**
- * @brief True if type carries nil sentinel (T? or T?!).
- */
+/// @brief True if type carries nil sentinel (T? or T?!).
 bool isNullableType(const TypeAST* type) {
     return type && (type->isa<NullableTypeAST>() || type->isa<CombinedTypeAST>());
 }
 
-/**
- * @brief True if type carries err sentinel (T! or T?!).
- */
+/// @brief True if type carries err sentinel (T! or T?!).
 bool isFallibleType(const TypeAST* type) {
     return type && (type->isa<FallibleTypeAST>() || type->isa<CombinedTypeAST>());
 }
 
-/**
- * @brief True if type is a reference type (&T).
- */
+/// @brief True if type is a reference type (&T).
 bool isReferenceType(const TypeAST* type) {
     return type && type->isa<RefTypeAST>();
 }
 
-/**
- * @brief True if type is a raw pointer (*T).
- */
+/// @brief True if type is a raw pointer (*T).
 bool isPointerType(const TypeAST* type) {
     return type && type->isa<PtrTypeAST>();
 }
 
-/**
- * @brief True if type is a numeric type (integer or float).
- */
+/// @brief True if type is a numeric type (integer or float).
 bool isNumericType(const TypeAST* type) {
     if (!type || !type->isa<PrimitiveTypeAST>()) return false;
     switch (type->as<PrimitiveTypeAST>()->primitiveKind) {
@@ -174,9 +157,7 @@ bool isNumericType(const TypeAST* type) {
     }
 }
 
-/**
- * @brief True if type is an integer type (not float).
- */
+/// @brief True if type is an integer type (not float).
 bool isIntegerType(const TypeAST* type) {
     if (!type || !type->isa<PrimitiveTypeAST>()) return false;
     switch (type->as<PrimitiveTypeAST>()->primitiveKind) {
@@ -202,13 +183,24 @@ bool isIntegerType(const TypeAST* type) {
     }
 }
 
+/// @brief True if type is a float type.
+bool isFloatType(const TypeAST* type) {
+    if (!type || !type->isa<PrimitiveTypeAST>()) return false;
+    switch (type->as<PrimitiveTypeAST>()->primitiveKind) {
+        case PrimitiveKind::Float:
+        case PrimitiveKind::Double:
+        case PrimitiveKind::Decimal:
+            return true;
+        default:
+            return false;
+    }
+}
+
 // =============================================================================
 // Type Unwrapping
 // =============================================================================
 
-/**
- * @brief Strip one layer of ?/?!, return inner type.
- */
+/// @brief Strip one layer of ?/?!, return inner type.
 TypeAST* unwrapNullable(TypeAST* type) {
     if (!type) return type;
     if (type->isa<NullableTypeAST>()) return type->as<NullableTypeAST>()->inner;
@@ -230,15 +222,13 @@ TypeAST* unwrapFallible(TypeAST* type) {
 // Assignability
 // =============================================================================
 
-/**
- * @brief Can a value of type `source` be used where `target` is required?
- *
- * Widening rules:
- *   1. Identical types → true
- *   2. T → T? / T! / T?! → true (widening)
- *   3. T? / T! → T?! → true (combining sentinels)
- *   4. Everything else → false
- */
+/// @brief Can a value of type `source` be used where `target` is required?
+/// 
+/// Widening rules:
+///   1. Identical types → true
+///   2. T → T? / T! / T?! → true (widening)
+///   3. T? / T! → T?! → true (combining sentinels)
+///   4. Everything else → false
 bool isAssignable(const TypeAST* target, const TypeAST* source, SemaContext& ctx) {
     if (!target || !source) return false;
 
@@ -272,47 +262,46 @@ bool isAssignable(const TypeAST* target, const TypeAST* source, SemaContext& ctx
 // Type Validation
 // =============================================================================
 
-/**
- * @brief Validate that a const field's type is not nullable or fallible.
- *
- * From DeclAST.hpp:
- *   A const field may NOT be nullable (T?) or fallible (T!).
- */
-bool validateConstFieldType(TypeAST* type, SemaContext& ctx) {
+/// @brief Validate that a const field's type is not nullable or fallible.
+/// 
+/// From DeclAST.hpp:
+///   A const field may NOT be nullable (T?) or fallible (T!).
+bool validateConstFieldType(const TypeAST* type, SemaContext& ctx) {
     if (isNullableType(type) || isFallibleType(type)) {
+        ctx.error(type, DiagCode::E3004,
+                  "const field cannot be nullable or fallible");
         return false;
     }
     return true;
 }
 
-/**
- * @brief Validate that a trait field is not nullable or fallible.
- *
- * From DeclAST.hpp:
- *   Trait fields must not be nullable or fallible.
- */
-bool validateTraitFieldType(TypeAST* type, SemaContext& ctx) {
+/// @brief Validate that a trait field is not nullable or fallible.
+/// 
+/// From DeclAST.hpp:
+///   Trait fields must not be nullable or fallible.
+bool validateTraitFieldType(const TypeAST* type, SemaContext& ctx) {
     if (isNullableType(type) || isFallibleType(type)) {
+        ctx.error(type, DiagCode::E3004,
+                  "trait field cannot be nullable or fallible");
         return false;
     }
     return true;
 }
 
-/**
- * @brief Validate reference type context (Downward Flow Rule).
- *
- * From TypeAST.hpp:
- *   References (&T) can only appear as:
- *     - Function parameters
- *     - Local variable aliases
- *
- *   Invalid contexts:
- *     - Struct fields (infinite size)
- *     - Array/Slice storage
- *     - Function returns
- */
-bool validateRefContext(RefTypeAST* type, SemaContext& ctx) {
-    TypeDeclAST* currentType = ctx.definingTypes.current();
+
+/// @brief Validate reference type context (Downward Flow Rule).
+/// 
+/// From TypeAST.hpp:
+///   References (&T) can only appear as:
+///     - Function parameters
+///     - Local variable aliases
+/// 
+///   Invalid contexts:
+///     - Struct fields (infinite size)
+///     - Array/Slice storage
+///     - Function returns
+bool validateRefContext(const RefTypeAST* type, SemaContext& ctx) {
+    const TypeDeclAST* currentType = ctx.definingTypes.current();
     
     // Check if we're inside a struct field being defined
     if (currentType && ctx.definingTypes.isDefining(currentType)) {
@@ -331,17 +320,15 @@ bool validateRefContext(RefTypeAST* type, SemaContext& ctx) {
 // FFI Compatibility
 // =============================================================================
 
-/**
- * @brief True if type is legal at an FFI boundary.
- *
- * FFI-compatible types:
- *   - Primitive types (int, float, bool, etc.)
- *   - Raw pointers (*T)
- *   - Void (no return type)
- *   - Structs with FFI-compatible fields
- *   - Enums with FFI-compatible backing types
- */
-bool isValidFFIType(TypeAST* type, SemaContext& ctx) {
+/// @brief True if type is legal at an FFI boundary.
+/// 
+/// FFI-compatible types:
+///   - Primitive types (int, float, bool, etc.)
+///   - Raw pointers (*T)
+///   - Void (no return type)
+///   - Structs with FFI-compatible fields
+///   - Enums with FFI-compatible backing types
+bool isValidFFIType(const TypeAST* type, SemaContext& ctx) {
     if (!type) return true; // void
 
     // Primitives are always valid
@@ -357,13 +344,13 @@ bool isValidFFIType(TypeAST* type, SemaContext& ctx) {
 
     // Named types (structs, enums) must be FFI-compatible
     if (type->isa<NamedTypeAST>()) {
-        NamedTypeAST* named = type->as<NamedTypeAST>();
-        TypeDeclAST* decl = lookupType(named->name, ctx);
+        const NamedTypeAST* named = type->as<NamedTypeAST>();
+        const TypeDeclAST* decl = lookupType(named->name, ctx);
         if (!decl) return false;
 
         if (decl->isa<StructDeclAST>()) {
-            StructDeclAST* structDecl = decl->as<StructDeclAST>();
-            for (FieldDeclAST* field : structDecl->fields) {
+            const StructDeclAST* structDecl = decl->as<StructDeclAST>();
+            for (const FieldDeclAST* field : structDecl->fields) {
                 if (!isValidFFIType(field->type, ctx)) return false;
             }
             return true;

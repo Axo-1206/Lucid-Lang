@@ -14,7 +14,7 @@ namespace sema {
 
 // ─── Push/Pop ────────────────────────────────────────────────────────
 
-void DefiningTypeStack::beginDefining(TypeDeclAST* decl) {
+void DefiningTypeStack::beginDefining(const TypeDeclAST* decl) {
     m_stack.push_back(decl);
 }
 
@@ -26,14 +26,14 @@ void DefiningTypeStack::endDefining() {
 
 // ─── Queries ─────────────────────────────────────────────────────────
 
-bool DefiningTypeStack::isDefining(TypeDeclAST* decl) const {
-    for (TypeDeclAST* d : m_stack) {
+bool DefiningTypeStack::isDefining(const TypeDeclAST* decl) const {
+    for (const TypeDeclAST* d : m_stack) {
         if (d == decl) return true;
     }
     return false;
 }
 
-TypeDeclAST* DefiningTypeStack::current() const {
+const TypeDeclAST* DefiningTypeStack::current() const {
     return m_stack.empty() ? nullptr : m_stack.back();
 }
 

@@ -711,15 +711,8 @@ struct_field    = { attribute_list } IDENTIFIER type [ '=' expr ]
                   (* mutable field by default — same as let *)
                 | { attribute_list } IDENTIFIER 'const' type [ '=' expr ]
                   (* const field — cannot be reassigned after construction.
-                     name then type, optional default value. One rule governs
-                     both: a const field's value must exist by the end of the
-                     struct literal. If a default is declared, the literal may
-                     omit it (falls back to the default) or override it (the
-                     explicit value wins). If no default is declared, the
-                     literal must supply a value — there is nothing to fall
-                     back to. Either way, whatever value the field holds when
-                     construction finishes is fixed for the lifetime of the
-                     value — see Const Fields, below. *)
+                    Similar to const variable declaration, NOTE that the 
+                    initialize value will override the default *)
 
 trait_ref       = IDENTIFIER
                 | IDENTIFIER '<' type_arg { ',' type_arg } '>'

@@ -685,6 +685,7 @@ TypeAST* unwrapFallible(TypeAST* type);
 
 bool isNumericType(const TypeAST* type);
 bool isIntegerType(const TypeAST* type);
+bool isFloatType(const TypeAST* type);
 
 // ─── Type Validation ──────────────────────────────────────────────────────
 

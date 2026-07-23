@@ -297,26 +297,30 @@ void analyzeTraitDecl(const TraitDeclAST* decl, SemaContext& ctx) {
     validateGenericParamUsage(decl, ctx);
 }
 
-/**
- * @brief Register a struct declaration and analyze its fields.
- *
- * REGISTRATION:
- *   - `ctx.symbols.insertType(decl)` - registers in type namespace
- *   - Generic params registered via analyzeGenericParamDecl() BEFORE fields
- *   - Pushes ScopedTypeDefinition for self-reference detection
- *
- * ORDER:
- *   1. Register struct name (for self-reference)
- *   2. Register generic parameters (for use in fields)
- *   3. Push ScopedTypeDefinition
- *   4. Analyze fields (now can find both struct and generic params)
- *   5. Pop ScopedTypeDefinition
- */
+
+/// @brief Register a struct declaration and analyze its fields.
+/// 
+/// REGISTRATION:
+///   - `ctx.symbols.insertType(decl)` - registers in type namespace
+///   - Generic params registered via analyzeGenericParamDecl() BEFORE fields
+///   - Pushes ScopedTypeDefinition for self-reference detection
+/// 
+/// ORDER:
+///   1. Register struct name (for self-reference)
+///   2. Register generic parameters (for use in fields)
+///   3. Push ScopedTypeDefinition
+///   4. Analyze fields (now can find both struct and generic params)
+///   5. Pop ScopedTypeDefinition
+/// 
+/// ERROR RECOVERY:
+///   - Struct is registered even if fields have errors (prevents "unknown type" cascading)
+///   - Field errors are reported but analysis continues
 void analyzeStructDecl(const StructDeclAST* decl, SemaContext& ctx) {
     validateAttributes(decl->attributes, decl, ctx);
 
     // Register struct name BEFORE analyzing fields - enables self-reference
     // (e.g., `next ptr<Node<T>>?` can resolve Node while still being defined)
+    // IMPORTANT: Register even if fields have errors (for better error recovery)
     if (reportTypeRedeclaration(decl, ctx)) {
         return;
     }
@@ -346,20 +350,33 @@ void analyzeStructDecl(const StructDeclAST* decl, SemaContext& ctx) {
             }
         }
 
+        // Resolve the field's type - even if it fails, continue for error recovery
+        // Note: resolveType returns a TypeAST* which may be null on error
+        const_cast<FieldDeclAST*>(field)->type = resolveType(field->type, ctx);
+
         // Check for direct self-reference (would cause infinite size)
-        // This may annotate the field with resolved type info
-        checkRecursiveFieldType(const_cast<FieldDeclAST*>(field), decl, ctx);
+        checkRecursiveFieldType(field, decl, ctx);
 
         // Const fields must not be nullable or fallible
-        if (field->isConst && field->type &&
-            (isNullableType(field->type) || isFallibleType(field->type))) {
-            ctx.error(field, DiagCode::E3004,
-                      "'", ctx.pool().lookup(field->name), "' must not be nullable or fallible");
+        // This is a DECLARATION error, not a usage error
+        if (field->isConst && field->type) {
+            if (isNullableType(field->type) || isFallibleType(field->type)) {
+                ctx.error(field, DiagCode::E3004,
+                          "const field '", ctx.pool().lookup(field->name),
+                          "' must not be nullable or fallible");
+                // Field type is broken, but we continue
+            }
         }
 
         // Check default value type matches the field's type
+        // If field->type is null (from resolution error), skip type checking
+        // but still try to check the expression for other errors
         if (field->defaultVal) {
-            TypeAST* initType = checkExpr(field->defaultVal, ctx);
+            // If field->type is null, we pass nullptr as target type
+            // The expression will still be checked for logical correctness
+            const TypeAST* targetType = field->type ? field->type : nullptr;
+            const TypeAST* initType = checkExpr(field->defaultVal, targetType, ctx);
+            
             if (field->type && initType && !isAssignable(field->type, initType, ctx)) {
                 std::string expected = debug::typeToString(field->type, ctx.pool());
                 std::string actual = debug::typeToString(initType, ctx.pool());
@@ -392,6 +409,21 @@ void analyzeStructDecl(const StructDeclAST* decl, SemaContext& ctx) {
 
     // Verify all generic parameters are used in at least one field type
     validateGenericParamUsage(decl, ctx);
+}
+
+
+void checkRecursiveFieldType(const FieldDeclAST* field, const TypeDeclAST* owner, SemaContext& ctx) {
+    if (!field || !owner) return;
+
+    // If field type is null, we already reported an error, skip self-reference check
+    if (!field->type) return;
+
+    // Check for direct self-reference (infinite size)
+    if (isDirectSelfReference(field->type, owner, ctx)) {
+        ctx.error(field, DiagCode::E3003,
+                  "struct '", ctx.pool().lookup(owner->name),
+                  "' contains a field of its own type directly (would be infinite size)");
+    }
 }
 
 } // namespace sema
