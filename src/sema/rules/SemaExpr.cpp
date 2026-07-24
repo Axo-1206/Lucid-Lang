@@ -2873,10 +2873,6 @@ bool checkComposeExpr(ComposeExprAST* expr, const TypeAST* targetType, SemaConte
     return true;
 }
 
-// =============================================================================
-// checkAnonFuncExpr
-// =============================================================================
-
 /// @brief Type-check an anonymous function expression: resolve its type
 ///        and analyze its body.
 ///
@@ -2887,10 +2883,81 @@ bool checkComposeExpr(ComposeExprAST* expr, const TypeAST* targetType, SemaConte
 bool checkAnonFuncExpr(AnonFuncExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
     if (!expr || !targetType) return false;
 
-    // TODO: Verify targetType is a function type
-    // TODO: Resolve all parameter and return types
-    // TODO: Analyze the body inside a FuncBody context
-    // TODO: Verify body returns the correct type
+    // ─── 1. Verify target type is a function type ─────────────────────────
+    if (!targetType->isa<FuncTypeAST>()) {
+        ctx.error(expr, DiagCode::E3003,
+                  "anonymous function requires a function target type, got ",
+                  debug::typeToString(targetType, ctx.pool()));
+        return false;
+    }
+
+    // ─── 2. Resolve the function type ─────────────────────────────────────
+    // Checks if all parameter and return types exist in scope
+    FuncTypeAST* funcType = const_cast<FuncTypeAST*>(targetType->as<FuncTypeAST>());
+    resolveFuncType(funcType, ctx);
+
+    // ─── 3. Check if the function type matches the expr's funcType ──────
+    // The expr already has a funcType from the parser, ensure it matches
+    if (!typesEqual(funcType, expr->funcType)) {
+        ctx.error(expr, DiagCode::E3003,
+                  "function type mismatch: expected ",
+                  debug::typeToString(funcType, ctx.pool()),
+                  ", got ", debug::typeToString(expr->funcType, ctx.pool()));
+        return false;
+    }
+
+    // ─── 4. Analyze parameters ────────────────────────────────────────────
+    // Parameters are registered in the function's scope
+    // Walk through all curry groups
+    for (FuncTypeAST* group = funcType; group; group = group->getNext()) {
+        for (ParamAST* param : group->params) {
+            analyzeParam(param, ctx);
+        }
+    }
+
+    // ─── 5. Push function context with return requirements ───────────────
+    ctx.contexts.pushAnonFunction(expr, funcType, expr->loc);
+
+    if (!expr->body) {
+        ctx.error(expr, DiagCode::E3003, "anonymous function has no body");
+        ctx.contexts.pop();
+        return false;
+    }
+
+    // ─── 6. Analyze the body ──────────────────────────────────────────────
+    bool bodyReturns = false;
+    if (expr->body->isa<BlockStmtAST>()) {
+        bodyReturns = analyzeBlock(expr->body->as<BlockStmtAST>(), ctx);
+    } else if (expr->body->isa<ReturnStmtAST>()) {
+        bodyReturns = analyzeReturnStmt(expr->body->as<ReturnStmtAST>(), ctx);
+    } else {
+        ctx.error(expr, DiagCode::E3003, 
+                  "anonymous function has invalid body type");
+        ctx.contexts.pop();
+        return false;
+    }
+
+    // ─── 7. Verify return paths ──────────────────────────────────────────
+    // Check if requirements are satisfied
+    if (bodyReturns && !ctx.contexts.returnRequirementsSatisfied()) {
+        ctx.error(expr, DiagCode::E3005,
+                  "anonymous function has missing nested return");
+    }
+
+    // ─── 8. Pop function context ──────────────────────────────────────────
+    ctx.contexts.pop();
+
+    // ─── 9. Set resolved type and value state ────────────────────────────
+    expr->resolvedType = const_cast<TypeAST*>(targetType);
+    
+    // Check if return type is nullable/fallible
+    if (isNullableType(targetType)) {
+        expr->valueState = ValueState::Unknown; // Could be nil at runtime
+    } else if (isFallibleType(targetType)) {
+        expr->valueState = ValueState::Unknown; // Could be err at runtime
+    } else {
+        expr->valueState = ValueState::Definite;
+    }
 
     return true;
 }

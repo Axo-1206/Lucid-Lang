@@ -264,9 +264,11 @@ public:
 /// Non-copyable, non-movable: identity is tied to one specific activation.
 struct ScopedSemanticContext {
     explicit ScopedSemanticContext(SemaContext& ctx, SemanticContext kind,
-                                    BaseAST* node, const SourceLocation& loc)
+                                    const BaseAST* node, const SourceLocation& loc)
         : ctx_(ctx) {
-        ctx_.contexts.push(kind, node, loc);
+        // const_cast is safe here because we only store the node pointer
+        // and never modify the AST node itself through this pointer
+        ctx_.contexts.push(kind, const_cast<BaseAST*>(node), loc);
     }
 
     ~ScopedSemanticContext() {
@@ -295,7 +297,7 @@ private:
 /// 
 /// Non-copyable, non-movable: identity is tied to one specific activation.
 struct ScopedTypeDefinition {
-    explicit ScopedTypeDefinition(SemaContext& ctx, TypeDeclAST* decl)
+    explicit ScopedTypeDefinition(SemaContext& ctx, const TypeDeclAST* decl)
         : ctx_(ctx) {
         ctx_.definingTypes.beginDefining(decl);
     }

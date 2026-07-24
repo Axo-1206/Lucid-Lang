@@ -146,7 +146,7 @@ void analyzeVarDecl(const VarDeclAST* decl, SemaContext& ctx) {
 /// ORDER:
 ///   1. Register function name (for recursion)
 ///   2. Register generic parameters (for use in params/return/body)
-///   3. Push ScopedSemanticContext(FuncBody)
+///   3. Push ScopedSemanticContext(FuncBody) with return requirements
 ///   4. Analyze parameters, return type, and body
 ///   5. Pop context
 ///
@@ -158,125 +158,75 @@ void analyzeFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
     validateAttributes(decl->attributes, decl, ctx);
 
     // ─── 1. Resolve the function type ─────────────────────────────────────
-    // Checks if all parameter and return types exist in scope
     FuncTypeAST* funcType = const_cast<FuncTypeAST*>(decl->funcType);
     resolveFuncType(funcType, ctx);
 
-    // ─── 2. Find the innermost return type ───────────────────────────────
-    // Walk through curried groups to find the final return type
-    FuncTypeAST* innermost = funcType;
-    while (innermost && innermost->isCurried()) {
-        innermost = innermost->getNext();
-    }
-    bool isVoid = (innermost == nullptr || innermost->isVoid());
-
-    // ─── 3. Check redeclaration ───────────────────────────────────────────
-    // Check value redeclaration in current tier only (shadowing is allowed)
+    // ─── 2. Check redeclaration ───────────────────────────────────────────
     if (reportValueRedeclaration(decl, ctx)) {
         return;
     }
 
-    // ─── 4. Register function name BEFORE analyzing body ──────────────────
-    // This enables recursion: the function can call itself inside its body
+    // ─── 3. Register function name BEFORE analyzing body ──────────────────
     ctx.symbols.insertValue(decl);
 
-    // ─── 5. Check for @[foreign] attribute ────────────────────────────────
+    // ─── 4. Check for @[foreign] attribute ────────────────────────────────
     // TODO: @[foreign] attribute support is not yet implemented.
-    // Foreign functions have no body - they're declarations only.
-    // When implemented, this should validate the foreign function signature
-    // against the FFI manifest and skip body analysis.
     AttributeAST* foreignAttr = findForeignAttr(decl->attributes, ctx);
     if (foreignAttr) {
-        // For now, treat as a regular function but warn that foreign is not supported
         // TODO: Implement proper foreign function validation
         // validateForeignFunc(decl, foreignAttr, ctx);
         // return;
     }
 
-    // ─── 6. Analyze generic parameters ────────────────────────────────────
-    // Generic parameters are registered in the current scope's genericParams map
-    // They shadow type names within the function's scope
+    // ─── 5. Analyze generic parameters ────────────────────────────────────
     for (const GenericParamDeclAST* g : decl->genericParams) {
         analyzeGenericParamDecl(g, ctx);
     }
 
-    // ─── 7. Analyze parameters ────────────────────────────────────────────
-    // Parameters are registered in the function's scope
-    // Walk through all curry groups
+    // ─── 6. Analyze parameters ────────────────────────────────────────────
     for (FuncTypeAST* group = funcType; group; group = group->getNext()) {
         for (ParamAST* param : group->params) {
             analyzeParam(param, ctx);
         }
     }
 
-    // ─── 8. Analyze body ──────────────────────────────────────────────────
-    // Push FuncBody context so statements know they're inside a function
-    ScopedSemanticContext funcCtx(ctx, SemanticContext::FuncBody, decl, decl->loc);
+    // ─── 7. Push function context with return requirements ───────────────
+    ctx.contexts.pushFunction(const_cast<FuncDeclAST*>(decl), funcType, decl->loc);
 
     if (!decl->body) {
         ctx.error(decl, DiagCode::E3003, "function '", ctx.pool().lookup(decl->name), "' has no body");
+        ctx.contexts.pop();
         return;
     }
 
     bool bodyReturns = false;
-
-    // ─── 8a. Block Body ───────────────────────────────────────────────────
     if (decl->body->isa<BlockStmtAST>()) {
         bodyReturns = analyzeBlock(decl->body->as<BlockStmtAST>(), ctx);
-    }
-    // ─── 8b. Expression Body (wrapped in ReturnStmtAST) ──────────────────
-    else if (decl->body->isa<ReturnStmtAST>()) {
+    } else if (decl->body->isa<ReturnStmtAST>()) {
         bodyReturns = analyzeReturnStmt(decl->body->as<ReturnStmtAST>(), ctx);
-    }
-    // ─── 8c. Function Reference Body ─────────────────────────────────────
-    else if (decl->body->isa<FuncRefStmtAST>()) {
+    } else if (decl->body->isa<FuncRefStmtAST>()) {
         const FuncRefStmtAST* refStmt = decl->body->as<FuncRefStmtAST>();
-        
-        // Validate the target expression against the function type
-        // The target must be a function value (Identifier, FieldAccess, or ModuleAccess)
         if (!checkExpr(refStmt->target, funcType, ctx)) {
             ctx.error(refStmt->target, DiagCode::E3003,
                       "function reference target type mismatch for '",
                       ctx.pool().lookup(decl->name), "'");
-            return;
         }
-
-        // Check that the target is actually a function value
-        if (!refStmt->target->resolvedType || 
-            !refStmt->target->resolvedType->isa<FuncTypeAST>()) {
-            ctx.error(refStmt->target, DiagCode::E2003,
-                      "function reference target is not a function for '",
-                      ctx.pool().lookup(decl->name), "'");
-            return;
-        }
-
-        // Check that the target function type matches this function's type
-        FuncTypeAST* targetFuncType = refStmt->target->resolvedType->as<FuncTypeAST>();
-        if (!typesEqual(funcType, targetFuncType)) {
-            ctx.error(refStmt->target, DiagCode::E3003,
-                      "function reference type mismatch: expected ",
-                      debug::typeToString(funcType, ctx.pool()),
-                      ", got ", debug::typeToString(targetFuncType, ctx.pool()));
-            return;
-        }
-
-        // A function reference is considered to "return" on all paths
-        // because the referenced function handles it
         bodyReturns = true;
-    }
-    // ─── 8d. Unknown Body Type ────────────────────────────────────────────
-    else {
+    } else {
         ctx.error(decl, DiagCode::E3003, 
                   "function '", ctx.pool().lookup(decl->name), "' has invalid body type");
+        ctx.contexts.pop();
         return;
     }
 
-    // ─── 9. Verify return paths ──────────────────────────────────────────
-    // Non-void functions must return on all paths
-    if (!isVoid && !bodyReturns) {
+    // ─── 8. Verify return paths ──────────────────────────────────────────
+    if (bodyReturns && !ctx.contexts.returnRequirementsSatisfied()) {
         ctx.error(decl, DiagCode::E3005,
-                  "function '", ctx.pool().lookup(decl->name), "' is missing a return");
+                  "function '", ctx.pool().lookup(decl->name), "' has missing nested return");
     }
+
+    // ─── 9. Pop function context ──────────────────────────────────────────
+    ctx.contexts.pop();
 }
 
 /// @brief Analyze a function parameter.
