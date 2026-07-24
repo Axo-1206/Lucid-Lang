@@ -1,16 +1,14 @@
-/**
- * @file SemanticResources.hpp
- * @brief Shared resources for the semantic phase.
- *
- * These are the immutable, session-wide resources that every semantic
- * pass needs access to. They are constructed once and shared across
- * all modules.
- *
- * @architectural_note Immutable by design
- *   None of these resources are modified during semantic analysis.
- *   The pool and arena are shared with the parser phase and only
- *   grow (allocation), never shrink or mutate existing data.
- */
+/// @file SemanticResources.hpp
+/// @brief Shared resources for the semantic phase.
+/// 
+/// These are the immutable, session-wide resources that every semantic
+/// pass needs access to. They are constructed once and shared across
+/// all modules.
+/// 
+/// @architectural_note Immutable by design
+///   None of these resources are modified during semantic analysis.
+///   The pool and arena are shared with the parser phase and only
+///   grow (allocation), never shrink or mutate existing data.
 #pragma once
 
 #include "core/memory/ASTArena.hpp"
@@ -18,16 +16,14 @@
 
 namespace sema {
 
-/**
- * @brief Shared, immutable resources for the semantic phase.
- *
- * Holds the resources that are constructed once at the start of the
- * compilation session and never modified during semantic analysis.
- *
- * @note All members are references to externally-owned resources.
- *       The lifetime of these resources must exceed the lifetime of
- *       any SemanticResources instance.
- */
+/// @brief Shared, immutable resources for the semantic phase.
+/// 
+/// Holds the resources that are constructed once at the start of the
+/// compilation session and never modified during semantic analysis.
+/// 
+/// @note All members are references to externally-owned resources.
+///       The lifetime of these resources must exceed the lifetime of
+///       any SemanticResources instance.
 struct SemanticResources {
     /// String interner (shared with parser phase)
     StringPool& pool;
@@ -35,12 +31,10 @@ struct SemanticResources {
     /// AST allocator (shared with parser phase)
     ASTArena& arena;
 
-    /**
-     * @brief Construct with all required resources.
-     *
-     * @param p The string pool (must outlive this instance).
-     * @param a The AST arena (must outlive this instance).
-     */
+    /// @brief Construct with all required resources.
+    /// 
+    /// @param p The string pool (must outlive this instance).
+    /// @param a The AST arena (must outlive this instance).
     SemanticResources(StringPool& p, ASTArena& a)
         : pool(p), arena(a)
     {}

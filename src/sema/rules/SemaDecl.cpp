@@ -429,8 +429,8 @@ void analyzeEnumDecl(const EnumDeclAST* decl, SemaContext& ctx) {
         // The variant's type is the enum itself (Direction.North has type Direction)
         // Since the enum is registered, we can look it up by name
         const TypeDeclAST* enumType = lookupType(decl->name, ctx);
-        if (enumType) {
-            const_cast<EnumVariantAST*>(variant)->type = const_cast<TypeDeclAST*>(enumType);
+        if (!enumType) {
+            /// LOG ERROR
         }
         // If lookup fails, error was already reported by reportTypeRedeclaration
     }

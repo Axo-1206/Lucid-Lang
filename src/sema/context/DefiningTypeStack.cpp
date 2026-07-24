@@ -1,12 +1,10 @@
-/**
- * @file DefiningTypeStack.cpp
- * @brief Implementation of DefiningTypeStack.
- *
- * Implements the stack of types currently being defined for self-reference
- * detection. This allows `checkRecursiveFieldType()` to distinguish:
- *   - `value Node<T>` → direct self-reference (illegal, infinite size)
- *   - `next ptr<Node<T>>?` → indirect (legal, breaks the cycle)
- */
+/// @file DefiningTypeStack.cpp
+/// @brief Implementation of DefiningTypeStack.
+/// 
+/// Implements the stack of types currently being defined for self-reference
+/// detection. This allows `checkRecursiveFieldType()` to distinguish:
+///   - `value Node<T>` → direct self-reference (illegal, infinite size)
+///   - `next ptr<Node<T>>?` → indirect (legal, breaks the cycle)
 
 #include "DefiningTypeStack.hpp"
 

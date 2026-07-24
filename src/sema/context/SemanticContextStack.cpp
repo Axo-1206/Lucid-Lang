@@ -1,14 +1,12 @@
-/**
- * @file SemanticContextStack.cpp
- * @brief Implementation of SemanticContextStack.
- *
- * Implements the semantic context stack that tracks what kind of
- * semantic construct we're currently inside (function body, loop body,
- * switch body, async body, etc.) for validation rules like:
- *   - Is `return` legal here?
- *   - Is `break` legal here?
- *   - Is `await` legal here?
- */
+/// @file SemanticContextStack.cpp
+/// @brief Implementation of SemanticContextStack.
+/// 
+/// Implements the semantic context stack that tracks what kind of
+/// semantic construct we're currently inside (function body, loop body,
+/// switch body, async body, etc.) for validation rules like:
+///   - Is `return` legal here?
+///   - Is `break` legal here?
+///   - Is `await` legal here?
 
 #include "SemanticContextStack.hpp"
 

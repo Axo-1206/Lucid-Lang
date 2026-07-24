@@ -1,7 +1,5 @@
-/**
- * @file SymbolStorage.cpp
- * @brief Implementation of SymbolStorage.
- */
+/// @file SymbolStorage.cpp
+/// @brief Implementation of SymbolStorage.
 
 #include "SymbolStorage.hpp"
 
