@@ -356,7 +356,7 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     funcDecl->funcType = funcType;
     funcDecl->body = body;
     funcDecl->isConst = isConst;
-    funcDecl->valueType = funcType;
+    funcDecl->type = funcType;
     
     LOG_PARSER_DETAIL("Parsed function declaration: ", ctx.toString(name));
     return funcDecl;

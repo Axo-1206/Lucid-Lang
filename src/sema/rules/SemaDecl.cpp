@@ -279,133 +279,219 @@ void analyzeFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
     }
 }
 
- /**
- * @brief Analyze a function parameter.
- *
- * REGISTRATION:
- *   - Parameters are registered in the function's scope
- *   - `ctx.symbols.insertValue(param)` - registers in value namespace
- *   - Parameters shadow outer variables
- */
+/// @brief Analyze a function parameter.
+///
+/// REGISTRATION:
+///   - Parameters are registered in the function's scope
+///   - `ctx.symbols.insertValue(param)` - registers in value namespace
+///   - Parameters shadow outer variables
+///
+/// VALIDATION:
+///   - Parameter type must exist in scope
+///   - Parameter name must not be redeclared in the same scope
+///   - `const` modifier marks a read-only reference parameter
+///   - Variadic parameters collect trailing arguments into a `[*]type` array
+///
+/// NOTE: Parameters are analyzed BEFORE the function body so they are
+///       available for use in the body.
 void analyzeParam(const ParamAST* param, SemaContext& ctx) {
     validateAttributes(param->attributes, param, ctx);
 
-    // Check value redeclaration in current scope only
+    // ─── 1. Resolve the parameter type ────────────────────────────────────
+    // Checks if the type exists in scope
+    // If the type is invalid, report error but continue for error recovery
+    TypeAST* paramType = resolveType(param->type, ctx);
+
+    // ─── 2. Check redeclaration ───────────────────────────────────────────
+    // Check value redeclaration in current scope only (shadowing is allowed)
+    // Parameters cannot have the same name as another parameter in the same scope
     if (reportValueRedeclaration(param, ctx)) {
         return;
     }
 
-    // Register in value namespace (parameters are values in the function's scope)
+    // ─── 3. Register the parameter ────────────────────────────────────────
+    // Parameters are values in the function's scope
+    // They are accessible by name in the function body and any nested scopes
     ctx.symbols.insertValue(param);
 }
 
-/**
- * @brief Register a generic parameter.
- *
- * REGISTRATION:
- *   - `ctx.symbols.insertGenericParam(param->name, param)` - registers in
- *     the current scope's genericParams map (transient, not module-level)
- *
- * PRIORITY:
- *   - Generic parameters have the HIGHEST lookup priority
- *   - They shadow type names in the current scope
- *   - Example: In `struct Box<T>`, `T` shadows any global type named `T`
- *
- * SCOPE:
- *   - Generic parameters are only valid in the scope they're registered in
- *   - They are popped when the scope is popped
- */
+/// @brief Analyze a generic parameter declaration.
+///
+/// REGISTRATION:
+///   - `ctx.symbols.insertGenericParam(param)` - registers in the current
+///     scope's genericParams map (transient, not module-level)
+///
+/// PRIORITY:
+///   - Generic parameters have the HIGHEST lookup priority
+///   - They shadow type names in the current scope
+///   - Example: In `struct Box<T>`, `T` shadows any global type named `T`
+///
+/// SCOPE:
+///   - Generic parameters are only valid in the scope they're registered in
+///   - They are popped when the scope is popped
+///
+/// VALIDATION:
+///   - Each trait constraint must resolve to a valid trait
+///   - Generic parameter name must not be redeclared in the same scope
+///
+/// NOTE: The parser already created the node with name and constraints.
+///       We only validate and register it.
 void analyzeGenericParamDecl(const GenericParamDeclAST* param, SemaContext& ctx) {
-    // Resolve all trait constraints - each must be a valid trait
+    // ─── 1. Resolve trait constraints ─────────────────────────────────────
+    // Each constraint must be a valid trait in scope
+    // resolveTraitRef validates the trait exists and reports errors
     for (const NamedTypeAST* constraint : param->constraints) {
         resolveTraitRef(constraint, ctx);
     }
 
-    // Check generic param redeclaration in current scope only
+    // ─── 2. Check redeclaration ───────────────────────────────────────────
+    // Generic parameters cannot have the same name as another generic parameter
+    // in the same scope (e.g., `<T, T>` is invalid)
     if (reportGenericParamRedeclaration(param, ctx)) {
         return;
     }
 
-    // Register in genericParams map (highest lookup priority)
+    // ─── 3. Register the generic parameter ────────────────────────────────
+    // Generic parameters are registered in the current scope's genericParams map
+    // They have the highest lookup priority and shadow type names
     ctx.symbols.insertGenericParam(param);
 }
 
 
-/**
- * @brief Register an enum declaration and analyze its variants.
- *
- * REGISTRATION:
- *   - `ctx.symbols.insertType(decl)` - registers in type namespace
- *   - Variants are registered as values in the enum's scope
- */
+/// @brief Register an enum declaration and analyze its variants.
+///
+/// REGISTRATION:
+///   - `ctx.symbols.insertType(decl)` - registers in type namespace
+///   - Variants are registered as values in the enum's scope
+///
+/// ORDER:
+///   1. Register enum name (for self-reference)
+///   2. Push ScopedTypeDefinition
+///   3. Analyze variants (now can reference the enum type)
+///   4. Pop ScopedTypeDefinition
+///
+/// VALIDATION:
+///   - Enum name must not be redeclared in the same scope
+///   - Backing type must be a valid integer type
+///   - Variant names must be unique within the enum
+///   - Variant values must be unique within the enum
 void analyzeEnumDecl(const EnumDeclAST* decl, SemaContext& ctx) {
     validateAttributes(decl->attributes, decl, ctx);
 
-    // Register enum name BEFORE analyzing variants - enables self-reference
-    // for variant types (e.g., `Direction.North` resolves to enum type)
+    // ─── 1. Register enum name BEFORE analyzing variants ──────────────────
+    // This enables self-reference: variants can reference the enum type
+    // (e.g., `Direction.North` resolves to the enum type)
     if (reportTypeRedeclaration(decl, ctx)) {
         return;
     }
     ctx.symbols.insertType(decl);
 
-    // Resolve backing type (optional) - defaults to int32
+    // ─── 2. Resolve backing type (optional) ──────────────────────────────
+    // Defaults to int32 if not specified
     if (decl->backingType) {
         resolvePrimitiveType(decl->backingType, ctx);
     }
 
-    // Push ScopedTypeDefinition so variants can reference the enum type
+    // ─── 3. Push ScopedTypeDefinition ─────────────────────────────────────
+    // This allows variants to reference the enum type during analysis
     ScopedTypeDefinition defining(ctx, decl);
 
-    // Analyze each variant - variants are read-only, we don't modify them
+    // ─── 4. Analyze each variant ──────────────────────────────────────────
     for (const EnumVariantAST* variant : decl->variants) {
         validateAttributes(variant->attributes, variant, ctx);
 
-        // Check for duplicate variant names and duplicate values
+        // ─── 4a. Check for duplicate variant names ──────────────────────
+        // Variant names must be unique within the enum
         for (const EnumVariantAST* existing : decl->variants) {
             if (existing == variant) break;
             if (existing->name == variant->name) {
                 ctx.error(variant, DiagCode::E2101,
                           "redeclaration of '", ctx.pool().lookup(variant->name), "'");
+                // Continue checking other errors
+                break;
             }
+        }
+
+        // ─── 4b. Check for duplicate variant values ──────────────────────
+        // Variant values must be unique within the enum
+        for (const EnumVariantAST* existing : decl->variants) {
+            if (existing == variant) break;
             if (existing->value == variant->value) {
                 ctx.error(variant, DiagCode::E3006,
                           "duplicate enum value ", std::to_string(variant->value),
                           " (also used by '", ctx.pool().lookup(existing->name), "')");
+                // Continue checking other errors
+                break;
             }
         }
+
+        // ─── 4c. Set the variant's type (semantic annotation) ────────────
+        // The variant's type is the enum itself (Direction.North has type Direction)
+        // Since the enum is registered, we can look it up by name
+        const TypeDeclAST* enumType = lookupType(decl->name, ctx);
+        if (enumType) {
+            const_cast<EnumVariantAST*>(variant)->type = const_cast<TypeDeclAST*>(enumType);
+        }
+        // If lookup fails, error was already reported by reportTypeRedeclaration
     }
+
+    // ─── 5. Verify enum has at least one variant ──────────────────────────
+    // Empty enums are allowed in Lucid (they can be extended later)
+    // No validation needed - empty enums are valid
 }
 
-/**
- * @brief Register a trait declaration and analyze its fields.
- *
- * REGISTRATION:
- *   - `ctx.symbols.insertType(decl)` - registers in type namespace
- *   - Generic params registered via analyzeGenericParamDecl() BEFORE fields
- */
+/// @brief Register a trait declaration and analyze its fields.
+///
+/// REGISTRATION:
+///   - `ctx.symbols.insertType(decl)` - registers in type namespace
+///   - Generic params registered via analyzeGenericParamDecl() BEFORE fields
+///
+/// ORDER:
+///   1. Register trait name (for self-reference)
+///   2. Push ScopedTypeDefinition
+///   3. Register generic parameters (for use in fields)
+///   4. Analyze fields (now can find both trait and generic params)
+///   5. Pop ScopedTypeDefinition
+///
+/// VALIDATION:
+///   - Trait name must not be redeclared in the same scope
+///   - Generic parameters must be used in at least one field type
+///   - Field names must be unique within the trait
+///   - Field types must exist in scope
+///   - Non-const fields: may be nullable, fallible, combined, or definite
+///   - Const fields: must be definite (not nullable or fallible)
+///
+/// NOTE: Trait fields are contracts. They can be nullable or fallible
+///       unless marked `const`. This allows traits to require optional
+///       or error-prone fields.
 void analyzeTraitDecl(const TraitDeclAST* decl, SemaContext& ctx) {
     validateAttributes(decl->attributes, decl, ctx);
 
-    // Register trait name BEFORE analyzing fields - enables self-reference
+    // ─── 1. Register trait name BEFORE analyzing fields ──────────────────
+    // This enables self-reference: the trait can reference itself
+    // in its field types
     if (reportTypeRedeclaration(decl, ctx)) {
         return;
     }
     ctx.symbols.insertType(decl);
 
-    // Push ScopedTypeDefinition for self-reference detection
+    // ─── 2. Push ScopedTypeDefinition ────────────────────────────────────
+    // This allows the trait to reference itself during field analysis
     ScopedTypeDefinition defining(ctx, decl);
 
+    // ─── 3. Register generic parameters ──────────────────────────────────
     // Generic parameters are registered in the current scope's genericParams map
     // They shadow type names within the trait's scope
     for (const GenericParamDeclAST* g : decl->genericParams) {
         analyzeGenericParamDecl(g, ctx);
     }
 
-    // Analyze each trait field requirement
+    // ─── 4. Analyze each trait field ──────────────────────────────────────
     for (const TraitFieldDeclAST* field : decl->fields) {
         validateAttributes(field->attributes, field, ctx);
 
-        // Check for duplicate field names within this trait
+        // ─── 4a. Check for duplicate field names ────────────────────────
+        // Field names must be unique within the trait
         for (const TraitFieldDeclAST* existing : decl->fields) {
             if (existing == field) break;
             if (existing->name == field->name) {
@@ -415,18 +501,34 @@ void analyzeTraitDecl(const TraitDeclAST* decl, SemaContext& ctx) {
             }
         }
 
-        // Resolve the field's type - must exist in scope
-        // Note: The AST node is stored in the arena and we can annotate it
-        const_cast<TraitFieldDeclAST*>(field)->type = resolveType(field->type, ctx);
-
-        // Trait fields must not be nullable or fallible
-        if (field->type && (isNullableType(field->type) || isFallibleType(field->type))) {
-            ctx.error(field, DiagCode::E3004,
-                      "'", ctx.pool().lookup(field->name), "' must not be nullable or fallible");
+        // ─── 4b. Resolve the field's type ────────────────────────────────
+        // The type must exist in scope
+        TypeAST* fieldType = resolveType(field->type, ctx);
+        if (!fieldType) {
+            // Error already reported by resolveType
+            continue;
         }
+
+        // ─── 4c. Validate const field type ───────────────────────────────
+        // If the field is marked const, its type must be definite
+        // (not nullable or fallible)
+        if (field->isConst) {
+            if (isNullableType(fieldType) || isFallibleType(fieldType)) {
+                ctx.error(field, DiagCode::E3004,
+                          "const trait field '", ctx.pool().lookup(field->name),
+                          "' must be definite (not nullable or fallible)");
+                continue;
+            }
+        }
+        // Non-const fields can be nullable, fallible, combined, or definite
+        // No additional restrictions
+
+        // ─── 4d. Set the field's type (semantic annotation) ──────────────
+        const_cast<TraitFieldDeclAST*>(field)->type = fieldType;
     }
 
-    // Verify all generic parameters are used in at least one field type
+    // ─── 5. Verify all generic parameters are used ──────────────────────
+    // All generic parameters must be used in at least one field type
     validateGenericParamUsage(decl, ctx);
 }
 
@@ -448,10 +550,18 @@ void analyzeTraitDecl(const TraitDeclAST* decl, SemaContext& ctx) {
 /// ERROR RECOVERY:
 ///   - Struct is registered even if fields have errors (prevents "unknown type" cascading)
 ///   - Field errors are reported but analysis continues
+/// 
+/// FIELD VALIDATION:
+///   - Field names must be unique within the struct
+///   - Field types must exist in scope
+///   - Const fields must be definite (not nullable or fallible)
+///   - Default values must match field types
+///   - No direct self-reference (infinite size) unless using pointer/reference
+///   - No reference types in struct fields (Downward Flow Rule)
 void analyzeStructDecl(const StructDeclAST* decl, SemaContext& ctx) {
     validateAttributes(decl->attributes, decl, ctx);
 
-    // Register struct name BEFORE analyzing fields - enables self-reference
+    // ─── 1. Register struct name BEFORE analyzing fields ──────────────────
     // (e.g., `next ptr<Node<T>>?` can resolve Node while still being defined)
     // IMPORTANT: Register even if fields have errors (for better error recovery)
     if (reportTypeRedeclaration(decl, ctx)) {
@@ -459,21 +569,22 @@ void analyzeStructDecl(const StructDeclAST* decl, SemaContext& ctx) {
     }
     ctx.symbols.insertType(decl);
 
-    // Push ScopedTypeDefinition so checkRecursiveFieldType can detect
-    // direct self-reference (e.g., `value Node<T>` is illegal, infinite size)
+    // ─── 2. Push ScopedTypeDefinition ─────────────────────────────────────
+    // So checkRecursiveFieldType can detect direct self-reference
+    // (e.g., `value Node<T>` is illegal, infinite size)
     ScopedTypeDefinition defining(ctx, decl);
 
-    // Generic parameters are registered in the current scope's genericParams map
+    // ─── 3. Register generic parameters ───────────────────────────────────
     // They shadow type names within the struct's scope
     for (const GenericParamDeclAST* g : decl->genericParams) {
         analyzeGenericParamDecl(g, ctx);
     }
 
-    // Analyze each field
+    // ─── 4. Analyze each field ────────────────────────────────────────────
     for (const FieldDeclAST* field : decl->fields) {
         validateAttributes(field->attributes, field, ctx);
 
-        // Check for duplicate field names within this struct
+        // ─── 4a. Check for duplicate field names ─────────────────────────
         for (const FieldDeclAST* existing : decl->fields) {
             if (existing == field) break;
             if (existing->name == field->name) {
@@ -483,50 +594,67 @@ void analyzeStructDecl(const StructDeclAST* decl, SemaContext& ctx) {
             }
         }
 
-        // Resolve the field's type - even if it fails, continue for error recovery
-        // Note: resolveType returns a TypeAST* which may be null on error
-        const_cast<FieldDeclAST*>(field)->type = resolveType(field->type, ctx);
+        // ─── 4b. Resolve the field's type ─────────────────────────────────
+        // Even if it fails, continue for error recovery
+        TypeAST* fieldType = resolveType(field->type, ctx);
+        const_cast<FieldDeclAST*>(field)->type = fieldType;
 
-        // Check for direct self-reference (would cause infinite size)
-        checkRecursiveFieldType(field, decl, ctx);
+        // If type resolution failed, skip further validation for this field
+        if (!fieldType) {
+            continue;
+        }
 
-        // Const fields must not be nullable or fallible
-        // This is a DECLARATION error, not a usage error
-        if (field->isConst && field->type) {
-            if (isNullableType(field->type) || isFallibleType(field->type)) {
+        // ─── 4c. Check for direct self-reference ──────────────────────────
+        // (would cause infinite size: `value Node<T>` is illegal)
+        if (isDirectSelfReference(fieldType, decl, ctx)) {
+            ctx.error(field, DiagCode::E3003,
+                      "struct '", ctx.pool().lookup(decl->name),
+                      "' contains a field of its own type directly (would be infinite size)");
+            // Continue to check other fields
+        }
+
+        // ─── 4d. Const field validation ──────────────────────────────────
+        // Const fields must be definite (not nullable or fallible)
+        if (field->isConst) {
+            if (isNullableType(fieldType) || isFallibleType(fieldType)) {
                 ctx.error(field, DiagCode::E3004,
                           "const field '", ctx.pool().lookup(field->name),
-                          "' must not be nullable or fallible");
-                // Field type is broken, but we continue
+                          "' must be definite (not nullable or fallible)");
+                // Continue to check other fields
             }
         }
 
-        // Check default value type matches the field's type
-        // If field->type is null (from resolution error), skip type checking
-        // but still try to check the expression for other errors
+        // ─── 4e. Check default value ──────────────────────────────────────
         if (field->defaultVal) {
-            // If field->type is null, we pass nullptr as target type
-            // The expression will still be checked for logical correctness
-            const TypeAST* targetType = field->type ? field->type : nullptr;
-            const TypeAST* initType = checkExpr(field->defaultVal, targetType, ctx);
-            
-            if (field->type && initType && !isAssignable(field->type, initType, ctx)) {
-                std::string expected = debug::typeToString(field->type, ctx.pool());
-                std::string actual = debug::typeToString(initType, ctx.pool());
-                ctx.error(field->defaultVal, DiagCode::E3003,
-                          "type mismatch for field '", ctx.pool().lookup(field->name),
-                          "': expected ", expected, ", got ", actual);
+            // Pass the field type as the target type for the expression
+            // If checkExpr fails, error is reported internally
+            if (!checkExpr(field->defaultVal, fieldType, ctx)) {
+                // Error already reported by checkExpr
+                // Continue to check other fields
             }
         }
+
+        // ─── 4f. Validate reference type context (Downward Flow Rule) ──
+        // References (&T) cannot be stored in struct fields
+        if (fieldType->isa<RefTypeAST>()) {
+            ctx.error(field, DiagCode::E3004,
+                      "reference type (&T) cannot be stored in struct field '",
+                      ctx.pool().lookup(field->name), "'");
+            // Continue to check other fields
+        }
+
+        // ─── 4g. Set the field's cached type ─────────────────────────────
+        const_cast<FieldDeclAST*>(field)->type = fieldType;
     }
 
-    // Validate trait implementations - each trait reference must resolve
-    // and the struct must implement all required fields
+    // ─── 5. Validate trait implementations ───────────────────────────────
+    // Each trait reference must resolve and the struct must implement all fields
     std::unordered_map<InternedString, const NamedTypeAST*> requiredBy;
     for (const NamedTypeAST* ref : decl->traitRefs) {
         const TraitDeclAST* trait = resolveTraitRef(ref, ctx);
         if (!trait) continue; // resolveTraitRef already reported its own error
 
+        // Validate that the struct implements all trait fields
         validateTraitImplementation(decl, ctx);
 
         // Check for duplicate field names required by multiple traits
@@ -540,23 +668,8 @@ void analyzeStructDecl(const StructDeclAST* decl, SemaContext& ctx) {
         }
     }
 
-    // Verify all generic parameters are used in at least one field type
+    // ─── 6. Verify all generic parameters are used ──────────────────────
     validateGenericParamUsage(decl, ctx);
-}
-
-
-void checkRecursiveFieldType(const FieldDeclAST* field, const TypeDeclAST* owner, SemaContext& ctx) {
-    if (!field || !owner) return;
-
-    // If field type is null, we already reported an error, skip self-reference check
-    if (!field->type) return;
-
-    // Check for direct self-reference (infinite size)
-    if (isDirectSelfReference(field->type, owner, ctx)) {
-        ctx.error(field, DiagCode::E3003,
-                  "struct '", ctx.pool().lookup(owner->name),
-                  "' contains a field of its own type directly (would be infinite size)");
-    }
 }
 
 } // namespace sema

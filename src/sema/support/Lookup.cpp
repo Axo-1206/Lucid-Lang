@@ -18,6 +18,8 @@
 
 #include "../Sema.hpp"
 #include "../context/SemaContext.hpp"
+#include "core/ast/BaseAST.hpp"
+#include "debug/DebugUtils.hpp"
 
 namespace sema {
 
@@ -63,7 +65,7 @@ const TypeDeclAST* lookupType(InternedString name, SemaContext& ctx) {
     return ctx.symbols.lookupType(name);
 }
 
-const TypeDeclAST* resolveTypeOrError(NamedTypeAST* type, SemaContext& ctx) {
+const TypeDeclAST* resolveTypeOrError(const NamedTypeAST* type, SemaContext& ctx) {
     // Generic parameters have highest priority - they shadow type names
     if (isGenericParam(type->name, ctx)) {
         return nullptr; // Valid, just not a TypeDeclAST
@@ -80,8 +82,55 @@ const TypeDeclAST* resolveTypeOrError(NamedTypeAST* type, SemaContext& ctx) {
     return nullptr;
 }
 
-const TypeDeclAST* resolveTypeNameOrError(NamedTypeAST* type, SemaContext& ctx) {
+const TypeDeclAST* resolveTypeNameOrError(const NamedTypeAST* type, SemaContext& ctx) {
     return resolveTypeOrError(type, ctx);
+}
+
+// =============================================================================
+// Trait Reference Resolution
+// =============================================================================
+
+/// @brief Resolve a trait reference to its declaration.
+///
+/// A trait reference is a NamedTypeAST that must resolve to a TraitDeclAST.
+/// This is used in:
+///   - Struct declarations: `struct Entity : Vector2, Named { ... }`
+///   - Generic constraints: `<T : Vector2 + Named>`
+///
+/// @param ref The trait reference (NamedTypeAST).
+/// @param ctx The semantic context.
+/// @return The resolved TraitDeclAST, or nullptr on error.
+const TraitDeclAST* resolveTraitRef(const NamedTypeAST* ref, SemaContext& ctx) {
+    if (!ref) return nullptr;
+
+    // Look up the type declaration by name
+    const TypeDeclAST* typeDecl = lookupType(ref->name, ctx);
+    if (!typeDecl) {
+        ctx.error(ref, DiagCode::E2002,
+                  "undefined trait '", ctx.pool().lookup(ref->name), "'");
+        return nullptr;
+    }
+
+    // Verify it's a trait (not a struct or enum)
+    if (!typeDecl->isa<TraitDeclAST>()) {
+        ctx.error(ref, DiagCode::E2002,
+                  "'", ctx.pool().lookup(ref->name), "' is not a trait");
+        return nullptr;
+    }
+
+    const TraitDeclAST* traitDecl = typeDecl->as<TraitDeclAST>();
+
+    // Check generic arguments if present
+    if (!ref->genericArgs.empty()) {
+        // TODO: Check generic argument arity against the trait's generic parameters
+        // TODO: Check constraints are satisfied
+        // For now, just resolve each generic argument type
+        for (const TypePtr arg : ref->genericArgs) {
+            resolveType(arg, ctx);
+        }
+    }
+
+    return traitDecl;
 }
 
 // =============================================================================
@@ -122,34 +171,42 @@ bool isImportAliasRedeclared(InternedString alias, SemaContext& ctx) {
     return table->importAliases.find(alias) != table->importAliases.end();
 }
 
-bool reportValueRedeclaration(InternedString name, BaseAST* node, SemaContext& ctx) {
-    if (isValueRedeclared(name, ctx)) {
+// ─── Value Redeclaration ──────────────────────────────────────────────────
+
+bool reportValueRedeclaration(const DeclAST* node, SemaContext& ctx) {
+    if (isValueRedeclared(node->name, ctx)) {
         ctx.error(node, DiagCode::E2101,
-                  "redeclaration of '", ctx.pool().lookup(name), "' in the same scope");
+                  "redeclaration of '", ctx.pool().lookup(node->name), "' in the same scope");
         return true;
     }
     return false;
 }
 
-bool reportTypeRedeclaration(InternedString name, BaseAST* node, SemaContext& ctx) {
-    if (isTypeRedeclared(name, ctx)) {
+// ─── Type Redeclaration ──────────────────────────────────────────────────
+
+bool reportTypeRedeclaration(const DeclAST* node, SemaContext& ctx) {
+    if (isTypeRedeclared(node->name, ctx)) {
         ctx.error(node, DiagCode::E2101,
-                  "redeclaration of '", ctx.pool().lookup(name), "' in the same scope");
+                  "redeclaration of '", ctx.pool().lookup(node->name), "' in the same scope");
         return true;
     }
     return false;
 }
 
-bool reportGenericParamRedeclaration(InternedString name, BaseAST* node, SemaContext& ctx) {
-    if (isGenericParamRedeclared(name, ctx)) {
+// ─── Generic Param Redeclaration ─────────────────────────────────────────
+
+bool reportGenericParamRedeclaration(const DeclAST* node, SemaContext& ctx) {
+    if (isGenericParamRedeclared(node->name, ctx)) {
         ctx.error(node, DiagCode::E2101,
-                  "redeclaration of generic parameter '", ctx.pool().lookup(name), "' in the same scope");
+                  "redeclaration of generic parameter '", ctx.pool().lookup(node->name), "' in the same scope");
         return true;
     }
     return false;
 }
 
-bool reportImportAliasRedeclaration(InternedString alias, BaseAST* node, SemaContext& ctx) {
+// ─── Import Alias Redeclaration ──────────────────────────────────────────
+
+bool reportImportAliasRedeclaration(InternedString alias, const BaseAST* node, SemaContext& ctx) {
     if (isImportAliasRedeclared(alias, ctx)) {
         ctx.error(node, DiagCode::E2101,
                   "redeclaration of import alias '", ctx.pool().lookup(alias), "'");
@@ -195,10 +252,10 @@ const ValueDeclAST* resolveModuleMemberOrError(ModuleAccessExprAST* access, Sema
 // Callee Resolution (for function calls)
 // =============================================================================
 
-const FuncDeclAST* resolveCalleeOrError(ExprAST* callee, SemaContext& ctx) {
+const FuncDeclAST* resolveCalleeOrError(const ExprAST* callee, SemaContext& ctx) {
     // Plain call: `foo(...)`
     if (callee->isa<IdentifierExprAST>()) {
-        IdentifierExprAST* id = callee->as<IdentifierExprAST>();
+        const IdentifierExprAST* id = callee->as<IdentifierExprAST>();
         const ValueDeclAST* value = lookupValue(id->name, ctx);
         
         if (!value) {
@@ -218,8 +275,8 @@ const FuncDeclAST* resolveCalleeOrError(ExprAST* callee, SemaContext& ctx) {
 
     // Cross-module call: `module:member(...)`
     if (callee->isa<ModuleAccessExprAST>()) {
-        ModuleAccessExprAST* access = callee->as<ModuleAccessExprAST>();
-        const ValueDeclAST* value = resolveModuleMemberOrError(access, ctx);
+        const ModuleAccessExprAST* access = callee->as<ModuleAccessExprAST>();
+        const ValueDeclAST* value = resolveModuleMemberOrError(const_cast<ModuleAccessExprAST*>(access), ctx);
         
         if (!value) {
             return nullptr; // Error already reported

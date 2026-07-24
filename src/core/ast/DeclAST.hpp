@@ -209,51 +209,50 @@ struct EnumVariantAST : ValueDeclAST {
 };
 using EnumVariantPtr = EnumVariantAST*;
 
-/**
- * @brief Represents a struct field, optionally with a default value and const-ness.
- *
- * @example
- *   x     float           → defaultVal = nullptr, isConst = false
- *   r     float = 1.0     → defaultVal = literal 1.0, isConst = false
- *   const step  int       → defaultVal = nullptr, isConst = true
- *   const max   int = 100 → defaultVal = literal 100, isConst = true
- *   items [*]string       → type = DynamicArray(String)
- *
- * ─── Const Fields ───────────────────────────────────────────────────────────
- * A field qualified `const` cannot be reassigned through `field_expr`, even
- * when the containing variable is itself `let`. This is useful for:
- *   - Fixed behavior callbacks
- *   - Immutable configuration values
- *   - Function-typed fields that should not be swapped
- *
- * ─── Const Field Rules ──────────────────────────────────────────────────────
- * 1. A `const` field may have a default value (`= expr`). If it has a default,
- *    it can be omitted during initialization.
- * 2. If a `const` field does NOT have a default value, it must be provided
- *    a value during struct initialization.
- * 3. A `const` field may NOT be nullable (`T?`) or fallible (`T!`).
- * 4. `const` fields cannot be reassigned after construction.
- *
- * ─── Semantic Cache ────────────────────────────────────────────────────────
- * `valueType` (from ValueDeclAST) points to the field's resolved type.
- *
- *@note
- * ─── Semantic Analysis Notes ──────────────────────────────────────────────
- * The semantic pass must enforce the following rules:
- * 1. **No Nullable/Fallible**: If `isConst` is true, `type` must not be
- *    `NullableTypeAST` or `FallibleTypeAST`. Emit a compile error if it is.
- * 2. **Default Value Optional**: A `const` field may have a default value.
- *    If it has a default, it must be omitted during initialization.
- * 3. **Initialization Required**: If `isConst` is true and `defaultVal` is
- *    nullptr, the field must be provided a value during struct initialization.
- *    If missing, emit a compile error.
- * 4. **Assignment Rejection**: Any assignment to a `const` field through
- *    field access (`struct.field = value`) must be rejected with a compile error.
- * 5. **Override not allow**: A `const` field with a default value must not be
- *    overridden during initialization.
- * 6. **Deep Immutability**: `const` on struct declaration is not transitive 
- *    to inner struct fields.
- */
+
+/// @brief Represents a struct field, optionally with a default value and const-ness.
+/// 
+/// @example
+///   x     float           → defaultVal = nullptr, isConst = false
+///   r     float = 1.0     → defaultVal = literal 1.0, isConst = false
+///   const step  int       → defaultVal = nullptr, isConst = true
+///   const max   int = 100 → defaultVal = literal 100, isConst = true
+///   items [*]string       → type = DynamicArray(String)
+/// 
+/// ─── Const Fields ───────────────────────────────────────────────────────────
+/// A field qualified `const` cannot be reassigned through `field_expr`, even
+/// when the containing variable is itself `let`. This is useful for:
+///   - Fixed behavior callbacks
+///   - Immutable configuration values
+///   - Function-typed fields that should not be swapped
+/// 
+/// ─── Const Field Rules ──────────────────────────────────────────────────────
+/// 1. A `const` field may have a default value (`= expr`). If it has a default,
+///    it can be omitted during initialization.
+/// 2. If a `const` field does NOT have a default value, it must be provided
+///    a value during struct initialization.
+/// 3. A `const` field may NOT be nullable (`T?`) or fallible (`T!`).
+/// 4. `const` fields cannot be reassigned after construction.
+/// 
+/// ─── Semantic Cache ────────────────────────────────────────────────────────
+/// `valueType` (from ValueDeclAST) points to the field's resolved type.
+/// 
+/// note
+/// ─── Semantic Analysis Notes ──────────────────────────────────────────────
+/// The semantic pass must enforce the following rules:
+/// 1. **No Nullable/Fallible**: If `isConst` is true, `type` must not be
+///    `NullableTypeAST` or `FallibleTypeAST`. Emit a compile error if it is.
+/// 2. **Default Value Optional**: A `const` field may have a default value.
+///    If it has a default, it must be omitted during initialization.
+/// 3. **Initialization Required**: If `isConst` is true and `defaultVal` is
+///    nullptr, the field must be provided a value during struct initialization.
+///    If missing, emit a compile error.
+/// 4. **Assignment Rejection**: Any assignment to a `const` field through
+///    field access (`struct.field = value`) must be rejected with a compile error.
+/// 5. **Override not allow**: A `const` field with a default value must not be
+///    overridden during initialization.
+/// 6. **Deep Immutability**: `const` on struct declaration is not transitive 
+///    to inner struct fields.
 struct FieldDeclAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::FieldDecl;
 
@@ -343,17 +342,28 @@ using EnumDeclPtr = EnumDeclAST*;
  *   trait Named { name string }
  *   trait Container<T> { value T, count int }
  *   trait ImmutableConfig { const maxRetries int, const timeout float }
+ *   trait NullableContainer { value int?, fallback int? }  // nullable allowed
+ *   trait ErrorHandler { result string!, fallback string! } // fallible allowed
  *
  * @field name      The required field name.
- * @field type      The required field type (must not be nullable or fallible).
+ * @field type      The required field type (may be nullable or fallible unless const).
  * @field isConst   True if the implementing struct must declare this field as `const`.
  *
  * ─── Trait Field Rules ──────────────────────────────────────────────────────
  * 1. **Name and Type Only**: Trait fields declare name, type, and optional
  *    const-ness – no default values. Qualifiers and defaults belong to the
  *    implementing struct.
+ *
  * 2. **Const Requirement**: If `isConst` is true, the implementing struct
  *    MUST declare this field as `const`.
+ *
+ * 3. **Type Restrictions**: 
+ *    - If `isConst` is true, the field type MUST be definite (not nullable or fallible).
+ *    - If `isConst` is false, the field type MAY be nullable (`T?`), fallible (`T!`), 
+ *      or combined (`T?!`). This allows traits to require optional or error-prone fields.
+ *
+ * 4. **Self-Reference**: Trait fields can reference the trait itself via its name.
+ *    This enables recursive trait definitions.
  *
  * @note Not a ValueDeclAST because trait fields are requirements, not
  *       actual values. The semantic pass uses them to verify that implementing
@@ -363,7 +373,7 @@ struct TraitFieldDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::TraitFieldDecl;
 
     InternedString name;
-    TypePtr type;          // required field type (must not be nullable/fallible)
+    TypePtr type;          // required field type (nullable/fallible allowed unless const)
     bool isConst = false;  // true if implementing struct must declare as const
 
     TraitFieldDeclAST() : DeclAST(ASTKind::TraitFieldDecl) {}
