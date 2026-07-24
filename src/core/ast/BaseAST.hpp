@@ -176,7 +176,6 @@ enum class ASTKind : uint16_t {
     EnumDecl,
     TraitFieldDecl,
     TraitDecl,
-    // TraitRef,
 
     // Expression nodes
     LiteralExpr,
@@ -370,29 +369,27 @@ struct DeclAST : BaseAST {
 // ValueDeclAST – base for declarations that produce values
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * @brief Base class for declarations that produce values (can appear in expressions).
- *
- * Value declarations live in the VALUE NAMESPACE. When an identifier is resolved
- * in an expression context, the lookup searches this namespace first.
- *
- * Value declarations include:
- *   - Variables (VarDeclAST)
- *   - Functions (FuncDeclAST)
- *   - Parameters (ParamAST)
- *   - Fields (FieldDeclAST)
- *   - Enum variants (EnumVariantAST)
- *
- * ─── Type Cache ─────────────────────────────────────────────────────────────
- * The `valueType` field caches the resolved type of this value. For example:
- *   - For a variable: its declared type
- *   - For a function: its function type (FuncTypeAST)
- *   - For a parameter: its parameter type
- *
- * This eliminates the need for a separate symbol table entry.
- *
- * @note ValueDeclAST nodes are stored in Scope::values map.
- */
+/// @brief Base class for declarations that produce values (can appear in expressions).
+/// 
+/// Value declarations live in the VALUE NAMESPACE. When an identifier is resolved
+/// in an expression context, the lookup searches this namespace first.
+/// 
+/// Value declarations include:
+///   - Variables (VarDeclAST)
+///   - Functions (FuncDeclAST)
+///   - Parameters (ParamAST)
+///   - Fields (FieldDeclAST)
+///   - Enum variants (EnumVariantAST)
+/// 
+/// ─── Type Cache ─────────────────────────────────────────────────────────────
+/// The `valueType` field caches the resolved type of this value. For example:
+///   - For a variable: its declared type
+///   - For a function: its function type (FuncTypeAST)
+///   - For a parameter: its parameter type
+/// 
+/// This eliminates the need for a separate symbol table entry.
+/// 
+/// @note ValueDeclAST nodes are stored in Scope::values map.
 struct ValueDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::ValueDecl;
 
@@ -405,25 +402,23 @@ struct ValueDeclAST : DeclAST {
 // TypeDeclAST – base for declarations that define types
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * @brief Base class for declarations that define types.
- *
- * Type declarations live in the TYPE NAMESPACE. When an identifier is resolved
- * in a type annotation context, the lookup searches this namespace.
- *
- * Type declarations include:
- *   - Structs (StructDeclAST)
- *   - Enums (EnumDeclAST)
- *   - Traits (TraitDeclAST)
- *
- * ─── Self‑Type Cache ────────────────────────────────────────────────────────
- * The `selfType` field caches a NamedTypeAST that represents this type itself.
- * This is used when a type name appears as a value (e.g., `int("42")` where `int`
- * is used as a conversion function). Without this cache, we would need to
- * create a new NamedTypeAST every time a type name is referenced.
- *
- * @note TypeDeclAST nodes are stored in Scope::types map.
- */
+/// @brief Base class for declarations that define types.
+/// 
+/// Type declarations live in the TYPE NAMESPACE. When an identifier is resolved
+/// in a type annotation context, the lookup searches this namespace.
+/// 
+/// Type declarations include:
+///   - Structs (StructDeclAST)
+///   - Enums (EnumDeclAST)
+///   - Traits (TraitDeclAST)
+/// 
+/// ─── Self‑Type Cache ────────────────────────────────────────────────────────
+/// The `selfType` field caches a NamedTypeAST that represents this type itself.
+/// This is used when a type name appears as a value (e.g., `int("42")` where `int`
+/// is used as a conversion function). Without this cache, we would need to
+/// create a new NamedTypeAST every time a type name is referenced.
+/// 
+/// @note TypeDeclAST nodes are stored in Scope::types map.
 struct TypeDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::TypeDecl;
     
@@ -443,55 +438,53 @@ using StmtPtr    = StmtAST*;
 // ModuleAST — root node for a single translation unit.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * @brief Root node for a single translation unit (source file).
- *
- * This node represents an entire `.luc` file after parsing. It owns all
- * top‑level declarations and provides file‑level context for semantic passes.
- *
- * @par Memory Layout (64-bit, typical)
- *   - BaseAST overhead        : ~20 bytes (vtable + kind + loc + flags + padding)
- *   - `packageName`           : 4 bytes (InternedString is a uint32_t)
- *   - `filePath`              : 4 bytes (InternedString)
- *   - `decls` (ArenaSpan)     : 16 bytes (ptr + size, each 8 bytes)
- *   @n Total: ~44 bytes per file (excluding the actual declaration nodes)
- *
- * @note Why separate `packageName` and `filePath`?
- *   - `packageName` is the identifier after `package` (e.g., "math").
- *     Used for cross‑file symbol resolution within the same package.
- *   - `filePath` is the relative path from the package root (e.g., "math/vec2.luc").
- *     Used for error messages, debug info, and module identity.
- *   Both are interned to avoid duplicate string storage across the AST.
- *
- * @par Declaration Ownership
- *   The `decls` span holds all top‑level declarations in source order.
- *   Each declaration is an ASTPtr<DeclAST> (unique_ptr with no‑op deleter).
- *   The underlying memory is arena‑allocated; the unique_ptr is just an
- *   ownership wrapper that does not call delete.
- *
- * @field packageName The package name declared by `package foo` at file start.
- * @field filePath    Relative path from package root (e.g., "math/vec2.luc").
- * @field decls       Top‑level declarations in source order.
- *
- * @note Diagnostics for this module are NOT stored here. They live in the
- *       `diagnostic` namespace's own whole-session list (see
- *       Diagnostic.hpp), keyed by `filePath` — get them with
- *       `diagnostic::getAllForFile(module->filePath)`. Storing a second
- *       copy on the node itself was removed once the diagnostic system
- *       started tracking file association on its own (see
- *       `diagnostic::pushSource()`/`getAllForFile()`); keeping one here
- *       too would just be the same data living in two places again, the
- *       exact duplication the diagnostic-system rewrite was meant to
- *       eliminate.
- *
- *       `hasErrors` remains as a cheap cached bool — a single flag, set
- *       once from `diagnostic::hasErrorsInCurrentSource()` right after
- *       this module finishes parsing/analysis, so callers that only need
- *       "did this succeed" don't have to make a lookup (or pull in
- *       Diagnostic.hpp at all) just to check a yes/no. That's a small
- *       derived snapshot, not a duplicate store, which is why it stayed
- *       while `errors` didn't.
- */
+/// @brief Root node for a single translation unit (source file).
+/// 
+/// This node represents an entire `.luc` file after parsing. It owns all
+/// top‑level declarations and provides file‑level context for semantic passes.
+/// 
+/// @par Memory Layout (64-bit, typical)
+///   - BaseAST overhead        : ~20 bytes (vtable + kind + loc + flags + padding)
+///   - `packageName`           : 4 bytes (InternedString is a uint32_t)
+///   - `filePath`              : 4 bytes (InternedString)
+///   - `decls` (ArenaSpan)     : 16 bytes (ptr + size, each 8 bytes)
+///   @n Total: ~44 bytes per file (excluding the actual declaration nodes)
+/// 
+/// @note Why separate `packageName` and `filePath`?
+///   - `packageName` is the identifier after `package` (e.g., "math").
+///     Used for cross‑file symbol resolution within the same package.
+///   - `filePath` is the relative path from the package root (e.g., "math/vec2.luc").
+///     Used for error messages, debug info, and module identity.
+///   Both are interned to avoid duplicate string storage across the AST.
+/// 
+/// @par Declaration Ownership
+///   The `decls` span holds all top‑level declarations in source order.
+///   Each declaration is an ASTPtr<DeclAST> (unique_ptr with no‑op deleter).
+///   The underlying memory is arena‑allocated; the unique_ptr is just an
+///   ownership wrapper that does not call delete.
+/// 
+/// @field packageName The package name declared by `package foo` at file start.
+/// @field filePath    Relative path from package root (e.g., "math/vec2.luc").
+/// @field decls       Top‑level declarations in source order.
+/// 
+/// @note Diagnostics for this module are NOT stored here. They live in the
+///       `diagnostic` namespace's own whole-session list (see
+///       Diagnostic.hpp), keyed by `filePath` — get them with
+///       `diagnostic::getAllForFile(module->filePath)`. Storing a second
+///       copy on the node itself was removed once the diagnostic system
+///       started tracking file association on its own (see
+///       `diagnostic::pushSource()`/`getAllForFile()`); keeping one here
+///       too would just be the same data living in two places again, the
+///       exact duplication the diagnostic-system rewrite was meant to
+///       eliminate.
+/// 
+///       `hasErrors` remains as a cheap cached bool — a single flag, set
+///       once from `diagnostic::hasErrorsInCurrentSource()` right after
+///       this module finishes parsing/analysis, so callers that only need
+///       "did this succeed" don't have to make a lookup (or pull in
+///       Diagnostic.hpp at all) just to check a yes/no. That's a small
+///       derived snapshot, not a duplicate store, which is why it stayed
+///       while `errors` didn't.
 struct ModuleAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::Program;
 
@@ -507,43 +500,43 @@ using ModuleASTPtr = ModuleAST*;
 // GenericParamDeclAST — a generic type parameter declaration.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * @brief Represents a single generic type parameter declaration.
- *
- * This node appears in the generic parameter list of functions, structs,
- * and traits. Each parameter has a name and an optional list of trait constraints.
- *
- * @par Grammar Reference (from LUCID_GRAMMAR.md)
- *   generic_param := IDENTIFIER
- *                  | IDENTIFIER ':' trait_ref { '+' trait_ref }
- *
- * @par Examples
- *   @code
- *   struct Box<T> { ... }                         // unconstrained T
- *   const magnitude<T : Vector2> (v T) -> float   // T must implement Vector2
- *   struct Pair<A : Named, B : Named> { ... }     // two constrained parameters
- *   @endcode
- *
- * @par Memory Layout (64-bit, typical)
- *   - BaseAST overhead    : ~16 bytes (vtable + kind + loc + padding)
- *   - `name`              : 4 bytes (InternedString is uint32_t)
- *   - `constraints` span  : 16 bytes (ptr + size, each 8 bytes)
- *   @n Total: ~36 bytes per generic parameter (excluding constraint nodes)
- *
- * @par Semantic Resolution
- *   During semantic analysis, each constraint type is resolved to a
- *   `TraitDeclAST`. The order of constraints does not affect semantics,
- *   but is preserved for source fidelity.
- *
- * @field name        The identifier of the type parameter (e.g., "T", "K", "V").
- * @field constraints Trait types that this parameter must satisfy.
- *                    Empty span means the parameter is unconstrained.
- *                    Each constraint is a NamedTypeAST node.
- *
- * @note Multiple constraints are joined with `+` in source (e.g., `T : Vector2 + Named`).
- *       The semantic pass verifies that all constraint types resolve to traits
- *       and that the traits are compatible.
- */
+/// 
+/// @brief Represents a single generic type parameter declaration.
+/// 
+/// This node appears in the generic parameter list of functions, structs,
+/// and traits. Each parameter has a name and an optional list of trait constraints.
+/// 
+/// @par Grammar Reference (from LUCID_GRAMMAR.md)
+///   generic_param := IDENTIFIER
+///                  | IDENTIFIER ':' trait_ref { '+' trait_ref }
+/// 
+/// @par Examples
+///   @code
+///   struct Box<T> { ... }                         // unconstrained T
+///   const magnitude<T : Vector2> (v T) -> float   // T must implement Vector2
+///   struct Pair<A : Named, B : Named> { ... }     // two constrained parameters
+///   @endcode
+/// 
+/// @par Memory Layout (64-bit, typical)
+///   - BaseAST overhead    : ~16 bytes (vtable + kind + loc + padding)
+///   - `name`              : 4 bytes (InternedString is uint32_t)
+///   - `constraints` span  : 16 bytes (ptr + size, each 8 bytes)
+///   @n Total: ~36 bytes per generic parameter (excluding constraint nodes)
+/// 
+/// @par Semantic Resolution
+///   During semantic analysis, each constraint type is resolved to a
+///   `TraitDeclAST`. The order of constraints does not affect semantics,
+///   but is preserved for source fidelity.
+/// 
+/// @field name        The identifier of the type parameter (e.g., "T", "K", "V").
+/// @field constraints Trait types that this parameter must satisfy.
+///                    Empty span means the parameter is unconstrained.
+///                    Each constraint is a NamedTypeAST node.
+/// 
+/// @note Multiple constraints are joined with `+` in source (e.g., `T : Vector2 + Named`).
+///       The semantic pass verifies that all constraint types resolve to traits
+///       and that the traits are compatible.
+/// 
 struct GenericParamDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::GenericParamDecl;
 
@@ -562,13 +555,11 @@ using GenericParamDeclPtr   = GenericParamDeclAST*;
 // UnknownAST family — error recovery nodes.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * @brief Generic unknown node – fallback when the specific kind is ambiguous.
- *
- * Used only when the parser cannot determine whether the invalid syntax
- * was a declaration, expression, statement, or type. Prefer the more
- * specific unknown node types when possible.
- */
+/// @brief Generic unknown node – fallback when the specific kind is ambiguous.
+/// 
+/// Used only when the parser cannot determine whether the invalid syntax
+/// was a declaration, expression, statement, or type. Prefer the more
+/// specific unknown node types when possible.
 struct UnknownAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::Unknown;
     UnknownAST() : BaseAST(ASTKind::Unknown) {}
