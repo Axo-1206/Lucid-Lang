@@ -101,29 +101,27 @@ struct DeclStmtAST : StmtAST {
     bool isUseDecl() const { return decl && decl->isa<ImportDeclAST>(); }
 };
 
-/**
- * @brief Multiple variable declaration (with `let` or `const`).
- *
- * Grammar:
- *   multi_var_decl := ( 'let' | 'const' ) IDENTIFIER type { ',' IDENTIFIER type } '=' expr
- *
- * @example
- *   let value int, ok bool = parseInt("42")
- *   const w int, h int = getScreenSize()
- *
- * All variables share the same keyword. Each variable has an explicit type.
- * The RHS must be a single expression that returns as many values as there are variables.
- *
- * ─── Semantic Analysis Notes ──────────────────────────────────────────────
- * 1. **Count Matching**: The number of variables must match the number of
- *    values returned by the RHS expression.
- * 2. **Type Matching**: Each variable's type must match the corresponding
- *    return value type.
- * 3. **Scope**: Variables are declared in the current scope and visible
- *    after the declaration.
- * 4. **Const Initialization**: If `keyword` is `Const`, all variables must
- *    have initializers (enforced by the parser/semantic pass).
- */
+/// @brief Multiple variable declaration (with `let` or `const`).
+/// 
+/// Grammar:
+///   multi_var_decl := ( 'let' | 'const' ) IDENTIFIER type { ',' IDENTIFIER type } '=' expr
+/// 
+/// @example
+///   let value int, ok bool = parseInt("42")
+///   const w int, h int = getScreenSize()
+/// 
+/// All variables share the same keyword. Each variable has an explicit type.
+/// The RHS must be a single expression that returns as many values as there are variables.
+/// 
+/// ─── Semantic Analysis Notes ──────────────────────────────────────────────
+/// 1. **Count Matching**: The number of variables must match the number of
+///    values returned by the RHS expression.
+/// 2. **Type Matching**: Each variable's type must match the corresponding
+///    return value type.
+/// 3. **Scope**: Variables are declared in the current scope and visible
+///    after the declaration.
+/// 4. **Const Initialization**: If `keyword` is `Const`, all variables must
+///    have initializers (enforced by the parser/semantic pass).
 struct MultiVarDeclAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::MultiVarDecl;
 
@@ -132,6 +130,19 @@ struct MultiVarDeclAST : StmtAST {
     ExprPtr rhs;                                        // Initialiser expression
 
     MultiVarDeclAST() : StmtAST(ASTKind::MultiVarDecl) {}
+};
+
+/// @brief A statement that references another function.
+/// Used for function declarations that delegate to another function.
+/// Examples:
+///   const add (a int)(b int) -> int = math:add
+///   const process = module:process
+struct FuncRefStmtAST : StmtAST {
+    static constexpr ASTKind staticKind = ASTKind::FuncRefStmt;
+    
+    ExprPtr target;  // The function reference (Identifier, FieldAccess, ModuleAccess)
+    
+    FuncRefStmtAST() : StmtAST(ASTKind::FuncRefStmt) {}
 };
 
 /**

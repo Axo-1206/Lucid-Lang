@@ -441,7 +441,7 @@ TypeAST* parseFuncType(TokenStream& stream, ParserContext& ctx) {
     
     // ─── 3. Parse return types (optional) ─────────────────────────────────
     if (stream.match(TokenType::ARROW)) {
-        funcType->hasArrow = true;
+        funcType->isVoid = true;
         // parseReturnList handles:
         // - Single type: `int`
         // - Multiple types: `(int, string)`

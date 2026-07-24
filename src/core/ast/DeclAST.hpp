@@ -171,11 +171,7 @@ struct FuncDeclAST : ValueDeclAST {
     DeclKeyword keyword;
     ArenaSpan<GenericParamDeclPtr> genericParams;
     FuncTypeAST* funcType = nullptr;   // full function type
-    StmtPtr body = nullptr;            // always BlockStmtAST
-    
-    // Cache for the first return type (for quick access during checking)
-    // Set during Phase 2 type resolution
-    TypePtr resolvedReturnType = nullptr;
+    StmtPtr body = nullptr;            // BlockStmtAST or ReturnStmtAST (expression body)
 
     FuncDeclAST() : ValueDeclAST(ASTKind::FuncDecl) {}
 };

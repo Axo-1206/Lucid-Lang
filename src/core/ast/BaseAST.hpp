@@ -1,18 +1,16 @@
-/**
- * @file BaseAST.hpp
- *
- * @responsibility The Foundation. Defines the BaseAST, the Visitor interface,
- *                 and common types (DocComment, SourceLocation, ASTKind).
- *
- * @architectural_note
- *   This file uses Forward Declarations for all AST families (Expr, Stmt, etc.).
- *   NEVER include a family header (like ExprAST.hpp) here; this keeps the
- *   dependency graph acyclic.
- *
- * @related_files
- *   - src/ast/ExprAST.hpp, StmtAST.hpp, DeclAST.hpp, TypeAST.hpp
- *   - Each family header includes BaseAST.hpp, not the other way around.
- */
+/// @file BaseAST.hpp
+/// 
+/// @responsibility The Foundation. Defines the BaseAST, the Visitor interface,
+///                 and common types (DocComment, SourceLocation, ASTKind).
+/// 
+/// @architectural_note
+///   This file uses Forward Declarations for all AST families (Expr, Stmt, etc.).
+///   NEVER include a family header (like ExprAST.hpp) here; this keeps the
+///   dependency graph acyclic.
+/// 
+/// @related_files
+///   - src/ast/ExprAST.hpp, StmtAST.hpp, DeclAST.hpp, TypeAST.hpp
+///   - Each family header includes BaseAST.hpp, not the other way around.
 
 #pragma once
 
@@ -109,6 +107,7 @@ struct BreakStmtAST;
 struct ContinueStmtAST;
 struct MultiVarDeclAST;
 struct MultiAssignStmtAST;
+struct FuncRefStmt;
 
 // Root
 struct ModuleAST;
@@ -224,6 +223,7 @@ enum class ASTKind : uint16_t {
     ContinueStmt,
     MultiVarDecl,
     MultiAssignStmt,
+    FuncRefStmt,
 
     // Root
     Program,

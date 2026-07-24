@@ -1,27 +1,25 @@
-/**
- * @file SemaDecl.cpp
- * @brief Implements Sema.hpp's "Declarations" section — analyzeDecl() and
- *        every specific analyze*Decl() function.
- *
- * @architectural_note Insert-before-recurse, except where it would be wrong
- *   This file's central theme is Sema.hpp's own "insert this name, THEN
- *   recurse into its internals" pattern — but applied per declaration kind:
- *     - Structs/enums/traits: insert name, open ScopedTypeDefinition, THEN
- *       walk fields/variants — enables self-reference (e.g., `next ptr<Node>?`)
- *     - Functions: insert name BEFORE params/body — enables recursion
- *     - Variables: type-check initializer BEFORE inserting name — prevents
- *       `let x int = x` from resolving to itself
- *
- * @architectural_note Redeclaration checks use current tier only
- *   Shadowing outer names is allowed. Every duplicate-name check looks only
- *   at the tier where the new declaration will be inserted, using the
- *   redeclaration helpers from Lookup.cpp.
- *
- * @architectural_note AST nodes are read-only
- *   The parser already created and populated all AST nodes. Semantic analysis
- *   only reads from them and annotates them with resolved types. We never
- *   modify the structure of the AST, only add semantic annotations.
- */
+/// @file SemaDecl.cpp
+/// @brief Implements Sema.hpp's "Declarations" section — analyzeDecl() and
+///        every specific analyze*Decl() function.
+/// 
+/// @architectural_note Insert-before-recurse, except where it would be wrong
+///   This file's central theme is Sema.hpp's own "insert this name, THEN
+///   recurse into its internals" pattern — but applied per declaration kind:
+///     - Structs/enums/traits: insert name, open ScopedTypeDefinition, THEN
+///       walk fields/variants — enables self-reference (e.g., `next ptr<Node>?`)
+///     - Functions: insert name BEFORE params/body — enables recursion
+///     - Variables: type-check initializer BEFORE inserting name — prevents
+///       `let x int = x` from resolving to itself
+/// 
+/// @architectural_note Redeclaration checks use current tier only
+///   Shadowing outer names is allowed. Every duplicate-name check looks only
+///   at the tier where the new declaration will be inserted, using the
+///   redeclaration helpers from Lookup.cpp.
+/// 
+/// @architectural_note AST nodes are read-only
+///   The parser already created and populated all AST nodes. Semantic analysis
+///   only reads from them and annotates them with resolved types. We never
+///   modify the structure of the AST, only add semantic annotations.
 
 #include "../Sema.hpp"
 #include "../context/SemaContext.hpp"
@@ -30,18 +28,17 @@
 
 namespace sema {
 
-/**
- * @brief Dispatch a declaration to its specific analyzer.
- *
- * IMPORTANT: Every declaration analyzer follows this pattern:
- *   1. REGISTER the declaration's name in the symbol table
- *   2. Push appropriate context guard (ScopedTypeDefinition for types)
- *   3. Analyze the declaration's internals (fields, body, etc.)
- *   4. Pop context guard
- *
- * This ordering enables self-reference: the name is findable while analyzing
- * the declaration's own internals.
- */
+
+/// @brief Dispatch a declaration to its specific analyzer.
+/// 
+/// IMPORTANT: Every declaration analyzer follows this pattern:
+///   1. REGISTER the declaration's name in the symbol table
+///   2. Push appropriate context guard (ScopedTypeDefinition for types)
+///   3. Analyze the declaration's internals (fields, body, etc.)
+///   4. Pop context guard
+/// 
+/// This ordering enables self-reference: the name is findable while analyzing
+/// the declaration's own internals.
 void analyzeDecl(const DeclAST* decl, SemaContext& ctx) {
     if (!decl) return;
 
@@ -57,13 +54,12 @@ void analyzeDecl(const DeclAST* decl, SemaContext& ctx) {
     }
 }
 
-/**
- * @brief Register an import declaration.
- *
- * REGISTRATION:
- *   - `ctx.symbols.addImportAlias(alias, module)` - registers import alias
- *   - This allows `module:member` syntax in expressions
- */
+
+/// @brief Register an import declaration.
+/// 
+/// REGISTRATION:
+///   - `ctx.symbols.addImportAlias(alias, module)` - registers import alias
+///   - This allows `module:member` syntax in expressions
 void analyzeImportDecl(const ImportDeclAST* decl, SemaContext& ctx) {
     validateAttributes(decl->attributes, decl, ctx);
 
@@ -82,25 +78,37 @@ void analyzeImportDecl(const ImportDeclAST* decl, SemaContext& ctx) {
     ctx.symbols.addImportAlias(decl->alias, target);
 }
 
-/**
- * @brief Register a variable declaration.
- *
- * REGISTRATION:
- *   - `ctx.symbols.insertValue(decl)` - registers in value namespace
- *   - For const declarations, marks isConst = true
- */
+/// @brief Register a variable declaration.
+///
+/// REGISTRATION:
+///   - `ctx.symbols.insertValue(decl)` - registers in value namespace
+///   - For const declarations, marks isConst = true
+///
+/// ORDER:
+///   1. Validate attributes
+///   2. Resolve the declared type
+///   3. Check redeclaration
+///   4. For const: enforce initializer
+///   5. For init: type-check the expression
+///   6. Register the variable
+///
+/// NOTE: The initializer is checked BEFORE inserting the variable name.
+/// This prevents `let x int = x` from resolving to itself.
 void analyzeVarDecl(const VarDeclAST* decl, SemaContext& ctx) {
     validateAttributes(decl->attributes, decl, ctx);
 
-    // Resolve the declared type - checks if the type name exists in scope
+    // ─── 1. Resolve the declared type ─────────────────────────────────
+    // Checks if the type name exists in scope
     TypeAST* declaredType = resolveType(decl->type, ctx);
 
+    // ─── 2. Check redeclaration ──────────────────────────────────────
     // Check value redeclaration in current tier only (shadowing is allowed)
     if (reportValueRedeclaration(decl, ctx)) {
         return;
     }
 
-    // `const` requires an initializer - no default value allowed
+    // ─── 3. Const requires initializer ──────────────────────────────
+    // const variables must have an initializer - no default value allowed
     if (decl->keyword == DeclKeyword::Const && !decl->init) {
         ctx.error(decl, DiagCode::E3002,
                   "'", ctx.pool().lookup(decl->name), "' must have an initializer");
@@ -109,42 +117,167 @@ void analyzeVarDecl(const VarDeclAST* decl, SemaContext& ctx) {
         return;
     }
 
+    // ─── 4. Check initializer ────────────────────────────────────────
     // Check initializer type BEFORE inserting the variable name
     // This prevents `let x int = x` from resolving to itself
     if (decl->init) {
-        TypeAST* initType = checkExpr(decl->init, ctx);
-        
-        if (declaredType && initType) {
-            if (!isAssignable(declaredType, initType, ctx)) {
-                std::string expected = debug::typeToString(declaredType, ctx.pool());
-                std::string actual = debug::typeToString(initType, ctx.pool());
-                ctx.error(decl->init, DiagCode::E3003,
-                          "type mismatch for '", ctx.pool().lookup(decl->name),
-                          "': expected ", expected, ", got ", actual);
-            }
+        // checkExpr validates the expression against the declared type
+        // This handles: type assignability, value state propagation, etc.
+        if (!checkExpr(decl->init, declaredType, ctx)) {
+            // Error already reported by checkExpr
+            // Still register the variable for error recovery
+            ctx.symbols.insertValue(decl);
+            return;
         }
     }
 
+    // ─── 5. Register the variable ────────────────────────────────────
+    // Set the variable's cached type and register it in the symbol table
+    const_cast<VarDeclAST*>(decl)->type = declaredType;
     ctx.symbols.insertValue(decl);
 }
 
-/**
- * @brief Register a function declaration.
- *
- * REGISTRATION:
- *   - `ctx.symbols.insertValue(decl->name, decl)` - registers in value namespace
- *   - Generic params registered via analyzeGenericParamDecl() BEFORE body
- *
- * ORDER:
- *   1. Register function name (for recursion)
- *   2. Register generic parameters (for use in params/return/body)
- *   3. Push ScopedSemanticContext(FuncBody)
- *   4. Analyze parameters, return type, and body
- *   5. Pop context
- */
- void analyzeFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
+/// @brief Analyze a function declaration.
+///
+/// REGISTRATION:
+///   - `ctx.symbols.insertValue(decl)` - registers in value namespace
+///   - Generic params registered via analyzeGenericParamDecl() BEFORE body
+///
+/// ORDER:
+///   1. Register function name (for recursion)
+///   2. Register generic parameters (for use in params/return/body)
+///   3. Push ScopedSemanticContext(FuncBody)
+///   4. Analyze parameters, return type, and body
+///   5. Pop context
+///
+/// BODY TYPES:
+///   - Block: { ... } - executable statements
+///   - Expression: a + b - wrapped in ReturnStmtAST
+///   - Reference: module:func - FuncRefStmtAST
+void analyzeFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
+    validateAttributes(decl->attributes, decl, ctx);
 
- }
+    // ─── 1. Resolve the function type ─────────────────────────────────────
+    // Checks if all parameter and return types exist in scope
+    FuncTypeAST* funcType = const_cast<FuncTypeAST*>(decl->funcType);
+    resolveFuncType(funcType, ctx);
+
+    // ─── 2. Find the innermost return type ───────────────────────────────
+    // Walk through curried groups to find the final return type
+    FuncTypeAST* innermost = funcType;
+    while (innermost && innermost->isCurried()) {
+        innermost = innermost->getNext();
+    }
+    bool isVoid = (innermost == nullptr || innermost->isVoid());
+
+    // ─── 3. Check redeclaration ───────────────────────────────────────────
+    // Check value redeclaration in current tier only (shadowing is allowed)
+    if (reportValueRedeclaration(decl, ctx)) {
+        return;
+    }
+
+    // ─── 4. Register function name BEFORE analyzing body ──────────────────
+    // This enables recursion: the function can call itself inside its body
+    ctx.symbols.insertValue(decl);
+
+    // ─── 5. Check for @[foreign] attribute ────────────────────────────────
+    // TODO: @[foreign] attribute support is not yet implemented.
+    // Foreign functions have no body - they're declarations only.
+    // When implemented, this should validate the foreign function signature
+    // against the FFI manifest and skip body analysis.
+    AttributeAST* foreignAttr = findForeignAttr(decl->attributes, ctx);
+    if (foreignAttr) {
+        // For now, treat as a regular function but warn that foreign is not supported
+        // TODO: Implement proper foreign function validation
+        // validateForeignFunc(decl, foreignAttr, ctx);
+        // return;
+    }
+
+    // ─── 6. Analyze generic parameters ────────────────────────────────────
+    // Generic parameters are registered in the current scope's genericParams map
+    // They shadow type names within the function's scope
+    for (const GenericParamDeclAST* g : decl->genericParams) {
+        analyzeGenericParamDecl(g, ctx);
+    }
+
+    // ─── 7. Analyze parameters ────────────────────────────────────────────
+    // Parameters are registered in the function's scope
+    // Walk through all curry groups
+    for (FuncTypeAST* group = funcType; group; group = group->getNext()) {
+        for (ParamAST* param : group->params) {
+            analyzeParam(param, ctx);
+        }
+    }
+
+    // ─── 8. Analyze body ──────────────────────────────────────────────────
+    // Push FuncBody context so statements know they're inside a function
+    ScopedSemanticContext funcCtx(ctx, SemanticContext::FuncBody, decl, decl->loc);
+
+    if (!decl->body) {
+        ctx.error(decl, DiagCode::E3003, "function '", ctx.pool().lookup(decl->name), "' has no body");
+        return;
+    }
+
+    bool bodyReturns = false;
+
+    // ─── 8a. Block Body ───────────────────────────────────────────────────
+    if (decl->body->isa<BlockStmtAST>()) {
+        bodyReturns = analyzeBlock(decl->body->as<BlockStmtAST>(), ctx);
+    }
+    // ─── 8b. Expression Body (wrapped in ReturnStmtAST) ──────────────────
+    else if (decl->body->isa<ReturnStmtAST>()) {
+        bodyReturns = analyzeReturnStmt(decl->body->as<ReturnStmtAST>(), ctx);
+    }
+    // ─── 8c. Function Reference Body ─────────────────────────────────────
+    else if (decl->body->isa<FuncRefStmtAST>()) {
+        const FuncRefStmtAST* refStmt = decl->body->as<FuncRefStmtAST>();
+        
+        // Validate the target expression against the function type
+        // The target must be a function value (Identifier, FieldAccess, or ModuleAccess)
+        if (!checkExpr(refStmt->target, funcType, ctx)) {
+            ctx.error(refStmt->target, DiagCode::E3003,
+                      "function reference target type mismatch for '",
+                      ctx.pool().lookup(decl->name), "'");
+            return;
+        }
+
+        // Check that the target is actually a function value
+        if (!refStmt->target->resolvedType || 
+            !refStmt->target->resolvedType->isa<FuncTypeAST>()) {
+            ctx.error(refStmt->target, DiagCode::E2003,
+                      "function reference target is not a function for '",
+                      ctx.pool().lookup(decl->name), "'");
+            return;
+        }
+
+        // Check that the target function type matches this function's type
+        FuncTypeAST* targetFuncType = refStmt->target->resolvedType->as<FuncTypeAST>();
+        if (!typesEqual(funcType, targetFuncType)) {
+            ctx.error(refStmt->target, DiagCode::E3003,
+                      "function reference type mismatch: expected ",
+                      debug::typeToString(funcType, ctx.pool()),
+                      ", got ", debug::typeToString(targetFuncType, ctx.pool()));
+            return;
+        }
+
+        // A function reference is considered to "return" on all paths
+        // because the referenced function handles it
+        bodyReturns = true;
+    }
+    // ─── 8d. Unknown Body Type ────────────────────────────────────────────
+    else {
+        ctx.error(decl, DiagCode::E3003, 
+                  "function '", ctx.pool().lookup(decl->name), "' has invalid body type");
+        return;
+    }
+
+    // ─── 9. Verify return paths ──────────────────────────────────────────
+    // Non-void functions must return on all paths
+    if (!isVoid && !bodyReturns) {
+        ctx.error(decl, DiagCode::E3005,
+                  "function '", ctx.pool().lookup(decl->name), "' is missing a return");
+    }
+}
 
  /**
  * @brief Analyze a function parameter.
