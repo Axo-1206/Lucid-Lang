@@ -113,8 +113,6 @@ bool analyzeBreakStmt(const BreakStmtAST* stmt, SemaContext& ctx);
 bool analyzeContinueStmt(const ContinueStmtAST* stmt, SemaContext& ctx);
 bool analyzeExprStmt(const ExprStmtAST* stmt, SemaContext& ctx);
 bool analyzeDeclStmt(const DeclStmtAST* stmt, SemaContext& ctx);
-bool analyzeMultiVarDecl(const MultiVarDeclAST* stmt, SemaContext& ctx);
-bool analyzeMultiAssignStmt(const MultiAssignStmtAST* stmt, SemaContext& ctx);
 
 // ─── Concurrency ─────────────────────────────────────────────────────────
 

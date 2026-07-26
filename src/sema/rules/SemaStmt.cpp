@@ -50,8 +50,6 @@ bool analyzeStmt(const StmtAST* stmt, SemaContext& ctx) {
         case ASTKind::ContinueStmt:     return analyzeContinueStmt(stmt->as<ContinueStmtAST>(), ctx);
         case ASTKind::ExprStmt:         return analyzeExprStmt(stmt->as<ExprStmtAST>(), ctx);
         case ASTKind::DeclStmt:         return analyzeDeclStmt(stmt->as<DeclStmtAST>(), ctx);
-        case ASTKind::MultiVarDecl:     return analyzeMultiVarDecl(stmt->as<MultiVarDeclAST>(), ctx);
-        case ASTKind::MultiAssignStmt:  return analyzeMultiAssignStmt(stmt->as<MultiAssignStmtAST>(), ctx);
         case ASTKind::AsyncExpr:        return analyzeAsyncStmt(stmt->as<AsyncStmtAST>(), ctx);
         case ASTKind::AwaitExpr:        return analyzeAwaitStmt(stmt->as<AwaitStmtAST>(), ctx);
         case ASTKind::SpawnExpr:        return analyzeSpawnStmt(stmt->as<SpawnStmtAST>(), ctx);
@@ -531,55 +529,6 @@ bool analyzeDeclStmt(const DeclStmtAST* stmt, SemaContext& ctx) {
     return false;
 }
 
-// =============================================================================
-// analyzeMultiVarDecl
-// =============================================================================
-
-/// @brief Analyze a multi-variable declaration.
-///
-/// Grammar: `(let | const) IDENTIFIER type { ',' IDENTIFIER type } '=' expr`
-///
-/// All variables share the same keyword and type annotations.
-/// The RHS must return as many values as there are variables.
-///
-/// @param stmt The multi-var declaration statement.
-/// @param ctx The semantic context.
-/// @return false (declarations do NOT transfer control).
-bool analyzeMultiVarDecl(const MultiVarDeclAST* stmt, SemaContext& ctx) {
-    // TODO: Check that we're inside a block (not at module level)
-    // TODO: Check each variable name for redeclaration
-    // TODO: Resolve each variable's type
-    // TODO: Check the RHS expression (must return as many values as variables)
-    // TODO: Check type assignability for each variable
-    // TODO: For const, enforce all variables have initializers
-    // TODO: Return false (declarations do not transfer control)
-    return false;
-}
-
-// =============================================================================
-// analyzeMultiAssignStmt
-// =============================================================================
-
-/// @brief Analyze a multi-assignment statement.
-///
-/// Grammar: `expr_lhs { ',' expr_lhs } '=' expr`
-///
-/// Each LHS must be an assignable lvalue (variable, field, index).
-/// The RHS must return as many values as there are LHS targets.
-///
-/// @param stmt The multi-assignment statement.
-/// @param ctx The semantic context.
-/// @return false (assignments do NOT transfer control).
-bool analyzeMultiAssignStmt(const MultiAssignStmtAST* stmt, SemaContext& ctx) {
-    // TODO: Check that we're inside a block (not at module level)
-    // TODO: Check each LHS is an assignable lvalue
-    // TODO: Check each LHS is not const (if variable or field)
-    // TODO: Check each LHS is not a module member (read-only)
-    // TODO: Check the RHS expression (must return as many values as LHS targets)
-    // TODO: Check type assignability for each LHS/RHS pair
-    // TODO: Return false (assignments do not transfer control)
-    return false;
-}
 
 
 
