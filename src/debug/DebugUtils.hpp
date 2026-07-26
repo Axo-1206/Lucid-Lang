@@ -104,8 +104,6 @@ inline std::string kindToString(ASTKind kind) {
         case ASTKind::ReturnStmt:         return "ReturnStmt";
         case ASTKind::BreakStmt:          return "BreakStmt";
         case ASTKind::ContinueStmt:       return "ContinueStmt";
-        case ASTKind::MultiVarDecl:       return "MultiVarDecl";
-        case ASTKind::MultiAssignStmt:    return "MultiAssignStmt";
 
         // Root
         case ASTKind::Program:            return "Program";
@@ -406,25 +404,7 @@ inline std::string typeToString(const TypeAST* type, const StringPool& pool) {
         //   - Void: (a int)                    → hasArrow = false → "(a int)"
         if (func->hasArrow) {
             result += " -> ";
-            
-            // Return types
-            if (func->returnTypes.empty()) {
-                result += "void";
-            } else if (func->isCurried()) {
-                // For curried functions, show the inner function type
-                // The inner function's hasArrow determines its own arrow display
-                result += typeToString(func->returnTypes[0], pool);
-            } else if (func->returnTypes.size() == 1) {
-                result += typeToString(func->returnTypes[0], pool);
-            } else {
-                // Multiple return values
-                result += "(";
-                for (size_t i = 0; i < func->returnTypes.size(); ++i) {
-                    if (i > 0) result += ", ";
-                    result += typeToString(func->returnTypes[i], pool);
-                }
-                result += ")";
-            }
+            result += typeToString(func->returnType, pool);
         }
         return result;
     }

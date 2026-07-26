@@ -189,7 +189,6 @@ using FieldInitPtr = FieldInitAST*;
 /// @field typeName      The name of the struct type.
 /// @field genericArgs   Generic arguments (empty if non-generic).
 /// @field inits         Field initializers (field = expr entries).
-/// @field instantiatedType  Resolved type (set during semantic analysis).
 struct StructLiteralExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::StructLiteralExpr;
 

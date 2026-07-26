@@ -117,8 +117,7 @@ struct NamedTypeAST : TypeAST {
     InternedString name;
     ArenaSpan<TypePtr> genericArgs;
 
-    explicit NamedTypeAST(InternedString n)
-        : TypeAST(ASTKind::NamedType), name(n) {}
+    explicit NamedTypeAST() : TypeAST(ASTKind::NamedType) {}
 };
 
 /// @brief Wraps an inner type with the nullable suffix `?`.
@@ -161,7 +160,7 @@ struct NullableTypeAST : TypeAST {
 struct FallibleTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::FallibleType;
 
-    TypePtr inner;
+    TypePtr inner = nullptr;
 
     explicit FallibleTypeAST(TypePtr t)
         : TypeAST(ASTKind::FallibleType), inner(t) {}
@@ -186,7 +185,7 @@ struct FallibleTypeAST : TypeAST {
 struct CombinedTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::CombinedType;
 
-    TypePtr inner;
+    TypePtr inner = nullptr;
 
     explicit CombinedTypeAST(TypePtr t)
         : TypeAST(ASTKind::CombinedType), inner(t) {}
@@ -219,7 +218,7 @@ struct ArrayTypeAST : TypeAST {
 
     ArrayKind arrayKind;
     uint64_t size;
-    TypePtr element;
+    TypePtr element = nullptr;
 
     ArrayTypeAST(ArrayKind k, uint64_t sz, TypePtr elem)
         : TypeAST(ASTKind::ArrayType), arrayKind(k), size(sz), element(elem) {}
@@ -253,7 +252,7 @@ struct ArrayTypeAST : TypeAST {
 struct RefTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::RefType;
 
-    TypePtr inner;
+    TypePtr inner = nullptr;
 
     explicit RefTypeAST(TypePtr t)
         : TypeAST(ASTKind::RefType), inner(t) {}
@@ -294,7 +293,7 @@ struct RefTypeAST : TypeAST {
 struct PtrTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::PtrType;
 
-    TypePtr inner;
+    TypePtr inner = nullptr;
 
     explicit PtrTypeAST(TypePtr t)
         : TypeAST(ASTKind::PtrType), inner(t) {}
@@ -329,7 +328,7 @@ struct FuncTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::FuncType;
 
     ArenaSpan<ParamAST*> params;      // parameters for this group
-    ArenaSpan<TypePtr>  returnTypes;  // return types (may contain FuncTypeAST)
+    TypePtr returnType = nullptr;  // return types (may contain FuncTypeAST)
     bool hasArrow = false;            // semantic enforce return statement inside the body
                                       // and codegen will automatically wrap function
 
@@ -337,24 +336,6 @@ struct FuncTypeAST : TypeAST {
     
     // Returns true if the return type is a function type (currying)
     bool isCurried() const { 
-        return returnTypes.size() == 1 && returnTypes[0] && returnTypes[0]->isa<FuncTypeAST>();
-    }
-    
-    // Returns the inner function type if curried, otherwise nullptr
-    FuncTypeAST* getNext() const {
-        if (isCurried()) {
-            return returnTypes[0]->as<FuncTypeAST>();
-        }
-        return nullptr;
-    }
-
-    // Returns true if this function type has no return types (void)
-    bool isVoid() const {
-        return returnTypes.size() == 0;
-    }
-
-    // Returns the number of return values
-    size_t returnCount() const {
-        return returnTypes.size();
+        return returnType->isa<FuncTypeAST>();
     }
 };

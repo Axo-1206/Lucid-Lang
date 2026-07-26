@@ -105,8 +105,6 @@ struct DoWhileStmtAST;
 struct ReturnStmtAST;
 struct BreakStmtAST;
 struct ContinueStmtAST;
-struct MultiVarDeclAST;
-struct MultiAssignStmtAST;
 struct FuncRefStmt;
 
 // Root
@@ -220,8 +218,6 @@ enum class ASTKind : uint16_t {
     ReturnStmt,
     BreakStmt,
     ContinueStmt,
-    MultiVarDecl,
-    MultiAssignStmt,
     FuncRefStmt,
 
     // Root

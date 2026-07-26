@@ -93,85 +93,6 @@ struct DeclStmtAST : StmtAST {
     bool isUseDecl() const { return decl && decl->isa<ImportDeclAST>(); }
 };
 
-/// @brief Multiple variable declaration (with `let` or `const`).
-/// 
-/// Grammar:
-///   multi_var_decl := ( 'let' | 'const' ) IDENTIFIER type { ',' IDENTIFIER type } '=' expr
-/// 
-/// @example
-///   let value int, ok bool = parseInt("42")
-///   const w int, h int = getScreenSize()
-/// 
-/// All variables share the same keyword. Each variable has an explicit type.
-/// The RHS must be a single expression that returns as many values as there are variables.
-/// 
-/// ─── Semantic Analysis Notes ──────────────────────────────────────────────
-/// 1. **Count Matching**: The number of variables must match the number of
-///    values returned by the RHS expression.
-/// 2. **Type Matching**: Each variable's type must match the corresponding
-///    return value type.
-/// 3. **Scope**: Variables are declared in the current scope and visible
-///    after the declaration.
-/// 4. **Const Initialization**: If `keyword` is `Const`, all variables must
-///    have initializers (enforced by the parser/semantic pass).
-struct MultiVarDeclAST : StmtAST {
-    static constexpr ASTKind staticKind = ASTKind::MultiVarDecl;
-
-    DeclKeyword keyword;                                // `let` or `const`
-    ArenaSpan<std::pair<InternedString, TypePtr>> vars; // (name, type) for each variable
-    ExprPtr rhs;                                        // Initialiser expression
-
-    MultiVarDeclAST() : StmtAST(ASTKind::MultiVarDecl) {}
-};
-
-/// @brief A statement that references another function.
-/// Used for function declarations that delegate to another function.
-/// Examples:
-///   const add (a int)(b int) -> int = math:add
-///   const process = module:process
-struct FuncRefStmtAST : StmtAST {
-    static constexpr ASTKind staticKind = ASTKind::FuncRefStmt;
-    
-    ExprPtr target;  // The function reference (Identifier, FieldAccess, ModuleAccess)
-    
-    FuncRefStmtAST() : StmtAST(ASTKind::FuncRefStmt) {}
-};
-
-/// @brief Multi‑assignment to existing variables (no `let`/`const`).
-/// 
-/// Grammar:
-///   multi_assign_stmt := expr_lhs { ',' expr_lhs } '=' expr
-///   expr_lhs          := IDENTIFIER | expr '.' IDENTIFIER | expr '[' expr ']'
-/// 
-/// @example
-///   value, ok = parseInt("42")
-///   x.y, arr[i] = getValues()
-///   p.x, q.y = getPositions()
-/// 
-/// Each left‑hand side must be an assignable lvalue (variable, field access, or index).
-/// The RHS must be a single expression producing as many values as there are LHS targets.
-/// Values are assigned left to right.
-/// 
-/// ─── Semantic Analysis Notes ──────────────────────────────────────────────
-/// 1. **Lvalue Validation**: Each LHS must be an assignable lvalue (variable,
-///    field access, or index expression).
-/// 2. **Const Checking**: Assigning to a `const` variable or `const` field is
-///    a semantic error.
-/// 3. **Count Matching**: The number of LHS targets must match the number of
-///    values returned by the RHS expression.
-/// 4. **Type Matching**: Each LHS target's type must match the corresponding
-///    return value type.
-/// 5. **Block Scope Only**: This statement is only allowed inside block scopes
-///    (not at top level).
-struct MultiAssignStmtAST : StmtAST {
-    static constexpr ASTKind staticKind = ASTKind::MultiAssignStmt;
-
-    ArenaSpan<ExprPtr> lhs; // Left‑hand side lvalues
-    ExprPtr rhs;            // Right‑hand side expression (single)
-
-    MultiAssignStmtAST() : StmtAST(ASTKind::MultiAssignStmt) {}
-};
-
 /// @brief The statement form of `if` – `else` is optional, no value is produced.
 /// 
 /// @example
@@ -389,7 +310,7 @@ struct DoWhileStmtAST : StmtAST {
 struct ReturnStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::ReturnStmt;
 
-    ArenaSpan<ExprPtr> values; // Empty for bare `return`, otherwise one or more expressions
+    ExprPtr value; // Empty for bare `return`
 
     ReturnStmtAST() : StmtAST(ASTKind::ReturnStmt) {}
 };
@@ -445,8 +366,7 @@ struct ContinueStmtAST : StmtAST {
 /// ─── Semantic Analysis Notes ──────────────────────────────────────────────
 /// 1. **Future Type**: The variable's type becomes `Future<T>` after async assignment.
 /// 2. **Cannot Use**: A `Future<T>` cannot be used as `T` – it must be awaited first.
-/// 3. **Multiple Returns**: One variable per return value of the call expression.
-/// 4. **Await Required**: The compiler warns about unawaited async operations
+/// 3. **Await Required**: The compiler warns about unawaited async operations
 ///    when the scope exits.
 /// 
 /// @field target         The variables being assigned to.
@@ -454,7 +374,7 @@ struct ContinueStmtAST : StmtAST {
 struct AsyncStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::AsyncExpr;
 
-    ArenaSpan<ExprPtr> target;   // variables to bind (must be lvalues)
+    ExprPtr target;   // variables to bind (must be lvalues)
     ExprPtr call;                // the async call
 
     AsyncStmtAST() : StmtAST(ASTKind::AsyncExpr) {}
@@ -492,8 +412,8 @@ struct AwaitStmtAST : StmtAST {
 /// 
 /// @example
 ///   spawn result = computeHeavyData()
-///   spawn _, _ = parseAndValidate(data)  – discard all return values
-///   spawn user, _, _ = processUser(data) – keep some, discard others
+///   spawn _ = parseAndValidate(data)  – discard all return values
+///   spawn user = processUser(data)
 /// 
 /// ─── Key Characteristics ──────────────────────────────────────────────────
 /// - Parallelism (OS threads)
@@ -509,18 +429,17 @@ struct AwaitStmtAST : StmtAST {
 /// 1. **Future Type**: The variable's type becomes `Future<T>` after spawn assignment.
 /// 2. **Cannot Use**: A `Future<T>` cannot be used as `T` – it must be joined first.
 /// 3. **Discard Pattern**: `_` means the result is discarded – no join required.
-/// 4. **Multiple Returns**: One variable per return value of the call expression.
-/// 5. **Join Warning**: The compiler warns about named spawns that are never joined.
-/// 6. **Shared State**: Variables declared before the spawn call are shared
+/// 4. **Join Warning**: The compiler warns about named spawns that are never joined.
+/// 5. **Shared State**: Variables declared before the spawn call are shared
 ///    between threads (requires synchronization).
-/// 7. **Nesting**: A spawned thread can itself launch further spawn or async calls.
+/// 6. **Nesting**: A spawned thread can itself launch further spawn or async calls.
 /// 
 /// @field targets        The variables being assigned to (`_` means discard).
 /// @field call           The spawn call expression.
 struct SpawnStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::SpawnExpr;
 
-    ArenaSpan<ExprPtr> targets;   // variables to bind (`_` for discard)
+    ExprPtr target;   // variables to bind (`_` for discard)
     ExprPtr call;                // the spawn call
 
     SpawnStmtAST() : StmtAST(ASTKind::SpawnExpr) {}
@@ -571,8 +490,6 @@ using DoWhileStmtPtr = DoWhileStmtAST*;
 using ReturnStmtPtr = ReturnStmtAST*;
 using BreakStmtPtr = BreakStmtAST*;
 using ContinueStmtPtr = ContinueStmtAST*;
-using MultiVarDeclPtr = MultiVarDeclAST*;
-using MultiAssignStmtPtr = MultiAssignStmtAST*;
 using AsyncExprPtr = AsyncStmtAST*;
 using AwaitExprPtr = AwaitStmtAST*;
 using SpawnExprPtr = SpawnStmtAST*;
