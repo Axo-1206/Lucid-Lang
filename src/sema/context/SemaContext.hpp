@@ -19,8 +19,11 @@
 
 #include "SemanticResources.hpp"
 #include "SymbolStorage.hpp"
-#include "SemanticContextStack.hpp"
+#include "ContextStack.hpp"          // Was SemanticContextStack.hpp
 #include "DefiningTypeStack.hpp"
+#include "ContextKind.hpp"            // Was SemanticContext.hpp
+#include "ReturnRequirements.hpp"
+#include "NarrowingStack.hpp"
 
 #include "core/diagnostics/Diagnostic.hpp"
 #include "core/diagnostics/DiagnosticCodes.hpp"
@@ -37,7 +40,7 @@ namespace sema {
 /// Composes:
 ///   - SemanticResources (shared, immutable)
 ///   - SymbolStorage (two-tier symbol tables)
-///   - SemanticContextStack (semantic nesting)
+///   - ContextStack (semantic nesting)           // Was SemanticContextStack
 ///   - DefiningTypeStack (self-reference support)
 /// 
 /// Also provides:
@@ -53,7 +56,7 @@ struct SemaContext {
     SymbolStorage symbols;
 
     /// Semantic context stack (includes type narrowing)
-    SemanticContextStack contexts;
+    ContextStack contexts;              // Was SemanticContextStack
 
     /// Self-reference support
     DefiningTypeStack definingTypes;
@@ -253,12 +256,12 @@ public:
 
 /// @brief RAII guard for semantic context tracking.
 /// 
-/// Pushes a SemanticContext frame on construction and pops it on
+/// Pushes a ContextKind frame on construction and pops it on
 /// destruction — automatically, on every exit path.
 /// 
 /// ```cpp
 /// void visitFunction(FuncDeclAST* func, SemaContext& ctx) {
-///     ScopedSemanticContext guard(ctx, SemanticContext::FuncBody,
+///     ScopedSemanticContext guard(ctx, ContextKind::FuncBody,
 ///                                   func, func->loc);
 ///     // ctx.contexts.current() now returns FuncBody
 ///     // return is legal inside the body
@@ -267,7 +270,7 @@ public:
 /// 
 /// Non-copyable, non-movable: identity is tied to one specific activation.
 struct ScopedSemanticContext {
-    explicit ScopedSemanticContext(SemaContext& ctx, SemanticContext kind,
+    explicit ScopedSemanticContext(SemaContext& ctx, ContextKind kind,
                                     const BaseAST* node, const SourceLocation& loc)
         : ctx_(ctx) {
         // const_cast is safe here because we only store the node pointer
