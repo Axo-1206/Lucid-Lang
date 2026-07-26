@@ -307,7 +307,7 @@ or          not         true        false       nil         err
 > type breaks parsing itself, not just readability.
 >
 > `func_decl` only ever introduces parameter names by writing `(name type)`
-> directly in a literal `param_group` — see **Function Declaration**. Consider:
+> directly in a literal `bound_group` — see **Function Declaration**. Consider:
 >
 > ```lucid
 > type MagicFunction = (a int) -> int;
@@ -1135,21 +1135,42 @@ real execution boundaries.
 
 ```ebnf
 func_decl       = { attribute_list } ('let' | 'const') IDENTIFIER [ generic_params ]
-                  param_group
-                  [ '->' return_type ]  (* omitted for void/unit *)
+                  chain
                   '=' func_body
 
-param_group     = '(' [ param_list ] ')'
-param_list      = param { ',' param } [ ',' variadic_param ]
-                | variadic_param
-param           = IDENTIFIER type               (* pass by value — caller's copy *)
+(* A chain is one or more clusters joined by '->', ending in a bare type.
+   The '->' is mandatory at every stage — there is no arrow-omission
+   shorthand for void/unit; a function returning nothing is written
+   '-> ()' explicitly, same as any other return type.
+
+   A cluster is one or more groups written back-to-back with no
+   arrow between them. Two groups glued with no '->' between them are the
+   Form 2 shorthand for that boundary; a '->' between two groups is the
+   Form 1 explicit stage for that boundary. Both spellings are legal at
+   any boundary in the same chain, and may be freely mixed — see
+   **Currying and Partial Application**, later in this document. *)
+
+chain           = bound_cluster { '->' unnamed_cluster } '->' type
+
+bound_cluster   = bound_group { bound_group }
+                  (* the leading cluster only — the one immediately bound
+                     to func_body. Parameter names introduced here are the
+                     only real bindings a func_decl's header can produce. *)
+
+unnamed_cluster = unnamed_group { unnamed_group }
+                  (* every cluster after the first '->'. No identifiers
+                     appear here — see the func_type production, below. *)
+
+bound_group     = '(' [ bound_param_list ] ')'
+bound_param_list = bound_param { ',' bound_param } [ ',' variadic_bound ]
+bound_param     = IDENTIFIER type               (* pass by value — caller's copy *)
                 | 'const' IDENTIFIER type       (* read-only reference parameter *)
-variadic_param  = IDENTIFIER '...' type
-                  (* must be the last parameter of a param_group; collects zero or
+variadic_bound  = IDENTIFIER '...' type
+                  (* must be the last parameter of its own group; collects zero or
                   more trailing arguments into a [*]type array *)
 
-return_type     = type
-                | '(' type ',' type { ',' type } ')'   (* multiple return values *)
+unnamed_group   = '(' [ type_param_list ] ')'
+type_param_list = type { ',' type } [ ',' '...' type ]
 
 func_body       = '{' { statement } '}'         (* declaration only — see WARNING below;
                                                      invalid as the RHS of a reassignment *)
@@ -1166,8 +1187,12 @@ generic_args    = '<' type_arg { ',' type_arg } '>'
                      'Foo<int>' is a reference (an IDENTIFIER-headed expr);
                      'Foo<int>(42)' is a call_expr. Both are 'expr'. *)
 
-func_type       = param_group '->' return_type
-                  (* a function type is always a single param group *)
+func_type       = unnamed_cluster { '->' unnamed_cluster } '->' type
+                  (* a bare function type — e.g. a struct field, a *func_type,
+                     a variable's declared type, a generic argument — is
+                     unnamed throughout, including its leading cluster.
+                     Only a chain directly attached to a func_body or a
+                     func_literal may name parameters in its leading cluster. *)
 ```
 
 **`func_body`'s second form is just `expr` — nothing narrower.** Earlier drafts
@@ -1209,7 +1234,8 @@ matches `f`'s declared `func_type` exactly.
 > **A block body (`{ ... }`) is only valid at the declaration, never at
 > reassignment.** A bare block carries no parameter list, no parameter types,
 > and no return type of its own — at declaration time it borrows all of that
-> from the surrounding `func_decl` header (`param_group`, `return_type`). At
+> from the surrounding `func_decl` header (its `chain` — the clusters and the
+terminal `type`). At
 > reassignment there is no such header to borrow from: `f = { ... }` would
 > leave both the parser and the reader unable to tell what parameters `f`
 > takes inside that block. Reassignment must therefore use an `expr` that
@@ -1237,30 +1263,23 @@ matches `f`'s declared `func_type` exactly.
 > f = pickAdder(2)
 > ```
 
-**Multiple return values** are grouped by `()`, NOTE: this is not a tuple but a way
-to allow parser to differentiate them with a `param_group`
+**Grouping several return values** is done with a generic struct — Lucid has no
+return-list and does not plan to add one. A struct is a first-class value: it
+can be stored, passed, nested, and returned from another function, none of
+which a return-list could ever do.
 
 ```lucid
-const parseInt (s string) -> (int, bool) = {
+struct Pair<A, B> { first A, second B }
+
+const parseInt (s string) -> Pair<int, bool> = {
     -- returns parsed value and whether parsing succeeded
-    return 0, false;
+    return Pair<int, bool>{ first = 0, second = false };
 }
 
 -- at the call site
-let value int;
-let ok bool;
-value, ok = parseInt("42");
-
--- or in a single declaration
-let value int, ok bool = parseInt("42");
+let result Pair<int, bool> = parseInt("42");
+if result.second { io:printl(stringFromInt(result.first)) }
 ```
-
-> [!NOTE]
-> (T, U) in a return type is a return list, not a tuple. Lucid has no tuple type
->  and does not plan to add one — multiple return values are a calling convention, 
-> not a first-class value. You cannot store, pass, or nest a return list as a value. 
-> If you need to group values, define a struct.
-
 
 **Parameters** are passed by value (a copy) by default. A `const` parameter
 marks a read-only reference — the function sees the caller's original value
@@ -1316,18 +1335,80 @@ const bad2 (nums ...int, label string)(words ...string) -> int = { ... }    -- E
 
 A flat `param_list` allows at most one variadic parameter — it must be the
 last parameter, so a second one could never follow it within the same group.
-A curry function lifts this limit: since each link in the curry chain is its
-own function with its own parameter list, each can independently end in a
-variadic, giving a function more than one variadic parameter overall, as
-long as each is the last parameter of its own group. The `()()` shorthand
-(see **Form 2 — `()()` Shorthand**, later in this document) only changes how
-that chain is written — it expands to exactly the nested single-argument
-functions described in **Form 1**, so the capability comes from currying
-itself, not from the shorthand syntax:
+A curry chain lifts this limit: since each group can be independently
+applied, each group can end in its own variadic, giving a function more than
+one variadic parameter overall, as long as each is the last parameter of its
+own group — see **Currying and Partial Application**, later in this document,
+for a worked example.
+
+
+### Currying and Partial Application
+
+A function's signature is a **chain**: one or more clusters joined by `->`,
+ending in a bare type. A cluster is one or more groups written back-to-back
+with no `->` between them.
+
+The two ways of joining two groups mean different things, and either spelling
+is legal at **any** boundary in the chain, not only the first:
+
+- **No arrow between two groups (`()()`)** — both groups belong to the same
+  cluster. Nothing runs between them; the compiler auto-generates the
+  wrapper so the group can still be applied one call at a time. Write the
+  body flat, as if every parameter in the cluster arrived together.
+- **An arrow between two groups (`() -> ()`)** — a real body boundary. The
+  function's body must contain an explicit `return (...) -> ... { ... }`
+  for that stage, and code may run at that point, before the next group is
+  supplied.
+
+Only the **leading cluster** of a chain that is directly attached to a
+`func_body` (a `func_decl` or a `func_literal`) may name its parameters —
+those are the only real bindings a header introduces. Every cluster after
+the first `->` is written with bare types, no identifiers, because it is
+documenting the *type* of whatever gets returned, not declaring a binding.
+The names actually come into scope only where a nested
+`return (...) -> ... { ... }` is written, and that literal's own leading
+cluster may name its own parameters, following the same rule recursively.
 
 ```lucid
--- two independent variadics — impossible as a single flat param_list,
--- straightforward as two curried groups
+-- adjacency: both values arrive in one call, one cluster, names in the header
+const add (a int)(b int) -> int = {
+    return a + b;
+}
+
+-- an arrow: a real boundary — the body must supply the nested return.
+-- the header names only the leading cluster ('base'); the returned
+-- function's shape is written with a bare, unnamed group
+const makeAdder (base int) -> (int) -> int = {
+    const adjusted int = base * 2;    -- runs once, at makeAdder(base)
+    return (n int) -> int { return adjusted + n }
+}
+
+const addTen (n int) -> int = makeAdder(5);
+addTen(3);    -- 13
+
+-- mixing both spellings in one chain: a merged leading cluster,
+-- then an explicit boundary, then another merged cluster
+const process (a int)(b int) -> (int) -> int = {
+    const sum int = a + b;    -- runs when process(a)(b) is called
+    return (c int) -> int { return sum + c }
+}
+
+-- an arrow can appear more than once — each one is its own boundary,
+-- each one needs its own nested return in the body
+const build (a int) -> (int) -> (int) -> int = {
+    return (b int) -> (int) -> int {
+        return (c int) -> int {
+            return a + b + c;
+        }
+    }
+}
+```
+
+This also gives a function more than one variadic parameter, which a single
+flat parameter list could never do — since a variadic must be the last
+parameter of its own group, two groups means two independent variadics:
+
+```lucid
 const summarize (nums ...int)(words ...string) -> string = {
     let total int = 0;
     for _, n int in nums { total = total + n }
@@ -1341,83 +1422,21 @@ const summarize (nums ...int)(words ...string) -> string = {
 summarize(1, 2, 3)("a", "b");    -- nums = [1, 2, 3], words = ["a", "b"]
 ```
 
-This is one concrete reason to curry a function's parameters at all, beyond
-deferring computation between argument groups (see **Form 1 — Explicit
-Intermediate `->` Return**, later in this document): it is the only way to
-give a function more than one variadic parameter, since a single flat
-parameter list permits just one. Writing the curry chain with the `()()`
-shorthand instead of nested Form 1 functions is purely a matter of style —
-either spelling has the same capability, because one expands into the other.
-
-### Form 1 — Explicit Intermediate `->` Return
-
-Each `->` in the signature corresponds to a real body boundary. The programmer
-writes every intermediate `return (...) -> T { ... }` explicitly. Use this form
-when code needs to run *between* argument groups — at the point of partial
-application, before the inner function is created.
+Generic chains follow the same rule — `T` is bound once, at the outermost
+declaration, and stays in scope through every later cluster and every nested
+`return`, whether that stage was merged or explicit:
 
 ```lucid
-const makeAdder (base int) -> (n int) -> int = {
-    const adjusted int = base * 2;    -- runs at makeAdder(base)
-    return (n int) -> int { return adjusted + n }
-}
-
-const addTen (n int) -> int = makeAdder(5);
-addTen(3);    -- 13
-```
-
-### Form 2 — `()()` Shorthand
-
-Think of Form 2 as a multi-parameter function that the compiler automatically
-makes curriable. You write the function exactly as if all the arguments arrive
-at once — the body is flat, all parameters are in scope, the logic reads left
-to right. The only difference from a plain multi-param function is that `()()`
-groups instead of `(,)` commas, which tells the compiler to make each group
-independently callable.
-
-The compiler expands Form 2 recursively and exhaustively into Form 1
-before semantic analysis. The written body is never modified — only wrapper
-layers are generated around it.
-
-```lucid
--- as written
-const add (a int)(b int) -> int = {
-    return a + b;
-}
-
--- the compiler expands to
-const add (a int) -> (b int) -> int = {
-    return (b int) -> int {
-        return a + b;
+const g<T> (a int)(b T) -> (T)(char) -> bool = {
+    return (c T)(d char) -> bool {
+        return true;
     }
 }
 ```
 
-### Currying and Partial Application
-
-Form 2 (`()()`) is pure textual shorthand for Form 1. The compiler
-expands it recursively before semantic analysis. The body is never modified.
-
-The core idea:
-- `(a T, b U)` — both values arrive in one call
-- `(a T)(b U)` — same values, arriving in two separate calls
-- `-> T` — the body must return a value of type `T`
-- Every `->` in a signature is a promise that something runs at that boundary
+### Partial Application
 
 ```lucid
--- Form 1: code runs between groups
-const makeCompiler (config Config) -> (data string) -> string = {
-    const compiled CompiledConfig = compile(config);    -- runs once at partial application
-    return (data string) -> string { return apply(compiled, data) }
-}
-
--- Mixing Forms: Form 2 groups first, Form 1 explicit return after
-const process (a int)(b int) -> (c int) -> int = {
-    const sum int = a + b;    -- runs when process(a)(b) is called
-    return (c int) -> int { return sum + c }
-}
-
--- Form 2: flat body, compiler handles the wrapping
 const clamp (lo int)(hi int)(v int) -> int = {
     if v < lo { return lo }
     if v > hi { return hi }
@@ -1458,7 +1477,7 @@ the compiler cannot resolve them from the call site alone.
 ```ebnf
 (* overloading is not a grammar construct — it falls out of the ordinary
    func_decl rule. Two func_decl with the same IDENTIFIER and different
-   param_group types are valid and together form an overload set. *)
+   leading bound_cluster types are valid and together form an overload set. *)
 ```
 
 ### Rules
@@ -1512,9 +1531,21 @@ including to literals that happen to match only one type (a string literal
 could only ever be `string`): the rule is stated once, with no per-case 
 exceptions to remember.
 
+**An initializer is required unless the type is nullable, fallible, or
+combined (`T?`, `T!`, `T?!`).** A plain type has no "empty" state to fall
+back to, so `let` must supply a real value up front. A nullable/fallible
+type already has a well-defined unset state (`nil` for `T?`, no value yet
+for `T!`) and may be declared without one — see **Nullable `?` / Fallible
+`!`**, later in this document. `const` is always immutable, so it always
+requires an initializer regardless of nullability.
+
 ```ebnf
-var_decl    = 'let'   IDENTIFIER type [ '=' expr ]   (* mutable binding *)
-            | 'const' IDENTIFIER type [ '=' expr ]   (* immutable binding *)
+var_decl    = 'let' IDENTIFIER type '=' expr
+                (* plain, non-nullable, non-fallible type — initializer required *)
+            | 'let' IDENTIFIER (nullable_type | fallible_type | combined_type) [ '=' expr ]
+                (* initializer optional — starts nil / unset until assigned *)
+            | 'const' IDENTIFIER type '=' expr
+                (* immutable binding — always requires an initializer *)
 ```
 
 ```lucid
@@ -1524,6 +1555,9 @@ const name string = "lucid";
 
 let bad = "lucid";    -- ERROR: type is required, even when the
                      -- initializer's type looks unambiguous
+
+let y int;    -- ERROR: plain, non-nullable type requires an initializer
+let z int?;    -- OK: nullable — starts as nil until assigned
 ```
 
 ---
@@ -1675,7 +1709,7 @@ const first<T>     (items [_]T)(length int) -> T? = {
                          -- in-bounds against a slice of unknown length
                          -- see Runtime Panics
 }
-const swap<T>      (a T)(b T) -> (T, T) = { return b, a }
+const swap<T>      (a T)(b T) -> Pair<T, T> = { return Pair<T, T>{ first = b, second = a } }
 ```
 
 **Higher-order — type-specific logic is a callback the caller provides:**
@@ -2418,10 +2452,9 @@ binary_op       = '+' | '-' | '*' | '/' | '%' | '**'
                 | 'and' | 'or'
                 | '&' | '|' | '^' | '<<' | '>>'
 
-func_literal    = param_group { param_group } '->' type block
-                  (* anonymous function — Form 2 *)
-                | param_group '->' func_type block
-                  (* anonymous function — Form 1 *)
+func_literal    = bound_cluster { '->' unnamed_cluster } '->' type block
+                  (* anonymous function — the same chain rule as func_decl:
+                     only the leading cluster may name its parameters *)
 
 struct_literal  = IDENTIFIER '{' { field_init } '}'
                 | IDENTIFIER '<' type_arg { ',' type_arg } '>' '{' { field_init } '}'
@@ -4869,20 +4902,36 @@ Here are the two sections rewritten for your unified concurrency model:
 >
 > `async`/`await` uses **cooperative multitasking** on a single thread. `spawn`/`join` uses **preemptive multitasking** on OS threads. The two features are complementary — they can be mixed freely in the same program.
 
-### `async` — Schedule Concurrent Operations
-
-`async` schedules a function call on the event loop and binds its return value to one or more existing variables. The calling thread continues running immediately — the async operation runs concurrently with the caller, but on the same thread (cooperative multitasking).
+**`async` binds exactly one variable per statement. `await` can wait on
+several at once** — schedule each concurrent operation with its own `async`,
+then join them together in a single `await`:
 
 ```ebnf
-async_stmt      = 'async' IDENTIFIER { ',' IDENTIFIER } '=' call_expr
-                  (* one variable per return value of call_expr *)
-                  (* variables must already be declared (let) *)
-                  (* call_expr must return a type that can be awaited *)
+async_stmt      = 'async' IDENTIFIER '=' call_expr
+                  (* exactly one variable — the variable must already be
+                     declared (let); call_expr must return a type that can
+                     be awaited *)
+
+await_stmt      = 'await' IDENTIFIER { ',' IDENTIFIER }
+                  (* one or more variables — waits until ALL named
+                     variables are ready; each IDENTIFIER must be a
+                     variable bound by a prior async_stmt *)
 ```
 
+> [!NOTE]
+> A variable targeted by `async` is not filled in until the matching
+> `await` returns — see **Variable Declaration**, earlier in this document.
+> If the variable's type is nullable (`T?`), no initializer is required; it
+> starts as `nil` and is set by the async operation. If the type is
+> non-nullable, `let` must give it a real initial value, which the async
+> operation later overwrites.
+
+### `async` — Schedule Concurrent Operations
+
+`async` schedules a function call on the event loop and binds its return value to an existing variable. The calling thread continues running immediately — the async operation runs concurrently with the caller, but on the same thread (cooperative multitasking).
+
 ```lucid
--- single return value
-let result string;
+let result string?;
 async result = fetchData("https://api.example.com");
 
 -- do other work while fetchData runs
@@ -4893,46 +4942,49 @@ for i int in 0..1000 {
 
 -- later, wait for the result
 await result;
-io:printl(result);
+io:printl(result ?? "");
 ```
 
-**Multiple return values** follow the same pattern — one variable per returned value, in the same order as the function's return type:
+A call that returns a **struct** (see **Grouping several return values**,
+earlier in this document) follows the same single-variable pattern — the
+struct is one value, like any other. Either nullability strategy works,
+depending on whether a sensible non-nullable initial value exists:
 
 ```lucid
-const parseInt (s string) -> (int, bool) = { ... }
+const parseInt (s string) -> Pair<int, bool> = { ... }
 
-let value int;
-let ok bool;
-async value, ok = parseInt("42");
+-- non-nullable: must supply a real initial value up front
+let result1 Pair<int, bool> = Pair<int, bool>{ first = 0, second = false };
+async result1 = parseInt("42");
+
+-- nullable: no initial value required, starts as nil
+let result2 Pair<int, bool>?;
+async result2 = parseInt("42");
 
 -- ... other work ...
 
-await value, ok;
-if ok { io:printl(stringFromInt(value)) }
+await result1, result2;
+if result1.second { io:printl(stringFromInt(result1.first)) }
 ```
 
 ### `await` — Wait for Async Results
 
 `await` blocks the current thread until one or more async operations complete. If multiple variables are awaited in one statement, the thread waits until **all** of them are ready.
 
-```ebnf
-await_stmt      = 'await' IDENTIFIER { ',' IDENTIFIER }
-                  (* waits for all named variables to be filled *)
-                  (* each IDENTIFIER must be a variable bound by async *)
-```
-
 ```lucid
 -- Wait for a single async operation
 await result;
-io:printl(result);
+io:printl(result ?? "");
 
 -- Wait for multiple async operations to complete
-let user User;
-let profile Profile;
+let user User?;
+let profile Profile?;
 async user = fetchUser(1);
 async profile = fetchProfile(1);
 await user, profile;
-io:printl(user.name + ": " + profile.bio);
+if user != nil and profile != nil {
+    io:printl(user.name + ": " + profile.bio);
+}
 ```
 
 **If `await` is never called**, the async operation runs until the main thread terminates — at which point all unawaited async operations are also terminated. The variables bound by `async` remain unset if `await` is never reached.
@@ -4942,7 +4994,7 @@ io:printl(user.name + ": " + profile.bio);
 >
 > ```lucid
 > const process () -> () = {
->     let result string
+>     let result string?;
 >     async result = fetchData(url);
 >
 >    -- If we exit without awaiting, the async operation is terminated
@@ -4962,18 +5014,30 @@ Async operations in Lucid are **cooperative**, not preemptive. A task runs until
 -- Three async operations sharing data safely
 let counter int = 0;
 
-async task1 = {
-    -- task1 runs until it hits an await
+-- each task is an ordinary function — 'bool' here is just a completion
+-- signal; the task's real work is the side effect on 'counter'
+const runTask1 () -> bool = {
     counter = counter + 1;    -- safe: no other task runs here
-    await someIo();
+    let io1 bool?;
+    async io1 = someIo();
+    await io1;
     counter = counter + 1;    -- still safe: we yielded, but no other task
-}    -- can modify counter unless it also yields
-
-async task2 = {
-    counter = counter + 2;    -- safe: happens in its own time slice
-    await otherIo();
-    counter = counter + 2;
+    return true;              -- can modify counter unless it also yields
 }
+
+const runTask2 () -> bool = {
+    counter = counter + 2;    -- safe: happens in its own time slice
+    let io2 bool?;
+    async io2 = otherIo();
+    await io2;
+    counter = counter + 2;
+    return true;
+}
+
+let task1 bool?;
+let task2 bool?;
+async task1 = runTask1();
+async task2 = runTask2();
 
 await task1, task2;
 -- counter is predictable: 0 → 1 → 1 → 3 → 3 → 6
@@ -4985,7 +5049,9 @@ await task1, task2;
 > - Data is shared between `async` tasks and **OS threads** (`spawn`/`join`)
 > - Data is shared between async tasks that yield inside a **critical section**
 >
-> In those cases, use standard library synchronization primitives (mutexes, atomics).
+> See the **Shared State** warning under Spawn/Join for the available
+> techniques (ownership by design, mutual exclusion, lock-free atomics,
+> explicit memory ordering) — the same discipline applies here.
 
 ### Async Operations in Loops
 
@@ -4997,7 +5063,7 @@ const urls [*]string = ["https://api1.com", "https://api2.com", "https://api3.co
 -- Schedule all fetches concurrently
 let results [*]string = [];
 for _, url string in urls {
-    let result string;
+    let result string = "";
     async result = fetchData(url);
     arr:append<string>(results)(result);    -- store the variable reference
 }
@@ -5040,9 +5106,9 @@ Async (concurrency) and spawn (parallelism) can be mixed freely:
 spawn heavyResult = processLargeDataset(data);
 
 -- Many I/O operations on the event loop
-let files [*]string;
+let files [*]string = [];
 for _, path string in filePaths {
-    let content string;
+    let content string = "";
     async content = readFile(path);
     arr:append<string>(files)(content);
 }
@@ -5063,13 +5129,13 @@ io:printl("All work complete: " + stringFromInt(heavyResult));
 `await` only waits for operations scheduled with `async`. You cannot `await` a `spawn` operation:
 
 ```lucid
-let result string;
+let result string?;
 spawn result = heavyWork();    -- result is thread-bound
 
 await result;    -- ERROR: result is not an async operation
 join result;    -- CORRECT: wait for the thread
 
-let light string;
+let light string?;
 async light = ioWork();    -- light is event-loop-bound
 
 join light;    -- ERROR: light is not a thread
@@ -5098,12 +5164,12 @@ await light;    -- CORRECT: wait for the async operation
 
 ```
 [spawn | heavyResult | expensiveWork]────┐  ← OS thread (dashed border)
-                                          │
-[async | lightResult | ioWork]──┐         │  ← Event loop task (solid border, different color)
-                                 │         │
-[await | lightResult] ──────────┘         │  ← Wait for event loop
-                                 │         │
-[join | heavyResult] ─────────────────────┘  ← Wait for OS thread
+                                         │
+[async | lightResult | ioWork]──┐        │  ← Event loop task (solid border, different color)
+                                │        │
+[await | lightResult] ──────────┘        │  ← Wait for event loop
+                                         │
+[join | heavyResult] ────────────────────┘  ← Wait for OS thread
 ```
 
 ### Performance Guidelines
@@ -5213,8 +5279,7 @@ const fetchAll (urls [*]string) -> [*]string = {
 `spawn` and `join` are **statement keywords** for thread-based parallelism. `spawn` launches a function call on a separate OS thread. `join` later blocks the calling thread until spawned operations complete.
 
 ```ebnf
-spawn_stmt      = 'spawn' spawn_binding { ',' spawn_binding } '=' call_expr
-                  (* one binding per return value of call_expr *)
+spawn_stmt      = 'spawn' spawn_binding '=' call_expr
 
 spawn_binding   = IDENTIFIER      (* store result for later join *)
                 | '_'             (* discard result — fire and forget *)
@@ -5245,7 +5310,7 @@ Use a named variable when you need the result. The spawned thread runs in parall
 
 ```lucid
 -- Single return value
-let result int;
+let result int?;
 spawn result = computeHeavyData();
 
 -- Do other work while computeHeavyData runs
@@ -5256,42 +5321,34 @@ for i int in 0..1000 {
 
 -- Block until result is ready
 join result;
-io:printl("Result: " + stringFromInt(result));
+io:printl("Result: " + stringFromInt(result ?? 0));
 ```
 
-**Multiple return values** follow the same pattern — one variable per returned value, in the same order as the function's return type:
+A call that returns a **struct** (see **Grouping several return values**,
+earlier in this document) follows the same single-variable pattern:
 
 ```lucid
-const parseData (s string) -> (int, bool) = { ... }
+const parseData (s string) -> Pair<int, bool> = { ... }
 
-let value int;
-let ok bool;
-spawn value, ok = parseData("42");
+let result Pair<int, bool>?;
+spawn result = parseData("42");
 
 -- ... other work ...
 
-join value, ok;
-if ok { io:printl(stringFromInt(value)) }
+join result;
+if result != nil and result.second { io:printl(stringFromInt(result.first)) }
 ```
 
-### Mixing Discarded and Kept Results
-
-When a function returns multiple values, you can keep some and discard others:
+`join` can still name more than one variable in a single statement — that
+joins several *independently spawned* variables together, not several values
+returned from one call:
 
 ```lucid
-const processUser (data string) -> (User, AuditLog, bool) = { ... }
-
--- Only need the User, discard the rest
-let user User;
-spawn user, _, _ = processUser(rawData);
-join user;
-
--- Or keep everything
-let user User;
-let log AuditLog;
-let valid bool;
-spawn user, log, valid = processUser(rawData);
-join user, log, valid;
+let user User?;
+let log AuditLog?;
+spawn user = fetchUser(id);
+spawn log = fetchLog(id);
+join user, log;
 ```
 
 ### The Discard Pattern (`_`) vs Named Variables
@@ -5326,10 +5383,10 @@ To silence the warning, either join the result or explicitly discard it:
 ```lucid
 const process () -> int = {
     -- Option 1: Join before returning
-    let result int;
+    let result int?;
     spawn result = heavyWork();
     join result;
-    return result;
+    return result ?? 0;
 
     -- Option 2: Discard intentionally
     spawn _ = heavyWork();
@@ -5344,26 +5401,64 @@ Every variable and function declared before the `spawn` call is shared between t
 ```lucid
 let sharedCounter int = 0;
 
-spawn _ = {
+const bumpCounter () -> () = {
     -- This runs on a separate thread
     sharedCounter = sharedCounter + 1;
 }
 
-let result int;
-spawn result = {
+const bumpAndReport () -> int = {
     -- Another thread, also can access sharedCounter
     sharedCounter = sharedCounter + 1;
     return sharedCounter;
 }
 
+spawn _ = bumpCounter();
+
+let result int?;
+spawn result = bumpAndReport();
+
 join result;
 ```
 
 > [!WARNING]
-> Concurrent writes to shared variables are not automatically synchronized.
-> Use shared state carefully — design the shared struct so each thread owns
-> distinct fields, or add explicit synchronization through the standard
-> library.
+> **Concurrent writes to shared variables are not automatically synchronized,
+> and the compiler does not detect or prevent data races.** This is a
+> deliberate design choice, consistent with Lucid rejecting a garbage
+> collector and a complex compile-time borrow checker elsewhere (see
+> **References**) — race-freedom is left to the programmer and the standard
+> library, not enforced by the type system.
+>
+> A race is a **correctness** failure, not something the OS or CPU guards
+> against — ordinary memory access is not serialized at the granularity of
+> a single variable. An unsynchronized `shared = shared + 1` from two
+> threads can silently lose an update; an unsynchronized write to a
+> multi-word value (a struct, a slice's pointer/length pair) can be read
+> mid-write and observed in a state that was never valid at any point in
+> time.
+>
+> Preventing this is the same discipline as in C: pick one of these
+> techniques whenever more than one thread can touch the same mutable data:
+>
+> - **Ownership by design** — give each thread its own fields to write, so
+>   there is nothing to race over in the first place. Prefer this whenever
+>   the problem allows it.
+> - **Mutual exclusion** — guard shared access with a lock built from
+>   `#atomic_cas`, so only one thread enters the critical section at a
+>   time (see the CAS spin-lock pattern under **Atomics**, above).
+> - **Lock-free atomics** — for a single shared counter or flag,
+>   `#atomic_add`/`#atomic_load`/`#atomic_store`/etc. are sufficient on
+>   their own and avoid locking entirely.
+> - **Explicit memory ordering** — `acquire`/`release` (see the ordering
+>   table under **Atomics**) establish a happens-before relationship
+>   between threads, so writes made before a `release` are guaranteed
+>   visible after the matching `acquire`. This is the mechanism, not a
+>   separate feature — pick an ordering weaker than `seq_cst` only once you
+>   know which happens-before relationship you actually need.
+>
+> None of this is enforced by the grammar or the type system today — a
+> `shared` annotation or a `Mutex<T>`/`Atomic<T>` standard-library wrapper
+> around these intrinsics is a convention to adopt, not a guarantee the
+> compiler currently checks.
 
 ### Nesting
 
@@ -5373,13 +5468,13 @@ A spawned thread can itself launch further `spawn` calls:
 const processData () -> int = {
     -- inside a thread, can spawn more threads
     spawn _ = logToFile("subtask started");
-    let subResult int;
+    let subResult int?;
     spawn subResult = computeSubtask();
     join subResult;
-    return subResult;
+    return subResult ?? 0;
 }
 
-let result int;
+let result int?;
 spawn result = processData();
 join result;
 ```
