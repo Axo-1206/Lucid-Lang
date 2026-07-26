@@ -2,10 +2,62 @@
 /// @brief Implementation of SemanticContextStack.
 
 #include "SemanticContextStack.hpp"
+#include "core/ast/ExprAST.hpp"
+#include "core/ast/StmtAST.hpp"
 
 namespace sema {
 
-// ─── Push/Pop ────────────────────────────────────────────────────────────
+// ─── TypeNarrowingStack Implementation ─────────────────────────────────────
+
+void TypeNarrowingStack::pushLevel(bool isInverse) {
+    NarrowingLevel level;
+    level.isInverse = isInverse;
+    m_stack.push_back(level);
+}
+
+void TypeNarrowingStack::popLevel() {
+    if (!m_stack.empty()) {
+        m_stack.pop_back();
+    }
+}
+
+void TypeNarrowingStack::narrow(InternedString name, const TypeAST* type) {
+    if (!m_stack.empty()) {
+        m_stack.back().narrowedTypes[name] = type;
+    }
+}
+
+const TypeAST* TypeNarrowingStack::getNarrowedType(InternedString name) const {
+    // Search from innermost to outermost
+    for (auto it = m_stack.rbegin(); it != m_stack.rend(); ++it) {
+        auto found = it->narrowedTypes.find(name);
+        if (found != it->narrowedTypes.end()) {
+            return found->second;
+        }
+    }
+    return nullptr;
+}
+
+bool TypeNarrowingStack::isInverse() const {
+    return !m_stack.empty() && m_stack.back().isInverse;
+}
+
+bool TypeNarrowingStack::hasNarrowing() const {
+    for (const auto& level : m_stack) {
+        if (!level.narrowedTypes.empty()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void TypeNarrowingStack::clear() {
+    m_stack.clear();
+}
+
+// ─── SemanticContextStack Implementation ──────────────────────────────────
+
+SemanticContextStack::SemanticContextStack() = default;
 
 void SemanticContextStack::push(SemanticContext kind, BaseAST* node, const SourceLocation& loc) {
     SemanticFrame frame;
@@ -55,6 +107,14 @@ void SemanticContextStack::pushSwitch(SwitchStmtAST* switchStmt, const SourceLoc
     m_stack.push_back(frame);
 }
 
+void SemanticContextStack::pushBlock(BlockStmtAST* block, const SourceLocation& loc) {
+    SemanticFrame frame;
+    frame.kind = SemanticContext::Block;
+    frame.node = block;
+    frame.openedAt = loc;
+    m_stack.push_back(frame);
+}
+
 void SemanticContextStack::pop() {
     if (!m_stack.empty()) {
         m_stack.pop_back();
@@ -78,7 +138,7 @@ bool SemanticContextStack::isInside(SemanticContext kind) const {
     return false;
 }
 
-// ─── Return Requirements Queries ──────────────────────────────────────
+// ─── Return Requirements ──────────────────────────────────────────────────
 
 const ReturnRequirements* SemanticContextStack::currentReturnReqs() const {
     const SemanticFrame* funcFrame = findInnermostFunction();
@@ -136,6 +196,107 @@ int SemanticContextStack::getCurrentLevel() const {
     return reqs ? reqs->getCurrentLevel() : 0;
 }
 
+// ─── If Condition Context ─────────────────────────────────────────────
+
+void SemanticContextStack::setIfConditionCtx(bool isIfCtx) {
+    SemanticFrame* frame = findInnermostIfContext();
+    if (frame) {
+        frame->isIfConditionCtx = isIfCtx;
+    }
+}
+
+bool SemanticContextStack::isIfConditionCtx() const {
+    const SemanticFrame* frame = findInnermostIfContext();
+    return frame ? frame->isIfConditionCtx : false;
+}
+
+void SemanticContextStack::setHasElse(bool hasElse) {
+    SemanticFrame* frame = findInnermostIfContext();
+    if (frame) {
+        frame->hasElse = hasElse;
+    }
+}
+
+bool SemanticContextStack::hasElse() const {
+    const SemanticFrame* frame = findInnermostIfContext();
+    return frame ? frame->hasElse : false;
+}
+
+void SemanticContextStack::setPendingNarrowing(const NarrowingInfo& info) {
+    SemanticFrame* frame = findInnermostIfContext();
+    if (frame) {
+        frame->pendingNarrowing = info;
+    }
+}
+
+const NarrowingInfo& SemanticContextStack::getPendingNarrowing() const {
+    static NarrowingInfo empty;
+    const SemanticFrame* frame = findInnermostIfContext();
+    return frame ? frame->pendingNarrowing : empty;
+}
+
+void SemanticContextStack::clearPendingNarrowing() {
+    SemanticFrame* frame = findInnermostIfContext();
+    if (frame) {
+        frame->pendingNarrowing = NarrowingInfo();
+    }
+}
+
+// ─── Type Narrowing ────────────────────────────────────────────────────
+
+void SemanticContextStack::pushNarrowingLevel(bool isInverse) {
+    m_narrowing.pushLevel(isInverse);
+}
+
+void SemanticContextStack::popNarrowingLevel() {
+    m_narrowing.popLevel();
+}
+
+void SemanticContextStack::narrowVariable(InternedString name, const TypeAST* type) {
+    m_narrowing.narrow(name, type);
+}
+
+const TypeAST* SemanticContextStack::getNarrowedType(InternedString name) const {
+    return m_narrowing.getNarrowedType(name);
+}
+
+bool SemanticContextStack::isNarrowingInverse() const {
+    return m_narrowing.isInverse();
+}
+
+bool SemanticContextStack::hasActiveNarrowing() const {
+    return m_narrowing.hasNarrowing();
+}
+
+// ─── Pending Inverse Narrowing ──────────────────────────────────────
+
+void SemanticContextStack::setPendingInverseNarrowing(const NarrowingInfo& info) {
+    SemanticFrame* frame = findInnermostBlock();
+    if (frame) {
+        frame->hasPendingInverseNarrowing = true;
+        frame->pendingInverseNarrowing = info;
+    }
+}
+
+bool SemanticContextStack::hasPendingInverseNarrowing() const {
+    const SemanticFrame* frame = findInnermostBlock();
+    return frame ? frame->hasPendingInverseNarrowing : false;
+}
+
+const NarrowingInfo& SemanticContextStack::getPendingInverseNarrowing() const {
+    static NarrowingInfo empty;
+    const SemanticFrame* frame = findInnermostBlock();
+    return frame ? frame->pendingInverseNarrowing : empty;
+}
+
+void SemanticContextStack::clearPendingInverseNarrowing() {
+    SemanticFrame* frame = findInnermostBlock();
+    if (frame) {
+        frame->hasPendingInverseNarrowing = false;
+        frame->pendingInverseNarrowing = NarrowingInfo();
+    }
+}
+
 // ─── Convenience Queries ─────────────────────────────────────────────────
 
 bool SemanticContextStack::insideFunction() const {
@@ -188,6 +349,15 @@ SwitchStmtAST* SemanticContextStack::currentSwitch() const {
     for (auto it = m_stack.rbegin(); it != m_stack.rend(); ++it) {
         if (it->kind == SemanticContext::SwitchBody) {
             return static_cast<SwitchStmtAST*>(it->node);
+        }
+    }
+    return nullptr;
+}
+
+BlockStmtAST* SemanticContextStack::currentBlock() const {
+    for (auto it = m_stack.rbegin(); it != m_stack.rend(); ++it) {
+        if (it->kind == SemanticContext::Block) {
+            return static_cast<BlockStmtAST*>(it->node);
         }
     }
     return nullptr;
@@ -252,6 +422,42 @@ const SemanticFrame* SemanticContextStack::findInnermostFunction() const {
         if (it->kind == SemanticContext::FuncBody ||
             it->kind == SemanticContext::AsyncBody ||
             it->kind == SemanticContext::GeneratorBody) {
+            return &(*it);
+        }
+    }
+    return nullptr;
+}
+
+SemanticFrame* SemanticContextStack::findInnermostIfContext() {
+    for (auto it = m_stack.rbegin(); it != m_stack.rend(); ++it) {
+        if (it->kind == SemanticContext::IfStmt) {
+            return &(*it);
+        }
+    }
+    return nullptr;
+}
+
+const SemanticFrame* SemanticContextStack::findInnermostIfContext() const {
+    for (auto it = m_stack.rbegin(); it != m_stack.rend(); ++it) {
+        if (it->kind == SemanticContext::IfStmt) {
+            return &(*it);
+        }
+    }
+    return nullptr;
+}
+
+SemanticFrame* SemanticContextStack::findInnermostBlock() {
+    for (auto it = m_stack.rbegin(); it != m_stack.rend(); ++it) {
+        if (it->kind == SemanticContext::Block) {
+            return &(*it);
+        }
+    }
+    return nullptr;
+}
+
+const SemanticFrame* SemanticContextStack::findInnermostBlock() const {
+    for (auto it = m_stack.rbegin(); it != m_stack.rend(); ++it) {
+        if (it->kind == SemanticContext::Block) {
             return &(*it);
         }
     }

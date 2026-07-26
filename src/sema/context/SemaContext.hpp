@@ -52,7 +52,7 @@ struct SemaContext {
     /// Two-tier symbol storage
     SymbolStorage symbols;
 
-    /// Semantic context stack
+    /// Semantic context stack (includes type narrowing)
     SemanticContextStack contexts;
 
     /// Self-reference support
@@ -247,6 +247,10 @@ public:
     }
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// RAII Guards
+// ─────────────────────────────────────────────────────────────────────────────
+
 /// @brief RAII guard for semantic context tracking.
 /// 
 /// Pushes a SemanticContext frame on construction and pops it on
@@ -279,6 +283,76 @@ struct ScopedSemanticContext {
     ScopedSemanticContext& operator=(const ScopedSemanticContext&) = delete;
     ScopedSemanticContext(ScopedSemanticContext&&) = delete;
     ScopedSemanticContext& operator=(ScopedSemanticContext&&) = delete;
+
+private:
+    SemaContext& ctx_;
+};
+
+/// @brief RAII guard for if condition context (enables type narrowing).
+/// 
+/// Sets the if condition context flag during condition analysis,
+/// allowing checkBinaryExpr to detect narrowing patterns.
+/// 
+/// ```cpp
+/// void analyzeIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
+///     ScopedIfCondition guard(ctx, stmt->elseBranch != nullptr);
+///     
+///     // During checkExpr, ctx.contexts.isIfConditionCtx() returns true
+///     // checkBinaryExpr can detect patterns like x != nil
+///     checkExpr(stmt->condition, ctx.getBoolType(), ctx);
+/// }
+/// ```
+/// 
+/// Non-copyable, non-movable: identity is tied to one specific activation.
+struct ScopedIfCondition {
+    explicit ScopedIfCondition(SemaContext& ctx, bool hasElse)
+        : ctx_(ctx) {
+        ctx_.contexts.setIfConditionCtx(true);
+        ctx_.contexts.setHasElse(hasElse);
+        ctx_.contexts.clearPendingNarrowing();
+    }
+
+    ~ScopedIfCondition() {
+        ctx_.contexts.setIfConditionCtx(false);
+    }
+
+    ScopedIfCondition(const ScopedIfCondition&) = delete;
+    ScopedIfCondition& operator=(const ScopedIfCondition&) = delete;
+    ScopedIfCondition(ScopedIfCondition&&) = delete;
+    ScopedIfCondition& operator=(ScopedIfCondition&&) = delete;
+
+private:
+    SemaContext& ctx_;
+};
+
+/// @brief RAII guard for type narrowing in a branch.
+/// 
+/// Pushes a narrowing level for the then branch of an if statement,
+/// and pops it when the branch is done.
+/// 
+/// ```cpp
+/// {
+///     ScopedNarrowing guard(ctx, varName, narrowedType, false);
+///     // Variables are narrowed here
+///     analyzeBlock(thenBranch, ctx);
+/// }
+/// ```
+struct ScopedNarrowing {
+    explicit ScopedNarrowing(SemaContext& ctx, InternedString varName, 
+                              const TypeAST* narrowedType, bool isInverse = false)
+        : ctx_(ctx) {
+        ctx_.contexts.pushNarrowingLevel(isInverse);
+        ctx_.contexts.narrowVariable(varName, narrowedType);
+    }
+
+    ~ScopedNarrowing() {
+        ctx_.contexts.popNarrowingLevel();
+    }
+
+    ScopedNarrowing(const ScopedNarrowing&) = delete;
+    ScopedNarrowing& operator=(const ScopedNarrowing&) = delete;
+    ScopedNarrowing(ScopedNarrowing&&) = delete;
+    ScopedNarrowing& operator=(ScopedNarrowing&&) = delete;
 
 private:
     SemaContext& ctx_;

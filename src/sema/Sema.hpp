@@ -57,6 +57,7 @@
 #include "core/diagnostics/Diagnostic.hpp"
 #include "debug/DebugUtils.hpp"
 #include "context/SemaContext.hpp"
+#include "support/TypeNarrowHelpers.hpp"
 
 #include <vector>
 #include <optional>

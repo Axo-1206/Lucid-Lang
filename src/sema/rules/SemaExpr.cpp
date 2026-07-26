@@ -701,10 +701,13 @@ bool checkStructLiteralExpr(StructLiteralExprAST* expr, const TypeAST* targetTyp
 ///     the result is `err` (matching the target type) - but this is a RUNTIME behavior,
 ///     not compile-time. At compile-time, we still reject the operation.
 ///
-/// Value State Propagation:
-///   - If either operand is `err` and target is fallible → result is `err` (recoverable)
-///   - If either operand is `nil` → rejected for non-comparison operators
-///   - For comparison, result is always `bool` (definite)
+/// Type Narrowing (If Condition Context):
+///   - When inside an if condition (ctx.contexts.isIfConditionCtx()), detect patterns:
+///     - x == nil   → x is nil in then branch, non-nullable in inverse
+///     - x != nil   → x is non-nullable in then branch
+///     - x == err   → x is err in then branch, non-fallible in inverse
+///     - x != err   → x is non-fallible in then branch
+///   - Stores narrowing info in ctx.contexts for analyzeIfStmt to use
 ///
 /// Examples:
 ///   // ✅ Comparison with nullable
@@ -733,23 +736,28 @@ bool checkStructLiteralExpr(StructLiteralExprAST* expr, const TypeAST* targetTyp
 ///   // ✅ Correct: use ?? to handle err
 ///   let c int! = (a ?? 0) + (b ?? 0)  // ALLOWED: c = 42
 ///
-///   // ✅ Fallible target with unknown expression
-///   let result int! = someUnknownExpr  // If someUnknownExpr fails, result becomes err
+///   // ✅ Type narrowing in if condition
+///   if x != nil {
+///       // x is int here (narrowed)
+///   }
 ///
-///   // ❌ Fallible target with arithmetic on fallible operands (still rejected)
-///   let a int! = 42
-///   let b int! = err
-///   let result int! = a + b  // ERROR: arithmetic cannot be used with fallible operands
-///   // Even though result could be err, we reject this at compile-time
-///   // to force explicit error handling
+///   // ✅ Type narrowing with fallible
+///   if a != err {
+///       // a is int here (narrowed)
+///   }
+///
+///   // ✅ Inverse narrowing with early exit
+///   if a == nil { return }
+///   // a is int here (inverse narrowing applied)
 bool checkBinaryExpr(BinaryExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
     if (!expr || !targetType) return false;
 
-    // Check both operands against the target type
+    // ─── Step 1: Check operands ──────────────────────────────────────────
+    // Always type-check both operands first
     if (!checkExpr(expr->left, targetType, ctx)) return false;
     if (!checkExpr(expr->right, targetType, ctx)) return false;
 
-    // Get value states of operands
+    // ─── Step 2: Get value states ───────────────────────────────────────
     ValueState leftState = expr->left->valueState;
     ValueState rightState = expr->right->valueState;
 
@@ -757,10 +765,22 @@ bool checkBinaryExpr(BinaryExprAST* expr, const TypeAST* targetType, SemaContext
     bool rightIsErr = rightState == ValueState::Err;
     bool leftIsNil = leftState == ValueState::Nil;
     bool rightIsNil = rightState == ValueState::Nil;
-    bool leftIsDefinite = leftState == ValueState::Definite;
-    bool rightIsDefinite = rightState == ValueState::Definite;
 
-    // Now validate operator-specific rules
+    // ─── Step 3: Check if we're in an if condition context ─────────────
+    // If we are, detect narrowing patterns BEFORE normal operator validation
+    if (ctx.contexts.isIfConditionCtx()) {
+        NarrowingInfo info = detectNarrowingPattern(expr, ctx);
+        if (info.hasNarrowing) {
+            // Store the narrowing info for analyzeIfStmt to use
+            ctx.contexts.setPendingNarrowing(info);
+            // The condition is valid (type checking already passed)
+            expr->valueState = ValueState::Definite;
+            return true;
+        }
+        // No narrowing pattern - continue with normal validation
+    }
+
+    // ─── Step 4: Validate operator-specific rules ──────────────────────
     switch (expr->op) {
         // ─── Arithmetic Operators ──────────────────────────────────────────
         case BinaryOp::Add:

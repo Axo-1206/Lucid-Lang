@@ -75,11 +75,57 @@ bool analyzeStmt(const StmtAST* stmt, SemaContext& ctx) {
 /// @param ctx The semantic context.
 /// @return true if the block guarantees control transfer out of the block.
 bool analyzeBlock(const BlockStmtAST* block, SemaContext& ctx) {
-    // TODO: Push a new scope for the block
-    // TODO: Analyze each statement in the block
-    // TODO: Track if any statement is unreachable (after return/break/continue)
-    // TODO: Return true if the last statement guarantees control transfer
-    return false;
+    // ─── 1. Push block context for pending inverse narrowing ────────────
+    ctx.contexts.pushBlock(const_cast<BlockStmtAST*>(block), block->loc);
+
+    bool transfers = false;
+    bool hasAppliedPendingNarrowing = false;
+
+    // ─── 2. Apply pending inverse narrowing from previous statements ────
+    // If there's pending inverse narrowing from a standalone if with early exit,
+    // apply it before analyzing the rest of the block
+    if (ctx.contexts.hasPendingInverseNarrowing()) {
+        const NarrowingInfo& pendingInfo = ctx.contexts.getPendingInverseNarrowing();
+        if (pendingInfo.hasNarrowing) {
+            ctx.contexts.pushNarrowingLevel(true);
+            for (const auto& [varName, narrowedType] : pendingInfo.narrowings) {
+                ctx.contexts.narrowVariable(varName, narrowedType);
+            }
+            ctx.contexts.clearPendingInverseNarrowing();
+            hasAppliedPendingNarrowing = true;
+        }
+    }
+
+    // ─── 3. Analyze each statement in the block ──────────────────────────
+    for (const StmtAST* stmt : block->stmts) {
+        transfers = analyzeStmt(stmt, ctx);
+        
+        // If the statement transfers control, subsequent statements are unreachable
+        if (transfers) {
+            break;
+        }
+    }
+
+    // ─── 4. Pop pending narrowing level if we applied one ───────────────
+    if (hasAppliedPendingNarrowing) {
+        ctx.contexts.popNarrowingLevel();
+    }
+
+    // ─── 5. Pop block context ─────────────────────────────────────────────
+    ctx.contexts.pop();
+
+    // ─── 6. Final Check: Return Requirements ─────────────────────────────
+    // If we're inside a function that has requirements, check they're satisfied
+    if (ctx.contexts.hasReturnRequirements() && !ctx.contexts.returnRequirementsSatisfied()) {
+        // Only report error if the block doesn't transfer control via return
+        // If it transfers via break/continue, that's fine (loop/switch handles it)
+        if (!transfers) {
+            ctx.error(block, DiagCode::E3005,
+                      "function is missing a return statement");
+        }
+    }
+
+    return transfers;
 }
 
 // =============================================================================
@@ -92,15 +138,196 @@ bool analyzeBlock(const BlockStmtAST* block, SemaContext& ctx) {
 /// The then branch is always executed if the condition is true.
 /// The else branch is optional.
 ///
+/// ─── Type Narrowing Rules ─────────────────────────────────────────────────
+///
+/// The compiler applies type narrowing inside branches based on the condition.
+///
+/// **Standard Narrowing — Inside the Block:**
+///
+/// When the condition checks a nullable variable, the compiler narrows its
+/// type inside the then-branch:
+///
+/// ```lucid
+/// const a int? = getValue();
+/// 
+/// if a != nil {
+///     -- a is int here, not int?
+///     const x int = a + 1;    -- OK
+/// }
+/// -- a is still int? here
+/// ```
+///
+/// **Inverse Narrowing — Early Exit Pattern:**
+///
+/// When a standalone `if` with no `else` contains a control flow exit
+/// (`return`, `break`, or `continue`), the compiler applies the inverse
+/// of the condition to the rest of the enclosing scope.
+///
+/// ```lucid
+/// -- VALID: standalone if — inverse narrowing applies
+/// if a == nil { return }
+/// -- a is non-nullable here
+///
+/// -- INVALID: has else — inverse narrowing NOT applied
+/// if a == nil { return } else { log("not nil") }
+/// -- a is still int? here
+///
+/// -- INVALID: chained else-if — inverse narrowing NOT applied
+/// if a == nil { return } else if b == nil { return }
+/// -- a and b are still nullable here
+/// ```
+///
+/// **Condition Table:**
+///
+/// | Condition  | Inside block            | Rest of scope (inverse)     |
+/// | ---------- | ----------------------- | --------------------------- |
+/// | `a == nil` | `a` is `nil`            | `a` is non-nullable         |
+/// | `a != nil` | `a` is non-nullable     | `a` is nullable (no change) |
+/// | `a == err` | `a` is `err`            | `a` is non-fallible         |
+/// | `a != err` | `a` is non-fallible     | `a` is fallible (no change) |
+/// | `not a`    | `a` is `nil` or `false` | `a` is non-nullable         |
+///
+/// **`or` at Top Level — Multiple Variables:**
+///
+/// ```lucid
+/// if a == nil or b == nil { return }
+/// -- inverse: a != nil AND b != nil
+/// -- rest: a is int, b is string — both narrowed
+/// ```
+///
+/// **`and` at Top Level — No Narrowing:**
+///
+/// ```lucid
+/// if a == nil and b == nil { return }
+/// -- inverse: a != nil OR b != nil
+/// -- cannot narrow either — no narrowing applied
+/// ```
+///
 /// @param stmt The if statement.
 /// @param ctx The semantic context.
 /// @return true if the statement guarantees control transfer out of the block.
 bool analyzeIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
-    // TODO: Check the condition expression (must be bool)
-    // TODO: Analyze the then branch
-    // TODO: Analyze the else branch (if present)
-    // TODO: Return true if BOTH branches transfer control
-    // TODO: Handle else-if chains (else branch is an IfStmtAST)
+    if (!stmt) return false;
+
+    // ─── 1. Push if context for type narrowing ──────────────────────────
+    // Push IfStmt context so checkBinaryExpr knows we're in an if condition
+    ctx.contexts.push(SemanticContext::IfStmt, const_cast<IfStmtAST*>(stmt), stmt->loc);
+    ctx.contexts.setHasElse(stmt->elseBranch != nullptr);
+
+    // ─── 2. Create a bool type for the condition ──────────────────────────
+    PrimitiveTypeAST* boolType = ctx.arena().makeType<PrimitiveTypeAST>(PrimitiveKind::Bool);
+
+    // ─── 3. Analyze condition with if context ────────────────────────────
+    // checkBinaryExpr will detect narrowing patterns because isIfConditionCtx is true
+    ctx.contexts.setIfConditionCtx(true);
+    
+    if (!checkExpr(stmt->condition, boolType, ctx)) {
+        ctx.contexts.setIfConditionCtx(false);
+        ctx.contexts.pop();
+        return false;
+    }
+    
+    ctx.contexts.setIfConditionCtx(false);
+
+    // ─── 4. Extract narrowing info from the condition ────────────────────
+    // The condition may contain multiple narrowings (or at top level)
+    NarrowingInfo info = extractNarrowingsFromCondition(stmt->condition, ctx);
+    bool hasNarrowing = info.hasNarrowing;
+
+    // ─── 5. Analyze then branch with narrowing ──────────────────────────
+    bool thenReturns = false;
+
+    if (hasNarrowing) {
+        // Push a single narrowing level with all narrowings
+        ctx.contexts.pushNarrowingLevel(false);
+        
+        // Apply all narrowings to the then branch
+        for (const auto& [varName, narrowedType] : info.narrowings) {
+            // For equality (x == nil), no narrowing in then branch
+            // (x is nil, but we don't track nil types)
+            // For inequality (x != nil, x != err), apply normal narrowing
+            if (!info.isEquality) {
+                // x != nil → x is non-nullable
+                // x != err → x is non-fallible
+                ctx.contexts.narrowVariable(varName, narrowedType);
+            }
+            // For equality (x == nil), we don't narrow in then branch
+            // because x is nil, not a definite type
+        }
+        
+        if (stmt->thenBranch && stmt->thenBranch->isa<BlockStmtAST>()) {
+            thenReturns = analyzeBlock(stmt->thenBranch->as<BlockStmtAST>(), ctx);
+        } else {
+            thenReturns = analyzeStmt(stmt->thenBranch, ctx);
+        }
+        ctx.contexts.popNarrowingLevel();
+    } else {
+        // No narrowing - just analyze
+        if (stmt->thenBranch && stmt->thenBranch->isa<BlockStmtAST>()) {
+            thenReturns = analyzeBlock(stmt->thenBranch->as<BlockStmtAST>(), ctx);
+        } else {
+            thenReturns = analyzeStmt(stmt->thenBranch, ctx);
+        }
+    }
+
+    // ─── 6. Analyze else branch (if present) ────────────────────────────
+    if (stmt->elseBranch) {
+        bool elseReturns = false;
+
+        // ─── 6a. Check if else branch is an else-if ──────────────────────
+        if (stmt->elseBranch->isa<IfStmtAST>()) {
+            elseReturns = analyzeIfStmt(stmt->elseBranch->as<IfStmtAST>(), ctx);
+        } else {
+            // ─── 6b. Regular else branch with inverse narrowing ──────────
+            if (hasNarrowing) {
+                ctx.contexts.pushNarrowingLevel(true); // Inverse narrowing
+                
+                for (const auto& [varName, narrowedType] : info.narrowings) {
+                    // For equality (x == nil, x == err):
+                    //   x is non-nullable/non-fallible in else branch
+                    // For inequality (x != nil, x != err):
+                    //   x is nullable/fallible (no change), so skip
+                    if (info.isEquality) {
+                        ctx.contexts.narrowVariable(varName, narrowedType);
+                    }
+                }
+                
+                if (stmt->elseBranch->isa<BlockStmtAST>()) {
+                    elseReturns = analyzeBlock(stmt->elseBranch->as<BlockStmtAST>(), ctx);
+                } else {
+                    elseReturns = analyzeStmt(stmt->elseBranch, ctx);
+                }
+                ctx.contexts.popNarrowingLevel();
+            } else {
+                // No narrowing
+                if (stmt->elseBranch->isa<BlockStmtAST>()) {
+                    elseReturns = analyzeBlock(stmt->elseBranch->as<BlockStmtAST>(), ctx);
+                } else {
+                    elseReturns = analyzeStmt(stmt->elseBranch, ctx);
+                }
+            }
+        }
+
+        // If both branches return, the if transfers control
+        if (thenReturns && elseReturns) {
+            ctx.contexts.pop();
+            return true;
+        }
+    }
+
+    // ─── 7. Handle inverse narrowing for standalone if ───────────────────
+    // Rule: standalone if with early exit applies inverse narrowing to rest of scope
+    // ONLY when: no else, then branch transfers control, and condition is equality
+    if (!stmt->elseBranch && thenReturns && hasNarrowing && info.isEquality) {
+        // Set pending inverse narrowing on the current block
+        // This will be applied when analyzeBlock continues
+        ctx.contexts.setPendingInverseNarrowing(info);
+    }
+
+    // ─── 8. Pop if context ────────────────────────────────────────────────
+    ctx.contexts.pop();
+
+    // If then branch doesn't transfer control, the if doesn't transfer
     return false;
 }
 
