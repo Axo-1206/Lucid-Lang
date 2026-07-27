@@ -283,6 +283,171 @@ private:
     // ─── Members ─────────────────────────────────────────────────────────
 
     std::vector<ContextFrame> m_stack;  ///< The actual context stack
+
+    // ─────────────────────────────────────────────────────────────────────
+    // TYPE NARROWING FLOW — Complete Lifecycle
+    // ─────────────────────────────────────────────────────────────────────
+    //
+    // The `ContextStack` manages two separate but related stacks:
+    //
+    //   1. ContextFrame Stack (m_stack): Tracks semantic contexts (function, loop, if, block)
+    //   2. NarrowingStack (m_narrowing): Tracks type narrowing per scope level
+    //
+    // These stacks work together to implement type narrowing.
+    //
+    // ─── Case 1: Then Branch (Direct Narrowing) ────────────────────────
+    //
+    //   Source: if x != nil { println(x) }
+    //
+    //   ┌─────────────────────────────────────────────────────────────────────┐
+    //   │ Step 1: analyzeIfStmt()                                             │
+    //   │   └── push(ContextKind::IfStmt)                                     │
+    //   │   └── setIfConditionCtx(true)                                       │
+    //   │       └── checkExpr(condition)                                      │
+    //   │           └── checkBinaryExpr() detects x != nil                    │
+    //   │               └── setPendingNarrowing({x → int, isEquality=false})  │
+    //   │   └── setIfConditionCtx(false)                                      │
+    //   │   └── info = getPendingNarrowing()                                  │
+    //   │   └── clearPendingNarrowing()                                       │
+    //   ├─────────────────────────────────────────────────────────────────────┤
+    //   │ Step 2: analyzeBlock(thenBranch)                                    │
+    //   │   └── pushBlock()                                                   │
+    //   │   └── pushNarrowingLevel(false)    ← isInverse=false                │
+    //   │   └── narrowVariable(x, int)                                        │
+    //   │   └── analyze statements...    ← x is int here                      │
+    //   │   └── popNarrowingLevel()          ← x returns to int?              │
+    //   │   └── pop()                                                         │
+    //   └─────────────────────────────────────────────────────────────────────┘
+    //
+    // ─── Case 2: Else Branch (Inverse Narrowing) ──────────────────────
+    //
+    //   Source: if x != nil { ... } else { println(x) }  // x is nil here
+    //
+    //   ┌─────────────────────────────────────────────────────────────────┐
+    //   │ Step 1: Same as Case 1 for condition analysis                   │
+    //   ├─────────────────────────────────────────────────────────────────┤
+    //   │ Step 2: analyzeBlock(elseBranch)                                │
+    //   │   └── pushBlock()                                               │
+    //   │   └── pushNarrowingLevel(true)     ← isInverse=true             │
+    //   │   └── narrowVariable(x, int)       ← x is non-nullable          │
+    //   │   └── analyze statements...    ← x is int here (inverse)        │
+    //   │   └── popNarrowingLevel()                                       │
+    //   │   └── pop()                                                     │
+    //   └─────────────────────────────────────────────────────────────────┘
+    //
+    // ─── Case 3: Standalone If with Early Return (Inverse Narrowing) ──
+    //
+    //   Source: 
+    //     if x == nil { return }
+    //     println(x)  // x is int here (inverse narrowing)
+    //
+    //   ┌─────────────────────────────────────────────────────────────────────┐
+    //   │ Step 1: analyzeIfStmt()                                             │
+    //   │   └── push(ContextKind::IfStmt)                                     │
+    //   │   └── setIfConditionCtx(true)                                       │
+    //   │       └── checkExpr(condition)                                      │
+    //   │           └── checkBinaryExpr() detects x == nil                    │
+    //   │               └── setPendingNarrowing({x → int, isEquality=true}    │
+    //   │   └── setIfConditionCtx(false)                                      │
+    //   │   └── info = getPendingNarrowing()                                  │
+    //   │   └── clearPendingNarrowing()                                       │
+    //   ├─────────────────────────────────────────────────────────────────────┤
+    //   │ Step 2: analyzeBlock(thenBranch)                                    │
+    //   │   └── pushBlock()                                                   │
+    //   │   └── pushNarrowingLevel(false)                                     │
+    //   │   └── For equality (isEquality=true): NO narrowing applied          │
+    //   │       (x is nil, not a definite type)                               │
+    //   │   └── analyze statements...    ← x is nil here (not useful)         │
+    //   │   └── popNarrowingLevel()                                           │
+    //   │   └── pop()                                                         │
+    //   ├─────────────────────────────────────────────────────────────────────┤
+    //   │ Step 3: Check for early return                                      │
+    //   │   └── if (!hasElse && thenReturns && hasNarrowing && isEquality) {  │
+    //   │       └── setPendingInverseNarrowing(info)  ← CRITICAL!             │
+    //   │   }                                                                 │
+    //   ├─────────────────────────────────────────────────────────────────────┤
+    //   │ Step 4: analyzeBlock(parentBlock) continues...                      │
+    //   │   └── pushBlock(parentBlock)                                        │
+    //   │   └── hasPendingInverseNarrowing() → true                           │
+    //   │   └── pushNarrowingLevel(true)    ← isInverse=true                  │
+    //   │   └── narrowVariable(x, int)      ← x is non-nullable               │
+    //   │   └── println(x)    ← x is int here                                 │
+    //   │   └── popNarrowingLevel()                                           │
+    //   │   └── clearPendingInverseNarrowing()                                │
+    //   │   └── pop()                                                         │
+    //   └─────────────────────────────────────────────────────────────────────┘
+    //
+    // ─── Why We Need Pending Inverse Narrowing ──────────────────────────
+    //
+    // The early return pattern requires inverse narrowing that applies to the
+    // REST OF THE BLOCK, not just the else branch. We can't apply it immediately
+    // because:
+    //   1. We don't know if the then branch actually returns until we analyze it
+    //   2. The parent block's scope hasn't been entered yet when we're in the if
+    //   3. We need to apply the narrowing at the block level, not the if level
+    //
+    // The `pendingInverseNarrowing` field in ContextFrame acts as a "deferred
+    // narrowing" that gets applied when analyzeBlock sees it.
+    //
+    // ─── Conditions for Pending Inverse Narrowing ───────────────────────
+    //
+    //   ✓ Standalone if (no else branch)
+    //   ✓ Then branch transfers control (returns, breaks, or continues)
+    //   ✓ Has narrowing info from condition
+    //   ✓ Condition uses equality (==) - not inequality (!=)
+    //     - x == nil → inverse: x != nil (narrows to T)
+    //     - x == err → inverse: x != err (narrows to T)
+    //     - x != nil → inverse: x == nil (narrows to nil, not useful)
+    //     - x != err → inverse: x == err (narrows to err, not useful)
+    //
+    // ─── Example: `or` at Top Level ─────────────────────────────────────
+    //
+    //   Source: if a == nil or b == nil { return }
+    //           println(a)  // a is int
+    //           println(b)  // b is string
+    //
+    //   info = {a → int, b → string, isEquality=true}
+    //   pendingInverseNarrowing = {a → int, b → string, isEquality=true}
+    //   Both variables are narrowed in the parent block ✅
+    //
+    // ─── Example: `and` at Top Level ─────────────────────────────────────
+    //
+    //   Source: if a == nil and b == nil { return }
+    //           println(a)  // a is still int? (not narrowed)
+    //           println(b)  // b is still string? (not narrowed)
+    //
+    //   info = {} (empty, because 'and' is unsound)
+    //   pendingInverseNarrowing = {} (no narrowing)
+    //
+    // ─── Example: Loop Context ──────────────────────────────────────────
+    //
+    //   Source: for _, item int? in items {
+    //               if item == nil { continue }
+    //               println(item)  // item is int here
+    //           }
+    //
+    //   The `continue` acts as an early exit from the loop iteration.
+    //   `pendingInverseNarrowing` works the same way - the narrowing applies
+    //   to the rest of the block after the if.
+    //
+    // ─── Summary ──────────────────────────────────────────────────────────
+    //
+    //   ┌──────────────────┬──────────────────┬────────────────────────────┐
+    //   │ Case             │ isInverse Flag   │ How Applied                │
+    //   ├──────────────────┼──────────────────┼────────────────────────────┤
+    //   │ Then Branch      │ false            │ Direct: pushNarrowingLevel │
+    //   │ (x != nil)       │                  │ (false)                    │
+    //   ├──────────────────┼──────────────────┼────────────────────────────┤
+    //   │ Else Branch      │ true             │ Direct: pushNarrowingLevel │
+    //   │ (inverse)        │                  │ (true)                     │
+    //   ├──────────────────┼──────────────────┼────────────────────────────┤
+    //   │ Standalone If    │ true             │ Deferred: setPending       │
+    //   │ (early return)   │                  │ InverseNarrowing()         │
+    //   └──────────────────┴──────────────────┴────────────────────────────┘
+    //
+    // @see analyzeIfStmt() in SemaStmt.cpp for the implementation
+    // @see analyzeBlock() in SemaStmt.cpp for pending inverse narrowing application
+    // @see TypeNarrowHelpers.hpp for narrowing extraction
     NarrowingStack m_narrowing;         ///< Type narrowing stack (separate from context)
 
     // ─── Helpers ─────────────────────────────────────────────────────────

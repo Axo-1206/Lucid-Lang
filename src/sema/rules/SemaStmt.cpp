@@ -72,6 +72,29 @@ bool analyzeStmt(const StmtAST* stmt, SemaContext& ctx) {
 /// @param block The block statement.
 /// @param ctx The semantic context.
 /// @return true if the block guarantees control transfer out of the block.
+///
+/// ─── Control Flow Analysis ──────────────────────────────────────────────────
+///
+/// The function tracks whether any statement in the block transfers control
+/// (return, break, continue). Once a transfer is detected:
+///   1. The block is considered to transfer control
+///   2. Subsequent statements are unreachable
+///   3. The function should warn about unreachable code
+///
+/// ─── Example ──────────────────────────────────────────────────────────────
+///
+/// ```lucid
+/// {
+///     let x int = 5
+///     return x      // ← transfers = true
+///     let y int = 10 // ← UNREACHABLE - should warn
+/// }
+/// ```
+///
+/// @todo Add diagnostic for unreachable code after control transfer.
+///       Currently, statements after a transfer are silently skipped.
+///       We should emit a warning (DiagCode::W1001 - UnreachableCode)
+///       when this occurs.
 bool analyzeBlock(const BlockStmtAST* block, SemaContext& ctx) {
     // ─── 1. Push block context for pending inverse narrowing ────────────
     ctx.contexts.pushBlock(const_cast<BlockStmtAST*>(block), block->loc);
@@ -96,10 +119,45 @@ bool analyzeBlock(const BlockStmtAST* block, SemaContext& ctx) {
 
     // ─── 3. Analyze each statement in the block ──────────────────────────
     for (const StmtAST* stmt : block->stmts) {
+        // ── 3a. Check if previous statement transferred control ──────────
+        // If the previous statement transferred control, this statement is
+        // unreachable. We should warn about it.
+        //
+        // TODO: Add unreachable code warning.
+        //       Once DiagCode::W1001 (UnreachableCode) is defined, emit:
+        //         ctx.warning(stmt, DiagCode::W1001,
+        //                     "unreachable statement after control transfer");
+        //
+        //       For now, we silently skip unreachable statements to avoid
+        //       analyzing dead code.
+        if (transfers) {
+            // The previous statement transferred control.
+            // This statement is unreachable - skip it.
+            //
+            // TODO: Emit warning for unreachable code.
+            //       This is a common source of bugs and should be reported.
+            //
+            // Note: We still need to continue the loop to check for
+            //       any potential nested transfers, but since control
+            //       already transferred, we don't need to analyze
+            //       this or subsequent statements for control flow.
+            //       However, we might want to still analyze for
+            //       validation (e.g., type checking) to catch errors,
+            //       but that's a separate concern.
+            continue;
+        }
+
+        // ── 3b. Analyze the statement ──────────────────────────────────────
         transfers = analyzeStmt(stmt, ctx);
         
         // If the statement transfers control, subsequent statements are unreachable
         if (transfers) {
+            // This statement transfers control (return, break, continue).
+            // The next iteration will detect unreachable code.
+            //
+            // TODO: If we want to emit a warning for unreachable code,
+            //       we should track the position of the transfer statement
+            //       so we can report "code after this point is unreachable".
             break;
         }
     }
@@ -125,6 +183,7 @@ bool analyzeBlock(const BlockStmtAST* block, SemaContext& ctx) {
 
     return transfers;
 }
+
 
 // =============================================================================
 // analyzeIfStmt
@@ -200,6 +259,75 @@ bool analyzeBlock(const BlockStmtAST* block, SemaContext& ctx) {
 /// -- inverse: a != nil OR b != nil
 /// -- cannot narrow either — no narrowing applied
 /// ```
+///
+/// ```lucid
+/// let x int? = getValue()
+/// if x == nil {
+///     return;
+/// }
+/// // x is int here (inverse narrowing)
+/// ```
+///
+/// ─── Execution Flow For Type Narrowing ─────────────────────────────────────
+///
+/// 1. analyzeIfStmt() called
+///    │
+///    ├── push(ContextKind::IfStmt)
+///    ├── setIfConditionCtx(true)
+///    ├── checkExpr(condition) → detects x == nil
+///    │   └── setPendingNarrowing({x → int, isEquality=true})
+///    ├── setIfConditionCtx(false)
+///    ├── info = getPendingNarrowing()  // {x → int, isEquality=true}
+///    ├── clearPendingNarrowing()
+///    │
+///    ├── pushNarrowingLevel(false)  // then branch
+///    │   └── For equality (x == nil): NO narrowing applied in then branch
+///    │       (x is nil, not a definite type)
+///    │
+///    ├── analyzeBlock(thenBranch)  // ← THIS IS KEY
+///    │   │
+///    │   ├── pushBlock()
+///    │   ├── analyzeStmt(return)  // ← Return statement
+///    │   │   │
+///    │   │   ├── analyzeReturnStmt()
+///    │   │   │   ├── Check: insideFunction() ✅
+///    │   │   │   ├── Check: return value matches expected type ✅
+///    │   │   │   ├── ctx.contexts.advanceReturnGroup()
+///    │   │   │   └── return true  // ← RETURN ALWAYS TRANSFERS CONTROL
+///    │   │   │
+///    │   │   └── returns true to analyzeBlock
+///    │   │
+///    │   ├── transfers = true  // ← Set by analyzeReturnStmt
+///    │   ├── popBlock()
+///    │   └── return transfers  // ← returns true to analyzeIfStmt
+///    │
+///    ├── thenReturns = true  // ← analyzeBlock returned true
+///    ├── popNarrowingLevel()
+///    │
+///    ├── Check: !stmt->elseBranch ✅
+///    ├── Check: thenReturns ✅
+///    ├── Check: hasNarrowing ✅
+///    ├── Check: info.isEquality ✅
+///    │
+///    ├── 🔑 setPendingInverseNarrowing(info)  // ← EARLY RETURN DETECTED!
+///    │
+///    └── pop()  // pop IfStmt context
+///
+/// 4. analyzeBlock(parentBlock) continues...
+///    │
+///    ├── pushBlock(parentBlock)
+///    │
+///    ├── 🔍 hasPendingInverseNarrowing() → true
+///    │   │
+///    │   ├── pushNarrowingLevel(true)  // Inverse narrowing
+///    │   ├── narrowVariable(x, int)   // x is now int in the rest of the block
+///    │   ├── clearPendingInverseNarrowing()
+///    │   └── hasAppliedPendingNarrowing = true
+///    │
+///    ├── analyzeStmt(println(x))  // ← x is int here ✅
+///    │
+///    └── popNarrowingLevel()  // pop inverse narrowing at block exit
+///        popBlock()
 ///
 /// @param stmt The if statement.
 /// @param ctx The semantic context.
@@ -440,17 +568,125 @@ bool analyzeDoWhileStmt(const DoWhileStmtAST* stmt, SemaContext& ctx) {
 /// @brief Analyze a return statement.
 ///
 /// The return statement exits the enclosing function.
-/// It may return zero or more values.
+/// It may return zero or one expression (Lucid uses single expression returns).
+///
+/// ─── Validation ──────────────────────────────────────────────────────────────
+/// 1. Must be inside a function body (ContextKind::FuncBody)
+/// 2. The return value type must match the function's return type
+/// 3. Cannot return from top-level
+/// 4. Inside a standalone if with no else, the return triggers inverse narrowing
+///    (handled by analyzeIfStmt via the boolean return value)
 ///
 /// @param stmt The return statement.
 /// @param ctx The semantic context.
 /// @return true (return always transfers control out of the block).
 bool analyzeReturnStmt(const ReturnStmtAST* stmt, SemaContext& ctx) {
-    // TODO: Check that we're inside a function body (SemanticContext::FuncBody)
-    // TODO: Check each return value against the function's return type
-    // TODO: Check that the number of values matches the function's return arity
-    // TODO: Check that fallible values are not returned without handling
-    // TODO: Return true (return always transfers control)
+    if (!stmt) return true;  // Return always transfers control
+
+    // ─── 1. Check: Must be inside a function body ──────────────────────────
+    if (!ctx.contexts.insideFunction()) {
+        ctx.error(stmt, DiagCode::E3006,
+                  "return statement outside of function body");
+        return true;  // Still transfers control (error recovery)
+    }
+
+    // ─── 2. Get the current function's return requirements ──────────────────
+    const ReturnRequirements* reqs = ctx.contexts.currentReturnReqs();
+    if (!reqs) {
+        // Shouldn't happen if insideFunction() is true, but safe
+        ctx.error(stmt, DiagCode::E3006,
+                  "return statement with no return requirements");
+        return true;
+    }
+
+    // ─── 3. Get the current return group ────────────────────────────────────
+    // For curried functions, each return must match the current group's type
+    const ReturnRequirements::Group* currentGroup = ctx.contexts.currentReturnGroup();
+
+    // ─── 4. Check return value against current group ────────────────────────
+    if (stmt->value) {
+        // ── 4a. Function has a return value ─────────────────────────────────
+        
+        // Must have a current group to return to
+        if (!currentGroup) {
+            ctx.error(stmt, DiagCode::E3005,
+                      "return value provided but function has no pending return group");
+            return true;
+        }
+
+        // Check the return value type against the group's return type
+        const TypeAST* expectedType = currentGroup->returnType;
+        if (!expectedType) {
+            ctx.error(stmt, DiagCode::E3005,
+                      "return value provided but function expects void return");
+            return true;
+        }
+
+        // Check the expression against the expected type
+        if (!checkExpr(stmt->value, expectedType, ctx)) {
+            // Error already reported by checkExpr
+            return true;
+        }
+
+        // ── 4b. Validate fallible/nullable propagation ──────────────────────
+        // A fallible value cannot be returned without handling err first
+        if (stmt->value->valueState == ValueState::Err) {
+            if (!isFallibleType(expectedType)) {
+                ctx.error(stmt->value, DiagCode::E3003,
+                          "cannot return err to non-fallible return type");
+                return true;
+            }
+            // If target is fallible, err is acceptable
+        }
+
+        if (stmt->value->valueState == ValueState::Nil) {
+            if (!isNullableType(expectedType)) {
+                ctx.error(stmt->value, DiagCode::E3003,
+                          "cannot return nil to non-nullable return type");
+                return true;
+            }
+            // If target is nullable, nil is acceptable
+        }
+
+    } else {
+        // ── 4c. Void return (no value) ──────────────────────────────────────
+        
+        // Check if void is allowed
+        if (currentGroup && currentGroup->requiresReturn) {
+            // This group requires a return value
+            ctx.error(stmt, DiagCode::E3005,
+                      "void return statement but function expects a return value");
+            return true;
+        }
+
+        // Check if the function allows optional return
+        if (!reqs->allowsOptionalReturn) {
+            ctx.error(stmt, DiagCode::E3005,
+                      "void return statement not allowed in this function");
+            return true;
+        }
+    }
+
+    // ─── 5. Advance the return group ────────────────────────────────────────
+    // This marks the current group as satisfied and moves to the next
+    if (currentGroup) {
+        ctx.contexts.advanceReturnGroup();
+        
+        // Record where this group was satisfied (for diagnostics)
+        // Note: currentGroup is const, we need to cast
+        const_cast<ReturnRequirements::Group*>(currentGroup)->satisfiedAt = stmt->loc;
+    }
+
+    // ─── 6. Check if all groups are now satisfied ──────────────────────────
+    if (reqs->hasRequirements() && reqs->isSatisfied()) {
+        // All return requirements satisfied - this is a terminal return
+        // (the function will exit after this)
+        // No additional action needed - the return already transfers control
+    }
+
+    // ─── 7. Return true (return always transfers control) ───────────────────
+    // This boolean propagates up to analyzeIfStmt, which checks
+    // if thenReturns is true to apply inverse narrowing
     return true;
 }
 
