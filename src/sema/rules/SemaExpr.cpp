@@ -753,7 +753,6 @@ bool checkBinaryExpr(BinaryExprAST* expr, const TypeAST* targetType, SemaContext
     if (!expr || !targetType) return false;
 
     // ─── Step 1: Check operands ──────────────────────────────────────────
-    // Always type-check both operands first
     if (!checkExpr(expr->left, targetType, ctx)) return false;
     if (!checkExpr(expr->right, targetType, ctx)) return false;
 
@@ -767,13 +766,11 @@ bool checkBinaryExpr(BinaryExprAST* expr, const TypeAST* targetType, SemaContext
     bool rightIsNil = rightState == ValueState::Nil;
 
     // ─── Step 3: Check if we're in an if condition context ─────────────
-    // If we are, detect narrowing patterns BEFORE normal operator validation
     if (ctx.contexts.isIfConditionCtx()) {
+        // ✅ Now this function is implemented!
         NarrowingInfo info = detectNarrowingPattern(expr, ctx);
         if (info.hasNarrowing) {
-            // Store the narrowing info for analyzeIfStmt to use
             ctx.contexts.setPendingNarrowing(info);
-            // The condition is valid (type checking already passed)
             expr->valueState = ValueState::Definite;
             return true;
         }

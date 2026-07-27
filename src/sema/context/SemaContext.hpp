@@ -19,9 +19,9 @@
 
 #include "SemanticResources.hpp"
 #include "SymbolStorage.hpp"
-#include "ContextStack.hpp"          // Was SemanticContextStack.hpp
+#include "ContextStack.hpp"
 #include "DefiningTypeStack.hpp"
-#include "ContextKind.hpp"            // Was SemanticContext.hpp
+#include "ContextKind.hpp"
 #include "ReturnRequirements.hpp"
 #include "NarrowingStack.hpp"
 

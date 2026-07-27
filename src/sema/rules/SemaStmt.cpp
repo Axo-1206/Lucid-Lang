@@ -209,7 +209,7 @@ bool analyzeIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
 
     // ─── 1. Push if context for type narrowing ──────────────────────────
     // Push IfStmt context so checkBinaryExpr knows we're in an if condition
-    ctx.contexts.push(SemanticContext::IfStmt, const_cast<IfStmtAST*>(stmt), stmt->loc);
+    ctx.contexts.push(ContextKind::IfStmt, const_cast<IfStmtAST*>(stmt), stmt->loc);
     ctx.contexts.setHasElse(stmt->elseBranch != nullptr);
 
     // ─── 2. Create a bool type for the condition ──────────────────────────
