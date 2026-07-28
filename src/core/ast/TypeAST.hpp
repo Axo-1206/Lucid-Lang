@@ -306,29 +306,28 @@ struct PtrTypeAST : TypeAST {
 /// @brief Represents a function type with a single parameter group.
 /// 
 /// This is a recursive design: a function type consists of one parameter group
-/// and one or more return types. If the function is curried, the return type
+/// and one return type. If the function is curried, the return type
 /// is another FuncTypeAST.
 /// 
 /// Grammar (desugared):
-///   func_type := param_group [ '->' return_list ]
+///   func_type := param_group [ '->' returnType ]
 /// 
 /// The parser desugars multiple parameter groups (e.g., `(a int)(b int) -> int`)
 /// into nested FuncTypeAST: `(a int) -> (b int) -> int`
 /// 
 /// Examples of nested structure:
-///   - `(a int) -> int`                    → params=[a], returnTypes=[int]
-///   - `(a int) -> (b int) -> int`         → params=[a], returnTypes=[FuncTypeAST(...)]
-///   - `(a int) -> (int, string)`          → params=[a], returnTypes=[int, string]
-///   - `(a int)(b int) -> (int, string)`   → desugars to `(a int) -> (b int) -> (int, string)`
+///   - `(a int) -> int`                    → params=[a], returnType = int
+///   - `(a int) -> (int) -> int`           → params=[a], returnType = FuncTypeAST(...)
+///   - `(a int) -> Pair<int, string>`      → params=[a], returnType = Pair<int, string>
+///   - `(a int)(b int) -> int`             → desugars to `(a int) -> (b int) -> int`
 /// 
 /// @field params        The parameters for this group (raw pointers to ParamAST)
-/// @field returnTypes   Return types – each may be a plain TypeAST or another FuncTypeAST
-///                      For void/unit returns, this span is empty.
+/// @field returnType   Return type – a plain TypeAST or another FuncTypeAST
 struct FuncTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::FuncType;
 
     ArenaSpan<ParamAST*> params;      // parameters for this group
-    TypePtr returnType = nullptr;  // return types (may contain FuncTypeAST)
+    TypePtr returnType = nullptr;     // return types (may contain FuncTypeAST)
     bool hasArrow = false;            // semantic enforce return statement inside the body
                                       // and codegen will automatically wrap function
 
@@ -337,5 +336,13 @@ struct FuncTypeAST : TypeAST {
     // Returns true if the return type is a function type (currying)
     bool isCurried() const { 
         return returnType->isa<FuncTypeAST>();
+    }
+
+    // Returns the inner function type if curried, otherwise nullptr
+    FuncTypeAST* getNext() const {
+        if (isCurried()) {
+            return returnType->as<FuncTypeAST>();
+        }
+        return nullptr;
     }
 };

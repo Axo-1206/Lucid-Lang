@@ -105,7 +105,7 @@ struct DoWhileStmtAST;
 struct ReturnStmtAST;
 struct BreakStmtAST;
 struct ContinueStmtAST;
-struct FuncRefStmt;
+struct FuncRefStmtAST;
 
 // Root
 struct ModuleAST;
@@ -378,7 +378,7 @@ struct DeclAST : BaseAST {
 ///   - Enum variants (EnumVariantAST)
 /// 
 /// ─── Type Cache ─────────────────────────────────────────────────────────────
-/// The `valueType` field caches the resolved type of this value. For example:
+/// The `type` field caches the resolved type of this value. For example:
 ///   - For a variable: its declared type
 ///   - For a function: its function type (FuncTypeAST)
 ///   - For a parameter: its parameter type

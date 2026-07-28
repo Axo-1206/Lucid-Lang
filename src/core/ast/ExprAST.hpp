@@ -176,16 +176,6 @@ using FieldInitPtr = FieldInitAST*;
 ///   Point {}  – all fields take their defaults
 ///   Pair<int, string> { first = 1, second = "one" }
 /// 
-/// ─── Const Field Rules ──────────────────────────────────────────────────────
-/// 1. **Const Fields with Default**: If a const field has a default value,
-///    it can be omitted during initialization.
-/// 2. **Const Fields without Default**: If a const field does NOT have a
-///    default value, it must be provided during initialization.
-/// 3. **Override Allowed**: A const field with a default value may be
-///    overridden during initialization (providing a different value is allowed).
-/// 4. **Mutable Fields**: Follow the same rules – if they have defaults,
-///    they can be omitted; if not, they must be provided.
-/// 
 /// @field typeName      The name of the struct type.
 /// @field genericArgs   Generic arguments (empty if non-generic).
 /// @field inits         Field initializers (field = expr entries).

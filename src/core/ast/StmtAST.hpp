@@ -93,6 +93,19 @@ struct DeclStmtAST : StmtAST {
     bool isUseDecl() const { return decl && decl->isa<ImportDeclAST>(); }
 };
 
+/// @brief A statement that references another function.
+/// Used for function declarations that delegate to another function.
+/// Examples:
+///   const add (a int)(b int) -> int = math:add
+///   const process = module:process
+struct FuncRefStmtAST : StmtAST {
+    static constexpr ASTKind staticKind = ASTKind::FuncRefStmt;
+    
+    ExprPtr target;  // The function reference (Identifier, FieldAccess, ModuleAccess)
+    
+    FuncRefStmtAST() : StmtAST(ASTKind::FuncRefStmt) {}
+};
+
 /// @brief The statement form of `if` – `else` is optional, no value is produced.
 /// 
 /// @example

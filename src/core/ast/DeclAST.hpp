@@ -133,7 +133,7 @@ using ParamGroup = std::vector<ParamPtr>;
 /// 
 /// @example
 ///   const add (a int)(b int) -> int = { return a + b }
-///   const makeAdder (base int) -> (n int) -> int = { ... }
+///   const makeAdder (base int) -> (int) -> int = { ... }
 ///   const sum (nums ...int) -> int = { ... }
 /// 
 /// @field keyword              Let or Const (const functions cannot be reassigned)
@@ -141,14 +141,6 @@ using ParamGroup = std::vector<ParamPtr>;
 /// @field funcType             Full function type (includes parameter groups and return types)
 /// @field body                 Function body (always BlockStmtAST, expression bodies desugared)
 /// @field resolvedReturnType   Cached first return type (set during type resolution)
-/// 
-/// ## Currying and Form 2 `()()` Shorthand
-/// 
-/// The parser desugars Form 2 `()()` shorthand into nested Form 1 functions
-/// before building the AST. The `funcType` captures the full curried structure:
-/// 
-///   const clamp (lo int)(hi int)(v int) -> int
-///   → FuncTypeAST: (lo int) -> (hi int) -> (v int) -> int
 /// 
 /// @note Visibility is only meaningful at top‑level; inside blocks, declarations
 ///       are always private. Attributes (e.g., @[export], @[inline]) are stored
@@ -177,10 +169,6 @@ using FuncDeclPtr = FuncDeclAST*;
 /// Values are required in Lucid – no auto-increment (same no-inference stance
 /// as variable declarations).
 /// 
-/// ─── Semantic Cache ────────────────────────────────────────────────────────
-/// `valueType` (from ValueDeclAST) points to the enum type (the variant's type
-/// is the enum itself, not the underlying integer).
-/// 
 /// @note Enum variants are accessed as `Direction.North` in source.
 ///       They live in the value namespace of the enum's scope.
 struct EnumVariantAST : ValueDeclAST {
@@ -198,47 +186,18 @@ using EnumVariantPtr = EnumVariantAST*;
 
 /// @brief Represents a struct field, optionally with a default value and const-ness.
 /// 
-/// @example
-///   x     float           → defaultVal = nullptr, isConst = false
-///   r     float = 1.0     → defaultVal = literal 1.0, isConst = false
-///   const step  int       → defaultVal = nullptr, isConst = true
-///   const max   int = 100 → defaultVal = literal 100, isConst = true
-///   items [*]string       → type = DynamicArray(String)
-/// 
-/// ─── Const Fields ───────────────────────────────────────────────────────────
-/// A field qualified `const` cannot be reassigned through `field_expr`, even
-/// when the containing variable is itself `let`. This is useful for:
-///   - Fixed behavior callbacks
-///   - Immutable configuration values
-///   - Function-typed fields that should not be swapped
-/// 
-/// ─── Const Field Rules ──────────────────────────────────────────────────────
-/// 1. A `const` field may have a default value (`= expr`). If it has a default,
-///    it can be omitted during initialization.
-/// 2. If a `const` field does NOT have a default value, it must be provided
-///    a value during struct initialization.
-/// 3. A `const` field may NOT be nullable (`T?`) or fallible (`T!`).
-/// 4. `const` fields cannot be reassigned after construction.
-/// 
-/// ─── Semantic Cache ────────────────────────────────────────────────────────
-/// `valueType` (from ValueDeclAST) points to the field's resolved type.
-/// 
-/// note
 /// ─── Semantic Analysis Notes ──────────────────────────────────────────────
 /// The semantic pass must enforce the following rules:
 /// 1. **No Nullable/Fallible**: If `isConst` is true, `type` must not be
 ///    `NullableTypeAST` or `FallibleTypeAST`. Emit a compile error if it is.
-/// 2. **Default Value Optional**: A `const` field may have a default value.
-///    If it has a default, it must be omitted during initialization.
-/// 3. **Initialization Required**: If `isConst` is true and `defaultVal` is
-///    nullptr, the field must be provided a value during struct initialization.
-///    If missing, emit a compile error.
-/// 4. **Assignment Rejection**: Any assignment to a `const` field through
+/// 2. **Assignment Rejection**: Any assignment to a `const` field through
 ///    field access (`struct.field = value`) must be rejected with a compile error.
-/// 5. **Override not allow**: A `const` field with a default value must not be
-///    overridden during initialization.
-/// 6. **Deep Immutability**: `const` on struct declaration is not transitive 
+/// 3. **Deep Immutability**: `const` on struct declaration is not transitive 
 ///    to inner struct fields.
+/// NOTE: the default value rule is the same for both const/let keywords
+///       the const keyword enforce immutable after declarartion, default
+///       value will override the default value, the declared keyword does not
+///       matter here.
 struct FieldDeclAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::FieldDecl;
 
