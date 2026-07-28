@@ -1011,6 +1011,148 @@ declared shape, so the following are the practical mitigations available:
   bounding the window (`const`) and controlling who is trusted to construct
   the value in the first place.
 
+### Recursive Structs and Deep Copy
+
+Lucid uses **arena allocation** — structs are value types that live in the current scope's arena and are freed when the scope exits.
+
+When a struct contains a recursive field (a field of the same type), the compiler automatically stores it as a **pointer** internally to avoid infinite size. However, **assignment always performs a deep copy**, not a pointer copy:
+
+```lucid
+struct Node<T> {
+    value T
+    next  Node<T>?    -- Recursive field (stored as pointer internally)
+}
+
+let node1 = Node<int> { value = 5, next = nil }
+{
+    let node2 = Node<int> { value = 10, next = nil }
+    node1.next = node2   -- DEEP COPY: node2's value is copied into node1.next
+}
+-- node2 is freed when the block exits, but node1.next still has the value ✅
+```
+
+**Why Deep Copy?**
+
+Lucid has no garbage collector and no reference counting. Memory is managed by scope arenas:
+
+- `node2` lives in the inner block's arena
+- When the block exits, `node2` is freed
+- If `node1.next` pointed to `node2` (reference), it would be a **dangling pointer**
+- Deep copy ensures `node1.next` owns its own independent copy of the data
+
+**Performance Considerations:**
+
+Deep copy has a cost — for large recursive structures, it copies the entire tree. This is a deliberate trade-off:
+
+| Aspect             | Trade-off                                  |
+| ------------------ | ------------------------------------------ |
+| **Safety**         | ✅ No dangling pointers, no use-after-free  |
+| **Memory**         | ✅ Arena allocation, no GC overhead         |
+| **Performance**    | ⚠️ Deep copy is O(n) for the structure size |
+| **Predictability** | ✅ Copy behavior is explicit and consistent |
+
+**When Deep Copy Happens:**
+
+```lucid
+let a = Node { value = 1, next = nil }
+let b = Node { value = 2, next = nil }
+
+-- Assignment: deep copy
+a.next = b           -- ✅ Deep copy: a.next is independent
+
+-- Function call: deep copy (passed by value)
+const process (n Node<int>) -> () = { ... }
+process(a)           -- ✅ Deep copy: function gets its own copy
+
+-- Return: deep copy
+const makeNode () -> Node<int> = { return Node { value = 42, next = nil } }
+let c = makeNode()   -- ✅ Deep copy: returned value is copied
+```
+
+**When Shallow Copy Happens:**
+
+```lucid
+-- Slices: shallow copy (borrowed view)
+let view [_]int = array   -- ✅ Shallow: view borrows from array
+
+-- References: no copy (borrowed)
+const process (const v &Node<int>) -> () = { ... }  -- ✅ No copy: read-only reference
+```
+
+**Explicit Deep Copy:**
+
+If you need to copy a recursive structure explicitly (e.g., to ensure independence), use `#clone` or implement your own clone function:
+
+```lucid
+struct Node<T> {
+    value T
+    next  Node<T>?
+    
+    const clone () -> Node<T> = {
+        return Node<T> {
+            value = self.value,
+            next = self.next?.clone()
+        }
+    }
+}
+```
+
+**Memory Management Summary:**
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  Memory Model for Recursive Structs                                 │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  User writes:     next  Node<T>?                                    │
+│  Compiler stores: next  *Node<T>?  (pointer internally)             │
+│  Assignment:      Deep copy (independent copy)                      │
+│  Lifetime:        Arena-allocated, freed on scope exit              │
+│  Safety:          No dangling pointers                              │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+> [!NOTE]
+> This is a deliberate design choice: **safety over efficiency** for recursive types. The cost of deep copy is acceptable because:
+> 1. Recursive structures are typically built once and traversed, not frequently copied
+> 2. Arena allocation makes freeing O(1) per scope
+> 3. Explicit references (`&T`) and slices (`[_]T`) provide zero-copy options when needed
+
+> [!Tip]
+> Consider group multiple simple struct inside a module instead of grouping
+> them inside another struct
+
+### Self-Reference Rules
+
+A struct may reference itself in its fields, but with restrictions to avoid infinite size:
+
+| Syntax           | Allowed?    | Semantics                                         |
+| ---------------- | ----------- | ------------------------------------------------- |
+| `next Node<T>`   | ❌ **Error** | Non-nullable self-reference creates infinite size |
+| `next Node<T>?`  | ✅ **OK**    | Nullable self-reference, terminate with `nil`     |
+| `next *Node<T>`  | ✅ **OK**    | Raw pointer (sealed conduit)                      |
+| `next *Node<T>?` | ✅ **OK**    | Nullable raw pointer                              |
+
+```lucid
+-- ❌ ERROR: Non-nullable self-reference
+struct Node<T> {
+    value T
+    next  Node<T>   -- Error: would create infinite size
+}
+
+-- ✅ OK: Nullable self-reference
+struct Node<T> {
+    value T
+    next  Node<T>?  -- OK: can be nil to terminate
+}
+
+-- ✅ OK: Raw pointer
+struct Node<T> {
+    value T
+    next  *Node<T>  -- OK: pointer breaks the cycle
+}
+
 ---
 
 ## Trait Declaration
