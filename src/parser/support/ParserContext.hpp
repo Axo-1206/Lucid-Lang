@@ -458,7 +458,7 @@ public:
     template<typename... Args>
     void error(TokenStream& stream, DiagCode code, Args&&... args) {
         std::string message = buildMessage(std::forward<Args>(args)...);
-        diagnostic::error(DiagnosticCategory::Syntax, stream.currentLoc(), code, {message});
+        diagnostic::error(stream.currentLoc(), code, {message});
     }
       
     /**
@@ -472,7 +472,7 @@ public:
     template<typename... Args>
     void errorAt(const SourceLocation& loc, DiagCode code, Args&&... args) {
         std::string message = buildMessage(std::forward<Args>(args)...);
-        diagnostic::error(DiagnosticCategory::Syntax, loc, code, {message});
+        diagnostic::error(loc, code, {message});
     }
     
     /**
@@ -486,7 +486,7 @@ public:
     template<typename... Args>
     void warning(TokenStream& stream, DiagCode code, Args&&... args) {
         std::string message = buildMessage(std::forward<Args>(args)...);
-        diagnostic::warning(DiagnosticCategory::Syntax, stream.currentLoc(), code, {message});
+        diagnostic::warning(stream.currentLoc(), code, {message});
     }
     
     // ─── Warning at Specific Location ────────────────────────────────────
@@ -502,7 +502,7 @@ public:
     template<typename... Args>
     void warningAt(const SourceLocation& loc, DiagCode code, Args&&... args) {
         std::string message = buildMessage(std::forward<Args>(args)...);
-        diagnostic::warning(DiagnosticCategory::Syntax, loc, code, {message});
+        diagnostic::warning(loc, code, {message});
     }
 
     /**

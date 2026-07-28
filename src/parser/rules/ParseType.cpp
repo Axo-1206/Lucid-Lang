@@ -19,6 +19,7 @@
 
 #include "../Parser.hpp"
 #include "core/Tokens.hpp"
+#include "core/ast/BaseAST.hpp"
 #include "core/ast/TypeAST.hpp"
 #include "core/ast/DeclAST.hpp"
 #include "debug/DebugMacros.hpp"
@@ -213,8 +214,9 @@ TypeAST* parseNamedType(TokenStream& stream, ParserContext& ctx) {
     // Check if it's a generic parameter reference (single identifier, no generic args)
     // The semantic pass will determine if this is a type parameter or a concrete type
     if (!stream.check(TokenType::LESS)) {
-        auto* type = ctx.arena.make<NamedTypeAST>(name);
+        auto* type = ctx.arena.make<NamedTypeAST>();
         type->loc = loc;
+        type->name = name;
         LOG_PARSER_DETAIL("parseNamedType: parsed named type: ", ctx.toString(name));
         return type;
     }
@@ -222,8 +224,9 @@ TypeAST* parseNamedType(TokenStream& stream, ParserContext& ctx) {
     // Parse generic arguments: <type { ',' type }>
     ArenaSpan<TypePtr> genericArgs = parseGenericArgs(stream, ctx);
     
-    auto* type = ctx.arena.make<NamedTypeAST>(name);
+    auto* type = ctx.arena.make<NamedTypeAST>();
     type->loc = loc;
+    type->name = name;
     type->genericArgs = genericArgs;
     
     LOG_PARSER_DETAIL("parseNamedType: parsed generic type: ", ctx.toString(name), 
@@ -438,22 +441,29 @@ TypeAST* parseFuncType(TokenStream& stream, ParserContext& ctx) {
         paramBuilder.push_back(p);
     }
     funcType->params = paramBuilder.build();
-    
+
     // ─── 3. Parse return types (optional) ─────────────────────────────────
     if (stream.match(TokenType::ARROW)) {
-        funcType->isVoid = true;
-        // parseReturnList handles:
-        // - Single type: `int`
-        // - Multiple types: `(int, string)`
-        // - Void: `()` (though this is unusual for function types)
-        ArenaSpan<TypePtr> returnTypes = parseReturnList(stream, ctx);
-        funcType->returnTypes = returnTypes;
+        funcType->hasArrow = true; // enforce this function body return values
     }
+
+    TypePtr returnType = parseType(stream, ctx);
+    if (!returnType) {
+        ctx.error(stream, DiagCode::E1003, "return type", stream.peekValue());
+    }
+    funcType->returnType = returnType;
+    // if (stream.match(TokenType::ARROW)) {
+    //     // parseReturnList handles:
+    //     // - Single type: `int`
+    //     // - Multiple types: `(int, string)`
+    //     // - Void: `()` (though this is unusual for function types)
+    //     ArenaSpan<TypePtr> returnTypes = parseReturnList(stream, ctx);
+    //     funcType->returnTypes = returnTypes;
+    // }
     // If no arrow, it's a void function type (returns nothing)
     
     LOG_PARSER("parseFuncType: parsed function type with ", 
-                      params.size(), " parameters and ",
-                      funcType->returnTypes.size(), " return types");
+                      params.size(), " parameters");
     return funcType;
 }
 

@@ -181,8 +181,6 @@ BreakStmtAST* parseBreakStmt(TokenStream& stream, ParserContext& ctx);
 ContinueStmtAST* parseContinueStmt(TokenStream& stream, ParserContext& ctx);
 ExprStmtAST* parseExprStmt(TokenStream& stream, ParserContext& ctx);
 DeclStmtAST* parseDeclStmt(TokenStream& stream, ParserContext& ctx);
-MultiVarDeclAST* parseMultiVarDecl(TokenStream& stream, ParserContext& ctx);
-MultiAssignStmtAST* parseMultiAssignStmt(TokenStream& stream, ParserContext& ctx);
 
 // ─── Expressions ───────────────────────────────────────────────────────────
 
@@ -245,11 +243,10 @@ ArenaSpan<GenericParamDeclPtr> parseGenericParamDecls(TokenStream& stream, Parse
 ArenaSpan<TypePtr> parseGenericArgs(TokenStream& stream, ParserContext& ctx);
 
 ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx);
-ArenaSpan<TypeAST*> parseReturnList(TokenStream& stream, ParserContext& ctx); // Use when parse function type
 std::vector<ParamPtr> parseParamList(TokenStream& stream, ParserContext& ctx);
 std::vector<InternedString> parseImportPath(TokenStream& stream, ParserContext& ctx);
 
-TraitRefPtr parseTraitRef(TokenStream& stream, ParserContext& ctx);
+NamedTypeAST* parseTraitRef(TokenStream& stream, ParserContext& ctx);
 
 ExprPtr parseLvalue(TokenStream& stream, ParserContext& ctx); // X
 
@@ -257,8 +254,6 @@ ExprPtr parseLvalue(TokenStream& stream, ParserContext& ctx); // X
 
 bool looksLikeFuncDecl(TokenStream& stream, ParserContext& ctx);
 bool looksLikeAnonFunc(TokenStream& stream, ParserContext& ctx);
-bool looksLikeMultiAssignStart(TokenStream& stream, ParserContext& ctx);
-bool looksLikeMultiAssignTargets(TokenStream& stream, ParserContext& ctx);
 bool looksLikeStructLiteral(TokenStream& stream, ParserContext& ctx);
 
 // ─── Precedence Helpers ────────────────────────────────────────────────────

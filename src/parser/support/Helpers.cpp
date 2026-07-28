@@ -11,6 +11,7 @@
 
 #include "../Parser.hpp"
 #include "core/Tokens.hpp"
+#include "core/ast/TypeAST.hpp"
 #include "core/diagnostics/DiagnosticCodes.hpp"
 #include "debug/DebugMacros.hpp"
 #include "debug/DebugUtils.hpp"
@@ -1105,7 +1106,7 @@ GenericParamDeclPtr parseGenericParamDecl(TokenStream& stream, ParserContext& ct
     
     // ─── 3. Check for constraints (optional) ───────────────────────────
     if (stream.match(TokenType::COLON)) {
-        std::vector<TraitRefPtr> constraints;
+        std::vector<NamedTypeAST*> constraints;
         bool hasConstraint = false;
         
         // ─── 3.1 Leading plus recovery ─────────────────────────────────
@@ -1120,7 +1121,7 @@ GenericParamDeclPtr parseGenericParamDecl(TokenStream& stream, ParserContext& ct
                !stream.check(TokenType::COMMA)) {
             
             // ─── Parse a trait reference ─────────────────────────────────
-            TraitRefPtr traitRef = parseTraitRef(stream, ctx);
+            NamedTypeAST* traitRef = parseTraitRef(stream, ctx);
             if (traitRef) {
                 constraints.push_back(traitRef);
                 hasConstraint = true;
@@ -1156,7 +1157,7 @@ GenericParamDeclPtr parseGenericParamDecl(TokenStream& stream, ParserContext& ct
         }
         
         // ─── 3.4 Build the constraints span ──────────────────────────
-        auto builder = ctx.arena.makeBuilder<TraitRefPtr>();
+        auto builder = ctx.arena.makeBuilder<NamedTypeAST*>();
         for (auto* tr : constraints) {
             builder.push_back(tr);
         }
@@ -1843,224 +1844,6 @@ ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx) {
 }
 
 /**
- * @brief Parse a list of return types.
- * 
- * Grammar: `type | '(' type { ',' type } ')'`
- * 
- * ## Examples
- * 
- * ```lucid
- * -> int                    → [int]          (single type, no parentheses)
- * -> (int, bool)            → [int, bool]    (multiple types, parentheses)
- * -> (string, int, float)   → [string, int, float]
- * -> ()                     → []             (void, empty parentheses)
- * ```
- * 
- * ## Program Flow
- * 
- * ```
- * parseReturnList()
- *     │
- *     ├── 1. Check for Parenthesized Return List
- *     │   │
- *     │   └── if (stream.check(TokenType::LPAREN))
- *     │       │
- *     │       ├── 1.1 Opening Delimiter Phase
- *     │       │   └── stream.advance()  // Consume '('
- *     │       │
- *     │       ├── 1.2 Empty List Check: ()
- *     │       │   └── if (stream.check(TokenType::RPAREN))
- *     │       │       ├── stream.advance()  // Consume ')'
- *     │       │       └── return empty ArenaSpan<TypePtr>
- *     │       │
- *     │       ├── 1.3 Leading Comma Recovery
- *     │       │   └── if (stream.consumeTrailing(TokenType::COMMA) > 0)
- *     │       │       └── ctx.error(stream, DiagCode::E1009, ",", "return list")
- *     │       │
- *     │       ├── 1.4 Main Type Parsing Loop
- *     │       │   │
- *     │       │   └── while (!stream.isAtEnd() && !stream.check(TokenType::RPAREN))
- *     │       │       │
- *     │       │       ├── 1.4.1 Parse Type
- *     │       │       │   │
- *     │       │       │   └── TypePtr type = parseType(stream, ctx)
- *     │       │       │       │
- *     │       │       │       ├── if (type != nullptr)
- *     │       │       │       │   └── returnTypes.push_back(type)
- *     │       │       │       │
- *     │       │       │       └── else
- *     │       │       │           ├── ctx.error(stream, DiagCode::E1003, "in return list", got)
- *     │       │       │           ├── synchronizeTo(stream, ctx, COMMA, RPAREN)
- *     │       │       │           └── // The loop condition handles ')' and EOF naturally.
- *     │       │       │               // If we're at a comma, the comma handling below will consume it.
- *     │       │       │               // If we're at some other token, break to avoid infinite loop.
- *     │       │       │
- *     │       │       └── 1.4.2 Comma Separator Handling
- *     │       │           └── if (stream.consumeTrailing(TokenType::COMMA) > 1)
- *     │       │               └── ctx.error(stream, DiagCode::E1009, ",", "return list")
- *     │       │                   // Reports once for multiple consecutive commas between types
- *     │       │
- *     │       └── 1.5 Closing Parenthesis Phase
- *     │           │
- *     │           └── if (stream.isAtEnd())
- *     │               ├── ctx.error(stream, DiagCode::E1005, ")", "return list", "<EOF>")
- *     │               └── // Return with whatever types we have (missing ')')
- *     │           └── else
- *     │               └── stream.advance()  // Consume ')' (we know it's there from loop condition)
- *     │
- *     └── 2. Single Return Type (no parentheses)
- *         │
- *         └── TypePtr type = parseType(stream, ctx)
- *             │
- *             ├── if (type != nullptr)
- *             │   └── returnTypes.push_back(type)
- *             │
- *             └── else
- *                 └── ctx.error(stream, DiagCode::E1003, "(return type) after '->'", got)
- *                     synchronizeToContext(stream, ctx)
- *     
- *     ├── 3. Build Result
- *     │   └── ctx.arena.makeBuilder<TypePtr>()
- *     │       └── push_back each type → build() → ArenaSpan<TypePtr>
- *     │
- *     └── 4. Return
- *         └── return ArenaSpan<TypePtr> (possibly empty)
- * ```
- * 
- * ## Error Recovery Strategy
- * 
- * ### Level 1: Parenthesized Return List
- * 
- * #### Level 1.1: Missing '(' (handled by caller)
- * - The caller (parseType) handles the case where '(' is expected but not found
- * 
- * #### Level 1.2: Malformed Type in Return List
- * - parseType() reports its own error and returns nullptr
- * - synchronizeTo(COMMA, RPAREN) skips to next separator or terminator
- * 
- * #### Level 1.3: Missing Closing Parenthesis
- * - E1005 reported at EOF
- * - No recovery needed since we're already at EOF
- * 
- * #### Level 1.4: Consecutive Commas
- * - Leading commas before first type → E1009 once
- * - Multiple commas between types → E1009 once per gap
- * 
- * ### Level 2: Single Return Type
- * - Missing type after `->` → E1003 reported
- * - synchronizeToContext() recovers
- * 
- * ## Token Stream State
- * 
- * After this function completes:
- * - Position is AFTER ')' (normal case for parenthesized list)
- * - Position is after the single type (normal case for single type)
- * - Position is at EOF (if ')' was missing)
- * - Position is at recovery point (if errors occurred)
- * 
- * ## Examples
- * 
- * ```lucid
- * -> int                    → [int]
- * -> (int, bool)            → [int, bool]
- * -> (string, int, float)   → [string, int, float]
- * -> ()                     → []
- * -> (int,,,bool)           → [int, bool] + E1009 (gap)
- * -> (int, )                → [int] + E1009 (trailing comma)
- * -> (int,                  → [int] + E1005 (missing ')')
- * -> (,int)                 → [int] + E1009 (leading comma)
- * -> (,,,)                  → [] + E1009 (only commas)
- * ```
- * 
- * @param stream The token stream for the current file
- * @param ctx The parsing context
- * @return ArenaSpan<TypeAST*> The parsed return types (empty for void)
- * 
- * @note This function consumes ')' if a parenthesized list is present.
- *       The caller must NOT consume ')'. For single return types, this
- *       function does NOT consume a closing parenthesis.
- */
-ArenaSpan<TypeAST*> parseReturnList(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER_DETAIL("parseReturnList: parsing return types");
-    
-    std::vector<TypePtr> returnTypes;
-    
-    // ─── Check if we have a parenthesized return list ────────────────────
-    if (stream.check(TokenType::LPAREN)) {
-        stream.advance(); // Consume '('
-        
-        // ─── Check for empty parentheses (void): () ──────────────────────
-        if (stream.check(TokenType::RPAREN)) {
-            stream.advance(); // Consume ')'
-            return ctx.arena.makeBuilder<TypePtr>().build();
-        }
-        
-        // ─── Skip initial consecutive commas ──────────────────────────────
-        // Ex: (,,,, int ...)
-        if (stream.consumeTrailing(TokenType::COMMA) > 0) {
-            ctx.error(stream, DiagCode::E1009, ",", "return list");
-        }
-        
-        // ─── Parse types until we hit ')' ──────────────────────────────────
-        while (!stream.isAtEnd() && !stream.check(TokenType::RPAREN)) {
-            // Parse a type
-            TypePtr type = parseType(stream, ctx);
-            if (type) {
-                returnTypes.push_back(type);
-            } else {
-                // Error already reported by parseType, try to recover
-                ctx.error(stream, DiagCode::E1003, "in return list", stream.peekValue());
-                synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN);
-                // The loop condition will handle ')' and EOF naturally.
-                // If we're at a comma, the comma handling below will consume it.
-                // If we're at some other token, break to avoid infinite loop.
-                if (!stream.check(TokenType::COMMA) && !stream.check(TokenType::RPAREN) && !stream.isAtEnd()) {
-                    break;
-                }
-                continue;
-            }
-            
-            // ─── Comma Separator Handling ────────────────────────────────────
-            // Consume at least 1 comma and skip consecutive commas
-            if (stream.consumeTrailing(TokenType::COMMA) > 1) {
-                ctx.error(stream, DiagCode::E1009, ",", "return list");
-            }
-        }
-        
-        // ─── Consume closing parenthesis ────────────────────────────────────
-        // The loop condition guarantees we're either at ')' or at EOF.
-        if (stream.isAtEnd()) {
-            ctx.error(stream, DiagCode::E1005, ")", "return list", "<EOF>");
-        } else {
-            // We must be at ')' (loop condition guaranteed !stream.check(RPAREN) is false)
-            stream.advance(); // Consume ')'
-        }
-        
-    } else {
-        // ─── Single return type (no parentheses) ──────────────────────────
-        // This is the case: `-> int`
-        TypePtr type = parseType(stream, ctx);
-        if (type) {
-            returnTypes.push_back(type);
-        } else {
-            // Use E1003 with specific context: "Expected return type after '->', but found '%s'"
-            ctx.error(stream, DiagCode::E1003, "(return type) after '->'", stream.peekValue());
-            synchronizeToContext(stream, ctx);
-        }
-    }
-    
-    // Build the ArenaSpan
-    auto builder = ctx.arena.makeBuilder<TypePtr>();
-    for (auto* type : returnTypes) {
-        builder.push_back(type);
-    }
-    
-    LOG_PARSER_DETAIL("parseReturnList: parsed ", returnTypes.size(), " return types");
-    
-    return builder.build();
-}
-
-/**
  * @brief Parse a import path.
  * 
  * Grammar: `IDENTIFIER { '.' IDENTIFIER }`
@@ -2218,7 +2001,7 @@ std::vector<InternedString> parseImportPath(TokenStream& stream, ParserContext& 
  * @param ctx The parsing context
  * @return TraitRefPtr The parsed trait reference, or nullptr on error
  */
-TraitRefPtr parseTraitRef(TokenStream& stream, ParserContext& ctx) {
+NamedTypeAST* parseTraitRef(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
     
     // Expect an identifier for the trait name
@@ -2232,7 +2015,7 @@ TraitRefPtr parseTraitRef(TokenStream& stream, ParserContext& ctx) {
     InternedString name = ctx.pool.intern(nameTok.value);
     
     // Create the trait reference node
-    auto* traitRef = ctx.arena.make<TraitRefAST>();
+    auto* traitRef = ctx.arena.make<NamedTypeAST>();
     traitRef->loc = loc;
     traitRef->name = name;
     

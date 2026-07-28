@@ -7,9 +7,10 @@
  * 
  * @related_files
  *   - src/parser/Parser.hpp – function declarations
- *   - src/parser/ParseStmt.cpp – statement dispatch (parseStmt), and the
- *     sibling multi-assign/multi-var-decl statements these are modeled
- *     after (same comma-list-then-shared-RHS shape)
+ *   - src/parser/ParseStmt.cpp – statement dispatch (parseStmt). `await`
+ *     and `join` are modeled after the sibling multi-assign/multi-var-decl
+ *     statements (comma-list target, shared trailing semantics); `async`
+ *     and `spawn` each bind exactly one target and do not use that shape.
  *   - src/parser/support/ParserContext.hpp – SyntacticContext, used here to
  *     confirm 'await' appears inside a function body
  */
@@ -43,29 +44,26 @@ AsyncStmtAST* parseAsyncStmt(TokenStream& stream, ParserContext& ctx) {
 
     AsyncStmtAST* asyncStmt = ctx.arena.make<AsyncStmtAST>();
     asyncStmt->loc = loc;
-    auto targetBuilder = ctx.arena.makeBuilder<ExprPtr>();
 
-    // ─── 2. Parse target list: IDENTIFIER { ',' IDENTIFIER } ────────────────
-    // Grammar: async_stmt := 'async' IDENTIFIER { ',' IDENTIFIER } '=' call_expr
-    // Targets are plain, already-`let`-declared variable names — not full
-    // lvalues; field access and indexing are not part of this grammar.
-    do {
-        if (!stream.check(TokenType::IDENTIFIER)) {
-            ctx.error(stream, DiagCode::E1002, "variable name", stream.peekValue());
-            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::ASSIGN);
-            break;
-        }
+    // ─── 2. Parse the single target: IDENTIFIER ─────────────────────────────
+    // Grammar: async_stmt := 'async' IDENTIFIER '=' call_expr
+    // The target is a plain, already-`let`-declared variable name — not a
+    // full lvalue; field access and indexing are not part of this grammar.
+    // Unlike await/join, async binds exactly one variable per statement —
+    // no comma-separated list here.
+    if (!stream.check(TokenType::IDENTIFIER)) {
+        ctx.error(stream, DiagCode::E1002, "variable name", stream.peekValue());
+        synchronizeToContext(stream, ctx);
+        return asyncStmt;
+    }
 
-        SourceLocation targetLoc = stream.currentLoc();
-        Token nameTok = stream.advance();
+    SourceLocation targetLoc = stream.currentLoc();
+    Token nameTok = stream.advance();
 
-        auto* target = ctx.arena.make<IdentifierExprAST>();
-        target->loc = targetLoc;
-        target->name = ctx.pool.intern(nameTok.value);
-
-        targetBuilder.push_back(target);
-    } while (stream.match(TokenType::COMMA));
-    asyncStmt->target = targetBuilder.build();
+    auto* target = ctx.arena.make<IdentifierExprAST>();
+    target->loc = targetLoc;
+    target->name = ctx.pool.intern(nameTok.value);
+    asyncStmt->target = target;
 
     // ─── 3. Expect ASSIGN ────────────────────────────────────────────────────
     if (!stream.match(TokenType::ASSIGN)) {
@@ -83,7 +81,7 @@ AsyncStmtAST* parseAsyncStmt(TokenStream& stream, ParserContext& ctx) {
     }
     asyncStmt->call = call;
 
-    LOG_PARSER("parseAsyncStmt: parsed async statement with ", asyncStmt->target.size(), " target(s)");
+    LOG_PARSER("parseAsyncStmt: parsed async statement for target '", nameTok.value, "'");
     return asyncStmt;
 }
 
@@ -159,34 +157,30 @@ SpawnStmtAST* parseSpawnStmt(TokenStream& stream, ParserContext& ctx) {
     SpawnStmtAST* spawnStmt = ctx.arena.make<SpawnStmtAST>();
     spawnStmt->loc = loc;
 
-    auto targetBuilder = ctx.arena.makeBuilder<ExprPtr>();
-
-    // ─── 2. Parse binding list: spawn_binding { ',' spawn_binding } ─────────
-    // Grammar: spawn_stmt    := 'spawn' spawn_binding { ',' spawn_binding } '=' call_expr
+    // ─── 2. Parse the single binding: spawn_binding ─────────────────────────
+    // Grammar: spawn_stmt    := 'spawn' spawn_binding '=' call_expr
     //          spawn_binding := IDENTIFIER | '_'
-    // '_' discards the corresponding return value (fire-and-forget, no join
-    // required) and is represented here as a null target, the same
-    // discard convention parseForStmt uses for its index/value bindings.
-    do {
-        if (stream.check(TokenType::UNDERSCORE)) {
-            stream.advance(); // Consume '_'
-            targetBuilder.push_back(nullptr);
-        } else if (stream.check(TokenType::IDENTIFIER)) {
-            SourceLocation targetLoc = stream.currentLoc();
-            Token nameTok = stream.advance();
+    // '_' discards the return value (fire-and-forget, no join required) and
+    // is represented here as a null target, the same discard convention
+    // parseForStmt uses for its index/value bindings. Unlike await/join,
+    // spawn binds exactly one value per statement — no comma-separated list.
+    if (stream.check(TokenType::UNDERSCORE)) {
+        stream.advance(); // Consume '_'
+        spawnStmt->target = nullptr;
+    } else if (stream.check(TokenType::IDENTIFIER)) {
+        SourceLocation targetLoc = stream.currentLoc();
+        Token nameTok = stream.advance();
 
-            auto* target = ctx.arena.make<IdentifierExprAST>();
-            target->loc = targetLoc;
-            target->name = ctx.pool.intern(nameTok.value);
+        auto* target = ctx.arena.make<IdentifierExprAST>();
+        target->loc = targetLoc;
+        target->name = ctx.pool.intern(nameTok.value);
 
-            targetBuilder.push_back(target);
-        } else {
-            ctx.error(stream, DiagCode::E1002, "variable name or '_'", stream.peekValue());
-            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::ASSIGN);
-            break;
-        }
-    } while (stream.match(TokenType::COMMA));
-    spawnStmt->targets = targetBuilder.build();
+        spawnStmt->target = target;
+    } else {
+        ctx.error(stream, DiagCode::E1002, "variable name or '_'", stream.peekValue());
+        synchronizeToContext(stream, ctx);
+        return spawnStmt;
+    }
 
     // ─── 3. Expect ASSIGN ────────────────────────────────────────────────────
     if (!stream.match(TokenType::ASSIGN)) {
@@ -204,7 +198,8 @@ SpawnStmtAST* parseSpawnStmt(TokenStream& stream, ParserContext& ctx) {
     }
     spawnStmt->call = call;
 
-    LOG_PARSER("parseSpawnStmt: parsed spawn statement with ", spawnStmt->targets.size(), " target(s)");
+    LOG_PARSER("parseSpawnStmt: parsed spawn statement (target ",
+               spawnStmt->target ? "bound" : "discarded", ")");
     return spawnStmt;
 }
 

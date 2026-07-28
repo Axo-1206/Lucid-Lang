@@ -355,13 +355,15 @@ struct ContinueStmtAST : StmtAST {
 /// 
 /// @example
 ///   async result = fetchData(url)
-///   async value, ok = parseInt("42")
 /// 
 /// ─── Key Characteristics ──────────────────────────────────────────────────
 /// - Cooperative concurrency (single-threaded event loop)
 /// - Non-blocking – the calling thread continues immediately
 /// - Must be awaited with `await` to get the result
 /// - Lightweight – can schedule thousands of async operations
+/// - Binds exactly one variable per statement — schedule additional
+///   concurrent operations with additional `async` statements, then wait
+///   on all of them together with a single `await` (see AwaitStmtAST)
 /// 
 /// ─── Semantic Analysis Notes ──────────────────────────────────────────────
 /// 1. **Future Type**: The variable's type becomes `Future<T>` after async assignment.
@@ -369,12 +371,12 @@ struct ContinueStmtAST : StmtAST {
 /// 3. **Await Required**: The compiler warns about unawaited async operations
 ///    when the scope exits.
 /// 
-/// @field target         The variables being assigned to.
+/// @field target         The variable being assigned to.
 /// @field call           The async call expression.
 struct AsyncStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::AsyncExpr;
 
-    ExprPtr target;   // variables to bind (must be lvalues)
+    ExprPtr target;   // variable to bind (must be an lvalue)
     ExprPtr call;                // the async call
 
     AsyncStmtAST() : StmtAST(ASTKind::AsyncExpr) {}
@@ -412,14 +414,16 @@ struct AwaitStmtAST : StmtAST {
 /// 
 /// @example
 ///   spawn result = computeHeavyData()
-///   spawn _ = parseAndValidate(data)  – discard all return values
-///   spawn user = processUser(data)
+///   spawn _ = logToFile("started")        – discard the return value
 /// 
 /// ─── Key Characteristics ──────────────────────────────────────────────────
 /// - Parallelism (OS threads)
 /// - Preemptive multitasking
 /// - Can be joined with `join` to get the result
 /// - Heavy overhead – limited to CPU cores (dozens of threads)
+/// - Binds exactly one value per statement — launch additional threads with
+///   additional `spawn` statements, then wait on several together with a
+///   single `join` (see JoinStmtAST)
 /// 
 /// ─── The Discard Pattern (`_`) ──────────────────────────────────────────────
 /// - `spawn _ = fn()` = fire and forget (no join required)
@@ -434,12 +438,12 @@ struct AwaitStmtAST : StmtAST {
 ///    between threads (requires synchronization).
 /// 6. **Nesting**: A spawned thread can itself launch further spawn or async calls.
 /// 
-/// @field targets        The variables being assigned to (`_` means discard).
-/// @field call           The spawn call expression.
+/// @field target          The variable being assigned to (`nullptr` means discard, `_`).
+/// @field call            The spawn call expression.
 struct SpawnStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::SpawnExpr;
 
-    ExprPtr target;   // variables to bind (`_` for discard)
+    ExprPtr target;   // variable to bind (nullptr for '_' discard)
     ExprPtr call;                // the spawn call
 
     SpawnStmtAST() : StmtAST(ASTKind::SpawnExpr) {}

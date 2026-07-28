@@ -872,7 +872,6 @@ StructLiteralExprAST* parseStructLiteralExpr(TokenStream& stream, ParserContext&
         structLit->typeName = typeName;
         structLit->genericArgs = genericArgs;
         structLit->inits = ctx.arena.makeBuilder<FieldInitPtr>().build();
-        structLit->instantiatedType = nullptr;
         
         LOG_PARSER_DETAIL("parseStructLiteralExpr: parsed empty struct literal");
         return structLit;
@@ -951,7 +950,6 @@ StructLiteralExprAST* parseStructLiteralExpr(TokenStream& stream, ParserContext&
     structLit->loc = loc;
     structLit->typeName = typeName;
     structLit->genericArgs = genericArgs;
-    structLit->instantiatedType = nullptr;
     
     auto builder = ctx.arena.makeBuilder<FieldInitPtr>();
     for (auto* init : inits) {

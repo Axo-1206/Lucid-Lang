@@ -20,6 +20,7 @@
 
 #include "../Parser.hpp"
 #include "core/Tokens.hpp"
+#include "core/ast/TypeAST.hpp"
 #include "debug/DebugMacros.hpp"
 #include "debug/DebugUtils.hpp"
 #include "core/diagnostics/DiagnosticCodes.hpp"
@@ -339,10 +340,7 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
         // Wrap the expression in a return statement
         auto* returnStmt = ctx.arena.make<ReturnStmtAST>();
         returnStmt->loc = expr->loc;
-        
-        auto builder = ctx.arena.makeBuilder<ExprPtr>();
-        builder.push_back(expr);
-        returnStmt->values = builder.build();
+        returnStmt->value = expr;
         
         body = returnStmt;
     }
@@ -408,7 +406,7 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
     }
     
     // ─── 4. Parse trait implementations (optional) ──────────────────────
-    std::vector<TraitRefPtr> traitRefs;
+    std::vector<NamedTypeAST*> traitRefs;
     if (stream.match(TokenType::COLON)) {
         // ─── Skip initial trailing commas ──────────────────────────
         // Ex: : ,,, Vector2, Named
@@ -419,7 +417,7 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
         // ─── Parse trait references ──────────────────────────────────
         while (!stream.isAtEnd() && !stream.check(TokenType::LBRACE)) {
             // Parse a trait reference
-            TraitRefPtr traitRef = parseTraitRef(stream, ctx);
+            NamedTypeAST* traitRef = parseTraitRef(stream, ctx);
             if (traitRef) {
                 traitRefs.push_back(traitRef);
             } else {
@@ -461,7 +459,7 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
         structDecl->fields = ctx.arena.makeBuilder<FieldDeclPtr>().build();
         
         // Build trait refs span
-        auto traitBuilder = ctx.arena.makeBuilder<TraitRefPtr>();
+        auto traitBuilder = ctx.arena.makeBuilder<NamedTypeAST*>();
         for (auto* tr : traitRefs) {
             traitBuilder.push_back(tr);
         }
@@ -518,7 +516,7 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
     structDecl->fields = fieldBuilder.build();
     
     // Build trait refs span
-    auto traitBuilder = ctx.arena.makeBuilder<TraitRefPtr>();
+    auto traitBuilder = ctx.arena.makeBuilder<NamedTypeAST*>();
     for (auto* tr : traitRefs) {
         traitBuilder.push_back(tr);
     }

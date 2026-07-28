@@ -92,11 +92,6 @@ StmtAST* parseStmt(TokenStream& stream, ParserContext& ctx) {
         // ─── Declaration Statements ──────────────────────────────────────
         case TokenType::LET:
         case TokenType::CONST:
-            // Check if this is a multi-var declaration: `let a int, b int = expr`
-            // We need to look ahead to see if there's a comma after a type
-            if (looksLikeMultiAssignStart(stream, ctx)) {
-                return parseMultiVarDecl(stream, ctx);
-            }
             return parseDeclStmt(stream, ctx);
             
         case TokenType::STRUCT:
@@ -121,16 +116,6 @@ StmtAST* parseStmt(TokenStream& stream, ParserContext& ctx) {
             
         // ─── Expression Statement (default) ─────────────────────────────
         default:
-            // Check if this is a multi-assign to existing variables:
-            // `value, ok = parseInt("42");`. Ordinary single-target
-            // assignment (`x = 5;`) is intentionally NOT matched here —
-            // it is already handled inside parseExpr()/parsePrattExpr()
-            // via the right-associative ASSIGN infix operator
-            // (parseInfixAssign), so it keeps going through
-            // parseExprStmt() below exactly as before.
-            if (looksLikeMultiAssignTargets(stream, ctx)) {
-                return parseMultiAssignStmt(stream, ctx);
-            }
             // Try to parse as an expression statement
             return parseExprStmt(stream, ctx);
     }
@@ -655,28 +640,18 @@ ReturnStmtAST* parseReturnStmt(TokenStream& stream, ParserContext& ctx) {
     
     ReturnStmtAST* returnStmt = ctx.arena.make<ReturnStmtAST>();
     returnStmt->loc = loc;
-    auto valueBuilder = ctx.arena.makeBuilder<ExprPtr>();
     
     // ─── 2. Check if this is a bare return (no values) ───────────────────
-    // If the next token is a statement terminator or isAtEnd, it's a bare return
-    if (!isStatementTerminator(stream) && !stream.isAtEnd()) {
-        // Parse one or more return values
-        do {
-            ExprPtr value = parseExpr(stream, ctx);
-            if (value) {
-                valueBuilder.push_back(value);
-            } else {
-                ctx.error(stream, DiagCode::E1006, "return value", stream.peekValue());
-                synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::SEMICOLON);
-                break;
-            }
-        } while (stream.match(TokenType::COMMA));
+    ExprPtr value = parseExpr(stream, ctx);
+    if (!value) {
+        ctx.error(stream, DiagCode::E1006, "return value", stream.peekValue());
+        synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::SEMICOLON);
     }
     
     // ─── 3. Store values ──────────────────────────────────────────────────
-    returnStmt->values = valueBuilder.build();
+    returnStmt->value = value;
     
-    LOG_PARSER("parseReturnStmt: parsed return with ", returnStmt->values.size(), " values");
+    LOG_PARSER("parseReturnStmt: parsed return statement");
     return returnStmt;
 }
 
@@ -774,130 +749,6 @@ DeclStmtAST* parseDeclStmt(TokenStream& stream, ParserContext& ctx) {
     
     LOG_PARSER_DETAIL("parseDeclStmt: parsed declaration statement");
     return declStmt;
-}
-
-// =============================================================================
-// parseMultiVarDecl – Parses multiple variable declaration
-// =============================================================================
-
-MultiVarDeclAST* parseMultiVarDecl(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER("parseMultiVarDecl: parsing multi-variable declaration");
-    
-    SourceLocation loc = stream.currentLoc();
-    
-    // ─── 1. Expect LET or CONST keyword ──────────────────────────────────────
-    Token keywordTok = stream.peek();
-    if (keywordTok.type != TokenType::LET && keywordTok.type != TokenType::CONST) {
-        ctx.error(stream, DiagCode::E1001, "let or const", stream.peekValue());
-        return ctx.arena.make<MultiVarDeclAST>();
-    }
-    stream.advance(); // Consume the keyword
-    
-    MultiVarDeclAST* multiDecl = ctx.arena.make<MultiVarDeclAST>();
-    multiDecl->loc = loc;
-    auto varBuilder = ctx.arena.makeBuilder<std::pair<InternedString, TypePtr>>();
-    
-    // Set the keyword
-    multiDecl->keyword = (keywordTok.type == TokenType::LET) 
-        ? DeclKeyword::Let
-        : DeclKeyword::Const;
-    
-    // ─── 2. Parse variable bindings: IDENTIFIER type { ',' IDENTIFIER type } ─
-    do {
-        // Parse variable name
-        if (!stream.check(TokenType::IDENTIFIER)) {
-            ctx.error(stream, DiagCode::E1002, "variable name", stream.peekValue());
-            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::ASSIGN);
-            break;
-        }
-        Token nameTok = stream.advance();
-        InternedString name = ctx.pool.intern(nameTok.value);
-        
-        // Parse type annotation
-        TypePtr type = parseType(stream, ctx);
-        if (!type) {
-            ctx.error(stream, DiagCode::E1003, "variable type");
-            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::ASSIGN);
-            break;
-        }
-        
-        varBuilder.push_back({name, type});
-    } while (stream.match(TokenType::COMMA));
-    
-    // ─── 3. Expect ASSIGN ──────────────────────────────────────────────────
-    if (!stream.match(TokenType::ASSIGN)) {
-        ctx.error(stream, DiagCode::E1004, "=", "multi-variable declaration", stream.peekValue());
-        synchronizeToContext(stream, ctx);
-        // Store what we have and return
-        multiDecl->vars = varBuilder.build();
-        return multiDecl;
-    }
-    
-    // ─── 4. Parse RHS expression ──────────────────────────────────────────
-    ExprPtr rhs = parseExpr(stream, ctx);
-    if (!rhs) {
-        ctx.error(stream, DiagCode::E1006, "right-hand side of multi-variable declaration", stream.peekValue());
-        synchronizeToContext(stream, ctx);
-        multiDecl->vars = varBuilder.build();
-        return multiDecl;
-    }
-    multiDecl->rhs = rhs;
-    
-    // ─── 5. Store variables ───────────────────────────────────────────────
-    multiDecl->vars = varBuilder.build();
-    
-    LOG_PARSER("parseMultiVarDecl: parsed ", multiDecl->vars.size(), " variables");
-    return multiDecl;
-}
-
-// =============================================================================
-// parseMultiAssignStmt – Parses multiple assignment statement
-// =============================================================================
-
-MultiAssignStmtAST* parseMultiAssignStmt(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER("parseMultiAssignStmt: parsing multi-assignment statement");
-    
-    SourceLocation loc = stream.currentLoc();
-    
-    MultiAssignStmtAST* multiAssign = ctx.arena.make<MultiAssignStmtAST>();
-    multiAssign->loc = loc;
-    auto lhsBuilder = ctx.arena.makeBuilder<ExprPtr>();
-    
-    // ─── 1. Parse LHS targets: expr_lhs { ',' expr_lhs } ─────────────────
-    do {
-        ExprPtr lhs = parseLvalue(stream, ctx);
-        if (lhs) {
-            lhsBuilder.push_back(lhs);
-        } else {
-            ctx.error(stream, DiagCode::E1006, "left-hand side of assignment", stream.peekValue());
-            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::ASSIGN);
-            break;
-        }
-    } while (stream.match(TokenType::COMMA));
-    
-    // ─── 2. Expect ASSIGN ──────────────────────────────────────────────────
-    if (!stream.match(TokenType::ASSIGN)) {
-        ctx.error(stream, DiagCode::E1007, "=", stream.peekValue());
-        synchronizeToContext(stream, ctx);
-        multiAssign->lhs = lhsBuilder.build();
-        return multiAssign;
-    }
-    
-    // ─── 3. Parse RHS expression ──────────────────────────────────────────
-    ExprPtr rhs = parseExpr(stream, ctx);
-    if (!rhs) {
-        ctx.error(stream, DiagCode::E1006, "right-hand side of multi-assignment", stream.peekValue());
-        synchronizeToContext(stream, ctx);
-        multiAssign->lhs = lhsBuilder.build();
-        return multiAssign;
-    }
-    multiAssign->rhs = rhs;
-    
-    // ─── 4. Store LHS targets ─────────────────────────────────────────────
-    multiAssign->lhs = lhsBuilder.build();
-    
-    LOG_PARSER("parseMultiAssignStmt: parsed ", multiAssign->lhs.size(), " assignments");
-    return multiAssign;
 }
 
 } // namespace parser
