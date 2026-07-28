@@ -15,8 +15,7 @@
 #include "context/SemaContext.hpp"
 #include "support/TypeNarrowHelpers.hpp"
 #include "support/SemaStructField.hpp"
-#include "support/SemaLookup.hpp"
-#include "support/SemaType.hpp"
+#include "types/SemaType.hpp"
 
 #include <vector>
 #include <optional>

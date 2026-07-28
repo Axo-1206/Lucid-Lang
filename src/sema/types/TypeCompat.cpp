@@ -42,14 +42,15 @@ bool typesEqual(const TypeAST* a, const TypeAST* b) {
             return true;
         }
 
+        // ─── Wrapper Types (T?, T!, T?!) ──────────────────────────────────
         case ASTKind::NullableType:
         case ASTKind::FallibleType:
         case ASTKind::CombinedType:
         case ASTKind::RefType:
         case ASTKind::PtrType: {
             // All are "one wrapper, one inner type"
-            TypeAST* innerA = nullptr;
-            TypeAST* innerB = nullptr;
+            const TypeAST* innerA = nullptr;
+            const TypeAST* innerB = nullptr;
             
             if (a->isa<NullableTypeAST>()) {
                 innerA = a->as<NullableTypeAST>()->inner;
@@ -70,6 +71,7 @@ bool typesEqual(const TypeAST* a, const TypeAST* b) {
             return typesEqual(innerA, innerB);
         }
 
+        // ─── Array Type ────────────────────────────────────────────────────
         case ASTKind::ArrayType: {
             const ArrayTypeAST* aa = a->as<ArrayTypeAST>();
             const ArrayTypeAST* ab = b->as<ArrayTypeAST>();
@@ -78,10 +80,15 @@ bool typesEqual(const TypeAST* a, const TypeAST* b) {
             return typesEqual(aa->element, ab->element);
         }
 
+        // ─── Function Type ────────────────────────────────────────────────
         case ASTKind::FuncType: {
             const FuncTypeAST* fa = a->as<FuncTypeAST>();
             const FuncTypeAST* fb = b->as<FuncTypeAST>();
 
+            // Compare hasArrow flag
+            if (fa->hasArrow != fb->hasArrow) return false;
+
+            // Compare parameters
             if (fa->params.size() != fb->params.size()) return false;
             for (size_t i = 0; i < fa->params.size(); ++i) {
                 const ParamAST* pa = fa->params[i];
@@ -91,11 +98,8 @@ bool typesEqual(const TypeAST* a, const TypeAST* b) {
                 if (!typesEqual(pa->type, pb->type)) return false;
             }
 
-            if (fa->returnTypes.size() != fb->returnTypes.size()) return false;
-            for (size_t i = 0; i < fa->returnTypes.size(); ++i) {
-                if (!typesEqual(fa->returnTypes[i], fb->returnTypes[i])) return false;
-            }
-            return true;
+            // ─── Compare return type (single) ────────────────────────────
+            return typesEqual(fa->returnType, fb->returnType);
         }
 
         default:
@@ -208,9 +212,7 @@ TypeAST* unwrapNullable(TypeAST* type) {
     return type;
 }
 
-/**
- * @brief Strip one layer of !/?!, return inner type.
- */
+/// @brief Strip one layer of !/?!, return inner type.
 TypeAST* unwrapFallible(TypeAST* type) {
     if (!type) return type;
     if (type->isa<FallibleTypeAST>()) return type->as<FallibleTypeAST>()->inner;
@@ -232,29 +234,60 @@ TypeAST* unwrapFallible(TypeAST* type) {
 bool isAssignable(const TypeAST* target, const TypeAST* source, SemaContext& ctx) {
     if (!target || !source) return false;
 
+    // ─── 1. Identical types ──────────────────────────────────────────────
     if (typesEqual(target, source)) return true;
 
-    // T → T? / T! / T?! (widening)
+    // ─── 2. T → T? (widening to nullable) ──────────────────────────────
     if (target->isa<NullableTypeAST>()) {
-        return isAssignable(target->as<NullableTypeAST>()->inner, source, ctx);
+        const TypeAST* inner = target->as<NullableTypeAST>()->inner;
+        return isAssignable(inner, source, ctx);
     }
+
+    // ─── 3. T → T! (widening to fallible) ──────────────────────────────
     if (target->isa<FallibleTypeAST>()) {
-        return isAssignable(target->as<FallibleTypeAST>()->inner, source, ctx);
+        const TypeAST* inner = target->as<FallibleTypeAST>()->inner;
+        return isAssignable(inner, source, ctx);
     }
+
+    // ─── 4. T → T?! (widening to combined) ─────────────────────────────
     if (target->isa<CombinedTypeAST>()) {
         const TypeAST* inner = target->as<CombinedTypeAST>()->inner;
+        
+        // T → T?!
         if (isAssignable(inner, source, ctx)) return true;
+        
+        // T? → T?!
         if (source->isa<NullableTypeAST>() &&
             isAssignable(inner, source->as<NullableTypeAST>()->inner, ctx)) return true;
+        
+        // T! → T?!
         if (source->isa<FallibleTypeAST>() &&
             isAssignable(inner, source->as<FallibleTypeAST>()->inner, ctx)) return true;
-        if (source->isa<CombinedTypeAST>() &&
-            isAssignable(inner, source->as<CombinedTypeAST>()->inner, ctx)) return true;
+        
+        // T?! → T?! (already covered by typesEqual)
         return false;
     }
 
-    // TODO: Trait conformance checking
+    // ─── 5. Nullable widening: T? → T?! ─────────────────────────────────
+    if (target->isa<CombinedTypeAST>() && source->isa<NullableTypeAST>()) {
+        const TypeAST* targetInner = target->as<CombinedTypeAST>()->inner;
+        const TypeAST* sourceInner = source->as<NullableTypeAST>()->inner;
+        return isAssignable(targetInner, sourceInner, ctx);
+    }
+
+    // ─── 6. Fallible widening: T! → T?! ─────────────────────────────────
+    if (target->isa<CombinedTypeAST>() && source->isa<FallibleTypeAST>()) {
+        const TypeAST* targetInner = target->as<CombinedTypeAST>()->inner;
+        const TypeAST* sourceInner = source->as<FallibleTypeAST>()->inner;
+        return isAssignable(targetInner, sourceInner, ctx);
+    }
+
+    // ─── 7. Trait conformance (Trait as target) ──────────────────────────
+    // TODO: Implement trait conformance checking
+    // If target is a NamedTypeAST that resolves to a trait, check if source
+    // implements that trait.
     (void)ctx;
+
     return false;
 }
 
@@ -287,7 +320,6 @@ bool validateTraitFieldType(const TypeAST* type, SemaContext& ctx) {
     }
     return true;
 }
-
 
 /// @brief Validate reference type context (Downward Flow Rule).
 /// 
