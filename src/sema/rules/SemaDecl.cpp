@@ -67,7 +67,7 @@ void analyzeDecl(const DeclAST* decl, SemaContext& ctx) {
 ///   - `ctx.symbols.addImportAlias(alias, module)` - registers import alias
 ///   - This allows `module:member` syntax in expressions
 void analyzeImportDecl(const ImportDeclAST* decl, SemaContext& ctx) {
-    validateAttributes(decl->attributes, decl, ctx);
+    // validateAttributes(decl->attributes, decl, ctx); // Should the import has attribute?
 
     // Check import alias redeclaration
     if (reportImportAliasRedeclaration(decl->alias, decl, ctx)) {
@@ -105,7 +105,7 @@ void analyzeImportDecl(const ImportDeclAST* decl, SemaContext& ctx) {
 /// NOTE: The initializer is checked BEFORE inserting the variable name.
 /// This prevents `let x int = x` from resolving to itself.
 void analyzeVarDecl(const VarDeclAST* decl, SemaContext& ctx) {
-    validateAttributes(decl->attributes, decl, ctx);
+    attr::validateAttributes(decl, ctx);
 
     // ─── 1. Resolve the declared type ─────────────────────────────────
     // Checks if the type name exists in scope
@@ -169,7 +169,7 @@ void analyzeVarDecl(const VarDeclAST* decl, SemaContext& ctx) {
 ///   - Expression: a + b - wrapped in ReturnStmtAST
 ///   - Reference: module:func - FuncRefStmtAST
 void analyzeFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
-    validateAttributes(decl->attributes, decl, ctx);
+    attr::validateAttributes(decl, ctx);
 
     // ─── 1. Resolve the function type ─────────────────────────────────────
     FuncTypeAST* funcType = const_cast<FuncTypeAST*>(decl->funcType);
@@ -268,7 +268,7 @@ void analyzeFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
 /// @param allowName True if parameter names are allowed in this context.
 /// @param ctx The semantic context.
 void analyzeParam(const ParamAST* param, bool allowName, SemaContext& ctx) {
-    validateAttributes(param->attributes, param, ctx);
+    // Parameter do not have attribute
 
     // ─── 1. Check: parameter names are only allowed in leading cluster ────
     // The leading cluster is the one immediately bound to func_body.
@@ -368,7 +368,7 @@ void analyzeGenericParamDecl(const GenericParamDeclAST* param, SemaContext& ctx)
 ///   - Variant names must be unique within the enum
 ///   - Variant values must be unique within the enum
 void analyzeEnumDecl(const EnumDeclAST* decl, SemaContext& ctx) {
-    validateAttributes(decl->attributes, decl, ctx);
+    attr::validateAttributes(decl, ctx);
 
     // ─── 1. Register enum name BEFORE analyzing variants ──────────────────
     // This enables self-reference: variants can reference the enum type
@@ -390,7 +390,7 @@ void analyzeEnumDecl(const EnumDeclAST* decl, SemaContext& ctx) {
 
     // ─── 4. Analyze each variant ──────────────────────────────────────────
     for (const EnumVariantAST* variant : decl->variants) {
-        validateAttributes(variant->attributes, variant, ctx);
+        attr::validateAttributes(variant, ctx);
 
         // ─── 4a. Check for duplicate variant names ──────────────────────
         // Variant names must be unique within the enum
@@ -461,7 +461,7 @@ void analyzeEnumDecl(const EnumDeclAST* decl, SemaContext& ctx) {
 ///       unless marked `const`. This allows traits to require optional
 ///       or error-prone fields.
 void analyzeTraitDecl(const TraitDeclAST* decl, SemaContext& ctx) {
-    validateAttributes(decl->attributes, decl, ctx);
+    attr::validateAttributes(decl, ctx);
 
     // ─── 1. Register trait name BEFORE analyzing fields ──────────────────
     // This enables self-reference: the trait can reference itself
@@ -484,7 +484,7 @@ void analyzeTraitDecl(const TraitDeclAST* decl, SemaContext& ctx) {
 
     // ─── 4. Analyze each trait field ──────────────────────────────────────
     for (const TraitFieldDeclAST* field : decl->fields) {
-        validateAttributes(field->attributes, field, ctx);
+        attr::validateAttributes(field, ctx);
 
         // ─── 4a. Check for duplicate field names ────────────────────────
         // Field names must be unique within the trait
@@ -559,7 +559,7 @@ void analyzeTraitDecl(const TraitDeclAST* decl, SemaContext& ctx) {
 ///   - No direct self-reference (infinite size) unless using pointer/reference
 ///   - No reference types in struct fields (Downward Flow Rule)
 void analyzeStructDecl(const StructDeclAST* decl, SemaContext& ctx) {
-    validateAttributes(decl->attributes, decl, ctx);
+    attr::validateAttributes(decl, ctx);
 
     // ─── 1. Register struct name BEFORE analyzing fields ──────────────────
     if (reportTypeRedeclaration(decl, ctx)) {

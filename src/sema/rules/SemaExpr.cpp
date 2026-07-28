@@ -193,14 +193,6 @@
 ///   - unwrapDefinite(type)     : Strips all modifiers to get inner type
 
 #include "../Sema.hpp"
-#include "DebugUtils.hpp"
-#include "core/ast/BaseAST.hpp"
-#include "core/ast/ExprAST.hpp"
-#include "core/ast/DeclAST.hpp"
-#include "core/ast/TypeAST.hpp"
-#include "core/ast/StmtAST.hpp"
-#include "../support/IntrinsicRegistry.hpp"
-#include "core/memory/InternedString.hpp"
 
 #include <unordered_set>
 #include <optional>

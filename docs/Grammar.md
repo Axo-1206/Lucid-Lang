@@ -4591,8 +4591,9 @@ the hint has no equivalent instruction.
 
 | Intrinsic          | Args     | Returns | Notes                                              |
 | ------------------ | -------- | ------- | -------------------------------------------------- |
-| `#prefetch(ptr)`   | `*T`     | —       | Hint CPU to load cache line into L1                |
-| `#prefetch_w(ptr)` | `*T`     | —       | Prefetch for write                                 |
+| `#prefetch(ptr)`   | `*T`     | —       | General prefetch (usually read)                    |
+| `#prefetch_r(ptr)` | `*T`     | —       | Explicit read prefetch                             |
+| `#prefetch_w(ptr)` | `*T`     | —       | Explicit write prefetch                            |
 | `#fence(ord)`      | ordering | —       | Explicit memory barrier                            |
 | `#pause()`         | —        | —       | Spin-wait hint; reduces power in busy-wait loops   |
 | `#likely(expr)`    | `bool`   | `bool`  | Hint that expr is usually true (branch prediction) |

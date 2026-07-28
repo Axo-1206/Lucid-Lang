@@ -16,6 +16,7 @@
 #include "support/TypeNarrowHelpers.hpp"
 #include "support/SemaStructField.hpp"
 #include "types/SemaType.hpp"
+#include "registry/AttributeRegistry.hpp"
 
 #include <vector>
 #include <optional>
@@ -187,13 +188,5 @@ void validateForeignFunc(const FuncDeclAST* decl, const AttributeAST* foreignAtt
 
 /// True if type is legal at FFI boundary.
 bool isValidFFIType(const TypeAST* type, SemaContext& ctx);
-
-// =============================================================================
-// ATTRIBUTES
-// =============================================================================
-
-/// Validate attributes on a declaration.
-void validateAttributes(ArenaSpan<AttributePtr> attrs, const DeclAST* owner, SemaContext& ctx);
-void validateAttribute(const AttributeAST* attr, const DeclAST* owner, SemaContext& ctx);
 
 } // namespace sema

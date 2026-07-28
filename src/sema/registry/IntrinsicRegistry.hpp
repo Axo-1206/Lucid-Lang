@@ -40,9 +40,39 @@
  *   "single-threaded, on purpose" / one-session-per-process invariant
  *   `diagnostic::`'s global state already relies on (see Diagnostic.cpp).
  *
- *   `AttributesRegistry.hpp` deliberately makes the opposite call for its
- *   five attribute names — see that file's own architectural note for why
- *   re-interning per-call was the better trade-off there.
+ * @architectural_note Prefetch Family (#prefetch, #prefetch_r, #prefetch_w)
+ *   All three map to the same LLVM intrinsic `llvm.prefetch`, differentiated
+ *   by the `rw` (read/write) argument:
+ *     - #prefetch(ptr)   → rw=0 (read), default, general use
+ *     - #prefetch_r(ptr) → rw=0 (read), explicit read prefetch
+ *     - #prefetch_w(ptr) → rw=1 (write), explicit write prefetch
+ *   The `_r` and `_w` suffixes make the intent explicit for performance-
+ *   critical code, while `#prefetch` remains the simple default.
+ *
+ * @architectural_note Fence Ordering Validation
+ *   #fence(ordering) is compiler-handled (not an LLVM intrinsic).
+ *   The ordering string is validated at compile time. Valid values:
+ *     - "relaxed" - No synchronization, only atomicity
+ *     - "acquire" - Subsequent reads/writes see prior releases
+ *     - "release" - Prior reads/writes visible before this op
+ *     - "acq_rel" - Both acquire and release (read-modify-write)
+ *     - "seq_cst" - Total sequential consistency
+ *   Emits LLVM 'fence' instruction directly during code generation.
+ *
+ * @architectural_note SIMD Splat (#simd_splat) - Type Argument Handling
+ *   #simd_splat(T, N, scalar) is compiler-handled because:
+ *     1. T is a type (e.g., float32), not a value — requires type resolution
+ *     2. N must be a compile-time integer constant
+ *     3. There is no direct LLVM intrinsic for splat — it's lowered to:
+ *        `insertelement` + `shufflevector` or `vector_splat` (LLVM 18+)
+ *   The compiler validates that T is a valid SIMD element type and that N
+ *   is a compile-time constant within the target's vector register limits.
+ *
+ * @architectural_note AttributesRegistry vs IntrinsicRegistry
+ *   IntrinsicRegistry is a class with state (maps of names to LLVM IDs)
+ *   because it stores data that must persist across the compilation session.
+ *   AttributeRegistry is header-only because it has no state — it only
+ *   validates attributes against declarations using pure functions.
  */
 
 #pragma once
@@ -93,6 +123,10 @@ struct IntrinsicInfo {
  *   - Argument count validation
  *   - Type parameter inference for overloaded intrinsics
  *   - Detection of compiler-handled intrinsics (no LLVM enum)
+ *
+ * @note This class has state (maps) and is appropriate as a singleton.
+ *       Compare with `attr::validateAttributes()` which is stateless and
+ *       header-only. See architectural note above for the distinction.
  */
 class IntrinsicRegistry {
 public:
@@ -133,6 +167,12 @@ public:
 
     /**
      * @brief Check if an intrinsic is compiler-handled (no LLVM enum).
+     *
+     * Compiler-handled intrinsics are validated and lowered by the compiler
+     * itself, not mapped to an LLVM intrinsic. Examples:
+     *   - #fence - Emits LLVM 'fence' instruction
+     *   - #simd_splat - Lowers to vector operations
+     *   - #sizeof - Resolved at compile time
      */
     bool isCompilerIntrinsic(InternedString name) const;
 
@@ -156,6 +196,18 @@ public:
      * @return std::optional<size_t> The expected count, or nullopt if variable/range
      */
     std::optional<size_t> getExpectedArgCount(InternedString name) const;
+
+    /**
+     * @brief Validate fence ordering string.
+     *
+     * #fence(ordering) takes an ordering string that must be one of:
+     *   - "relaxed", "acquire", "release", "acq_rel", "seq_cst"
+     *
+     * @param ordering The ordering string as an InternedString
+     * @param pool The StringPool for lookup
+     * @return true if the ordering is valid
+     */
+    bool validateFenceOrdering(InternedString ordering, StringPool& pool) const;
 
     /**
      * @brief Get all registered intrinsic names, sorted, as display text.
@@ -217,4 +269,8 @@ inline bool isCompilerIntrinsic(InternedString name, StringPool& pool) {
 
 inline bool isLLVMIntrinsic(InternedString name, StringPool& pool) {
     return IntrinsicRegistry::getInstance(pool).isLLVMIntrinsic(name);
+}
+
+inline bool validateFenceOrdering(InternedString ordering, StringPool& pool) {
+    return IntrinsicRegistry::getInstance(pool).validateFenceOrdering(ordering, pool);
 }
