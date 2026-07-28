@@ -28,6 +28,9 @@
 
 namespace sema {
 
+// =============================================================================
+// analyzeDecl - Dispatch
+// =============================================================================
 
 /// @brief Dispatch a declaration to its specific analyzer.
 /// 
@@ -54,6 +57,9 @@ void analyzeDecl(const DeclAST* decl, SemaContext& ctx) {
     }
 }
 
+// =============================================================================
+// Import Declaration
+// =============================================================================
 
 /// @brief Register an import declaration.
 /// 
@@ -77,6 +83,10 @@ void analyzeImportDecl(const ImportDeclAST* decl, SemaContext& ctx) {
 
     ctx.symbols.addImportAlias(decl->alias, target);
 }
+
+// =============================================================================
+// Variable Declaration
+// =============================================================================
 
 /// @brief Register a variable declaration.
 ///
@@ -136,6 +146,10 @@ void analyzeVarDecl(const VarDeclAST* decl, SemaContext& ctx) {
     const_cast<VarDeclAST*>(decl)->type = declaredType;
     ctx.symbols.insertValue(decl);
 }
+
+// =============================================================================
+// Function Declaration
+// =============================================================================
 
 /// @brief Analyze a function declaration.
 ///
@@ -229,6 +243,10 @@ void analyzeFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
     ctx.contexts.pop();
 }
 
+// =============================================================================
+// Parameter Analysis
+// =============================================================================
+
 /// @brief Analyze a function parameter.
 ///
 /// REGISTRATION:
@@ -264,6 +282,10 @@ void analyzeParam(const ParamAST* param, SemaContext& ctx) {
     // They are accessible by name in the function body and any nested scopes
     ctx.symbols.insertValue(param);
 }
+
+// =============================================================================
+// Generic Parameter Analysis
+// =============================================================================
 
 /// @brief Analyze a generic parameter declaration.
 ///
@@ -307,6 +329,9 @@ void analyzeGenericParamDecl(const GenericParamDeclAST* param, SemaContext& ctx)
     ctx.symbols.insertGenericParam(param);
 }
 
+// =============================================================================
+// Enum Declaration
+// =============================================================================
 
 /// @brief Register an enum declaration and analyze its variants.
 ///
@@ -389,6 +414,10 @@ void analyzeEnumDecl(const EnumDeclAST* decl, SemaContext& ctx) {
     // Empty enums are allowed in Lucid (they can be extended later)
     // No validation needed - empty enums are valid
 }
+
+// =============================================================================
+// Trait Declaration
+// =============================================================================
 
 /// @brief Register a trait declaration and analyze its fields.
 ///
@@ -482,6 +511,9 @@ void analyzeTraitDecl(const TraitDeclAST* decl, SemaContext& ctx) {
     validateGenericParamUsage(decl, ctx);
 }
 
+// =============================================================================
+// Struct Declaration - Two-Pass Analysis
+// =============================================================================
 
 /// @brief Register a struct declaration and analyze its fields.
 /// 
@@ -494,8 +526,9 @@ void analyzeTraitDecl(const TraitDeclAST* decl, SemaContext& ctx) {
 ///   1. Register struct name (for self-reference)
 ///   2. Register generic parameters (for use in fields)
 ///   3. Push ScopedTypeDefinition
-///   4. Analyze fields (now can find both struct and generic params)
-///   5. Pop ScopedTypeDefinition
+///   4. PHASE 1: Register ALL fields (names and types, no body analysis)
+///   5. PHASE 2: Analyze function bodies (last, with self available)
+///   6. Pop ScopedTypeDefinition
 /// 
 /// ERROR RECOVERY:
 ///   - Struct is registered even if fields have errors (prevents "unknown type" cascading)
@@ -512,16 +545,13 @@ void analyzeStructDecl(const StructDeclAST* decl, SemaContext& ctx) {
     validateAttributes(decl->attributes, decl, ctx);
 
     // ─── 1. Register struct name BEFORE analyzing fields ──────────────────
-    // (e.g., `next ptr<Node<T>>?` can resolve Node while still being defined)
-    // IMPORTANT: Register even if fields have errors (for better error recovery)
     if (reportTypeRedeclaration(decl, ctx)) {
         return;
     }
     ctx.symbols.insertType(decl);
 
     // ─── 2. Push ScopedTypeDefinition ─────────────────────────────────────
-    // So checkRecursiveFieldType can detect direct self-reference
-    // (e.g., `value Node<T>` is illegal, infinite size)
+    // So checkSelfReference can detect self-reference
     ScopedTypeDefinition defining(ctx, decl);
 
     // ─── 3. Register generic parameters ───────────────────────────────────
@@ -530,81 +560,13 @@ void analyzeStructDecl(const StructDeclAST* decl, SemaContext& ctx) {
         analyzeGenericParamDecl(g, ctx);
     }
 
-    // ─── 4. Analyze each field ────────────────────────────────────────────
-    for (const FieldDeclAST* field : decl->fields) {
-        validateAttributes(field->attributes, field, ctx);
-
-        // ─── 4a. Check for duplicate field names ─────────────────────────
-        for (const FieldDeclAST* existing : decl->fields) {
-            if (existing == field) break;
-            if (existing->name == field->name) {
-                ctx.error(field, DiagCode::E2101,
-                          "redeclaration of '", ctx.pool().lookup(field->name), "'");
-                break;
-            }
-        }
-
-        // ─── 4b. Resolve the field's type ─────────────────────────────────
-        // Even if it fails, continue for error recovery
-        TypeAST* fieldType = resolveType(field->type, ctx);
-        const_cast<FieldDeclAST*>(field)->type = fieldType;
-
-        // If type resolution failed, skip further validation for this field
-        if (!fieldType) {
-            continue;
-        }
-
-        // ─── 4c. Check for direct self-reference ──────────────────────────
-        // (would cause infinite size: `value Node<T>` is illegal)
-        if (isDirectSelfReference(fieldType, decl, ctx)) {
-            ctx.error(field, DiagCode::E3003,
-                      "struct '", ctx.pool().lookup(decl->name),
-                      "' contains a field of its own type directly (would be infinite size)");
-            // Continue to check other fields
-        }
-
-        // ─── 4d. Const field validation ──────────────────────────────────
-        // Const fields must be definite (not nullable or fallible)
-        if (field->isConst) {
-            if (isNullableType(fieldType) || isFallibleType(fieldType)) {
-                ctx.error(field, DiagCode::E3004,
-                          "const field '", ctx.pool().lookup(field->name),
-                          "' must be definite (not nullable or fallible)");
-                // Continue to check other fields
-            }
-        }
-
-        // ─── 4e. Check default value ──────────────────────────────────────
-        if (field->defaultVal) {
-            // Pass the field type as the target type for the expression
-            // If checkExpr fails, error is reported internally
-            if (!checkExpr(field->defaultVal, fieldType, ctx)) {
-                // Error already reported by checkExpr
-                // Continue to check other fields
-            }
-        }
-
-        // ─── 4f. Validate reference type context (Downward Flow Rule) ──
-        // References (&T) cannot be stored in struct fields
-        if (fieldType->isa<RefTypeAST>()) {
-            ctx.error(field, DiagCode::E3004,
-                      "reference type (&T) cannot be stored in struct field '",
-                      ctx.pool().lookup(field->name), "'");
-            // Continue to check other fields
-        }
-
-        // ─── 4g. Set the field's cached type ─────────────────────────────
-        const_cast<FieldDeclAST*>(field)->type = fieldType;
-    }
-
-    // ─── 5. Validate trait implementations ───────────────────────────────
-    // Each trait reference must resolve and the struct must implement all fields
+    // ─── 4. Validate trait implementations ──────────────────────────────
+    // Traits are validated before fields so we know which fields are required
     std::unordered_map<InternedString, const NamedTypeAST*> requiredBy;
     for (const NamedTypeAST* ref : decl->traitRefs) {
         const TraitDeclAST* trait = resolveTraitRef(ref, ctx);
-        if (!trait) continue; // resolveTraitRef already reported its own error
+        if (!trait) continue;
 
-        // Validate that the struct implements all trait fields
         validateTraitImplementation(decl, ctx);
 
         // Check for duplicate field names required by multiple traits
@@ -618,8 +580,29 @@ void analyzeStructDecl(const StructDeclAST* decl, SemaContext& ctx) {
         }
     }
 
-    // ─── 6. Verify all generic parameters are used ──────────────────────
+    // ─── 5. PHASE 1: Register ALL fields (no body analysis) ──────────────
+    // This registers field names and types, but does NOT analyze function bodies
+    // This allows:
+    //   - self.bar to resolve even if bar is declared after the function
+    //   - Recursive field types to be detected
+    for (const FieldDeclAST* field : decl->fields) {
+        registerStructField(field, decl, ctx);
+    }
+
+    // ─── 6. PHASE 2: Analyze function bodies (last) ──────────────────────
+    // Now that all fields are registered, we can analyze function bodies
+    // with self parameter available
+    for (const FieldDeclAST* field : decl->fields) {
+        if (field->type && field->type->isa<FuncTypeAST>()) {
+            analyzeFunctionFieldBody(field, decl, ctx);
+        }
+    }
+
+    // ─── 7. Verify all generic parameters are used ──────────────────────
     validateGenericParamUsage(decl, ctx);
+
+    // ─── 8. Pop ScopedTypeDefinition ──────────────────────────────────────
+    // Handled by ScopedTypeDefinition destructor
 }
 
 } // namespace sema

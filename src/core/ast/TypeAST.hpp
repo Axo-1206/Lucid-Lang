@@ -117,7 +117,8 @@ struct NamedTypeAST : TypeAST {
     InternedString name;
     ArenaSpan<TypePtr> genericArgs;
 
-    explicit NamedTypeAST() : TypeAST(ASTKind::NamedType) {}
+    explicit NamedTypeAST(InternedString n)
+        : TypeAST(ASTKind::NamedType), name(n) {}
 };
 
 /// @brief Wraps an inner type with the nullable suffix `?`.

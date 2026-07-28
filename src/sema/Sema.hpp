@@ -58,6 +58,7 @@
 #include "debug/DebugUtils.hpp"
 #include "context/SemaContext.hpp"
 #include "support/TypeNarrowHelpers.hpp"
+#include "support/SemaStructField.hpp"
 
 #include <vector>
 #include <optional>
@@ -79,15 +80,42 @@ void analyzeModuleDecls(ModuleAST* module, SemaContext& ctx);
 
 
 void analyzeDecl(const DeclAST* decl, SemaContext& ctx);
-void analyzeStructDecl(const StructDeclAST* decl, SemaContext& ctx);
-void analyzeEnumDecl(const EnumDeclAST* decl, SemaContext& ctx);
-void analyzeTraitDecl(const TraitDeclAST* decl, SemaContext& ctx);
+
+// ─── Specific Declaration Analyzers (Top-Down) ─────────────────────────────
 
 void analyzeImportDecl(const ImportDeclAST* decl, SemaContext& ctx);
 void analyzeVarDecl(const VarDeclAST* decl, SemaContext& ctx);
 void analyzeFuncDecl(const FuncDeclAST* decl, SemaContext& ctx);
 void analyzeParam(const ParamAST* param, SemaContext& ctx);
 void analyzeGenericParamDecl(const GenericParamDeclAST* param, SemaContext& ctx);
+
+// ─── Type Declaration Analyzers (Two-Pass for structs) ─────────────────────
+
+void analyzeStructDecl(const StructDeclAST* decl, SemaContext& ctx);
+void analyzeEnumDecl(const EnumDeclAST* decl, SemaContext& ctx);
+void analyzeTraitDecl(const TraitDeclAST* decl, SemaContext& ctx);
+
+// =============================================================================
+// Shared Function Analysis - Used by both top-level and struct functions
+// =============================================================================
+
+/// @brief Analyze a function body with optional extra parameters (e.g., self).
+/// 
+/// Shared logic for:
+///   - Top-level functions (no extra params)
+///   - Struct function fields (self as extra param)
+/// 
+/// @param funcType The function type.
+/// @param body The function body (BlockStmtAST, ReturnStmtAST, or expression).
+/// @param extraParams Optional extra parameters to register before function params.
+/// @param node The node owning this function (for diagnostics).
+/// @param ctx The semantic context.
+/// @return true if the body guarantees control transfer.
+bool analyzeFunctionBody(FuncTypeAST* funcType,
+                          StmtPtr body,
+                          const std::vector<ParamAST*>& extraParams,
+                          const BaseAST* node,
+                          SemaContext& ctx);
 
 // =============================================================================
 // STATEMENTS - Control flow analysis

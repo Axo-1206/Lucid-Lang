@@ -554,10 +554,13 @@ lucid/
     │   ├── Sema.cpp                      # Public API implementation
     │   │
     │   ├── context/                            # Context components
+    │   │   ├── ContextKind.hpp                 # Context flag definition
     │   │   ├── SemanticResources.hpp           # Shared resources
     │   │   ├── SymbolStorage.hpp/cpp           # Two-tier symbol storage
     │   │   ├── SemanticContextStack.hpp/cpp    # Semantic nesting tracking
     │   │   ├── DefiningTypeStack.hpp/cpp       # Self-reference support
+    │   │   ├── NarrowingStack.hpp/cpp          # Type narrowing support
+    │   │   ├── ReturnRequirement.hpp           # Enforce function body structure
     │   │   └── SemaContext.hpp/cpp             # Unified context (composition)
     │   │
     │   ├── rules/                        # Analysis rules (unchanged)
@@ -567,8 +570,10 @@ lucid/
     │   │   └── FFIValidator.hpp/cpp    -- validate @[foreign("C")] against lge_ffi.lfi
     │   │
     │   └── support/                      # Helpers (unchanged)
-    │       ├── Resolution.cpp          
+    │       ├── Lookup.cpp          
     │       ├── TypeCompat.cpp
+    │       ├── SemaStructFields.hpp/cpp
+    │       ├── TypeNarrowHelpers.hpp/cpp
     │       ├── AttributesRegistry.hpp
     │       └── IntrinsicRegistry.hpp/cpp
     │

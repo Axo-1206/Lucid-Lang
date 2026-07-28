@@ -214,9 +214,8 @@ TypeAST* parseNamedType(TokenStream& stream, ParserContext& ctx) {
     // Check if it's a generic parameter reference (single identifier, no generic args)
     // The semantic pass will determine if this is a type parameter or a concrete type
     if (!stream.check(TokenType::LESS)) {
-        auto* type = ctx.arena.make<NamedTypeAST>();
+        auto* type = ctx.arena.make<NamedTypeAST>(name);
         type->loc = loc;
-        type->name = name;
         LOG_PARSER_DETAIL("parseNamedType: parsed named type: ", ctx.toString(name));
         return type;
     }
@@ -224,9 +223,8 @@ TypeAST* parseNamedType(TokenStream& stream, ParserContext& ctx) {
     // Parse generic arguments: <type { ',' type }>
     ArenaSpan<TypePtr> genericArgs = parseGenericArgs(stream, ctx);
     
-    auto* type = ctx.arena.make<NamedTypeAST>();
+    auto* type = ctx.arena.make<NamedTypeAST>(name);
     type->loc = loc;
-    type->name = name;
     type->genericArgs = genericArgs;
     
     LOG_PARSER_DETAIL("parseNamedType: parsed generic type: ", ctx.toString(name), 

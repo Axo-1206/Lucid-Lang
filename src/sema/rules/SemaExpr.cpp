@@ -1357,7 +1357,7 @@ bool checkCallExpr(CallExprAST* expr, const TypeAST* targetType, SemaContext& ct
         }
 
         // Check return type assignability
-        if (funcType->returnTypes.empty()) {
+        if (!funcType->returnType) {
             // Void function
             if (targetType != nullptr) {
                 ctx.error(expr, DiagCode::E3003,
@@ -1368,7 +1368,7 @@ bool checkCallExpr(CallExprAST* expr, const TypeAST* targetType, SemaContext& ct
             return true;
         }
 
-        const TypeAST* returnType = funcType->returnTypes[0];
+        const TypeAST* returnType = funcType->returnType;
         if (!isAssignable(targetType, returnType, ctx)) {
             ctx.error(expr, DiagCode::E3003,
                       "return type mismatch: expected ",
