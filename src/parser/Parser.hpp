@@ -243,7 +243,7 @@ ArenaSpan<GenericParamDeclPtr> parseGenericParamDecls(TokenStream& stream, Parse
 ArenaSpan<TypePtr> parseGenericArgs(TokenStream& stream, ParserContext& ctx);
 
 ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx);
-std::vector<ParamPtr> parseParamList(TokenStream& stream, ParserContext& ctx);
+std::vector<ParamPtr> parseParamList(TokenStream& stream, ParserContext& ctx, bool allowNamme);
 std::vector<InternedString> parseImportPath(TokenStream& stream, ParserContext& ctx);
 
 NamedTypeAST* parseTraitRef(TokenStream& stream, ParserContext& ctx);

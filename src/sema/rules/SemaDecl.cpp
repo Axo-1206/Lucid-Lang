@@ -259,27 +259,44 @@ void analyzeFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
 ///   - Parameter name must not be redeclared in the same scope
 ///   - `const` modifier marks a read-only reference parameter
 ///   - Variadic parameters collect trailing arguments into a `[*]type` array
+///   - **Parameter names are only allowed in the leading cluster**
 ///
 /// NOTE: Parameters are analyzed BEFORE the function body so they are
 ///       available for use in the body.
-void analyzeParam(const ParamAST* param, SemaContext& ctx) {
+///
+/// @param param The parameter to analyze.
+/// @param allowName True if parameter names are allowed in this context.
+/// @param ctx The semantic context.
+void analyzeParam(const ParamAST* param, bool allowName, SemaContext& ctx) {
     validateAttributes(param->attributes, param, ctx);
 
-    // ─── 1. Resolve the parameter type ────────────────────────────────────
+    // ─── 1. Check: parameter names are only allowed in leading cluster ────
+    // The leading cluster is the one immediately bound to func_body.
+    // Every cluster after the first '->' is written with bare types, no identifiers.
+    if (!allowName && !param->name.isEmpty()) {
+        ctx.error(param, DiagCode::E3003,
+                  "parameters after the first '->' cannot have names");
+        // Continue for error recovery - we still register the parameter
+        // but with the name stripped? Or keep it for better errors?
+    }
+
+    // ─── 2. Resolve the parameter type ────────────────────────────────────
     // Checks if the type exists in scope
     // If the type is invalid, report error but continue for error recovery
     TypeAST* paramType = resolveType(param->type, ctx);
 
-    // ─── 2. Check redeclaration ───────────────────────────────────────────
+    // ─── 3. Check redeclaration ───────────────────────────────────────────
     // Check value redeclaration in current scope only (shadowing is allowed)
     // Parameters cannot have the same name as another parameter in the same scope
     if (reportValueRedeclaration(param, ctx)) {
         return;
     }
 
-    // ─── 3. Register the parameter ────────────────────────────────────────
+    // ─── 4. Register the parameter ────────────────────────────────────────
     // Parameters are values in the function's scope
     // They are accessible by name in the function body and any nested scopes
+    // Note: Even if the parameter has no name (bare type), it's still registered
+    // for type checking purposes, but cannot be referenced by name.
     ctx.symbols.insertValue(param);
 }
 

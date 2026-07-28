@@ -399,23 +399,21 @@ TypeAST* parsePtrType(TokenStream& stream, ParserContext& ctx) {
 /**
  * @brief Parse a function type.
  * 
- * Grammar: '(' [ param_list ] ')' [ '->' return_list ]
+ * Grammar: '(' [ param_list ] ')' [ '->' return_type ]
  * 
  * Function types represent callable types with parameters and return types.
- * They are recursive - a function type can return another function type.
  * 
- * Return types can be:
- * - A single type: `-> int`
- * - Multiple types in parentheses: `-> (int, string)`
- * - Void (no return): no `->` clause
+ * ## Name Rules
+ * 
+ * - **Before first `->`**: Parameters MAY have names (they are bindings)
+ * - **After first `->`**: Parameters MUST NOT have names (bare types only)
  * 
  * ## Examples
  * 
  * ```lucid
- * (a int) -> int                    // single return type
- * (a int) -> (int, string)          // multiple return types
- * (a int) -> (b int) -> int         // curried function type
- * (a int)(b int) -> (int, string)   // curried with multiple returns
+ * (a int) -> int                    // Named param before -> ✅
+ * (a int) -> (int) -> int           // After first ->, no names ✅
+ * (a int) -> (b int) -> int         // ERROR: 'b' after first ->
  * ```
  * 
  * @param stream The token stream
@@ -426,42 +424,67 @@ TypeAST* parseFuncType(TokenStream& stream, ParserContext& ctx) {
     LOG_PARSER_DETAIL("parseFuncType: start");
     SourceLocation loc = stream.currentLoc();
     
-    // ─── 1. Parse parameter list ──────────────────────────────────────────
-    std::vector<ParamPtr> params = parseParamList(stream, ctx);
+    // ─── 1. Parse the first parameter group (before any ->) ──────────────
+    // This group MAY have parameter names (bindings)
+    std::vector<ParamPtr> params = parseParamList(stream, ctx, true);
     
-    // ─── 2. Create the function type node ────────────────────────────────
+    // ─── 2. Create the first function type node ──────────────────────────
     auto* funcType = ctx.arena.make<FuncTypeAST>();
     funcType->loc = loc;
     
-    // Build params span
     auto paramBuilder = ctx.arena.makeBuilder<ParamPtr>();
     for (auto* p : params) {
         paramBuilder.push_back(p);
     }
     funcType->params = paramBuilder.build();
 
-    // ─── 3. Parse return types (optional) ─────────────────────────────────
-    if (stream.match(TokenType::ARROW)) {
-        funcType->hasArrow = true; // enforce this function body return values
+    // ─── 3. Check for arrow ───────────────────────────────────────────────
+    // If no arrow, it's a function type with no return (void)
+    if (!stream.check(TokenType::ARROW)) {
+        // No return type - this is a void function type
+        // hasArrow remains false
+        LOG_PARSER_DETAIL("parseFuncType: parsed void function type with ", 
+                          params.size(), " parameters");
+        return funcType;
     }
+    
+    // ─── 4. Parse the arrow ───────────────────────────────────────────────
+    stream.advance(); // Consume '->'
+    funcType->hasArrow = true;
 
+    // ─── 5. Parse the return type ─────────────────────────────────────────
+    // This could be:
+    //   - A single type: `int`
+    //   - A parameter group: `(int) -> ...` (currying)
+    //   - A function type: `(int) -> int`
+    
+    // Check if the return type is a parameter group (currying)
+    // We need to peek ahead to see if it's '(' followed by something
+    if (stream.check(TokenType::LPAREN)) {
+        // ─── 5a. Curried function: return type is another function type ──
+        // The next parameter group is the first group AFTER the arrow.
+        // This group MUST NOT have parameter names (bare types only).
+        TypePtr returnType = parseFuncType(stream, ctx);
+        funcType->returnType = returnType;
+        
+        LOG_PARSER_DETAIL("parseFuncType: parsed curried function type");
+        return funcType;
+    }
+    
+    // ─── 5b. Simple return type (non-function) ───────────────────────────
+    // Parse the return type. This is NOT a function type, so it's the final
+    // return type of the function.
     TypePtr returnType = parseType(stream, ctx);
     if (!returnType) {
         ctx.error(stream, DiagCode::E1003, "return type", stream.peekValue());
+        // Recover by skipping to the next token that could start a type
+        synchronizeToContext(stream, ctx);
+        return funcType;
     }
     funcType->returnType = returnType;
-    // if (stream.match(TokenType::ARROW)) {
-    //     // parseReturnList handles:
-    //     // - Single type: `int`
-    //     // - Multiple types: `(int, string)`
-    //     // - Void: `()` (though this is unusual for function types)
-    //     ArenaSpan<TypePtr> returnTypes = parseReturnList(stream, ctx);
-    //     funcType->returnTypes = returnTypes;
-    // }
-    // If no arrow, it's a void function type (returns nothing)
     
-    LOG_PARSER("parseFuncType: parsed function type with ", 
-                      params.size(), " parameters");
+    LOG_PARSER_DETAIL("parseFuncType: parsed function type with ", 
+                      params.size(), " parameters and return type");
     return funcType;
 }
 

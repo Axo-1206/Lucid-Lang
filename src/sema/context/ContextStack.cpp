@@ -318,21 +318,21 @@ BlockStmtAST* ContextStack::currentBlock() const {
 ReturnRequirements ContextStack::buildReturnRequirements(FuncTypeAST* funcType) {
     ReturnRequirements reqs;
     
-    if (!funcType) {
-        return reqs;
-    }
+    if (!funcType) return reqs;
     
     // Walk the function type chain
     // Each FuncTypeAST represents one parameter group
     // The returnType points to the next FuncTypeAST if curried, or a non-function type
     FuncTypeAST* current = funcType;
     int currentLevel = 0;
+    bool sawArrow = false;  // Track if we've seen any arrow
     
     while (current) {
         ReturnRequirements::Group group;
         
         // A group requires a return if it has the arrow syntax
         group.requiresReturn = current->hasArrow;
+        sawArrow = sawArrow || current->hasArrow;
         
         // Check if this group returns a function (currying)
         group.isCurried = current->returnType && current->returnType->isa<FuncTypeAST>();
@@ -376,6 +376,7 @@ ReturnRequirements ContextStack::buildReturnRequirements(FuncTypeAST* funcType) 
         reqs.isVoid = true;
     }
     
+    // allowsOptionalReturn: void functions or functions with no requirements
     reqs.allowsOptionalReturn = reqs.isVoid || !reqs.hasRequirements();
     
     return reqs;

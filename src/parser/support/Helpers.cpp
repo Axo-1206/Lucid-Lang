@@ -1409,155 +1409,28 @@ ArenaSpan<TypePtr> parseGenericArgs(TokenStream& stream, ParserContext& ctx) {
     return builder.build();
 }
 
-/**
- * @brief Parse a list of function parameters.
- * 
- * Grammar: `'(' [ param { ',' param } [ ',' variadic_param ] ] ')'`
- * 
- * This function consumes the opening '(' and closing ')' parentheses.
- * 
- * ## Parameter Forms
- * 
- * - `IDENTIFIER type`                   → pass by value
- * - `const IDENTIFIER type`             → read-only reference parameter
- * - `IDENTIFIER ... type`               → variadic parameter (must be last)
- * 
- * ## Program Flow
- * 
- * ```
- * parseParamList()
- *     │
- *     ├── 1. Opening Delimiter Phase
- *     │   │
- *     │   └── if (!stream.check(TokenType::LPAREN))
- *     │       ├── ctx.error(stream, DiagCode::E1004, "(", "parameter list", got)
- *     │       └── return empty vector
- *     │   └── else
- *     │       └── stream.advance()  // Consume '('
- *     │
- *     ├── 2. Empty List Check
- *     │   └── if (stream.check(TokenType::RPAREN))
- *     │       ├── stream.advance()  // Consume ')'
- *     │       └── return empty vector
- *     │
- *     ├── 3. Leading Comma Recovery
- *     │   └── if (stream.consumeTrailing(TokenType::COMMA) > 0)
- *     │       └── ctx.error(stream, DiagCode::E1009, ",", "parameter list")
- *     │           // (,,,, a int ...) — reports once for all leading commas
- *     │
- *     ├── 4. Main Parameter Parsing Loop
- *     │   │
- *     │   └── while (!stream.isAtEnd() && !stream.check(TokenType::RPAREN))
- *     │       │
- *     │       ├── 4.1 Parse 'const' Modifier
- *     │       │   └── bool isConst = stream.match(TokenType::CONST)
- *     │       │
- *     │       ├── 4.2 Parse Parameter Name
- *     │       │   │
- *     │       │   └── if (!stream.check(TokenType::IDENTIFIER))
- *     │       │       ├── ctx.error(stream, DiagCode::E1002, "parameter name", got)
- *     │       │       ├── synchronizeTo(stream, ctx, COMMA, RPAREN)
- *     │       │       └── // The loop condition handles ')' and EOF naturally.
- *     │       │           // If we're at a comma, the comma handling below will consume it.
- *     │       │           // If we're at some other token, break to avoid infinite loop.
- *     │       │   └── else
- *     │       │       └── Token nameTok = stream.advance()
- *     │       │
- *     │       ├── 4.3 Parse Variadic Modifier
- *     │       │   └── bool isVariadic = stream.match(TokenType::VARIADIC)
- *     │       │
- *     │       ├── 4.4 Parse Parameter Type
- *     │       │   │
- *     │       │   └── TypePtr type = parseType(stream, ctx)
- *     │       │       │
- *     │       │       ├── if (type != nullptr)
- *     │       │       │   └── Create ParamAST and push to params
- *     │       │       │
- *     │       │       └── else
- *     │       │           ├── ctx.error(stream, DiagCode::E1003, "parameter type", got)
- *     │       │           ├── synchronizeTo(stream, ctx, COMMA, RPAREN)
- *     │       │           └── // The loop condition handles ')' and EOF naturally.
- *     │       │               // If we're at a comma, the comma handling below will consume it.
- *     │       │               // If we're at some other token, break to avoid infinite loop.
- *     │       │
- *     │       ├── 4.5 Variadic Last Check
- *     │       │   └── if (isVariadic && stream.check(TokenType::COMMA))
- *     │       │       ├── ctx.error(stream, DiagCode::E1010, "parameter group",
- *     │       │       │              "variadic parameter must be the last parameter")
- *     │       │       └── // The comma will be consumed by the comma handling below
- *     │       │
- *     │       └── 4.6 Comma Separator Handling
- *     │           └── if (stream.consumeTrailing(TokenType::COMMA) > 1)
- *     │               └── ctx.error(stream, DiagCode::E1009, ",", "parameter list")
- *     │                   // Reports once for multiple consecutive commas between params
- *     │
- *     ├── 5. Closing Parenthesis Phase
- *     │   │
- *     │   └── if (stream.isAtEnd())
- *     │       ├── ctx.error(stream, DiagCode::E1005, ")", "parameter list", "<EOF>")
- *     │       └── // Return with whatever params we have (missing ')')
- *     │   └── else
- *     │       └── stream.advance()  // Consume ')' (we know it's there from loop condition)
- *     │
- *     └── 6. Return
- *         └── return params
- * ```
- * 
- * ## Error Recovery Strategy
- * 
- * ### Level 1: Missing '('
- * - E1004 reported, return empty
- * 
- * ### Level 2: Missing Parameter Name
- * - E1002 reported
- * - synchronizeTo(COMMA, RPAREN) skips to next separator or terminator
- * 
- * ### Level 3: Missing Parameter Type
- * - E1003 reported
- * - synchronizeTo(COMMA, RPAREN) skips to next separator or terminator
- * 
- * ### Level 4: Variadic Not Last
- * - E1010 reported when variadic is followed by a comma
- * - The comma handling below consumes the comma to allow recovery
- * 
- * ### Level 5: Missing Closing Parenthesis
- * - E1005 reported at EOF
- * - No recovery needed since we're already at EOF
- * 
- * ### Level 6: Consecutive Commas
- * - Leading commas before first parameter → E1009 once
- * - Multiple commas between parameters → E1009 once per gap
- * 
- * ## Token Stream State
- * 
- * After this function completes:
- * - Position is AFTER ')' (normal case)
- * - Position is at EOF (if ')' was missing)
- * - Position is at recovery point (if errors occurred)
- * 
- * ## Examples
- * 
- * ```lucid
- * (a int, b int)                       → [a: int, b: int]
- * (name string, age int)               → [name: string, age: int]
- * (nums ...int)                        → [nums: ...int] (variadic)
- * (const v Vector2)                    → [v: const Vector2] (read-only ref)
- * (a int, b int, rest ...string)       → [a: int, b: int, rest: ...string]
- * ()                                   → [] (empty parameter list)
- * (a int, b int,)                      → [a: int, b: int] + E1009 (trailing comma)
- * (a int,,,b int)                      → [a: int, b: int] + E1009 (gap)
- * (a int,                              → [a: int] + E1005 (missing ')')
- * (a int, b int, rest ...string,       → [a: int, b: int, rest: ...string] + E1010 (variadic not last) + E1005 (missing ')')
- * ```
- * 
- * @param stream The token stream for the current file
- * @param ctx The parsing context
- * @return std::vector<ParamPtr> The parsed parameters (empty for void)
- *
- * @note This function consumes ')'. The caller must NOT consume ')'.
- */
-std::vector<ParamPtr> parseParamList(TokenStream& stream, ParserContext& ctx) {
-    LOG_PARSER_DETAIL("parseParamList: parsing parameter list");
+/// @brief Parse a list of function parameters.
+/// 
+/// Grammar: `'(' [ param { ',' param } [ ',' variadic_param ] ] ')'`
+/// 
+/// ## Parameter Forms
+/// 
+/// - `IDENTIFIER type`                   → pass by value (named)
+/// - `type`                              → unnamed parameter (after first ->)
+/// - `const IDENTIFIER type`             → read-only reference parameter
+/// - `IDENTIFIER ... type`               → variadic parameter (must be last)
+/// 
+/// ## Parameters
+/// 
+/// @param stream The token stream
+/// @param ctx The parsing context
+/// @param allowNames If true, parameter names are required and validated.
+///                   If false, parameter names are forbidden (bare types only).
+/// @return std::vector<ParamPtr> The parsed parameters (empty for void)
+/// 
+/// @note This function consumes ')'. The caller must NOT consume ')'.
+std::vector<ParamPtr> parseParamList(TokenStream& stream, ParserContext& ctx, bool allowNames) {
+    LOG_PARSER_DETAIL("parseParamList: parsing parameter list (allowNames=", allowNames, ")");
     
     std::vector<ParamPtr> params;
     
@@ -1589,21 +1462,37 @@ std::vector<ParamPtr> parseParamList(TokenStream& stream, ParserContext& ctx) {
         // ─── 4.1 Check for 'const' modifier ──────────────────────────────
         bool isConst = stream.match(TokenType::CONST);
         
-        // ─── 4.2 Parse parameter name ─────────────────────────────────────
-        if (!stream.check(TokenType::IDENTIFIER)) {
-            ctx.error(stream, DiagCode::E1002, "parameter name", stream.peekValue());
-            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN);
-            // The loop condition will handle ')' and EOF naturally.
-            // If we're at a comma, the comma handling below will consume it.
-            // If we're at some other token, break to avoid infinite loop.
-            if (!stream.check(TokenType::COMMA) && !stream.check(TokenType::RPAREN) && !stream.isAtEnd()) {
-                break;
-            }
-            continue;
-        }
+        // ─── 4.2 Parse parameter name or detect bare type ─────────────────
+        InternedString name;
+        bool hasName = false;
         
-        Token nameTok = stream.advance();
-        InternedString name = ctx.pool.intern(nameTok.value);
+        if (allowNames) {
+            // ─── Form 1: Named parameter ──────────────────────────────────
+            // Expect: IDENTIFIER type
+            if (!stream.check(TokenType::IDENTIFIER)) {
+                ctx.error(stream, DiagCode::E1002, "parameter name", stream.peekValue());
+                synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN);
+                if (!stream.check(TokenType::COMMA) && !stream.check(TokenType::RPAREN) && !stream.isAtEnd()) {
+                    break;
+                }
+                continue;
+            }
+            
+            Token nameTok = stream.advance();
+            name = ctx.pool.intern(nameTok.value);
+            hasName = true;
+            
+            LOG_PARSER_DETAIL("parseParamList: parsed named parameter '", ctx.toString(name), "'");
+            
+        } else {
+            // ─── Form 2: Unnamed parameter (bare type) ────────────────────
+            // We don't consume a name token. The type parser will handle
+            // the next token as the start of a type.
+            // The name remains empty (id = 0).
+            hasName = false;
+            
+            LOG_PARSER_DETAIL("parseParamList: parsing unnamed parameter (bare type)");
+        }
         
         // ─── 4.3 Check for variadic modifier ─────────────────────────────
         bool isVariadic = stream.match(TokenType::VARIADIC);
@@ -1613,9 +1502,6 @@ std::vector<ParamPtr> parseParamList(TokenStream& stream, ParserContext& ctx) {
         if (!type) {
             ctx.error(stream, DiagCode::E1003, "parameter type", stream.peekValue());
             synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN);
-            // The loop condition will handle ')' and EOF naturally.
-            // If we're at a comma, the comma handling below will consume it.
-            // If we're at some other token, break to avoid infinite loop.
             if (!stream.check(TokenType::COMMA) && !stream.check(TokenType::RPAREN) && !stream.isAtEnd()) {
                 break;
             }
@@ -1625,36 +1511,45 @@ std::vector<ParamPtr> parseParamList(TokenStream& stream, ParserContext& ctx) {
         // ─── 4.5 Create the parameter node ────────────────────────────────
         auto* param = ctx.arena.make<ParamAST>();
         param->loc = loc;
-        param->name = name;
+        param->name = name;  // Will be empty (id=0) if allowNames=false
         param->type = type;
         param->isConst = isConst;
         param->isVariadic = isVariadic;
         params.push_back(param);
         
+        // ─── 4.6 Validate: If names are allowed, name must not be empty ───
+        if (allowNames && !hasName) {
+            // This shouldn't happen due to the check above, but just in case
+            ctx.error(stream, DiagCode::E1002, "parameter name", 
+                "expected name before type");
+        }
+        
+        // ─── 4.7 Validate: If names are disallowed, name must be empty ────
+        if (!allowNames && hasName) {
+            ctx.error(stream, DiagCode::E1010, "parameter name '" + ctx.toString(name), 
+                "' is not allowed after first '->'");
+        }
+        
         if (isVariadic) {
             hasVariadic = true;
         }
         
-        // ─── 4.6 Check if variadic is last ─────────────────────────────────
-        // If we have a variadic parameter, check if there's another parameter after it
+        // ─── 4.8 Check if variadic is last ─────────────────────────────────
         if (isVariadic && stream.check(TokenType::COMMA)) {
-            ctx.error(stream, DiagCode::E1010, "parameter group", "variadic parameter must be the last parameter");
-            // The comma will be consumed by the comma handling below
+            ctx.error(stream, DiagCode::E1010, 
+                      "variadic parameter must be the last parameter in its group");
         }
         
-        // ─── 4.7 Comma Separator Handling ────────────────────────────────
-        // Consume at least 1 comma and skip consecutive commas
+        // ─── 4.9 Comma Separator Handling ────────────────────────────────
         if (stream.consumeTrailing(TokenType::COMMA) > 1) {
             ctx.error(stream, DiagCode::E1009, ",", "parameter list");
         }
     }
     
     // ─── 5. Consume closing parenthesis ────────────────────────────────────
-    // The loop condition guarantees we're either at ')' or at EOF.
     if (stream.isAtEnd()) {
         ctx.error(stream, DiagCode::E1005, ")", "parameter list", "<EOF>");
     } else {
-        // We must be at ')' (loop condition guaranteed !stream.check(RPAREN) is false)
         stream.advance(); // Consume ')'
     }
     
@@ -2015,9 +1910,8 @@ NamedTypeAST* parseTraitRef(TokenStream& stream, ParserContext& ctx) {
     InternedString name = ctx.pool.intern(nameTok.value);
     
     // Create the trait reference node
-    auto* traitRef = ctx.arena.make<NamedTypeAST>();
+    auto* traitRef = ctx.arena.make<NamedTypeAST>(name);
     traitRef->loc = loc;
-    traitRef->name = name;
     
     // Check for generic arguments (optional)
     if (stream.check(TokenType::LESS)) {

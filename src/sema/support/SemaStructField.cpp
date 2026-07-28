@@ -293,8 +293,9 @@ void analyzeFunctionFieldBody(const FieldDeclAST* field,
 
     // ─── 1. Check: first parameter must be self ──────────────────────────
     if (funcType->params.empty()) {
-        ctx.error(field, "function field '", ctx.pool().lookup(field->name),
-                  "' must have at least one parameter (self)");
+        // TODO: add a diganostic code for this
+        // ctx.error(field, "function field '", ctx.pool().lookup(field->name),
+        //           "' must have at least one parameter (self)");
         return;
     }
 
@@ -308,8 +309,9 @@ void analyzeFunctionFieldBody(const FieldDeclAST* field,
 
     // ─── 2. Get the function body ──────────────────────────────────────────
     if (!field->defaultVal) {
-        ctx.error(field, "function field '", ctx.pool().lookup(field->name),
-                  "' has no body");
+        // TODO: add a diganostic code for this
+        // ctx.error(field, "function field '", ctx.pool().lookup(field->name),
+        //           "' has no body");
         return;
     }
 

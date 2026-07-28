@@ -51,6 +51,9 @@ struct InternedString {
 
     /** True for any string that was actually interned (id != 0). */
     bool isValid() const { return id != 0; }
+
+    /** True if this is an empty string (id == 0). */
+    bool isEmpty() const { return id == 0; }
 };
 
 // Specialize std::hash for InternedString so it can be used in unordered_map.
