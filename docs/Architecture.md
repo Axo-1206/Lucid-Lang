@@ -568,14 +568,20 @@ lucid/
     │   │   ├── SemaStmt.cpp            -- if, for, while, switch, return, block
     │   │   ├── SemaExpr.cpp            -- literals, binary/unary, calls, pipeline, compose
     │   │   └── FFIValidator.hpp/cpp    -- validate @[foreign("C")] against lge_ffi.lfi
+    │   │    
+    │   ├── types/                        # Analysis rules (unchanged)
+    │   │   ├── Lookup.cpp              -- Look up type, check if type exist in current scope.
+    │   │   ├── Resolution.cpp          -- Resolves type annotations to their semantic representations. 
+    │   │   ├── TypeCompat.cpp          -- Type Compatibility Helpers
+    │   │   └── SemaType.hpp            -- Main header for 3 .cpp files
+    │   │ 
+    │   ├── registry/
+    │   │   ├── AttributesRegistry.hpp
+    │   │   └── IntrinsicRegistry.hpp/cpp
     │   │
     │   └── support/                      # Helpers (unchanged)
-    │       ├── Lookup.cpp          
-    │       ├── TypeCompat.cpp
     │       ├── SemaStructFields.hpp/cpp
-    │       ├── TypeNarrowHelpers.hpp/cpp
-    │       ├── AttributesRegistry.hpp
-    │       └── IntrinsicRegistry.hpp/cpp
+    │       └── TypeNarrowHelpers.hpp/cpp
     │
     ├── codegen/
     │   ├── IRLowering.hpp                     # Single unified header (all declarations)
