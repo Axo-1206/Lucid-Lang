@@ -1318,10 +1318,11 @@ func_body       = '{' { statement } '}'         (* declaration only — see WARN
                                                      invalid as the RHS of a reassignment *)
                 | expr                           (* a function body may be ANY expr that
                                                      evaluates to a function value: a single
-                                                     computed result, an anonymous func_literal,
-                                                     a named reference, a generic instantiation,
-                                                     or a call that returns a function — see
-                                                     Function Body as an Expression *)
+                                                     computed result, a named reference, a
+                                                     generic instantiation, or a call that
+                                                     returns a function — NOT a bare
+                                                     func_literal; see Function Body as an
+                                                     Expression *)
 
 generic_args    = '<' type_arg { ',' type_arg } '>'
                   (* instantiates a generic function as a VALUE — no call parens.
@@ -1337,7 +1338,8 @@ func_type       = unnamed_cluster { '->' unnamed_cluster } '->' type
                      func_literal may name parameters in its leading cluster. *)
 ```
 
-**`func_body`'s second form is just `expr` — nothing narrower.** Earlier drafts
+**`func_body`'s second form is `expr`, with one semantic carve-out: it may
+not itself be a `func_literal`** — see the NOTE below for why. Earlier drafts
 of this grammar introduced a separate `func_ref` production to describe "an
 anonymous function or a named reference," but that was a hand-rolled subset of
 something `expr` already covers: `IDENTIFIER`, `call_expr`, `module_expr`, and
@@ -1347,10 +1349,6 @@ something `expr` already covers: `IDENTIFIER`, `call_expr`, `module_expr`, and
 `func_type`. This means the body can be:
 
 ```lucid
--- a func_literal (anonymous function value)
-let f () -> () = () -> () { ... }
-f = () -> () { ... }
-
 -- a named function reference — no call, IDENTIFIER alone
 const sq<T> (v T) -> T = { return v * v }
 let g (a int) -> int = sq<int>
@@ -1371,6 +1369,45 @@ call, as long as evaluating it produces a value of the matching `func_type`.
 Reassignment (`f = ...`) follows ordinary `assign_stmt` rules — `f` must be
 `let`, and the right-hand side `expr` must evaluate to a value whose type
 matches `f`'s declared `func_type` exactly.
+
+> [!NOTE]
+> **A `func_literal` — an inline, unnamed function value written out with its
+> own signature — is only accepted as a reassignment, never as a `func_decl`'s
+> own body.** At the declaration site the header's `chain` already supplies a
+> signature; writing a second, complete signature on the literal right next
+> to it gives the compiler two candidate signatures for the same binding with
+> no principled reason to prefer one over the other, and gives the reader two
+> places that must be kept in sync by hand for no benefit. A bare block is
+> the declaration-site equivalent instead — it carries no signature of its
+> own, so there's nothing left to reconcile (see the WARNING below). At
+> reassignment there is no header to borrow from, so a `func_literal` is
+> exactly what's needed there — it's the only place its own signature is
+> actually load-bearing.
+>
+> This restriction is specific to standing directly as a `func_decl`'s body.
+> A `func_literal` remains valid anywhere else an `expr` is expected — as a
+> call argument, as a returned value, inside a container literal, and so on.
+>
+> ```lucid
+> -- declaration: a bare block — the only anonymous form accepted here
+> let f () -> () = { ... }
+>
+> -- declaration: REJECTED — redundant, potentially conflicting signature
+> let f () -> () = () -> () { ... }    -- ERROR: func_literal not allowed
+>                                       -- as a func_decl's own body
+>
+> -- reassignment: func_literal — OK, carries its own signature, no header
+> -- to conflict with
+> f = () -> () { ... }
+>
+> -- passed as an argument — always fine, this isn't a func_decl's own body
+> runCallback((x int) -> int { return x * 2 })
+>
+> -- returned from a function — always fine, same reason
+> const makeDoubler () -> (int) -> int = {
+>     return (x int) -> int { return x * 2 };
+> }
+> ```
 
 > [!WARNING]
 > **A block body (`{ ... }`) is only valid at the declaration, never at
