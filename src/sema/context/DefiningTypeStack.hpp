@@ -1,7 +1,7 @@
 /// @file DefiningTypeStack.hpp
 /// @brief Tracks types currently being defined for self-reference detection.
 /// 
-/// Allows `checkRecursiveFieldType()` to distinguish:
+/// Allows to distinguish:
 ///   - `value Node<T>` → direct self-reference (illegal, infinite size)
 ///   - `next ptr<Node<T>>?` → indirect (legal, breaks the cycle)
 /// 

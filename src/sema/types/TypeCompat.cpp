@@ -9,7 +9,7 @@
 ///   Additional helpers for const field validation, trait field validation,
 ///   reference scoping, and FFI compatibility.
 
-#include "../Sema.hpp"
+#include "SemaType.hpp"
 #include "../context/SemaContext.hpp"
 
 namespace sema {

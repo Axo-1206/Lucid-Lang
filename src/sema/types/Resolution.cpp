@@ -1,8 +1,7 @@
-/// @file SemaType.cpp
+/// @file Resolution.cpp
 /// @brief Implementation of type resolution.
 
 #include "SemaType.hpp"
-#include "SemaLookup.hpp"
 #include "../context/SemaContext.hpp"
 #include "debug/DebugUtils.hpp"
 
@@ -294,123 +293,6 @@ TypeAST* resolveFuncType(const FuncTypeAST* type, SemaContext& ctx) {
     }
 
     return const_cast<FuncTypeAST*>(type);
-}
-
-// =============================================================================
-// Type Compatibility Helpers
-// =============================================================================
-
-bool typesEqual(const TypeAST* a, const TypeAST* b) {
-    // TODO: Implement proper type equality
-    // For now, just compare kinds
-    if (!a || !b) return false;
-    if (a->kind != b->kind) return false;
-
-    // TODO: Check inner types for compound types
-    return true;
-}
-
-bool isAssignable(const TypeAST* target, const TypeAST* source, SemaContext& ctx) {
-    if (!target || !source) return false;
-
-    // TODO: Implement proper assignability checking
-    // This should handle:
-    //   - Primitive type compatibility (int -> int32, etc.)
-    //   - Nullable widening (T -> T?)
-    //   - Fallible handling (T! -> T! but not T -> T!)
-    //   - Struct/type alias compatibility
-
-    // For now, just check if types are equal
-    return typesEqual(target, source);
-}
-
-bool isNullableType(const TypeAST* type) {
-    if (!type) return false;
-    return type->isa<NullableTypeAST>() || type->isa<CombinedTypeAST>();
-}
-
-bool isFallibleType(const TypeAST* type) {
-    if (!type) return false;
-    return type->isa<FallibleTypeAST>() || type->isa<CombinedTypeAST>();
-}
-
-TypeAST* unwrapNullable(TypeAST* type) {
-    if (!type) return nullptr;
-    if (type->isa<NullableTypeAST>()) {
-        return type->as<NullableTypeAST>()->inner;
-    }
-    if (type->isa<CombinedTypeAST>()) {
-        return type->as<CombinedTypeAST>()->inner;
-    }
-    return type;
-}
-
-TypeAST* unwrapFallible(TypeAST* type) {
-    if (!type) return nullptr;
-    if (type->isa<FallibleTypeAST>()) {
-        return type->as<FallibleTypeAST>()->inner;
-    }
-    if (type->isa<CombinedTypeAST>()) {
-        return type->as<CombinedTypeAST>()->inner;
-    }
-    return type;
-}
-
-bool isNumericType(const TypeAST* type) {
-    // TODO: Implement numeric type check
-    // Should handle int, float, double, decimal, and their fixed-width variants
-    if (!type || !type->isa<PrimitiveTypeAST>()) return false;
-    // For now, return false for non-primitive types
-    return false;
-}
-
-bool isIntegerType(const TypeAST* type) {
-    // TODO: Implement integer type check
-    if (!type || !type->isa<PrimitiveTypeAST>()) return false;
-    // For now, return false for non-primitive types
-    return false;
-}
-
-bool isFloatType(const TypeAST* type) {
-    // TODO: Implement float type check
-    if (!type || !type->isa<PrimitiveTypeAST>()) return false;
-    // For now, return false for non-primitive types
-    return false;
-}
-
-// =============================================================================
-// Type Validation
-// =============================================================================
-
-bool validateConstFieldType(const TypeAST* type, SemaContext& ctx) {
-    if (!type) return false;
-
-    if (isNullableType(type) || isFallibleType(type)) {
-        ctx.error(type, DiagCode::E3004,
-                  "const field cannot be nullable or fallible");
-        return false;
-    }
-
-    return true;
-}
-
-bool validateTraitFieldType(const TypeAST* type, SemaContext& ctx) {
-    // Trait fields can be nullable or fallible unless const
-    // This is checked in analyzeTraitDecl
-    return true;
-}
-
-bool validateRefContext(const RefTypeAST* type, SemaContext& ctx) {
-    // Check Downward Flow Rule:
-    // References can only appear as:
-    //   - Function parameters
-    //   - Local variable aliases
-
-    // Struct fields are checked in resolveRefType
-    // Array storage is checked in resolveArrayType
-    // Function returns are checked in resolveFuncType
-
-    return true;
 }
 
 } // namespace sema

@@ -1,7 +1,7 @@
-/// @file SemaLookup.cpp
+/// @file Lookup.cpp
 /// @brief Implements all name lookup with proper priority and diagnostics.
 
-#include "SemaLookup.hpp"
+#include "SemaType.hpp"
 #include "../context/SemaContext.hpp"
 #include "core/ast/BaseAST.hpp"
 #include "debug/DebugUtils.hpp"
