@@ -1,22 +1,7 @@
-/**
- * @file Lookup.cpp
- * @brief Implements all name lookup with proper priority and diagnostics.
- *
- * @architectural_note Lookup Priority
- *   1. Generic parameters in current scope (highest priority, shadow everything)
- *   2. Value/Type declarations in local scopes (innermost to outermost)
- *   3. Value/Type declarations in module scope (global)
- *
- * @architectural_note Two namespaces
- *   - VALUE NAMESPACE: variables, functions, parameters, fields, enum variants
- *   - TYPE NAMESPACE: structs, enums, traits, generic params
- *
- * @architectural_note No creation here
- *   The parser already created all AST nodes. This file only LOOKS UP
- *   existing names and reports errors if not found.
- */
+/// @file SemaLookup.cpp
+/// @brief Implements all name lookup with proper priority and diagnostics.
 
-#include "../Sema.hpp"
+#include "SemaLookup.hpp"
 #include "../context/SemaContext.hpp"
 #include "core/ast/BaseAST.hpp"
 #include "debug/DebugUtils.hpp"
@@ -90,16 +75,6 @@ const TypeDeclAST* resolveTypeNameOrError(const NamedTypeAST* type, SemaContext&
 // Trait Reference Resolution
 // =============================================================================
 
-/// @brief Resolve a trait reference to its declaration.
-///
-/// A trait reference is a NamedTypeAST that must resolve to a TraitDeclAST.
-/// This is used in:
-///   - Struct declarations: `struct Entity : Vector2, Named { ... }`
-///   - Generic constraints: `<T : Vector2 + Named>`
-///
-/// @param ref The trait reference (NamedTypeAST).
-/// @param ctx The semantic context.
-/// @return The resolved TraitDeclAST, or nullptr on error.
 const TraitDeclAST* resolveTraitRef(const NamedTypeAST* ref, SemaContext& ctx) {
     if (!ref) return nullptr;
 
@@ -131,88 +106,6 @@ const TraitDeclAST* resolveTraitRef(const NamedTypeAST* ref, SemaContext& ctx) {
     }
 
     return traitDecl;
-}
-
-// =============================================================================
-// REDECLARATION HELPERS - Check only the current tier (not outer scopes)
-// =============================================================================
-
-bool isValueRedeclared(InternedString name, SemaContext& ctx) {
-    if (ctx.symbols.isAtModuleLevel()) {
-        ModuleTable* table = ctx.symbols.currentModuleTable();
-        return table && table->values.find(name) != table->values.end();
-    } else {
-        const Scope& current = ctx.symbols.currentScope();
-        return current.values.find(name) != current.values.end();
-    }
-}
-
-bool isTypeRedeclared(InternedString name, SemaContext& ctx) {
-    if (ctx.symbols.isAtModuleLevel()) {
-        ModuleTable* table = ctx.symbols.currentModuleTable();
-        return table && table->types.find(name) != table->types.end();
-    } else {
-        const Scope& current = ctx.symbols.currentScope();
-        return current.types.find(name) != current.types.end();
-    }
-}
-
-bool isGenericParamRedeclared(InternedString name, SemaContext& ctx) {
-    if (ctx.symbols.isAtModuleLevel()) {
-        return false; // Generic params are never at module level
-    }
-    const Scope& current = ctx.symbols.currentScope();
-    return current.genericParams.find(name) != current.genericParams.end();
-}
-
-bool isImportAliasRedeclared(InternedString alias, SemaContext& ctx) {
-    ModuleTable* table = ctx.symbols.currentModuleTable();
-    if (!table) return false;
-    return table->importAliases.find(alias) != table->importAliases.end();
-}
-
-// ─── Value Redeclaration ──────────────────────────────────────────────────
-
-bool reportValueRedeclaration(const DeclAST* node, SemaContext& ctx) {
-    if (isValueRedeclared(node->name, ctx)) {
-        ctx.error(node, DiagCode::E2101,
-                  "redeclaration of '", ctx.pool().lookup(node->name), "' in the same scope");
-        return true;
-    }
-    return false;
-}
-
-// ─── Type Redeclaration ──────────────────────────────────────────────────
-
-bool reportTypeRedeclaration(const DeclAST* node, SemaContext& ctx) {
-    if (isTypeRedeclared(node->name, ctx)) {
-        ctx.error(node, DiagCode::E2101,
-                  "redeclaration of '", ctx.pool().lookup(node->name), "' in the same scope");
-        return true;
-    }
-    return false;
-}
-
-// ─── Generic Param Redeclaration ─────────────────────────────────────────
-
-bool reportGenericParamRedeclaration(const DeclAST* node, SemaContext& ctx) {
-    if (isGenericParamRedeclared(node->name, ctx)) {
-        ctx.error(node, DiagCode::E2101,
-                  "redeclaration of generic parameter '", ctx.pool().lookup(node->name), "' in the same scope");
-        return true;
-    }
-    return false;
-}
-
-// ─── Import Alias Redeclaration ──────────────────────────────────────────
-
-bool reportImportAliasRedeclaration(InternedString alias, const BaseAST* node, SemaContext& ctx) {
-    if (isImportAliasRedeclared(alias, ctx)) {
-        ctx.error(node, DiagCode::E2101,
-                  "redeclaration of import alias '", ctx.pool().lookup(alias), "'");
-        return true;
-    }
-    return false;
 }
 
 // =============================================================================
@@ -295,6 +188,88 @@ const FuncDeclAST* resolveCalleeOrError(const ExprAST* callee, SemaContext& ctx)
     // Any other callee shape - doesn't name a declaration
     // Caller must check callee's resolved type
     return nullptr;
+}
+
+// =============================================================================
+// REDECLARATION HELPERS - Check only the current tier (not outer scopes)
+// =============================================================================
+
+bool isValueRedeclared(InternedString name, SemaContext& ctx) {
+    if (ctx.symbols.isAtModuleLevel()) {
+        ModuleTable* table = ctx.symbols.currentModuleTable();
+        return table && table->values.find(name) != table->values.end();
+    } else {
+        const Scope& current = ctx.symbols.currentScope();
+        return current.values.find(name) != current.values.end();
+    }
+}
+
+bool isTypeRedeclared(InternedString name, SemaContext& ctx) {
+    if (ctx.symbols.isAtModuleLevel()) {
+        ModuleTable* table = ctx.symbols.currentModuleTable();
+        return table && table->types.find(name) != table->types.end();
+    } else {
+        const Scope& current = ctx.symbols.currentScope();
+        return current.types.find(name) != current.types.end();
+    }
+}
+
+bool isGenericParamRedeclared(InternedString name, SemaContext& ctx) {
+    if (ctx.symbols.isAtModuleLevel()) {
+        return false; // Generic params are never at module level
+    }
+    const Scope& current = ctx.symbols.currentScope();
+    return current.genericParams.find(name) != current.genericParams.end();
+}
+
+bool isImportAliasRedeclared(InternedString alias, SemaContext& ctx) {
+    ModuleTable* table = ctx.symbols.currentModuleTable();
+    if (!table) return false;
+    return table->importAliases.find(alias) != table->importAliases.end();
+}
+
+// ─── Value Redeclaration ──────────────────────────────────────────────────
+
+bool reportValueRedeclaration(const DeclAST* node, SemaContext& ctx) {
+    if (isValueRedeclared(node->name, ctx)) {
+        ctx.error(node, DiagCode::E2101,
+                  "redeclaration of '", ctx.pool().lookup(node->name), "' in the same scope");
+        return true;
+    }
+    return false;
+}
+
+// ─── Type Redeclaration ──────────────────────────────────────────────────
+
+bool reportTypeRedeclaration(const DeclAST* node, SemaContext& ctx) {
+    if (isTypeRedeclared(node->name, ctx)) {
+        ctx.error(node, DiagCode::E2101,
+                  "redeclaration of '", ctx.pool().lookup(node->name), "' in the same scope");
+        return true;
+    }
+    return false;
+}
+
+// ─── Generic Param Redeclaration ─────────────────────────────────────────
+
+bool reportGenericParamRedeclaration(const DeclAST* node, SemaContext& ctx) {
+    if (isGenericParamRedeclared(node->name, ctx)) {
+        ctx.error(node, DiagCode::E2101,
+                  "redeclaration of generic parameter '", ctx.pool().lookup(node->name), "' in the same scope");
+        return true;
+    }
+    return false;
+}
+
+// ─── Import Alias Redeclaration ──────────────────────────────────────────
+
+bool reportImportAliasRedeclaration(InternedString alias, const BaseAST* node, SemaContext& ctx) {
+    if (isImportAliasRedeclared(alias, ctx)) {
+        ctx.error(node, DiagCode::E2101,
+                  "redeclaration of import alias '", ctx.pool().lookup(alias), "'");
+        return true;
+    }
+    return false;
 }
 
 } // namespace sema
