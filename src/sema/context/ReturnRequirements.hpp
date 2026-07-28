@@ -5,9 +5,9 @@
 /// a "return group" that the body must satisfy. The groups are tracked in order.
 /// 
 /// Example:
-///   const add (a int) -> (b int) -> int = {
-///       // Group 0: (a int) -> (b int) -> int  → requires returning a function
-///       // Group 1: (b int) -> int             → requires returning an int
+///   const add (a int) -> (int) -> int = {
+///       // Group 0: (a int) -> (int) -> int  → requires returning a function
+///       // Group 1: (b int) -> int           → requires returning an int
 ///       
 ///       return (b int) -> int {
 ///           return a + b

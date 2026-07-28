@@ -251,8 +251,7 @@ void ContextStack::clearPendingInverseNarrowing() {
 
 bool ContextStack::insideFunction() const {
     return isInside(ContextKind::FuncBody) ||
-           isInside(ContextKind::AsyncBody) ||
-           isInside(ContextKind::GeneratorBody);
+           isInside(ContextKind::AsyncBody);
 }
 
 bool ContextStack::insideLoop() const {
@@ -267,10 +266,6 @@ bool ContextStack::insideAsync() const {
     return isInside(ContextKind::AsyncBody);
 }
 
-bool ContextStack::insideGenerator() const {
-    return isInside(ContextKind::GeneratorBody);
-}
-
 bool ContextStack::insideParallel() const {
     return isInside(ContextKind::ParallelBody);
 }
@@ -278,8 +273,7 @@ bool ContextStack::insideParallel() const {
 FuncDeclAST* ContextStack::currentFunction() const {
     for (auto it = m_stack.rbegin(); it != m_stack.rend(); ++it) {
         if (it->kind == ContextKind::FuncBody ||
-            it->kind == ContextKind::AsyncBody ||
-            it->kind == ContextKind::GeneratorBody) {
+            it->kind == ContextKind::AsyncBody) {
             return static_cast<FuncDeclAST*>(it->node);
         }
     }
@@ -385,8 +379,7 @@ ReturnRequirements ContextStack::buildReturnRequirements(FuncTypeAST* funcType) 
 ContextFrame* ContextStack::findInnermostFunction() {
     for (auto it = m_stack.rbegin(); it != m_stack.rend(); ++it) {
         if (it->kind == ContextKind::FuncBody ||
-            it->kind == ContextKind::AsyncBody ||
-            it->kind == ContextKind::GeneratorBody) {
+            it->kind == ContextKind::AsyncBody) {
             return &(*it);
         }
     }
@@ -396,8 +389,7 @@ ContextFrame* ContextStack::findInnermostFunction() {
 const ContextFrame* ContextStack::findInnermostFunction() const {
     for (auto it = m_stack.rbegin(); it != m_stack.rend(); ++it) {
         if (it->kind == ContextKind::FuncBody ||
-            it->kind == ContextKind::AsyncBody ||
-            it->kind == ContextKind::GeneratorBody) {
+            it->kind == ContextKind::AsyncBody) {
             return &(*it);
         }
     }

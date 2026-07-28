@@ -19,7 +19,6 @@ enum class ContextKind {
     LoopBody,       ///< Inside a loop body (break/continue allowed)
     SwitchBody,     ///< Inside a switch body (case/default allowed)
     AsyncBody,      ///< Inside an async function (await allowed)
-    GeneratorBody,  ///< Inside a generator function (yield allowed)
     ParallelBody,   ///< Inside a parallel/spawn block
     IfStmt,         ///< Inside an if statement (for type narrowing)
     Block,          ///< Inside a block statement (for pending inverse narrowing)
@@ -34,7 +33,6 @@ inline const char* contextKindName(ContextKind kind) {
         case ContextKind::LoopBody:      return "loop body";
         case ContextKind::SwitchBody:    return "switch body";
         case ContextKind::AsyncBody:     return "async body";
-        case ContextKind::GeneratorBody: return "generator body";
         case ContextKind::ParallelBody:  return "parallel body";
         case ContextKind::IfStmt:        return "if statement";
         case ContextKind::Block:         return "block";
