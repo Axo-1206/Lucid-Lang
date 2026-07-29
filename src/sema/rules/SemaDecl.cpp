@@ -25,6 +25,7 @@
 #include "../context/SemaContext.hpp"
 #include "core/ast/TypeAST.hpp"
 #include "debug/DebugUtils.hpp"
+#include "sema/registry/AttributeRegistry.hpp"
 
 namespace sema {
 
@@ -168,7 +169,15 @@ void analyzeVarDecl(const VarDeclAST* decl, SemaContext& ctx) {
 ///   - Block: { ... } - executable statements
 ///   - Expression: a + b - wrapped in ReturnStmtAST
 ///   - Reference: module:func - FuncRefStmtAST
+///
+/// ATTRIBUTES:
+///   - @[foreign("C")] - Foreign function (body must be empty) - SYNTACTIC CHECK ONLY
+///                       The actual symbol resolution happens during code generation.
+///   - @[inline] - Hint to inline at call sites
+///   - @[deprecated("msg")] - Warn at use sites
+///   - @[export] - Exported from module (top-level only)
 void analyzeFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
+    // ─── 0. Validate attributes ─────────────────────────────────────────────
     attr::validateAttributes(decl, ctx);
 
     // ─── 1. Resolve the function type ─────────────────────────────────────
@@ -184,12 +193,34 @@ void analyzeFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
     ctx.symbols.insertValue(decl);
 
     // ─── 4. Check for @[foreign] attribute ────────────────────────────────
-    // TODO: @[foreign] attribute support is not yet implemented.
-    AttributeAST* foreignAttr = findForeignAttr(decl->attributes, ctx);
+    // Foreign functions are a promise to the linker/JIT that this symbol
+    // will be provided by an external library. At the semantic level, we
+    // only need to validate the syntax and ensure the body is empty.
+    //
+    // The actual symbol resolution (matching against lge_ffi.lfi or
+    // dynamic libraries) happens during code generation.
+    const AttributeAST* foreignAttr = attr::findAttribute(
+        decl->attributes, 
+        attr::kForeign(ctx)
+    );
+    
     if (foreignAttr) {
-        // TODO: Implement proper foreign function validation
-        // validateForeignFunc(decl, foreignAttr, ctx);
-        // return;
+        // Foreign functions must not have a body
+        if (decl->body) {
+            ctx.error(decl, DiagCode::E3003,
+                      "@[foreign] function '", ctx.pool().lookup(decl->name),
+                      "' must not have a body (implementation is external)");
+        }
+        
+        // Foreign functions cannot have generic parameters
+        if (!decl->genericParams.empty()) {
+            ctx.error(decl, DiagCode::E3003,
+                      "@[foreign] function '", ctx.pool().lookup(decl->name),
+                      "' cannot have generic parameters");
+        }
+        
+        // Skip further analysis - foreign functions are external
+        return;
     }
 
     // ─── 5. Analyze generic parameters ────────────────────────────────────
@@ -213,6 +244,7 @@ void analyzeFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
         return;
     }
 
+    // ─── 8. Analyze body ──────────────────────────────────────────────────
     bool bodyReturns = false;
     if (decl->body->isa<BlockStmtAST>()) {
         bodyReturns = analyzeBlock(decl->body->as<BlockStmtAST>(), ctx);
@@ -233,13 +265,13 @@ void analyzeFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
         return;
     }
 
-    // ─── 8. Verify return paths ──────────────────────────────────────────
+    // ─── 9. Verify return paths ──────────────────────────────────────────
     if (bodyReturns && !ctx.contexts.returnRequirementsSatisfied()) {
         ctx.error(decl, DiagCode::E3005,
                   "function '", ctx.pool().lookup(decl->name), "' has missing nested return");
     }
 
-    // ─── 9. Pop function context ──────────────────────────────────────────
+    // ─── 10. Pop function context ──────────────────────────────────────────
     ctx.contexts.pop();
 }
 

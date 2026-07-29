@@ -35,6 +35,25 @@ inline InternedString kInline(SemaContext& ctx) {
     return ctx.pool().intern("inline");
 }
 
+// ─── Attribute Query Functions ────────────────────────────────────────────
+
+/// @brief Check if a declaration has a specific attribute.
+inline bool hasAttribute(ArenaSpan<AttributePtr> attrs, InternedString name) {
+    for (const AttributeAST* attr : attrs) {
+        if (attr->name == name) return true;
+    }
+    return false;
+}
+
+/// @brief Find a specific attribute by name.
+inline const AttributeAST* findAttribute(ArenaSpan<AttributePtr> attrs,
+                                          InternedString name) {
+    for (const AttributeAST* attr : attrs) {
+        if (attr->name == name) return attr;
+    }
+    return nullptr;
+}
+
 // ─── Validators ─────────────────────────────────────────────────────────────
 
 namespace detail {

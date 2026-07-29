@@ -180,14 +180,4 @@ void checkGenericArgs(ArenaSpan<TypePtr> args,
                        const BaseAST* useSite,
                        SemaContext& ctx);
 
-// =============================================================================
-// FFI VALIDATION
-// =============================================================================
-
-/// Validate @[foreign("C")] function against FFI manifest.
-void validateForeignFunc(const FuncDeclAST* decl, const AttributeAST* foreignAttr, SemaContext& ctx);
-
-/// True if type is legal at FFI boundary.
-bool isValidFFIType(const TypeAST* type, SemaContext& ctx);
-
 } // namespace sema
