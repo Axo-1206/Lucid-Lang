@@ -2,9 +2,13 @@
  * @file IntrinsicRegistry.hpp
  * @brief Maps Lucid intrinsic names to LLVM intrinsic IDs and provides validation.
  *
- * @responsibility Provides compile-time and runtime mapping between Lucid
- *                 intrinsic names and their corresponding LLVM intrinsic IDs.
- *                 Also handles validation of arguments for each intrinsic.
+ * @responsibility Provides:
+ *   - Mapping from Lucid intrinsic names to LLVM intrinsic IDs
+ *   - Argument count validation
+ *   - Argument type validation per intrinsic
+ *   - Return type determination per intrinsic
+ *   - Value state determination per intrinsic
+ *   - Detection of compiler-handled intrinsics (no LLVM enum)
  *
  * @related_files
  *   - src/codegen/IRLoweringIntrinsic.cpp - uses IntrinsicRegistry for lowering
@@ -68,19 +72,33 @@
  *   The compiler validates that T is a valid SIMD element type and that N
  *   is a compile-time constant within the target's vector register limits.
  *
- * @architectural_note AttributesRegistry vs IntrinsicRegistry
+ * @architectural_note AttributeRegistry vs IntrinsicRegistry
  *   IntrinsicRegistry is a class with state (maps of names to LLVM IDs)
  *   because it stores data that must persist across the compilation session.
  *   AttributeRegistry is header-only because it has no state — it only
  *   validates attributes against declarations using pure functions.
+ *
+ * @architectural_note Type Predicates
+ *   This registry uses the type predicates defined in SemaType.hpp:
+ *     - isIntegerType() - Checks if a type is an integer primitive
+ *     - isNumericType() - Checks if a type is integer or float
+ *     - isStringType()  - Checks if a type is a string
+ *     - isBoolType()    - Checks if a type is a boolean
+ *   These replace the broken BaseAST methods that were removed.
  */
 
 #pragma once
 
 #include "llvm/IR/Intrinsics.h"
 
+#include "core/ast/BaseAST.hpp"
+#include "core/ast/ExprAST.hpp"
+#include "core/ast/TypeAST.hpp"
 #include "core/memory/InternedString.hpp"
 #include "core/memory/StringPool.hpp"
+#include "../context/SemaContext.hpp"
+#include "../support/LiteralHelpers.hpp"
+#include "../types/SemaType.hpp"   // Type predicates: isIntegerType, isNumericType, etc.
 
 #include <unordered_map>
 #include <unordered_set>
@@ -89,13 +107,17 @@
 #include <string>
 #include <cstddef>
 
-/**
- * @brief Information about a registered intrinsic.
- */
+namespace sema {
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IntrinsicInfo
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Information about a registered intrinsic.
 struct IntrinsicInfo {
-    llvm::Intrinsic::ID id;              // LLVM intrinsic ID
+    llvm::Intrinsic::ID id;               // LLVM intrinsic ID
     InternedString name;                  // Full intrinsic name, interned
-                                           // into the registry's bound pool
+                                          // into the registry's bound pool
     size_t minArgs;                       // Minimum number of arguments
     size_t maxArgs;                       // Maximum number of arguments
     bool isVarArg;                        // Whether the intrinsic is variadic
@@ -115,13 +137,19 @@ struct IntrinsicInfo {
     bool hasFixedArgs() const { return !isVarArg && maxArgs > 0; }
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// IntrinsicRegistry
+// ─────────────────────────────────────────────────────────────────────────────
+
 /**
  * @brief Registry for intrinsic validation and lookup.
  *
  * Provides:
  *   - Mapping from Lucid intrinsic names to LLVM intrinsic IDs
  *   - Argument count validation
- *   - Type parameter inference for overloaded intrinsics
+ *   - Argument type validation per intrinsic
+ *   - Return type determination per intrinsic
+ *   - Value state determination per intrinsic
  *   - Detection of compiler-handled intrinsics (no LLVM enum)
  *
  * @note This class has state (maps) and is appropriate as a singleton.
@@ -146,6 +174,10 @@ public:
      *             the equivalent pool codegen's lowering context holds.
      */
     static IntrinsicRegistry& getInstance(StringPool& pool);
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Lookup Methods
+    // ─────────────────────────────────────────────────────────────────────────
 
     /**
      * @brief Get the LLVM intrinsic ID for a Lucid intrinsic name.
@@ -176,10 +208,12 @@ public:
      */
     bool isCompilerIntrinsic(InternedString name) const;
 
-    /**
-     * @brief Check if an intrinsic maps to an LLVM intrinsic.
-     */
+    /// @brief Check if an intrinsic maps to an LLVM intrinsic.
     bool isLLVMIntrinsic(InternedString name) const;
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Argument Validation Methods
+    // ─────────────────────────────────────────────────────────────────────────
 
     /**
      * @brief Validate the number of arguments for an intrinsic.
@@ -208,6 +242,58 @@ public:
      * @return true if the ordering is valid
      */
     bool validateFenceOrdering(InternedString ordering, StringPool& pool) const;
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Intrinsic Call Validation (used by SemaExpr.cpp)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * @brief Validate argument types for a specific intrinsic call.
+     *
+     * Each intrinsic has specific type requirements for its arguments.
+     * This function dispatches to the appropriate validator based on the
+     * intrinsic name.
+     *
+     * @param expr The intrinsic call expression.
+     * @param ctx The semantic context.
+     * @return true if all arguments are valid for this intrinsic.
+     */
+    bool validateIntrinsicCall(const IntrinsicCallExprAST* expr,
+                                SemaContext& ctx) const;
+
+    /**
+     * @brief Determine the return type of an intrinsic call.
+     *
+     * Some intrinsics have a fixed return type, while others derive their
+     * return type from their arguments (e.g., #addrof returns *T).
+     *
+     * @param expr The intrinsic call expression.
+     * @param targetType The target type from context (fallback).
+     * @param ctx The semantic context.
+     * @return The intrinsic's return type.
+     */
+    const TypeAST* getIntrinsicReturnType(const IntrinsicCallExprAST* expr,
+                                           const TypeAST* targetType,
+                                           SemaContext& ctx) const;
+
+    /**
+     * @brief Determine the value state of an intrinsic call.
+     *
+     * Some intrinsics have predictable value states:
+     *   - #alloc/#arena_alloc can fail → Unknown
+     *   - #toRef asserts non-null → Definite
+     *   - Most intrinsics → Definite
+     *
+     * @param expr The intrinsic call expression.
+     * @param ctx The semantic context.
+     * @return The appropriate ValueState for this intrinsic call.
+     */
+    ValueState getIntrinsicValueState(const IntrinsicCallExprAST* expr,
+                                       SemaContext& ctx) const;
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Listing Methods
+    // ─────────────────────────────────────────────────────────────────────────
 
     /**
      * @brief Get all registered intrinsic names, sorted, as display text.
@@ -246,6 +332,30 @@ private:
                                     size_t maxArgs = 0,
                                     bool isVarArg = false);
 
+    // ─── Validation Helper Methods ──────────────────────────────────────────
+
+    /// @brief Validate a pointer argument.
+    bool validatePtrArg(const ExprAST* arg, const std::string& argName, SemaContext& ctx) const;
+
+    /// @brief Validate a numeric argument.
+    /// Uses `isNumericType()` from SemaType.hpp.
+    bool validateNumericArg(const ExprAST* arg, const std::string& argName, SemaContext& ctx) const;
+
+    /// @brief Validate an integer argument.
+    /// Uses `isIntegerType()` from SemaType.hpp.
+    bool validateIntArg(const ExprAST* arg, const std::string& argName, SemaContext& ctx) const;
+
+    /// @brief Validate a string argument.
+    /// Uses `isStringType()` from SemaType.hpp.
+    bool validateStringArg(const ExprAST* arg, const std::string& argName, SemaContext& ctx) const;
+
+    /// @brief Validate a boolean argument.
+    /// Uses `isBoolType()` from SemaType.hpp.
+    bool validateBoolArg(const ExprAST* arg, const std::string& argName, SemaContext& ctx) const;
+
+    /// @brief Validate a reference argument.
+    bool validateRefArg(const ExprAST* arg, const std::string& argName, SemaContext& ctx) const;
+
     // ─── Members ─────────────────────────────────────────────────────────
 
     StringPool& m_pool;
@@ -274,3 +384,5 @@ inline bool isLLVMIntrinsic(InternedString name, StringPool& pool) {
 inline bool validateFenceOrdering(InternedString ordering, StringPool& pool) {
     return IntrinsicRegistry::getInstance(pool).validateFenceOrdering(ordering, pool);
 }
+
+} // namespace sema

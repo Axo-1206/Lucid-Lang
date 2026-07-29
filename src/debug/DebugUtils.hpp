@@ -110,7 +110,6 @@ inline std::string kindToString(ASTKind kind) {
 
         // Compiler directives
         case ASTKind::Attribute:          return "Attribute";
-        case ASTKind::AttributeArg:       return "AttributeArg";
         case ASTKind::IntrinsicCallExpr:  return "IntrinsicCallExpr";
 
         default: return "Unknown(" + std::to_string(static_cast<int>(kind)) + ")";
@@ -507,6 +506,27 @@ inline std::string typeDeclToString(const TypeDeclAST* decl, const StringPool& p
     }
 
     return "UnknownTypeDecl(" + kindToString(decl->kind) + ")";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LiteralKind to String
+// ─────────────────────────────────────────────────────────────────────────────
+
+inline const char* literalKindToString(LiteralKind kind) {
+    switch (kind) {
+        case LiteralKind::Int:       return "integer";
+        case LiteralKind::Float:     return "float";
+        case LiteralKind::String:    return "string";
+        case LiteralKind::RawString: return "raw string";
+        case LiteralKind::Char:      return "character";
+        case LiteralKind::Hex:       return "hex integer";
+        case LiteralKind::Binary:    return "binary integer";
+        case LiteralKind::True:      return "true";
+        case LiteralKind::False:     return "false";
+        case LiteralKind::Nil:       return "nil";
+        case LiteralKind::Err:       return "err";
+    }
+    return "unknown";
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

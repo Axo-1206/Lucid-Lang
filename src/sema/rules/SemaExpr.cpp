@@ -779,7 +779,7 @@ bool checkBinaryExpr(BinaryExprAST* expr, const TypeAST* targetType, SemaContext
         case BinaryOp::Pow:
         case BinaryOp::Mod: {
             // Arithmetic operators require numeric target type
-            if (!targetType->isNumericType()) {
+            if (!isNumericType(targetType)) {
                 ctx.error(expr, DiagCode::E3003,
                           "arithmetic operator requires numeric target type, got ",
                           debug::typeToString(targetType, ctx.pool()));
@@ -827,7 +827,7 @@ bool checkBinaryExpr(BinaryExprAST* expr, const TypeAST* targetType, SemaContext
         case BinaryOp::Le:
         case BinaryOp::Ge: {
             // Comparison operators require bool target type
-            if (!targetType->isBoolType()) {
+            if (!isBoolType(targetType)) {
                 ctx.error(expr, DiagCode::E3003,
                           "comparison operator requires bool target type, got ",
                           debug::typeToString(targetType, ctx.pool()));
@@ -844,7 +844,7 @@ bool checkBinaryExpr(BinaryExprAST* expr, const TypeAST* targetType, SemaContext
         case BinaryOp::And:
         case BinaryOp::Or: {
             // Logical operators require bool target type
-            if (!targetType->isBoolType()) {
+            if (!isBoolType(targetType)) {
                 ctx.error(expr, DiagCode::E3003,
                           "logical operator requires bool target type, got ",
                           debug::typeToString(targetType, ctx.pool()));
@@ -887,7 +887,7 @@ bool checkBinaryExpr(BinaryExprAST* expr, const TypeAST* targetType, SemaContext
         case BinaryOp::Shl:
         case BinaryOp::Shr: {
             // Bitwise operators require integer target type
-            if (!targetType->isIntegerType()) {
+            if (!isIntegerType(targetType)) {
                 ctx.error(expr, DiagCode::E3003,
                           "bitwise operator requires integer target type, got ",
                           debug::typeToString(targetType, ctx.pool()));
@@ -1000,7 +1000,7 @@ bool checkUnaryExpr(UnaryExprAST* expr, const TypeAST* targetType, SemaContext& 
         // ─── Arithmetic Negation (-x) ─────────────────────────────────────
         case UnaryOp::Neg: {
             // Negation requires numeric target type
-            if (!targetType->isNumericType()) {
+            if (!isNumericType(targetType)) {
                 ctx.error(expr, DiagCode::E3003,
                           "negation (-) requires numeric target type, got ",
                           debug::typeToString(targetType, ctx.pool()));
@@ -1041,7 +1041,7 @@ bool checkUnaryExpr(UnaryExprAST* expr, const TypeAST* targetType, SemaContext& 
         // ─── Logical Not (not x) ──────────────────────────────────────────
         case UnaryOp::Not: {
             // Logical Not requires bool target type
-            if (!targetType->isBoolType()) {
+            if (!isBoolType(targetType)) {
                 ctx.error(expr, DiagCode::E3003,
                           "logical not (not) requires bool target type, got ",
                           debug::typeToString(targetType, ctx.pool()));
@@ -1080,7 +1080,7 @@ bool checkUnaryExpr(UnaryExprAST* expr, const TypeAST* targetType, SemaContext& 
         // ─── Bitwise Not (~x) ─────────────────────────────────────────────
         case UnaryOp::BitNot: {
             // Bitwise Not requires integer target type
-            if (!targetType->isIntegerType()) {
+            if (!isIntegerType(targetType)) {
                 ctx.error(expr, DiagCode::E3003,
                           "bitwise not (~) requires integer target type, got ",
                           debug::typeToString(targetType, ctx.pool()));
@@ -1391,44 +1391,67 @@ bool checkCallExpr(CallExprAST* expr, const TypeAST* targetType, SemaContext& ct
 }
 
 // =============================================================================
-// checkIntrinsicCallExpr
+// checkIntrinsicCallExpr - Main Implementation
 // =============================================================================
 
 /// @brief Type-check an intrinsic call: validate the intrinsic name and
 ///        arguments, and return the intrinsic's return type.
-/// @note consider improve intrinsic registry to make this function simpiler
-bool checkIntrinsicCallExpr(IntrinsicCallExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+bool checkIntrinsicCallExpr(IntrinsicCallExprAST* expr,
+                             const TypeAST* targetType,
+                             SemaContext& ctx) {
     if (!expr || !targetType) return false;
 
-    // Look up the intrinsic in the registry
-    const IntrinsicInfo* info = IntrinsicRegistry::getInstance(ctx.pool())
-        .getIntrinsicInfo(expr->intrinsicName);
+    // ─── 1. Get the registry instance once ──────────────────────────────────
+    auto& registry = IntrinsicRegistry::getInstance(ctx.pool());
 
+    // ─── 2. Look up the intrinsic ──────────────────────────────────────────
+    const IntrinsicInfo* info = registry.getIntrinsicInfo(expr->intrinsicName);
     if (!info) {
         ctx.error(expr, DiagCode::E3101,
-                  "unknown intrinsic '", ctx.pool().lookup(expr->intrinsicName), "'");
+                  "unknown intrinsic '#", ctx.pool().lookup(expr->intrinsicName), "'");
         return false;
     }
 
-    // Check argument count
-    if (!IntrinsicRegistry::getInstance(ctx.pool())
-        .validateArgCount(expr->intrinsicName, expr->args.size())) {
+    // ─── 3. Validate argument count ────────────────────────────────────────
+    if (!registry.validateArgCount(expr->intrinsicName, expr->args.size())) {
         ctx.error(expr, DiagCode::E3001,
-                  "wrong number of arguments for intrinsic '",
+                  "wrong number of arguments for intrinsic '#",
                   ctx.pool().lookup(expr->intrinsicName), "'");
         return false;
     }
 
-    // Type-check each argument
+    // ─── 4. Type-check each argument first ─────────────────────────────────
     for (ExprAST* arg : expr->args) {
-        if (!checkExpr(arg, targetType, ctx)) return false;
-        // TODO: Validate argument types for specific intrinsics
+        if (!checkExpr(arg, targetType, ctx)) {
+            return false;
+        }
     }
 
-    // Store the LLVM intrinsic ID for codegen
+    // ─── 5. Validate argument types ──────────────────────────────────────
+    if (!registry.validateIntrinsicCall(expr, ctx)) {
+        return false;
+    }
+
+    // ─── 6. Store the LLVM intrinsic ID for codegen ──────────────────────
     if (info->isValid()) {
         expr->intrinsicID = info->id;
     }
+
+    // ─── 7. Determine and validate the return type ──────────────────────
+    const TypeAST* returnType = registry.getIntrinsicReturnType(expr, targetType, ctx);
+    if (!isAssignable(targetType, returnType, ctx)) {
+        ctx.error(expr, DiagCode::E3003,
+                  "return type mismatch for intrinsic '#",
+                  ctx.pool().lookup(expr->intrinsicName),
+                  "': expected ", debug::typeToString(targetType, ctx.pool()),
+                  ", got ", debug::typeToString(returnType, ctx.pool()));
+        return false;
+    }
+
+    expr->resolvedType = const_cast<TypeAST*>(returnType);
+
+    // ─── 8. Set value state ──────────────────────────────────────────────
+    expr->valueState = registry.getIntrinsicValueState(expr, ctx);
 
     return true;
 }
@@ -1549,7 +1572,7 @@ bool checkIndexExpr(IndexExprAST* expr, const TypeAST* targetType, SemaContext& 
     }
 
     // Index must be an integer type
-    if (!expr->index->resolvedType || !expr->index->resolvedType->isIntegerType()) {
+    if (!expr->index->resolvedType || !isIntegerType(expr->index->resolvedType)) {
         ctx.error(expr->index, DiagCode::E3003,
                   "index must be an integer type, got ",
                   debug::typeToString(expr->index->resolvedType, ctx.pool()));
@@ -1742,7 +1765,7 @@ bool checkSliceExpr(SliceExprAST* expr, const TypeAST* targetType, SemaContext& 
         }
 
         // Start must be an integer type
-        if (!expr->start->resolvedType || !expr->start->resolvedType->isIntegerType()) {
+        if (!expr->start->resolvedType || !isIntegerType(expr->start->resolvedType)) {
             ctx.error(expr->start, DiagCode::E3003,
                       "slice start must be an integer type, got ",
                       debug::typeToString(expr->start->resolvedType, ctx.pool()));
@@ -1813,7 +1836,7 @@ bool checkSliceExpr(SliceExprAST* expr, const TypeAST* targetType, SemaContext& 
         }
 
         // End must be an integer type
-        if (!expr->end->resolvedType || !expr->end->resolvedType->isIntegerType()) {
+        if (!expr->end->resolvedType || !isIntegerType(expr->end->resolvedType)) {
             ctx.error(expr->end, DiagCode::E3003,
                       "slice end must be an integer type, got ",
                       debug::typeToString(expr->end->resolvedType, ctx.pool()));
@@ -2711,7 +2734,7 @@ bool checkAssignExpr(AssignExprAST* expr, const TypeAST* targetType, SemaContext
             case AssignOp::PowAssign:
             case AssignOp::ModAssign: {
                 // Arithmetic compound assignments require numeric type
-                if (!targetType->isNumericType()) {
+                if (!isNumericType(targetType)) {
                     ctx.error(expr, DiagCode::E3003,
                               "arithmetic compound assignment requires numeric type, got ",
                               debug::typeToString(targetType, ctx.pool()));
@@ -2726,7 +2749,7 @@ bool checkAssignExpr(AssignExprAST* expr, const TypeAST* targetType, SemaContext
             case AssignOp::ShlAssign:
             case AssignOp::ShrAssign: {
                 // Bitwise compound assignments require integer type
-                if (!targetType->isIntegerType()) {
+                if (!isIntegerType(targetType)) {
                     ctx.error(expr, DiagCode::E3003,
                               "bitwise compound assignment requires integer type, got ",
                               debug::typeToString(targetType, ctx.pool()));

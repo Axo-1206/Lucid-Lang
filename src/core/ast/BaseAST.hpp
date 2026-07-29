@@ -122,7 +122,6 @@ struct UnknownTypeAST;
 
 // Compiler Directive nodes
 struct AttributeAST;
-struct AttributeArgAST;
 struct IntrinsicCallExprAST;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -225,7 +224,6 @@ enum class ASTKind : uint16_t {
 
     // Compiler directives
     Attribute,
-    AttributeArg,
     IntrinsicCallExpr,
 };
 
@@ -271,49 +269,7 @@ struct BaseAST {
         assert(kind == T::staticKind && "ASTKind mismatch in as<T>()");
         return static_cast<const T*>(this);
     }
-
-    bool isBoolType() const { return kind == ASTKind::PrimitiveType; }
-    bool isIntType() const { return kind == ASTKind::PrimitiveType; }
-    bool isFloatType() const { return kind == ASTKind::PrimitiveType; }
-    bool isStringType() const { return kind == ASTKind::PrimitiveType; }
-    bool isCharType() const { return kind == ASTKind::PrimitiveType; }
-    bool isNumericType() const { return kind == ASTKind::PrimitiveType; }
-    bool isIntegerType() const { return kind == ASTKind::PrimitiveType; }
-    bool isPrimitiveType() const { return kind == ASTKind::PrimitiveType; }
 };
-
-// ─────────────────────────────────────────────────────────────────────────────
-// AttributeArgKind — discriminator for attribute argument literals.
-// ─────────────────────────────────────────────────────────────────────────────
-
-enum class AttributeArgKind {
-    StringLit,   // "string"
-    IntLit,      // 42, 0xFF, 0b1010
-    FloatLit,    // 3.14
-    BoolLit,     // true, false
-    TypeIdent    // TypeName (e.g., @foreign("C"))
-};
-
-struct AttributeArgAST : BaseAST {
-    static constexpr ASTKind staticKind = ASTKind::AttributeArg;
-
-    AttributeArgKind kind;
-    InternedString   value;
-
-    AttributeArgAST(AttributeArgKind k, InternedString v)
-        : BaseAST(ASTKind::AttributeArg), kind(k), value(v) {}
-};
-using AttributeArgPtr = AttributeArgAST*;
-
-struct AttributeAST : BaseAST {
-    static constexpr ASTKind staticKind = ASTKind::Attribute;
-
-    InternedString name;
-    ArenaSpan<AttributeArgPtr> args;
-
-    AttributeAST() : BaseAST(ASTKind::Attribute) {}
-};
-using AttributePtr = AttributeAST*;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Family bases
@@ -352,7 +308,7 @@ struct StmtAST : BaseAST {
 
 struct DeclAST : BaseAST {
     std::optional<DocComment> doc;
-    ArenaSpan<AttributePtr>   attributes;
+    ArenaSpan<AttributeAST*>   attributes;
     InternedString            file;
     bool                      isConst = false;
     InternedString            name;
@@ -360,6 +316,34 @@ struct DeclAST : BaseAST {
     explicit DeclAST(ASTKind k) : BaseAST(k) {}
     bool hasDoc() const { return doc.has_value(); }
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AttributeAST — represents an attribute attached to a declaration.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Represents an attribute attached to a declaration.
+///
+/// Attributes are compiler directives that provide additional information
+/// to the compiler. Each attribute has a name and an optional list of
+/// literal arguments.
+///
+/// @note Arguments are restricted to literals only (no expressions).
+///       The parser enforces this restriction by parsing LiteralExprAST.
+///
+/// @example
+///   @[export]                      → name="export", args={}
+///   @[foreign("C")]                → name="foreign", args=[String("C")]
+///   @[deprecated("use new")]       → name="deprecated", args=[String("use new")]
+///   @[link("opengl", "m")]         → name="link", args=[String("opengl"), String("m")]
+struct AttributeAST : BaseAST {
+    static constexpr ASTKind staticKind = ASTKind::Attribute;
+
+    InternedString name;
+    ArenaSpan<LiteralExprAST*> args;  // ← Uses LiteralExprAST directly
+
+    AttributeAST() : BaseAST(ASTKind::Attribute) {}
+};
+using AttributePtr = AttributeAST*;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ValueDeclAST – base for declarations that produce values

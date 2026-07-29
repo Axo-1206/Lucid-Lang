@@ -17,6 +17,7 @@
 #include "support/SemaStructField.hpp"
 #include "types/SemaType.hpp"
 #include "registry/AttributeRegistry.hpp"
+#include "registry/IntrinsicRegistry.hpp"
 
 #include <vector>
 #include <optional>

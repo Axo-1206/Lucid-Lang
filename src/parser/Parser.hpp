@@ -236,7 +236,7 @@ TypeAST* parseTypeWithQualifier(TokenStream& stream, ParserContext& ctx, TypeAST
 std::optional<DocComment> harvestDocComment(TokenStream& stream, ParserContext& ctx);
 ArenaSpan<AttributePtr> parseAttributes(TokenStream& stream, ParserContext& ctx);
 AttributePtr parseAttribute(TokenStream& stream, ParserContext& ctx);
-AttributeArgPtr parseAttributeArgLiteral(TokenStream& stream, ParserContext& ctx);
+LiteralExprPtr parseAttributeArgLiteral(TokenStream& stream, ParserContext& ctx);
 
 GenericParamDeclPtr parseGenericParamDecl(TokenStream& stream, ParserContext& ctx);
 ArenaSpan<GenericParamDeclPtr> parseGenericParamDecls(TokenStream& stream, ParserContext& ctx);

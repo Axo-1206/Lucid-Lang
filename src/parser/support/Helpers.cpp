@@ -427,7 +427,7 @@ ArenaSpan<AttributePtr> parseAttributes(TokenStream& stream, ParserContext& ctx)
  *     │       │   └── while (!stream.isAtEnd() && !stream.check(TokenType::RPAREN))
  *     │       │       │
  *     │       │       ├── 4.2.1 Parse Argument Literal
- *     │       │       │   └── parseAttributeArgLiteral(stream, ctx) → AttributeArgPtr
+ *     │       │       │   └── parseAttributeArgLiteral(stream, ctx) → LiteralExprAST*
  *     │       │       │       │
  *     │       │       │       ├── if (arg != nullptr)
  *     │       │       │       │   └── args.push_back(arg)
@@ -453,7 +453,7 @@ ArenaSpan<AttributePtr> parseAttributes(TokenStream& stream, ParserContext& ctx)
  *     │               └── stream.advance()  // Consume ')' (we know it's there from loop condition)
  *     │
  *     ├── 5. Build Arguments Span
- *     │   └── ctx.arena.makeBuilder<AttributeArgPtr>()
+ *     │   └── ctx.arena.makeBuilder<LiteralExprAST*>()
  *     │       ├── push_back each arg
  *     │       └── build() → attr->args
  *     │
@@ -551,7 +551,7 @@ AttributePtr parseAttribute(TokenStream& stream, ParserContext& ctx) {
     attr->name = name;
     
     // Check for arguments
-    std::vector<AttributeArgPtr> args;
+    std::vector<LiteralExprAST*> args;
     if (stream.match(TokenType::LPAREN)) {
         // ─── Skip initial consecutive comma ',' before first arg
         // Ex: @[foo(,,,, "arg" ...)]
@@ -562,7 +562,7 @@ AttributePtr parseAttribute(TokenStream& stream, ParserContext& ctx) {
         // Parse arguments until we hit ')'
         while (!stream.isAtEnd() && !stream.check(TokenType::RPAREN)) {
             // Parse an argument
-            AttributeArgPtr arg = parseAttributeArgLiteral(stream, ctx);
+            LiteralExprAST* arg = parseAttributeArgLiteral(stream, ctx);
             if (arg) {
                 args.push_back(arg);
             } else {
@@ -593,7 +593,7 @@ AttributePtr parseAttribute(TokenStream& stream, ParserContext& ctx) {
     }
     
     // Build the args span
-    auto builder = ctx.arena.makeBuilder<AttributeArgPtr>();
+    auto builder = ctx.arena.makeBuilder<LiteralExprAST*>();
     for (auto* arg : args) {
         builder.push_back(arg);
     }
@@ -605,34 +605,25 @@ AttributePtr parseAttribute(TokenStream& stream, ParserContext& ctx) {
     return attr;
 }
 
-/**
- * @brief Parse an attribute argument literal.
- * 
- * Grammar: `STRING_LIT | INT_LIT | FLOAT_LIT | BOOL_LIT | IDENTIFIER`
- * 
- * ## Examples
- * 
- * ```lucid
- * @[foreign("C")]           → STRING_LIT: "C"
- * @[deprecated("message")]  → STRING_LIT: "message"
- * @[link("opengl")]         → STRING_LIT: "opengl"
- * @[inline]                 → IDENTIFIER: inline (no args)
- * ```
- * 
- * @param stream The token stream for the current file
- * @param ctx The parsing context
- * @return AttributeArgPtr The parsed argument node, or nullptr on error
- */
-AttributeArgPtr parseAttributeArgLiteral(TokenStream& stream, ParserContext& ctx) {
+/// @brief Parse an attribute argument literal.
+/// 
+/// Grammar: `STRING_LIT | INT_LIT | FLOAT_LIT | BOOL_LIT | IDENTIFIER`
+/// 
+/// Now returns LiteralExprAST* directly instead of AttributeArgAST*.
+/// 
+/// @param stream The token stream for the current file
+/// @param ctx The parsing context
+/// @return LiteralExprPtr The parsed literal, or nullptr on error
+LiteralExprPtr parseAttributeArgLiteral(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
     Token tok = stream.peek();
     
-    AttributeArgKind kind;
+    LiteralKind kind;
     InternedString value;
     
     switch (tok.type) {
         case TokenType::STRING_LITERAL:
-            kind = AttributeArgKind::StringLit;
+            kind = LiteralKind::String;
             value = ctx.pool.intern(tok.value);
             stream.advance();
             break;
@@ -641,26 +632,28 @@ AttributeArgPtr parseAttributeArgLiteral(TokenStream& stream, ParserContext& ctx
         case TokenType::HEX_LITERAL:
         case TokenType::BINARY_LITERAL:
         case TokenType::CHAR_LITERAL:
-            kind = AttributeArgKind::IntLit;
+            kind = LiteralKind::Int;  // Unified as Int, parser can distinguish later
             value = ctx.pool.intern(tok.value);
             stream.advance();
             break;
             
         case TokenType::FLOAT_LITERAL:
-            kind = AttributeArgKind::FloatLit;
+            kind = LiteralKind::Float;
             value = ctx.pool.intern(tok.value);
             stream.advance();
             break;
             
         case TokenType::TRUE:
         case TokenType::FALSE:
-            kind = AttributeArgKind::BoolLit;
+            kind = tok.type == TokenType::TRUE ? LiteralKind::True : LiteralKind::False;
             value = ctx.pool.intern(tok.value);
             stream.advance();
             break;
             
         case TokenType::IDENTIFIER:
-            kind = AttributeArgKind::TypeIdent;
+            // Type identifiers (e.g., "C" in @foreign("C")) are parsed as string literals
+            // or we could keep them as a special kind
+            kind = LiteralKind::String;
             value = ctx.pool.intern(tok.value);
             stream.advance();
             break;
@@ -671,13 +664,13 @@ AttributeArgPtr parseAttributeArgLiteral(TokenStream& stream, ParserContext& ctx
             return nullptr;
     }
     
-    auto* arg = ctx.arena.make<AttributeArgAST>(kind, value);
-    arg->loc = loc;
+    auto* literal = ctx.arena.make<LiteralExprAST>(kind, value);
+    literal->loc = loc;
     
-    LOG_PARSER("parseAttributeArgLiteral: parsed argument of type ", 
+    LOG_PARSER("parseAttributeArgLiteral: parsed literal of kind ", 
                static_cast<int>(kind));
     
-    return arg;
+    return literal;
 }
 
 /**

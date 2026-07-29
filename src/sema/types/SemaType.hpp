@@ -224,4 +224,70 @@ bool validateTraitFieldType(const TypeAST* type, SemaContext& ctx);
 /// @brief Validate reference type context (Downward Flow Rule).
 bool validateRefContext(const RefTypeAST* type, SemaContext& ctx);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Type Predicates
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Check if a type is a boolean type.
+inline bool isBoolType(const TypeAST* type) {
+    if (!type || !type->isa<PrimitiveTypeAST>()) return false;
+    return type->as<PrimitiveTypeAST>()->primitiveKind == PrimitiveKind::Bool;
+}
+
+/// @brief Check if a type is an integer type.
+inline bool isIntegerType(const TypeAST* type) {
+    if (!type || !type->isa<PrimitiveTypeAST>()) return false;
+    switch (type->as<PrimitiveTypeAST>()->primitiveKind) {
+        case PrimitiveKind::Byte:
+        case PrimitiveKind::Short:
+        case PrimitiveKind::Int:
+        case PrimitiveKind::Long:
+        case PrimitiveKind::Ubyte:
+        case PrimitiveKind::Ushort:
+        case PrimitiveKind::Uint:
+        case PrimitiveKind::Ulong:
+        case PrimitiveKind::Int8:
+        case PrimitiveKind::Int16:
+        case PrimitiveKind::Int32:
+        case PrimitiveKind::Int64:
+        case PrimitiveKind::Uint8:
+        case PrimitiveKind::Uint16:
+        case PrimitiveKind::Uint32:
+        case PrimitiveKind::Uint64:
+            return true;
+        default:
+            return false;
+    }
+}
+
+/// @brief Check if a type is a float type.
+inline bool isFloatType(const TypeAST* type) {
+    if (!type || !type->isa<PrimitiveTypeAST>()) return false;
+    switch (type->as<PrimitiveTypeAST>()->primitiveKind) {
+        case PrimitiveKind::Float:
+        case PrimitiveKind::Double:
+        case PrimitiveKind::Decimal:
+            return true;
+        default:
+            return false;
+    }
+}
+
+/// @brief Check if a type is a numeric type (integer or float).
+inline bool isNumericType(const TypeAST* type) {
+    return isIntegerType(type) || isFloatType(type);
+}
+
+/// @brief Check if a type is a string type.
+inline bool isStringType(const TypeAST* type) {
+    if (!type || !type->isa<PrimitiveTypeAST>()) return false;
+    return type->as<PrimitiveTypeAST>()->primitiveKind == PrimitiveKind::String;
+}
+
+/// @brief Check if a type is a char type.
+inline bool isCharType(const TypeAST* type) {
+    if (!type || !type->isa<PrimitiveTypeAST>()) return false;
+    return type->as<PrimitiveTypeAST>()->primitiveKind == PrimitiveKind::Char;
+}
+
 } // namespace sema
