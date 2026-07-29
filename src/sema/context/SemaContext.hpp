@@ -17,6 +17,8 @@
 ///   is needed - the category is derived from the error code range.
 #pragma once
 
+#include "GenericConstraintValidator.hpp"
+#include "TraitImplementationCache.hpp"
 #include "SemanticResources.hpp"
 #include "SymbolStorage.hpp"
 #include "ContextStack.hpp"
@@ -61,6 +63,14 @@ struct SemaContext {
     /// Self-reference support
     DefiningTypeStack definingTypes;
 
+    // ─── Trait and Generic Support ──────────────────────────────────────
+    
+    /// Cache of which structs implement which traits
+    TraitImplementationCache traitImpls;
+    
+    /// Validator for generic constraints
+    GenericConstraintValidator constraintValidator;
+
     // ─── Modules ────────────────────────────────────────────────────────
 
     /// Every module being analyzed, in the order provided
@@ -79,6 +89,7 @@ struct SemaContext {
     SemaContext(StringPool& p, ASTArena& a, std::vector<ModuleAST*> mods)
         : resources(p, a)
         , modules(std::move(mods))
+        , constraintValidator(*this)
     {
         for (ModuleAST* m : modules) {
             if (m) modulesByPath[m->filePath] = m;
