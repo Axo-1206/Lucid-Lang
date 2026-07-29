@@ -145,7 +145,7 @@ void validateStructFieldImpl(const FieldDeclAST* field,
                               SemaContext& ctx) {
     if (!field) return;
 
-    validateAttributes(field->attributes, field, ctx);
+    attr::validateAttributes(field, ctx);
 
     // ─── 1. Resolve the field's type ──────────────────────────────────
     TypeAST* fieldType = resolveType(field->type, ctx);
@@ -161,46 +161,29 @@ void validateStructFieldImpl(const FieldDeclAST* field,
 
     if (selfInfo.isSelfReference) {
         if (selfInfo.isPointer) {
-            // ─── Field is *Node<T> or *Node<T>? ──────────────────────
-            // This is a raw pointer (sealed conduit) - pointer semantics
-            // The user explicitly asked for a pointer.
-            // 
-            // Semantics: pointer copy, sealed conduit restrictions apply.
-            // This is allowed but with all the restrictions of *T.
-            // 
-            // ✅ OK: Pointer breaks the infinite cycle.
-            // No error - this is the explicit pointer form.
-
+            // ✅ OK: *Node<T> or *Node<T>? - pointer breaks the cycle
+            // No error
         } else if (selfInfo.isNullable) {
-            // ─── Field is Node<T>? ─────────────────────────────────────
-            // This is a nullable recursive value (deep copy semantics).
-            // 
-            // The compiler will handle this as a value type with deep copy.
-            // The field is stored as a pointer internally, but with
-            // value semantics (copy-on-assignment, deep copy).
-            // 
-            // ✅ OK: Nullability allows the cycle to terminate with nil.
-            // The user can set next = nil to end the chain.
-
-            // Emit a note to educate the user
-            ctx.note(field, "recursive field '", ctx.pool().lookup(field->name),
-                     "' uses value semantics (deep copy); use '",
-                     ctx.pool().lookup(field->name), " = nil' to terminate the chain");
-
+            // ✅ OK: Node<T>? - nullable breaks the cycle
+            // No error
         } else {
-            // ─── Field is Node<T> (non-nullable, non-pointer) ──────────
-            // ❌ ERROR: Non-nullable self-reference creates infinite size!
-            // 
-            // The user wrote `next Node<T>` without `?` or `*`.
-            // This would require an infinite chain of Node values.
-            // 
-            // Fix: Use `next Node<T>?` (nullable) or `next *Node<T>` (pointer)
-
-            ctx.error(field, DiagCode::E3003,
-                      "non-nullable self-reference '", ctx.pool().lookup(field->name),
-                      "' would create infinite size; use '",
-                      ctx.pool().lookup(field->name), "?' or '*",
-                      ctx.pool().lookup(field->name), "' instead");
+            // ❌ ERROR: Node<T> (non-nullable, non-pointer)
+            if (field->isConst) {
+                // Const field with self-reference - provide specific error
+                ctx.error(field, DiagCode::E3003,
+                        "const field '", ctx.pool().lookup(field->name),
+                        "' has non-nullable self-reference which would create infinite size; "
+                        "either remove 'const' and use '", ctx.pool().lookup(field->name),
+                        "?' (nullable), or use '*", ctx.pool().lookup(field->name),
+                        "' (raw pointer)");
+            } else {
+                // Regular field with self-reference
+                ctx.error(field, DiagCode::E3003,
+                        "non-nullable self-reference '", ctx.pool().lookup(field->name),
+                        "' would create infinite size; use '",
+                        ctx.pool().lookup(field->name), "?' or '*",
+                        ctx.pool().lookup(field->name), "' instead");
+            }
         }
     }
 

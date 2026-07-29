@@ -4,7 +4,7 @@
 #include "GenericValidation.hpp"
 #include "../context/SemaContext.hpp"
 #include "../context/GenericConstraintValidator.hpp"
-#include "types/SemaType.hpp"
+#include "../types/SemaType.hpp"
 #include "core/diagnostics/DiagnosticCodes.hpp"
 
 namespace sema {

@@ -4,7 +4,7 @@
 #include "TraitValidation.hpp"
 #include "../context/SemaContext.hpp"
 #include "../context/TraitImplementationCache.hpp"
-#include "types/SemaType.hpp"
+#include "../types/SemaType.hpp"
 #include "core/diagnostics/DiagnosticCodes.hpp"
 #include "debug/DebugUtils.hpp"
 

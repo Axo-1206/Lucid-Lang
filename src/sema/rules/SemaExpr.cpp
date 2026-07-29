@@ -376,13 +376,34 @@ bool checkLiteralExpr(LiteralExprAST* expr, const TypeAST* targetType, SemaConte
 ///   - Reports E2001 if not found
 ///   - Validates that the resolved value's type is assignable to targetType
 ///   - Propagates nil/err state from the resolved declaration
+///
+/// GENERIC HANDLING:
+///   - If the identifier resolves to a generic parameter, it's a type, not a value
+///   - For generic function instantiation, genericArgs are stored on the expr
 bool checkIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
     if (!expr || !targetType) return false;
 
+    // ─── Step 1: Check if this is a generic parameter ─────────────────────
+    // Generic parameters have the HIGHEST priority and shadow everything.
+    // If the name matches a generic parameter in the current scope, this is
+    // a type reference, not a value reference.
+    if (isGenericParam(expr->name, ctx)) {
+        // A generic parameter name used as an expression is a type reference.
+        // This is valid when the generic parameter is used as a type.
+        // Example: In `const identity<T> (v T) -> T`, `T` in `v T` is a type.
+        // But here we're in an expression context. A generic parameter name
+        // used alone as an expression is an error - you can't use a type name
+        // as a value expression.
+        ctx.error(expr, DiagCode::E2003,
+                  "'", ctx.pool().lookup(expr->name), "' is a generic type parameter, not a value");
+        return false;
+    }
+
+    // ─── Step 2: Resolve the value declaration ────────────────────────────
     const ValueDeclAST* decl = resolveValueOrError(expr, ctx);
     if (!decl) return false;
 
-    // Check if the resolved type is assignable to the target type
+    // ─── Step 3: Check if the resolved type is assignable to the target type
     if (decl->type && !isAssignable(targetType, decl->type, ctx)) {
         ctx.error(expr, DiagCode::E3003,
                   "type mismatch: expected ", debug::typeToString(targetType, ctx.pool()),
@@ -390,19 +411,54 @@ bool checkIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetType, Sem
         return false;
     }
 
-    // Propagate value state from the declaration if known
-    // For variables, we don't know the value state at compile-time
-    // unless it's a constant
+    // ─── Step 4: Handle generic arguments (function instantiation) ────────
+    // If the identifier has generic arguments, it's a generic function call
+    // like `identity<int>` (without the call parentheses)
+    if (!expr->genericArgs.empty()) {
+        // The declaration must be a function
+        if (!decl->isa<FuncDeclAST>()) {
+            ctx.error(expr, DiagCode::E3003,
+                      "'", ctx.pool().lookup(expr->name), "' is not a function");
+            return false;
+        }
+
+        const FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
+
+        // Resolve each generic argument type
+        for (const TypeAST* arg : expr->genericArgs) {
+            if (!resolveType(arg, ctx)) {
+                ctx.error(expr, DiagCode::E3002,
+                          "invalid generic argument type for '", 
+                          ctx.pool().lookup(expr->name), "'");
+                return false;
+            }
+        }
+
+        // Validate generic arguments against the function's generic parameters
+        if (!validateGenericArguments(expr->genericArgs, funcDecl->genericParams, expr, ctx)) {
+            return false;
+        }
+
+        // The resolved type is the function type with generic arguments applied
+        // For now, we just keep the function type
+        expr->resolvedType = const_cast<TypeAST*>(decl->type);
+    }
+
+    // ─── Step 5: Propagate value state ─────────────────────────────────────
     if (decl->isa<VarDeclAST>()) {
-        const VarDeclAST* varDecl = decl->as<VarDeclAST>();
-        // If the variable is const and has a literal initializer, we might know its value
-        // For now, mark as Unknown (runtime evaluation needed)
+        // Variables are unknown at compile-time
         expr->valueState = ValueState::Unknown;
     } else if (decl->isa<EnumVariantAST>()) {
         // Enum variants are definite values
         expr->valueState = ValueState::Definite;
+    } else if (decl->isa<FuncDeclAST>()) {
+        // Functions are callable values - definite at compile-time
+        expr->valueState = ValueState::Definite;
+    } else if (decl->isa<ParamAST>()) {
+        // Parameters are unknown at compile-time
+        expr->valueState = ValueState::Unknown;
     } else {
-        // Other declarations (functions, parameters, fields) are unknown at compile-time
+        // Other declarations (fields) are unknown at compile-time
         expr->valueState = ValueState::Unknown;
     }
 
@@ -1134,58 +1190,14 @@ bool checkUnaryExpr(UnaryExprAST* expr, const TypeAST* targetType, SemaContext& 
 ///   - Arguments are assignable to parameter types
 ///   - Return type is assignable to targetType
 ///
-/// Nullable/Fallible Rules:
-///   - Callee cannot be nullable/fallible (must narrow first)
-///   - Arguments cannot be fallible (must handle error first)
-///   - Arguments may be nullable if parameter type is nullable
-///   - If a fallible argument is passed and target is fallible, propagate err
-///
-/// Generic Rules:
-///   - Generic arguments must resolve to valid types
-///   - Arity must match the function's generic parameters
-///   - Constraints must be satisfied (if any)
-///
-/// Value State Propagation:
-///   - If callee is `err` → reject (cannot call err)
-///   - If any argument is `err` → result is `err` (if target is fallible)
-///   - If any argument is `nil` → allowed if parameter is nullable
-///   - Otherwise, result is the function's return type state
-///
-/// Examples:
-///   // ✅ Simple function call
-///   const add (a int)(b int) -> int = { return a + b }
-///   let result int = add(5)(3)  // OK
-///
-///   // ✅ Generic function call
-///   const identity<T> (v T) -> T = { return v }
-///   let x int = identity<int>(42)  // OK
-///
-///   // ❌ Generic argument mismatch
-///   let x int = identity<string>(42)  // ERROR: type mismatch
-///
-///   // ❌ Callee is nullable
-///   let f (int)->int? = someFunction
-///   let result int = f(5)  // ERROR: cannot call nullable callee
-///
-///   // ✅ Call with nullable argument
-///   const process (v int?) -> string = { ... }
-///   let x int? = 5
-///   let s string = process(x)  // OK: parameter accepts nullable
-///
-///   // ❌ Call with fallible argument (non-fallible target)
-///   const process (v int) -> string = { ... }
-///   let x int! = 42
-///   let s string = process(x)  // ERROR: cannot pass fallible to non-fallible
-///
-///   // ✅ Call with fallible argument (fallible target)
-///   const process (v int) -> string! = { ... }
-///   let x int! = 42
-///   let s string! = process(x)  // OK: result is err if x is err
+/// GENERIC HANDLING:
+///   - Generic arguments are validated against the function's generic parameters
+///   - Constraints are checked using validateGenericArguments()
+///   - The function type is instantiated with the generic arguments
 bool checkCallExpr(CallExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
     if (!expr || !targetType) return false;
 
     // ─── Step 1: Check Callee ─────────────────────────────────────────────
-    // Type-check the callee expression
     if (!checkExpr(expr->callee, targetType, ctx)) return false;
 
     // Callee must be definite (non-nullable, non-fallible)
@@ -1202,7 +1214,6 @@ bool checkCallExpr(CallExprAST* expr, const TypeAST* targetType, SemaContext& ct
     }
 
     // ─── Step 2: Resolve Callee ────────────────────────────────────────────
-    // Try to resolve the callee to a function declaration
     const FuncDeclAST* funcDecl = resolveCalleeOrError(expr->callee, ctx);
 
     if (funcDecl) {
@@ -1214,92 +1225,122 @@ bool checkCallExpr(CallExprAST* expr, const TypeAST* targetType, SemaContext& ct
             for (const TypeAST* arg : expr->genericArgs) {
                 if (!resolveType(arg, ctx)) {
                     ctx.error(expr, DiagCode::E3002,
-                              "invalid generic argument type");
+                              "invalid generic argument type for '", 
+                              ctx.pool().lookup(funcDecl->name), "'");
                     return false;
                 }
             }
 
-            // Check arity matches the function's generic parameters
-            // TODO: Compare expr->genericArgs.size() with funcDecl->genericParams.size()
-            // TODO: Check constraints are satisfied
-            // TODO: Instantiate the generic function type
+            // Validate generic arguments against the function's generic parameters
+            if (!validateGenericArguments(expr->genericArgs, funcDecl->genericParams, expr, ctx)) {
+                return false;
+            }
+        } else if (!funcDecl->genericParams.empty()) {
+            // Generic function called without generic arguments - error
+            ctx.error(expr, DiagCode::E2207,
+                      "generic function '", ctx.pool().lookup(funcDecl->name),
+                      "' requires ", std::to_string(funcDecl->genericParams.size()),
+                      " generic argument(s)");
+            return false;
         }
 
         // Step 2b: Check argument count
-        // Calculate expected argument count from the function's parameter groups
+        // Count total parameters across all groups in the function type
         size_t expectedArgCount = 0;
-        // TODO: Walk through funcDecl->funcType and count parameters
-        // TODO: Check expr->args.size() matches expectedArgCount
+        for (FuncTypeAST* group = funcDecl->funcType; group; group = group->getNext()) {
+            expectedArgCount += group->params.size();
+        }
+
+        if (expr->args.size() != expectedArgCount) {
+            ctx.error(expr, DiagCode::E3001,
+                      "wrong number of arguments: expected ",
+                      std::to_string(expectedArgCount), ", found ",
+                      std::to_string(expr->args.size()));
+            return false;
+        }
 
         // Step 2c: Check each argument type
+        // Walk through the function type groups and match arguments
         bool hasErrArg = false;
-        for (size_t i = 0; i < expr->args.size(); ++i) {
-            ExprAST* arg = expr->args[i];
+        size_t argIndex = 0;
+        for (FuncTypeAST* group = funcDecl->funcType; group; group = group->getNext()) {
+            for (ParamAST* param : group->params) {
+                if (argIndex >= expr->args.size()) break;
 
-            // Get the parameter type for this argument
-            // TODO: Get param type from funcDecl->funcType->params[i]
-            const TypeAST* paramType = nullptr; // Placeholder
+                ExprAST* arg = expr->args[argIndex];
+                const TypeAST* paramType = param->type;
 
-            if (!checkExpr(arg, paramType, ctx)) {
-                return false;
-            }
+                // Check if the argument is assignable to the parameter type
+                if (!checkExpr(arg, paramType, ctx)) {
+                    return false;
+                }
 
-            // Track err propagation
-            if (arg->valueState == ValueState::Err) {
-                hasErrArg = true;
-            }
+                // Track err propagation
+                if (arg->valueState == ValueState::Err) {
+                    hasErrArg = true;
+                }
 
-            // Check if argument is fallible and parameter is not nullable/fallible
-            if (arg->valueState == ValueState::Err && !isFallibleType(paramType)) {
-                ctx.error(arg, DiagCode::E3003,
-                          "cannot pass err to non-fallible parameter");
-                return false;
-            }
+                // Check if argument is fallible and parameter is not fallible
+                if (arg->valueState == ValueState::Err && !isFallibleType(paramType)) {
+                    ctx.error(arg, DiagCode::E3003,
+                              "cannot pass err to non-fallible parameter");
+                    return false;
+                }
 
-            // Check if argument is nil and parameter is not nullable
-            if (arg->valueState == ValueState::Nil && !isNullableType(paramType)) {
-                ctx.error(arg, DiagCode::E3003,
-                          "cannot pass nil to non-nullable parameter");
-                return false;
+                // Check if argument is nil and parameter is not nullable
+                if (arg->valueState == ValueState::Nil && !isNullableType(paramType)) {
+                    ctx.error(arg, DiagCode::E3003,
+                              "cannot pass nil to non-nullable parameter");
+                    return false;
+                }
+
+                argIndex++;
             }
         }
 
         // Step 2d: Check return type assignability
-        if (funcDecl->type && !isAssignable(targetType, funcDecl->type, ctx)) {
-            ctx.error(expr, DiagCode::E3003,
-                      "return type mismatch: expected ",
-                      debug::typeToString(targetType, ctx.pool()),
-                      ", got ", debug::typeToString(funcDecl->type, ctx.pool()));
-            return false;
+        if (funcDecl->funcType->returnType) {
+            const TypeAST* returnType = funcDecl->funcType->returnType;
+            if (!isAssignable(targetType, returnType, ctx)) {
+                ctx.error(expr, DiagCode::E3003,
+                          "return type mismatch: expected ",
+                          debug::typeToString(targetType, ctx.pool()),
+                          ", got ", debug::typeToString(returnType, ctx.pool()));
+                return false;
+            }
+        } else {
+            // Void function
+            if (targetType != nullptr) {
+                ctx.error(expr, DiagCode::E3003,
+                          "void function called in non-void context");
+                return false;
+            }
         }
 
         // Step 2e: Propagate value state
         if (hasErrArg) {
-            // If any argument is err and target is fallible, propagate err
             if (isFallibleType(targetType)) {
                 expr->valueState = ValueState::Err;
             } else {
-                // Should have been caught above, but just in case
                 expr->valueState = ValueState::Unknown;
             }
         } else {
-            // Check if return type is nullable/fallible
             if (isNullableType(targetType)) {
-                expr->valueState = ValueState::Unknown; // Could be nil at runtime
+                expr->valueState = ValueState::Unknown;
             } else if (isFallibleType(targetType)) {
-                expr->valueState = ValueState::Unknown; // Could be err at runtime
+                expr->valueState = ValueState::Unknown;
             } else {
                 expr->valueState = ValueState::Definite;
             }
         }
 
+        expr->resolvedType = const_cast<TypeAST*>(targetType);
         return true;
 
     } else {
         // ─── Callee is an expression that produces a function value ──────
         // (e.g., a curried call, an anonymous function, or a function pointer)
 
-        // Verify the callee type is a function type
         if (!expr->callee->resolvedType || !expr->callee->resolvedType->isa<FuncTypeAST>()) {
             ctx.error(expr->callee, DiagCode::E2003,
                       "expression is not callable");
@@ -1307,6 +1348,13 @@ bool checkCallExpr(CallExprAST* expr, const TypeAST* targetType, SemaContext& ct
         }
 
         FuncTypeAST* funcType = expr->callee->resolvedType->as<FuncTypeAST>();
+
+        // Generic arguments on the call expression are not valid for function expressions
+        if (!expr->genericArgs.empty()) {
+            ctx.error(expr, DiagCode::E3003,
+                      "generic arguments can only be applied to named function calls");
+            return false;
+        }
 
         // Check argument count
         size_t expectedArgCount = funcType->params.size();
@@ -1328,19 +1376,16 @@ bool checkCallExpr(CallExprAST* expr, const TypeAST* targetType, SemaContext& ct
                 return false;
             }
 
-            // Track err propagation
             if (arg->valueState == ValueState::Err) {
                 hasErrArg = true;
             }
 
-            // Check if argument is fallible and parameter is not fallible
             if (arg->valueState == ValueState::Err && !isFallibleType(param->type)) {
                 ctx.error(arg, DiagCode::E3003,
                           "cannot pass err to non-fallible parameter");
                 return false;
             }
 
-            // Check if argument is nil and parameter is not nullable
             if (arg->valueState == ValueState::Nil && !isNullableType(param->type)) {
                 ctx.error(arg, DiagCode::E3003,
                           "cannot pass nil to non-nullable parameter");
@@ -1350,7 +1395,6 @@ bool checkCallExpr(CallExprAST* expr, const TypeAST* targetType, SemaContext& ct
 
         // Check return type assignability
         if (!funcType->returnType) {
-            // Void function
             if (targetType != nullptr) {
                 ctx.error(expr, DiagCode::E3003,
                           "void function called in non-void context");
@@ -1369,7 +1413,6 @@ bool checkCallExpr(CallExprAST* expr, const TypeAST* targetType, SemaContext& ct
             return false;
         }
 
-        // Propagate value state
         if (hasErrArg) {
             if (isFallibleType(targetType)) {
                 expr->valueState = ValueState::Err;
@@ -1386,6 +1429,7 @@ bool checkCallExpr(CallExprAST* expr, const TypeAST* targetType, SemaContext& ct
             }
         }
 
+        expr->resolvedType = const_cast<TypeAST*>(targetType);
         return true;
     }
 }
@@ -1940,66 +1984,20 @@ bool checkSliceExpr(SliceExprAST* expr, const TypeAST* targetType, SemaContext& 
 ///
 /// Validates:
 ///   - target type is the field's type
-///   - object is a struct or enum type
+///   - object is a struct, enum, or generic type
 ///   - field exists on the object
 ///   - object must be definite (non-nullable, non-fallible)
 ///   - Accessing fields on nullable requires NullableChainExpr (?.)
 ///   - Accessing fields on fallible is NOT allowed (must handle err first)
 ///
-/// Nullable/Fallible Rules:
-///   - Object must be definite (use ?. for nullable, handle error for fallible)
-///   - Field access on nullable requires NullableChainExpr (?.)
-///   - Field access on fallible is NOT allowed (must use ?? first)
-///   - If object is `err` → rejected (no propagation)
-///   - If object is `nil` → rejected (use ?. instead)
-///
-/// Value State Propagation:
-///   - If object is `err` → rejected (must handle first)
-///   - If object is `nil` → rejected (use ?. instead)
-///   - Otherwise, result type is the field's type
-///
-/// Examples:
-///   // ✅ Valid field access
-///   struct Point { x float, y float }
-///   let p Point = Point { x = 1.0, y = 2.0 }
-///   let x float = p.x   // OK: 1.0
-///   let y float = p.y   // OK: 2.0
-///
-///   // ❌ Field access on nullable (use ?. instead)
-///   struct Point { x float, y float }
-///   let p Point? = Point { x = 1.0, y = 2.0 }
-///   let x float = p.x   // ERROR: cannot access field on nullable type. Use `?.` instead.
-///
-///   // ✅ Correct: use ?. for nullable
-///   let x float? = p?.x // OK: result is float?
-///
-///   // ❌ Field access on fallible (must handle first)
-///   struct Point { x float, y float }
-///   let p Point! = Point { x = 1.0, y = 2.0 }
-///   let x float = p.x   // ERROR: cannot access field on fallible type. Use `??` first.
-///
-///   // ✅ Correct: handle err first
-///   let p Point! = somePoint
-///   let x float = (p ?? Point { x = 0, y = 0 }).x  // OK
-///
-///   // ❌ Object is nil
-///   struct Point { x float, y float }
-///   let p Point? = nil
-///   let x float = p.x   // ERROR: cannot access field on nil. Use `?.` instead.
-///
-///   // ✅ Enum variant access
-///   enum Direction { North = 0, South = 1, East = 2, West = 3 }
-///   let dir Direction = Direction.North  // OK: access variant
-///
-///   // ❌ Field doesn't exist
-///   struct Point { x float, y float }
-///   let p Point = Point { x = 1.0, y = 2.0 }
-///   let z float = p.z   // ERROR: struct 'Point' has no field named 'z'
+/// GENERIC HANDLING:
+///   - If the object type is a generic parameter with trait constraints,
+///     only fields from the trait constraints are accessible
+///   - Uses isFieldAccessibleOnGenericType() to check accessibility
 bool checkFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
     if (!expr || !targetType) return false;
 
     // ─── Step 1: Check Object ─────────────────────────────────────────────
-    // Type-check the object expression
     if (!checkExpr(expr->object, targetType, ctx)) return false;
 
     // Object must be definite (non-nullable, non-fallible)
@@ -2015,14 +2013,12 @@ bool checkFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetType, S
         return false;
     }
 
-    // Check if object type is nullable (reject - must use ?.)
     if (expr->object->resolvedType && isNullableType(expr->object->resolvedType)) {
         ctx.error(expr->object, DiagCode::E3003,
                   "cannot access field on nullable type. Use `?.` for nullable access.");
         return false;
     }
 
-    // Check if object type is fallible (reject - must handle first)
     if (expr->object->resolvedType && isFallibleType(expr->object->resolvedType)) {
         ctx.error(expr->object, DiagCode::E3003,
                   "cannot access field on fallible type. Use `??` to handle err first.");
@@ -2030,17 +2026,74 @@ bool checkFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetType, S
     }
 
     // ─── Step 2: Resolve Object Type ──────────────────────────────────────
-    // Object must resolve to a named type (struct or enum)
-    if (!expr->object->resolvedType || !expr->object->resolvedType->isa<NamedTypeAST>()) {
-        ctx.error(expr->object, DiagCode::E2002,
-                  "field access requires a struct or enum type, got ",
-                  debug::typeToString(expr->object->resolvedType, ctx.pool()));
+    if (!expr->object->resolvedType) {
+        ctx.error(expr->object, DiagCode::E2002, "object has no resolved type");
         return false;
     }
 
-    const NamedTypeAST* namedType = expr->object->resolvedType->as<NamedTypeAST>();
-    
-    // Look up the type declaration by name (it should be registered already)
+    const TypeAST* objectType = expr->object->resolvedType;
+
+    // ─── Step 3: Handle Generic Type ──────────────────────────────────────
+    // If the object type is a generic parameter or a named type with generic args,
+    // check if the field is accessible through trait constraints
+    if (objectType->isa<NamedTypeAST>()) {
+        const NamedTypeAST* namedType = objectType->as<NamedTypeAST>();
+        
+        // Check if this is a generic parameter (or a type that might be generic)
+        // We use isGenericParam to check if the name resolves to a generic param
+        if (isGenericParam(namedType->name, ctx)) {
+            // The field must be accessible through trait constraints
+            if (!isFieldAccessibleOnGenericType(objectType, expr->fieldName, ctx)) {
+                ctx.error(expr, DiagCode::E2210,
+                          "field '", ctx.pool().lookup(expr->fieldName),
+                          "' is not accessible on generic type '",
+                          ctx.pool().lookup(namedType->name),
+                          "' (no trait constraint provides this field)");
+                return false;
+            }
+
+            // Get the field type from the generic constraints
+            const TypeAST* fieldType = getFieldTypeOnGenericType(objectType, expr->fieldName, ctx);
+            if (!fieldType) {
+                // This shouldn't happen if isFieldAccessibleOnGenericType returned true
+                ctx.error(expr, DiagCode::E2001,
+                          "field '", ctx.pool().lookup(expr->fieldName),
+                          "' has no type information in generic constraints");
+                return false;
+            }
+
+            // Check if field type is assignable to targetType
+            if (!isAssignable(targetType, fieldType, ctx)) {
+                ctx.error(expr, DiagCode::E3003,
+                          "field type mismatch: expected ",
+                          debug::typeToString(targetType, ctx.pool()),
+                          ", got ", debug::typeToString(fieldType, ctx.pool()));
+                return false;
+            }
+
+            // Propagate value state from the field type
+            if (isNullableType(fieldType)) {
+                expr->valueState = ValueState::Unknown;
+            } else if (isFallibleType(fieldType)) {
+                expr->valueState = ValueState::Unknown;
+            } else {
+                expr->valueState = ValueState::Definite;
+            }
+
+            return true;
+        }
+    }
+
+    // ─── Step 4: Look up the type declaration ─────────────────────────────
+    // For non-generic types, look up the type declaration
+    if (!objectType->isa<NamedTypeAST>()) {
+        ctx.error(expr->object, DiagCode::E2002,
+                  "field access requires a struct or enum type, got ",
+                  debug::typeToString(objectType, ctx.pool()));
+        return false;
+    }
+
+    const NamedTypeAST* namedType = objectType->as<NamedTypeAST>();
     const TypeDeclAST* typeDecl = lookupType(namedType->name, ctx);
     if (!typeDecl) {
         ctx.error(expr, DiagCode::E2002,
@@ -2048,11 +2101,10 @@ bool checkFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetType, S
         return false;
     }
 
-    // ─── Step 3: Handle Struct Type ───────────────────────────────────────
+    // ─── Step 5: Handle Struct Type ───────────────────────────────────────
     if (typeDecl->isa<StructDeclAST>()) {
         const StructDeclAST* structDecl = typeDecl->as<StructDeclAST>();
 
-        // Find the field
         const FieldDeclAST* field = nullptr;
         for (const FieldDeclAST* f : structDecl->fields) {
             if (f->name == expr->fieldName) {
@@ -2068,7 +2120,6 @@ bool checkFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetType, S
             return false;
         }
 
-        // Check if field type is assignable to targetType
         if (!isAssignable(targetType, field->type, ctx)) {
             ctx.error(expr, DiagCode::E3003,
                       "field type mismatch: expected ",
@@ -2077,19 +2128,10 @@ bool checkFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetType, S
             return false;
         }
 
-        // ─── Step 4: Check Const Field Assignment ────────────────────────
-        // If this is a module member access, it's always read-only
-        if (expr->isModuleMember) {
-            // Module member access is always read-only
-            // TODO: Mark the result as const
-        }
-
-        // ─── Step 5: Propagate Value State ────────────────────────────────
-        // Object is definite, result depends on field type
         if (isNullableType(field->type)) {
-            expr->valueState = ValueState::Unknown; // Could be nil at runtime
+            expr->valueState = ValueState::Unknown;
         } else if (isFallibleType(field->type)) {
-            expr->valueState = ValueState::Unknown; // Could be err at runtime
+            expr->valueState = ValueState::Unknown;
         } else {
             expr->valueState = ValueState::Definite;
         }
@@ -2097,11 +2139,10 @@ bool checkFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetType, S
         return true;
     }
 
-    // ─── Step 4: Handle Enum Type ─────────────────────────────────────────
+    // ─── Step 6: Handle Enum Type ─────────────────────────────────────────
     if (typeDecl->isa<EnumDeclAST>()) {
         const EnumDeclAST* enumDecl = typeDecl->as<EnumDeclAST>();
 
-        // Find the variant
         const EnumVariantAST* variant = nullptr;
         for (const EnumVariantAST* v : enumDecl->variants) {
             if (v->name == expr->fieldName) {
@@ -2117,12 +2158,8 @@ bool checkFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetType, S
             return false;
         }
 
-        // Enum variant's type is the enum itself
-        // Since the enum is registered, we can just create a NamedTypeAST
-        // that references it by name (or use the enum declaration directly)
         const TypeAST* variantType = ctx.arena().makeType<NamedTypeAST>(enumDecl->name);
 
-        // Check if variant type is assignable to targetType
         if (!isAssignable(targetType, variantType, ctx)) {
             ctx.error(expr, DiagCode::E3003,
                       "variant type mismatch: expected ",
@@ -2131,15 +2168,14 @@ bool checkFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetType, S
             return false;
         }
 
-        // Enum variants are definite values
         expr->valueState = ValueState::Definite;
         return true;
     }
 
-    // ─── Step 5: Unknown Type ─────────────────────────────────────────────
+    // ─── Step 7: Unknown Type ─────────────────────────────────────────────
     ctx.error(expr, DiagCode::E2002,
               "field access on unsupported type: ",
-              debug::typeToString(expr->object->resolvedType, ctx.pool()));
+              debug::typeToString(objectType, ctx.pool()));
     return false;
 }
 
@@ -2159,47 +2195,13 @@ bool checkFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetType, S
 /// Module access is always read-only.
 /// Module members are always definite (module-level values are fully resolved).
 ///
-/// Nullable/Fallible Rules:
-///   - Module members can be nullable/fallible (the module itself is definite)
-///   - The result type inherits the member's nullability/fallibility
-///   - No special restrictions on module access
-///
-/// Value State Propagation:
-///   - Module access is always definite (module exists at compile-time)
-///   - Result state depends on the member's type
-///   - If member is nullable → result is `Unknown` (could be nil at runtime)
-///   - If member is fallible → result is `Unknown` (could be err at runtime)
-///   - Otherwise → result is `Definite`
-///
-/// Examples:
-///   // ✅ Valid module access
-///   import std.math as math
-///   let pi float = math:PI        // OK: access exported constant
-///   let result float = math:sqrt(16.0)  // OK: call exported function
-///
-///   // ✅ Module with nullable member
-///   import std.optional as opt
-///   let maybe int? = opt:getValue()  // OK: result is int?
-///
-///   // ✅ Module with fallible member
-///   import std.io as io
-///   let content string! = io:readFile("file.txt")  // OK: result is string!
-///
-///   // ❌ Module alias doesn't exist
-///   let x = unknown:member  // ERROR: undefined module alias 'unknown'
-///
-///   // ❌ Member doesn't exist in module
-///   import std.math as math
-///   let x = math:unknown  // ERROR: module 'math' has no exported member 'unknown'
-///
-///   // ❌ Member is not exported (not in module table)
-///   import std.internal as internal
-///   let x = internal:secret  // ERROR: module 'internal' has no exported member 'secret'
+/// GENERIC HANDLING:
+///   - If the member is a generic function, genericArgs are validated
+///   - Generic constraints are checked against the member's generic parameters
 bool checkModuleAccessExpr(ModuleAccessExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
     if (!expr || !targetType) return false;
 
     // ─── Step 1: Look up the module alias ─────────────────────────────────
-    // The module alias should have been registered during import analysis
     ModuleAST* module = ctx.symbols.lookupImport(expr->moduleName);
     if (!module) {
         ctx.error(expr, DiagCode::E2001,
@@ -2208,7 +2210,6 @@ bool checkModuleAccessExpr(ModuleAccessExprAST* expr, const TypeAST* targetType,
     }
 
     // ─── Step 2: Get the module's table ───────────────────────────────────
-    // The module table should exist (module was analyzed before this)
     ModuleTable* table = ctx.symbols.findModuleTable(module);
     if (!table) {
         ctx.error(expr, DiagCode::E2001,
@@ -2217,7 +2218,6 @@ bool checkModuleAccessExpr(ModuleAccessExprAST* expr, const TypeAST* targetType,
     }
 
     // ─── Step 3: Look up the member ──────────────────────────────────────
-    // Members are in the value namespace (top-level values: const, functions)
     auto it = table->values.find(expr->memberName);
     if (it == table->values.end()) {
         ctx.error(expr, DiagCode::E2001,
@@ -2229,21 +2229,34 @@ bool checkModuleAccessExpr(ModuleAccessExprAST* expr, const TypeAST* targetType,
     const ValueDeclAST* decl = it->second;
 
     // ─── Step 4: Mark as module member (read-only) ──────────────────────
-    // Module members are always read-only from outside the module
     expr->isModuleMember = true;
 
     // ─── Step 5: Check generic arguments if present ──────────────────────
     if (!expr->genericArgs.empty()) {
+        // The member must be a generic function
+        if (!decl->isa<FuncDeclAST>()) {
+            ctx.error(expr, DiagCode::E3003,
+                      "member '", ctx.pool().lookup(expr->memberName), 
+                      "' is not a generic function");
+            return false;
+        }
+
+        const FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
+
         // Resolve each generic argument type
         for (const TypeAST* arg : expr->genericArgs) {
             if (!resolveType(arg, ctx)) {
                 ctx.error(expr, DiagCode::E3002,
-                          "invalid generic argument type in module access");
+                          "invalid generic argument type for '", 
+                          ctx.pool().lookup(expr->memberName), "'");
                 return false;
             }
         }
-        // TODO: Check generic argument arity and constraints against the
-        //       member's generic parameters (if the member is generic)
+
+        // Validate generic arguments against the function's generic parameters
+        if (!validateGenericArguments(expr->genericArgs, funcDecl->genericParams, expr, ctx)) {
+            return false;
+        }
     }
 
     // ─── Step 6: Verify member type is assignable to targetType ──────────
@@ -2263,12 +2276,10 @@ bool checkModuleAccessExpr(ModuleAccessExprAST* expr, const TypeAST* targetType,
     }
 
     // ─── Step 7: Propagate Value State ────────────────────────────────────
-    // Module access is definite (module exists at compile-time)
-    // Result state depends on the member's type
     if (isNullableType(decl->type)) {
-        expr->valueState = ValueState::Unknown; // Could be nil at runtime
+        expr->valueState = ValueState::Unknown;
     } else if (isFallibleType(decl->type)) {
-        expr->valueState = ValueState::Unknown; // Could be err at runtime
+        expr->valueState = ValueState::Unknown;
     } else {
         expr->valueState = ValueState::Definite;
     }
@@ -2791,6 +2802,10 @@ bool checkAssignExpr(AssignExprAST* expr, const TypeAST* targetType, SemaContext
 /// @brief Type-check a single pipeline step: verify the step is callable
 ///        with the input type and return the output type.
 ///
+/// GENERIC HANDLING:
+///   - If the callable is a generic function, it must be instantiated
+///   - The step may have generic arguments in packArgs
+///
 /// @param step The pipeline step.
 /// @param inputType The type flowing into this step.
 /// @param targetType The expected output type.
@@ -2798,12 +2813,64 @@ bool checkAssignExpr(AssignExprAST* expr, const TypeAST* targetType, SemaContext
 bool checkPipelineStep(PipelineStepAST* step, const TypeAST* inputType, const TypeAST* targetType, SemaContext& ctx) {
     if (!step || !inputType || !targetType) return false;
 
-    // Type-check the callable
+    // ─── Step 1: Type-check the callable ──────────────────────────────────
     if (!checkExpr(step->callable, targetType, ctx)) return false;
 
-    // TODO: Verify callable is a function type
-    // TODO: Verify first parameter matches inputType
-    // TODO: Verify return type matches targetType
+    // ─── Step 2: Handle argument pack (!) ─────────────────────────────────
+    // The argument pack is already parsed in the step's packArgs.
+    // The upstream value will be injected as the first argument.
+
+    // ─── Step 3: Verify the callable is a function type ───────────────────
+    if (!step->callable->resolvedType) {
+        ctx.error(step->callable, DiagCode::E2003,
+                  "pipeline step is not a function");
+        return false;
+    }
+
+    if (!step->callable->resolvedType->isa<FuncTypeAST>()) {
+        ctx.error(step->callable, DiagCode::E2003,
+                  "pipeline step is not a function type, got ",
+                  debug::typeToString(step->callable->resolvedType, ctx.pool()));
+        return false;
+    }
+
+    FuncTypeAST* funcType = step->callable->resolvedType->as<FuncTypeAST>();
+
+    // ─── Step 4: Check if the step has generic arguments ──────────────────
+    // Generic arguments on the callable are handled during checkExpr.
+    // We just verify the function type after instantiation.
+
+    // ─── Step 5: Verify the first parameter matches inputType ─────────────
+    if (funcType->params.empty()) {
+        ctx.error(step->callable, DiagCode::E3003,
+                  "pipeline step function takes no parameters");
+        return false;
+    }
+
+    // The first parameter receives the upstream value
+    const TypeAST* firstParamType = funcType->params[0]->type;
+    if (!isAssignable(firstParamType, inputType, ctx)) {
+        ctx.error(step->callable, DiagCode::E3003,
+                  "pipeline step input mismatch: expected ",
+                  debug::typeToString(firstParamType, ctx.pool()),
+                  ", got ", debug::typeToString(inputType, ctx.pool()));
+        return false;
+    }
+
+    // ─── Step 6: Verify the return type matches targetType ────────────────
+    if (!funcType->returnType) {
+        ctx.error(step->callable, DiagCode::E3003,
+                  "pipeline step returns void, but target expects a value");
+        return false;
+    }
+
+    if (!isAssignable(targetType, funcType->returnType, ctx)) {
+        ctx.error(step->callable, DiagCode::E3003,
+                  "pipeline step output mismatch: expected ",
+                  debug::typeToString(targetType, ctx.pool()),
+                  ", got ", debug::typeToString(funcType->returnType, ctx.pool()));
+        return false;
+    }
 
     return true;
 }
@@ -2820,6 +2887,10 @@ bool checkPipelineStep(PipelineStepAST* step, const TypeAST* inputType, const Ty
 ///   - Seed type matches first step's input
 ///   - Each step's output matches next step's input
 ///
+/// GENERIC HANDLING:
+///   - Generic functions in pipeline steps must be instantiated
+///   - Uses the same generic validation as checkCallExpr
+///
 /// Nullable/Fallible Rules:
 ///   - Pipeline short-circuits on err
 ///   - Steps cannot be fallible functions (must handle error first)
@@ -2831,16 +2902,62 @@ bool checkPipelineExpr(PipelineExprAST* expr, const TypeAST* targetType, SemaCon
         return false;
     }
 
-    // Check seed against first step's input type
+    // ─── Step 1: Check seed ───────────────────────────────────────────────
+    // The seed type flows into the first step
     if (!checkExpr(expr->seed, targetType, ctx)) return false;
 
-    // Walk through each step
-    const TypeAST* currentType = targetType;
-    for (PipelineStepAST* step : expr->steps) {
-        if (!checkPipelineStep(step, currentType, targetType, ctx)) return false;
-        // TODO: Update currentType to step's output type
+    // ─── Step 2: Walk through each step ──────────────────────────────────
+    const TypeAST* currentType = expr->seed->resolvedType;
+    if (!currentType) {
+        ctx.error(expr->seed, DiagCode::E2002, "seed has no resolved type");
+        return false;
     }
 
+    for (PipelineStepAST* step : expr->steps) {
+        // Check the step with the current input type
+        // The target type for the step is the next step's expected type,
+        // or the final target type for the last step.
+        const TypeAST* stepTarget = (step == expr->steps.back()) 
+            ? targetType 
+            : nullptr; // We'll infer the step's output type
+
+        if (!checkPipelineStep(step, currentType, stepTarget, ctx)) {
+            return false;
+        }
+
+        // Update current type to the step's output type
+        if (step->callable && step->callable->resolvedType) {
+            if (step->callable->resolvedType->isa<FuncTypeAST>()) {
+                FuncTypeAST* funcType = step->callable->resolvedType->as<FuncTypeAST>();
+                if (funcType->returnType) {
+                    currentType = funcType->returnType;
+                } else {
+                    ctx.error(step->callable, DiagCode::E3003,
+                              "pipeline step returns void");
+                    return false;
+                }
+            } else {
+                ctx.error(step->callable, DiagCode::E2003,
+                          "pipeline step is not a function");
+                return false;
+            }
+        } else {
+            ctx.error(step->callable, DiagCode::E2002,
+                      "pipeline step has no resolved type");
+            return false;
+        }
+    }
+
+    // ─── Step 3: Verify final output type matches target ──────────────────
+    if (!isAssignable(targetType, currentType, ctx)) {
+        ctx.error(expr, DiagCode::E3003,
+                  "pipeline output mismatch: expected ",
+                  debug::typeToString(targetType, ctx.pool()),
+                  ", got ", debug::typeToString(currentType, ctx.pool()));
+        return false;
+    }
+
+    expr->resolvedType = const_cast<TypeAST*>(targetType);
     return true;
 }
 
@@ -2868,6 +2985,86 @@ bool checkComposeOperand(ComposeOperandAST* operand, const TypeAST* targetType, 
 }
 
 // =============================================================================
+// checkComposeOperand
+// =============================================================================
+
+/// @brief Type-check a composition operand: resolve the callable and
+///        return its type.
+///
+/// GENERIC HANDLING:
+///   - Generic functions in composition must be instantiated with explicit
+///     type arguments stored in genericArgs
+///   - Validates that the callable is a function with exactly one group
+bool checkComposeOperand(ComposeOperandAST* operand, const TypeAST* targetType, SemaContext& ctx) {
+    if (!operand || !targetType) return false;
+
+    // ─── Step 1: Type-check the callable ──────────────────────────────────
+    if (!checkExpr(operand->callable, targetType, ctx)) return false;
+
+    // ─── Step 2: Check generic arguments if present ──────────────────────
+    if (!operand->genericArgs.empty()) {
+        // The callable must be a generic function
+        const FuncDeclAST* funcDecl = resolveCalleeOrError(operand->callable, ctx);
+        if (!funcDecl) {
+            ctx.error(operand->callable, DiagCode::E2003,
+                      "generic arguments applied to non-generic function");
+            return false;
+        }
+
+        // Resolve each generic argument type
+        for (const TypeAST* arg : operand->genericArgs) {
+            if (!resolveType(arg, ctx)) {
+                ctx.error(operand->callable, DiagCode::E3002,
+                          "invalid generic argument type");
+                return false;
+            }
+        }
+
+        // Validate generic arguments against the function's generic parameters
+        if (!validateGenericArguments(operand->genericArgs, funcDecl->genericParams, 
+                                       operand->callable, ctx)) {
+            return false;
+        }
+    }
+
+    // ─── Step 3: Verify callable is a function type ──────────────────────
+    if (!operand->callable->resolvedType) {
+        ctx.error(operand->callable, DiagCode::E2002,
+                  "composition operand has no resolved type");
+        return false;
+    }
+
+    if (!operand->callable->resolvedType->isa<FuncTypeAST>()) {
+        ctx.error(operand->callable, DiagCode::E2003,
+                  "composition operand is not a function type, got ",
+                  debug::typeToString(operand->callable->resolvedType, ctx.pool()));
+        return false;
+    }
+
+    FuncTypeAST* funcType = operand->callable->resolvedType->as<FuncTypeAST>();
+
+    // ─── Step 4: Verify function has exactly one parameter group ──────────
+    // Composition requires exactly one group per operand
+    if (funcType->isCurried()) {
+        ctx.error(operand->callable, DiagCode::E3003,
+                  "composition operand must have exactly one parameter group "
+                  "(curried functions are not allowed in composition)");
+        return false;
+    }
+
+    // ─── Step 5: Verify function type matches targetType ──────────────────
+    if (!isAssignable(targetType, funcType, ctx)) {
+        ctx.error(operand->callable, DiagCode::E3003,
+                  "composition type mismatch: expected ",
+                  debug::typeToString(targetType, ctx.pool()),
+                  ", got ", debug::typeToString(funcType, ctx.pool()));
+        return false;
+    }
+
+    return true;
+}
+
+// =============================================================================
 // checkComposeExpr
 // =============================================================================
 
@@ -2877,8 +3074,12 @@ bool checkComposeOperand(ComposeOperandAST* operand, const TypeAST* targetType, 
 ///
 /// Validates:
 ///   - target type is the composed function type
-///   - Each operand is a function type
+///   - Each operand is a function type with exactly one group
 ///   - Output of left matches input of right
+///
+/// GENERIC HANDLING:
+///   - Generic functions in composition must be instantiated
+///   - Each operand may have generic arguments
 ///
 /// Nullable/Fallible Rules:
 ///   - Fallible functions cannot be composed
@@ -2891,16 +3092,79 @@ bool checkComposeExpr(ComposeExprAST* expr, const TypeAST* targetType, SemaConte
         return false;
     }
 
-    // Start with the left operand
-    if (!checkComposeOperand(expr->left->as<ComposeOperandAST>(), targetType, ctx)) return false;
-
-    // Walk through each right operand
-    for (ComposeOperandAST* operand : expr->operands) {
-        if (!checkComposeOperand(operand, targetType, ctx)) return false;
-        // TODO: Verify output of previous matches input of current
+    // ─── Step 1: Type-check the left operand ──────────────────────────────
+    // The left operand is stored as a ComposeOperandAST
+    if (expr->left && expr->left->isa<ComposeOperandAST>()) {
+        if (!checkComposeOperand(expr->left->as<ComposeOperandAST>(), targetType, ctx)) {
+            return false;
+        }
+    } else {
+        ctx.error(expr->left, DiagCode::E2002, "invalid left operand in composition");
+        return false;
     }
 
-    // TODO: Verify composed function type matches targetType
+    // ─── Step 2: Track the current function type ──────────────────────────
+    const TypeAST* currentType = expr->left->resolvedType;
+    if (!currentType || !currentType->isa<FuncTypeAST>()) {
+        ctx.error(expr->left, DiagCode::E2002, "left operand is not a function");
+        return false;
+    }
+
+    FuncTypeAST* currentFunc = currentType->as<FuncTypeAST>();
+
+    // ─── Step 3: Walk through right operands ──────────────────────────────
+    for (ComposeOperandAST* operand : expr->operands) {
+        // Check the operand against the current function's output type
+        // The operand's input must match the previous output
+        if (!checkComposeOperand(operand, targetType, ctx)) {
+            return false;
+        }
+
+        // Verify the operand's input type matches the previous output type
+        if (!operand->callable->resolvedType || 
+            !operand->callable->resolvedType->isa<FuncTypeAST>()) {
+            ctx.error(operand->callable, DiagCode::E2002, "operand is not a function");
+            return false;
+        }
+
+        FuncTypeAST* nextFunc = operand->callable->resolvedType->as<FuncTypeAST>();
+
+        // Check: previous output must match next input
+        const TypeAST* prevOutput = currentFunc->returnType;
+        const TypeAST* nextInput = nextFunc->params.empty() ? nullptr : nextFunc->params[0]->type;
+
+        if (!prevOutput || !nextInput) {
+            ctx.error(operand->callable, DiagCode::E3003,
+                      "function input/output mismatch in composition");
+            return false;
+        }
+
+        if (!isAssignable(nextInput, prevOutput, ctx)) {
+            ctx.error(operand->callable, DiagCode::E3003,
+                      "composition type mismatch: previous output ",
+                      debug::typeToString(prevOutput, ctx.pool()),
+                      " is not assignable to next input ",
+                      debug::typeToString(nextInput, ctx.pool()));
+            return false;
+        }
+
+        // Update current function to the next one
+        currentFunc = nextFunc;
+    }
+
+    // ─── Step 4: Verify the composed function type matches targetType ─────
+    // The composed function takes the first operand's input and returns the last operand's output
+    const TypeAST* composedType = currentFunc;
+    if (!isAssignable(targetType, composedType, ctx)) {
+        ctx.error(expr, DiagCode::E3003,
+                  "composed function type mismatch: expected ",
+                  debug::typeToString(targetType, ctx.pool()),
+                  ", got ", debug::typeToString(composedType, ctx.pool()));
+        return false;
+    }
+
+    expr->resolvedType = const_cast<TypeAST*>(targetType);
+    expr->valueState = ValueState::Definite; // Composition is compile-time
 
     return true;
 }

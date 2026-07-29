@@ -42,6 +42,42 @@ bool isGenericParam(InternedString name, SemaContext& ctx);
 const GenericParamDeclAST* lookupGenericParam(InternedString name, SemaContext& ctx);
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Type Predicates (for type classification)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Check if a name resolves to a trait.
+bool isTrait(InternedString name, SemaContext& ctx);
+
+/// @brief Check if a name resolves to a struct.
+bool isStruct(InternedString name, SemaContext& ctx);
+
+/// @brief Check if a name resolves to an enum.
+bool isEnum(InternedString name, SemaContext& ctx);
+
+/// @brief Check if a type is a trait type.
+/// 
+/// A trait type is a NamedTypeAST that resolves to a TraitDeclAST.
+inline bool isTraitType(const TypeAST* type, SemaContext& ctx) {
+    if (!type || !type->isa<NamedTypeAST>()) return false;
+    const NamedTypeAST* named = type->as<NamedTypeAST>();
+    return isTrait(named->name, ctx);
+}
+
+/// @brief Check if a type is a struct type.
+inline bool isStructType(const TypeAST* type, SemaContext& ctx) {
+    if (!type || !type->isa<NamedTypeAST>()) return false;
+    const NamedTypeAST* named = type->as<NamedTypeAST>();
+    return isStruct(named->name, ctx);
+}
+
+/// @brief Check if a type is a generic parameter.
+inline bool isGenericParamType(const TypeAST* type, SemaContext& ctx) {
+    if (!type || !type->isa<NamedTypeAST>()) return false;
+    const NamedTypeAST* named = type->as<NamedTypeAST>();
+    return isGenericParam(named->name, ctx);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Value Lookup (variables, functions, parameters, fields, enum variants)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -136,9 +172,6 @@ bool reportTypeRedeclaration(const DeclAST* node, SemaContext& ctx);
 bool reportGenericParamRedeclaration(const DeclAST* node, SemaContext& ctx);
 bool reportImportAliasRedeclaration(InternedString alias, const BaseAST* node, SemaContext& ctx);
 
-
-
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Type Resolution Entry Point
 // ─────────────────────────────────────────────────────────────────────────────
@@ -200,16 +233,9 @@ bool typesEqual(const TypeAST* a, const TypeAST* b);
 /// True if source value can be used where target is expected.
 bool isAssignable(const TypeAST* target, const TypeAST* source, SemaContext& ctx);
 
-bool isNullableType(const TypeAST* type);
-bool isFallibleType(const TypeAST* type);
-
 /// Strip ?/?!, return inner type.
 TypeAST* unwrapNullable(TypeAST* type);
 TypeAST* unwrapFallible(TypeAST* type);
-
-bool isNumericType(const TypeAST* type);
-bool isIntegerType(const TypeAST* type);
-bool isFloatType(const TypeAST* type);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Type Validation
@@ -225,7 +251,7 @@ bool validateTraitFieldType(const TypeAST* type, SemaContext& ctx);
 bool validateRefContext(const RefTypeAST* type, SemaContext& ctx);
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Type Predicates
+// Type Predicates (inline)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// @brief Check if a type is a boolean type.
@@ -288,6 +314,26 @@ inline bool isStringType(const TypeAST* type) {
 inline bool isCharType(const TypeAST* type) {
     if (!type || !type->isa<PrimitiveTypeAST>()) return false;
     return type->as<PrimitiveTypeAST>()->primitiveKind == PrimitiveKind::Char;
+}
+
+/// @brief True if type carries nil sentinel (T? or T?!).
+inline bool isNullableType(const TypeAST* type) {
+    return type && (type->isa<NullableTypeAST>() || type->isa<CombinedTypeAST>());
+}
+
+/// @brief True if type carries err sentinel (T! or T?!).
+inline bool isFallibleType(const TypeAST* type) {
+    return type && (type->isa<FallibleTypeAST>() || type->isa<CombinedTypeAST>());
+}
+
+/// @brief True if type is a reference type (&T).
+inline bool isReferenceType(const TypeAST* type) {
+    return type && type->isa<RefTypeAST>();
+}
+
+/// @brief True if type is a raw pointer (*T).
+inline bool isPointerType(const TypeAST* type) {
+    return type && type->isa<PtrTypeAST>();
 }
 
 } // namespace sema

@@ -1134,6 +1134,11 @@ A struct may reference itself in its fields, but with restrictions to avoid infi
 | `next *Node<T>`  | ✅ **OK**    | Raw pointer (sealed conduit)                      |
 | `next *Node<T>?` | ✅ **OK**    | Nullable raw pointer                              |
 
+> [!NOTE]
+> struct field that have `const` modifier must not have self-reference.
+> Because `const` field is non-nullable and non-fallible, therefore it violate the
+> rule: "Non-nullable self-reference creates infinite size"
+
 ```lucid
 -- ❌ ERROR: Non-nullable self-reference
 struct Node<T> {

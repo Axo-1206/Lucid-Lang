@@ -11,6 +11,8 @@
 
 #include "SemaType.hpp"
 #include "../context/SemaContext.hpp"
+#include "../context/TraitImplementationCache.hpp"
+#include "debug/DebugUtils.hpp"
 
 namespace sema {
 
@@ -109,98 +111,6 @@ bool typesEqual(const TypeAST* a, const TypeAST* b) {
 }
 
 // =============================================================================
-// Type Predicates
-// =============================================================================
-
-/// @brief True if type carries nil sentinel (T? or T?!).
-bool isNullableType(const TypeAST* type) {
-    return type && (type->isa<NullableTypeAST>() || type->isa<CombinedTypeAST>());
-}
-
-/// @brief True if type carries err sentinel (T! or T?!).
-bool isFallibleType(const TypeAST* type) {
-    return type && (type->isa<FallibleTypeAST>() || type->isa<CombinedTypeAST>());
-}
-
-/// @brief True if type is a reference type (&T).
-bool isReferenceType(const TypeAST* type) {
-    return type && type->isa<RefTypeAST>();
-}
-
-/// @brief True if type is a raw pointer (*T).
-bool isPointerType(const TypeAST* type) {
-    return type && type->isa<PtrTypeAST>();
-}
-
-/// @brief True if type is a numeric type (integer or float).
-bool isNumericType(const TypeAST* type) {
-    if (!type || !type->isa<PrimitiveTypeAST>()) return false;
-    switch (type->as<PrimitiveTypeAST>()->primitiveKind) {
-        case PrimitiveKind::Byte:
-        case PrimitiveKind::Short:
-        case PrimitiveKind::Int:
-        case PrimitiveKind::Long:
-        case PrimitiveKind::Ubyte:
-        case PrimitiveKind::Ushort:
-        case PrimitiveKind::Uint:
-        case PrimitiveKind::Ulong:
-        case PrimitiveKind::Int8:
-        case PrimitiveKind::Int16:
-        case PrimitiveKind::Int32:
-        case PrimitiveKind::Int64:
-        case PrimitiveKind::Uint8:
-        case PrimitiveKind::Uint16:
-        case PrimitiveKind::Uint32:
-        case PrimitiveKind::Uint64:
-        case PrimitiveKind::Float:
-        case PrimitiveKind::Double:
-        case PrimitiveKind::Decimal:
-            return true;
-        default:
-            return false;
-    }
-}
-
-/// @brief True if type is an integer type (not float).
-bool isIntegerType(const TypeAST* type) {
-    if (!type || !type->isa<PrimitiveTypeAST>()) return false;
-    switch (type->as<PrimitiveTypeAST>()->primitiveKind) {
-        case PrimitiveKind::Byte:
-        case PrimitiveKind::Short:
-        case PrimitiveKind::Int:
-        case PrimitiveKind::Long:
-        case PrimitiveKind::Ubyte:
-        case PrimitiveKind::Ushort:
-        case PrimitiveKind::Uint:
-        case PrimitiveKind::Ulong:
-        case PrimitiveKind::Int8:
-        case PrimitiveKind::Int16:
-        case PrimitiveKind::Int32:
-        case PrimitiveKind::Int64:
-        case PrimitiveKind::Uint8:
-        case PrimitiveKind::Uint16:
-        case PrimitiveKind::Uint32:
-        case PrimitiveKind::Uint64:
-            return true;
-        default:
-            return false;
-    }
-}
-
-/// @brief True if type is a float type.
-bool isFloatType(const TypeAST* type) {
-    if (!type || !type->isa<PrimitiveTypeAST>()) return false;
-    switch (type->as<PrimitiveTypeAST>()->primitiveKind) {
-        case PrimitiveKind::Float:
-        case PrimitiveKind::Double:
-        case PrimitiveKind::Decimal:
-            return true;
-        default:
-            return false;
-    }
-}
-
-// =============================================================================
 // Type Unwrapping
 // =============================================================================
 
@@ -224,13 +134,41 @@ TypeAST* unwrapFallible(TypeAST* type) {
 // Assignability
 // =============================================================================
 
+/// @brief Check if a type implements a trait.
+/// 
+/// This is the core trait conformance check. It verifies that the source type
+/// (which must be a struct) implements the target trait.
+static bool isTraitConformant(const TypeAST* source, const TraitDeclAST* traitDecl, SemaContext& ctx) {
+    if (!source || !traitDecl) return false;
+
+    // Source must be a named type
+    if (!source->isa<NamedTypeAST>()) return false;
+    
+    const NamedTypeAST* namedSource = source->as<NamedTypeAST>();
+    
+    // Resolve the source type declaration
+    const TypeDeclAST* sourceDecl = lookupType(namedSource->name, ctx);
+    if (!sourceDecl) return false;
+
+    // Only structs can implement traits
+    if (!sourceDecl->isa<StructDeclAST>()) {
+        return false;
+    }
+
+    const StructDeclAST* structDecl = sourceDecl->as<StructDeclAST>();
+
+    // Check if the struct implements the trait using the cache
+    return ctx.traitImpls.implements(structDecl, traitDecl);
+}
+
 /// @brief Can a value of type `source` be used where `target` is required?
 /// 
 /// Widening rules:
 ///   1. Identical types → true
 ///   2. T → T? / T! / T?! → true (widening)
 ///   3. T? / T! → T?! → true (combining sentinels)
-///   4. Everything else → false
+///   4. Trait conformance: If target is a trait, source must implement it → true
+///   5. Everything else → false
 bool isAssignable(const TypeAST* target, const TypeAST* source, SemaContext& ctx) {
     if (!target || !source) return false;
 
@@ -283,10 +221,58 @@ bool isAssignable(const TypeAST* target, const TypeAST* source, SemaContext& ctx
     }
 
     // ─── 7. Trait conformance (Trait as target) ──────────────────────────
-    // TODO: Implement trait conformance checking
-    // If target is a NamedTypeAST that resolves to a trait, check if source
-    // implements that trait.
-    (void)ctx;
+    // If the target is a trait type, check if source implements it
+    if (target->isa<NamedTypeAST>()) {
+        const NamedTypeAST* namedTarget = target->as<NamedTypeAST>();
+        const TypeDeclAST* targetDecl = lookupType(namedTarget->name, ctx);
+        
+        if (targetDecl && targetDecl->isa<TraitDeclAST>()) {
+            const TraitDeclAST* traitDecl = targetDecl->as<TraitDeclAST>();
+            
+            // If source is also a trait, traits don't implement traits
+            if (source->isa<NamedTypeAST>()) {
+                const NamedTypeAST* namedSource = source->as<NamedTypeAST>();
+                const TypeDeclAST* sourceDecl = lookupType(namedSource->name, ctx);
+                if (sourceDecl && sourceDecl->isa<TraitDeclAST>()) {
+                    return false; // Traits don't implement other traits
+                }
+            }
+            
+            // Check if the source struct implements the trait
+            return isTraitConformant(source, traitDecl, ctx);
+        }
+    }
+
+    // ─── 8. Generic parameter assignability ──────────────────────────────
+    // If source is a generic parameter and target is a trait, check if the
+    // generic parameter's constraints include the trait
+    if (isGenericParamType(source, ctx) && target->isa<NamedTypeAST>()) {
+        const NamedTypeAST* namedTarget = target->as<NamedTypeAST>();
+        const TypeDeclAST* targetDecl = lookupType(namedTarget->name, ctx);
+        
+        if (targetDecl && targetDecl->isa<TraitDeclAST>()) {
+            // A generic parameter can be assigned to a trait type if it's
+            // constrained by that trait. However, we need to check the
+            // generic parameter's constraints.
+            // This is handled in checkIdentifierExpr and checkCallExpr
+            // where we validate constraints.
+            // For assignability, we conservatively return false here.
+            return false;
+        }
+    }
+
+    // ─── 9. Struct assignment with generic parameters ─────────────────────
+    // If both are named types, they must be the same struct or compatible
+    // through trait constraints (handled above)
+    if (target->isa<NamedTypeAST>() && source->isa<NamedTypeAST>()) {
+        const NamedTypeAST* nt = target->as<NamedTypeAST>();
+        const NamedTypeAST* ns = source->as<NamedTypeAST>();
+        
+        // If they have the same name, they're assignable (already handled by typesEqual)
+        // If they have different names, check if source is a struct that implements
+        // the target trait (handled above)
+        return false;
+    }
 
     return false;
 }
@@ -374,11 +360,14 @@ bool isValidFFIType(const TypeAST* type, SemaContext& ctx) {
     // References are NOT valid
     if (type->isa<RefTypeAST>()) return false;
 
-    // Named types (structs, enums) must be FFI-compatible
+    // Named types (structs, enums, traits) must be FFI-compatible
     if (type->isa<NamedTypeAST>()) {
         const NamedTypeAST* named = type->as<NamedTypeAST>();
         const TypeDeclAST* decl = lookupType(named->name, ctx);
         if (!decl) return false;
+
+        // Traits are not FFI-compatible (they're compile-time only)
+        if (decl->isa<TraitDeclAST>()) return false;
 
         if (decl->isa<StructDeclAST>()) {
             const StructDeclAST* structDecl = decl->as<StructDeclAST>();

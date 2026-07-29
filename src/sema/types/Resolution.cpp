@@ -36,7 +36,6 @@ TypeAST* resolveType(const TypeAST* type, SemaContext& ctx) {
 
 TypeAST* resolvePrimitiveType(const PrimitiveTypeAST* type, SemaContext& ctx) {
     // Primitive types are always valid - they're built-in
-    // Just return the type as-is
     return const_cast<PrimitiveTypeAST*>(type);
 }
 
@@ -63,11 +62,39 @@ TypeAST* resolveNamedType(const NamedTypeAST* type, SemaContext& ctx) {
         return nullptr;
     }
 
-    // ─── 3. Resolve generic arguments if present ─────────────────────────
+    // ─── 3. Traits are valid types ────────────────────────────────────────
+    // Traits can be used as types (e.g., `let v Vector2 = ...`)
+    // They don't need further resolution beyond lookup
+
+    // ─── 4. Resolve generic arguments if present ─────────────────────────
     if (!type->genericArgs.empty()) {
-        // TODO: Check generic argument arity against the declaration's generic parameters
-        // TODO: Check constraints are satisfied
-        // For now, just resolve each generic argument type
+        // If the declaration is a trait with generic parameters, we need to
+        // validate the generic arguments against the trait's parameters
+        if (decl->isa<TraitDeclAST>()) {
+            const TraitDeclAST* traitDecl = decl->as<TraitDeclAST>();
+            
+            // Check arity
+            if (type->genericArgs.size() != traitDecl->genericParams.size()) {
+                ctx.error(type, DiagCode::E2207,
+                          "trait '", ctx.pool().lookup(type->name),
+                          "' expected ", std::to_string(traitDecl->genericParams.size()),
+                          " generic arguments, got ", std::to_string(type->genericArgs.size()));
+                return nullptr;
+            }
+        } else if (decl->isa<StructDeclAST>()) {
+            const StructDeclAST* structDecl = decl->as<StructDeclAST>();
+            
+            // Check arity
+            if (type->genericArgs.size() != structDecl->genericParams.size()) {
+                ctx.error(type, DiagCode::E2207,
+                          "struct '", ctx.pool().lookup(type->name),
+                          "' expected ", std::to_string(structDecl->genericParams.size()),
+                          " generic arguments, got ", std::to_string(type->genericArgs.size()));
+                return nullptr;
+            }
+        }
+
+        // Resolve each generic argument type
         for (const TypePtr arg : type->genericArgs) {
             if (!resolveType(arg, ctx)) {
                 // Error already reported
@@ -76,8 +103,7 @@ TypeAST* resolveNamedType(const NamedTypeAST* type, SemaContext& ctx) {
         }
     }
 
-    // ─── 4. Return the resolved type ─────────────────────────────────────
-    // The named type is valid - return it as-is
+    // ─── 5. Return the resolved type ─────────────────────────────────────
     return const_cast<NamedTypeAST*>(type);
 }
 
@@ -102,7 +128,11 @@ TypeAST* resolveArrayType(const ArrayTypeAST* type, SemaContext& ctx) {
         return nullptr;
     }
 
-    // Return the array type with resolved element type
+    // Check: Traits cannot be stored in arrays (they're not concrete types)
+    // Actually, traits CAN be stored in arrays if the element type is a trait type,
+    // but the array would hold structs that implement the trait.
+    // This is valid and should be allowed.
+
     return const_cast<ArrayTypeAST*>(type);
 }
 
@@ -134,6 +164,10 @@ TypeAST* resolveNullableType(const NullableTypeAST* type, SemaContext& ctx) {
         return nullptr;
     }
 
+    // Check: Traits can be nullable (Trait? is allowed)
+    // A nullable trait type means "a struct that implements the trait, or nil"
+    // This is valid.
+
     return const_cast<NullableTypeAST*>(type);
 }
 
@@ -164,6 +198,10 @@ TypeAST* resolveFallibleType(const FallibleTypeAST* type, SemaContext& ctx) {
                   "array types cannot be fallible");
         return nullptr;
     }
+
+    // Check: Traits can be fallible (Trait! is allowed)
+    // A fallible trait type means "a struct that implements the trait, or err"
+    // This is valid.
 
     return const_cast<FallibleTypeAST*>(type);
 }
@@ -227,8 +265,17 @@ TypeAST* resolveRefType(const RefTypeAST* type, SemaContext& ctx) {
 
     // 2. Cannot store &T in arrays (checked in resolveArrayType)
     // 3. Cannot return &T from functions (checked in resolveFuncType)
-    //    For return types, we don't have the function context here,
-    //    but the caller (resolveFuncType) will check.
+
+    // Note: References to traits (&Trait) are NOT allowed because traits
+    // are not concrete types with a known size.
+    if (inner->isa<NamedTypeAST>()) {
+        const NamedTypeAST* named = inner->as<NamedTypeAST>();
+        if (isTrait(named->name, ctx)) {
+            ctx.error(type, DiagCode::E3004,
+                      "cannot take reference to trait type (&Trait)");
+            return nullptr;
+        }
+    }
 
     return const_cast<RefTypeAST*>(type);
 }
@@ -248,7 +295,7 @@ TypeAST* resolvePtrType(const PtrTypeAST* type, SemaContext& ctx) {
     }
 
     // Raw pointers are always valid (sealed conduit)
-    // No additional validation needed
+    // Pointers to traits are allowed (FFI compatibility)
 
     return const_cast<PtrTypeAST*>(type);
 }
@@ -284,7 +331,18 @@ TypeAST* resolveFuncType(const FuncTypeAST* type, SemaContext& ctx) {
             return nullptr;
         }
 
-        // ─── 4. If the return type is a function type, resolve it ────────
+        // ─── 4. Check: Cannot return trait type ──────────────────────────
+        // Traits are not concrete types with a known size, so they cannot be returned
+        if (returnType->isa<NamedTypeAST>()) {
+            const NamedTypeAST* named = returnType->as<NamedTypeAST>();
+            if (isTrait(named->name, ctx)) {
+                ctx.error(type, DiagCode::E3004,
+                          "function cannot return trait type (use a concrete struct instead)");
+                return nullptr;
+            }
+        }
+
+        // ─── 5. If the return type is a function type, resolve it ────────
         if (returnType->isa<FuncTypeAST>()) {
             if (!resolveFuncType(returnType->as<FuncTypeAST>(), ctx)) {
                 return nullptr;

@@ -50,6 +50,24 @@ const TypeDeclAST* lookupType(InternedString name, SemaContext& ctx) {
     return ctx.symbols.lookupType(name);
 }
 
+/// @brief Check if a type is a trait.
+bool isTrait(InternedString name, SemaContext& ctx) {
+    const TypeDeclAST* decl = lookupType(name, ctx);
+    return decl && decl->isa<TraitDeclAST>();
+}
+
+/// @brief Check if a type is a struct.
+bool isStruct(InternedString name, SemaContext& ctx) {
+    const TypeDeclAST* decl = lookupType(name, ctx);
+    return decl && decl->isa<StructDeclAST>();
+}
+
+/// @brief Check if a type is an enum.
+bool isEnum(InternedString name, SemaContext& ctx) {
+    const TypeDeclAST* decl = lookupType(name, ctx);
+    return decl && decl->isa<EnumDeclAST>();
+}
+
 const TypeDeclAST* resolveTypeOrError(const NamedTypeAST* type, SemaContext& ctx) {
     // Generic parameters have highest priority - they shadow type names
     if (isGenericParam(type->name, ctx)) {
@@ -97,11 +115,27 @@ const TraitDeclAST* resolveTraitRef(const NamedTypeAST* ref, SemaContext& ctx) {
 
     // Check generic arguments if present
     if (!ref->genericArgs.empty()) {
+        // A trait reference with generic arguments means this is a generic trait
+        // instantiation. We need to:
+        // 1. Check arity matches the trait's generic parameters
+        // 2. Resolve each generic argument type
+        // 3. Store the resolved arguments for later use
+        
         // TODO: Check generic argument arity against the trait's generic parameters
-        // TODO: Check constraints are satisfied
-        // For now, just resolve each generic argument type
+        if (ref->genericArgs.size() != traitDecl->genericParams.size()) {
+            ctx.error(ref, DiagCode::E2207,
+                      "trait '", ctx.pool().lookup(ref->name),
+                      "' expected ", std::to_string(traitDecl->genericParams.size()),
+                      " generic arguments, got ", std::to_string(ref->genericArgs.size()));
+            return nullptr;
+        }
+
+        // Resolve each generic argument type
         for (const TypePtr arg : ref->genericArgs) {
-            resolveType(arg, ctx);
+            if (!resolveType(arg, ctx)) {
+                // Error already reported
+                return nullptr;
+            }
         }
     }
 
@@ -183,6 +217,14 @@ const FuncDeclAST* resolveCalleeOrError(const ExprAST* callee, SemaContext& ctx)
         }
         
         return value->as<FuncDeclAST>();
+    }
+
+    // Field access call: `obj.method(...)` - not supported in Lucid (no methods)
+    if (callee->isa<FieldAccessExprAST>()) {
+        // Field access expressions in Lucid are for struct fields, not methods
+        // This should be handled elsewhere
+        ctx.error(callee, DiagCode::E2003, "field access is not callable (Lucid has no methods)");
+        return nullptr;
     }
 
     // Any other callee shape - doesn't name a declaration
