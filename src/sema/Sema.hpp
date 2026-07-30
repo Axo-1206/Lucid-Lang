@@ -15,6 +15,7 @@
 #include "context/SemaContext.hpp"
 #include "support/TypeNarrowHelpers.hpp"
 #include "support/SemaStructField.hpp"
+#include "support/SwitchHelpers.hpp"
 #include "support/TraitValidation.hpp"
 #include "support/GenericValidation.hpp"
 #include "support/LiteralHelpers.hpp"
@@ -77,7 +78,6 @@ void resolveModuleDecls(ModuleAST* module, SemaContext& ctx);
 void resolveDecl(const DeclAST* decl, SemaContext& ctx);
 
 // ─── Specific Declaration Resolvers ─────────────────────────────────────
-// These are the existing analyze*Decl functions, renamed for Phase 2.
 
 void resolveImportDecl(const ImportDeclAST* decl, SemaContext& ctx);
 void resolveVarDecl(const VarDeclAST* decl, SemaContext& ctx);
@@ -126,81 +126,106 @@ bool resolveSpawnStmt(const SpawnStmtAST* stmt, SemaContext& ctx);
 bool resolveJoinStmt(const JoinStmtAST* stmt, SemaContext& ctx);
 
 // =============================================================================
-// EXPRESSIONS - Type checking
+// EXPRESSIONS - Type Resolution
 // =============================================================================
 
-// checkExpr uses lookup which now works in Phase 2
+/// @brief Resolve the type of an expression.
+/// 
+/// This is the main entry point for expression type resolution.
+/// It resolves the expression's type and stores it in expr->resolvedType.
+/// 
+/// @param expr The expression to resolve.
+/// @param ctx The semantic context.
+/// @return The resolved type, or UnknownTypeAST on failure.
+/// 
+/// @note On success, expr->resolvedType is set to the resolved type.
+///       On failure, expr->resolvedType is set to UnknownTypeAST.
+TypeAST* resolveExpr(ExprAST* expr, SemaContext& ctx);
 
-bool checkExpr(ExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
+// ─── Specific Expression Resolvers ──────────────────────────────────────
 
-// ─── Literal Expressions ─────────────────────────────────────────────────
+/// @brief Resolve a literal expression.
+TypeAST* resolveLiteralExpr(LiteralExprAST* expr, SemaContext& ctx);
 
-bool checkLiteralExpr(LiteralExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
+/// @brief Resolve an identifier expression.
+TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, SemaContext& ctx);
 
-// ─── Identifier Expressions ──────────────────────────────────────────────
+/// @brief Resolve an array literal expression.
+TypeAST* resolveArrayLiteralExpr(ArrayLiteralExprAST* expr, SemaContext& ctx);
 
-bool checkIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
+/// @brief Resolve a struct literal expression.
+TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, SemaContext& ctx);
 
-// ─── Array and Struct Literals ───────────────────────────────────────────
+/// @brief Resolve a binary expression.
+TypeAST* resolveBinaryExpr(BinaryExprAST* expr, SemaContext& ctx);
 
-bool checkArrayLiteralExpr(ArrayLiteralExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
-bool checkStructLiteralExpr(StructLiteralExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
+/// @brief Resolve a unary expression.
+TypeAST* resolveUnaryExpr(UnaryExprAST* expr, SemaContext& ctx);
 
-// ─── Binary Expressions ──────────────────────────────────────────────────
+/// @brief Resolve a call expression.
+TypeAST* resolveCallExpr(CallExprAST* expr, SemaContext& ctx);
 
-bool checkBinaryExpr(BinaryExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
+/// @brief Resolve an intrinsic call expression.
+TypeAST* resolveIntrinsicCallExpr(IntrinsicCallExprAST* expr, SemaContext& ctx);
 
-// ─── Unary Expressions ───────────────────────────────────────────────────
+/// @brief Resolve an index expression.
+TypeAST* resolveIndexExpr(IndexExprAST* expr, SemaContext& ctx);
 
-bool checkUnaryExpr(UnaryExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
+/// @brief Resolve a slice expression.
+TypeAST* resolveSliceExpr(SliceExprAST* expr, SemaContext& ctx);
 
-// ─── Call Expressions ────────────────────────────────────────────────────
+/// @brief Resolve a field access expression.
+TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, SemaContext& ctx);
 
-bool checkCallExpr(CallExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
-bool checkIntrinsicCallExpr(IntrinsicCallExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
+/// @brief Resolve a module access expression.
+TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, SemaContext& ctx);
 
-// ─── Index and Slice Expressions ─────────────────────────────────────────
+/// @brief Resolve a nullable chain expression.
+TypeAST* resolveNullableChainExpr(NullableChainExprAST* expr, SemaContext& ctx);
 
-bool checkIndexExpr(IndexExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
-bool checkSliceExpr(SliceExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
+/// @brief Resolve a null coalesce expression.
+TypeAST* resolveNullCoalesceExpr(NullCoalesceExprAST* expr, SemaContext& ctx);
 
-// ─── Field Access Expressions ────────────────────────────────────────────
+/// @brief Resolve an assignment expression.
+TypeAST* resolveAssignExpr(AssignExprAST* expr, SemaContext& ctx);
 
-bool checkFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
-bool checkModuleAccessExpr(ModuleAccessExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
+/// @brief Resolve a pipeline expression.
+TypeAST* resolvePipelineExpr(PipelineExprAST* expr, SemaContext& ctx);
 
-// ─── Nullable Chain ──────────────────────────────────────────────────────
+/// @brief Resolve a pipeline step.
+TypeAST* resolvePipelineStep(PipelineStepAST* step, const TypeAST* inputType, SemaContext& ctx);
 
-bool checkNullableChainExpr(NullableChainExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
-bool checkNullCoalesceExpr(NullCoalesceExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
+/// @brief Resolve a composition expression.
+TypeAST* resolveComposeExpr(ComposeExprAST* expr, SemaContext& ctx);
 
-// ─── Assignment ──────────────────────────────────────────────────────────
+/// @brief Resolve a composition operand.
+TypeAST* resolveComposeOperand(ComposeOperandAST* operand, SemaContext& ctx);
 
-bool checkAssignExpr(AssignExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
+/// @brief Resolve an anonymous function expression.
+TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, SemaContext& ctx);
 
-// ─── Pipeline ────────────────────────────────────────────────────────────
+/// @brief Resolve an if expression.
+TypeAST* resolveIfExpr(IfExprAST* expr, SemaContext& ctx);
 
-bool checkPipelineExpr(PipelineExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
-bool checkPipelineStep(PipelineStepAST* step, const TypeAST* inputType, const TypeAST* targetType, SemaContext& ctx);
+/// @brief Resolve a range expression.
+TypeAST* resolveRangeExpr(RangeExprAST* expr, SemaContext& ctx);
 
-// ─── Composition ─────────────────────────────────────────────────────────
+// =============================================================================
+// TYPE CHECKING (Convenience wrappers)
+// =============================================================================
 
-bool checkComposeExpr(ComposeExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
-bool checkComposeOperand(ComposeOperandAST* operand, const TypeAST* targetType, SemaContext& ctx);
+/// @brief Check if an expression is assignable to a target type.
+/// 
+/// This is a convenience wrapper that resolves the expression and checks
+/// assignability against the target type.
+/// 
+/// @param expr The expression to check.
+/// @param targetType The target type.
+/// @param ctx The semantic context.
+/// @return true if the expression is assignable to the target type.
+bool checkExprAssignable(ExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
 
-// ─── Anonymous Function ──────────────────────────────────────────────────
-
-bool checkAnonFuncExpr(AnonFuncExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
-
-// ─── If Expression ──────────────────────────────────────────────────────
-
-bool checkIfExpr(IfExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
-
-// ─── Range Expression ────────────────────────────────────────────────────
-
-bool checkRangeExpr(RangeExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
-
-// ─────────────────────────────────────────────────────────────────────────────
+// =============================================================================
 // CONST EVALUATION
 // =============================================================================
 
