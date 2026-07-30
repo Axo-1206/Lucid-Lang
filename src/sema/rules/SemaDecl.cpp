@@ -244,7 +244,7 @@ void resolveImportDecl(const ImportDeclAST* decl, SemaContext& ctx) {
 /// RESOLUTION:
 ///   - Resolve the declared type
 ///   - For const: enforce initializer
-///   - For init: type-check the expression
+///   - For init: resolve the expression and check assignability
 ///
 /// NOTE: The variable name was already registered in Phase 1.
 ///       For let declarations, we check that the initializer doesn't
@@ -268,14 +268,24 @@ void resolveVarDecl(const VarDeclAST* decl, SemaContext& ctx) {
 
     // ─── 3. Check initializer ────────────────────────────────────────
     if (decl->init) {
-        if (!checkExpr(decl->init, declaredType, ctx)) {
-            // Error already reported by checkExpr
+        // Resolve the initializer's type
+        TypeAST* initType = resolveExpr(decl->init, ctx);
+        if (!initType || initType->isa<UnknownTypeAST>()) {
+            ctx.error(decl->init, DiagCode::E3003, "initializer has unknown type");
+            return;
+        }
+
+        // Check assignability using the existing isAssignable function
+        if (!isAssignable(declaredType, initType, ctx)) {
+            ctx.error(decl->init, DiagCode::E3003,
+                      "type mismatch: expected ", debug::typeToString(declaredType, ctx.pool()),
+                      ", got ", debug::typeToString(initType, ctx.pool()));
             return;
         }
 
         // ─── 4. Check for self-reference in let initializer ──────────────
         // For let declarations, we need to detect `let x int = x`
-        // Since the name is already registered (Phase 1), checkExpr would succeed.
+        // Since the name is already registered (Phase 1), resolveExpr would succeed.
         // We need to detect this case and report an error.
         if (decl->keyword == DeclKeyword::Let) {
             checkLetSelfReference(decl->init, decl->name, ctx);
@@ -292,16 +302,6 @@ void checkLetSelfReference(const ExprAST* expr, InternedString varName, SemaCont
     if (!expr) return;
 
     // Walk the expression tree looking for IdentifierExprAST with the same name
-    if (expr->isa<IdentifierExprAST>()) {
-        const IdentifierExprAST* id = expr->as<IdentifierExprAST>();
-        if (id->name == varName) {
-            ctx.error(expr, DiagCode::E3003,
-                      "variable '", ctx.pool().lookup(varName),
-                      "' cannot be used in its own initializer");
-        }
-        return;
-    }
-    
     switch (expr->kind) {
         case ASTKind::IdentifierExpr: {
             const IdentifierExprAST* id = expr->as<IdentifierExprAST>();
@@ -436,7 +436,13 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
         bodyReturns = resolveReturnStmt(decl->body->as<ReturnStmtAST>(), ctx);
     } else if (decl->body->isa<FuncRefStmtAST>()) {
         const FuncRefStmtAST* refStmt = decl->body->as<FuncRefStmtAST>();
-        if (!checkExpr(refStmt->target, funcType, ctx)) {
+        // Resolve the function reference and check assignability
+        TypeAST* refType = resolveExpr(refStmt->target, ctx);
+        if (!refType || refType->isa<UnknownTypeAST>()) {
+            ctx.error(refStmt->target, DiagCode::E3003,
+                      "function reference target has unknown type for '",
+                      ctx.pool().lookup(decl->name), "'");
+        } else if (!isAssignable(funcType, refType, ctx)) {
             ctx.error(refStmt->target, DiagCode::E3003,
                       "function reference target type mismatch for '",
                       ctx.pool().lookup(decl->name), "'");
@@ -687,8 +693,19 @@ void resolveStructFields(const StructDeclAST* decl, SemaContext& ctx) {
             // If this is a function field, the default value is the body.
             // We'll analyze it in Phase 2 of function fields.
             if (!fieldType->isa<FuncTypeAST>()) {
-                if (!checkExpr(field->defaultVal, fieldType, ctx)) {
-                    // Error already reported by checkExpr
+                // Resolve the default value and check assignability
+                TypeAST* defaultType = resolveExpr(field->defaultVal, ctx);
+                if (!defaultType || defaultType->isa<UnknownTypeAST>()) {
+                    ctx.error(field->defaultVal, DiagCode::E3003,
+                              "default value for field '", ctx.pool().lookup(field->name),
+                              "' has unknown type");
+                    continue;
+                }
+                if (!isAssignable(fieldType, defaultType, ctx)) {
+                    ctx.error(field->defaultVal, DiagCode::E3003,
+                              "default value type mismatch for field '",
+                              ctx.pool().lookup(field->name), "'");
+                    continue;
                 }
             }
         }

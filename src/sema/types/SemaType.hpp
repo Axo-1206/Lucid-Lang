@@ -336,4 +336,145 @@ inline bool isPointerType(const TypeAST* type) {
     return type && type->isa<PtrTypeAST>();
 }
 
+/// @brief Check if a type is an enum type.
+/// 
+/// @param type The type to check.
+/// @param ctx The semantic context.
+/// @return true if the type is an enum type.
+inline bool isEnumType(const TypeAST* type, SemaContext& ctx) {
+    if (!type || !type->isa<NamedTypeAST>()) return false;
+    
+    const NamedTypeAST* named = type->as<NamedTypeAST>();
+    const TypeDeclAST* decl = lookupType(named->name, ctx);
+    return decl && decl->isa<EnumDeclAST>();
+}
+
+
+/// @brief Check if a type is valid for switch statements.
+/// 
+/// Valid switch types:
+///   - Integer types (int, uint, int8, uint8, etc.)
+///   - Bool
+///   - Char
+///   - String
+///   - Enum types
+/// 
+/// @param type The type to check.
+/// @param ctx The semantic context.
+/// @return true if the type is valid for switch.
+inline bool isValidSwitchType(const TypeAST* type, SemaContext& ctx) {
+    if (!type) return false;
+
+    // Integer types are valid
+    if (isIntegerType(type)) return true;
+
+    // Bool is valid
+    if (isBoolType(type)) return true;
+
+    // Char is valid
+    if (isCharType(type)) return true;
+
+    // String is valid
+    if (isStringType(type)) return true;
+
+    // Enum types are valid (NamedType resolving to EnumDeclAST)
+    if (isEnumType(type, ctx)) return true;
+
+    return false;
+}
+
+/// @brief Get the enum declaration from a type.
+/// 
+/// @param type The type (must be an enum type).
+/// @param ctx The semantic context.
+/// @return The EnumDeclAST, or nullptr if not an enum.
+inline const EnumDeclAST* getEnumDeclFromType(const TypeAST* type, SemaContext& ctx) {
+    if (!type || !type->isa<NamedTypeAST>()) return nullptr;
+    
+    const NamedTypeAST* named = type->as<NamedTypeAST>();
+    const TypeDeclAST* decl = lookupType(named->name, ctx);
+    if (!decl || !decl->isa<EnumDeclAST>()) return nullptr;
+    
+    return decl->as<EnumDeclAST>();
+}
+
+/// @brief Check if a value is compatible with a switch subject type.
+/// 
+/// For enum types: the value must be a variant of that enum.
+/// For integer types: the value must be an integer literal.
+/// For bool: the value must be true/false.
+/// For char: the value must be a char literal.
+/// For string: the value must be a string literal.
+/// 
+/// @param value The case value expression.
+/// @param subjectType The switch subject type.
+/// @param ctx The semantic context.
+/// @return true if the value is compatible.
+inline bool isSwitchCaseCompatible(const ExprAST* value, const TypeAST* subjectType, SemaContext& ctx) {
+    if (!value || !subjectType) return false;
+
+    // ─── Enum type: value must be an enum variant ──────────────────────
+    if (isEnumType(subjectType, ctx)) {
+        // Value must be a field access (EnumName.Variant)
+        if (!value->isa<FieldAccessExprAST>()) {
+            return false;
+        }
+        const FieldAccessExprAST* field = value->as<FieldAccessExprAST>();
+        
+        // Object must be an identifier resolving to the enum type
+        if (!field->object->isa<IdentifierExprAST>()) {
+            return false;
+        }
+        const IdentifierExprAST* id = field->object->as<IdentifierExprAST>();
+        
+        const TypeDeclAST* decl = lookupType(id->name, ctx);
+        if (!decl || !decl->isa<EnumDeclAST>()) {
+            return false;
+        }
+        const EnumDeclAST* enumDecl = decl->as<EnumDeclAST>();
+        
+        // Check if the variant exists in the enum
+        for (const EnumVariantAST* variant : enumDecl->variants) {
+            if (variant->name == field->fieldName) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // ─── Integer type: value must be an integer literal ────────────────
+    if (isIntegerType(subjectType)) {
+        if (!value->isa<LiteralExprAST>()) return false;
+        const LiteralExprAST* lit = value->as<LiteralExprAST>();
+        return lit->kind == LiteralKind::Int ||
+               lit->kind == LiteralKind::Hex ||
+               lit->kind == LiteralKind::Binary;
+    }
+
+    // ─── Bool type: value must be true/false ────────────────────────────
+    if (isBoolType(subjectType)) {
+        if (!value->isa<LiteralExprAST>()) return false;
+        const LiteralExprAST* lit = value->as<LiteralExprAST>();
+        return lit->kind == LiteralKind::True ||
+               lit->kind == LiteralKind::False;
+    }
+
+    // ─── Char type: value must be a char literal ────────────────────────
+    if (isCharType(subjectType)) {
+        if (!value->isa<LiteralExprAST>()) return false;
+        const LiteralExprAST* lit = value->as<LiteralExprAST>();
+        return lit->kind == LiteralKind::Char;
+    }
+
+    // ─── String type: value must be a string literal ────────────────────
+    if (isStringType(subjectType)) {
+        if (!value->isa<LiteralExprAST>()) return false;
+        const LiteralExprAST* lit = value->as<LiteralExprAST>();
+        return lit->kind == LiteralKind::String ||
+               lit->kind == LiteralKind::RawString;
+    }
+
+    return false;
+}
+
 } // namespace sema

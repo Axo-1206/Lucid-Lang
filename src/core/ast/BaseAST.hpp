@@ -298,6 +298,7 @@ struct TypeAST : BaseAST {
 
 
 enum class ValueState {
+    None,       // For any call expression that return no value
     Definite,   // Produces a definite value (T)
     Nil,        // Produces nil (T?)
     Err,        // Produces err (T!)
@@ -469,7 +470,7 @@ struct ConstantValue {
 };
 
 struct ExprAST : BaseAST {
-    TypeAST* resolvedType = nullptr;
+    TypeAST* resolvedType = nullptr; // written as semantic phase
     ValueState valueState = ValueState::Unknown;  // track value state
     bool isModuleMember   = false;
     bool isConst          = false;

@@ -185,11 +185,12 @@ bool resolveIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
     // ─── 3. Resolve condition with if context ────────────────────────────
     ctx.contexts.setIfConditionCtx(true);
     
-    if (!checkExpr(stmt->condition, boolType, ctx)) {
-        ctx.contexts.setIfConditionCtx(false);
-        ctx.contexts.pop();
-        return false;
-    }
+    // TODO: refactor
+    // if (!checkExpr(stmt->condition, boolType, ctx)) {
+    //     ctx.contexts.setIfConditionCtx(false);
+    //     ctx.contexts.pop();
+    //     return false;
+    // }
     
     ctx.contexts.setIfConditionCtx(false);
 
@@ -304,138 +305,69 @@ bool resolveIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
 /// @param ctx The semantic context.
 /// @return true if the statement guarantees control transfer out of the block.
 bool resolveSwitchStmt(const SwitchStmtAST* stmt, SemaContext& ctx) {
-    if (!stmt) return false;
-
-    // ─── 1. Push switch context ──────────────────────────────────────────
-    ctx.contexts.push(ContextKind::SwitchBody, const_cast<SwitchStmtAST*>(stmt), stmt->loc);
-
-    // ─── 2. Resolve the subject expression ──────────────────────────────
-    // The subject must be an integer, enum, bool, char, or string type
-    // We check this by resolving the expression and validating the type
-    if (!checkExpr(stmt->subject, nullptr, ctx)) {
+    // ─── 1. Resolve subject expression ──────────────────────────────────
+    // resolveExpr gets the type without a target type
+    TypeAST* subjectType = resolveExpr(stmt->subject, ctx);
+    if (!subjectType || subjectType->isa<UnknownTypeAST>()) {
+        ctx.error(stmt->subject, DiagCode::E2002, "switch subject has unknown type");
+        ctx.contexts.push(ContextKind::SwitchBody, const_cast<SwitchStmtAST*>(stmt), stmt->loc);
         ctx.contexts.pop();
         return false;
     }
-
-    // ─── 3. Validate subject type ────────────────────────────────────────
-    const TypeAST* subjectType = stmt->subject->resolvedType;
-    if (!subjectType) {
-        ctx.error(stmt->subject, DiagCode::E2002, "switch subject has no type");
-        ctx.contexts.pop();
-        return false;
-    }
-
-    // Check if subject type is valid for switch
+    
+    // ─── 2. Validate subject type ──────────────────────────────────────
     if (!isValidSwitchType(subjectType, ctx)) {
         ctx.error(stmt->subject, DiagCode::E3003,
                   "switch subject must be integer, enum, bool, char, or string");
-        ctx.contexts.pop();
         return false;
     }
-
-    // ─── 4. Resolve each case statement ──────────────────────────────────
+    
+    // ─── 3. Push switch context ──────────────────────────────────────
+    ctx.contexts.push(ContextKind::SwitchBody, const_cast<SwitchStmtAST*>(stmt), stmt->loc);
+    
+    // ─── 4. Validate cases ─────────────────────────────────────────────
     bool allCasesReturn = true;
-    bool hasDefault = stmt->defaultBody != nullptr;
-
+    
     for (const SwitchCasePtr caseStmt : stmt->cases) {
-        if (!resolveSwitchCase(caseStmt, ctx)) {
-            allCasesReturn = false;
+        // Validate each case value using resolveExpr
+        for (ExprAST* value : caseStmt->values) {
+            // Case values should resolve to the subject type or be compatible
+            TypeAST* valueType = resolveExpr(value, ctx);
+            if (!valueType || valueType->isa<UnknownTypeAST>()) {
+                ctx.error(value, DiagCode::E3003, "case value has unknown type");
+                continue;
+            }
+            
+            // Check if the case value is compatible with the subject type
+            if (!isSwitchCaseCompatible(value, subjectType, ctx)) {
+                ctx.error(value, DiagCode::E3003,
+                          "case value is not compatible with switch subject type");
+            }
+        }
+        
+        // Resolve case body
+        if (caseStmt->body) {
+            if (!resolveBlock(caseStmt->body, ctx)) {
+                allCasesReturn = false;
+            }
         }
     }
-
-    // ─── 5. Resolve default clause (if present) ──────────────────────────
+    
+    // ─── 5. Check exhaustiveness ──────────────────────────────────────
+    if (!stmt->defaultBody && isEnumType(subjectType, ctx)) {
+        switch_helpers::checkExhaustiveness(stmt, subjectType, ctx);
+    }
+    
+    // ─── 6. Resolve default clause ────────────────────────────────────
     if (stmt->defaultBody) {
         if (!resolveBlock(stmt->defaultBody, ctx)) {
             allCasesReturn = false;
         }
     }
-
-    // ─── 6. Check exhaustiveness for enum types ──────────────────────────
-    // If the subject is an enum and no default is present, check all variants are covered
-    if (!hasDefault && isEnumType(subjectType, ctx)) {
-        checkSwitchExhaustiveness(stmt, subjectType, ctx);
-    }
-
-    // ─── 7. Pop switch context ────────────────────────────────────────────
-    ctx.contexts.pop();
-
-    // A switch transfers control only if ALL cases transfer control
-    // AND (there is a default that transfers control OR the enum is exhaustive)
-    return allCasesReturn && (hasDefault || isEnumType(subjectType, ctx));
-}
-
-/// @brief Check if a type is valid for switch statements.
-bool isValidSwitchType(const TypeAST* type, SemaContext& ctx) {
-    if (!type) return false;
-
-    // Integer types are valid
-    if (isIntegerType(type)) return true;
-
-    // Bool is valid
-    if (isBoolType(type)) return true;
-
-    // Char is valid
-    if (isCharType(type)) return true;
-
-    // String is valid
-    if (isStringType(type)) return true;
-
-    // Enum types are valid
-    if (type->isa<NamedTypeAST>()) {
-        const NamedTypeAST* named = type->as<NamedTypeAST>();
-        const TypeDeclAST* decl = lookupType(named->name, ctx);
-        if (decl && decl->isa<EnumDeclAST>()) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-/// @brief Check if a type is an enum type.
-bool isEnumType(const TypeAST* type, SemaContext& ctx) {
-    if (!type || !type->isa<NamedTypeAST>()) return false;
     
-    const NamedTypeAST* named = type->as<NamedTypeAST>();
-    const TypeDeclAST* decl = lookupType(named->name, ctx);
-    return decl && decl->isa<EnumDeclAST>();
-}
-
-/// @brief Check exhaustiveness of enum switch cases.
-void checkSwitchExhaustiveness(const SwitchStmtAST* stmt, const TypeAST* subjectType, SemaContext& ctx) {
-    // Collect all enum variants covered by cases
-    std::unordered_set<InternedString> coveredVariants;
-
-    for (const SwitchCasePtr caseStmt : stmt->cases) {
-        for (const ExprAST* value : caseStmt->values) {
-            if (value->isa<FieldAccessExprAST>()) {
-                const FieldAccessExprAST* field = value->as<FieldAccessExprAST>();
-                // Check if this is an enum variant access
-                if (field->object->isa<IdentifierExprAST>()) {
-                    const IdentifierExprAST* id = field->object->as<IdentifierExprAST>();
-                    if (isEnum(id->name, ctx)) {
-                        coveredVariants.insert(field->fieldName);
-                    }
-                }
-            }
-        }
-    }
-
-    // Get all variants from the enum declaration
-    const NamedTypeAST* named = subjectType->as<NamedTypeAST>();
-    const TypeDeclAST* decl = lookupType(named->name, ctx);
-    if (!decl || !decl->isa<EnumDeclAST>()) return;
-
-    const EnumDeclAST* enumDecl = decl->as<EnumDeclAST>();
-
-    // Check for missing variants
-    for (const EnumVariantAST* variant : enumDecl->variants) {
-        if (coveredVariants.find(variant->name) == coveredVariants.end()) {
-            ctx.error(stmt, DiagCode::E3003,
-                      "switch on enum '", ctx.pool().lookup(enumDecl->name),
-                      "' is missing case for variant '", ctx.pool().lookup(variant->name), "'");
-        }
-    }
+    ctx.contexts.pop();
+    
+    return allCasesReturn && (stmt->defaultBody || !isEnumType(subjectType, ctx));
 }
 
 // =============================================================================
@@ -454,7 +386,7 @@ bool resolveSwitchCase(const SwitchCaseAST* switchCase, SemaContext& ctx) {
     if (!switchCase) return false;
 
     // ─── 1. Validate each case value ──────────────────────────────────────
-    for (const ExprAST* value : switchCase->values) {
+    for (ExprAST* value : switchCase->values) {
         // Case values must be literals, enum variants, or ranges
         // The parser already enforces this, but we check again
         if (!value->isa<LiteralExprAST>() && 
@@ -465,9 +397,10 @@ bool resolveSwitchCase(const SwitchCaseAST* switchCase, SemaContext& ctx) {
             continue;
         }
 
-        // Resolve the case value
-        if (!checkExpr(value, nullptr, ctx)) {
-            // Error already reported
+        // Resolve the case value using resolveExpr
+        TypeAST* valueType = resolveExpr(value, ctx);
+        if (!valueType || valueType->isa<UnknownTypeAST>()) {
+            ctx.error(value, DiagCode::E3003, "case value has unknown type");
             continue;
         }
     }
@@ -528,18 +461,26 @@ bool resolveForStmt(const ForStmtAST* stmt, SemaContext& ctx) {
 
     // ─── 5. Resolve the iterable expression ──────────────────────────────
     if (stmt->iterable) {
-        if (!checkExpr(stmt->iterable, nullptr, ctx)) {
-            // Error already reported
+        TypeAST* iterableType = resolveExpr(stmt->iterable, ctx);
+        if (!iterableType || iterableType->isa<UnknownTypeAST>()) {
+            ctx.error(stmt->iterable, DiagCode::E3003, "iterable has unknown type");
+            ctx.symbols.popScope();
+            ctx.contexts.pop();
+            return false;
         }
+        // TODO: Validate iterable type (array or range)
     }
 
     // ─── 6. Resolve the step expression (if present) ──────────────────────
     if (stmt->step) {
-        if (!checkExpr(stmt->step, nullptr, ctx)) {
-            // Error already reported
+        TypeAST* stepType = resolveExpr(stmt->step, ctx);
+        if (!stepType || stepType->isa<UnknownTypeAST>()) {
+            ctx.error(stmt->step, DiagCode::E3003, "step has unknown type");
+            ctx.symbols.popScope();
+            ctx.contexts.pop();
+            return false;
         }
-        // Check that step is numeric
-        if (stmt->step->resolvedType && !isNumericType(stmt->step->resolvedType)) {
+        if (!isNumericType(stepType)) {
             ctx.error(stmt->step, DiagCode::E3003,
                       "step must be a numeric type");
         }
@@ -582,8 +523,17 @@ bool resolveWhileStmt(const WhileStmtAST* stmt, SemaContext& ctx) {
     ctx.contexts.pushLoop(const_cast<StmtAST*>(stmt->body), stmt->loc);
 
     // ─── 2. Resolve the condition ──────────────────────────────────────────
-    PrimitiveTypeAST* boolType = ctx.arena().makeType<PrimitiveTypeAST>(PrimitiveKind::Bool);
-    if (!checkExpr(stmt->condition, boolType, ctx)) {
+    TypeAST* condType = resolveExpr(stmt->condition, ctx);
+    if (!condType || condType->isa<UnknownTypeAST>()) {
+        ctx.error(stmt->condition, DiagCode::E3003, "condition has unknown type");
+        ctx.contexts.pop();
+        return false;
+    }
+
+    if (!isBoolType(condType)) {
+        ctx.error(stmt->condition, DiagCode::E3003,
+                  "while condition must be bool, got ",
+                  debug::typeToString(condType, ctx.pool()));
         ctx.contexts.pop();
         return false;
     }
@@ -626,11 +576,20 @@ bool resolveDoWhileStmt(const DoWhileStmtAST* stmt, SemaContext& ctx) {
 
     // ─── 3. Resolve the condition ──────────────────────────────────────────
     PrimitiveTypeAST* boolType = ctx.arena().makeType<PrimitiveTypeAST>(PrimitiveKind::Bool);
-    if (!checkExpr(stmt->condition, boolType, ctx)) {
+    TypeAST* condType = resolveExpr(stmt->condition, ctx);
+    if (!condType || condType->isa<UnknownTypeAST>()) {
+        ctx.error(stmt->condition, DiagCode::E3003, "condition has unknown type");
         ctx.contexts.pop();
         return false;
     }
 
+    if (!isBoolType(condType)) {
+        ctx.error(stmt->condition, DiagCode::E3003,
+                  "do-while condition must be bool, got ",
+                  debug::typeToString(condType, ctx.pool()));
+        ctx.contexts.pop();
+        return false;
+    }
     // ─── 4. Pop loop context ──────────────────────────────────────────────
     ctx.contexts.pop();
 
@@ -686,7 +645,10 @@ bool resolveReturnStmt(const ReturnStmtAST* stmt, SemaContext& ctx) {
             return true;
         }
 
-        if (!checkExpr(stmt->value, expectedType, ctx)) {
+        // Resolve the return value and check assignability
+        TypeAST* valueType = resolveExpr(stmt->value, ctx);
+        if (!valueType || valueType->isa<UnknownTypeAST>()) {
+            ctx.error(stmt->value, DiagCode::E3003, "return value has unknown type");
             return true;
         }
 
@@ -799,33 +761,30 @@ bool resolveExprStmt(const ExprStmtAST* stmt, SemaContext& ctx) {
     if (!stmt || !stmt->expr) return false;
 
     // ─── 1. Resolve the expression ──────────────────────────────────────────
-    // The expression type is determined by its context
-    if (!checkExpr(stmt->expr, nullptr, ctx)) {
+    TypeAST* exprType = resolveExpr(stmt->expr, ctx);
+    if (!exprType || exprType->isa<UnknownTypeAST>()) {
+        ctx.error(stmt->expr, DiagCode::E3003, "expression has unknown type");
         return false;
     }
 
     // ─── 2. Check for discarded non-void value ─────────────────────────────
     // If the expression has a non-void type and no side effects, warn
-    if (stmt->expr->resolvedType && 
-        !stmt->expr->resolvedType->isa<PrimitiveTypeAST>() &&
-        stmt->expr->resolvedType->as<PrimitiveTypeAST>()->primitiveKind == PrimitiveKind::Void) {
-        // Void expression is fine
-    } else if (stmt->expr->resolvedType) {
+    if (exprType && !exprType->isa<UnknownTypeAST>()) {
         // Check if the expression has side effects (function calls, assignments, etc.)
-        bool hasSideEffects = hasSideEffects(stmt->expr, ctx);
-        if (!hasSideEffects) {
-            // TODO: Emit warning about discarded pure expression
-            // ctx.warning(stmt, DiagCode::W1002,
-            //             "expression result is discarded (no side effects)");
-        }
+        // TODO: refactor
+        // bool hasSideEffects = hasSideEffects(stmt->expr, ctx);
+        // if (!hasSideEffects) {
+        //     // TODO: Emit warning about discarded pure expression
+        //     // ctx.warning(stmt, DiagCode::W1002,
+        //     //             "expression result is discarded (no side effects)");
+        // }
     }
 
-    // ─── 3. Return false (expression statements do not transfer control) ────
     return false;
 }
 
 /// @brief Check if an expression has side effects.
-bool hasSideEffects(const ExprAST* expr, SemaContext& ctx) {
+bool hasSideEffects(ExprAST* expr, SemaContext& ctx) {
     if (!expr) return false;
 
     switch (expr->kind) {
@@ -924,9 +883,10 @@ bool resolveAsyncStmt(const AsyncStmtAST* stmt, SemaContext& ctx) {
         return false;
     }
 
-    if (!checkExpr(stmt->call, nullptr, ctx)) {
-        return false;
-    }
+    // TODO: refactor
+    // if (!checkExpr(stmt->call, nullptr, ctx)) {
+    //     return false;
+    // }
 
     // ─── 4. Verify the call returns a Future type ──────────────────────────
     // The checkExpr should have set the resolved type
@@ -959,7 +919,7 @@ bool resolveAwaitStmt(const AwaitStmtAST* stmt, SemaContext& ctx) {
     }
 
     // ─── 2. Check each target variable ─────────────────────────────────────
-    for (const ExprAST* target : stmt->targets) {
+    for (ExprAST* target : stmt->targets) {
         if (!target->isa<IdentifierExprAST>()) {
             ctx.error(target, DiagCode::E3003,
                       "await target must be a variable (not an expression)");
@@ -1012,9 +972,10 @@ bool resolveSpawnStmt(const SpawnStmtAST* stmt, SemaContext& ctx) {
         return false;
     }
 
-    if (!checkExpr(stmt->call, nullptr, ctx)) {
-        return false;
-    }
+    // TODO: refactor
+    // if (!checkExpr(stmt->call, nullptr, ctx)) {
+    //     return false;
+    // }
 
     // ─── 4. Return false (spawn does not transfer control) ──────────────────
     return false;
@@ -1043,7 +1004,7 @@ bool resolveJoinStmt(const JoinStmtAST* stmt, SemaContext& ctx) {
     }
 
     // ─── 2. Check each target variable ─────────────────────────────────────
-    for (const ExprAST* target : stmt->targets) {
+    for (ExprAST* target : stmt->targets) {
         if (!target->isa<IdentifierExprAST>()) {
             ctx.error(target, DiagCode::E3003,
                       "join target must be a variable (not an expression)");

@@ -211,21 +211,6 @@ TypeAST* resolveIfExpr(IfExprAST* expr, SemaContext& ctx);
 TypeAST* resolveRangeExpr(RangeExprAST* expr, SemaContext& ctx);
 
 // =============================================================================
-// TYPE CHECKING (Convenience wrappers)
-// =============================================================================
-
-/// @brief Check if an expression is assignable to a target type.
-/// 
-/// This is a convenience wrapper that resolves the expression and checks
-/// assignability against the target type.
-/// 
-/// @param expr The expression to check.
-/// @param targetType The target type.
-/// @param ctx The semantic context.
-/// @return true if the expression is assignable to the target type.
-bool checkExprAssignable(ExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
-
-// =============================================================================
 // CONST EVALUATION
 // =============================================================================
 
