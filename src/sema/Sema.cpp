@@ -2,80 +2,114 @@
  * @file Sema.cpp
  * @brief Implements the public API for the semantic phase.
  *
- * @architectural_note Namespace alignment with parser
- *   This follows the same pattern as the parser: a namespace `sema` with a
- *   single entry point `analyze()`, and a context struct `SemaContext` that
- *   holds the shared state. This is cleaner and more consistent than the
- *   previous class-based design.
+ * @architectural_note Top-Down Type Resolution
+ *   Lucid uses a top-down, on-the-fly type resolution strategy. Types are
+ *   resolved immediately as declarations are analyzed, with one exception:
+ *   structs require a two-pass approach to support self-reference.
  *
- * @architectural_note Single entry point
- *   `sema::analyze(modules, ctx)` is the ONE entry point for semantic
- *   analysis. It processes every module in `modules` in dependency order.
+ * @architectural_note Struct Two-Pass Analysis
+ *   Structs are the only construct that require a separate pass:
+ *     1. PASS 1: Register struct name and all field names
+ *     2. PASS 2: Resolve field types (now self-reference is possible)
  *
- * @architectural_note Per-module isolation via ScopedModuleContext
- *   Each module is analyzed in its own ScopedModuleContext, which:
- *     1. Saves the previous module's state
- *     2. Switches to the new module's persistent ModuleTable
- *     3. Resets all transient state (scopes, context stack, defining-type stack)
- *     4. Opens a diagnostic::ScopedSource for this module
- *     5. Restores everything on destruction
- *
- *   This ensures that transient state from one module never leaks into
- *   another module's analysis, while persistent state (ModuleTable) is
- *   preserved across the whole compilation.
- *
- * @architectural_note Error handling
- *   analyzeModuleDecls() processes every declaration it can, even after
- *   individual declarations report errors. It stops early only if
- *   ctx.canContinue() becomes false (too many consecutive errors),
- *   mirroring the parser's own fatal-failure threshold.
+ * @architectural_note Const Evaluation
+ *   Const evaluation is a separate phase that runs AFTER all type resolution.
+ *   This ensures all types are fully resolved and all declarations are
+ *   registered before evaluating const expressions.
+ * 
+ * analyze(modules, ctx)
+ *    │
+ *    ├── PHASE 1: Declaration Registration (Top-Down)
+ *    │   └── For each module:
+ *    │       └── analyzeModuleDecls(module, ctx)
+ *    │           └── For each decl: analyzeDecl(decl, ctx)
+ *    │               ├── VarDecl: resolve type, check init, register
+ *    │               ├── FuncDecl: resolve type, register, analyze body
+ *    │               ├── EnumDecl: register, analyze variants
+ *    │               ├── TraitDecl: register, analyze fields
+ *    │               └── StructDecl:
+ *    │                   ├── Register struct name
+ *    │                   ├── Register generic params
+ *    │                   ├── PASS 1: Register all field names
+ *    │                   ├── PASS 2: Resolve field types
+ *    │                   └── Analyze function field bodies
+ *    │
+ *    └── PHASE 2: Const Evaluation
+ *        └── evaluateConstDeclarations(modules, ctx)
+ *            └── ConstEvaluator.evaluateAll()
+ *                └── Evaluate const expressions (after all types are resolved)
+ *                
  */
 
 #include "Sema.hpp"
 #include "context/SemaContext.hpp"
+#include "const_eval/ConstEvaluator.hpp"
 
 namespace sema {
 
 /**
  * @brief Analyze all modules in the program.
  *
- * Processes every module in `modules` in the order provided. Each module
- * is wrapped in a ScopedModuleContext to isolate transient state.
+ * Processes every module in `modules` in the order provided.
  *
  * @param modules The modules to analyze (in dependency order - imports first).
  * @param ctx     The semantic context (shared across all modules).
  */
 void analyze(std::vector<ModuleAST*>& modules, SemaContext& ctx) {
+    // ─────────────────────────────────────────────────────────────────────────
+    // PHASE 1: Declaration Analysis (Top-Down Type Resolution)
+    // ─────────────────────────────────────────────────────────────────────────
+    //
+    // Walk each module's top-level declarations in source order.
+    // Types are resolved immediately as declarations are analyzed.
+    //
+    // Exception: Structs use a two-pass approach within the struct itself:
+    //   - PASS 1: Register all field names (no type resolution)
+    //   - PASS 2: Resolve field types (enables self-reference)
+    //
+    // This is the only construct that requires a separate pass.
     for (ModuleAST* module : modules) {
         if (!module) continue;
 
-        // Analyze this module in its own context.
-        // ScopedModuleContext:
-        //   - Saves the previous module's state
-        //   - Switches to this module's persistent ModuleTable
-        //   - Resets transient state (scopes, context stack, defining-type stack)
-        //   - Opens a diagnostic::ScopedSource for this module
-        //   - Restores everything on destruction
-        ScopedModuleContext moduleContext(ctx, module);
+        // Enter the module's context
+        ctx.symbols.enterModule(module);
 
-        // Walk the module's top-level declarations in source order.
+        // Walk declarations - this handles all type resolution
         analyzeModuleDecls(module, ctx);
 
         // Record whether this module had errors.
-        // diagnostic::hasErrorsInCurrentSource() reads the current diagnostic
-        // scope's error count (the one opened by ScopedModuleContext).
         module->hasErrors = diagnostic::hasErrorsInCurrentSource();
 
         // Check if we've hit the fatal-error threshold.
         if (!ctx.canContinue()) {
-            // Too many consecutive errors across modules — stop processing.
             return;
         }
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // PHASE 2: Const Evaluation
+    // ─────────────────────────────────────────────────────────────────────────
+    //
+    // Evaluate all const declarations at compile-time.
+    // This runs AFTER all type resolution so that:
+    //   - All types are fully resolved
+    //   - All declarations are registered
+    //   - Const dependencies can be resolved
+    evaluateConstDeclarations(modules, ctx);
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // PHASE 3: Post-Evaluation Verification (Optional)
+    // ─────────────────────────────────────────────────────────────────────────
+    //
+    // Verify that all const values are used correctly.
+    // For example, check that const values are not used in contexts where
+    // they would be treated as mutable.
+    //
+    // TODO: Implement post-evaluation verification
 }
 
 // =============================================================================
-// Module-Level Analysis (implementation of the internal function)
+// Module-Level Analysis
 // =============================================================================
 
 /**
@@ -85,11 +119,13 @@ void analyze(std::vector<ModuleAST*>& modules, SemaContext& ctx) {
  * declarations report errors. Stops early only if `ctx.canContinue()`
  * becomes false (too many consecutive errors).
  *
+ * This function handles all type resolution. Types are resolved immediately
+ * as declarations are analyzed.
+ *
  * @param module The module whose `decls` span is walked.
  * @param ctx    The semantic context. Caller (`sema::analyze`) is
  *        responsible for having already entered `module` via
- *        ScopedModuleContext — this function assumes `ctx.symbols.currentModule()`
- *        and `ctx.symbols.currentModuleTable()` are already correct.
+ *        `ctx.symbols.enterModule(module)`.
  */
 void analyzeModuleDecls(ModuleAST* module, SemaContext& ctx) {
     if (!module) return;
@@ -101,17 +137,45 @@ void analyzeModuleDecls(ModuleAST* module, SemaContext& ctx) {
         if (!decl) continue;
 
         // Process the declaration.
-        // analyzeDecl() dispatches to the specific analyze*Decl() function
-        // in sema/rules/SemaDecl.cpp.
+        // analyzeDecl() dispatches to the specific analyze*Decl() function.
+        // Types are resolved immediately (except structs, which use two-pass).
         analyzeDecl(decl, ctx);
 
         // Check if we've hit the fatal-error threshold.
         if (!ctx.canContinue()) {
-            // Too many consecutive errors — stop processing.
-            // The error has already been reported by ctx.error().
             return;
         }
     }
+}
+
+// =============================================================================
+// Const Evaluation
+// =============================================================================
+
+/**
+ * @brief Evaluate all const declarations in the modules.
+ *
+ * Called after type checking. Replaces const expressions with their
+ * evaluated values (stored in ExprAST::constValue).
+ *
+ * @param modules The modules to evaluate.
+ * @param ctx     The semantic context.
+ */
+void evaluateConstDeclarations(std::vector<ModuleAST*>& modules, SemaContext& ctx) {
+    // Create the const evaluator
+    ConstEvaluator evaluator(ctx);
+
+    // Evaluate all const declarations
+    evaluator.evaluateAll();
+
+    // Check for errors during evaluation
+    if (diagnostic::hasErrors()) {
+        // Errors were reported by the evaluator
+        // We can continue, but modules may have unresolved const values
+        return;
+    }
+
+    // TODO: Add post-evaluation verification
 }
 
 } // namespace sema

@@ -167,4 +167,14 @@ bool checkIfExpr(IfExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
 
 bool checkRangeExpr(RangeExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// CONST EVALUATION
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Evaluate all const declarations in the modules.
+/// 
+/// Called after type checking. Replaces const expressions with their
+/// evaluated values (stored in ExprAST::constValue).
+void evaluateConstDeclarations(std::vector<ModuleAST*>& modules, SemaContext& ctx);
+
 } // namespace sema
