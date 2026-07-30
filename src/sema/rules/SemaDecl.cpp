@@ -221,6 +221,9 @@ void registerStructFieldNames(const StructDeclAST* decl, SemaContext& ctx) {
     }
 }
 
+
+
+
 // =============================================================================
 // PHASE 2: Type Resolution
 // =============================================================================
