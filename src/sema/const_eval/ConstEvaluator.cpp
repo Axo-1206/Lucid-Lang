@@ -2,10 +2,14 @@
 /// @brief Implementation of ConstEvaluator.
 
 #include "ConstEvaluator.hpp"
-#include "ConstInterpreter.hpp"
-#include "../types/SemaType.hpp"
 #include "debug/DebugUtils.hpp"
 #include "core/diagnostics/DiagnosticCodes.hpp"
+
+#include <cmath>
+#include <string>
+#include <queue>
+#include <algorithm>
+#include <sstream>
 
 namespace sema {
 
@@ -42,16 +46,16 @@ void ConstEvaluator::evaluateAll() {
 ConstantValue ConstEvaluator::evaluateDecl(const DeclAST* decl) {
     // Check recursion limit
     if (m_recursionDepth > MAX_RECURSION) {
-        reportError(decl, "const evaluation recursion limit exceeded");
-        return ConstantValue::error();
+        return error(decl, "const evaluation recursion limit exceeded");
     }
 
     // Check for cycles (detected during topological sort)
     if (m_evaluating.find(decl) != m_evaluating.end()) {
-        return ConstantValue::error();
+        return error(decl, "circular dependency detected in const evaluation");
     }
 
-    m_evaluating.insert(decl);
+    // RAII guard for recursion tracking
+    EvaluationGuard guard(m_evaluating, decl);
     m_recursionDepth++;
 
     ConstantValue result;
@@ -61,25 +65,21 @@ ConstantValue ConstEvaluator::evaluateDecl(const DeclAST* decl) {
         if (var->init) {
             result = evalExpr(var->init);
             if (result.isError()) {
-                reportError(var->init, "failed to evaluate const variable '"
+                return error(var->init, "failed to evaluate const variable '" 
                            + m_ctx.pool().lookup(var->name) + "'");
             }
             result.type = var->type;
         } else {
-            reportError(decl, "const variable '" + m_ctx.pool().lookup(var->name)
+            return error(decl, "const variable '" + m_ctx.pool().lookup(var->name)
                        + "' has no initializer");
-            result = ConstantValue::error();
         }
     } else if (decl->isa<FuncDeclAST>()) {
-        // Const functions are evaluated when called
         const FuncDeclAST* func = decl->as<FuncDeclAST>();
         result = ConstantValue(func);
         result.type = const_cast<FuncDeclAST*>(func)->funcType;
     }
 
     m_recursionDepth--;
-    m_evaluating.erase(decl);
-
     return result;
 }
 
@@ -89,7 +89,6 @@ bool ConstEvaluator::isEvaluated(const ExprAST* expr) const {
 
 ConstantValue ConstEvaluator::getValue(const ExprAST* expr) const {
     if (isEvaluated(expr)) {
-        // The expression should have its constValue set
         return expr->constValue;
     }
     return ConstantValue::unknown();
@@ -139,22 +138,21 @@ ConstantValue ConstEvaluator::evalExpr(const ExprAST* expr) {
             result = evalIfExpr(expr->as<IfExprAST>());
             break;
         default:
-            reportError(expr, "not a constant expression");
-            result = ConstantValue::error();
-            break;
+            return error(expr, "not a constant expression");
     }
 
     // Store result on the expression if successful
     if (result.isEvaluated() && !result.isError()) {
         const_cast<ExprAST*>(expr)->isConst = true;
         const_cast<ExprAST*>(expr)->constValue = result;
-        const_cast<ExprAST*>(expr)->resolvedType = result.type;
+        const_cast<ExprAST*>(expr)->resolvedType = getConstantType(result);
         const_cast<ExprAST*>(expr)->valueState = ValueState::Definite;
         m_evaluatedExprs.insert(expr);
     }
 
     return result;
 }
+
 
 ConstantValue ConstEvaluator::evalLiteral(const LiteralExprAST* expr) {
     switch (expr->kind) {
@@ -170,8 +168,7 @@ ConstantValue ConstEvaluator::evalLiteral(const LiteralExprAST* expr) {
                 int64_t val = std::stoll(str, nullptr, 0);
                 return ConstantValue(val);
             } catch (const std::exception&) {
-                reportError(expr, "invalid integer literal '" + str + "'");
-                return ConstantValue::error();
+                return error(expr, "invalid integer literal '" + str + "'");
             }
         }
         case LiteralKind::Float: {
@@ -180,8 +177,7 @@ ConstantValue ConstEvaluator::evalLiteral(const LiteralExprAST* expr) {
                 double val = std::stod(str);
                 return ConstantValue(val);
             } catch (const std::exception&) {
-                reportError(expr, "invalid float literal '" + str + "'");
-                return ConstantValue::error();
+                return error(expr, "invalid float literal '" + str + "'");
             }
         }
         case LiteralKind::String:
@@ -194,8 +190,7 @@ ConstantValue ConstEvaluator::evalLiteral(const LiteralExprAST* expr) {
         case LiteralKind::Err:
             return ConstantValue::err();
         default:
-            reportError(expr, "unsupported literal in const expression");
-            return ConstantValue::error();
+            return error(expr, "unsupported literal in const expression");
     }
 }
 
@@ -203,30 +198,25 @@ ConstantValue ConstEvaluator::evalIdentifier(const IdentifierExprAST* expr) {
     // Look up the declaration
     const ValueDeclAST* decl = lookupValue(expr->name, m_ctx);
     if (!decl) {
-        reportError(expr, "undefined identifier '" + m_ctx.pool().lookup(expr->name) + "'");
-        return ConstantValue::error();
+        return error(expr, "undefined identifier '" + m_ctx.pool().lookup(expr->name) + "'");
     }
 
     // Check if it's a const declaration
     if (decl->isa<VarDeclAST>()) {
         const VarDeclAST* var = decl->as<VarDeclAST>();
         if (var->keyword != DeclKeyword::Const) {
-            reportError(expr, "'" + m_ctx.pool().lookup(expr->name)
+            return error(expr, "'" + m_ctx.pool().lookup(expr->name)
                        + "' is not const (declared as 'let')");
-            return ConstantValue::error();
         }
 
-        // Evaluate the const variable
         if (!var->init) {
-            reportError(expr, "const variable '" + m_ctx.pool().lookup(expr->name)
+            return error(expr, "const variable '" + m_ctx.pool().lookup(expr->name)
                        + "' has no initializer");
-            return ConstantValue::error();
         }
 
-        // Check if we're currently evaluating this variable (cycle)
+        // Check for cycle
         if (m_evaluating.find(var) != m_evaluating.end()) {
-            reportError(expr, "cycle detected: '" + m_ctx.pool().lookup(expr->name) + "'");
-            return ConstantValue::error();
+            return error(expr, "cycle detected: '" + m_ctx.pool().lookup(expr->name) + "'");
         }
 
         return evalExpr(var->init);
@@ -235,38 +225,37 @@ ConstantValue ConstEvaluator::evalIdentifier(const IdentifierExprAST* expr) {
     if (decl->isa<FuncDeclAST>()) {
         const FuncDeclAST* func = decl->as<FuncDeclAST>();
         if (func->keyword != DeclKeyword::Const) {
-            reportError(expr, "'" + m_ctx.pool().lookup(expr->name)
+            return error(expr, "'" + m_ctx.pool().lookup(expr->name)
                        + "' is not const (declared as 'let')");
-            return ConstantValue::error();
         }
 
-        // Return function pointer for later call
         return ConstantValue(func);
     }
 
-    reportError(expr, "'" + m_ctx.pool().lookup(expr->name)
+    return error(expr, "'" + m_ctx.pool().lookup(expr->name)
                + "' is not a constant value");
-    return ConstantValue::error();
+}
+
+// ─── Binary Expression Evaluation ──────────────────────────────────────
+
+// Helper: check if two values are numeric
+static bool bothNumeric(const ConstantValue& a, const ConstantValue& b) {
+    return (a.isInt() || a.isFloat()) && (b.isInt() || b.isFloat());
+}
+
+// Helper: get numeric value as double
+static double toDouble(const ConstantValue& v) {
+    if (v.isInt()) return static_cast<double>(v.asInt());
+    if (v.isFloat()) return v.asFloat();
+    return 0.0;
 }
 
 ConstantValue ConstEvaluator::evalBinary(const BinaryExprAST* expr) {
     ConstantValue left = evalExpr(expr->left);
-    if (left.isError()) return ConstantValue::error();
+    if (left.isError()) return left;
 
     ConstantValue right = evalExpr(expr->right);
-    if (right.isError()) return ConstantValue::error();
-
-    // Helper: check both are numeric
-    auto bothNumeric = [](const ConstantValue& a, const ConstantValue& b) {
-        return (a.isInt() || a.isFloat()) && (b.isInt() || b.isFloat());
-    };
-
-    // Helper: get numeric values as double
-    auto toDouble = [](const ConstantValue& v) -> double {
-        if (v.isInt()) return static_cast<double>(v.asInt());
-        if (v.isFloat()) return v.asFloat();
-        return 0.0;
-    };
+    if (right.isError()) return right;
 
     switch (expr->op) {
         // ─── Arithmetic ──────────────────────────────────────────────────
@@ -278,13 +267,11 @@ ConstantValue ConstEvaluator::evalBinary(const BinaryExprAST* expr) {
                 return ConstantValue(toDouble(left) + toDouble(right));
             }
             if (left.isString() && right.isString()) {
-                // String concatenation at compile-time
                 std::string result = m_ctx.pool().lookup(left.asString());
                 result += m_ctx.pool().lookup(right.asString());
                 return ConstantValue(m_ctx.pool().intern(result));
             }
-            reportError(expr, "invalid operands for '+'");
-            return ConstantValue::error();
+            return error(expr, "invalid operands for '+'");
 
         case BinaryOp::Sub:
             if (left.isInt() && right.isInt()) {
@@ -293,8 +280,7 @@ ConstantValue ConstEvaluator::evalBinary(const BinaryExprAST* expr) {
             if (bothNumeric(left, right)) {
                 return ConstantValue(toDouble(left) - toDouble(right));
             }
-            reportError(expr, "invalid operands for '-'");
-            return ConstantValue::error();
+            return error(expr, "invalid operands for '-'");
 
         case BinaryOp::Mul:
             if (left.isInt() && right.isInt()) {
@@ -303,38 +289,32 @@ ConstantValue ConstEvaluator::evalBinary(const BinaryExprAST* expr) {
             if (bothNumeric(left, right)) {
                 return ConstantValue(toDouble(left) * toDouble(right));
             }
-            reportError(expr, "invalid operands for '*'");
-            return ConstantValue::error();
+            return error(expr, "invalid operands for '*'");
 
         case BinaryOp::Div:
             if (left.isInt() && right.isInt()) {
                 if (right.asInt() == 0) {
-                    reportError(expr->right, "division by zero");
-                    return ConstantValue::error();
+                    return error(expr->right, "division by zero");
                 }
                 return ConstantValue(left.asInt() / right.asInt());
             }
             if (bothNumeric(left, right)) {
                 double divisor = toDouble(right);
                 if (divisor == 0.0) {
-                    reportError(expr->right, "division by zero");
-                    return ConstantValue::error();
+                    return error(expr->right, "division by zero");
                 }
                 return ConstantValue(toDouble(left) / divisor);
             }
-            reportError(expr, "invalid operands for '/'");
-            return ConstantValue::error();
+            return error(expr, "invalid operands for '/'");
 
         case BinaryOp::Mod:
             if (left.isInt() && right.isInt()) {
                 if (right.asInt() == 0) {
-                    reportError(expr->right, "modulo by zero");
-                    return ConstantValue::error();
+                    return error(expr->right, "modulo by zero");
                 }
                 return ConstantValue(left.asInt() % right.asInt());
             }
-            reportError(expr, "modulo requires integer operands");
-            return ConstantValue::error();
+            return error(expr, "modulo requires integer operands");
 
         case BinaryOp::Pow:
             if (bothNumeric(left, right)) {
@@ -344,8 +324,7 @@ ConstantValue ConstEvaluator::evalBinary(const BinaryExprAST* expr) {
                 }
                 return ConstantValue(result);
             }
-            reportError(expr, "invalid operands for '**'");
-            return ConstantValue::error();
+            return error(expr, "invalid operands for '**'");
 
         // ─── Comparison ──────────────────────────────────────────────────
         case BinaryOp::Eq:
@@ -366,69 +345,59 @@ ConstantValue ConstEvaluator::evalBinary(const BinaryExprAST* expr) {
             if (left.isBool() && right.isBool()) {
                 return ConstantValue(left.asBool() && right.asBool());
             }
-            reportError(expr, "'and' requires bool operands");
-            return ConstantValue::error();
+            return error(expr, "'and' requires bool operands");
 
         case BinaryOp::Or:
             if (left.isBool() && right.isBool()) {
                 return ConstantValue(left.asBool() || right.asBool());
             }
-            reportError(expr, "'or' requires bool operands");
-            return ConstantValue::error();
+            return error(expr, "'or' requires bool operands");
 
         // ─── Bitwise ──────────────────────────────────────────────────────
         case BinaryOp::BitAnd:
             if (left.isInt() && right.isInt()) {
                 return ConstantValue(left.asInt() & right.asInt());
             }
-            reportError(expr, "bitwise AND requires integer operands");
-            return ConstantValue::error();
+            return error(expr, "bitwise AND requires integer operands");
 
         case BinaryOp::BitOr:
             if (left.isInt() && right.isInt()) {
                 return ConstantValue(left.asInt() | right.asInt());
             }
-            reportError(expr, "bitwise OR requires integer operands");
-            return ConstantValue::error();
+            return error(expr, "bitwise OR requires integer operands");
 
         case BinaryOp::BitXor:
             if (left.isInt() && right.isInt()) {
                 return ConstantValue(left.asInt() ^ right.asInt());
             }
-            reportError(expr, "bitwise XOR requires integer operands");
-            return ConstantValue::error();
+            return error(expr, "bitwise XOR requires integer operands");
 
         case BinaryOp::Shl:
             if (left.isInt() && right.isInt()) {
                 if (right.asInt() < 0) {
-                    reportError(expr->right, "negative shift amount");
-                    return ConstantValue::error();
+                    return error(expr->right, "negative shift amount");
                 }
                 return ConstantValue(left.asInt() << right.asInt());
             }
-            reportError(expr, "shift requires integer operands");
-            return ConstantValue::error();
+            return error(expr, "shift requires integer operands");
 
         case BinaryOp::Shr:
             if (left.isInt() && right.isInt()) {
                 if (right.asInt() < 0) {
-                    reportError(expr->right, "negative shift amount");
-                    return ConstantValue::error();
+                    return error(expr->right, "negative shift amount");
                 }
                 return ConstantValue(left.asInt() >> right.asInt());
             }
-            reportError(expr, "shift requires integer operands");
-            return ConstantValue::error();
+            return error(expr, "shift requires integer operands");
 
         default:
-            reportError(expr, "unsupported binary operator in const expression");
-            return ConstantValue::error();
+            return error(expr, "unsupported binary operator in const expression");
     }
 }
 
 ConstantValue ConstEvaluator::evalUnary(const UnaryExprAST* expr) {
     ConstantValue operand = evalExpr(expr->operand);
-    if (operand.isError()) return ConstantValue::error();
+    if (operand.isError()) return operand;
 
     switch (expr->op) {
         case UnaryOp::Neg:
@@ -438,97 +407,181 @@ ConstantValue ConstEvaluator::evalUnary(const UnaryExprAST* expr) {
             if (operand.isFloat()) {
                 return ConstantValue(-operand.asFloat());
             }
-            reportError(expr, "negation requires numeric operand");
-            return ConstantValue::error();
+            return error(expr, "negation requires numeric operand");
 
         case UnaryOp::Not:
             if (operand.isBool()) {
                 return ConstantValue(!operand.asBool());
             }
-            reportError(expr, "'not' requires bool operand");
-            return ConstantValue::error();
+            return error(expr, "'not' requires bool operand");
 
         case UnaryOp::BitNot:
             if (operand.isInt()) {
                 return ConstantValue(~operand.asInt());
             }
-            reportError(expr, "bitwise NOT requires integer operand");
-            return ConstantValue::error();
+            return error(expr, "bitwise NOT requires integer operand");
 
         default:
-            reportError(expr, "unsupported unary operator in const expression");
-            return ConstantValue::error();
+            return error(expr, "unsupported unary operator in const expression");
     }
 }
 
 ConstantValue ConstEvaluator::evalCall(const CallExprAST* expr) {
     // Evaluate the callee
     ConstantValue callee = evalExpr(expr->callee);
-    if (callee.isError()) return ConstantValue::error();
+    if (callee.isError()) return callee;
 
     // Must be a const function
     if (!callee.isFunction()) {
-        reportError(expr->callee, "not a const function");
-        return ConstantValue::error();
+        return error(expr->callee, "not a const function");
     }
 
     const FuncDeclAST* func = callee.asFunction();
     if (func->keyword != DeclKeyword::Const) {
-        reportError(expr->callee, "function is not const (declared as 'let')");
-        return ConstantValue::error();
+        return error(expr->callee, "function is not const (declared as 'let')");
     }
 
     // Evaluate arguments
     std::vector<ConstantValue> args;
     for (const ExprAST* arg : expr->args) {
         ConstantValue val = evalExpr(arg);
-        if (val.isError()) return ConstantValue::error();
+        if (val.isError()) return val;
         args.push_back(val);
     }
 
-    // Execute the const function
-    ConstInterpreter interpreter(*this, m_ctx);
-    return interpreter.executeFunction(func, args);
+    // Execute the const function (now inlined)
+    return executeFunction(func, args);
 }
 
 ConstantValue ConstEvaluator::evalStructLiteral(const StructLiteralExprAST* expr) {
-    // TODO: Implement struct literal evaluation
-    // This requires resolving the struct type and evaluating each field
+    // Get the struct declaration
+    const TypeDeclAST* typeDecl = lookupType(expr->typeName, m_ctx);
+    if (!typeDecl) {
+        return error(expr, "undefined struct type '" + m_ctx.pool().lookup(expr->typeName) + "'");
+    }
 
-    reportError(expr, "struct literal evaluation not yet implemented");
-    return ConstantValue::error();
+    if (!typeDecl->isa<StructDeclAST>()) {
+        return error(expr, "'" + m_ctx.pool().lookup(expr->typeName) + "' is not a struct");
+    }
+
+    const StructDeclAST* structDecl = typeDecl->as<StructDeclAST>();
+
+    // Build struct value
+    std::unordered_map<InternedString, ConstantValue> fields;
+
+    // First, collect default values from struct fields
+    for (const FieldDeclAST* field : structDecl->fields) {
+        if (field->defaultVal) {
+            ConstantValue val = evalExpr(field->defaultVal);
+            if (val.isError()) return val;
+            fields[field->name] = val;
+        }
+    }
+
+    // Then override with explicit initializers
+    for (const FieldInitAST* init : expr->inits) {
+        ConstantValue val = evalExpr(init->value);
+        if (val.isError()) return val;
+        fields[init->name] = val;
+    }
+
+    // Verify all required fields are initialized
+    for (const FieldDeclAST* field : structDecl->fields) {
+        if (fields.find(field->name) == fields.end() && !field->defaultVal) {
+            return error(expr, "missing initializer for struct field '" 
+                       + m_ctx.pool().lookup(field->name) + "'");
+        }
+    }
+
+    ConstantValue result;
+    result.kind = ConstantValue::Kind::Struct;
+    result.value = fields;
+    
+    // ─── FIX: Create a NamedTypeAST for the struct type ──────────────────
+    // The type should be a NamedTypeAST that refers to the struct,
+    // not the StructDeclAST itself. This matches how types are represented
+    // elsewhere in the AST.
+    NamedTypeAST* structType = m_ctx.arena().make<NamedTypeAST>(expr->typeName);
+    
+    // Copy generic arguments if present
+    if (!expr->genericArgs.empty()) {
+        // We need to copy the generic args to the new NamedTypeAST
+        // This requires creating a new span for the generic arguments
+        auto builder = m_ctx.arena().makeBuilder<TypePtr>();
+        for (const TypePtr arg : expr->genericArgs) {
+            builder.push_back(arg); // The args are already resolved
+        }
+        structType->genericArgs = builder.build();
+    }
+    
+    result.type = structType;
+    return result;
 }
 
 ConstantValue ConstEvaluator::evalArrayLiteral(const ArrayLiteralExprAST* expr) {
-    // TODO: Implement array literal evaluation
+    std::vector<ConstantValue> elements;
 
-    reportError(expr, "array literal evaluation not yet implemented");
-    return ConstantValue::error();
+    for (const ExprAST* elem : expr->elements) {
+        ConstantValue val = evalExpr(elem);
+        if (val.isError()) return val;
+        elements.push_back(val);
+    }
+
+    // Verify all elements have the same type
+    if (!elements.empty()) {
+        const TypeAST* firstType = elements[0].type;
+        for (size_t i = 1; i < elements.size(); ++i) {
+            if (elements[i].type != firstType) {
+                return error(expr, "array elements must have the same type");
+            }
+        }
+    }
+
+    ConstantValue result;
+    result.kind = ConstantValue::Kind::Array;
+    result.value = elements;
+    return result;
 }
 
 ConstantValue ConstEvaluator::evalFieldAccess(const FieldAccessExprAST* expr) {
-    // TODO: Implement field access evaluation
-    // This requires evaluating the object and extracting the field
+    // Evaluate the object
+    ConstantValue obj = evalExpr(expr->object);
+    if (obj.isError()) return obj;
 
-    reportError(expr, "field access evaluation not yet implemented");
-    return ConstantValue::error();
+    if (!obj.isStruct()) {
+        return error(expr->object, "field access on non-struct value");
+    }
+
+    const auto& structFields = obj.asStruct();
+    auto it = structFields.find(expr->fieldName);
+    if (it == structFields.end()) {
+        return error(expr, "struct has no field '" + m_ctx.pool().lookup(expr->fieldName) + "'");
+    }
+
+    return it->second;
 }
 
 ConstantValue ConstEvaluator::evalNullCoalesce(const NullCoalesceExprAST* expr) {
-    // TODO: Implement null coalesce evaluation
+    // Evaluate the value
+    ConstantValue val = evalExpr(expr->value);
+    if (val.isError()) return val;
 
-    reportError(expr, "null coalesce evaluation not yet implemented");
-    return ConstantValue::error();
+    // If value is nil or err, evaluate fallback
+    if (val.isNil() || val.isErr()) {
+        return evalExpr(expr->fallback);
+    }
+
+    // Otherwise return the value
+    return val;
 }
 
 ConstantValue ConstEvaluator::evalIfExpr(const IfExprAST* expr) {
     // Evaluate condition
     ConstantValue cond = evalExpr(expr->condition);
-    if (cond.isError()) return ConstantValue::error();
+    if (cond.isError()) return cond;
 
     if (!cond.isBool()) {
-        reportError(expr->condition, "if condition must be bool");
-        return ConstantValue::error();
+        return error(expr->condition, "if condition must be bool");
     }
 
     // Evaluate the appropriate branch
@@ -537,6 +590,249 @@ ConstantValue ConstEvaluator::evalIfExpr(const IfExprAST* expr) {
     } else {
         return evalExpr(expr->elseBranch);
     }
+}
+
+// ─── Statement Execution ──────────────────────────────────────────────────
+
+ConstantValue ConstEvaluator::executeStmt(const StmtAST* stmt) {
+    if (!stmt) return ConstantValue::voidValue();
+
+    // Check if we've already returned
+    if (currentFrame().hasReturned) return currentFrame().returnValue;
+
+    switch (stmt->kind) {
+        case ASTKind::BlockStmt:
+            return executeBlock(stmt->as<BlockStmtAST>());
+        case ASTKind::ReturnStmt:
+            return executeReturn(stmt->as<ReturnStmtAST>());
+        case ASTKind::IfStmt:
+            return executeIf(stmt->as<IfStmtAST>());
+        case ASTKind::WhileStmt:
+            return executeWhile(stmt->as<WhileStmtAST>());
+        case ASTKind::ExprStmt:
+            return executeExprStmt(stmt->as<ExprStmtAST>());
+        case ASTKind::DeclStmt:
+            return executeDeclStmt(stmt->as<DeclStmtAST>());
+        case ASTKind::BreakStmt:
+            return executeBreak();
+        case ASTKind::ContinueStmt:
+            return executeContinue();
+        default:
+            return error(stmt, "unsupported statement in const function");
+    }
+}
+
+ConstantValue ConstEvaluator::executeBlock(const BlockStmtAST* block) {
+    if (!block) return ConstantValue::voidValue();
+
+    // Save current locals (for nested blocks)
+    auto savedLocals = currentFrame().locals;
+
+    ConstantValue result = ConstantValue::voidValue();
+
+    for (const StmtPtr stmt : block->stmts) {
+        result = executeStmt(stmt);
+        if (result.isError()) break;
+        if (currentFrame().hasReturned) break;
+    }
+
+    // Restore locals (block scope)
+    currentFrame().locals = savedLocals;
+
+    return result;
+}
+
+ConstantValue ConstEvaluator::executeReturn(const ReturnStmtAST* stmt) {
+    auto& frame = currentFrame();
+
+    if (stmt->value) {
+        frame.returnValue = evalExpr(stmt->value);
+        if (frame.returnValue.isError()) return frame.returnValue;
+    } else {
+        frame.returnValue = ConstantValue::voidValue();
+    }
+
+    frame.hasReturned = true;
+    return frame.returnValue;
+}
+
+ConstantValue ConstEvaluator::executeIf(const IfStmtAST* stmt) {
+    if (!stmt) return ConstantValue::voidValue();
+
+    // Evaluate condition
+    ConstantValue cond = evalExpr(stmt->condition);
+    if (cond.isError()) return cond;
+
+    if (!cond.isBool()) {
+        return error(stmt->condition, "if condition must be bool");
+    }
+
+    // Execute the appropriate branch
+    if (cond.asBool()) {
+        if (stmt->thenBranch) {
+            return executeStmt(stmt->thenBranch);
+        }
+    } else {
+        if (stmt->elseBranch) {
+            return executeStmt(stmt->elseBranch);
+        }
+    }
+
+    return ConstantValue::voidValue();
+}
+
+ConstantValue ConstEvaluator::executeWhile(const WhileStmtAST* stmt) {
+    if (!stmt) return ConstantValue::voidValue();
+
+    const size_t MAX_ITERATIONS = 10000;
+    size_t iterations = 0;
+
+    while (true) {
+        if (++iterations > MAX_ITERATIONS) {
+            return error(stmt, "while loop exceeded maximum iterations (" 
+                       + std::to_string(MAX_ITERATIONS) + ")");
+        }
+
+        ConstantValue cond = evalExpr(stmt->condition);
+        if (cond.isError()) return cond;
+
+        if (!cond.isBool()) {
+            return error(stmt->condition, "while condition must be bool");
+        }
+
+        if (!cond.asBool()) break;
+
+        ConstantValue result = executeStmt(stmt->body);
+        if (result.isError()) return result;
+        if (currentFrame().hasReturned) return currentFrame().returnValue;
+    }
+
+    return ConstantValue::voidValue();
+}
+
+ConstantValue ConstEvaluator::executeAssign(const AssignExprAST* stmt) {
+    if (!stmt) return ConstantValue::voidValue();
+
+    // Evaluate RHS
+    ConstantValue rhs = evalExpr(stmt->rhs);
+    if (rhs.isError()) return rhs;
+
+    // Handle assignment to local variable
+    if (stmt->lhs->isa<IdentifierExprAST>()) {
+        const IdentifierExprAST* id = stmt->lhs->as<IdentifierExprAST>();
+        setLocal(id->name, rhs);
+        return rhs;
+    }
+
+    return error(stmt->lhs, "assignment target not supported in const function");
+}
+
+ConstantValue ConstEvaluator::executeExprStmt(const ExprStmtAST* stmt) {
+    if (!stmt || !stmt->expr) return ConstantValue::voidValue();
+
+    ConstantValue result = evalExpr(stmt->expr);
+    if (result.isError()) return result;
+
+    return ConstantValue::voidValue();
+}
+
+ConstantValue ConstEvaluator::executeDeclStmt(const DeclStmtAST* stmt) {
+    if (!stmt || !stmt->decl) return ConstantValue::voidValue();
+
+    if (stmt->decl->isa<VarDeclAST>()) {
+        const VarDeclAST* var = stmt->decl->as<VarDeclAST>();
+        if (var->keyword == DeclKeyword::Const) {
+            if (var->init) {
+                ConstantValue val = evalExpr(var->init);
+                if (val.isError()) return val;
+                setLocal(var->name, val);
+                return ConstantValue::voidValue();
+            }
+        }
+        return error(stmt->decl, "mutable local variables not allowed in const functions");
+    }
+
+    return error(stmt->decl, "declaration not supported in const function");
+}
+
+ConstantValue ConstEvaluator::executeBreak() {
+    return error(nullptr, "'break' not supported in const functions");
+}
+
+ConstantValue ConstEvaluator::executeContinue() {
+    return error(nullptr, "'continue' not supported in const functions");
+}
+
+// ─── Function Execution ──────────────────────────────────────────────────
+
+ConstantValue ConstEvaluator::executeFunction(
+    const FuncDeclAST* func,
+    const std::vector<ConstantValue>& args) {
+
+    if (!func) {
+        return error(nullptr, "null function");
+    }
+
+    // Check parameter count
+    size_t paramCount = 0;
+    for (FuncTypeAST* group = func->funcType; group; group = group->getNext()) {
+        paramCount += group->params.size();
+    }
+
+    if (args.size() != paramCount) {
+        return error(func, "argument count mismatch: expected "
+                   + std::to_string(paramCount) + ", got "
+                   + std::to_string(args.size()));
+    }
+
+    // Push a new frame
+    pushFrame();
+
+    // Bind parameters
+    size_t argIndex = 0;
+    for (FuncTypeAST* group = func->funcType; group; group = group->getNext()) {
+        for (ParamAST* param : group->params) {
+            if (argIndex < args.size()) {
+                setLocal(param->name, args[argIndex]);
+                argIndex++;
+            }
+        }
+    }
+
+    ConstantValue result;
+
+    // Execute the body
+    if (func->body) {
+        result = executeStmt(func->body);
+
+        // If the body returned a value, use it
+        if (currentFrame().hasReturned) {
+            result = currentFrame().returnValue;
+        } else if (func->funcType && !func->funcType->returnType) {
+            result = ConstantValue::voidValue();
+        } else {
+            result = error(func->body, "non-void const function does not return a value");
+        }
+    } else {
+        result = error(func, "const function has no body");
+    }
+
+    popFrame();
+    return result;
+}
+
+// ─── Frame Management ────────────────────────────────────────────────────
+
+ConstantValue ConstEvaluator::getLocal(InternedString name) const {
+    auto it = currentFrame().locals.find(name);
+    if (it != currentFrame().locals.end()) {
+        return it->second;
+    }
+    return ConstantValue::unknown();
+}
+
+void ConstEvaluator::setLocal(InternedString name, const ConstantValue& value) {
+    currentFrame().locals[name] = value;
 }
 
 // ─── Type Helpers ─────────────────────────────────────────────────────────
@@ -553,16 +849,12 @@ bool ConstEvaluator::isEvaluableType(const TypeAST* type) {
         const TypeDeclAST* decl = lookupType(named->name, m_ctx);
         if (!decl) return false;
 
-        // Structs and enums can be evaluated
         if (decl->isa<StructDeclAST>() || decl->isa<EnumDeclAST>()) {
             return true;
         }
-
-        // Traits cannot be evaluated (no concrete values)
         if (decl->isa<TraitDeclAST>()) {
             return false;
         }
-
         return false;
     }
 
@@ -572,7 +864,7 @@ bool ConstEvaluator::isEvaluableType(const TypeAST* type) {
         return isEvaluableType(array->element);
     }
 
-    // Function types are evaluable (function pointers)
+    // Function types are evaluable
     if (type->isa<FuncTypeAST>()) {
         return true;
     }
@@ -600,19 +892,22 @@ TypeAST* ConstEvaluator::getConstantType(const ConstantValue& val) {
     // If we already have a type, use it
     if (val.type) return val.type;
 
-    // Otherwise, infer from kind
+    // Otherwise, infer from kind using your type system
     switch (val.kind) {
         case ConstantValue::Kind::Bool:
-            // TODO: Return bool type
-            return nullptr;
+            // Use your existing type system to get bool type
+            return m_ctx.arena().make<PrimitiveTypeAST>(PrimitiveKind::Bool);
         case ConstantValue::Kind::Int:
-            // TODO: Return int type
-            return nullptr;
+            return m_ctx.arena().make<PrimitiveTypeAST>(PrimitiveKind::Int);
         case ConstantValue::Kind::Float:
-            // TODO: Return float type
-            return nullptr;
+            return m_ctx.arena().make<PrimitiveTypeAST>(PrimitiveKind::Float);
         case ConstantValue::Kind::String:
-            // TODO: Return string type
+            return m_ctx.arena().make<PrimitiveTypeAST>(PrimitiveKind::String);
+        case ConstantValue::Kind::Char:
+            return m_ctx.arena().make<PrimitiveTypeAST>(PrimitiveKind::Char);
+        case ConstantValue::Kind::Nil:
+        case ConstantValue::Kind::Err:
+            // Sentinels have no type
             return nullptr;
         default:
             return nullptr;
@@ -620,7 +915,6 @@ TypeAST* ConstEvaluator::getConstantType(const ConstantValue& val) {
 }
 
 bool ConstEvaluator::compareEqual(const ConstantValue& a, const ConstantValue& b) {
-    // Different kinds are never equal
     if (a.kind != b.kind) return false;
 
     switch (a.kind) {
@@ -631,22 +925,18 @@ bool ConstEvaluator::compareEqual(const ConstantValue& a, const ConstantValue& b
         case ConstantValue::Kind::Float:
             return a.asFloat() == b.asFloat();
         case ConstantValue::Kind::String:
-            return a.asString() == b.asString();
         case ConstantValue::Kind::Char:
-            return a.asString() == b.asString();
         case ConstantValue::Kind::Enum:
             return a.asString() == b.asString();
         case ConstantValue::Kind::Nil:
-            return true; // All nil are equal
         case ConstantValue::Kind::Err:
-            return true; // All err are equal
+            return true; // All sentinels are equal
         default:
             return false;
     }
 }
 
 int ConstEvaluator::compareOrder(const ConstantValue& a, const ConstantValue& b) {
-    // Can only compare same kinds
     if (a.kind != b.kind) return 0;
 
     switch (a.kind) {
@@ -659,8 +949,6 @@ int ConstEvaluator::compareOrder(const ConstantValue& a, const ConstantValue& b)
             return (diff > 0) ? 1 : (diff < 0) ? -1 : 0;
         }
         case ConstantValue::Kind::String:
-            return m_ctx.pool().lookup(a.asString()).compare(
-                   m_ctx.pool().lookup(b.asString()));
         case ConstantValue::Kind::Char:
             return m_ctx.pool().lookup(a.asString()).compare(
                    m_ctx.pool().lookup(b.asString()));
@@ -672,28 +960,29 @@ int ConstEvaluator::compareOrder(const ConstantValue& a, const ConstantValue& b)
 // ─── Dependency Analysis ─────────────────────────────────────────────────
 
 void ConstEvaluator::buildDependencyGraph() {
-    // Walk all modules and collect const declarations
-    std::vector<const DeclAST*> constDecls;
+    m_deps.clear();
+    m_constDecls.clear();
 
+    // Collect all const declarations
     for (ModuleAST* module : m_ctx.modules) {
         for (const DeclPtr decl : module->decls) {
             if (decl->isa<VarDeclAST>()) {
                 const VarDeclAST* var = decl->as<VarDeclAST>();
                 if (var->keyword == DeclKeyword::Const) {
-                    constDecls.push_back(var);
+                    m_constDecls.push_back(var);
                 }
             }
             if (decl->isa<FuncDeclAST>()) {
                 const FuncDeclAST* func = decl->as<FuncDeclAST>();
                 if (func->keyword == DeclKeyword::Const) {
-                    constDecls.push_back(func);
+                    m_constDecls.push_back(func);
                 }
             }
         }
     }
 
     // Build dependencies
-    for (const DeclAST* decl : constDecls) {
+    for (const DeclAST* decl : m_constDecls) {
         std::vector<const DeclAST*> deps;
 
         if (decl->isa<VarDeclAST>()) {
@@ -702,11 +991,11 @@ void ConstEvaluator::buildDependencyGraph() {
                 collectDeps(var->init, deps);
             }
         } else if (decl->isa<FuncDeclAST>()) {
-            // Const functions depend on other const functions/variables they reference
             const FuncDeclAST* func = decl->as<FuncDeclAST>();
             if (func->body) {
-                // TODO: Walk the body to collect dependencies
-                // For now, we'll handle this during evaluation
+                // Walk the body to collect dependencies
+                // For simplicity, we collect from the body recursively
+                collectDepsFromStmt(func->body, deps);
             }
         }
 
@@ -718,7 +1007,6 @@ void ConstEvaluator::collectDeps(const ExprAST* expr,
                                   std::vector<const DeclAST*>& deps) {
     if (!expr) return;
 
-    // Walk the AST and collect identifiers that refer to const declarations
     switch (expr->kind) {
         case ASTKind::IdentifierExpr: {
             const IdentifierExprAST* id = expr->as<IdentifierExprAST>();
@@ -780,51 +1068,121 @@ void ConstEvaluator::collectDeps(const ExprAST* expr,
     }
 }
 
+void ConstEvaluator::collectDepsFromStmt(const StmtAST* stmt,
+                                          std::vector<const DeclAST*>& deps) {
+    if (!stmt) return;
+
+    switch (stmt->kind) {
+        case ASTKind::BlockStmt: {
+            const BlockStmtAST* block = stmt->as<BlockStmtAST>();
+            for (const StmtPtr s : block->stmts) {
+                collectDepsFromStmt(s, deps);
+            }
+            break;
+        }
+        case ASTKind::ExprStmt: {
+            const ExprStmtAST* exprStmt = stmt->as<ExprStmtAST>();
+            collectDeps(exprStmt->expr, deps);
+            break;
+        }
+        case ASTKind::ReturnStmt: {
+            const ReturnStmtAST* ret = stmt->as<ReturnStmtAST>();
+            if (ret->value) {
+                collectDeps(ret->value, deps);
+            }
+            break;
+        }
+        case ASTKind::IfStmt: {
+            const IfStmtAST* ifStmt = stmt->as<IfStmtAST>();
+            collectDeps(ifStmt->condition, deps);
+            collectDepsFromStmt(ifStmt->thenBranch, deps);
+            if (ifStmt->elseBranch) {
+                collectDepsFromStmt(ifStmt->elseBranch, deps);
+            }
+            break;
+        }
+        case ASTKind::WhileStmt: {
+            const WhileStmtAST* whileStmt = stmt->as<WhileStmtAST>();
+            collectDeps(whileStmt->condition, deps);
+            collectDepsFromStmt(whileStmt->body, deps);
+            break;
+        }
+        case ASTKind::DeclStmt: {
+            const DeclStmtAST* declStmt = stmt->as<DeclStmtAST>();
+            if (declStmt->decl->isa<VarDeclAST>()) {
+                const VarDeclAST* var = declStmt->decl->as<VarDeclAST>();
+                if (var->keyword == DeclKeyword::Const && var->init) {
+                    collectDeps(var->init, deps);
+                }
+            }
+            break;
+        }
+        default:
+            break;
+    }
+}
+
 std::vector<const DeclAST*> ConstEvaluator::topologicalSort() {
     std::vector<const DeclAST*> result;
-    std::unordered_set<const DeclAST*> visited;
-    std::unordered_set<const DeclAST*> inStack;
+    std::unordered_map<const DeclAST*, size_t> inDegree;
+    std::unordered_map<const DeclAST*, std::vector<const DeclAST*>> graph;
 
-    std::function<void(const DeclAST*)> dfs = [&](const DeclAST* node) {
-        if (visited.find(node) != visited.end()) return;
-        if (inStack.find(node) != inStack.end()) {
-            // Cycle detected
-            return;
+    // Build graph and compute in-degrees
+    for (const auto& [decl, deps] : m_deps) {
+        inDegree[decl] = 0;
+        graph[decl] = {};
+    }
+
+    for (const auto& [decl, deps] : m_deps) {
+        for (const DeclAST* dep : deps) {
+            // Skip dependencies not in the graph (non-const declarations)
+            if (graph.find(dep) == graph.end()) continue;
+            graph[decl].push_back(dep);
+            inDegree[dep]++;
         }
+    }
 
-        inStack.insert(node);
+    // Kahn's algorithm
+    std::queue<const DeclAST*> queue;
+    for (const auto& [decl, degree] : inDegree) {
+        if (degree == 0) {
+            queue.push(decl);
+        }
+    }
 
-        auto it = m_deps.find(node);
-        if (it != m_deps.end()) {
-            for (const DeclAST* dep : it->second) {
-                dfs(dep);
+    while (!queue.empty()) {
+        const DeclAST* decl = queue.front();
+        queue.pop();
+        result.push_back(decl);
+
+        for (const DeclAST* dep : graph[decl]) {
+            inDegree[dep]--;
+            if (inDegree[dep] == 0) {
+                queue.push(dep);
             }
         }
+    }
 
-        inStack.erase(node);
-        visited.insert(node);
-        result.push_back(node);
-    };
-
-    for (const auto& pair : m_deps) {
-        if (visited.find(pair.first) == visited.end()) {
-            dfs(pair.first);
+    // Check for cycles
+    if (result.size() != m_deps.size()) {
+        // Find cycle
+        std::vector<const DeclAST*> cycle;
+        for (const auto& [decl, degree] : inDegree) {
+            if (degree > 0) {
+                cycle.push_back(decl);
+            }
         }
+        reportCycle(cycle);
     }
 
     return result;
 }
 
-bool ConstEvaluator::detectCycle(std::vector<const DeclAST*>& cycle) {
-    // TODO: Implement cycle detection
-    // This is handled by the DFS in topologicalSort
-    return false;
-}
-
 // ─── Error Reporting ─────────────────────────────────────────────────────
 
-void ConstEvaluator::reportError(const BaseAST* node, const std::string& msg) {
+ConstantValue ConstEvaluator::error(const BaseAST* node, const std::string& msg) {
     m_ctx.error(node, DiagCode::E3003, "const evaluation failed: ", msg);
+    return ConstantValue::error();
 }
 
 void ConstEvaluator::reportCycle(const std::vector<const DeclAST*>& cycle) {

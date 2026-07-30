@@ -1,27 +1,52 @@
 /// @file const_eval/ConstEvaluator.hpp
 /// @brief Evaluates const expressions at compile-time.
+///
+/// @design_decision Single-pass evaluation after type resolution
+///   All types are already resolved by Phase 2. The evaluator uses
+///   the resolved types directly and stores results on AST nodes.
+///
+/// @design_decision Frame-based execution model
+///   Uses a simple stack of frames for function calls. Each frame
+///   contains local variable bindings and return state.
 
 #pragma once
 
 #include "core/ast/BaseAST.hpp"
 #include "../context/SemaContext.hpp"
+#include "../types/SemaType.hpp"
 
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <queue>
+#include <functional>
 
 namespace sema {
 
+/// @brief RAII guard for const evaluation recursion tracking.
+class EvaluationGuard {
+public:
+    EvaluationGuard(std::unordered_set<const DeclAST*>& evaluating,
+                    const DeclAST* decl)
+        : m_evaluating(evaluating), m_decl(decl) {
+        m_evaluating.insert(decl);
+    }
+    
+    ~EvaluationGuard() {
+        m_evaluating.erase(m_decl);
+    }
+    
+    EvaluationGuard(const EvaluationGuard&) = delete;
+    EvaluationGuard& operator=(const EvaluationGuard&) = delete;
+    EvaluationGuard(EvaluationGuard&&) = delete;
+    EvaluationGuard& operator=(EvaluationGuard&&) = delete;
+
+private:
+    std::unordered_set<const DeclAST*>& m_evaluating;
+    const DeclAST* m_decl;
+};
+
 /// @brief Evaluates const declarations at compile-time.
-///
-/// This class walks the AST, identifies const declarations, and evaluates
-/// their initializers at compile-time. Results are stored on the expression
-/// nodes themselves (ExprAST::constValue).
-///
-/// @design_decision Expressions are mutable, declarations are immutable
-///   Since ExprAST nodes can be modified (resolvedType, valueState, etc.),
-///   we store the evaluated constant value directly on the expression.
-///   DeclAST nodes remain immutable.
 class ConstEvaluator {
 public:
     explicit ConstEvaluator(SemaContext& ctx);
@@ -30,24 +55,20 @@ public:
     void evaluateAll();
 
     /// @brief Evaluate a specific const declaration.
-    /// @return The evaluated value, or ConstantValue::error() on failure.
     ConstantValue evaluateDecl(const DeclAST* decl);
 
     /// @brief Check if an expression has been evaluated.
     bool isEvaluated(const ExprAST* expr) const;
 
     /// @brief Get the evaluated value of an expression.
-    /// @return The constant value, or ConstantValue::unknown() if not evaluated.
     ConstantValue getValue(const ExprAST* expr) const;
 
     /// @brief Get the SemaContext.
-    SemaContext& context() const { return const_cast<SemaContext&>(m_ctx); }
+    SemaContext& context() { return m_ctx; }
 
     // ─── Expression Evaluation ───────────────────────────────────────
 
     /// @brief Evaluate an expression and store result on the expression.
-    /// @param expr The expression to evaluate.
-    /// @return The evaluated constant value.
     ConstantValue evalExpr(const ExprAST* expr);
 
     /// @brief Evaluate a literal expression.
@@ -74,16 +95,36 @@ public:
     /// @brief Evaluate a field access.
     ConstantValue evalFieldAccess(const FieldAccessExprAST* expr);
 
-    /// @brief Evaluate a null coalesce expression (??).
+    /// @brief Evaluate a null coalesce expression.
     ConstantValue evalNullCoalesce(const NullCoalesceExprAST* expr);
 
     /// @brief Evaluate an if expression.
     ConstantValue evalIfExpr(const IfExprAST* expr);
 
+    // ─── Statement Execution ───────────────────────────────────────────
+
+    /// @brief Execute a statement in the current context.
+    ConstantValue executeStmt(const StmtAST* stmt);
+
+    /// @brief Execute a const function with constant arguments.
+    ConstantValue executeFunction(const FuncDeclAST* func,
+                                   const std::vector<ConstantValue>& args);
+
 private:
+    // ─── Frame for function execution ─────────────────────────────────
+
+    struct Frame {
+        std::unordered_map<InternedString, ConstantValue> locals;
+        bool hasReturned = false;
+        ConstantValue returnValue;
+    };
+
     // ─── Members ──────────────────────────────────────────────────────
 
     SemaContext& m_ctx;
+
+    // Stack of frames for function execution
+    std::vector<Frame> m_frames;
 
     // Track which expressions have been evaluated
     std::unordered_set<const ExprAST*> m_evaluatedExprs;
@@ -94,9 +135,23 @@ private:
     // Currently evaluating (for cycle detection)
     std::unordered_set<const DeclAST*> m_evaluating;
 
+    // All const declarations in order
+    std::vector<const DeclAST*> m_constDecls;
+
     // Recursion limit
     static constexpr size_t MAX_RECURSION = 1000;
     size_t m_recursionDepth = 0;
+
+    // ─── Frame Management ─────────────────────────────────────────────
+
+    Frame& currentFrame() { return m_frames.back(); }
+    const Frame& currentFrame() const { return m_frames.back(); }
+
+    void pushFrame() { m_frames.emplace_back(); }
+    void popFrame() { m_frames.pop_back(); }
+
+    ConstantValue getLocal(InternedString name) const;
+    void setLocal(InternedString name, const ConstantValue& value);
 
     // ─── Type Helpers ──────────────────────────────────────────────────
 
@@ -120,16 +175,28 @@ private:
     /// @brief Collect dependencies of an expression.
     void collectDeps(const ExprAST* expr, std::vector<const DeclAST*>& deps);
 
-    /// @brief Topological sort of const declarations.
+    /// @brief Collect dependencies from a statement.
+    void collectDepsFromStmt(const StmtAST* stmt, std::vector<const DeclAST*>& deps);
+
+    /// @brief Topological sort of const declarations using Kahn's algorithm.
     std::vector<const DeclAST*> topologicalSort();
 
-    /// @brief Detect cycles in the dependency graph.
-    bool detectCycle(std::vector<const DeclAST*>& cycle);
+    // ─── Statement Execution Helpers ──────────────────────────────────
+
+    ConstantValue executeBlock(const BlockStmtAST* block);
+    ConstantValue executeReturn(const ReturnStmtAST* stmt);
+    ConstantValue executeIf(const IfStmtAST* stmt);
+    ConstantValue executeWhile(const WhileStmtAST* stmt);
+    ConstantValue executeAssign(const AssignExprAST* stmt);
+    ConstantValue executeExprStmt(const ExprStmtAST* stmt);
+    ConstantValue executeDeclStmt(const DeclStmtAST* stmt);
+    ConstantValue executeBreak();
+    ConstantValue executeContinue();
 
     // ─── Error Reporting ──────────────────────────────────────────────
 
     /// @brief Report a const evaluation error.
-    void reportError(const BaseAST* node, const std::string& msg);
+    ConstantValue error(const BaseAST* node, const std::string& msg);
 
     /// @brief Report a dependency cycle.
     void reportCycle(const std::vector<const DeclAST*>& cycle);
