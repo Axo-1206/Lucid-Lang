@@ -3,8 +3,8 @@
 /// 
 /// @architectural_note Two-Pass Analysis for Structs
 ///   Struct fields require a two-pass approach to support self-reference:
-///     Phase 1: Register ALL fields (names and types) without analyzing bodies
-///     Phase 2: Analyze function bodies (with self parameter available)
+///     Phase 1: Register ALL field names (no type resolution)
+///     Phase 2: Resolve field types and analyze function bodies
 /// 
 ///   This allows:
 ///     - `self.bar` to resolve even if `bar` is declared after the function
@@ -128,29 +128,57 @@ SelfReferenceInfo checkSelfReferenceImpl(const TypeAST* fieldType,
     return result;
 }
 
-/// @brief Validate a single struct field (shared validation logic).
-/// 
-/// This handles all field validation including:
-///   - Type resolution
-///   - Self-reference detection (with different semantics for NamedType vs PtrType)
-///   - Const field validation
-///   - Default value validation
-///   - Reference type validation (Downward Flow Rule)
-/// 
-/// @param field The field to validate.
-/// @param currentStruct The struct currently being defined.
-/// @param ctx The semantic context.
-void validateStructFieldImpl(const FieldDeclAST* field,
+/// @brief Check for duplicate field names within a struct.
+void checkDuplicateFieldNames(const StructDeclAST* decl, SemaContext& ctx) {
+    for (const FieldDeclAST* field : decl->fields) {
+        for (const FieldDeclAST* existing : decl->fields) {
+            if (existing == field) break;
+            if (existing->name == field->name) {
+                ctx.error(field, DiagCode::E2101,
+                          "redeclaration of '", ctx.pool().lookup(field->name), "'");
+                break;
+            }
+        }
+    }
+}
+
+} // anonymous namespace
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Struct Field Registration - Phase 1 (Names Only)
+// ─────────────────────────────────────────────────────────────────────────────
+
+void registerStructFieldName(const FieldDeclAST* field,
                               const StructDeclAST* currentStruct,
                               SemaContext& ctx) {
+    if (!field) return;
+
+    // ─── 1. Check redeclaration ──────────────────────────────────────────
+    // Field names must be unique within the struct
+    // We check this during resolution (resolveStructFields)
+    // But we still need to prevent duplicate registrations
+
+    // ─── 2. Register the field name ──────────────────────────────────────
+    // Fields are in the value namespace
+    // No type resolution is performed here
+    ctx.symbols.insertValue(field);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Struct Field Resolution - Phase 2 (Types and Bodies)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Resolve a single struct field's type and validate it.
+void resolveStructField(const FieldDeclAST* field,
+                         const StructDeclAST* currentStruct,
+                         SemaContext& ctx) {
     if (!field) return;
 
     attr::validateAttributes(field, ctx);
 
     // ─── 1. Resolve the field's type ──────────────────────────────────
+    // Now all names are registered, so self-reference is possible
     TypeAST* fieldType = resolveType(field->type, ctx);
-    const_cast<FieldDeclAST*>(field)->type = fieldType;
-
     if (!fieldType) {
         // Type resolution failed - skip further validation
         return;
@@ -199,7 +227,7 @@ void validateStructFieldImpl(const FieldDeclAST* field,
     // ─── 4. Check default value ───────────────────────────────────────
     if (field->defaultVal) {
         // If this is a function field, the default value is the body.
-        // We'll analyze it in Phase 2.
+        // We'll analyze it in Phase 2 of function fields.
         if (!fieldType->isa<FuncTypeAST>()) {
             if (!checkExpr(field->defaultVal, fieldType, ctx)) {
                 // Error already reported by checkExpr
@@ -222,47 +250,35 @@ void validateStructFieldImpl(const FieldDeclAST* field,
     }
 }
 
-/// @brief Check for duplicate field names within a struct.
-void checkDuplicateFieldNames(const StructDeclAST* decl, SemaContext& ctx) {
+/// @brief Resolve all fields in a struct declaration.
+void resolveStructFields(const StructDeclAST* decl, SemaContext& ctx) {
+    // ─── 1. Check for duplicate field names ──────────────────────────────
+    checkDuplicateFieldNames(decl, ctx);
+
+    // ─── 2. Resolve each field's type ─────────────────────────────────────
     for (const FieldDeclAST* field : decl->fields) {
-        for (const FieldDeclAST* existing : decl->fields) {
-            if (existing == field) break;
-            if (existing->name == field->name) {
-                ctx.error(field, DiagCode::E2101,
-                          "redeclaration of '", ctx.pool().lookup(field->name), "'");
-                break;
-            }
+        resolveStructField(field, decl, ctx);
+        
+        if (!ctx.canContinue()) {
+            return;
+        }
+    }
+
+    // ─── 3. Analyze function field bodies ────────────────────────────────
+    // This must happen after all field types are resolved
+    for (const FieldDeclAST* field : decl->fields) {
+        if (field->type && field->type->isa<FuncTypeAST>()) {
+            analyzeFunctionFieldBody(field, decl, ctx);
+        }
+        
+        if (!ctx.canContinue()) {
+            return;
         }
     }
 }
 
-} // anonymous namespace
-
 // ─────────────────────────────────────────────────────────────────────────────
-// Struct Field Registration - Phase 1
-// ─────────────────────────────────────────────────────────────────────────────
-
-void registerStructField(const FieldDeclAST* field,
-                          const StructDeclAST* currentStruct,
-                          SemaContext& ctx) {
-    if (!field) return;
-
-    // ─── 1. Resolve and validate the field type ──────────────────────────
-    // This does NOT analyze function bodies - only validates the type
-    validateStructFieldImpl(field, currentStruct, ctx);
-
-    // ─── 2. Register the field in the struct's scope ──────────────────────
-    // Fields are in the value namespace
-    ctx.symbols.insertValue(field);
-
-    // ─── 3. For function fields, register parameters (except body) ────────
-    // Parameters will be registered when the body is analyzed (Phase 2)
-    // We don't register them here to avoid duplicate registration
-    // The function type is already resolved by resolveType in validateStructFieldImpl
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Struct Function Body Analysis - Phase 2
+// Struct Function Body Analysis - Phase 2 (Function Fields)
 // ─────────────────────────────────────────────────────────────────────────────
 
 void analyzeFunctionFieldBody(const FieldDeclAST* field,
@@ -276,7 +292,7 @@ void analyzeFunctionFieldBody(const FieldDeclAST* field,
 
     // ─── 1. Check: first parameter must be self ──────────────────────────
     if (funcType->params.empty()) {
-        // TODO: add a diganostic code for this
+        // TODO: Add diagnostic code
         // ctx.error(field, "function field '", ctx.pool().lookup(field->name),
         //           "' must have at least one parameter (self)");
         return;
@@ -284,40 +300,31 @@ void analyzeFunctionFieldBody(const FieldDeclAST* field,
 
     ParamAST* selfParam = funcType->params[0];
 
-    // Verify self parameter type is the struct type
-    // The struct type should be available as a NamedTypeAST
-    // TODO: Check that selfParam->type resolves to the current struct
-    // For now, we trust the user wrote `self Foo`
-    // This will be validated when the parameter is registered
-
     // ─── 2. Get the function body ──────────────────────────────────────────
     if (!field->defaultVal) {
-        // TODO: add a diganostic code for this
+        // TODO: Add diagnostic code
         // ctx.error(field, "function field '", ctx.pool().lookup(field->name),
         //           "' has no body");
         return;
     }
 
     // ─── 3. Push a scope for the function's parameters ────────────────────
-    // We need to push a new scope before registering parameters
-    // and analyzing the body
     ctx.symbols.pushScope();
 
     // ─── 4. Register the self parameter ────────────────────────────────────
     // The self parameter is the first parameter of the function
     // It's a value in the function's scope
-    analyzeParam(selfParam, ctx);
+    registerParamName(selfParam, ctx);
 
     // ─── 5. Register the rest of the parameters ───────────────────────────
-    // Skip the first parameter (self) since it's already registered
     for (size_t i = 1; i < funcType->params.size(); ++i) {
-        analyzeParam(funcType->params[i], ctx);
+        registerParamName(funcType->params[i], ctx);
     }
 
     // ─── 6. Analyze the body ──────────────────────────────────────────────
     // The body can be a BlockStmtAST or an expression
     if (field->defaultVal->isa<BlockStmtAST>()) {
-        analyzeBlock(field->defaultVal->as<BlockStmtAST>(), ctx);
+        resolveBlock(field->defaultVal->as<BlockStmtAST>(), ctx);
     } else {
         // Expression body - treat as a return statement
         // TODO: Handle expression bodies
@@ -333,18 +340,18 @@ void analyzeFunctionFieldBody(const FieldDeclAST* field,
 // Struct Field Validation Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-void validateStructField(const FieldDeclAST* field,
-                          const StructDeclAST* currentStruct,
-                          SemaContext& ctx) {
-    validateStructFieldImpl(field, currentStruct, ctx);
+void validateStructFieldType(const FieldDeclAST* field,
+                              const StructDeclAST* currentStruct,
+                              SemaContext& ctx) {
+    // This is now handled by resolveStructField
+    // Kept for backward compatibility
+    resolveStructField(field, currentStruct, ctx);
 }
 
 void validateStructFields(const StructDeclAST* decl, SemaContext& ctx) {
-    checkDuplicateFieldNames(decl, ctx);
-
-    for (const FieldDeclAST* field : decl->fields) {
-        validateStructFieldImpl(field, decl, ctx);
-    }
+    // This is now handled by resolveStructFields
+    // Kept for backward compatibility
+    resolveStructFields(decl, ctx);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -369,6 +376,17 @@ bool isPointerSelfReference(const TypeAST* fieldType,
                              SemaContext& ctx) {
     SelfReferenceInfo info = checkSelfReferenceImpl(fieldType, currentStruct, ctx);
     return info.isSelfReference && info.isPointer;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LEGACY Compatibility Functions (DEPRECATED)
+// ─────────────────────────────────────────────────────────────────────────────
+
+void registerStructField(const FieldDeclAST* field,
+                          const StructDeclAST* currentStruct,
+                          SemaContext& ctx) {
+    // Forward to registerStructFieldName (Phase 1)
+    registerStructFieldName(field, currentStruct, ctx);
 }
 
 } // namespace sema

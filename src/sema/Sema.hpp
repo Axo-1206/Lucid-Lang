@@ -35,68 +35,121 @@ namespace sema {
 /// The ONLY entry point for semantic analysis.
 void analyze(std::vector<ModuleAST*>& modules, SemaContext& ctx);
 
-/// Analyze a module's top-level declarations in source order.
-void analyzeModuleDecls(ModuleAST* module, SemaContext& ctx);
-
 // =============================================================================
-// Declaration Analysis
+// NAME REGISTRATION (Phase 1)
 // =============================================================================
 
+/// @brief Register all names in a module (no type resolution).
+void registerModuleNames(ModuleAST* module, SemaContext& ctx);
+
+/// @brief Register a declaration's name only (no type resolution).
+void registerDeclName(const DeclAST* decl, SemaContext& ctx);
+
+// ─── Specific Name Registration Functions ──────────────────────────────
+
+void registerImportName(const ImportDeclAST* decl, SemaContext& ctx);
+void registerVarName(const VarDeclAST* decl, SemaContext& ctx);
+void registerFuncName(const FuncDeclAST* decl, SemaContext& ctx);
+void registerParamName(const ParamAST* param, SemaContext& ctx);
+void registerGenericParamName(const GenericParamDeclAST* param, SemaContext& ctx);
+void registerStructName(const StructDeclAST* decl, SemaContext& ctx);
+void registerEnumName(const EnumDeclAST* decl, SemaContext& ctx);
+void registerTraitName(const TraitDeclAST* decl, SemaContext& ctx);
+
+// ─── Struct Field Registration (Phase 1 of struct two-pass) ────────────
+
+/// @brief Register all field names in a struct (no type resolution).
+void registerStructFieldNames(const StructDeclAST* decl, SemaContext& ctx);
+
+// ─── Statement Name Registration ────────────────────────────────────────
+
+/// @brief Register names in a statement (for local scopes).
+void registerStmtNames(const StmtAST* stmt, SemaContext& ctx);
+
+// =============================================================================
+// TYPE RESOLUTION (Phase 2)
+// =============================================================================
+
+/// @brief Resolve all types in a module (after all names are registered).
+void resolveModuleDecls(ModuleAST* module, SemaContext& ctx);
+
+/// @brief Resolve a declaration's type and check its body.
+void resolveDecl(const DeclAST* decl, SemaContext& ctx);
+
+// ─── Specific Declaration Resolvers ─────────────────────────────────────
+// These are the existing analyze*Decl functions, renamed for Phase 2.
+
+void resolveImportDecl(const ImportDeclAST* decl, SemaContext& ctx);
+void resolveVarDecl(const VarDeclAST* decl, SemaContext& ctx);
+void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx);
+void resolveParam(const ParamAST* param, SemaContext& ctx);
+void resolveGenericParam(const GenericParamDeclAST* param, SemaContext& ctx);
+void resolveStructDecl(const StructDeclAST* decl, SemaContext& ctx);
+void resolveEnumDecl(const EnumDeclAST* decl, SemaContext& ctx);
+void resolveTraitDecl(const TraitDeclAST* decl, SemaContext& ctx);
+
+// ─── Struct Field Resolution (Phase 2 of struct two-pass) ──────────────
+
+/// @brief Resolve all field types in a struct (after all fields are registered).
+void resolveStructFields(const StructDeclAST* decl, SemaContext& ctx);
+
+// ─── Statement Resolution ──────────────────────────────────────────────
+
+/// @brief Resolve types in a statement (after all names are registered).
+bool resolveStmt(const StmtAST* stmt, SemaContext& ctx);
+
+/// @brief Check if a let initializer references the variable being declared.
+void checkLetSelfReference(const ExprAST* expr, InternedString varName, SemaContext& ctx);
+
+// =============================================================================
+// LEGACY: Declaration Analysis (DEPRECATED - kept for compatibility during transition)
+// =============================================================================
+
+/// @brief [DEPRECATED] Use registerDeclName() + resolveDecl() instead.
+[[deprecated("Use registerDeclName() + resolveDecl() instead")]]
 void analyzeDecl(const DeclAST* decl, SemaContext& ctx);
 
-// ─── Specific Declaration Analyzers ──────────────────────────────────────
+/// @brief [DEPRECATED] Use resolveModuleDecls() instead.
+[[deprecated("Use resolveModuleDecls() instead")]]
+void analyzeModuleDecls(ModuleAST* module, SemaContext& ctx);
 
-void analyzeImportDecl(const ImportDeclAST* decl, SemaContext& ctx);
-void analyzeVarDecl(const VarDeclAST* decl, SemaContext& ctx);
-void analyzeFuncDecl(const FuncDeclAST* decl, SemaContext& ctx);
-void analyzeParam(const ParamAST* param, SemaContext& ctx);
-void analyzeGenericParamDecl(const GenericParamDeclAST* param, SemaContext& ctx);
-
-// ─── Type Declaration Analyzers (Two-Pass for structs) ──────────────────
-
-void analyzeStructDecl(const StructDeclAST* decl, SemaContext& ctx);
-void analyzeEnumDecl(const EnumDeclAST* decl, SemaContext& ctx);
-void analyzeTraitDecl(const TraitDeclAST* decl, SemaContext& ctx);
-
-// =============================================================================
-// Shared Function Analysis
-// =============================================================================
-
-/// @brief Analyze a function body with optional extra parameters (e.g., self).
-bool analyzeFunctionBody(FuncTypeAST* funcType,
-                          StmtPtr body,
-                          const std::vector<ParamAST*>& extraParams,
-                          const BaseAST* node,
-                          SemaContext& ctx);
-
-// =============================================================================
-// STATEMENTS - Control flow analysis
-// =============================================================================
-
+/// @brief [DEPRECATED] Use resolveStmt() instead.
+[[deprecated("Use resolveStmt() instead")]]
 bool analyzeStmt(const StmtAST* stmt, SemaContext& ctx);
+
+/// @brief [DEPRECATED] Use resolveBlock() instead.
+[[deprecated("Use resolveBlock() instead")]]
 bool analyzeBlock(const BlockStmtAST* block, SemaContext& ctx);
-bool analyzeIfStmt(const IfStmtAST* stmt, SemaContext& ctx);
-bool analyzeSwitchStmt(const SwitchStmtAST* stmt, SemaContext& ctx);
-bool analyzeSwitchCase(const SwitchCaseAST* switchCase, SemaContext& ctx);
-bool analyzeForStmt(const ForStmtAST* stmt, SemaContext& ctx);
-bool analyzeWhileStmt(const WhileStmtAST* stmt, SemaContext& ctx);
-bool analyzeDoWhileStmt(const DoWhileStmtAST* stmt, SemaContext& ctx);
-bool analyzeReturnStmt(const ReturnStmtAST* stmt, SemaContext& ctx);
-bool analyzeBreakStmt(const BreakStmtAST* stmt, SemaContext& ctx);
-bool analyzeContinueStmt(const ContinueStmtAST* stmt, SemaContext& ctx);
-bool analyzeExprStmt(const ExprStmtAST* stmt, SemaContext& ctx);
-bool analyzeDeclStmt(const DeclStmtAST* stmt, SemaContext& ctx);
+
+// =============================================================================
+// STATEMENTS - Control flow analysis (Phase 2)
+// =============================================================================
+
+bool resolveBlock(const BlockStmtAST* block, SemaContext& ctx);
+bool resolveIfStmt(const IfStmtAST* stmt, SemaContext& ctx);
+bool resolveSwitchStmt(const SwitchStmtAST* stmt, SemaContext& ctx);
+bool resolveSwitchCase(const SwitchCaseAST* switchCase, SemaContext& ctx);
+bool resolveForStmt(const ForStmtAST* stmt, SemaContext& ctx);
+bool resolveWhileStmt(const WhileStmtAST* stmt, SemaContext& ctx);
+bool resolveDoWhileStmt(const DoWhileStmtAST* stmt, SemaContext& ctx);
+bool resolveReturnStmt(const ReturnStmtAST* stmt, SemaContext& ctx);
+bool resolveBreakStmt(const BreakStmtAST* stmt, SemaContext& ctx);
+bool resolveContinueStmt(const ContinueStmtAST* stmt, SemaContext& ctx);
+bool resolveExprStmt(const ExprStmtAST* stmt, SemaContext& ctx);
+bool resolveDeclStmt(const DeclStmtAST* stmt, SemaContext& ctx);
 
 // ─── Concurrency ─────────────────────────────────────────────────────────
 
-bool analyzeAsyncStmt(const AsyncStmtAST* stmt, SemaContext& ctx);
-bool analyzeAwaitStmt(const AwaitStmtAST* stmt, SemaContext& ctx);
-bool analyzeSpawnStmt(const SpawnStmtAST* stmt, SemaContext& ctx);
-bool analyzeJoinStmt(const JoinStmtAST* stmt, SemaContext& ctx);
+bool resolveAsyncStmt(const AsyncStmtAST* stmt, SemaContext& ctx);
+bool resolveAwaitStmt(const AwaitStmtAST* stmt, SemaContext& ctx);
+bool resolveSpawnStmt(const SpawnStmtAST* stmt, SemaContext& ctx);
+bool resolveJoinStmt(const JoinStmtAST* stmt, SemaContext& ctx);
 
 // =============================================================================
 // EXPRESSIONS - Type checking
 // =============================================================================
+
+// These remain unchanged - checkExpr uses lookup which now works in Phase 2
 
 bool checkExpr(ExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
 
@@ -169,7 +222,7 @@ bool checkRangeExpr(RangeExprAST* expr, const TypeAST* targetType, SemaContext& 
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CONST EVALUATION
-// ─────────────────────────────────────────────────────────────────────────────
+// =============================================================================
 
 /// @brief Evaluate all const declarations in the modules.
 /// 

@@ -1,8 +1,11 @@
 /// @file SemaStmt.cpp
 /// @brief Implements Sema.hpp's "STATEMENTS - Control flow analysis" section.
 /// 
+/// This file handles Phase 2: Type resolution and validation for statements.
+/// All names are already registered from Phase 1, so lookups will succeed.
+/// 
 /// @architectural_note Control Flow Analysis
-///   Each statement analyzer returns a boolean indicating whether the statement
+///   Each statement resolver returns a boolean indicating whether the statement
 ///   guarantees control transfer out of the enclosing block (return, break,
 ///   continue, or a block whose last statement guarantees it).
 /// 
@@ -17,6 +20,7 @@
 ///   still transfers control).
 
 #include "../Sema.hpp"
+#include "../context/SemaContext.hpp"
 #include "core/ast/StmtAST.hpp"
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/DeclAST.hpp"
@@ -26,34 +30,34 @@
 namespace sema {
 
 // =============================================================================
-// analyzeStmt - Dispatch
+// resolveStmt - Dispatch
 // =============================================================================
 
-/// @brief Dispatch a statement to its specific analyze*Stmt() function.
+/// @brief Dispatch a statement to its specific resolver function.
 ///
-/// @param stmt The statement to analyze.
+/// @param stmt The statement to resolve.
 /// @param ctx The semantic context.
 /// @return true if this statement guarantees control transfer out of the block.
-bool analyzeStmt(const StmtAST* stmt, SemaContext& ctx) {
+bool resolveStmt(const StmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
     switch (stmt->kind) {
-        case ASTKind::BlockStmt:        return analyzeBlock(stmt->as<BlockStmtAST>(), ctx);
-        case ASTKind::IfStmt:           return analyzeIfStmt(stmt->as<IfStmtAST>(), ctx);
-        case ASTKind::SwitchStmt:       return analyzeSwitchStmt(stmt->as<SwitchStmtAST>(), ctx);
-        case ASTKind::SwitchCase:       return analyzeSwitchCase(stmt->as<SwitchCaseAST>(), ctx);
-        case ASTKind::ForStmt:          return analyzeForStmt(stmt->as<ForStmtAST>(), ctx);
-        case ASTKind::WhileStmt:        return analyzeWhileStmt(stmt->as<WhileStmtAST>(), ctx);
-        case ASTKind::DoWhileStmt:      return analyzeDoWhileStmt(stmt->as<DoWhileStmtAST>(), ctx);
-        case ASTKind::ReturnStmt:       return analyzeReturnStmt(stmt->as<ReturnStmtAST>(), ctx);
-        case ASTKind::BreakStmt:        return analyzeBreakStmt(stmt->as<BreakStmtAST>(), ctx);
-        case ASTKind::ContinueStmt:     return analyzeContinueStmt(stmt->as<ContinueStmtAST>(), ctx);
-        case ASTKind::ExprStmt:         return analyzeExprStmt(stmt->as<ExprStmtAST>(), ctx);
-        case ASTKind::DeclStmt:         return analyzeDeclStmt(stmt->as<DeclStmtAST>(), ctx);
-        case ASTKind::AsyncExpr:        return analyzeAsyncStmt(stmt->as<AsyncStmtAST>(), ctx);
-        case ASTKind::AwaitExpr:        return analyzeAwaitStmt(stmt->as<AwaitStmtAST>(), ctx);
-        case ASTKind::SpawnExpr:        return analyzeSpawnStmt(stmt->as<SpawnStmtAST>(), ctx);
-        case ASTKind::JoinExpr:         return analyzeJoinStmt(stmt->as<JoinStmtAST>(), ctx);
+        case ASTKind::BlockStmt:        return resolveBlock(stmt->as<BlockStmtAST>(), ctx);
+        case ASTKind::IfStmt:           return resolveIfStmt(stmt->as<IfStmtAST>(), ctx);
+        case ASTKind::SwitchStmt:       return resolveSwitchStmt(stmt->as<SwitchStmtAST>(), ctx);
+        case ASTKind::SwitchCase:       return resolveSwitchCase(stmt->as<SwitchCaseAST>(), ctx);
+        case ASTKind::ForStmt:          return resolveForStmt(stmt->as<ForStmtAST>(), ctx);
+        case ASTKind::WhileStmt:        return resolveWhileStmt(stmt->as<WhileStmtAST>(), ctx);
+        case ASTKind::DoWhileStmt:      return resolveDoWhileStmt(stmt->as<DoWhileStmtAST>(), ctx);
+        case ASTKind::ReturnStmt:       return resolveReturnStmt(stmt->as<ReturnStmtAST>(), ctx);
+        case ASTKind::BreakStmt:        return resolveBreakStmt(stmt->as<BreakStmtAST>(), ctx);
+        case ASTKind::ContinueStmt:     return resolveContinueStmt(stmt->as<ContinueStmtAST>(), ctx);
+        case ASTKind::ExprStmt:         return resolveExprStmt(stmt->as<ExprStmtAST>(), ctx);
+        case ASTKind::DeclStmt:         return resolveDeclStmt(stmt->as<DeclStmtAST>(), ctx);
+        case ASTKind::AsyncExpr:        return resolveAsyncStmt(stmt->as<AsyncStmtAST>(), ctx);
+        case ASTKind::AwaitExpr:        return resolveAwaitStmt(stmt->as<AwaitStmtAST>(), ctx);
+        case ASTKind::SpawnExpr:        return resolveSpawnStmt(stmt->as<SpawnStmtAST>(), ctx);
+        case ASTKind::JoinExpr:         return resolveJoinStmt(stmt->as<JoinStmtAST>(), ctx);
         default:
             // Unknown/error-recovery statement
             return false;
@@ -61,10 +65,10 @@ bool analyzeStmt(const StmtAST* stmt, SemaContext& ctx) {
 }
 
 // =============================================================================
-// analyzeBlock
+// resolveBlock
 // =============================================================================
 
-/// @brief Analyze a block statement.
+/// @brief Resolve a block statement.
 ///
 /// A block is a sequence of statements in a new scope.
 /// The block returns true if its last statement guarantees control transfer.
@@ -90,12 +94,7 @@ bool analyzeStmt(const StmtAST* stmt, SemaContext& ctx) {
 ///     let y int = 10 // ← UNREACHABLE - should warn
 /// }
 /// ```
-///
-/// @todo Add diagnostic for unreachable code after control transfer.
-///       Currently, statements after a transfer are silently skipped.
-///       We should emit a warning (DiagCode::W1001 - UnreachableCode)
-///       when this occurs.
-bool analyzeBlock(const BlockStmtAST* block, SemaContext& ctx) {
+bool resolveBlock(const BlockStmtAST* block, SemaContext& ctx) {
     // ─── 1. Push block context for pending inverse narrowing ────────────
     ctx.contexts.pushBlock(const_cast<BlockStmtAST*>(block), block->loc);
 
@@ -104,7 +103,7 @@ bool analyzeBlock(const BlockStmtAST* block, SemaContext& ctx) {
 
     // ─── 2. Apply pending inverse narrowing from previous statements ────
     // If there's pending inverse narrowing from a standalone if with early exit,
-    // apply it before analyzing the rest of the block
+    // apply it before resolving the rest of the block
     if (ctx.contexts.hasPendingInverseNarrowing()) {
         const NarrowingInfo& pendingInfo = ctx.contexts.getPendingInverseNarrowing();
         if (pendingInfo.hasNarrowing) {
@@ -117,47 +116,23 @@ bool analyzeBlock(const BlockStmtAST* block, SemaContext& ctx) {
         }
     }
 
-    // ─── 3. Analyze each statement in the block ──────────────────────────
+    // ─── 3. Resolve each statement in the block ──────────────────────────
     for (const StmtAST* stmt : block->stmts) {
         // ── 3a. Check if previous statement transferred control ──────────
         // If the previous statement transferred control, this statement is
         // unreachable. We should warn about it.
-        //
-        // TODO: Add unreachable code warning.
-        //       Once DiagCode::W1001 (UnreachableCode) is defined, emit:
-        //         ctx.warning(stmt, DiagCode::W1001,
-        //                     "unreachable statement after control transfer");
-        //
-        //       For now, we silently skip unreachable statements to avoid
-        //       analyzing dead code.
         if (transfers) {
-            // The previous statement transferred control.
-            // This statement is unreachable - skip it.
-            //
-            // TODO: Emit warning for unreachable code.
-            //       This is a common source of bugs and should be reported.
-            //
-            // Note: We still need to continue the loop to check for
-            //       any potential nested transfers, but since control
-            //       already transferred, we don't need to analyze
-            //       this or subsequent statements for control flow.
-            //       However, we might want to still analyze for
-            //       validation (e.g., type checking) to catch errors,
-            //       but that's a separate concern.
+            // TODO: Emit unreachable code warning
+            // ctx.warning(stmt, DiagCode::W1001,
+            //             "unreachable statement after control transfer");
             continue;
         }
 
-        // ── 3b. Analyze the statement ──────────────────────────────────────
-        transfers = analyzeStmt(stmt, ctx);
+        // ── 3b. Resolve the statement ──────────────────────────────────────
+        transfers = resolveStmt(stmt, ctx);
         
         // If the statement transfers control, subsequent statements are unreachable
         if (transfers) {
-            // This statement transfers control (return, break, continue).
-            // The next iteration will detect unreachable code.
-            //
-            // TODO: If we want to emit a warning for unreachable code,
-            //       we should track the position of the transfer statement
-            //       so we can report "code after this point is unreachable".
             break;
         }
     }
@@ -174,7 +149,6 @@ bool analyzeBlock(const BlockStmtAST* block, SemaContext& ctx) {
     // If we're inside a function that has requirements, check they're satisfied
     if (ctx.contexts.hasReturnRequirements() && !ctx.contexts.returnRequirementsSatisfied()) {
         // Only report error if the block doesn't transfer control via return
-        // If it transfers via break/continue, that's fine (loop/switch handles it)
         if (!transfers) {
             ctx.error(block, DiagCode::E3005,
                       "function is missing a return statement");
@@ -184,12 +158,11 @@ bool analyzeBlock(const BlockStmtAST* block, SemaContext& ctx) {
     return transfers;
 }
 
-
 // =============================================================================
-// analyzeIfStmt
+// resolveIfStmt
 // =============================================================================
 
-/// @brief Analyze an if statement.
+/// @brief Resolve an if statement.
 ///
 /// The condition must be a boolean expression.
 /// The then branch is always executed if the condition is true.
@@ -198,153 +171,18 @@ bool analyzeBlock(const BlockStmtAST* block, SemaContext& ctx) {
 /// ─── Type Narrowing Rules ─────────────────────────────────────────────────
 ///
 /// The compiler applies type narrowing inside branches based on the condition.
-///
-/// **Standard Narrowing — Inside the Block:**
-///
-/// When the condition checks a nullable variable, the compiler narrows its
-/// type inside the then-branch:
-///
-/// ```lucid
-/// const a int? = getValue();
-/// 
-/// if a != nil {
-///     -- a is int here, not int?
-///     const x int = a + 1;    -- OK
-/// }
-/// -- a is still int? here
-/// ```
-///
-/// **Inverse Narrowing — Early Exit Pattern:**
-///
-/// When a standalone `if` with no `else` contains a control flow exit
-/// (`return`, `break`, or `continue`), the compiler applies the inverse
-/// of the condition to the rest of the enclosing scope.
-///
-/// ```lucid
-/// -- VALID: standalone if — inverse narrowing applies
-/// if a == nil { return }
-/// -- a is non-nullable here
-///
-/// -- INVALID: has else — inverse narrowing NOT applied
-/// if a == nil { return } else { log("not nil") }
-/// -- a is still int? here
-///
-/// -- INVALID: chained else-if — inverse narrowing NOT applied
-/// if a == nil { return } else if b == nil { return }
-/// -- a and b are still nullable here
-/// ```
-///
-/// **Condition Table:**
-///
-/// | Condition  | Inside block            | Rest of scope (inverse)     |
-/// | ---------- | ----------------------- | --------------------------- |
-/// | `a == nil` | `a` is `nil`            | `a` is non-nullable         |
-/// | `a != nil` | `a` is non-nullable     | `a` is nullable (no change) |
-/// | `a == err` | `a` is `err`            | `a` is non-fallible         |
-/// | `a != err` | `a` is non-fallible     | `a` is fallible (no change) |
-/// | `not a`    | `a` is `nil` or `false` | `a` is non-nullable         |
-///
-/// **`or` at Top Level — Multiple Variables:**
-///
-/// ```lucid
-/// if a == nil or b == nil { return }
-/// -- inverse: a != nil AND b != nil
-/// -- rest: a is int, b is string — both narrowed
-/// ```
-///
-/// **`and` at Top Level — No Narrowing:**
-///
-/// ```lucid
-/// if a == nil and b == nil { return }
-/// -- inverse: a != nil OR b != nil
-/// -- cannot narrow either — no narrowing applied
-/// ```
-///
-/// ```lucid
-/// let x int? = getValue()
-/// if x == nil {
-///     return;
-/// }
-/// // x is int here (inverse narrowing)
-/// ```
-///
-/// ─── Execution Flow For Type Narrowing ─────────────────────────────────────
-///
-/// 1. analyzeIfStmt() called
-///    │
-///    ├── push(ContextKind::IfStmt)
-///    ├── setIfConditionCtx(true)
-///    ├── checkExpr(condition) → detects x == nil
-///    │   └── setPendingNarrowing({x → int, isEquality=true})
-///    ├── setIfConditionCtx(false)
-///    ├── info = getPendingNarrowing()  // {x → int, isEquality=true}
-///    ├── clearPendingNarrowing()
-///    │
-///    ├── pushNarrowingLevel(false)  // then branch
-///    │   └── For equality (x == nil): NO narrowing applied in then branch
-///    │       (x is nil, not a definite type)
-///    │
-///    ├── analyzeBlock(thenBranch)  // ← THIS IS KEY
-///    │   │
-///    │   ├── pushBlock()
-///    │   ├── analyzeStmt(return)  // ← Return statement
-///    │   │   │
-///    │   │   ├── analyzeReturnStmt()
-///    │   │   │   ├── Check: insideFunction() ✅
-///    │   │   │   ├── Check: return value matches expected type ✅
-///    │   │   │   ├── ctx.contexts.advanceReturnGroup()
-///    │   │   │   └── return true  // ← RETURN ALWAYS TRANSFERS CONTROL
-///    │   │   │
-///    │   │   └── returns true to analyzeBlock
-///    │   │
-///    │   ├── transfers = true  // ← Set by analyzeReturnStmt
-///    │   ├── popBlock()
-///    │   └── return transfers  // ← returns true to analyzeIfStmt
-///    │
-///    ├── thenReturns = true  // ← analyzeBlock returned true
-///    ├── popNarrowingLevel()
-///    │
-///    ├── Check: !stmt->elseBranch ✅
-///    ├── Check: thenReturns ✅
-///    ├── Check: hasNarrowing ✅
-///    ├── Check: info.isEquality ✅
-///    │
-///    ├── 🔑 setPendingInverseNarrowing(info)  // ← EARLY RETURN DETECTED!
-///    │
-///    └── pop()  // pop IfStmt context
-///
-/// 4. analyzeBlock(parentBlock) continues...
-///    │
-///    ├── pushBlock(parentBlock)
-///    │
-///    ├── 🔍 hasPendingInverseNarrowing() → true
-///    │   │
-///    │   ├── pushNarrowingLevel(true)  // Inverse narrowing
-///    │   ├── narrowVariable(x, int)   // x is now int in the rest of the block
-///    │   ├── clearPendingInverseNarrowing()
-///    │   └── hasAppliedPendingNarrowing = true
-///    │
-///    ├── analyzeStmt(println(x))  // ← x is int here ✅
-///    │
-///    └── popNarrowingLevel()  // pop inverse narrowing at block exit
-///        popBlock()
-///
-/// @param stmt The if statement.
-/// @param ctx The semantic context.
-/// @return true if the statement guarantees control transfer out of the block.
-bool analyzeIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
+/// See TypeNarrowHelpers.hpp for detailed documentation.
+bool resolveIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
     // ─── 1. Push if context for type narrowing ──────────────────────────
-    // Push IfStmt context so checkBinaryExpr knows we're in an if condition
     ctx.contexts.push(ContextKind::IfStmt, const_cast<IfStmtAST*>(stmt), stmt->loc);
     ctx.contexts.setHasElse(stmt->elseBranch != nullptr);
 
     // ─── 2. Create a bool type for the condition ──────────────────────────
     PrimitiveTypeAST* boolType = ctx.arena().makeType<PrimitiveTypeAST>(PrimitiveKind::Bool);
 
-    // ─── 3. Analyze condition with if context ────────────────────────────
-    // checkBinaryExpr will detect narrowing patterns because isIfConditionCtx is true
+    // ─── 3. Resolve condition with if context ────────────────────────────
     ctx.contexts.setIfConditionCtx(true);
     
     if (!checkExpr(stmt->condition, boolType, ctx)) {
@@ -356,11 +194,10 @@ bool analyzeIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
     ctx.contexts.setIfConditionCtx(false);
 
     // ─── 4. Extract narrowing info from the condition ────────────────────
-    // The condition may contain multiple narrowings (or at top level)
     NarrowingInfo info = extractNarrowingsFromCondition(stmt->condition, ctx);
     bool hasNarrowing = info.hasNarrowing;
 
-    // ─── 5. Analyze then branch with narrowing ──────────────────────────
+    // ─── 5. Resolve then branch with narrowing ──────────────────────────
     bool thenReturns = false;
 
     if (hasNarrowing) {
@@ -373,36 +210,32 @@ bool analyzeIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
             // (x is nil, but we don't track nil types)
             // For inequality (x != nil, x != err), apply normal narrowing
             if (!info.isEquality) {
-                // x != nil → x is non-nullable
-                // x != err → x is non-fallible
                 ctx.contexts.narrowVariable(varName, narrowedType);
             }
-            // For equality (x == nil), we don't narrow in then branch
-            // because x is nil, not a definite type
         }
         
         if (stmt->thenBranch && stmt->thenBranch->isa<BlockStmtAST>()) {
-            thenReturns = analyzeBlock(stmt->thenBranch->as<BlockStmtAST>(), ctx);
+            thenReturns = resolveBlock(stmt->thenBranch->as<BlockStmtAST>(), ctx);
         } else {
-            thenReturns = analyzeStmt(stmt->thenBranch, ctx);
+            thenReturns = resolveStmt(stmt->thenBranch, ctx);
         }
         ctx.contexts.popNarrowingLevel();
     } else {
-        // No narrowing - just analyze
+        // No narrowing - just resolve
         if (stmt->thenBranch && stmt->thenBranch->isa<BlockStmtAST>()) {
-            thenReturns = analyzeBlock(stmt->thenBranch->as<BlockStmtAST>(), ctx);
+            thenReturns = resolveBlock(stmt->thenBranch->as<BlockStmtAST>(), ctx);
         } else {
-            thenReturns = analyzeStmt(stmt->thenBranch, ctx);
+            thenReturns = resolveStmt(stmt->thenBranch, ctx);
         }
     }
 
-    // ─── 6. Analyze else branch (if present) ────────────────────────────
+    // ─── 6. Resolve else branch (if present) ────────────────────────────
     if (stmt->elseBranch) {
         bool elseReturns = false;
 
         // ─── 6a. Check if else branch is an else-if ──────────────────────
         if (stmt->elseBranch->isa<IfStmtAST>()) {
-            elseReturns = analyzeIfStmt(stmt->elseBranch->as<IfStmtAST>(), ctx);
+            elseReturns = resolveIfStmt(stmt->elseBranch->as<IfStmtAST>(), ctx);
         } else {
             // ─── 6b. Regular else branch with inverse narrowing ──────────
             if (hasNarrowing) {
@@ -419,17 +252,17 @@ bool analyzeIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
                 }
                 
                 if (stmt->elseBranch->isa<BlockStmtAST>()) {
-                    elseReturns = analyzeBlock(stmt->elseBranch->as<BlockStmtAST>(), ctx);
+                    elseReturns = resolveBlock(stmt->elseBranch->as<BlockStmtAST>(), ctx);
                 } else {
-                    elseReturns = analyzeStmt(stmt->elseBranch, ctx);
+                    elseReturns = resolveStmt(stmt->elseBranch, ctx);
                 }
                 ctx.contexts.popNarrowingLevel();
             } else {
                 // No narrowing
                 if (stmt->elseBranch->isa<BlockStmtAST>()) {
-                    elseReturns = analyzeBlock(stmt->elseBranch->as<BlockStmtAST>(), ctx);
+                    elseReturns = resolveBlock(stmt->elseBranch->as<BlockStmtAST>(), ctx);
                 } else {
-                    elseReturns = analyzeStmt(stmt->elseBranch, ctx);
+                    elseReturns = resolveStmt(stmt->elseBranch, ctx);
                 }
             }
         }
@@ -446,7 +279,7 @@ bool analyzeIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
     // ONLY when: no else, then branch transfers control, and condition is equality
     if (!stmt->elseBranch && thenReturns && hasNarrowing && info.isEquality) {
         // Set pending inverse narrowing on the current block
-        // This will be applied when analyzeBlock continues
+        // This will be applied when resolveBlock continues
         ctx.contexts.setPendingInverseNarrowing(info);
     }
 
@@ -458,10 +291,10 @@ bool analyzeIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
 }
 
 // =============================================================================
-// analyzeSwitchStmt
+// resolveSwitchStmt
 // =============================================================================
 
-/// @brief Analyze a switch statement.
+/// @brief Resolve a switch statement.
 ///
 /// The subject must be an integer, enum, bool, char, or string type.
 /// Each case must have a body that is a block.
@@ -470,22 +303,146 @@ bool analyzeIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
 /// @param stmt The switch statement.
 /// @param ctx The semantic context.
 /// @return true if the statement guarantees control transfer out of the block.
-bool analyzeSwitchStmt(const SwitchStmtAST* stmt, SemaContext& ctx) {
-    // TODO: Check the subject expression (must be integer, enum, bool, char, or string)
-    // TODO: Analyze each case statement
-    // TODO: Check for duplicate case values (compile-time error)
-    // TODO: Check for exhaustive matching (enum types without default)
-    // TODO: Analyze the default clause (if present)
-    // TODO: Return true if ALL cases transfer control AND default transfers control
-    //       (or no default but all possible values are covered)
+bool resolveSwitchStmt(const SwitchStmtAST* stmt, SemaContext& ctx) {
+    if (!stmt) return false;
+
+    // ─── 1. Push switch context ──────────────────────────────────────────
+    ctx.contexts.push(ContextKind::SwitchBody, const_cast<SwitchStmtAST*>(stmt), stmt->loc);
+
+    // ─── 2. Resolve the subject expression ──────────────────────────────
+    // The subject must be an integer, enum, bool, char, or string type
+    // We check this by resolving the expression and validating the type
+    if (!checkExpr(stmt->subject, nullptr, ctx)) {
+        ctx.contexts.pop();
+        return false;
+    }
+
+    // ─── 3. Validate subject type ────────────────────────────────────────
+    const TypeAST* subjectType = stmt->subject->resolvedType;
+    if (!subjectType) {
+        ctx.error(stmt->subject, DiagCode::E2002, "switch subject has no type");
+        ctx.contexts.pop();
+        return false;
+    }
+
+    // Check if subject type is valid for switch
+    if (!isValidSwitchType(subjectType, ctx)) {
+        ctx.error(stmt->subject, DiagCode::E3003,
+                  "switch subject must be integer, enum, bool, char, or string");
+        ctx.contexts.pop();
+        return false;
+    }
+
+    // ─── 4. Resolve each case statement ──────────────────────────────────
+    bool allCasesReturn = true;
+    bool hasDefault = stmt->defaultBody != nullptr;
+
+    for (const SwitchCasePtr caseStmt : stmt->cases) {
+        if (!resolveSwitchCase(caseStmt, ctx)) {
+            allCasesReturn = false;
+        }
+    }
+
+    // ─── 5. Resolve default clause (if present) ──────────────────────────
+    if (stmt->defaultBody) {
+        if (!resolveBlock(stmt->defaultBody, ctx)) {
+            allCasesReturn = false;
+        }
+    }
+
+    // ─── 6. Check exhaustiveness for enum types ──────────────────────────
+    // If the subject is an enum and no default is present, check all variants are covered
+    if (!hasDefault && isEnumType(subjectType, ctx)) {
+        checkSwitchExhaustiveness(stmt, subjectType, ctx);
+    }
+
+    // ─── 7. Pop switch context ────────────────────────────────────────────
+    ctx.contexts.pop();
+
+    // A switch transfers control only if ALL cases transfer control
+    // AND (there is a default that transfers control OR the enum is exhaustive)
+    return allCasesReturn && (hasDefault || isEnumType(subjectType, ctx));
+}
+
+/// @brief Check if a type is valid for switch statements.
+bool isValidSwitchType(const TypeAST* type, SemaContext& ctx) {
+    if (!type) return false;
+
+    // Integer types are valid
+    if (isIntegerType(type)) return true;
+
+    // Bool is valid
+    if (isBoolType(type)) return true;
+
+    // Char is valid
+    if (isCharType(type)) return true;
+
+    // String is valid
+    if (isStringType(type)) return true;
+
+    // Enum types are valid
+    if (type->isa<NamedTypeAST>()) {
+        const NamedTypeAST* named = type->as<NamedTypeAST>();
+        const TypeDeclAST* decl = lookupType(named->name, ctx);
+        if (decl && decl->isa<EnumDeclAST>()) {
+            return true;
+        }
+    }
+
     return false;
 }
 
+/// @brief Check if a type is an enum type.
+bool isEnumType(const TypeAST* type, SemaContext& ctx) {
+    if (!type || !type->isa<NamedTypeAST>()) return false;
+    
+    const NamedTypeAST* named = type->as<NamedTypeAST>();
+    const TypeDeclAST* decl = lookupType(named->name, ctx);
+    return decl && decl->isa<EnumDeclAST>();
+}
+
+/// @brief Check exhaustiveness of enum switch cases.
+void checkSwitchExhaustiveness(const SwitchStmtAST* stmt, const TypeAST* subjectType, SemaContext& ctx) {
+    // Collect all enum variants covered by cases
+    std::unordered_set<InternedString> coveredVariants;
+
+    for (const SwitchCasePtr caseStmt : stmt->cases) {
+        for (const ExprAST* value : caseStmt->values) {
+            if (value->isa<FieldAccessExprAST>()) {
+                const FieldAccessExprAST* field = value->as<FieldAccessExprAST>();
+                // Check if this is an enum variant access
+                if (field->object->isa<IdentifierExprAST>()) {
+                    const IdentifierExprAST* id = field->object->as<IdentifierExprAST>();
+                    if (isEnum(id->name, ctx)) {
+                        coveredVariants.insert(field->fieldName);
+                    }
+                }
+            }
+        }
+    }
+
+    // Get all variants from the enum declaration
+    const NamedTypeAST* named = subjectType->as<NamedTypeAST>();
+    const TypeDeclAST* decl = lookupType(named->name, ctx);
+    if (!decl || !decl->isa<EnumDeclAST>()) return;
+
+    const EnumDeclAST* enumDecl = decl->as<EnumDeclAST>();
+
+    // Check for missing variants
+    for (const EnumVariantAST* variant : enumDecl->variants) {
+        if (coveredVariants.find(variant->name) == coveredVariants.end()) {
+            ctx.error(stmt, DiagCode::E3003,
+                      "switch on enum '", ctx.pool().lookup(enumDecl->name),
+                      "' is missing case for variant '", ctx.pool().lookup(variant->name), "'");
+        }
+    }
+}
+
 // =============================================================================
-// analyzeSwitchCase
+// resolveSwitchCase
 // =============================================================================
 
-/// @brief Analyze a switch case.
+/// @brief Resolve a switch case.
 ///
 /// A case has one or more match values (literals, enum variants, or ranges)
 /// and a body block.
@@ -493,19 +450,41 @@ bool analyzeSwitchStmt(const SwitchStmtAST* stmt, SemaContext& ctx) {
 /// @param switchCase The switch case.
 /// @param ctx The semantic context.
 /// @return true if the case body guarantees control transfer out of the block.
-bool analyzeSwitchCase(const SwitchCaseAST* switchCase, SemaContext& ctx) {
-    // TODO: Check each case value (must be compatible with the switch subject)
-    // TODO: Check for duplicate case values within the same switch
-    // TODO: Analyze the case body
-    // TODO: Return true if the body transfers control
+bool resolveSwitchCase(const SwitchCaseAST* switchCase, SemaContext& ctx) {
+    if (!switchCase) return false;
+
+    // ─── 1. Validate each case value ──────────────────────────────────────
+    for (const ExprAST* value : switchCase->values) {
+        // Case values must be literals, enum variants, or ranges
+        // The parser already enforces this, but we check again
+        if (!value->isa<LiteralExprAST>() && 
+            !value->isa<FieldAccessExprAST>() && 
+            !value->isa<RangeExprAST>()) {
+            ctx.error(value, DiagCode::E3003,
+                      "case value must be a literal, enum variant, or range");
+            continue;
+        }
+
+        // Resolve the case value
+        if (!checkExpr(value, nullptr, ctx)) {
+            // Error already reported
+            continue;
+        }
+    }
+
+    // ─── 2. Resolve the case body ────────────────────────────────────────
+    if (switchCase->body) {
+        return resolveBlock(switchCase->body, ctx);
+    }
+
     return false;
 }
 
 // =============================================================================
-// analyzeForStmt
+// resolveForStmt
 // =============================================================================
 
-/// @brief Analyze a for loop statement.
+/// @brief Resolve a for loop statement.
 ///
 /// A for loop iterates over a range or collection.
 /// The index and value bindings are optional (can be ignored with `_`).
@@ -513,22 +492,82 @@ bool analyzeSwitchCase(const SwitchCaseAST* switchCase, SemaContext& ctx) {
 /// @param stmt The for statement.
 /// @param ctx The semantic context.
 /// @return true if the statement guarantees control transfer out of the block.
-bool analyzeForStmt(const ForStmtAST* stmt, SemaContext& ctx) {
-    // TODO: Push a new scope for loop variables
-    // TODO: Analyze the index binding (if present)
-    // TODO: Analyze the value binding (if present)
-    // TODO: Analyze the iterable expression (must be a range or collection)
-    // TODO: Analyze the step expression (if present, must be numeric)
-    // TODO: Analyze the loop body
-    // TODO: Return false (for loops do NOT guarantee transfer)
+bool resolveForStmt(const ForStmtAST* stmt, SemaContext& ctx) {
+    if (!stmt) return false;
+
+    // ─── 1. Push loop context ────────────────────────────────────────────
+    ctx.contexts.pushLoop(const_cast<StmtAST*>(stmt->body), stmt->loc);
+
+    // ─── 2. Push a scope for loop variables ──────────────────────────────
+    ctx.symbols.pushScope();
+
+    // ─── 3. Resolve the index binding (if present) ──────────────────────
+    if (stmt->indexVar) {
+        // The index variable was already registered in Phase 1
+        // Now we resolve its type
+        TypeAST* indexType = resolveType(stmt->indexVar->type, ctx);
+        if (!indexType) {
+            // Error already reported
+        }
+        // Check that index type is integer
+        if (indexType && !isIntegerType(indexType)) {
+            ctx.error(stmt->indexVar, DiagCode::E3003,
+                      "index variable must be an integer type");
+        }
+    }
+
+    // ─── 4. Resolve the value binding (if present) ──────────────────────
+    if (stmt->valueVar) {
+        // The value variable was already registered in Phase 1
+        // Now we resolve its type
+        TypeAST* valueType = resolveType(stmt->valueVar->type, ctx);
+        if (!valueType) {
+            // Error already reported
+        }
+    }
+
+    // ─── 5. Resolve the iterable expression ──────────────────────────────
+    if (stmt->iterable) {
+        if (!checkExpr(stmt->iterable, nullptr, ctx)) {
+            // Error already reported
+        }
+    }
+
+    // ─── 6. Resolve the step expression (if present) ──────────────────────
+    if (stmt->step) {
+        if (!checkExpr(stmt->step, nullptr, ctx)) {
+            // Error already reported
+        }
+        // Check that step is numeric
+        if (stmt->step->resolvedType && !isNumericType(stmt->step->resolvedType)) {
+            ctx.error(stmt->step, DiagCode::E3003,
+                      "step must be a numeric type");
+        }
+    }
+
+    // ─── 7. Resolve the loop body ─────────────────────────────────────────
+    bool bodyTransfers = false;
+    if (stmt->body) {
+        bodyTransfers = resolveStmt(stmt->body, ctx);
+    }
+
+    // ─── 8. Pop the scope ──────────────────────────────────────────────────
+    ctx.symbols.popScope();
+
+    // ─── 9. Pop loop context ──────────────────────────────────────────────
+    ctx.contexts.pop();
+
+    // For loops do NOT guarantee control transfer (unless the body always returns)
+    // But even then, the loop might not execute, so we return false
+    // Note: A for loop with break/continue doesn't guarantee transfer
     return false;
 }
 
 // =============================================================================
-// analyzeWhileStmt
+// resolveWhileStmt
 // =============================================================================
 
-/// @brief Analyze a while loop statement.
+/// @brief Resolve a while loop statement.
 ///
 /// The condition is tested before each iteration.
 /// The loop exits when the condition is false or a break is reached.
@@ -536,51 +575,81 @@ bool analyzeForStmt(const ForStmtAST* stmt, SemaContext& ctx) {
 /// @param stmt The while statement.
 /// @param ctx The semantic context.
 /// @return true if the statement guarantees control transfer out of the block.
-bool analyzeWhileStmt(const WhileStmtAST* stmt, SemaContext& ctx) {
-    // TODO: Check the condition expression (must be bool)
-    // TODO: Analyze the loop body
-    // TODO: Return false (while loops do NOT guarantee transfer)
+bool resolveWhileStmt(const WhileStmtAST* stmt, SemaContext& ctx) {
+    if (!stmt) return false;
+
+    // ─── 1. Push loop context ────────────────────────────────────────────
+    ctx.contexts.pushLoop(const_cast<StmtAST*>(stmt->body), stmt->loc);
+
+    // ─── 2. Resolve the condition ──────────────────────────────────────────
+    PrimitiveTypeAST* boolType = ctx.arena().makeType<PrimitiveTypeAST>(PrimitiveKind::Bool);
+    if (!checkExpr(stmt->condition, boolType, ctx)) {
+        ctx.contexts.pop();
+        return false;
+    }
+
+    // ─── 3. Resolve the loop body ─────────────────────────────────────────
+    bool bodyTransfers = false;
+    if (stmt->body) {
+        bodyTransfers = resolveStmt(stmt->body, ctx);
+    }
+
+    // ─── 4. Pop loop context ──────────────────────────────────────────────
+    ctx.contexts.pop();
+
+    // While loops do NOT guarantee control transfer
     return false;
 }
 
 // =============================================================================
-// analyzeDoWhileStmt
+// resolveDoWhileStmt
 // =============================================================================
 
-/// @brief Analyze a do-while loop statement.
+/// @brief Resolve a do-while loop statement.
 ///
 /// The body executes at least once before the condition is checked.
 ///
 /// @param stmt The do-while statement.
 /// @param ctx The semantic context.
 /// @return true if the statement guarantees control transfer out of the block.
-bool analyzeDoWhileStmt(const DoWhileStmtAST* stmt, SemaContext& ctx) {
-    // TODO: Analyze the loop body
-    // TODO: Check the condition expression (must be bool)
-    // TODO: Return false (do-while loops do NOT guarantee transfer)
+bool resolveDoWhileStmt(const DoWhileStmtAST* stmt, SemaContext& ctx) {
+    if (!stmt) return false;
+
+    // ─── 1. Push loop context ────────────────────────────────────────────
+    ctx.contexts.pushLoop(const_cast<StmtAST*>(stmt->body), stmt->loc);
+
+    // ─── 2. Resolve the loop body ─────────────────────────────────────────
+    bool bodyTransfers = false;
+    if (stmt->body) {
+        bodyTransfers = resolveStmt(stmt->body, ctx);
+    }
+
+    // ─── 3. Resolve the condition ──────────────────────────────────────────
+    PrimitiveTypeAST* boolType = ctx.arena().makeType<PrimitiveTypeAST>(PrimitiveKind::Bool);
+    if (!checkExpr(stmt->condition, boolType, ctx)) {
+        ctx.contexts.pop();
+        return false;
+    }
+
+    // ─── 4. Pop loop context ──────────────────────────────────────────────
+    ctx.contexts.pop();
+
+    // Do-while loops do NOT guarantee control transfer
     return false;
 }
 
 // =============================================================================
-// analyzeReturnStmt
+// resolveReturnStmt
 // =============================================================================
 
-/// @brief Analyze a return statement.
+/// @brief Resolve a return statement.
 ///
 /// The return statement exits the enclosing function.
-/// It may return zero or one expression (Lucid uses single expression returns).
-///
-/// ─── Validation ──────────────────────────────────────────────────────────────
-/// 1. Must be inside a function body (ContextKind::FuncBody)
-/// 2. The return value type must match the function's return type
-/// 3. Cannot return from top-level
-/// 4. Inside a standalone if with no else, the return triggers inverse narrowing
-///    (handled by analyzeIfStmt via the boolean return value)
 ///
 /// @param stmt The return statement.
 /// @param ctx The semantic context.
 /// @return true (return always transfers control out of the block).
-bool analyzeReturnStmt(const ReturnStmtAST* stmt, SemaContext& ctx) {
+bool resolveReturnStmt(const ReturnStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return true;  // Return always transfers control
 
     // ─── 1. Check: Must be inside a function body ──────────────────────────
@@ -593,28 +662,23 @@ bool analyzeReturnStmt(const ReturnStmtAST* stmt, SemaContext& ctx) {
     // ─── 2. Get the current function's return requirements ──────────────────
     const ReturnRequirements* reqs = ctx.contexts.currentReturnReqs();
     if (!reqs) {
-        // Shouldn't happen if insideFunction() is true, but safe
         ctx.error(stmt, DiagCode::E3006,
                   "return statement with no return requirements");
         return true;
     }
 
     // ─── 3. Get the current return group ────────────────────────────────────
-    // For curried functions, each return must match the current group's type
     const ReturnRequirements::Group* currentGroup = ctx.contexts.currentReturnGroup();
 
     // ─── 4. Check return value against current group ────────────────────────
     if (stmt->value) {
         // ── 4a. Function has a return value ─────────────────────────────────
-        
-        // Must have a current group to return to
         if (!currentGroup) {
             ctx.error(stmt, DiagCode::E3005,
                       "return value provided but function has no pending return group");
             return true;
         }
 
-        // Check the return value type against the group's return type
         const TypeAST* expectedType = currentGroup->returnType;
         if (!expectedType) {
             ctx.error(stmt, DiagCode::E3005,
@@ -622,21 +686,17 @@ bool analyzeReturnStmt(const ReturnStmtAST* stmt, SemaContext& ctx) {
             return true;
         }
 
-        // Check the expression against the expected type
         if (!checkExpr(stmt->value, expectedType, ctx)) {
-            // Error already reported by checkExpr
             return true;
         }
 
-        // ── 4b. Validate fallible/nullable propagation ──────────────────────
-        // A fallible value cannot be returned without handling err first
+        // Validate fallible/nullable propagation
         if (stmt->value->valueState == ValueState::Err) {
             if (!isFallibleType(expectedType)) {
                 ctx.error(stmt->value, DiagCode::E3003,
                           "cannot return err to non-fallible return type");
                 return true;
             }
-            // If target is fallible, err is acceptable
         }
 
         if (stmt->value->valueState == ValueState::Nil) {
@@ -645,21 +705,16 @@ bool analyzeReturnStmt(const ReturnStmtAST* stmt, SemaContext& ctx) {
                           "cannot return nil to non-nullable return type");
                 return true;
             }
-            // If target is nullable, nil is acceptable
         }
 
     } else {
-        // ── 4c. Void return (no value) ──────────────────────────────────────
-        
-        // Check if void is allowed
+        // ── 4b. Void return (no value) ──────────────────────────────────────
         if (currentGroup && currentGroup->requiresReturn) {
-            // This group requires a return value
             ctx.error(stmt, DiagCode::E3005,
                       "void return statement but function expects a return value");
             return true;
         }
 
-        // Check if the function allows optional return
         if (!reqs->allowsOptionalReturn) {
             ctx.error(stmt, DiagCode::E3005,
                       "void return statement not allowed in this function");
@@ -668,51 +723,45 @@ bool analyzeReturnStmt(const ReturnStmtAST* stmt, SemaContext& ctx) {
     }
 
     // ─── 5. Advance the return group ────────────────────────────────────────
-    // This marks the current group as satisfied and moves to the next
     if (currentGroup) {
         ctx.contexts.advanceReturnGroup();
-        
-        // Record where this group was satisfied (for diagnostics)
-        // Note: currentGroup is const, we need to cast
         const_cast<ReturnRequirements::Group*>(currentGroup)->satisfiedAt = stmt->loc;
     }
 
-    // ─── 6. Check if all groups are now satisfied ──────────────────────────
-    if (reqs->hasRequirements() && reqs->isSatisfied()) {
-        // All return requirements satisfied - this is a terminal return
-        // (the function will exit after this)
-        // No additional action needed - the return already transfers control
-    }
-
-    // ─── 7. Return true (return always transfers control) ───────────────────
-    // This boolean propagates up to analyzeIfStmt, which checks
-    // if thenReturns is true to apply inverse narrowing
+    // ─── 6. Return true (return always transfers control) ───────────────────
     return true;
 }
 
 // =============================================================================
-// analyzeBreakStmt
+// resolveBreakStmt
 // =============================================================================
 
-/// @brief Analyze a break statement.
+/// @brief Resolve a break statement.
 ///
 /// The break statement exits the nearest enclosing loop or switch.
 ///
 /// @param stmt The break statement.
 /// @param ctx The semantic context.
 /// @return true (break always transfers control out of the block).
-bool analyzeBreakStmt(const BreakStmtAST* stmt, SemaContext& ctx) {
-    // TODO: Check that we're inside a loop or switch (SemanticContext::LoopBody or SwitchBody)
-    // TODO: Verify break is not used outside of a loop/switch
-    // TODO: Return true (break always transfers control)
+bool resolveBreakStmt(const BreakStmtAST* stmt, SemaContext& ctx) {
+    if (!stmt) return true;
+
+    // ─── 1. Check: Must be inside a loop or switch ────────────────────────
+    if (!ctx.contexts.insideLoop() && !ctx.contexts.insideSwitch()) {
+        ctx.error(stmt, DiagCode::E3006,
+                  "break statement outside of loop or switch");
+        return true;  // Still transfers control (error recovery)
+    }
+
+    // ─── 2. Return true (break always transfers control) ───────────────────
     return true;
 }
 
 // =============================================================================
-// analyzeContinueStmt
+// resolveContinueStmt
 // =============================================================================
 
-/// @brief Analyze a continue statement.
+/// @brief Resolve a continue statement.
 ///
 /// The continue statement skips the rest of the current loop iteration
 /// and jumps to the next iteration.
@@ -720,18 +769,25 @@ bool analyzeBreakStmt(const BreakStmtAST* stmt, SemaContext& ctx) {
 /// @param stmt The continue statement.
 /// @param ctx The semantic context.
 /// @return true (continue always transfers control out of the block).
-bool analyzeContinueStmt(const ContinueStmtAST* stmt, SemaContext& ctx) {
-    // TODO: Check that we're inside a loop (SemanticContext::LoopBody)
-    // TODO: Verify continue is not used outside of a loop
-    // TODO: Return true (continue always transfers control)
+bool resolveContinueStmt(const ContinueStmtAST* stmt, SemaContext& ctx) {
+    if (!stmt) return true;
+
+    // ─── 1. Check: Must be inside a loop ────────────────────────────────────
+    if (!ctx.contexts.insideLoop()) {
+        ctx.error(stmt, DiagCode::E3006,
+                  "continue statement outside of loop");
+        return true;  // Still transfers control (error recovery)
+    }
+
+    // ─── 2. Return true (continue always transfers control) ─────────────────
     return true;
 }
 
 // =============================================================================
-// analyzeExprStmt
+// resolveExprStmt
 // =============================================================================
 
-/// @brief Analyze an expression statement.
+/// @brief Resolve an expression statement.
 ///
 /// An expression statement evaluates an expression for its side effects.
 /// The expression's value is discarded.
@@ -739,19 +795,71 @@ bool analyzeContinueStmt(const ContinueStmtAST* stmt, SemaContext& ctx) {
 /// @param stmt The expression statement.
 /// @param ctx The semantic context.
 /// @return false (expression statements do NOT transfer control).
-bool analyzeExprStmt(const ExprStmtAST* stmt, SemaContext& ctx) {
-    // TODO: Check the expression (validate it exists and has a type)
-    // TODO: Warn if the expression has no side effects (pure expression)
-    // TODO: Warn if a non-void expression result is discarded without explicit intent
-    // TODO: Return false (expression statements do not transfer control)
+bool resolveExprStmt(const ExprStmtAST* stmt, SemaContext& ctx) {
+    if (!stmt || !stmt->expr) return false;
+
+    // ─── 1. Resolve the expression ──────────────────────────────────────────
+    // The expression type is determined by its context
+    if (!checkExpr(stmt->expr, nullptr, ctx)) {
+        return false;
+    }
+
+    // ─── 2. Check for discarded non-void value ─────────────────────────────
+    // If the expression has a non-void type and no side effects, warn
+    if (stmt->expr->resolvedType && 
+        !stmt->expr->resolvedType->isa<PrimitiveTypeAST>() &&
+        stmt->expr->resolvedType->as<PrimitiveTypeAST>()->primitiveKind == PrimitiveKind::Void) {
+        // Void expression is fine
+    } else if (stmt->expr->resolvedType) {
+        // Check if the expression has side effects (function calls, assignments, etc.)
+        bool hasSideEffects = hasSideEffects(stmt->expr, ctx);
+        if (!hasSideEffects) {
+            // TODO: Emit warning about discarded pure expression
+            // ctx.warning(stmt, DiagCode::W1002,
+            //             "expression result is discarded (no side effects)");
+        }
+    }
+
+    // ─── 3. Return false (expression statements do not transfer control) ────
     return false;
 }
 
+/// @brief Check if an expression has side effects.
+bool hasSideEffects(const ExprAST* expr, SemaContext& ctx) {
+    if (!expr) return false;
+
+    switch (expr->kind) {
+        case ASTKind::CallExpr:
+            return true;  // Function calls may have side effects
+        case ASTKind::AssignExpr:
+            return true;  // Assignment has side effects
+        case ASTKind::PipelineExpr: {
+            const PipelineExprAST* pipeline = expr->as<PipelineExprAST>();
+            for (const PipelineStepPtr step : pipeline->steps) {
+                if (step->callable && hasSideEffects(step->callable, ctx)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        case ASTKind::BinaryExpr: {
+            const BinaryExprAST* bin = expr->as<BinaryExprAST>();
+            return hasSideEffects(bin->left, ctx) || hasSideEffects(bin->right, ctx);
+        }
+        case ASTKind::UnaryExpr: {
+            const UnaryExprAST* unary = expr->as<UnaryExprAST>();
+            return hasSideEffects(unary->operand, ctx);
+        }
+        default:
+            return false;
+    }
+}
+
 // =============================================================================
-// analyzeDeclStmt
+// resolveDeclStmt
 // =============================================================================
 
-/// @brief Analyze a declaration statement.
+/// @brief Resolve a declaration statement.
 ///
 /// A declaration statement introduces one or more local declarations
 /// (variables, functions, structs, enums, traits).
@@ -759,22 +867,25 @@ bool analyzeExprStmt(const ExprStmtAST* stmt, SemaContext& ctx) {
 /// @param stmt The declaration statement.
 /// @param ctx The semantic context.
 /// @return false (declaration statements do NOT transfer control).
-bool analyzeDeclStmt(const DeclStmtAST* stmt, SemaContext& ctx) {
-    // TODO: Dispatch to analyzeDecl() for the inner declaration
-    // TODO: Return false (declarations do not transfer control)
+bool resolveDeclStmt(const DeclStmtAST* stmt, SemaContext& ctx) {
+    if (!stmt || !stmt->decl) return false;
+
+    // ─── 1. Dispatch to resolveDecl() for the inner declaration ────────────
+    // The declaration was already registered in Phase 1.
+    // Now we resolve its type and validate it.
+    resolveDecl(stmt->decl, ctx);
+
+    // ─── 2. Return false (declarations do not transfer control) ────────────
     return false;
 }
-
-
-
 
 // =============================================================================
 // Concurrency Statements
 // =============================================================================
 
-// ─── analyzeAsyncStmt ──────────────────────────────────────────────────────
+// ─── resolveAsyncStmt ──────────────────────────────────────────────────────
 
-/// @brief Analyze an async statement.
+/// @brief Resolve an async statement.
 ///
 /// Grammar: `async IDENTIFIER { ',' IDENTIFIER } '=' call_expr`
 ///
@@ -784,19 +895,50 @@ bool analyzeDeclStmt(const DeclStmtAST* stmt, SemaContext& ctx) {
 /// @param stmt The async statement.
 /// @param ctx The semantic context.
 /// @return false (async does NOT transfer control).
-bool analyzeAsyncStmt(const AsyncStmtAST* stmt, SemaContext& ctx) {
-    // TODO: Check that we're inside a function body
-    // TODO: Check each target variable (must be assignable lvalue)
-    // TODO: Check the call expression (must be a function call)
-    // TODO: Check the call expression's return type is compatible with targets
-    // TODO: Mark variables as Future<T>
-    // TODO: Return false (async does not transfer control)
+bool resolveAsyncStmt(const AsyncStmtAST* stmt, SemaContext& ctx) {
+    if (!stmt) return false;
+
+    // ─── 1. Check: Must be inside a function body ──────────────────────────
+    if (!ctx.contexts.insideFunction()) {
+        ctx.error(stmt, DiagCode::E3006,
+                  "async statement outside of function body");
+        return false;
+    }
+
+    // ─── 2. Check the target variable ──────────────────────────────────────
+    if (!stmt->target) {
+        ctx.error(stmt, DiagCode::E3003, "async statement requires a target variable");
+        return false;
+    }
+
+    // The target must be an assignable lvalue
+    if (!stmt->target->isa<IdentifierExprAST>()) {
+        ctx.error(stmt->target, DiagCode::E3003,
+                  "async target must be a variable (not an expression)");
+        return false;
+    }
+
+    // ─── 3. Resolve the call expression ─────────────────────────────────────
+    if (!stmt->call) {
+        ctx.error(stmt, DiagCode::E3003, "async statement requires a call expression");
+        return false;
+    }
+
+    if (!checkExpr(stmt->call, nullptr, ctx)) {
+        return false;
+    }
+
+    // ─── 4. Verify the call returns a Future type ──────────────────────────
+    // The checkExpr should have set the resolved type
+    // TODO: Verify the call returns a Future<T> type
+
+    // ─── 5. Return false (async does not transfer control) ──────────────────
     return false;
 }
 
-// ─── analyzeAwaitStmt ──────────────────────────────────────────────────────
+// ─── resolveAwaitStmt ──────────────────────────────────────────────────────
 
-/// @brief Analyze an await statement.
+/// @brief Resolve an await statement.
 ///
 /// Grammar: `await IDENTIFIER { ',' IDENTIFIER }`
 ///
@@ -806,18 +948,35 @@ bool analyzeAsyncStmt(const AsyncStmtAST* stmt, SemaContext& ctx) {
 /// @param stmt The await statement.
 /// @param ctx The semantic context.
 /// @return false (await does NOT transfer control).
-bool analyzeAwaitStmt(const AwaitStmtAST* stmt, SemaContext& ctx) {
-    // TODO: Check that we're inside a function body
-    // TODO: Check each target variable (must be assignable lvalue)
-    // TODO: Verify each variable is Future<T>
-    // TODO: Change variable type from Future<T> to T
-    // TODO: Return false (await does not transfer control)
+bool resolveAwaitStmt(const AwaitStmtAST* stmt, SemaContext& ctx) {
+    if (!stmt) return false;
+
+    // ─── 1. Check: Must be inside a function body ──────────────────────────
+    if (!ctx.contexts.insideFunction()) {
+        ctx.error(stmt, DiagCode::E3006,
+                  "await statement outside of function body");
+        return false;
+    }
+
+    // ─── 2. Check each target variable ─────────────────────────────────────
+    for (const ExprAST* target : stmt->targets) {
+        if (!target->isa<IdentifierExprAST>()) {
+            ctx.error(target, DiagCode::E3003,
+                      "await target must be a variable (not an expression)");
+            continue;
+        }
+
+        // TODO: Verify the variable is a Future<T> type
+        // TODO: Change variable type from Future<T> to T
+    }
+
+    // ─── 3. Return false (await does not transfer control) ──────────────────
     return false;
 }
 
-// ─── analyzeSpawnStmt ──────────────────────────────────────────────────────
+// ─── resolveSpawnStmt ──────────────────────────────────────────────────────
 
-/// @brief Analyze a spawn statement.
+/// @brief Resolve a spawn statement.
 ///
 /// Grammar: `spawn IDENTIFIER { ',' IDENTIFIER } '=' call_expr`
 ///
@@ -827,20 +986,43 @@ bool analyzeAwaitStmt(const AwaitStmtAST* stmt, SemaContext& ctx) {
 /// @param stmt The spawn statement.
 /// @param ctx The semantic context.
 /// @return false (spawn does NOT transfer control).
-bool analyzeSpawnStmt(const SpawnStmtAST* stmt, SemaContext& ctx) {
-    // TODO: Check that we're inside a function body
-    // TODO: Check each target variable (must be assignable lvalue)
-    // TODO: Check the call expression (must be a function call)
-    // TODO: Check the call expression's return type is compatible with targets
-    // TODO: Mark variables as Future<T>
-    // TODO: Warn about spawns that are never joined
-    // TODO: Return false (spawn does not transfer control)
+bool resolveSpawnStmt(const SpawnStmtAST* stmt, SemaContext& ctx) {
+    if (!stmt) return false;
+
+    // ─── 1. Check: Must be inside a function body ──────────────────────────
+    if (!ctx.contexts.insideFunction()) {
+        ctx.error(stmt, DiagCode::E3006,
+                  "spawn statement outside of function body");
+        return false;
+    }
+
+    // ─── 2. Check the target variable ──────────────────────────────────────
+    if (!stmt->target) {
+        // _ is allowed (discard)
+        // No validation needed
+    } else if (!stmt->target->isa<IdentifierExprAST>()) {
+        ctx.error(stmt->target, DiagCode::E3003,
+                  "spawn target must be a variable (not an expression)");
+        return false;
+    }
+
+    // ─── 3. Resolve the call expression ─────────────────────────────────────
+    if (!stmt->call) {
+        ctx.error(stmt, DiagCode::E3003, "spawn statement requires a call expression");
+        return false;
+    }
+
+    if (!checkExpr(stmt->call, nullptr, ctx)) {
+        return false;
+    }
+
+    // ─── 4. Return false (spawn does not transfer control) ──────────────────
     return false;
 }
 
-// ─── analyzeJoinStmt ───────────────────────────────────────────────────────
+// ─── resolveJoinStmt ───────────────────────────────────────────────────────
 
-/// @brief Analyze a join statement.
+/// @brief Resolve a join statement.
 ///
 /// Grammar: `join IDENTIFIER { ',' IDENTIFIER }`
 ///
@@ -850,13 +1032,102 @@ bool analyzeSpawnStmt(const SpawnStmtAST* stmt, SemaContext& ctx) {
 /// @param stmt The join statement.
 /// @param ctx The semantic context.
 /// @return false (join does NOT transfer control).
-bool analyzeJoinStmt(const JoinStmtAST* stmt, SemaContext& ctx) {
-    // TODO: Check that we're inside a function body
-    // TODO: Check each target variable (must be assignable lvalue)
-    // TODO: Verify each variable is Future<T> from spawn
-    // TODO: Change variable type from Future<T> to T
-    // TODO: Return false (join does not transfer control)
+bool resolveJoinStmt(const JoinStmtAST* stmt, SemaContext& ctx) {
+    if (!stmt) return false;
+
+    // ─── 1. Check: Must be inside a function body ──────────────────────────
+    if (!ctx.contexts.insideFunction()) {
+        ctx.error(stmt, DiagCode::E3006,
+                  "join statement outside of function body");
+        return false;
+    }
+
+    // ─── 2. Check each target variable ─────────────────────────────────────
+    for (const ExprAST* target : stmt->targets) {
+        if (!target->isa<IdentifierExprAST>()) {
+            ctx.error(target, DiagCode::E3003,
+                      "join target must be a variable (not an expression)");
+            continue;
+        }
+
+        // TODO: Verify the variable is a Future<T> from spawn
+        // TODO: Change variable type from Future<T> to T
+    }
+
+    // ─── 3. Return false (join does not transfer control) ──────────────────
     return false;
+}
+
+// =============================================================================
+// LEGACY Compatibility Functions (DEPRECATED)
+// =============================================================================
+
+bool analyzeStmt(const StmtAST* stmt, SemaContext& ctx) {
+    return resolveStmt(stmt, ctx);
+}
+
+bool analyzeBlock(const BlockStmtAST* block, SemaContext& ctx) {
+    return resolveBlock(block, ctx);
+}
+
+bool analyzeIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
+    return resolveIfStmt(stmt, ctx);
+}
+
+bool analyzeSwitchStmt(const SwitchStmtAST* stmt, SemaContext& ctx) {
+    return resolveSwitchStmt(stmt, ctx);
+}
+
+bool analyzeSwitchCase(const SwitchCaseAST* switchCase, SemaContext& ctx) {
+    return resolveSwitchCase(switchCase, ctx);
+}
+
+bool analyzeForStmt(const ForStmtAST* stmt, SemaContext& ctx) {
+    return resolveForStmt(stmt, ctx);
+}
+
+bool analyzeWhileStmt(const WhileStmtAST* stmt, SemaContext& ctx) {
+    return resolveWhileStmt(stmt, ctx);
+}
+
+bool analyzeDoWhileStmt(const DoWhileStmtAST* stmt, SemaContext& ctx) {
+    return resolveDoWhileStmt(stmt, ctx);
+}
+
+bool analyzeReturnStmt(const ReturnStmtAST* stmt, SemaContext& ctx) {
+    return resolveReturnStmt(stmt, ctx);
+}
+
+bool analyzeBreakStmt(const BreakStmtAST* stmt, SemaContext& ctx) {
+    return resolveBreakStmt(stmt, ctx);
+}
+
+bool analyzeContinueStmt(const ContinueStmtAST* stmt, SemaContext& ctx) {
+    return resolveContinueStmt(stmt, ctx);
+}
+
+bool analyzeExprStmt(const ExprStmtAST* stmt, SemaContext& ctx) {
+    return resolveExprStmt(stmt, ctx);
+}
+
+bool analyzeDeclStmt(const DeclStmtAST* stmt, SemaContext& ctx) {
+    return resolveDeclStmt(stmt, ctx);
+}
+
+bool analyzeAsyncStmt(const AsyncStmtAST* stmt, SemaContext& ctx) {
+    return resolveAsyncStmt(stmt, ctx);
+}
+
+bool analyzeAwaitStmt(const AwaitStmtAST* stmt, SemaContext& ctx) {
+    return resolveAwaitStmt(stmt, ctx);
+}
+
+bool analyzeSpawnStmt(const SpawnStmtAST* stmt, SemaContext& ctx) {
+    return resolveSpawnStmt(stmt, ctx);
+}
+
+bool analyzeJoinStmt(const JoinStmtAST* stmt, SemaContext& ctx) {
+    return resolveJoinStmt(stmt, ctx);
 }
 
 } // namespace sema

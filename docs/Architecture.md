@@ -506,48 +506,48 @@ lucid/
 ├── .gitignore
 │
 ├── docs/
-│   ├── LUCID_GRAMMAR.md          -- grammar reference
-│   ├── ARCHITECTURE.md           -- this document
-│   ├── API.md                    -- standard library API
-│   ├── BUILD.md                  -- how to build Lucid
-│   └── examples/                 -- example .luc files
+│   ├── LUCID_GRAMMAR.md                    # grammar reference
+│   ├── ARCHITECTURE.md                     # this document
+│   ├── API.md                              # standard library API
+│   ├── BUILD.md                            # how to build Lucid
+│   └── examples/                           # example .luc files
 │
 └── src/
-    ├── main.cpp                  -- CLI entry point (lucid run / build / repl)
+    ├── main.cpp                            # CLI entry point (lucid run / build / repl)
     │
-    ├── core/                     -- shared data structures (no LLVM dependency)
-    │   ├── Tokens.hpp            -- Token and TokenKind definitions
-    │   ├── diagnostics/          -- user-facing error and warning reporting
-    │   ├── ast/                  -- AST node types
-    │   │   ├── BaseAST.hpp       -- base node, SourceLocation, visitor interface
-    │   │   ├── DeclAST.hpp       -- declaration nodes
-    │   │   ├── StmtAST.hpp       -- statement nodes
-    │   │   ├── ExprAST.hpp       -- expression nodes
-    │   │   └── TypeAST.hpp       -- type annotation nodes
-    │   └── memory/               -- AST memory management
-    │       ├── ArenaSpawn.hpp    -- arena allocator for AST nodes
-    │       ├── ASTArena.hpp      -- arena instance holding one module's nodes
+    ├── core/                               # shared data structures (no LLVM dependency)
+    │   ├── Tokens.hpp                      # Token and TokenKind definitions
+    │   ├── diagnostics/                    # user-facing error and warning reporting
+    │   ├── ast/                            # AST node types
+    │   │   ├── BaseAST.hpp                 # base node, SourceLocation, visitor interface
+    │   │   ├── DeclAST.hpp                 # declaration nodes
+    │   │   ├── StmtAST.hpp                 # statement nodes
+    │   │   ├── ExprAST.hpp                 # expression nodes
+    │   │   └── TypeAST.hpp                 # type annotation nodes
+    │   └── memory/                         # AST memory management
+    │       ├── ArenaSpawn.hpp              # arena allocator for AST nodes
+    │       ├── ASTArena.hpp                # arena instance holding one module's nodes
     │       ├── InternedString.hpp
     │       └── StringPool.hpp/cpp
     │
-    ├── parser/                   -- frontend stage 1: source → AST
-    │   ├── Parser.hpp            -- public interface: parse()
+    ├── parser/                             # frontend stage 1: source → AST
+    │   ├── Parser.hpp                      # public interface: parse()
     │   ├── Parser.cpp
-    │   ├── ModuleResolver.hpp/cpp -- multi-file resolution, cyclic import detection
+    │   ├── ModuleResolver.hpp/cpp          # multi-file resolution, cyclic import detection
     │   ├── lexer/
-    │   │   └── Lexer.hpp/cpp           -- character stream → token stream
-    │   ├── rules/                      -- grammar rule implementations
-    │   │   ├── ParserDecl.cpp          -- const, let, struct, enum, trait, fn
-    │   │   ├── ParserStmt.cpp          -- if, for, while, return, block
-    │   │   ├── ParserExpr.cpp          -- Pratt parser: all expressions
-    │   │   ├── ParserType.cpp          -- type annotations: *T, T?, generics
-    │   │   └── Concurrency.cpp         -- async, await, spawn, join
-    │   └── support/                    -- parser infrastructure
-    │       ├── ParserContext.hpp       -- shared parse state
-    │       ├── Lookahead.cpp           -- disambiguation helpers
-    │       ├── Helpers.cpp             -- attribute parsing, doc-comment handling
-    │       ├── TokenStream.hpp/cpp     -- Track stream of tokens when parsing a file
-    │       └── ErrorRecovery.cpp       -- sync points for error recovery
+    │   │   └── Lexer.hpp/cpp               # character stream → token stream
+    │   ├── rules/                          # grammar rule implementations
+    │   │   ├── ParserDecl.cpp              # const, let, struct, enum, trait, fn
+    │   │   ├── ParserStmt.cpp              # if, for, while, return, block
+    │   │   ├── ParserExpr.cpp              # Pratt parser: all expressions
+    │   │   ├── ParserType.cpp              # type annotations: *T, T?, generics
+    │   │   └── Concurrency.cpp             # async, await, spawn, join
+    │   └── support/                        # parser infrastructure
+    │       ├── ParserContext.hpp           # shared parse state
+    │       ├── Lookahead.cpp               # disambiguation helpers
+    │       ├── Helpers.cpp                 # attribute parsing, doc-comment handling
+    │       ├── TokenStream.hpp/cpp         # Track stream of tokens when parsing a file
+    │       └── ErrorRecovery.cpp           # sync points for error recovery
     │
     ├── src/sema/
     │   ├── Sema.hpp                      # Public API (namespace sema)
@@ -563,17 +563,21 @@ lucid/
     │   │   ├── ReturnRequirement.hpp           # Enforce function body structure
     │   │   └── SemaContext.hpp/cpp             # Unified context (composition)
     │   │
-    │   ├── rules/                        # Analysis rules (unchanged)
-    │   │   ├── SemaDecl.cpp            -- const, let, struct, enum, trait, fn, fields, params
-    │   │   ├── SemaStmt.cpp            -- if, for, while, switch, return, block
-    │   │   ├── SemaExpr.cpp            -- literals, binary/unary, calls, pipeline, compose
-    │   │   └── FFIValidator.hpp/cpp    -- validate @[foreign("C")] against lge_ffi.lfi
+    │   ├── rules/                              # Analysis rules (unchanged)
+    │   │   ├── SemaDecl.cpp                    # const, let, struct, enum, trait, fn, fields, params
+    │   │   ├── SemaStmt.cpp                    # if, for, while, switch, return, block
+    │   │   ├── SemaExpr.cpp                    # literals, binary/unary, calls, pipeline, compose
+    │   │   └── FFIValidator.hpp/cpp            # validate @[foreign("C")] against lge_ffi.lfi
     │   │    
-    │   ├── types/                        # Analysis rules (unchanged)
-    │   │   ├── Lookup.cpp              -- Look up type, check if type exist in current scope.
-    │   │   ├── Resolution.cpp          -- Resolves type annotations to their semantic representations. 
-    │   │   ├── TypeCompat.cpp          -- Type Compatibility Helpers
-    │   │   └── SemaType.hpp            -- Main header for 3 .cpp files
+    │   ├── types/                      
+    │   │   ├── Lookup.cpp                      # Look up type, check if type exist in current scope.
+    │   │   ├── Resolution.cpp                  # Resolves type annotations to their semantic representations. 
+    │   │   ├── TypeCompat.cpp                  # Type Compatibility Helpers
+    │   │   └── SemaType.hpp                    # Main header for 3 .cpp files
+    │   │
+    │   ├── const_eval/                        # Analysis rules (unchanged). 
+    │   │   ├── ConstEvaluator.hpp/cpp
+    │   │   └── ConstInterpreter.hpp/cpp
     │   │ 
     │   ├── registry/
     │   │   ├── AttributesRegistry.hpp
@@ -590,29 +594,29 @@ lucid/
     │   ├── IRLoweringStmt.cpp                 # Statement lowering (if, for, while, return, etc.)
     │   ├── IRLoweringExpr.cpp                 # Expression lowering (literals, binary, calls, etc.)
     │   ├── IRLoweringIntrinsic.cpp            # Intrinsic lowering (#sqrt, #memcpy, #ptrDiff, etc.)
-    │   │                                        -- consumes sema/support/IntrinsicRegistry.hpp
-    │   ├── IRLoweringBuilder.hpp/cpp              # Helper builders for common IR patterns
+    │   │                                        consumes sema/support/IntrinsicRegistry.hpp
+    │   ├── IRLoweringBuilder.hpp/cpp          # Helper builders for common IR patterns
     │   └── TypeMapping.hpp/cpp                # Lucid → LLVM type mapping (stays single file)
     │
-    ├── interpreter/              -- ORC JIT backend (lucid run)
-    │   ├── Interpreter.hpp/cpp   -- Main interpreter engine
-    │   ├── JIT.hpp/cpp           -- LLVM ORC JIT session
-    │   └── DynLink.hpp/cpp       -- dlopen/LoadLibrary
+    ├── interpreter/                    # ORC JIT backend (lucid run)
+    │   ├── Interpreter.hpp/cpp         # Main interpreter engine
+    │   ├── JIT.hpp/cpp                 # LLVM ORC JIT session
+    │   └── DynLink.hpp/cpp             # dlopen/LoadLibrary
     │
-    ├── compiler/                 -- AOT backend (lucid build)
-    │   └── aot/                  -- AOT-only backend
-    │       ├── AOT.hpp/cpp       -- optimisation pipeline + object file emission
-    │       └── Linker.hpp/cpp    -- system linker invocation
+    ├── compiler/                       # AOT backend (lucid build)
+    │   └── aot/                        # AOT-only backend
+    │       ├── AOT.hpp/cpp             # optimisation pipeline + object file emission
+    │       └── Linker.hpp/cpp          # system linker invocation
     │
-    ├── runtime/                  -- services that run alongside the program
-    │   ├── memory.hpp/cpp        -- #alloc/#free registry, ArenaDescriptor management
-    │   ├── threading.hpp/cpp     -- async/parallel/await/join implementation
+    ├── runtime/                        # services that run alongside the program
+    │   ├── memory.hpp/cpp              # #alloc/#free registry, ArenaDescriptor management
+    │   ├── threading.hpp/cpp           # async/parallel/await/join implementation
     │   └── ffi/
-    │       ├── FFI.hpp/cpp       -- foreign call dispatch
-    │       ├── DynLink.hpp/cpp   -- shared dlopen wrapper (used by runtime + JIT)
-    │       └── TypeMarshal.hpp/cpp -- Lucid ↔ C type layout (fallback path only)
+    │       ├── FFI.hpp/cpp             # foreign call dispatch
+    │       ├── DynLink.hpp/cpp         # shared dlopen wrapper (used by runtime + JIT)
+    │       └── TypeMarshal.hpp/cpp     # Lucid ↔ C type layout (fallback path only)
     │
-    ├── stdlib/                   -- standard library (written in Lucid)
+    ├── stdlib/                         # standard library (written in Lucid)
     │   ├── io.luc
     │   ├── math.luc
     │   ├── array.luc
@@ -620,13 +624,13 @@ lucid/
     │   ├── http.luc
     │   └── game.luc
     │
-    ├── cli/                      -- command-line interface
-    │   ├── commands.hpp/cpp      -- command dispatch
-    │   ├── run.hpp               -- lucid run
-    │   ├── build.hpp             -- lucid build
-    │   └── repl.hpp              -- lucid repl
+    ├── cli/                            # command-line interface
+    │   ├── commands.hpp/cpp            # command dispatch
+    │   ├── run.hpp                     # lucid run
+    │   ├── build.hpp                   # lucid build
+    │   └── repl.hpp                    # lucid repl
     │
-    └── debug/                    -- developer tools (not user-facing)
+    └── debug/                          # developer tools (not user-facing)
 
 tests/
 ├── parser/

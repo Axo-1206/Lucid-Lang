@@ -3,8 +3,8 @@
 /// 
 /// @architectural_note Two-Pass Analysis for Structs
 ///   Struct fields require a two-pass approach to support self-reference:
-///     Phase 1: Register ALL fields (names and types) without analyzing bodies
-///     Phase 2: Analyze function bodies (with self parameter available)
+///     Phase 1: Register ALL field names (no type resolution)
+///     Phase 2: Resolve field types and analyze function bodies
 /// 
 ///   This allows:
 ///     - `self.bar` to resolve even if `bar` is declared after the function
@@ -21,28 +21,48 @@
 namespace sema {
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Struct Field Registration - Phase 1
+// Struct Field Registration - Phase 1 (Names Only)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief Register a struct field (name and type) without analyzing body.
+/// @brief Register a struct field name only (no type resolution).
 /// 
-/// This is Phase 1 of struct analysis. It registers the field name and
-/// resolves its type, but does NOT analyze function bodies.
+/// This is Phase 1 of struct analysis. It registers the field name so that
+/// self-reference is possible in Phase 2.
 /// 
 /// @param field The field to register.
 /// @param currentStruct The struct currently being defined.
 /// @param ctx The semantic context.
-void registerStructField(const FieldDeclAST* field,
-                          const StructDeclAST* currentStruct,
-                          SemaContext& ctx);
+void registerStructFieldName(const FieldDeclAST* field,
+                              const StructDeclAST* currentStruct,
+                              SemaContext& ctx);
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Struct Function Body Analysis - Phase 2
+// Struct Field Resolution - Phase 2 (Types and Bodies)
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Resolve a struct field's type and validate it.
+/// 
+/// This is Phase 2 of struct analysis. Called after all field names are registered.
+/// Resolves the field type, validates self-reference, const rules, etc.
+/// 
+/// @param field The field to resolve.
+/// @param currentStruct The struct currently being defined.
+/// @param ctx The semantic context.
+void resolveStructField(const FieldDeclAST* field,
+                         const StructDeclAST* currentStruct,
+                         SemaContext& ctx);
+
+/// @brief Resolve all fields in a struct declaration.
+/// 
+/// Checks for duplicate field names and resolves each field.
+/// 
+/// @param decl The struct declaration.
+/// @param ctx The semantic context.
+void resolveStructFields(const StructDeclAST* decl, SemaContext& ctx);
 
 /// @brief Analyze a struct function field's body.
 /// 
-/// This is Phase 2 of struct analysis. Called after all fields are registered.
+/// This is Phase 2 of struct function fields. Called after all fields are resolved.
 /// Analyzes the function body with the `self` parameter already available.
 /// 
 /// @param field The function field to analyze.
@@ -53,19 +73,19 @@ void analyzeFunctionFieldBody(const FieldDeclAST* field,
                                SemaContext& ctx);
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Struct Field Validation Helpers
+// Struct Field Validation Helpers (Used by resolveStructField)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief Validate a single struct field (type, self-reference, const, etc.).
+/// @brief Validate a single struct field's type (self-reference, const, etc.).
 /// 
-/// Shared validation logic used in both Phase 1 and Phase 2.
+/// Shared validation logic used during resolution.
 /// 
 /// @param field The field to validate.
 /// @param currentStruct The struct currently being defined.
 /// @param ctx The semantic context.
-void validateStructField(const FieldDeclAST* field,
-                          const StructDeclAST* currentStruct,
-                          SemaContext& ctx);
+void validateStructFieldType(const FieldDeclAST* field,
+                              const StructDeclAST* currentStruct,
+                              SemaContext& ctx);
 
 /// @brief Validate all fields in a struct declaration.
 /// 
@@ -128,5 +148,15 @@ bool isRecursiveValueType(const TypeAST* fieldType,
 bool isPointerSelfReference(const TypeAST* fieldType,
                              const StructDeclAST* currentStruct,
                              SemaContext& ctx);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DEPRECATED (kept for compatibility during transition)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief [DEPRECATED] Use registerStructFieldName() + resolveStructField() instead.
+[[deprecated("Use registerStructFieldName() + resolveStructField() instead")]]
+void registerStructField(const FieldDeclAST* field,
+                          const StructDeclAST* currentStruct,
+                          SemaContext& ctx);
 
 } // namespace sema
