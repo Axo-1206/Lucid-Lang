@@ -102,26 +102,6 @@ bool resolveStmt(const StmtAST* stmt, SemaContext& ctx);
 void checkLetSelfReference(const ExprAST* expr, InternedString varName, SemaContext& ctx);
 
 // =============================================================================
-// LEGACY: Declaration Analysis (DEPRECATED - kept for compatibility during transition)
-// =============================================================================
-
-/// @brief [DEPRECATED] Use registerDeclName() + resolveDecl() instead.
-[[deprecated("Use registerDeclName() + resolveDecl() instead")]]
-void analyzeDecl(const DeclAST* decl, SemaContext& ctx);
-
-/// @brief [DEPRECATED] Use resolveModuleDecls() instead.
-[[deprecated("Use resolveModuleDecls() instead")]]
-void analyzeModuleDecls(ModuleAST* module, SemaContext& ctx);
-
-/// @brief [DEPRECATED] Use resolveStmt() instead.
-[[deprecated("Use resolveStmt() instead")]]
-bool analyzeStmt(const StmtAST* stmt, SemaContext& ctx);
-
-/// @brief [DEPRECATED] Use resolveBlock() instead.
-[[deprecated("Use resolveBlock() instead")]]
-bool analyzeBlock(const BlockStmtAST* block, SemaContext& ctx);
-
-// =============================================================================
 // STATEMENTS - Control flow analysis (Phase 2)
 // =============================================================================
 
@@ -149,7 +129,7 @@ bool resolveJoinStmt(const JoinStmtAST* stmt, SemaContext& ctx);
 // EXPRESSIONS - Type checking
 // =============================================================================
 
-// These remain unchanged - checkExpr uses lookup which now works in Phase 2
+// checkExpr uses lookup which now works in Phase 2
 
 bool checkExpr(ExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
 
