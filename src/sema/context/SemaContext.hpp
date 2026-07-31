@@ -1,339 +1,241 @@
 /// @file SemaContext.hpp
-/// @brief Unified semantic context - composes all sub-contexts.
-/// 
-/// This is the main context passed to all semantic analysis functions.
-/// It composes the smaller, focused contexts into a single interface.
-/// 
-/// @architectural_note Composition over inheritance
-///   Each sub-context has a single responsibility. SemaContext composes
-///   them and provides a unified interface for the semantic phase.
-/// 
-/// @architectural_note No toString() needed
-///   StringPool::lookup() now returns std::string directly, so callers
-///   can use pool.lookup(name) without an intermediate conversion step.
-/// 
-/// @architectural_note Diagnostic integration
-///   Uses the consolidated diagnostic:: API directly. No DiagnosticCategory
-///   is needed - the category is derived from the error code range.
+/// @brief Unified semantic context - monolithic design.
+///
+/// # Quick Reference
+///
+/// | Feature                   | Method                   |
+/// | ------------------------- | ------------------------ |
+/// | Self-reference check      | `isDefiningType(decl)`   |
+/// | Push type being defined   | `pushDefiningType(decl)` |
+/// | Get current defining type | `currentDefiningType()`  |
+///
+/// # Self-Reference Example
+///
+/// ```lucid
+/// struct Node<T> {           ← pushDefiningType(Node) called
+///     value T,
+///     next *Node<T>?         ← isDefiningType(Node) → true
+///                            ← Self-reference allowed via ptr
+/// }
+///                            ← popDefiningType() called
+/// ```
+///
+/// # Flow for Self-Reference Resolution
+///
+/// ```
+/// 1. registerStructName()
+///    └── ctx.symbols.insertType(decl)  ← Name registered
+///
+/// 2. resolveStructDecl()
+///    └── ScopedTypeDefinition guard(ctx, decl)  ← pushDefiningType()
+///        └── resolveStructFields()
+///            └── resolveType(field->type)
+///                └── resolveNamedType()
+///                    └── if isDefiningType(type->name) {
+///                          // Self-reference detected!
+///                          // Allowed if wrapped in ptr/ref/nullable and was not declared with `const` keyword
+///                        }
+///
+/// 3. ~ScopedTypeDefinition()  ← popDefiningType() called
+/// ```
+///
+/// @see ScopedTypeDefinition RAII guard below
+/// @see resolveNamedType() in Resolution.cpp
+
 #pragma once
 
-#include "GenericConstraintValidator.hpp"
-#include "TraitImplementationCache.hpp"
-#include "SemanticResources.hpp"
-#include "SymbolStorage.hpp"
 #include "ContextStack.hpp"
-#include "DefiningTypeStack.hpp"
-#include "ContextKind.hpp"
-#include "ReturnRequirements.hpp"
-#include "NarrowingStack.hpp"
-
+#include "core/memory/ASTArena.hpp"
+#include "core/memory/StringPool.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
 #include "core/diagnostics/DiagnosticCodes.hpp"
 
-#include <unordered_map>
 #include <vector>
+#include <unordered_map>
 #include <sstream>
-#include <type_traits>
 
 namespace sema {
 
-/// @brief Unified semantic context for all analysis passes.
+/// @brief Unified semantic context - all in one struct.
 /// 
-/// Composes:
-///   - SemanticResources (shared, immutable)
-///   - SymbolStorage (two-tier symbol tables)
-///   - ContextStack (semantic nesting)           // Was SemanticContextStack
-///   - DefiningTypeStack (self-reference support)
-/// 
-/// Also provides:
-///   - Module management (modules list, path lookup)
-///   - Diagnostic forwarding
+/// This is the main context passed to all semantic analysis functions.
+/// It's intentionally monolithic - all state is directly accessible.
 struct SemaContext {
-    // ─── Sub-Contexts ──────────────────────────────────────────────────
-
-    /// Shared, immutable resources
-    SemanticResources resources;
-
-    /// Two-tier symbol storage
-    SymbolStorage symbols;
-
-    /// Semantic context stack (includes type narrowing)
+    // ─── Resources ──────────────────────────────────────────────────────
+    
+    StringPool& pool;
+    ASTArena& arena;
     ContextStack contexts;
-
-    /// Self-reference support
-    DefiningTypeStack definingTypes;
-
-    // ─── Trait and Generic Support ──────────────────────────────────────
     
-    /// Cache of which structs implement which traits
-    TraitImplementationCache traitImpls;
-    
-    /// Validator for generic constraints
-    GenericConstraintValidator constraintValidator;
-
     // ─── Modules ────────────────────────────────────────────────────────
-
-    /// Every module being analyzed, in the order provided
+    
     std::vector<ModuleAST*> modules;
-
-    /// Fast path: module path → module AST
     std::unordered_map<InternedString, ModuleAST*> modulesByPath;
-
-    // ─── Constructor ────────────────────────────────────────────────────
-
-    /// @brief Construct the semantic context for a whole compilation.
+    
+    // ─── Self-Reference Tracking ──────────────────────────────────────
+    
+    /// Stack of types currently being defined.
     /// 
-    /// @param p   Shared string interner (same one used by the parser).
-    /// @param a   Shared AST allocator (same one used by the parser).
-    /// @param mods Every module produced by the parse phase, in dependency order.
+    /// When resolving a struct's fields, we push the struct onto this stack.
+    /// This allows `resolveNamedType()` to detect self-references.
+    /// 
+    /// @example
+    ///   struct Node<T> {           // push Node
+    ///       value T,
+    ///       next *Node<T>?     // isDefiningType(Node) → true
+    ///   }                          // pop Node
+    std::vector<const TypeDeclAST*> definingTypes;
+    
+    // ─── Constructor ────────────────────────────────────────────────────
+    
     SemaContext(StringPool& p, ASTArena& a, std::vector<ModuleAST*> mods)
-        : resources(p, a)
-        , modules(std::move(mods))
-        , constraintValidator(*this)
-    {
+        : pool(p), arena(a), modules(std::move(mods)) {
         for (ModuleAST* m : modules) {
             if (m) modulesByPath[m->filePath] = m;
         }
     }
-
-    // Non-copyable (contains references)
+    
     SemaContext(const SemaContext&) = delete;
     SemaContext& operator=(const SemaContext&) = delete;
-
-    // Move is not allowed (contains references)
-    SemaContext(SemaContext&&) = delete;
-    SemaContext& operator=(SemaContext&&) = delete;
-
-    // ─── Convenience Accessors ──────────────────────────────────────────
-
-    StringPool& pool() { return resources.pool; }
-    const StringPool& pool() const { return resources.pool; }
-
-    ASTArena& arena() { return resources.arena; }
-    const ASTArena& arena() const { return resources.arena; }
-
+    
     // ─── Module Lookup ──────────────────────────────────────────────────
-
-    /// @brief Resolve a module by its interned file/package path.
-    /// 
-    /// Used when processing an `import` statement: the path string must be
-    /// turned into a ModuleAST before an alias can be registered.
+    
     ModuleAST* findModuleByPath(InternedString path) const {
         auto it = modulesByPath.find(path);
         return it != modulesByPath.end() ? it->second : nullptr;
     }
-
-    // ─────────────────────────────────────────────────────────────────────
-    // Diagnostic Forwarding
-    // ─────────────────────────────────────────────────────────────────────
-
-private:
-    // ─── Internal Streaming Helpers ─────────────────────────────────────
-
-    template<typename T>
-    struct is_interned_string : std::false_type {};
-
-    template<>
-    struct is_interned_string<InternedString> : std::true_type {};
-
-    template<>
-    struct is_interned_string<InternedString&> : std::true_type {};
-
-    template<>
-    struct is_interned_string<const InternedString&> : std::true_type {};
-
-    template<typename T>
-    typename std::enable_if<!is_interned_string<typename std::decay<T>::type>::value>::type
-    streamTo(std::ostringstream& oss, T&& value) const {
-        oss << std::forward<T>(value);
-    }
-
-    /// @brief Stream an InternedString by converting it to std::string.
+    
+    // ─── Self-Reference Helpers ──────────────────────────────────────
+    
+    /// @brief Push a type that's currently being defined.
     /// 
-    /// Since StringPool::lookup() now returns std::string, we can stream
-    /// InternedString directly by looking it up in the pool.
-    void streamTo(std::ostringstream& oss, InternedString s) const {
-        oss << resources.pool.lookup(s);
+    /// Called when we start resolving a struct/enum/trait's internals.
+    /// @see ScopedTypeDefinition RAII guard
+    void pushDefiningType(const TypeDeclAST* decl) {
+        definingTypes.push_back(decl);
     }
-
-    template<typename T>
-    void buildMessageImpl(std::ostringstream& oss, T&& value) const {
-        streamTo(oss, std::forward<T>(value));
-    }
-
-    template<typename T, typename... Rest>
-    void buildMessageImpl(std::ostringstream& oss, T&& first, Rest&&... rest) const {
-        streamTo(oss, std::forward<T>(first));
-        buildMessageImpl(oss, std::forward<Rest>(rest)...);
-    }
-
-    template<typename... Args>
-    std::string buildMessage(Args&&... args) const {
-        if constexpr (sizeof...(Args) == 0) {
-            return "";
-        } else {
-            std::ostringstream oss;
-            buildMessageImpl(oss, std::forward<Args>(args)...);
-            return oss.str();
+    
+    /// @brief Pop the current defining type.
+    void popDefiningType() {
+        if (!definingTypes.empty()) {
+            definingTypes.pop_back();
         }
     }
-
-public:
-    // ─── Public Error Reporting API ────────────────────────────────────
-
-    /// @brief Report an error at an AST node's location.
+    
+    /// @brief Check if a type is currently being defined.
     /// 
-    /// Example usage with InternedString:
-    /// ```cpp
-    /// ctx.error(useSite, DiagCode::E2001, "undefined type '", ctx.pool().lookup(name), "'");
-    /// ```
+    /// Used by `resolveNamedType()` to detect self-references.
     /// 
-    /// Or, since InternedString is streamable through the diagnostic system:
-    /// ```cpp
-    /// ctx.error(useSite, DiagCode::E2001, "undefined type '", name, "'");
-    /// ```
+    /// @param decl The type declaration to check.
+    /// @return true if the type is on the defining stack.
     /// 
-    /// @note The diagnostic category is derived from the error code range.
-    ///       No DiagnosticCategory parameter is needed.
+    /// @example
+    ///   // In resolveNamedType for Node<T>:
+    ///   if (ctx.isDefiningType(decl)) {
+    ///       // This is a self-reference!
+    ///       // Check if it's wrapped in ptr/ref/nullable
+    ///   }
+    bool isDefiningType(const TypeDeclAST* decl) const {
+        for (const TypeDeclAST* d : definingTypes) {
+            if (d == decl) return true;
+        }
+        return false;
+    }
+    
+    /// @brief Get the innermost type currently being defined.
+    /// @return The innermost TypeDeclAST, or nullptr if none.
+    const TypeDeclAST* currentDefiningType() const {
+        return definingTypes.empty() ? nullptr : definingTypes.back();
+    }
+    
+    // ─── Error Reporting ─────────────────────────────────────────────────
+    
     template<typename... Args>
     void error(const BaseAST* node, DiagCode code, Args&&... args) {
-        std::string message = buildMessage(std::forward<Args>(args)...);
-        diagnostic::error(node ? node->loc : SourceLocation{}, code, {message});
+        std::string msg = buildMessage(std::forward<Args>(args)...);
+        diagnostic::error(node ? node->loc : SourceLocation{}, code, {msg});
     }
-
-    /// Report an error at a specific location.
-    template<typename... Args>
-    void errorAt(const SourceLocation& loc, DiagCode code, Args&&... args) {
-        std::string message = buildMessage(std::forward<Args>(args)...);
-        diagnostic::error(loc, code, {message});
-    }
-
-    /// Report a warning at an AST node's location.
+    
     template<typename... Args>
     void warning(const BaseAST* node, DiagCode code, Args&&... args) {
-        std::string message = buildMessage(std::forward<Args>(args)...);
-        diagnostic::warning(node ? node->loc : SourceLocation{}, code, {message});
+        std::string msg = buildMessage(std::forward<Args>(args)...);
+        diagnostic::warning(node ? node->loc : SourceLocation{}, code, {msg});
     }
-
-    /// Report a warning at a specific location.
-    template<typename... Args>
-    void warningAt(const SourceLocation& loc, DiagCode code, Args&&... args) {
-        std::string message = buildMessage(std::forward<Args>(args)...);
-        diagnostic::warning(loc, code, {message});
-    }
-
-    /// Report a free-text note at an AST node's location.
+    
     template<typename... Args>
     void note(const BaseAST* node, Args&&... args) {
-        std::string message = buildMessage(std::forward<Args>(args)...);
-        diagnostic::note(node ? node->loc : SourceLocation{}, message);
+        std::string msg = buildMessage(std::forward<Args>(args)...);
+        diagnostic::note(node ? node->loc : SourceLocation{}, msg);
     }
-
-    /// Report a free-text note at a specific location.
-    template<typename... Args>
-    void noteAt(const SourceLocation& loc, Args&&... args) {
-        std::string message = buildMessage(std::forward<Args>(args)...);
-        diagnostic::note(loc, message);
-    }
-
-    /// Report a free-text hint at an AST node's location.
-    template<typename... Args>
-    void hint(const BaseAST* node, Args&&... args) {
-        std::string message = buildMessage(std::forward<Args>(args)...);
-        diagnostic::hint(node ? node->loc : SourceLocation{}, message);
-    }
-
-    /// Report a free-text hint at a specific location.
-    template<typename... Args>
-    void hintAt(const SourceLocation& loc, Args&&... args) {
-        std::string message = buildMessage(std::forward<Args>(args)...);
-        diagnostic::hint(loc, message);
-    }
-
-    // ─── Context Queries ────────────────────────────────────────────────
-
-    /// @brief True if analysis can safely continue.
-    /// 
-    /// Forwards to `diagnostic::canContinue()`, which checks the
-    /// consecutive-error threshold for the current diagnostic scope.
+    
     bool canContinue() const {
         return diagnostic::canContinue();
     }
+    
+private:
+    template<typename... Args>
+    std::string buildMessage(Args&&... args) const {
+        std::ostringstream oss;
+        (oss << ... << args);
+        return oss.str();
+    }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// RAII Guards
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── RAII Guards ─────────────────────────────────────────────────────────
 
 /// @brief RAII guard for semantic context tracking.
 /// 
-/// Pushes a ContextKind frame on construction and pops it on
-/// destruction — automatically, on every exit path.
+/// Pushes a ContextKind frame on construction and pops it on destruction.
 /// 
+/// @example
 /// ```cpp
-/// void visitFunction(FuncDeclAST* func, SemaContext& ctx) {
-///     ScopedSemanticContext guard(ctx, ContextKind::FuncBody,
-///                                   func, func->loc);
+/// void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
+///     ScopedSemanticContext guard(ctx, ContextKind::FuncBody, decl, decl->loc);
 ///     // ctx.contexts.current() now returns FuncBody
 ///     // return is legal inside the body
 /// }
 /// ```
-/// 
-/// Non-copyable, non-movable: identity is tied to one specific activation.
 struct ScopedSemanticContext {
-    explicit ScopedSemanticContext(SemaContext& ctx, ContextKind kind,
-                                    const BaseAST* node, const SourceLocation& loc)
+    ScopedSemanticContext(SemaContext& ctx, ContextKind kind,
+                          const BaseAST* node, const SourceLocation& loc)
         : ctx_(ctx) {
-        // const_cast is safe here because we only store the node pointer
-        // and never modify the AST node itself through this pointer
         ctx_.contexts.push(kind, const_cast<BaseAST*>(node), loc);
     }
-
-    ~ScopedSemanticContext() {
-        ctx_.contexts.pop();
-    }
-
+    ~ScopedSemanticContext() { ctx_.contexts.pop(); }
+    
     ScopedSemanticContext(const ScopedSemanticContext&) = delete;
     ScopedSemanticContext& operator=(const ScopedSemanticContext&) = delete;
-    ScopedSemanticContext(ScopedSemanticContext&&) = delete;
-    ScopedSemanticContext& operator=(ScopedSemanticContext&&) = delete;
 
 private:
     SemaContext& ctx_;
 };
 
-/// @brief RAII guard for if condition context (enables type narrowing).
+/// @brief RAII guard for if condition context.
 /// 
-/// Sets the if condition context flag during condition analysis,
-/// allowing checkBinaryExpr to detect narrowing patterns.
+/// Enables type narrowing detection during condition analysis.
 /// 
+/// @example
 /// ```cpp
-/// void analyzeIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
+/// void resolveIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
 ///     ScopedIfCondition guard(ctx, stmt->elseBranch != nullptr);
-///     
 ///     // During checkExpr, ctx.contexts.isIfConditionCtx() returns true
 ///     // checkBinaryExpr can detect patterns like x != nil
-///     checkExpr(stmt->condition, ctx.getBoolType(), ctx);
+///     resolveExpr(stmt->condition, ctx);
 /// }
 /// ```
-/// 
-/// Non-copyable, non-movable: identity is tied to one specific activation.
 struct ScopedIfCondition {
-    explicit ScopedIfCondition(SemaContext& ctx, bool hasElse)
+    ScopedIfCondition(SemaContext& ctx, bool hasElse)
         : ctx_(ctx) {
         ctx_.contexts.setIfConditionCtx(true);
         ctx_.contexts.setHasElse(hasElse);
         ctx_.contexts.clearPendingNarrowing();
     }
-
     ~ScopedIfCondition() {
         ctx_.contexts.setIfConditionCtx(false);
     }
-
+    
     ScopedIfCondition(const ScopedIfCondition&) = delete;
     ScopedIfCondition& operator=(const ScopedIfCondition&) = delete;
-    ScopedIfCondition(ScopedIfCondition&&) = delete;
-    ScopedIfCondition& operator=(ScopedIfCondition&&) = delete;
 
 private:
     SemaContext& ctx_;
@@ -341,63 +243,61 @@ private:
 
 /// @brief RAII guard for type narrowing in a branch.
 /// 
-/// Pushes a narrowing level for the then branch of an if statement,
-/// and pops it when the branch is done.
+/// Pushes a narrowing level for the then/else branch of an if statement.
 /// 
+/// @example
 /// ```cpp
-/// {
-///     ScopedNarrowing guard(ctx, varName, narrowedType, false);
-///     // Variables are narrowed here
-///     analyzeBlock(thenBranch, ctx);
-/// }
+/// // Then branch: direct narrowing
+/// ScopedNarrowing guard(ctx, varName, narrowedType, false);
+/// analyzeBlock(thenBranch, ctx);
+/// 
+/// // Else branch: inverse narrowing
+/// ScopedNarrowing guard(ctx, varName, narrowedType, true);
+/// analyzeBlock(elseBranch, ctx);
 /// ```
 struct ScopedNarrowing {
-    explicit ScopedNarrowing(SemaContext& ctx, InternedString varName, 
-                              const TypeAST* narrowedType, bool isInverse = false)
+    ScopedNarrowing(SemaContext& ctx, InternedString varName, 
+                    const TypeAST* narrowedType, bool isInverse = false)
         : ctx_(ctx) {
         ctx_.contexts.pushNarrowingLevel(isInverse);
         ctx_.contexts.narrowVariable(varName, narrowedType);
     }
-
     ~ScopedNarrowing() {
         ctx_.contexts.popNarrowingLevel();
     }
-
+    
     ScopedNarrowing(const ScopedNarrowing&) = delete;
     ScopedNarrowing& operator=(const ScopedNarrowing&) = delete;
-    ScopedNarrowing(ScopedNarrowing&&) = delete;
-    ScopedNarrowing& operator=(ScopedNarrowing&&) = delete;
 
 private:
     SemaContext& ctx_;
 };
 
-/// @brief RAII guard marking a TypeDeclAST as "currently being defined".
+/// @brief RAII guard for self-reference detection.
 /// 
+/// Marks a type as "currently being defined" so that self-references
+/// can be detected and validated.
+/// 
+/// @example
 /// ```cpp
-/// void visitStruct(StructDeclAST* s, SemaContext& ctx) {
-///     ctx.symbols.insertType(s->name, s);
-///     ScopedTypeDefinition defining(ctx, s);
-///     // ctx.definingTypes.isDefining(s) returns true
-///     for (auto* f : s->fields) checkRecursiveFieldType(f, ctx);
+/// void resolveStructDecl(const StructDeclAST* decl, SemaContext& ctx) {
+///     ScopedTypeDefinition guard(ctx, decl);
+///     // ctx.isDefiningType(decl) returns true
+///     // ctx.currentDefiningType() returns decl
+///     resolveStructFields(decl, ctx);
 /// }
 /// ```
-/// 
-/// Non-copyable, non-movable: identity is tied to one specific activation.
 struct ScopedTypeDefinition {
-    explicit ScopedTypeDefinition(SemaContext& ctx, const TypeDeclAST* decl)
+    ScopedTypeDefinition(SemaContext& ctx, const TypeDeclAST* decl)
         : ctx_(ctx) {
-        ctx_.definingTypes.beginDefining(decl);
+        ctx_.pushDefiningType(decl);
     }
-
     ~ScopedTypeDefinition() {
-        ctx_.definingTypes.endDefining();
+        ctx_.popDefiningType();
     }
-
+    
     ScopedTypeDefinition(const ScopedTypeDefinition&) = delete;
     ScopedTypeDefinition& operator=(const ScopedTypeDefinition&) = delete;
-    ScopedTypeDefinition(ScopedTypeDefinition&&) = delete;
-    ScopedTypeDefinition& operator=(ScopedTypeDefinition&&) = delete;
 
 private:
     SemaContext& ctx_;
