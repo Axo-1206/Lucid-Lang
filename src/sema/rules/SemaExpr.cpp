@@ -944,10 +944,10 @@ TypeAST* resolveIntrinsicCallExpr(IntrinsicCallExprAST* expr, const TypeAST* tar
         expr->intrinsicID = info->id;
     }
 
-    TypeAST* resultType = registry.getIntrinsicReturnType(expr, ctx);
+    const TypeAST* resultType = registry.getIntrinsicReturnType(expr, targetType, ctx);
     ValueState state = registry.getIntrinsicValueState(expr, ctx);
-    setExprResult(expr, resultType, state);
-    return resultType;
+    setExprResult(expr, const_cast<TypeAST*>(resultType), state);
+    return const_cast<TypeAST*>(resultType);
 }
 
 // =============================================================================

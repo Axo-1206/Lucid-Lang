@@ -230,10 +230,9 @@ void resolveImportDecl(const ImportDeclAST* decl, SemaContext& ctx) {
 void resolveVarDecl(const VarDeclAST* decl, SemaContext& ctx) {
     attr::validateAttributes(decl, ctx);
 
-    // ─── 1. Resolve the declared type ─────────────────────────────────
+    // ─── 1. Resolve the declared type ───────────────────────────────
     TypeAST* declaredType = resolveType(decl->type, ctx);
     if (!declaredType) {
-        // Error already reported by resolveType
         return;
     }
 
@@ -244,40 +243,33 @@ void resolveVarDecl(const VarDeclAST* decl, SemaContext& ctx) {
         return;
     }
 
-    // ─── 3. Check initializer with target type ─────────────────────────
+    // ─── 3. Check initializer ────────────────────────────────────────
     if (decl->init) {
-        // ─── 3a. Resolve the initializer against the declared type ────
-        // This validates the type and stores resolvedType on the expression
+        // Resolve the initializer's type using the new target-type approach
         TypeAST* initType = resolveExprWithTarget(decl->init, declaredType, ctx);
-        
-        // Check if resolution failed
         if (!initType || initType->isa<UnknownTypeAST>()) {
             // Error already reported by resolveExprWithTarget
             return;
         }
 
-        // ─── 3b. Check for self-reference in let initializer ──────────
-        // This must be done AFTER type resolution because the expression
-        // needs to be resolved first, but BEFORE const evaluation
+        // ─── 4. Check for self-reference in let initializer ───────────
         if (decl->keyword == DeclKeyword::Let) {
             checkLetSelfReference(decl->init, decl->name, ctx);
         }
 
-        // ─── 3c. CONST EVALUATION (INTEGRATED) ────────────────────────
+        // ─── 5. CONST EVALUATION ──────────────────────────────────────
         // For const declarations, evaluate the initializer NOW.
         // This happens during type resolution, not as a separate phase.
         if (decl->keyword == DeclKeyword::Const) {
             ConstEvaluator evaluator(ctx);
-            ConstantValue val = evaluator.evalExpr(decl->init);
+            ConstantValue val = evaluator.evaluateDecl(decl);
             if (!val.isError()) {
                 // Store the evaluated value on the initializer expression
-                // (ExprAST is mutable during semantic analysis)
-                const_cast<ExprAST*>(decl->init)->isConst = true;
-                const_cast<ExprAST*>(decl->init)->constValue = val;
+                decl->init->isConst = true;
+                decl->init->constValue = val;
                 // Mark the declaration as const
                 const_cast<VarDeclAST*>(decl)->isConst = true;
             }
-            // If evaluation failed, error was already reported by evaluator
         }
     }
 }

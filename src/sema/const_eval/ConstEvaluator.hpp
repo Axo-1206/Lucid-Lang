@@ -2,8 +2,8 @@
 /// @brief Evaluates const expressions at compile-time.
 ///
 /// @design_decision Integrated with SemaContext
-///   Uses ContextStack for function/if/loop contexts, SymbolStorage for
-///   local variables, and NarrowingStack for type narrowing. No custom
+///   Uses ContextStack for function/if/loop contexts, integrated symbol storage
+///   for local variables, and NarrowingStack for type narrowing. No custom
 ///   frame system - leverages the existing semantic analysis infrastructure.
 ///
 /// @design_decision Called during type resolution (Phase 2)
@@ -16,12 +16,13 @@
 #include "core/ast/BaseAST.hpp"
 #include "../support/TypeNarrowHelpers.hpp"
 #include "../context/SemaContext.hpp"
-#include "../types/SemaType.hpp"
+#include "../types/SemaCompare.hpp"
 
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 #include <functional>
+#include <stack>
 
 namespace sema {
 
@@ -40,8 +41,6 @@ public:
     
     EvaluationGuard(const EvaluationGuard&) = delete;
     EvaluationGuard& operator=(const EvaluationGuard&) = delete;
-    EvaluationGuard(EvaluationGuard&&) = delete;
-    EvaluationGuard& operator=(EvaluationGuard&&) = delete;
 
 private:
     std::unordered_set<const DeclAST*>& m_evaluating;
@@ -49,38 +48,28 @@ private:
 };
 
 /// @brief RAII guard for const evaluation function context.
-/// 
-/// Pushes a function context and scope for const function execution.
-/// Uses the existing ContextStack and SymbolStorage.
 class ConstFunctionContext {
 public:
     ConstFunctionContext(SemaContext& ctx, const FuncDeclAST* func)
         : m_ctx(ctx) {
-        // Push function context using existing system
         m_ctx.contexts.pushFunction(
             const_cast<FuncDeclAST*>(func),
             const_cast<FuncTypeAST*>(func->funcType),
             func->loc
         );
-        // Push scope for local variables
-        m_ctx.symbols.pushScope();
+        m_ctx.pushScope();
     }
     
     ~ConstFunctionContext() {
-        m_ctx.symbols.popScope();
+        m_ctx.popScope();
         m_ctx.contexts.pop();
     }
-    
-    ConstFunctionContext(const ConstFunctionContext&) = delete;
-    ConstFunctionContext& operator=(const ConstFunctionContext&) = delete;
 
 private:
     SemaContext& m_ctx;
 };
 
 /// @brief RAII guard for const evaluation if context.
-/// 
-/// Uses the existing ScopedIfCondition for type narrowing.
 class ConstIfContext {
 public:
     ConstIfContext(SemaContext& ctx, bool hasElse)
@@ -91,8 +80,6 @@ private:
 };
 
 /// @brief RAII guard for const evaluation narrowing.
-/// 
-/// Uses the existing ScopedNarrowing for type narrowing.
 class ConstNarrowing {
 public:
     ConstNarrowing(SemaContext& ctx, InternedString name, 
@@ -103,173 +90,43 @@ private:
     ScopedNarrowing m_guard;
 };
 
+/// @brief Frame for local variable values during const evaluation.
+struct ConstFrame {
+    std::unordered_map<InternedString, ConstantValue> locals;
+    bool hasReturned = false;
+    ConstantValue returnValue;
+};
+
 /// @brief Evaluates const declarations at compile-time.
-///
-/// This class is tightly integrated with SemaContext and uses:
-///   - ContextStack for function/if/loop/block contexts
-///   - SymbolStorage for local variable binding
-///   - NarrowingStack for type narrowing
-///   - ReturnRequirements for return tracking
-///   - The existing diagnostic system for errors
 class ConstEvaluator {
 public:
     explicit ConstEvaluator(SemaContext& ctx);
 
-    /// @brief Main entry point: evaluate all const declarations.
-    void evaluateAll();
+    // ─── Main Entry Points ───────────────────────────────────────────────
 
-    /// @brief Evaluate a specific const declaration.
+    /// @brief Evaluate a const variable declaration.
     /// Called from resolveVarDecl during type resolution.
     ConstantValue evaluateDecl(const VarDeclAST* decl);
 
-    /// @brief Check if an expression has been evaluated.
-    bool isEvaluated(const ExprAST* expr) const;
-
-    /// @brief Get the evaluated value of an expression.
-    ConstantValue getValue(const ExprAST* expr) const;
-
-    /// @brief Get the SemaContext.
-    SemaContext& context() { return m_ctx; }
-
-    // ─── Expression Evaluation ───────────────────────────────────────
-
-    /// @brief Evaluate an expression and store result on the expression.
-    /// 
-    /// Uses the existing context for lookups (SymbolStorage, ContextStack).
-    /// Type narrowing is automatically applied via NarrowingStack.
+    /// @brief Evaluate an expression in the current context.
     ConstantValue evalExpr(const ExprAST* expr);
 
-    /// @brief Evaluate a literal expression.
+    // ─── Expression Evaluators ──────────────────────────────────────────
+
     ConstantValue evalLiteral(const LiteralExprAST* expr);
-
-    /// @brief Evaluate an identifier expression.
-    /// Uses SymbolStorage for lookup, respecting narrowing.
     ConstantValue evalIdentifier(const IdentifierExprAST* expr);
-
-    /// @brief Evaluate a binary expression.
-    /// Uses ContextStack to detect narrowing patterns.
     ConstantValue evalBinary(const BinaryExprAST* expr);
-
-    /// @brief Evaluate a unary expression.
     ConstantValue evalUnary(const UnaryExprAST* expr);
-
-    /// @brief Evaluate a call expression (const function call).
-    /// Uses ContextStack for function context.
     ConstantValue evalCall(const CallExprAST* expr);
-
-    /// @brief Evaluate a struct literal.
     ConstantValue evalStructLiteral(const StructLiteralExprAST* expr);
-
-    /// @brief Evaluate an array literal.
     ConstantValue evalArrayLiteral(const ArrayLiteralExprAST* expr);
-
-    /// @brief Evaluate a field access.
     ConstantValue evalFieldAccess(const FieldAccessExprAST* expr);
-
-    /// @brief Evaluate a null coalesce expression.
     ConstantValue evalNullCoalesce(const NullCoalesceExprAST* expr);
-
-    /// @brief Evaluate an if expression.
-    /// Uses ScopedIfCondition and ScopedNarrowing for type narrowing.
     ConstantValue evalIfExpr(const IfExprAST* expr);
 
-    // ─── Statement Execution ───────────────────────────────────────────
+    // ─── Statement Execution ─────────────────────────────────────────────
 
-    /// @brief Execute a statement in the current context.
-    /// Uses ContextStack for context tracking.
     ConstantValue executeStmt(const StmtAST* stmt);
-
-    /// @brief Execute a const function with constant arguments.
-    /// Uses ConstFunctionContext for context management.
-    ConstantValue executeFunction(const FuncDeclAST* func,
-                                   const std::vector<ConstantValue>& args);
-
-    // ─── Integration with SemaDecl ────────────────────────────────────
-
-    /// @brief Called from resolveVarDecl to evaluate const variables.
-    /// This is the main integration point.
-    void evaluateConstVar(const VarDeclAST* decl) {
-        if (decl->keyword == DeclKeyword::Const && decl->init) {
-            ConstantValue val = evalExpr(decl->init);
-            if (!val.isError()) {
-                // Store the value on the initializer expression (ExprAST is mutable)
-                const_cast<ExprAST*>(decl->init)->isConst = true;
-                const_cast<ExprAST*>(decl->init)->constValue = val;
-                const_cast<VarDeclAST*>(decl)->isConst = true;
-            }
-        }
-    }
-
-private:
-    // ─── Members ──────────────────────────────────────────────────────
-
-    SemaContext& m_ctx;
-
-    // Track which expressions have been evaluated
-    std::unordered_set<const ExprAST*> m_evaluatedExprs;
-
-    // Dependency graph: declaration → declarations it depends on
-    std::unordered_map<const DeclAST*, std::vector<const DeclAST*>> m_deps;
-
-    // Currently evaluating (for cycle detection)
-    std::unordered_set<const DeclAST*> m_evaluating;
-
-    // All const declarations in order
-    std::vector<const DeclAST*> m_constDecls;
-
-    // Recursion limit
-    static constexpr size_t MAX_RECURSION = 1000;
-    size_t m_recursionDepth = 0;
-
-    // ─── Binary Operation Helpers ────────────────────────────────────
-
-    /// @brief Evaluate a binary operation on constant values.
-    ConstantValue evalBinaryOp(BinaryOp op,
-                                const ConstantValue& left,
-                                const ConstantValue& right,
-                                const BaseAST* node);
-
-    // ─── Local Variable Helpers ──────────────────────────────────────
-
-    /// @brief Get a local variable value from SymbolStorage.
-    ConstantValue getLocalValue(InternedString name) const;
-
-    /// @brief Set a local variable value in SymbolStorage.
-    void setLocalValue(InternedString name, const ConstantValue& value);
-
-    /// @brief Check if a name is a local variable in the current scope.
-    bool isLocalVariable(InternedString name) const;
-
-    // ─── Type Helpers ──────────────────────────────────────────────────
-
-    /// @brief Check if a type can be evaluated at compile-time.
-    bool isEvaluableType(const TypeAST* type);
-
-    /// @brief Get the constant type from a value.
-    TypeAST* getConstantType(const ConstantValue& val);
-
-    /// @brief Compare two constant values for equality.
-    bool compareEqual(const ConstantValue& a, const ConstantValue& b);
-
-    /// @brief Compare two constant values for ordering.
-    int compareOrder(const ConstantValue& a, const ConstantValue& b);
-
-    // ─── Dependency Analysis ─────────────────────────────────────────
-
-    /// @brief Build dependency graph for all const declarations.
-    void buildDependencyGraph();
-
-    /// @brief Collect dependencies of an expression.
-    void collectDeps(const ExprAST* expr, std::vector<const DeclAST*>& deps);
-
-    /// @brief Collect dependencies from a statement.
-    void collectDepsFromStmt(const StmtAST* stmt, std::vector<const DeclAST*>& deps);
-
-    /// @brief Topological sort of const declarations using Kahn's algorithm.
-    std::vector<const DeclAST*> topologicalSort();
-
-    // ─── Statement Execution Helpers ──────────────────────────────────
-
     ConstantValue executeBlock(const BlockStmtAST* block);
     ConstantValue executeReturn(const ReturnStmtAST* stmt);
     ConstantValue executeIf(const IfStmtAST* stmt);
@@ -277,19 +134,69 @@ private:
     ConstantValue executeAssign(const AssignExprAST* stmt);
     ConstantValue executeExprStmt(const ExprStmtAST* stmt);
     ConstantValue executeDeclStmt(const DeclStmtAST* stmt);
-    ConstantValue executeBreak();
-    ConstantValue executeContinue();
 
-    // ─── Error Reporting ──────────────────────────────────────────────
+    /// @brief Execute a const function with constant arguments.
+    ConstantValue executeFunction(const FuncDeclAST* func,
+                                   const std::vector<ConstantValue>& args);
 
-    /// @brief Report a const evaluation error.
+private:
+    // ─── Members ──────────────────────────────────────────────────────────
+
+    SemaContext& m_ctx;
+    
+    /// Stack of frames for function execution
+    std::vector<ConstFrame> m_frames;
+    
+    /// Track which expressions have been evaluated
+    std::unordered_set<const ExprAST*> m_evaluatedExprs;
+    
+    /// Dependency graph for const declarations
+    std::unordered_map<const DeclAST*, std::vector<const DeclAST*>> m_deps;
+    
+    /// Currently evaluating (for cycle detection)
+    std::unordered_set<const DeclAST*> m_evaluating;
+    
+    /// All const declarations in order
+    std::vector<const DeclAST*> m_constDecls;
+    
+    static constexpr size_t MAX_RECURSION = 1000;
+    size_t m_recursionDepth = 0;
+
+    // ─── Frame Management ────────────────────────────────────────────────
+
+    ConstFrame& currentFrame() { return m_frames.back(); }
+    const ConstFrame& currentFrame() const { return m_frames.back(); }
+    
+    void pushFrame() { m_frames.emplace_back(); }
+    void popFrame() { m_frames.pop_back(); }
+    
+    ConstantValue getLocal(InternedString name) const;
+    void setLocal(InternedString name, const ConstantValue& value);
+
+    // ─── Binary Operation Helpers ───────────────────────────────────────
+
+    ConstantValue evalBinaryOp(BinaryOp op,
+                                const ConstantValue& left,
+                                const ConstantValue& right,
+                                const BaseAST* node);
+
+    // ─── Type Helpers ────────────────────────────────────────────────────
+
+    TypeAST* getConstantType(const ConstantValue& val);
+    bool compareEqual(const ConstantValue& a, const ConstantValue& b);
+    int compareOrder(const ConstantValue& a, const ConstantValue& b);
+
+    // ─── Dependency Analysis ─────────────────────────────────────────────
+
+    void buildDependencyGraph();
+    void collectDeps(const ExprAST* expr, std::vector<const DeclAST*>& deps);
+    void collectDepsFromStmt(const StmtAST* stmt, std::vector<const DeclAST*>& deps);
+    std::vector<const DeclAST*> topologicalSort();
+
+    // ─── Error Reporting ─────────────────────────────────────────────────
+
     ConstantValue error(const BaseAST* node, const std::string& msg);
-
-    /// @brief Report a dependency cycle.
     void reportCycle(const std::vector<const DeclAST*>& cycle);
-
-    /// @brief Get the string representation of a constant value.
-    std::string valueToString(const ConstantValue& val) const;
 };
 
 } // namespace sema
