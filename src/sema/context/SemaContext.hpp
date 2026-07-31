@@ -1,5 +1,5 @@
 /// @file SemaContext.hpp
-/// @brief Unified semantic context - monolithic design with integrated symbol storage.
+/// @brief Unified semantic context - monolithic design with integrated symbol storage and type cache.
 ///
 /// # Quick Reference
 ///
@@ -14,6 +14,9 @@
 /// | Self-reference check           | `isDefiningType(decl)`                    |
 /// | Push type being defined        | `pushDefiningType(decl)`                  |
 /// | Get current defining type      | `currentDefiningType()`                   |
+/// | Get cached bool type           | `getBoolType()`                           |
+/// | Get cached int type            | `getIntType()`                            |
+/// | Get cached named type          | `getNamedType(name)`                      |
 ///
 /// # Symbol Storage Design
 ///
@@ -71,6 +74,62 @@ struct Scope {
     std::unordered_map<InternedString, const GenericParamDeclAST*> genericParams;
 };
 
+// ─── TypeCache ────────────────────────────────────────────────────────────
+
+/// @brief Cache for singleton type instances to avoid duplicate allocations.
+/// 
+/// Many types appear repeatedly in the AST (e.g., `bool`, `int`, `string`).
+/// Instead of creating a new TypeAST node for each occurrence, we cache
+/// a single instance and reuse it. This reduces memory usage and improves
+/// performance (pointer comparison is faster than structural comparison).
+///
+/// This will be used when we analyzing conditional statement, like if statement
+/// while, do-while condition loop and switch case type restriction. We will 
+/// use this to ask if the expression will resolve to this kind of type.
+struct TypeCache {
+    // ─── Primitive Types (Singleton) ─────────────────────────────────────
+    PrimitiveTypeAST* boolType = nullptr;
+    PrimitiveTypeAST* intType = nullptr;
+    PrimitiveTypeAST* floatType = nullptr;
+    PrimitiveTypeAST* stringType = nullptr;
+    PrimitiveTypeAST* charType = nullptr;
+    UnknownTypeAST* unknownType = nullptr;
+    
+    // ─── Named Types Cache ──────────────────────────────────────────────
+    struct NamedTypeKey {
+        InternedString name;
+        bool operator==(const NamedTypeKey& other) const {
+            return name == other.name;
+        }
+    };
+    struct NamedTypeKeyHash {
+        size_t operator()(const NamedTypeKey& key) const {
+            return std::hash<uint32_t>{}(key.name.id);
+        }
+    };
+    std::unordered_map<NamedTypeKey, NamedTypeAST*, NamedTypeKeyHash> namedTypes;
+    
+    // ─── Array Types Cache ──────────────────────────────────────────────
+    struct ArrayTypeKey {
+        ArrayKind kind;
+        uint64_t size;
+        const TypeAST* element;
+        bool operator==(const ArrayTypeKey& other) const {
+            return kind == other.kind && 
+                   size == other.size && 
+                   element == other.element;
+        }
+    };
+    struct ArrayTypeKeyHash {
+        size_t operator()(const ArrayTypeKey& key) const {
+            return std::hash<int>{}(static_cast<int>(key.kind)) ^
+                   std::hash<uint64_t>{}(key.size) ^
+                   std::hash<const TypeAST*>{}(key.element);
+        }
+    };
+    std::unordered_map<ArrayTypeKey, ArrayTypeAST*, ArrayTypeKeyHash> arrayTypes;
+};
+
 // ─── SemaContext ──────────────────────────────────────────────────────────
 
 /// @brief Unified semantic context - all in one struct.
@@ -102,6 +161,11 @@ struct SemaContext {
     
     /// Transient scope stack.
     std::vector<Scope> scopes;
+    
+    // ─── Type Cache ────────────────────────────────────────────────────
+    
+    /// Cache for singleton type instances.
+    TypeCache typeCache;
     
     // ─── Self-Reference Tracking ──────────────────────────────────────
     
@@ -278,7 +342,6 @@ struct SemaContext {
                 return found->second;
             }
         }
-        
         return nullptr;
     }
     
@@ -305,6 +368,88 @@ struct SemaContext {
         if (!currentModuleTable) return nullptr;
         auto it = currentModuleTable->importAliases.find(alias);
         return it != currentModuleTable->importAliases.end() ? it->second : nullptr;
+    }
+    
+    // ─── Type Cache Accessors ──────────────────────────────────────────
+    
+    /// @brief Get the canonical bool type (singleton).
+    PrimitiveTypeAST* getBoolType() {
+        if (!typeCache.boolType) {
+            typeCache.boolType = arena.make<PrimitiveTypeAST>(PrimitiveKind::Bool);
+        }
+        return typeCache.boolType;
+    }
+    
+    /// @brief Get the canonical int type (singleton).
+    PrimitiveTypeAST* getIntType() {
+        if (!typeCache.intType) {
+            typeCache.intType = arena.make<PrimitiveTypeAST>(PrimitiveKind::Int);
+        }
+        return typeCache.intType;
+    }
+    
+    /// @brief Get the canonical float type (singleton).
+    PrimitiveTypeAST* getFloatType() {
+        if (!typeCache.floatType) {
+            typeCache.floatType = arena.make<PrimitiveTypeAST>(PrimitiveKind::Float);
+        }
+        return typeCache.floatType;
+    }
+    
+    /// @brief Get the canonical string type (singleton).
+    PrimitiveTypeAST* getStringType() {
+        if (!typeCache.stringType) {
+            typeCache.stringType = arena.make<PrimitiveTypeAST>(PrimitiveKind::String);
+        }
+        return typeCache.stringType;
+    }
+    
+    /// @brief Get the canonical char type (singleton).
+    PrimitiveTypeAST* getCharType() {
+        if (!typeCache.charType) {
+            typeCache.charType = arena.make<PrimitiveTypeAST>(PrimitiveKind::Char);
+        }
+        return typeCache.charType;
+    }
+    
+    /// @brief Get the canonical unknown type (singleton).
+    UnknownTypeAST* getUnknownType() {
+        if (!typeCache.unknownType) {
+            typeCache.unknownType = arena.make<UnknownTypeAST>();
+        }
+        return typeCache.unknownType;
+    }
+    
+    /// @brief Get or create a cached NamedTypeAST.
+    /// 
+    /// @param name The type name.
+    /// @return The cached NamedTypeAST (singleton per name).
+    NamedTypeAST* getNamedType(InternedString name) {
+        TypeCache::NamedTypeKey key{name};
+        auto it = typeCache.namedTypes.find(key);
+        if (it != typeCache.namedTypes.end()) {
+            return it->second;
+        }
+        NamedTypeAST* type = arena.make<NamedTypeAST>(name);
+        typeCache.namedTypes[key] = type;
+        return type;
+    }
+    
+    /// @brief Get or create a cached ArrayTypeAST.
+    /// 
+    /// @param kind The array kind (Slice, Dynamic, Fixed).
+    /// @param size The array size (only for Fixed).
+    /// @param element The element type.
+    /// @return The cached ArrayTypeAST.
+    ArrayTypeAST* getArrayType(ArrayKind kind, uint64_t size, TypeAST* element) {
+        TypeCache::ArrayTypeKey key{kind, size, element};
+        auto it = typeCache.arrayTypes.find(key);
+        if (it != typeCache.arrayTypes.end()) {
+            return it->second;
+        }
+        ArrayTypeAST* type = arena.make<ArrayTypeAST>(kind, size, element);
+        typeCache.arrayTypes[key] = type;
+        return type;
     }
     
     // ─── Self-Reference Helpers ──────────────────────────────────────

@@ -18,6 +18,11 @@
 ///   The return value should reflect the statement's control flow behavior
 ///   regardless of errors (if the statement is syntactically a return, it
 ///   still transfers control).
+/// 
+/// @architectural_note Expression Resolution with Target Type
+///   Statements that expect a specific type (conditions, loop bounds, etc.)
+///   pass the expected type as targetType to `resolveExprWithTarget()`.
+///   This centralizes type checking and uses cached type instances.
 
 #include "../Sema.hpp"
 #include "../context/SemaContext.hpp"
@@ -26,6 +31,7 @@
 #include "core/ast/DeclAST.hpp"
 #include "core/ast/TypeAST.hpp"
 #include "debug/DebugUtils.hpp"
+#include "sema/context/ReturnRequirements.hpp"
 
 namespace sema {
 
@@ -59,7 +65,6 @@ bool resolveStmt(const StmtAST* stmt, SemaContext& ctx) {
         case ASTKind::SpawnExpr:        return resolveSpawnStmt(stmt->as<SpawnStmtAST>(), ctx);
         case ASTKind::JoinExpr:         return resolveJoinStmt(stmt->as<JoinStmtAST>(), ctx);
         default:
-            // Unknown/error-recovery statement
             return false;
     }
 }
@@ -76,24 +81,6 @@ bool resolveStmt(const StmtAST* stmt, SemaContext& ctx) {
 /// @param block The block statement.
 /// @param ctx The semantic context.
 /// @return true if the block guarantees control transfer out of the block.
-///
-/// ─── Control Flow Analysis ──────────────────────────────────────────────────
-///
-/// The function tracks whether any statement in the block transfers control
-/// (return, break, continue). Once a transfer is detected:
-///   1. The block is considered to transfer control
-///   2. Subsequent statements are unreachable
-///   3. The function should warn about unreachable code
-///
-/// ─── Example ──────────────────────────────────────────────────────────────
-///
-/// ```lucid
-/// {
-///     let x int = 5
-///     return x      // ← transfers = true
-///     let y int = 10 // ← UNREACHABLE - should warn
-/// }
-/// ```
 bool resolveBlock(const BlockStmtAST* block, SemaContext& ctx) {
     // ─── 1. Push block context for pending inverse narrowing ────────────
     ctx.contexts.pushBlock(const_cast<BlockStmtAST*>(block), block->loc);
@@ -102,8 +89,6 @@ bool resolveBlock(const BlockStmtAST* block, SemaContext& ctx) {
     bool hasAppliedPendingNarrowing = false;
 
     // ─── 2. Apply pending inverse narrowing from previous statements ────
-    // If there's pending inverse narrowing from a standalone if with early exit,
-    // apply it before resolving the rest of the block
     if (ctx.contexts.hasPendingInverseNarrowing()) {
         const NarrowingInfo& pendingInfo = ctx.contexts.getPendingInverseNarrowing();
         if (pendingInfo.hasNarrowing) {
@@ -118,20 +103,11 @@ bool resolveBlock(const BlockStmtAST* block, SemaContext& ctx) {
 
     // ─── 3. Resolve each statement in the block ──────────────────────────
     for (const StmtAST* stmt : block->stmts) {
-        // ── 3a. Check if previous statement transferred control ──────────
-        // If the previous statement transferred control, this statement is
-        // unreachable. We should warn about it.
         if (transfers) {
             // TODO: Emit unreachable code warning
-            // ctx.warning(stmt, DiagCode::W1001,
-            //             "unreachable statement after control transfer");
             continue;
         }
-
-        // ── 3b. Resolve the statement ──────────────────────────────────────
         transfers = resolveStmt(stmt, ctx);
-        
-        // If the statement transfers control, subsequent statements are unreachable
         if (transfers) {
             break;
         }
@@ -146,9 +122,7 @@ bool resolveBlock(const BlockStmtAST* block, SemaContext& ctx) {
     ctx.contexts.pop();
 
     // ─── 6. Final Check: Return Requirements ─────────────────────────────
-    // If we're inside a function that has requirements, check they're satisfied
     if (ctx.contexts.hasReturnRequirements() && !ctx.contexts.returnRequirementsSatisfied()) {
-        // Only report error if the block doesn't transfer control via return
         if (!transfers) {
             ctx.error(block, DiagCode::E3005,
                       "function is missing a return statement");
@@ -179,36 +153,36 @@ bool resolveIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
     ctx.contexts.push(ContextKind::IfStmt, const_cast<IfStmtAST*>(stmt), stmt->loc);
     ctx.contexts.setHasElse(stmt->elseBranch != nullptr);
 
-    // ─── 2. Create a bool type for the condition ──────────────────────────
-    PrimitiveTypeAST* boolType = ctx.arena().makeType<PrimitiveTypeAST>(PrimitiveKind::Bool);
+    // ─── 2. Resolve condition with target type = bool ────────────────────
+    // Use cached bool type from context
+    PrimitiveTypeAST* boolType = ctx.getBoolType();
 
-    // ─── 3. Resolve condition with if context ────────────────────────────
+    // Enable if condition context for narrowing detection
     ctx.contexts.setIfConditionCtx(true);
     
-    // TODO: refactor
-    // if (!checkExpr(stmt->condition, boolType, ctx)) {
-    //     ctx.contexts.setIfConditionCtx(false);
-    //     ctx.contexts.pop();
-    //     return false;
-    // }
+    TypeAST* condType = resolveExprWithTarget(stmt->condition, boolType, ctx);
     
     ctx.contexts.setIfConditionCtx(false);
 
-    // ─── 4. Extract narrowing info from the condition ────────────────────
+    // Check if condition resolved correctly
+    if (!condType || condType->isa<UnknownTypeAST>()) {
+        // Error already reported by resolveExprWithTarget
+        ctx.contexts.pop();
+        return false;
+    }
+
+    // ─── 3. Extract narrowing info from the condition ────────────────────
     NarrowingInfo info = extractNarrowingsFromCondition(stmt->condition, ctx);
     bool hasNarrowing = info.hasNarrowing;
 
-    // ─── 5. Resolve then branch with narrowing ──────────────────────────
+    // ─── 4. Resolve then branch with narrowing ──────────────────────────
     bool thenReturns = false;
 
     if (hasNarrowing) {
-        // Push a single narrowing level with all narrowings
         ctx.contexts.pushNarrowingLevel(false);
         
-        // Apply all narrowings to the then branch
         for (const auto& [varName, narrowedType] : info.narrowings) {
             // For equality (x == nil), no narrowing in then branch
-            // (x is nil, but we don't track nil types)
             // For inequality (x != nil, x != err), apply normal narrowing
             if (!info.isEquality) {
                 ctx.contexts.narrowVariable(varName, narrowedType);
@@ -222,7 +196,6 @@ bool resolveIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
         }
         ctx.contexts.popNarrowingLevel();
     } else {
-        // No narrowing - just resolve
         if (stmt->thenBranch && stmt->thenBranch->isa<BlockStmtAST>()) {
             thenReturns = resolveBlock(stmt->thenBranch->as<BlockStmtAST>(), ctx);
         } else {
@@ -230,23 +203,19 @@ bool resolveIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
         }
     }
 
-    // ─── 6. Resolve else branch (if present) ────────────────────────────
+    // ─── 5. Resolve else branch (if present) ────────────────────────────
     if (stmt->elseBranch) {
         bool elseReturns = false;
 
-        // ─── 6a. Check if else branch is an else-if ──────────────────────
         if (stmt->elseBranch->isa<IfStmtAST>()) {
             elseReturns = resolveIfStmt(stmt->elseBranch->as<IfStmtAST>(), ctx);
         } else {
-            // ─── 6b. Regular else branch with inverse narrowing ──────────
             if (hasNarrowing) {
                 ctx.contexts.pushNarrowingLevel(true); // Inverse narrowing
                 
                 for (const auto& [varName, narrowedType] : info.narrowings) {
                     // For equality (x == nil, x == err):
                     //   x is non-nullable/non-fallible in else branch
-                    // For inequality (x != nil, x != err):
-                    //   x is nullable/fallible (no change), so skip
                     if (info.isEquality) {
                         ctx.contexts.narrowVariable(varName, narrowedType);
                     }
@@ -259,7 +228,6 @@ bool resolveIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
                 }
                 ctx.contexts.popNarrowingLevel();
             } else {
-                // No narrowing
                 if (stmt->elseBranch->isa<BlockStmtAST>()) {
                     elseReturns = resolveBlock(stmt->elseBranch->as<BlockStmtAST>(), ctx);
                 } else {
@@ -268,26 +236,19 @@ bool resolveIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
             }
         }
 
-        // If both branches return, the if transfers control
         if (thenReturns && elseReturns) {
             ctx.contexts.pop();
             return true;
         }
     }
 
-    // ─── 7. Handle inverse narrowing for standalone if ───────────────────
-    // Rule: standalone if with early exit applies inverse narrowing to rest of scope
-    // ONLY when: no else, then branch transfers control, and condition is equality
+    // ─── 6. Handle inverse narrowing for standalone if ───────────────────
     if (!stmt->elseBranch && thenReturns && hasNarrowing && info.isEquality) {
-        // Set pending inverse narrowing on the current block
-        // This will be applied when resolveBlock continues
         ctx.contexts.setPendingInverseNarrowing(info);
     }
 
-    // ─── 8. Pop if context ────────────────────────────────────────────────
+    // ─── 7. Pop if context ────────────────────────────────────────────────
     ctx.contexts.pop();
-
-    // If then branch doesn't transfer control, the if doesn't transfer
     return false;
 }
 
@@ -305,8 +266,7 @@ bool resolveIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
 /// @param ctx The semantic context.
 /// @return true if the statement guarantees control transfer out of the block.
 bool resolveSwitchStmt(const SwitchStmtAST* stmt, SemaContext& ctx) {
-    // ─── 1. Resolve subject expression ──────────────────────────────────
-    // resolveExpr gets the type without a target type
+    // ─── 1. Resolve subject expression (no target type yet) ──────────────
     TypeAST* subjectType = resolveExpr(stmt->subject, ctx);
     if (!subjectType || subjectType->isa<UnknownTypeAST>()) {
         ctx.error(stmt->subject, DiagCode::E2002, "switch subject has unknown type");
@@ -329,12 +289,12 @@ bool resolveSwitchStmt(const SwitchStmtAST* stmt, SemaContext& ctx) {
     bool allCasesReturn = true;
     
     for (const SwitchCasePtr caseStmt : stmt->cases) {
-        // Validate each case value using resolveExpr
+        // Validate each case value against the subject type
         for (ExprAST* value : caseStmt->values) {
-            // Case values should resolve to the subject type or be compatible
-            TypeAST* valueType = resolveExpr(value, ctx);
+            // Resolve case value against the subject type
+            TypeAST* valueType = resolveExprWithTarget(value, subjectType, ctx);
             if (!valueType || valueType->isa<UnknownTypeAST>()) {
-                ctx.error(value, DiagCode::E3003, "case value has unknown type");
+                // Error already reported by resolveExprWithTarget
                 continue;
             }
             
@@ -387,8 +347,6 @@ bool resolveSwitchCase(const SwitchCaseAST* switchCase, SemaContext& ctx) {
 
     // ─── 1. Validate each case value ──────────────────────────────────────
     for (ExprAST* value : switchCase->values) {
-        // Case values must be literals, enum variants, or ranges
-        // The parser already enforces this, but we check again
         if (!value->isa<LiteralExprAST>() && 
             !value->isa<FieldAccessExprAST>() && 
             !value->isa<RangeExprAST>()) {
@@ -397,7 +355,7 @@ bool resolveSwitchCase(const SwitchCaseAST* switchCase, SemaContext& ctx) {
             continue;
         }
 
-        // Resolve the case value using resolveExpr
+        // Resolve the case value (no target type - it'll be checked by the switch)
         TypeAST* valueType = resolveExpr(value, ctx);
         if (!valueType || valueType->isa<UnknownTypeAST>()) {
             ctx.error(value, DiagCode::E3003, "case value has unknown type");
@@ -432,17 +390,14 @@ bool resolveForStmt(const ForStmtAST* stmt, SemaContext& ctx) {
     ctx.contexts.pushLoop(const_cast<StmtAST*>(stmt->body), stmt->loc);
 
     // ─── 2. Push a scope for loop variables ──────────────────────────────
-    ctx.symbols.pushScope();
+    ctx.pushScope();
 
     // ─── 3. Resolve the index binding (if present) ──────────────────────
     if (stmt->indexVar) {
-        // The index variable was already registered in Phase 1
-        // Now we resolve its type
         TypeAST* indexType = resolveType(stmt->indexVar->type, ctx);
         if (!indexType) {
             // Error already reported
         }
-        // Check that index type is integer
         if (indexType && !isIntegerType(indexType)) {
             ctx.error(stmt->indexVar, DiagCode::E3003,
                       "index variable must be an integer type");
@@ -451,8 +406,6 @@ bool resolveForStmt(const ForStmtAST* stmt, SemaContext& ctx) {
 
     // ─── 4. Resolve the value binding (if present) ──────────────────────
     if (stmt->valueVar) {
-        // The value variable was already registered in Phase 1
-        // Now we resolve its type
         TypeAST* valueType = resolveType(stmt->valueVar->type, ctx);
         if (!valueType) {
             // Error already reported
@@ -461,28 +414,33 @@ bool resolveForStmt(const ForStmtAST* stmt, SemaContext& ctx) {
 
     // ─── 5. Resolve the iterable expression ──────────────────────────────
     if (stmt->iterable) {
+        // For range loops, the iterable is a RangeExprAST
+        // For collection loops, it's an array
+        // We resolve it without a target type first
         TypeAST* iterableType = resolveExpr(stmt->iterable, ctx);
         if (!iterableType || iterableType->isa<UnknownTypeAST>()) {
             ctx.error(stmt->iterable, DiagCode::E3003, "iterable has unknown type");
-            ctx.symbols.popScope();
+            ctx.popScope();
             ctx.contexts.pop();
             return false;
         }
+        
         // TODO: Validate iterable type (array or range)
+        // If it's a range, it should be numeric
+        // If it's an array, it should have a valid element type
     }
 
     // ─── 6. Resolve the step expression (if present) ──────────────────────
     if (stmt->step) {
-        TypeAST* stepType = resolveExpr(stmt->step, ctx);
+        // Step must be numeric
+        // Use cached int type as target
+        PrimitiveTypeAST* numericType = ctx.getIntType();
+        TypeAST* stepType = resolveExprWithTarget(stmt->step, numericType, ctx);
         if (!stepType || stepType->isa<UnknownTypeAST>()) {
-            ctx.error(stmt->step, DiagCode::E3003, "step has unknown type");
-            ctx.symbols.popScope();
+            // Error already reported by resolveExprWithTarget
+            ctx.popScope();
             ctx.contexts.pop();
             return false;
-        }
-        if (!isNumericType(stepType)) {
-            ctx.error(stmt->step, DiagCode::E3003,
-                      "step must be a numeric type");
         }
     }
 
@@ -493,14 +451,12 @@ bool resolveForStmt(const ForStmtAST* stmt, SemaContext& ctx) {
     }
 
     // ─── 8. Pop the scope ──────────────────────────────────────────────────
-    ctx.symbols.popScope();
+    ctx.popScope();
 
     // ─── 9. Pop loop context ──────────────────────────────────────────────
     ctx.contexts.pop();
 
-    // For loops do NOT guarantee control transfer (unless the body always returns)
-    // But even then, the loop might not execute, so we return false
-    // Note: A for loop with break/continue doesn't guarantee transfer
+    // For loops do NOT guarantee control transfer
     return false;
 }
 
@@ -522,18 +478,12 @@ bool resolveWhileStmt(const WhileStmtAST* stmt, SemaContext& ctx) {
     // ─── 1. Push loop context ────────────────────────────────────────────
     ctx.contexts.pushLoop(const_cast<StmtAST*>(stmt->body), stmt->loc);
 
-    // ─── 2. Resolve the condition ──────────────────────────────────────────
-    TypeAST* condType = resolveExpr(stmt->condition, ctx);
+    // ─── 2. Resolve the condition against bool type ──────────────────────
+    PrimitiveTypeAST* boolType = ctx.getBoolType();
+    TypeAST* condType = resolveExprWithTarget(stmt->condition, boolType, ctx);
+    
     if (!condType || condType->isa<UnknownTypeAST>()) {
-        ctx.error(stmt->condition, DiagCode::E3003, "condition has unknown type");
-        ctx.contexts.pop();
-        return false;
-    }
-
-    if (!isBoolType(condType)) {
-        ctx.error(stmt->condition, DiagCode::E3003,
-                  "while condition must be bool, got ",
-                  debug::typeToString(condType, ctx.pool()));
+        // Error already reported by resolveExprWithTarget
         ctx.contexts.pop();
         return false;
     }
@@ -547,7 +497,6 @@ bool resolveWhileStmt(const WhileStmtAST* stmt, SemaContext& ctx) {
     // ─── 4. Pop loop context ──────────────────────────────────────────────
     ctx.contexts.pop();
 
-    // While loops do NOT guarantee control transfer
     return false;
 }
 
@@ -574,26 +523,19 @@ bool resolveDoWhileStmt(const DoWhileStmtAST* stmt, SemaContext& ctx) {
         bodyTransfers = resolveStmt(stmt->body, ctx);
     }
 
-    // ─── 3. Resolve the condition ──────────────────────────────────────────
-    PrimitiveTypeAST* boolType = ctx.arena().makeType<PrimitiveTypeAST>(PrimitiveKind::Bool);
-    TypeAST* condType = resolveExpr(stmt->condition, ctx);
+    // ─── 3. Resolve the condition against bool type ──────────────────────
+    PrimitiveTypeAST* boolType = ctx.getBoolType();
+    TypeAST* condType = resolveExprWithTarget(stmt->condition, boolType, ctx);
+    
     if (!condType || condType->isa<UnknownTypeAST>()) {
-        ctx.error(stmt->condition, DiagCode::E3003, "condition has unknown type");
+        // Error already reported by resolveExprWithTarget
         ctx.contexts.pop();
         return false;
     }
 
-    if (!isBoolType(condType)) {
-        ctx.error(stmt->condition, DiagCode::E3003,
-                  "do-while condition must be bool, got ",
-                  debug::typeToString(condType, ctx.pool()));
-        ctx.contexts.pop();
-        return false;
-    }
     // ─── 4. Pop loop context ──────────────────────────────────────────────
     ctx.contexts.pop();
 
-    // Do-while loops do NOT guarantee control transfer
     return false;
 }
 
@@ -609,13 +551,13 @@ bool resolveDoWhileStmt(const DoWhileStmtAST* stmt, SemaContext& ctx) {
 /// @param ctx The semantic context.
 /// @return true (return always transfers control out of the block).
 bool resolveReturnStmt(const ReturnStmtAST* stmt, SemaContext& ctx) {
-    if (!stmt) return true;  // Return always transfers control
+    if (!stmt) return true;
 
     // ─── 1. Check: Must be inside a function body ──────────────────────────
     if (!ctx.contexts.insideFunction()) {
         ctx.error(stmt, DiagCode::E3006,
                   "return statement outside of function body");
-        return true;  // Still transfers control (error recovery)
+        return true;
     }
 
     // ─── 2. Get the current function's return requirements ──────────────────
@@ -631,7 +573,6 @@ bool resolveReturnStmt(const ReturnStmtAST* stmt, SemaContext& ctx) {
 
     // ─── 4. Check return value against current group ────────────────────────
     if (stmt->value) {
-        // ── 4a. Function has a return value ─────────────────────────────────
         if (!currentGroup) {
             ctx.error(stmt, DiagCode::E3005,
                       "return value provided but function has no pending return group");
@@ -645,10 +586,10 @@ bool resolveReturnStmt(const ReturnStmtAST* stmt, SemaContext& ctx) {
             return true;
         }
 
-        // Resolve the return value and check assignability
-        TypeAST* valueType = resolveExpr(stmt->value, ctx);
+        // Resolve the return value against the expected type
+        TypeAST* valueType = resolveExprWithTarget(stmt->value, expectedType, ctx);
         if (!valueType || valueType->isa<UnknownTypeAST>()) {
-            ctx.error(stmt->value, DiagCode::E3003, "return value has unknown type");
+            // Error already reported by resolveExprWithTarget
             return true;
         }
 
@@ -690,7 +631,6 @@ bool resolveReturnStmt(const ReturnStmtAST* stmt, SemaContext& ctx) {
         const_cast<ReturnRequirements::Group*>(currentGroup)->satisfiedAt = stmt->loc;
     }
 
-    // ─── 6. Return true (return always transfers control) ───────────────────
     return true;
 }
 
@@ -708,14 +648,12 @@ bool resolveReturnStmt(const ReturnStmtAST* stmt, SemaContext& ctx) {
 bool resolveBreakStmt(const BreakStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return true;
 
-    // ─── 1. Check: Must be inside a loop or switch ────────────────────────
     if (!ctx.contexts.insideLoop() && !ctx.contexts.insideSwitch()) {
         ctx.error(stmt, DiagCode::E3006,
                   "break statement outside of loop or switch");
-        return true;  // Still transfers control (error recovery)
+        return true;
     }
 
-    // ─── 2. Return true (break always transfers control) ───────────────────
     return true;
 }
 
@@ -725,8 +663,7 @@ bool resolveBreakStmt(const BreakStmtAST* stmt, SemaContext& ctx) {
 
 /// @brief Resolve a continue statement.
 ///
-/// The continue statement skips the rest of the current loop iteration
-/// and jumps to the next iteration.
+/// The continue statement skips the rest of the current loop iteration.
 ///
 /// @param stmt The continue statement.
 /// @param ctx The semantic context.
@@ -734,14 +671,12 @@ bool resolveBreakStmt(const BreakStmtAST* stmt, SemaContext& ctx) {
 bool resolveContinueStmt(const ContinueStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return true;
 
-    // ─── 1. Check: Must be inside a loop ────────────────────────────────────
     if (!ctx.contexts.insideLoop()) {
         ctx.error(stmt, DiagCode::E3006,
                   "continue statement outside of loop");
-        return true;  // Still transfers control (error recovery)
+        return true;
     }
 
-    // ─── 2. Return true (continue always transfers control) ─────────────────
     return true;
 }
 
@@ -760,7 +695,7 @@ bool resolveContinueStmt(const ContinueStmtAST* stmt, SemaContext& ctx) {
 bool resolveExprStmt(const ExprStmtAST* stmt, SemaContext& ctx) {
     if (!stmt || !stmt->expr) return false;
 
-    // ─── 1. Resolve the expression ──────────────────────────────────────────
+    // ─── 1. Resolve the expression (no target type) ──────────────────────
     TypeAST* exprType = resolveExpr(stmt->expr, ctx);
     if (!exprType || exprType->isa<UnknownTypeAST>()) {
         ctx.error(stmt->expr, DiagCode::E3003, "expression has unknown type");
@@ -770,48 +705,15 @@ bool resolveExprStmt(const ExprStmtAST* stmt, SemaContext& ctx) {
     // ─── 2. Check for discarded non-void value ─────────────────────────────
     // If the expression has a non-void type and no side effects, warn
     if (exprType && !exprType->isa<UnknownTypeAST>()) {
-        // Check if the expression has side effects (function calls, assignments, etc.)
-        // TODO: refactor
+        // TODO: Check if expression has side effects
         // bool hasSideEffects = hasSideEffects(stmt->expr, ctx);
         // if (!hasSideEffects) {
-        //     // TODO: Emit warning about discarded pure expression
-        //     // ctx.warning(stmt, DiagCode::W1002,
-        //     //             "expression result is discarded (no side effects)");
+        //     ctx.warning(stmt, DiagCode::W1002,
+        //                 "expression result is discarded (no side effects)");
         // }
     }
 
     return false;
-}
-
-/// @brief Check if an expression has side effects.
-bool hasSideEffects(ExprAST* expr, SemaContext& ctx) {
-    if (!expr) return false;
-
-    switch (expr->kind) {
-        case ASTKind::CallExpr:
-            return true;  // Function calls may have side effects
-        case ASTKind::AssignExpr:
-            return true;  // Assignment has side effects
-        case ASTKind::PipelineExpr: {
-            const PipelineExprAST* pipeline = expr->as<PipelineExprAST>();
-            for (const PipelineStepPtr step : pipeline->steps) {
-                if (step->callable && hasSideEffects(step->callable, ctx)) {
-                    return true;
-                }
-            }
-            return false;
-        }
-        case ASTKind::BinaryExpr: {
-            const BinaryExprAST* bin = expr->as<BinaryExprAST>();
-            return hasSideEffects(bin->left, ctx) || hasSideEffects(bin->right, ctx);
-        }
-        case ASTKind::UnaryExpr: {
-            const UnaryExprAST* unary = expr->as<UnaryExprAST>();
-            return hasSideEffects(unary->operand, ctx);
-        }
-        default:
-            return false;
-    }
 }
 
 // =============================================================================
@@ -820,8 +722,7 @@ bool hasSideEffects(ExprAST* expr, SemaContext& ctx) {
 
 /// @brief Resolve a declaration statement.
 ///
-/// A declaration statement introduces one or more local declarations
-/// (variables, functions, structs, enums, traits).
+/// A declaration statement introduces one or more local declarations.
 ///
 /// @param stmt The declaration statement.
 /// @param ctx The semantic context.
@@ -829,12 +730,7 @@ bool hasSideEffects(ExprAST* expr, SemaContext& ctx) {
 bool resolveDeclStmt(const DeclStmtAST* stmt, SemaContext& ctx) {
     if (!stmt || !stmt->decl) return false;
 
-    // ─── 1. Dispatch to resolveDecl() for the inner declaration ────────────
-    // The declaration was already registered in Phase 1.
-    // Now we resolve its type and validate it.
     resolveDecl(stmt->decl, ctx);
-
-    // ─── 2. Return false (declarations do not transfer control) ────────────
     return false;
 }
 
@@ -844,81 +740,55 @@ bool resolveDeclStmt(const DeclStmtAST* stmt, SemaContext& ctx) {
 
 // ─── resolveAsyncStmt ──────────────────────────────────────────────────────
 
-/// @brief Resolve an async statement.
-///
-/// Grammar: `async IDENTIFIER { ',' IDENTIFIER } '=' call_expr`
-///
-/// Schedules a function call on the event loop.
-/// The result is a Future<T> that must be awaited.
-///
-/// @param stmt The async statement.
-/// @param ctx The semantic context.
-/// @return false (async does NOT transfer control).
 bool resolveAsyncStmt(const AsyncStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
-    // ─── 1. Check: Must be inside a function body ──────────────────────────
     if (!ctx.contexts.insideFunction()) {
         ctx.error(stmt, DiagCode::E3006,
                   "async statement outside of function body");
         return false;
     }
 
-    // ─── 2. Check the target variable ──────────────────────────────────────
     if (!stmt->target) {
         ctx.error(stmt, DiagCode::E3003, "async statement requires a target variable");
         return false;
     }
 
-    // The target must be an assignable lvalue
     if (!stmt->target->isa<IdentifierExprAST>()) {
         ctx.error(stmt->target, DiagCode::E3003,
                   "async target must be a variable (not an expression)");
         return false;
     }
 
-    // ─── 3. Resolve the call expression ─────────────────────────────────────
     if (!stmt->call) {
         ctx.error(stmt, DiagCode::E3003, "async statement requires a call expression");
         return false;
     }
 
-    // TODO: refactor
-    // if (!checkExpr(stmt->call, nullptr, ctx)) {
-    //     return false;
-    // }
+    // Resolve the call expression (no target type - it'll be checked)
+    TypeAST* callType = resolveExpr(stmt->call, ctx);
+    if (!callType || callType->isa<UnknownTypeAST>()) {
+        // Error already reported
+        return false;
+    }
 
-    // ─── 4. Verify the call returns a Future type ──────────────────────────
-    // The checkExpr should have set the resolved type
     // TODO: Verify the call returns a Future<T> type
+    // TODO: Set the target variable's type to Future<T>
 
-    // ─── 5. Return false (async does not transfer control) ──────────────────
     return false;
 }
 
 // ─── resolveAwaitStmt ──────────────────────────────────────────────────────
 
-/// @brief Resolve an await statement.
-///
-/// Grammar: `await IDENTIFIER { ',' IDENTIFIER }`
-///
-/// Waits for async operations to complete.
-/// After await, variables become plain T (no longer Future<T>).
-///
-/// @param stmt The await statement.
-/// @param ctx The semantic context.
-/// @return false (await does NOT transfer control).
 bool resolveAwaitStmt(const AwaitStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
-    // ─── 1. Check: Must be inside a function body ──────────────────────────
     if (!ctx.contexts.insideFunction()) {
         ctx.error(stmt, DiagCode::E3006,
                   "await statement outside of function body");
         return false;
     }
 
-    // ─── 2. Check each target variable ─────────────────────────────────────
     for (ExprAST* target : stmt->targets) {
         if (!target->isa<IdentifierExprAST>()) {
             ctx.error(target, DiagCode::E3003,
@@ -926,84 +796,65 @@ bool resolveAwaitStmt(const AwaitStmtAST* stmt, SemaContext& ctx) {
             continue;
         }
 
+        // Resolve the target variable
+        TypeAST* targetType = resolveExpr(target, ctx);
+        if (!targetType || targetType->isa<UnknownTypeAST>()) {
+            continue;
+        }
+
         // TODO: Verify the variable is a Future<T> type
         // TODO: Change variable type from Future<T> to T
     }
 
-    // ─── 3. Return false (await does not transfer control) ──────────────────
     return false;
 }
 
 // ─── resolveSpawnStmt ──────────────────────────────────────────────────────
 
-/// @brief Resolve a spawn statement.
-///
-/// Grammar: `spawn IDENTIFIER { ',' IDENTIFIER } '=' call_expr`
-///
-/// Launches a function call on a separate OS thread.
-/// The result is a Future<T> that must be joined.
-///
-/// @param stmt The spawn statement.
-/// @param ctx The semantic context.
-/// @return false (spawn does NOT transfer control).
 bool resolveSpawnStmt(const SpawnStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
-    // ─── 1. Check: Must be inside a function body ──────────────────────────
     if (!ctx.contexts.insideFunction()) {
         ctx.error(stmt, DiagCode::E3006,
                   "spawn statement outside of function body");
         return false;
     }
 
-    // ─── 2. Check the target variable ──────────────────────────────────────
-    if (!stmt->target) {
-        // _ is allowed (discard)
-        // No validation needed
-    } else if (!stmt->target->isa<IdentifierExprAST>()) {
-        ctx.error(stmt->target, DiagCode::E3003,
-                  "spawn target must be a variable (not an expression)");
-        return false;
-    }
-
-    // ─── 3. Resolve the call expression ─────────────────────────────────────
     if (!stmt->call) {
         ctx.error(stmt, DiagCode::E3003, "spawn statement requires a call expression");
         return false;
     }
 
-    // TODO: refactor
-    // if (!checkExpr(stmt->call, nullptr, ctx)) {
-    //     return false;
-    // }
+    // Resolve the call expression
+    TypeAST* callType = resolveExpr(stmt->call, ctx);
+    if (!callType || callType->isa<UnknownTypeAST>()) {
+        return false;
+    }
 
-    // ─── 4. Return false (spawn does not transfer control) ──────────────────
+    if (stmt->target) {
+        if (!stmt->target->isa<IdentifierExprAST>()) {
+            ctx.error(stmt->target, DiagCode::E3003,
+                      "spawn target must be a variable (not an expression)");
+            return false;
+        }
+        // TODO: Set the target variable's type to Future<T>
+    }
+    // If no target, it's a discard (_) - no validation needed
+
     return false;
 }
 
 // ─── resolveJoinStmt ───────────────────────────────────────────────────────
 
-/// @brief Resolve a join statement.
-///
-/// Grammar: `join IDENTIFIER { ',' IDENTIFIER }`
-///
-/// Waits for spawned threads to complete.
-/// After join, variables become plain T (no longer Future<T>).
-///
-/// @param stmt The join statement.
-/// @param ctx The semantic context.
-/// @return false (join does NOT transfer control).
 bool resolveJoinStmt(const JoinStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
-    // ─── 1. Check: Must be inside a function body ──────────────────────────
     if (!ctx.contexts.insideFunction()) {
         ctx.error(stmt, DiagCode::E3006,
                   "join statement outside of function body");
         return false;
     }
 
-    // ─── 2. Check each target variable ─────────────────────────────────────
     for (ExprAST* target : stmt->targets) {
         if (!target->isa<IdentifierExprAST>()) {
             ctx.error(target, DiagCode::E3003,
@@ -1011,11 +862,16 @@ bool resolveJoinStmt(const JoinStmtAST* stmt, SemaContext& ctx) {
             continue;
         }
 
+        // Resolve the target variable
+        TypeAST* targetType = resolveExpr(target, ctx);
+        if (!targetType || targetType->isa<UnknownTypeAST>()) {
+            continue;
+        }
+
         // TODO: Verify the variable is a Future<T> from spawn
         // TODO: Change variable type from Future<T> to T
     }
 
-    // ─── 3. Return false (join does not transfer control) ──────────────────
     return false;
 }
 

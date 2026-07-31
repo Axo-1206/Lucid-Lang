@@ -156,6 +156,22 @@ TypeAST* resolveFuncType(const FuncTypeAST* type, SemaContext& ctx);
 /// @return The resolved TraitDeclAST, or nullptr on failure.
 const TraitDeclAST* resolveTraitRef(const NamedTypeAST* ref, SemaContext& ctx);
 
+// ─── Callee Resolution (for function calls) ─────────────────────────────
+
+/// @brief Resolve a call expression's callee to the FuncDeclAST it names.
+/// 
+/// Handles callee shapes:
+///   - IdentifierExprAST: Look up in value namespace
+///   - ModuleAccessExprAST: Look up module alias, then member
+/// 
+/// @param callee The callee expression from a CallExprAST.
+/// @param ctx The semantic context.
+/// @return The FuncDeclAST if found, nullptr on error.
+/// 
+/// @note Any other callee shape returns nullptr silently.
+const FuncDeclAST* resolveCalleeOrError(const ExprAST* callee, SemaContext& ctx);
+
+
 // ─── Self-Reference Detection ───────────────────────────────────────────
 
 /// @brief Check if a let initializer references the variable being declared.

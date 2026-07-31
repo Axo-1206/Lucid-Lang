@@ -124,11 +124,6 @@ enum class DiagCode : uint32_t {
 
     // ═══════════════════════════════════════════════════════════════════════
     // 2001–3000: Semantic — Name Resolution
-    // (AST → validated AST, the resolution half: does this name refer to
-    //  a real declaration in the current context? See SemaContext's
-    //  lookupValue()/lookupType(), Sema.hpp's resolveValueOrError()/
-    //  resolveTypeNameOrError()/resolveCalleeOrError(), implemented in
-    //  sema/support/Resolution.cpp)
     //
     // Sub-split, same reasoning as Syntax's 1001–1100/1101–2000 split below:
     //   2001–2100: general/structural name-resolution errors (the same

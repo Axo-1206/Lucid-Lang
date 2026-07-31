@@ -16,8 +16,6 @@
 #include "support/TypeNarrowHelpers.hpp"
 #include "support/SemaStructField.hpp"
 #include "support/SwitchHelpers.hpp"
-#include "support/TraitValidation.hpp"
-#include "support/GenericValidation.hpp"
 #include "support/LiteralHelpers.hpp"
 #include "types/SemaType.hpp"
 #include "registry/AttributeRegistry.hpp"
@@ -123,89 +121,105 @@ bool resolveSpawnStmt(const SpawnStmtAST* stmt, SemaContext& ctx);
 bool resolveJoinStmt(const JoinStmtAST* stmt, SemaContext& ctx);
 
 // =============================================================================
-// EXPRESSIONS - Type Resolution
+// EXPRESSIONS - Type Resolution (New Design)
 // =============================================================================
 
-/// @brief Resolve the type of an expression.
+/// @brief Resolve the type of an expression with an optional target type.
 /// 
-/// This is the main entry point for expression type resolution.
-/// It resolves the expression's type and stores it in expr->resolvedType.
+/// This is the new main entry point for expression resolution.
+/// It resolves the expression's type, validates against targetType if provided,
+/// and stores the result directly on the expression node (resolvedType, valueState).
 /// 
 /// @param expr The expression to resolve.
+/// @param targetType The expected type (nullptr if no constraint).
 /// @param ctx The semantic context.
 /// @return The resolved type, or UnknownTypeAST on failure.
 /// 
 /// @note On success, expr->resolvedType is set to the resolved type.
 ///       On failure, expr->resolvedType is set to UnknownTypeAST.
+TypeAST* resolveExprWithTarget(ExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
+
+/// @brief Resolve the type of an expression (legacy wrapper).
+/// 
+/// This is a wrapper around resolveExprWithTarget() that provides
+/// backward compatibility for existing code.
+/// 
+/// @param expr The expression to resolve.
+/// @param ctx The semantic context.
+/// @return The resolved type, or UnknownTypeAST on failure.
 TypeAST* resolveExpr(ExprAST* expr, SemaContext& ctx);
 
-// ─── Specific Expression Resolvers ──────────────────────────────────────
+// ─── Specific Expression Resolvers (New Design) ──────────────────────
 
 /// @brief Resolve a literal expression.
-TypeAST* resolveLiteralExpr(LiteralExprAST* expr, SemaContext& ctx);
+/// @param expr The expression to resolve.
+/// @param targetType The expected type (nullptr if no constraint).
+/// @param ctx The semantic context.
+/// @return The resolved type, or UnknownTypeAST on failure.
+TypeAST* resolveLiteralExpr(LiteralExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
 
 /// @brief Resolve an identifier expression.
-TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, SemaContext& ctx);
+TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
 
 /// @brief Resolve an array literal expression.
-TypeAST* resolveArrayLiteralExpr(ArrayLiteralExprAST* expr, SemaContext& ctx);
+TypeAST* resolveArrayLiteralExpr(ArrayLiteralExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
 
 /// @brief Resolve a struct literal expression.
-TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, SemaContext& ctx);
+TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
 
 /// @brief Resolve a binary expression.
-TypeAST* resolveBinaryExpr(BinaryExprAST* expr, SemaContext& ctx);
+TypeAST* resolveBinaryExpr(BinaryExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
 
 /// @brief Resolve a unary expression.
-TypeAST* resolveUnaryExpr(UnaryExprAST* expr, SemaContext& ctx);
+TypeAST* resolveUnaryExpr(UnaryExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
 
 /// @brief Resolve a call expression.
-TypeAST* resolveCallExpr(CallExprAST* expr, SemaContext& ctx);
+TypeAST* resolveCallExpr(CallExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
 
 /// @brief Resolve an intrinsic call expression.
-TypeAST* resolveIntrinsicCallExpr(IntrinsicCallExprAST* expr, SemaContext& ctx);
+TypeAST* resolveIntrinsicCallExpr(IntrinsicCallExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
 
 /// @brief Resolve an index expression.
-TypeAST* resolveIndexExpr(IndexExprAST* expr, SemaContext& ctx);
+TypeAST* resolveIndexExpr(IndexExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
 
 /// @brief Resolve a slice expression.
-TypeAST* resolveSliceExpr(SliceExprAST* expr, SemaContext& ctx);
+TypeAST* resolveSliceExpr(SliceExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
 
 /// @brief Resolve a field access expression.
-TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, SemaContext& ctx);
+TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
 
 /// @brief Resolve a module access expression.
-TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, SemaContext& ctx);
+TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
 
 /// @brief Resolve a nullable chain expression.
-TypeAST* resolveNullableChainExpr(NullableChainExprAST* expr, SemaContext& ctx);
+TypeAST* resolveNullableChainExpr(NullableChainExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
 
 /// @brief Resolve a null coalesce expression.
-TypeAST* resolveNullCoalesceExpr(NullCoalesceExprAST* expr, SemaContext& ctx);
+TypeAST* resolveNullCoalesceExpr(NullCoalesceExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
 
 /// @brief Resolve an assignment expression.
-TypeAST* resolveAssignExpr(AssignExprAST* expr, SemaContext& ctx);
+TypeAST* resolveAssignExpr(AssignExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
 
 /// @brief Resolve a pipeline expression.
-TypeAST* resolvePipelineExpr(PipelineExprAST* expr, SemaContext& ctx);
+TypeAST* resolvePipelineExpr(PipelineExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
 
 /// @brief Resolve a pipeline step.
 TypeAST* resolvePipelineStep(PipelineStepAST* step, const TypeAST* inputType, SemaContext& ctx);
 
 /// @brief Resolve a composition expression.
-TypeAST* resolveComposeExpr(ComposeExprAST* expr, SemaContext& ctx);
+TypeAST* resolveComposeExpr(ComposeExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
 
 /// @brief Resolve a composition operand.
-TypeAST* resolveComposeOperand(ComposeOperandAST* operand, SemaContext& ctx);
+TypeAST* resolveComposeOperand(ComposeOperandAST* operand, const TypeAST* targetType, SemaContext& ctx);
 
 /// @brief Resolve an anonymous function expression.
-TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, SemaContext& ctx);
+TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
 
 /// @brief Resolve an if expression.
-TypeAST* resolveIfExpr(IfExprAST* expr, SemaContext& ctx);
+TypeAST* resolveIfExpr(IfExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
 
 /// @brief Resolve a range expression.
-TypeAST* resolveRangeExpr(RangeExprAST* expr, SemaContext& ctx);
+TypeAST* resolveRangeExpr(RangeExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
 
 // =============================================================================
 // CONST EVALUATION

@@ -169,6 +169,7 @@
 #include "core/ast/ExprAST.hpp"
 #include "core/SourceLocation.hpp"
 #include "core/memory/InternedString.hpp"
+#include "ReturnRequirements.hpp"
 
 #include <vector>
 #include <unordered_map>
@@ -232,22 +233,8 @@ struct ContextFrame {
     /// Where the construct was opened (for diagnostics).
     SourceLocation openedAt;
     
-    // ─── Return Groups (only for FuncBody) ─────────────────────────────
-    
-    /// @brief One return group in a curried function.
-    /// 
-    /// Each `->` in the function signature creates one group.
-    /// Example: `(a int) -> (b int) -> int` has 2 groups.
-    struct ReturnGroup {
-        const TypeAST* returnType = nullptr;  ///< Expected return type
-        bool requiresReturn = false;          ///< True if this group needs a return
-        bool isSatisfied = false;             ///< Has this group been satisfied?
-        int level = 0;                        ///< Nesting level for this group
-    };
-    
-    std::vector<ReturnGroup> returnGroups;    ///< All return groups in order
-    int currentGroupIndex = -1;               ///< Currently active group
-    int currentLevel = 0;                     ///< Current nesting level
+    // ─── Return Groups (only for FuncBody / AsyncBody) ──────────────────
+    ReturnRequirements returnReqs;
     
     // ─── Loop/Switch Tracking ──────────────────────────────────────────
     
@@ -311,6 +298,9 @@ public:
     /// Push a function context with return tracking.
     void pushFunction(FuncDeclAST* node, FuncTypeAST* funcType, const SourceLocation& loc);
     
+    /// Push an anonymous function context with return tracking.
+    void pushAnonFunction(AnonFuncExprAST* node, FuncTypeAST* funcType, const SourceLocation& loc);
+    
     /// Push a loop context.
     void pushLoop(StmtAST* loopStmt, const SourceLocation& loc);
     
@@ -335,78 +325,77 @@ public:
     BaseAST* currentNode() const;
     
     /// @name Convenience Queries
-    /// @{
     bool insideFunction() const;
     bool insideLoop() const;
     bool insideSwitch() const;
     bool insideAsync() const;
     bool insideParallel() const;
-    /// @}
     
     /// @name Current Node Getters
-    /// @{
     FuncDeclAST* currentFunction() const;
     StmtAST* currentLoop() const;
     SwitchStmtAST* currentSwitch() const;
     BlockStmtAST* currentBlock() const;
-    /// @}
 
     // ─── Type Narrowing ──────────────────────────────────────────────────
 
     /// @name If Condition Context
     /// 
     /// Used during if condition analysis to detect narrowing patterns.
-    /// @{
     bool isIfConditionCtx() const;
     void setIfConditionCtx(bool isIfCtx);
     void setHasElse(bool hasElse);
     bool hasElse() const;
-    /// @}
     
     /// @name Pending Narrowing
     /// 
     /// Narrowing info detected during condition analysis, to be applied
     /// to the appropriate branch.
-    /// @{
     void setPendingNarrowing(const NarrowingInfo& info);
     const NarrowingInfo& getPendingNarrowing() const;
     void clearPendingNarrowing();
-    /// @}
     
     /// @name Narrowing Stack
     /// 
     /// Active narrowing levels for branches and blocks.
-    /// @{
     void pushNarrowingLevel(bool isInverse = false);
     void popNarrowingLevel();
     void narrowVariable(InternedString name, const TypeAST* type);
     const TypeAST* getNarrowedType(InternedString name) const;
     bool isNarrowingInverse() const;
-    /// @}
     
     /// @name Pending Inverse Narrowing
     /// 
     /// For standalone if with early exit - applies to the rest of the block.
-    /// @{
     void setPendingInverseNarrowing(const NarrowingInfo& info);
     bool hasPendingInverseNarrowing() const;
     const NarrowingInfo& getPendingInverseNarrowing() const;
     void clearPendingInverseNarrowing();
-    /// @}
 
     // ─── Return Requirements ─────────────────────────────────────────────
 
     /// @name Return Tracking
     /// 
     /// For curried functions, tracks which `->` groups have been satisfied.
-    /// @{
     bool hasReturnRequirements() const;
+    
+    /// Check if all return requirements are satisfied.
     bool returnRequirementsSatisfied() const;
+    
+    /// Advance to the next return group at the current level.
     void advanceReturnGroup();
-    const ContextFrame::ReturnGroup* currentReturnGroup() const;
+    
+    /// Get the current return group (for type checking).
+    const ReturnRequirements::Group* currentReturnGroup() const;
+    
+    /// Enter/exit nesting level (for curried functions).
     void enterLevel();
     void exitLevel();
-    /// @}
+
+    // ─── Debug ───────────────────────────────────────────────────────────
+
+    /// @brief Get the current return requirements (for debugging).
+    const ReturnRequirements* currentReturnReqs() const;
 
 private:
     // ─── Members ──────────────────────────────────────────────────────────
@@ -430,8 +419,8 @@ private:
     ContextFrame* findInnermostBlock();
     const ContextFrame* findInnermostBlock() const;
     
-    void buildReturnGroups(FuncTypeAST* funcType, 
-                           std::vector<ContextFrame::ReturnGroup>& groups);
+    /// Build return requirements from a function type.
+    ReturnRequirements buildReturnRequirements(FuncTypeAST* funcType);
 };
 
 } // namespace sema

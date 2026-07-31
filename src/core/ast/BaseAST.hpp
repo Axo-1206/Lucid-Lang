@@ -471,7 +471,7 @@ struct ConstantValue {
 
 struct ExprAST : BaseAST {
     TypeAST* resolvedType = nullptr; // written as semantic phase
-    ValueState valueState = ValueState::Unknown;  // track value state
+    ValueState valueState = ValueState::Unknown;  // track value state, use to return an `err` value when anything go wrong
     bool isModuleMember   = false;
     bool isConst          = false;
     ConstantValue constValue;  // Evaluated constant value (for const expressions)

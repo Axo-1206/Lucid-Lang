@@ -61,7 +61,7 @@ TypeAST* resolveNamedType(const NamedTypeAST* type, SemaContext& ctx) {
     }
 
     // ─── 2. Look up as concrete type ──────────────────────────────────────
-    const TypeDeclAST* decl = lookupType(type->name, ctx);
+    const TypeDeclAST* decl = ctx.lookupType(type->name);
     if (!decl) {
         ctx.error(type, DiagCode::E2002,
                   "undefined type '", ctx.pool.lookup(type->name), "'");
@@ -106,13 +106,11 @@ TypeAST* resolveNamedType(const NamedTypeAST* type, SemaContext& ctx) {
         // Resolve each generic argument type
         for (const TypePtr arg : type->genericArgs) {
             if (!resolveType(arg, ctx)) {
-                // Error already reported
                 return nullptr;
             }
         }
     }
 
-    // ─── 5. Return the resolved type ─────────────────────────────────────
     return const_cast<NamedTypeAST*>(type);
 }
 
@@ -121,14 +119,12 @@ TypeAST* resolveNamedType(const NamedTypeAST* type, SemaContext& ctx) {
 TypeAST* resolveArrayType(const ArrayTypeAST* type, SemaContext& ctx) {
     if (!type) return nullptr;
 
-    // Resolve the element type
     TypeAST* element = resolveType(type->element, ctx);
     if (!element) {
         ctx.error(type, DiagCode::E3003, "invalid array element type");
         return nullptr;
     }
 
-    // Check: Reference types cannot be stored in arrays (Downward Flow Rule)
     if (element->isa<RefTypeAST>()) {
         ctx.error(type, DiagCode::E3004,
                   "reference type (&T) cannot be stored in an array");
@@ -143,21 +139,17 @@ TypeAST* resolveArrayType(const ArrayTypeAST* type, SemaContext& ctx) {
 TypeAST* resolveNullableType(const NullableTypeAST* type, SemaContext& ctx) {
     if (!type) return nullptr;
 
-    // Resolve the inner type
     TypeAST* inner = resolveType(type->inner, ctx);
     if (!inner) {
         ctx.error(type, DiagCode::E3003, "invalid nullable inner type");
         return nullptr;
     }
 
-    // Check: Function types cannot be nullable
     if (inner->isa<FuncTypeAST>()) {
-        ctx.error(type, DiagCode::E3004,
-                  "function types cannot be nullable");
+        ctx.error(type, DiagCode::E3004, "function types cannot be nullable");
         return nullptr;
     }
 
-    // Check: Array types cannot be nullable
     if (inner->isa<ArrayTypeAST>()) {
         ctx.error(type, DiagCode::E3004,
                   "array types cannot be nullable (use empty array instead)");
@@ -172,24 +164,19 @@ TypeAST* resolveNullableType(const NullableTypeAST* type, SemaContext& ctx) {
 TypeAST* resolveFallibleType(const FallibleTypeAST* type, SemaContext& ctx) {
     if (!type) return nullptr;
 
-    // Resolve the inner type
     TypeAST* inner = resolveType(type->inner, ctx);
     if (!inner) {
         ctx.error(type, DiagCode::E3003, "invalid fallible inner type");
         return nullptr;
     }
 
-    // Check: Function types cannot be fallible
     if (inner->isa<FuncTypeAST>()) {
-        ctx.error(type, DiagCode::E3004,
-                  "function types cannot be fallible");
+        ctx.error(type, DiagCode::E3004, "function types cannot be fallible");
         return nullptr;
     }
 
-    // Check: Array types cannot be fallible
     if (inner->isa<ArrayTypeAST>()) {
-        ctx.error(type, DiagCode::E3004,
-                  "array types cannot be fallible");
+        ctx.error(type, DiagCode::E3004, "array types cannot be fallible");
         return nullptr;
     }
 
@@ -201,24 +188,19 @@ TypeAST* resolveFallibleType(const FallibleTypeAST* type, SemaContext& ctx) {
 TypeAST* resolveCombinedType(const CombinedTypeAST* type, SemaContext& ctx) {
     if (!type) return nullptr;
 
-    // Resolve the inner type
     TypeAST* inner = resolveType(type->inner, ctx);
     if (!inner) {
         ctx.error(type, DiagCode::E3003, "invalid combined inner type");
         return nullptr;
     }
 
-    // Check: Function types cannot be combined
     if (inner->isa<FuncTypeAST>()) {
-        ctx.error(type, DiagCode::E3004,
-                  "function types cannot be combined");
+        ctx.error(type, DiagCode::E3004, "function types cannot be combined");
         return nullptr;
     }
 
-    // Check: Array types cannot be combined
     if (inner->isa<ArrayTypeAST>()) {
-        ctx.error(type, DiagCode::E3004,
-                  "array types cannot be combined");
+        ctx.error(type, DiagCode::E3004, "array types cannot be combined");
         return nullptr;
     }
 
@@ -230,7 +212,6 @@ TypeAST* resolveCombinedType(const CombinedTypeAST* type, SemaContext& ctx) {
 TypeAST* resolveRefType(const RefTypeAST* type, SemaContext& ctx) {
     if (!type) return nullptr;
 
-    // Resolve the inner type
     TypeAST* inner = resolveType(type->inner, ctx);
     if (!inner) {
         ctx.error(type, DiagCode::E3003, "invalid reference target type");
@@ -249,18 +230,11 @@ TypeAST* resolveRefType(const RefTypeAST* type, SemaContext& ctx) {
         return nullptr;
     }
 
-    // 2. Cannot store &T in arrays (checked in resolveArrayType)
-    // 3. Cannot return &T from functions (checked in resolveFuncType)
-
-    // Note: References to traits (&Trait) are NOT allowed because traits
-    // are not concrete types with a known size.
-    if (inner->isa<NamedTypeAST>()) {
-        const NamedTypeAST* named = inner->as<NamedTypeAST>();
-        if (isTraitType(inner, ctx)) {
-            ctx.error(type, DiagCode::E3004,
-                      "cannot take reference to trait type (&Trait)");
-            return nullptr;
-        }
+    // References to traits are NOT allowed
+    if (isTraitType(inner, ctx)) {
+        ctx.error(type, DiagCode::E3004,
+                  "cannot take reference to trait type (&Trait)");
+        return nullptr;
     }
 
     return const_cast<RefTypeAST*>(type);
@@ -271,15 +245,11 @@ TypeAST* resolveRefType(const RefTypeAST* type, SemaContext& ctx) {
 TypeAST* resolvePtrType(const PtrTypeAST* type, SemaContext& ctx) {
     if (!type) return nullptr;
 
-    // Resolve the inner type
     TypeAST* inner = resolveType(type->inner, ctx);
     if (!inner) {
         ctx.error(type, DiagCode::E3003, "invalid pointer target type");
         return nullptr;
     }
-
-    // Raw pointers are always valid (sealed conduit)
-    // Pointers to traits are allowed (FFI compatibility)
 
     return const_cast<PtrTypeAST*>(type);
 }
@@ -289,7 +259,6 @@ TypeAST* resolvePtrType(const PtrTypeAST* type, SemaContext& ctx) {
 TypeAST* resolveFuncType(const FuncTypeAST* type, SemaContext& ctx) {
     if (!type) return nullptr;
 
-    // ─── 1. Resolve all parameters ────────────────────────────────────────
     for (ParamAST* param : type->params) {
         if (!resolveType(param->type, ctx)) {
             ctx.error(param, DiagCode::E3003, "invalid parameter type");
@@ -297,7 +266,6 @@ TypeAST* resolveFuncType(const FuncTypeAST* type, SemaContext& ctx) {
         }
     }
 
-    // ─── 2. Resolve return type ───────────────────────────────────────────
     if (type->returnType) {
         TypeAST* returnType = resolveType(type->returnType, ctx);
         if (!returnType) {
@@ -305,23 +273,18 @@ TypeAST* resolveFuncType(const FuncTypeAST* type, SemaContext& ctx) {
             return nullptr;
         }
 
-        // ─── 3. Check: Cannot return reference type ──────────────────────
-        // This is part of the Downward Flow Rule
         if (returnType->isa<RefTypeAST>()) {
             ctx.error(type, DiagCode::E3004,
                       "function cannot return reference type (&T)");
             return nullptr;
         }
 
-        // ─── 4. Check: Cannot return trait type ──────────────────────────
-        // Traits are not concrete types with a known size
         if (isTraitType(returnType, ctx)) {
             ctx.error(type, DiagCode::E3004,
                       "function cannot return trait type (use a concrete struct instead)");
             return nullptr;
         }
 
-        // ─── 5. If the return type is a function type, resolve it ────────
         if (returnType->isa<FuncTypeAST>()) {
             if (!resolveFuncType(returnType->as<FuncTypeAST>(), ctx)) {
                 return nullptr;
@@ -337,8 +300,7 @@ TypeAST* resolveFuncType(const FuncTypeAST* type, SemaContext& ctx) {
 const TraitDeclAST* resolveTraitRef(const NamedTypeAST* ref, SemaContext& ctx) {
     if (!ref) return nullptr;
 
-    // Look up the type declaration by name
-    const TypeDeclAST* typeDecl = lookupType(ref->name, ctx);
+    const TypeDeclAST* typeDecl = ctx.lookupType(ref->name);
     if (!typeDecl) {
         ctx.error(ref, DiagCode::E2002,
                   "undefined trait '", ctx.pool.lookup(ref->name), "'");
@@ -377,12 +339,108 @@ const TraitDeclAST* resolveTraitRef(const NamedTypeAST* ref, SemaContext& ctx) {
     return traitDecl;
 }
 
+// ─── Callee Resolution ──────────────────────────────────────────────────
+
+/// @brief Resolve a call expression's callee to the FuncDeclAST it names.
+/// 
+/// Handles two callee shapes:
+///   - IdentifierExprAST: Look up in value namespace (uses ctx.lookupValue)
+///   - ModuleAccessExprAST: Look up module alias, then member (uses ctx.lookupImport + ctx.findModuleTable)
+/// 
+/// Any other callee shape (curried call, function literal, field access) 
+/// returns nullptr silently - the caller must check the callee's resolved type.
+const FuncDeclAST* resolveCalleeOrError(const ExprAST* callee, SemaContext& ctx) {
+    if (!callee) return nullptr;
+
+    // ─── Case 1: Plain identifier call: `foo(...)` ──────────────────────
+    if (callee->isa<IdentifierExprAST>()) {
+        const IdentifierExprAST* id = callee->as<IdentifierExprAST>();
+        
+        // Check if it's a generic parameter (not callable)
+        if (ctx.isGenericParam(id->name)) {
+            ctx.error(callee, DiagCode::E2003,
+                      "'", ctx.pool.lookup(id->name), "' is a generic type parameter, not a function");
+            return nullptr;
+        }
+
+        // Look up the value in the symbol table
+        const ValueDeclAST* value = ctx.lookupValue(id->name);
+        if (!value) {
+            ctx.error(callee, DiagCode::E2001,
+                      "undefined value '", ctx.pool.lookup(id->name), "'");
+            return nullptr;
+        }
+
+        // Must be a function
+        if (!value->isa<FuncDeclAST>()) {
+            ctx.error(callee, DiagCode::E2003,
+                      "'", ctx.pool.lookup(id->name), "' is not callable");
+            return nullptr;
+        }
+
+        return value->as<FuncDeclAST>();
+    }
+
+    // ─── Case 2: Cross-module call: `module:member(...)` ────────────────
+    if (callee->isa<ModuleAccessExprAST>()) {
+        const ModuleAccessExprAST* access = callee->as<ModuleAccessExprAST>();
+        
+        // Look up the module alias
+        ModuleAST* module = ctx.lookupImport(access->moduleName);
+        if (!module) {
+            ctx.error(callee, DiagCode::E2001,
+                      "undefined module alias '", ctx.pool.lookup(access->moduleName), "'");
+            return nullptr;
+        }
+
+        // Get the module's table
+        ModuleTable* table = ctx.findModuleTable(module);
+        if (!table) {
+            ctx.error(callee, DiagCode::E2001,
+                      "module '", ctx.pool.lookup(access->moduleName), "' has not been analyzed");
+            return nullptr;
+        }
+
+        // Look up the member
+        auto it = table->values.find(access->memberName);
+        if (it == table->values.end()) {
+            ctx.error(callee, DiagCode::E2001,
+                      "module '", ctx.pool.lookup(access->moduleName),
+                      "' has no exported member '", ctx.pool.lookup(access->memberName), "'");
+            return nullptr;
+        }
+
+        const ValueDeclAST* decl = it->second;
+        if (!decl->isa<FuncDeclAST>()) {
+            ctx.error(callee, DiagCode::E2003,
+                      "'", ctx.pool.lookup(access->moduleName), ":",
+                      ctx.pool.lookup(access->memberName), "' is not callable");
+            return nullptr;
+        }
+
+        return decl->as<FuncDeclAST>();
+    }
+
+    // ─── Case 3: Field access call: `obj.method(...)` ────────────────────
+    // Lucid has no methods - field access is for struct fields only
+    if (callee->isa<FieldAccessExprAST>()) {
+        // Field access expressions in Lucid are for struct fields, not methods
+        ctx.error(callee, DiagCode::E2003,
+                  "field access is not callable (Lucid has no methods)");
+        return nullptr;
+    }
+
+    // ─── Case 4: Any other callee shape ──────────────────────────────────
+    // Examples: function literal, curried call, pipeline step, etc.
+    // The caller must check callee->resolvedType instead
+    return nullptr;
+}
+
 // ─── Self-Reference Detection ───────────────────────────────────────────
 
 void checkLetSelfReference(const ExprAST* expr, InternedString varName, SemaContext& ctx) {
     if (!expr) return;
 
-    // Walk the expression tree looking for IdentifierExprAST with the same name
     switch (expr->kind) {
         case ASTKind::IdentifierExpr: {
             const IdentifierExprAST* id = expr->as<IdentifierExprAST>();

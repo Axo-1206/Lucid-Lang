@@ -13,6 +13,11 @@
 ///   Const evaluation now happens DURING Phase 2 (type resolution), not as
 ///   a separate Phase 3. This allows const evaluation to use the fully
 ///   resolved type information and context.
+/// 
+/// @architectural_note Expression Resolution with Target Type
+///   Declarations provide the target type for their initializers.
+///   `resolveExprWithTarget(expr, targetType, ctx)` validates the expression
+///   against the target type and stores the result on the expression node.
 
 #include "../Sema.hpp"
 #include "../context/SemaContext.hpp"
@@ -20,8 +25,6 @@
 #include "core/ast/TypeAST.hpp"
 #include "debug/DebugUtils.hpp"
 #include "sema/registry/AttributeRegistry.hpp"
-#include "sema/support/TraitValidation.hpp"
-#include "sema/support/GenericValidation.hpp"
 
 namespace sema {
 
@@ -32,7 +35,7 @@ namespace sema {
 /// @brief Register an import declaration's name.
 /// 
 /// REGISTRATION:
-///   - `ctx.symbols.addImportAlias(alias, module)` - registers import alias
+///   - `ctx.addImportAlias(alias, module)` - registers import alias
 ///   - This allows `module:member` syntax in expressions
 void registerImportName(const ImportDeclAST* decl, SemaContext& ctx) {
     // Check import alias redeclaration in the current module
@@ -48,14 +51,14 @@ void registerImportName(const ImportDeclAST* decl, SemaContext& ctx) {
         return;
     }
 
-    // Register the import alias
-    ctx.symbols.addImportAlias(decl->alias, target);
+    // Register the import alias using the integrated context
+    ctx.addImportAlias(decl->alias, target);
 }
 
 /// @brief Register a variable declaration's name.
 ///
 /// REGISTRATION:
-///   - `ctx.symbols.insertValue(decl)` - registers in value namespace
+///   - `ctx.insertValue(decl)` - registers in value namespace
 ///   - No type resolution is performed
 ///   - For const declarations, initializer is NOT evaluated here
 void registerVarName(const VarDeclAST* decl, SemaContext& ctx) {
@@ -64,16 +67,16 @@ void registerVarName(const VarDeclAST* decl, SemaContext& ctx) {
         return;
     }
 
-    // ─── 2. Register the variable ────────────────────────────────────
+    // ─── 2. Register the variable using the integrated context ──────
     // Just register the name. Type resolution and const evaluation
     // will happen in Phase 2 (resolveVarDecl).
-    ctx.symbols.insertValue(decl);
+    ctx.insertValue(decl);
 }
 
 /// @brief Register a function declaration's name.
 ///
 /// REGISTRATION:
-///   - `ctx.symbols.insertValue(decl)` - registers in value namespace
+///   - `ctx.insertValue(decl)` - registers in value namespace
 ///   - Generic params registered BEFORE body
 ///   - Parameters registered in function scope
 ///   - Body names are registered via registerStmtNames
@@ -84,7 +87,7 @@ void registerFuncName(const FuncDeclAST* decl, SemaContext& ctx) {
     }
 
     // ─── 2. Register function name ──────────────────────────────────────
-    ctx.symbols.insertValue(decl);
+    ctx.insertValue(decl);
 
     // ─── 3. Register generic parameters ────────────────────────────────────
     for (const GenericParamDeclAST* g : decl->genericParams) {
@@ -92,7 +95,7 @@ void registerFuncName(const FuncDeclAST* decl, SemaContext& ctx) {
     }
 
     // ─── 4. Register parameters ────────────────────────────────────────────
-    ctx.symbols.pushScope();
+    ctx.pushScope();
 
     if (decl->funcType) {
         for (FuncTypeAST* group = decl->funcType; group; group = group->getNext()) {
@@ -102,7 +105,7 @@ void registerFuncName(const FuncDeclAST* decl, SemaContext& ctx) {
         }
     }
 
-    ctx.symbols.popScope();
+    ctx.popScope();
 
     // ─── 5. Note: Body names will be registered by registerStmtNames ──────
 }
@@ -110,19 +113,19 @@ void registerFuncName(const FuncDeclAST* decl, SemaContext& ctx) {
 /// @brief Register a parameter's name.
 ///
 /// REGISTRATION:
-///   - `ctx.symbols.insertValue(param)` - registers in value namespace
+///   - `ctx.insertValue(param)` - registers in value namespace
 ///   - Parameters shadow outer variables
 void registerParamName(const ParamAST* param, SemaContext& ctx) {
     if (reportValueRedeclaration(param, ctx)) {
         return;
     }
-    ctx.symbols.insertValue(param);
+    ctx.insertValue(param);
 }
 
 /// @brief Register a generic parameter's name.
 ///
 /// REGISTRATION:
-///   - `ctx.symbols.insertGenericParam(param)` - registers in the current
+///   - `ctx.insertGenericParam(param)` - registers in the current
 ///     scope's genericParams map (transient, not module-level)
 ///
 /// PRIORITY:
@@ -132,35 +135,35 @@ void registerGenericParamName(const GenericParamDeclAST* param, SemaContext& ctx
     if (reportGenericParamRedeclaration(param, ctx)) {
         return;
     }
-    ctx.symbols.insertGenericParam(param);
+    ctx.insertGenericParam(param);
 }
 
 /// @brief Register an enum declaration's name.
 ///
 /// REGISTRATION:
-///   - `ctx.symbols.insertType(decl)` - registers in type namespace
+///   - `ctx.insertType(decl)` - registers in type namespace
 ///   - Variants are registered as values in the enum's scope
 void registerEnumName(const EnumDeclAST* decl, SemaContext& ctx) {
     if (reportTypeRedeclaration(decl, ctx)) {
         return;
     }
-    ctx.symbols.insertType(decl);
+    ctx.insertType(decl);
 
     for (const EnumVariantAST* variant : decl->variants) {
-        ctx.symbols.insertValue(variant);
+        ctx.insertValue(variant);
     }
 }
 
 /// @brief Register a trait declaration's name.
 ///
 /// REGISTRATION:
-///   - `ctx.symbols.insertType(decl)` - registers in type namespace
+///   - `ctx.insertType(decl)` - registers in type namespace
 ///   - Generic params registered BEFORE fields
 void registerTraitName(const TraitDeclAST* decl, SemaContext& ctx) {
     if (reportTypeRedeclaration(decl, ctx)) {
         return;
     }
-    ctx.symbols.insertType(decl);
+    ctx.insertType(decl);
 
     for (const GenericParamDeclAST* g : decl->genericParams) {
         registerGenericParamName(g, ctx);
@@ -172,14 +175,14 @@ void registerTraitName(const TraitDeclAST* decl, SemaContext& ctx) {
 /// @brief Register a struct declaration's name.
 ///
 /// REGISTRATION:
-///   - `ctx.symbols.insertType(decl)` - registers in type namespace
+///   - `ctx.insertType(decl)` - registers in type namespace
 ///   - Generic params registered BEFORE fields
 ///   - Fields are registered in Phase 1 (registerStructFieldNames)
 void registerStructName(const StructDeclAST* decl, SemaContext& ctx) {
     if (reportTypeRedeclaration(decl, ctx)) {
         return;
     }
-    ctx.symbols.insertType(decl);
+    ctx.insertType(decl);
 
     for (const GenericParamDeclAST* g : decl->genericParams) {
         registerGenericParamName(g, ctx);
@@ -194,7 +197,7 @@ void registerStructName(const StructDeclAST* decl, SemaContext& ctx) {
 /// self-reference is possible in Phase 2.
 void registerStructFieldNames(const StructDeclAST* decl, SemaContext& ctx) {
     for (const FieldDeclAST* field : decl->fields) {
-        ctx.symbols.insertValue(field);
+        ctx.insertValue(field);
     }
 }
 
@@ -211,7 +214,7 @@ void resolveImportDecl(const ImportDeclAST* decl, SemaContext& ctx) {
     ModuleAST* target = ctx.findModuleByPath(decl->path);
     if (!target) {
         ctx.error(decl, DiagCode::E2001,
-                  "undefined module '", ctx.pool().lookup(decl->path), "'");
+                  "undefined module '", ctx.pool.lookup(decl->path), "'");
     }
 }
 
@@ -220,7 +223,7 @@ void resolveImportDecl(const ImportDeclAST* decl, SemaContext& ctx) {
 /// RESOLUTION:
 ///   - Resolve the declared type
 ///   - For const: enforce initializer
-///   - For init: resolve the expression and check assignability
+///   - For init: resolve the expression with target type validation
 ///   - For const: EVALUATE the initializer NOW (integrated const evaluation)
 ///
 /// NOTE: The variable name was already registered in Phase 1.
@@ -237,33 +240,30 @@ void resolveVarDecl(const VarDeclAST* decl, SemaContext& ctx) {
     // ─── 2. Const requires initializer ──────────────────────────────
     if (decl->keyword == DeclKeyword::Const && !decl->init) {
         ctx.error(decl, DiagCode::E3002,
-                  "'", ctx.pool().lookup(decl->name), "' must have an initializer");
+                  "'", ctx.pool.lookup(decl->name), "' must have an initializer");
         return;
     }
 
-    // ─── 3. Check initializer ────────────────────────────────────────
+    // ─── 3. Check initializer with target type ─────────────────────────
     if (decl->init) {
-        // Resolve the initializer's type
-        TypeAST* initType = resolveExpr(decl->init, ctx);
+        // ─── 3a. Resolve the initializer against the declared type ────
+        // This validates the type and stores resolvedType on the expression
+        TypeAST* initType = resolveExprWithTarget(decl->init, declaredType, ctx);
+        
+        // Check if resolution failed
         if (!initType || initType->isa<UnknownTypeAST>()) {
-            ctx.error(decl->init, DiagCode::E3003, "initializer has unknown type");
+            // Error already reported by resolveExprWithTarget
             return;
         }
 
-        // Check assignability using the existing isAssignable function
-        if (!isAssignable(declaredType, initType, ctx)) {
-            ctx.error(decl->init, DiagCode::E3003,
-                      "type mismatch: expected ", debug::typeToString(declaredType, ctx.pool()),
-                      ", got ", debug::typeToString(initType, ctx.pool()));
-            return;
-        }
-
-        // ─── 4. Check for self-reference in let initializer ──────────────
+        // ─── 3b. Check for self-reference in let initializer ──────────
+        // This must be done AFTER type resolution because the expression
+        // needs to be resolved first, but BEFORE const evaluation
         if (decl->keyword == DeclKeyword::Let) {
             checkLetSelfReference(decl->init, decl->name, ctx);
         }
 
-        // ─── 5. CONST EVALUATION (INTEGRATED) ────────────────────────────
+        // ─── 3c. CONST EVALUATION (INTEGRATED) ────────────────────────
         // For const declarations, evaluate the initializer NOW.
         // This happens during type resolution, not as a separate phase.
         if (decl->keyword == DeclKeyword::Const) {
@@ -310,13 +310,13 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
     if (foreignAttr) {
         if (decl->body) {
             ctx.error(decl, DiagCode::E3003,
-                      "@[foreign] function '", ctx.pool().lookup(decl->name),
+                      "@[foreign] function '", ctx.pool.lookup(decl->name),
                       "' must not have a body (implementation is external)");
         }
 
         if (!decl->genericParams.empty()) {
             ctx.error(decl, DiagCode::E3003,
-                      "@[foreign] function '", ctx.pool().lookup(decl->name),
+                      "@[foreign] function '", ctx.pool.lookup(decl->name),
                       "' cannot have generic parameters");
         }
         return;
@@ -337,7 +337,7 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
     // ─── 5. Analyze body ──────────────────────────────────────────────────
     if (!decl->body) {
         ctx.error(decl, DiagCode::E3003,
-                  "function '", ctx.pool().lookup(decl->name), "' has no body");
+                  "function '", ctx.pool.lookup(decl->name), "' has no body");
         return;
     }
 
@@ -351,20 +351,17 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
         bodyReturns = resolveReturnStmt(decl->body->as<ReturnStmtAST>(), ctx);
     } else if (decl->body->isa<FuncRefStmtAST>()) {
         const FuncRefStmtAST* refStmt = decl->body->as<FuncRefStmtAST>();
-        TypeAST* refType = resolveExpr(refStmt->target, ctx);
+        // Function reference must match the function type
+        TypeAST* refType = resolveExprWithTarget(refStmt->target, funcType, ctx);
         if (!refType || refType->isa<UnknownTypeAST>()) {
-            ctx.error(refStmt->target, DiagCode::E3003,
-                      "function reference target has unknown type for '",
-                      ctx.pool().lookup(decl->name), "'");
-        } else if (!isAssignable(funcType, refType, ctx)) {
-            ctx.error(refStmt->target, DiagCode::E3003,
-                      "function reference target type mismatch for '",
-                      ctx.pool().lookup(decl->name), "'");
+            // Error already reported by resolveExprWithTarget
+            ctx.contexts.pop();
+            return;
         }
         bodyReturns = true;
     } else {
         ctx.error(decl, DiagCode::E3003,
-                  "function '", ctx.pool().lookup(decl->name), "' has invalid body type");
+                  "function '", ctx.pool.lookup(decl->name), "' has invalid body type");
         ctx.contexts.pop();
         return;
     }
@@ -372,7 +369,7 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
     // Verify return paths
     if (bodyReturns && !ctx.contexts.returnRequirementsSatisfied()) {
         ctx.error(decl, DiagCode::E3005,
-                  "function '", ctx.pool().lookup(decl->name),
+                  "function '", ctx.pool.lookup(decl->name),
                   "' has missing nested return");
     }
 
@@ -431,7 +428,7 @@ void resolveEnumDecl(const EnumDeclAST* decl, SemaContext& ctx) {
         if (!resolvePrimitiveType(decl->backingType, ctx)) {
             ctx.error(decl, DiagCode::E2002,
                       "invalid backing type for enum '",
-                      ctx.pool().lookup(decl->name), "'");
+                      ctx.pool.lookup(decl->name), "'");
         }
     }
 
@@ -442,7 +439,7 @@ void resolveEnumDecl(const EnumDeclAST* decl, SemaContext& ctx) {
             if (existing == variant) break;
             if (existing->name == variant->name) {
                 ctx.error(variant, DiagCode::E2101,
-                          "redeclaration of '", ctx.pool().lookup(variant->name), "'");
+                          "redeclaration of '", ctx.pool.lookup(variant->name), "'");
                 break;
             }
         }
@@ -452,7 +449,7 @@ void resolveEnumDecl(const EnumDeclAST* decl, SemaContext& ctx) {
             if (existing->value == variant->value) {
                 ctx.error(variant, DiagCode::E3006,
                           "duplicate enum value ", std::to_string(variant->value),
-                          " (also used by '", ctx.pool().lookup(existing->name), "')");
+                          " (also used by '", ctx.pool.lookup(existing->name), "')");
                 break;
             }
         }
@@ -482,7 +479,7 @@ void resolveTraitDecl(const TraitDeclAST* decl, SemaContext& ctx) {
             if (existing == field) break;
             if (existing->name == field->name) {
                 ctx.error(field, DiagCode::E2101,
-                          "redeclaration of '", ctx.pool().lookup(field->name), "'");
+                          "redeclaration of '", ctx.pool.lookup(field->name), "'");
                 break;
             }
         }
@@ -495,7 +492,7 @@ void resolveTraitDecl(const TraitDeclAST* decl, SemaContext& ctx) {
         if (field->isConst) {
             if (isNullableType(fieldType) || isFallibleType(fieldType)) {
                 ctx.error(field, DiagCode::E3004,
-                          "const trait field '", ctx.pool().lookup(field->name),
+                          "const trait field '", ctx.pool.lookup(field->name),
                           "' must be definite (not nullable or fallible)");
                 continue;
             }
@@ -545,58 +542,59 @@ void resolveStructDecl(const StructDeclAST* decl, SemaContext& ctx) {
 /// This resolves the field types and validates each field.
 /// Called after all field names are registered.
 void resolveStructFields(const StructDeclAST* decl, SemaContext& ctx) {
+    // ─── 1. Check for duplicate field names ──────────────────────────────
     for (const FieldDeclAST* field : decl->fields) {
         for (const FieldDeclAST* existing : decl->fields) {
             if (existing == field) break;
             if (existing->name == field->name) {
                 ctx.error(field, DiagCode::E2101,
-                          "redeclaration of '", ctx.pool().lookup(field->name), "'");
+                          "redeclaration of '", ctx.pool.lookup(field->name), "'");
                 break;
             }
         }
     }
 
+    // ─── 2. Resolve each field's type ─────────────────────────────────────
     for (const FieldDeclAST* field : decl->fields) {
         attr::validateAttributes(field, ctx);
 
+        // ─── 2a. Resolve the field's type ──────────────────────────────
         TypeAST* fieldType = resolveType(field->type, ctx);
         if (!fieldType) {
             continue;
         }
 
+        // ─── 2b. Validate const field type ──────────────────────────────
         if (field->isConst) {
             if (isNullableType(fieldType) || isFallibleType(fieldType)) {
                 ctx.error(field, DiagCode::E3004,
-                          "const field '", ctx.pool().lookup(field->name),
+                          "const field '", ctx.pool.lookup(field->name),
                           "' must be definite (not nullable or fallible)");
                 continue;
             }
         }
 
+        // ─── 2c. Check default value ────────────────────────────────────
         if (field->defaultVal) {
+            // Function fields are handled separately
             if (!fieldType->isa<FuncTypeAST>()) {
-                TypeAST* defaultType = resolveExpr(field->defaultVal, ctx);
+                // Resolve default value against the field type
+                TypeAST* defaultType = resolveExprWithTarget(field->defaultVal, fieldType, ctx);
                 if (!defaultType || defaultType->isa<UnknownTypeAST>()) {
-                    ctx.error(field->defaultVal, DiagCode::E3003,
-                              "default value for field '", ctx.pool().lookup(field->name),
-                              "' has unknown type");
-                    continue;
-                }
-                if (!isAssignable(fieldType, defaultType, ctx)) {
-                    ctx.error(field->defaultVal, DiagCode::E3003,
-                              "default value type mismatch for field '",
-                              ctx.pool().lookup(field->name), "'");
+                    // Error already reported by resolveExprWithTarget
                     continue;
                 }
             }
         }
 
+        // ─── 2d. Validate reference type context (Downward Flow Rule) ────
         if (fieldType->isa<RefTypeAST>()) {
             ctx.error(field, DiagCode::E3004,
                       "reference type (&T) cannot be stored in struct field '",
-                      ctx.pool().lookup(field->name), "'");
+                      ctx.pool.lookup(field->name), "'");
         }
 
+        // ─── 2e. Analyze function field bodies ──────────────────────────
         if (fieldType->isa<FuncTypeAST>()) {
             analyzeFunctionFieldBody(field, decl, ctx);
         }
