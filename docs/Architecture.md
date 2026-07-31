@@ -554,26 +554,20 @@ lucid/
     │   ├── Sema.cpp                      # Public API implementation
     │   │
     │   ├── context/                            # Context components
-    │   │   ├── ContextKind.hpp                 # Context flag definition
-    │   │   ├── SemanticResources.hpp           # Shared resources
-    │   │   ├── SymbolStorage.hpp/cpp           # Two-tier symbol storage
-    │   │   ├── SemanticContextStack.hpp/cpp    # Semantic nesting tracking
-    │   │   ├── DefiningTypeStack.hpp/cpp       # Self-reference support
-    │   │   ├── NarrowingStack.hpp/cpp          # Type narrowing support
-    │   │   ├── ReturnRequirement.hpp           # Enforce function body structure
-    │   │   └── SemaContext.hpp/cpp             # Unified context (composition)
+    │   │   ├── ContextStack.hpp/cpp            
+    │   │   └── SemaContext.hpp                 # Unified context (composition)
     │   │
     │   ├── rules/                              # Analysis rules (unchanged)
     │   │   ├── SemaDecl.cpp                    # const, let, struct, enum, trait, fn, fields, params
     │   │   ├── SemaStmt.cpp                    # if, for, while, switch, return, block
-    │   │   ├── SemaExpr.cpp                    # literals, binary/unary, calls, pipeline, compose
-    │   │   └── FFIValidator.hpp/cpp            # validate @[foreign("C")] against lge_ffi.lfi
+    │   │   └── SemaExpr.cpp                    # literals, binary/unary, calls, pipeline, compose
     │   │    
     │   ├── types/                      
-    │   │   ├── Lookup.cpp                      # Look up type, check if type exist in current scope.
-    │   │   ├── Resolution.cpp                  # Resolves type annotations to their semantic representations. 
-    │   │   ├── TypeCompat.cpp                  # Type Compatibility Helpers
-    │   │   └── SemaType.hpp                    # Main header for 3 .cpp files
+    │   │   ├── SemaLookup.hpp/cpp              # Look up type, check if type exist in current scope.
+    │   │   ├── SemaResolve.hpp/cpp             # Resolves type annotations to their semantic representations. 
+    │   │   ├── SemaCompare.hpp/cpp             # Type Compatibility Helpers
+    │   │   ├── SemaValidate.hpp/cpp            # Type Compatibility Helpers
+    │   │   └── SemaType.hpp                    # Main header for 4 .cpp files
     │   │
     │   ├── const_eval/                        # Analysis rules (unchanged). 
     │   │   ├── ConstEvaluator.hpp/cpp
@@ -584,7 +578,9 @@ lucid/
     │   │   └── IntrinsicRegistry.hpp/cpp
     │   │
     │   └── support/                      # Helpers (unchanged)
+    │       ├── LiteralHelpers.hpp
     │       ├── SemaStructFields.hpp/cpp
+    │       ├── SwitchHelpers.hpp/cpp
     │       └── TypeNarrowHelpers.hpp/cpp
     │
     ├── codegen/
