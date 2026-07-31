@@ -1,46 +1,30 @@
 /// @file SemaContext.hpp
-/// @brief Unified semantic context - monolithic design.
+/// @brief Unified semantic context - monolithic design with integrated symbol storage.
 ///
 /// # Quick Reference
 ///
-/// | Feature                   | Method                   |
-/// | ------------------------- | ------------------------ |
-/// | Self-reference check      | `isDefiningType(decl)`   |
-/// | Push type being defined   | `pushDefiningType(decl)` |
-/// | Get current defining type | `currentDefiningType()`  |
+/// | Feature                        | Method                                    |
+/// | ------------------------------ | ----------------------------------------- |
+/// | Look up a value by name        | `lookupValue(name)`                       |
+/// | Look up a type by name         | `lookupType(name)`                        |
+/// | Look up a generic param        | `lookupGenericParam(name)`                |
+/// | Insert a value declaration     | `insertValue(decl)`                       |
+/// | Insert a type declaration      | `insertType(decl)`                        |
+/// | Check if name is generic param | `isGenericParam(name)`                    |
+/// | Self-reference check           | `isDefiningType(decl)`                    |
+/// | Push type being defined        | `pushDefiningType(decl)`                  |
+/// | Get current defining type      | `currentDefiningType()`                   |
 ///
-/// # Self-Reference Example
+/// # Symbol Storage Design
 ///
-/// ```lucid
-/// struct Node<T> {           ← pushDefiningType(Node) called
-///     value T,
-///     next *Node<T>?         ← isDefiningType(Node) → true
-///                            ← Self-reference allowed via ptr
-/// }
-///                            ← popDefiningType() called
-/// ```
+/// The symbol storage uses a two-tier model:
+///   1. **ModuleTable** (persistent): One per module, holds top-level declarations
+///   2. **Scope** (transient): Pushed/popped for blocks, functions, generic params
 ///
-/// # Flow for Self-Reference Resolution
-///
-/// ```
-/// 1. registerStructName()
-///    └── ctx.symbols.insertType(decl)  ← Name registered
-///
-/// 2. resolveStructDecl()
-///    └── ScopedTypeDefinition guard(ctx, decl)  ← pushDefiningType()
-///        └── resolveStructFields()
-///            └── resolveType(field->type)
-///                └── resolveNamedType()
-///                    └── if isDefiningType(type->name) {
-///                          // Self-reference detected!
-///                          // Allowed if wrapped in ptr/ref/nullable and was not declared with `const` keyword
-///                        }
-///
-/// 3. ~ScopedTypeDefinition()  ← popDefiningType() called
-/// ```
-///
-/// @see ScopedTypeDefinition RAII guard below
-/// @see resolveNamedType() in Resolution.cpp
+/// Lookup priority:
+///   1. Generic parameters in current scope (highest priority)
+///   2. Value/Type declarations in local scopes (innermost to outermost)
+///   3. Value/Type declarations in module scope (global)
 
 #pragma once
 
@@ -53,8 +37,41 @@
 #include <vector>
 #include <unordered_map>
 #include <sstream>
+#include <cassert>
 
 namespace sema {
+
+// ─── ModuleTable ──────────────────────────────────────────────────────────
+
+/// @brief Persistent top-level symbol table for exactly one module.
+struct ModuleTable {
+    ModuleAST* module = nullptr;
+    
+    /// Top-level value namespace: variables, functions.
+    std::unordered_map<InternedString, const ValueDeclAST*> values;
+    
+    /// Top-level type namespace: structs, enums, traits.
+    std::unordered_map<InternedString, const TypeDeclAST*> types;
+    
+    /// Import aliases: alias → module.
+    std::unordered_map<InternedString, ModuleAST*> importAliases;
+};
+
+// ─── Scope ────────────────────────────────────────────────────────────────
+
+/// @brief A single transient lexical scope.
+struct Scope {
+    /// Value namespace: variables, functions, parameters, fields, enum variants
+    std::unordered_map<InternedString, const ValueDeclAST*> values;
+    
+    /// Type namespace: structs, enums, traits
+    std::unordered_map<InternedString, const TypeDeclAST*> types;
+    
+    /// Generic parameter names (shadow type lookups)
+    std::unordered_map<InternedString, const GenericParamDeclAST*> genericParams;
+};
+
+// ─── SemaContext ──────────────────────────────────────────────────────────
 
 /// @brief Unified semantic context - all in one struct.
 /// 
@@ -71,6 +88,20 @@ struct SemaContext {
     
     std::vector<ModuleAST*> modules;
     std::unordered_map<InternedString, ModuleAST*> modulesByPath;
+    
+    // ─── Symbol Storage ────────────────────────────────────────────────
+    
+    /// Current module being analyzed.
+    ModuleAST* currentModule = nullptr;
+    
+    /// Pointer to the current module's table (cached for performance).
+    ModuleTable* currentModuleTable = nullptr;
+    
+    /// Persistent per-module tables.
+    std::unordered_map<ModuleAST*, ModuleTable> moduleTables;
+    
+    /// Transient scope stack.
+    std::vector<Scope> scopes;
     
     // ─── Self-Reference Tracking ──────────────────────────────────────
     
@@ -98,11 +129,182 @@ struct SemaContext {
     SemaContext(const SemaContext&) = delete;
     SemaContext& operator=(const SemaContext&) = delete;
     
-    // ─── Module Lookup ──────────────────────────────────────────────────
+    // ─── Module Management ─────────────────────────────────────────────
     
+    /// @brief Switch to a module, creating its table if needed.
+    void enterModule(ModuleAST* module) {
+        currentModule = module;
+        currentModuleTable = &getOrCreateModuleTable(module);
+    }
+    
+    /// @brief Get or create a module's persistent table.
+    ModuleTable& getOrCreateModuleTable(ModuleAST* module) {
+        auto it = moduleTables.find(module);
+        if (it != moduleTables.end()) {
+            return it->second;
+        }
+        
+        ModuleTable& table = moduleTables[module];
+        table.module = module;
+        return table;
+    }
+    
+    /// @brief Find a module's table without creating one.
+    ModuleTable* findModuleTable(ModuleAST* module) {
+        auto it = moduleTables.find(module);
+        return it != moduleTables.end() ? &it->second : nullptr;
+    }
+    
+    /// @brief Find a module by path.
     ModuleAST* findModuleByPath(InternedString path) const {
         auto it = modulesByPath.find(path);
         return it != modulesByPath.end() ? it->second : nullptr;
+    }
+    
+    // ─── Scope Management ──────────────────────────────────────────────
+    
+    /// @brief True if there are no open transient scopes.
+    bool isAtModuleLevel() const { return scopes.empty(); }
+    
+    /// @brief Push a new empty scope.
+    void pushScope() { scopes.emplace_back(); }
+    
+    /// @brief Pop the innermost scope.
+    void popScope() {
+        if (!scopes.empty()) {
+            scopes.pop_back();
+        }
+    }
+    
+    /// @brief Get the current (innermost) scope.
+    Scope& currentScope() {
+        assert(!scopes.empty() && "No scope open");
+        return scopes.back();
+    }
+    
+    const Scope& currentScope() const {
+        assert(!scopes.empty() && "No scope open");
+        return scopes.back();
+    }
+    
+    // ─── Symbol Insertion ──────────────────────────────────────────────
+    
+    /// @brief Insert a value declaration at the current level.
+    void insertValue(const ValueDeclAST* decl) {
+        if (isAtModuleLevel()) {
+            currentModuleTable->values[decl->name] = decl;
+        } else {
+            currentScope().values[decl->name] = decl;
+        }
+    }
+    
+    /// @brief Insert a type declaration at the current level.
+    void insertType(const TypeDeclAST* decl) {
+        if (isAtModuleLevel()) {
+            currentModuleTable->types[decl->name] = decl;
+        } else {
+            currentScope().types[decl->name] = decl;
+        }
+    }
+    
+    /// @brief Insert a generic parameter into the innermost scope.
+    /// @pre A scope must be open (not at module level).
+    void insertGenericParam(const GenericParamDeclAST* param) {
+        assert(!isAtModuleLevel() && "insertGenericParam() requires an open Scope");
+        currentScope().genericParams[param->name] = param;
+    }
+    
+    /// @brief Add an import alias to the current module.
+    void addImportAlias(InternedString alias, ModuleAST* module) {
+        if (currentModuleTable) {
+            currentModuleTable->importAliases[alias] = module;
+        }
+    }
+    
+    // ─── Symbol Lookup ──────────────────────────────────────────────────
+    
+    /// @brief Look up a value declaration by name.
+    /// 
+    /// Searches: scopes (innermost to outermost) → current module table.
+    const ValueDeclAST* lookupValue(InternedString name) const {
+        // Search scopes from innermost to outermost
+        for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
+            auto found = it->values.find(name);
+            if (found != it->values.end()) {
+                return found->second;
+            }
+        }
+        
+        // Fall back to current module's persistent table
+        if (currentModuleTable) {
+            auto found = currentModuleTable->values.find(name);
+            if (found != currentModuleTable->values.end()) {
+                return found->second;
+            }
+        }
+        
+        return nullptr;
+    }
+    
+    /// @brief Look up a function by name (convenience wrapper).
+    const FuncDeclAST* lookupFunction(InternedString name) const {
+        const ValueDeclAST* v = lookupValue(name);
+        return (v && v->isa<FuncDeclAST>()) ? v->as<FuncDeclAST>() : nullptr;
+    }
+    
+    /// @brief Look up a type declaration by name.
+    /// 
+    /// Searches: scopes (innermost to outermost) → current module table.
+    /// Generic parameters shadow type names in scopes.
+    const TypeDeclAST* lookupType(InternedString name) const {
+        // Search scopes from innermost to outermost
+        for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
+            // Generic parameters shadow type names
+            auto gen = it->genericParams.find(name);
+            if (gen != it->genericParams.end()) {
+                return nullptr; // Generic param, not a type
+            }
+            
+            auto found = it->types.find(name);
+            if (found != it->types.end()) {
+                return found->second;
+            }
+        }
+        
+        // Fall back to current module's persistent table
+        if (currentModuleTable) {
+            auto found = currentModuleTable->types.find(name);
+            if (found != currentModuleTable->types.end()) {
+                return found->second;
+            }
+        }
+        
+        return nullptr;
+    }
+    
+    /// @brief Look up a generic parameter by name.
+    /// 
+    /// Generic parameters are always transient, so only search scopes.
+    const GenericParamDeclAST* lookupGenericParam(InternedString name) const {
+        for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
+            auto found = it->genericParams.find(name);
+            if (found != it->genericParams.end()) {
+                return found->second;
+            }
+        }
+        return nullptr;
+    }
+    
+    /// @brief Check if a name is a generic parameter.
+    bool isGenericParam(InternedString name) const {
+        return lookupGenericParam(name) != nullptr;
+    }
+    
+    /// @brief Look up an import alias.
+    ModuleAST* lookupImport(InternedString alias) const {
+        if (!currentModuleTable) return nullptr;
+        auto it = currentModuleTable->importAliases.find(alias);
+        return it != currentModuleTable->importAliases.end() ? it->second : nullptr;
     }
     
     // ─── Self-Reference Helpers ──────────────────────────────────────
