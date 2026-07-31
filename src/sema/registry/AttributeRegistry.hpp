@@ -1,5 +1,13 @@
 /// @file AttributeRegistry.hpp
 /// @brief Validates `@[...]` attributes against what's legal on declarations.
+/// 
+/// @architectural_note Stateless Design
+///   Unlike IntrinsicRegistry which has state (maps of names to LLVM IDs),
+///   AttributeRegistry is header-only and stateless. It only validates
+///   attributes against declarations using pure functions.
+/// 
+/// @architectural_note Integration with SemaContext
+///   Uses SemaContext for error reporting and symbol table queries.
 
 #pragma once
 
@@ -16,23 +24,23 @@ namespace attr {
 // ─── Attribute Name Constants ─────────────────────────────────────────────
 
 inline InternedString kExport(SemaContext& ctx) {
-    return ctx.pool().intern("export");
+    return ctx.pool.intern("export");
 }
 
 inline InternedString kForeign(SemaContext& ctx) {
-    return ctx.pool().intern("foreign");
+    return ctx.pool.intern("foreign");
 }
 
 inline InternedString kLink(SemaContext& ctx) {
-    return ctx.pool().intern("link");
+    return ctx.pool.intern("link");
 }
 
 inline InternedString kDeprecated(SemaContext& ctx) {
-    return ctx.pool().intern("deprecated");
+    return ctx.pool.intern("deprecated");
 }
 
 inline InternedString kInline(SemaContext& ctx) {
-    return ctx.pool().intern("inline");
+    return ctx.pool.intern("inline");
 }
 
 // ─── Attribute Query Functions ────────────────────────────────────────────
@@ -64,7 +72,7 @@ inline bool isFunctionOwner(const DeclAST* owner) {
 
 inline bool isAtModuleLevel(const DeclAST* owner, SemaContext& ctx) {
     if (owner == nullptr) return true;
-    return ctx.symbols.isAtModuleLevel();
+    return ctx.isAtModuleLevel();
 }
 
 inline void validateExport(const AttributeAST* attr,
@@ -98,8 +106,7 @@ inline void validateForeign(const AttributeAST* attr,
         return;
     }
 
-    // Use unified literal helpers
-    auto abi = literal::extractString(attr->args[0], ctx.pool());
+    auto abi = literal::extractString(attr->args[0], ctx.pool);
     if (!abi) {
         ctx.error(attr->args[0], DiagCode::E3003,
                   "attribute '@[foreign]' expects a string literal");
@@ -190,7 +197,7 @@ inline void validateAttributes(const DeclAST* owner, SemaContext& ctx) {
             detail::validateInline(attr, owner, ctx);
         } else {
             ctx.error(attr, DiagCode::E4003,
-                      "unknown attribute '@", ctx.pool().lookup(name), "'");
+                      "unknown attribute '@", ctx.pool.lookup(name), "'");
         }
     }
 }

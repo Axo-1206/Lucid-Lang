@@ -13,7 +13,7 @@
 namespace sema {
 
 // ─────────────────────────────────────────────────────────────────────────────
-// IntrinsicRegistry - Singleton, bound to one StringPool
+// IntrinsicRegistry - Singleton
 // ─────────────────────────────────────────────────────────────────────────────
 
 IntrinsicRegistry& IntrinsicRegistry::getInstance(StringPool& pool) {
@@ -40,13 +40,6 @@ void IntrinsicRegistry::registerIntrinsics() {
     }
 
     // ─── Floating-Point Math Intrinsics ─────────────────────────────────────
-    // Grammar.md "Floating-Point Math" table — these map directly to LLVM
-    // intrinsic functions.
-    //
-    // NOTE: exp/log/log10/sin/cos/tan/atan2/fmod are NOT part of the Lucid
-    // grammar and must not be registered here. They are in the standard
-    // library as plain Lucid functions, not intrinsics.
-
     registerLLVMIntrinsic("sqrt", llvm::Intrinsic::sqrt, 1);
     registerLLVMIntrinsic("abs", llvm::Intrinsic::fabs, 1);
     registerLLVMIntrinsic("fma", llvm::Intrinsic::fma, 3);
@@ -55,67 +48,30 @@ void IntrinsicRegistry::registerIntrinsics() {
     registerLLVMIntrinsic("round", llvm::Intrinsic::round, 1);
     registerLLVMIntrinsic("pow", llvm::Intrinsic::pow, 2);
 
-    // min/max are compiler-handled (pick minnum/maxnum vs smin/smax by type)
+    // min/max are compiler-handled
     registerCompilerIntrinsic("min", 2);
     registerCompilerIntrinsic("max", 2);
 
     // ─── Memory Intrinsics ──────────────────────────────────────────────────
-    // These map directly to LLVM memory intrinsics.
-
     registerLLVMIntrinsic("memcpy", llvm::Intrinsic::memcpy, 3);
     registerLLVMIntrinsic("memmove", llvm::Intrinsic::memmove, 3);
     registerLLVMIntrinsic("memset", llvm::Intrinsic::memset, 3);
 
     // ─── Bit Manipulation Intrinsics ──────────────────────────────────────
-    // Maps to single CPU instructions (BSF, BSR, POPCNT, BSWAP on x86-64).
-
     registerLLVMIntrinsic("clz", llvm::Intrinsic::ctlz, 1);
     registerLLVMIntrinsic("ctz", llvm::Intrinsic::cttz, 1);
     registerLLVMIntrinsic("popcount", llvm::Intrinsic::ctpop, 1);
     registerLLVMIntrinsic("bswap", llvm::Intrinsic::bswap, 1);
 
     // ─── CPU Hints ──────────────────────────────────────────────────────────
-    //
-    // PREFETCH FAMILY:
-    //   All three map to the same LLVM intrinsic `llvm.prefetch`, differentiated
-    //   by the `rw` (read/write) argument:
-    //     - #prefetch(ptr)   → rw=0 (read), default, general use
-    //     - #prefetch_r(ptr) → rw=0 (read), explicit read prefetch
-    //     - #prefetch_w(ptr) → rw=1 (write), explicit write prefetch
-    //
-    //   The `_r` and `_w` suffixes make the intent explicit for performance-
-    //   critical code, while `#prefetch` remains the simple default.
-    //
-    //   LLVM's llvm.prefetch signature:
-    //     declare void @llvm.prefetch(ptr, i32, i32, i32)
-    //     - ptr: memory address to prefetch
-    //     - i32: read/write (0=read, 1=write)
-    //     - i32: locality (0=none, 1=low, 2=moderate, 3=high)
-    //     - i32: cache type (0=data, 1=instruction)
-    //
-    //   Code generation sets: rw=0 for #prefetch/#prefetch_r, rw=1 for #prefetch_w
-    //   locality=3 (high), cache=0 (data) by default.
+    registerLLVMIntrinsic("prefetch", llvm::Intrinsic::prefetch, 1);
+    registerLLVMIntrinsic("prefetch_r", llvm::Intrinsic::prefetch, 1);
+    registerLLVMIntrinsic("prefetch_w", llvm::Intrinsic::prefetch, 1);
 
-    registerLLVMIntrinsic("prefetch", llvm::Intrinsic::prefetch, 1);     // read (default)
-    registerLLVMIntrinsic("prefetch_r", llvm::Intrinsic::prefetch, 1);   // explicit read
-    registerLLVMIntrinsic("prefetch_w", llvm::Intrinsic::prefetch, 1);   // explicit write
-
-    // #fence(ordering) - compiler-handled; validates ordering strings:
-    //   relaxed, acquire, release, acq_rel, seq_cst
-    // Emits LLVM 'fence' instruction directly during code generation.
     registerCompilerIntrinsic("fence", 1);
-
-    // #pause() - compiler-handled; x86-specific PAUSE instruction.
-    // On other architectures, may be a no-op or a yield instruction.
     registerCompilerIntrinsic("pause", 0);
 
     // ─── Atomics ────────────────────────────────────────────────────────────
-    // These are LLVM instructions, NOT intrinsics!
-    // They are handled by the compiler during lowering, not mapped to an
-    // intrinsic function call. The registry marks them as compiler-handled
-    // so the frontend validates argument counts but code generation emits
-    // the LLVM instruction directly.
-
     registerCompilerIntrinsic("atomic_load", 2);
     registerCompilerIntrinsic("atomic_store", 2);
     registerCompilerIntrinsic("atomic_add", 2);
@@ -126,10 +82,6 @@ void IntrinsicRegistry::registerIntrinsics() {
     registerCompilerIntrinsic("atomic_cas", 3);
 
     // ─── Type & Value Inspection ──────────────────────────────────────────
-    // These are handled directly by the compiler, not LLVM intrinsics.
-    // They are resolved at compile time or lowered to specific LLVM IR
-    // patterns during code generation.
-
     registerCompilerIntrinsic("sizeof", 1);
     registerCompilerIntrinsic("alignof", 1);
     registerCompilerIntrinsic("typeof", 1);
@@ -139,8 +91,6 @@ void IntrinsicRegistry::registerIntrinsics() {
     registerCompilerIntrinsic("addrof", 1);
 
     // ─── Pointer Operations ──────────────────────────────────────────────
-    // Cross the safe/pointer boundary.
-
     registerCompilerIntrinsic("ptrOffset", 2);
     registerCompilerIntrinsic("ptrDiff", 2);
     registerCompilerIntrinsic("toRef", 1);
@@ -154,9 +104,6 @@ void IntrinsicRegistry::registerIntrinsics() {
     registerCompilerIntrinsic("unlikely", 1);
 
     // ─── String Operations ──────────────────────────────────────────────────
-    // Low-level string intrinsics the standard library builds on.
-    // Strings are immutable UTF-8 sequences managed by the compiler.
-
     registerCompilerIntrinsic("str_len", 1);
     registerCompilerIntrinsic("str_ptr", 1);
     registerCompilerIntrinsic("str_from_ptr", 2);
@@ -166,9 +113,6 @@ void IntrinsicRegistry::registerIntrinsics() {
     registerCompilerIntrinsic("str_byte_at", 2);
 
     // ─── Memory Management ──────────────────────────────────────────────────
-    // Foreign-interop allocation only — never used in ordinary Lucid code.
-    // The compiler tracks #alloc/#free to catch double-free and null-free.
-
     registerCompilerIntrinsic("alloc", 2);
     registerCompilerIntrinsic("free", 1);
     registerCompilerIntrinsic("arena_create", 1);
@@ -177,16 +121,6 @@ void IntrinsicRegistry::registerIntrinsics() {
     registerCompilerIntrinsic("arena_free", 1);
 
     // ─── SIMD Intrinsics ────────────────────────────────────────────────────
-    // These are compiler-handled and lower to LLVM instructions.
-    //
-    // #simd_splat(T, N, scalar) - Special handling because T is a type:
-    //   1. T is a type (e.g., float32), not a value — requires type resolution
-    //   2. N must be a compile-time integer constant
-    //   3. There is no direct LLVM intrinsic for splat — it's lowered to:
-    //      `insertelement` + `shufflevector` or `vector_splat` (LLVM 18+)
-    //   The compiler validates that T is a valid SIMD element type and that N
-    //   is a compile-time constant within the target's vector register limits.
-
     registerCompilerIntrinsic("simd_add", 2);
     registerCompilerIntrinsic("simd_sub", 2);
     registerCompilerIntrinsic("simd_mul", 2);
@@ -305,14 +239,14 @@ bool IntrinsicRegistry::validateFenceOrdering(InternedString ordering, StringPoo
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Argument Type Validators (Private Helpers)
+// Argument Type Validators (using SemaCompare predicates)
 // ─────────────────────────────────────────────────────────────────────────────
 
 bool IntrinsicRegistry::validatePtrArg(const ExprAST* arg, const std::string& argName, SemaContext& ctx) const {
     if (!arg->resolvedType || !arg->resolvedType->isa<PtrTypeAST>()) {
         ctx.error(arg, DiagCode::E3003,
                   "argument '", argName, "' expects pointer type, got ",
-                  debug::typeToString(arg->resolvedType, ctx.pool()));
+                  debug::typeToString(arg->resolvedType, ctx.pool));
         return false;
     }
     return true;
@@ -322,7 +256,7 @@ bool IntrinsicRegistry::validateNumericArg(const ExprAST* arg, const std::string
     if (!arg->resolvedType || !isNumericType(arg->resolvedType)) {
         ctx.error(arg, DiagCode::E3003,
                   "argument '", argName, "' expects numeric type, got ",
-                  debug::typeToString(arg->resolvedType, ctx.pool()));
+                  debug::typeToString(arg->resolvedType, ctx.pool));
         return false;
     }
     return true;
@@ -332,7 +266,7 @@ bool IntrinsicRegistry::validateIntArg(const ExprAST* arg, const std::string& ar
     if (!arg->resolvedType || !isIntegerType(arg->resolvedType)) {
         ctx.error(arg, DiagCode::E3003,
                   "argument '", argName, "' expects integer type, got ",
-                  debug::typeToString(arg->resolvedType, ctx.pool()));
+                  debug::typeToString(arg->resolvedType, ctx.pool));
         return false;
     }
     return true;
@@ -342,7 +276,7 @@ bool IntrinsicRegistry::validateStringArg(const ExprAST* arg, const std::string&
     if (!arg->resolvedType || !isStringType(arg->resolvedType)) {
         ctx.error(arg, DiagCode::E3003,
                   "argument '", argName, "' expects string type, got ",
-                  debug::typeToString(arg->resolvedType, ctx.pool()));
+                  debug::typeToString(arg->resolvedType, ctx.pool));
         return false;
     }
     return true;
@@ -352,7 +286,7 @@ bool IntrinsicRegistry::validateBoolArg(const ExprAST* arg, const std::string& a
     if (!arg->resolvedType || !isBoolType(arg->resolvedType)) {
         ctx.error(arg, DiagCode::E3003,
                   "argument '", argName, "' expects boolean type, got ",
-                  debug::typeToString(arg->resolvedType, ctx.pool()));
+                  debug::typeToString(arg->resolvedType, ctx.pool));
         return false;
     }
     return true;
@@ -362,7 +296,7 @@ bool IntrinsicRegistry::validateRefArg(const ExprAST* arg, const std::string& ar
     if (!arg->resolvedType || !arg->resolvedType->isa<RefTypeAST>()) {
         ctx.error(arg, DiagCode::E3003,
                   "argument '", argName, "' expects reference type, got ",
-                  debug::typeToString(arg->resolvedType, ctx.pool()));
+                  debug::typeToString(arg->resolvedType, ctx.pool));
         return false;
     }
     return true;
@@ -376,7 +310,7 @@ bool IntrinsicRegistry::validateIntrinsicCall(const IntrinsicCallExprAST* expr,
                                                SemaContext& ctx) const {
     if (!expr) return false;
 
-    const std::string name = ctx.pool().lookup(expr->intrinsicName);
+    const std::string name = ctx.pool.lookup(expr->intrinsicName);
 
     // ─── Floating-Point Math ──────────────────────────────────────────────
     if (name == "sqrt" || name == "abs" || name == "fma" ||
@@ -413,7 +347,7 @@ bool IntrinsicRegistry::validateIntrinsicCall(const IntrinsicCallExprAST* expr,
 
     if (name == "fence") {
         if (!expr->args.empty()) {
-            if (!validateFenceOrdering(expr->args[0]->as<LiteralExprAST>()->value, ctx.pool())) {
+            if (!validateFenceOrdering(expr->args[0]->as<LiteralExprAST>()->value, ctx.pool)) {
                 ctx.error(expr->args[0], DiagCode::E3003,
                           "invalid fence ordering — must be: relaxed, acquire, "
                           "release, acq_rel, or seq_cst");
@@ -504,7 +438,7 @@ bool IntrinsicRegistry::validateIntrinsicCall(const IntrinsicCallExprAST* expr,
         
         if (expr->args.size() >= 2) {
             const ExprAST* lastArg = expr->args[expr->args.size() - 1];
-            if (!validateFenceOrdering(lastArg->as<LiteralExprAST>()->value, ctx.pool())) {
+            if (!validateFenceOrdering(lastArg->as<LiteralExprAST>()->value, ctx.pool)) {
                 ctx.error(lastArg, DiagCode::E3003,
                           "invalid ordering — must be: relaxed, acquire, "
                           "release, acq_rel, or seq_cst");
@@ -517,7 +451,6 @@ bool IntrinsicRegistry::validateIntrinsicCall(const IntrinsicCallExprAST* expr,
     // ─── SIMD ────────────────────────────────────────────────────────────────
     if (name == "simd_splat") {
         if (expr->args.size() >= 2) {
-            // Use LiteralHelpers for integer literal check
             if (!literal::isIntLiteral(expr->args[1])) {
                 ctx.error(expr->args[1], DiagCode::E3003,
                           "argument 'N' must be a compile-time integer constant");
@@ -566,9 +499,6 @@ bool IntrinsicRegistry::validateIntrinsicCall(const IntrinsicCallExprAST* expr,
     }
 
     // ─── Compiler-Handled (no validation needed) ──────────────────────────
-    // sizeof, alignof, typeof, nameof, tostr, ptrstr, bitcast
-    // These are handled directly by the compiler.
-
     return true;
 }
 
@@ -579,20 +509,20 @@ bool IntrinsicRegistry::validateIntrinsicCall(const IntrinsicCallExprAST* expr,
 const TypeAST* IntrinsicRegistry::getIntrinsicReturnType(const IntrinsicCallExprAST* expr,
                                                           const TypeAST* targetType,
                                                           SemaContext& ctx) const {
-    const std::string name = ctx.pool().lookup(expr->intrinsicName);
+    const std::string name = ctx.pool.lookup(expr->intrinsicName);
 
     // ─── Type/Value Inspection ─────────────────────────────────────────────
     if (name == "sizeof" || name == "alignof") {
-        return ctx.arena().makeType<PrimitiveTypeAST>(PrimitiveKind::Uint64);
+        return ctx.getIntType();  // Use cached int type
     }
 
     if (name == "typeof" || name == "nameof" || name == "tostr" || name == "ptrstr") {
-        return ctx.arena().makeType<PrimitiveTypeAST>(PrimitiveKind::String);
+        return ctx.getStringType();
     }
 
     if (name == "addrof") {
         if (!expr->args.empty() && expr->args[0]->resolvedType) {
-            return ctx.arena().makeType<PtrTypeAST>(expr->args[0]->resolvedType);
+            return ctx.arena.make<PtrTypeAST>(expr->args[0]->resolvedType);
         }
         return targetType;
     }
@@ -601,7 +531,7 @@ const TypeAST* IntrinsicRegistry::getIntrinsicReturnType(const IntrinsicCallExpr
         if (!expr->args.empty() && expr->args[0]->resolvedType) {
             const TypeAST* argType = expr->args[0]->resolvedType;
             if (argType->isa<PtrTypeAST>()) {
-                return ctx.arena().makeType<RefTypeAST>(
+                return ctx.arena.make<RefTypeAST>(
                     argType->as<PtrTypeAST>()->inner
                 );
             }
@@ -613,7 +543,7 @@ const TypeAST* IntrinsicRegistry::getIntrinsicReturnType(const IntrinsicCallExpr
         if (!expr->args.empty() && expr->args[0]->resolvedType) {
             const TypeAST* argType = expr->args[0]->resolvedType;
             if (argType->isa<RefTypeAST>()) {
-                return ctx.arena().makeType<PtrTypeAST>(
+                return ctx.arena.make<PtrTypeAST>(
                     argType->as<RefTypeAST>()->inner
                 );
             }
@@ -628,28 +558,24 @@ const TypeAST* IntrinsicRegistry::getIntrinsicReturnType(const IntrinsicCallExpr
     // ─── String Operations ──────────────────────────────────────────────────
     if (name == "str_len" || name == "str_from_ptr" || name == "str_concat" ||
         name == "str_slice") {
-        return ctx.arena().makeType<PrimitiveTypeAST>(PrimitiveKind::String);
+        return ctx.getStringType();
     }
 
     if (name == "str_ptr") {
-        return ctx.arena().makeType<PtrTypeAST>(
-            ctx.arena().makeType<PrimitiveTypeAST>(PrimitiveKind::Uint8)
-        );
+        return ctx.arena.make<PtrTypeAST>(ctx.getIntType());
     }
 
     if (name == "str_eq") {
-        return ctx.arena().makeType<PrimitiveTypeAST>(PrimitiveKind::Bool);
+        return ctx.getBoolType();
     }
 
     if (name == "str_byte_at") {
-        return ctx.arena().makeType<PrimitiveTypeAST>(PrimitiveKind::Uint8);
+        return ctx.getIntType();
     }
 
     // ─── Memory Management ──────────────────────────────────────────────────
     if (name == "alloc" || name == "arena_alloc") {
-        return ctx.arena().makeType<PtrTypeAST>(
-            ctx.arena().makeType<PrimitiveTypeAST>(PrimitiveKind::Uint8)
-        );
+        return ctx.arena.make<PtrTypeAST>(ctx.getIntType());
     }
 
     if (name == "arena_create") {
@@ -672,7 +598,7 @@ const TypeAST* IntrinsicRegistry::getIntrinsicReturnType(const IntrinsicCallExpr
 ValueState IntrinsicRegistry::getIntrinsicValueState(const IntrinsicCallExprAST* expr,
                                                       SemaContext& ctx) const {
     (void)expr;
-    const std::string name = ctx.pool().lookup(expr->intrinsicName);
+    const std::string name = ctx.pool.lookup(expr->intrinsicName);
 
     if (name == "alloc" || name == "arena_alloc") {
         return ValueState::Unknown;
