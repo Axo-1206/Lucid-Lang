@@ -58,7 +58,7 @@ struct SemaContext {
     SymbolStorage symbols;
 
     /// Semantic context stack (includes type narrowing)
-    ContextStack contexts;              // Was SemanticContextStack
+    ContextStack contexts;
 
     /// Self-reference support
     DefiningTypeStack definingTypes;

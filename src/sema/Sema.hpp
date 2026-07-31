@@ -98,9 +98,6 @@ void resolveStructFields(const StructDeclAST* decl, SemaContext& ctx);
 /// @brief Resolve types in a statement (after all names are registered).
 bool resolveStmt(const StmtAST* stmt, SemaContext& ctx);
 
-/// @brief Check if a let initializer references the variable being declared.
-void checkLetSelfReference(const ExprAST* expr, InternedString varName, SemaContext& ctx);
-
 // =============================================================================
 // STATEMENTS - Control flow analysis (Phase 2)
 // =============================================================================

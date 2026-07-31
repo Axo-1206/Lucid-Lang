@@ -50,24 +50,6 @@ const TypeDeclAST* lookupType(InternedString name, SemaContext& ctx) {
     return ctx.symbols.lookupType(name);
 }
 
-/// @brief Check if a type is a trait.
-bool isTrait(InternedString name, SemaContext& ctx) {
-    const TypeDeclAST* decl = lookupType(name, ctx);
-    return decl && decl->isa<TraitDeclAST>();
-}
-
-/// @brief Check if a type is a struct.
-bool isStruct(InternedString name, SemaContext& ctx) {
-    const TypeDeclAST* decl = lookupType(name, ctx);
-    return decl && decl->isa<StructDeclAST>();
-}
-
-/// @brief Check if a type is an enum.
-bool isEnum(InternedString name, SemaContext& ctx) {
-    const TypeDeclAST* decl = lookupType(name, ctx);
-    return decl && decl->isa<EnumDeclAST>();
-}
-
 const TypeDeclAST* resolveTypeOrError(const NamedTypeAST* type, SemaContext& ctx) {
     // Generic parameters have highest priority - they shadow type names
     if (isGenericParam(type->name, ctx)) {

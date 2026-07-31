@@ -3,7 +3,6 @@
 /// 
 /// Allows to distinguish:
 ///   - `value Node<T>` → direct self-reference (illegal, infinite size)
-///   - `next ptr<Node<T>>?` → indirect (legal, breaks the cycle)
 /// 
 /// @architectural_note Stack, not a single flag
 ///   Definitions nest: a struct field whose type is an anonymous/local

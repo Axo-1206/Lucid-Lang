@@ -1,24 +1,26 @@
 /// @file const_eval/ConstEvaluator.hpp
 /// @brief Evaluates const expressions at compile-time.
 ///
-/// @design_decision Single-pass evaluation after type resolution
-///   All types are already resolved by Phase 2. The evaluator uses
-///   the resolved types directly and stores results on AST nodes.
+/// @design_decision Integrated with SemaContext
+///   Uses ContextStack for function/if/loop contexts, SymbolStorage for
+///   local variables, and NarrowingStack for type narrowing. No custom
+///   frame system - leverages the existing semantic analysis infrastructure.
 ///
-/// @design_decision Frame-based execution model
-///   Uses a simple stack of frames for function calls. Each frame
-///   contains local variable bindings and return state.
+/// @design_decision Called during type resolution (Phase 2)
+///   Const evaluation happens when resolving declarations, not as a
+///   separate phase. This allows the evaluator to use all the context
+///   information already available.
 
 #pragma once
 
 #include "core/ast/BaseAST.hpp"
+#include "../support/TypeNarrowHelpers.hpp"
 #include "../context/SemaContext.hpp"
 #include "../types/SemaType.hpp"
 
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-#include <queue>
 #include <functional>
 
 namespace sema {
@@ -46,7 +48,69 @@ private:
     const DeclAST* m_decl;
 };
 
+/// @brief RAII guard for const evaluation function context.
+/// 
+/// Pushes a function context and scope for const function execution.
+/// Uses the existing ContextStack and SymbolStorage.
+class ConstFunctionContext {
+public:
+    ConstFunctionContext(SemaContext& ctx, const FuncDeclAST* func)
+        : m_ctx(ctx) {
+        // Push function context using existing system
+        m_ctx.contexts.pushFunction(
+            const_cast<FuncDeclAST*>(func),
+            const_cast<FuncTypeAST*>(func->funcType),
+            func->loc
+        );
+        // Push scope for local variables
+        m_ctx.symbols.pushScope();
+    }
+    
+    ~ConstFunctionContext() {
+        m_ctx.symbols.popScope();
+        m_ctx.contexts.pop();
+    }
+    
+    ConstFunctionContext(const ConstFunctionContext&) = delete;
+    ConstFunctionContext& operator=(const ConstFunctionContext&) = delete;
+
+private:
+    SemaContext& m_ctx;
+};
+
+/// @brief RAII guard for const evaluation if context.
+/// 
+/// Uses the existing ScopedIfCondition for type narrowing.
+class ConstIfContext {
+public:
+    ConstIfContext(SemaContext& ctx, bool hasElse)
+        : m_guard(ctx, hasElse) {}
+    
+private:
+    ScopedIfCondition m_guard;
+};
+
+/// @brief RAII guard for const evaluation narrowing.
+/// 
+/// Uses the existing ScopedNarrowing for type narrowing.
+class ConstNarrowing {
+public:
+    ConstNarrowing(SemaContext& ctx, InternedString name, 
+                   const TypeAST* narrowedType, bool isInverse = false)
+        : m_guard(ctx, name, narrowedType, isInverse) {}
+    
+private:
+    ScopedNarrowing m_guard;
+};
+
 /// @brief Evaluates const declarations at compile-time.
+///
+/// This class is tightly integrated with SemaContext and uses:
+///   - ContextStack for function/if/loop/block contexts
+///   - SymbolStorage for local variable binding
+///   - NarrowingStack for type narrowing
+///   - ReturnRequirements for return tracking
+///   - The existing diagnostic system for errors
 class ConstEvaluator {
 public:
     explicit ConstEvaluator(SemaContext& ctx);
@@ -55,7 +119,8 @@ public:
     void evaluateAll();
 
     /// @brief Evaluate a specific const declaration.
-    ConstantValue evaluateDecl(const DeclAST* decl);
+    /// Called from resolveVarDecl during type resolution.
+    ConstantValue evaluateDecl(const VarDeclAST* decl);
 
     /// @brief Check if an expression has been evaluated.
     bool isEvaluated(const ExprAST* expr) const;
@@ -69,21 +134,27 @@ public:
     // ─── Expression Evaluation ───────────────────────────────────────
 
     /// @brief Evaluate an expression and store result on the expression.
+    /// 
+    /// Uses the existing context for lookups (SymbolStorage, ContextStack).
+    /// Type narrowing is automatically applied via NarrowingStack.
     ConstantValue evalExpr(const ExprAST* expr);
 
     /// @brief Evaluate a literal expression.
     ConstantValue evalLiteral(const LiteralExprAST* expr);
 
     /// @brief Evaluate an identifier expression.
+    /// Uses SymbolStorage for lookup, respecting narrowing.
     ConstantValue evalIdentifier(const IdentifierExprAST* expr);
 
     /// @brief Evaluate a binary expression.
+    /// Uses ContextStack to detect narrowing patterns.
     ConstantValue evalBinary(const BinaryExprAST* expr);
 
     /// @brief Evaluate a unary expression.
     ConstantValue evalUnary(const UnaryExprAST* expr);
 
     /// @brief Evaluate a call expression (const function call).
+    /// Uses ContextStack for function context.
     ConstantValue evalCall(const CallExprAST* expr);
 
     /// @brief Evaluate a struct literal.
@@ -99,32 +170,40 @@ public:
     ConstantValue evalNullCoalesce(const NullCoalesceExprAST* expr);
 
     /// @brief Evaluate an if expression.
+    /// Uses ScopedIfCondition and ScopedNarrowing for type narrowing.
     ConstantValue evalIfExpr(const IfExprAST* expr);
 
     // ─── Statement Execution ───────────────────────────────────────────
 
     /// @brief Execute a statement in the current context.
+    /// Uses ContextStack for context tracking.
     ConstantValue executeStmt(const StmtAST* stmt);
 
     /// @brief Execute a const function with constant arguments.
+    /// Uses ConstFunctionContext for context management.
     ConstantValue executeFunction(const FuncDeclAST* func,
                                    const std::vector<ConstantValue>& args);
 
+    // ─── Integration with SemaDecl ────────────────────────────────────
+
+    /// @brief Called from resolveVarDecl to evaluate const variables.
+    /// This is the main integration point.
+    void evaluateConstVar(const VarDeclAST* decl) {
+        if (decl->keyword == DeclKeyword::Const && decl->init) {
+            ConstantValue val = evalExpr(decl->init);
+            if (!val.isError()) {
+                // Store the value on the initializer expression (ExprAST is mutable)
+                const_cast<ExprAST*>(decl->init)->isConst = true;
+                const_cast<ExprAST*>(decl->init)->constValue = val;
+                const_cast<VarDeclAST*>(decl)->isConst = true;
+            }
+        }
+    }
+
 private:
-    // ─── Frame for function execution ─────────────────────────────────
-
-    struct Frame {
-        std::unordered_map<InternedString, ConstantValue> locals;
-        bool hasReturned = false;
-        ConstantValue returnValue;
-    };
-
     // ─── Members ──────────────────────────────────────────────────────
 
     SemaContext& m_ctx;
-
-    // Stack of frames for function execution
-    std::vector<Frame> m_frames;
 
     // Track which expressions have been evaluated
     std::unordered_set<const ExprAST*> m_evaluatedExprs;
@@ -142,16 +221,24 @@ private:
     static constexpr size_t MAX_RECURSION = 1000;
     size_t m_recursionDepth = 0;
 
-    // ─── Frame Management ─────────────────────────────────────────────
+    // ─── Binary Operation Helpers ────────────────────────────────────
 
-    Frame& currentFrame() { return m_frames.back(); }
-    const Frame& currentFrame() const { return m_frames.back(); }
+    /// @brief Evaluate a binary operation on constant values.
+    ConstantValue evalBinaryOp(BinaryOp op,
+                                const ConstantValue& left,
+                                const ConstantValue& right,
+                                const BaseAST* node);
 
-    void pushFrame() { m_frames.emplace_back(); }
-    void popFrame() { m_frames.pop_back(); }
+    // ─── Local Variable Helpers ──────────────────────────────────────
 
-    ConstantValue getLocal(InternedString name) const;
-    void setLocal(InternedString name, const ConstantValue& value);
+    /// @brief Get a local variable value from SymbolStorage.
+    ConstantValue getLocalValue(InternedString name) const;
+
+    /// @brief Set a local variable value in SymbolStorage.
+    void setLocalValue(InternedString name, const ConstantValue& value);
+
+    /// @brief Check if a name is a local variable in the current scope.
+    bool isLocalVariable(InternedString name) const;
 
     // ─── Type Helpers ──────────────────────────────────────────────────
 

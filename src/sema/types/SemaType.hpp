@@ -29,6 +29,15 @@
 namespace sema {
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Self reference check
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Check if a let initializer references the variable being declared.
+/// We need to prevent case: let x int = x
+/// Because x was never initialized, so this is a critical error
+void checkLetSelfReference(const ExprAST* expr, InternedString varName, SemaContext& ctx);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Generic Parameter Lookup
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -40,42 +49,6 @@ bool isGenericParam(InternedString name, SemaContext& ctx);
 /// @brief Look up a generic parameter by name.
 /// @return The GenericParamDeclAST if found, nullptr otherwise.
 const GenericParamDeclAST* lookupGenericParam(InternedString name, SemaContext& ctx);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Type Predicates (for type classification)
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// @brief Check if a name resolves to a trait.
-bool isTrait(InternedString name, SemaContext& ctx);
-
-/// @brief Check if a name resolves to a struct.
-bool isStruct(InternedString name, SemaContext& ctx);
-
-/// @brief Check if a name resolves to an enum.
-bool isEnum(InternedString name, SemaContext& ctx);
-
-/// @brief Check if a type is a trait type.
-/// 
-/// A trait type is a NamedTypeAST that resolves to a TraitDeclAST.
-inline bool isTraitType(const TypeAST* type, SemaContext& ctx) {
-    if (!type || !type->isa<NamedTypeAST>()) return false;
-    const NamedTypeAST* named = type->as<NamedTypeAST>();
-    return isTrait(named->name, ctx);
-}
-
-/// @brief Check if a type is a struct type.
-inline bool isStructType(const TypeAST* type, SemaContext& ctx) {
-    if (!type || !type->isa<NamedTypeAST>()) return false;
-    const NamedTypeAST* named = type->as<NamedTypeAST>();
-    return isStruct(named->name, ctx);
-}
-
-/// @brief Check if a type is a generic parameter.
-inline bool isGenericParamType(const TypeAST* type, SemaContext& ctx) {
-    if (!type || !type->isa<NamedTypeAST>()) return false;
-    const NamedTypeAST* named = type->as<NamedTypeAST>();
-    return isGenericParam(named->name, ctx);
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Value Lookup (variables, functions, parameters, fields, enum variants)
@@ -475,6 +448,49 @@ inline bool isSwitchCaseCompatible(const ExprAST* value, const TypeAST* subjectT
     }
 
     return false;
+}
+
+
+
+/// @brief Check if a type is a trait.
+inline bool isTrait(InternedString name, SemaContext& ctx) {
+    const TypeDeclAST* decl = lookupType(name, ctx);
+    return decl && decl->isa<TraitDeclAST>();
+}
+
+/// @brief Check if a type is a struct.
+inline bool isStruct(InternedString name, SemaContext& ctx) {
+    const TypeDeclAST* decl = lookupType(name, ctx);
+    return decl && decl->isa<StructDeclAST>();
+}
+
+/// @brief Check if a type is an enum.
+inline bool isEnum(InternedString name, SemaContext& ctx) {
+    const TypeDeclAST* decl = lookupType(name, ctx);
+    return decl && decl->isa<EnumDeclAST>();
+}
+
+/// @brief Check if a type is a trait type.
+/// 
+/// A trait type is a NamedTypeAST that resolves to a TraitDeclAST.
+inline bool isTraitType(const TypeAST* type, SemaContext& ctx) {
+    if (!type || !type->isa<NamedTypeAST>()) return false;
+    const NamedTypeAST* named = type->as<NamedTypeAST>();
+    return isTrait(named->name, ctx);
+}
+
+/// @brief Check if a type is a struct type.
+inline bool isStructType(const TypeAST* type, SemaContext& ctx) {
+    if (!type || !type->isa<NamedTypeAST>()) return false;
+    const NamedTypeAST* named = type->as<NamedTypeAST>();
+    return isStruct(named->name, ctx);
+}
+
+/// @brief Check if a type is a generic parameter.
+inline bool isGenericParamType(const TypeAST* type, SemaContext& ctx) {
+    if (!type || !type->isa<NamedTypeAST>()) return false;
+    const NamedTypeAST* named = type->as<NamedTypeAST>();
+    return isGenericParam(named->name, ctx);
 }
 
 } // namespace sema
