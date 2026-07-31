@@ -1,13 +1,9 @@
 /// @file SemaStructField.hpp
-/// @brief Struct field analysis - two-pass registration and body analysis.
+/// @brief Struct field analysis - focused on function field bodies and self-reference.
 /// 
-/// @architectural_note Two-Pass Analysis for Structs
-///   Struct fields require a two-pass approach to support self-reference:
-///     Phase 1: Register ALL field names (no type resolution)
-///     Phase 2: Resolve field types and analyze function bodies
-/// 
-///   This is separate from the global two-pass because struct fields
-///   need to be registered BEFORE their types are resolved (self-reference).
+/// @architectural_note Minimal Design
+///   Only the functionality that isn't duplicated elsewhere is kept here.
+///   Field name registration and type resolution are handled in SemaDecl.cpp.
 
 #pragma once
 
@@ -17,47 +13,6 @@
 #include "../context/SemaContext.hpp"
 
 namespace sema {
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Struct Field Registration - Phase 1 (Names Only)
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// @brief Register a struct field name only (no type resolution).
-/// 
-/// This is Phase 1 of struct analysis. It registers the field name so that
-/// self-reference is possible in Phase 2.
-/// 
-/// @param field The field to register.
-/// @param currentStruct The struct currently being defined.
-/// @param ctx The semantic context.
-void registerStructFieldName(const FieldDeclAST* field,
-                              const StructDeclAST* currentStruct,
-                              SemaContext& ctx);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Struct Field Resolution - Phase 2 (Types and Bodies)
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// @brief Resolve all fields in a struct declaration.
-/// 
-/// This is the main entry point for struct field resolution.
-/// Resolves all field types, validates self-reference, const, etc.
-/// 
-/// @param decl The struct declaration.
-/// @param ctx The semantic context.
-void resolveStructFields(const StructDeclAST* decl, SemaContext& ctx);
-
-/// @brief Analyze a struct function field's body.
-/// 
-/// Called after all fields are resolved. Analyzes the function body
-/// with the `self` parameter already available.
-/// 
-/// @param field The function field to analyze.
-/// @param currentStruct The struct currently being defined.
-/// @param ctx The semantic context.
-void analyzeFunctionFieldBody(const FieldDeclAST* field,
-                               const StructDeclAST* currentStruct,
-                               SemaContext& ctx);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Self-Reference Detection
@@ -84,5 +39,21 @@ struct SelfReferenceInfo {
 SelfReferenceInfo checkSelfReference(const TypeAST* fieldType,
                                       const StructDeclAST* currentStruct,
                                       SemaContext& ctx);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Function Field Body Analysis
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Analyze a struct function field's body.
+/// 
+/// Called after all fields are resolved. Analyzes the function body
+/// with the `self` parameter already available.
+/// 
+/// @param field The function field to analyze.
+/// @param currentStruct The struct currently being defined.
+/// @param ctx The semantic context.
+void analyzeFunctionFieldBody(const FieldDeclAST* field,
+                               const StructDeclAST* currentStruct,
+                               SemaContext& ctx);
 
 } // namespace sema

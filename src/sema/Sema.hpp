@@ -14,6 +14,7 @@
 #include "debug/DebugUtils.hpp"
 #include "context/SemaContext.hpp"
 #include "support/TypeNarrowHelpers.hpp"
+#include "support/SwitchHelpers.hpp"
 #include "support/SemaStructField.hpp"
 #include "types/SemaType.hpp"
 

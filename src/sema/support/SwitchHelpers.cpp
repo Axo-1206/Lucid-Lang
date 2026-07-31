@@ -33,9 +33,9 @@ bool checkExhaustiveness(const SwitchStmtAST* stmt,
     for (const EnumVariantAST* variant : enumDecl->variants) {
         if (covered.find(variant->name) == covered.end()) {
             ctx.error(stmt, DiagCode::E3003,
-                      "switch on enum '", ctx.pool().lookup(enumDecl->name),
+                      "switch on enum '", ctx.pool.lookup(enumDecl->name),
                       "' is missing case for variant '", 
-                      ctx.pool().lookup(variant->name), "'");
+                      ctx.pool.lookup(variant->name), "'");
             allCovered = false;
         }
     }
@@ -137,8 +137,8 @@ bool validateCaseValue(const ExprAST* value,
         }
         if (!found) {
             ctx.error(value, DiagCode::E2001,
-                      "enum '", ctx.pool().lookup(enumDecl->name),
-                      "' has no variant '", ctx.pool().lookup(variantName), "'");
+                      "enum '", ctx.pool.lookup(enumDecl->name),
+                      "' has no variant '", ctx.pool.lookup(variantName), "'");
             return false;
         }
     }
