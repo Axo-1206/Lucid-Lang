@@ -15,11 +15,7 @@
 #include "context/SemaContext.hpp"
 #include "support/TypeNarrowHelpers.hpp"
 #include "support/SemaStructField.hpp"
-#include "support/SwitchHelpers.hpp"
-#include "support/LiteralHelpers.hpp"
 #include "types/SemaType.hpp"
-#include "registry/AttributeRegistry.hpp"
-#include "registry/IntrinsicRegistry.hpp"
 
 #include <vector>
 #include <optional>

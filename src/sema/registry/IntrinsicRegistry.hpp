@@ -30,7 +30,6 @@
 #include "core/memory/InternedString.hpp"
 #include "core/memory/StringPool.hpp"
 #include "../context/SemaContext.hpp"
-#include "../support/LiteralHelpers.hpp"
 #include "../types/SemaCompare.hpp"   // Type predicates: isIntegerType, isNumericType, etc.
 
 #include <unordered_map>

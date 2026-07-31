@@ -4,8 +4,10 @@
  */
 
 #include "IntrinsicRegistry.hpp"
-#include "../support/LiteralHelpers.hpp"
+#include "../types/SemaResolve.hpp"
+#include "../types/SemaCompare.hpp"
 #include "debug/DebugUtils.hpp"
+#include "sema/Sema.hpp"
 
 #include <cassert>
 #include <algorithm>
@@ -239,7 +241,7 @@ bool IntrinsicRegistry::validateFenceOrdering(InternedString ordering, StringPoo
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Argument Type Validators (using SemaCompare predicates)
+// Argument Type Validators (using SemaCompare predicates and resolveExprWithTarget)
 // ─────────────────────────────────────────────────────────────────────────────
 
 bool IntrinsicRegistry::validatePtrArg(const ExprAST* arg, const std::string& argName, SemaContext& ctx) const {
@@ -347,7 +349,21 @@ bool IntrinsicRegistry::validateIntrinsicCall(const IntrinsicCallExprAST* expr,
 
     if (name == "fence") {
         if (!expr->args.empty()) {
-            if (!validateFenceOrdering(expr->args[0]->as<LiteralExprAST>()->value, ctx.pool)) {
+            // Validate the argument is a string literal using the type system
+            TypeAST* argType = resolveExprWithTarget(
+                const_cast<ExprAST*>(expr->args[0]), ctx.getStringType(), ctx
+            );
+            if (!argType || argType->isa<UnknownTypeAST>()) {
+                ctx.error(expr->args[0], DiagCode::E3003,
+                          "fence ordering expects a string literal");
+                return false;
+            }
+            
+            // Extract and validate the ordering
+            std::string ordering = ctx.pool.lookup(
+                expr->args[0]->as<LiteralExprAST>()->value
+            );
+            if (!validateFenceOrdering(ctx.pool.intern(ordering), ctx.pool)) {
                 ctx.error(expr->args[0], DiagCode::E3003,
                           "invalid fence ordering — must be: relaxed, acquire, "
                           "release, acq_rel, or seq_cst");
@@ -438,7 +454,20 @@ bool IntrinsicRegistry::validateIntrinsicCall(const IntrinsicCallExprAST* expr,
         
         if (expr->args.size() >= 2) {
             const ExprAST* lastArg = expr->args[expr->args.size() - 1];
-            if (!validateFenceOrdering(lastArg->as<LiteralExprAST>()->value, ctx.pool)) {
+            // Validate the ordering is a string literal
+            TypeAST* argType = resolveExprWithTarget(
+                const_cast<ExprAST*>(lastArg), ctx.getStringType(), ctx
+            );
+            if (!argType || argType->isa<UnknownTypeAST>()) {
+                ctx.error(lastArg, DiagCode::E3003,
+                          "atomic ordering expects a string literal");
+                return false;
+            }
+            
+            std::string ordering = ctx.pool.lookup(
+                lastArg->as<LiteralExprAST>()->value
+            );
+            if (!validateFenceOrdering(ctx.pool.intern(ordering), ctx.pool)) {
                 ctx.error(lastArg, DiagCode::E3003,
                           "invalid ordering — must be: relaxed, acquire, "
                           "release, acq_rel, or seq_cst");
@@ -451,7 +480,18 @@ bool IntrinsicRegistry::validateIntrinsicCall(const IntrinsicCallExprAST* expr,
     // ─── SIMD ────────────────────────────────────────────────────────────────
     if (name == "simd_splat") {
         if (expr->args.size() >= 2) {
-            if (!literal::isIntLiteral(expr->args[1])) {
+            // Validate N is a compile-time integer constant using the type system
+            TypeAST* nType = resolveExprWithTarget(
+                const_cast<ExprAST*>(expr->args[1]), ctx.getIntType(), ctx
+            );
+            if (!nType || nType->isa<UnknownTypeAST>()) {
+                ctx.error(expr->args[1], DiagCode::E3003,
+                          "argument 'N' must be a compile-time integer constant");
+                return false;
+            }
+            
+            // Check that it's actually a literal (constexpr)
+            if (!expr->args[1]->isa<LiteralExprAST>()) {
                 ctx.error(expr->args[1], DiagCode::E3003,
                           "argument 'N' must be a compile-time integer constant");
                 return false;
@@ -513,7 +553,7 @@ const TypeAST* IntrinsicRegistry::getIntrinsicReturnType(const IntrinsicCallExpr
 
     // ─── Type/Value Inspection ─────────────────────────────────────────────
     if (name == "sizeof" || name == "alignof") {
-        return ctx.getIntType();  // Use cached int type
+        return ctx.getIntType();
     }
 
     if (name == "typeof" || name == "nameof" || name == "tostr" || name == "ptrstr") {

@@ -6,17 +6,24 @@
 ///   AttributeRegistry is header-only and stateless. It only validates
 ///   attributes against declarations using pure functions.
 /// 
-/// @architectural_note Integration with SemaContext
-///   Uses SemaContext for error reporting and symbol table queries.
+/// @architectural_note Type Validation via resolveExprWithTarget
+///   Instead of checking literal kinds directly, we use the type system
+///   to validate attribute arguments. This is more consistent with the
+///   rest of the semantic analysis.
 
 #pragma once
 
 #include "core/ast/BaseAST.hpp"
 #include "core/ast/DeclAST.hpp"
+#include "core/ast/ExprAST.hpp"
 #include "core/memory/InternedString.hpp"
 #include "../context/SemaContext.hpp"
+#include "../types/SemaCompare.hpp"
+#include "../types/SemaResolve.hpp"
 #include "core/diagnostics/DiagnosticCodes.hpp"
-#include "../support/LiteralHelpers.hpp"
+#include "sema/Sema.hpp"
+
+#include <string>
 
 namespace sema {
 namespace attr {
@@ -45,7 +52,6 @@ inline InternedString kInline(SemaContext& ctx) {
 
 // ─── Attribute Query Functions ────────────────────────────────────────────
 
-/// @brief Check if a declaration has a specific attribute.
 inline bool hasAttribute(ArenaSpan<AttributePtr> attrs, InternedString name) {
     for (const AttributeAST* attr : attrs) {
         if (attr->name == name) return true;
@@ -53,7 +59,6 @@ inline bool hasAttribute(ArenaSpan<AttributePtr> attrs, InternedString name) {
     return false;
 }
 
-/// @brief Find a specific attribute by name.
 inline const AttributeAST* findAttribute(ArenaSpan<AttributePtr> attrs,
                                           InternedString name) {
     for (const AttributeAST* attr : attrs) {
@@ -73,6 +78,21 @@ inline bool isFunctionOwner(const DeclAST* owner) {
 inline bool isAtModuleLevel(const DeclAST* owner, SemaContext& ctx) {
     if (owner == nullptr) return true;
     return ctx.isAtModuleLevel();
+}
+
+/// @brief Validate that an attribute argument is a string literal.
+/// Uses resolveExprWithTarget for type validation.
+inline bool validateStringArg(const ExprAST* arg, SemaContext& ctx,
+                               const std::string& argName) {
+    TypeAST* result = resolveExprWithTarget(
+        const_cast<ExprAST*>(arg), ctx.getStringType(), ctx
+    );
+    if (!result || result->isa<UnknownTypeAST>()) {
+        ctx.error(arg, DiagCode::E3003,
+                  "argument '", argName, "' expects a string literal");
+        return false;
+    }
+    return true;
 }
 
 inline void validateExport(const AttributeAST* attr,
@@ -106,15 +126,16 @@ inline void validateForeign(const AttributeAST* attr,
         return;
     }
 
-    auto abi = literal::extractString(attr->args[0], ctx.pool);
-    if (!abi) {
-        ctx.error(attr->args[0], DiagCode::E3003,
-                  "attribute '@[foreign]' expects a string literal");
+    // Validate the argument is a string literal
+    if (!validateStringArg(attr->args[0], ctx, "ABI")) {
         return;
     }
-    if (*abi != "C") {
+
+    // Extract and validate the ABI string
+    std::string abi = ctx.pool.lookup(attr->args[0]->as<LiteralExprAST>()->value);
+    if (abi != "C") {
         ctx.error(attr->args[0], DiagCode::E4101,
-                  "unsupported foreign ABI '", *abi, "' — only \"C\" is supported");
+                  "unsupported foreign ABI '", abi, "' — only \"C\" is supported");
     }
 }
 
@@ -134,10 +155,7 @@ inline void validateLink(const AttributeAST* attr,
     }
 
     for (size_t i = 0; i < attr->args.size(); ++i) {
-        if (!literal::isStringLiteral(attr->args[i])) {
-            ctx.error(attr->args[i], DiagCode::E3003,
-                      "argument ", std::to_string(i + 1),
-                      " of '@[link]' expects a string literal");
+        if (!validateStringArg(attr->args[i], ctx, "library " + std::to_string(i + 1))) {
             return;
         }
     }
@@ -146,6 +164,7 @@ inline void validateLink(const AttributeAST* attr,
 inline void validateDeprecated(const AttributeAST* attr,
                                 const DeclAST* owner,
                                 SemaContext& ctx) {
+    (void)owner;
     if (attr->args.size() > 1) {
         ctx.error(attr, DiagCode::E4002,
                   "attribute '@[deprecated]' expects at most 1 argument (the message), got ",
@@ -154,7 +173,7 @@ inline void validateDeprecated(const AttributeAST* attr,
     }
 
     if (!attr->args.empty()) {
-        if (!literal::validateStringLiteral(attr->args[0], ctx, "message")) {
+        if (!validateStringArg(attr->args[0], ctx, "message")) {
             return;
         }
     }
