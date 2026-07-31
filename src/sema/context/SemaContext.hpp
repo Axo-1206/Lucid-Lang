@@ -1,33 +1,5 @@
 /// @file SemaContext.hpp
 /// @brief Unified semantic context - monolithic design with integrated symbol storage and type cache.
-///
-/// # Quick Reference
-///
-/// | Feature                        | Method                                    |
-/// | ------------------------------ | ----------------------------------------- |
-/// | Look up a value by name        | `lookupValue(name)`                       |
-/// | Look up a type by name         | `lookupType(name)`                        |
-/// | Look up a generic param        | `lookupGenericParam(name)`                |
-/// | Insert a value declaration     | `insertValue(decl)`                       |
-/// | Insert a type declaration      | `insertType(decl)`                        |
-/// | Check if name is generic param | `isGenericParam(name)`                    |
-/// | Self-reference check           | `isDefiningType(decl)`                    |
-/// | Push type being defined        | `pushDefiningType(decl)`                  |
-/// | Get current defining type      | `currentDefiningType()`                   |
-/// | Get cached bool type           | `getBoolType()`                           |
-/// | Get cached int type            | `getIntType()`                            |
-/// | Get cached named type          | `getNamedType(name)`                      |
-///
-/// # Symbol Storage Design
-///
-/// The symbol storage uses a two-tier model:
-///   1. **ModuleTable** (persistent): One per module, holds top-level declarations
-///   2. **Scope** (transient): Pushed/popped for blocks, functions, generic params
-///
-/// Lookup priority:
-///   1. Generic parameters in current scope (highest priority)
-///   2. Value/Type declarations in local scopes (innermost to outermost)
-///   3. Value/Type declarations in module scope (global)
 
 #pragma once
 
@@ -46,48 +18,16 @@ namespace sema {
 
 // ─── ModuleTable ──────────────────────────────────────────────────────────
 
-/// @brief Persistent top-level symbol table for exactly one module.
 struct ModuleTable {
     ModuleAST* module = nullptr;
-    
-    /// Top-level value namespace: variables, functions.
     std::unordered_map<InternedString, const ValueDeclAST*> values;
-    
-    /// Top-level type namespace: structs, enums, traits.
     std::unordered_map<InternedString, const TypeDeclAST*> types;
-    
-    /// Import aliases: alias → module.
     std::unordered_map<InternedString, ModuleAST*> importAliases;
-};
-
-// ─── Scope ────────────────────────────────────────────────────────────────
-
-/// @brief A single transient lexical scope.
-struct Scope {
-    /// Value namespace: variables, functions, parameters, fields, enum variants
-    std::unordered_map<InternedString, const ValueDeclAST*> values;
-    
-    /// Type namespace: structs, enums, traits
-    std::unordered_map<InternedString, const TypeDeclAST*> types;
-    
-    /// Generic parameter names (shadow type lookups)
-    std::unordered_map<InternedString, const GenericParamDeclAST*> genericParams;
 };
 
 // ─── TypeCache ────────────────────────────────────────────────────────────
 
-/// @brief Cache for singleton type instances to avoid duplicate allocations.
-/// 
-/// Many types appear repeatedly in the AST (e.g., `bool`, `int`, `string`).
-/// Instead of creating a new TypeAST node for each occurrence, we cache
-/// a single instance and reuse it. This reduces memory usage and improves
-/// performance (pointer comparison is faster than structural comparison).
-///
-/// This will be used when we analyzing conditional statement, like if statement
-/// while, do-while condition loop and switch case type restriction. We will 
-/// use this to ask if the expression will resolve to this kind of type.
 struct TypeCache {
-    // ─── Primitive Types (Singleton) ─────────────────────────────────────
     PrimitiveTypeAST* boolType = nullptr;
     PrimitiveTypeAST* intType = nullptr;
     PrimitiveTypeAST* floatType = nullptr;
@@ -95,7 +35,6 @@ struct TypeCache {
     PrimitiveTypeAST* charType = nullptr;
     UnknownTypeAST* unknownType = nullptr;
     
-    // ─── Named Types Cache ──────────────────────────────────────────────
     struct NamedTypeKey {
         InternedString name;
         bool operator==(const NamedTypeKey& other) const {
@@ -109,7 +48,6 @@ struct TypeCache {
     };
     std::unordered_map<NamedTypeKey, NamedTypeAST*, NamedTypeKeyHash> namedTypes;
     
-    // ─── Array Types Cache ──────────────────────────────────────────────
     struct ArrayTypeKey {
         ArrayKind kind;
         uint64_t size;
@@ -132,10 +70,6 @@ struct TypeCache {
 
 // ─── SemaContext ──────────────────────────────────────────────────────────
 
-/// @brief Unified semantic context - all in one struct.
-/// 
-/// This is the main context passed to all semantic analysis functions.
-/// It's intentionally monolithic - all state is directly accessible.
 struct SemaContext {
     // ─── Resources ──────────────────────────────────────────────────────
     
@@ -150,35 +84,17 @@ struct SemaContext {
     
     // ─── Symbol Storage ────────────────────────────────────────────────
     
-    /// Current module being analyzed.
     ModuleAST* currentModule = nullptr;
-    
-    /// Pointer to the current module's table (cached for performance).
     ModuleTable* currentModuleTable = nullptr;
-    
-    /// Persistent per-module tables.
     std::unordered_map<ModuleAST*, ModuleTable> moduleTables;
-    
-    /// Transient scope stack.
     std::vector<Scope> scopes;
     
     // ─── Type Cache ────────────────────────────────────────────────────
     
-    /// Cache for singleton type instances.
     TypeCache typeCache;
     
     // ─── Self-Reference Tracking ──────────────────────────────────────
     
-    /// Stack of types currently being defined.
-    /// 
-    /// When resolving a struct's fields, we push the struct onto this stack.
-    /// This allows `resolveNamedType()` to detect self-references.
-    /// 
-    /// @example
-    ///   struct Node<T> {           // push Node
-    ///       value T,
-    ///       next *Node<T>?     // isDefiningType(Node) → true
-    ///   }                          // pop Node
     std::vector<const TypeDeclAST*> definingTypes;
     
     // ─── Constructor ────────────────────────────────────────────────────
@@ -195,31 +111,26 @@ struct SemaContext {
     
     // ─── Module Management ─────────────────────────────────────────────
     
-    /// @brief Switch to a module, creating its table if needed.
     void enterModule(ModuleAST* module) {
         currentModule = module;
         currentModuleTable = &getOrCreateModuleTable(module);
     }
     
-    /// @brief Get or create a module's persistent table.
     ModuleTable& getOrCreateModuleTable(ModuleAST* module) {
         auto it = moduleTables.find(module);
         if (it != moduleTables.end()) {
             return it->second;
         }
-        
         ModuleTable& table = moduleTables[module];
         table.module = module;
         return table;
     }
     
-    /// @brief Find a module's table without creating one.
     ModuleTable* findModuleTable(ModuleAST* module) {
         auto it = moduleTables.find(module);
         return it != moduleTables.end() ? &it->second : nullptr;
     }
     
-    /// @brief Find a module by path.
     ModuleAST* findModuleByPath(InternedString path) const {
         auto it = modulesByPath.find(path);
         return it != modulesByPath.end() ? it->second : nullptr;
@@ -227,20 +138,16 @@ struct SemaContext {
     
     // ─── Scope Management ──────────────────────────────────────────────
     
-    /// @brief True if there are no open transient scopes.
     bool isAtModuleLevel() const { return scopes.empty(); }
     
-    /// @brief Push a new empty scope.
     void pushScope() { scopes.emplace_back(); }
     
-    /// @brief Pop the innermost scope.
     void popScope() {
         if (!scopes.empty()) {
             scopes.pop_back();
         }
     }
     
-    /// @brief Get the current (innermost) scope.
     Scope& currentScope() {
         assert(!scopes.empty() && "No scope open");
         return scopes.back();
@@ -253,7 +160,6 @@ struct SemaContext {
     
     // ─── Symbol Insertion ──────────────────────────────────────────────
     
-    /// @brief Insert a value declaration at the current level.
     void insertValue(const ValueDeclAST* decl) {
         if (isAtModuleLevel()) {
             currentModuleTable->values[decl->name] = decl;
@@ -262,7 +168,6 @@ struct SemaContext {
         }
     }
     
-    /// @brief Insert a type declaration at the current level.
     void insertType(const TypeDeclAST* decl) {
         if (isAtModuleLevel()) {
             currentModuleTable->types[decl->name] = decl;
@@ -271,14 +176,11 @@ struct SemaContext {
         }
     }
     
-    /// @brief Insert a generic parameter into the innermost scope.
-    /// @pre A scope must be open (not at module level).
     void insertGenericParam(const GenericParamDeclAST* param) {
         assert(!isAtModuleLevel() && "insertGenericParam() requires an open Scope");
         currentScope().genericParams[param->name] = param;
     }
     
-    /// @brief Add an import alias to the current module.
     void addImportAlias(InternedString alias, ModuleAST* module) {
         if (currentModuleTable) {
             currentModuleTable->importAliases[alias] = module;
@@ -287,55 +189,38 @@ struct SemaContext {
     
     // ─── Symbol Lookup ──────────────────────────────────────────────────
     
-    /// @brief Look up a value declaration by name.
-    /// 
-    /// Searches: scopes (innermost to outermost) → current module table.
     const ValueDeclAST* lookupValue(InternedString name) const {
-        // Search scopes from innermost to outermost
         for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
             auto found = it->values.find(name);
             if (found != it->values.end()) {
                 return found->second;
             }
         }
-        
-        // Fall back to current module's persistent table
         if (currentModuleTable) {
             auto found = currentModuleTable->values.find(name);
             if (found != currentModuleTable->values.end()) {
                 return found->second;
             }
         }
-        
         return nullptr;
     }
     
-    /// @brief Look up a function by name (convenience wrapper).
     const FuncDeclAST* lookupFunction(InternedString name) const {
         const ValueDeclAST* v = lookupValue(name);
         return (v && v->isa<FuncDeclAST>()) ? v->as<FuncDeclAST>() : nullptr;
     }
     
-    /// @brief Look up a type declaration by name.
-    /// 
-    /// Searches: scopes (innermost to outermost) → current module table.
-    /// Generic parameters shadow type names in scopes.
     const TypeDeclAST* lookupType(InternedString name) const {
-        // Search scopes from innermost to outermost
         for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
-            // Generic parameters shadow type names
             auto gen = it->genericParams.find(name);
             if (gen != it->genericParams.end()) {
-                return nullptr; // Generic param, not a type
+                return nullptr;
             }
-            
             auto found = it->types.find(name);
             if (found != it->types.end()) {
                 return found->second;
             }
         }
-        
-        // Fall back to current module's persistent table
         if (currentModuleTable) {
             auto found = currentModuleTable->types.find(name);
             if (found != currentModuleTable->types.end()) {
@@ -345,9 +230,6 @@ struct SemaContext {
         return nullptr;
     }
     
-    /// @brief Look up a generic parameter by name.
-    /// 
-    /// Generic parameters are always transient, so only search scopes.
     const GenericParamDeclAST* lookupGenericParam(InternedString name) const {
         for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
             auto found = it->genericParams.find(name);
@@ -358,21 +240,92 @@ struct SemaContext {
         return nullptr;
     }
     
-    /// @brief Check if a name is a generic parameter.
     bool isGenericParam(InternedString name) const {
         return lookupGenericParam(name) != nullptr;
     }
     
-    /// @brief Look up an import alias.
     ModuleAST* lookupImport(InternedString alias) const {
         if (!currentModuleTable) return nullptr;
         auto it = currentModuleTable->importAliases.find(alias);
         return it != currentModuleTable->importAliases.end() ? it->second : nullptr;
     }
     
+    // ─── Concurrency Helpers ─────────────────────────────────────────────
+    
+    /// @brief Add a pending async operation to the current scope.
+    void addPendingAsync(InternedString name, const ExprAST* call, const SourceLocation& loc) {
+        if (isAtModuleLevel()) return;
+        PendingAsync pending{name, call, loc};
+        currentScope().pendingAsync[name] = pending;
+    }
+    
+    /// @brief Add a pending spawn operation to the current scope.
+    void addPendingSpawn(InternedString name, const ExprAST* call, const SourceLocation& loc) {
+        if (isAtModuleLevel()) return;
+        PendingSpawn pending{name, call, loc};
+        currentScope().pendingSpawn[name] = pending;
+    }
+    
+    /// @brief Check if a name is a pending async operation.
+    bool hasPendingAsync(InternedString name) const {
+        if (scopes.empty()) return false;
+        return currentScope().pendingAsync.find(name) != currentScope().pendingAsync.end();
+    }
+    
+    /// @brief Check if a name is a pending spawn operation.
+    bool hasPendingSpawn(InternedString name) const {
+        if (scopes.empty()) return false;
+        return currentScope().pendingSpawn.find(name) != currentScope().pendingSpawn.end();
+    }
+    
+    /// @brief Resolve a pending async operation (remove it from the list).
+    void resolveAsync(InternedString name) {
+        if (!scopes.empty()) {
+            currentScope().pendingAsync.erase(name);
+        }
+    }
+    
+    /// @brief Resolve a pending spawn operation (remove it from the list).
+    void resolveSpawn(InternedString name) {
+        if (!scopes.empty()) {
+            currentScope().pendingSpawn.erase(name);
+        }
+    }
+    
+    /// @brief Get all pending async names in the current scope.
+    std::vector<InternedString> getPendingAsyncNames() const {
+        std::vector<InternedString> result;
+        if (!scopes.empty()) {
+            for (const auto& [name, _] : currentScope().pendingAsync) {
+                result.push_back(name);
+            }
+        }
+        return result;
+    }
+    
+    /// @brief Get all pending spawn names in the current scope.
+    std::vector<InternedString> getPendingSpawnNames() const {
+        std::vector<InternedString> result;
+        if (!scopes.empty()) {
+            for (const auto& [name, _] : currentScope().pendingSpawn) {
+                result.push_back(name);
+            }
+        }
+        return result;
+    }
+    
+    /// @brief Check if there are any pending async operations.
+    bool hasPendingAsync() const {
+        return !scopes.empty() && !currentScope().pendingAsync.empty();
+    }
+    
+    /// @brief Check if there are any pending spawn operations.
+    bool hasPendingSpawn() const {
+        return !scopes.empty() && !currentScope().pendingSpawn.empty();
+    }
+    
     // ─── Type Cache Accessors ──────────────────────────────────────────
     
-    /// @brief Get the canonical bool type (singleton).
     PrimitiveTypeAST* getBoolType() {
         if (!typeCache.boolType) {
             typeCache.boolType = arena.make<PrimitiveTypeAST>(PrimitiveKind::Bool);
@@ -380,7 +333,6 @@ struct SemaContext {
         return typeCache.boolType;
     }
     
-    /// @brief Get the canonical int type (singleton).
     PrimitiveTypeAST* getIntType() {
         if (!typeCache.intType) {
             typeCache.intType = arena.make<PrimitiveTypeAST>(PrimitiveKind::Int);
@@ -388,7 +340,6 @@ struct SemaContext {
         return typeCache.intType;
     }
     
-    /// @brief Get the canonical float type (singleton).
     PrimitiveTypeAST* getFloatType() {
         if (!typeCache.floatType) {
             typeCache.floatType = arena.make<PrimitiveTypeAST>(PrimitiveKind::Float);
@@ -396,7 +347,6 @@ struct SemaContext {
         return typeCache.floatType;
     }
     
-    /// @brief Get the canonical string type (singleton).
     PrimitiveTypeAST* getStringType() {
         if (!typeCache.stringType) {
             typeCache.stringType = arena.make<PrimitiveTypeAST>(PrimitiveKind::String);
@@ -404,7 +354,6 @@ struct SemaContext {
         return typeCache.stringType;
     }
     
-    /// @brief Get the canonical char type (singleton).
     PrimitiveTypeAST* getCharType() {
         if (!typeCache.charType) {
             typeCache.charType = arena.make<PrimitiveTypeAST>(PrimitiveKind::Char);
@@ -412,7 +361,6 @@ struct SemaContext {
         return typeCache.charType;
     }
     
-    /// @brief Get the canonical unknown type (singleton).
     UnknownTypeAST* getUnknownType() {
         if (!typeCache.unknownType) {
             typeCache.unknownType = arena.make<UnknownTypeAST>();
@@ -420,10 +368,6 @@ struct SemaContext {
         return typeCache.unknownType;
     }
     
-    /// @brief Get or create a cached NamedTypeAST.
-    /// 
-    /// @param name The type name.
-    /// @return The cached NamedTypeAST (singleton per name).
     NamedTypeAST* getNamedType(InternedString name) {
         TypeCache::NamedTypeKey key{name};
         auto it = typeCache.namedTypes.find(key);
@@ -435,12 +379,6 @@ struct SemaContext {
         return type;
     }
     
-    /// @brief Get or create a cached ArrayTypeAST.
-    /// 
-    /// @param kind The array kind (Slice, Dynamic, Fixed).
-    /// @param size The array size (only for Fixed).
-    /// @param element The element type.
-    /// @return The cached ArrayTypeAST.
     ArrayTypeAST* getArrayType(ArrayKind kind, uint64_t size, TypeAST* element) {
         TypeCache::ArrayTypeKey key{kind, size, element};
         auto it = typeCache.arrayTypes.find(key);
@@ -454,34 +392,16 @@ struct SemaContext {
     
     // ─── Self-Reference Helpers ──────────────────────────────────────
     
-    /// @brief Push a type that's currently being defined.
-    /// 
-    /// Called when we start resolving a struct/enum/trait's internals.
-    /// @see ScopedTypeDefinition RAII guard
     void pushDefiningType(const TypeDeclAST* decl) {
         definingTypes.push_back(decl);
     }
     
-    /// @brief Pop the current defining type.
     void popDefiningType() {
         if (!definingTypes.empty()) {
             definingTypes.pop_back();
         }
     }
     
-    /// @brief Check if a type is currently being defined.
-    /// 
-    /// Used by `resolveNamedType()` to detect self-references.
-    /// 
-    /// @param decl The type declaration to check.
-    /// @return true if the type is on the defining stack.
-    /// 
-    /// @example
-    ///   // In resolveNamedType for Node<T>:
-    ///   if (ctx.isDefiningType(decl)) {
-    ///       // This is a self-reference!
-    ///       // Check if it's wrapped in ptr/ref/nullable
-    ///   }
     bool isDefiningType(const TypeDeclAST* decl) const {
         for (const TypeDeclAST* d : definingTypes) {
             if (d == decl) return true;
@@ -489,8 +409,6 @@ struct SemaContext {
         return false;
     }
     
-    /// @brief Get the innermost type currently being defined.
-    /// @return The innermost TypeDeclAST, or nullptr if none.
     const TypeDeclAST* currentDefiningType() const {
         return definingTypes.empty() ? nullptr : definingTypes.back();
     }
@@ -530,18 +448,6 @@ private:
 
 // ─── RAII Guards ─────────────────────────────────────────────────────────
 
-/// @brief RAII guard for semantic context tracking.
-/// 
-/// Pushes a ContextKind frame on construction and pops it on destruction.
-/// 
-/// @example
-/// ```cpp
-/// void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
-///     ScopedSemanticContext guard(ctx, ContextKind::FuncBody, decl, decl->loc);
-///     // ctx.contexts.current() now returns FuncBody
-///     // return is legal inside the body
-/// }
-/// ```
 struct ScopedSemanticContext {
     ScopedSemanticContext(SemaContext& ctx, ContextKind kind,
                           const BaseAST* node, const SourceLocation& loc)
@@ -557,19 +463,6 @@ private:
     SemaContext& ctx_;
 };
 
-/// @brief RAII guard for if condition context.
-/// 
-/// Enables type narrowing detection during condition analysis.
-/// 
-/// @example
-/// ```cpp
-/// void resolveIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
-///     ScopedIfCondition guard(ctx, stmt->elseBranch != nullptr);
-///     // During checkExpr, ctx.contexts.isIfConditionCtx() returns true
-///     // checkBinaryExpr can detect patterns like x != nil
-///     resolveExpr(stmt->condition, ctx);
-/// }
-/// ```
 struct ScopedIfCondition {
     ScopedIfCondition(SemaContext& ctx, bool hasElse)
         : ctx_(ctx) {
@@ -588,20 +481,6 @@ private:
     SemaContext& ctx_;
 };
 
-/// @brief RAII guard for type narrowing in a branch.
-/// 
-/// Pushes a narrowing level for the then/else branch of an if statement.
-/// 
-/// @example
-/// ```cpp
-/// // Then branch: direct narrowing
-/// ScopedNarrowing guard(ctx, varName, narrowedType, false);
-/// analyzeBlock(thenBranch, ctx);
-/// 
-/// // Else branch: inverse narrowing
-/// ScopedNarrowing guard(ctx, varName, narrowedType, true);
-/// analyzeBlock(elseBranch, ctx);
-/// ```
 struct ScopedNarrowing {
     ScopedNarrowing(SemaContext& ctx, InternedString varName, 
                     const TypeAST* narrowedType, bool isInverse = false)
@@ -620,20 +499,6 @@ private:
     SemaContext& ctx_;
 };
 
-/// @brief RAII guard for self-reference detection.
-/// 
-/// Marks a type as "currently being defined" so that self-references
-/// can be detected and validated.
-/// 
-/// @example
-/// ```cpp
-/// void resolveStructDecl(const StructDeclAST* decl, SemaContext& ctx) {
-///     ScopedTypeDefinition guard(ctx, decl);
-///     // ctx.isDefiningType(decl) returns true
-///     // ctx.currentDefiningType() returns decl
-///     resolveStructFields(decl, ctx);
-/// }
-/// ```
 struct ScopedTypeDefinition {
     ScopedTypeDefinition(SemaContext& ctx, const TypeDeclAST* decl)
         : ctx_(ctx) {

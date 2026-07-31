@@ -188,8 +188,6 @@ enum class ContextKind : uint8_t {
     FuncBody,      ///< Inside a function body (return allowed)
     LoopBody,      ///< Inside a loop body (break/continue allowed)
     SwitchBody,    ///< Inside a switch body (case/default allowed)
-    AsyncBody,     ///< Inside an async function (await allowed)
-    ParallelBody,  ///< Inside a parallel/spawn block
     IfStmt,        ///< Inside an if statement (for type narrowing)
     Block          ///< Inside a block statement (for pending inverse narrowing)
 };
@@ -210,11 +208,43 @@ struct NarrowingInfo {
     /// Map from variable name to its narrowed type.
     /// Example: x → int (when x was int?)
     std::unordered_map<InternedString, const TypeAST*> narrowings;
+    bool isEquality = false;  // true for ==, false for !=
+};
+
+// ─── Pending Concurrency Operations ─────────────────────────────────────
+
+/// @brief Represents a pending async operation in the current scope.
+struct PendingAsync {
+    InternedString name;
+    const ExprAST* call;
+    SourceLocation loc;
+};
+
+/// @brief Represents a pending spawn operation in the current scope.
+struct PendingSpawn {
+    InternedString name;
+    const ExprAST* call;
+    SourceLocation loc;
+};
+
+// ─── Scope ──────────────────────────────────────────────────────────────
+
+/// @brief A single transient lexical scope.
+struct Scope {
+    /// Value namespace: variables, functions, parameters, fields, enum variants
+    std::unordered_map<InternedString, const ValueDeclAST*> values;
     
-    /// Operator type for ALL narrowings in this struct.
-    /// - true: All narrowings come from == comparisons
-    /// - false: All narrowings come from != comparisons
-    bool isEquality = false;
+    /// Type namespace: structs, enums, traits
+    std::unordered_map<InternedString, const TypeDeclAST*> types;
+    
+    /// Generic parameter names (shadow type lookups)
+    std::unordered_map<InternedString, const GenericParamDeclAST*> genericParams;
+    
+    /// Pending async operations that need to be awaited
+    std::unordered_map<InternedString, PendingAsync> pendingAsync;
+    
+    /// Pending spawn operations that need to be joined
+    std::unordered_map<InternedString, PendingSpawn> pendingSpawn;
 };
 
 // ─── ContextFrame ──────────────────────────────────────────────────────
@@ -328,8 +358,6 @@ public:
     bool insideFunction() const;
     bool insideLoop() const;
     bool insideSwitch() const;
-    bool insideAsync() const;
-    bool insideParallel() const;
     
     /// @name Current Node Getters
     FuncDeclAST* currentFunction() const;

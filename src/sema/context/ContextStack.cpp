@@ -84,7 +84,7 @@ BaseAST* ContextStack::currentNode() const {
 }
 
 bool ContextStack::insideFunction() const {
-    return isInside(ContextKind::FuncBody) || isInside(ContextKind::AsyncBody);
+    return isInside(ContextKind::FuncBody);
 }
 
 bool ContextStack::insideLoop() const {
@@ -95,17 +95,9 @@ bool ContextStack::insideSwitch() const {
     return isInside(ContextKind::SwitchBody);
 }
 
-bool ContextStack::insideAsync() const {
-    return isInside(ContextKind::AsyncBody);
-}
-
-bool ContextStack::insideParallel() const {
-    return isInside(ContextKind::ParallelBody);
-}
-
 FuncDeclAST* ContextStack::currentFunction() const {
     for (auto it = m_stack.rbegin(); it != m_stack.rend(); ++it) {
-        if (it->kind == ContextKind::FuncBody || it->kind == ContextKind::AsyncBody) {
+        if (it->kind == ContextKind::FuncBody) {
             return static_cast<FuncDeclAST*>(it->node);
         }
     }
@@ -302,7 +294,6 @@ ReturnRequirements ContextStack::buildReturnRequirements(FuncTypeAST* funcType) 
         }
     }
     
-    // Determine if void
     if (!reqs.groups.empty()) {
         const auto& lastGroup = reqs.groups.back();
         reqs.isVoid = !lastGroup.requiresReturn || 
@@ -320,7 +311,7 @@ ReturnRequirements ContextStack::buildReturnRequirements(FuncTypeAST* funcType) 
 
 ContextFrame* ContextStack::findInnermostFunction() {
     for (auto it = m_stack.rbegin(); it != m_stack.rend(); ++it) {
-        if (it->kind == ContextKind::FuncBody || it->kind == ContextKind::AsyncBody) {
+        if (it->kind == ContextKind::FuncBody) {
             return &(*it);
         }
     }
@@ -329,7 +320,7 @@ ContextFrame* ContextStack::findInnermostFunction() {
 
 const ContextFrame* ContextStack::findInnermostFunction() const {
     for (auto it = m_stack.rbegin(); it != m_stack.rend(); ++it) {
-        if (it->kind == ContextKind::FuncBody || it->kind == ContextKind::AsyncBody) {
+        if (it->kind == ContextKind::FuncBody) {
             return &(*it);
         }
     }

@@ -82,13 +82,13 @@ bool resolveStmt(const StmtAST* stmt, SemaContext& ctx) {
 /// @param ctx The semantic context.
 /// @return true if the block guarantees control transfer out of the block.
 bool resolveBlock(const BlockStmtAST* block, SemaContext& ctx) {
-    // ─── 1. Push block context for pending inverse narrowing ────────────
+    // ─── 1. Push block context ────────────────────────────────────────────
     ctx.contexts.pushBlock(const_cast<BlockStmtAST*>(block), block->loc);
 
     bool transfers = false;
     bool hasAppliedPendingNarrowing = false;
 
-    // ─── 2. Apply pending inverse narrowing from previous statements ────
+    // ─── 2. Apply pending inverse narrowing ──────────────────────────────
     if (ctx.contexts.hasPendingInverseNarrowing()) {
         const NarrowingInfo& pendingInfo = ctx.contexts.getPendingInverseNarrowing();
         if (pendingInfo.hasNarrowing) {
@@ -101,7 +101,10 @@ bool resolveBlock(const BlockStmtAST* block, SemaContext& ctx) {
         }
     }
 
-    // ─── 3. Resolve each statement in the block ──────────────────────────
+    // ─── 3. Push scope for the block ──────────────────────────────────────
+    ctx.pushScope();
+
+    // ─── 4. Resolve each statement ─────────────────────────────────────────
     for (const StmtAST* stmt : block->stmts) {
         if (transfers) {
             // TODO: Emit unreachable code warning
@@ -113,15 +116,30 @@ bool resolveBlock(const BlockStmtAST* block, SemaContext& ctx) {
         }
     }
 
-    // ─── 4. Pop pending narrowing level if we applied one ───────────────
+    // ─── 5. Check for unresolved async/spawn operations ────────────────────
+    // This is the critical part for concurrency tracking
+    for (const InternedString& name : ctx.getPendingAsyncNames()) {
+        ctx.warning(block, DiagCode::W1003,
+                    "async '", ctx.pool.lookup(name), "' was never awaited");
+    }
+
+    for (const InternedString& name : ctx.getPendingSpawnNames()) {
+        ctx.warning(block, DiagCode::W1004,
+                    "spawn '", ctx.pool.lookup(name), "' was never joined");
+    }
+
+    // ─── 6. Pop scope ─────────────────────────────────────────────────────
+    ctx.popScope();
+
+    // ─── 7. Pop pending narrowing level ────────────────────────────────────
     if (hasAppliedPendingNarrowing) {
         ctx.contexts.popNarrowingLevel();
     }
 
-    // ─── 5. Pop block context ─────────────────────────────────────────────
+    // ─── 8. Pop block context ──────────────────────────────────────────────
     ctx.contexts.pop();
 
-    // ─── 6. Final Check: Return Requirements ─────────────────────────────
+    // ─── 9. Final Check: Return Requirements ─────────────────────────────
     if (ctx.contexts.hasReturnRequirements() && !ctx.contexts.returnRequirementsSatisfied()) {
         if (!transfers) {
             ctx.error(block, DiagCode::E3005,
@@ -743,12 +761,14 @@ bool resolveDeclStmt(const DeclStmtAST* stmt, SemaContext& ctx) {
 bool resolveAsyncStmt(const AsyncStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
+    // ─── 1. Check: Must be inside a function body ──────────────────────────
     if (!ctx.contexts.insideFunction()) {
         ctx.error(stmt, DiagCode::E3006,
                   "async statement outside of function body");
         return false;
     }
 
+    // ─── 2. Check the target variable ──────────────────────────────────────
     if (!stmt->target) {
         ctx.error(stmt, DiagCode::E3003, "async statement requires a target variable");
         return false;
@@ -760,22 +780,47 @@ bool resolveAsyncStmt(const AsyncStmtAST* stmt, SemaContext& ctx) {
         return false;
     }
 
+    const IdentifierExprAST* target = stmt->target->as<IdentifierExprAST>();
+    InternedString targetName = target->name;
+
+    // ─── 3. Check for `_` discard ──────────────────────────────────────────
+    // `_` is a valid target - it means fire and forget, no tracking needed
+    // But we need to ensure the variable exists and is valid
+    if (targetName.id != 0) {  // Not `_`
+        // Verify the variable exists
+        const ValueDeclAST* decl = ctx.lookupValue(targetName);
+        if (!decl) {
+            ctx.error(stmt->target, DiagCode::E2001,
+                      "undefined variable '", ctx.pool.lookup(targetName), "'");
+            return false;
+        }
+
+        // Verify it's a variable (not a function, enum, etc.)
+        if (!decl->isa<VarDeclAST>()) {
+            ctx.error(stmt->target, DiagCode::E3003,
+                      "'", ctx.pool.lookup(targetName), "' is not a variable");
+            return false;
+        }
+    }
+
+    // ─── 4. Resolve the call expression ─────────────────────────────────────
     if (!stmt->call) {
         ctx.error(stmt, DiagCode::E3003, "async statement requires a call expression");
         return false;
     }
 
-    // Resolve the call expression (no target type - it'll be checked)
     TypeAST* callType = resolveExpr(stmt->call, ctx);
     if (!callType || callType->isa<UnknownTypeAST>()) {
-        // Error already reported
+        // Error already reported by resolveExpr
         return false;
     }
 
-    // TODO: Verify the call returns a Future<T> type
-    // TODO: Set the target variable's type to Future<T>
+    // ─── 5. Store in pending list if not `_` ──────────────────────────────
+    if (targetName.id != 0) {  // Not `_`
+        ctx.addPendingAsync(targetName, stmt->call, stmt->loc);
+    }
 
-    return false;
+    return false;  // async does not transfer control
 }
 
 // ─── resolveAwaitStmt ──────────────────────────────────────────────────────
@@ -783,30 +828,47 @@ bool resolveAsyncStmt(const AsyncStmtAST* stmt, SemaContext& ctx) {
 bool resolveAwaitStmt(const AwaitStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
+    // ─── 1. Check: Must be inside a function body ──────────────────────────
     if (!ctx.contexts.insideFunction()) {
         ctx.error(stmt, DiagCode::E3006,
                   "await statement outside of function body");
         return false;
     }
 
-    for (ExprAST* target : stmt->targets) {
+    // ─── 2. Check each target variable ─────────────────────────────────────
+    for (const ExprAST* target : stmt->targets) {
         if (!target->isa<IdentifierExprAST>()) {
             ctx.error(target, DiagCode::E3003,
                       "await target must be a variable (not an expression)");
             continue;
         }
 
-        // Resolve the target variable
-        TypeAST* targetType = resolveExpr(target, ctx);
-        if (!targetType || targetType->isa<UnknownTypeAST>()) {
-            continue;
+        const IdentifierExprAST* id = target->as<IdentifierExprAST>();
+        InternedString targetName = id->name;
+
+        // ─── 3. Check if this is a pending async operation ────────────────
+        if (ctx.hasPendingAsync(targetName)) {
+            // Resolve the async operation
+            ctx.resolveAsync(targetName);
+        } else {
+            ctx.error(target, DiagCode::E3003,
+                      "'", ctx.pool.lookup(targetName), "' was not declared with async");
+            return false;
         }
 
-        // TODO: Verify the variable is a Future<T> type
+        // ─── 4. Verify the variable exists ─────────────────────────────────
+        const ValueDeclAST* decl = ctx.lookupValue(targetName);
+        if (!decl) {
+            ctx.error(target, DiagCode::E2001,
+                      "undefined variable '", ctx.pool.lookup(targetName), "'");
+            return false;
+        }
+
         // TODO: Change variable type from Future<T> to T
+        // This would require updating the declaration's type
     }
 
-    return false;
+    return false;  // await does not transfer control
 }
 
 // ─── resolveSpawnStmt ──────────────────────────────────────────────────────
@@ -814,22 +876,16 @@ bool resolveAwaitStmt(const AwaitStmtAST* stmt, SemaContext& ctx) {
 bool resolveSpawnStmt(const SpawnStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
+    // ─── 1. Check: Must be inside a function body ──────────────────────────
     if (!ctx.contexts.insideFunction()) {
         ctx.error(stmt, DiagCode::E3006,
                   "spawn statement outside of function body");
         return false;
     }
 
-    if (!stmt->call) {
-        ctx.error(stmt, DiagCode::E3003, "spawn statement requires a call expression");
-        return false;
-    }
-
-    // Resolve the call expression
-    TypeAST* callType = resolveExpr(stmt->call, ctx);
-    if (!callType || callType->isa<UnknownTypeAST>()) {
-        return false;
-    }
+    // ─── 2. Check the target variable ──────────────────────────────────────
+    InternedString targetName;
+    bool isDiscard = false;
 
     if (stmt->target) {
         if (!stmt->target->isa<IdentifierExprAST>()) {
@@ -837,11 +893,52 @@ bool resolveSpawnStmt(const SpawnStmtAST* stmt, SemaContext& ctx) {
                       "spawn target must be a variable (not an expression)");
             return false;
         }
-        // TODO: Set the target variable's type to Future<T>
-    }
-    // If no target, it's a discard (_) - no validation needed
 
-    return false;
+        const IdentifierExprAST* target = stmt->target->as<IdentifierExprAST>();
+        targetName = target->name;
+
+        // Check for `_` discard
+        if (targetName.id == 0) {
+            isDiscard = true;
+        } else {
+            // Verify the variable exists
+            const ValueDeclAST* decl = ctx.lookupValue(targetName);
+            if (!decl) {
+                ctx.error(stmt->target, DiagCode::E2001,
+                          "undefined variable '", ctx.pool.lookup(targetName), "'");
+                return false;
+            }
+
+            // Verify it's a variable (not a function, enum, etc.)
+            if (!decl->isa<VarDeclAST>()) {
+                ctx.error(stmt->target, DiagCode::E3003,
+                          "'", ctx.pool.lookup(targetName), "' is not a variable");
+                return false;
+            }
+        }
+    } else {
+        // No target means `_` discard
+        isDiscard = true;
+    }
+
+    // ─── 3. Resolve the call expression ─────────────────────────────────────
+    if (!stmt->call) {
+        ctx.error(stmt, DiagCode::E3003, "spawn statement requires a call expression");
+        return false;
+    }
+
+    TypeAST* callType = resolveExpr(stmt->call, ctx);
+    if (!callType || callType->isa<UnknownTypeAST>()) {
+        // Error already reported by resolveExpr
+        return false;
+    }
+
+    // ─── 4. Store in pending list if not `_` ──────────────────────────────
+    if (!isDiscard && targetName.id != 0) {
+        ctx.addPendingSpawn(targetName, stmt->call, stmt->loc);
+    }
+
+    return false;  // spawn does not transfer control
 }
 
 // ─── resolveJoinStmt ───────────────────────────────────────────────────────
@@ -849,30 +946,47 @@ bool resolveSpawnStmt(const SpawnStmtAST* stmt, SemaContext& ctx) {
 bool resolveJoinStmt(const JoinStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
+    // ─── 1. Check: Must be inside a function body ──────────────────────────
     if (!ctx.contexts.insideFunction()) {
         ctx.error(stmt, DiagCode::E3006,
                   "join statement outside of function body");
         return false;
     }
 
-    for (ExprAST* target : stmt->targets) {
+    // ─── 2. Check each target variable ─────────────────────────────────────
+    for (const ExprAST* target : stmt->targets) {
         if (!target->isa<IdentifierExprAST>()) {
             ctx.error(target, DiagCode::E3003,
                       "join target must be a variable (not an expression)");
             continue;
         }
 
-        // Resolve the target variable
-        TypeAST* targetType = resolveExpr(target, ctx);
-        if (!targetType || targetType->isa<UnknownTypeAST>()) {
-            continue;
+        const IdentifierExprAST* id = target->as<IdentifierExprAST>();
+        InternedString targetName = id->name;
+
+        // ─── 3. Check if this is a pending spawn operation ─────────────────
+        if (ctx.hasPendingSpawn(targetName)) {
+            // Resolve the spawn operation
+            ctx.resolveSpawn(targetName);
+        } else {
+            ctx.error(target, DiagCode::E3003,
+                      "'", ctx.pool.lookup(targetName), "' was not declared with spawn");
+            return false;
         }
 
-        // TODO: Verify the variable is a Future<T> from spawn
+        // ─── 4. Verify the variable exists ─────────────────────────────────
+        const ValueDeclAST* decl = ctx.lookupValue(targetName);
+        if (!decl) {
+            ctx.error(target, DiagCode::E2001,
+                      "undefined variable '", ctx.pool.lookup(targetName), "'");
+            return false;
+        }
+
         // TODO: Change variable type from Future<T> to T
+        // This would require updating the declaration's type
     }
 
-    return false;
+    return false;  // join does not transfer control
 }
 
 } // namespace sema
