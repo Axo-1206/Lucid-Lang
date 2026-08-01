@@ -334,7 +334,7 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
     }
 
     // Push function context with return requirements
-    ctx.contexts.pushFunction(const_cast<FuncDeclAST*>(decl), funcType, decl->loc);
+    ctx.stack.pushFunction(const_cast<FuncDeclAST*>(decl), funcType, decl->loc);
 
     bool bodyReturns = false;
     if (decl->body->isa<BlockStmtAST>()) {
@@ -347,25 +347,25 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
         TypeAST* refType = resolveExprWithTarget(refStmt->target, funcType, ctx);
         if (!refType || refType->isa<UnknownTypeAST>()) {
             // Error already reported by resolveExprWithTarget
-            ctx.contexts.pop();
+            ctx.stack.pop();
             return;
         }
         bodyReturns = true;
     } else {
         ctx.error(decl, DiagCode::E3003,
                   "function '", ctx.pool.lookup(decl->name), "' has invalid body type");
-        ctx.contexts.pop();
+        ctx.stack.pop();
         return;
     }
 
     // Verify return paths
-    if (bodyReturns && !ctx.contexts.returnRequirementsSatisfied()) {
+    if (bodyReturns && !ctx.stack.returnRequirementsSatisfied()) {
         ctx.error(decl, DiagCode::E3005,
                   "function '", ctx.pool.lookup(decl->name),
                   "' has missing nested return");
     }
 
-    ctx.contexts.pop();
+    ctx.stack.pop();
 
     // ─── 6. CONST FUNCTION EVALUATION (INTEGRATED) ────────────────────────
     // For const functions, we don't evaluate the body here.

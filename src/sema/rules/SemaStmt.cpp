@@ -83,20 +83,20 @@ bool resolveStmt(const StmtAST* stmt, SemaContext& ctx) {
 /// @return true if the block guarantees control transfer out of the block.
 bool resolveBlock(const BlockStmtAST* block, SemaContext& ctx) {
     // ─── 1. Push block context ────────────────────────────────────────────
-    ctx.contexts.pushBlock(const_cast<BlockStmtAST*>(block), block->loc);
+    ctx.stack.pushBlock(const_cast<BlockStmtAST*>(block), block->loc);
 
     bool transfers = false;
     bool hasAppliedPendingNarrowing = false;
 
     // ─── 2. Apply pending inverse narrowing ──────────────────────────────
-    if (ctx.contexts.hasPendingInverseNarrowing()) {
-        const NarrowingInfo& pendingInfo = ctx.contexts.getPendingInverseNarrowing();
+    if (ctx.stack.hasPendingInverseNarrowing()) {
+        const NarrowingInfo& pendingInfo = ctx.stack.getPendingInverseNarrowing();
         if (pendingInfo.hasNarrowing) {
-            ctx.contexts.pushNarrowingLevel(true);
+            ctx.stack.pushNarrowingLevel(true);
             for (const auto& [varName, narrowedType] : pendingInfo.narrowings) {
-                ctx.contexts.narrowVariable(varName, narrowedType);
+                ctx.stack.narrowVariable(varName, narrowedType);
             }
-            ctx.contexts.clearPendingInverseNarrowing();
+            ctx.stack.clearPendingInverseNarrowing();
             hasAppliedPendingNarrowing = true;
         }
     }
@@ -133,14 +133,14 @@ bool resolveBlock(const BlockStmtAST* block, SemaContext& ctx) {
 
     // ─── 7. Pop pending narrowing level ────────────────────────────────────
     if (hasAppliedPendingNarrowing) {
-        ctx.contexts.popNarrowingLevel();
+        ctx.stack.popNarrowingLevel();
     }
 
     // ─── 8. Pop block context ──────────────────────────────────────────────
-    ctx.contexts.pop();
+    ctx.stack.pop();
 
     // ─── 9. Final Check: Return Requirements ─────────────────────────────
-    if (ctx.contexts.hasReturnRequirements() && !ctx.contexts.returnRequirementsSatisfied()) {
+    if (ctx.stack.hasReturnRequirements() && !ctx.stack.returnRequirementsSatisfied()) {
         if (!transfers) {
             ctx.error(block, DiagCode::E3005,
                       "function is missing a return statement");
@@ -168,24 +168,24 @@ bool resolveIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
     // ─── 1. Push if context for type narrowing ──────────────────────────
-    ctx.contexts.push(ContextKind::IfStmt, const_cast<IfStmtAST*>(stmt), stmt->loc);
-    ctx.contexts.setHasElse(stmt->elseBranch != nullptr);
+    ctx.stack.push(ContextKind::IfStmt, const_cast<IfStmtAST*>(stmt), stmt->loc);
+    ctx.stack.setHasElse(stmt->elseBranch != nullptr);
 
     // ─── 2. Resolve condition with target type = bool ────────────────────
     // Use cached bool type from context
     PrimitiveTypeAST* boolType = ctx.getBoolType();
 
     // Enable if condition context for narrowing detection
-    ctx.contexts.setIfConditionCtx(true);
+    ctx.stack.setIfConditionCtx(true);
     
     TypeAST* condType = resolveExprWithTarget(stmt->condition, boolType, ctx);
     
-    ctx.contexts.setIfConditionCtx(false);
+    ctx.stack.setIfConditionCtx(false);
 
     // Check if condition resolved correctly
     if (!condType || condType->isa<UnknownTypeAST>()) {
         // Error already reported by resolveExprWithTarget
-        ctx.contexts.pop();
+        ctx.stack.pop();
         return false;
     }
 
@@ -197,13 +197,13 @@ bool resolveIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
     bool thenReturns = false;
 
     if (hasNarrowing) {
-        ctx.contexts.pushNarrowingLevel(false);
+        ctx.stack.pushNarrowingLevel(false);
         
         for (const auto& [varName, narrowedType] : info.narrowings) {
             // For equality (x == nil), no narrowing in then branch
             // For inequality (x != nil, x != err), apply normal narrowing
             if (!info.isEquality) {
-                ctx.contexts.narrowVariable(varName, narrowedType);
+                ctx.stack.narrowVariable(varName, narrowedType);
             }
         }
         
@@ -212,7 +212,7 @@ bool resolveIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
         } else {
             thenReturns = resolveStmt(stmt->thenBranch, ctx);
         }
-        ctx.contexts.popNarrowingLevel();
+        ctx.stack.popNarrowingLevel();
     } else {
         if (stmt->thenBranch && stmt->thenBranch->isa<BlockStmtAST>()) {
             thenReturns = resolveBlock(stmt->thenBranch->as<BlockStmtAST>(), ctx);
@@ -229,13 +229,13 @@ bool resolveIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
             elseReturns = resolveIfStmt(stmt->elseBranch->as<IfStmtAST>(), ctx);
         } else {
             if (hasNarrowing) {
-                ctx.contexts.pushNarrowingLevel(true); // Inverse narrowing
+                ctx.stack.pushNarrowingLevel(true); // Inverse narrowing
                 
                 for (const auto& [varName, narrowedType] : info.narrowings) {
                     // For equality (x == nil, x == err):
                     //   x is non-nullable/non-fallible in else branch
                     if (info.isEquality) {
-                        ctx.contexts.narrowVariable(varName, narrowedType);
+                        ctx.stack.narrowVariable(varName, narrowedType);
                     }
                 }
                 
@@ -244,7 +244,7 @@ bool resolveIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
                 } else {
                     elseReturns = resolveStmt(stmt->elseBranch, ctx);
                 }
-                ctx.contexts.popNarrowingLevel();
+                ctx.stack.popNarrowingLevel();
             } else {
                 if (stmt->elseBranch->isa<BlockStmtAST>()) {
                     elseReturns = resolveBlock(stmt->elseBranch->as<BlockStmtAST>(), ctx);
@@ -255,18 +255,18 @@ bool resolveIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
         }
 
         if (thenReturns && elseReturns) {
-            ctx.contexts.pop();
+            ctx.stack.pop();
             return true;
         }
     }
 
     // ─── 6. Handle inverse narrowing for standalone if ───────────────────
     if (!stmt->elseBranch && thenReturns && hasNarrowing && info.isEquality) {
-        ctx.contexts.setPendingInverseNarrowing(info);
+        ctx.stack.setPendingInverseNarrowing(info);
     }
 
     // ─── 7. Pop if context ────────────────────────────────────────────────
-    ctx.contexts.pop();
+    ctx.stack.pop();
     return false;
 }
 
@@ -288,8 +288,8 @@ bool resolveSwitchStmt(const SwitchStmtAST* stmt, SemaContext& ctx) {
     TypeAST* subjectType = resolveExpr(stmt->subject, ctx);
     if (!subjectType || subjectType->isa<UnknownTypeAST>()) {
         ctx.error(stmt->subject, DiagCode::E2002, "switch subject has unknown type");
-        ctx.contexts.push(ContextKind::SwitchBody, const_cast<SwitchStmtAST*>(stmt), stmt->loc);
-        ctx.contexts.pop();
+        ctx.stack.push(ContextKind::SwitchBody, const_cast<SwitchStmtAST*>(stmt), stmt->loc);
+        ctx.stack.pop();
         return false;
     }
     
@@ -301,7 +301,7 @@ bool resolveSwitchStmt(const SwitchStmtAST* stmt, SemaContext& ctx) {
     }
     
     // ─── 3. Push switch context ──────────────────────────────────────
-    ctx.contexts.push(ContextKind::SwitchBody, const_cast<SwitchStmtAST*>(stmt), stmt->loc);
+    ctx.stack.push(ContextKind::SwitchBody, const_cast<SwitchStmtAST*>(stmt), stmt->loc);
     
     // ─── 4. Validate cases ─────────────────────────────────────────────
     bool allCasesReturn = true;
@@ -343,7 +343,7 @@ bool resolveSwitchStmt(const SwitchStmtAST* stmt, SemaContext& ctx) {
         }
     }
     
-    ctx.contexts.pop();
+    ctx.stack.pop();
     
     return allCasesReturn && (stmt->defaultBody || !isEnumType(subjectType, ctx));
 }
@@ -405,7 +405,7 @@ bool resolveForStmt(const ForStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
     // ─── 1. Push loop context ────────────────────────────────────────────
-    ctx.contexts.pushLoop(const_cast<StmtAST*>(stmt->body), stmt->loc);
+    ctx.stack.pushLoop(const_cast<StmtAST*>(stmt->body), stmt->loc);
 
     // ─── 2. Push a scope for loop variables ──────────────────────────────
     ctx.pushScope();
@@ -439,7 +439,7 @@ bool resolveForStmt(const ForStmtAST* stmt, SemaContext& ctx) {
         if (!iterableType || iterableType->isa<UnknownTypeAST>()) {
             ctx.error(stmt->iterable, DiagCode::E3003, "iterable has unknown type");
             ctx.popScope();
-            ctx.contexts.pop();
+            ctx.stack.pop();
             return false;
         }
         
@@ -457,7 +457,7 @@ bool resolveForStmt(const ForStmtAST* stmt, SemaContext& ctx) {
         if (!stepType || stepType->isa<UnknownTypeAST>()) {
             // Error already reported by resolveExprWithTarget
             ctx.popScope();
-            ctx.contexts.pop();
+            ctx.stack.pop();
             return false;
         }
     }
@@ -472,7 +472,7 @@ bool resolveForStmt(const ForStmtAST* stmt, SemaContext& ctx) {
     ctx.popScope();
 
     // ─── 9. Pop loop context ──────────────────────────────────────────────
-    ctx.contexts.pop();
+    ctx.stack.pop();
 
     // For loops do NOT guarantee control transfer
     return false;
@@ -494,7 +494,7 @@ bool resolveWhileStmt(const WhileStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
     // ─── 1. Push loop context ────────────────────────────────────────────
-    ctx.contexts.pushLoop(const_cast<StmtAST*>(stmt->body), stmt->loc);
+    ctx.stack.pushLoop(const_cast<StmtAST*>(stmt->body), stmt->loc);
 
     // ─── 2. Resolve the condition against bool type ──────────────────────
     PrimitiveTypeAST* boolType = ctx.getBoolType();
@@ -502,7 +502,7 @@ bool resolveWhileStmt(const WhileStmtAST* stmt, SemaContext& ctx) {
     
     if (!condType || condType->isa<UnknownTypeAST>()) {
         // Error already reported by resolveExprWithTarget
-        ctx.contexts.pop();
+        ctx.stack.pop();
         return false;
     }
 
@@ -513,7 +513,7 @@ bool resolveWhileStmt(const WhileStmtAST* stmt, SemaContext& ctx) {
     }
 
     // ─── 4. Pop loop context ──────────────────────────────────────────────
-    ctx.contexts.pop();
+    ctx.stack.pop();
 
     return false;
 }
@@ -533,7 +533,7 @@ bool resolveDoWhileStmt(const DoWhileStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
     // ─── 1. Push loop context ────────────────────────────────────────────
-    ctx.contexts.pushLoop(const_cast<StmtAST*>(stmt->body), stmt->loc);
+    ctx.stack.pushLoop(const_cast<StmtAST*>(stmt->body), stmt->loc);
 
     // ─── 2. Resolve the loop body ─────────────────────────────────────────
     bool bodyTransfers = false;
@@ -547,12 +547,12 @@ bool resolveDoWhileStmt(const DoWhileStmtAST* stmt, SemaContext& ctx) {
     
     if (!condType || condType->isa<UnknownTypeAST>()) {
         // Error already reported by resolveExprWithTarget
-        ctx.contexts.pop();
+        ctx.stack.pop();
         return false;
     }
 
     // ─── 4. Pop loop context ──────────────────────────────────────────────
-    ctx.contexts.pop();
+    ctx.stack.pop();
 
     return false;
 }
@@ -572,14 +572,14 @@ bool resolveReturnStmt(const ReturnStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return true;
 
     // ─── 1. Check: Must be inside a function body ──────────────────────────
-    if (!ctx.contexts.insideFunction()) {
+    if (!ctx.stack.insideFunction()) {
         ctx.error(stmt, DiagCode::E3006,
                   "return statement outside of function body");
         return true;
     }
 
     // ─── 2. Get the current function's return requirements ──────────────────
-    const ReturnRequirements* reqs = ctx.contexts.currentReturnReqs();
+    const ReturnRequirements* reqs = ctx.stack.currentReturnReqs();
     if (!reqs) {
         ctx.error(stmt, DiagCode::E3006,
                   "return statement with no return requirements");
@@ -587,7 +587,7 @@ bool resolveReturnStmt(const ReturnStmtAST* stmt, SemaContext& ctx) {
     }
 
     // ─── 3. Get the current return group ────────────────────────────────────
-    const ReturnRequirements::Group* currentGroup = ctx.contexts.currentReturnGroup();
+    const ReturnRequirements::Group* currentGroup = ctx.stack.currentReturnGroup();
 
     // ─── 4. Check return value against current group ────────────────────────
     if (stmt->value) {
@@ -645,7 +645,7 @@ bool resolveReturnStmt(const ReturnStmtAST* stmt, SemaContext& ctx) {
 
     // ─── 5. Advance the return group ────────────────────────────────────────
     if (currentGroup) {
-        ctx.contexts.advanceReturnGroup();
+        ctx.stack.advanceReturnGroup();
         const_cast<ReturnRequirements::Group*>(currentGroup)->satisfiedAt = stmt->loc;
     }
 
@@ -666,7 +666,7 @@ bool resolveReturnStmt(const ReturnStmtAST* stmt, SemaContext& ctx) {
 bool resolveBreakStmt(const BreakStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return true;
 
-    if (!ctx.contexts.insideLoop() && !ctx.contexts.insideSwitch()) {
+    if (!ctx.stack.insideLoop() && !ctx.stack.insideSwitch()) {
         ctx.error(stmt, DiagCode::E3006,
                   "break statement outside of loop or switch");
         return true;
@@ -689,7 +689,7 @@ bool resolveBreakStmt(const BreakStmtAST* stmt, SemaContext& ctx) {
 bool resolveContinueStmt(const ContinueStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return true;
 
-    if (!ctx.contexts.insideLoop()) {
+    if (!ctx.stack.insideLoop()) {
         ctx.error(stmt, DiagCode::E3006,
                   "continue statement outside of loop");
         return true;
@@ -762,7 +762,7 @@ bool resolveAsyncStmt(const AsyncStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
     // ─── 1. Check: Must be inside a function body ──────────────────────────
-    if (!ctx.contexts.insideFunction()) {
+    if (!ctx.stack.insideFunction()) {
         ctx.error(stmt, DiagCode::E3006,
                   "async statement outside of function body");
         return false;
@@ -829,7 +829,7 @@ bool resolveAwaitStmt(const AwaitStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
     // ─── 1. Check: Must be inside a function body ──────────────────────────
-    if (!ctx.contexts.insideFunction()) {
+    if (!ctx.stack.insideFunction()) {
         ctx.error(stmt, DiagCode::E3006,
                   "await statement outside of function body");
         return false;
@@ -877,7 +877,7 @@ bool resolveSpawnStmt(const SpawnStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
     // ─── 1. Check: Must be inside a function body ──────────────────────────
-    if (!ctx.contexts.insideFunction()) {
+    if (!ctx.stack.insideFunction()) {
         ctx.error(stmt, DiagCode::E3006,
                   "spawn statement outside of function body");
         return false;
@@ -947,7 +947,7 @@ bool resolveJoinStmt(const JoinStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
     // ─── 1. Check: Must be inside a function body ──────────────────────────
-    if (!ctx.contexts.insideFunction()) {
+    if (!ctx.stack.insideFunction()) {
         ctx.error(stmt, DiagCode::E3006,
                   "join statement outside of function body");
         return false;

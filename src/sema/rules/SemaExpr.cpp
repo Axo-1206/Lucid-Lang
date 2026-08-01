@@ -556,10 +556,10 @@ TypeAST* resolveBinaryExpr(BinaryExprAST* expr, const TypeAST* targetType, SemaC
     ValueState rightState = expr->right->valueState;
 
     // ─── Step 2: Check if we're in an if condition context ────────────────
-    if (ctx.contexts.isIfConditionCtx()) {
+    if (ctx.stack.isIfConditionCtx()) {
         NarrowingInfo info = detectNarrowingPattern(expr, ctx);
         if (info.hasNarrowing) {
-            ctx.contexts.setPendingNarrowing(info);
+            ctx.stack.setPendingNarrowing(info);
             setExprResult(expr, ctx.getBoolType(), ValueState::Definite);
             return ctx.getBoolType();
         }
@@ -1706,7 +1706,7 @@ TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, const TypeAST* targetType, S
     }
 
     // ─── Use pushAnonFunction (now exists) ─────────────────────────────────
-    ctx.contexts.pushAnonFunction(expr, funcType, expr->loc);
+    ctx.stack.pushAnonFunction(expr, funcType, expr->loc);
 
     bool bodyReturns = false;
     if (expr->body->isa<BlockStmtAST>()) {
@@ -1715,16 +1715,16 @@ TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, const TypeAST* targetType, S
         bodyReturns = resolveReturnStmt(expr->body->as<ReturnStmtAST>(), ctx);
     } else {
         setExprError(expr, ctx, expr, DiagCode::E3003, "anonymous function has invalid body type");
-        ctx.contexts.pop();
+        ctx.stack.pop();
         return ctx.getUnknownType();
     }
 
-    if (bodyReturns && !ctx.contexts.returnRequirementsSatisfied()) {
+    if (bodyReturns && !ctx.stack.returnRequirementsSatisfied()) {
         ctx.error(expr, DiagCode::E3005,
                   "anonymous function has missing nested return");
     }
 
-    ctx.contexts.pop();
+    ctx.stack.pop();
 
     // ─── Step 4: Return the function type ──────────────────────────────────
     ValueState state = (isNullableType(funcType) || isFallibleType(funcType))

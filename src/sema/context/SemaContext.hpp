@@ -75,7 +75,7 @@ struct SemaContext {
     
     StringPool& pool;
     ASTArena& arena;
-    ContextStack contexts;
+    ContextStack stack;
     
     // ─── Modules ────────────────────────────────────────────────────────
     
@@ -452,9 +452,9 @@ struct ScopedSemanticContext {
     ScopedSemanticContext(SemaContext& ctx, ContextKind kind,
                           const BaseAST* node, const SourceLocation& loc)
         : ctx_(ctx) {
-        ctx_.contexts.push(kind, const_cast<BaseAST*>(node), loc);
+        ctx_.stack.push(kind, const_cast<BaseAST*>(node), loc);
     }
-    ~ScopedSemanticContext() { ctx_.contexts.pop(); }
+    ~ScopedSemanticContext() { ctx_.stack.pop(); }
     
     ScopedSemanticContext(const ScopedSemanticContext&) = delete;
     ScopedSemanticContext& operator=(const ScopedSemanticContext&) = delete;
@@ -466,12 +466,12 @@ private:
 struct ScopedIfCondition {
     ScopedIfCondition(SemaContext& ctx, bool hasElse)
         : ctx_(ctx) {
-        ctx_.contexts.setIfConditionCtx(true);
-        ctx_.contexts.setHasElse(hasElse);
-        ctx_.contexts.clearPendingNarrowing();
+        ctx_.stack.setIfConditionCtx(true);
+        ctx_.stack.setHasElse(hasElse);
+        ctx_.stack.clearPendingNarrowing();
     }
     ~ScopedIfCondition() {
-        ctx_.contexts.setIfConditionCtx(false);
+        ctx_.stack.setIfConditionCtx(false);
     }
     
     ScopedIfCondition(const ScopedIfCondition&) = delete;
@@ -485,11 +485,11 @@ struct ScopedNarrowing {
     ScopedNarrowing(SemaContext& ctx, InternedString varName, 
                     const TypeAST* narrowedType, bool isInverse = false)
         : ctx_(ctx) {
-        ctx_.contexts.pushNarrowingLevel(isInverse);
-        ctx_.contexts.narrowVariable(varName, narrowedType);
+        ctx_.stack.pushNarrowingLevel(isInverse);
+        ctx_.stack.narrowVariable(varName, narrowedType);
     }
     ~ScopedNarrowing() {
-        ctx_.contexts.popNarrowingLevel();
+        ctx_.stack.popNarrowingLevel();
     }
     
     ScopedNarrowing(const ScopedNarrowing&) = delete;
