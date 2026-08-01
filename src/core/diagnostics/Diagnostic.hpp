@@ -1,259 +1,442 @@
 /**
  * @file Diagnostic.hpp
- * @brief Procedural diagnostic interface for the compiler.
+ * @brief Unified diagnostic system - single header for all diagnostic functionality.
  *
- * This is the SINGLE header for all diagnostic functionality.
- * It combines:
- *   - Diagnostic data types (Diagnostic, Summary)
- *   - Reporting API (error, warning, note, hint)
- *   - Source scope management (ScopedSource, pushSource, etc.)
- *   - Query API (hasErrors, totalErrorCount, summarize, etc.)
- *   - Formatting API (formatOneLine, dumpAll, etc.)
+ * @design_decision Simple and flexible
+ *   - Error codes are unique identifiers with clear purposes
+ *   - Messages are built at call site for maximum flexibility
+ *   - Code range determines category and severity
+ *   - Single context tracks all diagnostics
  *
- * @architectural_note Single header design
- *   All diagnostic functionality is in one header to eliminate:
- *   - Circular dependencies between DiagnosticSink and DiagnosticFormatter
- *   - Duplicate includes across multiple files
- *   - Confusion about which header to include
+ * @design_decision No code-to-message mapping
+ *   - Messages are built directly at call site using variadic templates
+ *   - This eliminates the need for template strings and message files
+ *   - Makes error messages more readable and maintainable
  *
- * @architectural_note Severity as numeric levels
- *   Uses integer levels (0-4) compatible with LSP and editor tooling:
- *   0 = Hint, 1 = Note, 2 = Warning, 3 = Error, 4 = Fatal
- *
- * @architectural_note No DiagnosticCategory
- *   The category is derived from the error code range, not stored separately.
- *
- * @architectural_note Source-scope stack
- *   Each frame remembers an index into the global diagnostics list plus
- *   its own counters. "This file's diagnostics" is a slice of one list.
+ * @design_decision Code ranges
+ *   1000-1999: Lexical
+ *   2000-2999: Syntax
+ *   3000-3999: Semantic - Name Resolution
+ *   4000-4999: Semantic - Type Checking
+ *   5000-5999: Semantic - Generics/Traits/FFI
+ *   6000-6999: Semantic - Other
+ *   7000-7999: Backend
+ *   8000-8999: Warnings (cross-cutting)
  */
 
 #pragma once
 
-#include "DiagnosticTypes.hpp"
-#include "DiagnosticCodes.hpp"
-#include "../SourceLocation.hpp"
-#include "../memory/InternedString.hpp"
+#include "core/SourceLocation.hpp"
+#include "core/ast/BaseAST.hpp"
+#include "core/memory/InternedString.hpp"
+#include "core/memory/StringPool.hpp"
 
-#include <iostream>
 #include <vector>
 #include <string>
-#include <string_view>
-#include <initializer_list>
-#include <unordered_set>
+#include <sstream>
+#include <iomanip>
 #include <ostream>
 
 namespace diagnostic {
 
-// =============================================================================
-// Quick Reference — "which function do I actually want?"
-// =============================================================================
-//
-//   "Did anything go wrong at all?"            → hasErrors()
-//   "Did anything go wrong in THIS file?"      → hasErrorsInCurrentSource()
-//   "Just the numbers, for a log line"         → totalErrorCount()
-//   "Full rollup: counts + which files"        → summarize()
-//   "Every diagnostic for one specific file"   → getAllForFile(file)
-//   "Every diagnostic, unfiltered"             → getAll()
-//   "Should I keep going, or bail out?"        → canContinue()
+// ─── Severity ──────────────────────────────────────────────────────────────
 
-// =============================================================================
-// Reporting API
-// =============================================================================
-
-// ─── Explicit file ────────────────────────────────────────────────────────
-
-/**
- * @brief Report an error.
- * @param file Source file path (interned).
- * @param loc  Source location (line, column).
- * @param code Diagnostic code.
- * @param args Format arguments for %s placeholders.
- *
- * @note Always increments the innermost open source frame's error count and
- *       consecutive-error streak, regardless of which `file` is named.
- */
-void error(InternedString file, SourceLocation loc, DiagCode code,
-           std::initializer_list<std::string> args = {});
-
-/**
- * @brief Report a warning.
- * @param file Source file path (interned).
- * @param loc  Source location.
- * @param code Diagnostic code.
- * @param args Format arguments for %s placeholders.
- *
- * @note Does NOT affect the innermost frame's consecutive-error streak.
- */
-void warning(InternedString file, SourceLocation loc, DiagCode code,
-             std::initializer_list<std::string> args = {});
-
-/**
- * @brief Report a free-text note (not tied to a diagnostic code).
- * @param file Source file path (interned).
- * @param loc  Source location.
- * @param msg  Human-readable message, printed verbatim.
- *
- * @note Affects neither the error/warning counters nor any frame's streak.
- */
-void note(InternedString file, SourceLocation loc, const std::string& msg);
-
-/**
- * @brief Report a free-text hint (not tied to a diagnostic code).
- * @param file Source file path (interned).
- * @param loc  Source location.
- * @param msg  Human-readable hint, printed verbatim.
- */
-void hint(InternedString file, SourceLocation loc, const std::string& msg);
-
-// ─── Implicit current source ─────────────────────────────────────────────
-
-/// Report an error at the current source.
-void error(SourceLocation loc, DiagCode code,
-           std::initializer_list<std::string> args = {});
-
-/// Report a warning at the current source.
-void warning(SourceLocation loc, DiagCode code,
-             std::initializer_list<std::string> args = {});
-
-/// Report a free-text note at the current source.
-void note(SourceLocation loc, const std::string& msg);
-
-/// Report a free-text hint at the current source.
-void hint(SourceLocation loc, const std::string& msg);
-
-// =============================================================================
-// Query API
-// =============================================================================
-
-/// True if at least one Error or Fatal has been reported.
-bool hasErrors();
-
-/// True if at least one Warning has been reported.
-bool hasWarnings();
-
-/// Total number of Error + Fatal diagnostics.
-int totalErrorCount();
-
-/// Total number of Warning diagnostics.
-int totalWarningCount();
-
-/// Total number of Note diagnostics.
-int totalNoteCount();
-
-/// Total number of Hint diagnostics.
-int totalHintCount();
-
-/// Compute a rollup summary of all diagnostics.
-Summary summarize();
-
-/// Clear every collected diagnostic and reset all counters (testing only).
-void clear();
-
-/// Returns the full list of diagnostics.
-const std::vector<Diagnostic>& getAll();
-
-/// Returns every diagnostic reported against `file`.
-std::vector<Diagnostic> getAllForFile(InternedString file);
-
-// =============================================================================
-// Source Scope API
-// =============================================================================
-
-/**
- * @brief Push a new source-scope frame for `file`.
- *
- * Prefer constructing a ScopedSource over calling this directly.
- */
-void pushSource(InternedString file);
-
-/// Pop the innermost source-scope frame. Prefer ScopedSource's destructor.
-void popSource();
-
-/// The innermost open frame's file, or an empty InternedString.
-InternedString currentFile();
-
-/// True if any Error has been reported in the current source.
-bool hasErrorsInCurrentSource();
-
-/// The innermost frame's current consecutive-error count.
-int consecutiveErrorsInCurrentSource();
-
-/**
- * @brief True if the innermost frame's consecutive-error count is below threshold.
- *
- * @param threshold Maximum allowed consecutive errors (default: 10).
- */
-bool canContinue(int threshold = 10);
-
-/// Reset the innermost frame's consecutive-error count to zero.
-void resetStreak();
-
-/// Every diagnostic reported since the innermost frame was pushed.
-std::vector<Diagnostic> currentSourceDiagnostics();
-
-// =============================================================================
-// RAII Guard
-// =============================================================================
-
-/**
- * @brief RAII guard for pushSource()/popSource().
- *
- * Pushes a new source-scope frame on construction, pops it on destruction.
- */
-struct ScopedSource {
-    explicit ScopedSource(InternedString file);
-    ~ScopedSource();
-
-    ScopedSource(const ScopedSource&) = delete;
-    ScopedSource& operator=(const ScopedSource&) = delete;
-    ScopedSource(ScopedSource&&) = delete;
-    ScopedSource& operator=(ScopedSource&&) = delete;
-
-    /// Get the file associated with this scope.
-    InternedString file() const { return m_file; }
-
-private:
-    InternedString m_file;
+enum class Severity : uint8_t {
+    Hint    = 0,
+    Note    = 1,
+    Warning = 2,
+    Error   = 3,
+    Fatal   = 4,
 };
 
-// =============================================================================
-// Formatting API
-// =============================================================================
+inline const char* severityName(Severity s) {
+    switch (s) {
+        case Severity::Hint:    return "HINT";
+        case Severity::Note:    return "NOTE";
+        case Severity::Warning: return "WARNING";
+        case Severity::Error:   return "ERROR";
+        case Severity::Fatal:   return "FATAL";
+    }
+    return "UNKNOWN";
+}
 
-/**
- * @brief Format a single diagnostic as one line.
- *
- * Output format:
- *   [ERROR] E2001: undefined value 'foo'  src/main.luc:12:5
- *   [NOTE] Consider using 'let' instead  src/main.luc:12:5
- *
- * @note Uses StringPool::instance() for string lookup.
- */
-std::string formatOneLine(const Diagnostic& diag);
+// ─── Error Codes ──────────────────────────────────────────────────────────
 
-/**
- * @brief Format a diagnostic for terminal output with colors.
- * Uses ANSI color codes for severity highlighting.
- */
-std::string formatOneLineWithColor(const Diagnostic& diag);
+enum class ErrorCode : uint32_t {
+    // ─── Lexical (1000-1999) ────────────────────────────────────────────
+    LexInvalidCharacter = 1001,
+    LexUnterminatedString = 1002,
+    LexUnterminatedRawString = 1003,
+    LexUnterminatedBlockComment = 1004,
+    LexUnknownCharacter = 1005,
 
-/**
- * @brief Format a diagnostic as a structured JSON object.
- * Useful for LSP and tooling integration.
- */
-std::string formatJSON(const Diagnostic& diag);
+    // ─── Syntax (2000-2999) ─────────────────────────────────────────────
+    SyntaxExpectedIdentifier = 2001,
+    SyntaxExpectedType = 2002,
+    SyntaxExpectedToken = 2003,
+    SyntaxUnexpectedToken = 2004,
+    SyntaxExpectedExpression = 2005,
+    SyntaxExpectedBlock = 2006,
+    SyntaxMultipleDefaults = 2007,
+    SyntaxEmptyGroup = 2008,
+    SyntaxExpectedPipelineSeed = 2009,
+    SyntaxExpectedModulePath = 2010,
+    SyntaxExpectedAttributeLiteral = 2011,
+    SyntaxExpectedSwitchSubject = 2012,
 
-/**
- * @brief Print all collected diagnostics to an output stream.
- * @param os Output stream (defaults to std::cerr).
- */
-void dumpAll(std::ostream& os = std::cerr);
+    // ─── Semantic - Name Resolution (3000-3999) ────────────────────────
+    SemUndefinedValue = 3001,
+    SemUndefinedType = 3002,
+    SemNotCallable = 3003,
+    SemRedeclaration = 3004,
+    SemUndefinedModule = 3005,
+    SemUndefinedMember = 3006,
+    SemGenericParamUnused = 3007,
+    SemTraitNotFound = 3008,
+    SemNotATrait = 3009,
+    SemFieldNotFound = 3010,
+    SemGenericParamRedeclaration = 3011,
 
-/**
- * @brief Print all collected diagnostics with ANSI color codes.
- * @param os Output stream (defaults to std::cerr).
- */
-void dumpAllWithColor(std::ostream& os = std::cerr);
+    // ─── Semantic - Type Checking (4000-4999) ──────────────────────────
+    SemTypeMismatch = 4001,
+    SemArgCountMismatch = 4002,
+    SemMissingInitializer = 4003,
+    SemConstNullable = 4004,
+    SemMissingReturn = 4005,
+    SemDuplicateValue = 4006,
+    SemUnknownIntrinsic = 4007,
+    SemSelfReference = 4008,
+    SemInvalidSwitchType = 4009,
+    SemMissingCase = 4010,
+    SemPipelineMismatch = 4011,
+    SemCompositionMismatch = 4012,
+    SemRefInStruct = 4013,
+    SemIllegalNilErr = 4014,
+    SemInvalidGenericArg = 4015,
+
+    // ─── Semantic - Generics/Traits/FFI (5000-5999) ────────────────────
+    SemGenericArityMismatch = 5001,
+    SemGenericConstraint = 5002,
+    SemTraitImplementation = 5003,
+    SemTraitConflict = 5004,
+    SemForeignInvalid = 5005,
+    SemForeignABI = 5006,
+    SemAttributeInvalid = 5007,
+    SemAttributeArgCount = 5008,
+    SemUnknownAttribute = 5009,
+
+    // ─── Backend (7000-7999) ────────────────────────────────────────────
+    BackendUnresolvedSymbol = 7001,
+    BackendLinkerError = 7002,
+    BackendCodegenError = 7003,
+    BackendTargetUnsupported = 7004,
+
+    // ─── Warnings (8000-8999) ───────────────────────────────────────────
+    WarnUnreachableCode = 8001,
+    WarnUnusedVariable = 8002,
+    WarnUnusedParameter = 8003,
+    WarnUnusedFunction = 8004,
+    WarnDeprecated = 8005,
+    WarnUnawaitedAsync = 8006,
+    WarnUnjoinedSpawn = 8007,
+    WarnUnreachableCase = 8008,
+};
+
+// ─── Helpers ─────────────────────────────────────────────────────────────
+
+/// Get the category name from an error code.
+inline const char* categoryName(ErrorCode code) {
+    uint32_t raw = static_cast<uint32_t>(code);
+    if (raw >= 1000 && raw < 2000) return "Lexical";
+    if (raw >= 2000 && raw < 3000) return "Syntax";
+    if (raw >= 3000 && raw < 7000) return "Semantic";
+    if (raw >= 7000 && raw < 8000) return "Backend";
+    if (raw >= 8000 && raw < 9000) return "Warning";
+    return "Unknown";
+}
+
+/// Get the severity from an error code.
+inline Severity severityFromCode(ErrorCode code) {
+    uint32_t raw = static_cast<uint32_t>(code);
+    if (raw >= 8000) return Severity::Warning;
+    return Severity::Error;
+}
+
+/// Check if a code is a warning.
+inline bool isWarningCode(ErrorCode code) {
+    return static_cast<uint32_t>(code) >= 8000;
+}
+
+/// Check if a code is an error.
+inline bool isErrorCode(ErrorCode code) {
+    return !isWarningCode(code);
+}
+
+// ─── Diagnostic ──────────────────────────────────────────────────────────
+
+struct Diagnostic {
+    Severity severity;
+    ErrorCode code;
+    SourceLocation location;
+    std::string message;
+
+    std::string category() const {
+        return categoryName(code);
+    }
+};
+
+// ─── Diagnostic Context ──────────────────────────────────────────────────
+
+/// @brief Simple diagnostic context - stores and tracks all diagnostics.
+///
+/// Usage:
+///   diagnostic::Context ctx;
+///   ctx.error(ErrorCode::SemUndefinedValue, node, "undefined variable '", name, "'");
+///   ctx.warning(ErrorCode::WarnUnusedVariable, node, "unused variable '", name, "'");
+///   ctx.note(node, "consider using '_' to ignore");
+///
+///   if (ctx.canContinue()) { ... }
+///   ctx.dump(std::cerr);
+class Context {
+public:
+    // ─── Report Functions ──────────────────────────────────────────────
+
+    /// Report an error with a diagnostic code.
+    template<typename... Args>
+    void error(ErrorCode code, const BaseAST* node, Args&&... args) {
+        add(severityFromCode(code), code,
+            node ? node->loc : SourceLocation{},
+            buildMessage(std::forward<Args>(args)...));
+    }
+
+    /// Report a warning with a diagnostic code.
+    template<typename... Args>
+    void warning(ErrorCode code, const BaseAST* node, Args&&... args) {
+        add(Severity::Warning, code,
+            node ? node->loc : SourceLocation{},
+            buildMessage(std::forward<Args>(args)...));
+    }
+
+    /// Report a free-text note.
+    template<typename... Args>
+    void note(const BaseAST* node, Args&&... args) {
+        add(Severity::Note, ErrorCode(0),
+            node ? node->loc : SourceLocation{},
+            buildMessage(std::forward<Args>(args)...));
+    }
+
+    /// Report a free-text hint.
+    template<typename... Args>
+    void hint(const BaseAST* node, Args&&... args) {
+        add(Severity::Hint, ErrorCode(0),
+            node ? node->loc : SourceLocation{},
+            buildMessage(std::forward<Args>(args)...));
+    }
+
+    // ─── Convenience overloads with explicit location ─────────────────
+
+    template<typename... Args>
+    void errorAt(ErrorCode code, const SourceLocation& loc, Args&&... args) {
+        add(severityFromCode(code), code, loc,
+            buildMessage(std::forward<Args>(args)...));
+    }
+
+    template<typename... Args>
+    void warningAt(ErrorCode code, const SourceLocation& loc, Args&&... args) {
+        add(Severity::Warning, code, loc,
+            buildMessage(std::forward<Args>(args)...));
+    }
+
+    template<typename... Args>
+    void noteAt(const SourceLocation& loc, Args&&... args) {
+        add(Severity::Note, ErrorCode(0), loc,
+            buildMessage(std::forward<Args>(args)...));
+    }
+
+    // ─── Query Functions ───────────────────────────────────────────────
+
+    /// Check if there are any errors.
+    bool hasErrors() const {
+        for (const auto& d : m_diagnostics) {
+            if (d.severity == Severity::Error || d.severity == Severity::Fatal) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Check if there are any warnings.
+    bool hasWarnings() const {
+        for (const auto& d : m_diagnostics) {
+            if (d.severity == Severity::Warning) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Get the total number of errors.
+    int errorCount() const {
+        int count = 0;
+        for (const auto& d : m_diagnostics) {
+            if (d.severity == Severity::Error || d.severity == Severity::Fatal) {
+                ++count;
+            }
+        }
+        return count;
+    }
+
+    /// Get the total number of warnings.
+    int warningCount() const {
+        int count = 0;
+        for (const auto& d : m_diagnostics) {
+            if (d.severity == Severity::Warning) {
+                ++count;
+            }
+        }
+        return count;
+    }
+
+    /// Get the total number of all diagnostics.
+    int totalCount() const {
+        return static_cast<int>(m_diagnostics.size());
+    }
+
+    /// Check if we can continue (error count < maxErrors).
+    bool canContinue(int maxErrors = 100) const {
+        return errorCount() < maxErrors;
+    }
+
+    /// Get all diagnostics.
+    const std::vector<Diagnostic>& all() const { return m_diagnostics; }
+
+    /// Clear all diagnostics.
+    void clear() { m_diagnostics.clear(); }
+
+    // ─── Formatting ────────────────────────────────────────────────────
+
+    /// Dump all diagnostics to an output stream.
+    void dump(std::ostream& os = std::cerr) const {
+        for (const auto& d : m_diagnostics) {
+            os << formatOneLine(d) << "\n";
+        }
+        if (hasErrors() || hasWarnings()) {
+            os << "\n" << errorCount() << " error(s), "
+               << warningCount() << " warning(s)\n";
+        }
+    }
+
+    /// Format a single diagnostic as one line.
+    std::string formatOneLine(const Diagnostic& d) const {
+        std::ostringstream oss;
+        oss << "[" << severityName(d.severity) << "] ";
+
+        // Format code if it's not a free-text note/hint
+        if (d.code != ErrorCode(0)) {
+            uint32_t raw = static_cast<uint32_t>(d.code);
+            char prefix = isWarningCode(d.code) ? 'W' : 'E';
+            oss << prefix << std::setfill('0') << std::setw(4) << raw << ": ";
+        }
+
+        oss << d.message;
+
+        if (d.location.isKnown()) {
+            oss << " at " << d.location.line() << ":" << d.location.column();
+        }
+
+        return oss.str();
+    }
+
+    /// Format a diagnostic with ANSI colors.
+    std::string formatOneLineWithColor(const Diagnostic& d) const {
+        const char* reset = "\033[0m";
+        const char* color;
+
+        switch (d.severity) {
+            case Severity::Fatal:
+            case Severity::Error:   color = "\033[31m"; break;  // Red
+            case Severity::Warning: color = "\033[33m"; break;  // Yellow
+            case Severity::Note:    color = "\033[36m"; break;  // Cyan
+            case Severity::Hint:    color = "\033[90m"; break;  // Gray
+            default:                color = reset; break;
+        }
+
+        return std::string(color) + formatOneLine(d) + reset;
+    }
+
+    /// Dump with colors.
+    void dumpWithColor(std::ostream& os = std::cerr) const {
+        for (const auto& d : m_diagnostics) {
+            os << formatOneLineWithColor(d) << "\n";
+        }
+        if (hasErrors() || hasWarnings()) {
+            const char* color = hasErrors() ? "\033[31m" : "\033[33m";
+            const char* reset = "\033[0m";
+            os << "\n" << color << errorCount() << " error(s), "
+               << warningCount() << " warning(s)" << reset << "\n";
+        }
+    }
+
+private:
+    std::vector<Diagnostic> m_diagnostics;
+
+    void add(Severity sev, ErrorCode code, const SourceLocation& loc, std::string msg) {
+        m_diagnostics.push_back({sev, code, loc, std::move(msg)});
+    }
+
+    // ─── Message Building ──────────────────────────────────────────────
+
+    template<typename T>
+    std::string toString(const T& value) {
+        std::ostringstream oss;
+        oss << value;
+        return oss.str();
+    }
+
+    std::string toString(InternedString s) {
+        return StringPool::instance().lookup(s);
+    }
+
+    std::string toString(const char* s) {
+        return std::string(s);
+    }
+
+    std::string toString(const std::string& s) {
+        return s;
+    }
+
+    std::string toString(bool b) {
+        return b ? "true" : "false";
+    }
+
+    std::string toString(int v) {
+        return std::to_string(v);
+    }
+
+    std::string toString(size_t v) {
+        return std::to_string(v);
+    }
+
+    std::string toString(double v) {
+        return std::to_string(v);
+    }
+
+    template<typename T>
+    std::string toString(const T* ptr) {
+        if (!ptr) return "null";
+        std::ostringstream oss;
+        oss << ptr;
+        return oss.str();
+    }
+
+    template<typename T, typename... Rest>
+    std::string buildMessage(const T& first, Rest&&... rest) {
+        return toString(first) + buildMessage(std::forward<Rest>(rest)...);
+    }
+
+    std::string buildMessage() {
+        return "";
+    }
+};
 
 } // namespace diagnostic
