@@ -61,22 +61,41 @@ inline const char* severityName(Severity s) {
 // ─── Diagnostic Codes ──────────────────────────────────────────────────────
 
 /// @brief Unique diagnostic codes with clear category prefixes.
-/// 
-/// Naming convention: Category_Detail
-///   - Lex_*     : Lexical errors (1000-1999)
-///   - Syntax_*  : Syntax errors (2000-2999)
-///   - Sem_*     : Semantic errors (3000-6999)
-///   - Backend_* : Backend errors (7000-7999)
-///   - Warn_*    : Warnings (8000-8999)
+///
+/// @design_decision Error codes represent WHAT the error is, not WHEN it occurs.
+///   - A division by zero is a division by zero whether at compile-time or runtime
+///   - A type mismatch is a type mismatch whether in const eval or normal code
+///   - This eliminates duplicate codes and enables unified error handling
+///
+/// @design_decision Code Ranges by Semantic Category
+///   1000-1999: Lexical Errors
+///   2000-2999: Syntax Errors  
+///   3000-3999: Name Resolution
+///   4000-4999: Type & Value Errors (compile-time + runtime)
+///   5000-5499: FFI/Foreign Errors (compile-time + runtime)
+///   5500-5999: Control Flow & Concurrency
+///   6000-6499: Generics & Traits
+///   6500-6999: Memory & Ownership
+///   7000-7999: Backend & Linking (truly phase-specific)
+///   8000-8999: Warnings (cross-cutting)
 enum class DiagCode : uint32_t {
-    // ─── Lexical (1000-1999) ────────────────────────────────────────────
+    // ──────────────────────────────────────────────────────────────────────────
+    // LEXICAL ERRORS (1000-1999)
+    // ──────────────────────────────────────────────────────────────────────────
+    
     Lex_InvalidCharacter         = 1001,
     Lex_UnterminatedString       = 1002,
     Lex_UnterminatedRawString    = 1003,
     Lex_UnterminatedBlockComment = 1004,
     Lex_UnknownCharacter         = 1005,
+    Lex_InvalidEscapeSequence    = 1006,
+    Lex_InvalidNumberLiteral     = 1007,
+    Lex_UnterminatedCharLiteral  = 1008,
 
-    // ─── Syntax (2000-2999) ─────────────────────────────────────────────
+    // ──────────────────────────────────────────────────────────────────────────
+    // SYNTAX ERRORS (2000-2999)
+    // ──────────────────────────────────────────────────────────────────────────
+    
     Syntax_ExpectedIdentifier       = 2001,
     Syntax_ExpectedType             = 2002,
     Syntax_ExpectedToken            = 2003,
@@ -89,8 +108,17 @@ enum class DiagCode : uint32_t {
     Syntax_ExpectedModulePath       = 2010,
     Syntax_ExpectedAttributeLiteral = 2011,
     Syntax_ExpectedSwitchSubject    = 2012,
+    Syntax_ExpectedCaseValue        = 2013,
+    Syntax_ExpectedForBinding       = 2014,
+    Syntax_ExpectedRangeBound       = 2015,
+    Syntax_InvalidAttributeTarget   = 2016,
+    Syntax_MissingAttributeArgs     = 2017,
+    Syntax_TrailingComma            = 2018,
 
-    // ─── Semantic - Name Resolution (3000-3999) ────────────────────────
+    // ──────────────────────────────────────────────────────────────────────────
+    // NAME RESOLUTION ERRORS (3000-3999)
+    // ──────────────────────────────────────────────────────────────────────────
+    
     Sem_UndefinedValue            = 3001,
     Sem_UndefinedType             = 3002,
     Sem_NotCallable               = 3003,
@@ -104,8 +132,16 @@ enum class DiagCode : uint32_t {
     Sem_GenericParamRedeclaration = 3011,
     Sem_ImportAliasRedeclaration  = 3012,
     Sem_ModuleNotAnalyzed         = 3013,
+    Sem_AmbiguousName             = 3014,
+    Sem_PrivateMember             = 3015,
+    Sem_ModuleCycle               = 3016,
 
-    // ─── Semantic - Type Checking (4000-4999) ──────────────────────────
+    // ──────────────────────────────────────────────────────────────────────────
+    // TYPE & VALUE ERRORS (4000-4999)
+    // These apply to BOTH compile-time and runtime evaluation.
+    // ──────────────────────────────────────────────────────────────────────────
+    
+    // Type System (4000-4099)
     Sem_TypeMismatch             = 4001,
     Sem_ArgCountMismatch         = 4002,
     Sem_MissingInitializer       = 4003,
@@ -113,7 +149,6 @@ enum class DiagCode : uint32_t {
     Sem_MissingReturn            = 4005,
     Sem_DuplicateValue           = 4006,
     Sem_UnknownIntrinsic         = 4007,
-    Sem_SelfReference            = 4008,
     Sem_InvalidSwitchType        = 4009,
     Sem_MissingCase              = 4010,
     Sem_PipelineMismatch         = 4011,
@@ -137,26 +172,137 @@ enum class DiagCode : uint32_t {
     Sem_InvalidAssignment        = 4029,
     Sem_InvalidUnary             = 4030,
     Sem_InvalidBinary            = 4031,
+    
+    // Arithmetic & Numeric Errors (shared with runtime)
+    Sem_DivisionByZero           = 4032,  // Division or modulo by zero
+    Sem_IntegerOverflow          = 4033,  // Integer overflow
+    Sem_InvalidShift             = 4034,  // Invalid shift operation
+    Sem_NegativeShift            = 4035,  // Negative shift amount
+    Sem_InvalidCast              = 4036,  // Invalid type cast/conversion
+    Sem_CircularDependency       = 4037,  // Circular dependency (const or otherwise)
+    Sem_ConstEvalLimit           = 4038,  // Const evaluation limit exceeded (internal)
+    Sem_InvalidBitwiseOp         = 4039,  // Bitwise op on non-integer
+    Sem_InvalidLogicalOp         = 4040,  // Logical op on non-bool
+    Sem_NumericOverflow          = 4041,  // General numeric overflow
+    Sem_InvalidIterator          = 4042,  // Invalid for-loop iterator
+    
+    // Assignment & Mutability (4050-4099)
+    Sem_ConstAssignment          = 4050,  // Assigning to const variable
+    Sem_ReadOnlyField            = 4051,  // Assigning to const struct field
+    Sem_ModuleReadOnly           = 4052,  // Assigning to module member
+    Sem_NonLValueAssignment      = 4053,  // Assignment to non-lvalue
+    Sem_ConstParamAssignment     = 4054,  // Assigning to const parameter
+    
+    // Fallible/Nullable Errors (4100-4149)
+    Sem_UnhandledNil             = 4100,  // Nil not handled
+    Sem_UnhandledErr             = 4101,  // Err not handled
+    Sem_InvalidNilCheck          = 4102,  // Nil check on non-nullable
+    Sem_InvalidErrCheck          = 4103,  // Err check on non-fallible
+    Sem_NilInConst               = 4104,  // Nil not allowed in const context
+    Sem_ErrInConst               = 4105,  // Err not allowed in const context
 
-    // ─── Semantic - Generics/Traits/FFI (5000-5999) ────────────────────
-    Sem_GenericArityMismatch  = 5001,
-    Sem_GenericConstraint     = 5002,
-    Sem_TraitImplementation   = 5003,
-    Sem_TraitConflict         = 5004,
-    Sem_ForeignInvalid        = 5005,
-    Sem_ForeignABI            = 5006,
-    Sem_AttributeInvalid      = 5007,
-    Sem_AttributeArgCount     = 5008,
-    Sem_UnknownAttribute      = 5009,
-    Sem_GenericParamRequired  = 5010,
+    // ──────────────────────────────────────────────────────────────────────────
+    // FFI/FOREIGN ERRORS (5000-5499)
+    // These can happen at compile-time OR runtime.
+    // ──────────────────────────────────────────────────────────────────────────
+    
+    Ffi_UnknownSymbol        = 5001,  // Symbol not found (link-time error)
+    Ffi_SymbolMismatch       = 5002,  // Symbol type/signature mismatch
+    Ffi_ABIIncompatible      = 5003,  // ABI/calling convention mismatch
+    Ffi_InvalidPointer       = 5004,  // Invalid pointer usage (e.g., &T vs *T)
+    Ffi_InvalidForeign       = 5005,  // Invalid @[foreign] declaration
+    Ffi_ConstContext         = 5006,  // Foreign call in const context (can't eval)
+    Ffi_TypeNotFFI           = 5007,  // Type can't be passed to FFI
+    Ffi_UnsafeReturn         = 5008,  // Returning pointer to stack memory
+    Ffi_LibraryNotFound      = 5009,  // Library not found at link time
+    Ffi_SymbolNotFound       = 5010,  // Symbol not found in library
+    Ffi_InvalidABIAttribute  = 5011,  // Invalid ABI attribute value
+    Ffi_MissingLibrary       = 5012,  // Missing library specification
+    Ffi_UnsupportedType      = 5013,  // Type not supported by FFI
+    Ffi_InvalidParamPassing  = 5014,  // Invalid parameter passing mode
+    Ffi_VariadicMismatch     = 5015,  // Variadic argument mismatch
+    Ffi_ReturnMismatch       = 5016,  // Return type mismatch with C
+    Ffi_SizeMismatch         = 5017,  // Size mismatch for struct/union
 
-    // ─── Backend (7000-7999) ────────────────────────────────────────────
-    Backend_UnresolvedSymbol  = 7001,
-    Backend_LinkerError       = 7002,
-    Backend_CodegenError      = 7003,
-    Backend_TargetUnsupported = 7004,
+    // ──────────────────────────────────────────────────────────────────────────
+    // CONTROL FLOW & CONCURRENCY ERRORS (5500-5999)
+    // ──────────────────────────────────────────────────────────────────────────
+    
+    Sem_InvalidBreak          = 5501,  // Break outside loop
+    Sem_InvalidContinue       = 5502,  // Continue outside loop
+    Sem_UnawaitedAsync        = 5503,  // Async never awaited (warning)
+    Sem_UnjoinedSpawn         = 5504,  // Spawn never joined (warning)
+    Sem_AsyncOutsideFunction  = 5505,  // Async outside function body
+    Sem_SpawnOutsideFunction  = 5506,  // Spawn outside function body
+    Sem_AwaitOutsideFunction  = 5507,  // Await outside function body
+    Sem_JoinOutsideFunction   = 5508,  // Join outside function body
+    Sem_AwaitNonAsync         = 5509,  // Await on non-async value
+    Sem_JoinNonSpawn          = 5510,  // Join on non-spawn value
+    Sem_DoubleAwait           = 5511,  // Awaiting already awaited value
+    Sem_DoubleJoin            = 5512,  // Joining already joined value
+    Sem_ReturnInAsync         = 5513,  // Return in async context
+    Sem_ReturnInSpawn         = 5514,  // Return in spawn context
+    Sem_SwitchExhaustive      = 5515,  // Switch not exhaustive
+    Sem_DefaultNotLast        = 5516,  // Default clause not last
+    Sem_DuplicateCase         = 5517,  // Duplicate case value
 
-    // ─── Warnings (8000-8999) ───────────────────────────────────────────
+    // ──────────────────────────────────────────────────────────────────────────
+    // GENERICS & TRAITS ERRORS (6000-6499)
+    // ──────────────────────────────────────────────────────────────────────────
+    
+    Sem_GenericArityMismatch  = 6001,
+    Sem_GenericConstraint     = 6002,
+    Sem_TraitImplementation   = 6003,
+    Sem_TraitConflict         = 6004,
+    Sem_ForeignInvalid        = 6005,
+    Sem_ForeignABI            = 6006,
+    Sem_AttributeInvalid      = 6007,
+    Sem_AttributeArgCount     = 6008,
+    Sem_UnknownAttribute      = 6009,
+    Sem_GenericParamRequired  = 6010,
+    Sem_GenericParamInference = 6011,
+    Sem_GenericInstantiate    = 6012,
+    Sem_TraitFieldMissing     = 6013,
+    Sem_TraitFieldTypeMismatch = 6014,
+    Sem_TraitConstMismatch    = 6015,
+    Sem_TraitDuplicate        = 6016,
+    Sem_GenericCycle          = 6017,
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // MEMORY & OWNERSHIP ERRORS (6500-6999)
+    // ──────────────────────────────────────────────────────────────────────────
+    
+    Sem_InvalidRef            = 6501,  // Invalid reference
+    Sem_RefEscape             = 6502,  // Reference escapes scope
+    Sem_UseAfterFree          = 6503,  // Use after free
+    Sem_DoubleFree            = 6504,  // Double free
+    Sem_InvalidPtr            = 6505,  // Invalid pointer operation
+    Sem_PtrArithmetic         = 6506,  // Invalid pointer arithmetic
+    Sem_PtrDeref              = 6507,  // Invalid pointer dereference
+    Sem_RefToStack            = 6508,  // Reference to stack-allocated data
+    Sem_MoveAfterUse          = 6509,  // Move after use
+    Sem_UninitVariable        = 6510,  // Uninitialized variable
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // BACKEND & LINKING ERRORS (7000-7999)
+    // These are truly phase-specific - only happen during codegen/linking.
+    // ──────────────────────────────────────────────────────────────────────────
+    
+    Backend_LinkerError       = 7001,
+    Backend_CodegenError      = 7002,
+    Backend_TargetUnsupported = 7003,
+    Backend_OutOfMemory       = 7004,
+    Backend_InvalidIR         = 7005,
+    Backend_OptimizerError    = 7006,
+    Backend_ObjectWriteError  = 7007,
+    Backend_AsmError          = 7008,
+    Backend_RelocationError   = 7009,
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // WARNINGS (8000-8999)
+    // Cross-cutting - all phases can emit these.
+    // ──────────────────────────────────────────────────────────────────────────
+    
     Warn_UnreachableCode   = 8001,
     Warn_UnusedVariable    = 8002,
     Warn_UnusedParameter   = 8003,
@@ -167,6 +313,14 @@ enum class DiagCode : uint32_t {
     Warn_UnreachableCase   = 8008,
     Warn_DiscardedResult   = 8009,
     Warn_RedundantNilCheck = 8010,
+    Warn_ShadowedName      = 8011,
+    Warn_UnusedImport      = 8012,
+    Warn_UnusedType        = 8013,
+    Warn_UnusedField       = 8014,
+    Warn_IneffectiveConst  = 8015,  // Const doesn't help optimization
+    Warn_PotentialOverflow = 8016,  // Potential integer overflow
+    Warn_Fallthrough       = 8017,  // Missing case in switch
+    Warn_UnsafeFFI         = 8018,  // Unsafe FFI usage
 };
 
 

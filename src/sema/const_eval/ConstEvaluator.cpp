@@ -2,8 +2,6 @@
 /// @brief Implementation of ConstEvaluator.
 
 #include "ConstEvaluator.hpp"
-#include "debug/DebugUtils.hpp"
-#include "core/diagnostics/DiagnosticCodes.hpp"
 
 #include <cmath>
 #include <string>
@@ -24,15 +22,28 @@ ConstEvaluator::ConstEvaluator(SemaContext& ctx) : m_ctx(ctx) {
 
 ConstantValue ConstEvaluator::evaluateDecl(const VarDeclAST* decl) {
     if (!decl || !decl->init) {
-        return error(decl, "const variable has no initializer");
+        // Const variable with no initializer - this is an error
+        m_ctx.diagnostics.error(DiagCode::Sem_MissingInitializer, decl,
+                                "const variable '", m_ctx.pool.lookup(decl->name),
+                                "' has no initializer");
+        return ConstantValue::error();
     }
 
     if (m_recursionDepth > MAX_RECURSION) {
-        return error(decl, "const evaluation recursion limit exceeded");
+        // Internal limit exceeded - this is a safety mechanism
+        // We treat it as an error because the program is too complex
+        m_ctx.diagnostics.error(DiagCode::Sem_ConstEvalLimit, decl,
+                                "const evaluation recursion limit exceeded (",
+                                MAX_RECURSION, ")");
+        return ConstantValue::error();
     }
 
     if (m_evaluating.find(decl) != m_evaluating.end()) {
-        return error(decl, "circular dependency detected");
+        // Circular dependency - real error
+        m_ctx.diagnostics.error(DiagCode::Sem_CircularDependency, decl,
+                                "circular dependency detected in const declaration '",
+                                m_ctx.pool.lookup(decl->name), "'");
+        return ConstantValue::error();
     }
 
     EvaluationGuard guard(m_evaluating, decl);
@@ -88,7 +99,9 @@ ConstantValue ConstEvaluator::evalExpr(const ExprAST* expr) {
             result = evalIfExpr(expr->as<IfExprAST>());
             break;
         default:
-            return error(expr, "not a constant expression");
+            // Not const-evaluable - this is normal, no diagnostic
+            // The expression will be evaluated at runtime
+            return ConstantValue::unknown();
     }
 
     // Store result on the expression node (ExprAST is mutable)
@@ -119,7 +132,11 @@ ConstantValue ConstEvaluator::evalLiteral(const LiteralExprAST* expr) {
                 int64_t val = std::stoll(str, nullptr, 0);
                 return ConstantValue(val);
             } catch (const std::exception&) {
-                return error(expr, "invalid integer literal '" + str + "'");
+                // Invalid literal - this is a lexical error, but we report it
+                // as a const eval error since it appears in a const context
+                m_ctx.diagnostics.error(DiagCode::Lex_InvalidNumberLiteral, expr,
+                                        "invalid integer literal '", str, "'");
+                return ConstantValue::error();
             }
         }
         case LiteralKind::Float: {
@@ -128,7 +145,9 @@ ConstantValue ConstEvaluator::evalLiteral(const LiteralExprAST* expr) {
                 double val = std::stod(str);
                 return ConstantValue(val);
             } catch (const std::exception&) {
-                return error(expr, "invalid float literal '" + str + "'");
+                m_ctx.diagnostics.error(DiagCode::Lex_InvalidNumberLiteral, expr,
+                                        "invalid float literal '", str, "'");
+                return ConstantValue::error();
             }
         }
         case LiteralKind::String:
@@ -141,7 +160,8 @@ ConstantValue ConstEvaluator::evalLiteral(const LiteralExprAST* expr) {
         case LiteralKind::Err:
             return ConstantValue::err();
         default:
-            return error(expr, "unsupported literal in const expression");
+            // Unsupported literal - not a valid const expression
+            return ConstantValue::unknown();
     }
 }
 
@@ -149,12 +169,13 @@ ConstantValue ConstEvaluator::evalLiteral(const LiteralExprAST* expr) {
 
 ConstantValue ConstEvaluator::evalIdentifier(const IdentifierExprAST* expr) {
     // ─── 1. Check for narrowed type (from if conditions) ──────────────────
-    const TypeAST* narrowedType = m_ctx.contexts.getNarrowedType(expr->name);
+    const TypeAST* narrowedType = m_ctx.stack.getNarrowedType(expr->name);
     if (narrowedType) {
         // Variable has been narrowed - get its value
         const ValueDeclAST* decl = m_ctx.lookupValue(expr->name);
         if (!decl) {
-            return error(expr, "undefined identifier '" + m_ctx.pool.lookup(expr->name) + "'");
+            // Name resolution should have caught this, but handle gracefully
+            return ConstantValue::error();
         }
         return getLocal(expr->name);
     }
@@ -162,7 +183,9 @@ ConstantValue ConstEvaluator::evalIdentifier(const IdentifierExprAST* expr) {
     // ─── 2. Look up in symbol table ──────────────────────────────────────
     const ValueDeclAST* decl = m_ctx.lookupValue(expr->name);
     if (!decl) {
-        return error(expr, "undefined identifier '" + m_ctx.pool.lookup(expr->name) + "'");
+        // Name resolution should have already reported this
+        // We just return error silently
+        return ConstantValue::error();
     }
 
     // ─── 3. Check if it's a const declaration ────────────────────────────
@@ -176,15 +199,21 @@ ConstantValue ConstEvaluator::evalIdentifier(const IdentifierExprAST* expr) {
         
         // Global const variable
         if (var->keyword != DeclKeyword::Const) {
-            return error(expr, "'" + m_ctx.pool.lookup(expr->name) + "' is not const");
+            // Not const-evaluable - this is normal
+            return ConstantValue::unknown();
         }
 
         if (!var->init) {
-            return error(expr, "const variable '" + m_ctx.pool.lookup(expr->name) + "' has no initializer");
+            // Const without initializer - should have been caught earlier
+            return ConstantValue::error();
         }
 
         if (m_evaluating.find(var) != m_evaluating.end()) {
-            return error(expr, "cycle detected: '" + m_ctx.pool.lookup(expr->name) + "'");
+            // Circular dependency - real error
+            m_ctx.diagnostics.error(DiagCode::Sem_CircularDependency, expr,
+                                    "cycle detected in const declaration '",
+                                    m_ctx.pool.lookup(expr->name), "'");
+            return ConstantValue::error();
         }
 
         return evalExpr(var->init);
@@ -194,31 +223,35 @@ ConstantValue ConstEvaluator::evalIdentifier(const IdentifierExprAST* expr) {
     if (decl->isa<FuncDeclAST>()) {
         const FuncDeclAST* func = decl->as<FuncDeclAST>();
         if (func->keyword != DeclKeyword::Const) {
-            return error(expr, "'" + m_ctx.pool.lookup(expr->name) + "' is not const");
+            // Non-const function - not const-evaluable
+            return ConstantValue::unknown();
         }
         return ConstantValue(func);
     }
 
-    return error(expr, "'" + m_ctx.pool.lookup(expr->name) + "' is not a constant value");
+    // Not a constant value
+    return ConstantValue::unknown();
 }
 
 // ─── Binary Expression Evaluation ──────────────────────────────────────
 
 ConstantValue ConstEvaluator::evalBinary(const BinaryExprAST* expr) {
     // ─── 1. Check for type narrowing pattern ─────────────────────────────
-    if (m_ctx.contexts.isIfConditionCtx()) {
+    if (m_ctx.stack.isIfConditionCtx()) {
         NarrowingInfo info = detectNarrowingPattern(expr, m_ctx);
         if (info.hasNarrowing) {
-            m_ctx.contexts.setPendingNarrowing(info);
+            m_ctx.stack.setPendingNarrowing(info);
         }
     }
 
     // ─── 2. Evaluate operands ────────────────────────────────────────────
     ConstantValue left = evalExpr(expr->left);
     if (left.isError()) return left;
+    if (left.isUnknown()) return ConstantValue::unknown();
 
     ConstantValue right = evalExpr(expr->right);
     if (right.isError()) return right;
+    if (right.isUnknown()) return ConstantValue::unknown();
 
     // ─── 3. Evaluate operation ──────────────────────────────────────────
     return evalBinaryOp(expr->op, left, right, expr);
@@ -240,11 +273,25 @@ ConstantValue ConstEvaluator::evalBinaryOp(BinaryOp op,
         return 0.0;
     };
 
+    auto emitTypeError = [&](const char* op) {
+        m_ctx.diagnostics.error(DiagCode::Sem_InvalidBinary, node,
+                                "invalid operands for '", op, "'");
+        return ConstantValue::error();
+    };
+
     switch (op) {
         // ─── Arithmetic ──────────────────────────────────────────────────
         case BinaryOp::Add:
             if (left.isInt() && right.isInt()) {
-                return ConstantValue(left.asInt() + right.asInt());
+                // Check for overflow
+                int64_t l = left.asInt();
+                int64_t r = right.asInt();
+                if ((r > 0 && l > INT64_MAX - r) || (r < 0 && l < INT64_MIN - r)) {
+                    m_ctx.diagnostics.error(DiagCode::Sem_IntegerOverflow, node,
+                                            "integer overflow in const addition");
+                    return ConstantValue::error();
+                }
+                return ConstantValue(l + r);
             }
             if (bothNumeric(left, right)) {
                 return ConstantValue(toDouble(left) + toDouble(right));
@@ -254,50 +301,70 @@ ConstantValue ConstEvaluator::evalBinaryOp(BinaryOp op,
                 result += m_ctx.pool.lookup(right.asString());
                 return ConstantValue(m_ctx.pool.intern(result));
             }
-            return error(node, "invalid operands for '+'");
+            return emitTypeError("+");
 
         case BinaryOp::Sub:
             if (left.isInt() && right.isInt()) {
-                return ConstantValue(left.asInt() - right.asInt());
+                int64_t l = left.asInt();
+                int64_t r = right.asInt();
+                if ((r > 0 && l < INT64_MIN + r) || (r < 0 && l > INT64_MAX + r)) {
+                    m_ctx.diagnostics.error(DiagCode::Sem_IntegerOverflow, node,
+                                            "integer overflow in const subtraction");
+                    return ConstantValue::error();
+                }
+                return ConstantValue(l - r);
             }
             if (bothNumeric(left, right)) {
                 return ConstantValue(toDouble(left) - toDouble(right));
             }
-            return error(node, "invalid operands for '-'");
+            return emitTypeError("-");
 
         case BinaryOp::Mul:
             if (left.isInt() && right.isInt()) {
-                return ConstantValue(left.asInt() * right.asInt());
+                int64_t l = left.asInt();
+                int64_t r = right.asInt();
+                if (r != 0 && l > INT64_MAX / r) {
+                    m_ctx.diagnostics.error(DiagCode::Sem_IntegerOverflow, node,
+                                            "integer overflow in const multiplication");
+                    return ConstantValue::error();
+                }
+                return ConstantValue(l * r);
             }
             if (bothNumeric(left, right)) {
                 return ConstantValue(toDouble(left) * toDouble(right));
             }
-            return error(node, "invalid operands for '*'");
+            return emitTypeError("*");
 
         case BinaryOp::Div:
             if (left.isInt() && right.isInt()) {
                 if (right.asInt() == 0) {
-                    return error(node, "division by zero");
+                    m_ctx.diagnostics.error(DiagCode::Sem_DivisionByZero, node,
+                                            "division by zero in const expression");
+                    return ConstantValue::error();
                 }
                 return ConstantValue(left.asInt() / right.asInt());
             }
             if (bothNumeric(left, right)) {
                 double divisor = toDouble(right);
                 if (divisor == 0.0) {
-                    return error(node, "division by zero");
+                    m_ctx.diagnostics.error(DiagCode::Sem_DivisionByZero, node,
+                                            "division by zero in const expression");
+                    return ConstantValue::error();
                 }
                 return ConstantValue(toDouble(left) / divisor);
             }
-            return error(node, "invalid operands for '/'");
+            return emitTypeError("/");
 
         case BinaryOp::Mod:
             if (left.isInt() && right.isInt()) {
                 if (right.asInt() == 0) {
-                    return error(node, "modulo by zero");
+                    m_ctx.diagnostics.error(DiagCode::Sem_DivisionByZero, node,
+                                            "modulo by zero in const expression");
+                    return ConstantValue::error();
                 }
                 return ConstantValue(left.asInt() % right.asInt());
             }
-            return error(node, "modulo requires integer operands");
+            return emitTypeError("%");
 
         case BinaryOp::Pow:
             if (bothNumeric(left, right)) {
@@ -307,7 +374,7 @@ ConstantValue ConstEvaluator::evalBinaryOp(BinaryOp op,
                 }
                 return ConstantValue(result);
             }
-            return error(node, "invalid operands for '**'");
+            return emitTypeError("**");
 
         // ─── Comparison ──────────────────────────────────────────────────
         case BinaryOp::Eq:
@@ -328,53 +395,81 @@ ConstantValue ConstEvaluator::evalBinaryOp(BinaryOp op,
             if (left.isBool() && right.isBool()) {
                 return ConstantValue(left.asBool() && right.asBool());
             }
-            return error(node, "'and' requires bool operands");
+            m_ctx.diagnostics.error(DiagCode::Sem_InvalidLogicalOp, node,
+                                    "'and' requires bool operands");
+            return ConstantValue::error();
 
         case BinaryOp::Or:
             if (left.isBool() && right.isBool()) {
                 return ConstantValue(left.asBool() || right.asBool());
             }
-            return error(node, "'or' requires bool operands");
+            m_ctx.diagnostics.error(DiagCode::Sem_InvalidLogicalOp, node,
+                                    "'or' requires bool operands");
+            return ConstantValue::error();
 
         // ─── Bitwise ──────────────────────────────────────────────────────
         case BinaryOp::BitAnd:
             if (left.isInt() && right.isInt()) {
                 return ConstantValue(left.asInt() & right.asInt());
             }
-            return error(node, "bitwise AND requires integer operands");
+            m_ctx.diagnostics.error(DiagCode::Sem_InvalidBitwiseOp, node,
+                                    "bitwise AND requires integer operands");
+            return ConstantValue::error();
 
         case BinaryOp::BitOr:
             if (left.isInt() && right.isInt()) {
                 return ConstantValue(left.asInt() | right.asInt());
             }
-            return error(node, "bitwise OR requires integer operands");
+            m_ctx.diagnostics.error(DiagCode::Sem_InvalidBitwiseOp, node,
+                                    "bitwise OR requires integer operands");
+            return ConstantValue::error();
 
         case BinaryOp::BitXor:
             if (left.isInt() && right.isInt()) {
                 return ConstantValue(left.asInt() ^ right.asInt());
             }
-            return error(node, "bitwise XOR requires integer operands");
+            m_ctx.diagnostics.error(DiagCode::Sem_InvalidBitwiseOp, node,
+                                    "bitwise XOR requires integer operands");
+            return ConstantValue::error();
 
         case BinaryOp::Shl:
             if (left.isInt() && right.isInt()) {
                 if (right.asInt() < 0) {
-                    return error(node, "negative shift amount");
+                    m_ctx.diagnostics.error(DiagCode::Sem_NegativeShift, node,
+                                            "negative shift amount in const expression");
+                    return ConstantValue::error();
+                }
+                if (right.asInt() >= 64) {
+                    m_ctx.diagnostics.error(DiagCode::Sem_InvalidShift, node,
+                                            "shift amount exceeds bit width");
+                    return ConstantValue::error();
                 }
                 return ConstantValue(left.asInt() << right.asInt());
             }
-            return error(node, "shift requires integer operands");
+            m_ctx.diagnostics.error(DiagCode::Sem_InvalidShift, node,
+                                    "shift requires integer operands");
+            return ConstantValue::error();
 
         case BinaryOp::Shr:
             if (left.isInt() && right.isInt()) {
                 if (right.asInt() < 0) {
-                    return error(node, "negative shift amount");
+                    m_ctx.diagnostics.error(DiagCode::Sem_NegativeShift, node,
+                                            "negative shift amount in const expression");
+                    return ConstantValue::error();
+                }
+                if (right.asInt() >= 64) {
+                    m_ctx.diagnostics.error(DiagCode::Sem_InvalidShift, node,
+                                            "shift amount exceeds bit width");
+                    return ConstantValue::error();
                 }
                 return ConstantValue(left.asInt() >> right.asInt());
             }
-            return error(node, "shift requires integer operands");
+            m_ctx.diagnostics.error(DiagCode::Sem_InvalidShift, node,
+                                    "shift requires integer operands");
+            return ConstantValue::error();
 
         default:
-            return error(node, "unsupported binary operator in const expression");
+            return ConstantValue::unknown();
     }
 }
 
@@ -383,31 +478,43 @@ ConstantValue ConstEvaluator::evalBinaryOp(BinaryOp op,
 ConstantValue ConstEvaluator::evalUnary(const UnaryExprAST* expr) {
     ConstantValue operand = evalExpr(expr->operand);
     if (operand.isError()) return operand;
+    if (operand.isUnknown()) return ConstantValue::unknown();
 
     switch (expr->op) {
         case UnaryOp::Neg:
             if (operand.isInt()) {
+                if (operand.asInt() == INT64_MIN) {
+                    m_ctx.diagnostics.error(DiagCode::Sem_IntegerOverflow, expr,
+                                            "integer overflow in const negation");
+                    return ConstantValue::error();
+                }
                 return ConstantValue(-operand.asInt());
             }
             if (operand.isFloat()) {
                 return ConstantValue(-operand.asFloat());
             }
-            return error(expr, "negation requires numeric operand");
+            m_ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, expr,
+                                    "negation requires numeric operand");
+            return ConstantValue::error();
 
         case UnaryOp::Not:
             if (operand.isBool()) {
                 return ConstantValue(!operand.asBool());
             }
-            return error(expr, "'not' requires bool operand");
+            m_ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, expr,
+                                    "'not' requires bool operand");
+            return ConstantValue::error();
 
         case UnaryOp::BitNot:
             if (operand.isInt()) {
                 return ConstantValue(~operand.asInt());
             }
-            return error(expr, "bitwise NOT requires integer operand");
+            m_ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, expr,
+                                    "bitwise NOT requires integer operand");
+            return ConstantValue::error();
 
         default:
-            return error(expr, "unsupported unary operator");
+            return ConstantValue::unknown();
     }
 }
 
@@ -417,14 +524,30 @@ ConstantValue ConstEvaluator::evalCall(const CallExprAST* expr) {
     // ─── 1. Evaluate callee ──────────────────────────────────────────────
     ConstantValue callee = evalExpr(expr->callee);
     if (callee.isError()) return callee;
+    if (callee.isUnknown()) return ConstantValue::unknown();
 
     if (!callee.isFunction()) {
-        return error(expr->callee, "not a const function");
+        // Not a function - this is a type error, already reported
+        return ConstantValue::error();
     }
 
     const FuncDeclAST* func = callee.asFunction();
     if (func->keyword != DeclKeyword::Const) {
-        return error(expr->callee, "function is not const");
+        // Non-const function - not const-evaluable
+        return ConstantValue::unknown();
+    }
+
+    // Check for foreign attribute
+    for (AttributeAST* attr : func->attributes) {
+        if (m_ctx.pool.lookup(attr->name) == "foreign") {
+            // Foreign functions cannot be evaluated at compile time
+            // This is a real error - user tried to call foreign in const context
+            m_ctx.diagnostics.error(DiagCode::Ffi_ConstContext, expr,
+                                    "cannot call foreign function '",
+                                    m_ctx.pool.lookup(func->name),
+                                    "' in const context");
+            return ConstantValue::error();
+        }
     }
 
     // ─── 2. Evaluate arguments ────────────────────────────────────────────
@@ -432,6 +555,7 @@ ConstantValue ConstEvaluator::evalCall(const CallExprAST* expr) {
     for (const ExprAST* arg : expr->args) {
         ConstantValue val = evalExpr(arg);
         if (val.isError()) return val;
+        if (val.isUnknown()) return ConstantValue::unknown();
         args.push_back(val);
     }
 
@@ -445,11 +569,15 @@ ConstantValue ConstEvaluator::evalStructLiteral(const StructLiteralExprAST* expr
     // ─── 1. Look up struct declaration ────────────────────────────────────
     const TypeDeclAST* typeDecl = m_ctx.lookupType(expr->typeName);
     if (!typeDecl) {
-        return error(expr, "undefined struct type '" + m_ctx.pool.lookup(expr->typeName) + "'");
+        // Type not found - already reported by name resolution
+        return ConstantValue::error();
     }
 
     if (!typeDecl->isa<StructDeclAST>()) {
-        return error(expr, "'" + m_ctx.pool.lookup(expr->typeName) + "' is not a struct");
+        m_ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
+                                "'", m_ctx.pool.lookup(expr->typeName),
+                                "' is not a struct");
+        return ConstantValue::error();
     }
 
     const StructDeclAST* structDecl = typeDecl->as<StructDeclAST>();
@@ -462,6 +590,7 @@ ConstantValue ConstEvaluator::evalStructLiteral(const StructLiteralExprAST* expr
         if (field->defaultVal) {
             ConstantValue val = evalExpr(field->defaultVal);
             if (val.isError()) return val;
+            if (val.isUnknown()) return ConstantValue::unknown();
             fields[field->name] = val;
         }
     }
@@ -470,14 +599,17 @@ ConstantValue ConstEvaluator::evalStructLiteral(const StructLiteralExprAST* expr
     for (const FieldInitAST* init : expr->inits) {
         ConstantValue val = evalExpr(init->value);
         if (val.isError()) return val;
+        if (val.isUnknown()) return ConstantValue::unknown();
         fields[init->name] = val;
     }
 
     // ─── 3. Verify all required fields are initialized ────────────────────
     for (const FieldDeclAST* field : structDecl->fields) {
         if (fields.find(field->name) == fields.end() && !field->defaultVal) {
-            return error(expr, "missing initializer for struct field '" 
-                       + m_ctx.pool.lookup(field->name) + "'");
+            m_ctx.diagnostics.error(DiagCode::Sem_MissingInitializer, expr,
+                                    "missing initializer for struct field '",
+                                    m_ctx.pool.lookup(field->name), "'");
+            return ConstantValue::error();
         }
     }
 
@@ -496,6 +628,7 @@ ConstantValue ConstEvaluator::evalArrayLiteral(const ArrayLiteralExprAST* expr) 
     for (const ExprAST* elem : expr->elements) {
         ConstantValue val = evalExpr(elem);
         if (val.isError()) return val;
+        if (val.isUnknown()) return ConstantValue::unknown();
         elements.push_back(val);
     }
 
@@ -504,7 +637,9 @@ ConstantValue ConstEvaluator::evalArrayLiteral(const ArrayLiteralExprAST* expr) 
         const TypeAST* firstType = elements[0].type;
         for (size_t i = 1; i < elements.size(); ++i) {
             if (elements[i].type != firstType) {
-                return error(expr, "array elements must have the same type");
+                m_ctx.diagnostics.error(DiagCode::Sem_InvalidArrayElement, expr,
+                                        "array elements must have the same type");
+                return ConstantValue::error();
             }
         }
     }
@@ -520,15 +655,21 @@ ConstantValue ConstEvaluator::evalArrayLiteral(const ArrayLiteralExprAST* expr) 
 ConstantValue ConstEvaluator::evalFieldAccess(const FieldAccessExprAST* expr) {
     ConstantValue obj = evalExpr(expr->object);
     if (obj.isError()) return obj;
+    if (obj.isUnknown()) return ConstantValue::unknown();
 
     if (!obj.isStruct()) {
-        return error(expr->object, "field access on non-struct value");
+        m_ctx.diagnostics.error(DiagCode::Sem_InvalidBinary, expr->object,
+                                "field access on non-struct value");
+        return ConstantValue::error();
     }
 
     const auto& structFields = obj.asStruct();
     auto it = structFields.find(expr->fieldName);
     if (it == structFields.end()) {
-        return error(expr, "struct has no field '" + m_ctx.pool.lookup(expr->fieldName) + "'");
+        m_ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr,
+                                "struct has no field '",
+                                m_ctx.pool.lookup(expr->fieldName), "'");
+        return ConstantValue::error();
     }
 
     return it->second;
@@ -545,6 +686,7 @@ ConstantValue ConstEvaluator::evalNullCoalesce(const NullCoalesceExprAST* expr) 
         return evalExpr(expr->fallback);
     }
 
+    if (val.isUnknown()) return ConstantValue::unknown();
     return val;
 }
 
@@ -553,9 +695,12 @@ ConstantValue ConstEvaluator::evalNullCoalesce(const NullCoalesceExprAST* expr) 
 ConstantValue ConstEvaluator::evalIfExpr(const IfExprAST* expr) {
     ConstantValue cond = evalExpr(expr->condition);
     if (cond.isError()) return cond;
+    if (cond.isUnknown()) return ConstantValue::unknown();
 
     if (!cond.isBool()) {
-        return error(expr->condition, "if condition must be bool");
+        m_ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr->condition,
+                                "if condition must be bool");
+        return ConstantValue::error();
     }
 
     if (cond.asBool()) {
@@ -588,7 +733,8 @@ ConstantValue ConstEvaluator::executeStmt(const StmtAST* stmt) {
         case ASTKind::DeclStmt:
             return executeDeclStmt(stmt->as<DeclStmtAST>());
         default:
-            return error(stmt, "unsupported statement in const function");
+            // Unsupported statement - not const-evaluable
+            return ConstantValue::unknown();
     }
 }
 
@@ -603,6 +749,7 @@ ConstantValue ConstEvaluator::executeBlock(const BlockStmtAST* block) {
     for (const StmtPtr stmt : block->stmts) {
         result = executeStmt(stmt);
         if (result.isError()) break;
+        if (result.isUnknown()) break;
         if (currentFrame().hasReturned) break;
     }
 
@@ -618,6 +765,7 @@ ConstantValue ConstEvaluator::executeReturn(const ReturnStmtAST* stmt) {
     if (stmt->value) {
         frame.returnValue = evalExpr(stmt->value);
         if (frame.returnValue.isError()) return frame.returnValue;
+        if (frame.returnValue.isUnknown()) return ConstantValue::unknown();
     } else {
         frame.returnValue = ConstantValue::voidValue();
     }
@@ -633,13 +781,16 @@ ConstantValue ConstEvaluator::executeIf(const IfStmtAST* stmt) {
 
     ConstantValue cond = evalExpr(stmt->condition);
     if (cond.isError()) return cond;
+    if (cond.isUnknown()) return ConstantValue::unknown();
 
     if (!cond.isBool()) {
-        return error(stmt->condition, "if condition must be bool");
+        m_ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, stmt->condition,
+                                "if condition must be bool");
+        return ConstantValue::error();
     }
 
-    NarrowingInfo info = m_ctx.contexts.getPendingNarrowing();
-    m_ctx.contexts.clearPendingNarrowing();
+    NarrowingInfo info = m_ctx.stack.getPendingNarrowing();
+    m_ctx.stack.clearPendingNarrowing();
 
     if (cond.asBool()) {
         if (stmt->thenBranch) {
@@ -672,21 +823,27 @@ ConstantValue ConstEvaluator::executeWhile(const WhileStmtAST* stmt) {
 
     while (true) {
         if (++iterations > MAX_ITERATIONS) {
-            return error(stmt, "while loop exceeded maximum iterations (" 
-                       + std::to_string(MAX_ITERATIONS) + ")");
+            m_ctx.diagnostics.error(DiagCode::Sem_ConstEvalLimit, stmt,
+                                    "while loop exceeded maximum iterations (",
+                                    MAX_ITERATIONS, ")");
+            return ConstantValue::error();
         }
 
         ConstantValue cond = evalExpr(stmt->condition);
         if (cond.isError()) return cond;
+        if (cond.isUnknown()) return ConstantValue::unknown();
 
         if (!cond.isBool()) {
-            return error(stmt->condition, "while condition must be bool");
+            m_ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, stmt->condition,
+                                    "while condition must be bool");
+            return ConstantValue::error();
         }
 
         if (!cond.asBool()) break;
 
         ConstantValue result = executeStmt(stmt->body);
         if (result.isError()) return result;
+        if (result.isUnknown()) return ConstantValue::unknown();
         if (currentFrame().hasReturned) break;
     }
 
@@ -698,6 +855,7 @@ ConstantValue ConstEvaluator::executeAssign(const AssignExprAST* stmt) {
 
     ConstantValue rhs = evalExpr(stmt->rhs);
     if (rhs.isError()) return rhs;
+    if (rhs.isUnknown()) return ConstantValue::unknown();
 
     if (stmt->lhs->isa<IdentifierExprAST>()) {
         const IdentifierExprAST* id = stmt->lhs->as<IdentifierExprAST>();
@@ -705,7 +863,9 @@ ConstantValue ConstEvaluator::executeAssign(const AssignExprAST* stmt) {
         return rhs;
     }
 
-    return error(stmt->lhs, "assignment target not supported in const function");
+    m_ctx.diagnostics.error(DiagCode::Sem_InvalidAssignment, stmt->lhs,
+                            "assignment target not supported in const function");
+    return ConstantValue::error();
 }
 
 ConstantValue ConstEvaluator::executeExprStmt(const ExprStmtAST* stmt) {
@@ -713,6 +873,7 @@ ConstantValue ConstEvaluator::executeExprStmt(const ExprStmtAST* stmt) {
 
     ConstantValue result = evalExpr(stmt->expr);
     if (result.isError()) return result;
+    if (result.isUnknown()) return ConstantValue::unknown();
 
     return ConstantValue::voidValue();
 }
@@ -726,14 +887,19 @@ ConstantValue ConstEvaluator::executeDeclStmt(const DeclStmtAST* stmt) {
             if (var->init) {
                 ConstantValue val = evalExpr(var->init);
                 if (val.isError()) return val;
+                if (val.isUnknown()) return ConstantValue::unknown();
                 setLocal(var->name, val);
                 return ConstantValue::voidValue();
             }
         }
-        return error(stmt->decl, "mutable local variables not allowed in const functions");
+        // Mutable local variables not allowed in const functions
+        m_ctx.diagnostics.error(DiagCode::Sem_InvalidAssignment, stmt->decl,
+                                "mutable local variables not allowed in const functions");
+        return ConstantValue::error();
     }
 
-    return error(stmt->decl, "declaration not supported in const function");
+    // Declaration not supported
+    return ConstantValue::unknown();
 }
 
 // ─── Function Execution ──────────────────────────────────────────────────
@@ -743,7 +909,9 @@ ConstantValue ConstEvaluator::executeFunction(
     const std::vector<ConstantValue>& args) {
 
     if (!func) {
-        return error(nullptr, "null function");
+        m_ctx.diagnostics.error(DiagCode::Sem_UndefinedValue, nullptr,
+                                "null function");
+        return ConstantValue::error();
     }
 
     // Check parameter count
@@ -753,9 +921,10 @@ ConstantValue ConstEvaluator::executeFunction(
     }
 
     if (args.size() != paramCount) {
-        return error(func, "argument count mismatch: expected "
-                   + std::to_string(paramCount) + ", got "
-                   + std::to_string(args.size()));
+        m_ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, func,
+                                "argument count mismatch: expected ",
+                                paramCount, ", got ", args.size());
+        return ConstantValue::error();
     }
 
     // ─── Use existing context system ──────────────────────────────────────
@@ -781,11 +950,16 @@ ConstantValue ConstEvaluator::executeFunction(
             result = currentFrame().returnValue;
         } else if (func->funcType && !func->funcType->returnType) {
             result = ConstantValue::voidValue();
-        } else if (!result.isError()) {
-            result = error(func->body, "non-void const function does not return a value");
+        } else if (!result.isError() && !result.isUnknown()) {
+            m_ctx.diagnostics.error(DiagCode::Sem_MissingReturn, func->body,
+                                    "non-void const function does not return a value");
+            result = ConstantValue::error();
         }
     } else {
-        result = error(func, "const function has no body");
+        // Function has no body - this is an error
+        m_ctx.diagnostics.error(DiagCode::Sem_MissingReturn, func,
+                                "const function has no body");
+        result = ConstantValue::error();
     }
 
     popFrame();
@@ -875,20 +1049,15 @@ int ConstEvaluator::compareOrder(const ConstantValue& a, const ConstantValue& b)
 
 // ─── Error Reporting ─────────────────────────────────────────────────────
 
-ConstantValue ConstEvaluator::error(const BaseAST* node, const std::string& msg) {
-    m_ctx.error(node, DiagCode::E3002, "const evaluation failed: ", msg);
-    return ConstantValue::error();
-}
-
 void ConstEvaluator::reportCycle(const std::vector<const DeclAST*>& cycle) {
+    if (cycle.empty()) return;
+    
     std::string msg = "circular dependency in const declarations: ";
     for (size_t i = 0; i < cycle.size(); ++i) {
         if (i > 0) msg += " → ";
         msg += m_ctx.pool.lookup(cycle[i]->name);
     }
-    if (!cycle.empty()) {
-        m_ctx.error(cycle[0], DiagCode::E3002, msg);
-    }
+    m_ctx.diagnostics.error(DiagCode::Sem_CircularDependency, cycle[0], msg);
 }
 
 // ─── Dependency Analysis ─────────────────────────────────────────────────

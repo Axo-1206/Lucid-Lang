@@ -213,8 +213,8 @@ void registerStructFieldNames(const StructDeclAST* decl, SemaContext& ctx) {
 void resolveImportDecl(const ImportDeclAST* decl, SemaContext& ctx) {
     ModuleAST* target = ctx.findModuleByPath(decl->path);
     if (!target) {
-        ctx.error(decl, DiagCode::E2001,
-                  "undefined module '", ctx.pool.lookup(decl->path), "'");
+        ctx.diagnostics.error(DiagCode::Sem_UndefinedModule, decl,
+                              "undefined module '", ctx.pool.lookup(decl->path), "'");
     }
 }
 
@@ -238,8 +238,9 @@ void resolveVarDecl(const VarDeclAST* decl, SemaContext& ctx) {
 
     // ─── 2. Const requires initializer ──────────────────────────────
     if (decl->keyword == DeclKeyword::Const && !decl->init) {
-        ctx.error(decl, DiagCode::E3002,
-                  "'", ctx.pool.lookup(decl->name), "' must have an initializer");
+        ctx.diagnostics.error(DiagCode::Sem_MissingInitializer, decl,
+                              "const variable '", ctx.pool.lookup(decl->name), 
+                              "' must have an initializer");
         return;
     }
 
@@ -265,8 +266,8 @@ void resolveVarDecl(const VarDeclAST* decl, SemaContext& ctx) {
             ConstantValue val = evaluator.evaluateDecl(decl);
             if (!val.isError()) {
                 // Store the evaluated value on the initializer expression
-                decl->init->isConst = true;
-                decl->init->constValue = val;
+                const_cast<ExprAST*>(decl->init)->isConst = true;
+                const_cast<ExprAST*>(decl->init)->constValue = val;
                 // Mark the declaration as const
                 const_cast<VarDeclAST*>(decl)->isConst = true;
             }
@@ -300,17 +301,45 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
     );
 
     if (foreignAttr) {
+        // Validate foreign function declaration
         if (decl->body) {
-            ctx.error(decl, DiagCode::E3003,
-                      "@[foreign] function '", ctx.pool.lookup(decl->name),
-                      "' must not have a body (implementation is external)");
+            ctx.diagnostics.error(DiagCode::Ffi_InvalidForeign, decl,
+                                  "@[foreign] function '", ctx.pool.lookup(decl->name),
+                                  "' must not have a body (implementation is external)");
         }
 
         if (!decl->genericParams.empty()) {
-            ctx.error(decl, DiagCode::E3003,
-                      "@[foreign] function '", ctx.pool.lookup(decl->name),
-                      "' cannot have generic parameters");
+            ctx.diagnostics.error(DiagCode::Ffi_InvalidForeign, decl,
+                                  "@[foreign] function '", ctx.pool.lookup(decl->name),
+                                  "' cannot have generic parameters");
         }
+
+        // TODO: uncomment or adjust this after we implement isFFICompatible
+        // Validate FFI type compatibility
+        // if (funcType) {
+        //     // Check return type
+        //     if (funcType->returnType && !isFFICompatible(funcType->returnType, ctx)) {
+        //         ctx.diagnostics.error(DiagCode::Ffi_TypeNotFFI, decl,
+        //                               "return type '", debug::typeToString(funcType->returnType, ctx.pool),
+        //                               "' is not FFI-compatible");
+        //     }
+            
+        //     // Check parameter types
+        //     for (FuncTypeAST* group = funcType; group; group = group->getNext()) {
+        //         for (ParamAST* param : group->params) {
+        //             if (!isFFICompatible(param->type, ctx)) {
+        //                 ctx.diagnostics.error(DiagCode::Ffi_TypeNotFFI, param,
+        //                                       "parameter '", ctx.pool.lookup(param->name),
+        //                                       "' type '", debug::typeToString(param->type, ctx.pool),
+        //                                       "' is not FFI-compatible");
+        //             }
+        //         }
+        //     }
+        // }
+        
+        // Foreign functions are not const-evaluable
+        // Mark as not const so we don't try to evaluate them
+        const_cast<FuncDeclAST*>(decl)->isConst = false;
         return;
     }
 
@@ -328,8 +357,8 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
 
     // ─── 5. Analyze body ──────────────────────────────────────────────────
     if (!decl->body) {
-        ctx.error(decl, DiagCode::E3003,
-                  "function '", ctx.pool.lookup(decl->name), "' has no body");
+        ctx.diagnostics.error(DiagCode::Sem_MissingReturn, decl,
+                              "function '", ctx.pool.lookup(decl->name), "' has no body");
         return;
     }
 
@@ -352,17 +381,18 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
         }
         bodyReturns = true;
     } else {
-        ctx.error(decl, DiagCode::E3003,
-                  "function '", ctx.pool.lookup(decl->name), "' has invalid body type");
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, decl,
+                              "function '", ctx.pool.lookup(decl->name), 
+                              "' has invalid body type");
         ctx.stack.pop();
         return;
     }
 
     // Verify return paths
     if (bodyReturns && !ctx.stack.returnRequirementsSatisfied()) {
-        ctx.error(decl, DiagCode::E3005,
-                  "function '", ctx.pool.lookup(decl->name),
-                  "' has missing nested return");
+        ctx.diagnostics.error(DiagCode::Sem_MissingReturn, decl,
+                              "function '", ctx.pool.lookup(decl->name),
+                              "' has missing nested return");
     }
 
     ctx.stack.pop();
@@ -418,9 +448,9 @@ void resolveEnumDecl(const EnumDeclAST* decl, SemaContext& ctx) {
 
     if (decl->backingType) {
         if (!resolvePrimitiveType(decl->backingType, ctx)) {
-            ctx.error(decl, DiagCode::E2002,
-                      "invalid backing type for enum '",
-                      ctx.pool.lookup(decl->name), "'");
+            ctx.diagnostics.error(DiagCode::Sem_InvalidParamType, decl,
+                                  "invalid backing type for enum '",
+                                  ctx.pool.lookup(decl->name), "'");
         }
     }
 
@@ -430,8 +460,8 @@ void resolveEnumDecl(const EnumDeclAST* decl, SemaContext& ctx) {
         for (const EnumVariantAST* existing : decl->variants) {
             if (existing == variant) break;
             if (existing->name == variant->name) {
-                ctx.error(variant, DiagCode::E2101,
-                          "redeclaration of '", ctx.pool.lookup(variant->name), "'");
+                ctx.diagnostics.error(DiagCode::Sem_Redeclaration, variant,
+                                      "redeclaration of '", ctx.pool.lookup(variant->name), "'");
                 break;
             }
         }
@@ -439,9 +469,9 @@ void resolveEnumDecl(const EnumDeclAST* decl, SemaContext& ctx) {
         for (const EnumVariantAST* existing : decl->variants) {
             if (existing == variant) break;
             if (existing->value == variant->value) {
-                ctx.error(variant, DiagCode::E3006,
-                          "duplicate enum value ", std::to_string(variant->value),
-                          " (also used by '", ctx.pool.lookup(existing->name), "')");
+                ctx.diagnostics.error(DiagCode::Sem_DuplicateValue, variant,
+                                      "duplicate enum value ", std::to_string(variant->value),
+                                      " (also used by '", ctx.pool.lookup(existing->name), "')");
                 break;
             }
         }
@@ -470,8 +500,8 @@ void resolveTraitDecl(const TraitDeclAST* decl, SemaContext& ctx) {
         for (const TraitFieldDeclAST* existing : decl->fields) {
             if (existing == field) break;
             if (existing->name == field->name) {
-                ctx.error(field, DiagCode::E2101,
-                          "redeclaration of '", ctx.pool.lookup(field->name), "'");
+                ctx.diagnostics.error(DiagCode::Sem_Redeclaration, field,
+                                      "redeclaration of '", ctx.pool.lookup(field->name), "'");
                 break;
             }
         }
@@ -483,9 +513,9 @@ void resolveTraitDecl(const TraitDeclAST* decl, SemaContext& ctx) {
 
         if (field->isConst) {
             if (isNullableType(fieldType) || isFallibleType(fieldType)) {
-                ctx.error(field, DiagCode::E3004,
-                          "const trait field '", ctx.pool.lookup(field->name),
-                          "' must be definite (not nullable or fallible)");
+                ctx.diagnostics.error(DiagCode::Sem_ConstNullable, field,
+                                      "const trait field '", ctx.pool.lookup(field->name),
+                                      "' must be definite (not nullable or fallible)");
                 continue;
             }
         }
@@ -539,8 +569,8 @@ void resolveStructFields(const StructDeclAST* decl, SemaContext& ctx) {
         for (const FieldDeclAST* existing : decl->fields) {
             if (existing == field) break;
             if (existing->name == field->name) {
-                ctx.error(field, DiagCode::E2101,
-                          "redeclaration of '", ctx.pool.lookup(field->name), "'");
+                ctx.diagnostics.error(DiagCode::Sem_Redeclaration, field,
+                                      "redeclaration of '", ctx.pool.lookup(field->name), "'");
                 break;
             }
         }
@@ -559,9 +589,9 @@ void resolveStructFields(const StructDeclAST* decl, SemaContext& ctx) {
         // ─── 2b. Validate const field type ──────────────────────────────
         if (field->isConst) {
             if (isNullableType(fieldType) || isFallibleType(fieldType)) {
-                ctx.error(field, DiagCode::E3004,
-                          "const field '", ctx.pool.lookup(field->name),
-                          "' must be definite (not nullable or fallible)");
+                ctx.diagnostics.error(DiagCode::Sem_ConstNullable, field,
+                                      "const field '", ctx.pool.lookup(field->name),
+                                      "' must be definite (not nullable or fallible)");
                 continue;
             }
         }
@@ -581,9 +611,9 @@ void resolveStructFields(const StructDeclAST* decl, SemaContext& ctx) {
 
         // ─── 2d. Validate reference type context (Downward Flow Rule) ────
         if (fieldType->isa<RefTypeAST>()) {
-            ctx.error(field, DiagCode::E3004,
-                      "reference type (&T) cannot be stored in struct field '",
-                      ctx.pool.lookup(field->name), "'");
+            ctx.diagnostics.error(DiagCode::Sem_RefInStruct, field,
+                                  "reference type (&T) cannot be stored in struct field '",
+                                  ctx.pool.lookup(field->name), "'");
         }
 
         // ─── 2e. Analyze function field bodies ──────────────────────────

@@ -10,6 +10,13 @@
 ///   Const evaluation happens when resolving declarations, not as a
 ///   separate phase. This allows the evaluator to use all the context
 ///   information already available.
+///
+/// @design_decision Silent on "not const-evaluable"
+///   If an expression can't be evaluated at compile time, we simply return
+///   ConstantValue::unknown() without emitting a diagnostic. This is normal
+///   and expected - the compiler continues with regular type checking.
+///   Only actual errors (division by zero, circular dependencies, etc.)
+///   trigger diagnostics.
 
 #pragma once
 
@@ -21,7 +28,6 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-#include <functional>
 #include <stack>
 
 namespace sema {
@@ -52,7 +58,7 @@ class ConstFunctionContext {
 public:
     ConstFunctionContext(SemaContext& ctx, const FuncDeclAST* func)
         : m_ctx(ctx) {
-        m_ctx.contexts.pushFunction(
+        m_ctx.stack.pushFunction(
             const_cast<FuncDeclAST*>(func),
             const_cast<FuncTypeAST*>(func->funcType),
             func->loc
@@ -62,7 +68,7 @@ public:
     
     ~ConstFunctionContext() {
         m_ctx.popScope();
-        m_ctx.contexts.pop();
+        m_ctx.stack.pop();
     }
 
 private:
@@ -109,6 +115,8 @@ public:
     ConstantValue evaluateDecl(const VarDeclAST* decl);
 
     /// @brief Evaluate an expression in the current context.
+    /// Returns ConstantValue::unknown() if the expression can't be evaluated
+    /// at compile time (no diagnostic emitted - this is normal).
     ConstantValue evalExpr(const ExprAST* expr);
 
     // ─── Expression Evaluators ──────────────────────────────────────────
@@ -172,6 +180,7 @@ private:
     
     ConstantValue getLocal(InternedString name) const;
     void setLocal(InternedString name, const ConstantValue& value);
+    bool isLocalVariable(InternedString name) const;
 
     // ─── Binary Operation Helpers ───────────────────────────────────────
 
@@ -195,7 +204,8 @@ private:
 
     // ─── Error Reporting ─────────────────────────────────────────────────
 
-    ConstantValue error(const BaseAST* node, const std::string& msg);
+    /// Report a circular dependency in const declarations.
+    /// This is a real error - emits a diagnostic.
     void reportCycle(const std::vector<const DeclAST*>& cycle);
 };
 

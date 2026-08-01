@@ -38,7 +38,8 @@ void analyze(std::vector<ModuleAST*>& modules, SemaContext& ctx) {
         ctx.enterModule(module);
         resolveModuleDecls(module, ctx);
 
-        module->hasErrors = diagnostic::hasErrorsInCurrentSource();
+        // Use the new diagnostic system via SemaContext
+        module->hasErrors = ctx.diagnostics.hasErrors();
 
         if (!ctx.canContinue()) {
             return;
