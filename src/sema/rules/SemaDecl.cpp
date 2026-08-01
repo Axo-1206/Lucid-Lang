@@ -258,7 +258,9 @@ void resolveVarDecl(const VarDeclAST* decl, SemaContext& ctx) {
             checkLetSelfReference(decl->init, decl->name, ctx);
         }
 
+        // ──────────────────────────────────────────────────────────────
         // ─── 5. CONST EVALUATION ──────────────────────────────────────
+        // ──────────────────────────────────────────────────────────────
         // For const declarations, evaluate the initializer NOW.
         // This happens during type resolution, not as a separate phase.
         if (decl->keyword == DeclKeyword::Const) {

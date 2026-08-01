@@ -10,27 +10,12 @@
 ///   This centralizes type checking and uses cached singleton types.
 
 #include "../Sema.hpp"
+#include "../registry/IntrinsicRegistry.hpp"
 
 #include <unordered_set>
 #include <optional>
 
 namespace sema {
-
-// ─── Helper: Set expression result ──────────────────────────────────────
-
-/// @brief Set an expression's resolved type and value state.
-static void setExprResult(ExprAST* expr, TypeAST* type, ValueState state) {
-    expr->resolvedType = type;
-    expr->valueState = state;
-}
-
-/// @brief Set an expression to error state.
-static void setExprError(ExprAST* expr, SemaContext& ctx, const BaseAST* node,
-                         DiagCode code, const std::string& msg) {
-    ctx.error(node, code, msg);
-    expr->resolvedType = ctx.getUnknownType();
-    expr->valueState = ValueState::Unknown;
-}
 
 // =============================================================================
 // resolveExprWithTarget - Main Entry Point
@@ -105,7 +90,10 @@ TypeAST* resolveExprWithTarget(ExprAST* expr, const TypeAST* targetType, SemaCon
             result = resolveRangeExpr(expr->as<RangeExprAST>(), targetType, ctx);
             break;
         default:
-            setExprError(expr, ctx, expr, DiagCode::E3003, "unsupported expression kind");
+            ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, expr,
+                                  "unsupported expression kind");
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
     }
 
@@ -121,11 +109,13 @@ TypeAST* resolveExprWithTarget(ExprAST* expr, const TypeAST* targetType, SemaCon
     // Validate against target type if provided and if we have a valid type
     if (targetType && result && !result->isa<UnknownTypeAST>()) {
         if (!isAssignable(targetType, result, ctx)) {
-            setExprError(expr, ctx, expr, DiagCode::E3003,
-                         "type mismatch: expected " +
-                         debug::typeToString(targetType, ctx.pool) +
-                         ", got " +
-                         debug::typeToString(result, ctx.pool));
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
+                                  "type mismatch: expected ",
+                                  debug::typeToString(targetType, ctx.pool),
+                                  ", got ",
+                                  debug::typeToString(result, ctx.pool));
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
         }
     }
@@ -205,11 +195,15 @@ TypeAST* resolveLiteralExpr(LiteralExprAST* expr, const TypeAST* targetType, Sem
             break;
 
         default:
-            setExprError(expr, ctx, expr, DiagCode::E3003, "unknown literal kind");
+            ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, expr,
+                                  "unknown literal kind");
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
     }
 
-    setExprResult(expr, result, state);
+    expr->resolvedType = result;
+    expr->valueState = state;
     return result;
 }
 
@@ -220,16 +214,21 @@ TypeAST* resolveLiteralExpr(LiteralExprAST* expr, const TypeAST* targetType, Sem
 TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
     // ─── Step 1: Check if this is a generic parameter ─────────────────────
     if (ctx.isGenericParam(expr->name)) {
-        setExprError(expr, ctx, expr, DiagCode::E2003,
-                     "'" + ctx.pool.lookup(expr->name) + "' is a generic type parameter, not a value");
+        ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
+                              "'", ctx.pool.lookup(expr->name), 
+                              "' is a generic type parameter, not a value");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
     // ─── Step 2: Look up the value declaration ────────────────────────────
     const ValueDeclAST* decl = ctx.lookupValue(expr->name);
     if (!decl) {
-        setExprError(expr, ctx, expr, DiagCode::E2001,
-                     "undefined value '" + ctx.pool.lookup(expr->name) + "'");
+        ctx.diagnostics.error(DiagCode::Sem_UndefinedValue, expr,
+                              "undefined value '", ctx.pool.lookup(expr->name), "'");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
@@ -251,8 +250,10 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetTyp
     // ─── Step 4: Handle generic arguments (function instantiation) ────────
     if (!expr->genericArgs.empty()) {
         if (!decl->isa<FuncDeclAST>()) {
-            setExprError(expr, ctx, expr, DiagCode::E3003,
-                         "'" + ctx.pool.lookup(expr->name) + "' is not a function");
+            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
+                                  "'", ctx.pool.lookup(expr->name), "' is not a function");
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
         }
 
@@ -260,26 +261,33 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetTyp
 
         for (const TypeAST* arg : expr->genericArgs) {
             if (!resolveType(arg, ctx)) {
-                setExprError(expr, ctx, expr, DiagCode::E3002,
-                             "invalid generic argument type for '" +
-                             ctx.pool.lookup(expr->name) + "'");
+                ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
+                                      "invalid generic argument type for '",
+                                      ctx.pool.lookup(expr->name), "'");
+                expr->resolvedType = ctx.getUnknownType();
+                expr->valueState = ValueState::Unknown;
                 return ctx.getUnknownType();
             }
         }
 
         if (!validateGenericArguments(expr->genericArgs, funcDecl->genericParams, expr, ctx)) {
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
         }
     }
 
     // ─── Step 5: Return the declaration's type ─────────────────────────────
     if (!decl->type) {
-        setExprError(expr, ctx, expr, DiagCode::E2002,
-                     "'" + ctx.pool.lookup(expr->name) + "' has no type information");
+        ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
+                              "'", ctx.pool.lookup(expr->name), "' has no type information");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
-    setExprResult(expr, decl->type, state);
+    expr->resolvedType = decl->type;
+    expr->valueState = state;
     return decl->type;
 }
 
@@ -289,7 +297,8 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetTyp
 
 TypeAST* resolveArrayLiteralExpr(ArrayLiteralExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
     if (expr->elements.empty()) {
-        setExprResult(expr, ctx.getUnknownType(), ValueState::Definite);
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Definite;
         return ctx.getUnknownType();
     }
 
@@ -301,7 +310,10 @@ TypeAST* resolveArrayLiteralExpr(ArrayLiteralExprAST* expr, const TypeAST* targe
 
     TypeAST* firstType = resolveExprWithTarget(expr->elements[0], targetElemType, ctx);
     if (!firstType || firstType->isa<UnknownTypeAST>()) {
-        setExprError(expr, ctx, expr, DiagCode::E3003, "array literal element has unknown type");
+        ctx.diagnostics.error(DiagCode::Sem_InvalidArrayElement, expr,
+                              "array literal element has unknown type");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
@@ -331,9 +343,10 @@ TypeAST* resolveArrayLiteralExpr(ArrayLiteralExprAST* expr, const TypeAST* targe
     }
 
     if (!allMatch) {
-        ctx.error(expr, DiagCode::E3003,
-                  "array literal contains elements of different types");
-        setExprResult(expr, ctx.getUnknownType(), ValueState::Unknown);
+        ctx.diagnostics.error(DiagCode::Sem_InvalidArrayElement, expr,
+                              "array literal contains elements of different types");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
@@ -349,7 +362,8 @@ TypeAST* resolveArrayLiteralExpr(ArrayLiteralExprAST* expr, const TypeAST* targe
 
     // Use cached array type
     ArrayTypeAST* arrayType = ctx.getArrayType(ArrayKind::Dynamic, 0, firstType);
-    setExprResult(expr, arrayType, state);
+    expr->resolvedType = arrayType;
+    expr->valueState = state;
     return arrayType;
 }
 
@@ -361,16 +375,18 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, const TypeAST* tar
     // ─── Step 1: Look up the struct type ─────────────────────────────────
     const TypeDeclAST* typeDecl = ctx.lookupType(expr->typeName);
     if (!typeDecl) {
-        ctx.error(expr, DiagCode::E2002,
-                  "undefined type '", ctx.pool.lookup(expr->typeName), "'");
-        setExprResult(expr, ctx.getUnknownType(), ValueState::Unknown);
+        ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
+                              "undefined type '", ctx.pool.lookup(expr->typeName), "'");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
     if (!typeDecl->isa<StructDeclAST>()) {
-        ctx.error(expr, DiagCode::E2002,
-                  "'", ctx.pool.lookup(expr->typeName), "' is not a struct");
-        setExprResult(expr, ctx.getUnknownType(), ValueState::Unknown);
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
+                              "'", ctx.pool.lookup(expr->typeName), "' is not a struct");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
@@ -380,48 +396,44 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, const TypeAST* tar
     if (!expr->genericArgs.empty()) {
         // ─── 2a. Check arity ─────────────────────────────────────────────
         if (expr->genericArgs.size() != structDecl->genericParams.size()) {
-            ctx.error(expr, DiagCode::E2207,
-                      "struct '", ctx.pool.lookup(structDecl->name),
-                      "' expected ", std::to_string(structDecl->genericParams.size()),
-                      " generic arguments, got ",
-                      std::to_string(expr->genericArgs.size()));
-            setExprResult(expr, ctx.getUnknownType(), ValueState::Unknown);
+            ctx.diagnostics.error(DiagCode::Sem_GenericArityMismatch, expr,
+                                  "struct '", ctx.pool.lookup(structDecl->name),
+                                  "' expected ", structDecl->genericParams.size(),
+                                  " generic arguments, got ",
+                                  expr->genericArgs.size());
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
         }
 
         // ─── 2b. Resolve each generic argument type ──────────────────────
-        // Create a temporary array to store resolved arguments
-        // We need to resolve each argument and store it back
         for (size_t i = 0; i < expr->genericArgs.size(); ++i) {
             TypeAST* resolvedArg = resolveType(expr->genericArgs[i], ctx);
             if (!resolvedArg) {
-                ctx.error(expr, DiagCode::E3002,
-                          "invalid generic argument at position ", std::to_string(i + 1),
-                          " for struct '", ctx.pool.lookup(structDecl->name), "'");
-                setExprResult(expr, ctx.getUnknownType(), ValueState::Unknown);
+                ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
+                                      "invalid generic argument at position ", i + 1,
+                                      " for struct '", ctx.pool.lookup(structDecl->name), "'");
+                expr->resolvedType = ctx.getUnknownType();
+                expr->valueState = ValueState::Unknown;
                 return ctx.getUnknownType();
             }
-            // Update the generic argument with the resolved type
             const_cast<TypePtr&>(expr->genericArgs[i]) = resolvedArg;
         }
 
         // ─── 2c. Validate constraints ─────────────────────────────────────
-        // Use the existing validateGenericArguments function
-        // Note: The generic arguments in StructLiteralExprAST are stored as TypePtr,
-        // but validateGenericArguments expects ArenaSpan<TypePtr>.
-        // We need to create a temporary ArenaSpan or use the existing one.
         if (!validateGenericArguments(expr->genericArgs, structDecl->genericParams, expr, ctx)) {
-            // Error already reported by validateGenericArguments
-            setExprResult(expr, ctx.getUnknownType(), ValueState::Unknown);
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
         }
     } else if (!structDecl->genericParams.empty()) {
         // ─── 2d. Struct has generic parameters but no arguments provided ──
-        ctx.error(expr, DiagCode::E2207,
-                  "struct '", ctx.pool.lookup(structDecl->name),
-                  "' requires ", std::to_string(structDecl->genericParams.size()),
-                  " generic argument(s)");
-        setExprResult(expr, ctx.getUnknownType(), ValueState::Unknown);
+        ctx.diagnostics.error(DiagCode::Sem_GenericArityMismatch, expr,
+                              "struct '", ctx.pool.lookup(structDecl->name),
+                              "' requires ", structDecl->genericParams.size(),
+                              " generic argument(s)");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
@@ -439,10 +451,11 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, const TypeAST* tar
     for (const FieldInitAST* init : expr->inits) {
         auto it = fieldMap.find(init->name);
         if (it == fieldMap.end()) {
-            ctx.error(init, DiagCode::E2001,
-                      "struct '", ctx.pool.lookup(structDecl->name),
-                      "' has no field named '", ctx.pool.lookup(init->name), "'");
-            setExprResult(expr, ctx.getUnknownType(), ValueState::Unknown);
+            ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, init,
+                                  "struct '", ctx.pool.lookup(structDecl->name),
+                                  "' has no field named '", ctx.pool.lookup(init->name), "'");
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
         }
 
@@ -453,12 +466,13 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, const TypeAST* tar
             if (init->value->isa<LiteralExprAST>()) {
                 const LiteralExprAST* literal = init->value->as<LiteralExprAST>();
                 if (literal->kind == LiteralKind::Nil || literal->kind == LiteralKind::Err) {
-                    ctx.error(init, DiagCode::E3004,
-                              "const field '", ctx.pool.lookup(field->name),
-                              "' cannot be assigned '",
-                              (literal->kind == LiteralKind::Nil ? "nil" : "err"),
-                              "' (const fields must have definite values)");
-                    setExprResult(expr, ctx.getUnknownType(), ValueState::Unknown);
+                    ctx.diagnostics.error(DiagCode::Sem_ConstNullable, init,
+                                          "const field '", ctx.pool.lookup(field->name),
+                                          "' cannot be assigned '",
+                                          (literal->kind == LiteralKind::Nil ? "nil" : "err"),
+                                          "' (const fields must have definite values)");
+                    expr->resolvedType = ctx.getUnknownType();
+                    expr->valueState = ValueState::Unknown;
                     return ctx.getUnknownType();
                 }
             }
@@ -468,7 +482,8 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, const TypeAST* tar
         TypeAST* initType = resolveExprWithTarget(init->value, field->type, ctx);
         if (!initType || initType->isa<UnknownTypeAST>()) {
             // Error already reported by resolveExprWithTarget
-            setExprResult(expr, ctx.getUnknownType(), ValueState::Unknown);
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
         }
 
@@ -489,32 +504,31 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, const TypeAST* tar
         }
 
         if (field->defaultVal) {
-            // Has default value - OK
             continue;
         }
 
         if (isNullableType(field->type)) {
-            // Nullable fields can be omitted (defaults to nil)
             continue;
         }
 
         if (isFallibleType(field->type)) {
-            // Fallible fields can be omitted (defaults to err)
             continue;
         }
 
         if (field->type->isa<CombinedTypeAST>()) {
-            ctx.error(expr, DiagCode::E3002,
-                      "combined field '", ctx.pool.lookup(field->name),
-                      "' (T?!) must be explicitly initialized (no implicit default)");
-            setExprResult(expr, ctx.getUnknownType(), ValueState::Unknown);
+            ctx.diagnostics.error(DiagCode::Sem_MissingInitializer, expr,
+                                  "combined field '", ctx.pool.lookup(field->name),
+                                  "' (T?!) must be explicitly initialized (no implicit default)");
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
         }
 
-        ctx.error(expr, DiagCode::E3002,
-                  "field '", ctx.pool.lookup(field->name),
-                  "' must be initialized in struct literal (no default value)");
-        setExprResult(expr, ctx.getUnknownType(), ValueState::Unknown);
+        ctx.diagnostics.error(DiagCode::Sem_MissingInitializer, expr,
+                              "field '", ctx.pool.lookup(field->name),
+                              "' must be initialized in struct literal (no default value)");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
@@ -530,7 +544,8 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, const TypeAST* tar
 
     // ─── Step 7: Return the struct type (cached) ──────────────────────
     NamedTypeAST* resultType = ctx.getNamedType(structDecl->name);
-    setExprResult(expr, resultType, state);
+    expr->resolvedType = resultType;
+    expr->valueState = state;
     return resultType;
 }
 
@@ -542,13 +557,19 @@ TypeAST* resolveBinaryExpr(BinaryExprAST* expr, const TypeAST* targetType, SemaC
     // ─── Step 1: Resolve operands ──────────────────────────────────────────
     TypeAST* leftType = resolveExpr(expr->left, ctx);
     if (!leftType || leftType->isa<UnknownTypeAST>()) {
-        setExprError(expr, ctx, expr->left, DiagCode::E3003, "left operand has unknown type");
+        ctx.diagnostics.error(DiagCode::Sem_InvalidBinary, expr->left,
+                              "left operand has unknown type");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
     TypeAST* rightType = resolveExpr(expr->right, ctx);
     if (!rightType || rightType->isa<UnknownTypeAST>()) {
-        setExprError(expr, ctx, expr->right, DiagCode::E3003, "right operand has unknown type");
+        ctx.diagnostics.error(DiagCode::Sem_InvalidBinary, expr->right,
+                              "right operand has unknown type");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
@@ -560,7 +581,8 @@ TypeAST* resolveBinaryExpr(BinaryExprAST* expr, const TypeAST* targetType, SemaC
         NarrowingInfo info = detectNarrowingPattern(expr, ctx);
         if (info.hasNarrowing) {
             ctx.stack.setPendingNarrowing(info);
-            setExprResult(expr, ctx.getBoolType(), ValueState::Definite);
+            expr->resolvedType = ctx.getBoolType();
+            expr->valueState = ValueState::Definite;
             return ctx.getBoolType();
         }
     }
@@ -578,14 +600,18 @@ TypeAST* resolveBinaryExpr(BinaryExprAST* expr, const TypeAST* targetType, SemaC
         case BinaryOp::Pow:
         case BinaryOp::Mod: {
             if (leftState == ValueState::Nil || rightState == ValueState::Nil) {
-                setExprError(expr, ctx, expr, DiagCode::E3003,
-                             "arithmetic operator cannot be used with nil. Use `??` to handle nil first.");
+                ctx.diagnostics.error(DiagCode::Sem_InvalidBinary, expr,
+                                      "arithmetic operator cannot be used with nil. Use `??` to handle nil first.");
+                expr->resolvedType = ctx.getUnknownType();
+                expr->valueState = ValueState::Unknown;
                 return ctx.getUnknownType();
             }
 
             if (!isNumericType(leftType) || !isNumericType(rightType)) {
-                setExprError(expr, ctx, expr, DiagCode::E3003,
-                             "arithmetic operator requires numeric operands");
+                ctx.diagnostics.error(DiagCode::Sem_InvalidBinary, expr,
+                                      "arithmetic operator requires numeric operands");
+                expr->resolvedType = ctx.getUnknownType();
+                expr->valueState = ValueState::Unknown;
                 return ctx.getUnknownType();
             }
 
@@ -611,20 +637,26 @@ TypeAST* resolveBinaryExpr(BinaryExprAST* expr, const TypeAST* targetType, SemaC
         case BinaryOp::And:
         case BinaryOp::Or: {
             if (leftState == ValueState::Nil || rightState == ValueState::Nil) {
-                setExprError(expr, ctx, expr, DiagCode::E3003,
-                             "logical operator cannot be used with nil");
+                ctx.diagnostics.error(DiagCode::Sem_InvalidLogicalOp, expr,
+                                      "logical operator cannot be used with nil");
+                expr->resolvedType = ctx.getUnknownType();
+                expr->valueState = ValueState::Unknown;
                 return ctx.getUnknownType();
             }
 
             if (leftState == ValueState::Err || rightState == ValueState::Err) {
-                setExprError(expr, ctx, expr, DiagCode::E3003,
-                             "logical operator cannot be used with err");
+                ctx.diagnostics.error(DiagCode::Sem_InvalidLogicalOp, expr,
+                                      "logical operator cannot be used with err");
+                expr->resolvedType = ctx.getUnknownType();
+                expr->valueState = ValueState::Unknown;
                 return ctx.getUnknownType();
             }
 
             if (!isBoolType(leftType) || !isBoolType(rightType)) {
-                setExprError(expr, ctx, expr, DiagCode::E3003,
-                             "logical operator requires bool operands");
+                ctx.diagnostics.error(DiagCode::Sem_InvalidLogicalOp, expr,
+                                      "logical operator requires bool operands");
+                expr->resolvedType = ctx.getUnknownType();
+                expr->valueState = ValueState::Unknown;
                 return ctx.getUnknownType();
             }
 
@@ -640,20 +672,26 @@ TypeAST* resolveBinaryExpr(BinaryExprAST* expr, const TypeAST* targetType, SemaC
         case BinaryOp::Shl:
         case BinaryOp::Shr: {
             if (leftState == ValueState::Nil || rightState == ValueState::Nil) {
-                setExprError(expr, ctx, expr, DiagCode::E3003,
-                             "bitwise operator cannot be used with nil");
+                ctx.diagnostics.error(DiagCode::Sem_InvalidBitwiseOp, expr,
+                                      "bitwise operator cannot be used with nil");
+                expr->resolvedType = ctx.getUnknownType();
+                expr->valueState = ValueState::Unknown;
                 return ctx.getUnknownType();
             }
 
             if (leftState == ValueState::Err || rightState == ValueState::Err) {
-                setExprError(expr, ctx, expr, DiagCode::E3003,
-                             "bitwise operator cannot be used with err");
+                ctx.diagnostics.error(DiagCode::Sem_InvalidBitwiseOp, expr,
+                                      "bitwise operator cannot be used with err");
+                expr->resolvedType = ctx.getUnknownType();
+                expr->valueState = ValueState::Unknown;
                 return ctx.getUnknownType();
             }
 
             if (!isIntegerType(leftType) || !isIntegerType(rightType)) {
-                setExprError(expr, ctx, expr, DiagCode::E3003,
-                             "bitwise operator requires integer operands");
+                ctx.diagnostics.error(DiagCode::Sem_InvalidBitwiseOp, expr,
+                                      "bitwise operator requires integer operands");
+                expr->resolvedType = ctx.getUnknownType();
+                expr->valueState = ValueState::Unknown;
                 return ctx.getUnknownType();
             }
 
@@ -663,23 +701,29 @@ TypeAST* resolveBinaryExpr(BinaryExprAST* expr, const TypeAST* targetType, SemaC
         }
 
         default:
-            setExprError(expr, ctx, expr, DiagCode::E3003, "unknown binary operator");
+            ctx.diagnostics.error(DiagCode::Sem_InvalidBinary, expr,
+                                  "unknown binary operator");
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
     }
 
     // Validate against target type if provided
     if (targetType && resultType && !resultType->isa<UnknownTypeAST>()) {
         if (!isAssignable(targetType, resultType, ctx)) {
-            setExprError(expr, ctx, expr, DiagCode::E3003,
-                         "type mismatch: expected " +
-                         debug::typeToString(targetType, ctx.pool) +
-                         ", got " +
-                         debug::typeToString(resultType, ctx.pool));
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
+                                  "type mismatch: expected ",
+                                  debug::typeToString(targetType, ctx.pool),
+                                  ", got ",
+                                  debug::typeToString(resultType, ctx.pool));
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
         }
     }
 
-    setExprResult(expr, resultType, resultState);
+    expr->resolvedType = resultType;
+    expr->valueState = resultState;
     return resultType;
 }
 
@@ -690,7 +734,10 @@ TypeAST* resolveBinaryExpr(BinaryExprAST* expr, const TypeAST* targetType, SemaC
 TypeAST* resolveUnaryExpr(UnaryExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
     TypeAST* operandType = resolveExpr(expr->operand, ctx);
     if (!operandType || operandType->isa<UnknownTypeAST>()) {
-        setExprError(expr, ctx, expr->operand, DiagCode::E3003, "operand has unknown type");
+        ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, expr->operand,
+                              "operand has unknown type");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
@@ -704,8 +751,10 @@ TypeAST* resolveUnaryExpr(UnaryExprAST* expr, const TypeAST* targetType, SemaCon
     switch (expr->op) {
         case UnaryOp::Neg: {
             if (isNil) {
-                setExprError(expr, ctx, expr, DiagCode::E3003,
-                             "negation cannot be used with nil. Use `??` to handle nil first.");
+                ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, expr,
+                                      "negation cannot be used with nil. Use `??` to handle nil first.");
+                expr->resolvedType = ctx.getUnknownType();
+                expr->valueState = ValueState::Unknown;
                 return ctx.getUnknownType();
             }
 
@@ -716,8 +765,10 @@ TypeAST* resolveUnaryExpr(UnaryExprAST* expr, const TypeAST* targetType, SemaCon
             }
 
             if (!isNumericType(operandType)) {
-                setExprError(expr, ctx, expr, DiagCode::E3003,
-                             "negation requires numeric operand");
+                ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, expr,
+                                      "negation requires numeric operand");
+                expr->resolvedType = ctx.getUnknownType();
+                expr->valueState = ValueState::Unknown;
                 return ctx.getUnknownType();
             }
 
@@ -728,20 +779,26 @@ TypeAST* resolveUnaryExpr(UnaryExprAST* expr, const TypeAST* targetType, SemaCon
 
         case UnaryOp::Not: {
             if (isNil) {
-                setExprError(expr, ctx, expr, DiagCode::E3003,
-                             "logical not cannot be used with nil. Use `??` to handle nil first.");
+                ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, expr,
+                                      "logical not cannot be used with nil. Use `??` to handle nil first.");
+                expr->resolvedType = ctx.getUnknownType();
+                expr->valueState = ValueState::Unknown;
                 return ctx.getUnknownType();
             }
 
             if (isErr) {
-                setExprError(expr, ctx, expr, DiagCode::E3003,
-                             "logical not cannot be used with err. Use `??` to handle err first.");
+                ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, expr,
+                                      "logical not cannot be used with err. Use `??` to handle err first.");
+                expr->resolvedType = ctx.getUnknownType();
+                expr->valueState = ValueState::Unknown;
                 return ctx.getUnknownType();
             }
 
             if (!isBoolType(operandType)) {
-                setExprError(expr, ctx, expr, DiagCode::E3003,
-                             "logical not requires bool operand");
+                ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, expr,
+                                      "logical not requires bool operand");
+                expr->resolvedType = ctx.getUnknownType();
+                expr->valueState = ValueState::Unknown;
                 return ctx.getUnknownType();
             }
 
@@ -752,20 +809,26 @@ TypeAST* resolveUnaryExpr(UnaryExprAST* expr, const TypeAST* targetType, SemaCon
 
         case UnaryOp::BitNot: {
             if (isNil) {
-                setExprError(expr, ctx, expr, DiagCode::E3003,
-                             "bitwise not cannot be used with nil. Use `??` to handle nil first.");
+                ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, expr,
+                                      "bitwise not cannot be used with nil. Use `??` to handle nil first.");
+                expr->resolvedType = ctx.getUnknownType();
+                expr->valueState = ValueState::Unknown;
                 return ctx.getUnknownType();
             }
 
             if (isErr) {
-                setExprError(expr, ctx, expr, DiagCode::E3003,
-                             "bitwise not cannot be used with err. Use `??` to handle err first.");
+                ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, expr,
+                                      "bitwise not cannot be used with err. Use `??` to handle err first.");
+                expr->resolvedType = ctx.getUnknownType();
+                expr->valueState = ValueState::Unknown;
                 return ctx.getUnknownType();
             }
 
             if (!isIntegerType(operandType)) {
-                setExprError(expr, ctx, expr, DiagCode::E3003,
-                             "bitwise not requires integer operand");
+                ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, expr,
+                                      "bitwise not requires integer operand");
+                expr->resolvedType = ctx.getUnknownType();
+                expr->valueState = ValueState::Unknown;
                 return ctx.getUnknownType();
             }
 
@@ -775,11 +838,15 @@ TypeAST* resolveUnaryExpr(UnaryExprAST* expr, const TypeAST* targetType, SemaCon
         }
 
         default:
-            setExprError(expr, ctx, expr, DiagCode::E3003, "unknown unary operator");
+            ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, expr,
+                                  "unknown unary operator");
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
     }
 
-    setExprResult(expr, resultType, resultState);
+    expr->resolvedType = resultType;
+    expr->valueState = resultState;
     return resultType;
 }
 
@@ -791,25 +858,34 @@ TypeAST* resolveCallExpr(CallExprAST* expr, const TypeAST* targetType, SemaConte
     // ─── Step 1: Resolve callee ─────────────────────────────────────────────
     TypeAST* calleeType = resolveExpr(expr->callee, ctx);
     if (!calleeType || calleeType->isa<UnknownTypeAST>()) {
-        setExprError(expr, ctx, expr->callee, DiagCode::E2003, "callee has unknown type");
+        ctx.diagnostics.error(DiagCode::Sem_NotCallable, expr->callee,
+                              "callee has unknown type");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
     if (expr->callee->valueState == ValueState::Nil) {
-        setExprError(expr, ctx, expr->callee, DiagCode::E3003,
-                     "cannot call nil value. Use `??` to handle nil first.");
+        ctx.diagnostics.error(DiagCode::Sem_NotCallable, expr->callee,
+                              "cannot call nil value. Use `??` to handle nil first.");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
     if (expr->callee->valueState == ValueState::Err) {
-        setExprError(expr, ctx, expr->callee, DiagCode::E3003,
-                     "cannot call err value. Use `??` to handle err first.");
+        ctx.diagnostics.error(DiagCode::Sem_NotCallable, expr->callee,
+                              "cannot call err value. Use `??` to handle err first.");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
     if (!calleeType->isa<FuncTypeAST>()) {
-        setExprError(expr, ctx, expr->callee, DiagCode::E2003,
-                     "expression is not callable");
+        ctx.diagnostics.error(DiagCode::Sem_NotCallable, expr->callee,
+                              "expression is not callable");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
@@ -821,39 +897,47 @@ TypeAST* resolveCallExpr(CallExprAST* expr, const TypeAST* targetType, SemaConte
         if (!expr->genericArgs.empty()) {
             for (const TypeAST* arg : expr->genericArgs) {
                 if (!resolveType(arg, ctx)) {
-                    setExprError(expr, ctx, expr, DiagCode::E3002,
-                                 "invalid generic argument type for '" +
-                                 ctx.pool.lookup(funcDecl->name) + "'");
+                    ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
+                                          "invalid generic argument type for '",
+                                          ctx.pool.lookup(funcDecl->name), "'");
+                    expr->resolvedType = ctx.getUnknownType();
+                    expr->valueState = ValueState::Unknown;
                     return ctx.getUnknownType();
                 }
             }
 
             if (!validateGenericArguments(expr->genericArgs, funcDecl->genericParams, expr, ctx)) {
+                expr->resolvedType = ctx.getUnknownType();
+                expr->valueState = ValueState::Unknown;
                 return ctx.getUnknownType();
             }
         } else if (!funcDecl->genericParams.empty()) {
-            ctx.error(expr, DiagCode::E2207,
-                      "generic function '", ctx.pool.lookup(funcDecl->name),
-                      "' requires ", std::to_string(funcDecl->genericParams.size()),
-                      " generic argument(s)");
-            setExprResult(expr, ctx.getUnknownType(), ValueState::Unknown);
+            ctx.diagnostics.error(DiagCode::Sem_GenericArityMismatch, expr,
+                                  "generic function '", ctx.pool.lookup(funcDecl->name),
+                                  "' requires ", funcDecl->genericParams.size(),
+                                  " generic argument(s)");
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
         }
     } else {
         if (!expr->genericArgs.empty()) {
-            setExprError(expr, ctx, expr, DiagCode::E3003,
-                         "generic arguments can only be applied to named function calls");
+            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
+                                  "generic arguments can only be applied to named function calls");
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
         }
     }
 
     // ─── Step 3: Check argument count ──────────────────────────────────────
     if (expr->args.size() != funcType->params.size()) {
-        ctx.error(expr, DiagCode::E3001,
-                  "wrong number of arguments: expected ",
-                  std::to_string(funcType->params.size()), ", found ",
-                  std::to_string(expr->args.size()));
-        setExprResult(expr, ctx.getUnknownType(), ValueState::Unknown);
+        ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
+                              "wrong number of arguments: expected ",
+                              funcType->params.size(), ", found ",
+                              expr->args.size());
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
@@ -866,7 +950,8 @@ TypeAST* resolveCallExpr(CallExprAST* expr, const TypeAST* targetType, SemaConte
         TypeAST* argType = resolveExprWithTarget(arg, param->type, ctx);
         if (!argType || argType->isa<UnknownTypeAST>()) {
             // Error already reported by resolveExprWithTarget
-            setExprResult(expr, ctx.getUnknownType(), ValueState::Unknown);
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
         }
 
@@ -875,14 +960,18 @@ TypeAST* resolveCallExpr(CallExprAST* expr, const TypeAST* targetType, SemaConte
         }
 
         if (arg->valueState == ValueState::Err && !isFallibleType(param->type)) {
-            setExprError(expr, ctx, arg, DiagCode::E3003,
-                         "cannot pass err to non-fallible parameter");
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
+                                  "cannot pass err to non-fallible parameter");
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
         }
 
         if (arg->valueState == ValueState::Nil && !isNullableType(param->type)) {
-            setExprError(expr, ctx, arg, DiagCode::E3003,
-                         "cannot pass nil to non-nullable parameter");
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
+                                  "cannot pass nil to non-nullable parameter");
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
         }
     }
@@ -899,7 +988,8 @@ TypeAST* resolveCallExpr(CallExprAST* expr, const TypeAST* targetType, SemaConte
         state = ValueState::Definite;
     }
 
-    setExprResult(expr, funcType->returnType, state);
+    expr->resolvedType = funcType->returnType;
+    expr->valueState = state;
     return funcType->returnType;
 }
 
@@ -912,15 +1002,19 @@ TypeAST* resolveIntrinsicCallExpr(IntrinsicCallExprAST* expr, const TypeAST* tar
 
     const IntrinsicInfo* info = registry.getIntrinsicInfo(expr->intrinsicName);
     if (!info) {
-        setExprError(expr, ctx, expr, DiagCode::E3101,
-                     "unknown intrinsic '#" + ctx.pool.lookup(expr->intrinsicName) + "'");
+        ctx.diagnostics.error(DiagCode::Sem_UnknownIntrinsic, expr,
+                              "unknown intrinsic '#", ctx.pool.lookup(expr->intrinsicName), "'");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
     if (!registry.validateArgCount(expr->intrinsicName, expr->args.size())) {
-        setExprError(expr, ctx, expr, DiagCode::E3001,
-                     "wrong number of arguments for intrinsic '#" +
-                     ctx.pool.lookup(expr->intrinsicName) + "'");
+        ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
+                              "wrong number of arguments for intrinsic '#",
+                              ctx.pool.lookup(expr->intrinsicName), "'");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
@@ -928,15 +1022,18 @@ TypeAST* resolveIntrinsicCallExpr(IntrinsicCallExprAST* expr, const TypeAST* tar
     for (ExprAST* arg : expr->args) {
         TypeAST* argType = resolveExpr(arg, ctx);
         if (!argType || argType->isa<UnknownTypeAST>()) {
-            setExprError(expr, ctx, arg, DiagCode::E3003,
-                         "argument to intrinsic '#" + ctx.pool.lookup(expr->intrinsicName) +
-                         "' has unknown type");
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
+                                  "argument to intrinsic '#", ctx.pool.lookup(expr->intrinsicName),
+                                  "' has unknown type");
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
         }
     }
 
     if (!registry.validateIntrinsicCall(expr, ctx)) {
-        setExprResult(expr, ctx.getUnknownType(), ValueState::Unknown);
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
@@ -946,7 +1043,8 @@ TypeAST* resolveIntrinsicCallExpr(IntrinsicCallExprAST* expr, const TypeAST* tar
 
     const TypeAST* resultType = registry.getIntrinsicReturnType(expr, targetType, ctx);
     ValueState state = registry.getIntrinsicValueState(expr, ctx);
-    setExprResult(expr, const_cast<TypeAST*>(resultType), state);
+    expr->resolvedType = const_cast<TypeAST*>(resultType);
+    expr->valueState = state;
     return const_cast<TypeAST*>(resultType);
 }
 
@@ -958,14 +1056,19 @@ TypeAST* resolveIndexExpr(IndexExprAST* expr, const TypeAST* targetType, SemaCon
     // ─── Step 1: Resolve target ─────────────────────────────────────────────
     TypeAST* targetTypeAst = resolveExpr(expr->target, ctx);
     if (!targetTypeAst || targetTypeAst->isa<UnknownTypeAST>()) {
-        setExprError(expr, ctx, expr->target, DiagCode::E3003, "index target has unknown type");
+        ctx.diagnostics.error(DiagCode::Sem_InvalidArrayElement, expr->target,
+                              "index target has unknown type");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
     if (!targetTypeAst->isa<ArrayTypeAST>()) {
-        setExprError(expr, ctx, expr->target, DiagCode::E3003,
-                     "indexing requires an array target type, got " +
-                     debug::typeToString(targetTypeAst, ctx.pool));
+        ctx.diagnostics.error(DiagCode::Sem_InvalidArrayElement, expr->target,
+                              "indexing requires an array target type, got ",
+                              debug::typeToString(targetTypeAst, ctx.pool));
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
@@ -976,7 +1079,8 @@ TypeAST* resolveIndexExpr(IndexExprAST* expr, const TypeAST* targetType, SemaCon
     TypeAST* indexType = resolveExprWithTarget(expr->index, intType, ctx);
     if (!indexType || indexType->isa<UnknownTypeAST>()) {
         // Error already reported by resolveExprWithTarget
-        setExprResult(expr, ctx.getUnknownType(), ValueState::Unknown);
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
@@ -988,7 +1092,8 @@ TypeAST* resolveIndexExpr(IndexExprAST* expr, const TypeAST* targetType, SemaCon
         state = ValueState::Definite;
     }
 
-    setExprResult(expr, arrayType->element, state);
+    expr->resolvedType = arrayType->element;
+    expr->valueState = state;
     return arrayType->element;
 }
 
@@ -1000,14 +1105,19 @@ TypeAST* resolveSliceExpr(SliceExprAST* expr, const TypeAST* targetType, SemaCon
     // ─── Step 1: Resolve target ─────────────────────────────────────────────
     TypeAST* targetTypeAst = resolveExpr(expr->target, ctx);
     if (!targetTypeAst || targetTypeAst->isa<UnknownTypeAST>()) {
-        setExprError(expr, ctx, expr->target, DiagCode::E3003, "slice target has unknown type");
+        ctx.diagnostics.error(DiagCode::Sem_InvalidArrayElement, expr->target,
+                              "slice target has unknown type");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
     if (!targetTypeAst->isa<ArrayTypeAST>()) {
-        setExprError(expr, ctx, expr->target, DiagCode::E3003,
-                     "slicing requires an array target type, got " +
-                     debug::typeToString(targetTypeAst, ctx.pool));
+        ctx.diagnostics.error(DiagCode::Sem_InvalidArrayElement, expr->target,
+                              "slicing requires an array target type, got ",
+                              debug::typeToString(targetTypeAst, ctx.pool));
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
@@ -1019,7 +1129,8 @@ TypeAST* resolveSliceExpr(SliceExprAST* expr, const TypeAST* targetType, SemaCon
         TypeAST* startType = resolveExprWithTarget(expr->start, intType, ctx);
         if (!startType || startType->isa<UnknownTypeAST>()) {
             // Error already reported by resolveExprWithTarget
-            setExprResult(expr, ctx.getUnknownType(), ValueState::Unknown);
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
         }
     }
@@ -1030,7 +1141,8 @@ TypeAST* resolveSliceExpr(SliceExprAST* expr, const TypeAST* targetType, SemaCon
         TypeAST* endType = resolveExprWithTarget(expr->end, intType, ctx);
         if (!endType || endType->isa<UnknownTypeAST>()) {
             // Error already reported by resolveExprWithTarget
-            setExprResult(expr, ctx.getUnknownType(), ValueState::Unknown);
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
         }
     }
@@ -1045,7 +1157,8 @@ TypeAST* resolveSliceExpr(SliceExprAST* expr, const TypeAST* targetType, SemaCon
 
     // Result is always a slice (cached)
     ArrayTypeAST* sliceType = ctx.getArrayType(ArrayKind::Slice, 0, arrayType->element);
-    setExprResult(expr, sliceType, state);
+    expr->resolvedType = sliceType;
+    expr->valueState = state;
     return sliceType;
 }
 
@@ -1057,31 +1170,42 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetT
     // ─── Step 1: Resolve object ─────────────────────────────────────────────
     TypeAST* objectType = resolveExpr(expr->object, ctx);
     if (!objectType || objectType->isa<UnknownTypeAST>()) {
-        setExprError(expr, ctx, expr->object, DiagCode::E3003, "object has unknown type");
+        ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr->object,
+                              "object has unknown type");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
     if (expr->object->valueState == ValueState::Nil) {
-        setExprError(expr, ctx, expr->object, DiagCode::E3003,
-                     "cannot access field on nil. Use `?.` for nullable access.");
+        ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr->object,
+                              "cannot access field on nil. Use `?.` for nullable access.");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
     if (expr->object->valueState == ValueState::Err) {
-        setExprError(expr, ctx, expr->object, DiagCode::E3003,
-                     "cannot access field on err. Use `??` to handle err first.");
+        ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr->object,
+                              "cannot access field on err. Use `??` to handle err first.");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
     if (isNullableType(objectType)) {
-        setExprError(expr, ctx, expr->object, DiagCode::E3003,
-                     "cannot access field on nullable type. Use `?.` for nullable access.");
+        ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr->object,
+                              "cannot access field on nullable type. Use `?.` for nullable access.");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
     if (isFallibleType(objectType)) {
-        setExprError(expr, ctx, expr->object, DiagCode::E3003,
-                     "cannot access field on fallible type. Use `??` to handle err first.");
+        ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr->object,
+                              "cannot access field on fallible type. Use `??` to handle err first.");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
@@ -1091,42 +1215,51 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetT
 
         if (ctx.isGenericParam(namedType->name)) {
             if (!isFieldAccessibleOnGenericType(objectType, expr->fieldName, ctx)) {
-                setExprError(expr, ctx, expr, DiagCode::E2210,
-                             "field '" + ctx.pool.lookup(expr->fieldName) +
-                             "' is not accessible on generic type '" +
-                             ctx.pool.lookup(namedType->name) +
-                             "' (no trait constraint provides this field)");
+                ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr,
+                                      "field '", ctx.pool.lookup(expr->fieldName),
+                                      "' is not accessible on generic type '",
+                                      ctx.pool.lookup(namedType->name),
+                                      "' (no trait constraint provides this field)");
+                expr->resolvedType = ctx.getUnknownType();
+                expr->valueState = ValueState::Unknown;
                 return ctx.getUnknownType();
             }
 
             const TypeAST* fieldType = getFieldTypeOnGenericType(objectType, expr->fieldName, ctx);
             if (!fieldType) {
-                setExprError(expr, ctx, expr, DiagCode::E2001,
-                             "field '" + ctx.pool.lookup(expr->fieldName) +
-                             "' has no type information in generic constraints");
+                ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr,
+                                      "field '", ctx.pool.lookup(expr->fieldName),
+                                      "' has no type information in generic constraints");
+                expr->resolvedType = ctx.getUnknownType();
+                expr->valueState = ValueState::Unknown;
                 return ctx.getUnknownType();
             }
 
             ValueState state = (isNullableType(fieldType) || isFallibleType(fieldType))
                                ? ValueState::Unknown : ValueState::Definite;
-            setExprResult(expr, const_cast<TypeAST*>(fieldType), state);
+            expr->resolvedType = const_cast<TypeAST*>(fieldType);
+            expr->valueState = state;
             return const_cast<TypeAST*>(fieldType);
         }
     }
 
     // ─── Step 3: Look up the type declaration ──────────────────────────────
     if (!objectType->isa<NamedTypeAST>()) {
-        setExprError(expr, ctx, expr->object, DiagCode::E2002,
-                     "field access requires a struct or enum type, got " +
-                     debug::typeToString(objectType, ctx.pool));
+        ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr->object,
+                              "field access requires a struct or enum type, got ",
+                              debug::typeToString(objectType, ctx.pool));
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
     const NamedTypeAST* namedType = objectType->as<NamedTypeAST>();
     const TypeDeclAST* typeDecl = ctx.lookupType(namedType->name);
     if (!typeDecl) {
-        setExprError(expr, ctx, expr, DiagCode::E2002,
-                     "undefined type '" + ctx.pool.lookup(namedType->name) + "'");
+        ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
+                              "undefined type '", ctx.pool.lookup(namedType->name), "'");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
@@ -1138,14 +1271,17 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetT
             if (f->name == expr->fieldName) {
                 ValueState state = (isNullableType(f->type) || isFallibleType(f->type))
                                    ? ValueState::Unknown : ValueState::Definite;
-                setExprResult(expr, f->type, state);
+                expr->resolvedType = f->type;
+                expr->valueState = state;
                 return f->type;
             }
         }
 
-        setExprError(expr, ctx, expr, DiagCode::E2001,
-                     "struct '" + ctx.pool.lookup(structDecl->name) +
-                     "' has no field named '" + ctx.pool.lookup(expr->fieldName) + "'");
+        ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr,
+                              "struct '", ctx.pool.lookup(structDecl->name),
+                              "' has no field named '", ctx.pool.lookup(expr->fieldName), "'");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
@@ -1155,19 +1291,24 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetT
 
         for (const EnumVariantAST* v : enumDecl->variants) {
             if (v->name == expr->fieldName) {
-                setExprResult(expr, ctx.getNamedType(enumDecl->name), ValueState::Definite);
+                expr->resolvedType = ctx.getNamedType(enumDecl->name);
+                expr->valueState = ValueState::Definite;
                 return ctx.getNamedType(enumDecl->name);
             }
         }
 
-        setExprError(expr, ctx, expr, DiagCode::E2001,
-                     "enum '" + ctx.pool.lookup(enumDecl->name) +
-                     "' has no variant named '" + ctx.pool.lookup(expr->fieldName) + "'");
+        ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr,
+                              "enum '", ctx.pool.lookup(enumDecl->name),
+                              "' has no variant named '", ctx.pool.lookup(expr->fieldName), "'");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
-    setExprError(expr, ctx, expr, DiagCode::E2002,
-                 "field access on unsupported type");
+    ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr,
+                          "field access on unsupported type");
+    expr->resolvedType = ctx.getUnknownType();
+    expr->valueState = ValueState::Unknown;
     return ctx.getUnknownType();
 }
 
@@ -1179,39 +1320,47 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, const TypeAST* targe
     // ─── Step 1: Look up the module alias ───────────────────────────────────
     ModuleAST* module = ctx.lookupImport(expr->moduleName);
     if (!module) {
-        setExprError(expr, ctx, expr, DiagCode::E2001,
-                     "undefined module alias '" + ctx.pool.lookup(expr->moduleName) + "'");
+        ctx.diagnostics.error(DiagCode::Sem_UndefinedModule, expr,
+                              "undefined module alias '", ctx.pool.lookup(expr->moduleName), "'");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
     // ─── Step 2: Get the module's table ────────────────────────────────────
     ModuleTable* table = ctx.findModuleTable(module);
     if (!table) {
-        setExprError(expr, ctx, expr, DiagCode::E2001,
-                     "module '" + ctx.pool.lookup(expr->moduleName) + "' has not been analyzed");
+        ctx.diagnostics.error(DiagCode::Sem_ModuleNotAnalyzed, expr,
+                              "module '", ctx.pool.lookup(expr->moduleName), "' has not been analyzed");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
     // ─── Step 3: Look up the member ────────────────────────────────────────
     auto it = table->values.find(expr->memberName);
     if (it == table->values.end()) {
-        setExprError(expr, ctx, expr, DiagCode::E2001,
-                     "module '" + ctx.pool.lookup(expr->moduleName) +
-                     "' has no exported member '" + ctx.pool.lookup(expr->memberName) + "'");
+        ctx.diagnostics.error(DiagCode::Sem_UndefinedMember, expr,
+                              "module '", ctx.pool.lookup(expr->moduleName),
+                              "' has no exported member '", ctx.pool.lookup(expr->memberName), "'");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
     const ValueDeclAST* decl = it->second;
 
-    // ─── Step 4: Mark as module member (read-only) ────────────────────────
+    // ─── Step 4: Mark as module member ────────────────────────────────────
     expr->isModuleMember = true;
 
     // ─── Step 5: Check generic arguments if present ────────────────────────
     if (!expr->genericArgs.empty()) {
         if (!decl->isa<FuncDeclAST>()) {
-            setExprError(expr, ctx, expr, DiagCode::E3003,
-                         "member '" + ctx.pool.lookup(expr->memberName) +
-                         "' is not a generic function");
+            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
+                                  "member '", ctx.pool.lookup(expr->memberName),
+                                  "' is not a generic function");
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
         }
 
@@ -1219,29 +1368,36 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, const TypeAST* targe
 
         for (const TypeAST* arg : expr->genericArgs) {
             if (!resolveType(arg, ctx)) {
-                setExprError(expr, ctx, expr, DiagCode::E3002,
-                             "invalid generic argument type for '" +
-                             ctx.pool.lookup(expr->memberName) + "'");
+                ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
+                                      "invalid generic argument type for '",
+                                      ctx.pool.lookup(expr->memberName), "'");
+                expr->resolvedType = ctx.getUnknownType();
+                expr->valueState = ValueState::Unknown;
                 return ctx.getUnknownType();
             }
         }
 
         if (!validateGenericArguments(expr->genericArgs, funcDecl->genericParams, expr, ctx)) {
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
         }
     }
 
     // ─── Step 6: Return the member's type ───────────────────────────────────
     if (!decl->type) {
-        setExprError(expr, ctx, expr, DiagCode::E3003,
-                     "member '" + ctx.pool.lookup(expr->memberName) +
-                     "' has no type information");
+        ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
+                              "member '", ctx.pool.lookup(expr->memberName),
+                              "' has no type information");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
     ValueState state = (isNullableType(decl->type) || isFallibleType(decl->type))
                        ? ValueState::Unknown : ValueState::Definite;
-    setExprResult(expr, decl->type, state);
+    expr->resolvedType = decl->type;
+    expr->valueState = state;
     return decl->type;
 }
 
@@ -1251,34 +1407,46 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, const TypeAST* targe
 
 TypeAST* resolveNullableChainExpr(NullableChainExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
     if (expr->steps.empty()) {
-        setExprError(expr, ctx, expr, DiagCode::E3003, "empty nullable chain");
+        ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, expr,
+                              "empty nullable chain");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
     // ─── Step 1: Resolve base object ────────────────────────────────────────
     TypeAST* currentType = resolveExpr(expr->object, ctx);
     if (!currentType || currentType->isa<UnknownTypeAST>()) {
-        setExprError(expr, ctx, expr->object, DiagCode::E3003, "base object has unknown type");
+        ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr->object,
+                              "base object has unknown type");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
     // Base must be nullable
     if (!isNullableType(currentType)) {
-        setExprError(expr, ctx, expr->object, DiagCode::E3003,
-                     "?. chain requires a nullable base type (T?), got " +
-                     debug::typeToString(currentType, ctx.pool));
+        ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr->object,
+                              "?. chain requires a nullable base type (T?), got ",
+                              debug::typeToString(currentType, ctx.pool));
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
     if (isFallibleType(currentType)) {
-        setExprError(expr, ctx, expr->object, DiagCode::E3003,
-                     "?. chain cannot be used on fallible type. Use `??` to handle err first.");
+        ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr->object,
+                              "?. chain cannot be used on fallible type. Use `??` to handle err first.");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
     if (expr->object->valueState == ValueState::Err) {
-        setExprError(expr, ctx, expr->object, DiagCode::E3003,
-                     "?. chain cannot be used on err. Use `??` to handle err first.");
+        ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr->object,
+                              "?. chain cannot be used on err. Use `??` to handle err first.");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
@@ -1287,30 +1455,39 @@ TypeAST* resolveNullableChainExpr(NullableChainExprAST* expr, const TypeAST* tar
     // ─── Step 2: Walk through each step ────────────────────────────────────
     for (const InternedString& step : expr->steps) {
         if (!currentType || !isNullableType(currentType)) {
-            setExprError(expr, ctx, expr, DiagCode::E3003,
-                         "?. step requires nullable type, got " +
-                         debug::typeToString(currentType, ctx.pool));
+            ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr,
+                                  "?. step requires nullable type, got ",
+                                  debug::typeToString(currentType, ctx.pool));
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
         }
 
         const TypeAST* innerType = unwrapNullable(const_cast<TypeAST*>(currentType));
         if (!innerType) {
-            setExprError(expr, ctx, expr, DiagCode::E3003, "cannot unwrap nullable type");
+            ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr,
+                                  "cannot unwrap nullable type");
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
         }
 
         if (!innerType->isa<NamedTypeAST>()) {
-            setExprError(expr, ctx, expr, DiagCode::E3003,
-                         "?. step requires struct or enum type, got " +
-                         debug::typeToString(innerType, ctx.pool));
+            ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr,
+                                  "?. step requires struct or enum type, got ",
+                                  debug::typeToString(innerType, ctx.pool));
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
         }
 
         const NamedTypeAST* namedType = innerType->as<NamedTypeAST>();
         const TypeDeclAST* typeDecl = ctx.lookupType(namedType->name);
         if (!typeDecl) {
-            setExprError(expr, ctx, expr, DiagCode::E2002,
-                         "undefined type '" + ctx.pool.lookup(namedType->name) + "'");
+            ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
+                                  "undefined type '", ctx.pool.lookup(namedType->name), "'");
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
         }
 
@@ -1326,16 +1503,20 @@ TypeAST* resolveNullableChainExpr(NullableChainExprAST* expr, const TypeAST* tar
         }
 
         if (!field) {
-            setExprError(expr, ctx, expr, DiagCode::E2001,
-                         "type has no field named '" + ctx.pool.lookup(step) + "'");
+            ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr,
+                                  "type has no field named '", ctx.pool.lookup(step), "'");
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
         }
 
         if (!isNullableType(field->type)) {
-            setExprError(expr, ctx, expr, DiagCode::E3003,
-                         "?. step '" + ctx.pool.lookup(step) +
-                         "' must be nullable, got "  +
-                         debug::typeToString(field->type, ctx.pool));
+            ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr,
+                                  "?. step '", ctx.pool.lookup(step),
+                                  "' must be nullable, got ",
+                                  debug::typeToString(field->type, ctx.pool));
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
         }
 
@@ -1343,7 +1524,8 @@ TypeAST* resolveNullableChainExpr(NullableChainExprAST* expr, const TypeAST* tar
     }
 
     // ─── Step 3: Propagate value state ────────────────────────────────────
-    setExprResult(expr, currentType, hasNilStep ? ValueState::Nil : ValueState::Unknown);
+    expr->resolvedType = currentType;
+    expr->valueState = hasNilStep ? ValueState::Nil : ValueState::Unknown;
     return currentType;
 }
 
@@ -1355,13 +1537,18 @@ TypeAST* resolveNullCoalesceExpr(NullCoalesceExprAST* expr, const TypeAST* targe
     // ─── Step 1: Resolve LHS ────────────────────────────────────────────────
     TypeAST* lhsType = resolveExpr(expr->value, ctx);
     if (!lhsType || lhsType->isa<UnknownTypeAST>()) {
-        setExprError(expr, ctx, expr->value, DiagCode::E3003, "LHS has unknown type");
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr->value,
+                              "LHS has unknown type");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
     if (!isNullableType(lhsType) && !isFallibleType(lhsType)) {
-        setExprError(expr, ctx, expr->value, DiagCode::E3003,
-                     "?? requires nullable or fallible LHS (T?, T!, or T?!)");
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr->value,
+                              "?? requires nullable or fallible LHS (T?, T!, or T?!)");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
@@ -1375,7 +1562,10 @@ TypeAST* resolveNullCoalesceExpr(NullCoalesceExprAST* expr, const TypeAST* targe
     }
 
     if (!lhsInner) {
-        setExprError(expr, ctx, expr, DiagCode::E3003, "cannot unwrap LHS type");
+        ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr,
+                              "cannot unwrap LHS type");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
@@ -1383,7 +1573,8 @@ TypeAST* resolveNullCoalesceExpr(NullCoalesceExprAST* expr, const TypeAST* targe
     TypeAST* rhsType = resolveExprWithTarget(expr->fallback, lhsInner, ctx);
     if (!rhsType || rhsType->isa<UnknownTypeAST>()) {
         // Error already reported by resolveExprWithTarget
-        setExprResult(expr, ctx.getUnknownType(), ValueState::Unknown);
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
@@ -1400,7 +1591,8 @@ TypeAST* resolveNullCoalesceExpr(NullCoalesceExprAST* expr, const TypeAST* targe
         state = ValueState::Unknown;
     }
 
-    setExprResult(expr, rhsType, state);
+    expr->resolvedType = rhsType;
+    expr->valueState = state;
     return rhsType;
 }
 
@@ -1412,7 +1604,10 @@ TypeAST* resolveAssignExpr(AssignExprAST* expr, const TypeAST* targetType, SemaC
     // ─── Step 1: Resolve LHS ─────────────────────────────────────────────────
     TypeAST* lhsType = resolveExpr(expr->lhs, ctx);
     if (!lhsType || lhsType->isa<UnknownTypeAST>()) {
-        setExprError(expr, ctx, expr->lhs, DiagCode::E3003, "LHS has unknown type");
+        ctx.diagnostics.error(DiagCode::Sem_InvalidAssignment, expr->lhs,
+                              "LHS has unknown type");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
@@ -1420,7 +1615,8 @@ TypeAST* resolveAssignExpr(AssignExprAST* expr, const TypeAST* targetType, SemaC
     TypeAST* rhsType = resolveExprWithTarget(expr->rhs, lhsType, ctx);
     if (!rhsType || rhsType->isa<UnknownTypeAST>()) {
         // Error already reported by resolveExprWithTarget
-        setExprResult(expr, ctx.getUnknownType(), ValueState::Unknown);
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
@@ -1436,9 +1632,11 @@ TypeAST* resolveAssignExpr(AssignExprAST* expr, const TypeAST* targetType, SemaC
             case AssignOp::ModAssign:
                 isArithmetic = true;
                 if (!isNumericType(lhsType)) {
-                    setExprError(expr, ctx, expr, DiagCode::E3003,
-                                 "arithmetic compound assignment requires numeric type, got " +
-                                 debug::typeToString(lhsType, ctx.pool));
+                    ctx.diagnostics.error(DiagCode::Sem_InvalidAssignment, expr,
+                                          "arithmetic compound assignment requires numeric type, got ",
+                                          debug::typeToString(lhsType, ctx.pool));
+                    expr->resolvedType = ctx.getUnknownType();
+                    expr->valueState = ValueState::Unknown;
                     return ctx.getUnknownType();
                 }
                 break;
@@ -1449,21 +1647,26 @@ TypeAST* resolveAssignExpr(AssignExprAST* expr, const TypeAST* targetType, SemaC
             case AssignOp::ShlAssign:
             case AssignOp::ShrAssign:
                 if (!isIntegerType(lhsType)) {
-                    setExprError(expr, ctx, expr, DiagCode::E3003,
-                                 "bitwise compound assignment requires integer type, got " +
-                                 debug::typeToString(lhsType, ctx.pool));
+                    ctx.diagnostics.error(DiagCode::Sem_InvalidAssignment, expr,
+                                          "bitwise compound assignment requires integer type, got ",
+                                          debug::typeToString(lhsType, ctx.pool));
+                    expr->resolvedType = ctx.getUnknownType();
+                    expr->valueState = ValueState::Unknown;
                     return ctx.getUnknownType();
                 }
                 break;
 
             default:
-                setExprError(expr, ctx, expr, DiagCode::E3003,
-                             "unknown compound assignment operator");
+                ctx.diagnostics.error(DiagCode::Sem_InvalidAssignment, expr,
+                                      "unknown compound assignment operator");
+                expr->resolvedType = ctx.getUnknownType();
+                expr->valueState = ValueState::Unknown;
                 return ctx.getUnknownType();
         }
     }
 
-    setExprResult(expr, lhsType, expr->rhs->valueState);
+    expr->resolvedType = lhsType;
+    expr->valueState = expr->rhs->valueState;
     return lhsType;
 }
 
@@ -1479,40 +1682,40 @@ TypeAST* resolvePipelineStep(PipelineStepAST* step, const TypeAST* inputType, Se
     // ─── Step 1: Resolve callable ───────────────────────────────────────────
     TypeAST* callableType = resolveExpr(step->callable, ctx);
     if (!callableType || callableType->isa<UnknownTypeAST>()) {
-        setExprError(step->callable, ctx, step->callable, DiagCode::E2003,
-                     "pipeline step callable has unknown type");
+        ctx.diagnostics.error(DiagCode::Sem_NotCallable, step->callable,
+                              "pipeline step callable has unknown type");
         return ctx.getUnknownType();
     }
 
     if (!callableType->isa<FuncTypeAST>()) {
-        setExprError(step->callable, ctx, step->callable, DiagCode::E2003,
-                     "pipeline step is not a function type, got " +
-                     debug::typeToString(callableType, ctx.pool));
+        ctx.diagnostics.error(DiagCode::Sem_PipelineMismatch, step->callable,
+                              "pipeline step is not a function type, got ",
+                              debug::typeToString(callableType, ctx.pool));
         return ctx.getUnknownType();
     }
 
     FuncTypeAST* funcType = callableType->as<FuncTypeAST>();
 
     if (funcType->params.empty()) {
-        setExprError(step->callable, ctx, step->callable, DiagCode::E3003,
-                     "pipeline step function takes no parameters");
+        ctx.diagnostics.error(DiagCode::Sem_PipelineMismatch, step->callable,
+                              "pipeline step function takes no parameters");
         return ctx.getUnknownType();
     }
 
     // ─── Step 2: Verify first parameter matches input type ────────────────
     const TypeAST* firstParamType = funcType->params[0]->type;
     if (!isAssignable(firstParamType, inputType, ctx)) {
-        setExprError(step->callable, ctx, step->callable, DiagCode::E3003,
-                     "pipeline step input mismatch: expected " +
-                     debug::typeToString(firstParamType, ctx.pool) +
-                     ", got " + debug::typeToString(inputType, ctx.pool));
+        ctx.diagnostics.error(DiagCode::Sem_PipelineMismatch, step->callable,
+                              "pipeline step input mismatch: expected ",
+                              debug::typeToString(firstParamType, ctx.pool),
+                              ", got ", debug::typeToString(inputType, ctx.pool));
         return ctx.getUnknownType();
     }
 
     // ─── Step 3: Return the output type ────────────────────────────────────
     if (!funcType->returnType) {
-        setExprError(step->callable, ctx, step->callable, DiagCode::E3003,
-                     "pipeline step returns void");
+        ctx.diagnostics.error(DiagCode::Sem_PipelineMismatch, step->callable,
+                              "pipeline step returns void");
         return ctx.getUnknownType();
     }
 
@@ -1525,14 +1728,20 @@ TypeAST* resolvePipelineStep(PipelineStepAST* step, const TypeAST* inputType, Se
 
 TypeAST* resolvePipelineExpr(PipelineExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
     if (expr->steps.empty()) {
-        setExprError(expr, ctx, expr, DiagCode::E1107, "pipeline has no steps");
+        ctx.diagnostics.error(DiagCode::Sem_PipelineMismatch, expr,
+                              "pipeline has no steps");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
     // ─── Step 1: Resolve seed ──────────────────────────────────────────────
     TypeAST* currentType = resolveExpr(expr->seed, ctx);
     if (!currentType || currentType->isa<UnknownTypeAST>()) {
-        setExprError(expr, ctx, expr->seed, DiagCode::E2002, "seed has unknown type");
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr->seed,
+                              "seed has unknown type");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
@@ -1544,7 +1753,8 @@ TypeAST* resolvePipelineExpr(PipelineExprAST* expr, const TypeAST* targetType, S
         }
     }
 
-    setExprResult(expr, currentType, ValueState::Definite);
+    expr->resolvedType = currentType;
+    expr->valueState = ValueState::Definite;
     return currentType;
 }
 
@@ -1560,15 +1770,15 @@ TypeAST* resolveComposeOperand(ComposeOperandAST* operand, const TypeAST* target
     // ─── Step 1: Resolve callable ──────────────────────────────────────────
     TypeAST* callableType = resolveExpr(operand->callable, ctx);
     if (!callableType || callableType->isa<UnknownTypeAST>()) {
-        setExprError(operand->callable, ctx, operand->callable, DiagCode::E2003,
-                     "composition operand has unknown type");
+        ctx.diagnostics.error(DiagCode::Sem_NotCallable, operand->callable,
+                              "composition operand has unknown type");
         return ctx.getUnknownType();
     }
 
     if (!callableType->isa<FuncTypeAST>()) {
-        setExprError(operand->callable, ctx, operand->callable, DiagCode::E2003,
-                     "composition operand is not a function type, got " +
-                     debug::typeToString(callableType, ctx.pool));
+        ctx.diagnostics.error(DiagCode::Sem_CompositionMismatch, operand->callable,
+                              "composition operand is not a function type, got ",
+                              debug::typeToString(callableType, ctx.pool));
         return ctx.getUnknownType();
     }
 
@@ -1576,9 +1786,9 @@ TypeAST* resolveComposeOperand(ComposeOperandAST* operand, const TypeAST* target
 
     // ─── Step 2: Verify function has exactly one parameter group ──────────
     if (funcType->isCurried()) {
-        setExprError(operand->callable, ctx, operand->callable, DiagCode::E3003,
-                     "composition operand must have exactly one parameter group "
-                     "(curried functions are not allowed in composition)");
+        ctx.diagnostics.error(DiagCode::Sem_CompositionMismatch, operand->callable,
+                              "composition operand must have exactly one parameter group "
+                              "(curried functions are not allowed in composition)");
         return ctx.getUnknownType();
     }
 
@@ -1586,15 +1796,15 @@ TypeAST* resolveComposeOperand(ComposeOperandAST* operand, const TypeAST* target
     if (!operand->genericArgs.empty()) {
         const FuncDeclAST* funcDecl = resolveCalleeOrError(operand->callable, ctx);
         if (!funcDecl) {
-            setExprError(operand->callable, ctx, operand->callable, DiagCode::E2003,
-                         "generic arguments applied to non-generic function");
+            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, operand->callable,
+                                  "generic arguments applied to non-generic function");
             return ctx.getUnknownType();
         }
 
         for (const TypeAST* arg : operand->genericArgs) {
             if (!resolveType(arg, ctx)) {
-                setExprError(operand->callable, ctx, operand->callable, DiagCode::E3002,
-                             "invalid generic argument type");
+                ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, operand->callable,
+                                      "invalid generic argument type");
                 return ctx.getUnknownType();
             }
         }
@@ -1614,13 +1824,19 @@ TypeAST* resolveComposeOperand(ComposeOperandAST* operand, const TypeAST* target
 
 TypeAST* resolveComposeExpr(ComposeExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
     if (expr->operands.empty()) {
-        setExprError(expr, ctx, expr, DiagCode::E3003, "composition has no operands");
+        ctx.diagnostics.error(DiagCode::Sem_CompositionMismatch, expr,
+                              "composition has no operands");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
     // ─── Step 1: Resolve left operand ──────────────────────────────────────
     if (!expr->left || !expr->left->isa<ComposeOperandAST>()) {
-        setExprError(expr, ctx, expr->left, DiagCode::E2002, "invalid left operand in composition");
+        ctx.diagnostics.error(DiagCode::Sem_CompositionMismatch, expr->left,
+                              "invalid left operand in composition");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
@@ -1630,7 +1846,10 @@ TypeAST* resolveComposeExpr(ComposeExprAST* expr, const TypeAST* targetType, Sem
     }
 
     if (!leftType->isa<FuncTypeAST>()) {
-        setExprError(expr, ctx, expr->left, DiagCode::E2002, "left operand is not a function");
+        ctx.diagnostics.error(DiagCode::Sem_CompositionMismatch, expr->left,
+                              "left operand is not a function");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
@@ -1644,8 +1863,10 @@ TypeAST* resolveComposeExpr(ComposeExprAST* expr, const TypeAST* targetType, Sem
         }
 
         if (!operandType->isa<FuncTypeAST>()) {
-            setExprError(operand->callable, ctx, operand->callable, DiagCode::E2002,
-                         "operand is not a function");
+            ctx.diagnostics.error(DiagCode::Sem_CompositionMismatch, operand->callable,
+                                  "operand is not a function");
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
         }
 
@@ -1655,24 +1876,29 @@ TypeAST* resolveComposeExpr(ComposeExprAST* expr, const TypeAST* targetType, Sem
         const TypeAST* nextInput = nextFunc->params.empty() ? nullptr : nextFunc->params[0]->type;
 
         if (!prevOutput || !nextInput) {
-            setExprError(operand->callable, ctx, operand->callable, DiagCode::E3003,
-                         "function input/output mismatch in composition");
+            ctx.diagnostics.error(DiagCode::Sem_CompositionMismatch, operand->callable,
+                                  "function input/output mismatch in composition");
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
         }
 
         if (!isAssignable(nextInput, prevOutput, ctx)) {
-            setExprError(operand->callable, ctx, operand->callable, DiagCode::E3003,
-                         "composition type mismatch: previous output " +
-                         debug::typeToString(prevOutput, ctx.pool) +
-                         " is not assignable to next input " +
-                         debug::typeToString(nextInput, ctx.pool));
+            ctx.diagnostics.error(DiagCode::Sem_CompositionMismatch, operand->callable,
+                                  "composition type mismatch: previous output ",
+                                  debug::typeToString(prevOutput, ctx.pool),
+                                  " is not assignable to next input ",
+                                  debug::typeToString(nextInput, ctx.pool));
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
         }
 
         currentFunc = nextFunc;
     }
 
-    setExprResult(expr, currentFunc, ValueState::Definite);
+    expr->resolvedType = currentFunc;
+    expr->valueState = ValueState::Definite;
     return currentFunc;
 }
 
@@ -1682,7 +1908,10 @@ TypeAST* resolveComposeExpr(ComposeExprAST* expr, const TypeAST* targetType, Sem
 
 TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
     if (!expr->funcType) {
-        setExprError(expr, ctx, expr, DiagCode::E2002, "anonymous function has no function type");
+        ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
+                              "anonymous function has no function type");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
@@ -1701,11 +1930,13 @@ TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, const TypeAST* targetType, S
 
     // ─── Step 3: Analyze body ──────────────────────────────────────────────
     if (!expr->body) {
-        setExprError(expr, ctx, expr, DiagCode::E3003, "anonymous function has no body");
+        ctx.diagnostics.error(DiagCode::Sem_MissingReturn, expr,
+                              "anonymous function has no body");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
-    // ─── Use pushAnonFunction (now exists) ─────────────────────────────────
     ctx.stack.pushAnonFunction(expr, funcType, expr->loc);
 
     bool bodyReturns = false;
@@ -1714,14 +1945,17 @@ TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, const TypeAST* targetType, S
     } else if (expr->body->isa<ReturnStmtAST>()) {
         bodyReturns = resolveReturnStmt(expr->body->as<ReturnStmtAST>(), ctx);
     } else {
-        setExprError(expr, ctx, expr, DiagCode::E3003, "anonymous function has invalid body type");
+        ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, expr,
+                              "anonymous function has invalid body type");
         ctx.stack.pop();
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
     if (bodyReturns && !ctx.stack.returnRequirementsSatisfied()) {
-        ctx.error(expr, DiagCode::E3005,
-                  "anonymous function has missing nested return");
+        ctx.diagnostics.error(DiagCode::Sem_MissingReturn, expr,
+                              "anonymous function has missing nested return");
     }
 
     ctx.stack.pop();
@@ -1729,7 +1963,8 @@ TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, const TypeAST* targetType, S
     // ─── Step 4: Return the function type ──────────────────────────────────
     ValueState state = (isNullableType(funcType) || isFallibleType(funcType))
                        ? ValueState::Unknown : ValueState::Definite;
-    setExprResult(expr, funcType, state);
+    expr->resolvedType = funcType;
+    expr->valueState = state;
     return funcType;
 }
 
@@ -1749,22 +1984,30 @@ TypeAST* resolveIfExpr(IfExprAST* expr, const TypeAST* targetType, SemaContext& 
     // ─── Step 2: Resolve branches ───────────────────────────────────────────
     TypeAST* thenType = resolveExpr(expr->thenBranch, ctx);
     if (!thenType || thenType->isa<UnknownTypeAST>()) {
-        setExprError(expr, ctx, expr->thenBranch, DiagCode::E3003, "then branch has unknown type");
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr->thenBranch,
+                              "then branch has unknown type");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
     TypeAST* elseType = resolveExpr(expr->elseBranch, ctx);
     if (!elseType || elseType->isa<UnknownTypeAST>()) {
-        setExprError(expr, ctx, expr->elseBranch, DiagCode::E3003, "else branch has unknown type");
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr->elseBranch,
+                              "else branch has unknown type");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
     // ─── Step 3: Check branch types are compatible ────────────────────────
     if (!isAssignable(thenType, elseType, ctx)) {
-        ctx.error(expr, DiagCode::E3003,
-                  "if expression branches have incompatible types: then ",
-                  debug::typeToString(thenType, ctx.pool),
-                  ", else ", debug::typeToString(elseType, ctx.pool));
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
+                              "if expression branches have incompatible types: then ",
+                              debug::typeToString(thenType, ctx.pool),
+                              ", else ", debug::typeToString(elseType, ctx.pool));
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
@@ -1779,7 +2022,8 @@ TypeAST* resolveIfExpr(IfExprAST* expr, const TypeAST* targetType, SemaContext& 
         state = ValueState::Definite;
     }
 
-    setExprResult(expr, thenType, state);
+    expr->resolvedType = thenType;
+    expr->valueState = state;
     return thenType;
 }
 
@@ -1789,7 +2033,6 @@ TypeAST* resolveIfExpr(IfExprAST* expr, const TypeAST* targetType, SemaContext& 
 
 TypeAST* resolveRangeExpr(RangeExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
     // ─── Step 1: Resolve lower bound ────────────────────────────────────────
-    // Range bounds must be numeric - use int as default target
     PrimitiveTypeAST* numericType = ctx.getIntType();
     TypeAST* loType = resolveExprWithTarget(expr->lo, numericType, ctx);
     if (!loType || loType->isa<UnknownTypeAST>()) {
@@ -1806,14 +2049,17 @@ TypeAST* resolveRangeExpr(RangeExprAST* expr, const TypeAST* targetType, SemaCon
 
     // ─── Step 3: Validate bounds are same type ─────────────────────────────
     if (!typesEqual(loType, hiType)) {
-        ctx.error(expr, DiagCode::E3003,
-                  "range bounds must be the same type, got ",
-                  debug::typeToString(loType, ctx.pool), " and ",
-                  debug::typeToString(hiType, ctx.pool));
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
+                              "range bounds must be the same type, got ",
+                              debug::typeToString(loType, ctx.pool), " and ",
+                              debug::typeToString(hiType, ctx.pool));
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
-    setExprResult(expr, loType, ValueState::Definite);
+    expr->resolvedType = loType;
+    expr->valueState = ValueState::Definite;
     return loType;
 }
 
