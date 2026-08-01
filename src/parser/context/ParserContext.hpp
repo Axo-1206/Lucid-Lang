@@ -35,7 +35,6 @@
 #include "core/memory/ASTArena.hpp"
 #include "core/memory/StringPool.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
-#include "core/diagnostics/DiagnosticCodes.hpp"
 #include "TokenStream.hpp"
 #include "../ModuleResolver.hpp"
 
