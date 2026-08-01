@@ -3,7 +3,7 @@
 
 #include "SemaLookup.hpp"
 #include "../context/SemaContext.hpp"
-#include "core/diagnostics/DiagnosticCodes.hpp"
+#include "core/diagnostics/Diagnostic.hpp"
 
 namespace sema {
 
@@ -61,9 +61,9 @@ bool isImportAliasRedeclared(InternedString alias, SemaContext& ctx) {
 
 bool reportValueRedeclaration(const DeclAST* node, SemaContext& ctx) {
     if (isValueRedeclared(node->name, ctx)) {
-        ctx.error(node, DiagCode::E2101,
-                  "redeclaration of '", ctx.pool.lookup(node->name), 
-                  "' in the same scope");
+        ctx.diagnostics.error(DiagCode::Sem_Redeclaration, node,
+                              "redeclaration of '", ctx.pool.lookup(node->name), 
+                              "' in the same scope");
         return true;
     }
     return false;
@@ -71,9 +71,9 @@ bool reportValueRedeclaration(const DeclAST* node, SemaContext& ctx) {
 
 bool reportTypeRedeclaration(const DeclAST* node, SemaContext& ctx) {
     if (isTypeRedeclared(node->name, ctx)) {
-        ctx.error(node, DiagCode::E2101,
-                  "redeclaration of '", ctx.pool.lookup(node->name), 
-                  "' in the same scope");
+        ctx.diagnostics.error(DiagCode::Sem_Redeclaration, node,
+                              "redeclaration of '", ctx.pool.lookup(node->name), 
+                              "' in the same scope");
         return true;
     }
     return false;
@@ -81,9 +81,9 @@ bool reportTypeRedeclaration(const DeclAST* node, SemaContext& ctx) {
 
 bool reportGenericParamRedeclaration(const DeclAST* node, SemaContext& ctx) {
     if (isGenericParamRedeclared(node->name, ctx)) {
-        ctx.error(node, DiagCode::E2101,
-                  "redeclaration of generic parameter '", 
-                  ctx.pool.lookup(node->name), "' in the same scope");
+        ctx.diagnostics.error(DiagCode::Sem_GenericParamRedeclaration, node,
+                              "redeclaration of generic parameter '", 
+                              ctx.pool.lookup(node->name), "' in the same scope");
         return true;
     }
     return false;
@@ -93,9 +93,9 @@ bool reportImportAliasRedeclaration(InternedString alias,
                                      const BaseAST* node, 
                                      SemaContext& ctx) {
     if (isImportAliasRedeclared(alias, ctx)) {
-        ctx.error(node, DiagCode::E2101,
-                  "redeclaration of import alias '", 
-                  ctx.pool.lookup(alias), "'");
+        ctx.diagnostics.error(DiagCode::Sem_ImportAliasRedeclaration, node,
+                              "redeclaration of import alias '", 
+                              ctx.pool.lookup(alias), "'");
         return true;
     }
     return false;

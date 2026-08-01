@@ -58,92 +58,122 @@ inline const char* severityName(Severity s) {
     return "UNKNOWN";
 }
 
-// ─── Error Codes ──────────────────────────────────────────────────────────
+// ─── Diagnostic Codes ──────────────────────────────────────────────────────
 
-enum class ErrorCode : uint32_t {
+/// @brief Unique diagnostic codes with clear category prefixes.
+/// 
+/// Naming convention: Category_Detail
+///   - Lex_*     : Lexical errors (1000-1999)
+///   - Syntax_*  : Syntax errors (2000-2999)
+///   - Sem_*     : Semantic errors (3000-6999)
+///   - Backend_* : Backend errors (7000-7999)
+///   - Warn_*    : Warnings (8000-8999)
+enum class DiagCode : uint32_t {
     // ─── Lexical (1000-1999) ────────────────────────────────────────────
-    LexInvalidCharacter = 1001,
-    LexUnterminatedString = 1002,
-    LexUnterminatedRawString = 1003,
-    LexUnterminatedBlockComment = 1004,
-    LexUnknownCharacter = 1005,
+    Lex_InvalidCharacter         = 1001,
+    Lex_UnterminatedString       = 1002,
+    Lex_UnterminatedRawString    = 1003,
+    Lex_UnterminatedBlockComment = 1004,
+    Lex_UnknownCharacter         = 1005,
 
     // ─── Syntax (2000-2999) ─────────────────────────────────────────────
-    SyntaxExpectedIdentifier = 2001,
-    SyntaxExpectedType = 2002,
-    SyntaxExpectedToken = 2003,
-    SyntaxUnexpectedToken = 2004,
-    SyntaxExpectedExpression = 2005,
-    SyntaxExpectedBlock = 2006,
-    SyntaxMultipleDefaults = 2007,
-    SyntaxEmptyGroup = 2008,
-    SyntaxExpectedPipelineSeed = 2009,
-    SyntaxExpectedModulePath = 2010,
-    SyntaxExpectedAttributeLiteral = 2011,
-    SyntaxExpectedSwitchSubject = 2012,
+    Syntax_ExpectedIdentifier       = 2001,
+    Syntax_ExpectedType             = 2002,
+    Syntax_ExpectedToken            = 2003,
+    Syntax_UnexpectedToken          = 2004,
+    Syntax_ExpectedExpression       = 2005,
+    Syntax_ExpectedBlock            = 2006,
+    Syntax_MultipleDefaults         = 2007,
+    Syntax_EmptyGroup               = 2008,
+    Syntax_ExpectedPipelineSeed     = 2009,
+    Syntax_ExpectedModulePath       = 2010,
+    Syntax_ExpectedAttributeLiteral = 2011,
+    Syntax_ExpectedSwitchSubject    = 2012,
 
     // ─── Semantic - Name Resolution (3000-3999) ────────────────────────
-    SemUndefinedValue = 3001,
-    SemUndefinedType = 3002,
-    SemNotCallable = 3003,
-    SemRedeclaration = 3004,
-    SemUndefinedModule = 3005,
-    SemUndefinedMember = 3006,
-    SemGenericParamUnused = 3007,
-    SemTraitNotFound = 3008,
-    SemNotATrait = 3009,
-    SemFieldNotFound = 3010,
-    SemGenericParamRedeclaration = 3011,
+    Sem_UndefinedValue            = 3001,
+    Sem_UndefinedType             = 3002,
+    Sem_NotCallable               = 3003,
+    Sem_Redeclaration             = 3004,
+    Sem_UndefinedModule           = 3005,
+    Sem_UndefinedMember           = 3006,
+    Sem_GenericParamUnused        = 3007,
+    Sem_TraitNotFound             = 3008,
+    Sem_NotATrait                 = 3009,
+    Sem_FieldNotFound             = 3010,
+    Sem_GenericParamRedeclaration = 3011,
+    Sem_ImportAliasRedeclaration  = 3012,
+    Sem_ModuleNotAnalyzed         = 3013,
 
     // ─── Semantic - Type Checking (4000-4999) ──────────────────────────
-    SemTypeMismatch = 4001,
-    SemArgCountMismatch = 4002,
-    SemMissingInitializer = 4003,
-    SemConstNullable = 4004,
-    SemMissingReturn = 4005,
-    SemDuplicateValue = 4006,
-    SemUnknownIntrinsic = 4007,
-    SemSelfReference = 4008,
-    SemInvalidSwitchType = 4009,
-    SemMissingCase = 4010,
-    SemPipelineMismatch = 4011,
-    SemCompositionMismatch = 4012,
-    SemRefInStruct = 4013,
-    SemIllegalNilErr = 4014,
-    SemInvalidGenericArg = 4015,
+    Sem_TypeMismatch             = 4001,
+    Sem_ArgCountMismatch         = 4002,
+    Sem_MissingInitializer       = 4003,
+    Sem_ConstNullable            = 4004,
+    Sem_MissingReturn            = 4005,
+    Sem_DuplicateValue           = 4006,
+    Sem_UnknownIntrinsic         = 4007,
+    Sem_SelfReference            = 4008,
+    Sem_InvalidSwitchType        = 4009,
+    Sem_MissingCase              = 4010,
+    Sem_PipelineMismatch         = 4011,
+    Sem_CompositionMismatch      = 4012,
+    Sem_RefInStruct              = 4013,
+    Sem_IllegalNilErr            = 4014,
+    Sem_InvalidGenericArg        = 4015,
+    Sem_UnknownType              = 4016,
+    Sem_InvalidArrayElement      = 4017,
+    Sem_RefInArray               = 4018,
+    Sem_FunctionNullable         = 4019,
+    Sem_ArrayNullable            = 4020,
+    Sem_RefToTrait               = 4021,
+    Sem_InvalidPointerTarget     = 4022,
+    Sem_InvalidParamType         = 4023,
+    Sem_InvalidReturnType        = 4024,
+    Sem_ReturnRef                = 4025,
+    Sem_ReturnTrait              = 4026,
+    Sem_GenericParamNotCallable  = 4027,
+    Sem_SelfReferentialInit      = 4028,
+    Sem_InvalidAssignment        = 4029,
+    Sem_InvalidUnary             = 4030,
+    Sem_InvalidBinary            = 4031,
 
     // ─── Semantic - Generics/Traits/FFI (5000-5999) ────────────────────
-    SemGenericArityMismatch = 5001,
-    SemGenericConstraint = 5002,
-    SemTraitImplementation = 5003,
-    SemTraitConflict = 5004,
-    SemForeignInvalid = 5005,
-    SemForeignABI = 5006,
-    SemAttributeInvalid = 5007,
-    SemAttributeArgCount = 5008,
-    SemUnknownAttribute = 5009,
+    Sem_GenericArityMismatch  = 5001,
+    Sem_GenericConstraint     = 5002,
+    Sem_TraitImplementation   = 5003,
+    Sem_TraitConflict         = 5004,
+    Sem_ForeignInvalid        = 5005,
+    Sem_ForeignABI            = 5006,
+    Sem_AttributeInvalid      = 5007,
+    Sem_AttributeArgCount     = 5008,
+    Sem_UnknownAttribute      = 5009,
+    Sem_GenericParamRequired  = 5010,
 
     // ─── Backend (7000-7999) ────────────────────────────────────────────
-    BackendUnresolvedSymbol = 7001,
-    BackendLinkerError = 7002,
-    BackendCodegenError = 7003,
-    BackendTargetUnsupported = 7004,
+    Backend_UnresolvedSymbol  = 7001,
+    Backend_LinkerError       = 7002,
+    Backend_CodegenError      = 7003,
+    Backend_TargetUnsupported = 7004,
 
     // ─── Warnings (8000-8999) ───────────────────────────────────────────
-    WarnUnreachableCode = 8001,
-    WarnUnusedVariable = 8002,
-    WarnUnusedParameter = 8003,
-    WarnUnusedFunction = 8004,
-    WarnDeprecated = 8005,
-    WarnUnawaitedAsync = 8006,
-    WarnUnjoinedSpawn = 8007,
-    WarnUnreachableCase = 8008,
+    Warn_UnreachableCode   = 8001,
+    Warn_UnusedVariable    = 8002,
+    Warn_UnusedParameter   = 8003,
+    Warn_UnusedFunction    = 8004,
+    Warn_Deprecated        = 8005,
+    Warn_UnawaitedAsync    = 8006,
+    Warn_UnjoinedSpawn     = 8007,
+    Warn_UnreachableCase   = 8008,
+    Warn_DiscardedResult   = 8009,
+    Warn_RedundantNilCheck = 8010,
 };
+
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
 /// Get the category name from an error code.
-inline const char* categoryName(ErrorCode code) {
+inline const char* categoryName(DiagCode code) {
     uint32_t raw = static_cast<uint32_t>(code);
     if (raw >= 1000 && raw < 2000) return "Lexical";
     if (raw >= 2000 && raw < 3000) return "Syntax";
@@ -154,19 +184,19 @@ inline const char* categoryName(ErrorCode code) {
 }
 
 /// Get the severity from an error code.
-inline Severity severityFromCode(ErrorCode code) {
+inline Severity severityFromCode(DiagCode code) {
     uint32_t raw = static_cast<uint32_t>(code);
     if (raw >= 8000) return Severity::Warning;
     return Severity::Error;
 }
 
 /// Check if a code is a warning.
-inline bool isWarningCode(ErrorCode code) {
+inline bool isWarningCode(DiagCode code) {
     return static_cast<uint32_t>(code) >= 8000;
 }
 
 /// Check if a code is an error.
-inline bool isErrorCode(ErrorCode code) {
+inline bool isErrorCode(DiagCode code) {
     return !isWarningCode(code);
 }
 
@@ -174,7 +204,7 @@ inline bool isErrorCode(ErrorCode code) {
 
 struct Diagnostic {
     Severity severity;
-    ErrorCode code;
+    DiagCode code;
     SourceLocation location;
     std::string message;
 
@@ -201,7 +231,7 @@ public:
 
     /// Report an error with a diagnostic code.
     template<typename... Args>
-    void error(ErrorCode code, const BaseAST* node, Args&&... args) {
+    void error(DiagCode code, const BaseAST* node, Args&&... args) {
         add(severityFromCode(code), code,
             node ? node->loc : SourceLocation{},
             buildMessage(std::forward<Args>(args)...));
@@ -209,7 +239,7 @@ public:
 
     /// Report a warning with a diagnostic code.
     template<typename... Args>
-    void warning(ErrorCode code, const BaseAST* node, Args&&... args) {
+    void warning(DiagCode code, const BaseAST* node, Args&&... args) {
         add(Severity::Warning, code,
             node ? node->loc : SourceLocation{},
             buildMessage(std::forward<Args>(args)...));
@@ -218,7 +248,7 @@ public:
     /// Report a free-text note.
     template<typename... Args>
     void note(const BaseAST* node, Args&&... args) {
-        add(Severity::Note, ErrorCode(0),
+        add(Severity::Note, DiagCode(0),
             node ? node->loc : SourceLocation{},
             buildMessage(std::forward<Args>(args)...));
     }
@@ -226,7 +256,7 @@ public:
     /// Report a free-text hint.
     template<typename... Args>
     void hint(const BaseAST* node, Args&&... args) {
-        add(Severity::Hint, ErrorCode(0),
+        add(Severity::Hint, DiagCode(0),
             node ? node->loc : SourceLocation{},
             buildMessage(std::forward<Args>(args)...));
     }
@@ -234,20 +264,20 @@ public:
     // ─── Convenience overloads with explicit location ─────────────────
 
     template<typename... Args>
-    void errorAt(ErrorCode code, const SourceLocation& loc, Args&&... args) {
+    void errorAt(DiagCode code, const SourceLocation& loc, Args&&... args) {
         add(severityFromCode(code), code, loc,
             buildMessage(std::forward<Args>(args)...));
     }
 
     template<typename... Args>
-    void warningAt(ErrorCode code, const SourceLocation& loc, Args&&... args) {
+    void warningAt(DiagCode code, const SourceLocation& loc, Args&&... args) {
         add(Severity::Warning, code, loc,
             buildMessage(std::forward<Args>(args)...));
     }
 
     template<typename... Args>
     void noteAt(const SourceLocation& loc, Args&&... args) {
-        add(Severity::Note, ErrorCode(0), loc,
+        add(Severity::Note, DiagCode(0), loc,
             buildMessage(std::forward<Args>(args)...));
     }
 
@@ -330,7 +360,7 @@ public:
         oss << "[" << severityName(d.severity) << "] ";
 
         // Format code if it's not a free-text note/hint
-        if (d.code != ErrorCode(0)) {
+        if (d.code != DiagCode(0)) {
             uint32_t raw = static_cast<uint32_t>(d.code);
             char prefix = isWarningCode(d.code) ? 'W' : 'E';
             oss << prefix << std::setfill('0') << std::setw(4) << raw << ": ";
@@ -378,7 +408,7 @@ public:
 private:
     std::vector<Diagnostic> m_diagnostics;
 
-    void add(Severity sev, ErrorCode code, const SourceLocation& loc, std::string msg) {
+    void add(Severity sev, DiagCode code, const SourceLocation& loc, std::string msg) {
         m_diagnostics.push_back({sev, code, loc, std::move(msg)});
     }
 

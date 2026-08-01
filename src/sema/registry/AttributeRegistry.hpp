@@ -88,7 +88,7 @@ inline bool validateStringArg(const ExprAST* arg, SemaContext& ctx,
         const_cast<ExprAST*>(arg), ctx.getStringType(), ctx
     );
     if (!result || result->isa<UnknownTypeAST>()) {
-        ctx.diagnostics.error(ErrorCode::SemTypeMismatch, arg,
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
                               "argument '", argName, "' expects a string literal");
         return false;
     }
@@ -99,13 +99,13 @@ inline void validateExport(const AttributeAST* attr,
                             const DeclAST* owner,
                             SemaContext& ctx) {
     if (!attr->args.empty()) {
-        ctx.diagnostics.error(ErrorCode::SemAttributeArgCount, attr,
+        ctx.diagnostics.error(DiagCode::Sem_AttributeArgCount, attr,
                               "attribute '@[export]' takes no arguments");
         return;
     }
 
     if (!isAtModuleLevel(owner, ctx)) {
-        ctx.diagnostics.error(ErrorCode::SemAttributeInvalid, attr,
+        ctx.diagnostics.error(DiagCode::Sem_AttributeInvalid, attr,
                               "attribute '@[export]' is only legal at module level");
     }
 }
@@ -114,13 +114,13 @@ inline void validateForeign(const AttributeAST* attr,
                              const DeclAST* owner,
                              SemaContext& ctx) {
     if (!isFunctionOwner(owner)) {
-        ctx.diagnostics.error(ErrorCode::SemAttributeInvalid, attr,
+        ctx.diagnostics.error(DiagCode::Sem_AttributeInvalid, attr,
                               "attribute '@[foreign]' is only legal on function declarations");
         return;
     }
 
     if (attr->args.size() != 1) {
-        ctx.diagnostics.error(ErrorCode::SemAttributeArgCount, attr,
+        ctx.diagnostics.error(DiagCode::Sem_AttributeArgCount, attr,
                               "attribute '@[foreign]' expects exactly 1 argument (the ABI), got ",
                               attr->args.size());
         return;
@@ -134,7 +134,7 @@ inline void validateForeign(const AttributeAST* attr,
     // Extract and validate the ABI string
     std::string abi = ctx.pool.lookup(attr->args[0]->as<LiteralExprAST>()->value);
     if (abi != "C") {
-        ctx.diagnostics.error(ErrorCode::SemForeignABI, attr->args[0],
+        ctx.diagnostics.error(DiagCode::Sem_ForeignABI, attr->args[0],
                               "unsupported foreign ABI '", abi, "' — only \"C\" is supported");
     }
 }
@@ -143,13 +143,13 @@ inline void validateLink(const AttributeAST* attr,
                           const DeclAST* owner,
                           SemaContext& ctx) {
     if (owner != nullptr && !isFunctionOwner(owner)) {
-        ctx.diagnostics.error(ErrorCode::SemAttributeInvalid, attr,
+        ctx.diagnostics.error(DiagCode::Sem_AttributeInvalid, attr,
                               "attribute '@[link]' is only legal at module level or on function declarations");
         return;
     }
 
     if (attr->args.empty()) {
-        ctx.diagnostics.error(ErrorCode::SemAttributeArgCount, attr,
+        ctx.diagnostics.error(DiagCode::Sem_AttributeArgCount, attr,
                               "attribute '@[link]' expects at least 1 argument (library name), got 0");
         return;
     }
@@ -166,7 +166,7 @@ inline void validateDeprecated(const AttributeAST* attr,
                                 SemaContext& ctx) {
     (void)owner;
     if (attr->args.size() > 1) {
-        ctx.diagnostics.error(ErrorCode::SemAttributeArgCount, attr,
+        ctx.diagnostics.error(DiagCode::Sem_AttributeArgCount, attr,
                               "attribute '@[deprecated]' expects at most 1 argument (the message), got ",
                               attr->args.size());
         return;
@@ -183,13 +183,13 @@ inline void validateInline(const AttributeAST* attr,
                             const DeclAST* owner,
                             SemaContext& ctx) {
     if (!isFunctionOwner(owner)) {
-        ctx.diagnostics.error(ErrorCode::SemAttributeInvalid, attr,
+        ctx.diagnostics.error(DiagCode::Sem_AttributeInvalid, attr,
                               "attribute '@[inline]' is only legal on function declarations");
         return;
     }
 
     if (!attr->args.empty()) {
-        ctx.diagnostics.error(ErrorCode::SemAttributeArgCount, attr,
+        ctx.diagnostics.error(DiagCode::Sem_AttributeArgCount, attr,
                               "attribute '@[inline]' takes no arguments");
     }
 }
@@ -215,7 +215,7 @@ inline void validateAttributes(const DeclAST* owner, SemaContext& ctx) {
         } else if (name == kInline(ctx)) {
             detail::validateInline(attr, owner, ctx);
         } else {
-            ctx.diagnostics.error(ErrorCode::SemUnknownAttribute, attr,
+            ctx.diagnostics.error(DiagCode::Sem_UnknownAttribute, attr,
                                   "unknown attribute '@", ctx.pool.lookup(name), "'");
         }
     }

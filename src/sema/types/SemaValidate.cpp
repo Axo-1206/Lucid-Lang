@@ -6,8 +6,8 @@
 #include "SemaCompare.hpp"
 #include "SemaResolve.hpp"
 #include "../context/SemaContext.hpp"
-#include "core/diagnostics/DiagnosticCodes.hpp"
 #include "debug/DebugUtils.hpp"
+#include "core/diagnostics/Diagnostic.hpp"
 
 #include <unordered_map>
 #include <unordered_set>
@@ -46,7 +46,6 @@ static bool satisfiesTraitConstraint(const TypeAST* actualType,
     if (!traitDecl) return false;
 
     // Check if the struct implements the trait by looking at its traitRefs
-    // The struct's traitRefs were validated in resolveStructDecl
     for (const NamedTypeAST* traitRef : structDecl->traitRefs) {
         const TraitDeclAST* resolved = resolveTraitRef(traitRef, ctx);
         if (resolved == traitDecl) {
@@ -64,14 +63,13 @@ static bool validateParamConstraints(const TypeAST* actualType,
     if (!param || !actualType) return true;
     if (param->constraints.empty()) return true;
 
-    // Check each constraint
     for (const NamedTypeAST* constraint : param->constraints) {
         if (!satisfiesTraitConstraint(actualType, constraint, ctx)) {
-            ctx.error(actualType, DiagCode::E2208,
-                      "type does not implement trait '", 
-                      ctx.pool.lookup(constraint->name), "'");
-            ctx.note(param, "parameter '", ctx.pool.lookup(param->name), 
-                     "' requires this trait");
+            ctx.diagnostics.error(DiagCode::Sem_GenericConstraint, actualType,
+                                  "type does not implement trait '", 
+                                  ctx.pool.lookup(constraint->name), "'");
+            ctx.diagnostics.note(param, "parameter '", ctx.pool.lookup(param->name), 
+                                 "' requires this trait");
             return false;
         }
     }
@@ -102,10 +100,10 @@ static bool validateSingleTraitImplementationInternal(
         // ─── 1. Check: Field exists in struct ──────────────────────────
         auto it = structFields.find(traitField->name);
         if (it == structFields.end()) {
-            ctx.error(traitField, DiagCode::E2203,
-                      "struct '", ctx.pool.lookup(structDecl->name),
-                      "' is missing field '", ctx.pool.lookup(traitField->name),
-                      "' required by trait '", ctx.pool.lookup(traitDecl->name), "'");
+            ctx.diagnostics.error(DiagCode::Sem_TraitImplementation, traitField,
+                                  "struct '", ctx.pool.lookup(structDecl->name),
+                                  "' is missing field '", ctx.pool.lookup(traitField->name),
+                                  "' required by trait '", ctx.pool.lookup(traitDecl->name), "'");
             isValid = false;
             continue;
         }
@@ -114,19 +112,19 @@ static bool validateSingleTraitImplementationInternal(
 
         // ─── 2. Check: Const-ness compatibility ────────────────────────
         if (traitField->isConst && !structField->isConst) {
-            ctx.error(structField, DiagCode::E2205,
-                      "trait '", ctx.pool.lookup(traitDecl->name),
-                      "' requires field '", ctx.pool.lookup(traitField->name),
-                      "' to be const, but struct declares it as mutable");
+            ctx.diagnostics.error(DiagCode::Sem_TraitImplementation, structField,
+                                  "trait '", ctx.pool.lookup(traitDecl->name),
+                                  "' requires field '", ctx.pool.lookup(traitField->name),
+                                  "' to be const, but struct declares it as mutable");
             isValid = false;
             continue;
         }
 
         // ─── 3. Check: Type compatibility ──────────────────────────────
         if (!structField->type || !traitField->type) {
-            ctx.error(structField, DiagCode::E2204,
-                      "field '", ctx.pool.lookup(traitField->name),
-                      "' has missing type information");
+            ctx.diagnostics.error(DiagCode::Sem_TraitImplementation, structField,
+                                  "field '", ctx.pool.lookup(traitField->name),
+                                  "' has missing type information");
             isValid = false;
             continue;
         }
@@ -134,24 +132,24 @@ static bool validateSingleTraitImplementationInternal(
         if (traitField->isConst) {
             // Const fields: types must match exactly
             if (!typesEqual(structField->type, traitField->type)) {
-                ctx.error(structField, DiagCode::E2204,
-                          "const field '", ctx.pool.lookup(traitField->name),
-                          "' type mismatch: trait expects ",
-                          debug::typeToString(traitField->type, ctx.pool),
-                          ", struct has ",
-                          debug::typeToString(structField->type, ctx.pool));
+                ctx.diagnostics.error(DiagCode::Sem_TraitImplementation, structField,
+                                      "const field '", ctx.pool.lookup(traitField->name),
+                                      "' type mismatch: trait expects ",
+                                      debug::typeToString(traitField->type, ctx.pool),
+                                      ", struct has ",
+                                      debug::typeToString(structField->type, ctx.pool));
                 isValid = false;
                 continue;
             }
         } else {
             // Non-const fields: allow assignable types
             if (!isAssignable(traitField->type, structField->type, ctx)) {
-                ctx.error(structField, DiagCode::E2204,
-                          "field '", ctx.pool.lookup(traitField->name),
-                          "' type mismatch: trait expects ",
-                          debug::typeToString(traitField->type, ctx.pool),
-                          ", struct has ",
-                          debug::typeToString(structField->type, ctx.pool));
+                ctx.diagnostics.error(DiagCode::Sem_TraitImplementation, structField,
+                                      "field '", ctx.pool.lookup(traitField->name),
+                                      "' type mismatch: trait expects ",
+                                      debug::typeToString(traitField->type, ctx.pool),
+                                      ", struct has ",
+                                      debug::typeToString(structField->type, ctx.pool));
                 isValid = false;
                 continue;
             }
@@ -160,10 +158,10 @@ static bool validateSingleTraitImplementationInternal(
         // ─── 4. Check: Const trait field type restrictions ─────────────
         if (traitField->isConst) {
             if (isNullableType(traitField->type) || isFallibleType(traitField->type)) {
-                ctx.error(traitField, DiagCode::E3004,
-                          "trait '", ctx.pool.lookup(traitDecl->name),
-                          "' has const field '", ctx.pool.lookup(traitField->name),
-                          "' that is nullable or fallible (must be definite)");
+                ctx.diagnostics.error(DiagCode::Sem_TraitImplementation, traitField,
+                                      "trait '", ctx.pool.lookup(traitDecl->name),
+                                      "' has const field '", ctx.pool.lookup(traitField->name),
+                                      "' that is nullable or fallible (must be definite)");
                 isValid = false;
                 continue;
             }
@@ -211,28 +209,28 @@ static bool checkTraitFieldConflictsInternal(
             const FieldRequirement* other = &reqs[i];
 
             if (first->isConst != other->isConst) {
-                ctx.error(structDecl, DiagCode::E2206,
-                          "field '", ctx.pool.lookup(fieldName),
-                          "' has conflicting const requirements: ",
-                          "trait '", ctx.pool.lookup(first->trait->name),
-                          "' requires ", first->isConst ? "const" : "mutable",
-                          ", but trait '", ctx.pool.lookup(other->trait->name),
-                          "' requires ", other->isConst ? "const" : "mutable");
+                ctx.diagnostics.error(DiagCode::Sem_TraitConflict, structDecl,
+                                      "field '", ctx.pool.lookup(fieldName),
+                                      "' has conflicting const requirements: ",
+                                      "trait '", ctx.pool.lookup(first->trait->name),
+                                      "' requires ", first->isConst ? "const" : "mutable",
+                                      ", but trait '", ctx.pool.lookup(other->trait->name),
+                                      "' requires ", other->isConst ? "const" : "mutable");
                 hasConflict = true;
                 continue;
             }
 
             if (first->type && other->type) {
                 if (!typesEqual(first->type, other->type)) {
-                    ctx.error(structDecl, DiagCode::E2206,
-                              "field '", ctx.pool.lookup(fieldName),
-                              "' has conflicting types: ",
-                              "trait '", ctx.pool.lookup(first->trait->name),
-                              "' expects ",
-                              debug::typeToString(first->type, ctx.pool),
-                              ", but trait '", ctx.pool.lookup(other->trait->name),
-                              "' expects ",
-                              debug::typeToString(other->type, ctx.pool));
+                    ctx.diagnostics.error(DiagCode::Sem_TraitConflict, structDecl,
+                                          "field '", ctx.pool.lookup(fieldName),
+                                          "' has conflicting types: ",
+                                          "trait '", ctx.pool.lookup(first->trait->name),
+                                          "' expects ",
+                                          debug::typeToString(first->type, ctx.pool),
+                                          ", but trait '", ctx.pool.lookup(other->trait->name),
+                                          "' expects ",
+                                          debug::typeToString(other->type, ctx.pool));
                     hasConflict = true;
                 }
             }
@@ -287,9 +285,9 @@ bool validateGenericArguments(ArenaSpan<TypePtr> args,
                                const BaseAST* useSite,
                                SemaContext& ctx) {
     if (args.size() != params.size()) {
-        ctx.error(useSite, DiagCode::E2207,
-                  "expected ", std::to_string(params.size()),
-                  " generic arguments, got ", std::to_string(args.size()));
+        ctx.diagnostics.error(DiagCode::Sem_GenericArityMismatch, useSite,
+                              "expected ", params.size(),
+                              " generic arguments, got ", args.size());
         return false;
     }
 
@@ -298,8 +296,8 @@ bool validateGenericArguments(ArenaSpan<TypePtr> args,
     for (size_t i = 0; i < args.size(); ++i) {
         TypeAST* resolvedArg = resolveType(args[i], ctx);
         if (!resolvedArg) {
-            ctx.error(useSite, DiagCode::E2209,
-                      "invalid generic argument at position ", std::to_string(i + 1));
+            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, useSite,
+                                  "invalid generic argument at position ", i + 1);
             allValid = false;
             continue;
         }
@@ -366,9 +364,9 @@ bool validateGenericParameterUsage(ArenaSpan<GenericParamDeclPtr> params,
     bool allUsed = true;
     for (const GenericParamDeclAST* param : params) {
         if (usedParams.find(param->name) == usedParams.end()) {
-            ctx.error(useSite, DiagCode::E2209,
-                      "generic parameter '", ctx.pool.lookup(param->name),
-                      "' is not used in the declaration");
+            ctx.diagnostics.error(DiagCode::Sem_GenericParamUnused, useSite,
+                                  "generic parameter '", ctx.pool.lookup(param->name),
+                                  "' is not used in the declaration");
             allUsed = false;
         }
     }
@@ -450,8 +448,8 @@ const TypeAST* getFieldTypeOnGenericType(const TypeAST* genericType,
 
 bool validateConstFieldType(const TypeAST* type, SemaContext& ctx) {
     if (isNullableType(type) || isFallibleType(type)) {
-        ctx.error(type, DiagCode::E3004,
-                  "const field cannot be nullable or fallible");
+        ctx.diagnostics.error(DiagCode::Sem_ConstNullable, type,
+                              "const field cannot be nullable or fallible");
         return false;
     }
     return true;
@@ -459,8 +457,8 @@ bool validateConstFieldType(const TypeAST* type, SemaContext& ctx) {
 
 bool validateTraitFieldType(const TypeAST* type, SemaContext& ctx) {
     if (isNullableType(type) || isFallibleType(type)) {
-        ctx.error(type, DiagCode::E3004,
-                  "trait field cannot be nullable or fallible");
+        ctx.diagnostics.error(DiagCode::Sem_ConstNullable, type,
+                              "trait field cannot be nullable or fallible");
         return false;
     }
     return true;
@@ -472,8 +470,8 @@ bool validateRefContext(const RefTypeAST* type, SemaContext& ctx) {
     const TypeDeclAST* currentType = ctx.currentDefiningType();
     
     if (currentType && ctx.isDefiningType(currentType)) {
-        ctx.error(type, DiagCode::E3004,
-                  "reference type (&T) cannot be stored in a struct field");
+        ctx.diagnostics.error(DiagCode::Sem_RefInStruct, type,
+                              "reference type (&T) cannot be stored in a struct field");
         return false;
     }
 

@@ -7,7 +7,7 @@
 #include "SemaValidate.hpp"
 #include "../context/SemaContext.hpp"
 #include "debug/DebugUtils.hpp"
-#include "core/diagnostics/DiagnosticCodes.hpp"
+#include "core/diagnostics/Diagnostic.hpp"
 
 namespace sema {
 
@@ -36,7 +36,8 @@ TypeAST* resolveType(const TypeAST* type, SemaContext& ctx) {
         case ASTKind::FuncType:      
             return resolveFuncType(type->as<FuncTypeAST>(), ctx);
         default:
-            ctx.error(type, DiagCode::E3003, "unknown type");
+            ctx.diagnostics.error(DiagCode::Sem_UnknownType, type,
+                                  "unknown type");
             return nullptr;
     }
 }
@@ -54,51 +55,41 @@ TypeAST* resolveNamedType(const NamedTypeAST* type, SemaContext& ctx) {
     if (!type) return nullptr;
 
     // ─── 1. Check: Is this a generic parameter? ──────────────────────────
-    // Generic parameters have highest priority and shadow type names
-    if (isGenericParam(type->name, ctx)) {
-        // Valid generic parameter - return as-is
+    if (ctx.isGenericParam(type->name)) {
         return const_cast<NamedTypeAST*>(type);
     }
 
     // ─── 2. Look up as concrete type ──────────────────────────────────────
     const TypeDeclAST* decl = ctx.lookupType(type->name);
     if (!decl) {
-        ctx.error(type, DiagCode::E2002,
-                  "undefined type '", ctx.pool.lookup(type->name), "'");
+        ctx.diagnostics.error(DiagCode::Sem_UndefinedType, type,
+                              "undefined type '", ctx.pool.lookup(type->name), "'");
         return nullptr;
     }
 
     // ─── 3. Check for self-reference ──────────────────────────────────────
-    // If this type is currently being defined, it's a self-reference
-    // This is only allowed through ptr/ref/nullable wrappers
-    if (ctx.isDefiningType(decl)) {
-        // Self-reference detected - this is allowed when wrapped
-        // The actual validation happens in resolveRefType/resolvePtrType
-        // etc. via validateRefContext()
-        // We just pass through - the wrapper resolvers will check
-    }
+    // Self-reference detection - the wrapper resolvers will validate
 
     // ─── 4. Resolve generic arguments if present ─────────────────────────
     if (!type->genericArgs.empty()) {
-        // Check arity against the declaration
         if (decl->isa<TraitDeclAST>()) {
             const TraitDeclAST* traitDecl = decl->as<TraitDeclAST>();
             if (type->genericArgs.size() != traitDecl->genericParams.size()) {
-                ctx.error(type, DiagCode::E2207,
-                          "trait '", ctx.pool.lookup(type->name),
-                          "' expected ", std::to_string(traitDecl->genericParams.size()),
-                          " generic arguments, got ", 
-                          std::to_string(type->genericArgs.size()));
+                ctx.diagnostics.error(DiagCode::Sem_GenericArityMismatch, type,
+                                      "trait '", ctx.pool.lookup(type->name),
+                                      "' expected ", traitDecl->genericParams.size(),
+                                      " generic arguments, got ", 
+                                      type->genericArgs.size());
                 return nullptr;
             }
         } else if (decl->isa<StructDeclAST>()) {
             const StructDeclAST* structDecl = decl->as<StructDeclAST>();
             if (type->genericArgs.size() != structDecl->genericParams.size()) {
-                ctx.error(type, DiagCode::E2207,
-                          "struct '", ctx.pool.lookup(type->name),
-                          "' expected ", std::to_string(structDecl->genericParams.size()),
-                          " generic arguments, got ", 
-                          std::to_string(type->genericArgs.size()));
+                ctx.diagnostics.error(DiagCode::Sem_GenericArityMismatch, type,
+                                      "struct '", ctx.pool.lookup(type->name),
+                                      "' expected ", structDecl->genericParams.size(),
+                                      " generic arguments, got ", 
+                                      type->genericArgs.size());
                 return nullptr;
             }
         }
@@ -121,13 +112,14 @@ TypeAST* resolveArrayType(const ArrayTypeAST* type, SemaContext& ctx) {
 
     TypeAST* element = resolveType(type->element, ctx);
     if (!element) {
-        ctx.error(type, DiagCode::E3003, "invalid array element type");
+        ctx.diagnostics.error(DiagCode::Sem_InvalidArrayElement, type,
+                              "invalid array element type");
         return nullptr;
     }
 
     if (element->isa<RefTypeAST>()) {
-        ctx.error(type, DiagCode::E3004,
-                  "reference type (&T) cannot be stored in an array");
+        ctx.diagnostics.error(DiagCode::Sem_RefInArray, type,
+                              "reference type (&T) cannot be stored in an array");
         return nullptr;
     }
 
@@ -141,18 +133,20 @@ TypeAST* resolveNullableType(const NullableTypeAST* type, SemaContext& ctx) {
 
     TypeAST* inner = resolveType(type->inner, ctx);
     if (!inner) {
-        ctx.error(type, DiagCode::E3003, "invalid nullable inner type");
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, type,
+                              "invalid nullable inner type");
         return nullptr;
     }
 
     if (inner->isa<FuncTypeAST>()) {
-        ctx.error(type, DiagCode::E3004, "function types cannot be nullable");
+        ctx.diagnostics.error(DiagCode::Sem_FunctionNullable, type,
+                              "function types cannot be nullable");
         return nullptr;
     }
 
     if (inner->isa<ArrayTypeAST>()) {
-        ctx.error(type, DiagCode::E3004,
-                  "array types cannot be nullable (use empty array instead)");
+        ctx.diagnostics.error(DiagCode::Sem_ArrayNullable, type,
+                              "array types cannot be nullable (use empty array instead)");
         return nullptr;
     }
 
@@ -166,17 +160,20 @@ TypeAST* resolveFallibleType(const FallibleTypeAST* type, SemaContext& ctx) {
 
     TypeAST* inner = resolveType(type->inner, ctx);
     if (!inner) {
-        ctx.error(type, DiagCode::E3003, "invalid fallible inner type");
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, type,
+                              "invalid fallible inner type");
         return nullptr;
     }
 
     if (inner->isa<FuncTypeAST>()) {
-        ctx.error(type, DiagCode::E3004, "function types cannot be fallible");
+        ctx.diagnostics.error(DiagCode::Sem_FunctionNullable, type,
+                              "function types cannot be fallible");
         return nullptr;
     }
 
     if (inner->isa<ArrayTypeAST>()) {
-        ctx.error(type, DiagCode::E3004, "array types cannot be fallible");
+        ctx.diagnostics.error(DiagCode::Sem_ArrayNullable, type,
+                              "array types cannot be fallible");
         return nullptr;
     }
 
@@ -190,17 +187,20 @@ TypeAST* resolveCombinedType(const CombinedTypeAST* type, SemaContext& ctx) {
 
     TypeAST* inner = resolveType(type->inner, ctx);
     if (!inner) {
-        ctx.error(type, DiagCode::E3003, "invalid combined inner type");
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, type,
+                              "invalid combined inner type");
         return nullptr;
     }
 
     if (inner->isa<FuncTypeAST>()) {
-        ctx.error(type, DiagCode::E3004, "function types cannot be combined");
+        ctx.diagnostics.error(DiagCode::Sem_FunctionNullable, type,
+                              "function types cannot be combined");
         return nullptr;
     }
 
     if (inner->isa<ArrayTypeAST>()) {
-        ctx.error(type, DiagCode::E3004, "array types cannot be combined");
+        ctx.diagnostics.error(DiagCode::Sem_ArrayNullable, type,
+                              "array types cannot be combined");
         return nullptr;
     }
 
@@ -214,7 +214,8 @@ TypeAST* resolveRefType(const RefTypeAST* type, SemaContext& ctx) {
 
     TypeAST* inner = resolveType(type->inner, ctx);
     if (!inner) {
-        ctx.error(type, DiagCode::E3003, "invalid reference target type");
+        ctx.diagnostics.error(DiagCode::Sem_InvalidPointerTarget, type,
+                              "invalid reference target type");
         return nullptr;
     }
 
@@ -225,15 +226,14 @@ TypeAST* resolveRefType(const RefTypeAST* type, SemaContext& ctx) {
     // 1. Cannot store &T in struct fields
     const TypeDeclAST* currentStruct = ctx.currentDefiningType();
     if (currentStruct && currentStruct->isa<StructDeclAST>()) {
-        ctx.error(type, DiagCode::E3004,
-                  "reference type (&T) cannot be stored in struct fields");
+        ctx.diagnostics.error(DiagCode::Sem_RefInStruct, type,
+                              "reference type (&T) cannot be stored in struct fields");
         return nullptr;
     }
 
-    // References to traits are NOT allowed
     if (isTraitType(inner, ctx)) {
-        ctx.error(type, DiagCode::E3004,
-                  "cannot take reference to trait type (&Trait)");
+        ctx.diagnostics.error(DiagCode::Sem_RefToTrait, type,
+                              "cannot take reference to trait type (&Trait)");
         return nullptr;
     }
 
@@ -247,7 +247,8 @@ TypeAST* resolvePtrType(const PtrTypeAST* type, SemaContext& ctx) {
 
     TypeAST* inner = resolveType(type->inner, ctx);
     if (!inner) {
-        ctx.error(type, DiagCode::E3003, "invalid pointer target type");
+        ctx.diagnostics.error(DiagCode::Sem_InvalidPointerTarget, type,
+                              "invalid pointer target type");
         return nullptr;
     }
 
@@ -261,7 +262,8 @@ TypeAST* resolveFuncType(const FuncTypeAST* type, SemaContext& ctx) {
 
     for (ParamAST* param : type->params) {
         if (!resolveType(param->type, ctx)) {
-            ctx.error(param, DiagCode::E3003, "invalid parameter type");
+            ctx.diagnostics.error(DiagCode::Sem_InvalidParamType, param,
+                                  "invalid parameter type");
             return nullptr;
         }
     }
@@ -269,19 +271,20 @@ TypeAST* resolveFuncType(const FuncTypeAST* type, SemaContext& ctx) {
     if (type->returnType) {
         TypeAST* returnType = resolveType(type->returnType, ctx);
         if (!returnType) {
-            ctx.error(type, DiagCode::E3003, "invalid return type");
+            ctx.diagnostics.error(DiagCode::Sem_InvalidReturnType, type,
+                                  "invalid return type");
             return nullptr;
         }
 
         if (returnType->isa<RefTypeAST>()) {
-            ctx.error(type, DiagCode::E3004,
-                      "function cannot return reference type (&T)");
+            ctx.diagnostics.error(DiagCode::Sem_ReturnRef, type,
+                                  "function cannot return reference type (&T)");
             return nullptr;
         }
 
         if (isTraitType(returnType, ctx)) {
-            ctx.error(type, DiagCode::E3004,
-                      "function cannot return trait type (use a concrete struct instead)");
+            ctx.diagnostics.error(DiagCode::Sem_ReturnTrait, type,
+                                  "function cannot return trait type (use a concrete struct instead)");
             return nullptr;
         }
 
@@ -302,35 +305,31 @@ const TraitDeclAST* resolveTraitRef(const NamedTypeAST* ref, SemaContext& ctx) {
 
     const TypeDeclAST* typeDecl = ctx.lookupType(ref->name);
     if (!typeDecl) {
-        ctx.error(ref, DiagCode::E2002,
-                  "undefined trait '", ctx.pool.lookup(ref->name), "'");
+        ctx.diagnostics.error(DiagCode::Sem_UndefinedType, ref,
+                              "undefined trait '", ctx.pool.lookup(ref->name), "'");
         return nullptr;
     }
 
-    // Verify it's a trait (not a struct or enum)
     if (!typeDecl->isa<TraitDeclAST>()) {
-        ctx.error(ref, DiagCode::E2002,
-                  "'", ctx.pool.lookup(ref->name), "' is not a trait");
+        ctx.diagnostics.error(DiagCode::Sem_NotATrait, ref,
+                              "'", ctx.pool.lookup(ref->name), "' is not a trait");
         return nullptr;
     }
 
     const TraitDeclAST* traitDecl = typeDecl->as<TraitDeclAST>();
 
-    // Check generic arguments if present
     if (!ref->genericArgs.empty()) {
         if (ref->genericArgs.size() != traitDecl->genericParams.size()) {
-            ctx.error(ref, DiagCode::E2207,
-                      "trait '", ctx.pool.lookup(ref->name),
-                      "' expected ", std::to_string(traitDecl->genericParams.size()),
-                      " generic arguments, got ", 
-                      std::to_string(ref->genericArgs.size()));
+            ctx.diagnostics.error(DiagCode::Sem_GenericArityMismatch, ref,
+                                  "trait '", ctx.pool.lookup(ref->name),
+                                  "' expected ", traitDecl->genericParams.size(),
+                                  " generic arguments, got ", 
+                                  ref->genericArgs.size());
             return nullptr;
         }
 
-        // Resolve each generic argument type
         for (const TypePtr arg : ref->genericArgs) {
             if (!resolveType(arg, ctx)) {
-                // Error already reported
                 return nullptr;
             }
         }
@@ -356,25 +355,22 @@ const FuncDeclAST* resolveCalleeOrError(const ExprAST* callee, SemaContext& ctx)
     if (callee->isa<IdentifierExprAST>()) {
         const IdentifierExprAST* id = callee->as<IdentifierExprAST>();
         
-        // Check if it's a generic parameter (not callable)
         if (ctx.isGenericParam(id->name)) {
-            ctx.error(callee, DiagCode::E2003,
-                      "'", ctx.pool.lookup(id->name), "' is a generic type parameter, not a function");
+            ctx.diagnostics.error(DiagCode::Sem_GenericParamNotCallable, callee,
+                                  "'", ctx.pool.lookup(id->name), "' is a generic type parameter, not a function");
             return nullptr;
         }
 
-        // Look up the value in the symbol table
         const ValueDeclAST* value = ctx.lookupValue(id->name);
         if (!value) {
-            ctx.error(callee, DiagCode::E2001,
-                      "undefined value '", ctx.pool.lookup(id->name), "'");
+            ctx.diagnostics.error(DiagCode::Sem_UndefinedValue, callee,
+                                  "undefined value '", ctx.pool.lookup(id->name), "'");
             return nullptr;
         }
 
-        // Must be a function
         if (!value->isa<FuncDeclAST>()) {
-            ctx.error(callee, DiagCode::E2003,
-                      "'", ctx.pool.lookup(id->name), "' is not callable");
+            ctx.diagnostics.error(DiagCode::Sem_NotCallable, callee,
+                                  "'", ctx.pool.lookup(id->name), "' is not callable");
             return nullptr;
         }
 
@@ -385,36 +381,33 @@ const FuncDeclAST* resolveCalleeOrError(const ExprAST* callee, SemaContext& ctx)
     if (callee->isa<ModuleAccessExprAST>()) {
         const ModuleAccessExprAST* access = callee->as<ModuleAccessExprAST>();
         
-        // Look up the module alias
         ModuleAST* module = ctx.lookupImport(access->moduleName);
         if (!module) {
-            ctx.error(callee, DiagCode::E2001,
-                      "undefined module alias '", ctx.pool.lookup(access->moduleName), "'");
+            ctx.diagnostics.error(DiagCode::Sem_UndefinedModule, callee,
+                                  "undefined module alias '", ctx.pool.lookup(access->moduleName), "'");
             return nullptr;
         }
 
-        // Get the module's table
         ModuleTable* table = ctx.findModuleTable(module);
         if (!table) {
-            ctx.error(callee, DiagCode::E2001,
-                      "module '", ctx.pool.lookup(access->moduleName), "' has not been analyzed");
+            ctx.diagnostics.error(DiagCode::Sem_UndefinedModule, callee,
+                                  "module '", ctx.pool.lookup(access->moduleName), "' has not been analyzed");
             return nullptr;
         }
 
-        // Look up the member
         auto it = table->values.find(access->memberName);
         if (it == table->values.end()) {
-            ctx.error(callee, DiagCode::E2001,
-                      "module '", ctx.pool.lookup(access->moduleName),
-                      "' has no exported member '", ctx.pool.lookup(access->memberName), "'");
+            ctx.diagnostics.error(DiagCode::Sem_UndefinedMember, callee,
+                                  "module '", ctx.pool.lookup(access->moduleName),
+                                  "' has no exported member '", ctx.pool.lookup(access->memberName), "'");
             return nullptr;
         }
 
         const ValueDeclAST* decl = it->second;
         if (!decl->isa<FuncDeclAST>()) {
-            ctx.error(callee, DiagCode::E2003,
-                      "'", ctx.pool.lookup(access->moduleName), ":",
-                      ctx.pool.lookup(access->memberName), "' is not callable");
+            ctx.diagnostics.error(DiagCode::Sem_NotCallable, callee,
+                                  "'", ctx.pool.lookup(access->moduleName), ":",
+                                  ctx.pool.lookup(access->memberName), "' is not callable");
             return nullptr;
         }
 
@@ -422,17 +415,13 @@ const FuncDeclAST* resolveCalleeOrError(const ExprAST* callee, SemaContext& ctx)
     }
 
     // ─── Case 3: Field access call: `obj.method(...)` ────────────────────
-    // Lucid has no methods - field access is for struct fields only
     if (callee->isa<FieldAccessExprAST>()) {
-        // Field access expressions in Lucid are for struct fields, not methods
-        ctx.error(callee, DiagCode::E2003,
-                  "field access is not callable (Lucid has no methods)");
+        ctx.diagnostics.error(DiagCode::Sem_NotCallable, callee,
+                              "field access is not callable (Lucid has no methods)");
         return nullptr;
     }
 
     // ─── Case 4: Any other callee shape ──────────────────────────────────
-    // Examples: function literal, curried call, pipeline step, etc.
-    // The caller must check callee->resolvedType instead
     return nullptr;
 }
 
@@ -445,9 +434,9 @@ void checkLetSelfReference(const ExprAST* expr, InternedString varName, SemaCont
         case ASTKind::IdentifierExpr: {
             const IdentifierExprAST* id = expr->as<IdentifierExprAST>();
             if (id->name == varName) {
-                ctx.error(expr, DiagCode::E3003,
-                          "let variable '", ctx.pool.lookup(varName),
-                          "' cannot be used in its own initializer");
+                ctx.diagnostics.error(DiagCode::Sem_SelfReferentialInit, expr,
+                                      "let variable '", ctx.pool.lookup(varName),
+                                      "' cannot be used in its own initializer");
             }
             return;
         }
