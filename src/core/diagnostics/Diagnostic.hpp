@@ -37,8 +37,6 @@
 #include <iomanip>
 #include <ostream>
 
-namespace diagnostic {
-
 // ─── Severity ──────────────────────────────────────────────────────────────
 
 enum class Severity : uint8_t {
@@ -185,19 +183,19 @@ struct Diagnostic {
     }
 };
 
-// ─── Diagnostic Context ──────────────────────────────────────────────────
+// ─── Diagnostic Engine ──────────────────────────────────────────────────
 
-/// @brief Simple diagnostic context - stores and tracks all diagnostics.
+/// @brief Simple diagnostic engine - stores and tracks all diagnostics.
 ///
 /// Usage:
-///   diagnostic::Context ctx;
+///   DiagnosticEngine ctx;
 ///   ctx.error(ErrorCode::SemUndefinedValue, node, "undefined variable '", name, "'");
 ///   ctx.warning(ErrorCode::WarnUnusedVariable, node, "unused variable '", name, "'");
 ///   ctx.note(node, "consider using '_' to ignore");
 ///
 ///   if (ctx.canContinue()) { ... }
 ///   ctx.dump(std::cerr);
-class Context {
+class DiagnosticEngine {
 public:
     // ─── Report Functions ──────────────────────────────────────────────
 
@@ -438,5 +436,3 @@ private:
         return "";
     }
 };
-
-} // namespace diagnostic

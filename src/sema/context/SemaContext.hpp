@@ -7,7 +7,6 @@
 #include "core/memory/ASTArena.hpp"
 #include "core/memory/StringPool.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
-#include "core/diagnostics/DiagnosticCodes.hpp"
 
 #include <vector>
 #include <unordered_map>
@@ -70,6 +69,14 @@ struct TypeCache {
 
 // ─── SemaContext ──────────────────────────────────────────────────────────
 
+/// @brief Unified semantic context - all in one struct.
+/// 
+/// This is the main context passed to all semantic analysis functions.
+/// It's intentionally monolithic - all state is directly accessible.
+/// 
+/// @note Diagnostic functions are called directly on ctx.diagnostics,
+///       not wrapped by SemaContext. This keeps concerns separate and
+///       avoids duplication.
 struct SemaContext {
     // ─── Resources ──────────────────────────────────────────────────────
     
@@ -96,6 +103,15 @@ struct SemaContext {
     // ─── Self-Reference Tracking ──────────────────────────────────────
     
     std::vector<const TypeDeclAST*> definingTypes;
+    
+    // ─── Diagnostics ────────────────────────────────────────────────────
+    
+    /// @brief Diagnostic context for reporting errors, warnings, notes, hints.
+    /// 
+    /// Use directly:
+    ///   ctx.diagnostics.error(ErrorCode::SemUndefinedValue, node, "message");
+    ///   ctx.diagnostics.warning(ErrorCode::WarnUnusedVariable, node, "message");
+    DiagnosticEngine diagnostics;
     
     // ─── Constructor ────────────────────────────────────────────────────
     
@@ -278,7 +294,6 @@ struct SemaContext {
         return currentScope().pendingSpawn.find(name) != currentScope().pendingSpawn.end();
     }
     
-    /// @brief Resolve a pending async operation (remove it from the list).
     void resolveAsync(InternedString name) {
         if (!scopes.empty()) {
             currentScope().pendingAsync.erase(name);
@@ -413,36 +428,12 @@ struct SemaContext {
         return definingTypes.empty() ? nullptr : definingTypes.back();
     }
     
-    // ─── Error Reporting ─────────────────────────────────────────────────
+    // ─── Query Helpers ─────────────────────────────────────────────────
     
-    template<typename... Args>
-    void error(const BaseAST* node, DiagCode code, Args&&... args) {
-        std::string msg = buildMessage(std::forward<Args>(args)...);
-        diagnostic::error(node ? node->loc : SourceLocation{}, code, {msg});
-    }
-    
-    template<typename... Args>
-    void warning(const BaseAST* node, DiagCode code, Args&&... args) {
-        std::string msg = buildMessage(std::forward<Args>(args)...);
-        diagnostic::warning(node ? node->loc : SourceLocation{}, code, {msg});
-    }
-    
-    template<typename... Args>
-    void note(const BaseAST* node, Args&&... args) {
-        std::string msg = buildMessage(std::forward<Args>(args)...);
-        diagnostic::note(node ? node->loc : SourceLocation{}, msg);
-    }
-    
-    bool canContinue() const {
-        return diagnostic::canContinue();
-    }
-    
-private:
-    template<typename... Args>
-    std::string buildMessage(Args&&... args) const {
-        std::ostringstream oss;
-        (oss << ... << args);
-        return oss.str();
+    /// @brief Check if we can continue processing.
+    /// Delegates to the diagnostic context.
+    bool canContinue(int maxErrors = 100) const {
+        return diagnostics.canContinue(maxErrors);
     }
 };
 

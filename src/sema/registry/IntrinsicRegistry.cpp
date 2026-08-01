@@ -7,6 +7,7 @@
 #include "../types/SemaResolve.hpp"
 #include "../types/SemaCompare.hpp"
 #include "debug/DebugUtils.hpp"
+#include "core/diagnostics/Diagnostic.hpp"
 #include "sema/Sema.hpp"
 
 #include <cassert>
@@ -246,9 +247,9 @@ bool IntrinsicRegistry::validateFenceOrdering(InternedString ordering, StringPoo
 
 bool IntrinsicRegistry::validatePtrArg(const ExprAST* arg, const std::string& argName, SemaContext& ctx) const {
     if (!arg->resolvedType || !arg->resolvedType->isa<PtrTypeAST>()) {
-        ctx.error(arg, DiagCode::E3003,
-                  "argument '", argName, "' expects pointer type, got ",
-                  debug::typeToString(arg->resolvedType, ctx.pool));
+        ctx.diagnostics.error(ErrorCode::SemTypeMismatch, arg,
+                              "argument '", argName, "' expects pointer type, got ",
+                              debug::typeToString(arg->resolvedType, ctx.pool));
         return false;
     }
     return true;
@@ -256,9 +257,9 @@ bool IntrinsicRegistry::validatePtrArg(const ExprAST* arg, const std::string& ar
 
 bool IntrinsicRegistry::validateNumericArg(const ExprAST* arg, const std::string& argName, SemaContext& ctx) const {
     if (!arg->resolvedType || !isNumericType(arg->resolvedType)) {
-        ctx.error(arg, DiagCode::E3003,
-                  "argument '", argName, "' expects numeric type, got ",
-                  debug::typeToString(arg->resolvedType, ctx.pool));
+        ctx.diagnostics.error(ErrorCode::SemTypeMismatch, arg,
+                              "argument '", argName, "' expects numeric type, got ",
+                              debug::typeToString(arg->resolvedType, ctx.pool));
         return false;
     }
     return true;
@@ -266,9 +267,9 @@ bool IntrinsicRegistry::validateNumericArg(const ExprAST* arg, const std::string
 
 bool IntrinsicRegistry::validateIntArg(const ExprAST* arg, const std::string& argName, SemaContext& ctx) const {
     if (!arg->resolvedType || !isIntegerType(arg->resolvedType)) {
-        ctx.error(arg, DiagCode::E3003,
-                  "argument '", argName, "' expects integer type, got ",
-                  debug::typeToString(arg->resolvedType, ctx.pool));
+        ctx.diagnostics.error(ErrorCode::SemTypeMismatch, arg,
+                              "argument '", argName, "' expects integer type, got ",
+                              debug::typeToString(arg->resolvedType, ctx.pool));
         return false;
     }
     return true;
@@ -276,9 +277,9 @@ bool IntrinsicRegistry::validateIntArg(const ExprAST* arg, const std::string& ar
 
 bool IntrinsicRegistry::validateStringArg(const ExprAST* arg, const std::string& argName, SemaContext& ctx) const {
     if (!arg->resolvedType || !isStringType(arg->resolvedType)) {
-        ctx.error(arg, DiagCode::E3003,
-                  "argument '", argName, "' expects string type, got ",
-                  debug::typeToString(arg->resolvedType, ctx.pool));
+        ctx.diagnostics.error(ErrorCode::SemTypeMismatch, arg,
+                              "argument '", argName, "' expects string type, got ",
+                              debug::typeToString(arg->resolvedType, ctx.pool));
         return false;
     }
     return true;
@@ -286,9 +287,9 @@ bool IntrinsicRegistry::validateStringArg(const ExprAST* arg, const std::string&
 
 bool IntrinsicRegistry::validateBoolArg(const ExprAST* arg, const std::string& argName, SemaContext& ctx) const {
     if (!arg->resolvedType || !isBoolType(arg->resolvedType)) {
-        ctx.error(arg, DiagCode::E3003,
-                  "argument '", argName, "' expects boolean type, got ",
-                  debug::typeToString(arg->resolvedType, ctx.pool));
+        ctx.diagnostics.error(ErrorCode::SemTypeMismatch, arg,
+                              "argument '", argName, "' expects boolean type, got ",
+                              debug::typeToString(arg->resolvedType, ctx.pool));
         return false;
     }
     return true;
@@ -296,9 +297,9 @@ bool IntrinsicRegistry::validateBoolArg(const ExprAST* arg, const std::string& a
 
 bool IntrinsicRegistry::validateRefArg(const ExprAST* arg, const std::string& argName, SemaContext& ctx) const {
     if (!arg->resolvedType || !arg->resolvedType->isa<RefTypeAST>()) {
-        ctx.error(arg, DiagCode::E3003,
-                  "argument '", argName, "' expects reference type, got ",
-                  debug::typeToString(arg->resolvedType, ctx.pool));
+        ctx.diagnostics.error(ErrorCode::SemTypeMismatch, arg,
+                              "argument '", argName, "' expects reference type, got ",
+                              debug::typeToString(arg->resolvedType, ctx.pool));
         return false;
     }
     return true;
@@ -354,8 +355,8 @@ bool IntrinsicRegistry::validateIntrinsicCall(const IntrinsicCallExprAST* expr,
                 const_cast<ExprAST*>(expr->args[0]), ctx.getStringType(), ctx
             );
             if (!argType || argType->isa<UnknownTypeAST>()) {
-                ctx.error(expr->args[0], DiagCode::E3003,
-                          "fence ordering expects a string literal");
+                ctx.diagnostics.error(ErrorCode::SemTypeMismatch, expr->args[0],
+                                      "fence ordering expects a string literal");
                 return false;
             }
             
@@ -364,9 +365,9 @@ bool IntrinsicRegistry::validateIntrinsicCall(const IntrinsicCallExprAST* expr,
                 expr->args[0]->as<LiteralExprAST>()->value
             );
             if (!validateFenceOrdering(ctx.pool.intern(ordering), ctx.pool)) {
-                ctx.error(expr->args[0], DiagCode::E3003,
-                          "invalid fence ordering — must be: relaxed, acquire, "
-                          "release, acq_rel, or seq_cst");
+                ctx.diagnostics.error(ErrorCode::SemTypeMismatch, expr->args[0],
+                                      "invalid fence ordering — must be: relaxed, acquire, "
+                                      "release, acq_rel, or seq_cst");
                 return false;
             }
         }
@@ -459,8 +460,8 @@ bool IntrinsicRegistry::validateIntrinsicCall(const IntrinsicCallExprAST* expr,
                 const_cast<ExprAST*>(lastArg), ctx.getStringType(), ctx
             );
             if (!argType || argType->isa<UnknownTypeAST>()) {
-                ctx.error(lastArg, DiagCode::E3003,
-                          "atomic ordering expects a string literal");
+                ctx.diagnostics.error(ErrorCode::SemTypeMismatch, lastArg,
+                                      "atomic ordering expects a string literal");
                 return false;
             }
             
@@ -468,9 +469,9 @@ bool IntrinsicRegistry::validateIntrinsicCall(const IntrinsicCallExprAST* expr,
                 lastArg->as<LiteralExprAST>()->value
             );
             if (!validateFenceOrdering(ctx.pool.intern(ordering), ctx.pool)) {
-                ctx.error(lastArg, DiagCode::E3003,
-                          "invalid ordering — must be: relaxed, acquire, "
-                          "release, acq_rel, or seq_cst");
+                ctx.diagnostics.error(ErrorCode::SemTypeMismatch, lastArg,
+                                      "invalid ordering — must be: relaxed, acquire, "
+                                      "release, acq_rel, or seq_cst");
                 return false;
             }
         }
@@ -485,15 +486,15 @@ bool IntrinsicRegistry::validateIntrinsicCall(const IntrinsicCallExprAST* expr,
                 const_cast<ExprAST*>(expr->args[1]), ctx.getIntType(), ctx
             );
             if (!nType || nType->isa<UnknownTypeAST>()) {
-                ctx.error(expr->args[1], DiagCode::E3003,
-                          "argument 'N' must be a compile-time integer constant");
+                ctx.diagnostics.error(ErrorCode::SemTypeMismatch, expr->args[1],
+                                      "argument 'N' must be a compile-time integer constant");
                 return false;
             }
             
             // Check that it's actually a literal (constexpr)
             if (!expr->args[1]->isa<LiteralExprAST>()) {
-                ctx.error(expr->args[1], DiagCode::E3003,
-                          "argument 'N' must be a compile-time integer constant");
+                ctx.diagnostics.error(ErrorCode::SemTypeMismatch, expr->args[1],
+                                      "argument 'N' must be a compile-time integer constant");
                 return false;
             }
         }
