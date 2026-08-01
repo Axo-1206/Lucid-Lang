@@ -117,15 +117,14 @@ bool resolveBlock(const BlockStmtAST* block, SemaContext& ctx) {
     }
 
     // ─── 5. Check for unresolved async/spawn operations ────────────────────
-    // This is the critical part for concurrency tracking
     for (const InternedString& name : ctx.getPendingAsyncNames()) {
-        ctx.warning(block, DiagCode::W1003,
-                    "async '", ctx.pool.lookup(name), "' was never awaited");
+        ctx.diagnostics.warning(DiagCode::Warn_UnawaitedAsync, block,
+                                "async '", ctx.pool.lookup(name), "' was never awaited");
     }
 
     for (const InternedString& name : ctx.getPendingSpawnNames()) {
-        ctx.warning(block, DiagCode::W1004,
-                    "spawn '", ctx.pool.lookup(name), "' was never joined");
+        ctx.diagnostics.warning(DiagCode::Warn_UnjoinedSpawn, block,
+                                "spawn '", ctx.pool.lookup(name), "' was never joined");
     }
 
     // ─── 6. Pop scope ─────────────────────────────────────────────────────
@@ -142,8 +141,8 @@ bool resolveBlock(const BlockStmtAST* block, SemaContext& ctx) {
     // ─── 9. Final Check: Return Requirements ─────────────────────────────
     if (ctx.stack.hasReturnRequirements() && !ctx.stack.returnRequirementsSatisfied()) {
         if (!transfers) {
-            ctx.error(block, DiagCode::E3005,
-                      "function is missing a return statement");
+            ctx.diagnostics.error(DiagCode::Sem_MissingReturn, block,
+                                  "function is missing a return statement");
         }
     }
 
@@ -172,7 +171,6 @@ bool resolveIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
     ctx.stack.setHasElse(stmt->elseBranch != nullptr);
 
     // ─── 2. Resolve condition with target type = bool ────────────────────
-    // Use cached bool type from context
     PrimitiveTypeAST* boolType = ctx.getBoolType();
 
     // Enable if condition context for narrowing detection
@@ -287,7 +285,8 @@ bool resolveSwitchStmt(const SwitchStmtAST* stmt, SemaContext& ctx) {
     // ─── 1. Resolve subject expression (no target type yet) ──────────────
     TypeAST* subjectType = resolveExpr(stmt->subject, ctx);
     if (!subjectType || subjectType->isa<UnknownTypeAST>()) {
-        ctx.error(stmt->subject, DiagCode::E2002, "switch subject has unknown type");
+        ctx.diagnostics.error(DiagCode::Sem_InvalidSwitchType, stmt->subject,
+                              "switch subject has unknown type");
         ctx.stack.push(ContextKind::SwitchBody, const_cast<SwitchStmtAST*>(stmt), stmt->loc);
         ctx.stack.pop();
         return false;
@@ -295,8 +294,8 @@ bool resolveSwitchStmt(const SwitchStmtAST* stmt, SemaContext& ctx) {
     
     // ─── 2. Validate subject type ──────────────────────────────────────
     if (!isValidSwitchType(subjectType, ctx)) {
-        ctx.error(stmt->subject, DiagCode::E3003,
-                  "switch subject must be integer, enum, bool, char, or string");
+        ctx.diagnostics.error(DiagCode::Sem_InvalidSwitchType, stmt->subject,
+                              "switch subject must be integer, enum, bool, char, or string");
         return false;
     }
     
@@ -318,8 +317,8 @@ bool resolveSwitchStmt(const SwitchStmtAST* stmt, SemaContext& ctx) {
             
             // Check if the case value is compatible with the subject type
             if (!isSwitchCaseCompatible(value, subjectType, ctx)) {
-                ctx.error(value, DiagCode::E3003,
-                          "case value is not compatible with switch subject type");
+                ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, value,
+                                      "case value is not compatible with switch subject type");
             }
         }
         
@@ -368,15 +367,16 @@ bool resolveSwitchCase(const SwitchCaseAST* switchCase, SemaContext& ctx) {
         if (!value->isa<LiteralExprAST>() && 
             !value->isa<FieldAccessExprAST>() && 
             !value->isa<RangeExprAST>()) {
-            ctx.error(value, DiagCode::E3003,
-                      "case value must be a literal, enum variant, or range");
+            ctx.diagnostics.error(DiagCode::Sem_InvalidSwitchType, value,
+                                  "case value must be a literal, enum variant, or range");
             continue;
         }
 
         // Resolve the case value (no target type - it'll be checked by the switch)
         TypeAST* valueType = resolveExpr(value, ctx);
         if (!valueType || valueType->isa<UnknownTypeAST>()) {
-            ctx.error(value, DiagCode::E3003, "case value has unknown type");
+            ctx.diagnostics.error(DiagCode::Sem_InvalidSwitchType, value,
+                                  "case value has unknown type");
             continue;
         }
     }
@@ -417,8 +417,8 @@ bool resolveForStmt(const ForStmtAST* stmt, SemaContext& ctx) {
             // Error already reported
         }
         if (indexType && !isIntegerType(indexType)) {
-            ctx.error(stmt->indexVar, DiagCode::E3003,
-                      "index variable must be an integer type");
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, stmt->indexVar,
+                                  "index variable must be an integer type");
         }
     }
 
@@ -437,7 +437,8 @@ bool resolveForStmt(const ForStmtAST* stmt, SemaContext& ctx) {
         // We resolve it without a target type first
         TypeAST* iterableType = resolveExpr(stmt->iterable, ctx);
         if (!iterableType || iterableType->isa<UnknownTypeAST>()) {
-            ctx.error(stmt->iterable, DiagCode::E3003, "iterable has unknown type");
+            ctx.diagnostics.error(DiagCode::Sem_InvalidIterator, stmt->iterable,
+                                  "iterable has unknown type");
             ctx.popScope();
             ctx.stack.pop();
             return false;
@@ -451,7 +452,6 @@ bool resolveForStmt(const ForStmtAST* stmt, SemaContext& ctx) {
     // ─── 6. Resolve the step expression (if present) ──────────────────────
     if (stmt->step) {
         // Step must be numeric
-        // Use cached int type as target
         PrimitiveTypeAST* numericType = ctx.getIntType();
         TypeAST* stepType = resolveExprWithTarget(stmt->step, numericType, ctx);
         if (!stepType || stepType->isa<UnknownTypeAST>()) {
@@ -573,16 +573,16 @@ bool resolveReturnStmt(const ReturnStmtAST* stmt, SemaContext& ctx) {
 
     // ─── 1. Check: Must be inside a function body ──────────────────────────
     if (!ctx.stack.insideFunction()) {
-        ctx.error(stmt, DiagCode::E3006,
-                  "return statement outside of function body");
+        ctx.diagnostics.error(DiagCode::Sem_InvalidBreak, stmt,
+                              "return statement outside of function body");
         return true;
     }
 
     // ─── 2. Get the current function's return requirements ──────────────────
     const ReturnRequirements* reqs = ctx.stack.currentReturnReqs();
     if (!reqs) {
-        ctx.error(stmt, DiagCode::E3006,
-                  "return statement with no return requirements");
+        ctx.diagnostics.error(DiagCode::Sem_MissingReturn, stmt,
+                              "return statement with no return requirements");
         return true;
     }
 
@@ -592,15 +592,15 @@ bool resolveReturnStmt(const ReturnStmtAST* stmt, SemaContext& ctx) {
     // ─── 4. Check return value against current group ────────────────────────
     if (stmt->value) {
         if (!currentGroup) {
-            ctx.error(stmt, DiagCode::E3005,
-                      "return value provided but function has no pending return group");
+            ctx.diagnostics.error(DiagCode::Sem_MissingReturn, stmt,
+                                  "return value provided but function has no pending return group");
             return true;
         }
 
         const TypeAST* expectedType = currentGroup->returnType;
         if (!expectedType) {
-            ctx.error(stmt, DiagCode::E3005,
-                      "return value provided but function expects void return");
+            ctx.diagnostics.error(DiagCode::Sem_MissingReturn, stmt,
+                                  "return value provided but function expects void return");
             return true;
         }
 
@@ -614,16 +614,16 @@ bool resolveReturnStmt(const ReturnStmtAST* stmt, SemaContext& ctx) {
         // Validate fallible/nullable propagation
         if (stmt->value->valueState == ValueState::Err) {
             if (!isFallibleType(expectedType)) {
-                ctx.error(stmt->value, DiagCode::E3003,
-                          "cannot return err to non-fallible return type");
+                ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, stmt->value,
+                                      "cannot return err to non-fallible return type");
                 return true;
             }
         }
 
         if (stmt->value->valueState == ValueState::Nil) {
             if (!isNullableType(expectedType)) {
-                ctx.error(stmt->value, DiagCode::E3003,
-                          "cannot return nil to non-nullable return type");
+                ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, stmt->value,
+                                      "cannot return nil to non-nullable return type");
                 return true;
             }
         }
@@ -631,14 +631,14 @@ bool resolveReturnStmt(const ReturnStmtAST* stmt, SemaContext& ctx) {
     } else {
         // ── 4b. Void return (no value) ──────────────────────────────────────
         if (currentGroup && currentGroup->requiresReturn) {
-            ctx.error(stmt, DiagCode::E3005,
-                      "void return statement but function expects a return value");
+            ctx.diagnostics.error(DiagCode::Sem_MissingReturn, stmt,
+                                  "void return statement but function expects a return value");
             return true;
         }
 
         if (!reqs->allowsOptionalReturn) {
-            ctx.error(stmt, DiagCode::E3005,
-                      "void return statement not allowed in this function");
+            ctx.diagnostics.error(DiagCode::Sem_MissingReturn, stmt,
+                                  "void return statement not allowed in this function");
             return true;
         }
     }
@@ -667,8 +667,8 @@ bool resolveBreakStmt(const BreakStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return true;
 
     if (!ctx.stack.insideLoop() && !ctx.stack.insideSwitch()) {
-        ctx.error(stmt, DiagCode::E3006,
-                  "break statement outside of loop or switch");
+        ctx.diagnostics.error(DiagCode::Sem_InvalidBreak, stmt,
+                              "break statement outside of loop or switch");
         return true;
     }
 
@@ -690,8 +690,8 @@ bool resolveContinueStmt(const ContinueStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return true;
 
     if (!ctx.stack.insideLoop()) {
-        ctx.error(stmt, DiagCode::E3006,
-                  "continue statement outside of loop");
+        ctx.diagnostics.error(DiagCode::Sem_InvalidContinue, stmt,
+                              "continue statement outside of loop");
         return true;
     }
 
@@ -716,7 +716,8 @@ bool resolveExprStmt(const ExprStmtAST* stmt, SemaContext& ctx) {
     // ─── 1. Resolve the expression (no target type) ──────────────────────
     TypeAST* exprType = resolveExpr(stmt->expr, ctx);
     if (!exprType || exprType->isa<UnknownTypeAST>()) {
-        ctx.error(stmt->expr, DiagCode::E3003, "expression has unknown type");
+        ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, stmt->expr,
+                              "expression has unknown type");
         return false;
     }
 
@@ -726,8 +727,8 @@ bool resolveExprStmt(const ExprStmtAST* stmt, SemaContext& ctx) {
         // TODO: Check if expression has side effects
         // bool hasSideEffects = hasSideEffects(stmt->expr, ctx);
         // if (!hasSideEffects) {
-        //     ctx.warning(stmt, DiagCode::W1002,
-        //                 "expression result is discarded (no side effects)");
+        //     ctx.diagnostics.warning(DiagCode::Warn_DiscardedResult, stmt,
+        //                             "expression result is discarded (no side effects)");
         // }
     }
 
@@ -763,20 +764,21 @@ bool resolveAsyncStmt(const AsyncStmtAST* stmt, SemaContext& ctx) {
 
     // ─── 1. Check: Must be inside a function body ──────────────────────────
     if (!ctx.stack.insideFunction()) {
-        ctx.error(stmt, DiagCode::E3006,
-                  "async statement outside of function body");
+        ctx.diagnostics.error(DiagCode::Sem_AsyncOutsideFunction, stmt,
+                              "async statement outside of function body");
         return false;
     }
 
     // ─── 2. Check the target variable ──────────────────────────────────────
     if (!stmt->target) {
-        ctx.error(stmt, DiagCode::E3003, "async statement requires a target variable");
+        ctx.diagnostics.error(DiagCode::Sem_AsyncOutsideFunction, stmt,
+                              "async statement requires a target variable");
         return false;
     }
 
     if (!stmt->target->isa<IdentifierExprAST>()) {
-        ctx.error(stmt->target, DiagCode::E3003,
-                  "async target must be a variable (not an expression)");
+        ctx.diagnostics.error(DiagCode::Sem_AsyncOutsideFunction, stmt->target,
+                              "async target must be a variable (not an expression)");
         return false;
     }
 
@@ -790,22 +792,23 @@ bool resolveAsyncStmt(const AsyncStmtAST* stmt, SemaContext& ctx) {
         // Verify the variable exists
         const ValueDeclAST* decl = ctx.lookupValue(targetName);
         if (!decl) {
-            ctx.error(stmt->target, DiagCode::E2001,
-                      "undefined variable '", ctx.pool.lookup(targetName), "'");
+            ctx.diagnostics.error(DiagCode::Sem_UndefinedValue, stmt->target,
+                                  "undefined variable '", ctx.pool.lookup(targetName), "'");
             return false;
         }
 
         // Verify it's a variable (not a function, enum, etc.)
         if (!decl->isa<VarDeclAST>()) {
-            ctx.error(stmt->target, DiagCode::E3003,
-                      "'", ctx.pool.lookup(targetName), "' is not a variable");
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, stmt->target,
+                                  "'", ctx.pool.lookup(targetName), "' is not a variable");
             return false;
         }
     }
 
     // ─── 4. Resolve the call expression ─────────────────────────────────────
     if (!stmt->call) {
-        ctx.error(stmt, DiagCode::E3003, "async statement requires a call expression");
+        ctx.diagnostics.error(DiagCode::Sem_AsyncOutsideFunction, stmt,
+                              "async statement requires a call expression");
         return false;
     }
 
@@ -830,16 +833,16 @@ bool resolveAwaitStmt(const AwaitStmtAST* stmt, SemaContext& ctx) {
 
     // ─── 1. Check: Must be inside a function body ──────────────────────────
     if (!ctx.stack.insideFunction()) {
-        ctx.error(stmt, DiagCode::E3006,
-                  "await statement outside of function body");
+        ctx.diagnostics.error(DiagCode::Sem_AwaitOutsideFunction, stmt,
+                              "await statement outside of function body");
         return false;
     }
 
     // ─── 2. Check each target variable ─────────────────────────────────────
     for (const ExprAST* target : stmt->targets) {
         if (!target->isa<IdentifierExprAST>()) {
-            ctx.error(target, DiagCode::E3003,
-                      "await target must be a variable (not an expression)");
+            ctx.diagnostics.error(DiagCode::Sem_AwaitNonAsync, target,
+                                  "await target must be a variable (not an expression)");
             continue;
         }
 
@@ -851,16 +854,16 @@ bool resolveAwaitStmt(const AwaitStmtAST* stmt, SemaContext& ctx) {
             // Resolve the async operation
             ctx.resolveAsync(targetName);
         } else {
-            ctx.error(target, DiagCode::E3003,
-                      "'", ctx.pool.lookup(targetName), "' was not declared with async");
+            ctx.diagnostics.error(DiagCode::Sem_AwaitNonAsync, target,
+                                  "'", ctx.pool.lookup(targetName), "' was not declared with async");
             return false;
         }
 
         // ─── 4. Verify the variable exists ─────────────────────────────────
         const ValueDeclAST* decl = ctx.lookupValue(targetName);
         if (!decl) {
-            ctx.error(target, DiagCode::E2001,
-                      "undefined variable '", ctx.pool.lookup(targetName), "'");
+            ctx.diagnostics.error(DiagCode::Sem_UndefinedValue, target,
+                                  "undefined variable '", ctx.pool.lookup(targetName), "'");
             return false;
         }
 
@@ -878,8 +881,8 @@ bool resolveSpawnStmt(const SpawnStmtAST* stmt, SemaContext& ctx) {
 
     // ─── 1. Check: Must be inside a function body ──────────────────────────
     if (!ctx.stack.insideFunction()) {
-        ctx.error(stmt, DiagCode::E3006,
-                  "spawn statement outside of function body");
+        ctx.diagnostics.error(DiagCode::Sem_SpawnOutsideFunction, stmt,
+                              "spawn statement outside of function body");
         return false;
     }
 
@@ -889,8 +892,8 @@ bool resolveSpawnStmt(const SpawnStmtAST* stmt, SemaContext& ctx) {
 
     if (stmt->target) {
         if (!stmt->target->isa<IdentifierExprAST>()) {
-            ctx.error(stmt->target, DiagCode::E3003,
-                      "spawn target must be a variable (not an expression)");
+            ctx.diagnostics.error(DiagCode::Sem_SpawnOutsideFunction, stmt->target,
+                                  "spawn target must be a variable (not an expression)");
             return false;
         }
 
@@ -904,15 +907,15 @@ bool resolveSpawnStmt(const SpawnStmtAST* stmt, SemaContext& ctx) {
             // Verify the variable exists
             const ValueDeclAST* decl = ctx.lookupValue(targetName);
             if (!decl) {
-                ctx.error(stmt->target, DiagCode::E2001,
-                          "undefined variable '", ctx.pool.lookup(targetName), "'");
+                ctx.diagnostics.error(DiagCode::Sem_UndefinedValue, stmt->target,
+                                      "undefined variable '", ctx.pool.lookup(targetName), "'");
                 return false;
             }
 
             // Verify it's a variable (not a function, enum, etc.)
             if (!decl->isa<VarDeclAST>()) {
-                ctx.error(stmt->target, DiagCode::E3003,
-                          "'", ctx.pool.lookup(targetName), "' is not a variable");
+                ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, stmt->target,
+                                      "'", ctx.pool.lookup(targetName), "' is not a variable");
                 return false;
             }
         }
@@ -923,7 +926,8 @@ bool resolveSpawnStmt(const SpawnStmtAST* stmt, SemaContext& ctx) {
 
     // ─── 3. Resolve the call expression ─────────────────────────────────────
     if (!stmt->call) {
-        ctx.error(stmt, DiagCode::E3003, "spawn statement requires a call expression");
+        ctx.diagnostics.error(DiagCode::Sem_SpawnOutsideFunction, stmt,
+                              "spawn statement requires a call expression");
         return false;
     }
 
@@ -948,16 +952,16 @@ bool resolveJoinStmt(const JoinStmtAST* stmt, SemaContext& ctx) {
 
     // ─── 1. Check: Must be inside a function body ──────────────────────────
     if (!ctx.stack.insideFunction()) {
-        ctx.error(stmt, DiagCode::E3006,
-                  "join statement outside of function body");
+        ctx.diagnostics.error(DiagCode::Sem_JoinOutsideFunction, stmt,
+                              "join statement outside of function body");
         return false;
     }
 
     // ─── 2. Check each target variable ─────────────────────────────────────
     for (const ExprAST* target : stmt->targets) {
         if (!target->isa<IdentifierExprAST>()) {
-            ctx.error(target, DiagCode::E3003,
-                      "join target must be a variable (not an expression)");
+            ctx.diagnostics.error(DiagCode::Sem_JoinNonSpawn, target,
+                                  "join target must be a variable (not an expression)");
             continue;
         }
 
@@ -969,16 +973,16 @@ bool resolveJoinStmt(const JoinStmtAST* stmt, SemaContext& ctx) {
             // Resolve the spawn operation
             ctx.resolveSpawn(targetName);
         } else {
-            ctx.error(target, DiagCode::E3003,
-                      "'", ctx.pool.lookup(targetName), "' was not declared with spawn");
+            ctx.diagnostics.error(DiagCode::Sem_JoinNonSpawn, target,
+                                  "'", ctx.pool.lookup(targetName), "' was not declared with spawn");
             return false;
         }
 
         // ─── 4. Verify the variable exists ─────────────────────────────────
         const ValueDeclAST* decl = ctx.lookupValue(targetName);
         if (!decl) {
-            ctx.error(target, DiagCode::E2001,
-                      "undefined variable '", ctx.pool.lookup(targetName), "'");
+            ctx.diagnostics.error(DiagCode::Sem_UndefinedValue, target,
+                                  "undefined variable '", ctx.pool.lookup(targetName), "'");
             return false;
         }
 
