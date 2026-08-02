@@ -4,12 +4,10 @@
  */
 
 #include "parser/ModuleResolver.hpp"
-#include "core/ast/BaseAST.hpp"
 
 #include <fstream>
 #include <sstream>
 #include <algorithm>
-#include <regex>
 
 namespace parser {
 
@@ -22,7 +20,6 @@ ModuleResolver::ModuleResolver(const std::filesystem::path& packageRoot, StringP
     , pool_(pool) {
     // Ensure package root exists
     if (!std::filesystem::exists(packageRoot_)) {
-        // Create if it doesn't exist (for tests)
         std::filesystem::create_directories(packageRoot_);
     }
 }
@@ -32,35 +29,28 @@ ModuleResolver::ModuleResolver(const std::filesystem::path& packageRoot, StringP
 // ─────────────────────────────────────────────────────────────────────────────
 
 InternedString ModuleResolver::resolveUsePath(InternedString usePath) {
-    // 1. Check custom mappings first (from build manifest)
-    auto it = customMappings_.find(usePath);
-    if (it != customMappings_.end()) {
-        return it->second;
-    }
-    
-    // 2. Check cache
+    // 1. Check cache first
     auto cacheIt = usePathToFile_.find(usePath);
     if (cacheIt != usePathToFile_.end()) {
         return cacheIt->second;
     }
     
-    // 3. Convert import path to relative file path
+    // 2. Convert import path to relative file path
     std::string relativePath = usePathToRelativePath(usePath);
     if (relativePath.empty()) {
         return InternedString();
     }
     
-    // 4. Try to resolve the relative path
+    // 3. Try to resolve the relative path
     std::filesystem::path foundPath = resolveRelativePath(relativePath);
     if (!foundPath.empty()) {
-        // Store in cache
         InternedString result = pool_.intern(relativePath);
         usePathToFile_[usePath] = result;
         resolvedPathCache_[result] = foundPath;
         return result;
     }
     
-    // 5. Try without .lucid extension
+    // 4. Try without .lucid extension (directory module)
     if (relativePath.size() > 6 && relativePath.substr(relativePath.size() - 6) == ".lucid") {
         std::string withoutExt = relativePath.substr(0, relativePath.size() - 6);
         foundPath = resolveRelativePath(withoutExt);
@@ -124,10 +114,7 @@ bool ModuleResolver::isModuleParsed(InternedString modulePath) const {
 
 ModuleAST* ModuleResolver::getParsedModule(InternedString modulePath) const {
     auto it = parsedModules_.find(modulePath);
-    if (it != parsedModules_.end()) {
-        return it->second;
-    }
-    return nullptr;
+    return it != parsedModules_.end() ? it->second : nullptr;
 }
 
 void ModuleResolver::cacheModule(InternedString modulePath, ModuleAST* ast) {
@@ -167,12 +154,10 @@ void ModuleResolver::popParsing() {
 std::string ModuleResolver::readModuleSource(InternedString filePath) const {
     std::filesystem::path fullPath = getModuleFilePath(filePath);
     
-    // Check if file exists
-    if (!std::filesystem::exists(fullPath)) {
+    if (!fileExists(fullPath)) {
         return "";
     }
     
-    // Read file
     std::ifstream file(fullPath);
     if (!file.is_open()) {
         return "";
@@ -185,26 +170,12 @@ std::string ModuleResolver::readModuleSource(InternedString filePath) const {
 
 bool ModuleResolver::moduleFileExists(InternedString filePath) const {
     std::filesystem::path fullPath = getModuleFilePath(filePath);
-    return std::filesystem::exists(fullPath);
+    return fileExists(fullPath);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Private Helpers
 // ─────────────────────────────────────────────────────────────────────────────
-
-InternedString ModuleResolver::normalizePath(std::string path) const {
-    // Convert Windows backslashes to forward slashes
-    std::string normalized;
-    normalized.reserve(path.size());
-    for (char c : path) {
-        if (c == '\\') {
-            normalized += '/';
-        } else {
-            normalized += c;
-        }
-    }
-    return pool_.intern(normalized);
-}
 
 std::string ModuleResolver::usePathToRelativePath(InternedString usePath) const {
     std::string useStr = pool_.lookup(usePath);
@@ -213,40 +184,27 @@ std::string ModuleResolver::usePathToRelativePath(InternedString usePath) const 
     }
     
     std::string relativePath;
-    relativePath.reserve(useStr.size() + 7); // +7 for ".lucid" + slashes
+    relativePath.reserve(useStr.size() + 7); // +7 for ".lucid"
     
     // Replace '.' with '/' for path separators
     for (char c : useStr) {
-        if (c == '.') {
-            relativePath += '/';
-        } else {
-            relativePath += c;
-        }
+        relativePath += (c == '.') ? '/' : c;
     }
     
-    // Add .lucid extension
     relativePath += ".lucid";
-    
     return relativePath;
 }
 
 std::filesystem::path ModuleResolver::resolveRelativePath(const std::string& relativePath) const {
-    // Check package root first
     std::filesystem::path rootPath = packageRoot_ / relativePath;
-    if (std::filesystem::exists(rootPath)) {
+    if (fileExists(rootPath)) {
         return rootPath;
     }
-    
-    // Check additional search paths
-    for (const auto& searchPath : searchPaths_) {
-        std::filesystem::path fullPath = searchPath / relativePath;
-        if (std::filesystem::exists(fullPath)) {
-            return fullPath;
-        }
-    }
-    
-    // Not found
     return {};
+}
+
+bool ModuleResolver::fileExists(const std::filesystem::path& fullPath) const {
+    return std::filesystem::exists(fullPath) && std::filesystem::is_regular_file(fullPath);
 }
 
 } // namespace parser

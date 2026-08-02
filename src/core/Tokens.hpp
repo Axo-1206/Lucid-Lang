@@ -838,3 +838,15 @@ inline TokenType keyword_to_type(const std::string& str) {
     }
     return TokenType::IDENTIFIER;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EOF Token Sentinel - SINGLE DEFINITION
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief The single sentinel EOF token used by both Lexer and TokenStream.
+/// 
+/// This is defined once in Tokens.hpp to avoid duplication between Lexer and
+/// TokenStream. Both use the same constant, ensuring consistent EOF representation.
+/// 
+/// @note This is a compile-time constant, not a runtime-created object.
+inline const Token EOF_TOKEN_SENTINEL = {TokenType::EOF_TOKEN, "EOF", 0, 0};

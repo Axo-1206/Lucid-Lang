@@ -74,14 +74,20 @@ struct TypeCache {
 /// This is the main context passed to all semantic analysis functions.
 /// It's intentionally monolithic - all state is directly accessible.
 /// 
-/// @note Diagnostic functions are called directly on ctx.diagnostics,
-///       not wrapped by SemaContext. This keeps concerns separate and
-///       avoids duplication.
+/// @design_decision Diagnostics use DiagnosticEngine& (shared with parser)
+///   The diagnostic engine is the same across parsing and semantic phases.
+///   Both ParserContext and SemaContext hold references to the same
+///   DiagnosticEngine instance, ensuring all diagnostics go to one place.
+/// 
+/// @design_decision No convenience wrappers for diagnostics
+///   Use ctx.diagnostics.error() directly. This keeps the interface
+///   consistent with ParserContext and avoids duplication.
 struct SemaContext {
     // ─── Resources ──────────────────────────────────────────────────────
     
     StringPool& pool;
     ASTArena& arena;
+    DiagnosticEngine& diagnostics;
     ContextStack stack;
     
     // ─── Modules ────────────────────────────────────────────────────────
@@ -104,19 +110,13 @@ struct SemaContext {
     
     std::vector<const TypeDeclAST*> definingTypes;
     
-    // ─── Diagnostics ────────────────────────────────────────────────────
-    
-    /// @brief Diagnostic context for reporting errors, warnings, notes, hints.
-    /// 
-    /// Use directly:
-    ///   ctx.diagnostics.error(ErrorCode::SemUndefinedValue, node, "message");
-    ///   ctx.diagnostics.warning(ErrorCode::WarnUnusedVariable, node, "message");
-    DiagnosticEngine diagnostics;
-    
     // ─── Constructor ────────────────────────────────────────────────────
     
-    SemaContext(StringPool& p, ASTArena& a, std::vector<ModuleAST*> mods)
-        : pool(p), arena(a), modules(std::move(mods)) {
+    SemaContext(StringPool& p, ASTArena& a, DiagnosticEngine& d, std::vector<ModuleAST*> mods)
+        : pool(p)
+        , arena(a)
+        , diagnostics(d)
+        , modules(std::move(mods)) {
         for (ModuleAST* m : modules) {
             if (m) modulesByPath[m->filePath] = m;
         }

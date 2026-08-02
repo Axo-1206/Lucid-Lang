@@ -5,6 +5,10 @@
  * TokenStream is per-file - each file gets its own token stream.
  * It wraps the token vector and provides safe accessors with
  * automatic comment skipping.
+ * 
+ * @design_decision TokenStream is a "tape" - it provides forward-only
+ *   navigation with lookahead and position save/restore for backtracking.
+ *   It does NOT own the file path - that's stored in ModuleAST.
  */
 
 #pragma once
@@ -24,26 +28,26 @@ namespace parser {
  * ## Usage Example
  * 
  * ```cpp
- * TokenStream stream(tokens, filePath);
+ * TokenStream stream(tokens);
  * if (stream.check(TokenType::IDENTIFIER)) {
- *     Token tok = stream.advance();
+ *     Token tok = stream.consume();  // Consumes the current token
  * }
  * stream.consume(TokenType::LBRACE);
  * ```
  */
 struct TokenStream {
     TokenStream() = default;
-    TokenStream(std::vector<Token> tokens, InternedString filePath);
+    explicit TokenStream(std::vector<Token> tokens);
     
     // ─── Token Consumption ──────────────────────────────────────────────
     
-    /** @brief Return the current token without consuming it. */
+    /// @brief Return the current token without consuming it.
     const Token& peek() const;
     
-    /** @brief Consume and return the current token. */
-    Token advance();
+    /// @brief Consume and return the current token (skips following comments).
+    Token consume();
     
-    /** @brief Check if the current token is of the given type. */
+    /// @brief Check if the current token is of the given type.
     bool check(TokenType type) const;
     
     /**
@@ -56,45 +60,48 @@ struct TokenStream {
     * ## Usage Examples
     * 
     * ```cpp
-    * // Check against two types
     * if (stream.checkAny(TokenType::LET, TokenType::CONST)) { ... }
-    * 
-    * // Check against multiple types
     * if (stream.checkAny(TokenType::STRUCT, TokenType::ENUM, TokenType::TRAIT)) { ... }
-    * 
-    * // Check against a single type
-    * if (stream.checkAny(TokenType::IDENTIFIER)) { ... }
     * ```
     */
     template<typename... Types>
     bool checkAny(Types... types) {
         TokenType current = peek().type;
-        // Use a fold expression (C++17) or manual expansion (C++11/14)
         return ((types == current) || ...);
     }
     
-    /** @brief If the current token matches, consume and return it. */
+    /**
+     * @brief If the current token matches the given type, consume it.
+     * 
+     * @param type The token type to match.
+     * @return true if the token was matched and consumed, false otherwise.
+     */
     bool match(TokenType type);
     
-    /** @brief Consume the current token, expecting it to be of the given type. */
+    /**
+     * @brief Consume the current token, asserting it's of the given type.
+     * 
+     * This method consumes the token without checking its type.
+     * The caller must verify the type before calling, or handle errors separately.
+     * 
+     * @param type The expected token type (for documentation, not validated here).
+     * @return Token The consumed token, or EOF token if at end.
+     */
     Token consume(TokenType type);
     
-    /** @brief Check if we've reached the end of the token stream. */
+    /// @brief Check if we've reached the end of the token stream.
     bool isAtEnd() const;
     
-    /** @brief Get the current source location. */
+    /// @brief Get the current source location.
     SourceLocation currentLoc() const;
     
-    /** @brief Get the file path this stream represents. */
-    InternedString getFilePath() const { return filePath_; }
-    
-    /** @brief Consume all consecutive tokens of the given type. */
+    /// @brief Consume all consecutive tokens of the given type.
     int consumeTrailing(TokenType type);
     
     // ─── Lookahead ──────────────────────────────────────────────────────
     
-    TokenType peekType() const { return peek().type; }     // Get the token type(kind)
-    std::string peekValue() const { return peek().value; } // Get the token name(value)
+    TokenType peekType() const { return peek().type; }
+    std::string peekValue() const { return peek().value; }
     TokenType peekNextType() const;
     const Token& peekNext() const;
     const Token& peekAt(size_t offset) const;
@@ -114,8 +121,7 @@ struct TokenStream {
 private:
     std::vector<Token> tokens_;
     size_t pos_ = 0;
-    InternedString filePath_;
-    static const Token eofToken_;
+    // filePath_ REMOVED - use ModuleAST::filePath or diagnostic::ScopedSource
 };
 
 } // namespace parser

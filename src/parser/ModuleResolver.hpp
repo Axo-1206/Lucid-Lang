@@ -1,4 +1,5 @@
 /**
+ * @file ModuleResolver.hpp
  * @brief Module resolver for a single parse session.
  * 
  * ModuleResolver maintains state for a specific parse session:
@@ -6,9 +7,18 @@
  * - Parsed module cache
  * - Circular import detection stack
  * 
+ * @design_decision Single Responsibility
+ *   ModuleResolver handles three things: path resolution, module caching,
+ *   and circular import detection. These are all related to "finding and
+ *   tracking modules" and belong together.
+ * 
+ * @design_decision ParserContext holds reference, not ownership
+ *   ModuleResolver is owned by the driver (parse session). ParserContext
+ *   holds a raw pointer for access. This allows the resolver to outlive
+ *   any individual parse call.
+ * 
  * Each parse session should have its own ModuleResolver
  * to keep state isolated and allow parallel compilation.
- * 
  */
 
 #pragma once
@@ -28,19 +38,16 @@ namespace parser {
  * @brief Resolves module imports and caches parsed modules.
  * 
  * The ModuleResolver handles:
- * - Converting import paths to file paths (e.g., "std.io" → "std/io.lucid")
+ * - Converting import paths to file paths (e.g., "std.io" → "std/io.luc")
  * - Caching parsed modules to avoid re-parsing
  * - Detecting circular imports
- * - Managing module search paths
  * 
- * ## Path Resolution Algorithm
+ * ## Path Resolution
  * 
- * 1. Check custom mappings (from build manifest)
- * 2. Check cache for previously resolved paths
- * 3. Convert import path to file path (replace '.' with '/')
- * 4. Try with .lucid extension
- * 5. Search in package root and additional search paths
- * 6. Try without extension
+ * 1. Check cache for previously resolved paths
+ * 2. Convert import path to file path (replace '.' with '/')
+ * 3. Try with .luc extension
+ * 4. Search in package root
  * 
  * ## Usage Example
  * 
@@ -55,8 +62,7 @@ namespace parser {
  *     ModuleAST* ast = resolver.getParsedModule(filePath);
  * }
  * 
- * // Track circular imports — prefer ScopedParsingGuard over calling
- * // pushParsing/popParsing directly; see its own doc comment below.
+ * // Track circular imports
  * ScopedParsingGuard guard(&resolver, filePath);
  * ModuleAST* ast = parseModule(filePath);
  * resolver.cacheModule(filePath, ast);
@@ -77,12 +83,12 @@ public:
     // ─── Path Resolution ──────────────────────────────────────────────────
     
     /**
-     * @brief Resolve a import path to a file path.
+     * @brief Resolve an import path to a file path.
      * 
      * Converts:
-     *   "std.io"         → "std/io.lucid"
-     *   "math"           → "math.lucid"
-     *   "graphics.gl"    → "graphics/gl.lucid"
+     *   "std.io"         → "std/io.luc"
+     *   "math"           → "math.luc"
+     *   "graphics.gl"    → "graphics/gl.luc"
      * 
      * @param usePath The import path (e.g., "std.io")
      * @return InternedString The resolved file path, or empty if not found
@@ -92,13 +98,13 @@ public:
     /**
      * @brief Get the full filesystem path for a resolved module.
      * 
-     * @param modulePath The resolved module path (e.g., "std/io.lucid")
+     * @param modulePath The resolved module path (e.g., "std/io.luc")
      * @return std::filesystem::path The absolute filesystem path
      */
     std::filesystem::path getModuleFilePath(InternedString modulePath) const;
     
     /**
-     * @brief Check if a import path is valid (resolves to an existing file).
+     * @brief Check if an import path is valid.
      * 
      * @param usePath The import path to check
      * @return true if the path resolves to an existing file
@@ -122,45 +128,27 @@ public:
     /**
      * @brief Store a parsed module AST.
      * 
-     * On the first cache of a given path, also appends it to the module
-     * order (see getModuleOrder()). A later cacheModule() call for the
-     * same, already-cached path is a no-op — this only happens if a caller
-     * calls parse() directly instead of going through the cache-check at
-     * the top of parse(), and is intentionally ignored rather than
-     * overwriting or re-ordering an already-completed module.
-     * 
-     * @param modulePath The resolved module path (e.g., "std/io.lucid")
+     * @param modulePath The resolved module path (e.g., "std/io.luc")
      * @param ast The parsed AST (owned by the session's arena)
      */
     void cacheModule(InternedString modulePath, ModuleAST* ast);
     
     /**
-     * @brief Get every module path in completion (post-)order.
-     *
-     * A module's path is appended here the first time it is cached — i.e.
-     * the moment its own parse() call finishes, which is after every
-     * module it `import`s has already finished and been appended. This means
-     * the order is a valid dependency order: for any module M, every
-     * module M depends on appears before M in this list. In particular,
-     * the root/main file — which depends (transitively) on everything
-     * else — is always last.
-     *
-     * This is what the driver should import to get the full set of parsed
-     * modules in an order safe for single-pass semantic analysis:
-     *
-     * ```cpp
-     * for (InternedString path : resolver.getModuleOrder()) {
-     *     ModuleAST* mod = resolver.getParsedModule(path);
-     *     analyze(mod);  // every module `mod` imports has already run
-     * }
-     * ```
+     * @brief Get all modules in dependency order (post-order).
+     * 
+     * A module's path is appended when it finishes parsing, after all
+     * its dependencies. This means the order is safe for single-pass
+     * semantic analysis.
      */
     const std::vector<InternedString>& getModuleOrder() const { return moduleOrder_; }
     
     // ─── Circular Import Detection ───────────────────────────────────────
     
     /**
-     * @brief Check if a module is currently being parsed (circular import).
+     * @brief Check if a module is currently being parsed.
+     * 
+     * @param modulePath The module path to check
+     * @return true if the module is in the parsing stack (circular import)
      */
     bool isParsing(InternedString modulePath) const;
     
@@ -168,6 +156,7 @@ public:
      * @brief Push a module onto the parsing stack.
      * 
      * Call before starting to parse a module.
+     * Prefer ScopedParsingGuard over calling this directly.
      */
     void pushParsing(InternedString modulePath);
     
@@ -175,6 +164,7 @@ public:
      * @brief Pop a module from the parsing stack.
      * 
      * Call after finishing parsing a module.
+     * Prefer ScopedParsingGuard over calling this directly.
      */
     void popParsing();
     
@@ -200,25 +190,19 @@ private:
     std::filesystem::path packageRoot_;
     StringPool& pool_;
     
-    // Map from import path (e.g., "std.io") to resolved file path (e.g., "std/io.lucid")
+    // ─── Internal State ──────────────────────────────────────────────────
+    
+    // Map from import path (e.g., "std.io") to resolved file path (e.g., "std/io.luc")
     std::unordered_map<InternedString, InternedString> usePathToFile_;
     
     // Map from resolved file path to parsed AST
     std::unordered_map<InternedString, ModuleAST*> parsedModules_;
     
-    // Paths in the order they were first cached (post-order / dependency
-    // order — see getModuleOrder()). A parallel index to parsedModules_,
-    // kept in sync exclusively by cacheModule().
+    // Paths in order they were parsed (post-order / dependency order)
     std::vector<InternedString> moduleOrder_;
     
     // Stack of modules currently being parsed (for circular detection)
     std::vector<InternedString> parsingStack_;
-    
-    // Additional search paths (beyond package root)
-    std::vector<std::filesystem::path> searchPaths_;
-    
-    // Custom module mappings (from build manifest)
-    std::unordered_map<InternedString, InternedString> customMappings_;
     
     // Cache of resolved filesystem paths (for performance)
     mutable std::unordered_map<InternedString, std::filesystem::path> resolvedPathCache_;
@@ -226,56 +210,48 @@ private:
     // ─── Private Helpers ──────────────────────────────────────────────────
     
     /**
-     * @brief Normalize path separators to forward slashes.
-     */
-    InternedString normalizePath(std::string path) const;
-    
-    /**
-     * @brief Convert a import path to a relative file path.
+     * @brief Convert an import path to a relative file path.
      * 
      * @param usePath The import path (e.g., "std.io")
-     * @return std::string The relative file path (e.g., "std/io.lucid")
+     * @return std::string The relative file path (e.g., "std/io.luc")
      */
     std::string usePathToRelativePath(InternedString usePath) const;
     
     /**
      * @brief Resolve a relative path to an absolute path.
      * 
-     * @param relativePath The relative path (e.g., "std/io.lucid")
+     * @param relativePath The relative path (e.g., "std/io.luc")
      * @return std::filesystem::path The absolute path, or empty if not found
      */
     std::filesystem::path resolveRelativePath(const std::string& relativePath) const;
+    
+    /**
+     * @brief Check if a file exists at the given path.
+     * 
+     * @param fullPath The full filesystem path
+     * @return true if the file exists and is readable
+     */
+    bool fileExists(const std::filesystem::path& fullPath) const;
 };
 
 /**
  * @brief RAII guard for ModuleResolver's circular-import tracking.
- *
- * Pushes `filePath` onto the resolver's parsing stack on construction and
- * pops it on destruction — on every exit path, including early returns.
- * Without this, pushParsing()/popParsing() must be balanced by hand across
- * every early return in parse() (it currently is, across four separate
- * exit points), and a future exit path that forgets the matching pop would
- * silently corrupt circular-import detection for every file parsed
- * afterward, with no crash to flag it.
- *
- * `resolver` may be null (parsing without a resolver is valid — see
- * parse()'s existing `if (ctx.resolver)` checks); the guard no-ops in
- * that case rather than requiring every call site to branch on it.
- *
+ * 
+ * Pushes a module onto the parsing stack on construction and pops it on
+ * destruction - on every exit path, including early returns.
+ * 
  * ## Usage
- *
+ * 
  * ```cpp
  * if (ctx.resolver && ctx.resolver->isParsing(filePath)) {
- *     // circular import — report and return before constructing the guard,
- *     // since nothing should be pushed for a parse that never starts
+ *     // circular import - report and return before constructing the guard
  *     return nullptr;
  * }
  * ScopedParsingGuard parsingGuard(ctx.resolver, filePath);
  * // every return below this point pops correctly, automatically
  * ```
- *
- * Non-copyable, non-movable, for the same reason as ScopedContext: its
- * identity is tied to one specific parse() activation.
+ * 
+ * Non-copyable, non-movable.
  */
 struct ScopedParsingGuard {
     ScopedParsingGuard(ModuleResolver* resolver, InternedString filePath)
