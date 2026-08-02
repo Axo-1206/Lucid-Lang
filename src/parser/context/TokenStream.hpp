@@ -122,17 +122,10 @@ public:
     const Token& getTokenAt(size_t idx) const { return tokens_[idx]; }
     size_t getTokenCount() const { return tokens_.size(); }
     
-    // ─── Diagnostics ───────────────────────────────────────────────────
-    
-    bool hasErrors() const { return hadErrors_; }
-    
 private:
     std::vector<Token> tokens_;
     size_t pos_ = 0;
-    bool hadErrors_ = false;
-    bool fullyTokenized_ = false;
     DiagnosticEngine* diagnostics_ = nullptr;
-    std::string source_;
     
     // ─── Lazy Lexing ───────────────────────────────────────────────────
     

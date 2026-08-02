@@ -120,6 +120,75 @@ inline std::string kindToString(ASTKind kind) {
 // Token to String
 // ─────────────────────────────────────────────────────────────────────────────
 
+inline std::string literalKindToString(LiteralKind kind) {
+    switch (kind) {
+        case LiteralKind::Int:       return "int";
+        case LiteralKind::Float:     return "float";
+        case LiteralKind::String:    return "string";
+        case LiteralKind::RawString: return "raw_string";
+        case LiteralKind::Char:      return "char";
+        case LiteralKind::Hex:       return "hex";
+        case LiteralKind::Binary:    return "binary";
+        case LiteralKind::True:      return "true";
+        case LiteralKind::False:     return "false";
+        case LiteralKind::Nil:       return "nil";
+        case LiteralKind::Err:       return "err";
+    }
+    return "unknown";
+}
+
+inline std::string binaryOpToString(BinaryOp op) {
+    switch (op) {
+        case BinaryOp::Add:     return "+";
+        case BinaryOp::Sub:     return "-";
+        case BinaryOp::Mul:     return "*";
+        case BinaryOp::Div:     return "/";
+        case BinaryOp::Pow:     return "**";
+        case BinaryOp::Mod:     return "%";
+        case BinaryOp::Eq:      return "==";
+        case BinaryOp::Ne:      return "!=";
+        case BinaryOp::Lt:      return "<";
+        case BinaryOp::Gt:      return ">";
+        case BinaryOp::Le:      return "<=";
+        case BinaryOp::Ge:      return ">=";
+        case BinaryOp::And:     return "and";
+        case BinaryOp::Or:      return "or";
+        case BinaryOp::BitAnd:  return "&";
+        case BinaryOp::BitOr:   return "|";
+        case BinaryOp::BitXor:  return "^";
+        case BinaryOp::Shl:     return "<<";
+        case BinaryOp::Shr:     return ">>";
+    }
+    return "unknown";
+}
+
+inline std::string unaryOpToString(UnaryOp op) {
+    switch (op) {
+        case UnaryOp::Neg:    return "-";
+        case UnaryOp::Not:    return "not";
+        case UnaryOp::BitNot: return "~";
+    }
+    return "unknown";
+}
+
+inline std::string assignOpToString(AssignOp op) {
+    switch (op) {
+        case AssignOp::Assign:       return "=";
+        case AssignOp::AddAssign:    return "+=";
+        case AssignOp::SubAssign:    return "-=";
+        case AssignOp::MulAssign:    return "*=";
+        case AssignOp::DivAssign:    return "/=";
+        case AssignOp::PowAssign:    return "**=";
+        case AssignOp::ModAssign:    return "%=";
+        case AssignOp::BitAndAssign: return "&=";
+        case AssignOp::BitOrAssign:  return "|=";
+        case AssignOp::BitXorAssign: return "^=";
+        case AssignOp::ShlAssign:    return "<<=";
+        case AssignOp::ShrAssign:    return ">>=";
+    }
+    return "unknown";
+}
+
 inline std::string tokenTypeToString(TokenType type) {
     switch (type) {
         case TokenType::EOF_TOKEN:      return "EOF";
@@ -506,36 +575,6 @@ inline std::string typeDeclToString(const TypeDeclAST* decl, const StringPool& p
     }
 
     return "UnknownTypeDecl(" + kindToString(decl->kind) + ")";
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// LiteralKind to String
-// ─────────────────────────────────────────────────────────────────────────────
-
-inline const char* literalKindToString(LiteralKind kind) {
-    switch (kind) {
-        case LiteralKind::Int:       return "integer";
-        case LiteralKind::Float:     return "float";
-        case LiteralKind::String:    return "string";
-        case LiteralKind::RawString: return "raw string";
-        case LiteralKind::Char:      return "character";
-        case LiteralKind::Hex:       return "hex integer";
-        case LiteralKind::Binary:    return "binary integer";
-        case LiteralKind::True:      return "true";
-        case LiteralKind::False:     return "false";
-        case LiteralKind::Nil:       return "nil";
-        case LiteralKind::Err:       return "err";
-    }
-    return "unknown";
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// InternedString to String
-// ─────────────────────────────────────────────────────────────────────────────
-
-inline std::string internedToString(const StringPool& pool, const InternedString& s) {
-    if (!s.isValid()) return "";
-    return std::string(pool.lookup(s));
 }
 
 } // namespace debug

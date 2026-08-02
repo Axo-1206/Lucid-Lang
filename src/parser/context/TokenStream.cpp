@@ -12,15 +12,12 @@ namespace parser {
 // ─── Construction ───────────────────────────────────────────────────────
 
 TokenStream::TokenStream(const std::string& source, DiagnosticEngine& diagnostics)
-    : diagnostics_(&diagnostics)
-    , source_(source)
-    , fullyTokenized_(false) {
+    : diagnostics_(&diagnostics) {
     // Don't tokenize immediately - lazy lexing
 }
 
 TokenStream::TokenStream(std::vector<Token> tokens)
-    : tokens_(std::move(tokens))
-    , fullyTokenized_(true) {}
+    : tokens_(std::move(tokens)) {}
 
 // ─── Token Consumption ──────────────────────────────────────────────────
 
@@ -84,33 +81,14 @@ SourceLocation TokenStream::currentLoc() const {
 // ─── Lazy Lexing ────────────────────────────────────────────────────────
 
 void TokenStream::ensureTokens(size_t count) {
-    if (fullyTokenized_) return;
     if (!diagnostics_) return;
     
-    while (tokens_.size() < pos_ + count && !fullyTokenized_) {
+    while (tokens_.size() < pos_ + count) {
         // Tokenize one token at a time
         // We need to tokenize all tokens at once since the lexer
         // doesn't support incremental tokenization yet.
         tokenizeAll();
     }
-}
-
-void TokenStream::tokenizeAll() {
-    if (fullyTokenized_) return;
-    if (!diagnostics_) return;
-    
-    tokens_ = lexer::tokenize(source_, *diagnostics_);
-    fullyTokenized_ = true;
-    
-    // Check if any errors occurred during lexing
-    // The lexer reports errors via diagnostics, so we just need to check
-    // if the diagnostic engine has errors
-    if (diagnostics_->hasErrors()) {
-        hadErrors_ = true;
-    }
-    
-    // source_ no longer needed after tokenization
-    source_.clear();
 }
 
 // ─── Trailing Token Consumption ────────────────────────────────────────

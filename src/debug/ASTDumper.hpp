@@ -1,7 +1,7 @@
 #pragma once
 
-#include "ast/BaseAST.hpp"
-#include "ast/support/StringPool.hpp"
+#include "core/ast/BaseAST.hpp"
+#include "core/memory/StringPool.hpp"
 #include <string>
 
 namespace debug {
