@@ -186,7 +186,7 @@ add_executable(lucid-comp ${SOURCES})
 # BASIC USAGE:
 #   cmake -B build                                          # Configure with defaults (debug OFF)
 #   cmake --build build                                     # Build the project
-#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid    # Run compiler
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.luc    # Run compiler
 #
 # =============================================================================
 # DEBUG FLAGS (enable specific components)
@@ -195,42 +195,42 @@ add_executable(lucid-comp ${SOURCES})
 # Enable ALL debug logging (master switch):
 #   cmake -B build -DDEBUG_MASTER=ON
 #   cmake --build build
-#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.luc
 #
 # Enable ONLY parser debugging:
 #   cmake -B build -DDEBUG_PARSER=ON
 #   cmake --build build
-#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.luc
 #
 # Enable ONLY semantic analysis debugging:
 #   cmake -B build -DDEBUG_SEMANTIC=ON
 #   cmake --build build
-#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.luc
 #
 # Enable ONLY type parsing debugging:
 #   cmake -B build -DDEBUG_TYPE=ON
 #   cmake --build build
-#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.luc
 #
 # Enable ONLY lexer debugging:
 #   cmake -B build -DDEBUG_LEXER=ON
 #   cmake --build build
-#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.luc
 #
 # Enable ONLY interpreter debugging:
 #   cmake -B build -DDEBUG_INTERPRETER=ON
 #   cmake --build build
-#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.luc
 #
 # Enable ONLY codegen debugging (when implemented):
 #   cmake -B build -DDEBUG_CODEGEN=ON
 #   cmake --build build
-#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.luc
 #
 # Enable multiple components (parser + semantic):
 #   cmake -B build -DDEBUG_PARSER=ON -DDEBUG_SEMANTIC=ON
 #   cmake --build build
-#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.luc
 #
 # =============================================================================
 # VERBOSITY LEVELS (controls output detail)
@@ -241,17 +241,17 @@ add_executable(lucid-comp ${SOURCES})
 # Minimal verbosity (major events only):
 #   cmake -B build -DDEBUG_PARSER=ON -DDEBUG_VERBOSITY=0
 #   cmake --build build
-#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.luc
 #
 # Normal verbosity (default):
 #   cmake -B build -DDEBUG_PARSER=ON -DDEBUG_VERBOSITY=1
 #   cmake --build build
-#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.luc
 #
 # Detail verbosity (verbose trace):
 #   cmake -B build -DDEBUG_PARSER=ON -DDEBUG_VERBOSITY=2
 #   cmake --build build
-#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.luc
 #
 # =============================================================================
 # OUTPUT TO FILE (instead of console)
@@ -260,13 +260,13 @@ add_executable(lucid-comp ${SOURCES})
 # Log to default file (debug.log):
 #   cmake -B build -DDEBUG_PARSER=ON -DDEBUG_TO_FILE=ON
 #   cmake --build build
-#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.luc
 #   type debug.log  # View the log
 #
 # Log to custom file path:
 #   cmake -B build -DDEBUG_PARSER=ON -DDEBUG_TO_FILE=ON -DDEBUG_FILE_PATH="parser_output.log"
 #   cmake --build build
-#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.luc
 #   type parser_output.log
 #
 # =============================================================================
@@ -276,33 +276,33 @@ add_executable(lucid-comp ${SOURCES})
 # Scenario 1: Debug parser with normal verbosity (most common for parser issues):
 #   cmake -B build -DDEBUG_PARSER=ON -DDEBUG_VERBOSITY=1
 #   cmake --build build
-#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.luc
 #
 # Scenario 2: Debug parser with detail output (for complex parsing issues):
 #   cmake -B build -DDEBUG_PARSER=ON -DDEBUG_VERBOSITY=2
 #   cmake --build build
-#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.luc
 #
 # Scenario 3: Debug type parsing and save to file:
 #   cmake -B build -DDEBUG_TYPE=ON -DDEBUG_TO_FILE=ON -DDEBUG_FILE_PATH="type_debug.log"
 #   cmake --build build
-#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.luc
 #   notepad type_debug.log
 #
 # Scenario 4: Debug semantic analysis with detail output:
 #   cmake -B build -DDEBUG_SEMANTIC=ON -DDEBUG_VERBOSITY=2
 #   cmake --build build
-#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.luc
 #
 # Scenario 5: Debug everything (master) with normal verbosity:
 #   cmake -B build -DDEBUG_MASTER=ON -DDEBUG_VERBOSITY=1
 #   cmake --build build
-#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.luc
 #
 # Scenario 6: Debug everything with detail verbosity (use for hard-to-find bugs):
 #   cmake -B build -DDEBUG_MASTER=ON -DDEBUG_VERBOSITY=2
 #   cmake --build build
-#   .\build\Debug\lucid-comp.exe tests\attribute_test.lucid 2>&1 | tee full_debug.log
+#   .\build\Debug\lucid-comp.exe tests\attribute_test.luc 2>&1 | tee full_debug.log
 #
 # =============================================================================
 # CLEAN BUILD (remove cache and rebuild from scratch)
@@ -324,7 +324,7 @@ add_executable(lucid-comp ${SOURCES})
 #
 #   cmake -B build -DCMAKE_BUILD_TYPE=Release
 #   cmake --build build --config Release
-#   .\build\Release\lucid-comp.exe tests\attribute_test.lucid
+#   .\build\Release\lucid-comp.exe tests\attribute_test.luc
 #
 # =============================================================================
 # QUICK REFERENCE CARD

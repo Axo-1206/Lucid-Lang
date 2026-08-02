@@ -22,14 +22,14 @@ future — nothing in the source changes between modes.
 **Current:** Lucid ships as an interpreter. Run a program with:
 
 ```
-lucid run main.lucid
+lucid run main.luc
 ```
 
 **Future:** A native ahead-of-time compiler will be added later. The invocation
 will be:
 
 ```
-lucid build main.lucid
+lucid build main.luc
 ```
 
 The execution mode is a **toolchain concern, not a source concern.** There are no
@@ -421,7 +421,7 @@ top_level_decl  = struct_decl
 
 ## Module System
 
-Every `.lucid` file is a module. A module's identity is its file path relative
+Every `.luc` file is a module. A module's identity is its file path relative
 to the package root. The package name and root are declared in the build manifest
 (e.g. `lucid.toml`) — no `package` declaration is needed in source files.
 Modules are flat — nesting is not supported.
@@ -446,7 +446,7 @@ the module that declared it. From outside the module, exported names are always
 is `let` or `const` internally:
 
 ```lucid
--- inside mymod.lucid
+-- inside mymod.luc
 @[export] let counter int = 0;    -- mutable inside the module
 @[export] const PI float = 3.14;    -- immutable everywhere
 
@@ -548,7 +548,7 @@ every other module export already works. Keep the mutable state itself
 module's own control:
 
 ```lucid
--- inside config.lucid
+-- inside config.luc
 struct Config {
     threshold int
 }
@@ -625,7 +625,7 @@ ways to retrieve the same underlying data, each shaped for a different
 caller need:
 
 ```lucid
--- inside users.lucid — internal layout is the module's own choice
+-- inside users.luc — internal layout is the module's own choice
 let ids    [*]int    = [];
 let names  [*]string = [];
 

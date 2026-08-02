@@ -50,8 +50,8 @@ InternedString ModuleResolver::resolveUsePath(InternedString usePath) {
         return result;
     }
     
-    // 4. Try without .lucid extension (directory module)
-    if (relativePath.size() > 6 && relativePath.substr(relativePath.size() - 6) == ".lucid") {
+    // 4. Try without .luc extension (directory module)
+    if (relativePath.size() > 6 && relativePath.substr(relativePath.size() - 6) == ".luc") {
         std::string withoutExt = relativePath.substr(0, relativePath.size() - 6);
         foundPath = resolveRelativePath(withoutExt);
         if (!foundPath.empty()) {
@@ -184,14 +184,14 @@ std::string ModuleResolver::usePathToRelativePath(InternedString usePath) const 
     }
     
     std::string relativePath;
-    relativePath.reserve(useStr.size() + 7); // +7 for ".lucid"
+    relativePath.reserve(useStr.size() + 7); // +7 for ".luc"
     
     // Replace '.' with '/' for path separators
     for (char c : useStr) {
         relativePath += (c == '.') ? '/' : c;
     }
     
-    relativePath += ".lucid";
+    relativePath += ".luc";
     return relativePath;
 }
 
