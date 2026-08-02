@@ -139,10 +139,6 @@ private:
     void ensureTokens(size_t count);
     void tokenizeAll();
     size_t skipCommentsFrom(size_t start) const;
-    
-    // ─── EOF Token ─────────────────────────────────────────────────────
-    
-    static const Token EOF_TOKEN_SENTINEL;
 };
 
 } // namespace parser

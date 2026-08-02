@@ -471,15 +471,16 @@ struct ConstantValue {
 
 struct ExprAST : BaseAST {
     TypeAST* resolvedType = nullptr; // written as semantic phase
+    ConstantValue constValue;  // Evaluated constant value (for const expressions)
     ValueState valueState = ValueState::Unknown;  // track value state, use to return an `err` value when anything go wrong
     bool isModuleMember   = false;
     bool isConst          = false;
-    ConstantValue constValue;  // Evaluated constant value (for const expressions)
 
     explicit ExprAST(ASTKind k) : BaseAST(k) {}
     bool hasType() const { return resolvedType != nullptr; }
     
     // Convenience methods
+    bool isNone() const { return valueState == ValueState::None; }
     bool isDefinite() const { return valueState == ValueState::Definite; }
     bool isNil() const { return valueState == ValueState::Nil; }
     bool isErr() const { return valueState == ValueState::Err; }

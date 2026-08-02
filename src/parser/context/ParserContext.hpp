@@ -150,12 +150,6 @@ struct ParserContext {
         , resolver(r)
     {}
     
-    // ─── String Conversion Helper ─────────────────────────────────────
-    
-    std::string toString(InternedString s) const {
-        return std::string(pool.lookup(s));
-    }
-    
     // ─── Query Helpers ─────────────────────────────────────────────────
     
     bool canContinue(int maxErrors = 100) const {
