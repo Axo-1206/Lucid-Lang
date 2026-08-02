@@ -114,6 +114,7 @@ enum class DiagCode : uint32_t {
     Syntax_InvalidAttributeTarget   = 2016,
     Syntax_MissingAttributeArgs     = 2017,
     Syntax_TrailingComma            = 2018,
+    Syntax_ExpectedLiteral           = 2019,
 
     // ──────────────────────────────────────────────────────────────────────────
     // NAME RESOLUTION ERRORS (3000-3999)

@@ -246,10 +246,6 @@ ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx);
 std::vector<ParamPtr> parseParamList(TokenStream& stream, ParserContext& ctx, bool allowNamme);
 std::vector<InternedString> parseImportPath(TokenStream& stream, ParserContext& ctx);
 
-NamedTypeAST* parseTraitRef(TokenStream& stream, ParserContext& ctx);
-
-ExprPtr parseLvalue(TokenStream& stream, ParserContext& ctx); // X
-
 // ─── Lookahead Helpers ────────────────────────────────────────────────────
 
 bool looksLikeFuncDecl(TokenStream& stream, ParserContext& ctx);

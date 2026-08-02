@@ -323,7 +323,7 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
         }
         
         while (!stream.isAtEnd() && !stream.check(TokenType::LBRACE)) {
-            NamedTypeAST* traitRef = parseTraitRef(stream, ctx);
+            NamedTypeAST* traitRef = parseNamedType(stream, ctx)->as<NamedTypeAST>();
             if (traitRef) {
                 traitRefs.push_back(traitRef);
             } else {
