@@ -1,70 +1,98 @@
 /**
  * @file Lexer.hpp
  * 
- * @responsibility Converts source text into a stream of tokens.
- * Pure functions - no state, no side effects.
+ * @responsibility Converts source text into tokens.
+ * Pure functions with no state - called by TokenStream.
  * 
- * @design Each token carries its own location information.
- * The lexer is stateless - it just processes input and returns tokens.
+ * @design_decision Lexer is a pure function, not a class
+ *   It takes source and returns tokens. No state is retained.
+ *   This makes it easy to test and reason about.
+ * 
+ * @design_decision Errors are reported via DiagnosticEngine
+ *   The lexer reports errors directly to the diagnostic system.
+ *   Unknown characters are skipped and parsing continues.
  */
 
 #pragma once
+
+#include "core/Tokens.hpp"
+#include "core/diagnostics/Diagnostic.hpp"
 #include <string>
 #include <vector>
-#include "core/Tokens.hpp"
 
 namespace lexer {
 
-// ─── Main Entry Points ──────────────────────────────────────────────────
-
 /**
- * Tokenize a complete source file into a vector of tokens.
- * Each token carries its own line/column/filename information.
+ * @brief Tokenize a source file into a vector of tokens.
+ * 
+ * This is a pure function - it takes source and returns tokens.
+ * Errors are reported via the DiagnosticEngine.
  * 
  * @param source The source code to tokenize
- * @param filename The source file name (for error reporting)
- * @return Vector of tokens
+ * @param diagnostics The diagnostic engine for error reporting
+ * @return std::vector<Token> The token stream
  */
 std::vector<Token> tokenize(const std::string& source, 
-                            const std::string& filename = "<unknown>");
+                            DiagnosticEngine& diagnostics);
 
 /**
- * Tokenize a source file, but stop after N tokens.
- * Useful for testing or partial parsing.
+ * @brief Tokenize a source file, stopping after N tokens.
+ * 
+ * @param source The source code to tokenize
+ * @param max_tokens Maximum number of tokens to produce
+ * @param diagnostics The diagnostic engine for error reporting
+ * @return std::vector<Token> The token stream (up to max_tokens)
  */
 std::vector<Token> tokenize_n(const std::string& source, 
                               size_t max_tokens,
-                              const std::string& filename = "<unknown>");
-
-// ─── Token Stream (For incremental consumption) ──────────────────────
+                              DiagnosticEngine& diagnostics);
 
 /**
- * A lightweight token stream for incremental parsing.
- * This is the only stateful part, but it's minimal and transparent.
+ * @brief Check if a character is a valid identifier start.
+ * 
+ * @param c The character to check
+ * @return true if the character can start an identifier
  */
-struct TokenStream {
-    std::vector<Token> tokens;
-    size_t position;
-    std::string filename;
-    
-    TokenStream(const std::string& source, const std::string& file = "<unknown>");
-    
-    // Get next token (advances position)
-    Token next();
-    
-    // Peek at token without consuming (offset 0 = current, 1 = next, etc.)
-    Token peek(int offset = 0) const;
-    
-    // Check if we've consumed all tokens
-    bool is_at_end() const;
-    
-    // Reset to beginning
-    void reset();
-    
-    // Get current position info
-    int current_line() const;
-    int current_column() const;
-    size_t current_position() const { return position; }
-};
+inline bool isIdentifierStart(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+}
+
+/**
+ * @brief Check if a character is a valid identifier character.
+ * 
+ * @param c The character to check
+ * @return true if the character can be part of an identifier
+ */
+inline bool isIdentifierChar(char c) {
+    return isIdentifierStart(c) || (c >= '0' && c <= '9');
+}
+
+/**
+ * @brief Check if a character is a digit.
+ */
+inline bool isDigit(char c) {
+    return c >= '0' && c <= '9';
+}
+
+/**
+ * @brief Check if a character is a hex digit.
+ */
+inline bool isHexDigit(char c) {
+    return isDigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+
+/**
+ * @brief Check if a character is a binary digit.
+ */
+inline bool isBinDigit(char c) {
+    return c == '0' || c == '1';
+}
+
+/**
+ * @brief Check if a character is an octal digit.
+ */
+inline bool isOctDigit(char c) {
+    return c >= '0' && c <= '7';
+}
 
 } // namespace lexer

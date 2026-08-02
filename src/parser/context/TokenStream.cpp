@@ -1,38 +1,6 @@
 /**
  * @file TokenStream.cpp
- * @brief Implementation of TokenStream - safe token consumption with comment skipping.
- * 
- * TokenStream wraps a vector of tokens and provides safe accessors that
- * automatically skip comments. This makes comments invisible to the grammar
- * (they are harvested separately for documentation generation).
- * 
- * ## Key Features
- * 
- * - **Comment Skipping**: All peek/consume methods skip LINE_COMMENT,
- *   DOC_COMMENT, and BLOCK_COMMENT tokens automatically.
- * - **Position Management**: Save and restore positions for lookahead and
- *   error recovery.
- * - **Lookahead**: Peek at future tokens without consuming them.
- * - **EOF Handling**: Returns a sentinel EOF token when at the end.
- * 
- * ## Usage Example
- * 
- * ```cpp
- * TokenStream stream(tokens);
- * 
- * // Check current token
- * if (stream.check(TokenType::IDENTIFIER)) {
- *     Token tok = stream.consume();  // Consumes and skips following comments
- * }
- * 
- * // Lookahead
- * TokenType next = stream.peekNextType();
- * 
- * // Save position for recovery
- * size_t saved = stream.getPos();
- * // ... try parsing ...
- * if (failed) stream.setPos(saved);
- * ```
+ * @brief Implementation of TokenStream - with lazy lexing.
  */
 
 #include "TokenStream.hpp"
@@ -41,47 +9,23 @@
 
 namespace parser {
 
-// =============================================================================
-// Construction
-// =============================================================================
+// ─── Construction ───────────────────────────────────────────────────────
 
-/**
- * @brief Construct a TokenStream from a vector of tokens.
- * 
- * @param tokens The vector of tokens to wrap (takes ownership via move).
- * 
- * ## Comments
- * 
- * Comments are NOT stripped from the token vector. Instead, they are skipped
- * transparently by all peek/consume methods. This allows doc comments to be
- * harvested by scanning backward from declarations.
- * 
- * ## Memory Ownership
- * 
- * The TokenStream takes ownership of the token vector via move. The tokens
- * remain in memory for the lifetime of the TokenStream.
- * 
- * ## EOF Token
- * 
- * Uses the single EOF_TOKEN_SENTINEL defined in Tokens.hpp, shared with the Lexer.
- */
+TokenStream::TokenStream(const std::string& source, DiagnosticEngine& diagnostics)
+    : diagnostics_(&diagnostics)
+    , source_(source)
+    , fullyTokenized_(false) {
+    // Don't tokenize immediately - lazy lexing
+}
+
 TokenStream::TokenStream(std::vector<Token> tokens)
-    : tokens_(std::move(tokens)) {}
+    : tokens_(std::move(tokens))
+    , fullyTokenized_(true) {}
 
-// =============================================================================
-// Token Consumption
-// =============================================================================
+// ─── Token Consumption ──────────────────────────────────────────────────
 
-/**
- * @brief Return the current token without consuming it.
- * 
- * This method automatically skips comments, returning the first non-comment
- * token at or after the current position. If no non-comment token exists,
- * the EOF_TOKEN_SENTINEL is returned.
- * 
- * @return const Token& The current non-comment token, or EOF_TOKEN_SENTINEL.
- */
-const Token& TokenStream::peek() const {
+const Token& TokenStream::peek() {
+    ensureTokens(1);
     if (pos_ >= tokens_.size()) {
         return EOF_TOKEN_SENTINEL;
     }
@@ -92,41 +36,21 @@ const Token& TokenStream::peek() const {
     return tokens_[next];
 }
 
-/**
- * @brief Consume and return the current token.
- * 
- * This method advances the position past the current token and any following
- * comments. The consumed token is returned.
- * 
- * @return Token The consumed token. If at EOF, returns EOF_TOKEN_SENTINEL.
- */
 Token TokenStream::consume() {
+    ensureTokens(1);
     if (pos_ >= tokens_.size()) {
         return EOF_TOKEN_SENTINEL;
     }
     Token result = tokens_[pos_];
     pos_++;
-    // Skip any comments that follow
     pos_ = skipCommentsFrom(pos_);
     return result;
 }
 
-/**
- * @brief Check if the current token is of the given type.
- * 
- * @param type The token type to check against.
- * @return true if the current token is of the given type, false otherwise.
- */
-bool TokenStream::check(TokenType type) const {
+bool TokenStream::check(TokenType type) {
     return peek().type == type;
 }
 
-/**
- * @brief If the current token matches the given type, consume and return it.
- * 
- * @param type The token type to match.
- * @return true if the token was matched and consumed, false otherwise.
- */
 bool TokenStream::match(TokenType type) {
     if (check(type)) {
         consume();
@@ -135,24 +59,7 @@ bool TokenStream::match(TokenType type) {
     return false;
 }
 
-/**
- * @brief Consume the current token, expecting it to be of the given type.
- * 
- * This method advances and returns the token without checking its type.
- * The caller is responsible for verifying the type before calling this
- * method, or handling the error case separately.
- * 
- * @param type The expected token type (for documentation, not validated here).
- * @return Token The consumed token. If at EOF, returns EOF_TOKEN_SENTINEL.
- * 
- * @note This method does NOT report errors. It's the caller's responsibility
- *       to check the token type before consuming it.
- * @see check() for verifying token type
- * @see match() for combined check-and-consume
- */
 Token TokenStream::consume(TokenType type) {
-    // This is a documentation-only parameter - we don't validate here
-    // Callers should use check() first or handle errors separately
     if (pos_ >= tokens_.size()) {
         return EOF_TOKEN_SENTINEL;
     }
@@ -162,47 +69,52 @@ Token TokenStream::consume(TokenType type) {
     return result;
 }
 
-/**
- * @brief Check if the token stream is at the end.
- * 
- * @return true if the current position is past the end of the token vector.
- */
-bool TokenStream::isAtEnd() const {
-    return pos_ >= tokens_.size() || peek().type == TokenType::EOF_TOKEN;
+bool TokenStream::isAtEnd() {
+    ensureTokens(1);
+    return pos_ >= tokens_.size() || tokens_[pos_].type == TokenType::EOF_TOKEN;
 }
 
-/**
- * @brief Get the current source location.
- * 
- * @return SourceLocation The location of the current token (or EOF location).
- */
 SourceLocation TokenStream::currentLoc() const {
-    const Token& tok = peek();
-    return SourceLocation(tok.line, tok.column);
+    if (pos_ < tokens_.size()) {
+        return SourceLocation(tokens_[pos_].line, tokens_[pos_].column);
+    }
+    return SourceLocation(1, 1);
 }
 
-// =============================================================================
-// Trailing Token Consumption
-// =============================================================================
+// ─── Lazy Lexing ────────────────────────────────────────────────────────
 
-/**
- * @brief Consume all consecutive tokens of the given type.
- * 
- * This method consumes ALL consecutive tokens of the specified type.
- * It is useful for handling optional trailing tokens like semicolons.
- * 
- * ## Usage
- * 
- * ```cpp
- * // Consume all trailing semicolons
- * int count = stream.consumeTrailing(TokenType::SEMICOLON);
- * ```
- * 
- * @param type The token type to consume.
- * @return The number of tokens consumed (0 if none).
- * 
- * @note This method skips comments before checking for the token.
- */
+void TokenStream::ensureTokens(size_t count) {
+    if (fullyTokenized_) return;
+    if (!diagnostics_) return;
+    
+    while (tokens_.size() < pos_ + count && !fullyTokenized_) {
+        // Tokenize one token at a time
+        // We need to tokenize all tokens at once since the lexer
+        // doesn't support incremental tokenization yet.
+        tokenizeAll();
+    }
+}
+
+void TokenStream::tokenizeAll() {
+    if (fullyTokenized_) return;
+    if (!diagnostics_) return;
+    
+    tokens_ = lexer::tokenize(source_, *diagnostics_);
+    fullyTokenized_ = true;
+    
+    // Check if any errors occurred during lexing
+    // The lexer reports errors via diagnostics, so we just need to check
+    // if the diagnostic engine has errors
+    if (diagnostics_->hasErrors()) {
+        hadErrors_ = true;
+    }
+    
+    // source_ no longer needed after tokenization
+    source_.clear();
+}
+
+// ─── Trailing Token Consumption ────────────────────────────────────────
+
 int TokenStream::consumeTrailing(TokenType type) {
     int count = 0;
     while (check(type)) {
@@ -219,23 +131,24 @@ int TokenStream::consumeTrailing(TokenType type) {
     return count;
 }
 
-// =============================================================================
-// Lookahead
-// =============================================================================
+// ─── Lookahead ──────────────────────────────────────────────────────────
 
-TokenType TokenStream::peekNextType() const {
+TokenType TokenStream::peekNextType() {
+    ensureTokens(2);
     size_t next = skipCommentsFrom(pos_ + 1);
     if (next >= tokens_.size()) return TokenType::EOF_TOKEN;
     return tokens_[next].type;
 }
 
-const Token& TokenStream::peekNext() const {
+const Token& TokenStream::peekNext() {
+    ensureTokens(2);
     size_t next = skipCommentsFrom(pos_ + 1);
     if (next >= tokens_.size()) return EOF_TOKEN_SENTINEL;
     return tokens_[next];
 }
 
-const Token& TokenStream::peekAt(size_t offset) const {
+const Token& TokenStream::peekAt(size_t offset) {
+    ensureTokens(offset + 1);
     size_t idx = pos_ + offset;
     if (idx >= tokens_.size()) return EOF_TOKEN_SENTINEL;
     idx = skipCommentsFrom(idx);
@@ -273,9 +186,7 @@ bool TokenStream::isPrimitiveTypeToken(TokenType type) const {
     }
 }
 
-// =============================================================================
-// Position Management
-// =============================================================================
+// ─── Position Management ────────────────────────────────────────────────
 
 size_t TokenStream::skipCommentsFrom(size_t start) const {
     while (start < tokens_.size()) {
@@ -289,10 +200,6 @@ size_t TokenStream::skipCommentsFrom(size_t start) const {
         }
     }
     return start;
-}
-
-SourceLocation TokenStream::locOf(const Token& tok) const {
-    return SourceLocation(tok.line, tok.column);
 }
 
 } // namespace parser

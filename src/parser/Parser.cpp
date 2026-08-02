@@ -16,8 +16,6 @@
 #include "core/ast/BaseAST.hpp"
 #include "debug/DebugMacros.hpp"
 #include "debug/DebugUtils.hpp"
-#include "core/diagnostics/DiagnosticCodes.hpp"
-#include "support/ParserContext.hpp"
 
 #include <filesystem>
 #include <fstream>

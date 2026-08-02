@@ -8,19 +8,28 @@
  * 
  * @design_decision TokenStream is a "tape" - it provides forward-only
  *   navigation with lookahead and position save/restore for backtracking.
- *   It does NOT own the file path - that's stored in ModuleAST.
+ * 
+ * @design_decision TokenStream uses lexer::tokenize() for lazy lexing
+ *   Instead of a separate lexer pass, TokenStream lazily tokenizes
+ *   as tokens are consumed. This simplifies the API.
+ * 
+ * @design_decision Comments are NOT stripped from the token vector
+ *   They are skipped transparently by peek/consume methods.
+ *   This allows doc comments to be harvested by scanning backward.
  */
 
 #pragma once
 
 #include "core/Tokens.hpp"
 #include "core/ast/BaseAST.hpp"
+#include "core/diagnostics/Diagnostic.hpp"
+#include "../lexer/Lexer.hpp"
 #include <string>
 
 namespace parser {
 
 /**
- * @brief Wraps a vector of tokens with safe accessors and automatic comment skipping.
+ * @brief Wraps a token stream with safe accessors and automatic comment skipping.
  * 
  * TokenStream is per-file - each file gets its own instance.
  * Comments (LINE_COMMENT, DOC_COMMENT, BLOCK_COMMENT) are transparently skipped.
@@ -28,42 +37,46 @@ namespace parser {
  * ## Usage Example
  * 
  * ```cpp
- * TokenStream stream(tokens);
+ * TokenStream stream(source, diagnostics);
  * if (stream.check(TokenType::IDENTIFIER)) {
- *     Token tok = stream.consume();  // Consumes the current token
+ *     Token tok = stream.consume();
  * }
  * stream.consume(TokenType::LBRACE);
  * ```
  */
-struct TokenStream {
-    TokenStream() = default;
+class TokenStream {
+public:
+    /**
+     * @brief Construct a TokenStream from a source file.
+     * 
+     * This will lazily tokenize the source as tokens are consumed.
+     * 
+     * @param source The source code
+     * @param diagnostics The diagnostic engine for error reporting
+     */
+    TokenStream(const std::string& source, DiagnosticEngine& diagnostics);
+    
+    /**
+     * @brief Construct a TokenStream from an existing token vector.
+     * 
+     * @param tokens The token vector (takes ownership via move)
+     */
     explicit TokenStream(std::vector<Token> tokens);
     
     // ─── Token Consumption ──────────────────────────────────────────────
     
     /// @brief Return the current token without consuming it.
-    const Token& peek() const;
+    const Token& peek();
     
     /// @brief Consume and return the current token (skips following comments).
     Token consume();
     
     /// @brief Check if the current token is of the given type.
-    bool check(TokenType type) const;
+    bool check(TokenType type);
     
     /**
-    * @brief Check if the current token matches any of the given types.
-    * 
-    * @tparam Types The token types to check against (variadic)
-    * @param types The token types to check against
-    * @return true if the current token matches any of the given types
-    * 
-    * ## Usage Examples
-    * 
-    * ```cpp
-    * if (stream.checkAny(TokenType::LET, TokenType::CONST)) { ... }
-    * if (stream.checkAny(TokenType::STRUCT, TokenType::ENUM, TokenType::TRAIT)) { ... }
-    * ```
-    */
+     * @brief Check if the current token matches any of the given types.
+     */
     template<typename... Types>
     bool checkAny(Types... types) {
         TokenType current = peek().type;
@@ -72,25 +85,19 @@ struct TokenStream {
     
     /**
      * @brief If the current token matches the given type, consume it.
-     * 
-     * @param type The token type to match.
-     * @return true if the token was matched and consumed, false otherwise.
      */
     bool match(TokenType type);
     
     /**
-     * @brief Consume the current token, asserting it's of the given type.
+     * @brief Consume the current token, expecting it to be of the given type.
      * 
      * This method consumes the token without checking its type.
-     * The caller must verify the type before calling, or handle errors separately.
-     * 
-     * @param type The expected token type (for documentation, not validated here).
-     * @return Token The consumed token, or EOF token if at end.
+     * The caller must verify the type before calling.
      */
     Token consume(TokenType type);
     
     /// @brief Check if we've reached the end of the token stream.
-    bool isAtEnd() const;
+    bool isAtEnd();
     
     /// @brief Get the current source location.
     SourceLocation currentLoc() const;
@@ -100,11 +107,11 @@ struct TokenStream {
     
     // ─── Lookahead ──────────────────────────────────────────────────────
     
-    TokenType peekType() const { return peek().type; }
-    std::string peekValue() const { return peek().value; }
-    TokenType peekNextType() const;
-    const Token& peekNext() const;
-    const Token& peekAt(size_t offset) const;
+    TokenType peekType() { return peek().type; }
+    std::string peekValue() { return peek().value; }
+    TokenType peekNextType();
+    const Token& peekNext();
+    const Token& peekAt(size_t offset);
     bool isPrimitiveTypeToken(TokenType type) const;
     
     // ─── Position Management ───────────────────────────────────────────
@@ -115,13 +122,27 @@ struct TokenStream {
     const Token& getTokenAt(size_t idx) const { return tokens_[idx]; }
     size_t getTokenCount() const { return tokens_.size(); }
     
-    size_t skipCommentsFrom(size_t start) const;
-    SourceLocation locOf(const Token& tok) const;
+    // ─── Diagnostics ───────────────────────────────────────────────────
+    
+    bool hasErrors() const { return hadErrors_; }
     
 private:
     std::vector<Token> tokens_;
     size_t pos_ = 0;
-    // filePath_ REMOVED - use ModuleAST::filePath or diagnostic::ScopedSource
+    bool hadErrors_ = false;
+    bool fullyTokenized_ = false;
+    DiagnosticEngine* diagnostics_ = nullptr;
+    std::string source_;
+    
+    // ─── Lazy Lexing ───────────────────────────────────────────────────
+    
+    void ensureTokens(size_t count);
+    void tokenizeAll();
+    size_t skipCommentsFrom(size_t start) const;
+    
+    // ─── EOF Token ─────────────────────────────────────────────────────
+    
+    static const Token EOF_TOKEN_SENTINEL;
 };
 
 } // namespace parser
