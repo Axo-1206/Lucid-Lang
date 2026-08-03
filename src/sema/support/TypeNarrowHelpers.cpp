@@ -1,8 +1,11 @@
-/// @file TypeNarrowHelper.cpp
+/// @file TypeNarrowHelpers.cpp
 /// @brief Implementation of type narrowing helper functions.
 
 #include "TypeNarrowHelpers.hpp"
 #include "../Sema.hpp"
+#include "../types/SemaCompare.hpp"
+#include "../types/SemaLookup.hpp"
+#include "../types/SemaResolve.hpp"
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/DeclAST.hpp"
 #include "core/ast/TypeAST.hpp"
@@ -33,18 +36,15 @@ NarrowingInfo extractNarrowingsFromCondition(const ExprAST* expr, SemaContext& c
         NarrowingInfo left = extractNarrowingsFromCondition(binary->left, ctx, &leftMixed);
         NarrowingInfo right = extractNarrowingsFromCondition(binary->right, ctx, &rightMixed);
         
-        // ─── Check for mixed operators ──────────────────────────────────
-        // Reject if either side has mixed operators, or if both sides have
-        // narrowing but different operator types
+        // Check for mixed operators - reject if either side has mixed operators
         if (leftMixed || rightMixed) {
             if (outIsValidMixed) *outIsValidMixed = false;
-            return NarrowingInfo();  // Mixed operators → no narrowing
+            return NarrowingInfo();
         }
         
         // Check operator consistency when both sides have narrowing
         if (left.hasNarrowing && right.hasNarrowing) {
             if (left.isEquality != right.isEquality) {
-                // Mixed == and != in the same condition - reject
                 if (outIsValidMixed) *outIsValidMixed = false;
                 return NarrowingInfo();
             }
@@ -60,7 +60,6 @@ NarrowingInfo extractNarrowingsFromCondition(const ExprAST* expr, SemaContext& c
         }
         if (right.hasNarrowing) {
             result.hasNarrowing = true;
-            // isEquality is already set from left (or will be set below)
             if (!left.hasNarrowing) {
                 result.isEquality = right.isEquality;
             }
@@ -90,7 +89,7 @@ NarrowingInfo extractNarrowingsFromCondition(const ExprAST* expr, SemaContext& c
         return detectSingleNarrowing(expr->as<BinaryExprAST>(), ctx);
     }
 
-    // ─── 4. Handle `not a` ──────────────────────────────────────────────
+    // ─── 4. Handle `not x` ──────────────────────────────────────────────
     // Pattern: not x → x is nil/false (inverse narrowing)
     if (expr->isa<UnaryExprAST>() && expr->as<UnaryExprAST>()->op == UnaryOp::Not) {
         const UnaryExprAST* unary = expr->as<UnaryExprAST>();
@@ -168,11 +167,11 @@ void detectIdentifierNarrowing(NarrowingInfo& info, const IdentifierExprAST* id,
         return;
     }
 
-    // Look up the variable
+    // Look up the variable using existing infrastructure
     const ValueDeclAST* decl = lookupValue(id->name, ctx);
     if (!decl) return;
 
-    // Check if the variable is nullable or fallible
+    // Check if the variable is nullable or fallible using SemaCompare
     if (!isNullableType(decl->type) && !isFallibleType(decl->type)) {
         return;
     }
@@ -194,12 +193,12 @@ const TypeAST* getInnerType(const ValueDeclAST* decl, SemaContext& ctx) {
 
     const TypeAST* type = decl->type;
 
-    // Unwrap nullable
+    // Unwrap nullable using SemaCompare
     if (isNullableType(type)) {
         type = unwrapNullable(const_cast<TypeAST*>(type));
     }
 
-    // Unwrap fallible
+    // Unwrap fallible using SemaCompare
     if (isFallibleType(type)) {
         type = unwrapFallible(const_cast<TypeAST*>(type));
     }
@@ -208,7 +207,7 @@ const TypeAST* getInnerType(const ValueDeclAST* decl, SemaContext& ctx) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// detectNarrowingPattern - NEW FUNCTION
+// detectNarrowingPattern
 // ─────────────────────────────────────────────────────────────────────────────
 
 NarrowingInfo detectNarrowingPattern(const BinaryExprAST* binary, SemaContext& ctx) {
@@ -223,50 +222,47 @@ NarrowingInfo detectNarrowingPattern(const BinaryExprAST* binary, SemaContext& c
 
     // If mixed operators were detected, report an error
     if (isMixed) {
-        ctx.error(binary, DiagCode::E3003,
-                  "mixed '==' and '!=' in condition for type narrowing");
-        return NarrowingInfo();  // No narrowing for mixed operators
+        ctx.diagnostics.error(DiagCode::Sem_InvalidBinary, binary,
+                              "mixed '==' and '!=' in condition for type narrowing");
+        return NarrowingInfo();
     }
 
     // Additional validation: check that the variables being narrowed are
     // actually defined and have the expected type
     if (result.hasNarrowing) {
-        // Verify each variable in the narrowing
         for (const auto& [varName, narrowedType] : result.narrowings) {
-            // Look up the variable
+            // Look up the variable using existing infrastructure
             const ValueDeclAST* decl = lookupValue(varName, ctx);
             if (!decl) {
-                // This shouldn't happen since detectIdentifierNarrowing already checked
-                ctx.error(binary, DiagCode::E2001,
-                          "undefined variable '", ctx.pool().lookup(varName), "'");
+                ctx.diagnostics.error(DiagCode::Sem_UndefinedValue, binary,
+                                      "undefined variable '", ctx.pool.lookup(varName), "'");
                 return NarrowingInfo();
             }
 
-            // Verify the variable is nullable or fallible
+            // Verify the variable is nullable or fallible using SemaCompare
             if (!isNullableType(decl->type) && !isFallibleType(decl->type)) {
-                ctx.error(binary, DiagCode::E3003,
-                          "cannot narrow non-nullable/non-fallible variable '",
-                          ctx.pool().lookup(varName), "'");
+                ctx.diagnostics.error(DiagCode::Sem_InvalidNilCheck, binary,
+                                      "cannot narrow non-nullable/non-fallible variable '",
+                                      ctx.pool.lookup(varName), "'");
                 return NarrowingInfo();
             }
 
             // Verify the narrowed type is valid
             if (!narrowedType) {
-                ctx.error(binary, DiagCode::E3003,
-                          "cannot narrow variable '", ctx.pool().lookup(varName),
-                          "' to invalid type");
+                ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, binary,
+                                      "cannot narrow variable '", ctx.pool.lookup(varName),
+                                      "' to invalid type");
                 return NarrowingInfo();
             }
         }
 
         // Verify that we're not trying to narrow the same variable twice
-        // with different types (shouldn't happen with our extraction, but safe)
         std::unordered_set<InternedString> seenVars;
         for (const auto& [varName, _] : result.narrowings) {
             if (seenVars.find(varName) != seenVars.end()) {
-                ctx.error(binary, DiagCode::E3003,
-                          "duplicate narrowing for variable '",
-                          ctx.pool().lookup(varName), "'");
+                ctx.diagnostics.error(DiagCode::Sem_InvalidNilCheck, binary,
+                                      "duplicate narrowing for variable '",
+                                      ctx.pool.lookup(varName), "'");
                 return NarrowingInfo();
             }
             seenVars.insert(varName);

@@ -1,5 +1,16 @@
-/// @file TypeNarrowHelper.hpp
+/// @file TypeNarrowHelpers.hpp
 /// @brief Helper functions for type narrowing detection in if conditions.
+/// 
+/// Type narrowing allows the compiler to refine variable types based on
+/// conditional checks. For example:
+///   if x != nil { ... }  // x is non-nullable inside the block
+///   if x == nil { return }  // x is non-nullable after the check
+/// 
+/// @design_decision Uses existing semantic infrastructure
+///   - SemaCompare for type predicates (isNullableType, isFallibleType)
+///   - SemaLookup for name resolution (lookupValue)
+///   - SemaResolve for type resolution (getInnerType)
+///   - DiagnosticEngine for error reporting
 
 #pragma once
 
@@ -12,6 +23,8 @@
 
 namespace sema {
 
+// ─── Main Entry Points ────────────────────────────────────────────────────
+
 /// @brief Extract all narrowing information from a condition expression.
 /// 
 /// Handles:
@@ -20,46 +33,12 @@ namespace sema {
 ///   - `and` at top level: No narrowing (unsound) → returns empty
 ///   - `not x`: Inverse narrowing (x is nil/false)
 /// 
-/// WARNING: Mixed operators (`==` and `!=` together) at the same logical level
-///    are REJECTED and return no narrowing.
-/// 
 /// @param expr The condition expression.
 /// @param ctx The semantic context.
 /// @param outIsValidMixed Optional output parameter to detect mixed operators.
 /// @return NarrowingInfo with all narrowings found, or empty if mixed/unsound.
 NarrowingInfo extractNarrowingsFromCondition(const ExprAST* expr, SemaContext& ctx, 
                                                bool* outIsValidMixed = nullptr);
-
-/// @brief Detect a single narrowing pattern in a binary expression.
-/// 
-/// Patterns detected:
-///   - x == nil, x != nil
-///   - x == err, x != err
-///   - nil == x, nil != x (reverse order)
-///   - err == x, err != x (reverse order)
-/// 
-/// @param binary The binary expression.
-/// @param ctx The semantic context.
-/// @return NarrowingInfo with the detected narrowing.
-NarrowingInfo detectSingleNarrowing(const BinaryExprAST* binary, SemaContext& ctx);
-
-/// @brief Detect if an identifier expression can be narrowed and add to info.
-/// 
-/// @param info The NarrowingInfo to add to.
-/// @param id The identifier expression.
-/// @param lit The literal (nil or err).
-/// @param isEquality True if operator is ==, false if !=.
-/// @param ctx The semantic context.
-void detectIdentifierNarrowing(NarrowingInfo& info, const IdentifierExprAST* id, 
-                                const LiteralExprAST* lit, bool isEquality, 
-                                SemaContext& ctx);
-
-/// @brief Get the inner type of a value declaration (unwrap nullable/fallible).
-/// 
-/// @param decl The value declaration.
-/// @param ctx The semantic context.
-/// @return The inner type, or nullptr if not found.
-const TypeAST* getInnerType(const ValueDeclAST* decl, SemaContext& ctx);
 
 /// @brief Detect narrowing pattern from a binary expression.
 /// 
@@ -70,5 +49,24 @@ const TypeAST* getInnerType(const ValueDeclAST* decl, SemaContext& ctx);
 /// @param ctx The semantic context.
 /// @return NarrowingInfo with the detected narrowing, or empty if no pattern.
 NarrowingInfo detectNarrowingPattern(const BinaryExprAST* binary, SemaContext& ctx);
+
+// ─── Internal Helpers (exposed for testing) ─────────────────────────────
+
+/// @brief Detect a single narrowing pattern in a binary expression.
+/// 
+/// Patterns detected:
+///   - x == nil, x != nil
+///   - x == err, x != err
+///   - nil == x, nil != x (reverse order)
+///   - err == x, err != x (reverse order)
+NarrowingInfo detectSingleNarrowing(const BinaryExprAST* binary, SemaContext& ctx);
+
+/// @brief Detect if an identifier expression can be narrowed and add to info.
+void detectIdentifierNarrowing(NarrowingInfo& info, const IdentifierExprAST* id, 
+                                const LiteralExprAST* lit, bool isEquality, 
+                                SemaContext& ctx);
+
+/// @brief Get the inner type of a value declaration (unwrap nullable/fallible).
+const TypeAST* getInnerType(const ValueDeclAST* decl, SemaContext& ctx);
 
 } // namespace sema
