@@ -99,7 +99,7 @@ const ValueDeclAST* lookupModuleMember(ModuleAST* module,
 /// These functions check if a name is already declared in the CURRENT tier:
 /// - If at module level: checks the module table
 /// - If in a scope: checks only the innermost scope (not outer scopes)
-/// @{
+
 
 /// Check if a value name is already declared in the current tier.
 bool isValueRedeclared(InternedString name, SemaContext& ctx);
@@ -113,7 +113,7 @@ bool isGenericParamRedeclared(InternedString name, SemaContext& ctx);
 /// Check if an import alias is already declared in the current module.
 bool isImportAliasRedeclared(InternedString alias, SemaContext& ctx);
 
-/// @}
+
 
 // ─── Redeclaration Reporting ─────────────────────────────────────────────
 
@@ -121,7 +121,6 @@ bool isImportAliasRedeclared(InternedString alias, SemaContext& ctx);
 /// 
 /// These functions check for redeclaration and report an error if found.
 /// Returns true if a redeclaration was found (error reported).
-/// @{
 
 /// Check and report value redeclaration.
 bool reportValueRedeclaration(const DeclAST* node, SemaContext& ctx);
@@ -137,6 +136,5 @@ bool reportImportAliasRedeclaration(InternedString alias,
                                      const BaseAST* node, 
                                      SemaContext& ctx);
 
-/// @}
 
 } // namespace sema

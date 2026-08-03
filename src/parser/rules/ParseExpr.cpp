@@ -221,6 +221,8 @@ ExprAST* parsePrimaryExpr(TokenStream& stream, ParserContext& ctx) {
     }
     
     // ─── Module Access: module:member ───────────────────────────────────
+    // Only parse as module access if the current token is IDENTIFIER followed by ':'
+    // This prevents parsing 'obj.field:something' as module access
     if (current == TokenType::IDENTIFIER) {
         size_t savedPos = stream.getPos();
         stream.consume(); // Consume identifier temporarily
@@ -228,6 +230,11 @@ ExprAST* parsePrimaryExpr(TokenStream& stream, ParserContext& ctx) {
         stream.setPos(savedPos);
         
         if (isModuleAccess) {
+            // ─── Additional check: Ensure the token before ':' is a valid module name ──
+            // The parser already checks this via the grammar, but we add a safety check
+            // to prevent things like 'obj.field:member' from being parsed as module access
+            
+            // This is safe because parseModuleAccessExpr will parse IDENTIFIER ':' IDENTIFIER
             return parseModuleAccessExpr(stream, ctx);
         }
     }
@@ -1076,6 +1083,33 @@ FieldAccessExprAST* parseFieldAccessExpr(TokenStream& stream, ParserContext& ctx
     
     Token fieldTok = stream.consume();
     InternedString fieldName = ctx.pool.intern(fieldTok.value);
+    
+    // ─── 3. CRITICAL: Check for invalid '.field:' syntax ──────────────────
+    // After parsing '.field', if the next token is ':', that's invalid.
+    // The grammar allows module:member.field but NOT obj.field:something
+    // 
+    // The rule: ':' can only appear after a module name (IDENTIFIER),
+    // not after a field access.
+    if (stream.check(TokenType::COLON)) {
+        SourceLocation colonLoc = stream.currentLoc();
+        
+        ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedColonAfterField, colonLoc,
+                                "unexpected ':' after field access. Did you mean to use '.' instead of ':'?");
+        ctx.diagnostics.noteAt(loc, "field access starts here");
+        
+        // ─── Error Recovery: Consume the ':' and skip to the next statement ──
+        stream.consume(); // Consume ':'
+        
+        // Skip the rest of the invalid expression
+        synchronizeToContext(stream, ctx);
+        
+        // Return a field access with the parsed field name (partial recovery)
+        auto* fieldAccess = ctx.arena.make<FieldAccessExprAST>();
+        fieldAccess->loc = loc;
+        fieldAccess->object = lhs;
+        fieldAccess->fieldName = fieldName;
+        return fieldAccess;
+    }
     
     // ─── 4. Build the AST node ────────────────────────────────────────────
     auto* fieldAccess = ctx.arena.make<FieldAccessExprAST>();

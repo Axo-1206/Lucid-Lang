@@ -473,6 +473,7 @@ struct ExprAST : BaseAST {
     TypeAST* resolvedType = nullptr; // written as semantic phase
     ConstantValue constValue;  // Evaluated constant value (for const expressions)
     ValueState valueState = ValueState::Unknown;  // track value state, use to return an `err` value when anything go wrong
+    bool isLValue         = false;  // Can this expression appear on LHS of assignment?
     bool isModuleMember   = false;
     bool isConst          = false;
 

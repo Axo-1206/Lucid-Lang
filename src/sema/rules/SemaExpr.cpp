@@ -2,7 +2,7 @@
 /// @brief Implements Sema.hpp's "EXPRESSIONS - Type Resolution" section.
 /// 
 /// @design_decision Direct Expression Mutation
-///   Each resolver updates the ExprAST node directly (resolvedType, valueState).
+///   Each resolver updates the ExprAST node directly (resolvedType, valueState, isLValue, isConst).
 ///   This leverages the existing infrastructure and avoids duplication.
 /// 
 /// @design_decision Target Type Validation
@@ -201,6 +201,11 @@ TypeAST* resolveLiteralExpr(LiteralExprAST* expr, const TypeAST* targetType, Sem
 
     expr->resolvedType = result;
     expr->valueState = state;
+    
+    // ─── Set isLValue ──────────────────────────────────────────────────────
+    expr->isLValue = false;   // Literals are never l-values
+    expr->isConst = true;     // Literals are compile-time constants
+    
     return result;
 }
 
@@ -244,7 +249,30 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetTyp
         state = ValueState::Unknown;
     }
 
-    // ─── Step 4: Handle generic arguments (function instantiation) ────────
+    // ─── Step 4: Set isLValue based on declaration type ──────────────────
+    if (decl->isa<VarDeclAST>()) {
+        const VarDeclAST* varDecl = decl->as<VarDeclAST>();
+        expr->isLValue = (varDecl->keyword == DeclKeyword::Let);
+        expr->isConst = (varDecl->keyword == DeclKeyword::Const);
+    } else if (decl->isa<FuncDeclAST>()) {
+        const FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
+        expr->isLValue = (funcDecl->keyword == DeclKeyword::Let);
+        expr->isConst = (funcDecl->keyword == DeclKeyword::Const);
+    } else if (decl->isa<ParamAST>()) {
+        const ParamAST* param = decl->as<ParamAST>();
+        expr->isLValue = !param->isConst;
+        expr->isConst = param->isConst;
+    } else if (decl->isa<EnumVariantAST>()) {
+        // Enum variants are compile-time constants, not assignable
+        expr->isLValue = false;
+        expr->isConst = true;
+    } else {
+        // Default: not an l-value
+        expr->isLValue = false;
+        expr->isConst = false;
+    }
+
+    // ─── Step 5: Handle generic arguments (function instantiation) ────────
     if (!expr->genericArgs.empty()) {
         if (!decl->isa<FuncDeclAST>()) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
@@ -274,7 +302,7 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetTyp
         }
     }
 
-    // ─── Step 5: Return the declaration's type ─────────────────────────────
+    // ─── Step 6: Return the declaration's type ─────────────────────────────
     if (!decl->type) {
         ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
                               "'", ctx.pool.lookup(expr->name), "' has no type information");
@@ -296,6 +324,11 @@ TypeAST* resolveArrayLiteralExpr(ArrayLiteralExprAST* expr, const TypeAST* targe
     if (expr->elements.empty()) {
         expr->resolvedType = ctx.getUnknownType();
         expr->valueState = ValueState::Definite;
+        
+        // ─── Set isLValue ──────────────────────────────────────────────────
+        expr->isLValue = false;   // Array literals are never l-values
+        expr->isConst = true;     // Empty array literal is compile-time constant
+        
         return ctx.getUnknownType();
     }
 
@@ -361,6 +394,11 @@ TypeAST* resolveArrayLiteralExpr(ArrayLiteralExprAST* expr, const TypeAST* targe
     ArrayTypeAST* arrayType = ctx.getArrayType(ArrayKind::Dynamic, 0, firstType);
     expr->resolvedType = arrayType;
     expr->valueState = state;
+    
+    // ─── Set isLValue ──────────────────────────────────────────────────────
+    expr->isLValue = false;   // Array literals are never l-values
+    expr->isConst = allDefinite;  // All elements must be const for the array to be const
+    
     return arrayType;
 }
 
@@ -543,6 +581,11 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, const TypeAST* tar
     NamedTypeAST* resultType = ctx.getNamedType(structDecl->name);
     expr->resolvedType = resultType;
     expr->valueState = state;
+    
+    // ─── Set isLValue ──────────────────────────────────────────────────────
+    expr->isLValue = false;   // Struct literals are never l-values
+    expr->isConst = allDefinite;  // All fields must be const for the struct to be const
+    
     return resultType;
 }
 
@@ -580,6 +623,11 @@ TypeAST* resolveBinaryExpr(BinaryExprAST* expr, const TypeAST* targetType, SemaC
             ctx.stack.setPendingNarrowing(info);
             expr->resolvedType = ctx.getBoolType();
             expr->valueState = ValueState::Definite;
+            
+            // ─── Set isLValue ──────────────────────────────────────────────
+            expr->isLValue = false;   // Binary expressions are never l-values
+            expr->isConst = false;    // Not compile-time constant
+            
             return ctx.getBoolType();
         }
     }
@@ -721,6 +769,11 @@ TypeAST* resolveBinaryExpr(BinaryExprAST* expr, const TypeAST* targetType, SemaC
 
     expr->resolvedType = resultType;
     expr->valueState = resultState;
+    
+    // ─── Set isLValue ──────────────────────────────────────────────────────
+    expr->isLValue = false;   // Binary expressions are never l-values
+    expr->isConst = false;    // Binary expressions are not compile-time constants
+    
     return resultType;
 }
 
@@ -844,6 +897,11 @@ TypeAST* resolveUnaryExpr(UnaryExprAST* expr, const TypeAST* targetType, SemaCon
 
     expr->resolvedType = resultType;
     expr->valueState = resultState;
+    
+    // ─── Set isLValue ──────────────────────────────────────────────────────
+    expr->isLValue = false;   // Unary expressions are never l-values
+    expr->isConst = false;    // Unary expressions are not compile-time constants
+    
     return resultType;
 }
 
@@ -987,6 +1045,11 @@ TypeAST* resolveCallExpr(CallExprAST* expr, const TypeAST* targetType, SemaConte
 
     expr->resolvedType = funcType->returnType;
     expr->valueState = state;
+    
+    // ─── Set isLValue ──────────────────────────────────────────────────────
+    expr->isLValue = false;   // Function calls are never l-values
+    expr->isConst = false;    // Function calls are not compile-time constants
+    
     return funcType->returnType;
 }
 
@@ -1042,6 +1105,11 @@ TypeAST* resolveIntrinsicCallExpr(IntrinsicCallExprAST* expr, const TypeAST* tar
     ValueState state = registry.getIntrinsicValueState(expr, ctx);
     expr->resolvedType = const_cast<TypeAST*>(resultType);
     expr->valueState = state;
+    
+    // ─── Set isLValue ──────────────────────────────────────────────────────
+    expr->isLValue = false;   // Intrinsic calls are never l-values
+    expr->isConst = false;    // Intrinsic calls are not compile-time constants
+    
     return const_cast<TypeAST*>(resultType);
 }
 
@@ -1091,6 +1159,13 @@ TypeAST* resolveIndexExpr(IndexExprAST* expr, const TypeAST* targetType, SemaCon
 
     expr->resolvedType = arrayType->element;
     expr->valueState = state;
+    
+    // ─── Set isLValue ──────────────────────────────────────────────────────
+    // Array indexing is an l-value iff the target array is an l-value
+    // (you can assign to nums[1] if nums is let)
+    expr->isLValue = expr->target->isLValue;
+    expr->isConst = expr->target->isConst;
+    
     return arrayType->element;
 }
 
@@ -1156,6 +1231,12 @@ TypeAST* resolveSliceExpr(SliceExprAST* expr, const TypeAST* targetType, SemaCon
     ArrayTypeAST* sliceType = ctx.getArrayType(ArrayKind::Slice, 0, arrayType->element);
     expr->resolvedType = sliceType;
     expr->valueState = state;
+    
+    // ─── Set isLValue ──────────────────────────────────────────────────────
+    // Slices are never l-values (you can't assign to a slice expression)
+    expr->isLValue = false;
+    expr->isConst = false;
+    
     return sliceType;
 }
 
@@ -1222,6 +1303,12 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetT
                                ? ValueState::Unknown : ValueState::Definite;
             expr->resolvedType = const_cast<TypeAST*>(fieldType);
             expr->valueState = state;
+            
+            // ─── Set isLValue for generic field ──────────────────────────────
+            // Generic fields are not l-values (can't assign through generic param)
+            expr->isLValue = false;
+            expr->isConst = false;
+            
             return const_cast<TypeAST*>(fieldType);
         }
     }
@@ -1256,6 +1343,24 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetT
                                    ? ValueState::Unknown : ValueState::Definite;
                 expr->resolvedType = f->type;
                 expr->valueState = state;
+                
+                // ─── Set isLValue ──────────────────────────────────────────────
+                // A field access is an l-value iff:
+                //   1. The object is an l-value
+                //   2. The field is not const
+                if (expr->object->isLValue) {
+                    if (f->isConst) {
+                        expr->isLValue = false;   // const field is not assignable
+                        expr->isConst = true;     // but it's still const-evaluable
+                    } else {
+                        expr->isLValue = true;
+                        expr->isConst = expr->object->isConst;
+                    }
+                } else {
+                    expr->isLValue = false;
+                    expr->isConst = expr->object->isConst;
+                }
+                
                 return f->type;
             }
         }
@@ -1276,6 +1381,12 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetT
             if (v->name == expr->fieldName) {
                 expr->resolvedType = ctx.getNamedType(enumDecl->name);
                 expr->valueState = ValueState::Definite;
+                
+                // ─── Set isLValue ──────────────────────────────────────────────
+                // Enum variants are compile-time constants, not assignable
+                expr->isLValue = false;
+                expr->isConst = true;
+                
                 return ctx.getNamedType(enumDecl->name);
             }
         }
@@ -1336,7 +1447,26 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, const TypeAST* targe
     // ─── Step 4: Mark as module member ────────────────────────────────────
     expr->isModuleMember = true;
 
-    // ─── Step 5: Check generic arguments if present ────────────────────────
+    // ─── Step 5: Set isLValue based on member's keyword ──────────────────
+    if (decl->isa<VarDeclAST>()) {
+        const VarDeclAST* varDecl = decl->as<VarDeclAST>();
+        expr->isLValue = (varDecl->keyword == DeclKeyword::Let);
+        expr->isConst = (varDecl->keyword == DeclKeyword::Const);
+    } else if (decl->isa<FuncDeclAST>()) {
+        const FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
+        expr->isLValue = (funcDecl->keyword == DeclKeyword::Let);
+        expr->isConst = (funcDecl->keyword == DeclKeyword::Const);
+    } else if (decl->isa<EnumVariantAST>()) {
+        // Enum variants are compile-time constants, not assignable
+        expr->isLValue = false;
+        expr->isConst = true;
+    } else {
+        // Default: not an l-value
+        expr->isLValue = false;
+        expr->isConst = false;
+    }
+
+    // ─── Step 6: Check generic arguments if present ────────────────────────
     if (!expr->genericArgs.empty()) {
         if (!decl->isa<FuncDeclAST>()) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
@@ -1367,7 +1497,7 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, const TypeAST* targe
         }
     }
 
-    // ─── Step 6: Return the member's type ───────────────────────────────────
+    // ─── Step 7: Return the member's type ───────────────────────────────────
     if (!decl->type) {
         ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
                               "member '", ctx.pool.lookup(expr->memberName),
@@ -1448,6 +1578,12 @@ TypeAST* resolveNullCoalesceExpr(NullCoalesceExprAST* expr, const TypeAST* targe
 
     expr->resolvedType = rhsType;
     expr->valueState = state;
+    
+    // ─── Set isLValue ──────────────────────────────────────────────────────
+    // Null coalesce expressions are never l-values
+    expr->isLValue = false;
+    expr->isConst = false;
+    
     return rhsType;
 }
 
@@ -1466,7 +1602,25 @@ TypeAST* resolveAssignExpr(AssignExprAST* expr, const TypeAST* targetType, SemaC
         return ctx.getUnknownType();
     }
 
-    // ─── Step 2: Resolve RHS against LHS type ──────────────────────────────
+    // ─── Step 2: Check if LHS is an l-value ─────────────────────────────────
+    if (!expr->lhs->isLValue) {
+        ctx.diagnostics.error(DiagCode::Sem_InvalidAssignment, expr->lhs,
+                              "cannot assign to non-l-value expression");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
+        return ctx.getUnknownType();
+    }
+
+    // ─── Step 3: Check if LHS is const ──────────────────────────────────────
+    if (expr->lhs->isConst) {
+        ctx.diagnostics.error(DiagCode::Sem_ConstAssignment, expr->lhs,
+                              "cannot assign to const expression");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
+        return ctx.getUnknownType();
+    }
+
+    // ─── Step 4: Resolve RHS against LHS type ──────────────────────────────
     TypeAST* rhsType = resolveExprWithTarget(expr->rhs, lhsType, ctx);
     if (!rhsType || rhsType->isa<UnknownTypeAST>()) {
         // Error already reported by resolveExprWithTarget
@@ -1475,7 +1629,7 @@ TypeAST* resolveAssignExpr(AssignExprAST* expr, const TypeAST* targetType, SemaC
         return ctx.getUnknownType();
     }
 
-    // ─── Step 3: Compound assignment operator validation ───────────────────
+    // ─── Step 5: Compound assignment operator validation ───────────────────
     if (expr->op != AssignOp::Assign) {
         bool isArithmetic = false;
         switch (expr->op) {
@@ -1522,6 +1676,12 @@ TypeAST* resolveAssignExpr(AssignExprAST* expr, const TypeAST* targetType, SemaC
 
     expr->resolvedType = lhsType;
     expr->valueState = expr->rhs->valueState;
+    
+    // ─── Set isLValue ──────────────────────────────────────────────────────
+    // Assignment expressions are never l-values (the result is a value)
+    expr->isLValue = false;
+    expr->isConst = false;
+    
     return lhsType;
 }
 
@@ -1610,6 +1770,12 @@ TypeAST* resolvePipelineExpr(PipelineExprAST* expr, const TypeAST* targetType, S
 
     expr->resolvedType = currentType;
     expr->valueState = ValueState::Definite;
+    
+    // ─── Set isLValue ──────────────────────────────────────────────────────
+    // Pipeline expressions are never l-values
+    expr->isLValue = false;
+    expr->isConst = false;
+    
     return currentType;
 }
 
@@ -1754,6 +1920,12 @@ TypeAST* resolveComposeExpr(ComposeExprAST* expr, const TypeAST* targetType, Sem
 
     expr->resolvedType = currentFunc;
     expr->valueState = ValueState::Definite;
+    
+    // ─── Set isLValue ──────────────────────────────────────────────────────
+    // Composition expressions are never l-values
+    expr->isLValue = false;
+    expr->isConst = false;
+    
     return currentFunc;
 }
 
@@ -1820,6 +1992,12 @@ TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, const TypeAST* targetType, S
                        ? ValueState::Unknown : ValueState::Definite;
     expr->resolvedType = funcType;
     expr->valueState = state;
+    
+    // ─── Set isLValue ──────────────────────────────────────────────────────
+    // Anonymous functions are never l-values
+    expr->isLValue = false;
+    expr->isConst = false;
+    
     return funcType;
 }
 
@@ -1879,6 +2057,12 @@ TypeAST* resolveIfExpr(IfExprAST* expr, const TypeAST* targetType, SemaContext& 
 
     expr->resolvedType = thenType;
     expr->valueState = state;
+    
+    // ─── Set isLValue ──────────────────────────────────────────────────────
+    // If expressions are never l-values
+    expr->isLValue = false;
+    expr->isConst = false;
+    
     return thenType;
 }
 
@@ -1915,6 +2099,12 @@ TypeAST* resolveRangeExpr(RangeExprAST* expr, const TypeAST* targetType, SemaCon
 
     expr->resolvedType = loType;
     expr->valueState = ValueState::Definite;
+    
+    // ─── Set isLValue ──────────────────────────────────────────────────────
+    // Range expressions are never l-values
+    expr->isLValue = false;
+    expr->isConst = false;
+    
     return loType;
 }
 

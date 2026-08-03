@@ -562,19 +562,6 @@ mymod:currentUser.name = "eve";    -- OK: currentUser is `let`, so the module's
                                     -- Module Member Access describes
 ```
 
-The difference between the two cases is **what produced the value**, not
-whether mutation is allowed at all. A function call through `:` returns a
-brand-new value the module has no further claim over — ordinary `.field`
-mutation rules apply from that point on, governed by how the caller's own
-binding (`u`) was declared. A struct reached by naming an exported `let`
-binding directly is, transitively, *the module's own storage* — and because
-**Exported Name Immutability** now makes a `let` export just as reassignable
-from outside as inside, reaching through `.field` to mutate it is consistent
-with, not an exception to, that rule. If a module wants a struct's fields to
-stay unreachable for direct mutation from outside, it must export the binding
-with `const`, or keep it unexported and go through functions instead (see
-**Pattern: Controlled Mutation Without Methods** below).
-
 #### Pattern: Controlled Mutation Without Methods
 
 Exporting state with `let` is the right call when outside code should simply
