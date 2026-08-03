@@ -441,38 +441,56 @@ import graphics.gl as gl
 ### Exported Name Immutability
 
 `@[export]` makes a name visible outside its module, but the binding belongs to
-the module that declared it. From outside the module, exported names are always
-**read-only** — they cannot be reassigned regardless of whether the declaration
-is `let` or `const` internally:
+the module that declared it. Whether an exported name can be reassigned from
+outside the module follows the same `let` / `const` distinction the module
+declared it with — `:` does not add an extra layer of read-only-ness on top:
 
 ```lucid
 -- inside mymod.luc
-@[export] let counter int = 0;    -- mutable inside the module
+@[export] let counter int = 0;    -- mutable inside AND outside the module
 @[export] const PI float = 3.14;    -- immutable everywhere
 
 -- inside another module
 import mymod
 
-mymod:counter = 1;    -- ERROR: exported names are read-only from outside the module
-mymod:PI      = 3.0;    -- ERROR: same rule
+mymod:counter = 1;    -- OK: counter was declared with `let`
+mymod:PI      = 3.0;    -- ERROR: PI was declared with `const` — never assignable
 ```
 
 This applies to all exported declarations — variables, functions, structs, enums,
 and traits. A module's exported surface is its public API; external code can read
-and call, never reassign.
+and call, and can reassign anything that is `let`, exactly as if it were a local
+`let` binding. If a module wants to expose a value for reading without letting
+outside code reassign it directly, it must export it with `const`, or keep the
+mutable state unexported and expose controlled access through functions (see
+**Pattern: Controlled Mutation Without Methods** below).
 
 ### Module Member Access
 
 Module members are accessed with `:`, not `.`. The colon is a deliberate
 syntactic distinction — it signals that the left-hand side is a module, not a
-struct, and that the result is **always read-only**. You can never assign through
-`:`.
+struct — but it does **not** by itself decide mutability. A `module:member`
+expression is an l-value whenever `member` was declared with `let`, and is
+never an l-value when `member` was declared with `const`, exactly mirroring
+the rule for a plain `let`/`const` binding accessed from inside the module.
 
 ```ebnf
-module_expr = IDENTIFIER ':' IDENTIFIER          (* module:member *)
-            | IDENTIFIER ':' call_expr            (* module:func(...) *)
-            | IDENTIFIER ':' generic_expr          (* module:genericFunc<T>(...) *)
+module_expr = IDENTIFIER ':' IDENTIFIER                  (* module:member *)
+            | IDENTIFIER ':' IDENTIFIER '.' field_chain    (* module:structMember.field1.field2 *)
+            | IDENTIFIER ':' call_expr                    (* module:func(...) *)
+            | IDENTIFIER ':' generic_expr                  (* module:genericFunc<T>(...) *)
+
+field_chain = IDENTIFIER { '.' IDENTIFIER }              (* one or more '.field' hops,
+                                                             left-associative *)
 ```
+
+`module_expr` produces an ordinary value or l-value once resolved — a
+`'.' field_chain` after `module:member` is just the usual `field_expr` rule
+applied to whatever `module:member` evaluated to, not a special case. This is
+why `module:structMember.field1.field2` type-checks and assigns the same way
+`structMember.field1.field2` would from inside the module: each `.field` hop
+is only ever restricted by the mutability of the binding it is reached
+through, `let` all the way down or `const` at the first step that isn't.
 
 ```lucid
 import std.math as math
@@ -487,6 +505,15 @@ let result float = math:sqrt(2.0);
 -- piping through an exported function
 let normalized float = 3.14 |> math:clamp;
 
+-- reassigning an exported `let` member directly
+math:precisionBits = 64;    -- OK, if math.luc declared:
+                            -- @[export] let precisionBits int = 32;
+
+-- reassigning through a chain of struct fields
+math:defaultConfig.tolerance.decimals = 6;    -- OK, if `defaultConfig` is `let`
+                                                -- and every field it passes
+                                                -- through is itself `let`
+
 -- chaining: result of a call is a value, access its fields with .
 let len int = math:split("a,b,c"):length;    -- ERROR: : is only for module access
 let parts [*]string = math:split("a,b,c");
@@ -495,21 +522,25 @@ let len   int       = parts.length;    -- OK: . for struct field
 
 **`:` vs `.` — the rule:**
 
-| Syntax        | Left-hand side | Assignable | Example         |
-| ------------- | -------------- | ---------- | --------------- |
-| `module:mem`  | module name    | never      | `math:sqrt(x)`  |
-| `value.field` | struct value   | if `let`   | `player.health` |
+| Syntax                     | Left-hand side | Assignable                                       | Example                           |
+| -------------------------- | -------------- | ------------------------------------------------ | --------------------------------- |
+| `module:mem`               | module name    | if `mem` is `let`                                | `math:sqrt(x)` (call, n/a)        |
+| `module:mem.field1.field2` | module name    | if `mem` and every field along the way are `let` | `math:structMember.field1.field2` |
+| `value.field`              | struct value   | if `let`                                         | `player.health`                   |
 
-The compiler rejects `module:member = ...` at the assignment site regardless
-of the member's internal mutability. This is enforced syntactically —
-`:` never produces an l-value.
+The compiler resolves `module:member = ...` (and `module:member.f... = ...`)
+by the same `let`/`const` check it would apply to any other assignment target
+— there is no additional syntactic block on `:` itself. Assigning through a
+`const` member, at any point in the chain, is still rejected.
 
-#### Depth of the Read-Only Guarantee
+#### Depth of the Mutability Rule
 
-"Always read-only" applies to **everything reachable through `:`**, not just
-the immediate result — a struct obtained via `:` is treated as `const` at
-every field depth, regardless of how its fields are individually qualified
-internally. This distinguishes two cases that look similar but are not:
+Mutability through `:` applies at **every depth reachable through the
+chain**, not just the immediate result — there is no point where `:` forces
+the rest of the chain to become read-only on its own. Both a function call
+and a directly-named binding follow ordinary `let`/`const` rules from there
+on, but which fields end up assignable can still differ, because the two
+cases are backed by different storage:
 
 ```lucid
 -- the module exports a FUNCTION that returns a new struct each call
@@ -519,33 +550,44 @@ const u User = mymod:makeUser();
 u.name = "alice";    -- OK: u is a fresh value the caller owns outright
                             -- mymod:makeUser() is the module_expr, already
                             -- fully resolved to a plain User before '.name'
-                            -- is ever reached
+                            -- is ever reached — mutability now depends only
+                            -- on how `u` itself was declared
 
 -- the module exports a STRUCT VALUE directly (a package-level variable)
 @[export] let currentUser User = User { id = 1  name = "bob"  email = "" }
 
-mymod:currentUser.name = "eve";    -- ERROR: cannot assign through a value
-                                    -- obtained via ':', at any field depth
+mymod:currentUser.name = "eve";    -- OK: currentUser is `let`, so the module's
+                                    -- own storage is reached and mutated directly
+                                    -- through the chain, exactly like
+                                    -- Module Member Access describes
 ```
 
-The difference is **what produced the value**, not its shape. A function
-call through `:` returns a brand-new value the module has no further claim
-over — ordinary `.field` mutation rules apply from that point on, exactly as
-they would for a value from any other source. A struct reached by naming an
-exported binding directly is still, transitively, *the module's own storage*
-— allowing `.field` to reach through and mutate it would silently defeat
-**Exported Name Immutability** for every exported struct, just by routing
-the same mutation through one extra `.field` hop instead of a direct
-assignment.
+The difference between the two cases is **what produced the value**, not
+whether mutation is allowed at all. A function call through `:` returns a
+brand-new value the module has no further claim over — ordinary `.field`
+mutation rules apply from that point on, governed by how the caller's own
+binding (`u`) was declared. A struct reached by naming an exported `let`
+binding directly is, transitively, *the module's own storage* — and because
+**Exported Name Immutability** now makes a `let` export just as reassignable
+from outside as inside, reaching through `.field` to mutate it is consistent
+with, not an exception to, that rule. If a module wants a struct's fields to
+stay unreachable for direct mutation from outside, it must export the binding
+with `const`, or keep it unexported and go through functions instead (see
+**Pattern: Controlled Mutation Without Methods** below).
 
 #### Pattern: Controlled Mutation Without Methods
 
-Lucid has no methods, no `self`, and no per-field accessor syntax (see the
-opening note on removed features). The equivalent of a getter/setter is an
-ordinary exported function — nothing new to learn, and consistent with how
-every other module export already works. Keep the mutable state itself
-**unexported**, and export plain functions that read or write it under the
-module's own control:
+Exporting state with `let` is the right call when outside code should simply
+be able to read and reassign it, with no extra ceremony. But sometimes a
+module wants to validate a new value, log a write, enforce an invariant, or
+otherwise keep control over *how* its state changes — direct reassignment via
+`module:member = ...` cannot do any of that, since there's no hook to run
+code on the way in. Lucid has no methods, no `self`, and no per-field
+accessor syntax (see the opening note on removed features), so the
+equivalent of a getter/setter is an ordinary exported function — nothing new
+to learn, and consistent with how every other module export already works.
+Keep the mutable state itself **unexported**, and export plain functions
+that read or write it under the module's own control:
 
 ```lucid
 -- inside config.luc
@@ -569,9 +611,9 @@ import config
 
 const t int = config:getThreshold();
 config:setThreshold(20);
-config:current.threshold = 5;    -- ERROR: current is not exported at all,
-                                  -- and even if it were, '.' cannot reach
-                                  -- through ':' to mutate it
+config:current.threshold = 5;    -- ERROR: current is not exported at all —
+                                  -- there is no `config:current` to reach
+                                  -- through ':' in the first place
 ```
 
 This gives the module exactly the same control a getter/setter would —
@@ -730,44 +772,44 @@ struct Point {
 }
 
 struct Node<T> {
-    value T
-    next  *Node<T>?    -- nullable pointer to next node
+    value T;
+    next  *Node<T>?;    -- nullable pointer to next node
 }
 
 struct Player {
     name   string
-    health int    = 100
-    speed  float  = 1.0
-    active bool   = true
+    health int    = 100;
+    speed  float  = 1.0;
+    active bool   = true;
 }
 
 -- struct implementing traits
 struct Entity : Vector2, Named {
-    name   string    -- satisfies Named
-    x      float = 0.0    -- satisfies Vector2
-    y      float = 0.0    -- satisfies Vector2
-    health int   = 100
+    name   string;    -- satisfies Named
+    x      float = 0.0;    -- satisfies Vector2
+    y      float = 0.0;    -- satisfies Vector2
+    health int   = 100;
 }
 
 -- field typed as a trait — accepts any struct implementing Vector2
 struct PhysicsBody {
-    position  Vector2    -- any struct implementing Vector2
-    velocity  Vector2
-    mass      float = 1.0
+    position  Vector2;    -- any struct implementing Vector2
+    velocity  Vector2;
+    mass      float = 1.0;
 }
 
 -- generic struct with trait constraint
 struct Wrapper<T : Named> {
-    item  T
-    label string
+    item  T;
+    label string;
 }
 
 -- deprecated field — built-in attribute
 struct Config {
     @[deprecated("use maxConnections instead")]
-    max_conn       int    = 100
-    maxConnections int    = 100
-    host           string = "localhost"
+    max_conn       int    = 100;
+    maxConnections int    = 100;
+    host           string = "localhost";
 }
 ```
 
@@ -778,11 +820,11 @@ and a value. Fields with default values may be omitted:
 
 ```lucid
 -- all fields explicit
-const p Point = Point { x = 3.0, y = 4.0 }
+const p Point = Point { x = 3.0, y = 4.0 };
 
 -- omit fields that have defaults
-const origin Point = Point {}    -- x=3.0, y=4.0 from defaults
-const shifted Point = Point { x = 5.0 }    -- x=5.0, y=4.0 from default
+const origin Point = Point {};    -- x=3.0, y=4.0 from defaults
+const shifted Point = Point { x = 5.0 };   -- x=5.0, y=4.0 from default
 ```
 
 > [!NOTE]
@@ -798,34 +840,34 @@ const shifted Point = Point { x = 5.0 }    -- x=5.0, y=4.0 from default
 > ```lucid
 > struct Counter {
 >     const step int = 1;    -- has a default — literal may omit or override
->     total      int
+>     total      int;
 > }
 >
-> let a Counter = Counter { total = 0 }              -- step = 1 (default)
-> let b Counter = Counter { step = 5, total = 0 }    -- step = 5 (override)
+> let a Counter = Counter { total = 0 };              -- step = 1 (default)
+> let b Counter = Counter { step = 5, total = 0 };    -- step = 5 (override)
 > a.step = 2;    -- ERROR: step is const — fixed once construction finished
 >
 > struct Validator {
 >     const check (int) -> bool;    -- no default — literal MUST supply one
 > }
 >
-> const v Validator = Validator { }    -- ERROR: check has no default and
+> const v Validator = Validator { };    -- ERROR: check has no default and
 >                                             -- was not supplied
 > const v2 Validator = Validator {
->     check = (n int) -> bool { return n > 0 }    -- OK: required, now fixed
+>     check = (n int) -> bool { return n > 0 };   -- OK: required, now fixed
 > }
 > ```
 
 ```lucid
 -- nested struct
 struct Rect {
-    origin Point
-    width  float = 0.0
-    height float = 0.0
+    origin Point;
+    width  float = 0.0;
+    height float = 0.0;
 }
 
 const r Rect = Rect {
-    origin = Point { x = 1.0, y = 2.0 }
+    origin = Point { x = 1.0, y = 2.0 };
     width  = 100.0;
     height = 50.0;
 }
@@ -868,7 +910,49 @@ if e2.target != nil {
 }
 ```
 
-### Const Fields and Function-Typed Fields
+### Object Slicing
+
+A struct implementing a trait can be assigned to a variable **declared with
+the trait's type** — a struct's value is always a superset of what the trait
+requires, so nothing is missing. But the reverse is not just narrower, it is
+genuinely **impossible to fill in**: a trait only carries the fields it
+declares, so a value that only knows it is "some `Person`" has no other
+fields for the compiler to read out of it, even if the concrete struct
+behind it happens to have more.
+
+```lucid
+trait Person {
+    name string;
+}
+
+struct Staff : Person {
+    name   string;    -- satisfies Person
+    salary float = 0.0;
+}
+
+let s Staff  = Staff { name = "Amy", salary = 50000.0 }
+let p Person = s;    -- OK: Staff has everything Person requires
+
+p.name;              -- OK: name is part of the Person contract
+p.salary;             -- ERROR: salary isn't part of Person — this is
+                       -- Object Slicing, `p`'s static type only exposes
+                       -- Person's fields, `salary` is gone from view
+
+let s2 Staff = p;    -- ERROR: cannot assign a Person to a Staff — the
+                      -- compiler has no `salary` to read from `p` and no
+                      -- rule for inventing one, so the assignment is
+                      -- rejected outright rather than fabricating a value
+```
+
+`p = s` is called Object Slicing because assigning a wider struct into a
+narrower trait-typed variable keeps only the fields the trait declares —
+`salary` still exists in memory as part of `s`, but `p`'s type means the
+extra field is no longer reachable through `p`. Going the other direction —
+`Staff = Person` — isn't a narrowing at all, it would require *inventing*
+data the right-hand side never had, so the compiler rejects it at the
+assignment site rather than guessing a default.
+
+
 
 A field declared with `const` cannot be reassigned through `field_expr`, even
 when the containing variable is itself `let`. Field-level `const` is
@@ -880,7 +964,7 @@ itself declared `const` stays read-only regardless:
 ```lucid
 struct Counter {
     const step int = 1;    -- has a default — see Struct Initialization
-    total      int
+    total      int;
 }
 
 let c Counter = Counter { total = 0 }    -- step = 1, taken from the default
@@ -1271,6 +1355,36 @@ enum Bad {
     East  = 1
 }
 ```
+
+### Accessing Variants
+
+A variant is reached with `.`, the same operator used for struct fields —
+`EnumName.Variant`. This is a plain read of a fixed value, never an l-value:
+the variant's value was already fixed at the enum's own declaration, so there
+is nothing to assign through `EnumName.Variant` itself.
+
+```lucid
+let facing Direction = Direction.North;    -- OK: reading a variant
+
+Direction.North = Direction.South;    -- ERROR: a variant is not an l-value —
+                                        -- '.' here is only ever a read,
+                                        -- there is no storage behind
+                                        -- `Direction.North` to reassign
+```
+
+What *is* assignable is the `let`/`const` binding that holds the variant,
+exactly like any other value — the enum type itself has no bearing on that:
+
+```lucid
+let facing Direction = Direction.North;
+facing = Direction.West;    -- OK: facing is `let`, reassigning the binding,
+                              -- not the variant
+
+const home Direction = Direction.East;
+home = Direction.West;       -- ERROR: home is `const` — same rule as any
+                              -- other const binding, unrelated to enums
+```
+
 
 ---
 
@@ -2622,9 +2736,10 @@ range_op        = '..'      (* inclusive end *)
 
 field_expr      = expr '.' IDENTIFIER           (* struct field access — may be l-value *)
 
-module_expr     = IDENTIFIER ':' IDENTIFIER     (* module member access — never l-value,
-                                                    at any '.field' depth — see
-                                                    Depth of the Read-Only Guarantee *)
+module_expr     = IDENTIFIER ':' IDENTIFIER     (* module member access — l-value iff the
+                                                    member is `let`, at any '.field' depth
+                                                    reached afterward — see Depth of the
+                                                    Mutability Rule *)
                 | IDENTIFIER ':' call_expr      (* module function call *)
                 | IDENTIFIER ':' generic_expr   (* module generic function call *)
 
