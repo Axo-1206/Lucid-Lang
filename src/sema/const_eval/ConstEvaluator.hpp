@@ -11,6 +11,14 @@
 ///   and expected - the compiler continues with regular type checking.
 ///   Only actual errors (division by zero, circular dependencies, etc.)
 ///   trigger diagnostics.
+///
+/// @design_decision Uses existing semantic infrastructure
+///   - Type checking: SemaCompare (typesEqual, isAssignable, isNullableType, etc.)
+///   - Name lookup: SemaLookup (lookupValue, lookupType, etc.)
+///   - Type resolution: SemaResolve (resolveType, etc.)
+///   - Validation: SemaValidate (validateGenericArguments, etc.)
+///   This eliminates duplication and ensures consistency between compile-time
+///   and runtime behavior.
 
 #pragma once
 
@@ -106,8 +114,11 @@ public:
     /// @brief Evaluate a const variable declaration.
     static ConstantValue evaluateDecl(SemaContext& ctx, const VarDeclAST* decl);
 
-    /// @brief Evaluate an expression in the current context.
-    static ConstantValue evaluate(SemaContext& ctx, const ExprAST* expr);
+    /// @brief Evaluate an expression with optional target type.
+    /// Returns ConstantValue::unknown() if the expression can't be evaluated
+    /// at compile time (no diagnostic emitted - this is normal).
+    static ConstantValue evaluate(SemaContext& ctx, const ExprAST* expr,
+                                  const TypeAST* targetType = nullptr);
 
     /// @brief Report a circular dependency in const declarations.
     static void reportCycle(SemaContext& ctx, const std::vector<const DeclAST*>& cycle);
@@ -132,8 +143,10 @@ private:
     static ConstantValue evalLiteral(SemaContext& ctx, const LiteralExprAST* expr);
     static ConstantValue evalIdentifier(SemaContext& ctx, std::vector<ConstFrame>& frames,
                                          const IdentifierExprAST* expr);
-    static ConstantValue evalBinary(SemaContext& ctx, const BinaryExprAST* expr);
-    static ConstantValue evalUnary(SemaContext& ctx, const UnaryExprAST* expr);
+    static ConstantValue evalBinary(SemaContext& ctx, const BinaryExprAST* expr,
+                                     const TypeAST* targetType);
+    static ConstantValue evalUnary(SemaContext& ctx, const UnaryExprAST* expr,
+                                    const TypeAST* targetType);
     static ConstantValue evalCall(SemaContext& ctx, std::vector<ConstFrame>& frames,
                                    const CallExprAST* expr);
     static ConstantValue evalStructLiteral(SemaContext& ctx, const StructLiteralExprAST* expr);
@@ -171,13 +184,24 @@ private:
     static ConstantValue evalBinaryOp(SemaContext& ctx, BinaryOp op,
                                        const ConstantValue& left,
                                        const ConstantValue& right,
-                                       const BaseAST* node);
+                                       const BaseAST* node,
+                                       const TypeAST* targetType);
+
+    // ─── Comparison Helpers ──────────────────────────────────────────────
+
+    /// @brief Compare two constant values for equality.
+    /// Uses semantic comparison logic where appropriate.
+    static bool compareEqual(SemaContext& ctx, const ConstantValue& a, const ConstantValue& b);
+
+    /// @brief Compare two constant values for ordering.
+    /// Uses semantic comparison logic where appropriate.
+    static int compareOrder(SemaContext& ctx, const ConstantValue& a, const ConstantValue& b);
 
     // ─── Type Helpers ────────────────────────────────────────────────────
 
+    /// @brief Get the type of a constant value.
+    /// Uses SemaContext's type cache.
     static TypeAST* getConstantType(SemaContext& ctx, const ConstantValue& val);
-    static bool compareEqual(const ConstantValue& a, const ConstantValue& b);
-    static int compareOrder(const ConstantValue& a, const ConstantValue& b, SemaContext& ctx);
 
     // ─── Dependency Analysis ─────────────────────────────────────────────
 

@@ -3,6 +3,9 @@
 
 #include "ConstEvaluator.hpp"
 #include "sema/context/SemaContext.hpp"
+#include "sema/types/SemaCompare.hpp"  // For isNullableType, isFallibleType, typesEqual
+#include "sema/types/SemaLookup.hpp"   // For lookupValue, lookupType
+#include "sema/types/SemaResolve.hpp"  // For resolveType
 
 #include <cmath>
 #include <queue>
@@ -83,14 +86,15 @@ ConstantValue ConstEvaluator::evaluateDecl(SemaContext& ctx, const VarDeclAST* d
 
     std::vector<ConstFrame> frames;
     pushFrame(frames);
-    ConstantValue result = evaluate(ctx, decl->init);
+    ConstantValue result = evaluate(ctx, decl->init, decl->type);
     popFrame(frames);
 
     m_recursionDepth--;
     return result;
 }
 
-ConstantValue ConstEvaluator::evaluate(SemaContext& ctx, const ExprAST* expr) {
+ConstantValue ConstEvaluator::evaluate(SemaContext& ctx, const ExprAST* expr,
+                                        const TypeAST* targetType) {
     if (!expr) return ConstantValue::error();
 
     if (m_evaluatedExprs.find(expr) != m_evaluatedExprs.end()) {
@@ -111,10 +115,10 @@ ConstantValue ConstEvaluator::evaluate(SemaContext& ctx, const ExprAST* expr) {
             break;
         }
         case ASTKind::BinaryExpr:
-            result = evalBinary(ctx, expr->as<BinaryExprAST>());
+            result = evalBinary(ctx, expr->as<BinaryExprAST>(), targetType);
             break;
         case ASTKind::UnaryExpr:
-            result = evalUnary(ctx, expr->as<UnaryExprAST>());
+            result = evalUnary(ctx, expr->as<UnaryExprAST>(), targetType);
             break;
         case ASTKind::CallExpr: {
             std::vector<ConstFrame> frames;
@@ -139,7 +143,6 @@ ConstantValue ConstEvaluator::evaluate(SemaContext& ctx, const ExprAST* expr) {
             result = evalIfExpr(ctx, expr->as<IfExprAST>());
             break;
         default:
-            // Not const-evaluable - this is normal, no diagnostic
             return ConstantValue::unknown();
     }
 
@@ -147,7 +150,7 @@ ConstantValue ConstEvaluator::evaluate(SemaContext& ctx, const ExprAST* expr) {
         const_cast<ExprAST*>(expr)->isConst = true;
         const_cast<ExprAST*>(expr)->constValue = result;
         const_cast<ExprAST*>(expr)->resolvedType = getConstantType(ctx, result);
-        const_cast<ExprAST*>(expr)->valueState = ValueState::Definite;
+        const_cast<ExprAST*>(expr)->valueState = result.isErr() ? ValueState::Err : ValueState::Definite;
         m_evaluatedExprs.insert(expr);
     }
 
@@ -169,17 +172,14 @@ void ConstEvaluator::reportCycle(SemaContext& ctx, const std::vector<const DeclA
 
 ConstantValue ConstEvaluator::evalLiteral(SemaContext& ctx, const LiteralExprAST* expr) {
     switch (expr->kind) {
-        case LiteralKind::True:
-            return ConstantValue(true);
-        case LiteralKind::False:
-            return ConstantValue(false);
+        case LiteralKind::True:   return ConstantValue(true);
+        case LiteralKind::False:  return ConstantValue(false);
         case LiteralKind::Int:
         case LiteralKind::Hex:
         case LiteralKind::Binary: {
             std::string str = ctx.pool.lookup(expr->value);
             try {
-                int64_t val = std::stoll(str, nullptr, 0);
-                return ConstantValue(val);
+                return ConstantValue(std::stoll(str, nullptr, 0));
             } catch (const std::exception&) {
                 ctx.diagnostics.error(DiagCode::Lex_InvalidNumberLiteral, expr,
                                       "invalid integer literal '", str, "'");
@@ -189,8 +189,7 @@ ConstantValue ConstEvaluator::evalLiteral(SemaContext& ctx, const LiteralExprAST
         case LiteralKind::Float: {
             std::string str = ctx.pool.lookup(expr->value);
             try {
-                double val = std::stod(str);
-                return ConstantValue(val);
+                return ConstantValue(std::stod(str));
             } catch (const std::exception&) {
                 ctx.diagnostics.error(DiagCode::Lex_InvalidNumberLiteral, expr,
                                       "invalid float literal '", str, "'");
@@ -202,12 +201,9 @@ ConstantValue ConstEvaluator::evalLiteral(SemaContext& ctx, const LiteralExprAST
             return ConstantValue(expr->value);
         case LiteralKind::Char:
             return ConstantValue(expr->value);
-        case LiteralKind::Nil:
-            return ConstantValue::nil();
-        case LiteralKind::Err:
-            return ConstantValue::err();
-        default:
-            return ConstantValue::unknown();
+        case LiteralKind::Nil:   return ConstantValue::nil();
+        case LiteralKind::Err:   return ConstantValue::err();
+        default:                 return ConstantValue::unknown();
     }
 }
 
@@ -215,19 +211,17 @@ ConstantValue ConstEvaluator::evalLiteral(SemaContext& ctx, const LiteralExprAST
 
 ConstantValue ConstEvaluator::evalIdentifier(SemaContext& ctx, std::vector<ConstFrame>& frames,
                                               const IdentifierExprAST* expr) {
+    // Check narrowed type
     const TypeAST* narrowedType = ctx.stack.getNarrowedType(expr->name);
     if (narrowedType) {
         const ValueDeclAST* decl = ctx.lookupValue(expr->name);
-        if (!decl) {
-            return ConstantValue::error();
-        }
+        if (!decl) return ConstantValue::error();
         return getLocal(frames, expr->name);
     }
 
-    const ValueDeclAST* decl = ctx.lookupValue(expr->name);
-    if (!decl) {
-        return ConstantValue::error();
-    }
+    // Use existing lookup infrastructure
+    const ValueDeclAST* decl = lookupValue(expr->name, ctx);
+    if (!decl) return ConstantValue::error();
 
     if (decl->isa<VarDeclAST>()) {
         const VarDeclAST* var = decl->as<VarDeclAST>();
@@ -240,9 +234,7 @@ ConstantValue ConstEvaluator::evalIdentifier(SemaContext& ctx, std::vector<Const
             return ConstantValue::unknown();
         }
 
-        if (!var->init) {
-            return ConstantValue::error();
-        }
+        if (!var->init) return ConstantValue::error();
 
         if (m_evaluating.find(var) != m_evaluating.end()) {
             ctx.diagnostics.error(DiagCode::Sem_CircularDependency, expr,
@@ -251,7 +243,7 @@ ConstantValue ConstEvaluator::evalIdentifier(SemaContext& ctx, std::vector<Const
             return ConstantValue::error();
         }
 
-        return evaluate(ctx, var->init);
+        return evaluate(ctx, var->init, var->type);
     }
 
     if (decl->isa<FuncDeclAST>()) {
@@ -267,7 +259,8 @@ ConstantValue ConstEvaluator::evalIdentifier(SemaContext& ctx, std::vector<Const
 
 // ─── Binary Expression Evaluation ──────────────────────────────────────
 
-ConstantValue ConstEvaluator::evalBinary(SemaContext& ctx, const BinaryExprAST* expr) {
+ConstantValue ConstEvaluator::evalBinary(SemaContext& ctx, const BinaryExprAST* expr,
+                                          const TypeAST* targetType) {
     if (ctx.stack.isIfConditionCtx()) {
         NarrowingInfo info = detectNarrowingPattern(expr, ctx);
         if (info.hasNarrowing) {
@@ -275,15 +268,15 @@ ConstantValue ConstEvaluator::evalBinary(SemaContext& ctx, const BinaryExprAST* 
         }
     }
 
-    ConstantValue left = evaluate(ctx, expr->left);
+    ConstantValue left = evaluate(ctx, expr->left, targetType);
     if (left.isError()) return left;
     if (left.isUnknown()) return ConstantValue::unknown();
 
-    ConstantValue right = evaluate(ctx, expr->right);
+    ConstantValue right = evaluate(ctx, expr->right, targetType);
     if (right.isError()) return right;
     if (right.isUnknown()) return ConstantValue::unknown();
 
-    return evalBinaryOp(ctx, expr->op, left, right, expr);
+    return evalBinaryOp(ctx, expr->op, left, right, expr, targetType);
 }
 
 // ─── Binary Operation Evaluation ────────────────────────────────────────
@@ -291,7 +284,8 @@ ConstantValue ConstEvaluator::evalBinary(SemaContext& ctx, const BinaryExprAST* 
 ConstantValue ConstEvaluator::evalBinaryOp(SemaContext& ctx, BinaryOp op,
                                             const ConstantValue& left,
                                             const ConstantValue& right,
-                                            const BaseAST* node) {
+                                            const BaseAST* node,
+                                            const TypeAST* targetType) {
     auto bothNumeric = [](const ConstantValue& a, const ConstantValue& b) {
         return (a.isInt() || a.isFloat()) && (b.isInt() || b.isFloat());
     };
@@ -302,9 +296,13 @@ ConstantValue ConstEvaluator::evalBinaryOp(SemaContext& ctx, BinaryOp op,
         return 0.0;
     };
 
-    auto emitTypeError = [&](const char* op) {
-        ctx.diagnostics.error(DiagCode::Sem_InvalidBinary, node,
-                              "invalid operands for '", op, "'");
+    auto handleArithmeticError = [&](const char* op, const std::string& reason) -> ConstantValue {
+        // Use existing isFallibleType from SemaCompare
+        if (targetType && isFallibleType(targetType)) {
+            return ConstantValue::err();
+        }
+        ctx.diagnostics.error(DiagCode::Sem_DivisionByZero, node,
+                              reason, " in const expression");
         return ConstantValue::error();
     };
 
@@ -329,94 +327,52 @@ ConstantValue ConstEvaluator::evalBinaryOp(SemaContext& ctx, BinaryOp op,
                 result += ctx.pool.lookup(right.asString());
                 return ConstantValue(ctx.pool.intern(result));
             }
-            return emitTypeError("+");
-
-        case BinaryOp::Sub:
-            if (left.isInt() && right.isInt()) {
-                int64_t l = left.asInt();
-                int64_t r = right.asInt();
-                if ((r > 0 && l < INT64_MIN + r) || (r < 0 && l > INT64_MAX + r)) {
-                    ctx.diagnostics.error(DiagCode::Sem_IntegerOverflow, node,
-                                          "integer overflow in const subtraction");
-                    return ConstantValue::error();
-                }
-                return ConstantValue(l - r);
-            }
-            if (bothNumeric(left, right)) {
-                return ConstantValue(toDouble(left) - toDouble(right));
-            }
-            return emitTypeError("-");
-
-        case BinaryOp::Mul:
-            if (left.isInt() && right.isInt()) {
-                int64_t l = left.asInt();
-                int64_t r = right.asInt();
-                if (r != 0 && l > INT64_MAX / r) {
-                    ctx.diagnostics.error(DiagCode::Sem_IntegerOverflow, node,
-                                          "integer overflow in const multiplication");
-                    return ConstantValue::error();
-                }
-                return ConstantValue(l * r);
-            }
-            if (bothNumeric(left, right)) {
-                return ConstantValue(toDouble(left) * toDouble(right));
-            }
-            return emitTypeError("*");
+            ctx.diagnostics.error(DiagCode::Sem_InvalidBinary, node,
+                                  "invalid operands for '+'");
+            return ConstantValue::error();
 
         case BinaryOp::Div:
             if (left.isInt() && right.isInt()) {
                 if (right.asInt() == 0) {
-                    ctx.diagnostics.error(DiagCode::Sem_DivisionByZero, node,
-                                          "division by zero in const expression");
-                    return ConstantValue::error();
+                    return handleArithmeticError("/", "division by zero");
                 }
                 return ConstantValue(left.asInt() / right.asInt());
             }
             if (bothNumeric(left, right)) {
                 double divisor = toDouble(right);
                 if (divisor == 0.0) {
-                    ctx.diagnostics.error(DiagCode::Sem_DivisionByZero, node,
-                                          "division by zero in const expression");
-                    return ConstantValue::error();
+                    return handleArithmeticError("/", "division by zero");
                 }
                 return ConstantValue(toDouble(left) / divisor);
             }
-            return emitTypeError("/");
+            ctx.diagnostics.error(DiagCode::Sem_InvalidBinary, node,
+                                  "invalid operands for '/'");
+            return ConstantValue::error();
 
         case BinaryOp::Mod:
             if (left.isInt() && right.isInt()) {
                 if (right.asInt() == 0) {
-                    ctx.diagnostics.error(DiagCode::Sem_DivisionByZero, node,
-                                          "modulo by zero in const expression");
-                    return ConstantValue::error();
+                    return handleArithmeticError("%", "modulo by zero");
                 }
                 return ConstantValue(left.asInt() % right.asInt());
             }
-            return emitTypeError("%");
-
-        case BinaryOp::Pow:
-            if (bothNumeric(left, right)) {
-                double result = std::pow(toDouble(left), toDouble(right));
-                if (left.isInt() && right.isInt() && result == std::floor(result)) {
-                    return ConstantValue(static_cast<int64_t>(result));
-                }
-                return ConstantValue(result);
-            }
-            return emitTypeError("**");
+            ctx.diagnostics.error(DiagCode::Sem_InvalidBinary, node,
+                                  "modulo requires integer operands");
+            return ConstantValue::error();
 
         // ─── Comparison ──────────────────────────────────────────────────
         case BinaryOp::Eq:
-            return ConstantValue(compareEqual(left, right));
+            return ConstantValue(compareEqual(ctx, left, right));
         case BinaryOp::Ne:
-            return ConstantValue(!compareEqual(left, right));
+            return ConstantValue(!compareEqual(ctx, left, right));
         case BinaryOp::Lt:
-            return ConstantValue(compareOrder(left, right, ctx) < 0);
+            return ConstantValue(compareOrder(ctx, left, right) < 0);
         case BinaryOp::Gt:
-            return ConstantValue(compareOrder(left, right, ctx) > 0);
+            return ConstantValue(compareOrder(ctx, left, right) > 0);
         case BinaryOp::Le:
-            return ConstantValue(compareOrder(left, right, ctx) <= 0);
+            return ConstantValue(compareOrder(ctx, left, right) <= 0);
         case BinaryOp::Ge:
-            return ConstantValue(compareOrder(left, right, ctx) >= 0);
+            return ConstantValue(compareOrder(ctx, left, right) >= 0);
 
         // ─── Logical ──────────────────────────────────────────────────────
         case BinaryOp::And:
@@ -437,47 +393,20 @@ ConstantValue ConstEvaluator::evalBinaryOp(SemaContext& ctx, BinaryOp op,
 
         // ─── Bitwise ──────────────────────────────────────────────────────
         case BinaryOp::BitAnd:
-            if (left.isInt() && right.isInt()) {
-                return ConstantValue(left.asInt() & right.asInt());
-            }
-            ctx.diagnostics.error(DiagCode::Sem_InvalidBitwiseOp, node,
-                                  "bitwise AND requires integer operands");
-            return ConstantValue::error();
-
         case BinaryOp::BitOr:
-            if (left.isInt() && right.isInt()) {
-                return ConstantValue(left.asInt() | right.asInt());
-            }
-            ctx.diagnostics.error(DiagCode::Sem_InvalidBitwiseOp, node,
-                                  "bitwise OR requires integer operands");
-            return ConstantValue::error();
-
         case BinaryOp::BitXor:
             if (left.isInt() && right.isInt()) {
-                return ConstantValue(left.asInt() ^ right.asInt());
+                return ConstantValue(
+                    op == BinaryOp::BitAnd ? left.asInt() & right.asInt() :
+                    op == BinaryOp::BitOr  ? left.asInt() | right.asInt() :
+                                              left.asInt() ^ right.asInt()
+                );
             }
             ctx.diagnostics.error(DiagCode::Sem_InvalidBitwiseOp, node,
-                                  "bitwise XOR requires integer operands");
+                                  "bitwise operator requires integer operands");
             return ConstantValue::error();
 
         case BinaryOp::Shl:
-            if (left.isInt() && right.isInt()) {
-                if (right.asInt() < 0) {
-                    ctx.diagnostics.error(DiagCode::Sem_NegativeShift, node,
-                                          "negative shift amount in const expression");
-                    return ConstantValue::error();
-                }
-                if (right.asInt() >= 64) {
-                    ctx.diagnostics.error(DiagCode::Sem_InvalidShift, node,
-                                          "shift amount exceeds bit width");
-                    return ConstantValue::error();
-                }
-                return ConstantValue(left.asInt() << right.asInt());
-            }
-            ctx.diagnostics.error(DiagCode::Sem_InvalidShift, node,
-                                  "shift requires integer operands");
-            return ConstantValue::error();
-
         case BinaryOp::Shr:
             if (left.isInt() && right.isInt()) {
                 if (right.asInt() < 0) {
@@ -490,7 +419,10 @@ ConstantValue ConstEvaluator::evalBinaryOp(SemaContext& ctx, BinaryOp op,
                                           "shift amount exceeds bit width");
                     return ConstantValue::error();
                 }
-                return ConstantValue(left.asInt() >> right.asInt());
+                return ConstantValue(
+                    op == BinaryOp::Shl ? left.asInt() << right.asInt() :
+                                          left.asInt() >> right.asInt()
+                );
             }
             ctx.diagnostics.error(DiagCode::Sem_InvalidShift, node,
                                   "shift requires integer operands");
@@ -501,101 +433,76 @@ ConstantValue ConstEvaluator::evalBinaryOp(SemaContext& ctx, BinaryOp op,
     }
 }
 
-// ─── Unary Expression Evaluation ────────────────────────────────────────
+// ─── Comparison Helpers (using existing infrastructure) ─────────────────
 
-ConstantValue ConstEvaluator::evalUnary(SemaContext& ctx, const UnaryExprAST* expr) {
-    ConstantValue operand = evaluate(ctx, expr->operand);
-    if (operand.isError()) return operand;
-    if (operand.isUnknown()) return ConstantValue::unknown();
+bool ConstEvaluator::compareEqual(SemaContext& ctx, const ConstantValue& a, const ConstantValue& b) {
+    if (a.kind != b.kind) return false;
 
-    switch (expr->op) {
-        case UnaryOp::Neg:
-            if (operand.isInt()) {
-                if (operand.asInt() == INT64_MIN) {
-                    ctx.diagnostics.error(DiagCode::Sem_IntegerOverflow, expr,
-                                          "integer overflow in const negation");
-                    return ConstantValue::error();
-                }
-                return ConstantValue(-operand.asInt());
-            }
-            if (operand.isFloat()) {
-                return ConstantValue(-operand.asFloat());
-            }
-            ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, expr,
-                                  "negation requires numeric operand");
-            return ConstantValue::error();
-
-        case UnaryOp::Not:
-            if (operand.isBool()) {
-                return ConstantValue(!operand.asBool());
-            }
-            ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, expr,
-                                  "'not' requires bool operand");
-            return ConstantValue::error();
-
-        case UnaryOp::BitNot:
-            if (operand.isInt()) {
-                return ConstantValue(~operand.asInt());
-            }
-            ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, expr,
-                                  "bitwise NOT requires integer operand");
-            return ConstantValue::error();
-
+    switch (a.kind) {
+        case ConstantValue::Kind::Bool:
+            return a.asBool() == b.asBool();
+        case ConstantValue::Kind::Int:
+            return a.asInt() == b.asInt();
+        case ConstantValue::Kind::Float:
+            return a.asFloat() == b.asFloat();
+        case ConstantValue::Kind::String:
+        case ConstantValue::Kind::Char:
+            return ctx.pool.lookup(a.asString()) == ctx.pool.lookup(b.asString());
+        case ConstantValue::Kind::Nil:
+        case ConstantValue::Kind::Err:
+            return true;
         default:
-            return ConstantValue::unknown();
+            return false;
     }
 }
 
-// ─── Call Expression Evaluation ─────────────────────────────────────────
+int ConstEvaluator::compareOrder(SemaContext& ctx, const ConstantValue& a, const ConstantValue& b) {
+    if (a.kind != b.kind) return 0;
 
-ConstantValue ConstEvaluator::evalCall(SemaContext& ctx, std::vector<ConstFrame>& frames,
-                                        const CallExprAST* expr) {
-    ConstantValue callee = evaluate(ctx, expr->callee);
-    if (callee.isError()) return callee;
-    if (callee.isUnknown()) return ConstantValue::unknown();
-
-    if (!callee.isFunction()) {
-        return ConstantValue::error();
-    }
-
-    const FuncDeclAST* func = callee.asFunction();
-    if (func->keyword != DeclKeyword::Const) {
-        return ConstantValue::unknown();
-    }
-
-    for (AttributeAST* attr : func->attributes) {
-        if (ctx.pool.lookup(attr->name) == "foreign") {
-            ctx.diagnostics.error(DiagCode::Ffi_ConstContext, expr,
-                                  "cannot call foreign function '",
-                                  ctx.pool.lookup(func->name),
-                                  "' in const context");
-            return ConstantValue::error();
+    switch (a.kind) {
+        case ConstantValue::Kind::Int: {
+            int64_t diff = a.asInt() - b.asInt();
+            return (diff > 0) ? 1 : (diff < 0) ? -1 : 0;
         }
+        case ConstantValue::Kind::Float: {
+            double diff = a.asFloat() - b.asFloat();
+            return (diff > 0) ? 1 : (diff < 0) ? -1 : 0;
+        }
+        case ConstantValue::Kind::String:
+        case ConstantValue::Kind::Char:
+            return ctx.pool.lookup(a.asString()).compare(ctx.pool.lookup(b.asString()));
+        default:
+            return 0;
     }
+}
 
-    std::vector<ConstantValue> args;
-    for (const ExprAST* arg : expr->args) {
-        ConstantValue val = evaluate(ctx, arg);
-        if (val.isError()) return val;
-        if (val.isUnknown()) return ConstantValue::unknown();
-        args.push_back(val);
+// ─── Type Helpers (using existing infrastructure) ──────────────────────
+
+TypeAST* ConstEvaluator::getConstantType(SemaContext& ctx, const ConstantValue& val) {
+    if (val.type) return val.type;
+
+    switch (val.kind) {
+        case ConstantValue::Kind::Bool:   return ctx.getBoolType();
+        case ConstantValue::Kind::Int:    return ctx.getIntType();
+        case ConstantValue::Kind::Float:  return ctx.getFloatType();
+        case ConstantValue::Kind::String: return ctx.getStringType();
+        case ConstantValue::Kind::Char:   return ctx.getCharType();
+        default:                          return ctx.getUnknownType();
     }
-
-    return executeFunction(ctx, frames, func, args);
 }
 
 // ─── Struct Literal Evaluation ──────────────────────────────────────────
 
 ConstantValue ConstEvaluator::evalStructLiteral(SemaContext& ctx, const StructLiteralExprAST* expr) {
-    const TypeDeclAST* typeDecl = ctx.lookupType(expr->typeName);
+    // Use existing lookup infrastructure
+    const TypeDeclAST* typeDecl = lookupType(expr->typeName, ctx);
     if (!typeDecl) {
         return ConstantValue::error();
     }
 
     if (!typeDecl->isa<StructDeclAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
-                              "'", ctx.pool.lookup(expr->typeName),
-                              "' is not a struct");
+                              "'", ctx.pool.lookup(expr->typeName), "' is not a struct");
         return ConstantValue::error();
     }
 
@@ -605,7 +512,7 @@ ConstantValue ConstEvaluator::evalStructLiteral(SemaContext& ctx, const StructLi
 
     for (const FieldDeclAST* field : structDecl->fields) {
         if (field->defaultVal) {
-            ConstantValue val = evaluate(ctx, field->defaultVal);
+            ConstantValue val = evaluate(ctx, field->defaultVal, field->type);
             if (val.isError()) return val;
             if (val.isUnknown()) return ConstantValue::unknown();
             fields[field->name] = val;
@@ -648,9 +555,10 @@ ConstantValue ConstEvaluator::evalArrayLiteral(SemaContext& ctx, const ArrayLite
     }
 
     if (!elements.empty()) {
+        // Use existing typesEqual from SemaCompare
         const TypeAST* firstType = elements[0].type;
         for (size_t i = 1; i < elements.size(); ++i) {
-            if (elements[i].type != firstType) {
+            if (!typesEqual(elements[i].type, firstType)) {
                 ctx.diagnostics.error(DiagCode::Sem_InvalidArrayElement, expr,
                                       "array elements must have the same type");
                 return ConstantValue::error();
@@ -974,108 +882,7 @@ ConstantValue ConstEvaluator::executeFunction(SemaContext& ctx, std::vector<Cons
     return result;
 }
 
-// ─── Type Helpers ─────────────────────────────────────────────────────────
-
-TypeAST* ConstEvaluator::getConstantType(SemaContext& ctx, const ConstantValue& val) {
-    if (val.type) return val.type;
-
-    switch (val.kind) {
-        case ConstantValue::Kind::Bool:
-            return ctx.getBoolType();
-        case ConstantValue::Kind::Int:
-            return ctx.getIntType();
-        case ConstantValue::Kind::Float:
-            return ctx.getFloatType();
-        case ConstantValue::Kind::String:
-            return ctx.getStringType();
-        case ConstantValue::Kind::Char:
-            return ctx.getCharType();
-        default:
-            return nullptr;
-    }
-}
-
-bool ConstEvaluator::compareEqual(const ConstantValue& a, const ConstantValue& b) {
-    if (a.kind != b.kind) return false;
-
-    switch (a.kind) {
-        case ConstantValue::Kind::Bool:
-            return a.asBool() == b.asBool();
-        case ConstantValue::Kind::Int:
-            return a.asInt() == b.asInt();
-        case ConstantValue::Kind::Float:
-            return a.asFloat() == b.asFloat();
-        case ConstantValue::Kind::String:
-        case ConstantValue::Kind::Char:
-            return a.asString() == b.asString();
-        case ConstantValue::Kind::Nil:
-        case ConstantValue::Kind::Err:
-            return true;
-        default:
-            return false;
-    }
-}
-
-int ConstEvaluator::compareOrder(const ConstantValue& a, const ConstantValue& b, SemaContext& ctx) {
-    if (a.kind != b.kind) return 0;
-
-    switch (a.kind) {
-        case ConstantValue::Kind::Int: {
-            int64_t diff = a.asInt() - b.asInt();
-            return (diff > 0) ? 1 : (diff < 0) ? -1 : 0;
-        }
-        case ConstantValue::Kind::Float: {
-            double diff = a.asFloat() - b.asFloat();
-            return (diff > 0) ? 1 : (diff < 0) ? -1 : 0;
-        }
-        case ConstantValue::Kind::String:
-        case ConstantValue::Kind::Char:
-            return ctx.pool.lookup(a.asString()).compare(
-                   ctx.pool.lookup(b.asString()));
-        default:
-            return 0;
-    }
-}
-
 // ─── Dependency Analysis ─────────────────────────────────────────────────
-
-void ConstEvaluator::buildDependencyGraph(SemaContext& ctx) {
-    m_deps.clear();
-    m_constDecls.clear();
-
-    for (ModuleAST* module : ctx.modules) {
-        for (const DeclPtr decl : module->decls) {
-            if (decl->isa<VarDeclAST>()) {
-                const VarDeclAST* var = decl->as<VarDeclAST>();
-                if (var->keyword == DeclKeyword::Const) {
-                    m_constDecls.push_back(var);
-                }
-            }
-            if (decl->isa<FuncDeclAST>()) {
-                const FuncDeclAST* func = decl->as<FuncDeclAST>();
-                if (func->keyword == DeclKeyword::Const) {
-                    m_constDecls.push_back(func);
-                }
-            }
-        }
-    }
-
-    for (const DeclAST* decl : m_constDecls) {
-        std::vector<const DeclAST*> deps;
-        if (decl->isa<VarDeclAST>()) {
-            const VarDeclAST* var = decl->as<VarDeclAST>();
-            if (var->init) {
-                collectDeps(ctx, var->init, deps);
-            }
-        } else if (decl->isa<FuncDeclAST>()) {
-            const FuncDeclAST* func = decl->as<FuncDeclAST>();
-            if (func->body) {
-                collectDepsFromStmt(ctx, func->body, deps);
-            }
-        }
-        m_deps[decl] = deps;
-    }
-}
 
 void ConstEvaluator::collectDeps(SemaContext& ctx, const ExprAST* expr,
                                   std::vector<const DeclAST*>& deps) {
@@ -1084,7 +891,8 @@ void ConstEvaluator::collectDeps(SemaContext& ctx, const ExprAST* expr,
     switch (expr->kind) {
         case ASTKind::IdentifierExpr: {
             const IdentifierExprAST* id = expr->as<IdentifierExprAST>();
-            const ValueDeclAST* decl = ctx.lookupValue(id->name);
+            // Use existing lookup infrastructure
+            const ValueDeclAST* decl = lookupValue(id->name, ctx);
             if (decl && decl->isa<VarDeclAST>()) {
                 const VarDeclAST* var = decl->as<VarDeclAST>();
                 if (var->keyword == DeclKeyword::Const) {
