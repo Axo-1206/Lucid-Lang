@@ -82,13 +82,12 @@ bool resolveStmt(const StmtAST* stmt, SemaContext& ctx) {
 /// @param ctx The semantic context.
 /// @return true if the block guarantees control transfer out of the block.
 bool resolveBlock(const BlockStmtAST* block, SemaContext& ctx) {
-    // ─── 1. Push block context ────────────────────────────────────────────
     ctx.stack.pushBlock(const_cast<BlockStmtAST*>(block), block->loc);
 
     bool transfers = false;
     bool hasAppliedPendingNarrowing = false;
 
-    // ─── 2. Apply pending inverse narrowing ──────────────────────────────
+    // Apply pending inverse narrowing
     if (ctx.stack.hasPendingInverseNarrowing()) {
         const NarrowingInfo& pendingInfo = ctx.stack.getPendingInverseNarrowing();
         if (pendingInfo.hasNarrowing) {
@@ -101,7 +100,7 @@ bool resolveBlock(const BlockStmtAST* block, SemaContext& ctx) {
         }
     }
 
-    // ─── 3. Push scope for the block ──────────────────────────────────────
+    // Push a new scope for the block (for local variables)
     ctx.pushScope();
 
     // ─── 4. Resolve each statement ─────────────────────────────────────────
@@ -116,7 +115,7 @@ bool resolveBlock(const BlockStmtAST* block, SemaContext& ctx) {
         }
     }
 
-    // ─── 5. Check for unresolved async/spawn operations ────────────────────
+    // Check for unresolved async/spawn operations
     for (const InternedString& name : ctx.getPendingAsyncNames()) {
         ctx.diagnostics.warning(DiagCode::Warn_UnawaitedAsync, block,
                                 "async '", ctx.pool.lookup(name), "' was never awaited");
@@ -127,18 +126,17 @@ bool resolveBlock(const BlockStmtAST* block, SemaContext& ctx) {
                                 "spawn '", ctx.pool.lookup(name), "' was never joined");
     }
 
-    // ─── 6. Pop scope ─────────────────────────────────────────────────────
+    // Pop the block scope - local variables are no longer visible
     ctx.popScope();
 
-    // ─── 7. Pop pending narrowing level ────────────────────────────────────
+    // Pop pending narrowing level
     if (hasAppliedPendingNarrowing) {
         ctx.stack.popNarrowingLevel();
     }
 
-    // ─── 8. Pop block context ──────────────────────────────────────────────
     ctx.stack.pop();
 
-    // ─── 9. Final Check: Return Requirements ─────────────────────────────
+    // Final check: Return requirements
     if (ctx.stack.hasReturnRequirements() && !ctx.stack.returnRequirementsSatisfied()) {
         if (!transfers) {
             ctx.diagnostics.error(DiagCode::Sem_MissingReturn, block,
@@ -410,11 +408,12 @@ bool resolveForStmt(const ForStmtAST* stmt, SemaContext& ctx) {
     // ─── 2. Push a scope for loop variables ──────────────────────────────
     ctx.pushScope();
 
-    // ─── 3. Resolve the index binding (if present) ──────────────────────
+    // ─── 3. Resolve AND REGISTER the index binding ──────────────────────
     if (stmt->indexVar) {
         TypeAST* indexType = resolveType(stmt->indexVar->type, ctx);
-        if (!indexType) {
-            // Error already reported
+        if (indexType) {
+            // Register the index variable in the current scope
+            ctx.insertValue(stmt->indexVar);
         }
         if (indexType && !isIntegerType(indexType)) {
             ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, stmt->indexVar,
@@ -422,19 +421,17 @@ bool resolveForStmt(const ForStmtAST* stmt, SemaContext& ctx) {
         }
     }
 
-    // ─── 4. Resolve the value binding (if present) ──────────────────────
+    // ─── 4. Resolve AND REGISTER the value binding ──────────────────────
     if (stmt->valueVar) {
         TypeAST* valueType = resolveType(stmt->valueVar->type, ctx);
-        if (!valueType) {
-            // Error already reported
+        if (valueType) {
+            // Register the value variable in the current scope
+            ctx.insertValue(stmt->valueVar);
         }
     }
 
     // ─── 5. Resolve the iterable expression ──────────────────────────────
     if (stmt->iterable) {
-        // For range loops, the iterable is a RangeExprAST
-        // For collection loops, it's an array
-        // We resolve it without a target type first
         TypeAST* iterableType = resolveExpr(stmt->iterable, ctx);
         if (!iterableType || iterableType->isa<UnknownTypeAST>()) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidIterator, stmt->iterable,
@@ -443,19 +440,13 @@ bool resolveForStmt(const ForStmtAST* stmt, SemaContext& ctx) {
             ctx.stack.pop();
             return false;
         }
-        
-        // TODO: Validate iterable type (array or range)
-        // If it's a range, it should be numeric
-        // If it's an array, it should have a valid element type
     }
 
     // ─── 6. Resolve the step expression (if present) ──────────────────────
     if (stmt->step) {
-        // Step must be numeric
         PrimitiveTypeAST* numericType = ctx.getIntType();
         TypeAST* stepType = resolveExprWithTarget(stmt->step, numericType, ctx);
         if (!stepType || stepType->isa<UnknownTypeAST>()) {
-            // Error already reported by resolveExprWithTarget
             ctx.popScope();
             ctx.stack.pop();
             return false;
@@ -474,7 +465,6 @@ bool resolveForStmt(const ForStmtAST* stmt, SemaContext& ctx) {
     // ─── 9. Pop loop context ──────────────────────────────────────────────
     ctx.stack.pop();
 
-    // For loops do NOT guarantee control transfer
     return false;
 }
 

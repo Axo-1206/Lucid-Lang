@@ -36,7 +36,7 @@ void analyze(std::vector<ModuleAST*>& modules, SemaContext& ctx);
 // =============================================================================
 
 /// @brief Register all names in a module (no type resolution).
-void registerModuleNames(ModuleAST* module, SemaContext& ctx);
+void registerTopLevelNames(ModuleAST* module, SemaContext& ctx);
 
 /// @brief Register a declaration's name only (no type resolution).
 void registerDeclName(const DeclAST* decl, SemaContext& ctx);
@@ -56,11 +56,6 @@ void registerTraitName(const TraitDeclAST* decl, SemaContext& ctx);
 
 /// @brief Register all field names in a struct (no type resolution).
 void registerStructFieldNames(const StructDeclAST* decl, SemaContext& ctx);
-
-// ─── Statement Name Registration ────────────────────────────────────────
-
-/// @brief Register names in a statement (for local scopes).
-void registerStmtNames(const StmtAST* stmt, SemaContext& ctx);
 
 // =============================================================================
 // TYPE RESOLUTION (Phase 2)

@@ -1,15 +1,9 @@
 /// @file const_eval/ConstEvaluator.hpp
 /// @brief Evaluates const expressions at compile-time.
 ///
-/// @design_decision Integrated with SemaContext
-///   Uses ContextStack for function/if/loop contexts, integrated symbol storage
-///   for local variables, and NarrowingStack for type narrowing. No custom
-///   frame system - leverages the existing semantic analysis infrastructure.
-///
-/// @design_decision Called during type resolution (Phase 2)
-///   Const evaluation happens when resolving declarations, not as a
-///   separate phase. This allows the evaluator to use all the context
-///   information already available.
+/// @design_decision Static methods only - no instance state needed.
+///   Each const declaration is evaluated independently. The evaluator
+///   doesn't need to persist state between calls.
 ///
 /// @design_decision Silent on "not const-evaluable"
 ///   If an expression can't be evaluated at compile time, we simply return
@@ -21,14 +15,12 @@
 #pragma once
 
 #include "core/ast/BaseAST.hpp"
-#include "../support/TypeNarrowHelpers.hpp"
 #include "../context/SemaContext.hpp"
-#include "../types/SemaCompare.hpp"
+#include "../support/TypeNarrowHelpers.hpp"
 
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-#include <stack>
 
 namespace sema {
 
@@ -104,109 +96,105 @@ struct ConstFrame {
 };
 
 /// @brief Evaluates const declarations at compile-time.
+/// All methods are static - no instance state needed.
 class ConstEvaluator {
 public:
-    explicit ConstEvaluator(SemaContext& ctx);
+    static constexpr size_t MAX_RECURSION = 1000;
 
     // ─── Main Entry Points ───────────────────────────────────────────────
 
     /// @brief Evaluate a const variable declaration.
-    /// Called from resolveVarDecl during type resolution.
-    ConstantValue evaluateDecl(const VarDeclAST* decl);
+    static ConstantValue evaluateDecl(SemaContext& ctx, const VarDeclAST* decl);
 
     /// @brief Evaluate an expression in the current context.
-    /// Returns ConstantValue::unknown() if the expression can't be evaluated
-    /// at compile time (no diagnostic emitted - this is normal).
-    ConstantValue evalExpr(const ExprAST* expr);
+    static ConstantValue evaluate(SemaContext& ctx, const ExprAST* expr);
+
+    /// @brief Report a circular dependency in const declarations.
+    static void reportCycle(SemaContext& ctx, const std::vector<const DeclAST*>& cycle);
+
+    /// @brief Build the dependency graph for const declarations.
+    static void buildDependencyGraph(SemaContext& ctx);
+
+private:
+    // ─── Frame Management ────────────────────────────────────────────────
+
+    static ConstFrame& currentFrame(std::vector<ConstFrame>& frames);
+    static const ConstFrame& currentFrame(const std::vector<ConstFrame>& frames);
+    static void pushFrame(std::vector<ConstFrame>& frames);
+    static void popFrame(std::vector<ConstFrame>& frames);
+    
+    static ConstantValue getLocal(std::vector<ConstFrame>& frames, InternedString name);
+    static void setLocal(std::vector<ConstFrame>& frames, InternedString name, const ConstantValue& value);
+    static bool isLocalVariable(const std::vector<ConstFrame>& frames, InternedString name);
 
     // ─── Expression Evaluators ──────────────────────────────────────────
 
-    ConstantValue evalLiteral(const LiteralExprAST* expr);
-    ConstantValue evalIdentifier(const IdentifierExprAST* expr);
-    ConstantValue evalBinary(const BinaryExprAST* expr);
-    ConstantValue evalUnary(const UnaryExprAST* expr);
-    ConstantValue evalCall(const CallExprAST* expr);
-    ConstantValue evalStructLiteral(const StructLiteralExprAST* expr);
-    ConstantValue evalArrayLiteral(const ArrayLiteralExprAST* expr);
-    ConstantValue evalFieldAccess(const FieldAccessExprAST* expr);
-    ConstantValue evalNullCoalesce(const NullCoalesceExprAST* expr);
-    ConstantValue evalIfExpr(const IfExprAST* expr);
+    static ConstantValue evalLiteral(SemaContext& ctx, const LiteralExprAST* expr);
+    static ConstantValue evalIdentifier(SemaContext& ctx, std::vector<ConstFrame>& frames,
+                                         const IdentifierExprAST* expr);
+    static ConstantValue evalBinary(SemaContext& ctx, const BinaryExprAST* expr);
+    static ConstantValue evalUnary(SemaContext& ctx, const UnaryExprAST* expr);
+    static ConstantValue evalCall(SemaContext& ctx, std::vector<ConstFrame>& frames,
+                                   const CallExprAST* expr);
+    static ConstantValue evalStructLiteral(SemaContext& ctx, const StructLiteralExprAST* expr);
+    static ConstantValue evalArrayLiteral(SemaContext& ctx, const ArrayLiteralExprAST* expr);
+    static ConstantValue evalFieldAccess(SemaContext& ctx, const FieldAccessExprAST* expr);
+    static ConstantValue evalNullCoalesce(SemaContext& ctx, const NullCoalesceExprAST* expr);
+    static ConstantValue evalIfExpr(SemaContext& ctx, const IfExprAST* expr);
 
     // ─── Statement Execution ─────────────────────────────────────────────
 
-    ConstantValue executeStmt(const StmtAST* stmt);
-    ConstantValue executeBlock(const BlockStmtAST* block);
-    ConstantValue executeReturn(const ReturnStmtAST* stmt);
-    ConstantValue executeIf(const IfStmtAST* stmt);
-    ConstantValue executeWhile(const WhileStmtAST* stmt);
-    ConstantValue executeAssign(const AssignExprAST* stmt);
-    ConstantValue executeExprStmt(const ExprStmtAST* stmt);
-    ConstantValue executeDeclStmt(const DeclStmtAST* stmt);
+    static ConstantValue executeStmt(SemaContext& ctx, std::vector<ConstFrame>& frames,
+                                      const StmtAST* stmt);
+    static ConstantValue executeBlock(SemaContext& ctx, std::vector<ConstFrame>& frames,
+                                       const BlockStmtAST* block);
+    static ConstantValue executeReturn(SemaContext& ctx, std::vector<ConstFrame>& frames,
+                                        const ReturnStmtAST* stmt);
+    static ConstantValue executeIf(SemaContext& ctx, std::vector<ConstFrame>& frames,
+                                    const IfStmtAST* stmt);
+    static ConstantValue executeWhile(SemaContext& ctx, std::vector<ConstFrame>& frames,
+                                       const WhileStmtAST* stmt);
+    static ConstantValue executeAssign(SemaContext& ctx, std::vector<ConstFrame>& frames,
+                                        const AssignExprAST* stmt);
+    static ConstantValue executeExprStmt(SemaContext& ctx, std::vector<ConstFrame>& frames,
+                                          const ExprStmtAST* stmt);
+    static ConstantValue executeDeclStmt(SemaContext& ctx, std::vector<ConstFrame>& frames,
+                                          const DeclStmtAST* stmt);
 
     /// @brief Execute a const function with constant arguments.
-    ConstantValue executeFunction(const FuncDeclAST* func,
-                                   const std::vector<ConstantValue>& args);
-
-private:
-    // ─── Members ──────────────────────────────────────────────────────────
-
-    SemaContext& m_ctx;
-    
-    /// Stack of frames for function execution
-    std::vector<ConstFrame> m_frames;
-    
-    /// Track which expressions have been evaluated
-    std::unordered_set<const ExprAST*> m_evaluatedExprs;
-    
-    /// Dependency graph for const declarations
-    std::unordered_map<const DeclAST*, std::vector<const DeclAST*>> m_deps;
-    
-    /// Currently evaluating (for cycle detection)
-    std::unordered_set<const DeclAST*> m_evaluating;
-    
-    /// All const declarations in order
-    std::vector<const DeclAST*> m_constDecls;
-    
-    static constexpr size_t MAX_RECURSION = 1000;
-    size_t m_recursionDepth = 0;
-
-    // ─── Frame Management ────────────────────────────────────────────────
-
-    ConstFrame& currentFrame() { return m_frames.back(); }
-    const ConstFrame& currentFrame() const { return m_frames.back(); }
-    
-    void pushFrame() { m_frames.emplace_back(); }
-    void popFrame() { m_frames.pop_back(); }
-    
-    ConstantValue getLocal(InternedString name) const;
-    void setLocal(InternedString name, const ConstantValue& value);
-    bool isLocalVariable(InternedString name) const;
+    static ConstantValue executeFunction(SemaContext& ctx, std::vector<ConstFrame>& frames,
+                                          const FuncDeclAST* func,
+                                          const std::vector<ConstantValue>& args);
 
     // ─── Binary Operation Helpers ───────────────────────────────────────
 
-    ConstantValue evalBinaryOp(BinaryOp op,
-                                const ConstantValue& left,
-                                const ConstantValue& right,
-                                const BaseAST* node);
+    static ConstantValue evalBinaryOp(SemaContext& ctx, BinaryOp op,
+                                       const ConstantValue& left,
+                                       const ConstantValue& right,
+                                       const BaseAST* node);
 
     // ─── Type Helpers ────────────────────────────────────────────────────
 
-    TypeAST* getConstantType(const ConstantValue& val);
-    bool compareEqual(const ConstantValue& a, const ConstantValue& b);
-    int compareOrder(const ConstantValue& a, const ConstantValue& b);
+    static TypeAST* getConstantType(SemaContext& ctx, const ConstantValue& val);
+    static bool compareEqual(const ConstantValue& a, const ConstantValue& b);
+    static int compareOrder(const ConstantValue& a, const ConstantValue& b, SemaContext& ctx);
 
     // ─── Dependency Analysis ─────────────────────────────────────────────
 
-    void buildDependencyGraph();
-    void collectDeps(const ExprAST* expr, std::vector<const DeclAST*>& deps);
-    void collectDepsFromStmt(const StmtAST* stmt, std::vector<const DeclAST*>& deps);
-    std::vector<const DeclAST*> topologicalSort();
+    static void collectDeps(SemaContext& ctx, const ExprAST* expr, 
+                            std::vector<const DeclAST*>& deps);
+    static void collectDepsFromStmt(SemaContext& ctx, const StmtAST* stmt,
+                                     std::vector<const DeclAST*>& deps);
+    static std::vector<const DeclAST*> topologicalSort(SemaContext& ctx);
 
-    // ─── Error Reporting ─────────────────────────────────────────────────
+    // ─── Internal State ──────────────────────────────────────────────────
 
-    /// Report a circular dependency in const declarations.
-    /// This is a real error - emits a diagnostic.
-    void reportCycle(const std::vector<const DeclAST*>& cycle);
+    // These are static because they track global const state across evaluations
+    static std::unordered_map<const DeclAST*, std::vector<const DeclAST*>> m_deps;
+    static std::vector<const DeclAST*> m_constDecls;
+    static std::unordered_set<const ExprAST*> m_evaluatedExprs;
+    static std::unordered_set<const DeclAST*> m_evaluating;
+    static size_t m_recursionDepth;
 };
 
 } // namespace sema

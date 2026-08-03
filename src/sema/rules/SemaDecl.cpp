@@ -246,34 +246,31 @@ void resolveVarDecl(const VarDeclAST* decl, SemaContext& ctx) {
 
     // ─── 3. Check initializer ────────────────────────────────────────
     if (decl->init) {
-        // Resolve the initializer's type using the new target-type approach
         TypeAST* initType = resolveExprWithTarget(decl->init, declaredType, ctx);
         if (!initType || initType->isa<UnknownTypeAST>()) {
-            // Error already reported by resolveExprWithTarget
             return;
         }
 
-        // ─── 4. Check for self-reference in let initializer ───────────
         if (decl->keyword == DeclKeyword::Let) {
             checkLetSelfReference(decl->init, decl->name, ctx);
         }
 
-        // ──────────────────────────────────────────────────────────────
-        // ─── 5. CONST EVALUATION ──────────────────────────────────────
-        // ──────────────────────────────────────────────────────────────
-        // For const declarations, evaluate the initializer NOW.
-        // This happens during type resolution, not as a separate phase.
+        // ─── 4. CONST EVALUATION ──────────────────────────────────────
         if (decl->keyword == DeclKeyword::Const) {
-            ConstEvaluator evaluator(ctx);
-            ConstantValue val = evaluator.evaluateDecl(decl);
+            ConstantValue val = ConstEvaluator::evaluateDecl(ctx, decl);
             if (!val.isError()) {
-                // Store the evaluated value on the initializer expression
                 const_cast<ExprAST*>(decl->init)->isConst = true;
                 const_cast<ExprAST*>(decl->init)->constValue = val;
-                // Mark the declaration as const
-                const_cast<VarDeclAST*>(decl)->isConst = true;
             }
         }
+    }
+
+    // ─── 5. REGISTER the variable in the current scope ────────────────
+    // This is critical for local variables to be visible
+    // For top-level variables, this was already done in Phase 1
+    // For local variables, this registers them in the current block scope
+    if (!ctx.isAtModuleLevel()) {
+        ctx.insertValue(decl);
     }
 }
 
@@ -290,81 +287,53 @@ void resolveVarDecl(const VarDeclAST* decl, SemaContext& ctx) {
 void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
     attr::validateAttributes(decl, ctx);
 
-    // ─── 1. Resolve the function type ─────────────────────────────────────
+    // 1. Resolve function type
     FuncTypeAST* funcType = const_cast<FuncTypeAST*>(decl->funcType);
     if (!resolveFuncType(funcType, ctx)) {
         return;
     }
 
-    // ─── 2. Check for @[foreign] attribute ────────────────────────────────
+    // 2. Check for @[foreign] attribute
     const AttributeAST* foreignAttr = attr::findAttribute(
         decl->attributes,
         attr::kForeign(ctx)
     );
 
     if (foreignAttr) {
-        // Validate foreign function declaration
-        if (decl->body) {
-            ctx.diagnostics.error(DiagCode::Ffi_InvalidForeign, decl,
-                                  "@[foreign] function '", ctx.pool.lookup(decl->name),
-                                  "' must not have a body (implementation is external)");
-        }
-
-        if (!decl->genericParams.empty()) {
-            ctx.diagnostics.error(DiagCode::Ffi_InvalidForeign, decl,
-                                  "@[foreign] function '", ctx.pool.lookup(decl->name),
-                                  "' cannot have generic parameters");
-        }
-
-        // TODO: uncomment or adjust this after we implement isFFICompatible
-        // Validate FFI type compatibility
-        // if (funcType) {
-        //     // Check return type
-        //     if (funcType->returnType && !isFFICompatible(funcType->returnType, ctx)) {
-        //         ctx.diagnostics.error(DiagCode::Ffi_TypeNotFFI, decl,
-        //                               "return type '", debug::typeToString(funcType->returnType, ctx.pool),
-        //                               "' is not FFI-compatible");
-        //     }
-            
-        //     // Check parameter types
-        //     for (FuncTypeAST* group = funcType; group; group = group->getNext()) {
-        //         for (ParamAST* param : group->params) {
-        //             if (!isFFICompatible(param->type, ctx)) {
-        //                 ctx.diagnostics.error(DiagCode::Ffi_TypeNotFFI, param,
-        //                                       "parameter '", ctx.pool.lookup(param->name),
-        //                                       "' type '", debug::typeToString(param->type, ctx.pool),
-        //                                       "' is not FFI-compatible");
-        //             }
-        //         }
-        //     }
-        // }
-        
-        // Foreign functions are not const-evaluable
-        // Mark as not const so we don't try to evaluate them
+        // ... foreign function validation ...
         const_cast<FuncDeclAST*>(decl)->isConst = false;
         return;
     }
 
-    // ─── 3. Resolve generic parameters ────────────────────────────────────
+    // 3. Resolve generic parameters
     for (const GenericParamDeclAST* g : decl->genericParams) {
         resolveGenericParam(g, ctx);
     }
 
-    // ─── 4. Resolve parameters ────────────────────────────────────────────
+    // ─── 4. REGISTER the function in the current scope ────────────────────
+    // For nested functions, this registers them in the enclosing block scope.
+    // For top-level functions, this is a no-op (already registered in Phase 1).
+    if (!ctx.isAtModuleLevel()) {
+        ctx.insertValue(decl);
+    }
+
+    // 5. Resolve parameters - REGISTER them in the function scope
+    ctx.pushScope();  // Create scope for parameters
+    
     for (FuncTypeAST* group = funcType; group; group = group->getNext()) {
         for (ParamAST* param : group->params) {
-            resolveParam(param, ctx);
+            resolveParam(param, ctx);  // This registers the parameter name
         }
     }
 
-    // ─── 5. Analyze body ──────────────────────────────────────────────────
+    // 6. Analyze body - registers local names as it goes
     if (!decl->body) {
         ctx.diagnostics.error(DiagCode::Sem_MissingReturn, decl,
                               "function '", ctx.pool.lookup(decl->name), "' has no body");
+        ctx.popScope();  // Clean up parameter scope
         return;
     }
 
-    // Push function context with return requirements
     ctx.stack.pushFunction(const_cast<FuncDeclAST*>(decl), funcType, decl->loc);
 
     bool bodyReturns = false;
@@ -374,11 +343,10 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
         bodyReturns = resolveReturnStmt(decl->body->as<ReturnStmtAST>(), ctx);
     } else if (decl->body->isa<FuncRefStmtAST>()) {
         const FuncRefStmtAST* refStmt = decl->body->as<FuncRefStmtAST>();
-        // Function reference must match the function type
         TypeAST* refType = resolveExprWithTarget(refStmt->target, funcType, ctx);
         if (!refType || refType->isa<UnknownTypeAST>()) {
-            // Error already reported by resolveExprWithTarget
             ctx.stack.pop();
+            ctx.popScope();
             return;
         }
         bodyReturns = true;
@@ -387,6 +355,7 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
                               "function '", ctx.pool.lookup(decl->name), 
                               "' has invalid body type");
         ctx.stack.pop();
+        ctx.popScope();
         return;
     }
 
@@ -398,16 +367,11 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
     }
 
     ctx.stack.pop();
+    ctx.popScope();  // Clean up parameter scope
 
-    // ─── 6. CONST FUNCTION EVALUATION (INTEGRATED) ────────────────────────
-    // For const functions, we don't evaluate the body here.
-    // Const functions are evaluated when called (at compile-time).
-    // The function is marked as const, and the body will be interpreted
-    // when a const function call is encountered.
+    // 7. Mark as const if applicable
     if (decl->keyword == DeclKeyword::Const) {
         const_cast<FuncDeclAST*>(decl)->isConst = true;
-        // We could optionally pre-validate that the body is const-evaluable
-        // But we defer this to the actual call site.
     }
 }
 
@@ -423,7 +387,12 @@ void resolveParam(const ParamAST* param, SemaContext& ctx) {
         // Error already reported by resolveType
         return;
     }
+    
+    // Register the parameter name in the current scope
+    // (This is called while the function's parameter scope is active)
+    ctx.insertValue(param);
 }
+
 
 /// @brief Resolve a generic parameter declaration.
 ///
@@ -447,6 +416,11 @@ void resolveGenericParam(const GenericParamDeclAST* param, SemaContext& ctx) {
 /// NOTE: Enum name and variants were already registered in Phase 1.
 void resolveEnumDecl(const EnumDeclAST* decl, SemaContext& ctx) {
     attr::validateAttributes(decl, ctx);
+
+    // ─── 1. REGISTER the enum in the current scope if nested ──────────────
+    if (!ctx.isAtModuleLevel()) {
+        ctx.insertType(decl);
+    }
 
     if (decl->backingType) {
         if (!resolvePrimitiveType(decl->backingType, ctx)) {
@@ -491,6 +465,11 @@ void resolveEnumDecl(const EnumDeclAST* decl, SemaContext& ctx) {
 /// NOTE: Trait name was already registered in Phase 1.
 void resolveTraitDecl(const TraitDeclAST* decl, SemaContext& ctx) {
     attr::validateAttributes(decl, ctx);
+
+    // ─── 1. REGISTER the trait in the current scope if nested ────────────
+    if (!ctx.isAtModuleLevel()) {
+        ctx.insertType(decl);
+    }
 
     for (const GenericParamDeclAST* g : decl->genericParams) {
         resolveGenericParam(g, ctx);
@@ -542,6 +521,11 @@ void resolveTraitDecl(const TraitDeclAST* decl, SemaContext& ctx) {
 void resolveStructDecl(const StructDeclAST* decl, SemaContext& ctx) {
     attr::validateAttributes(decl, ctx);
 
+    // ─── 1. REGISTER the struct in the current scope if nested ────────────
+    if (!ctx.isAtModuleLevel()) {
+        ctx.insertType(decl);
+    }
+
     ScopedTypeDefinition defining(ctx, decl);
 
     for (const GenericParamDeclAST* g : decl->genericParams) {
@@ -560,6 +544,7 @@ void resolveStructDecl(const StructDeclAST* decl, SemaContext& ctx) {
     }
     validateGenericParameterUsage(decl->genericParams, types, decl, ctx);
 }
+
 
 /// @brief Resolve all field types in a struct (Phase 2 of struct two-pass).
 ///

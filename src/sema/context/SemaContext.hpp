@@ -427,14 +427,6 @@ struct SemaContext {
     const TypeDeclAST* currentDefiningType() const {
         return definingTypes.empty() ? nullptr : definingTypes.back();
     }
-    
-    // ─── Query Helpers ─────────────────────────────────────────────────
-    
-    /// @brief Check if we can continue processing.
-    /// Delegates to the diagnostic context.
-    bool canContinue(int maxErrors = 100) const {
-        return diagnostics.canContinue(maxErrors);
-    }
 };
 
 // ─── RAII Guards ─────────────────────────────────────────────────────────

@@ -4,6 +4,7 @@
 #include "Sema.hpp"
 #include "context/SemaContext.hpp"
 #include "const_eval/ConstEvaluator.hpp"
+#include "core/ast/BaseAST.hpp"
 
 namespace sema {
 
@@ -11,26 +12,62 @@ namespace sema {
 // analyze - Main Entry Point
 // =============================================================================
 
+// analyze()
+//   └── PHASE 1: registerTopLevelNames()
+//       └── registerDeclName(outer) → ctx.insertValue(outer)  // ✅ Module table
+//
+//   └── PHASE 2: resolveModuleDecls()
+//       └── resolveFuncDecl(outer)
+//           ├── ctx.isAtModuleLevel()? true → no registration needed
+//           ├── ctx.pushScope()  // Parameter scope for outer
+//           ├── resolveParam(x) → ctx.insertValue(x)  // ✅ Registers x
+//           ├── ctx.stack.pushFunction(outer)
+//           ├── resolveBlock(outer->body)
+//           │   ├── ctx.pushScope()  // Block scope for outer's body
+//           │   ├── resolveDeclStmt(inner)
+//           │   │   └── resolveDecl(inner) → resolveFuncDecl(inner)
+//           │   │       ├── ctx.isAtModuleLevel()? false → ctx.insertValue(inner)  // ✅ Registers inner in outer's block scope
+//           │   │       ├── ctx.pushScope()  // Parameter scope for inner
+//           │   │       ├── resolveParam(y) → ctx.insertValue(y)  // ✅ Registers y
+//           │   │       ├── ctx.stack.pushFunction(inner)  // ✅ Nested context
+//           │   │       ├── resolveBlock(inner->body)
+//           │   │       │   ├── ctx.pushScope()
+//           │   │       │   └── ctx.popScope()
+//           │   │       ├── ctx.stack.pop()  // ✅ Pop inner's function context
+//           │   │       └── ctx.popScope()  // ✅ Pop inner's parameter scope
+//           │   ├── resolveReturnStmt(inner(10))
+//           │   │   └── resolveIdentifierExpr(inner)
+//           │   │       └── ctx.lookupValue(inner)  // ✅ Finds inner in outer's block scope!
+//           │   └── ctx.popScope()  // Clean up outer's block scope
+//           ├── ctx.stack.pop()  // Pop outer's function context
+//           └── ctx.popScope()  // Clean up outer's parameter scope
 void analyze(std::vector<ModuleAST*>& modules, SemaContext& ctx) {
     // ─────────────────────────────────────────────────────────────────────────
-    // PHASE 1: Register ALL names (No type resolution)
+    // PHASE 1: Register ALL top-level names (No type resolution)
+    // ─────────────────────────────────────────────────────────────────────────
+    // 
+    // IMPORTANT: Phase 1 ONLY registers top-level declarations.
+    // Local variables, parameters, and other scoped names are registered
+    // during Phase 2 when we actually resolve the bodies.
+    // 
+    // This is because:
+    // 1. Name resolution needs type information (which we don't have yet)
+    // 2. Local scopes are only meaningful during type resolution
+    // 3. It's simpler and more correct
     // ─────────────────────────────────────────────────────────────────────────
     for (ModuleAST* module : modules) {
         if (!module) continue;
         ctx.enterModule(module);
-        registerModuleNames(module, ctx);
+        registerTopLevelNames(module, ctx);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
     // PHASE 2: Resolve ALL types, check bodies, AND evaluate consts
     // ─────────────────────────────────────────────────────────────────────────
     // 
-    // Const evaluation is now INTEGRATED into this phase via resolveVarDecl.
-    // No separate const evaluation phase is needed.
+    // During this phase, we resolve types, register local names as we go,
+    // perform semantic analysis, and evaluate const expressions.
     // ─────────────────────────────────────────────────────────────────────────
-    
-    // Create const evaluator once for the entire phase
-    ConstEvaluator evaluator(ctx);
 
     for (ModuleAST* module : modules) {
         if (!module) continue;
@@ -38,64 +75,42 @@ void analyze(std::vector<ModuleAST*>& modules, SemaContext& ctx) {
         ctx.enterModule(module);
         resolveModuleDecls(module, ctx);
 
-        // Use the new diagnostic system via SemaContext
         module->hasErrors = ctx.diagnostics.hasErrors();
 
-        if (!ctx.canContinue()) {
+        if (!ctx.diagnostics.canContinue()) {
             return;
         }
     }
-    
-    // Note: Const evaluation happens during resolveVarDecl, not as a separate phase.
-    // The ConstEvaluator instance is used by resolveVarDecl when it sees const declarations.
 }
 
 // =============================================================================
-// PHASE 1: Name Registration - Module Level
+// PHASE 1: Top-Level Name Registration Only
 // =============================================================================
 
-/// @brief Register all names in a module (no type resolution).
+/// @brief Register ONLY top-level names in a module (no type resolution).
 ///
-/// This is the Phase 1 entry point for a module. It walks all top-level
-/// declarations and registers their names in the symbol table.
-///
-/// REGISTRATION FLOW:
-///   1. Enter the module's scope (ctx.enterModule already called)
-///   2. For each declaration, call registerDeclName()
-///   3. For statements inside declarations, call registerStmtNames()
+/// This is Phase 1 of semantic analysis. It only registers names that are
+/// visible at module scope. Local variables, parameters, and other scoped
+/// names are registered during Phase 2 (type resolution).
 ///
 /// @param module The module to register names from.
 /// @param ctx The semantic context.
-///
-/// @note This function does NOT resolve types - it only registers names.
-///       Type resolution happens in Phase 2 (resolveModuleDecls).
-void registerModuleNames(ModuleAST* module, SemaContext& ctx) {
+void registerTopLevelNames(ModuleAST* module, SemaContext& ctx) {
     if (!module) return;
 
-    // ─── Register top-level declarations ──────────────────────────────────
     for (const DeclPtr decl : module->decls) {
         if (!decl) continue;
         
-        // Register the declaration's name
+        // Register ONLY top-level declaration names
         registerDeclName(decl, ctx);
         
-        // ─── Register names inside statements (function bodies, etc.) ────
-        // If this is a function declaration, register names in its body
-        if (decl->isa<FuncDeclAST>()) {
-            const FuncDeclAST* func = decl->as<FuncDeclAST>();
-            if (func->body) {
-                // Register names in the function body
-                registerStmtNames(func->body, ctx);
-            }
-        }
+        // IMPORTANT: We do NOT walk into function bodies here.
+        // Local names are registered during Phase 2.
+        // 
+        // Struct fields are registered by registerStructName
+        // (called from registerDeclName)
         
-        // If this is a struct declaration, fields are already registered
-        // by registerStructName (which calls registerStructFieldNames)
-        
-        // If this is a trait declaration, fields are requirements, not values
-        // No registration needed for trait fields
-
-        if (!ctx.canContinue()) {
+        if (!ctx.diagnostics.canContinue()) {
             return;
         }
     }
@@ -103,10 +118,11 @@ void registerModuleNames(ModuleAST* module, SemaContext& ctx) {
 
 // ─── registerDeclName ──────────────────────────────────────────────────────
 
-/// @brief Register a declaration's name only (no type resolution).
+/// @brief Register a declaration's name at the current scope level.
 ///
-/// Dispatches to the appropriate registration function based on the
-/// declaration's kind.
+/// For top-level declarations, this registers in the module table.
+/// For local declarations (called during Phase 2), this registers in the
+/// current scope.
 ///
 /// @param decl The declaration to register.
 /// @param ctx The semantic context.
@@ -133,111 +149,146 @@ void registerDeclName(const DeclAST* decl, SemaContext& ctx) {
             registerStructName(decl->as<StructDeclAST>(), ctx);
             return;
         default:
+            return;
+    }
+}
+
+// =============================================================================
+// PHASE 2: Type Resolution
+// =============================================================================
+
+/// @brief Resolve all declarations in a module.
+///
+/// This is the Phase 2 entry point for a module. It walks all top-level
+/// declarations and resolves their types, bodies, and const expressions.
+///
+/// @param module The module to resolve.
+/// @param ctx The semantic context.
+///
+/// @note This function does NOT register names - that was done in Phase 1.
+///       However, nested declarations (inside function bodies) will be
+///       registered during resolution of those bodies.
+void resolveModuleDecls(ModuleAST* module, SemaContext& ctx) {
+    if (!module) return;
+
+    for (const DeclPtr decl : module->decls) {
+        if (!decl) continue;
+        
+        resolveDecl(decl, ctx);
+        
+        if (!ctx.diagnostics.canContinue()) {
+            return;
+        }
+    }
+}
+
+/// @brief Resolve a single declaration.
+///
+/// Dispatches to the appropriate resolver based on the declaration's kind.
+///
+/// @param decl The declaration to resolve.
+/// @param ctx The semantic context.
+///
+/// @note This function is also called recursively for nested declarations
+///       (e.g., functions defined inside function bodies).
+void resolveDecl(const DeclAST* decl, SemaContext& ctx) {
+    if (!decl) return;
+
+    // Check if we're at module level - if not, we need to register
+    // this declaration in the current scope (it's a nested declaration).
+    // This handles nested functions, structs, enums, and traits.
+    if (!ctx.isAtModuleLevel()) {
+        // Register the declaration in the current scope
+        switch (decl->kind) {
+            case ASTKind::VarDecl:
+            case ASTKind::FuncDecl:
+                ctx.insertValue(decl->as<ValueDeclAST>());
+                break;
+            case ASTKind::StructDecl:
+            case ASTKind::EnumDecl:
+            case ASTKind::TraitDecl:
+                ctx.insertType(decl->as<TypeDeclAST>());
+                break;
+            default:
+                // Other declaration kinds don't need registration
+                break;
+        }
+    }
+
+    // Now resolve the declaration's type and body
+    switch (decl->kind) {
+        case ASTKind::ImportDecl:
+            resolveImportDecl(decl->as<ImportDeclAST>(), ctx);
+            return;
+        case ASTKind::VarDecl:
+            resolveVarDecl(decl->as<VarDeclAST>(), ctx);
+            return;
+        case ASTKind::FuncDecl:
+            resolveFuncDecl(decl->as<FuncDeclAST>(), ctx);
+            return;
+        case ASTKind::EnumDecl:
+            resolveEnumDecl(decl->as<EnumDeclAST>(), ctx);
+            return;
+        case ASTKind::TraitDecl:
+            resolveTraitDecl(decl->as<TraitDeclAST>(), ctx);
+            return;
+        case ASTKind::StructDecl:
+            resolveStructDecl(decl->as<StructDeclAST>(), ctx);
+            return;
+        default:
             // Unknown declaration kind - ignore (error recovery)
             return;
     }
 }
 
-// ─── registerStmtNames ────────────────────────────────────────────────────
+// =============================================================================
+// Phase 1 Registration Functions (forwarded to SemaDecl.cpp)
+// =============================================================================
 
-/// @brief Register names in a statement (for local scopes).
-///
-/// Walks a statement AST and registers all names introduced by declarations
-/// inside it. This is used for function bodies, blocks, and other scoped
-/// constructs.
-///
-/// @param stmt The statement to walk.
-/// @param ctx The semantic context.
-///
-/// @note This function is called during Phase 1 (name registration).
-///       It does NOT resolve types or validate semantics.
-void registerStmtNames(const StmtAST* stmt, SemaContext& ctx) {
-    if (!stmt) return;
+// These functions are declared in Sema.hpp and implemented in SemaDecl.cpp.
+// They are called from registerTopLevelNames() above.
 
-    switch (stmt->kind) {
-        case ASTKind::BlockStmt: {
-            const BlockStmtAST* block = stmt->as<BlockStmtAST>();
-            // Push a new scope for the block
-            ctx.pushScope();
-            for (const StmtPtr s : block->stmts) {
-                registerStmtNames(s, ctx);
-            }
-            ctx.popScope();
-            return;
-        }
+// registerImportName()    - implemented in SemaDecl.cpp
+// registerVarName()       - implemented in SemaDecl.cpp
+// registerFuncName()      - implemented in SemaDecl.cpp
+// registerParamName()     - implemented in SemaDecl.cpp
+// registerGenericParamName() - implemented in SemaDecl.cpp
+// registerEnumName()      - implemented in SemaDecl.cpp
+// registerTraitName()     - implemented in SemaDecl.cpp
+// registerStructName()    - implemented in SemaDecl.cpp
+// registerStructFieldNames() - implemented in SemaDecl.cpp
 
-        case ASTKind::DeclStmt: {
-            const DeclStmtAST* declStmt = stmt->as<DeclStmtAST>();
-            // Register the declaration's name
-            registerDeclName(declStmt->decl, ctx);
-            return;
-        }
+// Phase 2 Resolution Functions (forwarded to SemaDecl.cpp, SemaStmt.cpp, SemaExpr.cpp)
 
-        case ASTKind::ForStmt: {
-            const ForStmtAST* forStmt = stmt->as<ForStmtAST>();
-            // For loop variables are in their own scope
-            ctx.pushScope();
-            
-            // Register index variable
-            if (forStmt->indexVar) {
-                registerParamName(forStmt->indexVar, ctx);
-            }
-            
-            // Register value variable
-            if (forStmt->valueVar) {
-                registerParamName(forStmt->valueVar, ctx);
-            }
-            
-            // Register names in the loop body
-            if (forStmt->body) {
-                registerStmtNames(forStmt->body, ctx);
-            }
-            
-            ctx.popScope();
-            return;
-        }
+// resolveImportDecl()     - implemented in SemaDecl.cpp
+// resolveVarDecl()        - implemented in SemaDecl.cpp
+// resolveFuncDecl()       - implemented in SemaDecl.cpp
+// resolveParam()          - implemented in SemaDecl.cpp
+// resolveGenericParam()   - implemented in SemaDecl.cpp
+// resolveEnumDecl()       - implemented in SemaDecl.cpp
+// resolveTraitDecl()      - implemented in SemaDecl.cpp
+// resolveStructDecl()     - implemented in SemaDecl.cpp
+// resolveStructFields()   - implemented in SemaDecl.cpp
 
-        case ASTKind::IfStmt: {
-            const IfStmtAST* ifStmt = stmt->as<IfStmtAST>();
-            // If condition doesn't introduce names
-            // Register names in branches
-            if (ifStmt->thenBranch) {
-                registerStmtNames(ifStmt->thenBranch, ctx);
-            }
-            if (ifStmt->elseBranch) {
-                registerStmtNames(ifStmt->elseBranch, ctx);
-            }
-            return;
-        }
+// resolveStmt()           - implemented in SemaStmt.cpp
+// resolveBlock()          - implemented in SemaStmt.cpp
+// resolveIfStmt()         - implemented in SemaStmt.cpp
+// resolveSwitchStmt()     - implemented in SemaStmt.cpp
+// resolveSwitchCase()     - implemented in SemaStmt.cpp
+// resolveForStmt()        - implemented in SemaStmt.cpp
+// resolveWhileStmt()      - implemented in SemaStmt.cpp
+// resolveDoWhileStmt()    - implemented in SemaStmt.cpp
+// resolveReturnStmt()     - implemented in SemaStmt.cpp
+// resolveBreakStmt()      - implemented in SemaStmt.cpp
+// resolveContinueStmt()   - implemented in SemaStmt.cpp
+// resolveExprStmt()       - implemented in SemaStmt.cpp
+// resolveDeclStmt()       - implemented in SemaStmt.cpp
+// resolveAsyncStmt()      - implemented in SemaStmt.cpp
+// resolveAwaitStmt()      - implemented in SemaStmt.cpp
+// resolveSpawnStmt()      - implemented in SemaStmt.cpp
+// resolveJoinStmt()       - implemented in SemaStmt.cpp
 
-        case ASTKind::WhileStmt: {
-            const WhileStmtAST* whileStmt = stmt->as<WhileStmtAST>();
-            if (whileStmt->body) {
-                registerStmtNames(whileStmt->body, ctx);
-            }
-            return;
-        }
-
-        case ASTKind::SwitchStmt: {
-            const SwitchStmtAST* switchStmt = stmt->as<SwitchStmtAST>();
-            // Switch cases don't introduce names (they use existing names)
-            // But register names in case bodies
-            for (const SwitchCasePtr caseStmt : switchStmt->cases) {
-                if (caseStmt->body) {
-                    registerStmtNames(caseStmt->body, ctx);
-                }
-            }
-            if (switchStmt->defaultBody) {
-                registerStmtNames(switchStmt->defaultBody, ctx);
-            }
-            return;
-        }
-
-        default:
-            // Other statements don't introduce names
-            // (ReturnStmt, BreakStmt, ContinueStmt, ExprStmt, etc.)
-            return;
-    }
-}
+// resolveExpr()           - implemented in SemaExpr.cpp
+// resolveExprWithTarget() - implemented in SemaExpr.cpp
 
 } // namespace sema
