@@ -183,9 +183,6 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetT
 /// @brief Resolve a module access expression.
 TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
 
-/// @brief Resolve a nullable chain expression.
-TypeAST* resolveNullableChainExpr(NullableChainExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
-
 /// @brief Resolve a null coalesce expression.
 TypeAST* resolveNullCoalesceExpr(NullCoalesceExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
 

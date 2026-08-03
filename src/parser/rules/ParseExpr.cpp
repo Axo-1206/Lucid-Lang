@@ -166,27 +166,27 @@ ExprAST* parsePrimaryExpr(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
     TokenType current = stream.peekType();
     
-    // Literals
+    // ─── Literals ────────────────────────────────────────────────────────
     if (is_literal(current)) {
         return parseLiteralExpr(stream, ctx);
     }
     
-    // Intrinsic call: #sizeof(T)
+    // ─── Intrinsic call: #sizeof(T) ─────────────────────────────────────
     if (current == TokenType::HASH) {
         return parseIntrinsicCallExpr(stream, ctx);
     }
     
-    // Array literal: [1, 2, 3]
+    // ─── Array literal: [1, 2, 3] ──────────────────────────────────────
     if (current == TokenType::LBRACKET) {
         return parseArrayLiteralExpr(stream, ctx);
     }
     
-    // If expression: if cond ?? expr else expr
+    // ─── If expression: if cond ?? expr else expr ──────────────────────
     if (current == TokenType::IF) {
         return parseIfExpr(stream, ctx);
     }
     
-    // Parenthesized expression: (expr)
+    // ─── Parenthesized expression: (expr) ──────────────────────────────
     if (current == TokenType::LPAREN) {
         stream.consume(); // Consume '('
         
@@ -215,12 +215,24 @@ ExprAST* parsePrimaryExpr(TokenStream& stream, ParserContext& ctx) {
         return expr;
     }
     
-    // Anonymous function: (a int) -> int { ... }
+    // ─── Anonymous function: (a int) -> int { ... } ────────────────────
     if (looksLikeAnonFunc(stream, ctx)) {
         return parseAnonFuncExpr(stream, ctx);
     }
     
-    // Struct literal: Point { x = 1, y = 2 }
+    // ─── Module Access: module:member ───────────────────────────────────
+    if (current == TokenType::IDENTIFIER) {
+        size_t savedPos = stream.getPos();
+        stream.consume(); // Consume identifier temporarily
+        bool isModuleAccess = stream.check(TokenType::COLON);
+        stream.setPos(savedPos);
+        
+        if (isModuleAccess) {
+            return parseModuleAccessExpr(stream, ctx);
+        }
+    }
+    
+    // ─── Struct literal: Point { x = 1, y = 2 } ────────────────────────
     if (looksLikeStructLiteral(stream, ctx)) {
         if (!stream.check(TokenType::IDENTIFIER)) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, loc,
@@ -243,7 +255,12 @@ ExprAST* parsePrimaryExpr(TokenStream& stream, ParserContext& ctx) {
         return parseStructLiteralExpr(stream, ctx, typeName, genericArgs);
     }
     
-    // Unknown primary expression
+    // ─── Identifier: x ──────────────────────────────────────────────────
+    if (current == TokenType::IDENTIFIER) {
+        return parseIdentifierExpr(stream, ctx);
+    }
+    
+    // ─── Unknown primary expression ─────────────────────────────────────
     ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, loc,
                             "unexpected token '", stream.peekValue(), "' in expression");
     synchronizeToContext(stream, ctx);
@@ -593,19 +610,15 @@ ExprAST* parsePostfixExpr(TokenStream& stream, ParserContext& ctx, ExprPtr lhs) 
     
     TokenType current = stream.peekType();
     
-    // Function call: f()
+    // ─── Function call: f() or module:func() ────────────────────────────
     if (current == TokenType::LPAREN) {
         ArenaSpan<TypePtr> genericArgs;
         
+        // Check if the callee already has generic arguments
         if (lhs->isa<IdentifierExprAST>()) {
             auto* idExpr = lhs->as<IdentifierExprAST>();
             if (idExpr->genericArgs.size() > 0) {
                 genericArgs = idExpr->genericArgs;
-            }
-        } else if (lhs->isa<FieldAccessExprAST>()) {
-            auto* fieldAccess = lhs->as<FieldAccessExprAST>();
-            if (fieldAccess->genericArgs.size() > 0) {
-                genericArgs = fieldAccess->genericArgs;
             }
         } else if (lhs->isa<ModuleAccessExprAST>()) {
             auto* moduleAccess = lhs->as<ModuleAccessExprAST>();
@@ -613,11 +626,30 @@ ExprAST* parsePostfixExpr(TokenStream& stream, ParserContext& ctx, ExprPtr lhs) 
                 genericArgs = moduleAccess->genericArgs;
             }
         }
+        // FieldAccessExprAST doesn't store genericArgs
+        
+        // ─── Parse generic args before the call (if present) ──────────────
+        if (genericArgs.empty() && stream.check(TokenType::LESS)) {
+            // Only IdentifierExprAST and ModuleAccessExprAST can have generic args
+            // FieldAccessExprAST cannot - generic args are resolved at struct declaration time
+            if (lhs->isa<FieldAccessExprAST>()) {
+                const FieldAccessExprAST* fieldAccess = lhs->as<FieldAccessExprAST>();
+                ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
+                                        "generic arguments are not allowed on field access '",
+                                        ctx.pool.lookup(fieldAccess->fieldName),
+                                        "<...>' - struct generic arguments are resolved at declaration time");
+                // Skip the generic args to recover
+                parseGenericArgs(stream, ctx);
+            } else {
+                // Valid: identifier or module access
+                genericArgs = parseGenericArgs(stream, ctx);
+            }
+        }
         
         return parseCallExpr(stream, ctx, lhs, genericArgs);
     }
     
-    // Index or slice: arr[0] or arr[1..3]
+    // ─── Index or slice: arr[0] or arr[1..3] ────────────────────────────
     if (current == TokenType::LBRACKET) {
         size_t savedPos = stream.getPos();
         stream.consume(); // Consume '['
@@ -653,12 +685,44 @@ ExprAST* parsePostfixExpr(TokenStream& stream, ParserContext& ctx, ExprPtr lhs) 
         }
     }
     
-    // Pipeline: expr |> step
+    // ─── Pipeline: expr |> step ──────────────────────────────────────────
     if (current == TokenType::PIPELINE) {
         return parsePipelineExpr(stream, ctx, lhs);
     }
+
+    // ─── Field Access: expr.field ────────────────────────────────────────
+    if (current == TokenType::DOT) {
+        return parseFieldAccessExpr(stream, ctx, lhs);
+    }
     
     return lhs;
+}
+
+
+
+/// @brief Parse a regular identifier expression.
+/// 
+/// This is a helper to avoid duplicating identifier creation logic.
+IdentifierExprAST* parseIdentifierExpr(TokenStream& stream, ParserContext& ctx) {
+    SourceLocation loc = stream.currentLoc();
+    
+    if (!stream.check(TokenType::IDENTIFIER)) {
+        return nullptr;
+    }
+    
+    Token nameTok = stream.consume();
+    InternedString name = ctx.pool.intern(nameTok.value);
+    
+    ArenaSpan<TypePtr> genericArgs;
+    if (stream.check(TokenType::LESS)) {
+        genericArgs = parseGenericArgs(stream, ctx);
+    }
+    
+    auto* idExpr = ctx.arena.make<IdentifierExprAST>();
+    idExpr->loc = loc;
+    idExpr->name = name;
+    idExpr->genericArgs = genericArgs;
+    return idExpr;
 }
 
 // =============================================================================
@@ -675,6 +739,19 @@ CallExprAST* parseCallExpr(TokenStream& stream, ParserContext& ctx,
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, loc,
                                 "expected callee");
         return nullptr;
+    }
+    
+    // ─── Defensive check: FieldAccessExprAST should never have generic args ──
+    // This is a safety net - parsePostfixExpr should have caught this already
+    // by skip all the generics
+    if (callee->isa<FieldAccessExprAST>() && !genericArgs.empty()) {
+        const FieldAccessExprAST* fieldAccess = callee->as<FieldAccessExprAST>();
+        ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, loc,
+                                "generic arguments are not allowed on field access '",
+                                ctx.pool.lookup(fieldAccess->fieldName),
+                                "<...>' - struct generic arguments are resolved at declaration time");
+        // Clear generic args to continue parsing
+        genericArgs = ArenaSpan<TypePtr>();
     }
     
     if (!stream.check(TokenType::LPAREN)) {
@@ -957,6 +1034,124 @@ SliceExprAST* parseSliceExpr(TokenStream& stream, ParserContext& ctx, ExprPtr ta
     return slice;
 }
 
+/// @brief Parse a field access expression.
+/// 
+/// Grammar: `expr '.' IDENTIFIER`
+/// 
+/// @example
+///   player.health         → object = player, field = "health"
+///   Direction.North       → object = Direction, field = "North"
+///   getPlayer().health    → object = getPlayer(), field = "health"
+/// 
+/// @param stream The token stream
+/// @param ctx The parsing context
+/// @param lhs The left-hand side expression (the object)
+/// @return FieldAccessExprAST* The parsed field access expression
+FieldAccessExprAST* parseFieldAccessExpr(TokenStream& stream, ParserContext& ctx, ExprPtr lhs) {
+    SourceLocation loc = stream.currentLoc();
+    
+    LOG_PARSER_DETAIL("parseFieldAccessExpr");
+    
+    if (!lhs) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, loc,
+                                "expected object for field access");
+        return nullptr;
+    }
+    
+    // ─── 1. Consume '.' ──────────────────────────────────────────────────
+    if (!stream.match(TokenType::DOT)) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, loc,
+                                "expected '.', got '", stream.peekValue(), "'");
+        synchronizeToContext(stream, ctx);
+        return nullptr;
+    }
+    
+    // ─── 2. Parse field name ──────────────────────────────────────────────
+    if (!stream.check(TokenType::IDENTIFIER)) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+                                "expected field name, got '", stream.peekValue(), "'");
+        synchronizeToContext(stream, ctx);
+        return nullptr;
+    }
+    
+    Token fieldTok = stream.consume();
+    InternedString fieldName = ctx.pool.intern(fieldTok.value);
+    
+    // ─── 4. Build the AST node ────────────────────────────────────────────
+    auto* fieldAccess = ctx.arena.make<FieldAccessExprAST>();
+    fieldAccess->loc = loc;
+    fieldAccess->object = lhs;
+    fieldAccess->fieldName = fieldName;
+    
+    LOG_PARSER_DETAIL("parseFieldAccessExpr: parsed '.", ctx.pool.lookup(fieldName), "'");
+    return fieldAccess;
+}
+
+/// @brief Parse a module access expression.
+/// 
+/// Grammar: `IDENTIFIER ':' IDENTIFIER`
+/// 
+/// @example
+///   math:sqrt         → module = "math", member = "sqrt"
+///   std:io            → module = "std", member = "io"
+///   mymod:PI          → module = "mymod", member = "PI"
+/// 
+/// @param stream The token stream
+/// @param ctx The parsing context
+/// @return ModuleAccessExprAST* The parsed module access expression
+ModuleAccessExprAST* parseModuleAccessExpr(TokenStream& stream, ParserContext& ctx) {
+    SourceLocation loc = stream.currentLoc();
+    
+    LOG_PARSER_DETAIL("parseModuleAccessExpr");
+    
+    // ─── 1. Parse module name ─────────────────────────────────────────────
+    if (!stream.check(TokenType::IDENTIFIER)) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+                                "expected module name, got '", stream.peekValue(), "'");
+        synchronizeToContext(stream, ctx);
+        return nullptr;
+    }
+    
+    Token moduleTok = stream.consume();
+    InternedString moduleName = ctx.pool.intern(moduleTok.value);
+    
+    // ─── 2. Expect ':' ────────────────────────────────────────────────────
+    if (!stream.match(TokenType::COLON)) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                "expected ':', got '", stream.peekValue(), "'");
+        synchronizeToContext(stream, ctx);
+        return nullptr;
+    }
+    
+    // ─── 3. Parse member name ─────────────────────────────────────────────
+    if (!stream.check(TokenType::IDENTIFIER)) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+                                "expected member name, got '", stream.peekValue(), "'");
+        synchronizeToContext(stream, ctx);
+        return nullptr;
+    }
+    
+    Token memberTok = stream.consume();
+    InternedString memberName = ctx.pool.intern(memberTok.value);
+    
+    // ─── 4. Check for generic arguments ──────────────────────────────────
+    ArenaSpan<TypePtr> genericArgs;
+    if (stream.check(TokenType::LESS)) {
+        genericArgs = parseGenericArgs(stream, ctx);
+    }
+    
+    // ─── 5. Build the AST node ────────────────────────────────────────────
+    auto* moduleAccess = ctx.arena.make<ModuleAccessExprAST>();
+    moduleAccess->loc = loc;
+    moduleAccess->moduleName = moduleName;
+    moduleAccess->memberName = memberName;
+    moduleAccess->genericArgs = genericArgs;
+    
+    LOG_PARSER_DETAIL("parseModuleAccessExpr: parsed '", 
+                      ctx.pool.lookup(moduleName), ":", ctx.pool.lookup(memberName), "'");
+    return moduleAccess;
+}
+
 // =============================================================================
 // Pipeline & Composition
 // =============================================================================
@@ -1213,11 +1408,6 @@ ComposeOperandAST* parseComposeOperand(TokenStream& stream, ParserContext& ctx) 
         if (idExpr->genericArgs.size() > 0) {
             genericArgs = idExpr->genericArgs;
         }
-    } else if (callable->isa<FieldAccessExprAST>()) {
-        auto* fieldAccess = callable->as<FieldAccessExprAST>();
-        if (fieldAccess->genericArgs.size() > 0) {
-            genericArgs = fieldAccess->genericArgs;
-        }
     } else if (callable->isa<ModuleAccessExprAST>()) {
         auto* moduleAccess = callable->as<ModuleAccessExprAST>();
         if (moduleAccess->genericArgs.size() > 0) {
@@ -1240,26 +1430,27 @@ ComposeOperandAST* parseComposeOperand(TokenStream& stream, ParserContext& ctx) 
 
 int infixPrec(TokenType type) {
     switch (type) {
-        case TokenType::COMPOSE:        return 8;
+        case TokenType::DOT:            return 9;   // Field access (highest)
+        case TokenType::COMPOSE:        return 8;   // Composition
         case TokenType::MUL:
         case TokenType::DIV:
         case TokenType::MOD:
-        case TokenType::POW:            return 6;
+        case TokenType::POW:            return 6;   // Multiplicative
         case TokenType::PLUS:
-        case TokenType::MINUS:          return 5;
+        case TokenType::MINUS:          return 5;   // Additive
         case TokenType::RANGE:
-        case TokenType::RANGE_EXCLUSIVE: return 4;
+        case TokenType::RANGE_EXCLUSIVE: return 4;  // Range
         case TokenType::EQUAL_EQUAL:
         case TokenType::NOT_EQUAL:
         case TokenType::LESS:
         case TokenType::LESS_EQUAL:
         case TokenType::GREATER:
-        case TokenType::GREATER_EQUAL:  return 3;
-        case TokenType::AND:            return 2;
-        case TokenType::OR:             return 1;
-        case TokenType::QUESTION_QUESTION: return 0;
-        case TokenType::PIPELINE:       return -1;
-        default:                        return -2;
+        case TokenType::GREATER_EQUAL:  return 3;   // Comparison
+        case TokenType::AND:            return 2;   // Logical AND
+        case TokenType::OR:             return 1;   // Logical OR
+        case TokenType::QUESTION_QUESTION: return 0; // Null coalesce
+        case TokenType::PIPELINE:       return -1;  // Pipeline
+        default:                        return -2;  // Not an operator
     }
 }
 

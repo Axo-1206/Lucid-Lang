@@ -65,9 +65,6 @@ TypeAST* resolveExprWithTarget(ExprAST* expr, const TypeAST* targetType, SemaCon
         case ASTKind::ModuleAccessExpr:
             result = resolveModuleAccessExpr(expr->as<ModuleAccessExprAST>(), targetType, ctx);
             break;
-        case ASTKind::NullableChainExpr:
-            result = resolveNullableChainExpr(expr->as<NullableChainExprAST>(), targetType, ctx);
-            break;
         case ASTKind::NullCoalesceExpr:
             result = resolveNullCoalesceExpr(expr->as<NullCoalesceExprAST>(), targetType, ctx);
             break;
@@ -1177,6 +1174,7 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetT
         return ctx.getUnknownType();
     }
 
+    // ─── Step 2: Validate value state ──────────────────────────────────────
     if (expr->object->valueState == ValueState::Nil) {
         ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr->object,
                               "cannot access field on nil. Use `?.` for nullable access.");
@@ -1185,14 +1183,7 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetT
         return ctx.getUnknownType();
     }
 
-    if (expr->object->valueState == ValueState::Err) {
-        ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr->object,
-                              "cannot access field on err. Use `??` to handle err first.");
-        expr->resolvedType = ctx.getUnknownType();
-        expr->valueState = ValueState::Unknown;
-        return ctx.getUnknownType();
-    }
-
+    // ─── Step 3: Validate object type ──────────────────────────────────────
     if (isNullableType(objectType)) {
         ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr->object,
                               "cannot access field on nullable type. Use `?.` for nullable access.");
@@ -1201,15 +1192,7 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetT
         return ctx.getUnknownType();
     }
 
-    if (isFallibleType(objectType)) {
-        ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr->object,
-                              "cannot access field on fallible type. Use `??` to handle err first.");
-        expr->resolvedType = ctx.getUnknownType();
-        expr->valueState = ValueState::Unknown;
-        return ctx.getUnknownType();
-    }
-
-    // ─── Step 2: Handle generic type ────────────────────────────────────────
+    // ─── Step 4: Handle generic type parameter ─────────────────────────────
     if (objectType->isa<NamedTypeAST>()) {
         const NamedTypeAST* namedType = objectType->as<NamedTypeAST>();
 
@@ -1243,7 +1226,7 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetT
         }
     }
 
-    // ─── Step 3: Look up the type declaration ──────────────────────────────
+    // ─── Step 5: Look up type declaration ──────────────────────────────────
     if (!objectType->isa<NamedTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr->object,
                               "field access requires a struct or enum type, got ",
@@ -1263,7 +1246,7 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetT
         return ctx.getUnknownType();
     }
 
-    // ─── Step 4: Handle struct type ─────────────────────────────────────────
+    // ─── Step 6: Handle struct type ─────────────────────────────────────────
     if (typeDecl->isa<StructDeclAST>()) {
         const StructDeclAST* structDecl = typeDecl->as<StructDeclAST>();
 
@@ -1285,7 +1268,7 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetT
         return ctx.getUnknownType();
     }
 
-    // ─── Step 5: Handle enum type ───────────────────────────────────────────
+    // ─── Step 7: Handle enum type ───────────────────────────────────────────
     if (typeDecl->isa<EnumDeclAST>()) {
         const EnumDeclAST* enumDecl = typeDecl->as<EnumDeclAST>();
 
@@ -1399,134 +1382,6 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, const TypeAST* targe
     expr->resolvedType = decl->type;
     expr->valueState = state;
     return decl->type;
-}
-
-// =============================================================================
-// resolveNullableChainExpr
-// =============================================================================
-
-TypeAST* resolveNullableChainExpr(NullableChainExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
-    if (expr->steps.empty()) {
-        ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, expr,
-                              "empty nullable chain");
-        expr->resolvedType = ctx.getUnknownType();
-        expr->valueState = ValueState::Unknown;
-        return ctx.getUnknownType();
-    }
-
-    // ─── Step 1: Resolve base object ────────────────────────────────────────
-    TypeAST* currentType = resolveExpr(expr->object, ctx);
-    if (!currentType || currentType->isa<UnknownTypeAST>()) {
-        ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr->object,
-                              "base object has unknown type");
-        expr->resolvedType = ctx.getUnknownType();
-        expr->valueState = ValueState::Unknown;
-        return ctx.getUnknownType();
-    }
-
-    // Base must be nullable
-    if (!isNullableType(currentType)) {
-        ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr->object,
-                              "?. chain requires a nullable base type (T?), got ",
-                              debug::typeToString(currentType, ctx.pool));
-        expr->resolvedType = ctx.getUnknownType();
-        expr->valueState = ValueState::Unknown;
-        return ctx.getUnknownType();
-    }
-
-    if (isFallibleType(currentType)) {
-        ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr->object,
-                              "?. chain cannot be used on fallible type. Use `??` to handle err first.");
-        expr->resolvedType = ctx.getUnknownType();
-        expr->valueState = ValueState::Unknown;
-        return ctx.getUnknownType();
-    }
-
-    if (expr->object->valueState == ValueState::Err) {
-        ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr->object,
-                              "?. chain cannot be used on err. Use `??` to handle err first.");
-        expr->resolvedType = ctx.getUnknownType();
-        expr->valueState = ValueState::Unknown;
-        return ctx.getUnknownType();
-    }
-
-    bool hasNilStep = false;
-
-    // ─── Step 2: Walk through each step ────────────────────────────────────
-    for (const InternedString& step : expr->steps) {
-        if (!currentType || !isNullableType(currentType)) {
-            ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr,
-                                  "?. step requires nullable type, got ",
-                                  debug::typeToString(currentType, ctx.pool));
-            expr->resolvedType = ctx.getUnknownType();
-            expr->valueState = ValueState::Unknown;
-            return ctx.getUnknownType();
-        }
-
-        const TypeAST* innerType = unwrapNullable(const_cast<TypeAST*>(currentType));
-        if (!innerType) {
-            ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr,
-                                  "cannot unwrap nullable type");
-            expr->resolvedType = ctx.getUnknownType();
-            expr->valueState = ValueState::Unknown;
-            return ctx.getUnknownType();
-        }
-
-        if (!innerType->isa<NamedTypeAST>()) {
-            ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr,
-                                  "?. step requires struct or enum type, got ",
-                                  debug::typeToString(innerType, ctx.pool));
-            expr->resolvedType = ctx.getUnknownType();
-            expr->valueState = ValueState::Unknown;
-            return ctx.getUnknownType();
-        }
-
-        const NamedTypeAST* namedType = innerType->as<NamedTypeAST>();
-        const TypeDeclAST* typeDecl = ctx.lookupType(namedType->name);
-        if (!typeDecl) {
-            ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
-                                  "undefined type '", ctx.pool.lookup(namedType->name), "'");
-            expr->resolvedType = ctx.getUnknownType();
-            expr->valueState = ValueState::Unknown;
-            return ctx.getUnknownType();
-        }
-
-        const FieldDeclAST* field = nullptr;
-        if (typeDecl->isa<StructDeclAST>()) {
-            const StructDeclAST* structDecl = typeDecl->as<StructDeclAST>();
-            for (const FieldDeclAST* f : structDecl->fields) {
-                if (f->name == step) {
-                    field = f;
-                    break;
-                }
-            }
-        }
-
-        if (!field) {
-            ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr,
-                                  "type has no field named '", ctx.pool.lookup(step), "'");
-            expr->resolvedType = ctx.getUnknownType();
-            expr->valueState = ValueState::Unknown;
-            return ctx.getUnknownType();
-        }
-
-        if (!isNullableType(field->type)) {
-            ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr,
-                                  "?. step '", ctx.pool.lookup(step),
-                                  "' must be nullable, got ",
-                                  debug::typeToString(field->type, ctx.pool));
-            expr->resolvedType = ctx.getUnknownType();
-            expr->valueState = ValueState::Unknown;
-            return ctx.getUnknownType();
-        }
-
-        currentType = field->type;
-    }
-
-    // ─── Step 3: Propagate value state ────────────────────────────────────
-    expr->resolvedType = currentType;
-    expr->valueState = hasNilStep ? ValueState::Nil : ValueState::Unknown;
-    return currentType;
 }
 
 // =============================================================================

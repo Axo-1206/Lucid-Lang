@@ -503,14 +503,6 @@ void dumpSliceExpr(std::string& out, const SliceExprAST* node, const StringPool*
 
 void dumpFieldAccessExpr(std::string& out, const FieldAccessExprAST* node, const StringPool* pool, int indentLevel) {
     std::string header = "FieldAccessExprAST ." + std::string(pool->lookup(node->fieldName));
-    if (!node->genericArgs.empty()) {
-        header += " <";
-        for (size_t i = 0; i < node->genericArgs.size(); ++i) {
-            if (i > 0) header += ", ";
-            header += formatType(node->genericArgs[i], pool);
-        }
-        header += ">";
-    }
     printNodeHeader(out, indentLevel, *node, header);
     if (node->object) dumpNode(out, node->object, pool, indentLevel + 1);
 }

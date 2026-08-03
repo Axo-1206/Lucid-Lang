@@ -190,6 +190,10 @@ ExprAST* parsePrefixExpr(TokenStream& stream, ParserContext& ctx);
 ExprAST* parsePrimaryExpr(TokenStream& stream, ParserContext& ctx);
 ExprAST* parsePostfixExpr(TokenStream& stream, ParserContext& ctx, ExprPtr lhs);
 
+// ─── Primary Expression Helpers ───────────────────────────────────────────
+
+IdentifierExprAST* parseIdentifierExpr(TokenStream& stream, ParserContext& ctx);
+
 // ─── Literals ──────────────────────────────────────────────────────────────
 
 LiteralExprAST* parseLiteralExpr(TokenStream& stream, ParserContext& ctx);
@@ -211,6 +215,9 @@ CallExprAST* parseCallExpr(TokenStream& stream, ParserContext& ctx, ExprPtr call
 IntrinsicCallExprAST* parseIntrinsicCallExpr(TokenStream& stream, ParserContext& ctx);
 IndexExprAST* parseIndexExpr(TokenStream& stream, ParserContext& ctx, ExprPtr target);
 SliceExprAST* parseSliceExpr(TokenStream& stream, ParserContext& ctx, ExprPtr target);
+
+FieldAccessExprAST* parseFieldAccessExpr(TokenStream& stream, ParserContext& ctx, ExprPtr lhs);
+ModuleAccessExprAST* parseModuleAccessExpr(TokenStream& stream, ParserContext& ctx);
 
 // ─── Pipeline & Composition ───────────────────────────────────────────────
 

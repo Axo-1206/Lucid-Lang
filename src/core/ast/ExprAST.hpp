@@ -222,13 +222,6 @@ struct IdentifierExprAST : ExprAST {
 ///   v.x                     → object = identifier("v"), field = "x"
 ///   Direction.North         → object = identifier("Direction"), field = "North"
 /// 
-/// ─── Semantic Analysis Notes ──────────────────────────────────────────────
-/// 1. **Field Access**: `object.field` accesses a struct field. If the object
-///    is `~[const]`, the field access is read-only.
-/// 2. **Enum Variant**: `EnumName.Variant` accesses an enum variant.
-/// 3. **Generic Functions**: When the field refers to a generic function,
-///    the FieldAccessExprAST becomes the entity of a generic instantiation.
-/// 
 /// @field object         The object expression.
 /// @field field          The field name.
 /// @field genericArgs   Generic arguments for generic function access.
@@ -237,7 +230,6 @@ struct FieldAccessExprAST : ExprAST {
 
     ExprPtr object;
     InternedString fieldName;
-    ArenaSpan<TypePtr> genericArgs; // Generic function instantiation
 
     FieldAccessExprAST() : ExprAST(ASTKind::FieldAccessExpr) {}
 };
@@ -246,25 +238,8 @@ struct FieldAccessExprAST : ExprAST {
 /// 
 /// @example
 ///   math:sqrt(x)         → module = "math", member = "sqrt"
-///   std:io:printl("hi")  → nested module access
+///   std:io.printl("hi")  → nested module access
 ///   mymod:PI             → reading an exported value
-/// 
-/// ─── Key Characteristics ──────────────────────────────────────────────────
-/// - `:` is for module access, never struct field access
-/// - Module members are always read-only from outside the module
-/// - `:` never produces an l-value
-/// - The left-hand side must be a module name, not a struct value
-/// 
-/// ─── Semantic Analysis Notes ──────────────────────────────────────────────
-/// 1. **Read-Only**: Module members obtained via `:` are always read-only,
-///    regardless of the member's internal mutability.
-/// 2. **Depth Guarantee**: "Always read-only" applies to everything reachable
-///    through `:` – a struct obtained via `:` is treated as `const` at every
-///    field depth.
-/// 3. **No Assignment**: `module:member = ...` is always a compile error.
-/// 4. **Function Calls**: `module:func(args)` calls an exported function.
-/// 5. **Generic Functions**: `module:genericFunc<T>(args)` calls a generic
-///    exported function.
 /// 
 /// @field module        The module name (left-hand side of `:`).
 /// @field member        The member name (right-hand side of `:`).
@@ -460,32 +435,6 @@ struct AssignExprAST : ExprAST {
 // ─────────────────────────────────────────────────────────────────────────────
 // NULLABLE NODES
 // ─────────────────────────────────────────────────────────────────────────────
-
-/// @brief A ?. chain – each step is only evaluated if the previous value is non‑nil.
-/// 
-/// @example
-///   player?.weapon?.damage ?? 0
-/// 
-/// The grammar enforces that every ?. chain MUST be terminated by ??.
-/// Standalone '.' becomes FieldAccessExprAST.
-/// 
-/// ─── Semantic Analysis Notes ──────────────────────────────────────────────
-/// 1. **Short-Circuit**: Each step is only evaluated if the previous value
-///    is non-nil. If any step is nil, the chain short-circuits to nil.
-/// 2. **Termination Required**: Every ?. chain must be terminated by `??`.
-/// 3. **Type**: The result type is the type of the final field, or nullable
-///    if the chain ends in nil.
-/// 
-/// @field object        The root expression before the first ?.
-/// @field steps         The field names accessed via ?. in order.
-struct NullableChainExprAST : ExprAST {
-    static constexpr ASTKind staticKind = ASTKind::NullableChainExpr;
-
-    ExprPtr object;
-    ArenaSpan<InternedString> steps;   // field names accessed via ?.
-
-    NullableChainExprAST() : ExprAST(ASTKind::NullableChainExpr) {}
-};
 
 /// @brief The null coalescing operator – provides a fallback value when the LHS is nil or err.
 /// 
