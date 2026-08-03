@@ -697,8 +697,11 @@ ConstantValue ConstEvaluator::executeIf(SemaContext& ctx, std::vector<ConstFrame
                                          const IfStmtAST* stmt) {
     if (!stmt) return ConstantValue::voidValue();
 
-    ConstIfContext ifContext(ctx, stmt->elseBranch != nullptr);
+    // ─── 1. Push if context for type narrowing ──────────────────────────
+    // Use ScopedIfCondition directly instead of ConstIfContext wrapper
+    ScopedIfCondition ifContext(ctx, stmt->elseBranch != nullptr);
 
+    // ─── 2. Evaluate condition ───────────────────────────────────────────
     ConstantValue cond = evaluate(ctx, stmt->condition);
     if (cond.isError()) return cond;
     if (cond.isUnknown()) return ConstantValue::unknown();
@@ -709,26 +712,47 @@ ConstantValue ConstEvaluator::executeIf(SemaContext& ctx, std::vector<ConstFrame
         return ConstantValue::error();
     }
 
+    // ─── 3. Get narrowing info detected during condition evaluation ────
     NarrowingInfo info = ctx.stack.getPendingNarrowing();
     ctx.stack.clearPendingNarrowing();
 
+    // ─── 4. Execute the appropriate branch with narrowing ──────────────
     if (cond.asBool()) {
+        // Then branch - condition is true
         if (stmt->thenBranch) {
+            // Apply normal narrowing for inequality conditions (x != nil)
+            // For equality conditions (x == nil), the then branch gets no narrowing
+            // because if x == nil is true, x is nil (no definite type to narrow to)
             if (info.hasNarrowing && !info.isEquality) {
+                ctx.stack.pushNarrowingLevel(false);
                 for (const auto& [name, type] : info.narrowings) {
-                    ConstNarrowing narrow(ctx, name, type, false);
+                    ctx.stack.narrowVariable(name, type);
                 }
+                ConstantValue result = executeStmt(ctx, frames, stmt->thenBranch);
+                ctx.stack.popNarrowingLevel();
+                return result;
+            } else {
+                // No narrowing needed (equality condition, or no info)
+                return executeStmt(ctx, frames, stmt->thenBranch);
             }
-            return executeStmt(ctx, frames, stmt->thenBranch);
         }
     } else {
+        // Else branch - condition is false
         if (stmt->elseBranch) {
+            // Apply inverse narrowing for equality conditions (x == nil)
+            // When x == nil is false, x is definitely non-nullable
             if (info.hasNarrowing && info.isEquality) {
+                ctx.stack.pushNarrowingLevel(true);
                 for (const auto& [name, type] : info.narrowings) {
-                    ConstNarrowing narrow(ctx, name, type, true);
+                    ctx.stack.narrowVariable(name, type);
                 }
+                ConstantValue result = executeStmt(ctx, frames, stmt->elseBranch);
+                ctx.stack.popNarrowingLevel();
+                return result;
+            } else {
+                // No narrowing needed
+                return executeStmt(ctx, frames, stmt->elseBranch);
             }
-            return executeStmt(ctx, frames, stmt->elseBranch);
         }
     }
 

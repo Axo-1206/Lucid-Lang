@@ -16,7 +16,7 @@
 ///   - Type checking: SemaCompare (typesEqual, isAssignable, isNullableType, etc.)
 ///   - Name lookup: SemaLookup (lookupValue, lookupType, etc.)
 ///   - Type resolution: SemaResolve (resolveType, etc.)
-///   - Validation: SemaValidate (validateGenericArguments, etc.)
+///   - Context management: SemaContext (pushFunction, pushScope, etc.)
 ///   This eliminates duplication and ensures consistency between compile-time
 ///   and runtime behavior.
 
@@ -32,7 +32,25 @@
 
 namespace sema {
 
-/// @brief RAII guard for const evaluation recursion tracking.
+// ─────────────────────────────────────────────────────────────────────────────
+// RAII Guards - Why They Exist
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @brief RAII guard for const evaluation recursion/cycle detection.
+ * 
+ * WHY: Prevents infinite loops from circular const dependencies.
+ * 
+ * @example
+ *   const x = y + 1
+ *   const y = x + 1  // ← EvaluationGuard catches this cycle
+ * 
+ * HOW: Inserts the declaration into a set on construction, removes on destruction.
+ *      If a declaration is already in the set, it's a circular dependency.
+ * 
+ * @note This is the only guard that truly needs to exist as a separate class
+ *       because it manages the static evaluation set.
+ */
 class EvaluationGuard {
 public:
     EvaluationGuard(std::unordered_set<const DeclAST*>& evaluating,
@@ -53,16 +71,32 @@ private:
     const DeclAST* m_decl;
 };
 
-/// @brief RAII guard for const evaluation function context.
+/**
+ * @brief RAII guard for const function execution context.
+ * 
+ * WHY: Const functions need proper semantic context to execute.
+ *       - pushFunction: Enables `return` statement validation
+ *       - pushScope: Creates scope for function parameters
+ * 
+ * @example
+ *   const add (a int)(b int) -> int = { return a + b }
+ *   //                    ↑
+ *   // ConstFunctionContext sets up the context for executing this body
+ * 
+ * @note Could be simplified by inlining the push/pop calls, but kept as
+ *       a separate class for clarity and to ensure proper cleanup.
+ */
 class ConstFunctionContext {
 public:
     ConstFunctionContext(SemaContext& ctx, const FuncDeclAST* func)
         : m_ctx(ctx) {
+        // Push function context for return validation
         m_ctx.stack.pushFunction(
             const_cast<FuncDeclAST*>(func),
             const_cast<FuncTypeAST*>(func->funcType),
             func->loc
         );
+        // Push scope for parameters
         m_ctx.pushScope();
     }
     
@@ -75,33 +109,41 @@ private:
     SemaContext& m_ctx;
 };
 
-/// @brief RAII guard for const evaluation if context.
-class ConstIfContext {
-public:
-    ConstIfContext(SemaContext& ctx, bool hasElse)
-        : m_guard(ctx, hasElse) {}
-    
-private:
-    ScopedIfCondition m_guard;
-};
-
-/// @brief RAII guard for const evaluation narrowing.
-class ConstNarrowing {
-public:
-    ConstNarrowing(SemaContext& ctx, InternedString name, 
-                   const TypeAST* narrowedType, bool isInverse = false)
-        : m_guard(ctx, name, narrowedType, isInverse) {}
-    
-private:
-    ScopedNarrowing m_guard;
-};
-
-/// @brief Frame for local variable values during const evaluation.
+/**
+ * @brief Frame for local variable values during const function execution.
+ * 
+ * WHY: Const functions can have local variables (e.g., `let y int = x + 1`).
+ *      These need to be stored somewhere during execution.
+ * 
+ * @example
+ *   const compute (x int) -> int = {
+ *       let y int = x + 1  // ← Stored in ConstFrame
+ *       return y * 2
+ *   }
+ * 
+ * @note This could be simplified to just a `std::unordered_map` but is kept
+ *       as a struct for clarity and to support future extensions (like
+ *       tracking returns).
+ */
 struct ConstFrame {
     std::unordered_map<InternedString, ConstantValue> locals;
     bool hasReturned = false;
     ConstantValue returnValue;
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// REMOVED: ConstIfContext - Use ScopedIfCondition directly
+// REMOVED: ConstNarrowing - Use ScopedNarrowing directly
+// ─────────────────────────────────────────────────────────────────────────────
+
+// These were removed because they were just thin wrappers around existing
+// RAII guards in SemaContext:
+//   - ConstIfContext  → ScopedIfCondition
+//   - ConstNarrowing  → ScopedNarrowing
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ConstEvaluator - Main Class
+// ─────────────────────────────────────────────────────────────────────────────
 
 /// @brief Evaluates const declarations at compile-time.
 /// All methods are static - no instance state needed.
@@ -115,8 +157,6 @@ public:
     static ConstantValue evaluateDecl(SemaContext& ctx, const VarDeclAST* decl);
 
     /// @brief Evaluate an expression with optional target type.
-    /// Returns ConstantValue::unknown() if the expression can't be evaluated
-    /// at compile time (no diagnostic emitted - this is normal).
     static ConstantValue evaluate(SemaContext& ctx, const ExprAST* expr,
                                   const TypeAST* targetType = nullptr);
 
@@ -189,18 +229,11 @@ private:
 
     // ─── Comparison Helpers ──────────────────────────────────────────────
 
-    /// @brief Compare two constant values for equality.
-    /// Uses semantic comparison logic where appropriate.
     static bool compareEqual(SemaContext& ctx, const ConstantValue& a, const ConstantValue& b);
-
-    /// @brief Compare two constant values for ordering.
-    /// Uses semantic comparison logic where appropriate.
     static int compareOrder(SemaContext& ctx, const ConstantValue& a, const ConstantValue& b);
 
     // ─── Type Helpers ────────────────────────────────────────────────────
 
-    /// @brief Get the type of a constant value.
-    /// Uses SemaContext's type cache.
     static TypeAST* getConstantType(SemaContext& ctx, const ConstantValue& val);
 
     // ─── Dependency Analysis ─────────────────────────────────────────────
@@ -213,7 +246,7 @@ private:
 
     // ─── Internal State ──────────────────────────────────────────────────
 
-    // These are static because they track global const state across evaluations
+    // Static state shared across all evaluations
     static std::unordered_map<const DeclAST*, std::vector<const DeclAST*>> m_deps;
     static std::vector<const DeclAST*> m_constDecls;
     static std::unordered_set<const ExprAST*> m_evaluatedExprs;
