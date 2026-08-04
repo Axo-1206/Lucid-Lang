@@ -73,15 +73,6 @@ struct TypeCache {
 /// 
 /// This is the main context passed to all semantic analysis functions.
 /// It's intentionally monolithic - all state is directly accessible.
-/// 
-/// @design_decision Diagnostics use DiagnosticEngine& (shared with parser)
-///   The diagnostic engine is the same across parsing and semantic phases.
-///   Both ParserContext and SemaContext hold references to the same
-///   DiagnosticEngine instance, ensuring all diagnostics go to one place.
-/// 
-/// @design_decision No convenience wrappers for diagnostics
-///   Use ctx.diagnostics.error() directly. This keeps the interface
-///   consistent with ParserContext and avoids duplication.
 struct SemaContext {
     // ─── Resources ──────────────────────────────────────────────────────
     
@@ -205,6 +196,25 @@ struct SemaContext {
     
     // ─── Symbol Lookup ──────────────────────────────────────────────────
     
+    /// @brief Look up a generic parameter by name in the current scope.
+    const GenericParamDeclAST* lookupGenericParam(InternedString name) const {
+        for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
+            auto found = it->genericParams.find(name);
+            if (found != it->genericParams.end()) {
+                return found->second;
+            }
+        }
+        return nullptr;
+    }
+    
+    /// @brief Check if a name is a generic parameter in the current scope.
+    bool isGenericParam(InternedString name) const {
+        return lookupGenericParam(name) != nullptr;
+    }
+    
+    /// @brief Look up a value declaration by name.
+    /// 
+    /// Searches: local scopes (innermost to outermost) → module scope
     const ValueDeclAST* lookupValue(InternedString name) const {
         for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
             auto found = it->values.find(name);
@@ -221,13 +231,20 @@ struct SemaContext {
         return nullptr;
     }
     
+    /// @brief Look up a function by name.
     const FuncDeclAST* lookupFunction(InternedString name) const {
         const ValueDeclAST* v = lookupValue(name);
         return (v && v->isa<FuncDeclAST>()) ? v->as<FuncDeclAST>() : nullptr;
     }
     
+    /// @brief Look up a type declaration by name.
+    /// 
+    /// Searches: local scopes (innermost to outermost) → module scope
+    /// 
+    /// @note Generic parameters shadow type names in scopes.
     const TypeDeclAST* lookupType(InternedString name) const {
         for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
+            // Generic parameters shadow types
             auto gen = it->genericParams.find(name);
             if (gen != it->genericParams.end()) {
                 return nullptr;
@@ -246,24 +263,104 @@ struct SemaContext {
         return nullptr;
     }
     
-    const GenericParamDeclAST* lookupGenericParam(InternedString name) const {
-        for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
-            auto found = it->genericParams.find(name);
-            if (found != it->genericParams.end()) {
-                return found->second;
-            }
-        }
-        return nullptr;
-    }
-    
-    bool isGenericParam(InternedString name) const {
-        return lookupGenericParam(name) != nullptr;
-    }
-    
+    /// @brief Look up a module by its import alias.
     ModuleAST* lookupImport(InternedString alias) const {
         if (!currentModuleTable) return nullptr;
         auto it = currentModuleTable->importAliases.find(alias);
         return it != currentModuleTable->importAliases.end() ? it->second : nullptr;
+    }
+    
+    /// @brief Look up a member in a module's table.
+    const ValueDeclAST* lookupModuleMember(ModuleAST* module, InternedString memberName) const {
+        if (!module) return nullptr;
+        
+        auto it = moduleTables.find(module);
+        if (it == moduleTables.end()) return nullptr;
+        
+        auto found = it->second.values.find(memberName);
+        return found != it->second.values.end() ? found->second : nullptr;
+    }
+    
+    // ─── Redeclaration Checks ──────────────────────────────────────────
+    
+    /// @brief Check if a value name is already declared in the current tier.
+    bool isValueRedeclared(InternedString name) const {
+        if (isAtModuleLevel()) {
+            return currentModuleTable && 
+                   currentModuleTable->values.find(name) != currentModuleTable->values.end();
+        } else {
+            return currentScope().values.find(name) != currentScope().values.end();
+        }
+    }
+    
+    /// @brief Check if a type name is already declared in the current tier.
+    bool isTypeRedeclared(InternedString name) const {
+        if (isAtModuleLevel()) {
+            return currentModuleTable && 
+                   currentModuleTable->types.find(name) != currentModuleTable->types.end();
+        } else {
+            return currentScope().types.find(name) != currentScope().types.end();
+        }
+    }
+    
+    /// @brief Check if a generic parameter name is already declared in the current tier.
+    bool isGenericParamRedeclared(InternedString name) const {
+        if (isAtModuleLevel()) {
+            return false; // Generic params are never at module level
+        }
+        return currentScope().genericParams.find(name) != currentScope().genericParams.end();
+    }
+    
+    /// @brief Check if an import alias is already declared in the current module.
+    bool isImportAliasRedeclared(InternedString alias) const {
+        return currentModuleTable && 
+               currentModuleTable->importAliases.find(alias) != currentModuleTable->importAliases.end();
+    }
+    
+    // ─── Redeclaration Reporting ──────────────────────────────────────
+    
+    /// @brief Check and report value redeclaration.
+    bool reportValueRedeclaration(const DeclAST* node) {
+        if (isValueRedeclared(node->name)) {
+            diagnostics.error(DiagCode::Sem_Redeclaration, node,
+                              "redeclaration of '", pool.lookup(node->name), 
+                              "' in the same scope");
+            return true;
+        }
+        return false;
+    }
+    
+    /// @brief Check and report type redeclaration.
+    bool reportTypeRedeclaration(const DeclAST* node) {
+        if (isTypeRedeclared(node->name)) {
+            diagnostics.error(DiagCode::Sem_Redeclaration, node,
+                              "redeclaration of '", pool.lookup(node->name), 
+                              "' in the same scope");
+            return true;
+        }
+        return false;
+    }
+    
+    /// @brief Check and report generic parameter redeclaration.
+    bool reportGenericParamRedeclaration(const DeclAST* node) {
+        if (isGenericParamRedeclared(node->name)) {
+            diagnostics.error(DiagCode::Sem_GenericParamRedeclaration, node,
+                              "redeclaration of generic parameter '", 
+                              pool.lookup(node->name), "' in the same scope");
+            return true;
+        }
+        return false;
+    }
+    
+    /// @brief Check and report import alias redeclaration.
+    bool reportImportAliasRedeclaration(InternedString alias, const BaseAST* node) {
+        if (isImportAliasRedeclared(alias)) {
+            diagnostics.error(DiagCode::Sem_ImportAliasRedeclaration, node,
+                              "redeclaration of import alias '", 
+                              pool.lookup(alias), "'");
+            return true;
+        }
+        return false;
     }
     
     // ─── Concurrency Helpers ─────────────────────────────────────────────
@@ -426,6 +523,53 @@ struct SemaContext {
     
     const TypeDeclAST* currentDefiningType() const {
         return definingTypes.empty() ? nullptr : definingTypes.back();
+    }
+    
+    // ─── Convenience: Lookup with Keyword Info ──────────────────────────
+    
+    /// @brief Look up a module member's keyword.
+    DeclKeyword lookupModuleMemberKeyword(ModuleAST* module, InternedString memberName) const {
+        const ValueDeclAST* decl = lookupModuleMember(module, memberName);
+        if (!decl) return DeclKeyword::Let;
+        
+        if (decl->isa<VarDeclAST>()) {
+            return decl->as<VarDeclAST>()->keyword;
+        }
+        if (decl->isa<FuncDeclAST>()) {
+            return decl->as<FuncDeclAST>()->keyword;
+        }
+        return DeclKeyword::Let;
+    }
+    
+    /// @brief Check if a module member is mutable (let).
+    bool isModuleMemberMutable(ModuleAST* module, InternedString memberName) const {
+        const ValueDeclAST* decl = lookupModuleMember(module, memberName);
+        if (!decl) return false;
+        
+        if (decl->isa<VarDeclAST>()) {
+            return decl->as<VarDeclAST>()->keyword == DeclKeyword::Let;
+        }
+        if (decl->isa<FuncDeclAST>()) {
+            return decl->as<FuncDeclAST>()->keyword == DeclKeyword::Let;
+        }
+        return false;
+    }
+    
+    /// @brief Check if a module member is const.
+    bool isModuleMemberConst(ModuleAST* module, InternedString memberName) const {
+        const ValueDeclAST* decl = lookupModuleMember(module, memberName);
+        if (!decl) return false;
+        
+        if (decl->isa<VarDeclAST>()) {
+            return decl->as<VarDeclAST>()->keyword == DeclKeyword::Const;
+        }
+        if (decl->isa<FuncDeclAST>()) {
+            return decl->as<FuncDeclAST>()->keyword == DeclKeyword::Const;
+        }
+        if (decl->isa<EnumVariantAST>()) {
+            return true; // Enum variants are compile-time constants
+        }
+        return false;
     }
 };
 

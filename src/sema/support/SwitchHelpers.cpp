@@ -4,7 +4,6 @@
 #include "SwitchHelpers.hpp"
 #include "../types/SemaType.hpp"
 #include "../context/SemaContext.hpp"
-#include "core/diagnostics/DiagnosticCodes.hpp"
 
 namespace sema {
 namespace switch_helpers {
@@ -76,7 +75,7 @@ bool isEnumVariantAccess(const ExprAST* value, SemaContext& ctx) {
     const IdentifierExprAST* id = field->object->as<IdentifierExprAST>();
     
     // Object must resolve to an enum type
-    const TypeDeclAST* decl = lookupType(id->name, ctx);
+    const TypeDeclAST* decl = ctx.lookupType(id->name);
     return decl && decl->isa<EnumDeclAST>();
 }
 
@@ -96,7 +95,7 @@ const EnumDeclAST* getEnumDeclFromVariantAccess(const ExprAST* value, SemaContex
     
     const IdentifierExprAST* id = field->object->as<IdentifierExprAST>();
     
-    const TypeDeclAST* decl = lookupType(id->name, ctx);
+    const TypeDeclAST* decl = ctx.lookupType(id->name);
     if (!decl || !decl->isa<EnumDeclAST>()) return nullptr;
     
     return decl->as<EnumDeclAST>();

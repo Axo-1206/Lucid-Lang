@@ -2,7 +2,6 @@
 /// @brief Implementation of type comparison and assignability checks.
 
 #include "SemaCompare.hpp"
-#include "SemaLookup.hpp"
 #include "../context/SemaContext.hpp"
 #include "SemaResolve.hpp"
 #include "debug/DebugUtils.hpp"

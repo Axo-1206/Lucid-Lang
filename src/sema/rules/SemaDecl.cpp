@@ -39,7 +39,7 @@ namespace sema {
 ///   - This allows `module:member` syntax in expressions
 void registerImportName(const ImportDeclAST* decl, SemaContext& ctx) {
     // Check import alias redeclaration in the current module
-    if (reportImportAliasRedeclaration(decl->alias, decl, ctx)) {
+    if (ctx.reportImportAliasRedeclaration(decl->alias, decl)) {
         return;
     }
 
@@ -63,7 +63,7 @@ void registerImportName(const ImportDeclAST* decl, SemaContext& ctx) {
 ///   - For const declarations, initializer is NOT evaluated here
 void registerVarName(const VarDeclAST* decl, SemaContext& ctx) {
     // ─── 1. Check redeclaration ──────────────────────────────────────
-    if (reportValueRedeclaration(decl, ctx)) {
+    if (ctx.reportValueRedeclaration(decl)) {
         return;
     }
 
@@ -82,7 +82,7 @@ void registerVarName(const VarDeclAST* decl, SemaContext& ctx) {
 ///   - Body names are registered via registerStmtNames
 void registerFuncName(const FuncDeclAST* decl, SemaContext& ctx) {
     // ─── 1. Check redeclaration ───────────────────────────────────────────
-    if (reportValueRedeclaration(decl, ctx)) {
+    if (ctx.reportValueRedeclaration(decl)) {
         return;
     }
 
@@ -116,7 +116,7 @@ void registerFuncName(const FuncDeclAST* decl, SemaContext& ctx) {
 ///   - `ctx.insertValue(param)` - registers in value namespace
 ///   - Parameters shadow outer variables
 void registerParamName(const ParamAST* param, SemaContext& ctx) {
-    if (reportValueRedeclaration(param, ctx)) {
+    if (ctx.reportValueRedeclaration(param)) {
         return;
     }
     ctx.insertValue(param);
@@ -132,7 +132,7 @@ void registerParamName(const ParamAST* param, SemaContext& ctx) {
 ///   - Generic parameters have the HIGHEST lookup priority
 ///   - They shadow type names in the current scope
 void registerGenericParamName(const GenericParamDeclAST* param, SemaContext& ctx) {
-    if (reportGenericParamRedeclaration(param, ctx)) {
+    if (ctx.reportGenericParamRedeclaration(param)) {
         return;
     }
     ctx.insertGenericParam(param);
@@ -144,7 +144,7 @@ void registerGenericParamName(const GenericParamDeclAST* param, SemaContext& ctx
 ///   - `ctx.insertType(decl)` - registers in type namespace
 ///   - Variants are registered as values in the enum's scope
 void registerEnumName(const EnumDeclAST* decl, SemaContext& ctx) {
-    if (reportTypeRedeclaration(decl, ctx)) {
+    if (ctx.reportTypeRedeclaration(decl)) {
         return;
     }
     ctx.insertType(decl);
@@ -160,7 +160,7 @@ void registerEnumName(const EnumDeclAST* decl, SemaContext& ctx) {
 ///   - `ctx.insertType(decl)` - registers in type namespace
 ///   - Generic params registered BEFORE fields
 void registerTraitName(const TraitDeclAST* decl, SemaContext& ctx) {
-    if (reportTypeRedeclaration(decl, ctx)) {
+    if (ctx.reportTypeRedeclaration(decl)) {
         return;
     }
     ctx.insertType(decl);
@@ -179,7 +179,7 @@ void registerTraitName(const TraitDeclAST* decl, SemaContext& ctx) {
 ///   - Generic params registered BEFORE fields
 ///   - Fields are registered in Phase 1 (registerStructFieldNames)
 void registerStructName(const StructDeclAST* decl, SemaContext& ctx) {
-    if (reportTypeRedeclaration(decl, ctx)) {
+    if (ctx.reportTypeRedeclaration(decl)) {
         return;
     }
     ctx.insertType(decl);

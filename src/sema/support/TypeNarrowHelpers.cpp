@@ -4,7 +4,6 @@
 #include "TypeNarrowHelpers.hpp"
 #include "../Sema.hpp"
 #include "../types/SemaCompare.hpp"
-#include "../types/SemaLookup.hpp"
 #include "../types/SemaResolve.hpp"
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/DeclAST.hpp"
@@ -96,7 +95,7 @@ NarrowingInfo extractNarrowingsFromCondition(const ExprAST* expr, SemaContext& c
         if (unary->operand->isa<IdentifierExprAST>()) {
             const IdentifierExprAST* id = unary->operand->as<IdentifierExprAST>();
             
-            const ValueDeclAST* decl = lookupValue(id->name, ctx);
+            const ValueDeclAST* decl = ctx.lookupValue(id->name);
             if (decl) {
                 const TypeAST* innerType = getInnerType(decl, ctx);
                 if (innerType) {
@@ -168,7 +167,7 @@ void detectIdentifierNarrowing(NarrowingInfo& info, const IdentifierExprAST* id,
     }
 
     // Look up the variable using existing infrastructure
-    const ValueDeclAST* decl = lookupValue(id->name, ctx);
+    const ValueDeclAST* decl = ctx.lookupValue(id->name);
     if (!decl) return;
 
     // Check if the variable is nullable or fallible using SemaCompare
@@ -232,7 +231,7 @@ NarrowingInfo detectNarrowingPattern(const BinaryExprAST* binary, SemaContext& c
     if (result.hasNarrowing) {
         for (const auto& [varName, narrowedType] : result.narrowings) {
             // Look up the variable using existing infrastructure
-            const ValueDeclAST* decl = lookupValue(varName, ctx);
+            const ValueDeclAST* decl = ctx.lookupValue(varName);
             if (!decl) {
                 ctx.diagnostics.error(DiagCode::Sem_UndefinedValue, binary,
                                       "undefined variable '", ctx.pool.lookup(varName), "'");

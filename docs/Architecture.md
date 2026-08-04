@@ -555,6 +555,7 @@ lucid/
     │   │
     │   ├── context/                            # Context components
     │   │   ├── ContextStack.hpp/cpp            
+    │   │   ├── ReturnRequirements.hpp/cpp      # track function body requirrments on return statement
     │   │   └── SemaContext.hpp                 # Unified context (composition)
     │   │
     │   ├── rules/                              # Analysis rules (unchanged)

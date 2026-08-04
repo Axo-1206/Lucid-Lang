@@ -2,7 +2,6 @@
 /// @brief Implementation of type resolution functions.
 
 #include "SemaResolve.hpp"
-#include "SemaLookup.hpp"
 #include "SemaCompare.hpp"
 #include "SemaValidate.hpp"
 #include "../context/SemaContext.hpp"

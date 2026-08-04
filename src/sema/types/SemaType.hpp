@@ -31,7 +31,6 @@
 
 #pragma once
 
-#include "SemaLookup.hpp"
 #include "SemaResolve.hpp"
 #include "SemaCompare.hpp"
 #include "SemaValidate.hpp"

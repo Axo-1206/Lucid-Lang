@@ -4,7 +4,6 @@
 #include "SemaStructField.hpp"
 #include "../Sema.hpp"
 #include "../context/SemaContext.hpp"
-#include "../types/SemaLookup.hpp"
 #include "../types/SemaResolve.hpp"
 #include "../types/SemaCompare.hpp"
 #include "debug/DebugUtils.hpp"
