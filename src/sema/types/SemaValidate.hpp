@@ -1,17 +1,5 @@
 /// @file SemaValidate.hpp
 /// @brief Semantic validation rules for declarations and constructs.
-/// 
-/// These functions check semantic rules that go beyond type resolution:
-/// - Trait implementation validation
-/// - Generic constraint validation
-/// - Const field validation
-/// - Downward Flow Rule (reference types)
-/// 
-/// @validation_rules
-///   1. Trait implementations must provide all required fields
-///   2. Generic arguments must satisfy constraints
-///   3. Const fields cannot be nullable or fallible
-///   4. Reference types cannot be stored (Downward Flow)
 
 #pragma once
 
@@ -24,6 +12,42 @@
 #include <vector>
 
 namespace sema {
+
+// ─── Const Validation ────────────────────────────────────────────────────
+
+/// @brief Validate that a const declaration has a definite (non-nullable, non-fallible) type.
+/// 
+/// Const declarations cannot be nullable or fallible because they must have
+/// a definite value at compile time.
+/// 
+/// @param type The type to validate.
+/// @param name The name of the declaration (for error messages).
+/// @param kind The kind of declaration (for error messages).
+/// @param ctx The semantic context.
+/// @return true if the type is valid for a const declaration.
+/// 
+/// @example
+///   validateConstType(type, "x", "variable", ctx);
+///   validateConstType(type, "field", "struct field", ctx);
+bool validateConstType(const TypeAST* type,
+                        InternedString name,
+                        const char* kind,
+                        SemaContext& ctx);
+
+/// @brief Validate that a const declaration has an initializer.
+/// 
+/// Const declarations must always have an initializer because they cannot
+/// be assigned later.
+/// 
+/// @param hasInit True if the declaration has an initializer.
+/// @param name The name of the declaration (for error messages).
+/// @param kind The kind of declaration (for error messages).
+/// @param ctx The semantic context.
+/// @return true if the declaration has an initializer.
+bool validateConstInitializer(bool hasInit,
+                               InternedString name,
+                               const char* kind,
+                               SemaContext& ctx);
 
 // ─── Trait Validation ────────────────────────────────────────────────────
 
@@ -63,11 +87,6 @@ bool isFieldAccessibleOnGenericType(const TypeAST* genericType,
 const TypeAST* getFieldTypeOnGenericType(const TypeAST* genericType,
                                          InternedString fieldName,
                                          SemaContext& ctx);
-
-// ─── Const Field Validation ──────────────────────────────────────────────
-
-/// @brief Validate that a trait field's type is not nullable or fallible.
-bool validateTraitFieldType(const TypeAST* type, SemaContext& ctx);
 
 // ─── Downward Flow Rule ──────────────────────────────────────────────────
 

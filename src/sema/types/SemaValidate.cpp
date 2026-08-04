@@ -239,6 +239,45 @@ static bool checkTraitFieldConflictsInternal(
     return !hasConflict;
 }
 
+// ─── Const Validation ────────────────────────────────────────────────────
+
+bool validateConstType(const TypeAST* type,
+                        InternedString name,
+                        const char* kind,
+                        SemaContext& ctx) {
+    if (!type) return false;
+
+    if (isNullableType(type) || isFallibleType(type)) {
+        ctx.diagnostics.error(DiagCode::Sem_ConstNullable, type,
+                              "const ", kind, " '", ctx.pool.lookup(name),
+                              "' must be definite (not nullable or fallible)");
+        return false;
+    }
+
+    // Combined type (T?!) is also not allowed for const
+    if (type->isa<CombinedTypeAST>()) {
+        ctx.diagnostics.error(DiagCode::Sem_ConstNullable, type,
+                              "const ", kind, " '", ctx.pool.lookup(name),
+                              "' cannot be combined (T?!). Use a definite type.");
+        return false;
+    }
+
+    return true;
+}
+
+bool validateConstInitializer(bool hasInit,
+                               InternedString name,
+                               const char* kind,
+                               SemaContext& ctx) {
+    if (!hasInit) {
+        ctx.diagnostics.error(DiagCode::Sem_MissingInitializer, nullptr,
+                              "const ", kind, " '", ctx.pool.lookup(name),
+                              "' must have an initializer");
+        return false;
+    }
+    return true;
+}
+
 // ─── Public Trait Validation ────────────────────────────────────────────
 
 bool validateTraitImplementation(const StructDeclAST* structDecl,

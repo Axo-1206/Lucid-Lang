@@ -236,12 +236,14 @@ void resolveVarDecl(const VarDeclAST* decl, SemaContext& ctx) {
         return;
     }
 
-    // ─── 2. Const requires initializer ──────────────────────────────
-    if (decl->keyword == DeclKeyword::Const && !decl->init) {
-        ctx.diagnostics.error(DiagCode::Sem_MissingInitializer, decl,
-                              "const variable '", ctx.pool.lookup(decl->name), 
-                              "' must have an initializer");
-        return;
+    // ─── 2. Validate const type and initializer ──────────────────────
+    if (decl->keyword == DeclKeyword::Const) {
+        if (!validateConstType(declaredType, decl->name, "variable", ctx)) {
+            return;
+        }
+        if (!validateConstInitializer(decl->init != nullptr, decl->name, "variable", ctx)) {
+            return;
+        }
     }
 
     // ─── 3. Check initializer ────────────────────────────────────────
@@ -266,9 +268,6 @@ void resolveVarDecl(const VarDeclAST* decl, SemaContext& ctx) {
     }
 
     // ─── 5. REGISTER the variable in the current scope ────────────────
-    // This is critical for local variables to be visible
-    // For top-level variables, this was already done in Phase 1
-    // For local variables, this registers them in the current block scope
     if (!ctx.isAtModuleLevel()) {
         ctx.insertValue(decl);
     }
@@ -388,8 +387,15 @@ void resolveParam(const ParamAST* param, SemaContext& ctx) {
         return;
     }
     
+    // ─── Validate const parameter ──────────────────────────────────────
+    if (param->isConst) {
+        // Const parameters must have definite types
+        if (!validateConstType(paramType, param->name, "parameter", ctx)) {
+            return;
+        }
+    }
+    
     // Register the parameter name in the current scope
-    // (This is called while the function's parameter scope is active)
     ctx.insertValue(param);
 }
 
@@ -492,11 +498,9 @@ void resolveTraitDecl(const TraitDeclAST* decl, SemaContext& ctx) {
             continue;
         }
 
+        // ─── Validate const trait field ──────────────────────────────────
         if (field->isConst) {
-            if (isNullableType(fieldType) || isFallibleType(fieldType)) {
-                ctx.diagnostics.error(DiagCode::Sem_ConstNullable, field,
-                                      "const trait field '", ctx.pool.lookup(field->name),
-                                      "' must be definite (not nullable or fallible)");
+            if (!validateConstType(fieldType, field->name, "trait field", ctx)) {
                 continue;
             }
         }
@@ -569,41 +573,38 @@ void resolveStructFields(const StructDeclAST* decl, SemaContext& ctx) {
 
         // ─── 2a. Resolve the field's type ──────────────────────────────
         TypeAST* fieldType = resolveType(field->type, ctx);
-        if (!isValidStructSelfReference(field->type, decl, ctx)) {
-            // Error already reported by isValidStructSelfReference
+        if (!fieldType) {
             continue;
         }
-        // ─── 2b. Validate const field type ──────────────────────────────
+
+        // ─── 2b. Validate self-reference ────────────────────────────────
+        isValidStructSelfReference(fieldType, decl, ctx);
+
+        // ─── 2c. Validate const field type ──────────────────────────────
         if (field->isConst) {
-            if (isNullableType(fieldType) || isFallibleType(fieldType)) {
-                ctx.diagnostics.error(DiagCode::Sem_ConstNullable, field,
-                                      "const field '", ctx.pool.lookup(field->name),
-                                      "' must be definite (not nullable or fallible)");
+            if (!validateConstType(fieldType, field->name, "struct field", ctx)) {
                 continue;
             }
         }
 
-        // ─── 2c. Check default value ────────────────────────────────────
+        // ─── 2d. Check default value ────────────────────────────────────
         if (field->defaultVal) {
-            // Function fields are handled separately
             if (!fieldType->isa<FuncTypeAST>()) {
-                // Resolve default value against the field type
                 TypeAST* defaultType = resolveExprWithTarget(field->defaultVal, fieldType, ctx);
                 if (!defaultType || defaultType->isa<UnknownTypeAST>()) {
-                    // Error already reported by resolveExprWithTarget
                     continue;
                 }
             }
         }
 
-        // ─── 2d. Validate reference type context (Downward Flow Rule) ────
+        // ─── 2e. Validate reference type context (Downward Flow Rule) ────
         if (fieldType->isa<RefTypeAST>()) {
             ctx.diagnostics.error(DiagCode::Sem_RefInStruct, field,
                                   "reference type (&T) cannot be stored in struct field '",
                                   ctx.pool.lookup(field->name), "'");
         }
 
-        // ─── 2e. Analyze function field bodies ──────────────────────────
+        // ─── 2f. Analyze function field bodies ──────────────────────────
         if (fieldType->isa<FuncTypeAST>()) {
             analyzeFunctionFieldBody(field, decl, ctx);
         }
