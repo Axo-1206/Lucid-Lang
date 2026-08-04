@@ -8,7 +8,6 @@
 /// 
 /// | File             | Purpose                                             |
 /// | ---------------- | --------------------------------------------------- |
-/// | SemaLookup.hpp   | Pure name lookup - find declarations by name        |
 /// | SemaResolve.hpp  | Type resolution - convert type AST to semantic type |
 /// | SemaCompare.hpp  | Type comparison and assignability                   |
 /// | SemaValidate.hpp | Semantic validation rules                           |
@@ -17,9 +16,6 @@
 /// 
 /// | What you need                  | Where to look | Function                        |
 /// | ------------------------------ | ------------- | ------------------------------- |
-/// | Find a declaration by name     | SemaLookup    | `lookupValue()`, `lookupType()` |
-/// | Check if name is generic param | SemaLookup    | `isGenericParam()`              |
-/// | Check for redeclaration        | SemaLookup    | `reportValueRedeclaration()`    |
 /// | Resolve a type annotation      | SemaResolve   | `resolveType()`                 |
 /// | Resolve a trait reference      | SemaResolve   | `resolveTraitRef()`             |
 /// | Compare two types              | SemaCompare   | `typesEqual()`                  |

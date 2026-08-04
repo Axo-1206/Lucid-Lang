@@ -4,7 +4,6 @@
 #include "ConstEvaluator.hpp"
 #include "sema/context/SemaContext.hpp"
 #include "sema/types/SemaCompare.hpp"  // For isNullableType, isFallibleType, typesEqual
-#include "sema/types/SemaLookup.hpp"   // For lookupValue, lookupType
 #include "sema/types/SemaResolve.hpp"  // For resolveType
 
 #include <cmath>
@@ -220,7 +219,7 @@ ConstantValue ConstEvaluator::evalIdentifier(SemaContext& ctx, std::vector<Const
     }
 
     // Use existing lookup infrastructure
-    const ValueDeclAST* decl = lookupValue(expr->name, ctx);
+    const ValueDeclAST* decl = ctx.lookupValue(expr->name);
     if (!decl) return ConstantValue::error();
 
     if (decl->isa<VarDeclAST>()) {
@@ -495,7 +494,7 @@ TypeAST* ConstEvaluator::getConstantType(SemaContext& ctx, const ConstantValue& 
 
 ConstantValue ConstEvaluator::evalStructLiteral(SemaContext& ctx, const StructLiteralExprAST* expr) {
     // Use existing lookup infrastructure
-    const TypeDeclAST* typeDecl = lookupType(expr->typeName, ctx);
+    const TypeDeclAST* typeDecl = ctx.lookupType(expr->typeName);
     if (!typeDecl) {
         return ConstantValue::error();
     }
@@ -916,7 +915,7 @@ void ConstEvaluator::collectDeps(SemaContext& ctx, const ExprAST* expr,
         case ASTKind::IdentifierExpr: {
             const IdentifierExprAST* id = expr->as<IdentifierExprAST>();
             // Use existing lookup infrastructure
-            const ValueDeclAST* decl = lookupValue(id->name, ctx);
+            const ValueDeclAST* decl = ctx.lookupValue(id->name);
             if (decl && decl->isa<VarDeclAST>()) {
                 const VarDeclAST* var = decl->as<VarDeclAST>();
                 if (var->keyword == DeclKeyword::Const) {
