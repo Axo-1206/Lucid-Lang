@@ -569,10 +569,10 @@ void resolveStructFields(const StructDeclAST* decl, SemaContext& ctx) {
 
         // ─── 2a. Resolve the field's type ──────────────────────────────
         TypeAST* fieldType = resolveType(field->type, ctx);
-        if (!fieldType) {
+        if (!isValidStructSelfReference(field->type, decl, ctx)) {
+            // Error already reported by isValidStructSelfReference
             continue;
         }
-
         // ─── 2b. Validate const field type ──────────────────────────────
         if (field->isConst) {
             if (isNullableType(fieldType) || isFallibleType(fieldType)) {

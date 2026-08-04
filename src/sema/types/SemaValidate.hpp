@@ -66,9 +66,6 @@ const TypeAST* getFieldTypeOnGenericType(const TypeAST* genericType,
 
 // ─── Const Field Validation ──────────────────────────────────────────────
 
-/// @brief Validate that a const field's type is not nullable or fallible.
-bool validateConstFieldType(const TypeAST* type, SemaContext& ctx);
-
 /// @brief Validate that a trait field's type is not nullable or fallible.
 bool validateTraitFieldType(const TypeAST* type, SemaContext& ctx);
 

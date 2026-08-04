@@ -586,4 +586,72 @@ void checkLetSelfReference(const ExprAST* expr, InternedString varName, SemaCont
     }
 }
 
+// ─── Struct Self-Reference Validation ─────────────────────────────────────
+
+bool isValidStructSelfReference(const TypeAST* fieldType,
+                                 const StructDeclAST* currentStruct,
+                                 SemaContext& ctx) {
+    if (!fieldType || !currentStruct) return false;
+
+    // ─── Step 1: Unwrap nullable and pointer layers ────────────────────────
+    bool isNullable = false;
+    bool isPointer = false;
+    const TypeAST* innerType = fieldType;
+
+    if (fieldType->isa<NullableTypeAST>()) {
+        isNullable = true;
+        innerType = fieldType->as<NullableTypeAST>()->inner;
+    }
+
+    if (innerType->isa<PtrTypeAST>()) {
+        isPointer = true;
+        innerType = innerType->as<PtrTypeAST>()->inner;
+    }
+
+    // ─── Step 2: Check if the inner type is a NamedType ────────────────────
+    if (!innerType->isa<NamedTypeAST>()) {
+        return false;  // Not a self-reference
+    }
+
+    const NamedTypeAST* named = innerType->as<NamedTypeAST>();
+
+    // ─── Step 3: Check if it references the current struct ─────────────────
+    if (named->name != currentStruct->name) {
+        return false;  // Not a self-reference
+    }
+
+    // ─── Step 4: Check generic arguments match ─────────────────────────────
+    if (named->genericArgs.size() != currentStruct->genericParams.size()) {
+        return false;  // Different instantiation
+    }
+
+    for (size_t i = 0; i < named->genericArgs.size(); ++i) {
+        TypeAST* arg = named->genericArgs[i];
+        const GenericParamDeclAST* param = currentStruct->genericParams[i];
+        
+        if (arg->isa<NamedTypeAST>()) {
+            NamedTypeAST* argNamed = arg->as<NamedTypeAST>();
+            if (argNamed->name != param->name) {
+                return false;  // Different generic arguments
+            }
+        } else {
+            return false;  // Not a generic parameter reference
+        }
+    }
+
+    // ─── Step 5: Validate self-reference rules ─────────────────────────────
+    // Self-reference is only valid if it's nullable or a raw pointer
+    if (!isNullable && !isPointer) {
+        ctx.diagnostics.error(DiagCode::Sem_InvalidParamType, fieldType,
+                              "non-nullable self-reference in struct '",
+                              ctx.pool.lookup(currentStruct->name),
+                              "' (use '?', '*', or '*?' to allow recursion)");
+        return false;
+    }
+
+    // Self-reference through raw pointer is always allowed
+    // Self-reference through nullable is always allowed
+    return true;
+}
+
 } // namespace sema

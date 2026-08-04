@@ -443,17 +443,6 @@ const TypeAST* getFieldTypeOnGenericType(const TypeAST* genericType,
     return nullptr;
 }
 
-// ─── Const Field Validation ──────────────────────────────────────────────
-
-bool validateConstFieldType(const TypeAST* type, SemaContext& ctx) {
-    if (isNullableType(type) || isFallibleType(type)) {
-        ctx.diagnostics.error(DiagCode::Sem_ConstNullable, type,
-                              "const field cannot be nullable or fallible");
-        return false;
-    }
-    return true;
-}
-
 bool validateTraitFieldType(const TypeAST* type, SemaContext& ctx) {
     if (isNullableType(type) || isFallibleType(type)) {
         ctx.diagnostics.error(DiagCode::Sem_ConstNullable, type,

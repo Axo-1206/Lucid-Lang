@@ -214,4 +214,18 @@ const FuncDeclAST* resolveCalleeOrError(const ExprAST* callee, SemaContext& ctx)
 ///   }
 void checkLetSelfReference(const ExprAST* expr, InternedString varName, SemaContext& ctx);
 
+/// @file SemaResolve.hpp (add declaration)
+
+/// @brief Check if a field type is a self-reference to the current struct.
+/// 
+/// A self-reference is allowed only if the field is nullable (T?) or 
+/// a raw pointer (*T). Non-nullable self-reference (T) is a compile error.
+/// 
+/// @param fieldType The field's type.
+/// @param currentStruct The struct being defined.
+/// @param ctx The semantic context.
+/// @return true if this is a valid self-reference, false if invalid.
+bool isValidStructSelfReference(const TypeAST* fieldType,
+                                 const StructDeclAST* currentStruct,
+                                 SemaContext& ctx);
 } // namespace sema
