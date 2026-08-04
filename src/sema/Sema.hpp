@@ -209,14 +209,54 @@ TypeAST* resolveIfExpr(IfExprAST* expr, const TypeAST* targetType, SemaContext& 
 /// @brief Resolve a range expression.
 TypeAST* resolveRangeExpr(RangeExprAST* expr, const TypeAST* targetType, SemaContext& ctx);
 
+
 // =============================================================================
-// CONST EVALUATION
+// Helper: Check if an expression is a function value used by 
+// resolveStructLiteralExpr and resolveStructFields
 // =============================================================================
 
-/// @brief Evaluate all const declarations in the modules.
+/// @brief Check if an expression is a function value.
 /// 
-/// Called after type checking. Replaces const expressions with their
-/// evaluated values (stored in ExprAST::constValue).
-void evaluateConstDeclarations(std::vector<ModuleAST*>& modules, SemaContext& ctx);
+/// A function value can be:
+///   - A named function reference (IdentifierExprAST)
+///   - A module function reference (ModuleAccessExprAST)
+///   - A call that returns a function (CallExprAST)
+///   - A field access that returns a function (FieldAccessExprAST)
+/// 
+/// @param expr The expression to check.
+/// @param ctx The semantic context.
+/// @return true if the expression evaluates to a function value.
+static bool isFunctionValue(const ExprAST* expr, SemaContext& ctx) {
+    if (!expr) return false;
+
+    switch (expr->kind) {
+        case ASTKind::IdentifierExpr: {
+            const IdentifierExprAST* id = expr->as<IdentifierExprAST>();
+            const ValueDeclAST* decl = ctx.lookupValue(id->name);
+            return decl && decl->isa<FuncDeclAST>();
+        }
+
+        case ASTKind::ModuleAccessExpr: {
+            const ModuleAccessExprAST* access = expr->as<ModuleAccessExprAST>();
+            const ValueDeclAST* decl = ctx.lookupValueByAlias(access->moduleName, access->memberName);
+            return decl && decl->isa<FuncDeclAST>();
+        }
+
+        case ASTKind::CallExpr: {
+            return expr->resolvedType && expr->resolvedType->isa<FuncTypeAST>();
+        }
+
+        case ASTKind::FieldAccessExpr: {
+            return expr->resolvedType && expr->resolvedType->isa<FuncTypeAST>();
+        }
+
+        case ASTKind::AnonFuncExpr: {
+            return true;
+        }
+
+        default:
+            return false;
+    }
+}
 
 } // namespace sema

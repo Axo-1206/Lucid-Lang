@@ -48,6 +48,8 @@ enum class SyntacticContext {
     GenericArgs,    // < ... >  (use site: map<int, string>)
     FuncParams,     // ( ... )  parameter list
     FuncBody,       // { ... }  function body
+    FieldBody,      // similar to function body but don't have the 
+                    // feature like generic function, this rely on its struct generic 
     StructBody,     // struct { ... }
     EnumBody,       // enum { ... }
     TraitBody,      // trait { ... }
@@ -61,6 +63,7 @@ inline const char* syntacticContextName(SyntacticContext kind) {
         case SyntacticContext::GenericArgs:   return "generic argument list";
         case SyntacticContext::FuncParams:    return "function parameter list";
         case SyntacticContext::FuncBody:      return "function body";
+        case SyntacticContext::FieldBody:     return "field body";
         case SyntacticContext::StructBody:    return "struct body";
         case SyntacticContext::EnumBody:      return "enum body";
         case SyntacticContext::TraitBody:     return "trait body";

@@ -165,33 +165,92 @@ struct SemaContext {
         return scopes.back();
     }
     
-    // ─── Symbol Insertion ──────────────────────────────────────────────
+    // ─── Symbol Insertion (with automatic duplicate checking) ──────────
     
-    void insertValue(const ValueDeclAST* decl) {
+    /// @brief Insert a value declaration with automatic duplicate checking.
+    /// 
+    /// @param decl The declaration to insert.
+    /// @return true if inserted successfully, false if a duplicate was found.
+    bool insertValue(const ValueDeclAST* decl) {
         if (isAtModuleLevel()) {
+            if (currentModuleTable->values.find(decl->name) != currentModuleTable->values.end()) {
+                diagnostics.error(DiagCode::Sem_Redeclaration, decl,
+                                  "redeclaration of '", pool.lookup(decl->name), 
+                                  "' in the same scope");
+                return false;
+            }
             currentModuleTable->values[decl->name] = decl;
+            return true;
         } else {
+            if (currentScope().values.find(decl->name) != currentScope().values.end()) {
+                diagnostics.error(DiagCode::Sem_Redeclaration, decl,
+                                  "redeclaration of '", pool.lookup(decl->name), 
+                                  "' in the same scope");
+                return false;
+            }
             currentScope().values[decl->name] = decl;
+            return true;
         }
     }
     
-    void insertType(const TypeDeclAST* decl) {
+    /// @brief Insert a type declaration with automatic duplicate checking.
+    /// 
+    /// @param decl The declaration to insert.
+    /// @return true if inserted successfully, false if a duplicate was found.
+    bool insertType(const TypeDeclAST* decl) {
         if (isAtModuleLevel()) {
+            if (currentModuleTable->types.find(decl->name) != currentModuleTable->types.end()) {
+                diagnostics.error(DiagCode::Sem_Redeclaration, decl,
+                                  "redeclaration of '", pool.lookup(decl->name), 
+                                  "' in the same scope");
+                return false;
+            }
             currentModuleTable->types[decl->name] = decl;
+            return true;
         } else {
+            if (currentScope().types.find(decl->name) != currentScope().types.end()) {
+                diagnostics.error(DiagCode::Sem_Redeclaration, decl,
+                                  "redeclaration of '", pool.lookup(decl->name), 
+                                  "' in the same scope");
+                return false;
+            }
             currentScope().types[decl->name] = decl;
+            return true;
         }
     }
     
-    void insertGenericParam(const GenericParamDeclAST* param) {
+    /// @brief Insert a generic parameter with duplicate checking.
+    /// 
+    /// @param param The generic parameter to insert.
+    /// @return true if inserted successfully, false if a duplicate was found.
+    bool insertGenericParam(const GenericParamDeclAST* param) {
         assert(!isAtModuleLevel() && "insertGenericParam() requires an open Scope");
+        if (currentScope().genericParams.find(param->name) != currentScope().genericParams.end()) {
+            diagnostics.error(DiagCode::Sem_GenericParamRedeclaration, param,
+                              "redeclaration of generic parameter '", 
+                              pool.lookup(param->name), "' in the same scope");
+            return false;
+        }
         currentScope().genericParams[param->name] = param;
+        return true;
     }
     
-    void addImportAlias(InternedString alias, ModuleAST* module) {
-        if (currentModuleTable) {
-            currentModuleTable->importAliases[alias] = module;
+    /// @brief Insert an import alias with duplicate checking.
+    /// 
+    /// @param alias The import alias.
+    /// @param module The module to associate with the alias.
+    /// @param node The AST node for error reporting.
+    /// @return true if inserted successfully, false if a duplicate was found.
+    bool addImportAlias(InternedString alias, ModuleAST* module, const BaseAST* node = nullptr) {
+        if (!currentModuleTable) return false;
+        if (currentModuleTable->importAliases.find(alias) != currentModuleTable->importAliases.end()) {
+            diagnostics.error(DiagCode::Sem_ImportAliasRedeclaration, node ? node : module,
+                              "redeclaration of import alias '", 
+                              pool.lookup(alias), "'");
+            return false;
         }
+        currentModuleTable->importAliases[alias] = module;
+        return true;
     }
     
     // ─── Symbol Lookup ──────────────────────────────────────────────────
@@ -273,48 +332,24 @@ struct SemaContext {
     // ─── Module Member Lookup ──────────────────────────────────────────
     
     /// @brief Look up a value member in a module's table.
-    /// 
-    /// This is a convenience wrapper that handles the module table lookup
-    /// and returns the value declaration directly.
-    /// 
-    /// @param module The module to search.
-    /// @param memberName The member name to look up.
-    /// @return The ValueDeclAST if found, nullptr otherwise.
     const ValueDeclAST* lookupModuleValueMember(ModuleAST* module, InternedString memberName) const {
         if (!module) return nullptr;
-        
         auto it = moduleTables.find(module);
         if (it == moduleTables.end()) return nullptr;
-        
         auto found = it->second.values.find(memberName);
         return found != it->second.values.end() ? found->second : nullptr;
     }
     
     /// @brief Look up a type member in a module's table.
-    /// 
-    /// This is a convenience wrapper that handles the module table lookup
-    /// and returns the type declaration directly.
-    /// 
-    /// @param module The module to search.
-    /// @param memberName The member name to look up.
-    /// @return The TypeDeclAST if found, nullptr otherwise.
     const TypeDeclAST* lookupModuleTypeMember(ModuleAST* module, InternedString memberName) const {
         if (!module) return nullptr;
-        
         auto it = moduleTables.find(module);
         if (it == moduleTables.end()) return nullptr;
-        
         auto found = it->second.types.find(memberName);
         return found != it->second.types.end() ? found->second : nullptr;
     }
     
     /// @brief Look up a value member by module alias.
-    /// 
-    /// This combines module lookup and value member lookup in one call.
-    /// 
-    /// @param alias The module alias.
-    /// @param memberName The member name to look up.
-    /// @return The ValueDeclAST if found, nullptr otherwise.
     const ValueDeclAST* lookupValueByAlias(InternedString alias, InternedString memberName) const {
         ModuleAST* module = lookupImport(alias);
         if (!module) return nullptr;
@@ -322,143 +357,119 @@ struct SemaContext {
     }
     
     /// @brief Look up a type member by module alias.
-    /// 
-    /// This combines module lookup and type member lookup in one call.
-    /// 
-    /// @param alias The module alias.
-    /// @param memberName The member name to look up.
-    /// @return The TypeDeclAST if found, nullptr otherwise.
     const TypeDeclAST* lookupTypeByAlias(InternedString alias, InternedString memberName) const {
         ModuleAST* module = lookupImport(alias);
         if (!module) return nullptr;
         return lookupModuleTypeMember(module, memberName);
     }
     
-    /// @brief Check if a value member exists in a module.
-    bool hasModuleValueMember(ModuleAST* module, InternedString memberName) const {
-        return lookupModuleValueMember(module, memberName) != nullptr;
-    }
+    // ─── Export Checking ──────────────────────────────────────────────
     
-    /// @brief Check if a type member exists in a module.
-    bool hasModuleTypeMember(ModuleAST* module, InternedString memberName) const {
-        return lookupModuleTypeMember(module, memberName) != nullptr;
-    }
-    
-    /// @brief Check if a value member exists by module alias.
-    bool hasValueByAlias(InternedString alias, InternedString memberName) const {
-        return lookupValueByAlias(alias, memberName) != nullptr;
-    }
-    
-    /// @brief Check if a type member exists by module alias.
-    bool hasTypeByAlias(InternedString alias, InternedString memberName) const {
-        return lookupTypeByAlias(alias, memberName) != nullptr;
-    }
-    
-    // ─── Redeclaration Checks ──────────────────────────────────────────
-    
-    /// @brief Check if a value name is already declared in the current tier.
-    bool isValueRedeclared(InternedString name) const {
-        if (isAtModuleLevel()) {
-            return currentModuleTable && 
-                   currentModuleTable->values.find(name) != currentModuleTable->values.end();
-        } else {
-            return currentScope().values.find(name) != currentScope().values.end();
+    /// @brief Check if a declaration has the @[export] attribute.
+    bool isExported(const DeclAST* decl) const {
+        if (!decl) return false;
+        for (AttributeAST* attr : decl->attributes) {
+            if (attr->name == pool.intern("export")) {
+                return true;
+            }
         }
+        return false;
     }
     
-    /// @brief Check if a type name is already declared in the current tier.
-    bool isTypeRedeclared(InternedString name) const {
-        if (isAtModuleLevel()) {
-            return currentModuleTable && 
-                   currentModuleTable->types.find(name) != currentModuleTable->types.end();
-        } else {
-            return currentScope().types.find(name) != currentScope().types.end();
+    /// @brief Check if a type declaration is exported.
+    bool isTypeExported(const TypeDeclAST* decl) const {
+        return isExported(decl);
+    }
+    
+    /// @brief Check if a value declaration is exported.
+    bool isValueExported(const ValueDeclAST* decl) const {
+        return isExported(decl);
+    }
+    
+    // ─── Convenience: Module Member Keyword Info ──────────────────────
+    
+    /// @brief Look up a module member's keyword.
+    DeclKeyword lookupModuleMemberKeyword(ModuleAST* module, InternedString memberName) const {
+        const ValueDeclAST* decl = lookupModuleValueMember(module, memberName);
+        if (!decl) return DeclKeyword::Let;
+        if (decl->isa<VarDeclAST>()) {
+            return decl->as<VarDeclAST>()->keyword;
         }
-    }
-    
-    /// @brief Check if a generic parameter name is already declared in the current tier.
-    bool isGenericParamRedeclared(InternedString name) const {
-        if (isAtModuleLevel()) {
-            return false; // Generic params are never at module level
+        if (decl->isa<FuncDeclAST>()) {
+            return decl->as<FuncDeclAST>()->keyword;
         }
-        return currentScope().genericParams.find(name) != currentScope().genericParams.end();
+        return DeclKeyword::Let;
     }
     
-    /// @brief Check if an import alias is already declared in the current module.
-    bool isImportAliasRedeclared(InternedString alias) const {
-        return currentModuleTable && 
-               currentModuleTable->importAliases.find(alias) != currentModuleTable->importAliases.end();
+    /// @brief Check if a module member is mutable (let).
+    bool isModuleMemberMutable(ModuleAST* module, InternedString memberName) const {
+        const ValueDeclAST* decl = lookupModuleValueMember(module, memberName);
+        if (!decl) return false;
+        if (decl->isa<VarDeclAST>()) {
+            return decl->as<VarDeclAST>()->keyword == DeclKeyword::Let;
+        }
+        if (decl->isa<FuncDeclAST>()) {
+            return decl->as<FuncDeclAST>()->keyword == DeclKeyword::Let;
+        }
+        return false;
     }
     
-    // ─── Redeclaration Reporting ──────────────────────────────────────
-    
-    /// @brief Check and report value redeclaration.
-    bool reportValueRedeclaration(const DeclAST* node) {
-        if (isValueRedeclared(node->name)) {
-            diagnostics.error(DiagCode::Sem_Redeclaration, node,
-                              "redeclaration of '", pool.lookup(node->name), 
-                              "' in the same scope");
+    /// @brief Check if a module member is const.
+    bool isModuleMemberConst(ModuleAST* module, InternedString memberName) const {
+        const ValueDeclAST* decl = lookupModuleValueMember(module, memberName);
+        if (!decl) return false;
+        if (decl->isa<VarDeclAST>()) {
+            return decl->as<VarDeclAST>()->keyword == DeclKeyword::Const;
+        }
+        if (decl->isa<FuncDeclAST>()) {
+            return decl->as<FuncDeclAST>()->keyword == DeclKeyword::Const;
+        }
+        if (decl->isa<EnumVariantAST>()) {
             return true;
         }
         return false;
     }
     
-    /// @brief Check and report type redeclaration.
-    bool reportTypeRedeclaration(const DeclAST* node) {
-        if (isTypeRedeclared(node->name)) {
-            diagnostics.error(DiagCode::Sem_Redeclaration, node,
-                              "redeclaration of '", pool.lookup(node->name), 
-                              "' in the same scope");
-            return true;
-        }
-        return false;
+    /// @brief Look up a module member's keyword by alias.
+    DeclKeyword lookupModuleMemberKeywordByAlias(InternedString alias, InternedString memberName) const {
+        ModuleAST* module = lookupImport(alias);
+        if (!module) return DeclKeyword::Let;
+        return lookupModuleMemberKeyword(module, memberName);
     }
     
-    /// @brief Check and report generic parameter redeclaration.
-    bool reportGenericParamRedeclaration(const DeclAST* node) {
-        if (isGenericParamRedeclared(node->name)) {
-            diagnostics.error(DiagCode::Sem_GenericParamRedeclaration, node,
-                              "redeclaration of generic parameter '", 
-                              pool.lookup(node->name), "' in the same scope");
-            return true;
-        }
-        return false;
+    /// @brief Check if a module member is mutable by alias.
+    bool isModuleMemberMutableByAlias(InternedString alias, InternedString memberName) const {
+        ModuleAST* module = lookupImport(alias);
+        if (!module) return false;
+        return isModuleMemberMutable(module, memberName);
     }
     
-    /// @brief Check and report import alias redeclaration.
-    bool reportImportAliasRedeclaration(InternedString alias, const BaseAST* node) {
-        if (isImportAliasRedeclared(alias)) {
-            diagnostics.error(DiagCode::Sem_ImportAliasRedeclaration, node,
-                              "redeclaration of import alias '", 
-                              pool.lookup(alias), "'");
-            return true;
-        }
-        return false;
+    /// @brief Check if a module member is const by alias.
+    bool isModuleMemberConstByAlias(InternedString alias, InternedString memberName) const {
+        ModuleAST* module = lookupImport(alias);
+        if (!module) return false;
+        return isModuleMemberConst(module, memberName);
     }
     
     // ─── Concurrency Helpers ─────────────────────────────────────────────
     
-    /// @brief Add a pending async operation to the current scope.
     void addPendingAsync(InternedString name, const ExprAST* call, const SourceLocation& loc) {
         if (isAtModuleLevel()) return;
         PendingAsync pending{name, call, loc};
         currentScope().pendingAsync[name] = pending;
     }
     
-    /// @brief Add a pending spawn operation to the current scope.
     void addPendingSpawn(InternedString name, const ExprAST* call, const SourceLocation& loc) {
         if (isAtModuleLevel()) return;
         PendingSpawn pending{name, call, loc};
         currentScope().pendingSpawn[name] = pending;
     }
     
-    /// @brief Check if a name is a pending async operation.
     bool hasPendingAsync(InternedString name) const {
         if (scopes.empty()) return false;
         return currentScope().pendingAsync.find(name) != currentScope().pendingAsync.end();
     }
     
-    /// @brief Check if a name is a pending spawn operation.
     bool hasPendingSpawn(InternedString name) const {
         if (scopes.empty()) return false;
         return currentScope().pendingSpawn.find(name) != currentScope().pendingSpawn.end();
@@ -470,14 +481,12 @@ struct SemaContext {
         }
     }
     
-    /// @brief Resolve a pending spawn operation (remove it from the list).
     void resolveSpawn(InternedString name) {
         if (!scopes.empty()) {
             currentScope().pendingSpawn.erase(name);
         }
     }
     
-    /// @brief Get all pending async names in the current scope.
     std::vector<InternedString> getPendingAsyncNames() const {
         std::vector<InternedString> result;
         if (!scopes.empty()) {
@@ -488,7 +497,6 @@ struct SemaContext {
         return result;
     }
     
-    /// @brief Get all pending spawn names in the current scope.
     std::vector<InternedString> getPendingSpawnNames() const {
         std::vector<InternedString> result;
         if (!scopes.empty()) {
@@ -499,12 +507,10 @@ struct SemaContext {
         return result;
     }
     
-    /// @brief Check if there are any pending async operations.
     bool hasPendingAsync() const {
         return !scopes.empty() && !currentScope().pendingAsync.empty();
     }
     
-    /// @brief Check if there are any pending spawn operations.
     bool hasPendingSpawn() const {
         return !scopes.empty() && !currentScope().pendingSpawn.empty();
     }
@@ -596,97 +602,6 @@ struct SemaContext {
     
     const TypeDeclAST* currentDefiningType() const {
         return definingTypes.empty() ? nullptr : definingTypes.back();
-    }
-    
-    // ─── Export Checking ──────────────────────────────────────────────
-    
-    /// @brief Check if a declaration has the @[export] attribute.
-    bool isExported(const DeclAST* decl) const {
-        if (!decl) return false;
-        for (AttributeAST* attr : decl->attributes) {
-            if (attr->name == pool.intern("export")) {
-                return true;
-            }
-        }
-        return false;
-    }
-    
-    /// @brief Check if a type declaration is exported.
-    bool isTypeExported(const TypeDeclAST* decl) const {
-        return isExported(decl);
-    }
-    
-    /// @brief Check if a value declaration is exported.
-    bool isValueExported(const ValueDeclAST* decl) const {
-        return isExported(decl);
-    }
-    
-    // ─── Convenience: Module Member Keyword Info ──────────────────────
-    
-    /// @brief Look up a module member's keyword.
-    DeclKeyword lookupModuleMemberKeyword(ModuleAST* module, InternedString memberName) const {
-        const ValueDeclAST* decl = lookupModuleValueMember(module, memberName);
-        if (!decl) return DeclKeyword::Let;
-        
-        if (decl->isa<VarDeclAST>()) {
-            return decl->as<VarDeclAST>()->keyword;
-        }
-        if (decl->isa<FuncDeclAST>()) {
-            return decl->as<FuncDeclAST>()->keyword;
-        }
-        return DeclKeyword::Let;
-    }
-    
-    /// @brief Check if a module member is mutable (let).
-    bool isModuleMemberMutable(ModuleAST* module, InternedString memberName) const {
-        const ValueDeclAST* decl = lookupModuleValueMember(module, memberName);
-        if (!decl) return false;
-        
-        if (decl->isa<VarDeclAST>()) {
-            return decl->as<VarDeclAST>()->keyword == DeclKeyword::Let;
-        }
-        if (decl->isa<FuncDeclAST>()) {
-            return decl->as<FuncDeclAST>()->keyword == DeclKeyword::Let;
-        }
-        return false;
-    }
-    
-    /// @brief Check if a module member is const.
-    bool isModuleMemberConst(ModuleAST* module, InternedString memberName) const {
-        const ValueDeclAST* decl = lookupModuleValueMember(module, memberName);
-        if (!decl) return false;
-        
-        if (decl->isa<VarDeclAST>()) {
-            return decl->as<VarDeclAST>()->keyword == DeclKeyword::Const;
-        }
-        if (decl->isa<FuncDeclAST>()) {
-            return decl->as<FuncDeclAST>()->keyword == DeclKeyword::Const;
-        }
-        if (decl->isa<EnumVariantAST>()) {
-            return true; // Enum variants are compile-time constants
-        }
-        return false;
-    }
-    
-    /// @brief Look up a module member's keyword by alias.
-    DeclKeyword lookupModuleMemberKeywordByAlias(InternedString alias, InternedString memberName) const {
-        ModuleAST* module = lookupImport(alias);
-        if (!module) return DeclKeyword::Let;
-        return lookupModuleMemberKeyword(module, memberName);
-    }
-    
-    /// @brief Check if a module member is mutable by alias.
-    bool isModuleMemberMutableByAlias(InternedString alias, InternedString memberName) const {
-        ModuleAST* module = lookupImport(alias);
-        if (!module) return false;
-        return isModuleMemberMutable(module, memberName);
-    }
-    
-    /// @brief Check if a module member is const by alias.
-    bool isModuleMemberConstByAlias(InternedString alias, InternedString memberName) const {
-        ModuleAST* module = lookupImport(alias);
-        if (!module) return false;
-        return isModuleMemberConst(module, memberName);
     }
 };
 

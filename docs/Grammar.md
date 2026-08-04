@@ -746,12 +746,15 @@ struct_decl     = 'struct' IDENTIFIER [ generic_params ]
                   [ ':' trait_ref { ',' trait_ref } ]
                   '{' { struct_field } '}'
 
-struct_field    = { attribute_list } IDENTIFIER type [ '=' expr ]
+struct_field    = { attribute_list } IDENTIFIER type [ '=' field_default ]
                   (* mutable field by default — same as let *)
-                | { attribute_list } IDENTIFIER 'const' type [ '=' expr ]
+                | { attribute_list } IDENTIFIER 'const' type [ '=' field_default ]
                   (* const field — cannot be reassigned after construction.
                     Similar to const variable declaration, NOTE that the 
                     initialize value will override the default *)
+
+field_default   = block  (* declaration site: block body only, no signature *)
+                | expr   (* assignment site: any expression, including func_literal *)
 
 trait_ref       = IDENTIFIER
                 | IDENTIFIER '<' type_arg { ',' type_arg } '>'

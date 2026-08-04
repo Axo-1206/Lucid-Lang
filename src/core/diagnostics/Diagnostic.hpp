@@ -116,6 +116,7 @@ enum class DiagCode : uint32_t {
     Syntax_TrailingComma            = 2018,
     Syntax_ExpectedLiteral           = 2019,
     Syntax_UnexpectedColonAfterField = 2020,
+    Syntax_AnonymousFunctionAtDeclaration = 2021,
 
     // ──────────────────────────────────────────────────────────────────────────
     // NAME RESOLUTION ERRORS (3000-3999)

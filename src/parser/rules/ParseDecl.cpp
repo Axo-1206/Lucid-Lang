@@ -182,10 +182,25 @@ VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
 // parseFuncDecl
 // =============================================================================
 
+/// @brief Parse a function declaration.
+/// 
+/// Grammar:
+///   func_decl = ('let' | 'const') IDENTIFIER [ generic_params ] func_type '=' func_body
+/// 
+/// Rules:
+///   1. Block body is allowed: `const f () -> T = { ... }`  ✅
+///   2. Function reference is allowed: `const f () -> T = existingFn`  ✅
+///   3. Module function reference is allowed: `const f () -> T = module:fn`  ✅
+///   4. Anonymous function is REJECTED: `const f () -> T = (x int) -> int { ... }`  ❌
+///      (use a block body instead: `const f () -> T = { ... }`)
+/// 
+/// @param stream The token stream.
+/// @param ctx The parsing context.
+/// @return FuncDeclAST* The parsed function declaration, or nullptr on error.
 FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
     
-    // 1. Parse keyword
+    // ─── 1. Parse keyword ──────────────────────────────────────────────────
     bool isConst = stream.match(TokenType::CONST);
     if (!isConst && !stream.match(TokenType::LET)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
@@ -194,7 +209,7 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
         return nullptr;
     }
     
-    // 2. Parse function name
+    // ─── 2. Parse function name ─────────────────────────────────────────────
     if (!stream.check(TokenType::IDENTIFIER)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
                                 "expected function name, got '", stream.peekValue(), "'");
@@ -204,13 +219,13 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     Token nameTok = stream.consume();
     InternedString name = ctx.pool.intern(nameTok.value);
     
-    // 3. Parse generic parameters
+    // ─── 3. Parse generic parameters ────────────────────────────────────────
     ArenaSpan<GenericParamDeclPtr> genericParams;
     if (stream.check(TokenType::LESS)) {
         genericParams = parseGenericParamDecls(stream, ctx);
     }
     
-    // 4. Parse function type
+    // ─── 4. Parse function type ─────────────────────────────────────────────
     TypeAST* type = parseFuncType(stream, ctx);
     if (!type) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
@@ -227,7 +242,7 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     }
     FuncTypeAST* funcType = type->as<FuncTypeAST>();
     
-    // 5. Parse body
+    // ─── 5. Parse '=' ───────────────────────────────────────────────────────
     if (!stream.match(TokenType::ASSIGN)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected '=', got '", stream.peekValue(), "'");
@@ -235,6 +250,7 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
         return nullptr;
     }
     
+    // ─── 6. Parse body ──────────────────────────────────────────────────────
     StmtPtr body = nullptr;
     
     if (stream.check(TokenType::LBRACE)) {
@@ -252,22 +268,44 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
         } else {
             stream.consume(); // Consume '}'
         }
+        
     } else {
-        ExprPtr expr = parseExpr(stream, ctx);
-        if (!expr) {
+        // ─── Expression body ─────────────────────────────────────────────
+        // This can be a function reference or any expression.
+        // Anonymous function is rejected at declaration site.
+        
+        if (looksLikeAnonFunc(stream, ctx)) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_AnonymousFunctionAtDeclaration, 
+                                    stream.currentLoc(),
+                                    "anonymous function not allowed at declaration site");
+            ctx.diagnostics.noteAt(stream.currentLoc(),
+                                   "Use a block body instead: '{ ... }'");
+            ctx.diagnostics.noteAt(stream.currentLoc(),
+                                   "The block body borrows its signature from the function declaration");
+            
+            synchronizeTo(stream, ctx, TokenType::SEMICOLON, TokenType::RBRACE);
+            if (stream.check(TokenType::SEMICOLON)) {
+                stream.consume();
+            }
+            return nullptr;
+        }
+        
+        ExprPtr exprBody = parseExpr(stream, ctx);
+        if (!exprBody) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                     "expected function body expression");
             synchronizeToContext(stream, ctx);
             return nullptr;
         }
         
+        // Wrap expression in a ReturnStmtAST
         auto* returnStmt = ctx.arena.make<ReturnStmtAST>();
-        returnStmt->loc = expr->loc;
-        returnStmt->value = expr;
+        returnStmt->loc = exprBody->loc;
+        returnStmt->value = exprBody;
         body = returnStmt;
     }
     
-    // 7. Build AST
+    // ─── Build AST ──────────────────────────────────────────────────────
     auto* funcDecl = ctx.arena.make<FuncDeclAST>();
     funcDecl->loc = loc;
     funcDecl->name = name;
@@ -424,9 +462,13 @@ FieldDeclPtr parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
     auto doc = harvestDocComment(stream, ctx);
     
+    // ─── 1. Parse attributes ──────────────────────────────────────────────
     ArenaSpan<AttributePtr> attrs = parseAttributes(stream, ctx);
+    
+    // ─── 2. Parse const modifier ────────────────────────────────────────────
     bool isConst = stream.match(TokenType::CONST);
     
+    // ─── 3. Parse field name ────────────────────────────────────────────────
     if (!stream.check(TokenType::IDENTIFIER)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
                                 "expected field name, got '", stream.peekValue(), "'");
@@ -436,6 +478,7 @@ FieldDeclPtr parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
     Token nameTok = stream.consume();
     InternedString name = ctx.pool.intern(nameTok.value);
     
+    // ─── 4. Parse field type ────────────────────────────────────────────────
     TypePtr type = parseType(stream, ctx);
     if (!type) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
@@ -444,22 +487,67 @@ FieldDeclPtr parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
         return nullptr;
     }
     
+    // ─── 5. Parse default value ─────────────────────────────────────────────
     ExprPtr defaultVal = nullptr;
+    StmtPtr defaultBody = nullptr;
+    
     if (stream.match(TokenType::ASSIGN)) {
-        defaultVal = parseExpr(stream, ctx);
-        if (!defaultVal) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
-                                    "expected default value expression");
-            synchronizeToContext(stream, ctx);
-            return nullptr;
+        // ─── 5a. Check for block body ──────────────────────────────────────
+        if (stream.check(TokenType::LBRACE)) {
+            stream.consume();
+            
+            // Push struct field context for the body
+            ScopedContext bodyGuard(ctx, SyntacticContext::FieldBody, stream.currentLoc());
+            
+            defaultBody = parseBlock(stream, ctx);
+            if (!stream.check(TokenType::RBRACE)) {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedBlock, stream.currentLoc(),
+                                        "expected '}' to close block body");
+                synchronizeTo(stream, ctx, TokenType::RBRACE);
+                if (stream.check(TokenType::RBRACE)) {
+                    stream.consume();
+                }
+            } else {
+                stream.consume(); // Consume '}'
+            }
+            
+        } else {
+            // ─── 5b. Expression default ─────────────────────────────────────
+            if (looksLikeAnonFunc(stream, ctx)) {
+                // Anonymous function at declaration site
+                ctx.diagnostics.errorAt(DiagCode::Syntax_AnonymousFunctionAtDeclaration,
+                                        stream.currentLoc(),
+                                        "anonymous function not allowed at declaration site");
+                ctx.diagnostics.noteAt(stream.currentLoc(),
+                                       "Use a block body instead: '{ ... }'");
+                ctx.diagnostics.noteAt(stream.currentLoc(),
+                                       "The block body borrows its signature from the field type");
+                
+                synchronizeTo(stream, ctx, TokenType::SEMICOLON, TokenType::RBRACE, TokenType::COMMA);
+                if (stream.checkAny(TokenType::SEMICOLON, TokenType::COMMA)) {
+                    stream.consume();
+                }
+                return nullptr;
+            }
+            
+            // Parse as an expression (function reference, etc.)
+            defaultVal = parseExpr(stream, ctx);
+            if (!defaultVal) {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
+                                        "expected default value expression");
+                synchronizeToContext(stream, ctx);
+                return nullptr;
+            }
         }
     }
     
+    // ─── 6. Build AST ──────────────────────────────────────────────────────
     auto* fieldDecl = ctx.arena.make<FieldDeclAST>();
     fieldDecl->loc = loc;
     fieldDecl->name = name;
     fieldDecl->type = type;
     fieldDecl->defaultVal = defaultVal;
+    fieldDecl->defaultBody = defaultBody;
     fieldDecl->isConst = isConst;
     fieldDecl->attributes = attrs;
     

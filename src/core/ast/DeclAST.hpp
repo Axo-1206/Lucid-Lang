@@ -201,8 +201,9 @@ using EnumVariantPtr = EnumVariantAST*;
 struct FieldDeclAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::FieldDecl;
 
-    TypePtr type;          // Original type annotation (may contain aliases)
-    ExprPtr defaultVal;    // nullptr if no default
+    TypePtr type;          // Original type annotation
+    ExprPtr defaultVal;    // nullptr if no default (EXPRESSION form)
+    StmtPtr defaultBody;   // nullptr if no default (BLOCK form - similar to FuncDeclAST::body)
     bool isConst = false;  // true if field is marked `const`
 
     FieldDeclAST() : ValueDeclAST(ASTKind::FieldDecl) {}

@@ -513,13 +513,45 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, const TypeAST* tar
             }
         }
 
-        // ─── 4b. Resolve initializer against the field type ─────────────
+        // ─── 4b. Check if field has a block body (function field) ────────
+        // If the field has a defaultBody, the literal can provide a value
+        // But the value can be a function reference OR an anonymous function
+        // (since we're at a struct literal site, anonymous functions are allowed)
+        bool isFunctionType = field->type && field->type->isa<FuncTypeAST>();
+
+        // ─── 4c. Resolve initializer against the field type ─────────────
         TypeAST* initType = resolveExprWithTarget(init->value, field->type, ctx);
         if (!initType || initType->isa<UnknownTypeAST>()) {
             // Error already reported by resolveExprWithTarget
             expr->resolvedType = ctx.getUnknownType();
             expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
+        }
+
+        // ─── 4d. Special validation for function fields ──────────────────
+        if (isFunctionType && field->defaultBody) {
+            // The field has a block body at declaration site.
+            // At struct literal site, the user can override it with:
+            //   - A function reference (existingFn)
+            //   - An anonymous function (func_literal)
+            //   - Any expression that evaluates to a function value
+            
+            // Check if the initializer is a function value
+            if (!isFunctionValue(init->value, ctx)) {
+                // But wait - if the initializer is a block (which would be
+                // an anonymous function at struct literal site), it should
+                // be allowed because we're at a struct literal site.
+                // The parser would have parsed it as an AnonFuncExpr,
+                // which is a function value.
+                
+                // If it's not a function value, report an error
+                ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, init,
+                                      "field '", ctx.pool.lookup(field->name),
+                                      "' must be initialized with a function value");
+                expr->resolvedType = ctx.getUnknownType();
+                expr->valueState = ValueState::Unknown;
+                return ctx.getUnknownType();
+            }
         }
 
         if (init->value->valueState == ValueState::Err) {
@@ -538,10 +570,13 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, const TypeAST* tar
             continue;
         }
 
-        if (field->defaultVal) {
+        // ─── 5a. Check if field has a default value or default body ──────
+        // If the field has a defaultVal or defaultBody, it's optional
+        if (field->defaultVal || field->defaultBody) {
             continue;
         }
 
+        // ─── 5b. Nullable and fallible fields are optional ──────────────
         if (isNullableType(field->type)) {
             continue;
         }
@@ -550,6 +585,7 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, const TypeAST* tar
             continue;
         }
 
+        // ─── 5c. Combined (T?!) fields must be explicitly initialized ──
         if (field->type->isa<CombinedTypeAST>()) {
             ctx.diagnostics.error(DiagCode::Sem_MissingInitializer, expr,
                                   "combined field '", ctx.pool.lookup(field->name),
@@ -559,6 +595,20 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, const TypeAST* tar
             return ctx.getUnknownType();
         }
 
+        // ─── 5d. Function fields with no default are required ────────────
+        if (field->type->isa<FuncTypeAST>()) {
+            // Function fields without a defaultBody must be initialized
+            // (defaultVal would be a function reference at declaration site)
+            // If neither is present, the field is required
+            ctx.diagnostics.error(DiagCode::Sem_MissingInitializer, expr,
+                                  "function field '", ctx.pool.lookup(field->name),
+                                  "' must be initialized in struct literal (no default body)");
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
+            return ctx.getUnknownType();
+        }
+
+        // ─── 5e. Plain fields with no default are required ──────────────
         ctx.diagnostics.error(DiagCode::Sem_MissingInitializer, expr,
                               "field '", ctx.pool.lookup(field->name),
                               "' must be initialized in struct literal (no default value)");
