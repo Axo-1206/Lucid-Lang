@@ -312,7 +312,7 @@ or          not         true        false       nil         err
 > ```lucid
 > type MagicFunction = (a int) -> int;
 >
-> const doSomething MagicFunction = { return a + 5 }
+> const doSomething MagicFunction = { return a + 5 };
 >```
 >
 > This single line is **structurally ambiguous to programmer**. We
@@ -382,7 +382,7 @@ doc_comment     = '/--' { ' -' ANY_CHAR NEWLINE } '--/'
 ```lucid
 -- normalizes the vector in place
 -- only call after the vector has been validated
-const normalize (v Vec2) -> Vec2 = { ... }    -- stacked attaches
+const normalize (v Vec2) -> Vec2 = { ... };    -- stacked attaches
 
 const maxVertices int = 65536;    -- Vulkan hard limit   -- trailing attaches
 
@@ -391,7 +391,7 @@ const maxVertices int = 65536;    -- Vulkan hard limit   -- trailing attaches
  -
  - Returns `|a| * |b| * cos(angle)`.;
 --/
-const dot (other Vec2) -> float = { ... }    -- block attaches
+const dot (other Vec2) -> float = { ... };    -- block attaches
 ```
 
 ---
@@ -416,6 +416,16 @@ top_level_decl  = struct_decl
                 | func_decl
                 | var_decl
 ```
+
+> [!NOTE]
+> **Semicolons at the top level follow the same rule as inside a function
+> body** (see **Statements**): `func_decl` and `var_decl` are `let`/`const`
+> declarations with a value, so they require a trailing `;` even when that
+> value ends in `}` — a top-level function's block body included. `struct_decl`
+> and `enum_decl` are bare type declarations with no `=` and no value — the
+> `{ fields }` or `{ variants }` is the declaration's own body, not something
+> assigned to it, so it takes no `;`, the same way `if`/`for`/`while`/`switch`
+> don't.
 
 ---
 
@@ -544,7 +554,7 @@ cases are backed by different storage:
 
 ```lucid
 -- the module exports a FUNCTION that returns a new struct each call
-@[export] const makeUser () -> User = { return User { id = 0  name = ""  email = "" } }
+@[export] const makeUser () -> User = { return User { id = 0  name = ""  email = "" } };
 
 const u User = mymod:makeUser();
 u.name = "alice";    -- OK: u is a fresh value the caller owns outright
@@ -554,7 +564,7 @@ u.name = "alice";    -- OK: u is a fresh value the caller owns outright
                             -- on how `u` itself was declared
 
 -- the module exports a STRUCT VALUE directly (a package-level variable)
-@[export] let currentUser User = User { id = 1  name = "bob"  email = "" }
+@[export] let currentUser User = User { id = 1  name = "bob"  email = "" };
 
 mymod:currentUser.name = "eve";    -- OK: currentUser is `let`, so the module's
                                     -- own storage is reached and mutated directly
@@ -579,17 +589,17 @@ that read or write it under the module's own control:
 ```lucid
 -- inside config.luc
 struct Config {
-    threshold int
+    threshold int;
 }
 
-let current Config = Config { threshold = 10 }    -- NOT exported
+let current Config = Config { threshold = 10 };    -- NOT exported
 
-@[export] const getThreshold () -> int = { return current.threshold }
+@[export] const getThreshold () -> int = { return current.threshold };
 
 @[export] const setThreshold (v int) -> () = {
     if v < 0 { return }    -- the module can validate, log, or guard here
     current.threshold = v;
-}
+};
 ```
 
 ```lucid
@@ -658,9 +668,9 @@ caller need:
 let ids    [*]int    = [];
 let names  [*]string = [];
 
-@[export] const getUser (id int)    -> User?    = { ... }    -- one full record
-@[export] const getUser (ids [*]int) -> [*]User  = { ... }    -- many full records
-@[export] const getUser ()           -> [*]int   = { return ids }    -- ids only, no copy of names
+@[export] const getUser (id int)    -> User?    = { ... };    -- one full record
+@[export] const getUser (ids [*]int) -> [*]User  = { ... };    -- many full records
+@[export] const getUser ()           -> [*]int   = { return ids };    -- ids only, no copy of names
 ```
 
 ```lucid
@@ -754,8 +764,8 @@ generic_param   = IDENTIFIER
 
 ```lucid
 struct Point {
-    x float = 0.0
-    y float = 0.0
+    x float = 0.0;
+    y float = 0.0;
 }
 
 struct Node<T> {
@@ -764,7 +774,7 @@ struct Node<T> {
 }
 
 struct Player {
-    name   string
+    name   string;
     health int    = 100;
     speed  float  = 1.0;
     active bool   = true;
@@ -811,7 +821,7 @@ const p Point = Point { x = 3.0, y = 4.0 };
 
 -- omit fields that have defaults
 const origin Point = Point {};    -- x=3.0, y=4.0 from defaults
-const shifted Point = Point { x = 5.0 };   -- x=5.0, y=4.0 from default
+const shifted Point = Point { x = 5.0 };    -- x=5.0, y=4.0 from default
 ```
 
 > [!NOTE]
@@ -830,7 +840,7 @@ const shifted Point = Point { x = 5.0 };   -- x=5.0, y=4.0 from default
 >     total      int;
 > }
 >
-> let a Counter = Counter { total = 0 };              -- step = 1 (default)
+> let a Counter = Counter { total = 0 };    -- step = 1 (default)
 > let b Counter = Counter { step = 5, total = 0 };    -- step = 5 (override)
 > a.step = 2;    -- ERROR: step is const — fixed once construction finished
 >
@@ -841,8 +851,8 @@ const shifted Point = Point { x = 5.0 };   -- x=5.0, y=4.0 from default
 > const v Validator = Validator { };    -- ERROR: check has no default and
 >                                             -- was not supplied
 > const v2 Validator = Validator {
->     check = (n int) -> bool { return n > 0 };   -- OK: required, now fixed
-> }
+>     check = (n int) -> bool { return n > 0 };    -- OK: required, now fixed
+> };
 > ```
 
 ```lucid
@@ -857,28 +867,28 @@ const r Rect = Rect {
     origin = Point { x = 1.0, y = 2.0 };
     width  = 100.0;
     height = 50.0;
-}
+};
 
 -- generic struct
 struct Box<T> { value T }
 
-const b1 Box<int>    = Box<int>    { value = 42 }
-const b2 Box<string> = Box<string> { value = "hello" }
-const b3 Box<Point>  = Box<Point>  { value = Point { x = 1.0, y = 2.0 } }
+const b1 Box<int>    = Box<int>    { value = 42 };
+const b2 Box<string> = Box<string> { value = "hello" };
+const b3 Box<Point>  = Box<Point>  { value = Point { x = 1.0, y = 2.0 } };
 
 -- mutable struct — fields can be reassigned
-let player Player = Player { name = "hero" }
+let player Player = Player { name = "hero" };
 player.health = 80;
 player.speed  = 1.5;
 
 -- struct with nullable field
 struct Enemy {
-    name   string
-    target Player?    -- nullable — may have no target
+    name   string;
+    target Player?;    -- nullable — may have no target
 }
 
-const e Enemy = Enemy { name = "goblin", target = nil }
-const e2 Enemy = Enemy { name = "orc", target = player }
+const e Enemy = Enemy { name = "goblin", target = nil };
+const e2 Enemy = Enemy { name = "orc", target = player };
 ```
 
 ### Field Access
@@ -917,7 +927,7 @@ struct Staff : Person {
     salary float = 0.0;
 }
 
-let s Staff  = Staff { name = "Amy", salary = 50000.0 }
+let s Staff  = Staff { name = "Amy", salary = 50000.0 };
 let p Person = s;    -- OK: Staff has everything Person requires
 
 p.name;              -- OK: name is part of the Person contract
@@ -954,7 +964,7 @@ struct Counter {
     total      int;
 }
 
-let c Counter = Counter { total = 0 }    -- step = 1, taken from the default
+let c Counter = Counter { total = 0 };    -- step = 1, taken from the default
 c.total = 5;    -- OK: total is let
 c.step  = 2;    -- ERROR: step is const — read-only even though c is let
 ```
@@ -997,10 +1007,10 @@ struct Validator {
 }
 
 const positive Validator = Validator {
-    check = (n int) -> bool { return n > 0 }
-}
+    check = (n int) -> bool { return n > 0 };
+};
 
-positive.check = (n int) -> bool { return n < 0 }    -- ERROR: check is const
+positive.check = (n int) -> bool { return n < 0 };    -- ERROR: check is const
 
 const result bool = positive.check(5);    -- OK: calling through a
                                                   -- const field is unaffected
@@ -1014,11 +1024,11 @@ genuinely swappable behavior, like a configurable callback:
 
 ```lucid
 struct Logger {
-    sink (string) -> () = (msg string) -> () { io:printl(msg) }
+    sink (string) -> () = (msg string) -> () { io:printl(msg) };
 }
 
-let log Logger = Logger { }
-log.sink = (msg string) -> () { system:writeToFile("app.log", msg) }    -- OK
+let log Logger = Logger { };
+log.sink = (msg string) -> () { system:writeToFile("app.log", msg) };    -- OK
 ```
 
 ### Security Considerations for Function-Typed Fields
@@ -1057,7 +1067,7 @@ declared shape, so the following are the practical mitigations available:
 
   ```lucid
   -- avoid: caller supplies arbitrary behavior matching the shape
-  const runCallback (call () -> ()) -> () = { call() }
+  const runCallback (call () -> ()) -> () = { call() };
 
   -- prefer: caller selects from a closed, exhaustively-checked set;
   -- the actual behavior is never exposed as a parameter at all
@@ -1069,7 +1079,7 @@ declared shape, so the following are the practical mitigations available:
           case Action.Reload:  { doReload(arg1) }
           case Action.Discard: { doDiscard() }
       }
-  }
+  };
   ```
 
   Keep the concrete handlers (`doSave`, `doReload`, `doDiscard`) un-exported
@@ -1090,14 +1100,14 @@ When a struct contains a recursive field (a field of the same type), the compile
 
 ```lucid
 struct Node<T> {
-    value T
-    next  Node<T>?    -- Recursive field (stored as pointer internally)
+    value T;
+    next  Node<T>?;    -- Recursive field (stored as pointer internally)
 }
 
-let node1 = Node<int> { value = 5, next = nil }
+let node1 = Node<int> { value = 5, next = nil };
 {
-    let node2 = Node<int> { value = 10, next = nil }
-    node1.next = node2   -- DEEP COPY: node2's value is copied into node1.next
+    let node2 = Node<int> { value = 10, next = nil };
+    node1.next = node2;    -- DEEP COPY: node2's value is copied into node1.next
 }
 -- node2 is freed when the block exits, but node1.next still has the value ✅
 ```
@@ -1125,29 +1135,29 @@ Deep copy has a cost — for large recursive structures, it copies the entire tr
 **When Deep Copy Happens:**
 
 ```lucid
-let a = Node { value = 1, next = nil }
-let b = Node { value = 2, next = nil }
+let a = Node { value = 1, next = nil };
+let b = Node { value = 2, next = nil };
 
 -- Assignment: deep copy
-a.next = b           -- ✅ Deep copy: a.next is independent
+a.next = b;    -- ✅ Deep copy: a.next is independent
 
 -- Function call: deep copy (passed by value)
-const process (n Node<int>) -> () = { ... }
-process(a)           -- ✅ Deep copy: function gets its own copy
+const process (n Node<int>) -> () = { ... };
+process(a);    -- ✅ Deep copy: function gets its own copy
 
 -- Return: deep copy
-const makeNode () -> Node<int> = { return Node { value = 42, next = nil } }
-let c = makeNode()   -- ✅ Deep copy: returned value is copied
+const makeNode () -> Node<int> = { return Node { value = 42, next = nil } };
+let c = makeNode();    -- ✅ Deep copy: returned value is copied
 ```
 
 **When Shallow Copy Happens:**
 
 ```lucid
 -- Slices: shallow copy (borrowed view)
-let view [_]int = array   -- ✅ Shallow: view borrows from array
+let view [_]int = array;    -- ✅ Shallow: view borrows from array
 
 -- References: no copy (borrowed)
-const process (const v &Node<int>) -> () = { ... }  -- ✅ No copy: read-only reference
+const process (const v &Node<int>) -> () = { ... };    -- ✅ No copy: read-only reference
 ```
 
 **Explicit Deep Copy:**
@@ -1156,15 +1166,15 @@ If you need to copy a recursive structure explicitly (e.g., to ensure independen
 
 ```lucid
 struct Node<T> {
-    value T
-    next  Node<T>?
+    value T;
+    next  Node<T>?;
     
     const clone () -> Node<T> = {
         return Node<T> {
             value = self.value,
             next = self.next?.clone()
         }
-    }
+    };
 }
 ```
 
@@ -1213,21 +1223,22 @@ A struct may reference itself in its fields, but with restrictions to avoid infi
 ```lucid
 -- ❌ ERROR: Non-nullable self-reference
 struct Node<T> {
-    value T
-    next  Node<T>   -- Error: would create infinite size
+    value T;
+    next  Node<T>;    -- Error: would create infinite size
 }
 
 -- ✅ OK: Nullable self-reference
 struct Node<T> {
-    value T
-    next  Node<T>?  -- OK: can be nil to terminate
+    value T;
+    next  Node<T>?;    -- OK: can be nil to terminate
 }
 
 -- ✅ OK: Raw pointer
 struct Node<T> {
-    value T
-    next  *Node<T>  -- OK: pointer breaks the cycle
+    value T;
+    next  *Node<T>;    -- OK: pointer breaks the cycle
 }
+```
 
 ---
 
@@ -1247,23 +1258,23 @@ trait_field    = { attribute_list } IDENTIFIER type
 
 ```lucid
 trait Vector2 {
-    x float
-    y float
+    x float;
+    y float;
 }
 
 trait Named {
-    name string
+    name string;
 }
 
 trait Bounded {
-    minVal float
-    maxVal float
+    minVal float;
+    maxVal float;
 }
 
 -- generic trait
 trait Container<T> {
-    value T
-    count int
+    value T;
+    count int;
 }
 ```
 
@@ -1288,7 +1299,7 @@ trait A { x float }
 trait B { x int   }
 
 struct Bad : A, B {    -- ERROR: field x required as float by A and int by B
-    x float    -- which one?
+    x float;    -- which one?
 }
 
 -- name conflict: same field, same type — fine, satisfied once
@@ -1296,8 +1307,8 @@ trait A { x float }
 trait B { x float, y float }
 
 struct Both : A, B {    -- OK: x satisfies both A and B
-    x float
-    y float
+    x float;
+    y float;
 }
 ```
 
@@ -1325,21 +1336,21 @@ enum_variant    = { attribute_list } IDENTIFIER '=' INT_LIT
 
 ```lucid
 enum Direction {
-    North = 0
-    East  = 1
-    South = 2
-    West  = 3
+    North = 0;
+    East  = 1;
+    South = 2;
+    West  = 3;
 }
 
 enum Status : int32 {
-    Ok      = 200
-    NotFound = 404
-    Error   = 500
+    Ok      = 200;
+    NotFound = 404;
+    Error   = 500;
 }
 
 enum Bad {
-    North    -- ERROR: value is required, even though "the next int" looks obvious
-    East  = 1
+    North;    -- ERROR: value is required, even though "the next int" looks obvious
+    East  = 1;
 }
 ```
 
@@ -1456,14 +1467,14 @@ something `expr` already covers: `IDENTIFIER`, `call_expr`, `module_expr`, and
 
 ```lucid
 -- a named function reference — no call, IDENTIFIER alone
-const sq<T> (v T) -> T = { return v * v }
-let g (a int) -> int = sq<int>
-g = myModule:sq<int>          -- module-qualified, still just an expr
+const sq<T> (v T) -> T = { return v * v };
+let g (a int) -> int = sq<int>;
+g = myModule:sq<int>;    -- module-qualified, still just an expr
 
 -- a call_expr that itself RETURNS a function value
-const getHandler (kind string) -> (int) -> int = { ... }
-let h (a int) -> int = getHandler("double")
-h = getHandler("triple")      -- reassignment from a call is equally valid
+const getHandler (kind string) -> (int) -> int = { ... };
+let h (a int) -> int = getHandler("double");
+h = getHandler("triple");    -- reassignment from a call is equally valid
 ```
 
 The last case is the one easy to miss: the right-hand side does not have to be
@@ -1496,23 +1507,23 @@ matches `f`'s declared `func_type` exactly.
 >
 > ```lucid
 > -- declaration: a bare block — the only anonymous form accepted here
-> let f () -> () = { ... }
+> let f () -> () = { ... };
 >
 > -- declaration: REJECTED — redundant, potentially conflicting signature
-> let f () -> () = () -> () { ... }    -- ERROR: func_literal not allowed
+> let f () -> () = () -> () { ... };    -- ERROR: func_literal not allowed
 >                                       -- as a func_decl's own body
 >
 > -- reassignment: func_literal — OK, carries its own signature, no header
 > -- to conflict with
-> f = () -> () { ... }
+> f = () -> () { ... };
 >
 > -- passed as an argument — always fine, this isn't a func_decl's own body
-> runCallback((x int) -> int { return x * 2 })
+> runCallback((x int) -> int { return x * 2 });
 >
 > -- returned from a function — always fine, same reason
 > const makeDoubler () -> (int) -> int = {
 >     return (x int) -> int { return x * 2 };
-> }
+> };
 > ```
 
 > [!WARNING]
@@ -1530,22 +1541,22 @@ terminal `type`). At
 >
 > ```lucid
 > -- declaration: bare block is valid — header supplies the signature
-> let f (a int) -> int = { return a + 1 }
+> let f (a int) -> int = { return a + 1 };
 >
 > -- reassignment: bare block is REJECTED — no header to borrow from
-> f = { return a + 2 }    -- ERROR: block body not allowed outside declaration
+> f = { return a + 2 };    -- ERROR: block body not allowed outside declaration
 >
 > -- reassignment: anonymous function — OK, carries its own signature
-> f = (a int) -> int { return a + 2 }
+> f = (a int) -> int { return a + 2 };
 >
 > -- reassignment: named reference — OK, signature comes from the reference
-> const addTwo (a int) -> int = { return a + 2 }
-> f = addTwo
+> const addTwo (a int) -> int = { return a + 2 };
+> f = addTwo;
 >
 > -- reassignment: call returning a function — OK, signature comes from the
 > -- call's return type
-> const pickAdder (n int) -> (int) -> int = { ... }
-> f = pickAdder(2)
+> const pickAdder (n int) -> (int) -> int = { ... };
+> f = pickAdder(2);
 > ```
 
 **Grouping several return values** is done with a generic struct — Lucid has no
@@ -1559,7 +1570,7 @@ struct Pair<A, B> { first A, second B }
 const parseInt (s string) -> Pair<int, bool> = {
     -- returns parsed value and whether parsing succeeded
     return Pair<int, bool>{ first = 0, second = false };
-}
+};
 
 -- at the call site
 let result Pair<int, bool> = parseInt("42");
@@ -1575,12 +1586,12 @@ const sum (nums ...int) -> int = {
     let total int = 0;
     for _, n int in nums { total = total + n }
     return total;
-}
+};
 
 const describe (const v Vector2) -> string = {
     -- v is a read-only reference — no copy overhead
     return "(" + stringFromFloat(v.x) + ", " + stringFromFloat(v.y) + ")";
-}
+};
 ```
 
 ### Variadic Parameters
@@ -1601,7 +1612,7 @@ const sum (nums ...int) -> int = {
         total = total + n;
     }
     return total;
-}
+};
 
 sum();    -- 0
 sum(1, 2, 3);    -- 6
@@ -1609,13 +1620,13 @@ sum(1, 2, 3);    -- 6
 -- variadic combined with regular parameters: variadic must come last
 const logf (level int, fmt string, args ...string) -> () = {
     -- args is [*]string
-}
+};
 
 -- INVALID — variadic is not the last parameter
-const bad (nums ...int, label string) -> int = { ... }    -- ERROR
+const bad (nums ...int, label string) -> int = { ... };    -- ERROR
 
 -- INVALID — variadic is not the last parameter of ITS OWN group
-const bad2 (nums ...int, label string)(words ...string) -> int = { ... }    -- ERROR
+const bad2 (nums ...int, label string)(words ...string) -> int = { ... };    -- ERROR
 ```
 
 A flat `param_list` allows at most one variadic parameter — it must be the
@@ -1658,7 +1669,7 @@ cluster may name its own parameters, following the same rule recursively.
 -- adjacency: both values arrive in one call, one cluster, names in the header
 const add (a int)(b int) -> int = {
     return a + b;
-}
+};
 
 -- an arrow: a real boundary — the body must supply the nested return.
 -- the header names only the leading cluster ('base'); the returned
@@ -1666,7 +1677,7 @@ const add (a int)(b int) -> int = {
 const makeAdder (base int) -> (int) -> int = {
     const adjusted int = base * 2;    -- runs once, at makeAdder(base)
     return (n int) -> int { return adjusted + n }
-}
+};
 
 const addTen (n int) -> int = makeAdder(5);
 addTen(3);    -- 13
@@ -1676,7 +1687,7 @@ addTen(3);    -- 13
 const process (a int)(b int) -> (int) -> int = {
     const sum int = a + b;    -- runs when process(a)(b) is called
     return (c int) -> int { return sum + c }
-}
+};
 
 -- an arrow can appear more than once — each one is its own boundary,
 -- each one needs its own nested return in the body
@@ -1686,7 +1697,7 @@ const build (a int) -> (int) -> (int) -> int = {
             return a + b + c;
         }
     }
-}
+};
 ```
 
 This also gives a function more than one variadic parameter, which a single
@@ -1702,7 +1713,7 @@ const summarize (nums ...int)(words ...string) -> string = {
     for _, w string in words { joined = joined + w + " " }
 
     return stringFromInt(total) + ": " + joined;
-}
+};
 
 summarize(1, 2, 3)("a", "b");    -- nums = [1, 2, 3], words = ["a", "b"]
 ```
@@ -1716,7 +1727,7 @@ const g<T> (a int)(b T) -> (T)(char) -> bool = {
     return (c T)(d char) -> bool {
         return true;
     }
-}
+};
 ```
 
 ### Partial Application
@@ -1726,7 +1737,7 @@ const clamp (lo int)(hi int)(v int) -> int = {
     if v < lo { return lo }
     if v > hi { return hi }
     return v;
-}
+};
 
 -- partial application
 const clamp0to100 (v int) -> int = clamp(0)(100);
@@ -1739,7 +1750,7 @@ clamp0to100(200);    -- 100
 ```lucid
 @[export] const main () -> int = {
     return 0;
-}
+};
 
 -- with command-line arguments
 -- [_]string: slice — the runtime owns the argument buffer, main gets a
@@ -1747,7 +1758,7 @@ clamp0to100(200);    -- 100
 -- heap copy of all arguments, which the runtime never hands over.
 @[export] const main (args [_]string) -> int = {
     return 0;
-}
+};
 ```
 
 ---
@@ -1776,10 +1787,10 @@ the compiler cannot resolve them from the call site alone.
 
 ```lucid
 -- concrete overloads — same name, different parameter types
-const describe (v int)    -> string = { return "int: "    + stringFromInt(v) }
-const describe (v float)  -> string = { return "float: "  + stringFromFloat(v) }
-const describe (v bool)   -> string = { return "bool: "   + stringFromBool(v) }
-const describe (v string) -> string = { return "string: " + v }
+const describe (v int)    -> string = { return "int: "    + stringFromInt(v) };
+const describe (v float)  -> string = { return "float: "  + stringFromFloat(v) };
+const describe (v bool)   -> string = { return "bool: "   + stringFromBool(v) };
+const describe (v string) -> string = { return "string: " + v };
 
 describe(42);    -- resolves to (int) -> string
 describe(3.14);    -- resolves to (float) -> string
@@ -1787,16 +1798,16 @@ describe(true);    -- resolves to (bool) -> string
 describe("hi");    -- resolves to (string) -> string
 
 -- generic and concrete coexist — concrete wins on exact match
-const process<T>  (v T)   -> string = { return "generic" }
-const process     (v int) -> string = { return "concrete int" }
+const process<T>  (v T)   -> string = { return "generic" };
+const process     (v int) -> string = { return "concrete int" };
 
 process<string>("hi");    -- generic: "generic"
 process<int>(42);    -- concrete wins: "concrete int"
 process(42);    -- concrete wins: "concrete int"
 
 -- return-type-only difference: compile error
-const bad (v int) -> string = { ... }
-const bad (v int) -> int    = { ... }
+const bad (v int) -> string = { ... };
+const bad (v int) -> int    = { ... };
 -- ERROR: overloads differ only in return type — unresolvable at call site
 ```
 
@@ -1896,12 +1907,12 @@ generic_param   = IDENTIFIER
 -- T must implement Vector2 (has x float and y float)
 const magnitude<T : Vector2> (v T) -> float = {
     return sqrt(v.x * v.x + v.y * v.y);    -- x and y accessible because T : Vector2
-}
+};
 
 -- multiple constraints on the SAME parameter — '+' joins them
 const describeEntity<T : Vector2 + Named> (v T) -> string = {
     return v.name + " at (" + stringFromFloat(v.x) + ", " + stringFromFloat(v.y) + ")";
-}
+};
 
 -- TWO independently-constrained parameters — T and U need not be the same
 -- concrete type, only each independently satisfy Vector2. A plain
@@ -1916,7 +1927,7 @@ const distanceBetween<T : Vector2, U : Vector2> (a T)(b U) -> float = {
     const dx float = a.x - b.x;
     const dy float = a.y - b.y;
     return sqrt(dx * dx + dy * dy);
-}
+};
 
 -- works on any struct implementing Vector2
 struct Point  : Vector2 { x float = 0.0  y float = 0.0 }
@@ -1928,15 +1939,15 @@ magnitude<int>(42);    -- ERROR: int does not implement Vector2
 
 -- T = Point, U = Entity — two DIFFERENT concrete types, each satisfying
 -- Vector2 independently; distanceBetween never requires them to match
-const p Point  = Point  { x = 0.0, y = 0.0 }
-const e Entity = Entity { name = "hero", x = 3.0, y = 4.0 }
+const p Point  = Point  { x = 0.0, y = 0.0 };
+const e Entity = Entity { name = "hero", x = 3.0, y = 4.0 };
 distanceBetween<Point, Entity>(p)(e);    -- OK → 5.0
 
 -- constraint in struct generic parameter — same rule, '+' for multiple
 -- constraints on one parameter, ',' to separate A from B
 struct Pair<A : Named, B : Named> {
-    first  A
-    second B
+    first  A;
+    second B;
 }
 ```
 
@@ -1953,9 +1964,9 @@ reconstructed `T`:
 ```lucid
 const addVectors (v1 Vector2)(v2 Vector2) -> Vector2 = {
     return Vector2 { x = v1.x + v2.x, y = v1.y + v2.y }
-}
+};
 
-const e Entity = Entity { name = "hero", x = 1.0, y = 2.0 }
+const e Entity = Entity { name = "hero", x = 1.0, y = 2.0 };
 const added Vector2 = addVectors(e)(e);    -- returns Vector2, name discarded
 ```
 
@@ -1973,9 +1984,9 @@ to be known, since nothing is reconstructed:
 const scale<T : Vector2> (v &T)(s float) -> () = {
     v.x = v.x * s;
     v.y = v.y * s;
-}
+};
 
-let e Entity = Entity { name = "hero", x = 1.0, y = 2.0 }
+let e Entity = Entity { name = "hero", x = 1.0, y = 2.0 };
 scale<Entity>(e)(2.0);    -- e.x and e.y scaled in place through the reference,
                          -- e.name untouched
 ```
@@ -1987,14 +1998,14 @@ The legitimate uses of generic functions in Lucid are:
 **Opaque pass-through — the function never inspects `T`, only passes it:**
 
 ```lucid
-const identity<T>  (v T)      -> T      = { return v }
+const identity<T>  (v T)      -> T      = { return v };
 const first<T>     (items [_]T)(length int) -> T? = {
     if length == 0 { return nil }
     return items[0];    -- runtime-checked: a literal index does not prove
                          -- in-bounds against a slice of unknown length
                          -- see Runtime Panics
-}
-const swap<T>      (a T)(b T) -> Pair<T, T> = { return Pair<T, T>{ first = b, second = a } }
+};
+const swap<T>      (a T)(b T) -> Pair<T, T> = { return Pair<T, T>{ first = b, second = a } };
 ```
 
 **Higher-order — type-specific logic is a callback the caller provides:**
@@ -2004,21 +2015,21 @@ const map<T, U>    (items [_]T)(f (T) -> U)           -> [*]U  = {
     let result [*]U = [];
     for _, v T in items { arr:append<U>(result)(f(v)) }
     return result;
-}
+};
 
 const filter<T>    (items [_]T)(pred (T) -> bool)     -> [*]T  = {
     let result [*]T = [];
     for _, v T in items { if pred(v) { arr:append<T>(result)(v) } }
     return result;
-}
+};
 
 const fold<T, U>   (items [_]T)(seed U)(f (U, T) -> U) -> U   = {
     let acc U = seed;
     for _, v T in items { acc = f(acc, v) }
     return acc;
-}
+};
 
-const sort<T>      (items [*]T)(cmp (T, T) -> int)    -> [*]T  = { ... }
+const sort<T>      (items [*]T)(cmp (T, T) -> int)    -> [*]T  = { ... };
 ```
 
 **Call sites — explicit type arguments always required:**
@@ -2048,31 +2059,31 @@ field type annotations:
 
 ```lucid
 struct Box<T> {
-    value T
+    value T;
 }
 
 struct Pair<A, B> {
-    first  A
-    second B
+    first  A;
+    second B;
 }
 
 struct Cache<K, V> {
-    key   K
-    value V
+    key   K;
+    value V;
 }
 
 -- instantiation
-const b Box<int>         = Box<int>    { value = 42 }
-const p Pair<int, string> = Pair<int, string> { first = 1, second = "hello" }
+const b Box<int>         = Box<int>    { value = 42 };
+const p Pair<int, string> = Pair<int, string> { first = 1, second = "hello" };
 ```
 
 Functions that operate on generic structs receive the instantiated type:
 
 ```lucid
-const unbox<T>    (b Box<T>)         -> T = { return b.value }
+const unbox<T>    (b Box<T>)         -> T = { return b.value };
 const rebox<T, U> (b Box<T>)(f (T) -> U) -> Box<U> = {
     return Box<U> { value = f(b.value) }
-}
+};
 
 const n int    = unbox<int>(b);
 const s Box<string> = rebox<int, string>(b)(stringFromInt);
@@ -2139,7 +2150,7 @@ const compute () -> int? = {
         x = y;
     }    -- y released here
     return x;
-}    -- x released here
+};    -- x released here
 ```
 
 ### `nil` — Absence
@@ -2313,6 +2324,7 @@ case_value      = literal
 > - Statements that end with a `block` (`if`, `for`, `while`, `switch`) do **not** take a `;` — the closing `}` is unambiguous.
 > - `do`/`while` ends with an expression, not a block, so it **does** require `;`.
 > - Everything else — declarations, assignments, `return`, `break`, `continue`, bare expression statements — requires `;`.
+> - This includes a declaration or assignment whose *value* happens to end in `}` — a struct literal (`let p Point = Point { x = 1.0 }`), a function body (`const add (a int)(b int) -> int = { return a + b }`), or a reassigned anonymous function (`f = (a int) -> int { return a + 1 }`) all still need the trailing `;`. The exemption above applies only to `if`/`for`/`while`/`switch` themselves, where the block **is** the statement; a struct literal or function body is a *value* on the right of `=`, and Lucid's `|>`, `+>`, `:`, and `.` can all legally follow a value, so nothing about a trailing `}` is inherently statement-final the way it is for those four keywords. Requiring `;` here removes that ambiguity instead of relying on layout to imply it.
 
 > [!WARNING]
 > **Visibility inside blocks:** `@[export]` is **not allowed** on any local declaration — it is top-level only. The parser emits an error if it appears inside a block.
@@ -2327,15 +2339,15 @@ const compute () -> int = {
     struct Vec2 { x float = 0.0  y float = 0.0 }
 
     @[inline]
-    const add (a int)(b int) -> int = { return a + b }
+    const add (a int)(b int) -> int = { return a + b };
 
     struct Point { x int = 0.0  y int = 0.0 }
 
     enum Color { Red = 0  Green = 1  Blue = 2 }
 
-    const p Point = Point { x = 5, y = 5 }
+    const p Point = Point { x = 5, y = 5 };
     return add(p.x)(p.y);
-}
+};
 ```
 
 ### `if` / `else`
@@ -2441,7 +2453,7 @@ if a == nil and b == nil { return }
 >     if a == nil or b == nil or c == nil { return -1 }
 >    -- from here: a is int, b is string, c is User
 >     return a + strLength(b) + c.id;
-> }
+> };
 >```
 >
 > **Loop body guards** — skip nil elements without nesting:
@@ -2909,7 +2921,7 @@ argument list. The upstream value is injected as the **first** argument when
 `|>` fires:
 
 ```lucid
-const scale (factor float)(v float) -> float = { return v * factor }
+const scale (factor float)(v float) -> float = { return v * factor };
 
 -- without !: scale(2.0) is a complete partial application — no slot for upstream
 42.0 |> scale(2.0);    -- ERROR: upstream has no parameter to fill
@@ -2928,15 +2940,15 @@ const clamp (lo int)(hi int)(v int) -> int = {
     if v < lo { return lo }
     if v > hi { return hi }
     return v;
-}
+};
 
-42 |> clamp    -- ERROR: 3 groups — upstream fills (lo), (hi) and (v) unresolved
+42 |> clamp;    -- ERROR: 3 groups — upstream fills (lo), (hi) and (v) unresolved
 42 |> (v int) -> int { return clamp(0)(100)(v) }    -- OK: wrap in anonymous function
 
 -- CORRECT: pre-apply to a single-group function
 const clamp0to100 (v int) -> int = clamp(0)(100);
-42 |> clamp0to100    -- OK → 42
-150 |> clamp0to100    -- OK → 100
+42 |> clamp0to100;    -- OK → 42
+150 |> clamp0to100;    -- OK → 100
 ```
 
 ### Generic Functions in Pipelines
@@ -2945,11 +2957,11 @@ Generic functions must be instantiated with explicit type arguments at the
 pipeline step site. An uninstantiated generic is a compile error:
 
 ```lucid
-const identity<T> (v T) -> T = { return v }
-const map<T, U>   (v T)(f (T) -> U) -> U = { return f(v) }
+const identity<T> (v T) -> T = { return v };
+const map<T, U>   (v T)(f (T) -> U) -> U = { return f(v) };
 
-42     |> identity<int>    -- OK → 42
-42     |> identity    -- ERROR: uninstantiated generic
+42     |> identity<int>;    -- OK → 42
+42     |> identity;    -- ERROR: uninstantiated generic
 42     |> map<int, string>(stringFromInt)!;    -- OK → "42"
 "hello" |> map<string, int>(length)!;    -- OK → 5
 
@@ -2981,8 +2993,8 @@ compose_expr    = expr '+>' expr     (* f +> g: apply f then g, always left-to-r
 ```
 
 ```lucid
-const f (a int)    -> string = { ... }
-const g (s string) -> bool   = { ... }
+const f (a int)    -> string = { ... };
+const g (s string) -> bool   = { ... };
 
 const h   (a int) -> bool = f +> g;    -- OK: f returns string, g takes string
 const bad          = g +> f;    -- ERROR: g returns bool, f takes int
@@ -2998,13 +3010,13 @@ composition site, a generic function acts as a universal adapter between any
 two compatible types:
 
 ```lucid
-const toString<T>  (v T)      -> string = { ... }
-const parseFloat   (s string) -> float  = { ... }
-const double       (x float)  -> float  = { return x * 2.0 }
+const toString<T>  (v T)      -> string = { ... };
+const parseFloat   (s string) -> float  = { ... };
+const double       (x float)  -> float  = { return x * 2.0 };
 
 -- int → string → float → float
 const intToDoubled (x int) -> float =
-    toString<int> +> parseFloat +> double
+    toString<int> +> parseFloat +> double;
 
 intToDoubled(42);    -- "42" → 42.0 → 84.0
 intToDoubled(10);    -- "10" → 10.0 → 20.0
@@ -3036,13 +3048,13 @@ predict from reading the composition alone. Both sides are pre-applied down
 to a single group before composing:
 
 ```lucid
-const clamp   (lo int)(hi int)(v int) -> int = { ... }
-const scaleBy2 (v int)                -> int = { return v * 2 }
+const clamp   (lo int)(hi int)(v int) -> int = { ... };
+const scaleBy2 (v int)                -> int = { return v * 2 };
 
 const pipeline = clamp +> scaleBy2;    -- ERROR: clamp has 3 groups (left side)
 
-const validate (a int) -> string = { ... }
-const checkLen (s string)(extra int) -> bool = { ... }
+const validate (a int) -> string = { ... };
+const checkLen (s string)(extra int) -> bool = { ... };
 
 const bad = validate +> checkLen;    -- ERROR: checkLen has 2 groups (right
                                               -- side) — even though validate's
@@ -3056,7 +3068,7 @@ const bad = validate +> checkLen;    -- ERROR: checkLen has 2 groups (right
 const clamp0to100 (v int) -> int = clamp(0)(100);
 const pipeline    (v int) -> int = clamp0to100 +> scaleBy2;
 
-const checkLenWith5 (s string) -> bool = (s string) -> bool { return checkLen(s)(5) }
+const checkLenWith5 (s string) -> bool = (s string) -> bool { return checkLen(s)(5) };
 const ok            (a int) -> bool = validate +> checkLenWith5;
 
 pipeline(150);    -- clamp → 100, scale → 200
@@ -3106,9 +3118,9 @@ there is no separate error type to declare. A fallible type `T!` holds either
 Non-fallible targets reject `err` at compile time.
 
 ```lucid
-let x int! = 5 + nil   -- ✅ recoverable: err → int!
-let y int  = 5 + nil   -- ❌ non-recoverable error: err → int (not fallible)
-let z int? = 5 + nil   -- ❌ non-recoverable error: err → int? (not fallible)
+let x int! = 5 + nil;    -- ✅ recoverable: err → int!
+let y int  = 5 + nil;    -- ❌ non-recoverable error: err → int (not fallible)
+let z int? = 5 + nil;    -- ❌ non-recoverable error: err → int? (not fallible)
 ```
 
 **Principle:** 
@@ -3176,7 +3188,7 @@ const process (id int) -> int = {
     if x == err { return -1 }
     -- x is int here for the rest of the function
     return x + 1;
-}
+};
 ```
 
 The narrowing table extends with `err` alongside `nil`:
@@ -3198,7 +3210,7 @@ const process (id int) -> int = {
     if x == nil or x == err { return -1 }
     -- x is User here — neither nil nor err remain possible
     return x.id;
-}
+};
 ```
 
 Stacked standalone guards work identically to the existing nullable
@@ -3230,13 +3242,13 @@ errors:
 ```lucid
 const x int! = riskyOp();
 
-x + 1    -- ERROR: cannot apply '+' to un-narrowed int!
+x + 1;    -- ERROR: cannot apply '+' to un-narrowed int!
 const y = x;    -- ERROR: cannot assign un-narrowed int!
 io:printl(x);    -- ERROR: cannot pass un-narrowed int! as argument
-x.field    -- ERROR: cannot access field on un-narrowed int!
+x.field;    -- ERROR: cannot access field on un-narrowed int!
 x:method();    -- ERROR: cannot call method on un-narrowed int!
-x |> double    -- ERROR: cannot pipe un-narrowed int!
-x == 5    -- ERROR: cannot compare un-narrowed int! to int
+x |> double;    -- ERROR: cannot pipe un-narrowed int!
+x == 5;    -- ERROR: cannot compare un-narrowed int! to int
 ```
 
 `x == err` (and, for `T?!`, `x == nil`) are the only comparisons legal on an
@@ -3281,7 +3293,7 @@ fallback_expr   = expr '??' expr
 const x int = (10 / d) ?? {
     system:logError("division failed");
     return -1;
-}
+};
 -- x is int — the block's last expression/return is plain int
 
 -- block re-raises: result stays int!, not int
@@ -3292,7 +3304,7 @@ const y int! = (10 / d) ?? {
     const retried int! = 10 / retryDivisor;    -- still runtime-checked
     if retried == err { return err }
     return retried;
-}
+};
 -- y is int! here — caller of y still must narrow it; the failure was not
 -- silently discarded, only retried
 ```
@@ -3308,7 +3320,7 @@ const d int  = c ?? 0;    -- err discarded, d = 0
 
 -- nullable and fallible together
 const e User?! = riskyLookup();
-const f User   = e ?? User { id = 0  name = "guest"  email = "" }
+const f User   = e ?? User { id = 0  name = "guest"  email = "" };
 
 -- never triggers: lhs is plain int
 const g int = getValue();
@@ -3318,7 +3330,7 @@ const h int = g ?? 0;    -- always g
 const i int = riskyOp() ?? {
     system:logError("riskyOp failed, using default");
     return -1;
-}
+};
 ```
 
 `??` is also the separator in inline `if` expressions (see **If Expression —
@@ -3375,7 +3387,7 @@ const step1 int! = x ?? {
     const retried int! = retryOp();
     if retried == err { return err }
     return retried;
-}
+};
 -- step1 is explicitly int! — the block re-raised, so it did NOT fully
 -- resolve x. This makes the next ?? visibly live, not dead:
 const step2 int = step1 ?? -1;    -- fully resolves whatever remains
@@ -3408,7 +3420,7 @@ dispatching on some other value the block computes, not on `nil` vs `err`:
 ```lucid
 -- (assume the following lives inside a function body, as with all
 -- 'return'-containing snippets in this section)
- recoveryCode (d int) -> int = { ... }
+ recoveryCode (d int) -> int = { ... };
 
  d int = getDivisor();
 
@@ -3418,7 +3430,7 @@ dispatching on some other value the block computes, not on `nil` vs `err`:
         case 2: { return -2 }
         default: { return 0 }
     }
-}
+};
 ```
 
 Each `??` in the chain still only ever sees "resolved or not" — not which
@@ -3432,12 +3444,12 @@ checks already established for `nil` and `err`:
  handleAbsent (lookup User?!) -> int = {
     system:logError("value was absent");
     return -1;
-}
+};
 
  handleFailure (lookup User?!) -> int = {
     system:logError("operation failed");
     return -2;
-}
+};
 
  x User?! = riskyLookup();
 
@@ -3458,8 +3470,8 @@ dispatch can use `switch` instead, since `nil` and `err` are valid
 `case_value`s:
 
 ```lucid
- handleAbsentCode  () -> int = { system:logError("absent")  return -1 }
- handleFailureCode () -> int = { system:logError("failed")  return -2 }
+ handleAbsentCode  () -> int = { system:logError("absent")  return -1 };
+ handleFailureCode () -> int = { system:logError("failed")  return -2 };
 
  code int?! = riskyParse();
 
@@ -3549,7 +3561,7 @@ const divide (a int, b int) -> int! = {
         return err;
     }
     return a / b;
-}
+};
 ```
 
 ### Propagation
@@ -3561,14 +3573,14 @@ without narrowing first, even when the caller's own return type matches
 exactly:
 
 ```lucid
-const fetch (url string) -> string! = { ... }
+const fetch (url string) -> string! = { ... };
 
 const process (url string) -> string! = {
     const raw string! = fetch(url);
     if raw == err { return err }
     -- raw is string here
     return raw;
-}
+};
 ```
 
 ```lucid
@@ -3578,7 +3590,7 @@ const process (url string) -> string! = {
 const badProcess (url string) -> string! = {
     const raw string! = fetch(url);
     return raw;    -- ERROR: cannot return un-narrowed string!
-}
+};
 ```
 
 This guarantees every propagation point is visible as an explicit `if raw ==
@@ -3599,9 +3611,9 @@ syntax itself:
 
 ```lucid
 enum FetchError {
-    Network = 0
-    Parse   = 1
-    Timeout = 2
+    Network = 0;
+    Parse   = 1;
+    Timeout = 2;
 }
 
 const fetch (url string)(lastError FetchError?) -> string! = {
@@ -3610,7 +3622,7 @@ const fetch (url string)(lastError FetchError?) -> string! = {
         return err;
     }
     return readBody(url);
-}
+};
 ```
 
 ### Error Handling in Pipelines
@@ -3621,7 +3633,7 @@ pipeline. To narrow inside a pipeline, use an anonymous function as the final
 step:
 
 ```lucid
-const result string = dbFindUser(id);
+const result string = dbFindUser(id)
     |> formatUser
     |> (v string!) -> string {
         if v == err { return "unnamed" }
@@ -3633,24 +3645,24 @@ const result string = dbFindUser(id);
 not need to be distinguished from absence:
 
 ```lucid
-const result string = fetchData(url);
+const result string = fetchData(url)
     |> parseJson
     |> formatOutput
-    ?? ""    -- any step that failed or returned nil: use ""
+    ?? "";    -- any step that failed or returned nil: use ""
 ```
 
 ### Complete Example
 
 ```lucid
 struct User {
-    id    int
-    name  string
-    email string
+    id    int;
+    name  string;
+    email string;
 }
 
 enum DbError {
-    NotFound       = 0
-    ConnectionLost = 1
+    NotFound       = 0;
+    ConnectionLost = 1;
 }
 
 const dbFindUser (id int)(lastError DbError?) -> User?! = {
@@ -3659,12 +3671,12 @@ const dbFindUser (id int)(lastError DbError?) -> User?! = {
         return err;
     }
     return db:query(id);    -- returns User?, nil if not found
-}
+};
 
 const formatUser (user User) -> string = {
     if user.name == "" { return "user has no name" }
     return user.name + " <" + user.email + ">";
-}
+};
 
 const getFormattedUser (id int) -> string = {
     let lastError DbError? = nil;
@@ -3676,10 +3688,10 @@ const getFormattedUser (id int) -> string = {
     }
     -- found is User? here — err ruled out, nil still possible
 
-    const user User = found ?? User { id = 0  name = "guest"  email = "" }
+    const user User = found ?? User { id = 0  name = "guest"  email = "" };
 
     return user |> formatUser;
-}
+};
 ```
 
 ---
@@ -3720,7 +3732,7 @@ const matrix [3][3]float = [
     [1.0, 0.0, 0.0],
     [0.0, 1.0, 0.0],
     [0.0, 0.0, 1.0]
-]
+];
 ```
 
 ### Element Access and Index
@@ -3751,27 +3763,27 @@ const nums  [*]int = [3, 1, 4, 1, 5, 9, 2, 6];
 -- sorting — user provides the comparison callback
 const sorted [*]int = arr:sort<int>(nums)(
     (a int, b int) -> int { return a - b }    -- ascending
-)
+);
 
 -- mapping — user provides the transform callback
 const doubled [*]int = arr:map<int, int>(nums)(
     (v int) -> int { return v * 2 }
-)
+);
 
 -- filtering — user provides the predicate callback
 const evens [*]int = arr:filter<int>(nums)(
     (v int) -> bool { return v % 2 == 0 }
-)
+);
 
 -- reducing — user provides the accumulator callback
 const sum int = arr:reduce<int, int>(nums)(0)(
     (acc int, v int) -> int { return acc + v }
-)
+);
 
 -- searching — user provides the predicate
 const found int? = arr:find<int>(nums)(
     (v int) -> bool { return v > 4 }
-)
+);
 ```
 
 Since the std array library functions are plain curried functions, they compose
@@ -3850,7 +3862,7 @@ const mat4  [16]float = [
     0.0, 1.0, 0.0, 0.0,
     0.0, 0.0, 1.0, 0.0,
     0.0, 0.0, 0.0, 1.0
-]
+];
 
 -- pass as slice to functions that accept [_]T
 const view [_]float = mat4;
@@ -3882,11 +3894,11 @@ Struct assignment always produces a fully independent value. Owned fields are cl
 
 ```lucid
 struct Player {
-    score  int    -- owned: cloned
-    items  [*]string    -- owned: buffer deep-copied
+    score  int;    -- owned: cloned
+    items  [*]string;    -- owned: buffer deep-copied
 }
 
-const a Player = Player { score = 10, items = ["sword"] }
+const a Player = Player { score = 10, items = ["sword"] };
 let b Player = a;
 -- b.score and b.items are fully independent of a
 ```
@@ -3896,7 +3908,7 @@ let b Player = a;
 References (`&T`) allow sharing data without copying. They represent a safe borrowed view of an owned variable.
 
 ```lucid
-const a Player = Player { … }
+const a Player = Player { … };
 
 let ref &Player = a;    -- mutable shared reference
 const rc &Player = a;    -- read-only shared reference
@@ -3930,10 +3942,10 @@ This guarantees that a reference never outlives the owned variable it points to.
 > mutates the original array directly:
 >
 > ```lucid
-> let players [*]Player = loadPlayers()
+> let players [*]Player = loadPlayers();
 >
 > for _, plr Player in players {
->     plr.health = plr.health - 10   -- mutates players in place
+>     plr.health = plr.health - 10;    -- mutates players in place
 > }
 > ```
 >
@@ -3949,15 +3961,15 @@ Because references (`&T`) cannot be stored inside structs, building circular or 
 1. **Indices and Arenas (Recommended DOD Style):** Store integer indices into a flat array/arena instead of memory references.
    ```lucid
    struct Node {
-       value int
-       next  int    -- index of the next node in an array / arena
+       value int;
+       next  int;    -- index of the next node in an array / arena
    }
 ```
 2. **Raw Pointers (`*T`):** For manual memory management (e.g., building low-level systems or C integrations), use raw pointers. Raw pointers are "sealed conduits" and require explicit `#toRef` conversion to use, signaling unsafe operations. Type conversion syntax (e.g., `*T(val)` or `&T(val)`) is forbidden for raw pointers and references; the `#toRef` and `#toPtr` intrinsics must be used instead to cross the unsafe boundary.
    ```lucid
    struct Node {
-       value int
-       next  *Node?    -- raw pointer, nullable. Requires manual lifecycle tracking.
+       value int;
+       next  *Node?;    -- raw pointer, nullable. Requires manual lifecycle tracking.
    }
 ```
 3. **Smart Pointers (Standard Library):** For safe shared heap state, use standard library reference-counted wrappers like `Shared<T>` and `Weak<T>` (which auto-nulls when the owner is destroyed). These incur a small runtime cost.
@@ -4030,13 +4042,13 @@ const q *Node? = findNode();   -- pointer itself may be nil; nil-check required 
 > **Preferred mitigation — wrap `*T` in a cleanup struct:**
 > ```lucid
 > struct OwnedBuffer {
->     ptr  *uint8    -- non-nullable: asserts validity at construction
->     size uint64
+>     ptr  *uint8;    -- non-nullable: asserts validity at construction
+>     size uint64;
 > }
 >
 > const disposeBuffer (buf &OwnedBuffer) = {
 >     freeBuffer(buf.ptr, buf.size);    -- lifetime ends here, predictably
-> }
+> };
 >```
 > For shared ownership with automatic invalidation, use the standard library's `Shared<T>` and `Weak<T>` instead.
 
@@ -4068,7 +4080,7 @@ const q *Node? = findNode();   -- pointer itself may be nil; nil-check required 
 
 ```lucid
 @[foreign("C")]
-const malloc (size uint64) -> *uint8? = {}
+const malloc (size uint64) -> *uint8? = {};
 
 const buf *uint8? = malloc(1024);
 if buf == nil { return 1 }
@@ -4099,7 +4111,7 @@ int getValue(int* address) {
 ```lucid
 -- main.luc — Lucid side
 @[foreign("C")]
-const getValue (address *int) -> int = {}    -- returns owned int, never &int
+const getValue (address *int) -> int = {};    -- returns owned int, never &int
 
 const addr *int = getAddressFromSomewhere();
 const n    int  = getValue(addr);    -- safe: int is owned, fully copied
@@ -4117,7 +4129,7 @@ Player* getPlayer(PlayerStore* store, int id) {
 ```lucid
 -- Lucid side
 @[foreign("C")]
-const getPlayer (store *PlayerStore, id int) -> *Player? = {}    -- nullable: id may not exist
+const getPlayer (store *PlayerStore, id int) -> *Player? = {};    -- nullable: id may not exist
 
 const p *Player? = getPlayer(store, 42);
 if p == nil { return }
@@ -4139,9 +4151,9 @@ calls. Conversion functions are plain functions by convention:
 
 ```lucid
 -- naming convention: targetFromSource or targetOf
-const intFromString (s string) -> int! = { ... }
-const stringFromInt (n int)    -> string = { ... }
-const floatFromInt  (n int)    -> float  = { ... }
+const intFromString (s string) -> int! = { ... };
+const stringFromInt (n int)    -> string = { ... };
+const floatFromInt  (n int)    -> float  = { ... };
 
 -- use
 const parsed int! = intFromString("42");
@@ -4215,11 +4227,11 @@ string's content is taken verbatim — including every newline and the
 indentation on each line — between the opening and closing `"""`:
 
 ```lucid
-const query string = """;
+const query string = """
 SELECT id, name
 FROM users
 WHERE active = true;
-"""
+""";
 -- query contains the literal newlines and leading/trailing whitespace shown
 -- above; nothing is stripped or reformatted
 ```
@@ -4249,7 +4261,7 @@ const join (parts ...string) -> string = {
     let result string = "";
     for _, p string in parts { result = result + p }
     return result;
-}
+};
 
 join("a", "b", "c");    -- "abc"
 ```
@@ -4263,26 +4275,26 @@ plain functions that take the type as an explicit parameter:
 
 ```lucid
 struct Vector2 {
-    x float
-    y float
+    x float;
+    y float;
 }
 
 -- all "methods" are plain functions
 const vector2Add  (a Vector2)(b Vector2) -> Vector2 = {
     return Vector2 { x = a.x + b.x, y = a.y + b.y }
-}
+};
 
 const vector2Scale (v Vector2)(s float) -> Vector2 = {
     return Vector2 { x = v.x * s, y = v.y * s }
-}
+};
 
 const vector2Length (v Vector2) -> float = {
     return sqrt(v.x * v.x + v.y * v.y);
-}
+};
 
 -- usage
-const a Vector2 = Vector2 { x = 1.0, y = 0.0 }
-const b Vector2 = Vector2 { x = 0.0, y = 1.0 }
+const a Vector2 = Vector2 { x = 1.0, y = 0.0 };
+const b Vector2 = Vector2 { x = 0.0, y = 1.0 };
 const c Vector2 = vector2Add(a)(b);
 const len float = vector2Length(c);
 ```
@@ -4378,7 +4390,7 @@ const Log<T> (prefix string, values ...T) = {
     for v in values {
         io:printl(prefix ++ ": " ++ #tostr(v));
     }
-}
+};
 
 -- Inspecting a function
 const add (a int, b int) -> int = a + b;
@@ -4389,12 +4401,12 @@ io:printl(#ptrstr(add));    -- "0x7ffd91a2"
 
 -- Struct with custom str field — #tostr calls it automatically
 struct Point = {
-    x float
-    y float
-    const str () -> string = { return "(" ++ #tostr(x) ++ ", " ++ #tostr(y) ++ ")" }
+    x float;
+    y float;
+    const str () -> string = { return "(" ++ #tostr(x) ++ ", " ++ #tostr(y) ++ ")" };
 }
 
-const p Point = Point{ x: 1.5, y: 3.0 }
+const p Point = Point{ x: 1.5, y: 3.0 };
 io:printl(#tostr(p));    -- "(1.5, 3.0)"
 io:printl(#typeof(p));    -- "Point"
 io:printl(#nameof(p));    -- "p"
@@ -4429,7 +4441,7 @@ io:printl(#tostr(#str_len(greet)));    -- "13"
 io:printl(#tostr(#str_byte_at(greet, 0)));    -- "72"  (ASCII 'H')
 
 -- Build a string from a raw byte buffer received via foreign function
-@[foreign("C")] const get_buf (out *uint8, len *uint64) = {}
+@[foreign("C")] const get_buf (out *uint8, len *uint64) = {};
 
 let buf  *uint8 = #alloc(256);
 let size uint64 = 0;
@@ -4487,7 +4499,7 @@ this allocation and catches double-free and null-free. Use this when you need a
 raw pointer that Lucid allocates but passes into foreign code:
 
 ```lucid
-@[foreign("C")] const c_process (buf *uint8, len uint64) = {}
+@[foreign("C")] const c_process (buf *uint8, len uint64) = {};
 
 const buf *uint8 = #alloc(uint8, 1024);    -- Lucid allocates, Lucid tracks
 #memset(buf, 0, 1024);
@@ -4499,8 +4511,8 @@ c_process(buf, 1024);    -- C reads it
 it. You must free it using the matching C function:
 
 ```lucid
-@[foreign("C")] const c_malloc (size uint64) -> *uint8 = {}
-@[foreign("C")] const c_free   (ptr  *uint8)           = {}
+@[foreign("C")] const c_malloc (size uint64) -> *uint8 = {};
+@[foreign("C")] const c_free   (ptr  *uint8)           = {};
 
 const buf *uint8 = c_malloc(1024);    -- C's memory, Lucid has no knowledge of it
 -- ... work with buf via intrinsics ...
@@ -4518,16 +4530,16 @@ per-pointer tagging:
 -- ArenaDescriptor is a built-in POD struct — identical layout on Lucid and C sides
 -- Fields are read-only after creation; only the intrinsics may mutate them
 const ArenaDescriptor = struct {
-    base *uint8   -- start address of the arena region (never changes after create)
-    size uint64   -- total byte capacity (never changes after create)
-}
+    base *uint8;    -- start address of the arena region (never changes after create)
+    size uint64;    -- total byte capacity (never changes after create)
+};
 
 -- usage
-let arena ArenaDescriptor = #arena_create(4096)
-const nodes *Node  = #arena_alloc(arena, Node, 128)
-const edges *Edge  = #arena_alloc(arena, Edge, 256)
+let arena ArenaDescriptor = #arena_create(4096);
+const nodes *Node  = #arena_alloc(arena, Node, 128);
+const edges *Edge  = #arena_alloc(arena, Edge, 256);
 -- ... build a graph, pass descriptor + pointers to foreign code ...
-#arena_free(arena)    -- releases everything at once, no per-slot free needed
+#arena_free(arena);    -- releases everything at once, no per-slot free needed
 ```
 
 `ArenaDescriptor` carries only `base` and `size` — the two values needed to
@@ -4639,7 +4651,7 @@ const sumFloats (data *float32, len uint64) -> float32 = {
 
     return #simd_extract(acc, 0) + #simd_extract(acc, 1);
          + #simd_extract(acc, 2) + #simd_extract(acc, 3);
-}
+};
 ```
 
 ---
@@ -4673,19 +4685,19 @@ ordering argument.
 -- Lock-free reference counter
 const retain (refcount *uint32) = {
     #atomic_add(refcount, 1, relaxed);
-}
+};
 
 const release (refcount *uint32) -> bool = {
     const prev uint32 = #atomic_sub(refcount, 1, acq_rel);
     return prev == 1;    -- true means count hit zero
-}
+};
 
 -- CAS spin loop
 const claimSlot (flag *uint32) = {
     while not #atomic_cas(flag, 0, 1, acq_rel) {
         #pause();
     }
-}
+};
 ```
 
 ---
@@ -4848,23 +4860,23 @@ link_attr       = 'link' '(' STRING_LIT { ',' STRING_LIT } ')'
 ```lucid
 -- standard C library function
 @[foreign("C")]
-const malloc (size uint64) -> *uint8? = {}
+const malloc (size uint64) -> *uint8? = {};
 
 -- combine foreign + link in one attribute list
 @[foreign("C"), link("path/to/file.c")]
-const myAdd (a int32, b int32) -> int32 = {}
+const myAdd (a int32, b int32) -> int32 = {};
 
 -- no return value: omit the return type entirely
 @[foreign("C"), link("opengl")]
-const glClear (mask uint32) = {}
+const glClear (mask uint32) = {};
 
 -- nullable return — C function may return NULL
 @[foreign("C"), link("mylib")]
-const findNode (id int32) -> *Node? = {}
+const findNode (id int32) -> *Node? = {};
 
 -- multiple link targets: paths and library names can be mixed
 @[foreign("C"), link("vendor/math/fast_math.c", "vendor/math/lut.c", "m")]
-const fastSin (x float32) -> float32 = {}
+const fastSin (x float32) -> float32 = {};
 ```
 
 **Type mapping — C to Lucid:**
@@ -4888,7 +4900,7 @@ const fastSin (x float32) -> float32 = {}
 @[export, foreign("C")]
 const add (a int32, b int32) -> int32 = {
     return a + b;
-}
+};
 ```
 
 `@[export]` makes the symbol visible to the linker. `@[foreign("C")]` forces the
@@ -4939,13 +4951,13 @@ extern "C" {
 ```lucid
 -- Lucid sees a flat C surface — no C++ anywhere in these declarations
 @[foreign("C"), link("kernel_wrapper.cpp", "kernel")]
-const kernel_create  (config int32) -> *uint8? = {}
+const kernel_create  (config int32) -> *uint8? = {};
 
 @[foreign("C"), link("kernel_wrapper.cpp", "kernel")]
-const kernel_destroy (self *uint8) = {}
+const kernel_destroy (self *uint8) = {};
 
 @[foreign("C"), link("kernel_wrapper.cpp", "kernel")]
-const kernel_run     (self *uint8, data *float32, len int32) -> int32 = {}
+const kernel_run     (self *uint8, data *float32, len int32) -> int32 = {};
 
 -- usage: the C++ object is an opaque handle on the Lucid side
 const k *uint8? = kernel_create(42);
@@ -5019,8 +5031,8 @@ c_read_into(buf, 1024);   -- C reads/writes but does not free
 #free(buf);
 
 -- C owns: allocated and freed by C
-@[foreign("C")] const c_malloc (size uint64) -> *uint8? = {}
-@[foreign("C")] const c_free   (ptr *uint8) = {}
+@[foreign("C")] const c_malloc (size uint64) -> *uint8? = {};
+@[foreign("C")] const c_free   (ptr *uint8) = {};
 
 const cbuf *uint8? = c_malloc(1024);
 c_process(cbuf);
@@ -5049,14 +5061,14 @@ Never pass a raw `*uint8` into arena memory to C without its descriptor:
 
 ```lucid
 -- WRONG: C receives arena memory but has no boundary information
-let arena ArenaDescriptor = #arena_create(65536)
-const data *uint8 = #arena_alloc(arena, uint8, 4096)
-c_process(data)    -- C has no way to verify ownership or bounds
+let arena ArenaDescriptor = #arena_create(65536);
+const data *uint8 = #arena_alloc(arena, uint8, 4096);
+c_process(data);    -- C has no way to verify ownership or bounds
 
 -- CORRECT: C receives both the data and the descriptor
-let arena ArenaDescriptor = #arena_create(65536)
-const data *uint8 = #arena_alloc(arena, uint8, 4096)
-c_process(data, #addrof(arena))    -- C can verify: is data inside arena?
+let arena ArenaDescriptor = #arena_create(65536);
+const data *uint8 = #arena_alloc(arena, uint8, 4096);
+c_process(data, #addrof(arena));    -- C can verify: is data inside arena?
 ```
 
 **Pattern — Arena as a C sandbox**
@@ -5070,17 +5082,17 @@ arena at once.
 
 ```lucid
 -- Lucid side: create arena and allocate slices from it
-let arena ArenaDescriptor = #arena_create(65536)
-const nodes *uint8 = #arena_alloc(arena, uint8, 4096)
-const edges *uint8 = #arena_alloc(arena, uint8, 8192)
+let arena ArenaDescriptor = #arena_create(65536);
+const nodes *uint8 = #arena_alloc(arena, uint8, 4096);
+const edges *uint8 = #arena_alloc(arena, uint8, 8192);
 
 -- pass both the slices and the descriptor to C
 -- C receives: the data pointers AND the arena's base + size
 -- C can verify ownership: is this pointer inside arena.base .. arena.base + arena.size?
 -- C must not call free() on nodes or edges — they are not malloc-ed addresses
-c_build_graph(nodes, edges, #addrof(arena))
+c_build_graph(nodes, edges, #addrof(arena));
 
-#arena_free(arena)    -- Lucid frees everything at once when C is done
+#arena_free(arena);    -- Lucid frees everything at once when C is done
 ```
 
 On the C side, the descriptor arrives as a plain POD struct with an identical
@@ -5133,11 +5145,11 @@ and owns that promise.
 ```lucid
 -- programmer promises this never returns NULL → declared non-nullable
 @[foreign("C")]
-const getGlobalState () -> *State = {}
+const getGlobalState () -> *State = {};
 
 -- programmer knows this may return NULL → declared nullable
 @[foreign("C")]
-const findUser (id int32) -> *User? = {}
+const findUser (id int32) -> *User? = {};
 ```
 
 Unannotated pointer returns default to non-nullable (`*T`). Use `*T?` only when
@@ -5238,7 +5250,7 @@ struct is one value, like any other. Either nullability strategy works,
 depending on whether a sensible non-nullable initial value exists:
 
 ```lucid
-const parseInt (s string) -> Pair<int, bool> = { ... }
+const parseInt (s string) -> Pair<int, bool> = { ... };
 
 -- non-nullable: must supply a real initial value up front
 let result1 Pair<int, bool> = Pair<int, bool>{ first = 0, second = false };
@@ -5286,7 +5298,7 @@ if user != nil and profile != nil {
 >
 >    -- If we exit without awaiting, the async operation is terminated
 >    -- WARNING: 'result' was bound by async but never awaited
-> }
+> };
 >```
 
 ### Cooperative Multitasking — The Event Loop
@@ -5310,7 +5322,7 @@ const runTask1 () -> bool = {
     await io1;
     counter = counter + 1;    -- still safe: we yielded, but no other task
     return true;              -- can modify counter unless it also yields
-}
+};
 
 const runTask2 () -> bool = {
     counter = counter + 2;    -- safe: happens in its own time slice
@@ -5319,7 +5331,7 @@ const runTask2 () -> bool = {
     await io2;
     counter = counter + 2;
     return true;
-}
+};
 
 let task1 bool?;
 let task2 bool?;
@@ -5493,7 +5505,7 @@ const fetchAll (urls [*]string) -> [*]string = {
     }
 
     return fetched;
-}
+};
 
 -- Mixed parallelism and concurrency
 @[export] const main () -> int = {
@@ -5501,7 +5513,7 @@ const fetchAll (urls [*]string) -> [*]string = {
         "https://api1.com/users",
         "https://api2.com/products",
         "https://api3.com/orders"
-    ]
+    ];
 
     -- Concurrent I/O (event loop)
     let userData string;
@@ -5532,7 +5544,7 @@ const fetchAll (urls [*]string) -> [*]string = {
     io:printl(processed);
 
     return 0;
-}
+};
 ```
 
 ### Async vs Spawn — Decision Tree
@@ -5615,7 +5627,7 @@ A call that returns a **struct** (see **Grouping several return values**,
 earlier in this document) follows the same single-variable pattern:
 
 ```lucid
-const parseData (s string) -> Pair<int, bool> = { ... }
+const parseData (s string) -> Pair<int, bool> = { ... };
 
 let result Pair<int, bool>?;
 spawn result = parseData("42");
@@ -5661,7 +5673,7 @@ The compiler **warns** about named spawns that are never joined:
 const process () -> int = {
     spawn result = heavyWork();    -- result is never joined
     return 0;
-}
+};
 -- COMPILER WARNING: spawned result 'result' is never joined
 ```
 
@@ -5678,7 +5690,7 @@ const process () -> int = {
     -- Option 2: Discard intentionally
     spawn _ = heavyWork();
     return 0;
-}
+};
 ```
 
 ### Shared State
@@ -5691,13 +5703,13 @@ let sharedCounter int = 0;
 const bumpCounter () -> () = {
     -- This runs on a separate thread
     sharedCounter = sharedCounter + 1;
-}
+};
 
 const bumpAndReport () -> int = {
     -- Another thread, also can access sharedCounter
     sharedCounter = sharedCounter + 1;
     return sharedCounter;
-}
+};
 
 spawn _ = bumpCounter();
 
@@ -5759,7 +5771,7 @@ const processData () -> int = {
     spawn subResult = computeSubtask();
     join subResult;
     return subResult ?? 0;
-}
+};
 
 let result int?;
 spawn result = processData();
@@ -5818,7 +5830,7 @@ const processImages (images [*]Image) -> [*]ProcessedImage = {
     }
 
     return output;
-}
+};
 
 -- Mixed: fire-and-forget + joinable
 @[export] const main () -> int = {
@@ -5850,7 +5862,7 @@ const processImages (images [*]Image) -> [*]ProcessedImage = {
     spawn _ = logToFile("main completed");
 
     return 0;
-}
+};
 ```
 
 ### Spawn vs Async — Quick Reference
