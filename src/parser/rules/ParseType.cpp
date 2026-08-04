@@ -62,6 +62,7 @@ TypeAST* parseBaseType(TokenStream& stream, ParserContext& ctx) {
     }
     
     if (stream.check(TokenType::IDENTIFIER)) {
+        // parseNamedType handles both unqualified and module-qualified types
         return parseNamedType(stream, ctx);
     }
     
@@ -128,6 +129,15 @@ TypeAST* parsePrimitiveType(TokenStream& stream, ParserContext& ctx) {
 // parseNamedType
 // =============================================================================
 
+/// @brief Parse a type reference (named or module-qualified).
+/// 
+/// Grammar:
+///   type_reference = IDENTIFIER [ '<' type_arg_list '>' ]           (* unqualified *)
+///                   | IDENTIFIER ':' IDENTIFIER [ '<' type_arg_list '>' ]   (* qualified *)
+/// 
+/// @param stream The token stream
+/// @param ctx The parsing context
+/// @return TypeAST* - NamedTypeAST or ModuleTypeAccessAST
 TypeAST* parseNamedType(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
     
@@ -138,24 +148,50 @@ TypeAST* parseNamedType(TokenStream& stream, ParserContext& ctx) {
         return nullptr;
     }
     
-    Token nameTok = stream.consume();
-    InternedString name = ctx.pool.intern(nameTok.value);
+    Token firstTok = stream.consume();
+    InternedString firstName = ctx.pool.intern(firstTok.value);
     
-    if (!stream.check(TokenType::LESS)) {
-        auto* type = ctx.arena.make<NamedTypeAST>(name);
-        type->loc = loc;
-        return type;
+    // ─── Check for module qualification: IDENTIFIER ':' IDENTIFIER ────
+    if (stream.check(TokenType::COLON)) {
+        stream.consume(); // Consume ':'
+        
+        if (!stream.check(TokenType::IDENTIFIER)) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+                                    "expected type name after ':', got '", stream.peekValue(), "'");
+            return nullptr;
+        }
+        
+        Token secondTok = stream.consume();
+        InternedString typeName = ctx.pool.intern(secondTok.value);
+        
+        ArenaSpan<TypePtr> genericArgs;
+        if (stream.check(TokenType::LESS)) {
+            genericArgs = parseGenericArgs(stream, ctx);
+        }
+        
+        auto* moduleType = ctx.arena.make<ModuleTypeAccessAST>();
+        moduleType->loc = loc;
+        moduleType->moduleName = firstName;
+        moduleType->typeName = typeName;
+        moduleType->genericArgs = genericArgs;
+        
+        LOG_PARSER_DETAIL("parseNamedType: module-qualified '", 
+                          ctx.pool.lookup(firstName), ":", ctx.pool.lookup(typeName), "'");
+        return moduleType;
     }
     
-    ArenaSpan<TypePtr> genericArgs = parseGenericArgs(stream, ctx);
+    // ─── Unqualified type: IDENTIFIER [ '<' type_args '>' ] ──────────
+    ArenaSpan<TypePtr> genericArgs;
+    if (stream.check(TokenType::LESS)) {
+        genericArgs = parseGenericArgs(stream, ctx);
+    }
     
-    auto* type = ctx.arena.make<NamedTypeAST>(name);
-    type->loc = loc;
-    type->genericArgs = genericArgs;
+    auto* namedType = ctx.arena.make<NamedTypeAST>(firstName);
+    namedType->loc = loc;
+    namedType->genericArgs = genericArgs;
     
-    LOG_PARSER_DETAIL("parseNamedType: ", ctx.pool.lookup(name), 
-                      " with ", genericArgs.size(), " args");
-    return type;
+    LOG_PARSER_DETAIL("parseNamedType: unqualified '", ctx.pool.lookup(firstName), "'");
+    return namedType;
 }
 
 // =============================================================================

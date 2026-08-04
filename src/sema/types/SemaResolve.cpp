@@ -20,6 +20,8 @@ TypeAST* resolveType(const TypeAST* type, SemaContext& ctx) {
             return resolvePrimitiveType(type->as<PrimitiveTypeAST>(), ctx);
         case ASTKind::NamedType:     
             return resolveNamedType(type->as<NamedTypeAST>(), ctx);
+        case ASTKind::ModuleTypeAccess:
+            return resolveModuleTypeAccess(type->as<ModuleTypeAccessAST>(), ctx);
         case ASTKind::ArrayType:     
             return resolveArrayType(type->as<ArrayTypeAST>(), ctx);
         case ASTKind::NullableType:  
@@ -66,10 +68,7 @@ TypeAST* resolveNamedType(const NamedTypeAST* type, SemaContext& ctx) {
         return nullptr;
     }
 
-    // ─── 3. Check for self-reference ──────────────────────────────────────
-    // Self-reference detection - the wrapper resolvers will validate
-
-    // ─── 4. Resolve generic arguments if present ─────────────────────────
+    // ─── 3. Resolve generic arguments if present ─────────────────────────
     if (!type->genericArgs.empty()) {
         if (decl->isa<TraitDeclAST>()) {
             const TraitDeclAST* traitDecl = decl->as<TraitDeclAST>();
@@ -91,6 +90,11 @@ TypeAST* resolveNamedType(const NamedTypeAST* type, SemaContext& ctx) {
                                       type->genericArgs.size());
                 return nullptr;
             }
+        } else if (decl->isa<EnumDeclAST>()) {
+            // Enums cannot be generic - but we should validate
+            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, type,
+                                  "enum '", ctx.pool.lookup(type->name), "' is not generic");
+            return nullptr;
         }
 
         // Resolve each generic argument type
@@ -99,9 +103,128 @@ TypeAST* resolveNamedType(const NamedTypeAST* type, SemaContext& ctx) {
                 return nullptr;
             }
         }
+
+        // Validate constraints
+        if (decl->isa<StructDeclAST>()) {
+            const StructDeclAST* structDecl = decl->as<StructDeclAST>();
+            if (!validateGenericArguments(type->genericArgs, structDecl->genericParams, type, ctx)) {
+                return nullptr;
+            }
+        } else if (decl->isa<TraitDeclAST>()) {
+            const TraitDeclAST* traitDecl = decl->as<TraitDeclAST>();
+            if (!validateGenericArguments(type->genericArgs, traitDecl->genericParams, type, ctx)) {
+                return nullptr;
+            }
+        }
     }
 
     return const_cast<NamedTypeAST*>(type);
+}
+
+// ─── Module Type Access ──────────────────────────────────────────────────
+
+TypeAST* resolveModuleTypeAccess(const ModuleTypeAccessAST* type, SemaContext& ctx) {
+    if (!type) return nullptr;
+
+    // ─── Step 1: Look up the type in the module by alias ──────────────────
+    // Using the new simplified helper
+    const TypeDeclAST* decl = ctx.lookupTypeByAlias(type->moduleName, type->typeName);
+    if (!decl) {
+        // The helper already reported the error (module not found or type not found)
+        return nullptr;
+    }
+
+    // ─── Step 2: Check if the type is exported ─────────────────────────────
+    if (!ctx.isTypeExported(decl)) {
+        ctx.diagnostics.error(DiagCode::Sem_PrivateMember, type,
+                              "type '", ctx.pool.lookup(type->typeName), "' in module '",
+                              ctx.pool.lookup(type->moduleName), "' is not exported");
+        ctx.diagnostics.note(type, "Add @[export] to the type declaration to make it accessible");
+        return nullptr;
+    }
+
+    // ─── Step 3: Validate generic arguments if present ─────────────────────
+    if (!type->genericArgs.empty()) {
+        // Check if the type is generic
+        size_t expectedParams = 0;
+        bool isGeneric = false;
+
+        if (decl->isa<StructDeclAST>()) {
+            const StructDeclAST* structDecl = decl->as<StructDeclAST>();
+            expectedParams = structDecl->genericParams.size();
+            isGeneric = true;
+        } else if (decl->isa<TraitDeclAST>()) {
+            const TraitDeclAST* traitDecl = decl->as<TraitDeclAST>();
+            expectedParams = traitDecl->genericParams.size();
+            isGeneric = true;
+        }
+
+        if (!isGeneric) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, type,
+                                  "type '", ctx.pool.lookup(type->typeName), "' is not generic");
+            return nullptr;
+        }
+
+        // Check arity
+        if (type->genericArgs.size() != expectedParams) {
+            ctx.diagnostics.error(DiagCode::Sem_GenericArityMismatch, type,
+                                  "type '", ctx.pool.lookup(type->typeName),
+                                  "' expected ", expectedParams,
+                                  " generic arguments, got ", type->genericArgs.size());
+            return nullptr;
+        }
+
+        // Resolve each generic argument type
+        for (const TypePtr arg : type->genericArgs) {
+            if (!resolveType(arg, ctx)) {
+                return nullptr;
+            }
+        }
+
+        // Validate constraints
+        if (decl->isa<StructDeclAST>()) {
+            const StructDeclAST* structDecl = decl->as<StructDeclAST>();
+            if (!validateGenericArguments(type->genericArgs, structDecl->genericParams, type, ctx)) {
+                return nullptr;
+            }
+        } else if (decl->isa<TraitDeclAST>()) {
+            const TraitDeclAST* traitDecl = decl->as<TraitDeclAST>();
+            if (!validateGenericArguments(type->genericArgs, traitDecl->genericParams, type, ctx)) {
+                return nullptr;
+            }
+        }
+    } else {
+        // Check if the type requires generic arguments
+        bool requiresGeneric = false;
+        if (decl->isa<StructDeclAST>()) {
+            const StructDeclAST* structDecl = decl->as<StructDeclAST>();
+            if (!structDecl->genericParams.empty()) {
+                requiresGeneric = true;
+            }
+        } else if (decl->isa<TraitDeclAST>()) {
+            const TraitDeclAST* traitDecl = decl->as<TraitDeclAST>();
+            if (!traitDecl->genericParams.empty()) {
+                requiresGeneric = true;
+            }
+        }
+
+        if (requiresGeneric) {
+            ctx.diagnostics.error(DiagCode::Sem_GenericParamRequired, type,
+                                  "type '", ctx.pool.lookup(type->typeName),
+                                  "' requires generic arguments");
+            ctx.diagnostics.note(type, "Use '", ctx.pool.lookup(type->moduleName), ":",
+                                 ctx.pool.lookup(type->typeName), "<...>' to provide them");
+            return nullptr;
+        }
+    }
+
+    // ─── Step 4: Return the resolved type ──────────────────────────────────
+    // Create a NamedTypeAST that represents the resolved type
+    NamedTypeAST* resolvedType = ctx.getNamedType(type->typeName);
+    resolvedType->genericArgs = type->genericArgs;
+    resolvedType->loc = type->loc;
+
+    return resolvedType;
 }
 
 // ─── Array Type ──────────────────────────────────────────────────────────
@@ -339,14 +462,6 @@ const TraitDeclAST* resolveTraitRef(const NamedTypeAST* ref, SemaContext& ctx) {
 
 // ─── Callee Resolution ──────────────────────────────────────────────────
 
-/// @brief Resolve a call expression's callee to the FuncDeclAST it names.
-/// 
-/// Handles two callee shapes:
-///   - IdentifierExprAST: Look up in value namespace (uses ctx.lookupValue)
-///   - ModuleAccessExprAST: Look up module alias, then member (uses ctx.lookupImport + ctx.findModuleTable)
-/// 
-/// Any other callee shape (curried call, function literal, field access) 
-/// returns nullptr silently - the caller must check the callee's resolved type.
 const FuncDeclAST* resolveCalleeOrError(const ExprAST* callee, SemaContext& ctx) {
     if (!callee) return nullptr;
 
@@ -380,29 +495,12 @@ const FuncDeclAST* resolveCalleeOrError(const ExprAST* callee, SemaContext& ctx)
     if (callee->isa<ModuleAccessExprAST>()) {
         const ModuleAccessExprAST* access = callee->as<ModuleAccessExprAST>();
         
-        ModuleAST* module = ctx.lookupImport(access->moduleName);
-        if (!module) {
-            ctx.diagnostics.error(DiagCode::Sem_UndefinedModule, callee,
-                                  "undefined module alias '", ctx.pool.lookup(access->moduleName), "'");
+        const ValueDeclAST* decl = ctx.lookupValueByAlias(access->moduleName, access->memberName);
+        if (!decl) {
+            // The helper already reported the error (module not found or member not found)
             return nullptr;
         }
 
-        ModuleTable* table = ctx.findModuleTable(module);
-        if (!table) {
-            ctx.diagnostics.error(DiagCode::Sem_UndefinedModule, callee,
-                                  "module '", ctx.pool.lookup(access->moduleName), "' has not been analyzed");
-            return nullptr;
-        }
-
-        auto it = table->values.find(access->memberName);
-        if (it == table->values.end()) {
-            ctx.diagnostics.error(DiagCode::Sem_UndefinedMember, callee,
-                                  "module '", ctx.pool.lookup(access->moduleName),
-                                  "' has no exported member '", ctx.pool.lookup(access->memberName), "'");
-            return nullptr;
-        }
-
-        const ValueDeclAST* decl = it->second;
         if (!decl->isa<FuncDeclAST>()) {
             ctx.diagnostics.error(DiagCode::Sem_NotCallable, callee,
                                   "'", ctx.pool.lookup(access->moduleName), ":",

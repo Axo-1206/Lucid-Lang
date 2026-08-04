@@ -1,9 +1,10 @@
 /// @file SemaResolve.hpp
 /// @brief Type resolution - converts type AST nodes to semantic representations.
 /// 
-/// Resolution uses lookup to find declarations, then builds the complete
-/// semantic type representation. This is where generic arguments are resolved,
-/// and self-references are detected.
+/// Resolution uses SemaContext's lookup methods to find declarations,
+/// then builds the complete semantic type representation. This is where
+/// generic arguments are resolved, self-references are detected, and
+/// qualified type access (module:Type) is handled.
 /// 
 /// @resolve_priority
 ///   1. Check if it's a generic parameter (highest priority)
@@ -23,6 +24,7 @@
 
 #include "core/ast/BaseAST.hpp"
 #include "core/ast/TypeAST.hpp"
+#include "core/ast/DeclAST.hpp"
 #include "../context/SemaContext.hpp"
 
 namespace sema {
@@ -38,7 +40,7 @@ namespace sema {
 /// @param ctx The semantic context.
 /// @return The resolved TypeAST, or nullptr on failure.
 /// 
-/// @note On failure, an error is reported via ctx.error().
+/// @note On failure, an error is reported via ctx.diagnostics.error().
 /// 
 /// @example
 ///   TypeAST* resolved = resolveType(decl->type, ctx);
@@ -56,7 +58,7 @@ TypeAST* resolvePrimitiveType(const PrimitiveTypeAST* type, SemaContext& ctx);
 /// 
 /// Resolution priority:
 ///   1. Check if it's a generic parameter (highest priority)
-///   2. Look up as concrete type in scopes
+///   2. Look up as concrete type in scopes using ctx.lookupType()
 ///   3. Validate generic arguments if present
 ///   4. Check for self-reference (if being defined)
 /// 
@@ -64,9 +66,30 @@ TypeAST* resolvePrimitiveType(const PrimitiveTypeAST* type, SemaContext& ctx);
 /// @param ctx The semantic context.
 /// @return The resolved NamedTypeAST, or nullptr on failure.
 /// 
-/// @see SemaLookup.hpp - lookupType() for the actual lookup
-/// @see SemaValidate.hpp - validateGenericArguments()
+/// @note Uses ctx.lookupType() for symbol resolution.
+/// @see SemaContext::lookupType()
+/// @see validateGenericArguments()
 TypeAST* resolveNamedType(const NamedTypeAST* type, SemaContext& ctx);
+
+/// @brief Resolve a qualified type access: module:Type
+/// 
+/// This handles the case where the user explicitly qualifies a type
+/// with a module name to disambiguate a conflict or access a type
+/// from a specific module.
+/// 
+/// Resolution steps:
+///   1. Look up the module alias using ctx.lookupImport()
+///   2. Find the type in the module's type table
+///   3. Check if the type is exported (@[export] attribute)
+///   4. Validate generic arguments if present
+/// 
+/// @param type The qualified type access node.
+/// @param ctx The semantic context.
+/// @return The resolved NamedTypeAST, or nullptr on failure.
+/// 
+/// @example
+///   const u user:User = user:User { id = 1 }
+TypeAST* resolveModuleTypeAccess(const ModuleTypeAccessAST* type, SemaContext& ctx);
 
 /// @brief Resolve an array type.
 /// 
@@ -119,7 +142,7 @@ TypeAST* resolveCombinedType(const CombinedTypeAST* type, SemaContext& ctx);
 /// @param ctx The semantic context.
 /// @return The resolved RefTypeAST, or nullptr on failure.
 /// 
-/// @see SemaValidate.hpp - validateRefContext()
+/// @see validateRefContext()
 TypeAST* resolveRefType(const RefTypeAST* type, SemaContext& ctx);
 
 /// @brief Resolve a pointer type (*T).
@@ -161,8 +184,9 @@ const TraitDeclAST* resolveTraitRef(const NamedTypeAST* ref, SemaContext& ctx);
 /// @brief Resolve a call expression's callee to the FuncDeclAST it names.
 /// 
 /// Handles callee shapes:
-///   - IdentifierExprAST: Look up in value namespace
-///   - ModuleAccessExprAST: Look up module alias, then member
+///   - IdentifierExprAST: Look up in value namespace using ctx.lookupValue()
+///   - ModuleAccessExprAST: Look up module alias using ctx.lookupImport(),
+///     then member using ctx.lookupModuleMember()
 /// 
 /// @param callee The callee expression from a CallExprAST.
 /// @param ctx The semantic context.
@@ -170,7 +194,6 @@ const TraitDeclAST* resolveTraitRef(const NamedTypeAST* ref, SemaContext& ctx);
 /// 
 /// @note Any other callee shape returns nullptr silently.
 const FuncDeclAST* resolveCalleeOrError(const ExprAST* callee, SemaContext& ctx);
-
 
 // ─── Self-Reference Detection ───────────────────────────────────────────
 

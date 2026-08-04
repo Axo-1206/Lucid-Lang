@@ -270,8 +270,17 @@ struct SemaContext {
         return it != currentModuleTable->importAliases.end() ? it->second : nullptr;
     }
     
-    /// @brief Look up a member in a module's table.
-    const ValueDeclAST* lookupModuleMember(ModuleAST* module, InternedString memberName) const {
+    // ─── Module Member Lookup ──────────────────────────────────────────
+    
+    /// @brief Look up a value member in a module's table.
+    /// 
+    /// This is a convenience wrapper that handles the module table lookup
+    /// and returns the value declaration directly.
+    /// 
+    /// @param module The module to search.
+    /// @param memberName The member name to look up.
+    /// @return The ValueDeclAST if found, nullptr otherwise.
+    const ValueDeclAST* lookupModuleValueMember(ModuleAST* module, InternedString memberName) const {
         if (!module) return nullptr;
         
         auto it = moduleTables.find(module);
@@ -279,6 +288,70 @@ struct SemaContext {
         
         auto found = it->second.values.find(memberName);
         return found != it->second.values.end() ? found->second : nullptr;
+    }
+    
+    /// @brief Look up a type member in a module's table.
+    /// 
+    /// This is a convenience wrapper that handles the module table lookup
+    /// and returns the type declaration directly.
+    /// 
+    /// @param module The module to search.
+    /// @param memberName The member name to look up.
+    /// @return The TypeDeclAST if found, nullptr otherwise.
+    const TypeDeclAST* lookupModuleTypeMember(ModuleAST* module, InternedString memberName) const {
+        if (!module) return nullptr;
+        
+        auto it = moduleTables.find(module);
+        if (it == moduleTables.end()) return nullptr;
+        
+        auto found = it->second.types.find(memberName);
+        return found != it->second.types.end() ? found->second : nullptr;
+    }
+    
+    /// @brief Look up a value member by module alias.
+    /// 
+    /// This combines module lookup and value member lookup in one call.
+    /// 
+    /// @param alias The module alias.
+    /// @param memberName The member name to look up.
+    /// @return The ValueDeclAST if found, nullptr otherwise.
+    const ValueDeclAST* lookupValueByAlias(InternedString alias, InternedString memberName) const {
+        ModuleAST* module = lookupImport(alias);
+        if (!module) return nullptr;
+        return lookupModuleValueMember(module, memberName);
+    }
+    
+    /// @brief Look up a type member by module alias.
+    /// 
+    /// This combines module lookup and type member lookup in one call.
+    /// 
+    /// @param alias The module alias.
+    /// @param memberName The member name to look up.
+    /// @return The TypeDeclAST if found, nullptr otherwise.
+    const TypeDeclAST* lookupTypeByAlias(InternedString alias, InternedString memberName) const {
+        ModuleAST* module = lookupImport(alias);
+        if (!module) return nullptr;
+        return lookupModuleTypeMember(module, memberName);
+    }
+    
+    /// @brief Check if a value member exists in a module.
+    bool hasModuleValueMember(ModuleAST* module, InternedString memberName) const {
+        return lookupModuleValueMember(module, memberName) != nullptr;
+    }
+    
+    /// @brief Check if a type member exists in a module.
+    bool hasModuleTypeMember(ModuleAST* module, InternedString memberName) const {
+        return lookupModuleTypeMember(module, memberName) != nullptr;
+    }
+    
+    /// @brief Check if a value member exists by module alias.
+    bool hasValueByAlias(InternedString alias, InternedString memberName) const {
+        return lookupValueByAlias(alias, memberName) != nullptr;
+    }
+    
+    /// @brief Check if a type member exists by module alias.
+    bool hasTypeByAlias(InternedString alias, InternedString memberName) const {
+        return lookupTypeByAlias(alias, memberName) != nullptr;
     }
     
     // ─── Redeclaration Checks ──────────────────────────────────────────
@@ -525,11 +598,34 @@ struct SemaContext {
         return definingTypes.empty() ? nullptr : definingTypes.back();
     }
     
-    // ─── Convenience: Lookup with Keyword Info ──────────────────────────
+    // ─── Export Checking ──────────────────────────────────────────────
+    
+    /// @brief Check if a declaration has the @[export] attribute.
+    bool isExported(const DeclAST* decl) const {
+        if (!decl) return false;
+        for (AttributeAST* attr : decl->attributes) {
+            if (attr->name == pool.intern("export")) {
+                return true;
+            }
+        }
+        return false;
+    }
+    
+    /// @brief Check if a type declaration is exported.
+    bool isTypeExported(const TypeDeclAST* decl) const {
+        return isExported(decl);
+    }
+    
+    /// @brief Check if a value declaration is exported.
+    bool isValueExported(const ValueDeclAST* decl) const {
+        return isExported(decl);
+    }
+    
+    // ─── Convenience: Module Member Keyword Info ──────────────────────
     
     /// @brief Look up a module member's keyword.
     DeclKeyword lookupModuleMemberKeyword(ModuleAST* module, InternedString memberName) const {
-        const ValueDeclAST* decl = lookupModuleMember(module, memberName);
+        const ValueDeclAST* decl = lookupModuleValueMember(module, memberName);
         if (!decl) return DeclKeyword::Let;
         
         if (decl->isa<VarDeclAST>()) {
@@ -543,7 +639,7 @@ struct SemaContext {
     
     /// @brief Check if a module member is mutable (let).
     bool isModuleMemberMutable(ModuleAST* module, InternedString memberName) const {
-        const ValueDeclAST* decl = lookupModuleMember(module, memberName);
+        const ValueDeclAST* decl = lookupModuleValueMember(module, memberName);
         if (!decl) return false;
         
         if (decl->isa<VarDeclAST>()) {
@@ -557,7 +653,7 @@ struct SemaContext {
     
     /// @brief Check if a module member is const.
     bool isModuleMemberConst(ModuleAST* module, InternedString memberName) const {
-        const ValueDeclAST* decl = lookupModuleMember(module, memberName);
+        const ValueDeclAST* decl = lookupModuleValueMember(module, memberName);
         if (!decl) return false;
         
         if (decl->isa<VarDeclAST>()) {
@@ -570,6 +666,27 @@ struct SemaContext {
             return true; // Enum variants are compile-time constants
         }
         return false;
+    }
+    
+    /// @brief Look up a module member's keyword by alias.
+    DeclKeyword lookupModuleMemberKeywordByAlias(InternedString alias, InternedString memberName) const {
+        ModuleAST* module = lookupImport(alias);
+        if (!module) return DeclKeyword::Let;
+        return lookupModuleMemberKeyword(module, memberName);
+    }
+    
+    /// @brief Check if a module member is mutable by alias.
+    bool isModuleMemberMutableByAlias(InternedString alias, InternedString memberName) const {
+        ModuleAST* module = lookupImport(alias);
+        if (!module) return false;
+        return isModuleMemberMutable(module, memberName);
+    }
+    
+    /// @brief Check if a module member is const by alias.
+    bool isModuleMemberConstByAlias(InternedString alias, InternedString memberName) const {
+        ModuleAST* module = lookupImport(alias);
+        if (!module) return false;
+        return isModuleMemberConst(module, memberName);
     }
 };
 

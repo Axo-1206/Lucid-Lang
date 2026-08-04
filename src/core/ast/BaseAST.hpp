@@ -41,6 +41,7 @@
 // TypeAST.hpp
 struct PrimitiveTypeAST;
 struct NamedTypeAST;
+struct ModuleTypeAccessAST;
 struct ArrayTypeAST;
 struct NullableTypeAST;
 struct FallibleTypeAST;
@@ -154,6 +155,7 @@ enum class ASTKind : uint16_t {
     // Type nodes
     PrimitiveType,
     NamedType,
+    ModuleTypeAccess,
     ArrayType,
     NullableType,
     FallibleType,

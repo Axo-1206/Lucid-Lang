@@ -347,3 +347,32 @@ struct FuncTypeAST : TypeAST {
         return nullptr;
     }
 };
+
+/// @file TypeAST.hpp
+
+/// @brief Accesses a type from a module via the ':' operator.
+/// 
+/// This is used ONLY for type names, not values. It resolves a type
+/// reference that is qualified with a module name.
+/// 
+/// @example
+///   parser:Result      → module = "parser", typeName = "Result"
+///   sql:Result         → module = "sql", typeName = "Result"
+///   std:io:File        → module = "std:io", typeName = "File" (nested module)
+/// 
+/// @note This node is used when a type name conflict exists and the user
+///       must disambiguate with module qualification. For unqualified
+///       type names, the resolver looks up the type directly.
+/// 
+/// @field moduleName    The module name (left-hand side of `:`).
+/// @field typeName      The type name (right-hand side of `:`).
+/// @field genericArgs   Generic arguments if the type is generic.
+struct ModuleTypeAccessAST : TypeAST {
+    static constexpr ASTKind staticKind = ASTKind::ModuleTypeAccess;
+
+    InternedString moduleName;
+    InternedString typeName;
+    ArenaSpan<TypePtr> genericArgs;
+
+    ModuleTypeAccessAST() : TypeAST(ASTKind::ModuleTypeAccess) {}
+};
