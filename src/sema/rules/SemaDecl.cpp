@@ -149,9 +149,10 @@ void resolveVarDecl(const VarDeclAST* decl, SemaContext& ctx) {
     }
 
     // ─── 5. REGISTER the variable in the current scope ────────────────
-    if (!ctx.isAtModuleLevel()) {
-        ctx.insertValue(decl);
-    }
+    // insertValue handles both module-level and local scopes
+    // For top-level variables, this is a no-op (already registered in Phase 1)
+    // For local variables, this registers them in the current block scope
+    ctx.insertValue(decl);
 }
 
 void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
@@ -179,10 +180,9 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
         resolveGenericParam(g, ctx);
     }
 
-    // ─── 4. REGISTER the function in the current scope if nested ────────
-    if (!ctx.isAtModuleLevel()) {
-        ctx.insertValue(decl);
-    }
+    // ─── 4. REGISTER the function in the current scope ────────────────
+    // insertValue handles both module-level and local scopes
+    ctx.insertValue(decl);
 
     // 5. Resolve parameters - REGISTER them in the function scope
     ctx.pushScope();
@@ -264,9 +264,8 @@ void resolveGenericParam(const GenericParamDeclAST* param, SemaContext& ctx) {
 void resolveEnumDecl(const EnumDeclAST* decl, SemaContext& ctx) {
     attr::validateAttributes(decl, ctx);
 
-    if (!ctx.isAtModuleLevel()) {
-        ctx.insertType(decl);
-    }
+    // insertType handles both module-level and local scopes
+    ctx.insertType(decl);
 
     if (decl->backingType) {
         if (!resolvePrimitiveType(decl->backingType, ctx)) {
@@ -279,7 +278,6 @@ void resolveEnumDecl(const EnumDeclAST* decl, SemaContext& ctx) {
     for (const EnumVariantAST* variant : decl->variants) {
         attr::validateAttributes(variant, ctx);
 
-        // Check duplicate variant names (already caught by ctx.insertValue)
         // Check duplicate variant values
         for (const EnumVariantAST* existing : decl->variants) {
             if (existing == variant) break;
@@ -296,9 +294,8 @@ void resolveEnumDecl(const EnumDeclAST* decl, SemaContext& ctx) {
 void resolveTraitDecl(const TraitDeclAST* decl, SemaContext& ctx) {
     attr::validateAttributes(decl, ctx);
 
-    if (!ctx.isAtModuleLevel()) {
-        ctx.insertType(decl);
-    }
+    // insertType handles both module-level and local scopes
+    ctx.insertType(decl);
 
     for (const GenericParamDeclAST* g : decl->genericParams) {
         resolveGenericParam(g, ctx);
@@ -330,9 +327,8 @@ void resolveTraitDecl(const TraitDeclAST* decl, SemaContext& ctx) {
 void resolveStructDecl(const StructDeclAST* decl, SemaContext& ctx) {
     attr::validateAttributes(decl, ctx);
 
-    if (!ctx.isAtModuleLevel()) {
-        ctx.insertType(decl);
-    }
+    // insertType handles both module-level and local scopes
+    ctx.insertType(decl);
 
     ScopedTypeDefinition defining(ctx, decl);
 
