@@ -403,18 +403,53 @@ bool isSwitchCaseCompatible(const ExprAST* value,
 bool isValidFFIType(const TypeAST* type, SemaContext& ctx) {
     if (!type) return true; // void
 
-    // Primitives are always valid
+    // ─── Primitive types ──────────────────────────────────────────────────────
     if (type->isa<PrimitiveTypeAST>()) return true;
 
-    // Raw pointers are valid
+    // ─── Raw pointers ─────────────────────────────────────────────────────────
     if (type->isa<PtrTypeAST>()) {
-        return isValidFFIType(type->as<PtrTypeAST>()->inner, ctx);
+        const TypeAST* inner = type->as<PtrTypeAST>()->inner;
+        
+        // ─── Function pointers: *() -> T is FFI-compatible ──────────────────
+        if (inner->isa<FuncTypeAST>()) {
+            // Validate the function type itself (parameters and return types)
+            const FuncTypeAST* funcType = inner->as<FuncTypeAST>();
+            
+            // Check all parameter types
+            for (const ParamAST* param : funcType->params) {
+                if (!isValidFFIType(param->type, ctx)) {
+                    return false;
+                }
+            }
+            
+            // Check return type
+            if (funcType->returnType && !isValidFFIType(funcType->returnType, ctx)) {
+                return false;
+            }
+            
+            return true;  // *() -> T is valid
+        }
+        
+        // ─── Pointers to other types ──────────────────────────────────────────
+        // Only allow pointers to: primitives, structs, enums, and other pointers
+        if (inner->isa<ArrayTypeAST>()) {
+            return false;  // *array is not FFI-compatible
+        }
+        if (isNullableType(inner) || isFallibleType(inner)) {
+            return false;
+        }
+        if (inner->isa<RefTypeAST>()) {
+            return false;
+        }
+        if (isTraitType(inner, ctx)) {
+            return false;
+        }
+        
+        // Recursively validate inner type
+        return isValidFFIType(inner, ctx);
     }
 
-    // References are NOT valid
-    if (type->isa<RefTypeAST>()) return false;
-
-    // Named types (structs, enums, traits)
+    // ─── Named types (structs, enums, traits) ──────────────────────────────
     if (type->isa<NamedTypeAST>()) {
         const NamedTypeAST* named = type->as<NamedTypeAST>();
         const TypeDeclAST* decl = ctx.lookupType(named->name);
@@ -438,18 +473,27 @@ bool isValidFFIType(const TypeAST* type, SemaContext& ctx) {
         return false;
     }
 
+    // ─── Arrays ──────────────────────────────────────────────────────────────
     // Arrays are valid if element type is FFI-compatible
     if (type->isa<ArrayTypeAST>()) {
         return isValidFFIType(type->as<ArrayTypeAST>()->element, ctx);
     }
 
-    // Nullable/fallible types are NOT valid
+    // ─── Nullable/fallible types ────────────────────────────────────────────
     if (isNullableType(type) || isFallibleType(type)) {
         return false;
     }
 
-    // Function types are NOT valid
-    if (type->isa<FuncTypeAST>()) return false;
+    // ─── Function types (bare, not behind a pointer) ──────────────────────
+    // Bare function types are NOT FFI-compatible (must be *func_type)
+    if (type->isa<FuncTypeAST>()) {
+        return false;
+    }
+
+    // ─── Reference types ────────────────────────────────────────────────────
+    if (type->isa<RefTypeAST>()) {
+        return false;
+    }
 
     return false;
 }

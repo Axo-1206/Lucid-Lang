@@ -252,7 +252,7 @@ enum class DiagCode : uint32_t {
     // ──────────────────────────────────────────────────────────────────────────
     // GENERICS & TRAITS ERRORS (6000-6499)
     // ──────────────────────────────────────────────────────────────────────────
-    
+
     Sem_GenericArityMismatch  = 6001,
     Sem_GenericConstraint     = 6002,
     Sem_TraitImplementation   = 6003,
@@ -270,6 +270,7 @@ enum class DiagCode : uint32_t {
     Sem_TraitConstMismatch    = 6015,
     Sem_TraitDuplicate        = 6016,
     Sem_GenericCycle          = 6017,
+    Sem_AttributeArgValue     = 6018,  // ← NEW: Invalid attribute argument value
 
     // ──────────────────────────────────────────────────────────────────────────
     // MEMORY & OWNERSHIP ERRORS (6500-6999)

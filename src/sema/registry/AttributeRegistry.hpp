@@ -142,21 +142,69 @@ inline void validateForeign(const AttributeAST* attr,
 inline void validateLink(const AttributeAST* attr,
                           const DeclAST* owner,
                           SemaContext& ctx) {
+    // ─── 1. Validate placement ──────────────────────────────────────────────
+    // @[link] can appear at module level OR on function declarations
     if (owner != nullptr && !isFunctionOwner(owner)) {
         ctx.diagnostics.error(DiagCode::Sem_AttributeInvalid, attr,
                               "attribute '@[link]' is only legal at module level or on function declarations");
         return;
     }
 
+    // ─── 2. Validate argument count ──────────────────────────────────────────
+    // Grammar: link '(' STRING_LIT { ',' STRING_LIT } ')' — at least 1
     if (attr->args.empty()) {
         ctx.diagnostics.error(DiagCode::Sem_AttributeArgCount, attr,
-                              "attribute '@[link]' expects at least 1 argument (library name), got 0");
+                              "attribute '@[link]' expects at least 1 argument (library name or file path), got 0");
         return;
     }
 
+    // ─── 3. Validate each argument ──────────────────────────────────────────
     for (size_t i = 0; i < attr->args.size(); ++i) {
-        if (!validateStringArg(attr->args[i], ctx, "library " + std::to_string(i + 1))) {
-            return;
+        const ExprAST* arg = attr->args[i];
+        
+        // 3a. Must be a literal expression
+        if (!arg || arg->kind != ASTKind::LiteralExpr) {
+            ctx.diagnostics.error(DiagCode::Sem_AttributeArgValue, arg,
+                                  "@[link] argument ", i + 1, 
+                                  " must be a string literal, got non-literal expression");
+            continue;
+        }
+
+        const LiteralExprAST* lit = arg->as<LiteralExprAST>();
+        
+        // 3b. Must be a string literal (String or RawString)
+        if (lit->kind != LiteralKind::String && 
+            lit->kind != LiteralKind::RawString) {
+            ctx.diagnostics.error(DiagCode::Sem_AttributeArgValue, arg,
+                                  "@[link] argument ", i + 1, 
+                                  " must be a string literal, got ", 
+                                  debug::literalKindToString(lit->kind));
+            continue;
+        }
+
+        // 3c. Empty string is invalid
+        std::string value = ctx.pool.lookup(lit->value);
+        if (value.empty()) {
+            ctx.diagnostics.error(DiagCode::Sem_AttributeArgValue, arg,
+                                  "@[link] argument ", i + 1, " cannot be an empty string");
+            continue;
+        }
+
+        // ─── 4. Optional: Warn about common mistakes ─────────────────────────
+        // These are warnings, not errors — the linker will handle actual resolution
+        
+        // 4a. Spaces in library names or paths are almost always wrong
+        if (value.find(' ') != std::string::npos) {
+            ctx.diagnostics.warning(DiagCode::Warn_UnsafeFFI, arg,
+                                    "@[link] argument '", value, 
+                                    "' contains a space — library names and file paths should not contain spaces");
+        }
+
+        // 4b. Relative paths with './' are fragile — prefer package-relative paths
+        if (value.find("./") == 0 || value.find(".\\") == 0) {
+            ctx.diagnostics.warning(DiagCode::Warn_UnsafeFFI, arg,
+                                    "@[link] argument '", value, 
+                                    "' uses './' — prefer absolute or package-relative paths for better portability");
         }
     }
 }

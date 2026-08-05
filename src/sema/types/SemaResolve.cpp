@@ -374,6 +374,18 @@ TypeAST* resolvePtrType(const PtrTypeAST* type, SemaContext& ctx) {
         return nullptr;
     }
 
+    // ─── Remove FFI-specific checks ─────────────────────────────────────
+    // These belong in isValidFFIType, not here.
+    // Only keep structural validation that applies to ALL pointers:
+    
+    // 1. Check self-reference validity (keep this one)
+    // 2. Any other pointer-specific structural rules
+    
+    // Remove: array check, nullable/fallible check, ref check, trait check
+    // These are FFI concerns, not pointer concerns.
+
+    // Maybe add a note: "FFI compatibility is checked separately"
+    
     return const_cast<PtrTypeAST*>(type);
 }
 

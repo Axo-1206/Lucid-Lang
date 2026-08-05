@@ -171,7 +171,14 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
     );
 
     if (foreignAttr) {
-        const_cast<FuncDeclAST*>(decl)->isConst = false;
+        // ─── 2a. Validate FFI function ─────────────────────────────────────────
+        validateForeignFunction(decl, foreignAttr, ctx);
+
+        // No need to collect link info here - the AST already has it.
+        // Later phases (JIT/AOT) will traverse the AST to find @[link] attributes.
+        
+        // Mark as const (foreign functions are compile-time constants)
+        const_cast<FuncDeclAST*>(decl)->isConst = true;
         return;
     }
 

@@ -309,6 +309,8 @@ TypeAST* parsePtrType(TokenStream& stream, ParserContext& ctx) {
         return nullptr;
     }
     
+    // Semantic validation will reject invalid pointer targets
+    // (arrays, nullable/fallible, traits, etc.)
     auto* type = ctx.arena.make<PtrTypeAST>(inner);
     type->loc = loc;
     

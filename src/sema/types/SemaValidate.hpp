@@ -83,4 +83,23 @@ bool validateGenericParameterUsage(ArenaSpan<GenericParamDeclPtr> params,
 /// @brief Validate that a reference type appears in a valid context.
 bool validateRefContext(const RefTypeAST* type, SemaContext& ctx);
 
+
+// ─── FFI Validation ──────────────────────────────────────────────────────
+
+/// @brief Validate a foreign function declaration.
+/// 
+/// Checks:
+///   1. ABI string must be "C"
+///   2. All parameter types must be FFI-compatible
+///   3. Return type must be FFI-compatible
+///   4. Function must have no body
+/// 
+/// @param decl The function declaration.
+/// @param foreignAttr The @[foreign] attribute.
+/// @param ctx The semantic context.
+/// @return true if valid, false otherwise.
+bool validateForeignFunction(const FuncDeclAST* decl,
+                              const AttributeAST* foreignAttr,
+                              SemaContext& ctx);
+
 } // namespace sema

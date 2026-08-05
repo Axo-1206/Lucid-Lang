@@ -426,4 +426,82 @@ bool validateRefContext(const RefTypeAST* type, SemaContext& ctx) {
     return true;
 }
 
+// ─── FFI Validation ──────────────────────────────────────────────────────
+
+bool validateForeignFunction(const FuncDeclAST* decl,
+                              const AttributeAST* foreignAttr,
+                              SemaContext& ctx) {
+    if (!decl || !foreignAttr) return false;
+
+    // ─── 1. Validate ABI ─────────────────────────────────────────────────────
+    if (foreignAttr->args.empty()) {
+        ctx.diagnostics.error(DiagCode::Sem_AttributeArgCount, foreignAttr,
+                              "@[foreign] requires an ABI argument");
+        return false;
+    }
+
+    const LiteralExprAST* abiLiteral = foreignAttr->args[0];
+    if (!abiLiteral || abiLiteral->kind != LiteralKind::String) {
+        ctx.diagnostics.error(DiagCode::Sem_ForeignABI, foreignAttr,
+                              "@[foreign] ABI must be a string literal");
+        return false;
+    }
+
+    std::string abi = ctx.pool.lookup(abiLiteral->value);
+    if (abi != "C") {
+        ctx.diagnostics.error(DiagCode::Sem_ForeignABI, foreignAttr,
+                              "unsupported foreign ABI '", abi, "' — only \"C\" is supported");
+        return false;
+    }
+
+    // ─── 2. Check: Function must have no body ────────────────────────────────
+    if (decl->body) {
+        ctx.diagnostics.error(DiagCode::Sem_ForeignInvalid, decl,
+                              "foreign function '", ctx.pool.lookup(decl->name),
+                              "' must have no body (implementation is external)");
+        return false;
+    }
+
+    // ─── 3. Validate parameter types ─────────────────────────────────────────
+    FuncTypeAST* funcType = decl->funcType;
+    if (!funcType) {
+        ctx.diagnostics.error(DiagCode::Sem_InvalidReturnType, decl,
+                              "foreign function '", ctx.pool.lookup(decl->name),
+                              "' has no function type");
+        return false;
+    }
+
+    bool allValid = true;
+
+    for (FuncTypeAST* group = funcType; group; group = group->getNext()) {
+        for (ParamAST* param : group->params) {
+            if (!isValidFFIType(param->type, ctx)) {
+                ctx.diagnostics.error(DiagCode::Ffi_TypeNotFFI, param,
+                                      "parameter '", ctx.pool.lookup(param->name),
+                                      "' type is not FFI-compatible");
+                allValid = false;
+            }
+        }
+    }
+
+    // ─── 4. Validate return type ─────────────────────────────────────────────
+    const TypeAST* returnType = funcType->returnType;
+    if (returnType && !isValidFFIType(returnType, ctx)) {
+        ctx.diagnostics.error(DiagCode::Ffi_TypeNotFFI, decl,
+                              "return type of foreign function '",
+                              ctx.pool.lookup(decl->name), "' is not FFI-compatible");
+        allValid = false;
+    }
+
+    // ─── 5. Validate no generic parameters ──────────────────────────────────
+    if (!decl->genericParams.empty()) {
+        ctx.diagnostics.error(DiagCode::Sem_ForeignInvalid, decl,
+                              "foreign function '", ctx.pool.lookup(decl->name),
+                              "' cannot have generic parameters");
+        allValid = false;
+    }
+
+    return allValid;
+}
+
 } // namespace sema
