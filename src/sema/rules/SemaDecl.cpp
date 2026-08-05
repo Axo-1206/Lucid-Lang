@@ -158,13 +158,13 @@ void resolveVarDecl(const VarDeclAST* decl, SemaContext& ctx) {
 void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
     attr::validateAttributes(decl, ctx);
 
-    // 1. Resolve function type
+    // ─── 1. Resolve function type ─────────────────────────────────────────────
     FuncTypeAST* funcType = const_cast<FuncTypeAST*>(decl->funcType);
     if (!resolveFuncType(funcType, ctx)) {
         return;
     }
 
-    // 2. Check for @[foreign] attribute
+    // ─── 2. Check for @[foreign] attribute ───────────────────────────────────
     const AttributeAST* foreignAttr = attr::findAttribute(
         decl->attributes,
         attr::kForeign(ctx)
@@ -175,16 +175,15 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
         return;
     }
 
-    // 3. Resolve generic parameters
+    // ─── 3. Resolve generic parameters ───────────────────────────────────────
     for (const GenericParamDeclAST* g : decl->genericParams) {
         resolveGenericParam(g, ctx);
     }
 
-    // ─── 4. REGISTER the function in the current scope ────────────────
-    // insertValue handles both module-level and local scopes
+    // ─── 4. REGISTER the function in the current scope ──────────────────────
     ctx.insertValue(decl);
 
-    // 5. Resolve parameters - REGISTER them in the function scope
+    // ─── 5. Resolve parameters - REGISTER them in the function scope ────────
     ctx.pushScope();
     
     for (FuncTypeAST* group = funcType; group; group = group->getNext()) {
@@ -193,7 +192,7 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
         }
     }
 
-    // 6. Analyze body - registers local names as it goes
+    // ─── 6. Analyze body ──────────────────────────────────────────────────────
     if (!decl->body) {
         ctx.diagnostics.error(DiagCode::Sem_MissingReturn, decl,
                               "function '", ctx.pool.lookup(decl->name), "' has no body");
@@ -201,9 +200,15 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
         return;
     }
 
-    ctx.stack.pushFunction(const_cast<FuncDeclAST*>(decl), funcType, decl->loc);
+    // ─── 7. Push function context with expected return type ──────────────────
+    // The expected return type is the function's return type (funcType->returnType)
+    // For curried functions, this will be another FuncTypeAST
+    const TypeAST* expectedReturn = funcType ? funcType->returnType : nullptr;
+    ctx.stack.pushFunction(const_cast<FuncDeclAST*>(decl), expectedReturn, decl->loc);
 
     bool bodyReturns = false;
+    
+    // ─── 8. Resolve the body ──────────────────────────────────────────────────
     if (decl->body->isa<BlockStmtAST>()) {
         bodyReturns = resolveBlock(decl->body->as<BlockStmtAST>(), ctx);
     } else if (decl->body->isa<ReturnStmtAST>()) {
@@ -226,15 +231,24 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
         return;
     }
 
-    if (bodyReturns && !ctx.stack.returnRequirementsSatisfied()) {
+    // ─── 9. Verify return paths ──────────────────────────────────────────────
+    // With the stack-based approach, we check that the body actually returns
+    // something when expected. The return statements themselves check against
+    // the current return type on the stack.
+    if (!bodyReturns && expectedReturn) {
+        // Non-void function must return a value
+        // But if the body had a return statement, bodyReturns would be true
+        // So this is a catch-all for functions that fall through
         ctx.diagnostics.error(DiagCode::Sem_MissingReturn, decl,
                               "function '", ctx.pool.lookup(decl->name),
-                              "' has missing nested return");
+                              "' does not return a value on all paths");
     }
 
+    // ─── 10. Pop function context ────────────────────────────────────────────
     ctx.stack.pop();
     ctx.popScope();
 
+    // ─── 11. Mark as const if applicable ─────────────────────────────────────
     if (decl->keyword == DeclKeyword::Const) {
         const_cast<FuncDeclAST*>(decl)->isConst = true;
     }

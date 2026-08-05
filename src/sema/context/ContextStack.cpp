@@ -16,22 +16,24 @@ void ContextStack::push(ContextKind kind, BaseAST* node, const SourceLocation& l
     m_stack.push_back(std::move(frame));
 }
 
-void ContextStack::pushFunction(FuncDeclAST* node, FuncTypeAST* funcType, const SourceLocation& loc) {
+void ContextStack::pushFunction(FuncDeclAST* node, const TypeAST* returnType, const SourceLocation& loc) {
     ContextFrame frame;
     frame.kind = ContextKind::FuncBody;
     frame.node = node;
     frame.openedAt = loc;
-    frame.returnReqs = buildReturnRequirements(funcType);
+    frame.expectedReturnType = returnType;
     m_stack.push_back(std::move(frame));
+    m_returnStack.push(returnType);
 }
 
-void ContextStack::pushAnonFunction(AnonFuncExprAST* node, FuncTypeAST* funcType, const SourceLocation& loc) {
+void ContextStack::pushAnonFunction(AnonFuncExprAST* node, const TypeAST* returnType, const SourceLocation& loc) {
     ContextFrame frame;
     frame.kind = ContextKind::FuncBody;
     frame.node = node;
     frame.openedAt = loc;
-    frame.returnReqs = buildReturnRequirements(funcType);
+    frame.expectedReturnType = returnType;
     m_stack.push_back(std::move(frame));
+    m_returnStack.push(returnType);
 }
 
 void ContextStack::pushLoop(StmtAST* loopStmt, const SourceLocation& loc) {
@@ -62,6 +64,10 @@ void ContextStack::pushBlock(BlockStmtAST* block, const SourceLocation& loc) {
 
 void ContextStack::pop() {
     if (!m_stack.empty()) {
+        ContextFrame& frame = m_stack.back();
+        if (frame.kind == ContextKind::FuncBody) {
+            m_returnStack.pop();
+        }
         m_stack.pop_back();
     }
 }
@@ -228,86 +234,7 @@ void ContextStack::clearPendingInverseNarrowing() {
     }
 }
 
-// ─── Return Requirements ─────────────────────────────────────────────────
-
-bool ContextStack::hasReturnRequirements() const {
-    auto* frame = findInnermostFunction();
-    return frame && !frame->returnReqs.groups.empty();
-}
-
-bool ContextStack::returnRequirementsSatisfied() const {
-    auto* frame = findInnermostFunction();
-    if (!frame) return true;
-    return frame->returnReqs.isSatisfied();
-}
-
-void ContextStack::advanceReturnGroup() {
-    auto* frame = findInnermostFunction();
-    if (!frame) return;
-    frame->returnReqs.advanceGroup();
-}
-
-const ReturnRequirements::Group* ContextStack::currentReturnGroup() const {
-    auto* frame = findInnermostFunction();
-    if (!frame) return nullptr;
-    return frame->returnReqs.currentGroup();
-}
-
-void ContextStack::enterLevel() {
-    auto* frame = findInnermostFunction();
-    if (frame) frame->returnReqs.enterLevel();
-}
-
-void ContextStack::exitLevel() {
-    auto* frame = findInnermostFunction();
-    if (frame) frame->returnReqs.exitLevel();
-}
-
-const ReturnRequirements* ContextStack::currentReturnReqs() const {
-    auto* frame = findInnermostFunction();
-    return frame ? &frame->returnReqs : nullptr;
-}
-
 // ─── Helpers ─────────────────────────────────────────────────────────────
-
-ReturnRequirements ContextStack::buildReturnRequirements(FuncTypeAST* funcType) {
-    ReturnRequirements reqs;
-    
-    if (!funcType) return reqs;
-    
-    FuncTypeAST* current = funcType;
-    int level = 0;
-    
-    while (current) {
-        ReturnRequirements::Group group;
-        group.requiresReturn = current->hasArrow;
-        group.returnType = current->returnType;
-        group.isCurried = current->returnType && current->returnType->isa<FuncTypeAST>();
-        group.level = group.requiresReturn ? level++ : level;
-        group.isSatisfied = false;
-        reqs.groups.push_back(group);
-        
-        if (current->returnType && current->returnType->isa<FuncTypeAST>()) {
-            current = static_cast<FuncTypeAST*>(current->returnType);
-        } else {
-            break;
-        }
-    }
-    
-    if (!reqs.groups.empty()) {
-        const auto& lastGroup = reqs.groups.back();
-        reqs.isVoid = !lastGroup.requiresReturn || 
-                      (lastGroup.returnType == nullptr && !lastGroup.isCurried);
-    } else {
-        reqs.isVoid = true;
-    }
-    
-    reqs.allowsOptionalReturn = reqs.isVoid || !reqs.hasRequirements();
-    reqs.currentGroupIndex = -1;
-    reqs.currentLevel = 0;
-    
-    return reqs;
-}
 
 ContextFrame* ContextStack::findInnermostFunction() {
     for (auto it = m_stack.rbegin(); it != m_stack.rend(); ++it) {

@@ -1969,7 +1969,9 @@ TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, const TypeAST* targetType, S
         return ctx.getUnknownType();
     }
 
-    // ─── Step 2: Analyze parameters ────────────────────────────────────────
+    // ─── Step 2: Analyze parameters ─────────────────────────────────────────
+    // Note: Anonymous function parameters have no names (they're just types)
+    // But resolveParam still registers them for the body to reference
     for (FuncTypeAST* group = funcType; group; group = group->getNext()) {
         for (ParamAST* param : group->params) {
             resolveParam(param, ctx);
@@ -1985,9 +1987,14 @@ TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, const TypeAST* targetType, S
         return ctx.getUnknownType();
     }
 
-    ctx.stack.pushAnonFunction(expr, funcType, expr->loc);
+    // ─── Step 4: Push anonymous function context with expected return type ──
+    // The expected return type is the function's return type
+    const TypeAST* expectedReturn = funcType ? funcType->returnType : nullptr;
+    ctx.stack.pushAnonFunction(expr, expectedReturn, expr->loc);
 
     bool bodyReturns = false;
+    
+    // ─── Step 5: Resolve the body ───────────────────────────────────────────
     if (expr->body->isa<BlockStmtAST>()) {
         bodyReturns = resolveBlock(expr->body->as<BlockStmtAST>(), ctx);
     } else if (expr->body->isa<ReturnStmtAST>()) {
@@ -2001,14 +2008,16 @@ TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, const TypeAST* targetType, S
         return ctx.getUnknownType();
     }
 
-    if (bodyReturns && !ctx.stack.returnRequirementsSatisfied()) {
+    // ─── Step 6: Verify return paths ────────────────────────────────────────
+    if (!bodyReturns && expectedReturn) {
         ctx.diagnostics.error(DiagCode::Sem_MissingReturn, expr,
-                              "anonymous function has missing nested return");
+                              "anonymous function does not return a value on all paths");
     }
 
+    // ─── Step 7: Pop function context ──────────────────────────────────────
     ctx.stack.pop();
 
-    // ─── Step 4: Return the function type ──────────────────────────────────
+    // ─── Step 8: Return the function type ──────────────────────────────────
     ValueState state = (isNullableType(funcType) || isFallibleType(funcType))
                        ? ValueState::Unknown : ValueState::Definite;
     expr->resolvedType = funcType;

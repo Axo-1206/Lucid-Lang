@@ -15,149 +15,106 @@
 /// | Are we inside a loop?                   | `insideLoop()`                  |
 /// | Are we inside an if condition?          | `isIfConditionCtx()`            |
 /// | What's the narrowed type of X?          | `getNarrowedType(X)`            |
-/// | Does the current function need returns? | `hasReturnRequirements()`       |
-/// | Are all returns satisfied?              | `returnRequirementsSatisfied()` |
+/// | What's the current expected return type?| `currentReturnType()`           |
 /// | Is a type being defined?                | `isDefiningType(T)`             |
 ///
-/// ## Small Program Example
+/// # Return Stack
 ///
-/// Consider this Lucid program:
+/// The ReturnStack is a simple stack-based mechanism for tracking expected
+/// return types in nested function bodies. It replaces the complex
+/// ReturnRequirements group/level system with a clean push/pop model.
+///
+/// ## Why a Stack?
+///
+/// For curried functions like `(a int) -> (int) -> int`, each `->` creates
+/// a new function body with its own expected return type:
+///
 /// ```lucid
-/// package example
-///
-/// struct Node<T> {                    // [decl1] struct definition
-///     value T,                        // [field1] field with generic param
-///     next *Node<T>?                  // [field2] self-referential field
-/// }
-///
-/// const process (n Node<int>) -> int { // [decl2] function definition
-///     if n != nil {                    // [stmt1] if statement
-///         let x int = n.value + 1      // [stmt2] variable declaration
-///         return x                     // [stmt3] return statement
-///     } else {
-///         return 0                     // [stmt4] return statement
+/// const add (a int) -> (int) -> int = {
+///     -- Outer body: expected return type is (int) -> int
+///     return (b int) -> int {
+///         -- Inner body: expected return type is int
+///         return a + b
 ///     }
 /// }
 /// ```
 ///
-/// ## Context Stack Evolution
-///
+/// The stack naturally models this nesting:
 /// ```
-/// Step 1: Entering module
-/// ┌─────────────────────────────────────────────┐
-/// │ Stack: []                                   │
-/// │ current() = TopLevel                        │
-/// └─────────────────────────────────────────────┘
-///
-/// Step 2: Resolving struct Node<T> (registerStructName)
-/// ┌─────────────────────────────────────────────┐
-/// │ Stack: [                                    │
-/// │   { kind: TopLevel, node: module }          │
-/// │ ]                                           │
-/// │ current() = TopLevel                        │
-/// │ definingTypes = [Node]  ← self-ref enabled  │
-/// └─────────────────────────────────────────────┘
-///
-/// Step 3: Resolving field 'next '*Node<T>?'
-/// ┌─────────────────────────────────────────────┐
-/// │ Stack: [                                    │
-/// │   { kind: TopLevel, node: module }          │
-/// │ ]                                           │
-/// │ definingTypes = [Node]                      │
-/// │ isDefiningType(Node) → true ✅              │
-/// │ → This is a self-reference, allowed via ptr │
-/// └─────────────────────────────────────────────┘
-///
-/// Step 4: Entering function process
-/// ┌─────────────────────────────────────────────┐
-/// │ Stack: [                                    │
-/// │   { kind: TopLevel, node: module },         │
-/// │   { kind: FuncBody, node: process,          │
-/// │     returnGroups: [{ returnType: int,       │
-/// │                      requiresReturn: true,  │
-/// │                      level: 0,              │
-/// │                      isSatisfied: false }]  │
-/// │   }                                         │
-/// │ ]                                           │
-/// │ current() = FuncBody                        │
-/// │ hasReturnRequirements() → true              │
-/// └─────────────────────────────────────────────┘
-///
-/// Step 5: Analyzing if condition 'n != nil'
-/// ┌─────────────────────────────────────────────┐
-/// │ Stack: [                                    │
-/// │   { kind: TopLevel, node: module },         │
-/// │   { kind: FuncBody, node: process, ... },   │
-/// │   { kind: IfStmt, node: stmt1,              │
-/// │     isIfConditionCtx: true,                 │
-/// │     hasElse: true,                          │
-/// │     pendingNarrowing: { hasNarrowing: true, │
-/// │                         narrowings: {n→int}}│
-/// │   }                                         │
-/// │ ]                                           │
-/// │ isIfConditionCtx() → true                   │
-/// │ getPendingNarrowing() → {n→int}             │
-/// └─────────────────────────────────────────────┘
-///
-/// Step 6: Entering then branch with narrowing
-/// ┌─────────────────────────────────────────────┐
-/// │ Stack: [                                    │
-/// │   { kind: TopLevel },                       │
-/// │   { kind: FuncBody, ... },                  │
-/// │   { kind: IfStmt, ... },                    │
-/// │   { kind: Block, node: thenBranch }         │
-/// │ ]                                           │
-/// │ NarrowingStack: [                           │
-/// │   Level 0: { n→int, isInverse: false }      │
-/// │ ]                                           │
-/// │ getNarrowedType(n) → int ✅                 │
-/// └─────────────────────────────────────────────┘
-///
-/// Step 7: Processing return statement
-/// ┌─────────────────────────────────────────────┐
-/// │ Stack: [                                    │
-/// │   { kind: TopLevel },                       │
-/// │   { kind: FuncBody, node: process,          │
-/// │     returnGroups: [{ returnType: int,       │
-/// │                      requiresReturn: true,  │
-/// │                      level: 0,              │
-/// │                      isSatisfied: true }]   │
-/// │   },                                        │
-/// │   { kind: IfStmt, ... },                    │
-/// │   { kind: Block, ... }                      │
-/// │ ]                                           │
-/// │ returnRequirementsSatisfied() → true ✅     │
-/// └─────────────────────────────────────────────┘
+/// Enter outer function  → push (int) -> int
+/// Enter inner function  → push int
+/// Return in inner body  → check against top of stack (int) ✅
+/// Exit inner function   → pop int
+/// Return in outer body  → check against top of stack ((int) -> int) ✅
+/// Exit outer function   → pop (int) -> int
 /// ```
 ///
-/// ## Node Storage Hierarchy
+/// ## Stack Lifecycle
 ///
 /// ```
-/// ModuleAST (root)
-///   └── decls: [decl1, decl2, ...]
-///         ├── StructDeclAST (decl1)
-///         │   └── fields: [field1, field2, ...]
-///         │         ├── FieldDeclAST (field1): type = NamedTypeAST("T")
-///         │         └── FieldDeclAST (field2): type = NullableTypeAST(
-///         │                                       PtrTypeAST(
-///         │                                         NamedTypeAST("Node<T>")
-///         │                                       )
-///         │                                     )
-///         └── FuncDeclAST (decl2)
-///             └── body: BlockStmtAST
-///                   └── stmts: [stmt1, stmt2, stmt3, stmt4]
-///                         ├── IfStmtAST (stmt1)
-///                         │   ├── condition: BinaryExprAST(n != nil)
-///                         │   ├── thenBranch: BlockStmtAST
-///                         │   │   └── stmts: [stmt2, stmt3]
-///                         │   └── elseBranch: BlockStmtAST
-///                         │       └── stmts: [stmt4]
-///                         ├── DeclStmtAST (stmt2)
-///                         │   └── decl: VarDeclAST(x)
-///                         ├── ReturnStmtAST (stmt3)
-///                         │   └── value: BinaryExprAST(n.value + 1)
-///                         └── ReturnStmtAST (stmt4)
-///                             └── value: LiteralExprAST(0)
+/// resolveFuncDecl()
+///   │
+///   ├─ pushReturnType(funcType->returnType)
+///   │
+///   ├─ resolveBlock(body)
+///   │    │
+///   │    ├─ resolveReturnStmt()
+///   │    │    │
+///   │    │    ├─ expectedType = currentReturnType()
+///   │    │    ├─ resolveExprWithTarget(returnValue, expectedType)
+///   │    │    └─ ...
+///   │    │
+///   │    └─ resolveBlock(innerFunction.body)
+///   │         │
+///   │         ├─ resolveAnonFuncExpr()
+///   │         │    │
+///   │         │    ├─ pushReturnType(innerFuncType->returnType)
+///   │         │    ├─ resolveBlock(innerBody)
+///   │         │    │    └─ resolveReturnStmt() → checks against inner type
+///   │         │    └─ popReturnType()
+///   │         │
+///   │         └─ ...
+///   │
+///   └─ popReturnType()
+/// ```
+///
+/// ## Example: Curried Function with Multiple Levels
+///
+/// ```lucid
+/// const build (a int) -> (int) -> (int) -> int = {
+///     return (b int) -> (int) -> int {
+///         return (c int) -> int {
+///             return a + b + c
+///         }
+///     }
+/// }
+/// ```
+///
+/// Stack evolution:
+/// ```
+/// Level 0: Enter build        → push (int) -> (int) -> int
+/// Level 1: Enter outer return → push (int) -> int
+/// Level 2: Enter inner return → push int
+/// Level 2: Return c           → check int ✅ → pop int
+/// Level 1: Return function    → check (int) -> int ✅ → pop (int) -> int
+/// Level 0: Return function    → check (int) -> (int) -> int ✅ → pop (int) -> (int) -> int
+/// ```
+///
+/// ## Error Cases
+///
+/// The ReturnStack catches type mismatches at compile time:
+///
+/// ```lucid
+/// const bad (a int) -> int = {
+///     return "hello"  -- ❌ ERROR: expected int, got string
+/// }
+/// ```
+///
+/// ```
+/// resolveReturnStmt:
+///   1. expectedType = currentReturnType() → int
+///   2. resolveExprWithTarget("hello", int) → fails
+///   3. diagnostics.error("type mismatch")
 /// ```
 
 #pragma once
@@ -169,7 +126,6 @@
 #include "core/ast/ExprAST.hpp"
 #include "core/SourceLocation.hpp"
 #include "core/memory/InternedString.hpp"
-#include "ReturnRequirements.hpp"
 
 #include <vector>
 #include <unordered_map>
@@ -247,6 +203,68 @@ struct Scope {
     std::unordered_map<InternedString, PendingSpawn> pendingSpawn;
 };
 
+// ─── ReturnStack ─────────────────────────────────────────────────────────
+
+/// @brief Simple stack for tracking expected return types in nested functions.
+/// 
+/// When entering a function body, push the expected return type.
+/// When exiting, pop it. Return statements check against the top of the stack.
+/// 
+/// @example
+/// ```lucid
+/// const add (a int) -> (int) -> int = {
+///     -- Stack: [ (int) -> int ]
+///     return (b int) -> int {
+///         -- Stack: [ (int) -> int, int ]
+///         return a + b
+///         -- Check: a + b is int → matches top of stack (int) ✅
+///     }
+///     -- Check: returned function matches (int) -> int ✅
+/// }
+/// ```
+///
+/// @note This is a simple wrapper around std::vector. It provides a
+///       clean interface for the semantic analyzer to push/pop return types.
+class ReturnStack {
+public:
+    /// @brief Push an expected return type onto the stack.
+    /// 
+    /// Called when entering a function body.
+    /// @param returnType The expected return type for this function body.
+    void push(const TypeAST* returnType) {
+        m_stack.push_back(returnType);
+    }
+    
+    /// @brief Pop the top of the stack.
+    /// 
+    /// Called when exiting a function body.
+    void pop() {
+        if (!m_stack.empty()) {
+            m_stack.pop_back();
+        }
+    }
+    
+    /// @brief Get the current expected return type.
+    /// 
+    /// @return The top of the stack, or nullptr if the stack is empty.
+    const TypeAST* current() const {
+        return m_stack.empty() ? nullptr : m_stack.back();
+    }
+    
+    /// @brief Check if the stack is empty.
+    bool empty() const {
+        return m_stack.empty();
+    }
+    
+    /// @brief Get the size of the stack.
+    size_t size() const {
+        return m_stack.size();
+    }
+
+private:
+    std::vector<const TypeAST*> m_stack;
+};
+
 // ─── ContextFrame ──────────────────────────────────────────────────────
 
 /// @brief One frame on the context stack.
@@ -263,16 +281,18 @@ struct ContextFrame {
     /// Where the construct was opened (for diagnostics).
     SourceLocation openedAt;
     
-    // ─── Return Groups (only for FuncBody / AsyncBody) ──────────────────
-    ReturnRequirements returnReqs;
+    // ─── Return Type ──────────────────────────────────────────────────────
+    /// @brief Expected return type for this function body.
+    /// 
+    /// For curried functions, this may be another FuncTypeAST.
+    /// The ReturnStack manages pushing/popping these types.
+    const TypeAST* expectedReturnType = nullptr;
     
     // ─── Loop/Switch Tracking ──────────────────────────────────────────
-    
     StmtAST* loopStmt = nullptr;              ///< The loop statement
     SwitchStmtAST* switchStmt = nullptr;      ///< The switch statement
     
     // ─── Type Narrowing (only for IfStmt) ─────────────────────────────
-    
     bool isIfConditionCtx = false;            ///< Analyzing an if condition
     bool hasElse = false;                     ///< If has an else branch
     NarrowingInfo pendingNarrowing;           ///< Narrowing from condition
@@ -325,11 +345,25 @@ public:
     /// Push a generic context frame.
     void push(ContextKind kind, BaseAST* node, const SourceLocation& loc);
     
-    /// Push a function context with return tracking.
-    void pushFunction(FuncDeclAST* node, FuncTypeAST* funcType, const SourceLocation& loc);
+    /// Push a function context with expected return type.
+    /// 
+    /// This pushes the function context and the expected return type onto
+    /// the ReturnStack. The return type is used by resolveReturnStmt to
+    /// validate return values.
+    /// 
+    /// @param node The function declaration AST node.
+    /// @param returnType The expected return type for this function body.
+    /// @param loc The source location for diagnostics.
+    void pushFunction(FuncDeclAST* node, const TypeAST* returnType, const SourceLocation& loc);
     
-    /// Push an anonymous function context with return tracking.
-    void pushAnonFunction(AnonFuncExprAST* node, FuncTypeAST* funcType, const SourceLocation& loc);
+    /// Push an anonymous function context with expected return type.
+    /// 
+    /// Similar to pushFunction, but for anonymous function expressions.
+    /// 
+    /// @param node The anonymous function expression AST node.
+    /// @param returnType The expected return type for this function body.
+    /// @param loc The source location for diagnostics.
+    void pushAnonFunction(AnonFuncExprAST* node, const TypeAST* returnType, const SourceLocation& loc);
     
     /// Push a loop context.
     void pushLoop(StmtAST* loopStmt, const SourceLocation& loc);
@@ -341,6 +375,9 @@ public:
     void pushBlock(BlockStmtAST* block, const SourceLocation& loc);
     
     /// Pop the innermost context.
+    /// 
+    /// If the innermost context is a function body, it also pops the
+    /// corresponding return type from the ReturnStack.
     void pop();
 
     // ─── Queries ──────────────────────────────────────────────────────────
@@ -364,6 +401,42 @@ public:
     StmtAST* currentLoop() const;
     SwitchStmtAST* currentSwitch() const;
     BlockStmtAST* currentBlock() const;
+
+    // ─── Return Tracking ──────────────────────────────────────────────────
+
+    /// @brief Push an expected return type for the current function body.
+    /// 
+    /// Called when entering a function body. The type will be used by
+    /// resolveReturnStmt to validate return values.
+    /// 
+    /// @param returnType The expected return type.
+    void pushReturnType(const TypeAST* returnType) {
+        m_returnStack.push(returnType);
+    }
+    
+    /// @brief Pop the current return type.
+    /// 
+    /// Called when exiting a function body.
+    void popReturnType() {
+        m_returnStack.pop();
+    }
+    
+    /// @brief Get the current expected return type.
+    /// 
+    /// This is used by resolveReturnStmt to validate return values.
+    /// For curried functions, this returns the innermost expected type.
+    /// 
+    /// @return The current expected return type, or nullptr if none.
+    const TypeAST* currentReturnType() const {
+        return m_returnStack.current();
+    }
+    
+    /// @brief Check if there are any pending return requirements.
+    /// 
+    /// @return true if there's at least one expected return type on the stack.
+    bool hasReturnRequirements() const {
+        return !m_returnStack.empty();
+    }
 
     // ─── Type Narrowing ──────────────────────────────────────────────────
 
@@ -400,36 +473,18 @@ public:
     const NarrowingInfo& getPendingInverseNarrowing() const;
     void clearPendingInverseNarrowing();
 
-    // ─── Return Requirements ─────────────────────────────────────────────
-
-    /// @name Return Tracking
-    /// 
-    /// For curried functions, tracks which `->` groups have been satisfied.
-    bool hasReturnRequirements() const;
-    
-    /// Check if all return requirements are satisfied.
-    bool returnRequirementsSatisfied() const;
-    
-    /// Advance to the next return group at the current level.
-    void advanceReturnGroup();
-    
-    /// Get the current return group (for type checking).
-    const ReturnRequirements::Group* currentReturnGroup() const;
-    
-    /// Enter/exit nesting level (for curried functions).
-    void enterLevel();
-    void exitLevel();
-
-    // ─── Debug ───────────────────────────────────────────────────────────
-
-    /// @brief Get the current return requirements (for debugging).
-    const ReturnRequirements* currentReturnReqs() const;
-
 private:
     // ─── Members ──────────────────────────────────────────────────────────
 
     /// Main context stack.
     std::vector<ContextFrame> m_stack;
+    
+    /// Stack of expected return types for nested functions.
+    /// 
+    /// Each function body pushes its expected return type when entered
+    /// and pops it when exited. Return statements validate against the
+    /// top of this stack.
+    ReturnStack m_returnStack;
 
     /// Type narrowing stack (separate because it can persist across contexts).
     struct NarrowingLevel {
@@ -446,9 +501,6 @@ private:
     const ContextFrame* findInnermostIfContext() const;
     ContextFrame* findInnermostBlock();
     const ContextFrame* findInnermostBlock() const;
-    
-    /// Build return requirements from a function type.
-    ReturnRequirements buildReturnRequirements(FuncTypeAST* funcType);
 };
 
 } // namespace sema
