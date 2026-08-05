@@ -970,17 +970,12 @@ TypeAST* resolveCallExpr(CallExprAST* expr, const TypeAST* targetType, SemaConte
         return ctx.getUnknownType();
     }
 
-    if (expr->callee->valueState == ValueState::Nil) {
+    // ─── Check if callee is nullable or fallible (type-based) ───────────────
+    // calleeType is already narrowed (if applicable) because resolveExpr uses
+    // lookupValue() which automatically checks getNarrowedType()
+    if (isNullableType(calleeType) || isFallibleType(calleeType)) {
         ctx.diagnostics.error(DiagCode::Sem_NotCallable, expr->callee,
-                              "cannot call nil value. Use `??` to handle nil first.");
-        expr->resolvedType = ctx.getUnknownType();
-        expr->valueState = ValueState::Unknown;
-        return ctx.getUnknownType();
-    }
-
-    if (expr->callee->valueState == ValueState::Err) {
-        ctx.diagnostics.error(DiagCode::Sem_NotCallable, expr->callee,
-                              "cannot call err value. Use `??` to handle err first.");
+                            "cannot call nullable or fallible value. Narrow first using 'if' or '?\?'");
         expr->resolvedType = ctx.getUnknownType();
         expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
@@ -1296,6 +1291,7 @@ TypeAST* resolveSliceExpr(SliceExprAST* expr, const TypeAST* targetType, SemaCon
 
 TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
     // ─── Step 1: Resolve object ─────────────────────────────────────────────
+    // The object's type is automatically narrowed by lookupValue() during resolution
     TypeAST* objectType = resolveExpr(expr->object, ctx);
     if (!objectType || objectType->isa<UnknownTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr->object,
@@ -1305,25 +1301,22 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetT
         return ctx.getUnknownType();
     }
 
-    // ─── Step 2: Validate value state ──────────────────────────────────────
-    if (expr->object->valueState == ValueState::Nil) {
+    // ─── Step 2: Check if object is nullable or fallible ────────────────────
+    // objectType is already narrowed (if applicable) because resolveExpr uses
+    // lookupValue() which automatically checks getNarrowedType()
+    if (isNullableType(objectType) || isFallibleType(objectType)) {
         ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr->object,
-                              "cannot access field on nil. Use `?.` for nullable access.");
+                              "cannot access field on nullable or fallible type '",
+                              debug::typeToString(objectType, ctx.pool),
+                              "'. Narrow the value first using 'if' or '?\?'");
+        ctx.diagnostics.note(expr->object,
+                             "Use 'if x != nil' or 'if x != err' to narrow, or 'x ?? default'");
         expr->resolvedType = ctx.getUnknownType();
         expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
-    // ─── Step 3: Validate object type ──────────────────────────────────────
-    if (isNullableType(objectType)) {
-        ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr->object,
-                              "cannot access field on nullable type. Use `?.` for nullable access.");
-        expr->resolvedType = ctx.getUnknownType();
-        expr->valueState = ValueState::Unknown;
-        return ctx.getUnknownType();
-    }
-
-    // ─── Step 4: Handle generic type parameter ─────────────────────────────
+    // ─── Step 3: Handle generic type parameter ─────────────────────────────
     if (objectType->isa<NamedTypeAST>()) {
         const NamedTypeAST* namedType = objectType->as<NamedTypeAST>();
 
@@ -1354,7 +1347,6 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetT
             expr->resolvedType = const_cast<TypeAST*>(fieldType);
             expr->valueState = state;
             
-            // ─── Set isLValue for generic field ──────────────────────────────
             // Generic fields are not l-values (can't assign through generic param)
             expr->isLValue = false;
             expr->isConst = false;
@@ -1363,7 +1355,7 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetT
         }
     }
 
-    // ─── Step 5: Look up type declaration ──────────────────────────────────
+    // ─── Step 4: Look up type declaration ──────────────────────────────────
     if (!objectType->isa<NamedTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr->object,
                               "field access requires a struct or enum type, got ",
@@ -1383,18 +1375,22 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetT
         return ctx.getUnknownType();
     }
 
-    // ─── Step 6: Handle struct type ─────────────────────────────────────────
+    // ─── Step 5: Handle struct type ─────────────────────────────────────────
     if (typeDecl->isa<StructDeclAST>()) {
         const StructDeclAST* structDecl = typeDecl->as<StructDeclAST>();
 
         for (const FieldDeclAST* f : structDecl->fields) {
             if (f->name == expr->fieldName) {
-                ValueState state = (isNullableType(f->type) || isFallibleType(f->type))
+                // ─── Get field type ──────────────────────────────────────────
+                TypeAST* fieldType = f->type;
+                
+                // ─── Propagate value state ──────────────────────────────────
+                ValueState state = (isNullableType(fieldType) || isFallibleType(fieldType))
                                    ? ValueState::Unknown : ValueState::Definite;
-                expr->resolvedType = f->type;
+                expr->resolvedType = fieldType;
                 expr->valueState = state;
                 
-                // ─── Set isLValue ──────────────────────────────────────────────
+                // ─── Set isLValue and isConst ───────────────────────────────
                 // A field access is an l-value iff:
                 //   1. The object is an l-value
                 //   2. The field is not const
@@ -1411,7 +1407,7 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetT
                     expr->isConst = expr->object->isConst;
                 }
                 
-                return f->type;
+                return fieldType;
             }
         }
 
@@ -1423,7 +1419,7 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetT
         return ctx.getUnknownType();
     }
 
-    // ─── Step 7: Handle enum type ───────────────────────────────────────────
+    // ─── Step 6: Handle enum type ───────────────────────────────────────────
     if (typeDecl->isa<EnumDeclAST>()) {
         const EnumDeclAST* enumDecl = typeDecl->as<EnumDeclAST>();
 
@@ -1432,7 +1428,6 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetT
                 expr->resolvedType = ctx.getNamedType(enumDecl->name);
                 expr->valueState = ValueState::Definite;
                 
-                // ─── Set isLValue ──────────────────────────────────────────────
                 // Enum variants are compile-time constants, not assignable
                 expr->isLValue = false;
                 expr->isConst = true;
@@ -1461,43 +1456,19 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetT
 // =============================================================================
 
 TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
-    // ─── Step 1: Look up the module alias ───────────────────────────────────
-    ModuleAST* module = ctx.lookupImport(expr->moduleName);
-    if (!module) {
-        ctx.diagnostics.error(DiagCode::Sem_UndefinedModule, expr,
-                              "undefined module alias '", ctx.pool.lookup(expr->moduleName), "'");
+    // ─── Step 1: Look up the member by module alias ─────────────────────────
+    const ValueDeclAST* decl = ctx.lookupValueByAlias(expr->moduleName, expr->memberName);
+    if (!decl) {
+        // The helper already reported the error (module not found or member not found)
         expr->resolvedType = ctx.getUnknownType();
         expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
-    // ─── Step 2: Get the module's table ────────────────────────────────────
-    ModuleTable* table = ctx.findModuleTable(module);
-    if (!table) {
-        ctx.diagnostics.error(DiagCode::Sem_ModuleNotAnalyzed, expr,
-                              "module '", ctx.pool.lookup(expr->moduleName), "' has not been analyzed");
-        expr->resolvedType = ctx.getUnknownType();
-        expr->valueState = ValueState::Unknown;
-        return ctx.getUnknownType();
-    }
-
-    // ─── Step 3: Look up the member ────────────────────────────────────────
-    auto it = table->values.find(expr->memberName);
-    if (it == table->values.end()) {
-        ctx.diagnostics.error(DiagCode::Sem_UndefinedMember, expr,
-                              "module '", ctx.pool.lookup(expr->moduleName),
-                              "' has no exported member '", ctx.pool.lookup(expr->memberName), "'");
-        expr->resolvedType = ctx.getUnknownType();
-        expr->valueState = ValueState::Unknown;
-        return ctx.getUnknownType();
-    }
-
-    const ValueDeclAST* decl = it->second;
-
-    // ─── Step 4: Mark as module member ────────────────────────────────────
+    // ─── Step 2: Mark as module member ────────────────────────────────────
     expr->isModuleMember = true;
 
-    // ─── Step 5: Set isLValue based on member's keyword ──────────────────
+    // ─── Step 3: Set isLValue based on member's keyword ──────────────────
     if (decl->isa<VarDeclAST>()) {
         const VarDeclAST* varDecl = decl->as<VarDeclAST>();
         expr->isLValue = (varDecl->keyword == DeclKeyword::Let);
@@ -1516,7 +1487,7 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, const TypeAST* targe
         expr->isConst = false;
     }
 
-    // ─── Step 6: Check generic arguments if present ────────────────────────
+    // ─── Step 4: Check generic arguments if present ────────────────────────
     if (!expr->genericArgs.empty()) {
         if (!decl->isa<FuncDeclAST>()) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
@@ -1547,7 +1518,7 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, const TypeAST* targe
         }
     }
 
-    // ─── Step 7: Return the member's type ───────────────────────────────────
+    // ─── Step 5: Return the member's type ───────────────────────────────────
     if (!decl->type) {
         ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
                               "member '", ctx.pool.lookup(expr->memberName),

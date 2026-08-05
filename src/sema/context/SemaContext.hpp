@@ -253,7 +253,27 @@ struct SemaContext {
         return true;
     }
     
-    // ─── Symbol Lookup ──────────────────────────────────────────────────
+    // ─── Symbol Lookup (with automatic type narrowing) ──────────────────
+    
+    /// @brief Get the effective type of a value declaration, considering narrowing.
+    /// 
+    /// If the variable has been narrowed in the current context, returns the
+    /// narrowed type. Otherwise returns the original type.
+    /// 
+    /// @param decl The value declaration.
+    /// @param name The name of the variable (for narrowing lookup).
+    /// @return The effective type (narrowed or original).
+    const TypeAST* getEffectiveType(const ValueDeclAST* decl, InternedString name) const {
+        if (!decl || !decl->type) return nullptr;
+        
+        // Check if this variable has been narrowed in the current context
+        const TypeAST* narrowedType = stack.getNarrowedType(name);
+        if (narrowedType) {
+            return narrowedType;
+        }
+        
+        return decl->type;
+    }
     
     /// @brief Look up a generic parameter by name in the current scope.
     const GenericParamDeclAST* lookupGenericParam(InternedString name) const {
@@ -271,10 +291,30 @@ struct SemaContext {
         return lookupGenericParam(name) != nullptr;
     }
     
-    /// @brief Look up a value declaration by name.
+    /// @brief Look up a value declaration by name with automatic narrowing.
     /// 
     /// Searches: local scopes (innermost to outermost) → module scope
+    /// If the variable has been narrowed, the returned declaration's type
+    /// is automatically updated to the narrowed type.
     const ValueDeclAST* lookupValue(InternedString name) const {
+        const ValueDeclAST* decl = lookupValueRaw(name);
+        if (!decl) return nullptr;
+        
+        // Check if this variable has been narrowed
+        const TypeAST* narrowedType = stack.getNarrowedType(name);
+        if (narrowedType) {
+            // Create a temporary declaration with the narrowed type
+            // We need to const_cast because we're modifying the type
+            // This is safe because we're only changing the type field
+            // and the original declaration remains unchanged
+            const_cast<ValueDeclAST*>(decl)->type = const_cast<TypeAST*>(narrowedType);
+        }
+        
+        return decl;
+    }
+    
+    /// @brief Look up a value declaration by name (raw, no narrowing).
+    const ValueDeclAST* lookupValueRaw(InternedString name) const {
         for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
             auto found = it->values.find(name);
             if (found != it->values.end()) {
@@ -290,7 +330,7 @@ struct SemaContext {
         return nullptr;
     }
     
-    /// @brief Look up a function by name.
+    /// @brief Look up a function by name with automatic narrowing.
     const FuncDeclAST* lookupFunction(InternedString name) const {
         const ValueDeclAST* v = lookupValue(name);
         return (v && v->isa<FuncDeclAST>()) ? v->as<FuncDeclAST>() : nullptr;
