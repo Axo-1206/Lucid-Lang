@@ -970,12 +970,10 @@ TypeAST* resolveCallExpr(CallExprAST* expr, const TypeAST* targetType, SemaConte
         return ctx.getUnknownType();
     }
 
-    // ─── Check if callee is nullable or fallible (type-based) ───────────────
-    // calleeType is already narrowed (if applicable) because resolveExpr uses
-    // lookupValue() which automatically checks getNarrowedType()
+    // ─── Step 2: Check if callee is nullable or fallible ────────────────────
     if (isNullableType(calleeType) || isFallibleType(calleeType)) {
         ctx.diagnostics.error(DiagCode::Sem_NotCallable, expr->callee,
-                            "cannot call nullable or fallible value. Narrow first using 'if' or '?\?'");
+                              "cannot call nullable or fallible value. Narrow first using 'if' or '?\?'");
         expr->resolvedType = ctx.getUnknownType();
         expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
@@ -991,7 +989,7 @@ TypeAST* resolveCallExpr(CallExprAST* expr, const TypeAST* targetType, SemaConte
 
     FuncTypeAST* funcType = calleeType->as<FuncTypeAST>();
 
-    // ─── Step 2: Check generic arguments ────────────────────────────────────
+    // ─── Step 3: Check generic arguments ────────────────────────────────────
     const FuncDeclAST* funcDecl = resolveCalleeOrError(expr->callee, ctx);
     if (funcDecl) {
         if (!expr->genericArgs.empty()) {
@@ -1030,26 +1028,83 @@ TypeAST* resolveCallExpr(CallExprAST* expr, const TypeAST* targetType, SemaConte
         }
     }
 
-    // ─── Step 3: Check argument count ──────────────────────────────────────
-    if (expr->args.size() != funcType->params.size()) {
-        ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
-                              "wrong number of arguments: expected ",
-                              funcType->params.size(), ", found ",
-                              expr->args.size());
-        expr->resolvedType = ctx.getUnknownType();
-        expr->valueState = ValueState::Unknown;
-        return ctx.getUnknownType();
+    // ─── Step 4: Check argument count with variadic support ─────────────────
+    size_t requiredArgs = 0;
+    size_t totalArgs = funcType->params.size();
+    bool hasVariadic = false;
+    size_t variadicIndex = totalArgs;
+    
+    // Find the variadic parameter (if any)
+    for (size_t i = 0; i < totalArgs; ++i) {
+        if (funcType->params[i]->isVariadic) {
+            hasVariadic = true;
+            variadicIndex = i;
+            break;
+        }
     }
 
-    // ─── Step 4: Check each argument type ──────────────────────────────────
+    if (hasVariadic) {
+        // ─── Variadic function ─────────────────────────────────────────────────
+        // Required arguments are all parameters before the variadic
+        requiredArgs = variadicIndex;
+        
+        if (expr->args.size() < requiredArgs) {
+            ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
+                                  "function expects at least ", requiredArgs,
+                                  " argument(s), got ", expr->args.size(),
+                                  " (variadic parameter starts at position ", 
+                                  variadicIndex + 1, ")");
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
+            return ctx.getUnknownType();
+        }
+        // No upper bound check - variadic can take unlimited arguments
+    } else {
+        // ─── Non-variadic function ─────────────────────────────────────────────
+        if (expr->args.size() != totalArgs) {
+            ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
+                                  "wrong number of arguments: expected ", totalArgs,
+                                  ", got ", expr->args.size());
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
+            return ctx.getUnknownType();
+        }
+    }
+
+    // ─── Step 5: Check each argument type ──────────────────────────────────
     bool hasErrArg = false;
+    
     for (size_t i = 0; i < expr->args.size(); ++i) {
         ExprAST* arg = expr->args[i];
-        const ParamAST* param = funcType->params[i];
+        
+        // Determine the expected parameter type
+        const TypeAST* expectedType = nullptr;
+        
+        if (hasVariadic && i >= variadicIndex) {
+            // ─── This argument goes to the variadic parameter ──────────────────
+            // The variadic parameter's type is [*]T (dynamic array)
+            // The argument type should be T (element type)
+            const ParamAST* variadicParam = funcType->params[variadicIndex];
+            
+            // The type should be [*]T
+            if (variadicParam->type->isa<ArrayTypeAST>()) {
+                expectedType = variadicParam->type->as<ArrayTypeAST>()->element;
+            } else {
+                // Fallback - should not happen
+                ctx.diagnostics.error(DiagCode::Sem_InvalidParamType, expr,
+                                      "variadic parameter has invalid type (expected array)");
+                expr->resolvedType = ctx.getUnknownType();
+                expr->valueState = ValueState::Unknown;
+                return ctx.getUnknownType();
+            }
+        } else {
+            // ─── Regular parameter ──────────────────────────────────────────────
+            expectedType = funcType->params[i]->type;
+        }
 
-        TypeAST* argType = resolveExprWithTarget(arg, param->type, ctx);
+        // Resolve the argument against the expected type
+        TypeAST* argType = resolveExprWithTarget(arg, expectedType, ctx);
         if (!argType || argType->isa<UnknownTypeAST>()) {
-            // Error already reported by resolveExprWithTarget
             expr->resolvedType = ctx.getUnknownType();
             expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
@@ -1059,7 +1114,7 @@ TypeAST* resolveCallExpr(CallExprAST* expr, const TypeAST* targetType, SemaConte
             hasErrArg = true;
         }
 
-        if (arg->valueState == ValueState::Err && !isFallibleType(param->type)) {
+        if (arg->valueState == ValueState::Err && !isFallibleType(expectedType)) {
             ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
                                   "cannot pass err to non-fallible parameter");
             expr->resolvedType = ctx.getUnknownType();
@@ -1067,7 +1122,7 @@ TypeAST* resolveCallExpr(CallExprAST* expr, const TypeAST* targetType, SemaConte
             return ctx.getUnknownType();
         }
 
-        if (arg->valueState == ValueState::Nil && !isNullableType(param->type)) {
+        if (arg->valueState == ValueState::Nil && !isNullableType(expectedType)) {
             ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
                                   "cannot pass nil to non-nullable parameter");
             expr->resolvedType = ctx.getUnknownType();
@@ -1076,7 +1131,7 @@ TypeAST* resolveCallExpr(CallExprAST* expr, const TypeAST* targetType, SemaConte
         }
     }
 
-    // ─── Step 5: Propagate value state ──────────────────────────────────────
+    // ─── Step 6: Propagate value state ──────────────────────────────────────
     ValueState state;
     if (hasErrArg && isFallibleType(funcType->returnType)) {
         state = ValueState::Err;

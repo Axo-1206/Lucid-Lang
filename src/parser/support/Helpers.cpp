@@ -599,6 +599,7 @@ std::vector<ParamPtr> parseParamList(TokenStream& stream, ParserContext& ctx, bo
         
         bool isVariadic = stream.match(TokenType::VARIADIC);
         
+        // ─── Parse the type ──────────────────────────────────────────────────
         TypePtr type = parseType(stream, ctx);
         if (!type) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
@@ -608,6 +609,14 @@ std::vector<ParamPtr> parseParamList(TokenStream& stream, ParserContext& ctx, bo
                 break;
             }
             continue;
+        }
+        
+        // ─── If variadic, wrap the type in [*]T ──────────────────────────────
+        // The grammar says: `...T` is a parameter that collects arguments into [*]T
+        // So the parameter type should be [*]T, not T
+        if (isVariadic) {
+            // Store as [*]T (dynamic array) - the element type is 'type'
+            type = ctx.arena.make<ArrayTypeAST>(ArrayKind::Dynamic, 0, type);
         }
         
         auto* param = ctx.arena.make<ParamAST>();
