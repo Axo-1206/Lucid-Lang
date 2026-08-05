@@ -78,16 +78,6 @@ bool validateGenericParameterUsage(ArenaSpan<GenericParamDeclPtr> params,
                                     const BaseAST* useSite,
                                     SemaContext& ctx);
 
-/// @brief Check if a field is accessible on a generic type.
-bool isFieldAccessibleOnGenericType(const TypeAST* genericType,
-                                    InternedString fieldName,
-                                    SemaContext& ctx);
-
-/// @brief Get the type of a field on a generic type.
-const TypeAST* getFieldTypeOnGenericType(const TypeAST* genericType,
-                                         InternedString fieldName,
-                                         SemaContext& ctx);
-
 // ─── Downward Flow Rule ──────────────────────────────────────────────────
 
 /// @brief Validate that a reference type appears in a valid context.

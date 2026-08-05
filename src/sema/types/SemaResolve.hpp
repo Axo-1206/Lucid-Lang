@@ -214,8 +214,6 @@ const FuncDeclAST* resolveCalleeOrError(const ExprAST* callee, SemaContext& ctx)
 ///   }
 void checkLetSelfReference(const ExprAST* expr, InternedString varName, SemaContext& ctx);
 
-/// @file SemaResolve.hpp (add declaration)
-
 /// @brief Check if a field type is a self-reference to the current struct.
 /// 
 /// A self-reference is allowed only if the field is nullable (T?) or 
@@ -228,4 +226,15 @@ void checkLetSelfReference(const ExprAST* expr, InternedString varName, SemaCont
 bool isValidStructSelfReference(const TypeAST* fieldType,
                                  const StructDeclAST* currentStruct,
                                  SemaContext& ctx);
+
+/// @brief Check if a field is accessible on a generic type.
+bool isFieldAccessibleOnGenericType(const TypeAST* genericType,
+                                    InternedString fieldName,
+                                    SemaContext& ctx);
+
+/// @brief Get the type of a field on a generic type.
+const TypeAST* getFieldTypeOnGenericType(const TypeAST* genericType,
+                                         InternedString fieldName,
+                                         SemaContext& ctx);
+
 } // namespace sema
