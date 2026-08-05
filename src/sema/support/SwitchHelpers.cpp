@@ -3,7 +3,12 @@
 
 #include "SwitchHelpers.hpp"
 #include "../types/SemaType.hpp"
+#include "../types/SemaCompare.hpp"
 #include "../context/SemaContext.hpp"
+#include "core/diagnostics/Diagnostic.hpp"
+
+#include <unordered_map>
+#include <unordered_set>
 
 namespace sema {
 namespace switch_helpers {
@@ -31,10 +36,10 @@ bool checkExhaustiveness(const SwitchStmtAST* stmt,
     bool allCovered = true;
     for (const EnumVariantAST* variant : enumDecl->variants) {
         if (covered.find(variant->name) == covered.end()) {
-            ctx.error(stmt, DiagCode::E3003,
-                      "switch on enum '", ctx.pool.lookup(enumDecl->name),
-                      "' is missing case for variant '", 
-                      ctx.pool.lookup(variant->name), "'");
+            ctx.diagnostics.error(DiagCode::Sem_MissingCase, stmt,
+                                  "switch on enum '", ctx.pool.lookup(enumDecl->name),
+                                  "' is missing case for variant '", 
+                                  ctx.pool.lookup(variant->name), "'");
             allCovered = false;
         }
     }
@@ -42,12 +47,84 @@ bool checkExhaustiveness(const SwitchStmtAST* stmt,
     return allCovered;
 }
 
+bool checkDuplicateCases(const SwitchStmtAST* stmt, SemaContext& ctx) {
+    if (!stmt) return true;
+    
+    std::unordered_map<InternedString, const SwitchCaseAST*> seenValues;
+    std::unordered_map<std::string, const SwitchCaseAST*> seenRanges;
+    
+    for (const SwitchCasePtr caseStmt : stmt->cases) {
+        for (const ExprAST* value : caseStmt->values) {
+            // ─── Literal values ──────────────────────────────────────────
+            if (value->isa<LiteralExprAST>()) {
+                const LiteralExprAST* lit = value->as<LiteralExprAST>();
+                InternedString key = lit->value;  // Use the literal value as key
+                
+                auto it = seenValues.find(key);
+                if (it != seenValues.end()) {
+                    ctx.diagnostics.error(DiagCode::Sem_DuplicateCase, value,
+                                          "duplicate case value '", ctx.pool.lookup(key), "'");
+                    return false;
+                }
+                seenValues[key] = caseStmt;
+                continue;
+            }
+            
+            // ─── Enum variants ──────────────────────────────────────────
+            if (isEnumVariantAccess(value, ctx)) {
+                InternedString variantName = getEnumVariantName(value, ctx);
+                if (variantName.isValid()) {
+                    auto it = seenValues.find(variantName);
+                    if (it != seenValues.end()) {
+                        ctx.diagnostics.error(DiagCode::Sem_DuplicateCase, value,
+                                              "duplicate case value '", ctx.pool.lookup(variantName), "'");
+                        return false;
+                    }
+                    seenValues[variantName] = caseStmt;
+                }
+                continue;
+            }
+            
+            // ─── Range values ──────────────────────────────────────────
+            if (value->isa<RangeExprAST>()) {
+                // TODO: Implement range duplication checking
+                // This requires comparing range bounds
+                continue;
+            }
+        }
+    }
+    
+    return true;
+}
+
+bool checkOverlappingRanges(const SwitchStmtAST* stmt, SemaContext& ctx) {
+    if (!stmt) return true;
+    
+    // Collect all ranges
+    std::vector<std::pair<RangeExprAST*, const SwitchCaseAST*>> ranges;
+    
+    for (const SwitchCasePtr caseStmt : stmt->cases) {
+        for (const ExprAST* value : caseStmt->values) {
+            if (value->isa<RangeExprAST>()) {
+                ranges.push_back({
+                    const_cast<RangeExprAST*>(value->as<RangeExprAST>()),
+                    caseStmt
+                });
+            }
+        }
+    }
+    
+    // TODO: Implement range overlap detection
+    // This requires evaluating range bounds (constant folding)
+    
+    return true;
+}
+
 std::unordered_set<InternedString> collectCoveredVariants(
     const SwitchStmtAST* stmt, 
     SemaContext& ctx) {
     
     std::unordered_set<InternedString> covered;
-    
     if (!stmt) return covered;
     
     for (const SwitchCasePtr caseStmt : stmt->cases) {
@@ -69,12 +146,10 @@ bool isEnumVariantAccess(const ExprAST* value, SemaContext& ctx) {
     
     const FieldAccessExprAST* field = value->as<FieldAccessExprAST>();
     
-    // Object must be an identifier
     if (!field->object->isa<IdentifierExprAST>()) return false;
     
     const IdentifierExprAST* id = field->object->as<IdentifierExprAST>();
     
-    // Object must resolve to an enum type
     const TypeDeclAST* decl = ctx.lookupType(id->name);
     return decl && decl->isa<EnumDeclAST>();
 }
@@ -110,8 +185,8 @@ bool validateCaseValue(const ExprAST* value,
     
     // First, check if the value type matches the subject type
     if (!isSwitchCaseCompatible(value, subjectType, ctx)) {
-        ctx.error(value, DiagCode::E3003,
-                  "case value is not compatible with switch subject type");
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, value,
+                              "case value is not compatible with switch subject type");
         return false;
     }
     
@@ -119,13 +194,11 @@ bool validateCaseValue(const ExprAST* value,
     if (isEnumType(subjectType, ctx) && isEnumVariantAccess(value, ctx)) {
         const EnumDeclAST* enumDecl = getEnumDeclFromVariantAccess(value, ctx);
         if (!enumDecl) {
-            ctx.error(value, DiagCode::E2002,
-                      "invalid enum variant in case value");
+            ctx.diagnostics.error(DiagCode::Sem_InvalidSwitchType, value,
+                                  "invalid enum variant in case value");
             return false;
         }
         
-        // Check if variant exists (this is redundant with isSwitchCaseCompatible)
-        // but provides a more specific error message
         InternedString variantName = getEnumVariantName(value, ctx);
         bool found = false;
         for (const EnumVariantAST* variant : enumDecl->variants) {
@@ -135,9 +208,9 @@ bool validateCaseValue(const ExprAST* value,
             }
         }
         if (!found) {
-            ctx.error(value, DiagCode::E2001,
-                      "enum '", ctx.pool.lookup(enumDecl->name),
-                      "' has no variant '", ctx.pool.lookup(variantName), "'");
+            ctx.diagnostics.error(DiagCode::Sem_UndefinedValue, value,
+                                  "enum '", ctx.pool.lookup(enumDecl->name),
+                                  "' has no variant '", ctx.pool.lookup(variantName), "'");
             return false;
         }
     }
@@ -146,7 +219,6 @@ bool validateCaseValue(const ExprAST* value,
     if (value->isa<RangeExprAST>()) {
         const RangeExprAST* range = value->as<RangeExprAST>();
         // TODO: Validate range bounds are compatible with subject type
-        // This requires checking lo and hi expressions
         return true;
     }
     

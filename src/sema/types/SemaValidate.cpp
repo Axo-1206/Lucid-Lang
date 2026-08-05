@@ -482,15 +482,6 @@ const TypeAST* getFieldTypeOnGenericType(const TypeAST* genericType,
     return nullptr;
 }
 
-bool validateTraitFieldType(const TypeAST* type, SemaContext& ctx) {
-    if (isNullableType(type) || isFallibleType(type)) {
-        ctx.diagnostics.error(DiagCode::Sem_ConstNullable, type,
-                              "trait field cannot be nullable or fallible");
-        return false;
-    }
-    return true;
-}
-
 // ─── Downward Flow Rule ──────────────────────────────────────────────────
 
 bool validateRefContext(const RefTypeAST* type, SemaContext& ctx) {

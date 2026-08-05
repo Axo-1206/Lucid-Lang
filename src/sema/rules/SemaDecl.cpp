@@ -312,6 +312,7 @@ void resolveTraitDecl(const TraitDeclAST* decl, SemaContext& ctx) {
             continue;
         }
 
+        // ─── Validate const trait field ──────────────────────────────────
         if (field->isConst) {
             if (!validateConstType(fieldType, field->name, "trait field", ctx)) {
                 continue;
