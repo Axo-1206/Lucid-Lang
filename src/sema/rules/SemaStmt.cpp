@@ -30,8 +30,8 @@
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/DeclAST.hpp"
 #include "core/ast/TypeAST.hpp"
+#include "core/diagnostics/Diagnostic.hpp"
 #include "debug/DebugUtils.hpp"
-#include "sema/context/ReturnRequirements.hpp"
 
 namespace sema {
 
@@ -103,10 +103,10 @@ bool resolveBlock(const BlockStmtAST* block, SemaContext& ctx) {
     // Push a new scope for the block (for local variables)
     ctx.pushScope();
 
-    // ─── 4. Resolve each statement ─────────────────────────────────────────
+    // ─── Resolve each statement ─────────────────────────────────────────
     for (const StmtAST* stmt : block->stmts) {
         if (transfers) {
-            // TODO: Emit unreachable code warning
+            ctx.diagnostics.warning(DiagCode::Warn_UnreachableCode, stmt, "unreachedable code");
             continue;
         }
         transfers = resolveStmt(stmt, ctx);
@@ -136,14 +136,6 @@ bool resolveBlock(const BlockStmtAST* block, SemaContext& ctx) {
 
     ctx.stack.pop();
 
-    // Final check: Return requirements
-    if (ctx.stack.hasReturnRequirements() && !ctx.stack.returnRequirementsSatisfied()) {
-        if (!transfers) {
-            ctx.diagnostics.error(DiagCode::Sem_MissingReturn, block,
-                                  "function is missing a return statement");
-        }
-    }
-
     return transfers;
 }
 
@@ -160,7 +152,6 @@ bool resolveBlock(const BlockStmtAST* block, SemaContext& ctx) {
 /// ─── Type Narrowing Rules ─────────────────────────────────────────────────
 ///
 /// The compiler applies type narrowing inside branches based on the condition.
-/// See TypeNarrowHelpers.hpp for detailed documentation.
 bool resolveIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
@@ -171,16 +162,11 @@ bool resolveIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
     // ─── 2. Resolve condition with target type = bool ────────────────────
     PrimitiveTypeAST* boolType = ctx.getBoolType();
 
-    // Enable if condition context for narrowing detection
     ctx.stack.setIfConditionCtx(true);
-    
     TypeAST* condType = resolveExprWithTarget(stmt->condition, boolType, ctx);
-    
     ctx.stack.setIfConditionCtx(false);
 
-    // Check if condition resolved correctly
     if (!condType || condType->isa<UnknownTypeAST>()) {
-        // Error already reported by resolveExprWithTarget
         ctx.stack.pop();
         return false;
     }
@@ -189,64 +175,28 @@ bool resolveIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
     NarrowingInfo info = extractNarrowingsFromCondition(stmt->condition, ctx);
     bool hasNarrowing = info.hasNarrowing;
 
-    // ─── 4. Resolve then branch with narrowing ──────────────────────────
+    // ─── 4. Resolve then branch ──────────────────────────────────────────
     bool thenReturns = false;
 
-    if (hasNarrowing) {
-        ctx.stack.pushNarrowingLevel(false);
-        
-        for (const auto& [varName, narrowedType] : info.narrowings) {
-            // For equality (x == nil), no narrowing in then branch
-            // For inequality (x != nil, x != err), apply normal narrowing
-            if (!info.isEquality) {
-                ctx.stack.narrowVariable(varName, narrowedType);
-            }
-        }
-        
-        if (stmt->thenBranch && stmt->thenBranch->isa<BlockStmtAST>()) {
-            thenReturns = resolveBlock(stmt->thenBranch->as<BlockStmtAST>(), ctx);
-        } else {
-            thenReturns = resolveStmt(stmt->thenBranch, ctx);
-        }
-        ctx.stack.popNarrowingLevel();
+    if (hasNarrowing && !info.isEquality) {
+        ScopedNarrowing narrowing(ctx, info.narrowings, false);
+        thenReturns = stmt->thenBranch ? resolveStmt(stmt->thenBranch, ctx) : false;
     } else {
-        if (stmt->thenBranch && stmt->thenBranch->isa<BlockStmtAST>()) {
-            thenReturns = resolveBlock(stmt->thenBranch->as<BlockStmtAST>(), ctx);
-        } else {
-            thenReturns = resolveStmt(stmt->thenBranch, ctx);
-        }
+        thenReturns = stmt->thenBranch ? resolveStmt(stmt->thenBranch, ctx) : false;
     }
 
-    // ─── 5. Resolve else branch (if present) ────────────────────────────
+    // ─── 5. Resolve else branch ──────────────────────────────────────────
     if (stmt->elseBranch) {
         bool elseReturns = false;
 
         if (stmt->elseBranch->isa<IfStmtAST>()) {
             elseReturns = resolveIfStmt(stmt->elseBranch->as<IfStmtAST>(), ctx);
         } else {
-            if (hasNarrowing) {
-                ctx.stack.pushNarrowingLevel(true); // Inverse narrowing
-                
-                for (const auto& [varName, narrowedType] : info.narrowings) {
-                    // For equality (x == nil, x == err):
-                    //   x is non-nullable/non-fallible in else branch
-                    if (info.isEquality) {
-                        ctx.stack.narrowVariable(varName, narrowedType);
-                    }
-                }
-                
-                if (stmt->elseBranch->isa<BlockStmtAST>()) {
-                    elseReturns = resolveBlock(stmt->elseBranch->as<BlockStmtAST>(), ctx);
-                } else {
-                    elseReturns = resolveStmt(stmt->elseBranch, ctx);
-                }
-                ctx.stack.popNarrowingLevel();
+            if (hasNarrowing && info.isEquality) {
+                ScopedNarrowing narrowing(ctx, info.narrowings, true);
+                elseReturns = resolveStmt(stmt->elseBranch, ctx);
             } else {
-                if (stmt->elseBranch->isa<BlockStmtAST>()) {
-                    elseReturns = resolveBlock(stmt->elseBranch->as<BlockStmtAST>(), ctx);
-                } else {
-                    elseReturns = resolveStmt(stmt->elseBranch, ctx);
-                }
+                elseReturns = resolveStmt(stmt->elseBranch, ctx);
             }
         }
 
@@ -261,7 +211,6 @@ bool resolveIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
         ctx.stack.setPendingInverseNarrowing(info);
     }
 
-    // ─── 7. Pop if context ────────────────────────────────────────────────
     ctx.stack.pop();
     return false;
 }
@@ -280,7 +229,7 @@ bool resolveIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
 /// @param ctx The semantic context.
 /// @return true if the statement guarantees control transfer out of the block.
 bool resolveSwitchStmt(const SwitchStmtAST* stmt, SemaContext& ctx) {
-    // ─── 1. Resolve subject expression (no target type yet) ──────────────
+    // ─── 1. Resolve subject expression ──────────────────────────────
     TypeAST* subjectType = resolveExpr(stmt->subject, ctx);
     if (!subjectType || subjectType->isa<UnknownTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_InvalidSwitchType, stmt->subject,
@@ -306,14 +255,11 @@ bool resolveSwitchStmt(const SwitchStmtAST* stmt, SemaContext& ctx) {
     for (const SwitchCasePtr caseStmt : stmt->cases) {
         // Validate each case value against the subject type
         for (ExprAST* value : caseStmt->values) {
-            // Resolve case value against the subject type
             TypeAST* valueType = resolveExprWithTarget(value, subjectType, ctx);
             if (!valueType || valueType->isa<UnknownTypeAST>()) {
-                // Error already reported by resolveExprWithTarget
                 continue;
             }
             
-            // Check if the case value is compatible with the subject type
             if (!isSwitchCaseCompatible(value, subjectType, ctx)) {
                 ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, value,
                                       "case value is not compatible with switch subject type");
@@ -370,7 +316,6 @@ bool resolveSwitchCase(const SwitchCaseAST* switchCase, SemaContext& ctx) {
             continue;
         }
 
-        // Resolve the case value (no target type - it'll be checked by the switch)
         TypeAST* valueType = resolveExpr(value, ctx);
         if (!valueType || valueType->isa<UnknownTypeAST>()) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidSwitchType, value,
@@ -412,7 +357,6 @@ bool resolveForStmt(const ForStmtAST* stmt, SemaContext& ctx) {
     if (stmt->indexVar) {
         TypeAST* indexType = resolveType(stmt->indexVar->type, ctx);
         if (indexType) {
-            // Register the index variable in the current scope
             ctx.insertValue(stmt->indexVar);
         }
         if (indexType && !isIntegerType(indexType)) {
@@ -425,7 +369,6 @@ bool resolveForStmt(const ForStmtAST* stmt, SemaContext& ctx) {
     if (stmt->valueVar) {
         TypeAST* valueType = resolveType(stmt->valueVar->type, ctx);
         if (valueType) {
-            // Register the value variable in the current scope
             ctx.insertValue(stmt->valueVar);
         }
     }
@@ -454,9 +397,8 @@ bool resolveForStmt(const ForStmtAST* stmt, SemaContext& ctx) {
     }
 
     // ─── 7. Resolve the loop body ─────────────────────────────────────────
-    bool bodyTransfers = false;
     if (stmt->body) {
-        bodyTransfers = resolveStmt(stmt->body, ctx);
+        resolveStmt(stmt->body, ctx);
     }
 
     // ─── 8. Pop the scope ──────────────────────────────────────────────────
@@ -491,15 +433,13 @@ bool resolveWhileStmt(const WhileStmtAST* stmt, SemaContext& ctx) {
     TypeAST* condType = resolveExprWithTarget(stmt->condition, boolType, ctx);
     
     if (!condType || condType->isa<UnknownTypeAST>()) {
-        // Error already reported by resolveExprWithTarget
         ctx.stack.pop();
         return false;
     }
 
     // ─── 3. Resolve the loop body ─────────────────────────────────────────
-    bool bodyTransfers = false;
     if (stmt->body) {
-        bodyTransfers = resolveStmt(stmt->body, ctx);
+        resolveStmt(stmt->body, ctx);
     }
 
     // ─── 4. Pop loop context ──────────────────────────────────────────────
@@ -526,9 +466,8 @@ bool resolveDoWhileStmt(const DoWhileStmtAST* stmt, SemaContext& ctx) {
     ctx.stack.pushLoop(const_cast<StmtAST*>(stmt->body), stmt->loc);
 
     // ─── 2. Resolve the loop body ─────────────────────────────────────────
-    bool bodyTransfers = false;
     if (stmt->body) {
-        bodyTransfers = resolveStmt(stmt->body, ctx);
+        resolveStmt(stmt->body, ctx);
     }
 
     // ─── 3. Resolve the condition against bool type ──────────────────────
@@ -536,7 +475,6 @@ bool resolveDoWhileStmt(const DoWhileStmtAST* stmt, SemaContext& ctx) {
     TypeAST* condType = resolveExprWithTarget(stmt->condition, boolType, ctx);
     
     if (!condType || condType->isa<UnknownTypeAST>()) {
-        // Error already reported by resolveExprWithTarget
         ctx.stack.pop();
         return false;
     }
@@ -554,6 +492,7 @@ bool resolveDoWhileStmt(const DoWhileStmtAST* stmt, SemaContext& ctx) {
 /// @brief Resolve a return statement.
 ///
 /// The return statement exits the enclosing function.
+/// Uses the simplified ReturnStack for type validation.
 ///
 /// @param stmt The return statement.
 /// @param ctx The semantic context.
@@ -568,29 +507,15 @@ bool resolveReturnStmt(const ReturnStmtAST* stmt, SemaContext& ctx) {
         return true;
     }
 
-    // ─── 2. Get the current function's return requirements ──────────────────
-    const ReturnRequirements* reqs = ctx.stack.currentReturnReqs();
-    if (!reqs) {
-        ctx.diagnostics.error(DiagCode::Sem_MissingReturn, stmt,
-                              "return statement with no return requirements");
-        return true;
-    }
+    // ─── 2. Get the current expected return type from the stack ───────────
+    const TypeAST* expectedType = ctx.stack.currentReturnType();
 
-    // ─── 3. Get the current return group ────────────────────────────────────
-    const ReturnRequirements::Group* currentGroup = ctx.stack.currentReturnGroup();
-
-    // ─── 4. Check return value against current group ────────────────────────
+    // ─── 3. Validate return value against expected type ────────────────────
     if (stmt->value) {
-        if (!currentGroup) {
-            ctx.diagnostics.error(DiagCode::Sem_MissingReturn, stmt,
-                                  "return value provided but function has no pending return group");
-            return true;
-        }
-
-        const TypeAST* expectedType = currentGroup->returnType;
+        // ─── 3a. Non-void return ──────────────────────────────────────────
         if (!expectedType) {
             ctx.diagnostics.error(DiagCode::Sem_MissingReturn, stmt,
-                                  "return value provided but function expects void return");
+                                  "return value provided but function has no return type (expected void)");
             return true;
         }
 
@@ -619,24 +544,13 @@ bool resolveReturnStmt(const ReturnStmtAST* stmt, SemaContext& ctx) {
         }
 
     } else {
-        // ── 4b. Void return (no value) ──────────────────────────────────────
-        if (currentGroup && currentGroup->requiresReturn) {
+        // ─── 3b. Void return (no value) ────────────────────────────────────
+        if (expectedType) {
             ctx.diagnostics.error(DiagCode::Sem_MissingReturn, stmt,
-                                  "void return statement but function expects a return value");
+                                  "void return statement but function expects a return value (", 
+                                  debug::typeToString(expectedType, ctx.pool), ")");
             return true;
         }
-
-        if (!reqs->allowsOptionalReturn) {
-            ctx.diagnostics.error(DiagCode::Sem_MissingReturn, stmt,
-                                  "void return statement not allowed in this function");
-            return true;
-        }
-    }
-
-    // ─── 5. Advance the return group ────────────────────────────────────────
-    if (currentGroup) {
-        ctx.stack.advanceReturnGroup();
-        const_cast<ReturnRequirements::Group*>(currentGroup)->satisfiedAt = stmt->loc;
     }
 
     return true;
@@ -692,6 +606,155 @@ bool resolveContinueStmt(const ContinueStmtAST* stmt, SemaContext& ctx) {
 // resolveExprStmt
 // =============================================================================
 
+/// @brief Check if an expression has side effects.
+///
+/// An expression has side effects if it:
+///   - Is a function call (call_expr)
+///   - Is an assignment (assign_expr)
+///   - Contains a function call or assignment in any sub-expression
+///   - Is a pipeline expression (may contain calls)
+///   - Is a field access that might be a function call (though Lucid has no methods)
+///
+/// @param expr The expression to check.
+/// @param ctx The semantic context.
+/// @return true if the expression has side effects, false otherwise.
+static bool hasSideEffects(const ExprAST* expr, SemaContext& ctx) {
+    if (!expr) return false;
+
+    switch (expr->kind) {
+        // ─── Call expressions always have side effects ──────────────────────
+        case ASTKind::CallExpr:
+            return true;
+
+        // ─── Intrinsic calls may have side effects ──────────────────────────
+        case ASTKind::IntrinsicCallExpr: {
+            const IntrinsicCallExprAST* intrinsic = expr->as<IntrinsicCallExprAST>();
+            // Memory operations and FFI intrinsics have side effects
+            InternedString name = intrinsic->intrinsicName;
+            std::string nameStr = ctx.pool.lookup(name);
+            if (nameStr == "memcpy" || nameStr == "memmove" || nameStr == "memset" ||
+                nameStr == "alloc" || nameStr == "free" ||
+                nameStr == "arena_create" || nameStr == "arena_alloc" || 
+                nameStr == "arena_free" || nameStr == "arena_reset" ||
+                nameStr == "atomic_store" || nameStr == "atomic_add" ||
+                nameStr == "atomic_sub" || nameStr == "atomic_and" ||
+                nameStr == "atomic_or" || nameStr == "atomic_xor" ||
+                nameStr == "atomic_cas") {
+                return true;
+            }
+            return false;
+        }
+
+        // ─── Assignment always has side effects ─────────────────────────────
+        case ASTKind::AssignExpr:
+            return true;
+
+        // ─── Pipeline may contain calls in steps ────────────────────────────
+        case ASTKind::PipelineExpr: {
+            const PipelineExprAST* pipeline = expr->as<PipelineExprAST>();
+            // Check seed
+            if (hasSideEffects(pipeline->seed, ctx)) return true;
+            // Check each step
+            for (const PipelineStepAST* step : pipeline->steps) {
+                if (hasSideEffects(step->callable, ctx)) return true;
+                for (const ExprAST* arg : step->packArgs) {
+                    if (hasSideEffects(arg, ctx)) return true;
+                }
+            }
+            return false;
+        }
+
+        // ─── Pipeline step (shouldn't appear standalone, but handle it) ─────
+        case ASTKind::PipelineStep: {
+            const PipelineStepAST* step = expr->as<PipelineStepAST>();
+            if (hasSideEffects(step->callable, ctx)) return true;
+            for (const ExprAST* arg : step->packArgs) {
+                if (hasSideEffects(arg, ctx)) return true;
+            }
+            return false;
+        }
+
+        // ─── Binary expressions: check both operands ────────────────────────
+        case ASTKind::BinaryExpr: {
+            const BinaryExprAST* bin = expr->as<BinaryExprAST>();
+            return hasSideEffects(bin->left, ctx) || hasSideEffects(bin->right, ctx);
+        }
+
+        // ─── Unary expressions: check operand ──────────────────────────────
+        case ASTKind::UnaryExpr: {
+            const UnaryExprAST* unary = expr->as<UnaryExprAST>();
+            return hasSideEffects(unary->operand, ctx);
+        }
+
+        // ─── Field access: check object ─────────────────────────────────────
+        case ASTKind::FieldAccessExpr: {
+            const FieldAccessExprAST* field = expr->as<FieldAccessExprAST>();
+            return hasSideEffects(field->object, ctx);
+        }
+
+        // ─── Index expression: check target and index ──────────────────────
+        case ASTKind::IndexExpr: {
+            const IndexExprAST* index = expr->as<IndexExprAST>();
+            return hasSideEffects(index->target, ctx) || 
+                   hasSideEffects(index->index, ctx);
+        }
+
+        // ─── Slice expression: check target and bounds ─────────────────────
+        case ASTKind::SliceExpr: {
+            const SliceExprAST* slice = expr->as<SliceExprAST>();
+            if (hasSideEffects(slice->target, ctx)) return true;
+            if (slice->start && hasSideEffects(slice->start, ctx)) return true;
+            if (slice->end && hasSideEffects(slice->end, ctx)) return true;
+            return false;
+        }
+
+        // ─── Struct literal: check each field initializer ──────────────────
+        case ASTKind::StructLiteralExpr: {
+            const StructLiteralExprAST* sl = expr->as<StructLiteralExprAST>();
+            for (const FieldInitAST* init : sl->inits) {
+                if (hasSideEffects(init->value, ctx)) return true;
+            }
+            return false;
+        }
+
+        // ─── Array literal: check each element ─────────────────────────────
+        case ASTKind::ArrayLiteralExpr: {
+            const ArrayLiteralExprAST* al = expr->as<ArrayLiteralExprAST>();
+            for (const ExprAST* elem : al->elements) {
+                if (hasSideEffects(elem, ctx)) return true;
+            }
+            return false;
+        }
+
+        // ─── If expression: check condition and branches ────────────────────
+        case ASTKind::IfExpr: {
+            const IfExprAST* ifExpr = expr->as<IfExprAST>();
+            if (hasSideEffects(ifExpr->condition, ctx)) return true;
+            if (hasSideEffects(ifExpr->thenBranch, ctx)) return true;
+            if (hasSideEffects(ifExpr->elseBranch, ctx)) return true;
+            return false;
+        }
+
+        // ─── Null coalesce: check both sides ───────────────────────────────
+        case ASTKind::NullCoalesceExpr: {
+            const NullCoalesceExprAST* nc = expr->as<NullCoalesceExprAST>();
+            return hasSideEffects(nc->value, ctx) || 
+                   hasSideEffects(nc->fallback, ctx);
+        }
+
+        // ─── Literals and identifiers have no side effects ──────────────────
+        case ASTKind::LiteralExpr:
+        case ASTKind::IdentifierExpr:
+        case ASTKind::ModuleAccessExpr:
+        case ASTKind::RangeExpr:
+            return false;
+
+        // ─── Default: assume no side effects for unknown kinds ─────────────
+        default:
+            return false;
+    }
+}
+
 /// @brief Resolve an expression statement.
 ///
 /// An expression statement evaluates an expression for its side effects.
@@ -703,7 +766,7 @@ bool resolveContinueStmt(const ContinueStmtAST* stmt, SemaContext& ctx) {
 bool resolveExprStmt(const ExprStmtAST* stmt, SemaContext& ctx) {
     if (!stmt || !stmt->expr) return false;
 
-    // ─── 1. Resolve the expression (no target type) ──────────────────────
+    // ─── 1. Resolve the expression ──────────────────────────────────────
     TypeAST* exprType = resolveExpr(stmt->expr, ctx);
     if (!exprType || exprType->isa<UnknownTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, stmt->expr,
@@ -714,12 +777,10 @@ bool resolveExprStmt(const ExprStmtAST* stmt, SemaContext& ctx) {
     // ─── 2. Check for discarded non-void value ─────────────────────────────
     // If the expression has a non-void type and no side effects, warn
     if (exprType && !exprType->isa<UnknownTypeAST>()) {
-        // TODO: Check if expression has side effects
-        // bool hasSideEffects = hasSideEffects(stmt->expr, ctx);
-        // if (!hasSideEffects) {
-        //     ctx.diagnostics.warning(DiagCode::Warn_DiscardedResult, stmt,
-        //                             "expression result is discarded (no side effects)");
-        // }
+        if (!hasSideEffects(stmt->expr, ctx)) {
+            ctx.diagnostics.warning(DiagCode::Warn_DiscardedResult, stmt,
+                                    "expression result is discarded (no side effects)");
+        }
     }
 
     return false;
@@ -776,10 +837,7 @@ bool resolveAsyncStmt(const AsyncStmtAST* stmt, SemaContext& ctx) {
     InternedString targetName = target->name;
 
     // ─── 3. Check for `_` discard ──────────────────────────────────────────
-    // `_` is a valid target - it means fire and forget, no tracking needed
-    // But we need to ensure the variable exists and is valid
     if (targetName.id != 0) {  // Not `_`
-        // Verify the variable exists
         const ValueDeclAST* decl = ctx.lookupValue(targetName);
         if (!decl) {
             ctx.diagnostics.error(DiagCode::Sem_UndefinedValue, stmt->target,
@@ -787,7 +845,6 @@ bool resolveAsyncStmt(const AsyncStmtAST* stmt, SemaContext& ctx) {
             return false;
         }
 
-        // Verify it's a variable (not a function, enum, etc.)
         if (!decl->isa<VarDeclAST>()) {
             ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, stmt->target,
                                   "'", ctx.pool.lookup(targetName), "' is not a variable");
@@ -804,16 +861,15 @@ bool resolveAsyncStmt(const AsyncStmtAST* stmt, SemaContext& ctx) {
 
     TypeAST* callType = resolveExpr(stmt->call, ctx);
     if (!callType || callType->isa<UnknownTypeAST>()) {
-        // Error already reported by resolveExpr
         return false;
     }
 
     // ─── 5. Store in pending list if not `_` ──────────────────────────────
-    if (targetName.id != 0) {  // Not `_`
+    if (targetName.id != 0) {
         ctx.addPendingAsync(targetName, stmt->call, stmt->loc);
     }
 
-    return false;  // async does not transfer control
+    return false;
 }
 
 // ─── resolveAwaitStmt ──────────────────────────────────────────────────────
@@ -841,7 +897,6 @@ bool resolveAwaitStmt(const AwaitStmtAST* stmt, SemaContext& ctx) {
 
         // ─── 3. Check if this is a pending async operation ────────────────
         if (ctx.hasPendingAsync(targetName)) {
-            // Resolve the async operation
             ctx.resolveAsync(targetName);
         } else {
             ctx.diagnostics.error(DiagCode::Sem_AwaitNonAsync, target,
@@ -858,10 +913,9 @@ bool resolveAwaitStmt(const AwaitStmtAST* stmt, SemaContext& ctx) {
         }
 
         // TODO: Change variable type from Future<T> to T
-        // This would require updating the declaration's type
     }
 
-    return false;  // await does not transfer control
+    return false;
 }
 
 // ─── resolveSpawnStmt ──────────────────────────────────────────────────────
@@ -890,11 +944,9 @@ bool resolveSpawnStmt(const SpawnStmtAST* stmt, SemaContext& ctx) {
         const IdentifierExprAST* target = stmt->target->as<IdentifierExprAST>();
         targetName = target->name;
 
-        // Check for `_` discard
         if (targetName.id == 0) {
             isDiscard = true;
         } else {
-            // Verify the variable exists
             const ValueDeclAST* decl = ctx.lookupValue(targetName);
             if (!decl) {
                 ctx.diagnostics.error(DiagCode::Sem_UndefinedValue, stmt->target,
@@ -902,7 +954,6 @@ bool resolveSpawnStmt(const SpawnStmtAST* stmt, SemaContext& ctx) {
                 return false;
             }
 
-            // Verify it's a variable (not a function, enum, etc.)
             if (!decl->isa<VarDeclAST>()) {
                 ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, stmt->target,
                                       "'", ctx.pool.lookup(targetName), "' is not a variable");
@@ -910,7 +961,6 @@ bool resolveSpawnStmt(const SpawnStmtAST* stmt, SemaContext& ctx) {
             }
         }
     } else {
-        // No target means `_` discard
         isDiscard = true;
     }
 
@@ -923,7 +973,6 @@ bool resolveSpawnStmt(const SpawnStmtAST* stmt, SemaContext& ctx) {
 
     TypeAST* callType = resolveExpr(stmt->call, ctx);
     if (!callType || callType->isa<UnknownTypeAST>()) {
-        // Error already reported by resolveExpr
         return false;
     }
 
@@ -932,7 +981,7 @@ bool resolveSpawnStmt(const SpawnStmtAST* stmt, SemaContext& ctx) {
         ctx.addPendingSpawn(targetName, stmt->call, stmt->loc);
     }
 
-    return false;  // spawn does not transfer control
+    return false;
 }
 
 // ─── resolveJoinStmt ───────────────────────────────────────────────────────
@@ -960,7 +1009,6 @@ bool resolveJoinStmt(const JoinStmtAST* stmt, SemaContext& ctx) {
 
         // ─── 3. Check if this is a pending spawn operation ─────────────────
         if (ctx.hasPendingSpawn(targetName)) {
-            // Resolve the spawn operation
             ctx.resolveSpawn(targetName);
         } else {
             ctx.diagnostics.error(DiagCode::Sem_JoinNonSpawn, target,
@@ -977,10 +1025,9 @@ bool resolveJoinStmt(const JoinStmtAST* stmt, SemaContext& ctx) {
         }
 
         // TODO: Change variable type from Future<T> to T
-        // This would require updating the declaration's type
     }
 
-    return false;  // join does not transfer control
+    return false;
 }
 
 } // namespace sema
