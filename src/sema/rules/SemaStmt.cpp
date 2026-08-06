@@ -9,20 +9,9 @@
 ///   guarantees control transfer out of the enclosing block (return, break,
 ///   continue, or a block whose last statement guarantees it).
 /// 
-/// @architectural_note Statement Structure
-///   Statements are read-only AST nodes. We validate them and determine
-///   control flow behavior without modifying the AST.
-/// 
-/// @architectural_note Error Recovery
-///   Even if a statement has errors, we continue analysis to find more errors.
-///   The return value should reflect the statement's control flow behavior
-///   regardless of errors (if the statement is syntactically a return, it
-///   still transfers control).
-/// 
-/// @architectural_note Expression Resolution with Target Type
-///   Statements that expect a specific type (conditions, loop bounds, etc.)
-///   pass the expected type as targetType to `resolveExprWithTarget()`.
-///   This centralizes type checking and uses cached type instances.
+/// @architectural_note RAII Guards
+///   All scope and context management is done via RAII guards to ensure
+///   proper cleanup even when errors occur.
 
 #include "../Sema.hpp"
 #include "../context/SemaContext.hpp"
@@ -39,11 +28,6 @@ namespace sema {
 // resolveStmt - Dispatch
 // =============================================================================
 
-/// @brief Dispatch a statement to its specific resolver function.
-///
-/// @param stmt The statement to resolve.
-/// @param ctx The semantic context.
-/// @return true if this statement guarantees control transfer out of the block.
 bool resolveStmt(const StmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
@@ -73,16 +57,12 @@ bool resolveStmt(const StmtAST* stmt, SemaContext& ctx) {
 // resolveBlock
 // =============================================================================
 
-/// @brief Resolve a block statement.
-///
-/// A block is a sequence of statements in a new scope.
-/// The block returns true if its last statement guarantees control transfer.
-///
-/// @param block The block statement.
-/// @param ctx The semantic context.
-/// @return true if the block guarantees control transfer out of the block.
 bool resolveBlock(const BlockStmtAST* block, SemaContext& ctx) {
-    ctx.stack.pushBlock(const_cast<BlockStmtAST*>(block), block->loc);
+    if (!block) return false;
+
+    // ─── RAII: Push block context ──────────────────────────────────────────
+    ScopedSemanticContext context(ctx, ContextKind::Block, 
+                                   const_cast<BlockStmtAST*>(block), block->loc);
 
     bool transfers = false;
     bool hasAppliedPendingNarrowing = false;
@@ -100,13 +80,13 @@ bool resolveBlock(const BlockStmtAST* block, SemaContext& ctx) {
         }
     }
 
-    // Push a new scope for the block (for local variables)
-    ctx.pushScope();
+    // ─── RAII: Push a new scope for the block ──────────────────────────────
+    SymbolScope scope(ctx);
 
     // ─── Resolve each statement ─────────────────────────────────────────
     for (const StmtAST* stmt : block->stmts) {
         if (transfers) {
-            ctx.diagnostics.warning(DiagCode::Warn_UnreachableCode, stmt, "unreachedable code");
+            ctx.diagnostics.warning(DiagCode::Warn_UnreachableCode, stmt, "unreachable code");
             continue;
         }
         transfers = resolveStmt(stmt, ctx);
@@ -126,15 +106,12 @@ bool resolveBlock(const BlockStmtAST* block, SemaContext& ctx) {
                                 "spawn '", ctx.pool.lookup(name), "' was never joined");
     }
 
-    // Pop the block scope - local variables are no longer visible
-    ctx.popScope();
-
-    // Pop pending narrowing level
+    // ─── Pop pending narrowing level ──────────────────────────────────────
     if (hasAppliedPendingNarrowing) {
         ctx.stack.popNarrowingLevel();
     }
 
-    ctx.stack.pop();
+    // ─── SymbolScope and ScopedSemanticContext automatically pop ───────────
 
     return transfers;
 }
@@ -143,39 +120,30 @@ bool resolveBlock(const BlockStmtAST* block, SemaContext& ctx) {
 // resolveIfStmt
 // =============================================================================
 
-/// @brief Resolve an if statement.
-///
-/// The condition must be a boolean expression.
-/// The then branch is always executed if the condition is true.
-/// The else branch is optional.
-///
-/// ─── Type Narrowing Rules ─────────────────────────────────────────────────
-///
-/// The compiler applies type narrowing inside branches based on the condition.
 bool resolveIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
-    // ─── 1. Push if context for type narrowing ──────────────────────────
-    ctx.stack.push(ContextKind::IfStmt, const_cast<IfStmtAST*>(stmt), stmt->loc);
+    // ─── RAII: Push if context ────────────────────────────────────────────
+    ScopedSemanticContext context(ctx, ContextKind::IfStmt,
+                                   const_cast<IfStmtAST*>(stmt), stmt->loc);
     ctx.stack.setHasElse(stmt->elseBranch != nullptr);
 
-    // ─── 2. Resolve condition with target type = bool ────────────────────
-    PrimitiveTypeAST* boolType = ctx.getBoolType();
+    // ─── RAII: ScopedIfCondition for narrowing detection ──────────────────
+    ScopedIfCondition ifContext(ctx, stmt->elseBranch != nullptr);
 
-    ctx.stack.setIfConditionCtx(true);
+    // ─── Resolve condition with target type = bool ─────────────────────────
+    PrimitiveTypeAST* boolType = ctx.getBoolType();
     TypeAST* condType = resolveExprWithTarget(stmt->condition, boolType, ctx);
-    ctx.stack.setIfConditionCtx(false);
 
     if (!condType || condType->isa<UnknownTypeAST>()) {
-        ctx.stack.pop();
         return false;
     }
 
-    // ─── 3. Extract narrowing info from the condition ────────────────────
+    // ─── Extract narrowing info from the condition ─────────────────────────
     NarrowingInfo info = extractNarrowingsFromCondition(stmt->condition, ctx);
     bool hasNarrowing = info.hasNarrowing;
 
-    // ─── 4. Resolve then branch ──────────────────────────────────────────
+    // ─── Resolve then branch ──────────────────────────────────────────────
     bool thenReturns = false;
 
     if (hasNarrowing && !info.isEquality) {
@@ -185,7 +153,7 @@ bool resolveIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
         thenReturns = stmt->thenBranch ? resolveStmt(stmt->thenBranch, ctx) : false;
     }
 
-    // ─── 5. Resolve else branch ──────────────────────────────────────────
+    // ─── Resolve else branch ──────────────────────────────────────────────
     if (stmt->elseBranch) {
         bool elseReturns = false;
 
@@ -201,17 +169,15 @@ bool resolveIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
         }
 
         if (thenReturns && elseReturns) {
-            ctx.stack.pop();
             return true;
         }
     }
 
-    // ─── 6. Handle inverse narrowing for standalone if ───────────────────
+    // ─── Handle inverse narrowing for standalone if ───────────────────────
     if (!stmt->elseBranch && thenReturns && hasNarrowing && info.isEquality) {
         ctx.stack.setPendingInverseNarrowing(info);
     }
 
-    ctx.stack.pop();
     return false;
 }
 
@@ -219,37 +185,29 @@ bool resolveIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
 // resolveSwitchStmt
 // =============================================================================
 
-/// @brief Resolve a switch statement.
-///
-/// The subject must be an integer, enum, bool, char, or string type.
-/// Each case must have a body that is a block.
-/// The default clause is optional.
-///
-/// @param stmt The switch statement.
-/// @param ctx The semantic context.
-/// @return true if the statement guarantees control transfer out of the block.
 bool resolveSwitchStmt(const SwitchStmtAST* stmt, SemaContext& ctx) {
-    // ─── 1. Resolve subject expression ──────────────────────────────
+    if (!stmt) return false;
+
+    // ─── Resolve subject expression ────────────────────────────────────────
     TypeAST* subjectType = resolveExpr(stmt->subject, ctx);
     if (!subjectType || subjectType->isa<UnknownTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_InvalidSwitchType, stmt->subject,
                               "switch subject has unknown type");
-        ctx.stack.push(ContextKind::SwitchBody, const_cast<SwitchStmtAST*>(stmt), stmt->loc);
-        ctx.stack.pop();
         return false;
     }
     
-    // ─── 2. Validate subject type ──────────────────────────────────────
+    // ─── Validate subject type ─────────────────────────────────────────────
     if (!isValidSwitchType(subjectType, ctx)) {
         ctx.diagnostics.error(DiagCode::Sem_InvalidSwitchType, stmt->subject,
                               "switch subject must be integer, enum, bool, char, or string");
         return false;
     }
     
-    // ─── 3. Push switch context ──────────────────────────────────────
-    ctx.stack.push(ContextKind::SwitchBody, const_cast<SwitchStmtAST*>(stmt), stmt->loc);
+    // ─── RAII: Push switch context ─────────────────────────────────────────
+    ScopedSemanticContext context(ctx, ContextKind::SwitchBody,
+                                   const_cast<SwitchStmtAST*>(stmt), stmt->loc);
     
-    // ─── 4. Validate cases ─────────────────────────────────────────────
+    // ─── Validate cases ─────────────────────────────────────────────────────
     bool allCasesReturn = true;
     
     for (const SwitchCasePtr caseStmt : stmt->cases) {
@@ -274,19 +232,17 @@ bool resolveSwitchStmt(const SwitchStmtAST* stmt, SemaContext& ctx) {
         }
     }
     
-    // ─── 5. Check exhaustiveness ──────────────────────────────────────
+    // ─── Check exhaustiveness ──────────────────────────────────────────────
     if (!stmt->defaultBody && isEnumType(subjectType, ctx)) {
         switch_helpers::checkExhaustiveness(stmt, subjectType, ctx);
     }
     
-    // ─── 6. Resolve default clause ────────────────────────────────────
+    // ─── Resolve default clause ────────────────────────────────────────────
     if (stmt->defaultBody) {
         if (!resolveBlock(stmt->defaultBody, ctx)) {
             allCasesReturn = false;
         }
     }
-    
-    ctx.stack.pop();
     
     return allCasesReturn && (stmt->defaultBody || !isEnumType(subjectType, ctx));
 }
@@ -295,18 +251,10 @@ bool resolveSwitchStmt(const SwitchStmtAST* stmt, SemaContext& ctx) {
 // resolveSwitchCase
 // =============================================================================
 
-/// @brief Resolve a switch case.
-///
-/// A case has one or more match values (literals, enum variants, or ranges)
-/// and a body block.
-///
-/// @param switchCase The switch case.
-/// @param ctx The semantic context.
-/// @return true if the case body guarantees control transfer out of the block.
 bool resolveSwitchCase(const SwitchCaseAST* switchCase, SemaContext& ctx) {
     if (!switchCase) return false;
 
-    // ─── 1. Validate each case value ──────────────────────────────────────
+    // ─── Validate each case value ──────────────────────────────────────────
     for (ExprAST* value : switchCase->values) {
         if (!value->isa<LiteralExprAST>() && 
             !value->isa<FieldAccessExprAST>() && 
@@ -324,7 +272,7 @@ bool resolveSwitchCase(const SwitchCaseAST* switchCase, SemaContext& ctx) {
         }
     }
 
-    // ─── 2. Resolve the case body ────────────────────────────────────────
+    // ─── Resolve the case body ────────────────────────────────────────────
     if (switchCase->body) {
         return resolveBlock(switchCase->body, ctx);
     }
@@ -336,76 +284,80 @@ bool resolveSwitchCase(const SwitchCaseAST* switchCase, SemaContext& ctx) {
 // resolveForStmt
 // =============================================================================
 
-/// @brief Resolve a for loop statement.
-///
-/// A for loop iterates over a range or collection.
-/// The index and value bindings are optional (can be ignored with `_`).
-///
-/// @param stmt The for statement.
-/// @param ctx The semantic context.
-/// @return true if the statement guarantees control transfer out of the block.
 bool resolveForStmt(const ForStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
-    // ─── 1. Push loop context ────────────────────────────────────────────
-    ctx.stack.pushLoop(const_cast<StmtAST*>(stmt->body), stmt->loc);
+    // ─── RAII: Push loop context ───────────────────────────────────────────
+    ScopedSemanticContext context(ctx, ContextKind::LoopBody,
+                                   const_cast<StmtAST*>(stmt->body), stmt->loc);
 
-    // ─── 2. Push a scope for loop variables ──────────────────────────────
-    ctx.pushScope();
+    // ─── RAII: Push a scope for loop variables ─────────────────────────────
+    SymbolScope scope(ctx);
 
-    // ─── 3. Resolve AND REGISTER the index binding ──────────────────────
+    // ─── Resolve AND REGISTER the index binding ──────────────────────────
     if (stmt->indexVar) {
         TypeAST* indexType = resolveType(stmt->indexVar->type, ctx);
-        if (indexType) {
-            ctx.insertValue(stmt->indexVar);
-        }
+        
+        // ─── ALWAYS register the variable ──────────────────────────────────
+        ctx.insertValue(stmt->indexVar);
+        
         if (indexType && !isIntegerType(indexType)) {
             ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, stmt->indexVar,
-                                  "index variable must be an integer type");
+                                  "index variable must be an integer type, got ",
+                                  debug::typeToString(indexType, ctx.pool));
         }
     }
 
-    // ─── 4. Resolve AND REGISTER the value binding ──────────────────────
+    // ─── Resolve AND REGISTER the value binding ──────────────────────────
     if (stmt->valueVar) {
         TypeAST* valueType = resolveType(stmt->valueVar->type, ctx);
-        if (valueType) {
-            ctx.insertValue(stmt->valueVar);
-        }
+        
+        // ─── ALWAYS register the value variable ───────────────────────────
+        ctx.insertValue(stmt->valueVar);
+        
+        // Value type validation will happen against the iterable
     }
 
-    // ─── 5. Resolve the iterable expression ──────────────────────────────
+    // ─── Resolve the iterable expression ──────────────────────────────────
     if (stmt->iterable) {
         TypeAST* iterableType = resolveExpr(stmt->iterable, ctx);
         if (!iterableType || iterableType->isa<UnknownTypeAST>()) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidIterator, stmt->iterable,
                                   "iterable has unknown type");
-            ctx.popScope();
-            ctx.stack.pop();
-            return false;
+        } else {
+            // ─── Validate value type against iterable element type ──────
+            if (stmt->valueVar && iterableType->isa<ArrayTypeAST>()) {
+                const ArrayTypeAST* arrayType = iterableType->as<ArrayTypeAST>();
+                const TypeAST* elementType = arrayType->element;
+                
+                if (stmt->valueVar->type) {
+                    TypeAST* valueType = resolveType(stmt->valueVar->type, ctx);
+                    if (valueType && !typesEqual(valueType, elementType)) {
+                        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, stmt->valueVar,
+                                              "value type '", debug::typeToString(valueType, ctx.pool),
+                                              "' does not match iterable element type '",
+                                              debug::typeToString(elementType, ctx.pool), "'");
+                    }
+                }
+            }
         }
     }
 
-    // ─── 6. Resolve the step expression (if present) ──────────────────────
+    // ─── Resolve the step expression (if present) ──────────────────────────
     if (stmt->step) {
         PrimitiveTypeAST* numericType = ctx.getIntType();
         TypeAST* stepType = resolveExprWithTarget(stmt->step, numericType, ctx);
         if (!stepType || stepType->isa<UnknownTypeAST>()) {
-            ctx.popScope();
-            ctx.stack.pop();
-            return false;
+            // Error already reported - continue
         }
     }
 
-    // ─── 7. Resolve the loop body ─────────────────────────────────────────
+    // ─── Resolve the loop body ─────────────────────────────────────────────
     if (stmt->body) {
         resolveStmt(stmt->body, ctx);
     }
 
-    // ─── 8. Pop the scope ──────────────────────────────────────────────────
-    ctx.popScope();
-
-    // ─── 9. Pop loop context ──────────────────────────────────────────────
-    ctx.stack.pop();
+    // ─── SymbolScope and ScopedSemanticContext automatically pop ───────────
 
     return false;
 }
@@ -414,36 +366,27 @@ bool resolveForStmt(const ForStmtAST* stmt, SemaContext& ctx) {
 // resolveWhileStmt
 // =============================================================================
 
-/// @brief Resolve a while loop statement.
-///
-/// The condition is tested before each iteration.
-/// The loop exits when the condition is false or a break is reached.
-///
-/// @param stmt The while statement.
-/// @param ctx The semantic context.
-/// @return true if the statement guarantees control transfer out of the block.
 bool resolveWhileStmt(const WhileStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
-    // ─── 1. Push loop context ────────────────────────────────────────────
-    ctx.stack.pushLoop(const_cast<StmtAST*>(stmt->body), stmt->loc);
+    // ─── RAII: Push loop context ───────────────────────────────────────────
+    ScopedSemanticContext context(ctx, ContextKind::LoopBody,
+                                   const_cast<StmtAST*>(stmt->body), stmt->loc);
 
-    // ─── 2. Resolve the condition against bool type ──────────────────────
+    // ─── Resolve the condition against bool type ──────────────────────────
     PrimitiveTypeAST* boolType = ctx.getBoolType();
     TypeAST* condType = resolveExprWithTarget(stmt->condition, boolType, ctx);
     
     if (!condType || condType->isa<UnknownTypeAST>()) {
-        ctx.stack.pop();
         return false;
     }
 
-    // ─── 3. Resolve the loop body ─────────────────────────────────────────
+    // ─── Resolve the loop body ─────────────────────────────────────────────
     if (stmt->body) {
         resolveStmt(stmt->body, ctx);
     }
 
-    // ─── 4. Pop loop context ──────────────────────────────────────────────
-    ctx.stack.pop();
+    // ─── ScopedSemanticContext automatically pops ─────────────────────────
 
     return false;
 }
@@ -452,35 +395,27 @@ bool resolveWhileStmt(const WhileStmtAST* stmt, SemaContext& ctx) {
 // resolveDoWhileStmt
 // =============================================================================
 
-/// @brief Resolve a do-while loop statement.
-///
-/// The body executes at least once before the condition is checked.
-///
-/// @param stmt The do-while statement.
-/// @param ctx The semantic context.
-/// @return true if the statement guarantees control transfer out of the block.
 bool resolveDoWhileStmt(const DoWhileStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
-    // ─── 1. Push loop context ────────────────────────────────────────────
-    ctx.stack.pushLoop(const_cast<StmtAST*>(stmt->body), stmt->loc);
+    // ─── RAII: Push loop context ───────────────────────────────────────────
+    ScopedSemanticContext context(ctx, ContextKind::LoopBody,
+                                   const_cast<StmtAST*>(stmt->body), stmt->loc);
 
-    // ─── 2. Resolve the loop body ─────────────────────────────────────────
+    // ─── Resolve the loop body ─────────────────────────────────────────────
     if (stmt->body) {
         resolveStmt(stmt->body, ctx);
     }
 
-    // ─── 3. Resolve the condition against bool type ──────────────────────
+    // ─── Resolve the condition against bool type ──────────────────────────
     PrimitiveTypeAST* boolType = ctx.getBoolType();
     TypeAST* condType = resolveExprWithTarget(stmt->condition, boolType, ctx);
     
     if (!condType || condType->isa<UnknownTypeAST>()) {
-        ctx.stack.pop();
         return false;
     }
 
-    // ─── 4. Pop loop context ──────────────────────────────────────────────
-    ctx.stack.pop();
+    // ─── ScopedSemanticContext automatically pops ─────────────────────────
 
     return false;
 }
@@ -489,30 +424,22 @@ bool resolveDoWhileStmt(const DoWhileStmtAST* stmt, SemaContext& ctx) {
 // resolveReturnStmt
 // =============================================================================
 
-/// @brief Resolve a return statement.
-///
-/// The return statement exits the enclosing function.
-/// Uses the simplified ReturnStack for type validation.
-///
-/// @param stmt The return statement.
-/// @param ctx The semantic context.
-/// @return true (return always transfers control out of the block).
 bool resolveReturnStmt(const ReturnStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return true;
 
-    // ─── 1. Check: Must be inside a function body ──────────────────────────
+    // ─── Check: Must be inside a function body ─────────────────────────────
     if (!ctx.stack.insideFunction()) {
         ctx.diagnostics.error(DiagCode::Sem_InvalidBreak, stmt,
                               "return statement outside of function body");
         return true;
     }
 
-    // ─── 2. Get the current expected return type from the stack ───────────
+    // ─── Get the current expected return type from the stack ──────────────
     const TypeAST* expectedType = ctx.stack.currentReturnType();
 
-    // ─── 3. Validate return value against expected type ────────────────────
+    // ─── Validate return value against expected type ───────────────────────
     if (stmt->value) {
-        // ─── 3a. Non-void return ──────────────────────────────────────────
+        // ─── Non-void return ──────────────────────────────────────────────
         if (!expectedType) {
             ctx.diagnostics.error(DiagCode::Sem_MissingReturn, stmt,
                                   "return value provided but function has no return type (expected void)");
@@ -544,7 +471,7 @@ bool resolveReturnStmt(const ReturnStmtAST* stmt, SemaContext& ctx) {
         }
 
     } else {
-        // ─── 3b. Void return (no value) ────────────────────────────────────
+        // ─── Void return (no value) ──────────────────────────────────────
         if (expectedType) {
             ctx.diagnostics.error(DiagCode::Sem_MissingReturn, stmt,
                                   "void return statement but function expects a return value (", 
@@ -560,13 +487,6 @@ bool resolveReturnStmt(const ReturnStmtAST* stmt, SemaContext& ctx) {
 // resolveBreakStmt
 // =============================================================================
 
-/// @brief Resolve a break statement.
-///
-/// The break statement exits the nearest enclosing loop or switch.
-///
-/// @param stmt The break statement.
-/// @param ctx The semantic context.
-/// @return true (break always transfers control out of the block).
 bool resolveBreakStmt(const BreakStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return true;
 
@@ -583,13 +503,6 @@ bool resolveBreakStmt(const BreakStmtAST* stmt, SemaContext& ctx) {
 // resolveContinueStmt
 // =============================================================================
 
-/// @brief Resolve a continue statement.
-///
-/// The continue statement skips the rest of the current loop iteration.
-///
-/// @param stmt The continue statement.
-/// @param ctx The semantic context.
-/// @return true (continue always transfers control out of the block).
 bool resolveContinueStmt(const ContinueStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return true;
 
@@ -607,31 +520,16 @@ bool resolveContinueStmt(const ContinueStmtAST* stmt, SemaContext& ctx) {
 // =============================================================================
 
 /// @brief Check if an expression has side effects.
-///
-/// An expression has side effects if it:
-///   - Is a function call (call_expr)
-///   - Is an assignment (assign_expr)
-///   - Contains a function call or assignment in any sub-expression
-///   - Is a pipeline expression (may contain calls)
-///   - Is a field access that might be a function call (though Lucid has no methods)
-///
-/// @param expr The expression to check.
-/// @param ctx The semantic context.
-/// @return true if the expression has side effects, false otherwise.
 static bool hasSideEffects(const ExprAST* expr, SemaContext& ctx) {
     if (!expr) return false;
 
     switch (expr->kind) {
-        // ─── Call expressions always have side effects ──────────────────────
         case ASTKind::CallExpr:
             return true;
 
-        // ─── Intrinsic calls may have side effects ──────────────────────────
         case ASTKind::IntrinsicCallExpr: {
             const IntrinsicCallExprAST* intrinsic = expr->as<IntrinsicCallExprAST>();
-            // Memory operations and FFI intrinsics have side effects
-            InternedString name = intrinsic->intrinsicName;
-            std::string nameStr = ctx.pool.lookup(name);
+            std::string nameStr = ctx.pool.lookup(intrinsic->intrinsicName);
             if (nameStr == "memcpy" || nameStr == "memmove" || nameStr == "memset" ||
                 nameStr == "alloc" || nameStr == "free" ||
                 nameStr == "arena_create" || nameStr == "arena_alloc" || 
@@ -645,16 +543,12 @@ static bool hasSideEffects(const ExprAST* expr, SemaContext& ctx) {
             return false;
         }
 
-        // ─── Assignment always has side effects ─────────────────────────────
         case ASTKind::AssignExpr:
             return true;
 
-        // ─── Pipeline may contain calls in steps ────────────────────────────
         case ASTKind::PipelineExpr: {
             const PipelineExprAST* pipeline = expr->as<PipelineExprAST>();
-            // Check seed
             if (hasSideEffects(pipeline->seed, ctx)) return true;
-            // Check each step
             for (const PipelineStepAST* step : pipeline->steps) {
                 if (hasSideEffects(step->callable, ctx)) return true;
                 for (const ExprAST* arg : step->packArgs) {
@@ -664,7 +558,6 @@ static bool hasSideEffects(const ExprAST* expr, SemaContext& ctx) {
             return false;
         }
 
-        // ─── Pipeline step (shouldn't appear standalone, but handle it) ─────
         case ASTKind::PipelineStep: {
             const PipelineStepAST* step = expr->as<PipelineStepAST>();
             if (hasSideEffects(step->callable, ctx)) return true;
@@ -674,32 +567,27 @@ static bool hasSideEffects(const ExprAST* expr, SemaContext& ctx) {
             return false;
         }
 
-        // ─── Binary expressions: check both operands ────────────────────────
         case ASTKind::BinaryExpr: {
             const BinaryExprAST* bin = expr->as<BinaryExprAST>();
             return hasSideEffects(bin->left, ctx) || hasSideEffects(bin->right, ctx);
         }
 
-        // ─── Unary expressions: check operand ──────────────────────────────
         case ASTKind::UnaryExpr: {
             const UnaryExprAST* unary = expr->as<UnaryExprAST>();
             return hasSideEffects(unary->operand, ctx);
         }
 
-        // ─── Field access: check object ─────────────────────────────────────
         case ASTKind::FieldAccessExpr: {
             const FieldAccessExprAST* field = expr->as<FieldAccessExprAST>();
             return hasSideEffects(field->object, ctx);
         }
 
-        // ─── Index expression: check target and index ──────────────────────
         case ASTKind::IndexExpr: {
             const IndexExprAST* index = expr->as<IndexExprAST>();
             return hasSideEffects(index->target, ctx) || 
                    hasSideEffects(index->index, ctx);
         }
 
-        // ─── Slice expression: check target and bounds ─────────────────────
         case ASTKind::SliceExpr: {
             const SliceExprAST* slice = expr->as<SliceExprAST>();
             if (hasSideEffects(slice->target, ctx)) return true;
@@ -708,7 +596,6 @@ static bool hasSideEffects(const ExprAST* expr, SemaContext& ctx) {
             return false;
         }
 
-        // ─── Struct literal: check each field initializer ──────────────────
         case ASTKind::StructLiteralExpr: {
             const StructLiteralExprAST* sl = expr->as<StructLiteralExprAST>();
             for (const FieldInitAST* init : sl->inits) {
@@ -717,7 +604,6 @@ static bool hasSideEffects(const ExprAST* expr, SemaContext& ctx) {
             return false;
         }
 
-        // ─── Array literal: check each element ─────────────────────────────
         case ASTKind::ArrayLiteralExpr: {
             const ArrayLiteralExprAST* al = expr->as<ArrayLiteralExprAST>();
             for (const ExprAST* elem : al->elements) {
@@ -726,7 +612,6 @@ static bool hasSideEffects(const ExprAST* expr, SemaContext& ctx) {
             return false;
         }
 
-        // ─── If expression: check condition and branches ────────────────────
         case ASTKind::IfExpr: {
             const IfExprAST* ifExpr = expr->as<IfExprAST>();
             if (hasSideEffects(ifExpr->condition, ctx)) return true;
@@ -735,38 +620,27 @@ static bool hasSideEffects(const ExprAST* expr, SemaContext& ctx) {
             return false;
         }
 
-        // ─── Null coalesce: check both sides ───────────────────────────────
         case ASTKind::NullCoalesceExpr: {
             const NullCoalesceExprAST* nc = expr->as<NullCoalesceExprAST>();
             return hasSideEffects(nc->value, ctx) || 
                    hasSideEffects(nc->fallback, ctx);
         }
 
-        // ─── Literals and identifiers have no side effects ──────────────────
         case ASTKind::LiteralExpr:
         case ASTKind::IdentifierExpr:
         case ASTKind::ModuleAccessExpr:
         case ASTKind::RangeExpr:
             return false;
 
-        // ─── Default: assume no side effects for unknown kinds ─────────────
         default:
             return false;
     }
 }
 
-/// @brief Resolve an expression statement.
-///
-/// An expression statement evaluates an expression for its side effects.
-/// The expression's value is discarded.
-///
-/// @param stmt The expression statement.
-/// @param ctx The semantic context.
-/// @return false (expression statements do NOT transfer control).
 bool resolveExprStmt(const ExprStmtAST* stmt, SemaContext& ctx) {
     if (!stmt || !stmt->expr) return false;
 
-    // ─── 1. Resolve the expression ──────────────────────────────────────
+    // ─── Resolve the expression ────────────────────────────────────────────
     TypeAST* exprType = resolveExpr(stmt->expr, ctx);
     if (!exprType || exprType->isa<UnknownTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, stmt->expr,
@@ -774,8 +648,7 @@ bool resolveExprStmt(const ExprStmtAST* stmt, SemaContext& ctx) {
         return false;
     }
 
-    // ─── 2. Check for discarded non-void value ─────────────────────────────
-    // If the expression has a non-void type and no side effects, warn
+    // ─── Check for discarded non-void value ──────────────────────────────
     if (exprType && !exprType->isa<UnknownTypeAST>()) {
         if (!hasSideEffects(stmt->expr, ctx)) {
             ctx.diagnostics.warning(DiagCode::Warn_DiscardedResult, stmt,
@@ -790,13 +663,6 @@ bool resolveExprStmt(const ExprStmtAST* stmt, SemaContext& ctx) {
 // resolveDeclStmt
 // =============================================================================
 
-/// @brief Resolve a declaration statement.
-///
-/// A declaration statement introduces one or more local declarations.
-///
-/// @param stmt The declaration statement.
-/// @param ctx The semantic context.
-/// @return false (declaration statements do NOT transfer control).
 bool resolveDeclStmt(const DeclStmtAST* stmt, SemaContext& ctx) {
     if (!stmt || !stmt->decl) return false;
 
@@ -813,14 +679,14 @@ bool resolveDeclStmt(const DeclStmtAST* stmt, SemaContext& ctx) {
 bool resolveAsyncStmt(const AsyncStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
-    // ─── 1. Check: Must be inside a function body ──────────────────────────
+    // ─── Check: Must be inside a function body ─────────────────────────────
     if (!ctx.stack.insideFunction()) {
         ctx.diagnostics.error(DiagCode::Sem_AsyncOutsideFunction, stmt,
                               "async statement outside of function body");
         return false;
     }
 
-    // ─── 2. Check the target variable ──────────────────────────────────────
+    // ─── Check the target variable ─────────────────────────────────────────
     if (!stmt->target) {
         ctx.diagnostics.error(DiagCode::Sem_AsyncOutsideFunction, stmt,
                               "async statement requires a target variable");
@@ -836,7 +702,7 @@ bool resolveAsyncStmt(const AsyncStmtAST* stmt, SemaContext& ctx) {
     const IdentifierExprAST* target = stmt->target->as<IdentifierExprAST>();
     InternedString targetName = target->name;
 
-    // ─── 3. Check for `_` discard ──────────────────────────────────────────
+    // ─── Check for `_` discard ─────────────────────────────────────────────
     if (targetName.id != 0) {  // Not `_`
         const ValueDeclAST* decl = ctx.lookupValue(targetName);
         if (!decl) {
@@ -852,7 +718,7 @@ bool resolveAsyncStmt(const AsyncStmtAST* stmt, SemaContext& ctx) {
         }
     }
 
-    // ─── 4. Resolve the call expression ─────────────────────────────────────
+    // ─── Resolve the call expression ───────────────────────────────────────
     if (!stmt->call) {
         ctx.diagnostics.error(DiagCode::Sem_AsyncOutsideFunction, stmt,
                               "async statement requires a call expression");
@@ -864,7 +730,7 @@ bool resolveAsyncStmt(const AsyncStmtAST* stmt, SemaContext& ctx) {
         return false;
     }
 
-    // ─── 5. Store in pending list if not `_` ──────────────────────────────
+    // ─── Store in pending list if not `_` ──────────────────────────────────
     if (targetName.id != 0) {
         ctx.addPendingAsync(targetName, stmt->call, stmt->loc);
     }
@@ -877,14 +743,14 @@ bool resolveAsyncStmt(const AsyncStmtAST* stmt, SemaContext& ctx) {
 bool resolveAwaitStmt(const AwaitStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
-    // ─── 1. Check: Must be inside a function body ──────────────────────────
+    // ─── Check: Must be inside a function body ─────────────────────────────
     if (!ctx.stack.insideFunction()) {
         ctx.diagnostics.error(DiagCode::Sem_AwaitOutsideFunction, stmt,
                               "await statement outside of function body");
         return false;
     }
 
-    // ─── 2. Check each target variable ─────────────────────────────────────
+    // ─── Check each target variable ────────────────────────────────────────
     for (const ExprAST* target : stmt->targets) {
         if (!target->isa<IdentifierExprAST>()) {
             ctx.diagnostics.error(DiagCode::Sem_AwaitNonAsync, target,
@@ -895,23 +761,20 @@ bool resolveAwaitStmt(const AwaitStmtAST* stmt, SemaContext& ctx) {
         const IdentifierExprAST* id = target->as<IdentifierExprAST>();
         InternedString targetName = id->name;
 
-        // ─── 3. Check if this is a pending async operation ────────────────
+        // ─── Check if this is a pending async operation ────────────────────
         if (ctx.hasPendingAsync(targetName)) {
-            // Resolve the async operation (remove from pending list)
             ctx.resolveAsync(targetName);
         } else if (ctx.hasPendingSpawn(targetName)) {
-            // Cannot await a spawn - must use join
             ctx.diagnostics.error(DiagCode::Sem_AwaitNonAsync, target,
                                   "'", ctx.pool.lookup(targetName), "' was declared with spawn, not async. Use 'join' instead.");
             return false;
         } else {
-            // Check if it's just a normal variable that was never async
             ctx.diagnostics.error(DiagCode::Sem_AwaitNonAsync, target,
                                   "'", ctx.pool.lookup(targetName), "' is not a pending async operation");
             return false;
         }
 
-        // ─── 4. Verify the variable exists ─────────────────────────────────
+        // ─── Verify the variable exists ────────────────────────────────────
         const ValueDeclAST* decl = ctx.lookupValue(targetName);
         if (!decl) {
             ctx.diagnostics.error(DiagCode::Sem_UndefinedValue, target,
@@ -928,14 +791,14 @@ bool resolveAwaitStmt(const AwaitStmtAST* stmt, SemaContext& ctx) {
 bool resolveSpawnStmt(const SpawnStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
-    // ─── 1. Check: Must be inside a function body ──────────────────────────
+    // ─── Check: Must be inside a function body ─────────────────────────────
     if (!ctx.stack.insideFunction()) {
         ctx.diagnostics.error(DiagCode::Sem_SpawnOutsideFunction, stmt,
                               "spawn statement outside of function body");
         return false;
     }
 
-    // ─── 2. Check the target variable ──────────────────────────────────────
+    // ─── Check the target variable ─────────────────────────────────────────
     InternedString targetName;
     bool isDiscard = false;
 
@@ -969,7 +832,7 @@ bool resolveSpawnStmt(const SpawnStmtAST* stmt, SemaContext& ctx) {
         isDiscard = true;
     }
 
-    // ─── 3. Resolve the call expression ─────────────────────────────────────
+    // ─── Resolve the call expression ───────────────────────────────────────
     if (!stmt->call) {
         ctx.diagnostics.error(DiagCode::Sem_SpawnOutsideFunction, stmt,
                               "spawn statement requires a call expression");
@@ -981,7 +844,7 @@ bool resolveSpawnStmt(const SpawnStmtAST* stmt, SemaContext& ctx) {
         return false;
     }
 
-    // ─── 4. Store in pending list if not `_` ──────────────────────────────
+    // ─── Store in pending list if not `_` ──────────────────────────────────
     if (!isDiscard && targetName.id != 0) {
         ctx.addPendingSpawn(targetName, stmt->call, stmt->loc);
     }
@@ -994,14 +857,14 @@ bool resolveSpawnStmt(const SpawnStmtAST* stmt, SemaContext& ctx) {
 bool resolveJoinStmt(const JoinStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
-    // ─── 1. Check: Must be inside a function body ──────────────────────────
+    // ─── Check: Must be inside a function body ─────────────────────────────
     if (!ctx.stack.insideFunction()) {
         ctx.diagnostics.error(DiagCode::Sem_JoinOutsideFunction, stmt,
                               "join statement outside of function body");
         return false;
     }
 
-    // ─── 2. Check each target variable ─────────────────────────────────────
+    // ─── Check each target variable ────────────────────────────────────────
     for (const ExprAST* target : stmt->targets) {
         if (!target->isa<IdentifierExprAST>()) {
             ctx.diagnostics.error(DiagCode::Sem_JoinNonSpawn, target,
@@ -1012,23 +875,20 @@ bool resolveJoinStmt(const JoinStmtAST* stmt, SemaContext& ctx) {
         const IdentifierExprAST* id = target->as<IdentifierExprAST>();
         InternedString targetName = id->name;
 
-        // ─── 3. Check if this is a pending spawn operation ─────────────────
+        // ─── Check if this is a pending spawn operation ────────────────────
         if (ctx.hasPendingSpawn(targetName)) {
-            // Resolve the spawn operation (remove from pending list)
             ctx.resolveSpawn(targetName);
         } else if (ctx.hasPendingAsync(targetName)) {
-            // Cannot join an async - must use await
             ctx.diagnostics.error(DiagCode::Sem_JoinNonSpawn, target,
                                   "'", ctx.pool.lookup(targetName), "' was declared with async, not spawn. Use 'await' instead.");
             return false;
         } else {
-            // Check if it's just a normal variable that was never spawn
             ctx.diagnostics.error(DiagCode::Sem_JoinNonSpawn, target,
                                   "'", ctx.pool.lookup(targetName), "' is not a pending spawn operation");
             return false;
         }
 
-        // ─── 4. Verify the variable exists ─────────────────────────────────
+        // ─── Verify the variable exists ────────────────────────────────────
         const ValueDeclAST* decl = ctx.lookupValue(targetName);
         if (!decl) {
             ctx.diagnostics.error(DiagCode::Sem_UndefinedValue, target,

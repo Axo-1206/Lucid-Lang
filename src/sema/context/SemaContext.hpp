@@ -167,10 +167,6 @@ struct SemaContext {
     
     // ─── Symbol Insertion (with automatic duplicate checking) ──────────
     
-    /// @brief Insert a value declaration with automatic duplicate checking.
-    /// 
-    /// @param decl The declaration to insert.
-    /// @return true if inserted successfully, false if a duplicate was found.
     bool insertValue(const ValueDeclAST* decl) {
         if (isAtModuleLevel()) {
             if (currentModuleTable->values.find(decl->name) != currentModuleTable->values.end()) {
@@ -193,10 +189,6 @@ struct SemaContext {
         }
     }
     
-    /// @brief Insert a type declaration with automatic duplicate checking.
-    /// 
-    /// @param decl The declaration to insert.
-    /// @return true if inserted successfully, false if a duplicate was found.
     bool insertType(const TypeDeclAST* decl) {
         if (isAtModuleLevel()) {
             if (currentModuleTable->types.find(decl->name) != currentModuleTable->types.end()) {
@@ -219,10 +211,6 @@ struct SemaContext {
         }
     }
     
-    /// @brief Insert a generic parameter with duplicate checking.
-    /// 
-    /// @param param The generic parameter to insert.
-    /// @return true if inserted successfully, false if a duplicate was found.
     bool insertGenericParam(const GenericParamDeclAST* param) {
         assert(!isAtModuleLevel() && "insertGenericParam() requires an open Scope");
         if (currentScope().genericParams.find(param->name) != currentScope().genericParams.end()) {
@@ -235,12 +223,6 @@ struct SemaContext {
         return true;
     }
     
-    /// @brief Insert an import alias with duplicate checking.
-    /// 
-    /// @param alias The import alias.
-    /// @param module The module to associate with the alias.
-    /// @param node The AST node for error reporting.
-    /// @return true if inserted successfully, false if a duplicate was found.
     bool addImportAlias(InternedString alias, ModuleAST* module, const BaseAST* node = nullptr) {
         if (!currentModuleTable) return false;
         if (currentModuleTable->importAliases.find(alias) != currentModuleTable->importAliases.end()) {
@@ -255,18 +237,9 @@ struct SemaContext {
     
     // ─── Symbol Lookup (with automatic type narrowing) ──────────────────
     
-    /// @brief Get the effective type of a value declaration, considering narrowing.
-    /// 
-    /// If the variable has been narrowed in the current context, returns the
-    /// narrowed type. Otherwise returns the original type.
-    /// 
-    /// @param decl The value declaration.
-    /// @param name The name of the variable (for narrowing lookup).
-    /// @return The effective type (narrowed or original).
     const TypeAST* getEffectiveType(const ValueDeclAST* decl, InternedString name) const {
         if (!decl || !decl->type) return nullptr;
         
-        // Check if this variable has been narrowed in the current context
         const TypeAST* narrowedType = stack.getNarrowedType(name);
         if (narrowedType) {
             return narrowedType;
@@ -275,7 +248,6 @@ struct SemaContext {
         return decl->type;
     }
     
-    /// @brief Look up a generic parameter by name in the current scope.
     const GenericParamDeclAST* lookupGenericParam(InternedString name) const {
         for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
             auto found = it->genericParams.find(name);
@@ -286,21 +258,14 @@ struct SemaContext {
         return nullptr;
     }
     
-    /// @brief Check if a name is a generic parameter in the current scope.
     bool isGenericParam(InternedString name) const {
         return lookupGenericParam(name) != nullptr;
     }
     
-    /// @brief Look up a value declaration by name with automatic narrowing.
-    /// 
-    /// Searches: local scopes (innermost to outermost) → module scope
-    /// If the variable has been narrowed, the returned declaration's type
-    /// is automatically updated to the narrowed type.
     const ValueDeclAST* lookupValue(InternedString name) const {
         const ValueDeclAST* decl = lookupValueRaw(name);
         if (!decl) return nullptr;
         
-        // Check if this variable has been narrowed
         const TypeAST* narrowedType = stack.getNarrowedType(name);
         if (narrowedType) {
             const_cast<ValueDeclAST*>(decl)->type = const_cast<TypeAST*>(narrowedType);
@@ -310,7 +275,6 @@ struct SemaContext {
         return decl;
     }
     
-    /// @brief Look up a value declaration by name (raw, no narrowing).
     const ValueDeclAST* lookupValueRaw(InternedString name) const {
         for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
             auto found = it->values.find(name);
@@ -327,20 +291,13 @@ struct SemaContext {
         return nullptr;
     }
     
-    /// @brief Look up a function by name with automatic narrowing.
     const FuncDeclAST* lookupFunction(InternedString name) const {
         const ValueDeclAST* v = lookupValue(name);
         return (v && v->isa<FuncDeclAST>()) ? v->as<FuncDeclAST>() : nullptr;
     }
     
-    /// @brief Look up a type declaration by name.
-    /// 
-    /// Searches: local scopes (innermost to outermost) → module scope
-    /// 
-    /// @note Generic parameters shadow type names in scopes.
     const TypeDeclAST* lookupType(InternedString name) const {
         for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
-            // Generic parameters shadow types
             auto gen = it->genericParams.find(name);
             if (gen != it->genericParams.end()) {
                 return nullptr;
@@ -359,7 +316,6 @@ struct SemaContext {
         return nullptr;
     }
     
-    /// @brief Look up a module by its import alias.
     ModuleAST* lookupImport(InternedString alias) const {
         if (!currentModuleTable) return nullptr;
         auto it = currentModuleTable->importAliases.find(alias);
@@ -368,7 +324,6 @@ struct SemaContext {
     
     // ─── Module Member Lookup ──────────────────────────────────────────
     
-    /// @brief Look up a value member in a module's table.
     const ValueDeclAST* lookupModuleValueMember(ModuleAST* module, InternedString memberName) const {
         if (!module) return nullptr;
         auto it = moduleTables.find(module);
@@ -377,7 +332,6 @@ struct SemaContext {
         return found != it->second.values.end() ? found->second : nullptr;
     }
     
-    /// @brief Look up a type member in a module's table.
     const TypeDeclAST* lookupModuleTypeMember(ModuleAST* module, InternedString memberName) const {
         if (!module) return nullptr;
         auto it = moduleTables.find(module);
@@ -386,14 +340,12 @@ struct SemaContext {
         return found != it->second.types.end() ? found->second : nullptr;
     }
     
-    /// @brief Look up a value member by module alias.
     const ValueDeclAST* lookupValueByAlias(InternedString alias, InternedString memberName) const {
         ModuleAST* module = lookupImport(alias);
         if (!module) return nullptr;
         return lookupModuleValueMember(module, memberName);
     }
     
-    /// @brief Look up a type member by module alias.
     const TypeDeclAST* lookupTypeByAlias(InternedString alias, InternedString memberName) const {
         ModuleAST* module = lookupImport(alias);
         if (!module) return nullptr;
@@ -402,7 +354,6 @@ struct SemaContext {
     
     // ─── Export Checking ──────────────────────────────────────────────
     
-    /// @brief Check if a declaration has the @[export] attribute.
     bool isExported(const DeclAST* decl) const {
         if (!decl) return false;
         for (AttributeAST* attr : decl->attributes) {
@@ -413,19 +364,16 @@ struct SemaContext {
         return false;
     }
     
-    /// @brief Check if a type declaration is exported.
     bool isTypeExported(const TypeDeclAST* decl) const {
         return isExported(decl);
     }
     
-    /// @brief Check if a value declaration is exported.
     bool isValueExported(const ValueDeclAST* decl) const {
         return isExported(decl);
     }
     
     // ─── Convenience: Module Member Keyword Info ──────────────────────
     
-    /// @brief Look up a module member's keyword.
     DeclKeyword lookupModuleMemberKeyword(ModuleAST* module, InternedString memberName) const {
         const ValueDeclAST* decl = lookupModuleValueMember(module, memberName);
         if (!decl) return DeclKeyword::Let;
@@ -438,7 +386,6 @@ struct SemaContext {
         return DeclKeyword::Let;
     }
     
-    /// @brief Check if a module member is mutable (let).
     bool isModuleMemberMutable(ModuleAST* module, InternedString memberName) const {
         const ValueDeclAST* decl = lookupModuleValueMember(module, memberName);
         if (!decl) return false;
@@ -451,7 +398,6 @@ struct SemaContext {
         return false;
     }
     
-    /// @brief Check if a module member is const.
     bool isModuleMemberConst(ModuleAST* module, InternedString memberName) const {
         const ValueDeclAST* decl = lookupModuleValueMember(module, memberName);
         if (!decl) return false;
@@ -467,21 +413,18 @@ struct SemaContext {
         return false;
     }
     
-    /// @brief Look up a module member's keyword by alias.
     DeclKeyword lookupModuleMemberKeywordByAlias(InternedString alias, InternedString memberName) const {
         ModuleAST* module = lookupImport(alias);
         if (!module) return DeclKeyword::Let;
         return lookupModuleMemberKeyword(module, memberName);
     }
     
-    /// @brief Check if a module member is mutable by alias.
     bool isModuleMemberMutableByAlias(InternedString alias, InternedString memberName) const {
         ModuleAST* module = lookupImport(alias);
         if (!module) return false;
         return isModuleMemberMutable(module, memberName);
     }
     
-    /// @brief Check if a module member is const by alias.
     bool isModuleMemberConstByAlias(InternedString alias, InternedString memberName) const {
         ModuleAST* module = lookupImport(alias);
         if (!module) return false;
@@ -512,7 +455,6 @@ struct SemaContext {
         return currentScope().pendingSpawn.find(name) != currentScope().pendingSpawn.end();
     }
     
-    /// @brief Check if a variable is a pending future (async/spawn not yet resolved).
     bool isPendingFuture(InternedString name) const {
         return hasPendingAsync(name) || hasPendingSpawn(name);
     }
@@ -649,6 +591,10 @@ struct SemaContext {
 
 // ─── RAII Guards ─────────────────────────────────────────────────────────
 
+/// @brief RAII guard for semantic context frames.
+/// 
+/// Automatically pushes a context frame on construction and pops it on destruction.
+/// Used for functions, loops, switches, blocks, and if statements.
 struct ScopedSemanticContext {
     ScopedSemanticContext(SemaContext& ctx, ContextKind kind,
                           const BaseAST* node, const SourceLocation& loc)
@@ -664,6 +610,9 @@ private:
     SemaContext& ctx_;
 };
 
+/// @brief RAII guard for if condition context.
+/// 
+/// Automatically sets up if condition context for narrowing detection.
 struct ScopedIfCondition {
     ScopedIfCondition(SemaContext& ctx, bool hasElse)
         : ctx_(ctx) {
@@ -677,6 +626,33 @@ struct ScopedIfCondition {
     
     ScopedIfCondition(const ScopedIfCondition&) = delete;
     ScopedIfCondition& operator=(const ScopedIfCondition&) = delete;
+
+private:
+    SemaContext& ctx_;
+};
+
+/// @brief RAII guard for symbol table scopes.
+/// 
+/// Automatically pushes a new symbol scope on construction and pops it on destruction.
+/// Used for blocks and any other place that introduces a new lexical scope.
+///
+/// @example
+///   {
+///       SymbolScope scope(ctx);
+///       // Any declarations made here are local to this scope
+///   }  // Scope automatically popped
+struct SymbolScope {
+    explicit SymbolScope(SemaContext& ctx)
+        : ctx_(ctx) {
+        ctx_.pushScope();
+    }
+    
+    ~SymbolScope() {
+        ctx_.popScope();
+    }
+    
+    SymbolScope(const SymbolScope&) = delete;
+    SymbolScope& operator=(const SymbolScope&) = delete;
 
 private:
     SemaContext& ctx_;
@@ -727,6 +703,9 @@ private:
     SemaContext& ctx_;
 };
 
+/// @brief RAII guard for type definition context.
+/// 
+/// Tracks that we're currently defining a type (for self-reference detection).
 struct ScopedTypeDefinition {
     ScopedTypeDefinition(SemaContext& ctx, const TypeDeclAST* decl)
         : ctx_(ctx) {
