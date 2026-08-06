@@ -178,11 +178,56 @@ public:
     /// @brief Get the const value of a declaration if it has one.
     static ConstantValue getConstValue(const VarDeclAST* decl);
 
+    // ─── Binary Operation Evaluators ────────────────────────────────────
+    // These are called from evalBinaryOp and are declared as static members
+    // so they can be used across the const_eval module.
+
+    static ConstantValue evalAdd(SemaContext& ctx, const ConstantValue& left,
+                                  const ConstantValue& right,
+                                  const BaseAST* node,
+                                  const TypeAST* targetType);
+
+    static ConstantValue evalSub(SemaContext& ctx, const ConstantValue& left,
+                                  const ConstantValue& right,
+                                  const BaseAST* node,
+                                  const TypeAST* targetType);
+
+    static ConstantValue evalMul(SemaContext& ctx, const ConstantValue& left,
+                                  const ConstantValue& right,
+                                  const BaseAST* node,
+                                  const TypeAST* targetType);
+
+    static ConstantValue evalDiv(SemaContext& ctx, const ConstantValue& left,
+                                  const ConstantValue& right,
+                                  const BaseAST* node,
+                                  const TypeAST* targetType);
+
+    static ConstantValue evalMod(SemaContext& ctx, const ConstantValue& left,
+                                  const ConstantValue& right,
+                                  const BaseAST* node,
+                                  const TypeAST* targetType);
+
+    static ConstantValue evalPow(SemaContext& ctx, const ConstantValue& left,
+                                  const ConstantValue& right,
+                                  const BaseAST* node,
+                                  const TypeAST* targetType);
+
+    static ConstantValue evalNeg(SemaContext& ctx, const ConstantValue& operand,
+                                  const BaseAST* node,
+                                  const TypeAST* targetType);
+
+    static ConstantValue evalNot(SemaContext& ctx, const ConstantValue& operand,
+                                  const BaseAST* node);
+
+    static ConstantValue evalBitNot(SemaContext& ctx, const ConstantValue& operand,
+                                     const BaseAST* node);
+
 private:
     // ─── Expression Evaluators ──────────────────────────────────────────
 
     static ConstantValue evalLiteral(SemaContext& ctx, const LiteralExprAST* expr);
     static ConstantValue evalIdentifier(SemaContext& ctx, const IdentifierExprAST* expr);
+    
     static ConstantValue evalBinary(SemaContext& ctx, const BinaryExprAST* expr,
                                      const TypeAST* targetType);
     static ConstantValue evalUnary(SemaContext& ctx, const UnaryExprAST* expr,
@@ -208,7 +253,7 @@ private:
     static ConstantValue executeFunction(SemaContext& ctx, const FuncDeclAST* func,
                                           const std::vector<ConstantValue>& args);
 
-    // ─── Binary Operation Helpers ───────────────────────────────────────
+    // ─── Binary Operation Dispatcher ────────────────────────────────────
 
     static ConstantValue evalBinaryOp(SemaContext& ctx, BinaryOp op,
                                        const ConstantValue& left,
@@ -225,26 +270,21 @@ private:
 
     static TypeAST* getConstantType(SemaContext& ctx, const ConstantValue& val);
 
-    // ─── Dependency Analysis ─────────────────────────────────────────────
-
-    static void collectDeps(SemaContext& ctx, const ExprAST* expr, 
-                            std::vector<const DeclAST*>& deps);
-    static void collectDepsFromStmt(SemaContext& ctx, const StmtAST* stmt,
-                                     std::vector<const DeclAST*>& deps);
-    static std::vector<const DeclAST*> topologicalSort(SemaContext& ctx);
-
     // ─── Internal State ──────────────────────────────────────────────────
 
-    // Dependency graph for const declarations (for cycle detection)
+    /// @brief All const declarations collected for dependency analysis.
+    static std::vector<const DeclAST*> m_constDecls;
+
+    /// @brief Dependency graph for const declarations (for cycle detection).
     static std::unordered_map<const DeclAST*, std::vector<const DeclAST*>> m_deps;
     
-    // Set of expressions that have already been evaluated (caching)
+    /// @brief Set of expressions that have already been evaluated (caching).
     static std::unordered_set<const ExprAST*> m_evaluatedExprs;
     
-    // Set of declarations currently being evaluated (cycle detection)
+    /// @brief Set of declarations currently being evaluated (cycle detection).
     static std::unordered_set<const DeclAST*> m_evaluating;
     
-    // Current recursion depth (prevents stack overflow)
+    /// @brief Current recursion depth (prevents stack overflow).
     static size_t m_recursionDepth;
 };
 

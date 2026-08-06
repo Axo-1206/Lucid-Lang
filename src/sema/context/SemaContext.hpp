@@ -680,13 +680,40 @@ private:
     SemaContext& ctx_;
 };
 
+/// @brief RAII guard for applying type narrowing.
+/// 
+/// This guard automatically:
+///   1. Pushes a new narrowing level on construction
+///   2. Applies all specified narrowings
+///   3. Pops the narrowing level on destruction
+///
+/// @example
+///   // Single variable narrowing
+///   ScopedNarrowing narrowing(ctx, "x", intType, false);
+///   
+///   // Multiple variable narrowing (from if condition)
+///   NarrowingInfo info = { { "x", intType }, { "y", stringType } };
+///   ScopedNarrowing narrowing(ctx, info.narrowings, false);
 struct ScopedNarrowing {
+    // ─── Single variable ──────────────────────────────────────────────────
     ScopedNarrowing(SemaContext& ctx, InternedString varName, 
                     const TypeAST* narrowedType, bool isInverse = false)
         : ctx_(ctx) {
         ctx_.stack.pushNarrowingLevel(isInverse);
         ctx_.stack.narrowVariable(varName, narrowedType);
     }
+    
+    // ─── Multiple variables (from if condition) ──────────────────────────
+    ScopedNarrowing(SemaContext& ctx, 
+                    const std::unordered_map<InternedString, const TypeAST*>& narrowings,
+                    bool isInverse = false)
+        : ctx_(ctx) {
+        ctx_.stack.pushNarrowingLevel(isInverse);
+        for (const auto& [name, type] : narrowings) {
+            ctx_.stack.narrowVariable(name, type);
+        }
+    }
+    
     ~ScopedNarrowing() {
         ctx_.stack.popNarrowingLevel();
     }
