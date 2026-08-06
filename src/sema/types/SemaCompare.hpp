@@ -1,30 +1,5 @@
 /// @file SemaCompare.hpp
 /// @brief Type comparison and assignability checks.
-/// 
-/// These functions compare types structurally and check if one type
-/// can be used where another is expected.
-/// 
-/// @comparison_rules
-///   1. Identical types → equal
-///   2. Different shapes → not equal
-///   3. Wrapper types (T?, T!, T?!) → compare inner types
-///   4. Named types → compare name and generic arguments
-/// 
-/// @assignability_rules
-///   1. Identical types → assignable
-///   2. T → T? / T! / T?! (widening)
-///   3. T? / T! → T?! (combining sentinels)
-///   4. Struct → Trait (trait conformance)
-/// 
-/// @example
-///   // Check if two types are equal
-///   if (typesEqual(typeA, typeB)) { ... }
-///   
-///   // Check if source can be assigned to target
-///   if (isAssignable(target, source, ctx)) { ... }
-///   
-///   // Check type predicates
-///   if (isNullableType(type)) { ... }
 
 #pragma once
 
@@ -38,46 +13,41 @@ namespace sema {
 
 // ─── Type Equality ───────────────────────────────────────────────────────
 
-/// @brief Structural equality of two TypeAST nodes.
-/// 
-/// Returns true if types have the same shape and content.
-/// This is a deep equality check that recurses into nested types.
-/// 
-/// @param a First type to compare.
-/// @param b Second type to compare.
-/// @return true if the types are structurally equal.
 bool typesEqual(const TypeAST* a, const TypeAST* b);
 
 // ─── Type Unwrapping ─────────────────────────────────────────────────────
 
-/// @brief Strip one layer of ? or ?!, return inner type.
 TypeAST* unwrapNullable(TypeAST* type);
-
-/// @brief Strip one layer of ! or ?!, return inner type.
 TypeAST* unwrapFallible(TypeAST* type);
 
 // ─── Assignability ───────────────────────────────────────────────────────
 
-/// @brief Check if a value of type `source` can be used where `target` is expected.
-/// 
-/// Assignability rules:
-///   1. Identical types → true
-///   2. T → T? / T! / T?! (widening)
-///   3. T? / T! → T?! (combining sentinels)
-///   4. Struct → Trait (trait conformance)
-///   5. Everything else → false
 bool isAssignable(const TypeAST* target, const TypeAST* source, SemaContext& ctx);
+
+// ─── Numeric Type Helpers ───────────────────────────────────────────────
+
+/// @brief Get the bit width of an integer type.
+/// @param type The integer type.
+/// @return The bit width (8, 16, 32, 64) or 0 if not an integer type.
+size_t getIntegerBitWidth(const TypeAST* type);
+
+/// @brief Get the larger of two integer types (for promotion).
+/// @param a First integer type.
+/// @param b Second integer type.
+/// @return The larger type, or nullptr if either is not an integer type.
+TypeAST* getLargerIntegerType(const TypeAST* a, const TypeAST* b, SemaContext& ctx);
+
+/// @brief Check if integer promotion from source to target is safe.
+/// @param target The target type.
+/// @param source The source type.
+/// @param ctx The semantic context.
+/// @return true if promotion is safe (target is larger or equal).
+bool isIntegerPromotionSafe(const TypeAST* target, const TypeAST* source, SemaContext& ctx);
 
 // ─── Type Predicates ─────────────────────────────────────────────────────
 
-/// @name Sentinel Checks
-/// @{
 bool isNullableType(const TypeAST* type);
 bool isFallibleType(const TypeAST* type);
-/// @}
-
-/// @name Category Checks
-/// @{
 bool isReferenceType(const TypeAST* type);
 bool isPointerType(const TypeAST* type);
 bool isPrimitiveType(const TypeAST* type);
@@ -87,36 +57,24 @@ bool isFloatType(const TypeAST* type);
 bool isNumericType(const TypeAST* type);
 bool isStringType(const TypeAST* type);
 bool isCharType(const TypeAST* type);
-/// @}
 
-/// @name Named Type Checks
-/// 
-/// These functions check if a NamedTypeAST resolves to a specific kind of
-/// declaration (struct, enum, trait, or generic parameter).
-/// @{
+// ─── Named Type Checks ──────────────────────────────────────────────────
+
 bool isStructType(const TypeAST* type, SemaContext& ctx);
 bool isEnumType(const TypeAST* type, SemaContext& ctx);
 bool isTraitType(const TypeAST* type, SemaContext& ctx);
 bool isGenericParamType(const TypeAST* type, SemaContext& ctx);
-/// @}
 
 // ─── Switch Type Checks ─────────────────────────────────────────────────
 
-/// Check if a type is valid for switch statements.
-/// Valid switch types: integers, bool, char, string, enums.
 bool isValidSwitchType(const TypeAST* type, SemaContext& ctx);
-
-/// Get the enum declaration from an enum type.
 const EnumDeclAST* getEnumDeclFromType(const TypeAST* type, SemaContext& ctx);
-
-/// Check if a case value is compatible with a switch subject type.
 bool isSwitchCaseCompatible(const ExprAST* value, 
                              const TypeAST* subjectType, 
                              SemaContext& ctx);
 
-// ─── FFI Compatibility ───────────────────────────────────────────────────
+// ─── FFI Compatibility ─────────────────────────────────────────────────
 
-/// Check if a type is legal at an FFI boundary.
 bool isValidFFIType(const TypeAST* type, SemaContext& ctx);
 
 } // namespace sema

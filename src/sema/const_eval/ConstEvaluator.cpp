@@ -3,58 +3,15 @@
 
 #include "ConstEvaluator.hpp"
 #include "sema/context/SemaContext.hpp"
-#include "sema/types/SemaCompare.hpp"  // For isNullableType, isFallibleType, typesEqual
-#include "sema/types/SemaResolve.hpp"  // For resolveType
+#include "sema/types/SemaCompare.hpp"
+#include "sema/types/SemaResolve.hpp"
+#include "sema/Sema.hpp"
 
 #include <cmath>
 #include <queue>
 #include <algorithm>
 
 namespace sema {
-
-// ─── Static Member Initialization ────────────────────────────────────────
-
-std::unordered_map<const DeclAST*, std::vector<const DeclAST*>> ConstEvaluator::m_deps;
-std::vector<const DeclAST*> ConstEvaluator::m_constDecls;
-std::unordered_set<const ExprAST*> ConstEvaluator::m_evaluatedExprs;
-std::unordered_set<const DeclAST*> ConstEvaluator::m_evaluating;
-size_t ConstEvaluator::m_recursionDepth = 0;
-
-// ─── Frame Management ────────────────────────────────────────────────────
-
-ConstFrame& ConstEvaluator::currentFrame(std::vector<ConstFrame>& frames) {
-    return frames.back();
-}
-
-const ConstFrame& ConstEvaluator::currentFrame(const std::vector<ConstFrame>& frames) {
-    return frames.back();
-}
-
-void ConstEvaluator::pushFrame(std::vector<ConstFrame>& frames) {
-    frames.emplace_back();
-}
-
-void ConstEvaluator::popFrame(std::vector<ConstFrame>& frames) {
-    if (!frames.empty()) {
-        frames.pop_back();
-    }
-}
-
-ConstantValue ConstEvaluator::getLocal(std::vector<ConstFrame>& frames, InternedString name) {
-    auto it = currentFrame(frames).locals.find(name);
-    if (it != currentFrame(frames).locals.end()) {
-        return it->second;
-    }
-    return ConstantValue::unknown();
-}
-
-void ConstEvaluator::setLocal(std::vector<ConstFrame>& frames, InternedString name, const ConstantValue& value) {
-    currentFrame(frames).locals[name] = value;
-}
-
-bool ConstEvaluator::isLocalVariable(const std::vector<ConstFrame>& frames, InternedString name) {
-    return currentFrame(frames).locals.find(name) != currentFrame(frames).locals.end();
-}
 
 // ─── Main Entry Points ───────────────────────────────────────────────────
 
@@ -83,12 +40,17 @@ ConstantValue ConstEvaluator::evaluateDecl(SemaContext& ctx, const VarDeclAST* d
     EvaluationGuard guard(m_evaluating, decl);
     m_recursionDepth++;
 
-    std::vector<ConstFrame> frames;
-    pushFrame(frames);
+    // ─── Push a scope for the declaration ──────────────────────────────
+    // This allows the initializer to look up the variable if needed
+    // (though self-reference should be caught separately)
+    ctx.pushScope();
+    ctx.insertValue(decl);
+    
     ConstantValue result = evaluate(ctx, decl->init, decl->type);
-    popFrame(frames);
-
+    
+    ctx.popScope();
     m_recursionDepth--;
+
     return result;
 }
 
@@ -106,26 +68,18 @@ ConstantValue ConstEvaluator::evaluate(SemaContext& ctx, const ExprAST* expr,
         case ASTKind::LiteralExpr:
             result = evalLiteral(ctx, expr->as<LiteralExprAST>());
             break;
-        case ASTKind::IdentifierExpr: {
-            std::vector<ConstFrame> frames;
-            pushFrame(frames);
-            result = evalIdentifier(ctx, frames, expr->as<IdentifierExprAST>());
-            popFrame(frames);
+        case ASTKind::IdentifierExpr:
+            result = evalIdentifier(ctx, expr->as<IdentifierExprAST>());
             break;
-        }
         case ASTKind::BinaryExpr:
             result = evalBinary(ctx, expr->as<BinaryExprAST>(), targetType);
             break;
         case ASTKind::UnaryExpr:
             result = evalUnary(ctx, expr->as<UnaryExprAST>(), targetType);
             break;
-        case ASTKind::CallExpr: {
-            std::vector<ConstFrame> frames;
-            pushFrame(frames);
-            result = evalCall(ctx, frames, expr->as<CallExprAST>());
-            popFrame(frames);
+        case ASTKind::CallExpr:
+            result = evalCall(ctx, expr->as<CallExprAST>());
             break;
-        }
         case ASTKind::StructLiteralExpr:
             result = evalStructLiteral(ctx, expr->as<StructLiteralExprAST>());
             break;
@@ -165,6 +119,16 @@ void ConstEvaluator::reportCycle(SemaContext& ctx, const std::vector<const DeclA
         msg += ctx.pool.lookup(cycle[i]->name);
     }
     ctx.diagnostics.error(DiagCode::Sem_CircularDependency, cycle[0], msg);
+}
+
+ConstantValue ConstEvaluator::getConstValue(const VarDeclAST* decl) {
+    if (!decl || decl->keyword != DeclKeyword::Const || !decl->init) {
+        return ConstantValue::unknown();
+    }
+    if (decl->init->isConst) {
+        return decl->init->constValue;
+    }
+    return ConstantValue::unknown();
 }
 
 // ─── Literal Evaluation ──────────────────────────────────────────────────
@@ -208,49 +172,48 @@ ConstantValue ConstEvaluator::evalLiteral(SemaContext& ctx, const LiteralExprAST
 
 // ─── Identifier Evaluation ──────────────────────────────────────────────
 
-ConstantValue ConstEvaluator::evalIdentifier(SemaContext& ctx, std::vector<ConstFrame>& frames,
-                                              const IdentifierExprAST* expr) {
-    // Check narrowed type
-    const TypeAST* narrowedType = ctx.stack.getNarrowedType(expr->name);
-    if (narrowedType) {
-        const ValueDeclAST* decl = ctx.lookupValue(expr->name);
-        if (!decl) return ConstantValue::error();
-        return getLocal(frames, expr->name);
-    }
-
+ConstantValue ConstEvaluator::evalIdentifier(SemaContext& ctx, const IdentifierExprAST* expr) {
     // Use existing lookup infrastructure
     const ValueDeclAST* decl = ctx.lookupValue(expr->name);
     if (!decl) return ConstantValue::error();
 
+    // ─── Variable ──────────────────────────────────────────────────────────
     if (decl->isa<VarDeclAST>()) {
         const VarDeclAST* var = decl->as<VarDeclAST>();
         
-        if (isLocalVariable(frames, expr->name)) {
-            return getLocal(frames, expr->name);
-        }
-        
-        if (var->keyword != DeclKeyword::Const) {
-            return ConstantValue::unknown();
+        // Check if this variable has a const value already computed
+        if (var->init && var->init->isConst) {
+            return var->init->constValue;
         }
 
-        if (!var->init) return ConstantValue::error();
-
-        if (m_evaluating.find(var) != m_evaluating.end()) {
-            ctx.diagnostics.error(DiagCode::Sem_CircularDependency, expr,
-                                  "cycle detected in const declaration '",
-                                  ctx.pool.lookup(expr->name), "'");
-            return ConstantValue::error();
+        // If it's a const variable, evaluate it now
+        if (var->keyword == DeclKeyword::Const && var->init) {
+            if (m_evaluating.find(var) != m_evaluating.end()) {
+                ctx.diagnostics.error(DiagCode::Sem_CircularDependency, expr,
+                                      "cycle detected in const declaration '",
+                                      ctx.pool.lookup(expr->name), "'");
+                return ConstantValue::error();
+            }
+            return evaluate(ctx, var->init, var->type);
         }
 
-        return evaluate(ctx, var->init, var->type);
+        // Non-const variable cannot be evaluated
+        return ConstantValue::unknown();
     }
 
+    // ─── Function ──────────────────────────────────────────────────────────
     if (decl->isa<FuncDeclAST>()) {
         const FuncDeclAST* func = decl->as<FuncDeclAST>();
         if (func->keyword != DeclKeyword::Const) {
             return ConstantValue::unknown();
         }
         return ConstantValue(func);
+    }
+
+    // ─── Enum Variant ──────────────────────────────────────────────────────
+    if (decl->isa<EnumVariantAST>()) {
+        const EnumVariantAST* variant = decl->as<EnumVariantAST>();
+        return ConstantValue(variant->value);
     }
 
     return ConstantValue::unknown();
@@ -271,11 +234,72 @@ ConstantValue ConstEvaluator::evalBinary(SemaContext& ctx, const BinaryExprAST* 
     if (left.isError()) return left;
     if (left.isUnknown()) return ConstantValue::unknown();
 
+    // Short-circuit for logical operators
+    if (expr->op == BinaryOp::And) {
+        if (left.isBool() && !left.asBool()) {
+            return ConstantValue(false);
+        }
+        if (left.isUnknown()) return ConstantValue::unknown();
+    }
+    if (expr->op == BinaryOp::Or) {
+        if (left.isBool() && left.asBool()) {
+            return ConstantValue(true);
+        }
+        if (left.isUnknown()) return ConstantValue::unknown();
+    }
+
     ConstantValue right = evaluate(ctx, expr->right, targetType);
     if (right.isError()) return right;
     if (right.isUnknown()) return ConstantValue::unknown();
 
     return evalBinaryOp(ctx, expr->op, left, right, expr, targetType);
+}
+
+// ─── Unary Expression Evaluation ────────────────────────────────────────
+
+ConstantValue ConstEvaluator::evalUnary(SemaContext& ctx, const UnaryExprAST* expr,
+                                         const TypeAST* targetType) {
+    ConstantValue operand = evaluate(ctx, expr->operand, targetType);
+    if (operand.isError()) return operand;
+    if (operand.isUnknown()) return ConstantValue::unknown();
+
+    switch (expr->op) {
+        case UnaryOp::Neg:
+            if (operand.isInt()) {
+                // Check for overflow: INT64_MIN cannot be negated
+                if (operand.asInt() == INT64_MIN) {
+                    ctx.diagnostics.error(DiagCode::Sem_IntegerOverflow, expr,
+                                          "integer overflow in const negation (INT64_MIN)");
+                    return ConstantValue::error();
+                }
+                return ConstantValue(-operand.asInt());
+            }
+            if (operand.isFloat()) {
+                return ConstantValue(-operand.asFloat());
+            }
+            ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, expr,
+                                  "negation requires numeric operand");
+            return ConstantValue::error();
+
+        case UnaryOp::Not:
+            if (operand.isBool()) {
+                return ConstantValue(!operand.asBool());
+            }
+            ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, expr,
+                                  "logical not requires bool operand");
+            return ConstantValue::error();
+
+        case UnaryOp::BitNot:
+            if (operand.isInt()) {
+                return ConstantValue(~operand.asInt());
+            }
+            ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, expr,
+                                  "bitwise not requires integer operand");
+            return ConstantValue::error();
+
+        default:
+            return ConstantValue::unknown();
+    }
 }
 
 // ─── Binary Operation Evaluation ────────────────────────────────────────
@@ -296,7 +320,6 @@ ConstantValue ConstEvaluator::evalBinaryOp(SemaContext& ctx, BinaryOp op,
     };
 
     auto handleArithmeticError = [&](const char* op, const std::string& reason) -> ConstantValue {
-        // Use existing isFallibleType from SemaCompare
         if (targetType && isFallibleType(targetType)) {
             return ConstantValue::err();
         }
@@ -308,6 +331,7 @@ ConstantValue ConstEvaluator::evalBinaryOp(SemaContext& ctx, BinaryOp op,
     switch (op) {
         // ─── Arithmetic ──────────────────────────────────────────────────
         case BinaryOp::Add:
+            // ─── Integer + Integer ──────────────────────────────────────
             if (left.isInt() && right.isInt()) {
                 int64_t l = left.asInt();
                 int64_t r = right.asInt();
@@ -318,45 +342,160 @@ ConstantValue ConstEvaluator::evalBinaryOp(SemaContext& ctx, BinaryOp op,
                 }
                 return ConstantValue(l + r);
             }
-            if (bothNumeric(left, right)) {
-                return ConstantValue(toDouble(left) + toDouble(right));
+            
+            // ─── Float + Float ──────────────────────────────────────────
+            if (left.isFloat() && right.isFloat()) {
+                return ConstantValue(left.asFloat() + right.asFloat());
             }
+            
+            // ─── Integer + Float (promote int to float) ────────────────
+            if (left.isInt() && right.isFloat()) {
+                double l = static_cast<double>(left.asInt());
+                return ConstantValue(l + right.asFloat());
+            }
+            if (left.isFloat() && right.isInt()) {
+                double r = static_cast<double>(right.asInt());
+                return ConstantValue(left.asFloat() + r);
+            }
+            
+            // ─── String concatenation ──────────────────────────────────
             if (left.isString() && right.isString()) {
                 std::string result = ctx.pool.lookup(left.asString());
                 result += ctx.pool.lookup(right.asString());
                 return ConstantValue(ctx.pool.intern(result));
             }
+            
             ctx.diagnostics.error(DiagCode::Sem_InvalidBinary, node,
                                   "invalid operands for '+'");
             return ConstantValue::error();
 
+        case BinaryOp::Sub:
+            // ─── Integer - Integer ──────────────────────────────────────
+            if (left.isInt() && right.isInt()) {
+                int64_t l = left.asInt();
+                int64_t r = right.asInt();
+                if ((r > 0 && l < INT64_MIN + r) || (r < 0 && l > INT64_MAX + r)) {
+                    ctx.diagnostics.error(DiagCode::Sem_IntegerOverflow, node,
+                                          "integer overflow in const subtraction");
+                    return ConstantValue::error();
+                }
+                return ConstantValue(l - r);
+            }
+            
+            // ─── Float - Float ──────────────────────────────────────────
+            if (left.isFloat() && right.isFloat()) {
+                return ConstantValue(left.asFloat() - right.asFloat());
+            }
+            
+            // ─── Integer - Float (promote int to float) ────────────────
+            if (left.isInt() && right.isFloat()) {
+                double l = static_cast<double>(left.asInt());
+                return ConstantValue(l - right.asFloat());
+            }
+            if (left.isFloat() && right.isInt()) {
+                double r = static_cast<double>(right.asInt());
+                return ConstantValue(left.asFloat() - r);
+            }
+            
+            ctx.diagnostics.error(DiagCode::Sem_InvalidBinary, node,
+                                  "invalid operands for '-'");
+            return ConstantValue::error();
+
+        case BinaryOp::Mul:
+            // ─── Integer * Integer ──────────────────────────────────────
+            if (left.isInt() && right.isInt()) {
+                int64_t l = left.asInt();
+                int64_t r = right.asInt();
+                if (l != 0 && r != 0) {
+                    if ((r > 0 && (l > INT64_MAX / r || l < INT64_MIN / r)) ||
+                        (r < 0 && (l > INT64_MIN / -r || l < INT64_MAX / -r))) {
+                        ctx.diagnostics.error(DiagCode::Sem_IntegerOverflow, node,
+                                              "integer overflow in const multiplication");
+                        return ConstantValue::error();
+                    }
+                }
+                return ConstantValue(l * r);
+            }
+            
+            // ─── Float * Float ──────────────────────────────────────────
+            if (left.isFloat() && right.isFloat()) {
+                return ConstantValue(left.asFloat() * right.asFloat());
+            }
+            
+            // ─── Integer * Float (promote int to float) ────────────────
+            if (left.isInt() && right.isFloat()) {
+                double l = static_cast<double>(left.asInt());
+                return ConstantValue(l * right.asFloat());
+            }
+            if (left.isFloat() && right.isInt()) {
+                double r = static_cast<double>(right.asInt());
+                return ConstantValue(left.asFloat() * r);
+            }
+            
+            ctx.diagnostics.error(DiagCode::Sem_InvalidBinary, node,
+                                  "invalid operands for '*'");
+            return ConstantValue::error();
+
         case BinaryOp::Div:
+            // ─── Integer / Integer ──────────────────────────────────────
             if (left.isInt() && right.isInt()) {
                 if (right.asInt() == 0) {
                     return handleArithmeticError("/", "division by zero");
                 }
                 return ConstantValue(left.asInt() / right.asInt());
             }
-            if (bothNumeric(left, right)) {
-                double divisor = toDouble(right);
-                if (divisor == 0.0) {
+            
+            // ─── Float / Float ──────────────────────────────────────────
+            if (left.isFloat() && right.isFloat()) {
+                if (right.asFloat() == 0.0) {
                     return handleArithmeticError("/", "division by zero");
                 }
-                return ConstantValue(toDouble(left) / divisor);
+                return ConstantValue(left.asFloat() / right.asFloat());
             }
+            
+            // ─── Integer / Float (promote int to float) ────────────────
+            if (left.isInt() && right.isFloat()) {
+                if (right.asFloat() == 0.0) {
+                    return handleArithmeticError("/", "division by zero");
+                }
+                return ConstantValue(static_cast<double>(left.asInt()) / right.asFloat());
+            }
+            if (left.isFloat() && right.isInt()) {
+                if (right.asInt() == 0) {
+                    return handleArithmeticError("/", "division by zero");
+                }
+                return ConstantValue(left.asFloat() / static_cast<double>(right.asInt()));
+            }
+            
             ctx.diagnostics.error(DiagCode::Sem_InvalidBinary, node,
                                   "invalid operands for '/'");
             return ConstantValue::error();
 
         case BinaryOp::Mod:
+            // ─── Integer % Integer ──────────────────────────────────────
             if (left.isInt() && right.isInt()) {
                 if (right.asInt() == 0) {
                     return handleArithmeticError("%", "modulo by zero");
                 }
                 return ConstantValue(left.asInt() % right.asInt());
             }
+            
             ctx.diagnostics.error(DiagCode::Sem_InvalidBinary, node,
                                   "modulo requires integer operands");
+            return ConstantValue::error();
+
+        case BinaryOp::Pow:
+            // ─── Numeric power ──────────────────────────────────────────
+            if (bothNumeric(left, right)) {
+                double base = toDouble(left);
+                double exp = toDouble(right);
+                if (base == 0.0 && exp < 0) {
+                    return handleArithmeticError("**", "0 raised to negative power");
+                }
+                return ConstantValue(std::pow(base, exp));
+            }
+            ctx.diagnostics.error(DiagCode::Sem_InvalidBinary, node,
+                                  "pow requires numeric operands");
             return ConstantValue::error();
 
         // ─── Comparison ──────────────────────────────────────────────────
@@ -432,7 +571,7 @@ ConstantValue ConstEvaluator::evalBinaryOp(SemaContext& ctx, BinaryOp op,
     }
 }
 
-// ─── Comparison Helpers (using existing infrastructure) ─────────────────
+// ─── Comparison Helpers ─────────────────────────────────────────────────
 
 bool ConstEvaluator::compareEqual(SemaContext& ctx, const ConstantValue& a, const ConstantValue& b) {
     if (a.kind != b.kind) return false;
@@ -475,7 +614,7 @@ int ConstEvaluator::compareOrder(SemaContext& ctx, const ConstantValue& a, const
     }
 }
 
-// ─── Type Helpers (using existing infrastructure) ──────────────────────
+// ─── Type Helpers ──────────────────────────────────────────────────────
 
 TypeAST* ConstEvaluator::getConstantType(SemaContext& ctx, const ConstantValue& val) {
     if (val.type) return val.type;
@@ -490,10 +629,50 @@ TypeAST* ConstEvaluator::getConstantType(SemaContext& ctx, const ConstantValue& 
     }
 }
 
+// ─── Call Evaluation ────────────────────────────────────────────────────
+
+ConstantValue ConstEvaluator::evalCall(SemaContext& ctx, const CallExprAST* expr) {
+    // ─── 1. Resolve the callee ──────────────────────────────────────────
+    const FuncDeclAST* func = resolveCalleeOrError(expr->callee, ctx);
+    if (!func) {
+        // Error already reported by resolveCalleeOrError
+        return ConstantValue::error();
+    }
+
+    // ─── 2. Check if it's const ──────────────────────────────────────────
+    if (func->keyword != DeclKeyword::Const) {
+        return ConstantValue::unknown();
+    }
+
+    // ─── 3. Collect parameter count ──────────────────────────────────────
+    size_t paramCount = 0;
+    for (FuncTypeAST* group = func->funcType; group; group = group->getNext()) {
+        paramCount += group->params.size();
+    }
+
+    if (expr->args.size() != paramCount) {
+        ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
+                              "argument count mismatch: expected ",
+                              paramCount, ", got ", expr->args.size());
+        return ConstantValue::error();
+    }
+
+    // ─── 4. Evaluate arguments ──────────────────────────────────────────
+    std::vector<ConstantValue> args;
+    for (const ExprAST* arg : expr->args) {
+        ConstantValue val = evaluate(ctx, arg);
+        if (val.isError()) return val;
+        if (val.isUnknown()) return ConstantValue::unknown();
+        args.push_back(val);
+    }
+
+    // ─── 5. Execute the function ────────────────────────────────────────
+    return executeFunction(ctx, func, args);
+}
+
 // ─── Struct Literal Evaluation ──────────────────────────────────────────
 
 ConstantValue ConstEvaluator::evalStructLiteral(SemaContext& ctx, const StructLiteralExprAST* expr) {
-    // Use existing lookup infrastructure
     const TypeDeclAST* typeDecl = ctx.lookupType(expr->typeName);
     if (!typeDecl) {
         return ConstantValue::error();
@@ -509,6 +688,7 @@ ConstantValue ConstEvaluator::evalStructLiteral(SemaContext& ctx, const StructLi
 
     std::unordered_map<InternedString, ConstantValue> fields;
 
+    // ─── Initialize with default values ─────────────────────────────────
     for (const FieldDeclAST* field : structDecl->fields) {
         if (field->defaultVal) {
             ConstantValue val = evaluate(ctx, field->defaultVal, field->type);
@@ -518,6 +698,7 @@ ConstantValue ConstEvaluator::evalStructLiteral(SemaContext& ctx, const StructLi
         }
     }
 
+    // ─── Override with explicit initializers ────────────────────────────
     for (const FieldInitAST* init : expr->inits) {
         ConstantValue val = evaluate(ctx, init->value);
         if (val.isError()) return val;
@@ -525,8 +706,21 @@ ConstantValue ConstEvaluator::evalStructLiteral(SemaContext& ctx, const StructLi
         fields[init->name] = val;
     }
 
+    // ─── Check missing required fields ──────────────────────────────────
     for (const FieldDeclAST* field : structDecl->fields) {
-        if (fields.find(field->name) == fields.end() && !field->defaultVal) {
+        if (fields.find(field->name) == fields.end()) {
+            // Check if field has a default
+            if (field->defaultVal) continue;
+            // Check if field is nullable/fallible (optional)
+            if (isNullableType(field->type) || isFallibleType(field->type)) continue;
+            // Check if field is combined (T?!) - must be explicit
+            if (field->type->isa<CombinedTypeAST>()) {
+                ctx.diagnostics.error(DiagCode::Sem_MissingInitializer, expr,
+                                      "combined field '", ctx.pool.lookup(field->name),
+                                      "' (T?!) must be explicitly initialized");
+                return ConstantValue::error();
+            }
+            
             ctx.diagnostics.error(DiagCode::Sem_MissingInitializer, expr,
                                   "missing initializer for struct field '",
                                   ctx.pool.lookup(field->name), "'");
@@ -554,7 +748,6 @@ ConstantValue ConstEvaluator::evalArrayLiteral(SemaContext& ctx, const ArrayLite
     }
 
     if (!elements.empty()) {
-        // Use existing typesEqual from SemaCompare
         const TypeAST* firstType = elements[0].type;
         for (size_t i = 1; i < elements.size(); ++i) {
             if (!typesEqual(elements[i].type, firstType)) {
@@ -632,72 +825,58 @@ ConstantValue ConstEvaluator::evalIfExpr(SemaContext& ctx, const IfExprAST* expr
 
 // ─── Statement Execution ──────────────────────────────────────────────────
 
-ConstantValue ConstEvaluator::executeStmt(SemaContext& ctx, std::vector<ConstFrame>& frames,
-                                           const StmtAST* stmt) {
+ConstantValue ConstEvaluator::executeStmt(SemaContext& ctx, const StmtAST* stmt) {
     if (!stmt) return ConstantValue::voidValue();
-
-    if (currentFrame(frames).hasReturned) {
-        return currentFrame(frames).returnValue;
-    }
 
     switch (stmt->kind) {
         case ASTKind::BlockStmt:
-            return executeBlock(ctx, frames, stmt->as<BlockStmtAST>());
+            return executeBlock(ctx, stmt->as<BlockStmtAST>());
         case ASTKind::ReturnStmt:
-            return executeReturn(ctx, frames, stmt->as<ReturnStmtAST>());
+            return executeReturn(ctx, stmt->as<ReturnStmtAST>());
         case ASTKind::IfStmt:
-            return executeIf(ctx, frames, stmt->as<IfStmtAST>());
+            return executeIf(ctx, stmt->as<IfStmtAST>());
         case ASTKind::WhileStmt:
-            return executeWhile(ctx, frames, stmt->as<WhileStmtAST>());
+            return executeWhile(ctx, stmt->as<WhileStmtAST>());
         case ASTKind::ExprStmt:
-            return executeExprStmt(ctx, frames, stmt->as<ExprStmtAST>());
+            return executeExprStmt(ctx, stmt->as<ExprStmtAST>());
         case ASTKind::DeclStmt:
-            return executeDeclStmt(ctx, frames, stmt->as<DeclStmtAST>());
+            return executeDeclStmt(ctx, stmt->as<DeclStmtAST>());
         default:
             return ConstantValue::unknown();
     }
 }
 
-ConstantValue ConstEvaluator::executeBlock(SemaContext& ctx, std::vector<ConstFrame>& frames,
-                                            const BlockStmtAST* block) {
+ConstantValue ConstEvaluator::executeBlock(SemaContext& ctx, const BlockStmtAST* block) {
     if (!block) return ConstantValue::voidValue();
 
-    auto savedLocals = currentFrame(frames).locals;
+    // Push a scope for the block
+    ctx.pushScope();
     ConstantValue result = ConstantValue::voidValue();
 
     for (const StmtPtr stmt : block->stmts) {
-        result = executeStmt(ctx, frames, stmt);
+        result = executeStmt(ctx, stmt);
         if (result.isError()) break;
         if (result.isUnknown()) break;
-        if (currentFrame(frames).hasReturned) break;
     }
 
-    currentFrame(frames).locals = savedLocals;
+    ctx.popScope();
     return result;
 }
 
-ConstantValue ConstEvaluator::executeReturn(SemaContext& ctx, std::vector<ConstFrame>& frames,
-                                              const ReturnStmtAST* stmt) {
-    auto& frame = currentFrame(frames);
-
+ConstantValue ConstEvaluator::executeReturn(SemaContext& ctx, const ReturnStmtAST* stmt) {
     if (stmt->value) {
-        frame.returnValue = evaluate(ctx, stmt->value);
-        if (frame.returnValue.isError()) return frame.returnValue;
-        if (frame.returnValue.isUnknown()) return ConstantValue::unknown();
-    } else {
-        frame.returnValue = ConstantValue::voidValue();
+        ConstantValue result = evaluate(ctx, stmt->value);
+        if (result.isError()) return result;
+        if (result.isUnknown()) return ConstantValue::unknown();
+        return result;
     }
-
-    frame.hasReturned = true;
-    return frame.returnValue;
+    return ConstantValue::voidValue();
 }
 
-ConstantValue ConstEvaluator::executeIf(SemaContext& ctx, std::vector<ConstFrame>& frames,
-                                         const IfStmtAST* stmt) {
+ConstantValue ConstEvaluator::executeIf(SemaContext& ctx, const IfStmtAST* stmt) {
     if (!stmt) return ConstantValue::voidValue();
 
     // ─── 1. Push if context for type narrowing ──────────────────────────
-    // Use ScopedIfCondition directly instead of ConstIfContext wrapper
     ScopedIfCondition ifContext(ctx, stmt->elseBranch != nullptr);
 
     // ─── 2. Evaluate condition ───────────────────────────────────────────
@@ -715,28 +894,25 @@ ConstantValue ConstEvaluator::executeIf(SemaContext& ctx, std::vector<ConstFrame
     NarrowingInfo info = ctx.stack.getPendingNarrowing();
     ctx.stack.clearPendingNarrowing();
 
-    // ─── 4. Execute the appropriate branch with narrowing ──────────────
+    // ─── 4. Execute the appropriate branch ──────────────────────────────
     if (cond.asBool()) {
-        // Then branch - condition is true
+        // ─── Then branch ──────────────────────────────────────────────────
         if (stmt->thenBranch) {
             // Apply normal narrowing for inequality conditions (x != nil)
-            // For equality conditions (x == nil), the then branch gets no narrowing
-            // because if x == nil is true, x is nil (no definite type to narrow to)
+            // When x != nil is true, x is non-nullable
             if (info.hasNarrowing && !info.isEquality) {
                 ctx.stack.pushNarrowingLevel(false);
                 for (const auto& [name, type] : info.narrowings) {
                     ctx.stack.narrowVariable(name, type);
                 }
-                ConstantValue result = executeStmt(ctx, frames, stmt->thenBranch);
+                ConstantValue result = executeStmt(ctx, stmt->thenBranch);
                 ctx.stack.popNarrowingLevel();
                 return result;
-            } else {
-                // No narrowing needed (equality condition, or no info)
-                return executeStmt(ctx, frames, stmt->thenBranch);
             }
+            return executeStmt(ctx, stmt->thenBranch);
         }
     } else {
-        // Else branch - condition is false
+        // ─── Else branch ──────────────────────────────────────────────────
         if (stmt->elseBranch) {
             // Apply inverse narrowing for equality conditions (x == nil)
             // When x == nil is false, x is definitely non-nullable
@@ -745,21 +921,18 @@ ConstantValue ConstEvaluator::executeIf(SemaContext& ctx, std::vector<ConstFrame
                 for (const auto& [name, type] : info.narrowings) {
                     ctx.stack.narrowVariable(name, type);
                 }
-                ConstantValue result = executeStmt(ctx, frames, stmt->elseBranch);
+                ConstantValue result = executeStmt(ctx, stmt->elseBranch);
                 ctx.stack.popNarrowingLevel();
                 return result;
-            } else {
-                // No narrowing needed
-                return executeStmt(ctx, frames, stmt->elseBranch);
             }
+            return executeStmt(ctx, stmt->elseBranch);
         }
     }
 
     return ConstantValue::voidValue();
 }
 
-ConstantValue ConstEvaluator::executeWhile(SemaContext& ctx, std::vector<ConstFrame>& frames,
-                                             const WhileStmtAST* stmt) {
+ConstantValue ConstEvaluator::executeWhile(SemaContext& ctx, const WhileStmtAST* stmt) {
     if (!stmt) return ConstantValue::voidValue();
 
     const size_t MAX_ITERATIONS = 10000;
@@ -785,36 +958,16 @@ ConstantValue ConstEvaluator::executeWhile(SemaContext& ctx, std::vector<ConstFr
 
         if (!cond.asBool()) break;
 
-        ConstantValue result = executeStmt(ctx, frames, stmt->body);
+        ConstantValue result = executeStmt(ctx, stmt->body);
         if (result.isError()) return result;
         if (result.isUnknown()) return ConstantValue::unknown();
-        if (currentFrame(frames).hasReturned) break;
+        if (result.isVoid()) continue;
     }
 
     return ConstantValue::voidValue();
 }
 
-ConstantValue ConstEvaluator::executeAssign(SemaContext& ctx, std::vector<ConstFrame>& frames,
-                                              const AssignExprAST* stmt) {
-    if (!stmt) return ConstantValue::voidValue();
-
-    ConstantValue rhs = evaluate(ctx, stmt->rhs);
-    if (rhs.isError()) return rhs;
-    if (rhs.isUnknown()) return ConstantValue::unknown();
-
-    if (stmt->lhs->isa<IdentifierExprAST>()) {
-        const IdentifierExprAST* id = stmt->lhs->as<IdentifierExprAST>();
-        setLocal(frames, id->name, rhs);
-        return rhs;
-    }
-
-    ctx.diagnostics.error(DiagCode::Sem_InvalidAssignment, stmt->lhs,
-                          "assignment target not supported in const function");
-    return ConstantValue::error();
-}
-
-ConstantValue ConstEvaluator::executeExprStmt(SemaContext& ctx, std::vector<ConstFrame>& frames,
-                                                const ExprStmtAST* stmt) {
+ConstantValue ConstEvaluator::executeExprStmt(SemaContext& ctx, const ExprStmtAST* stmt) {
     if (!stmt || !stmt->expr) return ConstantValue::voidValue();
 
     ConstantValue result = evaluate(ctx, stmt->expr);
@@ -824,21 +977,25 @@ ConstantValue ConstEvaluator::executeExprStmt(SemaContext& ctx, std::vector<Cons
     return ConstantValue::voidValue();
 }
 
-ConstantValue ConstEvaluator::executeDeclStmt(SemaContext& ctx, std::vector<ConstFrame>& frames,
-                                                const DeclStmtAST* stmt) {
+ConstantValue ConstEvaluator::executeDeclStmt(SemaContext& ctx, const DeclStmtAST* stmt) {
     if (!stmt || !stmt->decl) return ConstantValue::voidValue();
 
     if (stmt->decl->isa<VarDeclAST>()) {
         const VarDeclAST* var = stmt->decl->as<VarDeclAST>();
-        if (var->keyword == DeclKeyword::Const) {
-            if (var->init) {
-                ConstantValue val = evaluate(ctx, var->init);
-                if (val.isError()) return val;
-                if (val.isUnknown()) return ConstantValue::unknown();
-                setLocal(frames, var->name, val);
-                return ConstantValue::voidValue();
-            }
+        if (var->keyword == DeclKeyword::Const && var->init) {
+            // Evaluate and register the const local
+            ConstantValue val = evaluate(ctx, var->init);
+            if (val.isError()) return val;
+            if (val.isUnknown()) return ConstantValue::unknown();
+            
+            // Store the const value on the AST
+            const_cast<ExprAST*>(var->init)->isConst = true;
+            const_cast<ExprAST*>(var->init)->constValue = val;
+            ctx.insertValue(var);
+            return ConstantValue::voidValue();
         }
+        
+        // Mutable local variables are not allowed in const functions
         ctx.diagnostics.error(DiagCode::Sem_InvalidAssignment, stmt->decl,
                               "mutable local variables not allowed in const functions");
         return ConstantValue::error();
@@ -849,8 +1006,7 @@ ConstantValue ConstEvaluator::executeDeclStmt(SemaContext& ctx, std::vector<Cons
 
 // ─── Function Execution ──────────────────────────────────────────────────
 
-ConstantValue ConstEvaluator::executeFunction(SemaContext& ctx, std::vector<ConstFrame>& frames,
-                                               const FuncDeclAST* func,
+ConstantValue ConstEvaluator::executeFunction(SemaContext& ctx, const FuncDeclAST* func,
                                                const std::vector<ConstantValue>& args) {
     if (!func) {
         ctx.diagnostics.error(DiagCode::Sem_UndefinedValue, nullptr,
@@ -858,50 +1014,52 @@ ConstantValue ConstEvaluator::executeFunction(SemaContext& ctx, std::vector<Cons
         return ConstantValue::error();
     }
 
-    size_t paramCount = 0;
-    for (FuncTypeAST* group = func->funcType; group; group = group->getNext()) {
-        paramCount += group->params.size();
-    }
-
-    if (args.size() != paramCount) {
-        ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, func,
-                              "argument count mismatch: expected ",
-                              paramCount, ", got ", args.size());
-        return ConstantValue::error();
-    }
-
+    // ─── 1. Setup function context ──────────────────────────────────────
     ConstFunctionContext context(ctx, func);
-    pushFrame(frames);
 
+    // ─── 2. Bind arguments to parameters ────────────────────────────────
     size_t argIndex = 0;
     for (FuncTypeAST* group = func->funcType; group; group = group->getNext()) {
         for (ParamAST* param : group->params) {
             if (argIndex < args.size()) {
-                setLocal(frames, param->name, args[argIndex]);
-                argIndex++;
+                // Store the argument value on the parameter's initializer
+                if (argIndex < args.size()) {
+                    // Create a synthetic literal expression for the argument
+                    // or store it directly on the parameter's type
+                    // For now, we'll store it on the param's constValue
+                    const_cast<ParamAST*>(param)->type = getConstantType(ctx, args[argIndex]);
+                    const_cast<ParamAST*>(param)->isConst = true;
+                    argIndex++;
+                }
             }
         }
     }
 
-    ConstantValue result;
+    // ─── 3. Execute the body ─────────────────────────────────────────────
+    ConstantValue result = ConstantValue::voidValue();
     if (func->body) {
-        result = executeStmt(ctx, frames, func->body);
-        if (currentFrame(frames).hasReturned) {
-            result = currentFrame(frames).returnValue;
-        } else if (func->funcType && !func->funcType->returnType) {
-            result = ConstantValue::voidValue();
-        } else if (!result.isError() && !result.isUnknown()) {
-            ctx.diagnostics.error(DiagCode::Sem_MissingReturn, func->body,
-                                  "non-void const function does not return a value");
-            result = ConstantValue::error();
-        }
+        result = executeStmt(ctx, func->body);
     } else {
         ctx.diagnostics.error(DiagCode::Sem_MissingReturn, func,
                               "const function has no body");
-        result = ConstantValue::error();
+        return ConstantValue::error();
     }
 
-    popFrame(frames);
+    // ─── 4. Check return type ────────────────────────────────────────────
+    if (func->funcType && func->funcType->returnType) {
+        if (result.isVoid()) {
+            ctx.diagnostics.error(DiagCode::Sem_MissingReturn, func->body,
+                                  "non-void const function does not return a value");
+            return ConstantValue::error();
+        }
+    } else {
+        if (!result.isVoid()) {
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, func->body,
+                                  "void const function returns a value");
+            return ConstantValue::error();
+        }
+    }
+
     return result;
 }
 
@@ -914,7 +1072,6 @@ void ConstEvaluator::collectDeps(SemaContext& ctx, const ExprAST* expr,
     switch (expr->kind) {
         case ASTKind::IdentifierExpr: {
             const IdentifierExprAST* id = expr->as<IdentifierExprAST>();
-            // Use existing lookup infrastructure
             const ValueDeclAST* decl = ctx.lookupValue(id->name);
             if (decl && decl->isa<VarDeclAST>()) {
                 const VarDeclAST* var = decl->as<VarDeclAST>();

@@ -14,11 +14,50 @@
 ///
 /// @design_decision Uses existing semantic infrastructure
 ///   - Type checking: SemaCompare (typesEqual, isAssignable, isNullableType, etc.)
-///   - Name lookup: SemaLookup (lookupValue, lookupType, etc.)
+///   - Name lookup: SemaContext (lookupValue, lookupType, etc.)
 ///   - Type resolution: SemaResolve (resolveType, etc.)
 ///   - Context management: SemaContext (pushFunction, pushScope, etc.)
 ///   This eliminates duplication and ensures consistency between compile-time
 ///   and runtime behavior.
+///
+/// @design_decision No separate ConstFrame
+///   Local variables are stored on the AST nodes themselves (constValue field
+///   on ExprAST) and looked up via SemaContext::lookupValue. This eliminates
+///   duplication with SemaContext's Scope system.
+///
+/// # Error Handling Strategy
+///
+/// ## Hard Errors (Diagnostic + Error Return)
+/// 
+/// These are unrecoverable errors that make the const expression invalid:
+///   - Division by zero
+///   - Integer overflow
+///   - Circular dependency
+///   - Missing initializer
+///   - Type mismatch
+///   - Invalid operation
+///   - Shift amount >= bit width
+///   - Negative shift amount
+///   - Recursion limit exceeded
+///   - Unknown identifier (should be caught by name resolution)
+///
+/// ## Soft Errors (No Diagnostic + Unknown Return)
+/// 
+/// These are cases where the expression can't be evaluated at compile time,
+/// but this is normal and expected:
+///   - Non-const variable reference
+///   - Non-const function call
+///   - Unknown expression kind
+///   - Value that depends on runtime input
+///
+/// ## Why This Strategy?
+/// 
+/// 1. **Hard Errors** - The expression is invalid and cannot be used.
+///    Example: `const x = 1 / 0` → This is never valid.
+/// 
+/// 2. **Soft Errors** - The expression is valid but not const-evaluable.
+///    Example: `const x = y + 1` where `y` is a runtime variable.
+///    The compiler should silently fall back to runtime evaluation.
 
 #pragma once
 
@@ -33,7 +72,7 @@
 namespace sema {
 
 // ─────────────────────────────────────────────────────────────────────────────
-// RAII Guards - Why They Exist
+// RAII Guards
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -47,9 +86,6 @@ namespace sema {
  * 
  * HOW: Inserts the declaration into a set on construction, removes on destruction.
  *      If a declaration is already in the set, it's a circular dependency.
- * 
- * @note This is the only guard that truly needs to exist as a separate class
- *       because it manages the static evaluation set.
  */
 class EvaluationGuard {
 public:
@@ -77,14 +113,6 @@ private:
  * WHY: Const functions need proper semantic context to execute.
  *       - pushFunction: Enables `return` statement validation
  *       - pushScope: Creates scope for function parameters
- * 
- * @example
- *   const add (a int)(b int) -> int = { return a + b }
- *   //                    ↑
- *   // ConstFunctionContext sets up the context for executing this body
- * 
- * @note Could be simplified by inlining the push/pop calls, but kept as
- *       a separate class for clarity and to ensure proper cleanup.
  */
 class ConstFunctionContext {
 public:
@@ -93,7 +121,7 @@ public:
         // Push function context for return validation
         m_ctx.stack.pushFunction(
             const_cast<FuncDeclAST*>(func),
-            const_cast<FuncTypeAST*>(func->funcType),
+            func->funcType ? func->funcType->returnType : nullptr,
             func->loc
         );
         // Push scope for parameters
@@ -109,38 +137,6 @@ private:
     SemaContext& m_ctx;
 };
 
-/**
- * @brief Frame for local variable values during const function execution.
- * 
- * WHY: Const functions can have local variables (e.g., `let y int = x + 1`).
- *      These need to be stored somewhere during execution.
- * 
- * @example
- *   const compute (x int) -> int = {
- *       let y int = x + 1  // ← Stored in ConstFrame
- *       return y * 2
- *   }
- * 
- * @note This could be simplified to just a `std::unordered_map` but is kept
- *       as a struct for clarity and to support future extensions (like
- *       tracking returns).
- */
-struct ConstFrame {
-    std::unordered_map<InternedString, ConstantValue> locals;
-    bool hasReturned = false;
-    ConstantValue returnValue;
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// REMOVED: ConstIfContext - Use ScopedIfCondition directly
-// REMOVED: ConstNarrowing - Use ScopedNarrowing directly
-// ─────────────────────────────────────────────────────────────────────────────
-
-// These were removed because they were just thin wrappers around existing
-// RAII guards in SemaContext:
-//   - ConstIfContext  → ScopedIfCondition
-//   - ConstNarrowing  → ScopedNarrowing
-
 // ─────────────────────────────────────────────────────────────────────────────
 // ConstEvaluator - Main Class
 // ─────────────────────────────────────────────────────────────────────────────
@@ -154,9 +150,22 @@ public:
     // ─── Main Entry Points ───────────────────────────────────────────────
 
     /// @brief Evaluate a const variable declaration.
+    /// 
+    /// @param ctx The semantic context.
+    /// @param decl The const variable declaration.
+    /// @return The evaluated constant value, or error/unknown on failure.
+    /// 
+    /// @note Hard errors emit diagnostics. Soft errors return unknown.
     static ConstantValue evaluateDecl(SemaContext& ctx, const VarDeclAST* decl);
 
     /// @brief Evaluate an expression with optional target type.
+    /// 
+    /// @param ctx The semantic context.
+    /// @param expr The expression to evaluate.
+    /// @param targetType Optional expected type (for type checking).
+    /// @return The evaluated constant value, or error/unknown on failure.
+    /// 
+    /// @note Hard errors emit diagnostics. Soft errors return unknown.
     static ConstantValue evaluate(SemaContext& ctx, const ExprAST* expr,
                                   const TypeAST* targetType = nullptr);
 
@@ -166,29 +175,19 @@ public:
     /// @brief Build the dependency graph for const declarations.
     static void buildDependencyGraph(SemaContext& ctx);
 
+    /// @brief Get the const value of a declaration if it has one.
+    static ConstantValue getConstValue(const VarDeclAST* decl);
+
 private:
-    // ─── Frame Management ────────────────────────────────────────────────
-
-    static ConstFrame& currentFrame(std::vector<ConstFrame>& frames);
-    static const ConstFrame& currentFrame(const std::vector<ConstFrame>& frames);
-    static void pushFrame(std::vector<ConstFrame>& frames);
-    static void popFrame(std::vector<ConstFrame>& frames);
-    
-    static ConstantValue getLocal(std::vector<ConstFrame>& frames, InternedString name);
-    static void setLocal(std::vector<ConstFrame>& frames, InternedString name, const ConstantValue& value);
-    static bool isLocalVariable(const std::vector<ConstFrame>& frames, InternedString name);
-
     // ─── Expression Evaluators ──────────────────────────────────────────
 
     static ConstantValue evalLiteral(SemaContext& ctx, const LiteralExprAST* expr);
-    static ConstantValue evalIdentifier(SemaContext& ctx, std::vector<ConstFrame>& frames,
-                                         const IdentifierExprAST* expr);
+    static ConstantValue evalIdentifier(SemaContext& ctx, const IdentifierExprAST* expr);
     static ConstantValue evalBinary(SemaContext& ctx, const BinaryExprAST* expr,
                                      const TypeAST* targetType);
     static ConstantValue evalUnary(SemaContext& ctx, const UnaryExprAST* expr,
                                     const TypeAST* targetType);
-    static ConstantValue evalCall(SemaContext& ctx, std::vector<ConstFrame>& frames,
-                                   const CallExprAST* expr);
+    static ConstantValue evalCall(SemaContext& ctx, const CallExprAST* expr);
     static ConstantValue evalStructLiteral(SemaContext& ctx, const StructLiteralExprAST* expr);
     static ConstantValue evalArrayLiteral(SemaContext& ctx, const ArrayLiteralExprAST* expr);
     static ConstantValue evalFieldAccess(SemaContext& ctx, const FieldAccessExprAST* expr);
@@ -197,26 +196,16 @@ private:
 
     // ─── Statement Execution ─────────────────────────────────────────────
 
-    static ConstantValue executeStmt(SemaContext& ctx, std::vector<ConstFrame>& frames,
-                                      const StmtAST* stmt);
-    static ConstantValue executeBlock(SemaContext& ctx, std::vector<ConstFrame>& frames,
-                                       const BlockStmtAST* block);
-    static ConstantValue executeReturn(SemaContext& ctx, std::vector<ConstFrame>& frames,
-                                        const ReturnStmtAST* stmt);
-    static ConstantValue executeIf(SemaContext& ctx, std::vector<ConstFrame>& frames,
-                                    const IfStmtAST* stmt);
-    static ConstantValue executeWhile(SemaContext& ctx, std::vector<ConstFrame>& frames,
-                                       const WhileStmtAST* stmt);
-    static ConstantValue executeAssign(SemaContext& ctx, std::vector<ConstFrame>& frames,
-                                        const AssignExprAST* stmt);
-    static ConstantValue executeExprStmt(SemaContext& ctx, std::vector<ConstFrame>& frames,
-                                          const ExprStmtAST* stmt);
-    static ConstantValue executeDeclStmt(SemaContext& ctx, std::vector<ConstFrame>& frames,
-                                          const DeclStmtAST* stmt);
+    static ConstantValue executeStmt(SemaContext& ctx, const StmtAST* stmt);
+    static ConstantValue executeBlock(SemaContext& ctx, const BlockStmtAST* block);
+    static ConstantValue executeReturn(SemaContext& ctx, const ReturnStmtAST* stmt);
+    static ConstantValue executeIf(SemaContext& ctx, const IfStmtAST* stmt);
+    static ConstantValue executeWhile(SemaContext& ctx, const WhileStmtAST* stmt);
+    static ConstantValue executeExprStmt(SemaContext& ctx, const ExprStmtAST* stmt);
+    static ConstantValue executeDeclStmt(SemaContext& ctx, const DeclStmtAST* stmt);
 
     /// @brief Execute a const function with constant arguments.
-    static ConstantValue executeFunction(SemaContext& ctx, std::vector<ConstFrame>& frames,
-                                          const FuncDeclAST* func,
+    static ConstantValue executeFunction(SemaContext& ctx, const FuncDeclAST* func,
                                           const std::vector<ConstantValue>& args);
 
     // ─── Binary Operation Helpers ───────────────────────────────────────
@@ -246,11 +235,16 @@ private:
 
     // ─── Internal State ──────────────────────────────────────────────────
 
-    // Static state shared across all evaluations
+    // Dependency graph for const declarations (for cycle detection)
     static std::unordered_map<const DeclAST*, std::vector<const DeclAST*>> m_deps;
-    static std::vector<const DeclAST*> m_constDecls;
+    
+    // Set of expressions that have already been evaluated (caching)
     static std::unordered_set<const ExprAST*> m_evaluatedExprs;
+    
+    // Set of declarations currently being evaluated (cycle detection)
     static std::unordered_set<const DeclAST*> m_evaluating;
+    
+    // Current recursion depth (prevents stack overflow)
     static size_t m_recursionDepth;
 };
 

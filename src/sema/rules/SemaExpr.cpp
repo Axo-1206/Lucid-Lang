@@ -673,11 +673,8 @@ TypeAST* resolveBinaryExpr(BinaryExprAST* expr, const TypeAST* targetType, SemaC
             ctx.stack.setPendingNarrowing(info);
             expr->resolvedType = ctx.getBoolType();
             expr->valueState = ValueState::Definite;
-            
-            // ─── Set isLValue ──────────────────────────────────────────────
-            expr->isLValue = false;   // Binary expressions are never l-values
-            expr->isConst = false;    // Not compile-time constant
-            
+            expr->isLValue = false;
+            expr->isConst = false;
             return ctx.getBoolType();
         }
     }
@@ -710,7 +707,21 @@ TypeAST* resolveBinaryExpr(BinaryExprAST* expr, const TypeAST* targetType, SemaC
                 return ctx.getUnknownType();
             }
 
-            resultType = isFloatType(rightType) ? rightType : leftType;
+            // ─── Numeric promotion rules ────────────────────────────────────
+            // 1. If either operand is float → result is float
+            // 2. Both integers → promote to larger type
+            if (isFloatType(leftType) || isFloatType(rightType)) {
+                // int → float promotion
+                resultType = ctx.getFloatType();
+            } else {
+                // Both integers → promote to larger type
+                if (!typesEqual(leftType, rightType)) {
+                    resultType = getLargerIntegerType(leftType, rightType, ctx);
+                } else {
+                    resultType = leftType;
+                }
+            }
+
             resultState = (leftState == ValueState::Err || rightState == ValueState::Err)
                           ? ValueState::Err : ValueState::Definite;
             break;
@@ -723,6 +734,28 @@ TypeAST* resolveBinaryExpr(BinaryExprAST* expr, const TypeAST* targetType, SemaC
         case BinaryOp::Gt:
         case BinaryOp::Le:
         case BinaryOp::Ge: {
+            // ─── Numeric comparisons: allow mixed types ──────────────────
+            if (isNumericType(leftType) && isNumericType(rightType)) {
+                resultType = ctx.getBoolType();
+                resultState = ValueState::Definite;
+                break;
+            }
+            
+            // ─── Non-numeric comparisons: must be same type ──────────────
+            if (!typesEqual(leftType, rightType)) {
+                // Allow nil/err comparisons with nullable/fallible types
+                if (!(isNullableType(leftType) || isFallibleType(leftType) ||
+                      isNullableType(rightType) || isFallibleType(rightType))) {
+                    ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
+                                          "comparison of incompatible types: ",
+                                          debug::typeToString(leftType, ctx.pool), " and ",
+                                          debug::typeToString(rightType, ctx.pool));
+                    expr->resolvedType = ctx.getUnknownType();
+                    expr->valueState = ValueState::Unknown;
+                    return ctx.getUnknownType();
+                }
+            }
+            
             resultType = ctx.getBoolType();
             resultState = ValueState::Definite;
             break;
@@ -790,7 +823,13 @@ TypeAST* resolveBinaryExpr(BinaryExprAST* expr, const TypeAST* targetType, SemaC
                 return ctx.getUnknownType();
             }
 
-            resultType = leftType;
+            // Bitwise operators: promote to larger type
+            if (!typesEqual(leftType, rightType)) {
+                resultType = getLargerIntegerType(leftType, rightType, ctx);
+            } else {
+                resultType = leftType;
+            }
+
             resultState = ValueState::Definite;
             break;
         }
@@ -819,10 +858,8 @@ TypeAST* resolveBinaryExpr(BinaryExprAST* expr, const TypeAST* targetType, SemaC
 
     expr->resolvedType = resultType;
     expr->valueState = resultState;
-    
-    // ─── Set isLValue ──────────────────────────────────────────────────────
-    expr->isLValue = false;   // Binary expressions are never l-values
-    expr->isConst = false;    // Binary expressions are not compile-time constants
+    expr->isLValue = false;
+    expr->isConst = false;
     
     return resultType;
 }

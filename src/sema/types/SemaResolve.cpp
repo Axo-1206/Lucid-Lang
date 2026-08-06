@@ -65,7 +65,7 @@ TypeAST* resolveNamedType(const NamedTypeAST* type, SemaContext& ctx) {
     if (!decl) {
         ctx.diagnostics.error(DiagCode::Sem_UndefinedType, type,
                               "undefined type '", ctx.pool.lookup(type->name), "'");
-        return nullptr;
+        return nullptr; // type doesn't exist
     }
 
     // ─── 3. Resolve generic arguments if present ─────────────────────────

@@ -12,35 +12,6 @@ namespace sema {
 // analyze - Main Entry Point
 // =============================================================================
 
-// analyze()
-//   └── PHASE 1: registerTopLevelNames()
-//       └── registerDeclName(outer) → ctx.insertValue(outer)  // ✅ Module table
-//
-//   └── PHASE 2: resolveModuleDecls()
-//       └── resolveFuncDecl(outer)
-//           ├── ctx.isAtModuleLevel()? true → no registration needed
-//           ├── ctx.pushScope()  // Parameter scope for outer
-//           ├── resolveParam(x) → ctx.insertValue(x)  // ✅ Registers x
-//           ├── ctx.stack.pushFunction(outer)
-//           ├── resolveBlock(outer->body)
-//           │   ├── ctx.pushScope()  // Block scope for outer's body
-//           │   ├── resolveDeclStmt(inner)
-//           │   │   └── resolveDecl(inner) → resolveFuncDecl(inner)
-//           │   │       ├── ctx.isAtModuleLevel()? false → ctx.insertValue(inner)  // ✅ Registers inner in outer's block scope
-//           │   │       ├── ctx.pushScope()  // Parameter scope for inner
-//           │   │       ├── resolveParam(y) → ctx.insertValue(y)  // ✅ Registers y
-//           │   │       ├── ctx.stack.pushFunction(inner)  // ✅ Nested context
-//           │   │       ├── resolveBlock(inner->body)
-//           │   │       │   ├── ctx.pushScope()
-//           │   │       │   └── ctx.popScope()
-//           │   │       ├── ctx.stack.pop()  // ✅ Pop inner's function context
-//           │   │       └── ctx.popScope()  // ✅ Pop inner's parameter scope
-//           │   ├── resolveReturnStmt(inner(10))
-//           │   │   └── resolveIdentifierExpr(inner)
-//           │   │       └── ctx.lookupValue(inner)  // ✅ Finds inner in outer's block scope!
-//           │   └── ctx.popScope()  // Clean up outer's block scope
-//           ├── ctx.stack.pop()  // Pop outer's function context
-//           └── ctx.popScope()  // Clean up outer's parameter scope
 void analyze(std::vector<ModuleAST*>& modules, SemaContext& ctx) {
     // ─────────────────────────────────────────────────────────────────────────
     // PHASE 1: Register ALL top-level names (No type resolution)
@@ -182,23 +153,25 @@ void resolveModuleDecls(ModuleAST* module, SemaContext& ctx) {
     }
 }
 
+// ─── Resolution Entry Point ────────────────────────────────────────────────
+
 /// @brief Resolve a single declaration.
 ///
-/// Dispatches to the appropriate resolver based on the declaration's kind.
+/// This is the main entry point for declaration resolution.
+/// It handles:
+///   1. Registering nested declarations (Phase 2 registration)
+///   2. Dispatching to the appropriate resolver
 ///
-/// @param decl The declaration to resolve.
-/// @param ctx The semantic context.
-///
-/// @note This function is also called recursively for nested declarations
-///       (e.g., functions defined inside function bodies).
+/// @note Top-level declarations are already registered in Phase 1.
+///       Only nested declarations are registered here.
 void resolveDecl(const DeclAST* decl, SemaContext& ctx) {
     if (!decl) return;
 
-    // Check if we're at module level - if not, we need to register
-    // this declaration in the current scope (it's a nested declaration).
-    // This handles nested functions, structs, enums, and traits.
+    // ─── PHASE 2 REGISTRATION: Nested declarations only ──────────────────
+    // Top-level declarations are already registered in Phase 1.
+    // Nested declarations (inside functions, blocks, etc.) are registered
+    // when the resolver encounters them during Phase 2.
     if (!ctx.isAtModuleLevel()) {
-        // Register the declaration in the current scope
         switch (decl->kind) {
             case ASTKind::VarDecl:
             case ASTKind::FuncDecl:
@@ -215,7 +188,9 @@ void resolveDecl(const DeclAST* decl, SemaContext& ctx) {
         }
     }
 
-    // Now resolve the declaration's type and body
+    // ─── DISPATCH TO RESOLVER ─────────────────────────────────────────────
+    // The resolver functions below do NOT register the declaration again.
+    // They only resolve types, check bodies, and evaluate consts.
     switch (decl->kind) {
         case ASTKind::ImportDecl:
             resolveImportDecl(decl->as<ImportDeclAST>(), ctx);
@@ -240,55 +215,5 @@ void resolveDecl(const DeclAST* decl, SemaContext& ctx) {
             return;
     }
 }
-
-// =============================================================================
-// Phase 1 Registration Functions (forwarded to SemaDecl.cpp)
-// =============================================================================
-
-// These functions are declared in Sema.hpp and implemented in SemaDecl.cpp.
-// They are called from registerTopLevelNames() above.
-
-// registerImportName()    - implemented in SemaDecl.cpp
-// registerVarName()       - implemented in SemaDecl.cpp
-// registerFuncName()      - implemented in SemaDecl.cpp
-// registerParamName()     - implemented in SemaDecl.cpp
-// registerGenericParamName() - implemented in SemaDecl.cpp
-// registerEnumName()      - implemented in SemaDecl.cpp
-// registerTraitName()     - implemented in SemaDecl.cpp
-// registerStructName()    - implemented in SemaDecl.cpp
-// registerStructFieldNames() - implemented in SemaDecl.cpp
-
-// Phase 2 Resolution Functions (forwarded to SemaDecl.cpp, SemaStmt.cpp, SemaExpr.cpp)
-
-// resolveImportDecl()     - implemented in SemaDecl.cpp
-// resolveVarDecl()        - implemented in SemaDecl.cpp
-// resolveFuncDecl()       - implemented in SemaDecl.cpp
-// resolveParam()          - implemented in SemaDecl.cpp
-// resolveGenericParam()   - implemented in SemaDecl.cpp
-// resolveEnumDecl()       - implemented in SemaDecl.cpp
-// resolveTraitDecl()      - implemented in SemaDecl.cpp
-// resolveStructDecl()     - implemented in SemaDecl.cpp
-// resolveStructFields()   - implemented in SemaDecl.cpp
-
-// resolveStmt()           - implemented in SemaStmt.cpp
-// resolveBlock()          - implemented in SemaStmt.cpp
-// resolveIfStmt()         - implemented in SemaStmt.cpp
-// resolveSwitchStmt()     - implemented in SemaStmt.cpp
-// resolveSwitchCase()     - implemented in SemaStmt.cpp
-// resolveForStmt()        - implemented in SemaStmt.cpp
-// resolveWhileStmt()      - implemented in SemaStmt.cpp
-// resolveDoWhileStmt()    - implemented in SemaStmt.cpp
-// resolveReturnStmt()     - implemented in SemaStmt.cpp
-// resolveBreakStmt()      - implemented in SemaStmt.cpp
-// resolveContinueStmt()   - implemented in SemaStmt.cpp
-// resolveExprStmt()       - implemented in SemaStmt.cpp
-// resolveDeclStmt()       - implemented in SemaStmt.cpp
-// resolveAsyncStmt()      - implemented in SemaStmt.cpp
-// resolveAwaitStmt()      - implemented in SemaStmt.cpp
-// resolveSpawnStmt()      - implemented in SemaStmt.cpp
-// resolveJoinStmt()       - implemented in SemaStmt.cpp
-
-// resolveExpr()           - implemented in SemaExpr.cpp
-// resolveExprWithTarget() - implemented in SemaExpr.cpp
 
 } // namespace sema

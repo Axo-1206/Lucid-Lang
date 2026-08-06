@@ -9,15 +9,11 @@
 ///   All names are registered first, then types are resolved. This enables
 ///   forward references (names can be used before they're defined).
 /// 
-/// @architectural_note Const Evaluation Integration
-///   Const evaluation now happens DURING Phase 2 (type resolution), not as
-///   a separate Phase 3. This allows const evaluation to use the fully
-///   resolved type information and context.
-/// 
-/// @architectural_note Expression Resolution with Target Type
-///   Declarations provide the target type for their initializers.
-///   `resolveExprWithTarget(expr, targetType, ctx)` validates the expression
-///   against the target type and stores the result on the expression node.
+/// @architectural_note Registration Rules
+///   - Top-level declarations: Registered in Phase 1 (register*Name)
+///   - Nested declarations: Registered in Phase 2 (resolveDecl)
+///   - Parameters: Registered in Phase 1 (registerFuncName) and Phase 2 (resolveParam)
+///   - Generic params: Registered in Phase 1 (registerFuncName) and Phase 2 (resolveGenericParam)
 
 #include "../Sema.hpp"
 #include "../context/SemaContext.hpp"
@@ -148,11 +144,8 @@ void resolveVarDecl(const VarDeclAST* decl, SemaContext& ctx) {
         }
     }
 
-    // ─── 5. REGISTER the variable in the current scope ────────────────
-    // insertValue handles both module-level and local scopes
-    // For top-level variables, this is a no-op (already registered in Phase 1)
-    // For local variables, this registers them in the current block scope
-    ctx.insertValue(decl);
+    // ─── NOTE: Registration is handled by resolveDecl() ──────────────
+    // Do NOT call ctx.insertValue() here.
 }
 
 void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
@@ -174,9 +167,6 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
         // ─── 2a. Validate FFI function ─────────────────────────────────────────
         validateForeignFunction(decl, foreignAttr, ctx);
 
-        // No need to collect link info here - the AST already has it.
-        // Later phases (JIT/AOT) will traverse the AST to find @[link] attributes.
-        
         // Mark as const (foreign functions are compile-time constants)
         const_cast<FuncDeclAST*>(decl)->isConst = true;
         return;
@@ -187,10 +177,10 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
         resolveGenericParam(g, ctx);
     }
 
-    // ─── 4. REGISTER the function in the current scope ──────────────────────
-    ctx.insertValue(decl);
+    // ─── NOTE: Registration is handled by resolveDecl() ─────────────────────
+    // Do NOT call ctx.insertValue() here.
 
-    // ─── 5. Resolve parameters - REGISTER them in the function scope ────────
+    // ─── 4. Resolve parameters ────────────────────────────────────────────────
     ctx.pushScope();
     
     for (FuncTypeAST* group = funcType; group; group = group->getNext()) {
@@ -199,7 +189,7 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
         }
     }
 
-    // ─── 6. Analyze body ──────────────────────────────────────────────────────
+    // ─── 5. Analyze body ──────────────────────────────────────────────────────
     if (!decl->body) {
         ctx.diagnostics.error(DiagCode::Sem_MissingReturn, decl,
                               "function '", ctx.pool.lookup(decl->name), "' has no body");
@@ -207,15 +197,13 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
         return;
     }
 
-    // ─── 7. Push function context with expected return type ──────────────────
-    // The expected return type is the function's return type (funcType->returnType)
-    // For curried functions, this will be another FuncTypeAST
+    // ─── 6. Push function context with expected return type ──────────────────
     const TypeAST* expectedReturn = funcType ? funcType->returnType : nullptr;
     ctx.stack.pushFunction(const_cast<FuncDeclAST*>(decl), expectedReturn, decl->loc);
 
     bool bodyReturns = false;
     
-    // ─── 8. Resolve the body ──────────────────────────────────────────────────
+    // ─── 7. Resolve the body ──────────────────────────────────────────────────
     if (decl->body->isa<BlockStmtAST>()) {
         bodyReturns = resolveBlock(decl->body->as<BlockStmtAST>(), ctx);
     } else if (decl->body->isa<ReturnStmtAST>()) {
@@ -238,29 +226,32 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
         return;
     }
 
-    // ─── 9. Verify return paths ──────────────────────────────────────────────
-    // With the stack-based approach, we check that the body actually returns
-    // something when expected. The return statements themselves check against
-    // the current return type on the stack.
+    // ─── 8. Verify return paths ──────────────────────────────────────────────
     if (!bodyReturns && expectedReturn) {
-        // Non-void function must return a value
-        // But if the body had a return statement, bodyReturns would be true
-        // So this is a catch-all for functions that fall through
         ctx.diagnostics.error(DiagCode::Sem_MissingReturn, decl,
                               "function '", ctx.pool.lookup(decl->name),
                               "' does not return a value on all paths");
     }
 
-    // ─── 10. Pop function context ────────────────────────────────────────────
+    // ─── 9. Pop function context ────────────────────────────────────────────
     ctx.stack.pop();
     ctx.popScope();
 
-    // ─── 11. Mark as const if applicable ─────────────────────────────────────
+    // ─── 10. Mark as const if applicable ─────────────────────────────────────
     if (decl->keyword == DeclKeyword::Const) {
         const_cast<FuncDeclAST*>(decl)->isConst = true;
     }
 }
 
+/// @brief Resolve a parameter type and register it in the current scope.
+///
+/// Parameters are special because they are only discovered during Phase 2
+/// (when walking function signatures) and need to be registered in the
+/// current scope for the function body to reference them.
+///
+/// @note This is called from both Phase 1 (registerFuncName) and Phase 2
+///       (resolveFuncDecl). The duplicate insertValue calls are safe because
+///       insertValue checks for duplicates before inserting.
 void resolveParam(const ParamAST* param, SemaContext& ctx) {
     TypeAST* paramType = resolveType(param->type, ctx);
     if (!paramType) {
@@ -273,6 +264,7 @@ void resolveParam(const ParamAST* param, SemaContext& ctx) {
         }
     }
     
+    // Parameters are registered in the current scope
     ctx.insertValue(param);
 }
 
@@ -285,8 +277,8 @@ void resolveGenericParam(const GenericParamDeclAST* param, SemaContext& ctx) {
 void resolveEnumDecl(const EnumDeclAST* decl, SemaContext& ctx) {
     attr::validateAttributes(decl, ctx);
 
-    // insertType handles both module-level and local scopes
-    ctx.insertType(decl);
+    // ─── NOTE: Registration is handled by resolveDecl() ─────────────────────
+    // Do NOT call ctx.insertType() here.
 
     if (decl->backingType) {
         if (!resolvePrimitiveType(decl->backingType, ctx)) {
@@ -315,8 +307,8 @@ void resolveEnumDecl(const EnumDeclAST* decl, SemaContext& ctx) {
 void resolveTraitDecl(const TraitDeclAST* decl, SemaContext& ctx) {
     attr::validateAttributes(decl, ctx);
 
-    // insertType handles both module-level and local scopes
-    ctx.insertType(decl);
+    // ─── NOTE: Registration is handled by resolveDecl() ─────────────────────
+    // Do NOT call ctx.insertType() here.
 
     for (const GenericParamDeclAST* g : decl->genericParams) {
         resolveGenericParam(g, ctx);
@@ -348,8 +340,8 @@ void resolveTraitDecl(const TraitDeclAST* decl, SemaContext& ctx) {
 void resolveStructDecl(const StructDeclAST* decl, SemaContext& ctx) {
     attr::validateAttributes(decl, ctx);
 
-    // insertType handles both module-level and local scopes
-    ctx.insertType(decl);
+    // ─── NOTE: Registration is handled by resolveDecl() ─────────────────────
+    // Do NOT call ctx.insertType() here.
 
     ScopedTypeDefinition defining(ctx, decl);
 
