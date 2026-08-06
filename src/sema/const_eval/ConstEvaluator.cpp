@@ -20,10 +20,7 @@ ConstantValue ConstEvaluator::evaluateDecl(SemaContext& ctx, const VarDeclAST* d
     }
 
     if (m_recursionDepth >= MAX_RECURSION) {
-        ctx.diagnostics.error(DiagCode::Sem_ConstEvalLimit, decl,
-                              "const evaluation recursion limit exceeded (",
-                              MAX_RECURSION, ")");
-        return ConstantValue::error();
+        return ConstantValue::unknown();
     }
 
     if (m_evaluating.find(decl) != m_evaluating.end()) {
@@ -52,12 +49,10 @@ ConstantValue ConstEvaluator::evaluate(SemaContext& ctx, const ExprAST* expr,
     if (!expr) return ConstantValue::error();
 
     if (m_recursionDepth >= MAX_RECURSION) {
-        ctx.diagnostics.error(DiagCode::Sem_ConstEvalLimit, expr,
-                              "const evaluation recursion limit exceeded (",
-                              MAX_RECURSION, ")");
-        return ConstantValue::error();
+        return ConstantValue::unknown();
     }
 
+    // ─── Cache check ──────────────────────────────────────────────────────
     if (m_evaluatedExprs.find(expr) != m_evaluatedExprs.end()) {
         return expr->constValue;
     }
@@ -95,10 +90,14 @@ ConstantValue ConstEvaluator::evaluate(SemaContext& ctx, const ExprAST* expr,
         case ASTKind::IfExpr:
             result = evalIfExpr(ctx, expr->as<IfExprAST>());
             break;
+        case ASTKind::RangeExpr:
+            result = evalRangeExpr(ctx, expr->as<RangeExprAST>());
+            break;
         default:
             return ConstantValue::unknown();
     }
 
+    // ─── Store result on the AST node ──────────────────────────────────
     if (result.isEvaluated() && !result.isError()) {
         const_cast<ExprAST*>(expr)->isConst = true;
         const_cast<ExprAST*>(expr)->constValue = result;
@@ -109,6 +108,162 @@ ConstantValue ConstEvaluator::evaluate(SemaContext& ctx, const ExprAST* expr,
 
     return result;
 }
+
+bool ConstEvaluator::isConstExpr(SemaContext& ctx, const ExprAST* expr,
+                                  const TypeAST* targetType) {
+    if (!expr) return false;
+    if (expr->isConst) return true;
+    
+    ConstantValue val = evaluate(ctx, expr, targetType);
+    return val.isEvaluated() && !val.isError();
+}
+
+ConstantValue ConstEvaluator::getConstValue(SemaContext& ctx, const ExprAST* expr,
+                                             const TypeAST* targetType) {
+    if (!expr) return ConstantValue::unknown();
+    if (expr->isConst) return expr->constValue;
+    return evaluate(ctx, expr, targetType);
+}
+
+std::optional<int64_t> ConstEvaluator::evaluateAsInt(SemaContext& ctx, const ExprAST* expr) {
+    if (!expr) return std::nullopt;
+    
+    ConstantValue val = getConstValue(ctx, expr);
+    if (val.isInt()) {
+        return val.asInt();
+    }
+    return std::nullopt;
+}
+
+std::optional<bool> ConstEvaluator::evaluateAsBool(SemaContext& ctx, const ExprAST* expr) {
+    if (!expr) return std::nullopt;
+    
+    ConstantValue val = getConstValue(ctx, expr);
+    if (val.isBool()) {
+        return val.asBool();
+    }
+    return std::nullopt;
+}
+
+// ─── evalRangeExpr ────────────────────────────────────────────────────────
+
+ConstantValue ConstEvaluator::evalRangeExpr(SemaContext& ctx, const RangeExprAST* expr) {
+    if (!expr) return ConstantValue::error();
+
+    // ─── Evaluate both bounds ───────────────────────────────────────────
+    ConstantValue loVal = evaluate(ctx, expr->lo);
+    if (loVal.isError()) return loVal;
+    if (loVal.isUnknown()) return ConstantValue::unknown();
+
+    ConstantValue hiVal = evaluate(ctx, expr->hi);
+    if (hiVal.isError()) return hiVal;
+    if (hiVal.isUnknown()) return ConstantValue::unknown();
+
+    // ─── Both bounds must be integers ────────────────────────────────────
+    if (!loVal.isInt() || !hiVal.isInt()) {
+        return ConstantValue::unknown();
+    }
+
+    int64_t lo = loVal.asInt();
+    int64_t hi = hiVal.asInt();
+    bool isInclusive = !expr->isExclusive;
+    
+    // ─── Validate range order ────────────────────────────────────────────
+    if (isInclusive && lo > hi) {
+        ctx.diagnostics.error(DiagCode::Sem_InvalidRange, expr,
+                              "inclusive range start (", lo, 
+                              ") must be less than or equal to end (", hi, ")");
+        return ConstantValue::error();
+    }
+    if (!isInclusive && lo >= hi) {
+        ctx.diagnostics.error(DiagCode::Sem_InvalidRange, expr,
+                              "exclusive range start (", lo, 
+                              ") must be less than end (", hi, ")");
+        return ConstantValue::error();
+    }
+
+    // ─── Return the lower bound (the range itself is a "value") ──────────
+    // For a range, we return the lower bound as the "value"
+    // The caller can access loVal and hiVal separately if needed
+    return loVal;
+}
+
+// ─── evalCall ─────────────────────────────────────────────────────────────
+
+ConstantValue ConstEvaluator::evalCall(SemaContext& ctx, const CallExprAST* expr) {
+    const FuncDeclAST* func = resolveCalleeOrError(expr->callee, ctx);
+    if (!func) {
+        return ConstantValue::error();
+    }
+
+    if (func->keyword != DeclKeyword::Const) {
+        return ConstantValue::unknown();
+    }
+
+    if (!func->genericParams.empty() && expr->genericArgs.empty()) {
+        return ConstantValue::unknown();
+    }
+
+    std::vector<ConstantValue> args;
+    for (const ExprAST* arg : expr->args) {
+        ConstantValue val = evaluate(ctx, arg);
+        if (val.isError()) return val;
+        if (val.isUnknown()) return ConstantValue::unknown();
+        args.push_back(val);
+    }
+
+    return executeFunction(ctx, func, args);
+}
+
+// ─── executeFunction ──────────────────────────────────────────────────────
+
+ConstantValue ConstEvaluator::executeFunction(SemaContext& ctx, const FuncDeclAST* func,
+                                               const std::vector<ConstantValue>& args) {
+    if (!func) {
+        ctx.diagnostics.error(DiagCode::Sem_UndefinedValue, nullptr,
+                              "null function");
+        return ConstantValue::error();
+    }
+
+    ConstFunctionContext context(ctx, func);
+
+    size_t argIndex = 0;
+    for (FuncTypeAST* group = func->funcType; group; group = group->getNext()) {
+        for (ParamAST* param : group->params) {
+            if (argIndex < args.size()) {
+                const_cast<ParamAST*>(param)->type = getConstantType(ctx, args[argIndex]);
+                argIndex++;
+            }
+        }
+    }
+
+    ConstantValue result = ConstantValue::voidValue();
+    if (func->body) {
+        result = executeStmt(ctx, func->body);
+    } else {
+        ctx.diagnostics.error(DiagCode::Sem_MissingReturn, func,
+                              "const function has no body");
+        return ConstantValue::error();
+    }
+
+    if (func->funcType && func->funcType->returnType) {
+        if (result.isVoid()) {
+            ctx.diagnostics.error(DiagCode::Sem_MissingReturn, func->body,
+                                  "non-void const function does not return a value");
+            return ConstantValue::error();
+        }
+    } else {
+        if (!result.isVoid() && !result.isUnknown()) {
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, func->body,
+                                  "void const function returns a value");
+            return ConstantValue::error();
+        }
+    }
+
+    return result;
+}
+
+// ─── Report Cycle ────────────────────────────────────────────────────────
 
 void ConstEvaluator::reportCycle(SemaContext& ctx, const std::vector<const DeclAST*>& cycle) {
     if (cycle.empty()) return;
@@ -132,7 +287,9 @@ ConstantValue ConstEvaluator::getConstValue(const VarDeclAST* decl) {
 }
 
 void ConstEvaluator::buildDependencyGraph(SemaContext& ctx) {
-    // Collect all const declarations
+    m_constDecls.clear();
+    m_deps.clear();
+
     for (ModuleAST* module : ctx.modules) {
         for (const DeclPtr decl : module->decls) {
             if (decl && decl->isa<VarDeclAST>()) {
@@ -150,7 +307,6 @@ void ConstEvaluator::buildDependencyGraph(SemaContext& ctx) {
         }
     }
 
-    // Build dependency graph
     for (const DeclAST* decl : m_constDecls) {
         std::vector<const DeclAST*> deps;
         if (decl->isa<VarDeclAST>()) {
@@ -167,7 +323,6 @@ void ConstEvaluator::buildDependencyGraph(SemaContext& ctx) {
         m_deps[decl] = deps;
     }
 
-    // Check for cycles
     topologicalSort(ctx, m_deps);
 }
 

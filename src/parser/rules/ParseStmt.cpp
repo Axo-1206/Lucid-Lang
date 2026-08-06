@@ -21,6 +21,7 @@
 #include "core/ast/DeclAST.hpp"
 #include "core/memory/ASTArena.hpp"
 #include "debug/DebugMacros.hpp"
+#include "parser/Parser.hpp"
 
 #include <vector>
 #include <optional>
@@ -387,8 +388,9 @@ ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
     ForStmtAST* forStmt = ctx.arena.make<ForStmtAST>();
     forStmt->loc = loc;
     
-    // Parse index binding
+    // ─── 1. Parse index binding ────────────────────────────────────────────
     ParamAST* indexParam = nullptr;
+    bool isRangeLoop = true;  // Assume range loop unless we see a comma
     
     if (stream.check(TokenType::UNDERSCORE)) {
         stream.consume(); // Consume '_'
@@ -414,10 +416,12 @@ ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
     }
     forStmt->indexVar = indexParam;
     
+    // ─── 2. Check for collection iteration (has comma) ─────────────────────
     bool hasValueBinding = stream.match(TokenType::COMMA);
     
     if (hasValueBinding) {
-        // Parse value binding (collection iteration)
+        isRangeLoop = false;  // Collection iteration
+        // ─── Parse value binding (collection iteration) ──────────────────
         ParamAST* valueParam = nullptr;
         
         if (stream.check(TokenType::UNDERSCORE)) {
@@ -447,6 +451,7 @@ ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
         forStmt->valueVar = nullptr;
     }
     
+    // ─── 3. Parse 'in' ─────────────────────────────────────────────────────
     if (!stream.match(TokenType::IN)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected 'in', got '", stream.peekValue(), "'");
@@ -454,6 +459,7 @@ ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
         return forStmt;
     }
     
+    // ─── 4. Parse iterable expression ──────────────────────────────────────
     ExprPtr iterable = parseExpr(stream, ctx);
     if (!iterable) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
@@ -463,20 +469,35 @@ ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
     }
     forStmt->iterable = iterable;
     
-    // Parse optional step (ONLY for range loops)
+    // ─── 5. Parse optional step (ONLY for range loops) ────────────────────
+    // Step is ONLY valid for range iteration (isRangeLoop == true)
+    // Collection iteration (has comma) cannot have a step.
     if (stream.match(TokenType::RANGE)) {
-        ExprPtr step = parseExpr(stream, ctx);
-        if (step) {
-            forStmt->step = step;
+        if (hasValueBinding) {
+            /// ERROR: Step on collection iteration is not allowed
+            ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
+                                    "step ('..') is not allowed in collection iteration. "
+                                    "Step is only valid for range loops (e.g., 'for i int in 0..10..2')");
+            
+            // Try to recover by skipping the step expression
+            synchronizeTo(stream, ctx, TokenType::LBRACE);
+            forStmt->step = nullptr;
         } else {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
-                                    "expected step expression");
-            synchronizeToContext(stream, ctx);
+            /// VALID: Parse step for range loop
+            ExprPtr step = parseExpr(stream, ctx);
+            if (step) {
+                forStmt->step = step;
+            } else {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
+                                        "expected step expression after '..'");
+                synchronizeToContext(stream, ctx);
+            }
         }
     } else {
         forStmt->step = nullptr;
     }
     
+    // ─── 6. Parse loop body ────────────────────────────────────────────────
     StmtPtr body = parseBlock(stream, ctx);
     if (!body) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedBlock, stream.currentLoc(),

@@ -96,27 +96,27 @@ enum class DiagCode : uint32_t {
     // SYNTAX ERRORS (2000-2999)
     // ──────────────────────────────────────────────────────────────────────────
     
-    Syntax_ExpectedIdentifier       = 2001,
-    Syntax_ExpectedType             = 2002,
-    Syntax_ExpectedToken            = 2003,
-    Syntax_UnexpectedToken          = 2004,
-    Syntax_ExpectedExpression       = 2005,
-    Syntax_ExpectedBlock            = 2006,
-    Syntax_MultipleDefaults         = 2007,
-    Syntax_EmptyGroup               = 2008,
-    Syntax_ExpectedPipelineSeed     = 2009,
-    Syntax_ExpectedModulePath       = 2010,
-    Syntax_ExpectedAttributeLiteral = 2011,
-    Syntax_ExpectedSwitchSubject    = 2012,
-    Syntax_ExpectedCaseValue        = 2013,
-    Syntax_ExpectedForBinding       = 2014,
-    Syntax_ExpectedRangeBound       = 2015,
-    Syntax_InvalidAttributeTarget   = 2016,
-    Syntax_MissingAttributeArgs     = 2017,
-    Syntax_TrailingComma            = 2018,
-    Syntax_ExpectedLiteral           = 2019,
-    Syntax_UnexpectedColonAfterField = 2020,
-    Syntax_AnonymousFunctionAtDeclaration = 2021,
+    Syntax_ExpectedIdentifier               = 2001,
+    Syntax_ExpectedType                     = 2002,
+    Syntax_ExpectedToken                    = 2003,
+    Syntax_UnexpectedToken                  = 2004,
+    Syntax_ExpectedExpression               = 2005,
+    Syntax_ExpectedBlock                    = 2006,
+    Syntax_MultipleDefaults                 = 2007,
+    Syntax_EmptyGroup                       = 2008,
+    Syntax_ExpectedPipelineSeed             = 2009,
+    Syntax_ExpectedModulePath               = 2010,
+    Syntax_ExpectedAttributeLiteral         = 2011,
+    Syntax_ExpectedSwitchSubject            = 2012,
+    Syntax_ExpectedCaseValue                = 2013,
+    Syntax_ExpectedForBinding               = 2014,
+    Syntax_ExpectedRangeBound               = 2015,
+    Syntax_InvalidAttributeTarget           = 2016,
+    Syntax_MissingAttributeArgs             = 2017,
+    Syntax_TrailingComma                    = 2018,
+    Syntax_ExpectedLiteral                  = 2019,
+    Syntax_UnexpectedColonAfterField        = 2020,
+    Syntax_AnonymousFunctionAtDeclaration   = 2021,
 
     // ──────────────────────────────────────────────────────────────────────────
     // NAME RESOLUTION ERRORS (3000-3999)
@@ -175,34 +175,34 @@ enum class DiagCode : uint32_t {
     Sem_InvalidAssignment        = 4029,
     Sem_InvalidUnary             = 4030,
     Sem_InvalidBinary            = 4031,
+    Sem_InvalidRange             = 4032,
     
     // Arithmetic & Numeric Errors (shared with runtime)
-    Sem_DivisionByZero           = 4032,  // Division or modulo by zero
-    Sem_IntegerOverflow          = 4033,  // Integer overflow
-    Sem_InvalidShift             = 4034,  // Invalid shift operation
-    Sem_NegativeShift            = 4035,  // Negative shift amount
-    Sem_InvalidCast              = 4036,  // Invalid type cast/conversion
-    Sem_CircularDependency       = 4037,  // Circular dependency (const or otherwise)
-    Sem_ConstEvalLimit           = 4038,  // Const evaluation limit exceeded (internal)
-    Sem_InvalidBitwiseOp         = 4039,  // Bitwise op on non-integer
-    Sem_InvalidLogicalOp         = 4040,  // Logical op on non-bool
-    Sem_NumericOverflow          = 4041,  // General numeric overflow
-    Sem_InvalidIterator          = 4042,  // Invalid for-loop iterator
+    Sem_DivisionByZero           = 4101,  // Division or modulo by zero
+    Sem_IntegerOverflow          = 4102,  // Integer overflow
+    Sem_InvalidShift             = 4103,  // Invalid shift operation
+    Sem_NegativeShift            = 4104,  // Negative shift amount
+    Sem_InvalidCast              = 4105,  // Invalid type cast/conversion
+    Sem_CircularDependency       = 4106,  // Circular dependency (const or otherwise)
+    Sem_InvalidBitwiseOp         = 4107,  // Bitwise op on non-integer
+    Sem_InvalidLogicalOp         = 4108,  // Logical op on non-bool
+    Sem_NumericOverflow          = 4109,  // General numeric overflow
+    Sem_InvalidIterator          = 4110,  // Invalid for-loop iterator
     
-    // Assignment & Mutability (4050-4099)
-    Sem_ConstAssignment          = 4050,  // Assigning to const variable
-    Sem_ReadOnlyField            = 4051,  // Assigning to const struct field
-    Sem_ModuleReadOnly           = 4052,  // Assigning to module member
-    Sem_NonLValueAssignment      = 4053,  // Assignment to non-lvalue
-    Sem_ConstParamAssignment     = 4054,  // Assigning to const parameter
+    // Assignment & Mutability (4200-4299)
+    Sem_ConstAssignment          = 4200,  // Assigning to const variable
+    Sem_ReadOnlyField            = 4201,  // Assigning to const struct field
+    Sem_ModuleReadOnly           = 4202,  // Assigning to module member
+    Sem_NonLValueAssignment      = 4203,  // Assignment to non-lvalue
+    Sem_ConstParamAssignment     = 4204,  // Assigning to const parameter
     
-    // Fallible/Nullable Errors (4100-4149)
-    Sem_UnhandledNil             = 4100,  // Nil not handled
-    Sem_UnhandledErr             = 4101,  // Err not handled
-    Sem_InvalidNilCheck          = 4102,  // Nil check on non-nullable
-    Sem_InvalidErrCheck          = 4103,  // Err check on non-fallible
-    Sem_NilInConst               = 4104,  // Nil not allowed in const context
-    Sem_ErrInConst               = 4105,  // Err not allowed in const context
+    // Fallible/Nullable Errors (4300-4399)
+    Sem_UnhandledNil             = 4300,  // Nil not handled
+    Sem_UnhandledErr             = 4301,  // Err not handled
+    Sem_InvalidNilCheck          = 4302,  // Nil check on non-nullable
+    Sem_InvalidErrCheck          = 4303,  // Err check on non-fallible
+    Sem_NilInConst               = 4304,  // Nil not allowed in const context
+    Sem_ErrInConst               = 4305,  // Err not allowed in const context
 
     // ──────────────────────────────────────────────────────────────────────────
     // FFI/FOREIGN ERRORS (5000-5499)
@@ -270,7 +270,7 @@ enum class DiagCode : uint32_t {
     Sem_TraitConstMismatch    = 6015,
     Sem_TraitDuplicate        = 6016,
     Sem_GenericCycle          = 6017,
-    Sem_AttributeArgValue     = 6018,  // ← NEW: Invalid attribute argument value
+    Sem_AttributeArgValue     = 6018,
 
     // ──────────────────────────────────────────────────────────────────────────
     // MEMORY & OWNERSHIP ERRORS (6500-6999)

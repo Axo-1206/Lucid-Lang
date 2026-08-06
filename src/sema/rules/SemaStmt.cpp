@@ -12,9 +12,16 @@
 /// @architectural_note RAII Guards
 ///   All scope and context management is done via RAII guards to ensure
 ///   proper cleanup even when errors occur.
+/// 
+/// @architectural_note Const Evaluation Integration
+///   Const evaluation is used for constant folding and dead code elimination.
+///   - If conditions with constant booleans: only resolve the taken branch
+///   - While conditions with constant false: warn about unreachable body
+///   - For loop ranges with constant bounds: validate range at compile time
 
 #include "../Sema.hpp"
 #include "../context/SemaContext.hpp"
+#include "../const_eval/ConstEvaluator.hpp"
 #include "core/ast/StmtAST.hpp"
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/DeclAST.hpp"
@@ -111,8 +118,6 @@ bool resolveBlock(const BlockStmtAST* block, SemaContext& ctx) {
         ctx.stack.popNarrowingLevel();
     }
 
-    // ─── SymbolScope and ScopedSemanticContext automatically pop ───────────
-
     return transfers;
 }
 
@@ -139,11 +144,44 @@ bool resolveIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
         return false;
     }
 
+    // ─── CONST EVALUATION: Try to evaluate the condition at compile time ──
+    ConstantValue condVal = ConstEvaluator::evaluate(ctx, stmt->condition, boolType);
+    bool condIsConst = condVal.isBool();
+    bool condValue = condIsConst ? condVal.asBool() : false;
+
     // ─── Extract narrowing info from the condition ─────────────────────────
     NarrowingInfo info = extractNarrowingsFromCondition(stmt->condition, ctx);
     bool hasNarrowing = info.hasNarrowing;
 
-    // ─── Resolve then branch ──────────────────────────────────────────────
+    // ─── If condition is compile-time constant, only resolve the taken branch ──
+    if (condIsConst) {
+        if (condValue) {
+            // ─── Condition is always true: only resolve then branch ──────
+            if (stmt->thenBranch) {
+                if (hasNarrowing && !info.isEquality) {
+                    ScopedNarrowing narrowing(ctx, info.narrowings, false);
+                    return resolveStmt(stmt->thenBranch, ctx);
+                }
+                return resolveStmt(stmt->thenBranch, ctx);
+            }
+            return false;
+        } else {
+            // ─── Condition is always false: only resolve else branch ──────
+            if (stmt->elseBranch) {
+                if (stmt->elseBranch->isa<IfStmtAST>()) {
+                    return resolveIfStmt(stmt->elseBranch->as<IfStmtAST>(), ctx);
+                }
+                if (hasNarrowing && info.isEquality) {
+                    ScopedNarrowing narrowing(ctx, info.narrowings, true);
+                    return resolveStmt(stmt->elseBranch, ctx);
+                }
+                return resolveStmt(stmt->elseBranch, ctx);
+            }
+            return false;
+        }
+    }
+
+    // ─── Condition is runtime: resolve both branches ──────────────────────
     bool thenReturns = false;
 
     if (hasNarrowing && !info.isEquality) {
@@ -153,7 +191,6 @@ bool resolveIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
         thenReturns = stmt->thenBranch ? resolveStmt(stmt->thenBranch, ctx) : false;
     }
 
-    // ─── Resolve else branch ──────────────────────────────────────────────
     if (stmt->elseBranch) {
         bool elseReturns = false;
 
@@ -207,8 +244,13 @@ bool resolveSwitchStmt(const SwitchStmtAST* stmt, SemaContext& ctx) {
     ScopedSemanticContext context(ctx, ContextKind::SwitchBody,
                                    const_cast<SwitchStmtAST*>(stmt), stmt->loc);
     
+    // ─── CONST EVALUATION: Try to evaluate subject at compile time ────────
+    ConstantValue subjectVal = ConstEvaluator::evaluate(ctx, stmt->subject);
+    bool subjectConst = subjectVal.isInt() || subjectVal.isBool() || subjectVal.isString();
+    
     // ─── Validate cases ─────────────────────────────────────────────────────
     bool allCasesReturn = true;
+    bool foundMatch = false;
     
     for (const SwitchCasePtr caseStmt : stmt->cases) {
         // Validate each case value against the subject type
@@ -221,6 +263,51 @@ bool resolveSwitchStmt(const SwitchStmtAST* stmt, SemaContext& ctx) {
             if (!isSwitchCaseCompatible(value, subjectType, ctx)) {
                 ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, value,
                                       "case value is not compatible with switch subject type");
+            }
+            
+            // ─── CONST EVALUATION: Check if this case matches the subject ──
+            if (subjectConst && !foundMatch) {
+                bool matches = false;
+                
+                if (value->isa<RangeExprAST>()) {
+                    const RangeExprAST* range = value->as<RangeExprAST>();
+                    auto loOpt = ConstEvaluator::evaluateAsInt(ctx, range->lo);
+                    auto hiOpt = ConstEvaluator::evaluateAsInt(ctx, range->hi);
+                    if (loOpt.has_value() && hiOpt.has_value() && subjectVal.isInt()) {
+                        int64_t subj = subjectVal.asInt();
+                        bool isInclusive = !range->isExclusive;
+                        matches = isInclusive ? (subj >= loOpt.value() && subj <= hiOpt.value())
+                                              : (subj >= loOpt.value() && subj < hiOpt.value());
+                    }
+                } else if (subjectVal.isInt() && value->isa<LiteralExprAST>() && 
+                           value->as<LiteralExprAST>()->kind == LiteralKind::Int) {
+                    // Integer literal case
+                    auto caseInt = ConstEvaluator::evaluateAsInt(ctx, value);
+                    if (caseInt.has_value() && caseInt.value() == subjectVal.asInt()) {
+                        matches = true;
+                    }
+                } else if (subjectVal.isBool() && value->isa<LiteralExprAST>()) {
+                    auto caseBool = ConstEvaluator::evaluateAsBool(ctx, value);
+                    if (caseBool.has_value() && caseBool.value() == subjectVal.asBool()) {
+                        matches = true;
+                    }
+                } else if (subjectVal.isString() && value->isa<LiteralExprAST>() &&
+                           value->as<LiteralExprAST>()->kind == LiteralKind::String) {
+                    auto caseStr = ConstEvaluator::evaluate(ctx, value);
+                    if (caseStr.isString() && 
+                        ctx.pool.lookup(caseStr.asString()) == ctx.pool.lookup(subjectVal.asString())) {
+                        matches = true;
+                    }
+                } else if (value->isa<FieldAccessExprAST>() && subjectVal.isEnum()) {
+                    // Enum variant case - check by comparing names
+                    const FieldAccessExprAST* field = value->as<FieldAccessExprAST>();
+                    // If subject is an enum variant, compare names
+                    // For now, skip enum const evaluation as it's more complex
+                }
+                
+                if (matches) {
+                    foundMatch = true;
+                }
             }
         }
         
@@ -236,6 +323,10 @@ bool resolveSwitchStmt(const SwitchStmtAST* stmt, SemaContext& ctx) {
     if (!stmt->defaultBody && isEnumType(subjectType, ctx)) {
         switch_helpers::checkExhaustiveness(stmt, subjectType, ctx);
     }
+    
+    // ─── CONST EVALUATION: If we found a compile-time match and no default ──
+    // Only resolve the matching case body, skip others
+    // But we've already resolved all case bodies above. This is fine.
     
     // ─── Resolve default clause ────────────────────────────────────────────
     if (stmt->defaultBody) {
@@ -294,61 +385,138 @@ bool resolveForStmt(const ForStmtAST* stmt, SemaContext& ctx) {
     // ─── RAII: Push a scope for loop variables ─────────────────────────────
     SymbolScope scope(ctx);
 
-    // ─── Resolve AND REGISTER the index binding ──────────────────────────
-    if (stmt->indexVar) {
-        TypeAST* indexType = resolveType(stmt->indexVar->type, ctx);
+    // ─── Determine if this is a range loop or collection loop ─────────────
+    bool isRangeLoop = (stmt->valueVar == nullptr);
+    
+    if (isRangeLoop) {
+        // ─── Form 1: Range loop ─────────────────────────────────────────────
+        // for i int in 0..10 [..step]
         
-        // ─── ALWAYS register the variable ──────────────────────────────────
-        ctx.insertValue(stmt->indexVar);
-        
-        if (indexType && !isIntegerType(indexType)) {
-            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, stmt->indexVar,
-                                  "index variable must be an integer type, got ",
-                                  debug::typeToString(indexType, ctx.pool));
+        if (!stmt->iterable || !stmt->iterable->isa<RangeExprAST>()) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidIterator, stmt->iterable,
+                                  "range loop requires a range expression (start..end)");
+            return false;
         }
-    }
-
-    // ─── Resolve AND REGISTER the value binding ──────────────────────────
-    if (stmt->valueVar) {
-        TypeAST* valueType = resolveType(stmt->valueVar->type, ctx);
         
-        // ─── ALWAYS register the value variable ───────────────────────────
-        ctx.insertValue(stmt->valueVar);
+        const RangeExprAST* range = stmt->iterable->as<RangeExprAST>();
         
-        // Value type validation will happen against the iterable
-    }
-
-    // ─── Resolve the iterable expression ──────────────────────────────────
-    if (stmt->iterable) {
+        // ─── Resolve AND REGISTER the index binding ──────────────────────
+        if (stmt->indexVar) {
+            TypeAST* indexType = resolveType(stmt->indexVar->type, ctx);
+            ctx.insertValue(stmt->indexVar);
+            if (indexType && !isNumericType(indexType)) {
+                ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, stmt->indexVar,
+                                      "index variable in range loop must be numeric, got ",
+                                      debug::typeToString(indexType, ctx.pool));
+            }
+        }
+        
+        // ─── CONST EVALUATION: Validate range bounds at compile time ──────
+        auto loOpt = ConstEvaluator::evaluateAsInt(ctx, range->lo);
+        auto hiOpt = ConstEvaluator::evaluateAsInt(ctx, range->hi);
+        
+        if (loOpt.has_value() && hiOpt.has_value()) {
+            int64_t lo = loOpt.value();
+            int64_t hi = hiOpt.value();
+            bool isInclusive = !range->isExclusive;
+            
+            // Validate range order
+            if (isInclusive && lo > hi) {
+                ctx.diagnostics.error(DiagCode::Sem_InvalidRange, range,
+                                      "inclusive range start (", lo, 
+                                      ") must be less than or equal to end (", hi, ")");
+                return false;
+            }
+            if (!isInclusive && lo >= hi) {
+                ctx.diagnostics.error(DiagCode::Sem_InvalidRange, range,
+                                      "exclusive range start (", lo, 
+                                      ") must be less than end (", hi, ")");
+                return false;
+            }
+            
+            // Warn about empty ranges
+            int64_t count = hi - lo + (isInclusive ? 1 : 0);
+            if (count <= 0) {
+                ctx.diagnostics.warning(DiagCode::Warn_UnreachableCode, range,
+                                        "range is empty - loop body will never execute");
+            }
+        }
+        
+        // ─── Resolve step ──────────────────────────────────────────────────
+        if (stmt->step) {
+            PrimitiveTypeAST* numericType = ctx.getIntType();
+            TypeAST* stepType = resolveExprWithTarget(stmt->step, numericType, ctx);
+            if (!stepType || stepType->isa<UnknownTypeAST>()) {
+                // Error already reported
+            }
+            
+            // ─── CONST EVALUATION: Validate step at compile time ──────────
+            auto stepOpt = ConstEvaluator::evaluateAsInt(ctx, stmt->step);
+            if (stepOpt.has_value()) {
+                int64_t step = stepOpt.value();
+                if (step <= 0) {
+                    ctx.diagnostics.error(DiagCode::Sem_InvalidRange, stmt->step,
+                                          "step must be positive, got ", step);
+                    return false;
+                }
+            }
+        }
+        
+    } else {
+        // ─── Form 2: Collection loop ───────────────────────────────────────
+        // for i int, v V in collection
+        
+        if (stmt->step) {
+            // Step should have been rejected by the parser
+            ctx.diagnostics.error(DiagCode::Sem_InvalidIterator, stmt->step,
+                                  "step ('..') is not allowed in collection iteration");
+            return false;
+        }
+        
+        // ─── Resolve AND REGISTER the index binding ──────────────────────
+        if (stmt->indexVar) {
+            TypeAST* indexType = resolveType(stmt->indexVar->type, ctx);
+            ctx.insertValue(stmt->indexVar);
+            if (indexType && !isIntegerType(indexType)) {
+                ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, stmt->indexVar,
+                                      "index variable in collection loop must be integer, got ",
+                                      debug::typeToString(indexType, ctx.pool));
+            }
+        }
+        
+        // ─── Resolve AND REGISTER the value binding ──────────────────────
+        if (stmt->valueVar) {
+            TypeAST* valueType = resolveType(stmt->valueVar->type, ctx);
+            ctx.insertValue(stmt->valueVar);
+        }
+        
+        // ─── Resolve the iterable expression ──────────────────────────────
         TypeAST* iterableType = resolveExpr(stmt->iterable, ctx);
         if (!iterableType || iterableType->isa<UnknownTypeAST>()) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidIterator, stmt->iterable,
                                   "iterable has unknown type");
-        } else {
-            // ─── Validate value type against iterable element type ──────
-            if (stmt->valueVar && iterableType->isa<ArrayTypeAST>()) {
-                const ArrayTypeAST* arrayType = iterableType->as<ArrayTypeAST>();
-                const TypeAST* elementType = arrayType->element;
-                
-                if (stmt->valueVar->type) {
-                    TypeAST* valueType = resolveType(stmt->valueVar->type, ctx);
-                    if (valueType && !typesEqual(valueType, elementType)) {
-                        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, stmt->valueVar,
-                                              "value type '", debug::typeToString(valueType, ctx.pool),
-                                              "' does not match iterable element type '",
-                                              debug::typeToString(elementType, ctx.pool), "'");
-                    }
+            return false;
+        }
+        
+        // ─── Validate value type against iterable element type ──────────
+        if (stmt->valueVar && iterableType->isa<ArrayTypeAST>()) {
+            const ArrayTypeAST* arrayType = iterableType->as<ArrayTypeAST>();
+            const TypeAST* elementType = arrayType->element;
+            
+            if (stmt->valueVar->type) {
+                TypeAST* valueType = resolveType(stmt->valueVar->type, ctx);
+                if (valueType && !typesEqual(valueType, elementType)) {
+                    ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, stmt->valueVar,
+                                          "value type '", debug::typeToString(valueType, ctx.pool),
+                                          "' does not match iterable element type '",
+                                          debug::typeToString(elementType, ctx.pool), "'");
                 }
             }
-        }
-    }
-
-    // ─── Resolve the step expression (if present) ──────────────────────────
-    if (stmt->step) {
-        PrimitiveTypeAST* numericType = ctx.getIntType();
-        TypeAST* stepType = resolveExprWithTarget(stmt->step, numericType, ctx);
-        if (!stepType || stepType->isa<UnknownTypeAST>()) {
-            // Error already reported - continue
+        } else if (stmt->valueVar && !iterableType->isa<ArrayTypeAST>()) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidIterator, stmt->iterable,
+                                  "collection loop requires an array type, got ",
+                                  debug::typeToString(iterableType, ctx.pool));
+            return false;
         }
     }
 
@@ -356,8 +524,6 @@ bool resolveForStmt(const ForStmtAST* stmt, SemaContext& ctx) {
     if (stmt->body) {
         resolveStmt(stmt->body, ctx);
     }
-
-    // ─── SymbolScope and ScopedSemanticContext automatically pop ───────────
 
     return false;
 }
@@ -381,12 +547,29 @@ bool resolveWhileStmt(const WhileStmtAST* stmt, SemaContext& ctx) {
         return false;
     }
 
+    // ─── CONST EVALUATION: Check if condition is compile-time constant ────
+    ConstantValue condVal = ConstEvaluator::evaluate(ctx, stmt->condition, boolType);
+    bool condIsConst = condVal.isBool();
+    bool condValue = condIsConst ? condVal.asBool() : false;
+
+    // ─── If condition is compile-time false, body is unreachable ──────────
+    if (condIsConst && !condValue) {
+        ctx.diagnostics.warning(DiagCode::Warn_UnreachableCode, stmt->body,
+                                "while loop condition is always false - body will never execute");
+        return false;
+    }
+
+    // ─── If condition is compile-time true, it's an infinite loop ─────────
+    if (condIsConst && condValue) {
+        ctx.diagnostics.warning(DiagCode::Warn_UnreachableCode, stmt,
+                                "while loop condition is always true - infinite loop (no break)");
+        // Still resolve the body (it may have break/return)
+    }
+
     // ─── Resolve the loop body ─────────────────────────────────────────────
     if (stmt->body) {
         resolveStmt(stmt->body, ctx);
     }
-
-    // ─── ScopedSemanticContext automatically pops ─────────────────────────
 
     return false;
 }
@@ -415,7 +598,22 @@ bool resolveDoWhileStmt(const DoWhileStmtAST* stmt, SemaContext& ctx) {
         return false;
     }
 
-    // ─── ScopedSemanticContext automatically pops ─────────────────────────
+    // ─── CONST EVALUATION: Check if condition is compile-time constant ────
+    ConstantValue condVal = ConstEvaluator::evaluate(ctx, stmt->condition, boolType);
+    bool condIsConst = condVal.isBool();
+    bool condValue = condIsConst ? condVal.asBool() : false;
+
+    // ─── If condition is compile-time false, loop executes once ────────────
+    if (condIsConst && !condValue) {
+        // Body already resolved above
+        return false;
+    }
+
+    // ─── If condition is compile-time true, it's an infinite loop ─────────
+    if (condIsConst && condValue) {
+        ctx.diagnostics.warning(DiagCode::Warn_UnreachableCode, stmt,
+                                "do-while loop condition is always true - infinite loop (no break)");
+    }
 
     return false;
 }
@@ -449,7 +647,6 @@ bool resolveReturnStmt(const ReturnStmtAST* stmt, SemaContext& ctx) {
         // Resolve the return value against the expected type
         TypeAST* valueType = resolveExprWithTarget(stmt->value, expectedType, ctx);
         if (!valueType || valueType->isa<UnknownTypeAST>()) {
-            // Error already reported by resolveExprWithTarget
             return true;
         }
 
