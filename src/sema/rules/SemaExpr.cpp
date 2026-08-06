@@ -234,7 +234,28 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetTyp
         return ctx.getUnknownType();
     }
 
-    // ─── Step 3: Determine value state ─────────────────────────────────────
+    // ─── Step 3: Check: Is this a pending future (async/spawn not resolved)? ──
+    if (ctx.isPendingFuture(expr->name)) {
+        // Check what kind of future it is for a better error message
+        if (ctx.hasPendingAsync(expr->name)) {
+            ctx.diagnostics.error(DiagCode::Sem_AwaitNonAsync, expr,
+                                  "cannot use async value '", ctx.pool.lookup(expr->name), 
+                                  "'. Use 'await' before using the value.");
+        } else if (ctx.hasPendingSpawn(expr->name)) {
+            ctx.diagnostics.error(DiagCode::Sem_JoinNonSpawn, expr,
+                                  "cannot use spawn value '", ctx.pool.lookup(expr->name), 
+                                  "'. Use 'join' before using the value.");
+        } else {
+            ctx.diagnostics.error(DiagCode::Sem_AwaitNonAsync, expr,
+                                  "cannot use future value '", ctx.pool.lookup(expr->name), 
+                                  "'. Resolve it first.");
+        }
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
+        return ctx.getUnknownType();
+    }
+
+    // ─── Step 4: Determine value state ─────────────────────────────────────
     ValueState state = ValueState::Unknown;
     if (decl->isa<EnumVariantAST>() || decl->isa<FuncDeclAST>()) {
         state = ValueState::Definite;
@@ -249,7 +270,7 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetTyp
         state = ValueState::Unknown;
     }
 
-    // ─── Step 4: Set isLValue based on declaration type ──────────────────
+    // ─── Step 5: Set isLValue based on declaration type ──────────────────
     if (decl->isa<VarDeclAST>()) {
         const VarDeclAST* varDecl = decl->as<VarDeclAST>();
         expr->isLValue = (varDecl->keyword == DeclKeyword::Let);
@@ -263,16 +284,14 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetTyp
         expr->isLValue = !param->isConst;
         expr->isConst = param->isConst;
     } else if (decl->isa<EnumVariantAST>()) {
-        // Enum variants are compile-time constants, not assignable
         expr->isLValue = false;
         expr->isConst = true;
     } else {
-        // Default: not an l-value
         expr->isLValue = false;
         expr->isConst = false;
     }
 
-    // ─── Step 5: Handle generic arguments (function instantiation) ────────
+    // ─── Step 6: Handle generic arguments (function instantiation) ────────
     if (!expr->genericArgs.empty()) {
         if (!decl->isa<FuncDeclAST>()) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
@@ -302,7 +321,7 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetTyp
         }
     }
 
-    // ─── Step 6: Return the declaration's type ─────────────────────────────
+    // ─── Step 7: Return the declaration's type ─────────────────────────────
     if (!decl->type) {
         ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
                               "'", ctx.pool.lookup(expr->name), "' has no type information");

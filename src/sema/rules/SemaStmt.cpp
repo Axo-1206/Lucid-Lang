@@ -897,10 +897,17 @@ bool resolveAwaitStmt(const AwaitStmtAST* stmt, SemaContext& ctx) {
 
         // ─── 3. Check if this is a pending async operation ────────────────
         if (ctx.hasPendingAsync(targetName)) {
+            // Resolve the async operation (remove from pending list)
             ctx.resolveAsync(targetName);
-        } else {
+        } else if (ctx.hasPendingSpawn(targetName)) {
+            // Cannot await a spawn - must use join
             ctx.diagnostics.error(DiagCode::Sem_AwaitNonAsync, target,
-                                  "'", ctx.pool.lookup(targetName), "' was not declared with async");
+                                  "'", ctx.pool.lookup(targetName), "' was declared with spawn, not async. Use 'join' instead.");
+            return false;
+        } else {
+            // Check if it's just a normal variable that was never async
+            ctx.diagnostics.error(DiagCode::Sem_AwaitNonAsync, target,
+                                  "'", ctx.pool.lookup(targetName), "' is not a pending async operation");
             return false;
         }
 
@@ -911,8 +918,6 @@ bool resolveAwaitStmt(const AwaitStmtAST* stmt, SemaContext& ctx) {
                                   "undefined variable '", ctx.pool.lookup(targetName), "'");
             return false;
         }
-
-        // TODO: Change variable type from Future<T> to T
     }
 
     return false;
@@ -1009,10 +1014,17 @@ bool resolveJoinStmt(const JoinStmtAST* stmt, SemaContext& ctx) {
 
         // ─── 3. Check if this is a pending spawn operation ─────────────────
         if (ctx.hasPendingSpawn(targetName)) {
+            // Resolve the spawn operation (remove from pending list)
             ctx.resolveSpawn(targetName);
-        } else {
+        } else if (ctx.hasPendingAsync(targetName)) {
+            // Cannot join an async - must use await
             ctx.diagnostics.error(DiagCode::Sem_JoinNonSpawn, target,
-                                  "'", ctx.pool.lookup(targetName), "' was not declared with spawn");
+                                  "'", ctx.pool.lookup(targetName), "' was declared with async, not spawn. Use 'await' instead.");
+            return false;
+        } else {
+            // Check if it's just a normal variable that was never spawn
+            ctx.diagnostics.error(DiagCode::Sem_JoinNonSpawn, target,
+                                  "'", ctx.pool.lookup(targetName), "' is not a pending spawn operation");
             return false;
         }
 
@@ -1023,8 +1035,6 @@ bool resolveJoinStmt(const JoinStmtAST* stmt, SemaContext& ctx) {
                                   "undefined variable '", ctx.pool.lookup(targetName), "'");
             return false;
         }
-
-        // TODO: Change variable type from Future<T> to T
     }
 
     return false;

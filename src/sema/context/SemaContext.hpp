@@ -303,11 +303,8 @@ struct SemaContext {
         // Check if this variable has been narrowed
         const TypeAST* narrowedType = stack.getNarrowedType(name);
         if (narrowedType) {
-            // Create a temporary declaration with the narrowed type
-            // We need to const_cast because we're modifying the type
-            // This is safe because we're only changing the type field
-            // and the original declaration remains unchanged
             const_cast<ValueDeclAST*>(decl)->type = const_cast<TypeAST*>(narrowedType);
+            return decl;
         }
         
         return decl;
@@ -513,6 +510,11 @@ struct SemaContext {
     bool hasPendingSpawn(InternedString name) const {
         if (scopes.empty()) return false;
         return currentScope().pendingSpawn.find(name) != currentScope().pendingSpawn.end();
+    }
+    
+    /// @brief Check if a variable is a pending future (async/spawn not yet resolved).
+    bool isPendingFuture(InternedString name) const {
+        return hasPendingAsync(name) || hasPendingSpawn(name);
     }
     
     void resolveAsync(InternedString name) {
