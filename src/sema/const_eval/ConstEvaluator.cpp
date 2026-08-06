@@ -7,6 +7,8 @@
 #include "sema/types/SemaCompare.hpp"
 #include "sema/Sema.hpp"
 
+#include <cmath>
+
 namespace sema {
 
 // ─── Main Entry Points ───────────────────────────────────────────────────
@@ -145,7 +147,382 @@ std::optional<bool> ConstEvaluator::evaluateAsBool(SemaContext& ctx, const ExprA
     return std::nullopt;
 }
 
-// ─── evalRangeExpr ────────────────────────────────────────────────────────
+// ─── evalLiteral ──────────────────────────────────────────────────────────
+
+ConstantValue ConstEvaluator::evalLiteral(SemaContext& ctx, const LiteralExprAST* expr) {
+    if (!expr) return ConstantValue::error();
+
+    switch (expr->kind) {
+        case LiteralKind::True:   return ConstantValue(true);
+        case LiteralKind::False:  return ConstantValue(false);
+        case LiteralKind::Int:
+        case LiteralKind::Hex:
+        case LiteralKind::Binary: {
+            std::string str = ctx.pool.lookup(expr->value);
+            try {
+                return ConstantValue(std::stoll(str, nullptr, 0));
+            } catch (const std::exception&) {
+                ctx.diagnostics.error(DiagCode::Lex_InvalidNumberLiteral, expr,
+                                      "invalid integer literal '", str, "'");
+                return ConstantValue::error();
+            }
+        }
+        case LiteralKind::Float: {
+            std::string str = ctx.pool.lookup(expr->value);
+            try {
+                return ConstantValue(std::stod(str));
+            } catch (const std::exception&) {
+                ctx.diagnostics.error(DiagCode::Lex_InvalidNumberLiteral, expr,
+                                      "invalid float literal '", str, "'");
+                return ConstantValue::error();
+            }
+        }
+        case LiteralKind::String:
+        case LiteralKind::RawString:
+            return ConstantValue(expr->value);
+        case LiteralKind::Char:
+            return ConstantValue(expr->value);
+        case LiteralKind::Nil:   return ConstantValue::nil();
+        case LiteralKind::Err:   return ConstantValue::err();
+        default:                 return ConstantValue::unknown();
+    }
+}
+
+// ─── evalIdentifier ──────────────────────────────────────────────────────
+
+ConstantValue ConstEvaluator::evalIdentifier(SemaContext& ctx, const IdentifierExprAST* expr) {
+    if (!expr) return ConstantValue::error();
+
+    // ─── `_` is the discard placeholder ──────────────────────────────────────
+    // `_` is a valid identifier but has no value - it's used for discarding
+    if (ctx.pool.lookupView(expr->name) == "_") {
+        return ConstantValue::unknown();
+    }
+
+    const ValueDeclAST* decl = ctx.lookupValue(expr->name);
+    if (!decl) {
+        // This shouldn't happen if name resolution succeeded
+        return ConstantValue::error();
+    }
+
+    // ─── Variable ──────────────────────────────────────────────────────────
+    if (decl->isa<VarDeclAST>()) {
+        const VarDeclAST* var = decl->as<VarDeclAST>();
+        
+        // Check if this variable has a const value already computed
+        if (var->init && var->init->isConst) {
+            return var->init->constValue;
+        }
+
+        // If it's a const variable, evaluate it now
+        if (var->keyword == DeclKeyword::Const && var->init) {
+            // Check for circular dependency
+            if (m_evaluating.find(var) != m_evaluating.end()) {
+                ctx.diagnostics.error(DiagCode::Sem_CircularDependency, expr,
+                                      "cycle detected in const declaration '",
+                                      ctx.pool.lookup(expr->name), "'");
+                return ConstantValue::error();
+            }
+            return evaluate(ctx, var->init, var->type);
+        }
+
+        // Non-const variable cannot be evaluated at compile time
+        return ConstantValue::unknown();
+    }
+
+    // ─── Function ──────────────────────────────────────────────────────────
+    if (decl->isa<FuncDeclAST>()) {
+        const FuncDeclAST* func = decl->as<FuncDeclAST>();
+        if (func->keyword != DeclKeyword::Const) {
+            return ConstantValue::unknown();
+        }
+        return ConstantValue(func);
+    }
+
+    // ─── Enum Variant ──────────────────────────────────────────────────────
+    if (decl->isa<EnumVariantAST>()) {
+        const EnumVariantAST* variant = decl->as<EnumVariantAST>();
+        return ConstantValue(variant->value);
+    }
+
+    // ─── Parameter ─────────────────────────────────────────────────────────
+    if (decl->isa<ParamAST>()) {
+        // Parameters get their values from function arguments during
+        // const function execution. The value is stored in the parameter's
+        // type field during executeFunction.
+        const ParamAST* param = decl->as<ParamAST>();
+        if (param->type && param->type->isa<PrimitiveTypeAST>()) {
+            // We don't have the actual value stored on the param
+            // During const function execution, the value is bound to the param
+            // This should only be called when executing a const function body
+            return ConstantValue::unknown();
+        }
+        return ConstantValue::unknown();
+    }
+
+    return ConstantValue::unknown();
+}
+
+// ─── evalBinary ──────────────────────────────────────────────────────────
+
+ConstantValue ConstEvaluator::evalBinary(SemaContext& ctx, const BinaryExprAST* expr,
+                                          const TypeAST* targetType) {
+    if (!expr) return ConstantValue::error();
+
+    // ─── If condition context: detect narrowing ──────────────────────────
+    if (ctx.stack.isIfConditionCtx()) {
+        NarrowingInfo info = detectNarrowingPattern(expr, ctx);
+        if (info.hasNarrowing) {
+            ctx.stack.setPendingNarrowing(info);
+            // Return a placeholder - the actual value will be evaluated later
+            // if needed. For narrowing detection, we just need to know
+            // that the condition is const.
+            return ConstantValue::unknown();
+        }
+    }
+
+    // ─── Evaluate left operand ──────────────────────────────────────────
+    ConstantValue left = evaluate(ctx, expr->left, targetType);
+    if (left.isError()) return left;
+    if (left.isUnknown()) return ConstantValue::unknown();
+
+    // ─── Short-circuit for logical operators ────────────────────────────
+    if (expr->op == BinaryOp::And) {
+        if (left.isBool() && !left.asBool()) {
+            return ConstantValue(false);
+        }
+        if (left.isUnknown()) return ConstantValue::unknown();
+    }
+    if (expr->op == BinaryOp::Or) {
+        if (left.isBool() && left.asBool()) {
+            return ConstantValue(true);
+        }
+        if (left.isUnknown()) return ConstantValue::unknown();
+    }
+
+    // ─── Evaluate right operand ──────────────────────────────────────────
+    ConstantValue right = evaluate(ctx, expr->right, targetType);
+    if (right.isError()) return right;
+    if (right.isUnknown()) return ConstantValue::unknown();
+
+    // ─── Perform the operation ────────────────────────────────────────────
+    return evalBinaryOp(ctx, expr->op, left, right, expr, targetType);
+}
+
+// ─── evalUnary ────────────────────────────────────────────────────────────
+
+ConstantValue ConstEvaluator::evalUnary(SemaContext& ctx, const UnaryExprAST* expr,
+                                         const TypeAST* targetType) {
+    if (!expr) return ConstantValue::error();
+
+    ConstantValue operand = evaluate(ctx, expr->operand, targetType);
+    if (operand.isError()) return operand;
+    if (operand.isUnknown()) return ConstantValue::unknown();
+
+    switch (expr->op) {
+        case UnaryOp::Neg:
+            return evalNeg(ctx, operand, expr, targetType);
+        case UnaryOp::Not:
+            return evalNot(ctx, operand, expr);
+        case UnaryOp::BitNot:
+            return evalBitNot(ctx, operand, expr);
+        default:
+            return ConstantValue::unknown();
+    }
+}
+
+// ─── evalStructLiteral ────────────────────────────────────────────────────
+
+ConstantValue ConstEvaluator::evalStructLiteral(SemaContext& ctx, const StructLiteralExprAST* expr) {
+    if (!expr) return ConstantValue::error();
+
+    // ─── Look up struct type ──────────────────────────────────────────────
+    const TypeDeclAST* typeDecl = ctx.lookupType(expr->typeName);
+    if (!typeDecl) {
+        ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
+                              "undefined type '", ctx.pool.lookup(expr->typeName), "'");
+        return ConstantValue::error();
+    }
+
+    if (!typeDecl->isa<StructDeclAST>()) {
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
+                              "'", ctx.pool.lookup(expr->typeName), "' is not a struct");
+        return ConstantValue::error();
+    }
+
+    const StructDeclAST* structDecl = typeDecl->as<StructDeclAST>();
+
+    // ─── Build field map ──────────────────────────────────────────────────
+    std::unordered_map<InternedString, const FieldDeclAST*> fieldMap;
+    for (const FieldDeclAST* field : structDecl->fields) {
+        fieldMap[field->name] = field;
+    }
+
+    std::unordered_map<InternedString, ConstantValue> fields;
+    bool hasError = false;
+
+    // ─── Initialize with default values ──────────────────────────────────
+    for (const FieldDeclAST* field : structDecl->fields) {
+        if (field->defaultVal) {
+            ConstantValue val = evaluate(ctx, field->defaultVal, field->type);
+            if (val.isError()) return val;
+            if (val.isUnknown()) return ConstantValue::unknown();
+            fields[field->name] = val;
+        }
+    }
+
+    // ─── Override with explicit initializers ─────────────────────────────
+    for (const FieldInitAST* init : expr->inits) {
+        auto it = fieldMap.find(init->name);
+        if (it == fieldMap.end()) {
+            ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, init,
+                                  "struct '", ctx.pool.lookup(structDecl->name),
+                                  "' has no field named '", ctx.pool.lookup(init->name), "'");
+            return ConstantValue::error();
+        }
+
+        const FieldDeclAST* field = it->second;
+
+        // Check const field cannot be assigned nil/err
+        if (field->isConst) {
+            if (init->value->isa<LiteralExprAST>()) {
+                const LiteralExprAST* lit = init->value->as<LiteralExprAST>();
+                if (lit->kind == LiteralKind::Nil || lit->kind == LiteralKind::Err) {
+                    ctx.diagnostics.error(DiagCode::Sem_ConstNullable, init,
+                                          "const field '", ctx.pool.lookup(field->name),
+                                          "' cannot be assigned '",
+                                          (lit->kind == LiteralKind::Nil ? "nil" : "err"), "'");
+                    return ConstantValue::error();
+                }
+            }
+        }
+
+        ConstantValue val = evaluate(ctx, init->value, field->type);
+        if (val.isError()) return val;
+        if (val.isUnknown()) return ConstantValue::unknown();
+        fields[init->name] = val;
+    }
+
+    // ─── Check missing required fields ──────────────────────────────────
+    for (const FieldDeclAST* field : structDecl->fields) {
+        if (fields.find(field->name) == fields.end()) {
+            // Check if field has a default
+            if (field->defaultVal) continue;
+            // Check if field is nullable/fallible (optional)
+            if (isNullableType(field->type) || isFallibleType(field->type)) continue;
+            
+            ctx.diagnostics.error(DiagCode::Sem_MissingInitializer, expr,
+                                  "missing initializer for struct field '",
+                                  ctx.pool.lookup(field->name), "'");
+            return ConstantValue::error();
+        }
+    }
+
+    ConstantValue result;
+    result.kind = ConstantValue::Kind::Struct;
+    result.value = fields;
+    result.type = ctx.getNamedType(structDecl->name);
+    return result;
+}
+
+// ─── evalArrayLiteral ────────────────────────────────────────────────────
+
+ConstantValue ConstEvaluator::evalArrayLiteral(SemaContext& ctx, const ArrayLiteralExprAST* expr) {
+    if (!expr) return ConstantValue::error();
+
+    std::vector<ConstantValue> elements;
+
+    for (const ExprAST* elem : expr->elements) {
+        ConstantValue val = evaluate(ctx, elem);
+        if (val.isError()) return val;
+        if (val.isUnknown()) return ConstantValue::unknown();
+        elements.push_back(val);
+    }
+
+    // ─── Check all elements have the same type ──────────────────────────
+    if (!elements.empty()) {
+        const TypeAST* firstType = elements[0].type;
+        for (size_t i = 1; i < elements.size(); ++i) {
+            if (!typesEqual(elements[i].type, firstType)) {
+                ctx.diagnostics.error(DiagCode::Sem_InvalidArrayElement, expr,
+                                      "array elements must have the same type");
+                return ConstantValue::error();
+            }
+        }
+    }
+
+    ConstantValue result;
+    result.kind = ConstantValue::Kind::Array;
+    result.value = elements;
+    return result;
+}
+
+// ─── evalFieldAccess ─────────────────────────────────────────────────────
+
+ConstantValue ConstEvaluator::evalFieldAccess(SemaContext& ctx, const FieldAccessExprAST* expr) {
+    if (!expr) return ConstantValue::error();
+
+    ConstantValue obj = evaluate(ctx, expr->object);
+    if (obj.isError()) return obj;
+    if (obj.isUnknown()) return ConstantValue::unknown();
+
+    if (!obj.isStruct()) {
+        ctx.diagnostics.error(DiagCode::Sem_InvalidBinary, expr->object,
+                              "field access on non-struct value");
+        return ConstantValue::error();
+    }
+
+    const auto& structFields = obj.asStruct();
+    auto it = structFields.find(expr->fieldName);
+    if (it == structFields.end()) {
+        ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr,
+                              "struct has no field '",
+                              ctx.pool.lookup(expr->fieldName), "'");
+        return ConstantValue::error();
+    }
+
+    return it->second;
+}
+
+// ─── evalNullCoalesce ────────────────────────────────────────────────────
+
+ConstantValue ConstEvaluator::evalNullCoalesce(SemaContext& ctx, const NullCoalesceExprAST* expr) {
+    if (!expr) return ConstantValue::error();
+
+    ConstantValue val = evaluate(ctx, expr->value);
+    if (val.isError()) return val;
+
+    if (val.isNil() || val.isErr()) {
+        return evaluate(ctx, expr->fallback);
+    }
+
+    if (val.isUnknown()) return ConstantValue::unknown();
+    return val;
+}
+
+// ─── evalIfExpr ──────────────────────────────────────────────────────────
+
+ConstantValue ConstEvaluator::evalIfExpr(SemaContext& ctx, const IfExprAST* expr) {
+    if (!expr) return ConstantValue::error();
+
+    ConstantValue cond = evaluate(ctx, expr->condition);
+    if (cond.isError()) return cond;
+    if (cond.isUnknown()) return ConstantValue::unknown();
+
+    if (!cond.isBool()) {
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr->condition,
+                              "if condition must be bool");
+        return ConstantValue::error();
+    }
+
+    if (cond.asBool()) {
+        return evaluate(ctx, expr->thenBranch);
+    } else {
+        return evaluate(ctx, expr->elseBranch);
+    }
+}
+
+// ─── evalRangeExpr ──────────────────────────────────────────────────────
 
 ConstantValue ConstEvaluator::evalRangeExpr(SemaContext& ctx, const RangeExprAST* expr) {
     if (!expr) return ConstantValue::error();
@@ -182,13 +559,12 @@ ConstantValue ConstEvaluator::evalRangeExpr(SemaContext& ctx, const RangeExprAST
         return ConstantValue::error();
     }
 
-    // ─── Return the lower bound (the range itself is a "value") ──────────
-    // For a range, we return the lower bound as the "value"
+    // ─── Return the lower bound ──────────────────────────────────────────
     // The caller can access loVal and hiVal separately if needed
     return loVal;
 }
 
-// ─── evalCall ─────────────────────────────────────────────────────────────
+// ─── evalCall ────────────────────────────────────────────────────────────
 
 ConstantValue ConstEvaluator::evalCall(SemaContext& ctx, const CallExprAST* expr) {
     const FuncDeclAST* func = resolveCalleeOrError(expr->callee, ctx);
@@ -215,7 +591,7 @@ ConstantValue ConstEvaluator::evalCall(SemaContext& ctx, const CallExprAST* expr
     return executeFunction(ctx, func, args);
 }
 
-// ─── executeFunction ──────────────────────────────────────────────────────
+// ─── executeFunction ─────────────────────────────────────────────────────
 
 ConstantValue ConstEvaluator::executeFunction(SemaContext& ctx, const FuncDeclAST* func,
                                                const std::vector<ConstantValue>& args) {

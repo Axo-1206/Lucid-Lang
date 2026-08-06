@@ -170,6 +170,16 @@ ExprAST* parsePrimaryExpr(TokenStream& stream, ParserContext& ctx) {
     if (is_literal(current)) {
         return parseLiteralExpr(stream, ctx);
     }
+
+    // ─── Underscore (_) - discard placeholder ──────────────────────────
+    if (current == TokenType::UNDERSCORE) {
+        stream.consume(); // Consume '_'
+        auto* idExpr = ctx.arena.make<IdentifierExprAST>();
+        idExpr->loc = loc;
+        idExpr->name = ctx.pool.intern("_");
+        idExpr->genericArgs = ctx.arena.makeBuilder<TypePtr>().build();
+        return idExpr;
+    }
     
     // ─── Intrinsic call: #sizeof(T) ─────────────────────────────────────
     if (current == TokenType::HASH) {

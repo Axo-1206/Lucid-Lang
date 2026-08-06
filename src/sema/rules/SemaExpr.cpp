@@ -214,6 +214,16 @@ TypeAST* resolveLiteralExpr(LiteralExprAST* expr, const TypeAST* targetType, Sem
 // =============================================================================
 
 TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+    // ─── Special case: `_` is the discard placeholder ──────────────────────
+    if (ctx.pool.lookupView(expr->name) == "_") {
+        // `_` has no type - it's a placeholder, not a real value
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
+        expr->isLValue = false;
+        expr->isConst = false;
+        return ctx.getUnknownType();
+    }
+
     // ─── Step 1: Check if this is a generic parameter ─────────────────────
     if (ctx.isGenericParam(expr->name)) {
         ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
