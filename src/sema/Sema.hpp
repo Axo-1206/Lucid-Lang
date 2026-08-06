@@ -94,7 +94,6 @@ bool resolveStmt(const StmtAST* stmt, SemaContext& ctx);
 bool resolveBlock(const BlockStmtAST* block, SemaContext& ctx);
 bool resolveIfStmt(const IfStmtAST* stmt, SemaContext& ctx);
 bool resolveSwitchStmt(const SwitchStmtAST* stmt, SemaContext& ctx);
-bool resolveSwitchCase(const SwitchCaseAST* switchCase, SemaContext& ctx);
 bool resolveForStmt(const ForStmtAST* stmt, SemaContext& ctx);
 bool resolveWhileStmt(const WhileStmtAST* stmt, SemaContext& ctx);
 bool resolveDoWhileStmt(const DoWhileStmtAST* stmt, SemaContext& ctx);

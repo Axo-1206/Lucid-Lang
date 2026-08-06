@@ -42,7 +42,6 @@ bool resolveStmt(const StmtAST* stmt, SemaContext& ctx) {
         case ASTKind::BlockStmt:        return resolveBlock(stmt->as<BlockStmtAST>(), ctx);
         case ASTKind::IfStmt:           return resolveIfStmt(stmt->as<IfStmtAST>(), ctx);
         case ASTKind::SwitchStmt:       return resolveSwitchStmt(stmt->as<SwitchStmtAST>(), ctx);
-        case ASTKind::SwitchCase:       return resolveSwitchCase(stmt->as<SwitchCaseAST>(), ctx);
         case ASTKind::ForStmt:          return resolveForStmt(stmt->as<ForStmtAST>(), ctx);
         case ASTKind::WhileStmt:        return resolveWhileStmt(stmt->as<WhileStmtAST>(), ctx);
         case ASTKind::DoWhileStmt:      return resolveDoWhileStmt(stmt->as<DoWhileStmtAST>(), ctx);
@@ -252,6 +251,29 @@ bool resolveSwitchStmt(const SwitchStmtAST* stmt, SemaContext& ctx) {
     bool allCasesReturn = true;
     bool foundMatch = false;
     
+    // ─── Track seen values for duplicate detection ─────────────────────────
+    // For literal values, store the raw value as key
+    std::unordered_map<InternedString, SourceLocation> seenLiterals;
+    // For enum variants, store the variant name
+    std::unordered_map<InternedString, SourceLocation> seenVariants;
+    // For ranges, store the range bounds
+    struct RangeKey {
+        int64_t lo;
+        int64_t hi;
+        bool isInclusive;
+        bool operator==(const RangeKey& other) const {
+            return lo == other.lo && hi == other.hi && isInclusive == other.isInclusive;
+        }
+    };
+    struct RangeKeyHash {
+        size_t operator()(const RangeKey& key) const {
+            return std::hash<int64_t>{}(key.lo) ^ 
+                   std::hash<int64_t>{}(key.hi) ^ 
+                   std::hash<bool>{}(key.isInclusive);
+        }
+    };
+    std::unordered_map<RangeKey, SourceLocation, RangeKeyHash> seenRanges;
+    
     for (const SwitchCasePtr caseStmt : stmt->cases) {
         // Validate each case value against the subject type
         for (ExprAST* value : caseStmt->values) {
@@ -263,6 +285,84 @@ bool resolveSwitchStmt(const SwitchStmtAST* stmt, SemaContext& ctx) {
             if (!isSwitchCaseCompatible(value, subjectType, ctx)) {
                 ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, value,
                                       "case value is not compatible with switch subject type");
+            }
+            
+            // ─── DUPLICATE DETECTION ─────────────────────────────────────────
+            
+            // ─── Check literal values ──────────────────────────────────────
+            if (value->isa<LiteralExprAST>()) {
+                const LiteralExprAST* lit = value->as<LiteralExprAST>();
+                InternedString key = lit->value;
+                
+                // For integer literals, also check if they fall within any range
+                auto it = seenLiterals.find(key);
+                if (it != seenLiterals.end()) {
+                    ctx.diagnostics.error(DiagCode::Sem_DuplicateCase, value,
+                                          "duplicate case value '", ctx.pool.lookup(key), "'");
+                    ctx.diagnostics.noteAt(it->second, "previous definition here");
+                    return false;
+                }
+                seenLiterals[key] = value->loc;
+                continue;
+            }
+            
+            // ─── Check enum variants ──────────────────────────────────────
+            if (switch_helpers::isEnumVariantAccess(value, ctx)) {
+                InternedString variantName = switch_helpers::getEnumVariantName(value, ctx);
+                if (variantName.isValid()) {
+                    auto it = seenVariants.find(variantName);
+                    if (it != seenVariants.end()) {
+                        ctx.diagnostics.error(DiagCode::Sem_DuplicateCase, value,
+                                              "duplicate case value '", ctx.pool.lookup(variantName), "'");
+                        ctx.diagnostics.noteAt(it->second, "previous definition here");
+                        return false;
+                    }
+                    seenVariants[variantName] = value->loc;
+                }
+                continue;
+            }
+            
+            // ─── Check ranges ──────────────────────────────────────────────
+            if (value->isa<RangeExprAST>()) {
+                const RangeExprAST* range = value->as<RangeExprAST>();
+                auto loOpt = ConstEvaluator::evaluateAsInt(ctx, range->lo);
+                auto hiOpt = ConstEvaluator::evaluateAsInt(ctx, range->hi);
+                
+                if (loOpt.has_value() && hiOpt.has_value()) {
+                    RangeKey key{loOpt.value(), hiOpt.value(), !range->isExclusive};
+                    
+                    // Check for duplicate range
+                    auto it = seenRanges.find(key);
+                    if (it != seenRanges.end()) {
+                        ctx.diagnostics.error(DiagCode::Sem_DuplicateCase, value,
+                                              "duplicate range case");
+                        ctx.diagnostics.noteAt(it->second, "previous definition here");
+                        return false;
+                    }
+                    seenRanges[key] = value->loc;
+                    
+                    // ─── Check if this range overlaps with any literal ──────
+                    for (const auto& [litKey, loc] : seenLiterals) {
+                        // Try to parse the literal as an integer
+                        // This is a simplified check - only works for int literals
+                        std::string litStr = ctx.pool.lookup(litKey);
+                        try {
+                            int64_t litVal = std::stoll(litStr, nullptr, 0);
+                            bool overlaps = key.isInclusive 
+                                ? (litVal >= key.lo && litVal <= key.hi)
+                                : (litVal >= key.lo && litVal < key.hi);
+                            if (overlaps) {
+                                ctx.diagnostics.warning(DiagCode::Warn_UnreachableCode, value,
+                                                        "range case overlaps with literal case '", litStr, 
+                                                        "' - literal case is unreachable");
+                                break;
+                            }
+                        } catch (const std::exception&) {
+                            // Not an integer literal - skip
+                        }
+                    }
+                }
+                continue;
             }
             
             // ─── CONST EVALUATION: Check if this case matches the subject ──
@@ -281,7 +381,6 @@ bool resolveSwitchStmt(const SwitchStmtAST* stmt, SemaContext& ctx) {
                     }
                 } else if (subjectVal.isInt() && value->isa<LiteralExprAST>() && 
                            value->as<LiteralExprAST>()->kind == LiteralKind::Int) {
-                    // Integer literal case
                     auto caseInt = ConstEvaluator::evaluateAsInt(ctx, value);
                     if (caseInt.has_value() && caseInt.value() == subjectVal.asInt()) {
                         matches = true;
@@ -300,8 +399,6 @@ bool resolveSwitchStmt(const SwitchStmtAST* stmt, SemaContext& ctx) {
                     }
                 } else if (value->isa<FieldAccessExprAST>() && subjectVal.isEnum()) {
                     // Enum variant case - check by comparing names
-                    const FieldAccessExprAST* field = value->as<FieldAccessExprAST>();
-                    // If subject is an enum variant, compare names
                     // For now, skip enum const evaluation as it's more complex
                 }
                 
@@ -324,10 +421,6 @@ bool resolveSwitchStmt(const SwitchStmtAST* stmt, SemaContext& ctx) {
         switch_helpers::checkExhaustiveness(stmt, subjectType, ctx);
     }
     
-    // ─── CONST EVALUATION: If we found a compile-time match and no default ──
-    // Only resolve the matching case body, skip others
-    // But we've already resolved all case bodies above. This is fine.
-    
     // ─── Resolve default clause ────────────────────────────────────────────
     if (stmt->defaultBody) {
         if (!resolveBlock(stmt->defaultBody, ctx)) {
@@ -336,39 +429,6 @@ bool resolveSwitchStmt(const SwitchStmtAST* stmt, SemaContext& ctx) {
     }
     
     return allCasesReturn && (stmt->defaultBody || !isEnumType(subjectType, ctx));
-}
-
-// =============================================================================
-// resolveSwitchCase
-// =============================================================================
-
-bool resolveSwitchCase(const SwitchCaseAST* switchCase, SemaContext& ctx) {
-    if (!switchCase) return false;
-
-    // ─── Validate each case value ──────────────────────────────────────────
-    for (ExprAST* value : switchCase->values) {
-        if (!value->isa<LiteralExprAST>() && 
-            !value->isa<FieldAccessExprAST>() && 
-            !value->isa<RangeExprAST>()) {
-            ctx.diagnostics.error(DiagCode::Sem_InvalidSwitchType, value,
-                                  "case value must be a literal, enum variant, or range");
-            continue;
-        }
-
-        TypeAST* valueType = resolveExpr(value, ctx);
-        if (!valueType || valueType->isa<UnknownTypeAST>()) {
-            ctx.diagnostics.error(DiagCode::Sem_InvalidSwitchType, value,
-                                  "case value has unknown type");
-            continue;
-        }
-    }
-
-    // ─── Resolve the case body ────────────────────────────────────────────
-    if (switchCase->body) {
-        return resolveBlock(switchCase->body, ctx);
-    }
-
-    return false;
 }
 
 // =============================================================================

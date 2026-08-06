@@ -11,7 +11,6 @@
 #include "../context/SemaContext.hpp"
 
 #include <unordered_set>
-#include <unordered_map>
 
 namespace sema {
 namespace switch_helpers {
@@ -23,12 +22,6 @@ bool checkExhaustiveness(const SwitchStmtAST* stmt,
                           const TypeAST* subjectType, 
                           SemaContext& ctx);
 
-/// @brief Check for duplicate case values in a switch.
-bool checkDuplicateCases(const SwitchStmtAST* stmt, SemaContext& ctx);
-
-/// @brief Check for overlapping ranges in a switch.
-bool checkOverlappingRanges(const SwitchStmtAST* stmt, SemaContext& ctx);
-
 /// @brief Collect all enum variants covered by switch cases.
 std::unordered_set<InternedString> collectCoveredVariants(
     const SwitchStmtAST* stmt, 
@@ -39,16 +32,6 @@ bool isEnumVariantAccess(const ExprAST* value, SemaContext& ctx);
 
 /// @brief Get the enum variant name from a case value.
 InternedString getEnumVariantName(const ExprAST* value, SemaContext& ctx);
-
-/// @brief Get the enum declaration from a case value.
-const EnumDeclAST* getEnumDeclFromVariantAccess(const ExprAST* value, SemaContext& ctx);
-
-// ─── Case Value Validation ────────────────────────────────────────────────
-
-/// @brief Validate a switch case value against the subject type.
-bool validateCaseValue(const ExprAST* value, 
-                        const TypeAST* subjectType, 
-                        SemaContext& ctx);
 
 } // namespace switch_helpers
 } // namespace sema
