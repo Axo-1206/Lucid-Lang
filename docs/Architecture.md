@@ -540,60 +540,62 @@ lucid/
     │   │   ├── ParserDecl.cpp              # const, let, struct, enum, trait, fn
     │   │   ├── ParserStmt.cpp              # if, for, while, return, block
     │   │   ├── ParserExpr.cpp              # Pratt parser: all expressions
-    │   │   ├── ParserType.cpp              # type annotations: *T, T?, generics
-    │   │   └── Concurrency.cpp             # async, await, spawn, join
-    │   └── support/                        # parser infrastructure
-    │       ├── ParserContext.hpp           # shared parse state
-    │       ├── Lookahead.cpp               # disambiguation helpers
-    │       ├── Helpers.cpp                 # attribute parsing, doc-comment handling
+    │   │   └── ParserType.cpp              # type annotations: *T, T?, generics
+    │   ├── support/                        # parser infrastructure
+    │   │   ├── ErrorRecovery.cpp           # shared parse state
+    │   │   ├── Lookahead.cpp               # disambiguation helpers
+    │   │   └── Helpers.cpp                 # attribute parsing, doc-comment handling
+    │   └── context/                        # parser infrastructure
     │       ├── TokenStream.hpp/cpp         # Track stream of tokens when parsing a file
-    │       └── ErrorRecovery.cpp           # sync points for error recovery
+    │       └── ParserContext.hpp           # sync points for error recovery
     │
     ├── src/sema/
-    │   ├── Sema.hpp                      # Public API (namespace sema)
-    │   ├── Sema.cpp                      # Public API implementation
+    │   ├── Sema.hpp                        # Public API (namespace sema)
+    │   ├── Sema.cpp                        # Public API implementation
     │   │
-    │   ├── context/                            # Context components
-    │   │   ├── ContextStack.hpp/cpp            
-    │   │   ├── ReturnRequirements.hpp/cpp      # track function body requirrments on return statement
-    │   │   └── SemaContext.hpp                 # Unified context (composition)
+    │   ├── context/                        # Context components
+    │   │   ├── ContextStack.hpp/cpp        
+    │   │   └── SemaContext.hpp             # Unified context (composition)
     │   │
-    │   ├── rules/                              # Analysis rules (unchanged)
-    │   │   ├── SemaDecl.cpp                    # const, let, struct, enum, trait, fn, fields, params
-    │   │   ├── SemaStmt.cpp                    # if, for, while, switch, return, block
-    │   │   └── SemaExpr.cpp                    # literals, binary/unary, calls, pipeline, compose
-    │   │    
-    │   ├── types/                      
-    │   │   ├── SemaLookup.hpp/cpp              # Look up type, check if type exist in current scope.
-    │   │   ├── SemaResolve.hpp/cpp             # Resolves type annotations to their semantic representations. 
-    │   │   ├── SemaCompare.hpp/cpp             # Type Compatibility Helpers
-    │   │   ├── SemaValidate.hpp/cpp            # Type Compatibility Helpers
-    │   │   └── SemaType.hpp                    # Main header for 4 .cpp files
+    │   ├── rules/                          # Analysis rules (unchanged)
+    │   │   ├── SemaDecl.cpp                # const, let, struct, enum, trait, fn, fields, params
+    │   │   ├── SemaStmt.cpp                # if, for, while, switch, return, block
+    │   │   └── SemaExpr.cpp                # literals, binary/unary, calls, pipeline, compose
     │   │
-    │   ├── const_eval/                        # Analysis rules (unchanged). 
-    │   │   ├── ConstEvaluator.hpp/cpp
-    │   │   └── ConstInterpreter.hpp/cpp
+    │   ├── types/
+    │   │   ├── SemaLookup.hpp/cpp          # Look up type, check if type exist in current scope.
+    │   │   ├── SemaResolve.hpp/cpp         # Resolves type annotations to their semantic representations. 
+    │   │   ├── SemaCompare.hpp/cpp         # Type Compatibility Helpers
+    │   │   ├── SemaValidate.hpp/cpp        # Type Compatibility Helpers
+    │   │   └── SemaType.hpp                # Main header for 4 .cpp files
+    │   │
+    │   ├── const_eval/
+    │   │   ├── ConstEvaluator.hpp          # Public interface (unchanged)
+    │   │   ├── ConstEvaluator.cpp          # Main logic: evaluateDecl, evaluate, buildDependencyGraph
+    │   │   ├── ConstEvalHelpers.hpp        # Internal helper declarations
+    │   │   ├── ConstEvalHelpers.cpp        # Type helpers, error helpers, dependency helpers
+    │   │   ├── ConstEvalBinary.cpp         # Binary operations: add, sub, mul, div, mod, pow, comparisons
+    │   │   ├── ConstEvalUnary.cpp          # Unary operations: neg, not, bitnot
+    │   │   └── ConstEvalStatement.cpp      # Statement execution: block, return, if, while, expr, decl
     │   │ 
     │   ├── registry/
     │   │   ├── AttributesRegistry.hpp
     │   │   └── IntrinsicRegistry.hpp/cpp
     │   │
-    │   └── support/                      # Helpers (unchanged)
-    │       ├── LiteralHelpers.hpp
-    │       ├── SemaStructFields.hpp/cpp
+    │   └── support/
     │       ├── SwitchHelpers.hpp/cpp
     │       └── TypeNarrowHelpers.hpp/cpp
     │
     ├── codegen/
-    │   ├── IRLowering.hpp                     # Single unified header (all declarations)
-    │   ├── IRLowering.cpp                     # Main entry point + orchestration
-    │   ├── IRLoweringDecl.cpp                 # Declaration lowering (functions, vars, structs, enums)
-    │   ├── IRLoweringStmt.cpp                 # Statement lowering (if, for, while, return, etc.)
-    │   ├── IRLoweringExpr.cpp                 # Expression lowering (literals, binary, calls, etc.)
-    │   ├── IRLoweringIntrinsic.cpp            # Intrinsic lowering (#sqrt, #memcpy, #ptrDiff, etc.)
-    │   │                                        consumes sema/support/IntrinsicRegistry.hpp
-    │   ├── IRLoweringBuilder.hpp/cpp          # Helper builders for common IR patterns
-    │   └── TypeMapping.hpp/cpp                # Lucid → LLVM type mapping (stays single file)
+    │   ├── IRLowering.hpp                 # Single unified header (all declarations)
+    │   ├── IRLowering.cpp                 # Main entry point + orchestration
+    │   ├── IRLoweringDecl.cpp             # Declaration lowering (functions, vars, structs, enums)
+    │   ├── IRLoweringStmt.cpp             # Statement lowering (if, for, while, return, etc.)
+    │   ├── IRLoweringExpr.cpp             # Expression lowering (literals, binary, calls, etc.)
+    │   ├── IRLoweringIntrinsic.cpp        # Intrinsic lowering (#sqrt, #memcpy, #ptrDiff, etc.)
+    │   │                                    consumes sema/support/IntrinsicRegistry.hpp
+    │   ├── IRLoweringBuilder.hpp/cpp      # Helper builders for common IR patterns
+    │   └── TypeMapping.hpp/cpp            # Lucid → LLVM type mapping (stays single file)
     │
     ├── interpreter/                    # ORC JIT backend (lucid run)
     │   ├── Interpreter.hpp/cpp         # Main interpreter engine
