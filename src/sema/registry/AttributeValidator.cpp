@@ -9,7 +9,6 @@
 #include <unordered_set>
 
 namespace sema {
-namespace attr {
 
 // ─── Public API ────────────────────────────────────────────────────────────
 
@@ -401,5 +400,4 @@ bool isAtModuleLevel(const DeclAST* decl, SemaContext& ctx) {
     return false;
 }
 
-} // namespace attr
 } // namespace sema
