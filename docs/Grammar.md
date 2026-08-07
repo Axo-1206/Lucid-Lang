@@ -87,10 +87,26 @@ execution path.
 
 ### Intrinsics — Written Once, Used by Both
 
-Every Lucid intrinsic (`#sqrt`, `#atomic_add`, `#memcpy`, etc.) maps directly to
-an LLVM intrinsic or LLVM IR instruction. The lowering is written once in the
-frontend and produces the same IR node regardless of whether the IR is later
-compiled AOT or executed by the JIT.
+> [!NOTE]
+> Not every Lucid intrinsic maps to an LLVM intrinsic. `#sqrt`, `#atomic_add`,
+> `#memcpy`, and the rest of the hardware/memory-instruction intrinsics shown
+> below do — but the full intrinsic surface (documented in full under
+> **Compiler Directives: Attributes `@` and Intrinsics `#`**) also includes
+> compile-time-only constructs (`#sizeof`, `#nameof`) that emit no LLVM node
+> at all, calls into the Lucid runtime library (`#alloc`, `#arena_create`)
+> that are ordinary function calls rather than `llvm.*` intrinsics, and
+> `#scope_exit`, which emits no call at its own call site and instead
+> registers a callback the compiler inserts at the enclosing block's exit
+> edges. See **Intrinsic Lowering Strategies** in that section for the full
+> breakdown. This table covers only the hardware/memory-instruction subset,
+> for which the "maps directly to an LLVM intrinsic or instruction" claim
+> does hold.
+
+For the intrinsics below, the lowering is written once in the frontend and
+produces the same IR node regardless of whether the IR is later compiled AOT
+or executed by the JIT — there is no separate "interpreter implementation"
+of an intrinsic; both backends consume the identical IR that `IRLowering`
+produces.
 
 ```
 Lucid intrinsic  →  LLVM IR node
@@ -192,6 +208,16 @@ registry check is a single hash lookup on every `#free` call.
 bump-pointer allocator over a `malloc`-ed region. `#arena_alloc` advances a
 pointer; `#arena_free` calls `free` on the original region. No per-slot tracking
 needed.
+
+**`#scope_exit`** — unlike every other memory intrinsic above, this one has
+no runtime component at all. `IRLowering` maintains a stack of pending-callback
+frames that mirrors block nesting one-for-one with the scope-arena stack
+already described: pushed on block entry, appended to on each `#scope_exit`
+call, drained in LIFO order and popped on every exit edge of that block
+(fall-through, `return`, `break`, `continue`). The frame stack exists only
+during compilation — it produces ordinary `call` instructions inserted at
+each exit edge and leaves nothing behind in the generated IR that resembles
+a registry or a runtime list.
 
 **Nullable / fallible tagged slots** — the tag byte is a Lucid-level abstraction.
 The frontend lowers `T?` and `T!` declarations to a struct in IR:
@@ -4342,14 +4368,16 @@ attr_arg        = STRING_LIT | INT_LIT | FLOAT_LIT | BOOL_LIT | IDENTIFIER
 Intrinsics are direct calls into the compiler's backend — a layer shared
 between the interpreter and the compiler. They exist because some operations cannot
 be expressed as ordinary Lucid functions: querying a type's memory layout, emitting
-a specific hardware instruction, performing atomic operations, or managing memory
-all require the compiler itself to handle the call.
+a specific hardware instruction, performing atomic operations, managing memory,
+or hooking a scope's exit all require the compiler itself to handle the call.
 
-Unlike a standard library function, an intrinsic has no Lucid body. The compiler 
-resolves it entirely — the interpreter executes a built-in implementation,
-the compiler emits the corresponding machine instruction or computation directly.
-The result is zero-overhead access to hardware capabilities without leaving the
-language.
+Unlike a standard library function, an intrinsic has no Lucid body. The
+compiler resolves it entirely during `IRLowering` — there is no separate
+"interpreter implementation" of an intrinsic and no separate "compiled
+implementation"; both `lucid run` and `lucid build` consume the exact same
+IR that `IRLowering` produces, per **Intrinsics — Written Once, Used by
+Both** above. The result is zero-overhead access to hardware capabilities
+without leaving the language.
 
 This gives Lucid a clean two-layer model:
 
@@ -4368,6 +4396,28 @@ intrinsic_call     = '#' IDENTIFIER '(' [ intrinsic_arg_list ] ')'
 intrinsic_arg_list = intrinsic_arg { ',' intrinsic_arg }
 intrinsic_arg      = expr | type
 ```
+
+#### Intrinsic Lowering Strategies
+
+"Intrinsic" is a single language-level concept — no Lucid body, resolved
+entirely by the compiler, opted into with `#` — but it covers five different
+implementation strategies internally. A Lucid user never needs to know which
+one a given intrinsic uses; the registry tags each entry with one so
+`IRLowering` knows how to handle it, and so downstream tooling (the LSP
+included) can answer "does this intrinsic emit a call here, or somewhere
+else, or nowhere at all?" without guessing from the name.
+
+| Strategy               | What it emits                                                                                                                                                                           | Examples                                                                          |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `LLVMIntrinsic`        | `call @llvm.*` — a genuine LLVM intrinsic function                                                                                                                                      | `#sqrt`, `#memcpy`, `#clz`, `#fma`, `#bswap`                                      |
+| `LLVMInstruction`      | A raw LLVM IR instruction — LLVM itself does not call these "intrinsics"                                                                                                                | `#bitcast`, `#ptrOffset`, `#atomic_add`, `#fence`                                 |
+| `CompileTimeConst`     | No codegen call at all — resolved to a literal during Sema/lowering                                                                                                                     | `#sizeof`, `#alignof`, `#nameof`, `#typeof`                                       |
+| `RuntimeCall`          | `call` against a symbol exported by `runtime/` — not an LLVM intrinsic, not a raw instruction, and not backend-specific: both the JIT and the AOT-linked binary resolve the same symbol | `#alloc`, `#free`, `#arena_create`, `#arena_alloc`, `#arena_reset`, `#arena_free` |
+| `ControlFlowTransform` | No call at the intrinsic's own call site — the compiler records a pending callback and emits ordinary calls at every exit edge of the enclosing block                                   | `#scope_exit`                                                                     |
+
+Only the first two strategies correspond to the "maps to an LLVM intrinsic or
+instruction" claim in the overview section above; the rest are genuinely
+different implementation shapes hiding behind the same `#name(...)` syntax.
 
 ---
 
@@ -4570,6 +4620,116 @@ needs the boundaries.
 | `#arena_alloc(arena, T, n)` | `ArenaDescriptor`, type, `uint64` | `*T`              | Allocate from arena                    |
 | `#arena_reset(arena)`       | `ArenaDescriptor`                 | —                 | Release contents; arena remains usable |
 | `#arena_free(arena)`        | `ArenaDescriptor`                 | —                 | Destroy arena and all contents         |
+
+---
+
+#### Scope-Exit Callbacks
+
+Lucid does not have constructors or destructors — RAII-style cleanup that
+runs automatically when a scope ends is achieved with a single intrinsic
+instead of adding lifecycle methods to structs. `#scope_exit` registers a
+function to run when the *enclosing block* — not necessarily the enclosing
+function — exits, however it exits.
+
+```ebnf
+scope_exit_call = '#scope_exit' '(' expr { ',' expr } ')'
+```
+
+The first argument is any function value (a named function or a closure);
+the remaining arguments are passed to it when it eventually runs.
+
+```lucid
+const process () = {
+    const conn Connection = openConnection();
+    #scope_exit(closeConnection, conn);
+
+    const buf *uint8 = #alloc(uint8, 4096);
+    #scope_exit(() {
+        #free(buf);
+    });
+
+    -- ... use conn and buf ...
+    -- both cleanups run here, LIFO: buf freed first, then conn closed
+};
+```
+
+**Semantics:**
+
+- **Block-scoped, not function-scoped.** `#scope_exit` binds to whichever
+  `{ ... }` block lexically contains the call — a bare block, an `if` body,
+  a loop body, or a function body are all equally valid. A call registered
+  inside an `if` body only ever fires as part of that branch; there is no
+  separate runtime flag needed to track whether the branch executed, since
+  the branch's own code path is the only place the registration and its
+  eventual drain call can occur.
+- **LIFO within a block, and blocks nest LIFO with their parents.** Multiple
+  `#scope_exit` calls in the same block fire in reverse registration order.
+  A nested block's pending callbacks fully drain before the callback that
+  registered the outer block's cleanup runs.
+
+  > [!NOTE]
+  > **Why LIFO and not FIFO.** Registration order and dependency order are
+  > usually the same order — a later resource is frequently acquired *using*
+  > an earlier one, and cleanup has to unwind that chain in reverse to stay
+  > valid:
+  > ```lucid
+  > const conn Connection = openConnection();
+  > #scope_exit(closeConnection, conn);
+  >
+  > const tx Transaction = beginTransaction(conn);   -- tx depends on conn
+  > #scope_exit(rollbackTransaction, tx);            -- rollback needs conn open
+  > ```
+  > LIFO runs `rollbackTransaction(tx)` before `closeConnection(conn)`, so
+  > `conn` is still open when the rollback needs it. FIFO would run
+  > `closeConnection` first and hand `rollbackTransaction` an already-closed
+  > connection — a real bug, not a corner case, since "acquire A, then
+  > acquire B using A" is the typical shape of resource setup, not an
+  > unusual one. Arena deallocation doesn't suggest a preferred order here
+  > either: a bump allocator releases its whole region in one step and has
+  > no per-item ordering concept for `#scope_exit` to mirror. LIFO is also
+  > what every comparable mechanism elsewhere converged on independently —
+  > C++ destructors, Rust's `Drop`, Go's and Zig's `defer`, D's
+  > `scope(exit)` — and for the same reason: it is correct for dependent
+  > chains and harmless for independent callbacks, while FIFO is only ever
+  > equivalent for the independent case and wrong for the dependent one.
+
+- **Fires on every exit path** — falling off the end of the block, `return`,
+  `break`, `continue`, and error propagation all drain the pending callbacks
+  for every block being unwound between the exit point and where control
+  lands, innermost block first.
+- **A loop body's `#scope_exit` fires every iteration**, not once at the
+  loop's end — the loop body is a block entered and exited once per
+  iteration, and `#scope_exit` binds to that block like any other.
+- **Arguments are read at the moment the block actually exits**, not
+  snapshotted at the `#scope_exit` call site. If a captured variable is
+  reassigned between registration and exit, the callback sees the
+  reassigned value. This matches the intrinsic's zero-cost design: nothing
+  is copied or computed at the registration point, only recorded.
+- **The target function must return nothing.** A fallible (`!`) or
+  value-returning function is rejected — there is nothing to hand the
+  return value or a propagated error to during an unwind.
+- **Statement position only.** `#scope_exit` produces no value and cannot
+  appear inside a larger expression (`let x = #scope_exit(...)` is a compile
+  error, not `nil`) — this is the same restriction already implied for every
+  other void-returning intrinsic (`#free`, `#arena_free`, `#fence`, ...),
+  not a special case invented for this one. Keeping registration order tied
+  to unambiguous statement order is also what makes the LIFO guarantee mean
+  anything.
+- **Only valid inside a function body.** `#scope_exit` at module scope or
+  inside a `const` initializer evaluated by `ConstEvaluator` is a compile
+  error — there is no block-exit event for either.
+
+**Nothing about `#scope_exit` resolves at runtime.** Every registration is
+resolved to concrete call sites at compile time: an unconditional
+`#scope_exit` at the top of a block lowers to a direct call inserted at
+each of that block's exit edges, with no bookkeeping structure surviving
+into the generated code. `IRLowering` tracks pending callbacks as a stack of
+frames mirroring block nesting during lowering itself — this stack exists
+only in the compiler, never in the compiled program.
+
+| Intrinsic                  | Args                                   | Returns | Notes                                                                                         |
+| -------------------------- | -------------------------------------- | ------- | --------------------------------------------------------------------------------------------- |
+| `#scope_exit(fn, args...)` | function value, zero or more arguments | —       | Registers `fn(args...)` to run when the enclosing block exits (LIFO); statement position only |
 
 ---
 
