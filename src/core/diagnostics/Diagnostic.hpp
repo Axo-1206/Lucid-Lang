@@ -271,6 +271,7 @@ enum class DiagCode : uint32_t {
     Sem_TraitDuplicate        = 6016,
     Sem_GenericCycle          = 6017,
     Sem_AttributeArgValue     = 6018,
+    Sem_AttributeDuplicate    = 6019, // Duplicate attribute on same declaration
 
     // ──────────────────────────────────────────────────────────────────────────
     // MEMORY & OWNERSHIP ERRORS (6500-6999)
@@ -325,6 +326,8 @@ enum class DiagCode : uint32_t {
     Warn_PotentialOverflow = 8016,  // Potential integer overflow
     Warn_Fallthrough       = 8017,  // Missing case in switch
     Warn_UnsafeFFI         = 8018,  // Unsafe FFI usage
+    Warn_ForeignBody       = 8019,  // Foreign function has a body
+    Warn_ForeignInline     = 8020,  // Cannot inline foreign function
 };
 
 

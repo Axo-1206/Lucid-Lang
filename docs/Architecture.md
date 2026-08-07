@@ -524,6 +524,9 @@ lucid/
     │   │   ├── StmtAST.hpp                 # statement nodes
     │   │   ├── ExprAST.hpp                 # expression nodes
     │   │   └── TypeAST.hpp                 # type annotation nodes
+    │   ├── registry/
+    │   │   ├── AttributeRegistry.hpp/cpp
+    │   │   └── IntrinsicRegistry.hpp/cpp
     │   └── memory/                         # AST memory management
     │       ├── ArenaSpawn.hpp              # arena allocator for AST nodes
     │       ├── ASTArena.hpp                # arena instance holding one module's nodes
@@ -579,8 +582,8 @@ lucid/
     │   │   └── ConstEvalStatement.cpp      # Statement execution: block, return, if, while, expr, decl
     │   │ 
     │   ├── registry/
-    │   │   ├── AttributesRegistry.hpp
-    │   │   └── IntrinsicRegistry.hpp/cpp
+    │   │   ├── AttributeValidator.hpp/cpp  # validate if the attribute exist and the argument is correct
+    │   │   └── IntrinsicValidator.hpp/cpp  # validate if the intrinsic exist and the argument is correct
     │   │
     │   └── support/
     │       ├── SwitchHelpers.hpp/cpp

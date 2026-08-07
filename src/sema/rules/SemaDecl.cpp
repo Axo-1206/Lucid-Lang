@@ -20,7 +20,7 @@
 #include "../const_eval/ConstEvaluator.hpp"
 #include "core/ast/TypeAST.hpp"
 #include "debug/DebugUtils.hpp"
-#include "sema/registry/AttributeRegistry.hpp"
+#include "sema/registry/AttributeValidator.hpp"
 
 namespace sema {
 
@@ -105,7 +105,7 @@ void resolveImportDecl(const ImportDeclAST* decl, SemaContext& ctx) {
 }
 
 void resolveVarDecl(const VarDeclAST* decl, SemaContext& ctx) {
-    attr::validateAttributes(decl, ctx);
+    validateAll(decl, ctx);
 
     // ─── 1. Resolve the declared type ───────────────────────────────
     TypeAST* declaredType = resolveType(decl->type, ctx);
@@ -149,38 +149,50 @@ void resolveVarDecl(const VarDeclAST* decl, SemaContext& ctx) {
 }
 
 void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
-    attr::validateAttributes(decl, ctx);
+    // ─── 1. Validate all attributes ────────────────────────────────────────
+    // This validates @[foreign] syntax (ABI string, etc.)
+    validateAll(decl, ctx);
 
-    // ─── 1. Resolve function type ─────────────────────────────────────────────
+    // ─── 2. Check if @[foreign] is present ────────────────────────────────
+    // We check this directly from the attributes list.
+    // The attribute validator already validated the syntax,
+    // now we just need to know if it's there.
+    InternedString foreignName = ctx.pool.intern("foreign");
+    const AttributeAST* foreignAttr = nullptr;
+    for (const AttributeAST* attr : decl->attributes) {
+        if (attr->name == foreignName) {
+            foreignAttr = attr;
+        }
+    }
+
+    // ─── 3. Resolve function type ─────────────────────────────────────────────
     FuncTypeAST* funcType = const_cast<FuncTypeAST*>(decl->funcType);
     if (!resolveFuncType(funcType, ctx)) {
         return;
     }
 
-    // ─── 2. Check for @[foreign] attribute ───────────────────────────────────
-    const AttributeAST* foreignAttr = attr::findAttribute(
-        decl->attributes,
-        attr::kForeign(ctx)
-    );
-
+    // ─── 4. Handle @[foreign] functions ────────────────────────────────────
     if (foreignAttr) {
-        // ─── 2a. Validate FFI function ─────────────────────────────────────────
-        validateForeignFunction(decl, foreignAttr, ctx);
-
+        // The attribute validator already validated:
+        //   - ABI is "C"
+        //   - Function has no body (warning)
+        //   - Parameter types are FFI-compatible
+        //   - Return type is FFI-compatible
+        //   - No generic parameters
+        
         // Mark as const (foreign functions are compile-time constants)
         const_cast<FuncDeclAST*>(decl)->isConst = true;
+        
+        // No body to resolve - we're done
         return;
     }
 
-    // ─── 3. Resolve generic parameters ───────────────────────────────────────
+    // ─── 5. Resolve generic parameters ───────────────────────────────────────
     for (const GenericParamDeclAST* g : decl->genericParams) {
         resolveGenericParam(g, ctx);
     }
 
-    // ─── NOTE: Registration is handled by resolveDecl() ─────────────────────
-    // Do NOT call ctx.insertValue() here.
-
-    // ─── 4. Resolve parameters ────────────────────────────────────────────────
+    // ─── 6. Resolve parameters ────────────────────────────────────────────────
     ctx.pushScope();
     
     for (FuncTypeAST* group = funcType; group; group = group->getNext()) {
@@ -189,7 +201,7 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
         }
     }
 
-    // ─── 5. Analyze body ──────────────────────────────────────────────────────
+    // ─── 7. Analyze body ──────────────────────────────────────────────────────
     if (!decl->body) {
         ctx.diagnostics.error(DiagCode::Sem_MissingReturn, decl,
                               "function '", ctx.pool.lookup(decl->name), "' has no body");
@@ -197,13 +209,13 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
         return;
     }
 
-    // ─── 6. Push function context with expected return type ──────────────────
+    // ─── 8. Push function context with expected return type ──────────────────
     const TypeAST* expectedReturn = funcType ? funcType->returnType : nullptr;
     ctx.stack.pushFunction(const_cast<FuncDeclAST*>(decl), expectedReturn, decl->loc);
 
     bool bodyReturns = false;
     
-    // ─── 7. Resolve the body ──────────────────────────────────────────────────
+    // ─── 9. Resolve the body ──────────────────────────────────────────────────
     if (decl->body->isa<BlockStmtAST>()) {
         bodyReturns = resolveBlock(decl->body->as<BlockStmtAST>(), ctx);
     } else if (decl->body->isa<ReturnStmtAST>()) {
@@ -226,18 +238,18 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
         return;
     }
 
-    // ─── 8. Verify return paths ──────────────────────────────────────────────
+    // ─── 10. Verify return paths ──────────────────────────────────────────────
     if (!bodyReturns && expectedReturn) {
         ctx.diagnostics.error(DiagCode::Sem_MissingReturn, decl,
                               "function '", ctx.pool.lookup(decl->name),
                               "' does not return a value on all paths");
     }
 
-    // ─── 9. Pop function context ────────────────────────────────────────────
+    // ─── 11. Pop function context ────────────────────────────────────────────
     ctx.stack.pop();
     ctx.popScope();
 
-    // ─── 10. Mark as const if applicable ─────────────────────────────────────
+    // ─── 12. Mark as const if applicable ─────────────────────────────────────
     if (decl->keyword == DeclKeyword::Const) {
         const_cast<FuncDeclAST*>(decl)->isConst = true;
     }
@@ -253,6 +265,9 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
 ///       (resolveFuncDecl). The duplicate insertValue calls are safe because
 ///       insertValue checks for duplicates before inserting.
 void resolveParam(const ParamAST* param, SemaContext& ctx) {
+    // Parameters don't support attributes, so we skip validateAll
+    // If they somehow have attributes, they were already rejected by the parser.
+
     TypeAST* paramType = resolveType(param->type, ctx);
     if (!paramType) {
         return;
@@ -275,7 +290,7 @@ void resolveGenericParam(const GenericParamDeclAST* param, SemaContext& ctx) {
 }
 
 void resolveEnumDecl(const EnumDeclAST* decl, SemaContext& ctx) {
-    attr::validateAttributes(decl, ctx);
+    validateAll(decl, ctx);
 
     // ─── NOTE: Registration is handled by resolveDecl() ─────────────────────
     // Do NOT call ctx.insertType() here.
@@ -289,7 +304,7 @@ void resolveEnumDecl(const EnumDeclAST* decl, SemaContext& ctx) {
     }
 
     for (const EnumVariantAST* variant : decl->variants) {
-        attr::validateAttributes(variant, ctx);
+        validateAll(variant, ctx);
 
         // Check duplicate variant values
         for (const EnumVariantAST* existing : decl->variants) {
@@ -305,7 +320,7 @@ void resolveEnumDecl(const EnumDeclAST* decl, SemaContext& ctx) {
 }
 
 void resolveTraitDecl(const TraitDeclAST* decl, SemaContext& ctx) {
-    attr::validateAttributes(decl, ctx);
+    validateAll(decl, ctx);
 
     // ─── NOTE: Registration is handled by resolveDecl() ─────────────────────
     // Do NOT call ctx.insertType() here.
@@ -315,7 +330,7 @@ void resolveTraitDecl(const TraitDeclAST* decl, SemaContext& ctx) {
     }
 
     for (const TraitFieldDeclAST* field : decl->fields) {
-        attr::validateAttributes(field, ctx);
+        validateAll(field, ctx);
 
         TypeAST* fieldType = resolveType(field->type, ctx);
         if (!fieldType) {
@@ -338,7 +353,7 @@ void resolveTraitDecl(const TraitDeclAST* decl, SemaContext& ctx) {
 }
 
 void resolveStructDecl(const StructDeclAST* decl, SemaContext& ctx) {
-    attr::validateAttributes(decl, ctx);
+    validateAll(decl, ctx);
 
     // ─── NOTE: Registration is handled by resolveDecl() ─────────────────────
     // Do NOT call ctx.insertType() here.
@@ -364,7 +379,7 @@ void resolveStructDecl(const StructDeclAST* decl, SemaContext& ctx) {
 
 void resolveStructFields(const StructDeclAST* decl, SemaContext& ctx) {
     for (const FieldDeclAST* field : decl->fields) {
-        attr::validateAttributes(field, ctx);
+        validateAll(field, ctx);
 
         // ─── 1. Resolve the field's type ──────────────────────────────
         TypeAST* fieldType = resolveType(field->type, ctx);

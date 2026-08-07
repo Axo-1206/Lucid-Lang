@@ -10,7 +10,7 @@
 ///   This centralizes type checking and uses cached singleton types.
 
 #include "../Sema.hpp"
-#include "../registry/IntrinsicRegistry.hpp"
+#include "../registry/IntrinsicValidator.hpp"
 
 #include <unordered_set>
 #include <optional>
@@ -1224,58 +1224,65 @@ TypeAST* resolveCallExpr(CallExprAST* expr, const TypeAST* targetType, SemaConte
 // =============================================================================
 
 TypeAST* resolveIntrinsicCallExpr(IntrinsicCallExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
-    auto& registry = IntrinsicRegistry::getInstance(ctx.pool);
-
-    const IntrinsicInfo* info = registry.getIntrinsicInfo(expr->intrinsicName);
-    if (!info) {
-        ctx.diagnostics.error(DiagCode::Sem_UnknownIntrinsic, expr,
-                              "unknown intrinsic '#", ctx.pool.lookup(expr->intrinsicName), "'");
+    // ─── Step 1: Validate the intrinsic call ──────────────────────────────────
+    // This validates:
+    //   - Intrinsic exists in registry
+    //   - Argument count is correct
+    //   - Each argument type matches the intrinsic's requirements
+    //   - Specific intrinsic rules (fence ordering, etc.)
+    if (!validateIntrinsicCall(expr, ctx)) {
         expr->resolvedType = ctx.getUnknownType();
         expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
-    if (!registry.validateArgCount(expr->intrinsicName, expr->args.size())) {
-        ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
-                              "wrong number of arguments for intrinsic '#",
-                              ctx.pool.lookup(expr->intrinsicName), "'");
+    // ─── Step 2: Get the return type ──────────────────────────────────────────
+    const TypeAST* resultType = getIntrinsicReturnType(expr, targetType, ctx);
+    if (!resultType) {
+        // Void return - valid for scope_exit, etc.
+        expr->resolvedType = nullptr;
+        expr->valueState = ValueState::None;
+        expr->isLValue = false;
+        expr->isConst = false;
+        return nullptr;
+    }
+
+    if (resultType->isa<UnknownTypeAST>()) {
         expr->resolvedType = ctx.getUnknownType();
         expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
-    // Resolve each argument (no target type for intrinsic args)
-    for (ExprAST* arg : expr->args) {
-        TypeAST* argType = resolveExpr(arg, ctx);
-        if (!argType || argType->isa<UnknownTypeAST>()) {
-            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
-                                  "argument to intrinsic '#", ctx.pool.lookup(expr->intrinsicName),
-                                  "' has unknown type");
+    // ─── Step 3: Validate return type against target type ────────────────────
+    if (targetType && !targetType->isa<UnknownTypeAST>()) {
+        if (!isAssignable(targetType, resultType, ctx)) {
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
+                                  "type mismatch: expected ",
+                                  debug::typeToString(targetType, ctx.pool),
+                                  ", got ",
+                                  debug::typeToString(resultType, ctx.pool));
             expr->resolvedType = ctx.getUnknownType();
             expr->valueState = ValueState::Unknown;
             return ctx.getUnknownType();
         }
     }
 
-    if (!registry.validateIntrinsicCall(expr, ctx)) {
-        expr->resolvedType = ctx.getUnknownType();
-        expr->valueState = ValueState::Unknown;
-        return ctx.getUnknownType();
+    // ─── Step 4: Get value state ──────────────────────────────────────────────
+    ValueState state = getIntrinsicValueState(expr, ctx);
+
+    // ─── Step 5: Store LLVM intrinsic ID if available ────────────────────────
+    IntrinsicRegistry& registry = IntrinsicRegistry::getInstance(ctx.pool);
+    const IntrinsicInfo* info = registry.getInfo(expr->intrinsicName);
+    if (info && info->isValid()) {
+        expr->intrinsicID = info->llvmID;
     }
 
-    if (info->isValid()) {
-        expr->intrinsicID = info->id;
-    }
-
-    const TypeAST* resultType = registry.getIntrinsicReturnType(expr, targetType, ctx);
-    ValueState state = registry.getIntrinsicValueState(expr, ctx);
+    // ─── Step 6: Store results ──────────────────────────────────────────────────
     expr->resolvedType = const_cast<TypeAST*>(resultType);
     expr->valueState = state;
-    
-    // ─── Set isLValue ──────────────────────────────────────────────────────
     expr->isLValue = false;   // Intrinsic calls are never l-values
     expr->isConst = false;    // Intrinsic calls are not compile-time constants
-    
+
     return const_cast<TypeAST*>(resultType);
 }
 
