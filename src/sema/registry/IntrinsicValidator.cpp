@@ -13,8 +13,6 @@ namespace sema {
 // ─── Forward Declarations ──────────────────────────────────────────────────
 
 static bool isArgumentCountValid(size_t count, const IntrinsicInfo* info);
-static bool isNullableType(const TypeAST* type);
-static bool isFallibleType(const TypeAST* type);
 
 // ─── Public API ────────────────────────────────────────────────────────────
 
@@ -487,6 +485,7 @@ bool validateScopeExit(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
             return false;
         }
 
+        // ─── Use public SemaCompare functions ──────────────────────────────
         if (arg->valueState == ValueState::Nil && !isNullableType(expectedType)) {
             ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
                                   "cannot pass nil to non-nullable parameter in #scope_exit callback");
@@ -673,14 +672,6 @@ static bool isArgumentCountValid(size_t count, const IntrinsicInfo* info) {
         return count >= info->minArgs;
     }
     return count >= info->minArgs && count <= info->maxArgs;
-}
-
-static bool isNullableType(const TypeAST* type) {
-    return type && (type->isa<NullableTypeAST>() || type->isa<CombinedTypeAST>());
-}
-
-static bool isFallibleType(const TypeAST* type) {
-    return type && (type->isa<FallibleTypeAST>() || type->isa<CombinedTypeAST>());
 }
 
 } // namespace sema
