@@ -42,6 +42,12 @@ const TypeAST* getIntrinsicReturnType(const IntrinsicCallExprAST* expr,
 /// @return The value state.
 ValueState getIntrinsicValueState(const IntrinsicCallExprAST* expr, SemaContext& ctx);
 
+/// @brief Check if an intrinsic returns void (no value).
+/// @param name The intrinsic name.
+/// @param ctx The semantic context.
+/// @return true if the intrinsic returns void.
+bool isIntrinsicVoid(InternedString name, SemaContext& ctx);
+
 // ─── Individual Intrinsic Validators ──────────────────────────────────────
 
 bool validateFloatingPoint(const IntrinsicCallExprAST* expr, SemaContext& ctx);

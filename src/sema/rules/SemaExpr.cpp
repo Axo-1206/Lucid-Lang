@@ -1225,26 +1225,45 @@ TypeAST* resolveCallExpr(CallExprAST* expr, const TypeAST* targetType, SemaConte
 
 TypeAST* resolveIntrinsicCallExpr(IntrinsicCallExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
     // ─── Step 1: Validate the intrinsic call ──────────────────────────────────
-    // This validates:
-    //   - Intrinsic exists in registry
-    //   - Argument count is correct
-    //   - Each argument type matches the intrinsic's requirements
-    //   - Specific intrinsic rules (fence ordering, etc.)
     if (!validateIntrinsicCall(expr, ctx)) {
         expr->resolvedType = ctx.getUnknownType();
         expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
     }
 
-    // ─── Step 2: Get the return type ──────────────────────────────────────────
-    const TypeAST* resultType = getIntrinsicReturnType(expr, targetType, ctx);
-    if (!resultType) {
-        // Void return - valid for scope_exit, etc.
+    // ─── Step 2: Check if this intrinsic returns void ──────────────────────────
+    // Void intrinsics cannot appear in assignment contexts or anywhere a value
+    // is expected.
+    if (isIntrinsicVoid(expr->intrinsicName, ctx)) {
+        // Void intrinsics are only valid as statements
+        // The parser should ensure this, but we validate here defensively
+        if (targetType != nullptr) {
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
+                                  "intrinsic '#", ctx.pool.lookup(expr->intrinsicName),
+                                  "' returns no value and cannot be used in an assignment or expression context");
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
+            return ctx.getUnknownType();
+        }
+        
+        // Void intrinsic - valid as a statement
         expr->resolvedType = nullptr;
         expr->valueState = ValueState::None;
         expr->isLValue = false;
         expr->isConst = false;
         return nullptr;
+    }
+
+    // ─── Step 3: Get the return type ──────────────────────────────────────────
+    const TypeAST* resultType = getIntrinsicReturnType(expr, targetType, ctx);
+    if (!resultType) {
+        // This should not happen if isIntrinsicVoid returned false
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
+                              "intrinsic '#", ctx.pool.lookup(expr->intrinsicName),
+                              "' unexpectedly returns no value");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
+        return ctx.getUnknownType();
     }
 
     if (resultType->isa<UnknownTypeAST>()) {
@@ -1253,7 +1272,7 @@ TypeAST* resolveIntrinsicCallExpr(IntrinsicCallExprAST* expr, const TypeAST* tar
         return ctx.getUnknownType();
     }
 
-    // ─── Step 3: Validate return type against target type ────────────────────
+    // ─── Step 4: Validate return type against target type ────────────────────
     if (targetType && !targetType->isa<UnknownTypeAST>()) {
         if (!isAssignable(targetType, resultType, ctx)) {
             ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
@@ -1267,17 +1286,17 @@ TypeAST* resolveIntrinsicCallExpr(IntrinsicCallExprAST* expr, const TypeAST* tar
         }
     }
 
-    // ─── Step 4: Get value state ──────────────────────────────────────────────
+    // ─── Step 5: Get value state ──────────────────────────────────────────────
     ValueState state = getIntrinsicValueState(expr, ctx);
 
-    // ─── Step 5: Store LLVM intrinsic ID if available ────────────────────────
+    // ─── Step 6: Store LLVM intrinsic ID if available ────────────────────────
     IntrinsicRegistry& registry = IntrinsicRegistry::getInstance(ctx.pool);
     const IntrinsicInfo* info = registry.getInfo(expr->intrinsicName);
     if (info && info->isValid()) {
         expr->intrinsicID = info->llvmID;
     }
 
-    // ─── Step 6: Store results ──────────────────────────────────────────────────
+    // ─── Step 7: Store results ──────────────────────────────────────────────────
     expr->resolvedType = const_cast<TypeAST*>(resultType);
     expr->valueState = state;
     expr->isLValue = false;   // Intrinsic calls are never l-values

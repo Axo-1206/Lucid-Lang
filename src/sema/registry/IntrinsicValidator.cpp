@@ -7,12 +7,39 @@
 #include "sema/Sema.hpp"
 
 #include <unordered_set>
+#include <unordered_map>
 
 namespace sema {
 
 // ─── Forward Declarations ──────────────────────────────────────────────────
 
 static bool isArgumentCountValid(size_t count, const IntrinsicInfo* info);
+static bool isIntrinsicVoidInternal(InternedString name, SemaContext& ctx);
+
+// ─── Void Intrinsics Registry ─────────────────────────────────────────────
+
+static const std::unordered_set<std::string> VOID_INTRINSICS = {
+    // Memory Operations - no return value
+    "memcpy", "memmove", "memset",
+    
+    // Memory Management - no return value (free operations)
+    "free", "arena_free", "arena_reset",
+    
+    // Synchronization - no return value
+    "fence",
+    
+    // CPU Hints - no return value
+    "pause", "prefetch", "prefetch_r", "prefetch_w",
+    
+    // Scope Exit - no return value
+    "scope_exit",
+    
+    // SIMD Store - no return value
+    "simd_store",
+    
+    // Atomic Store - no return value
+    "atomic_store",
+};
 
 // ─── Public API ────────────────────────────────────────────────────────────
 
@@ -136,12 +163,21 @@ bool validateIntrinsicArgCount(InternedString name, size_t count, SemaContext& c
     return isArgumentCountValid(count, info);
 }
 
+bool isIntrinsicVoid(InternedString name, SemaContext& ctx) {
+    return isIntrinsicVoidInternal(name, ctx);
+}
+
 const TypeAST* getIntrinsicReturnType(const IntrinsicCallExprAST* expr,
                                        const TypeAST* targetType,
                                        SemaContext& ctx) {
     if (!expr) return targetType;
 
     const std::string name = ctx.pool.lookup(expr->intrinsicName);
+
+    // ─── Void intrinsics return nothing ────────────────────────────────────
+    if (isIntrinsicVoidInternal(expr->intrinsicName, ctx)) {
+        return nullptr;
+    }
 
     // ─── Scope Exit returns void ──────────────────────────────────────────
     if (name == "scope_exit") {
@@ -222,6 +258,10 @@ const TypeAST* getIntrinsicReturnType(const IntrinsicCallExprAST* expr,
 
     // ─── SIMD ────────────────────────────────────────────────────────────────
     if (name.find("simd_") == 0) {
+        // simd_store returns void
+        if (name == "simd_store") {
+            return nullptr;
+        }
         return targetType;
     }
 
@@ -232,6 +272,11 @@ ValueState getIntrinsicValueState(const IntrinsicCallExprAST* expr, SemaContext&
     if (!expr) return ValueState::Unknown;
 
     const std::string name = ctx.pool.lookup(expr->intrinsicName);
+
+    // ─── Void intrinsics produce no value ──────────────────────────────────
+    if (isIntrinsicVoidInternal(expr->intrinsicName, ctx)) {
+        return ValueState::None;
+    }
 
     // ─── Scope Exit produces no value ─────────────────────────────────────
     if (name == "scope_exit") {
@@ -358,6 +403,8 @@ bool validatePointerOp(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
     const std::string name = ctx.pool.lookup(expr->intrinsicName);
 
     if (name == "addrof") {
+        // addrof can take any expression (even function names, struct fields, etc.)
+        // It returns *T, which is valid
         return true;
     }
 
@@ -502,8 +549,19 @@ bool validateScopeExit(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
 }
 
 bool validateAtomicOp(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
-    if (expr->args.size() >= 1 && !validatePtrArg(expr->args[0], "ptr", ctx)) return false;
+    const std::string name = ctx.pool.lookup(expr->intrinsicName);
 
+    // ─── atomic_store takes ptr, val, ordering ────────────────────────────
+    if (name == "atomic_store") {
+        if (expr->args.size() >= 1 && !validatePtrArg(expr->args[0], "ptr", ctx)) return false;
+        // val can be any type that matches the pointer's pointee
+        // Ordering is validated below
+    } else {
+        // atomic_load, atomic_add, atomic_sub, atomic_and, atomic_or, atomic_xor, atomic_cas
+        if (expr->args.size() >= 1 && !validatePtrArg(expr->args[0], "ptr", ctx)) return false;
+    }
+
+    // ─── Validate ordering (last argument, if present) ────────────────────
     if (expr->args.size() >= 2) {
         const ExprAST* lastArg = expr->args[expr->args.size() - 1];
         TypeAST* result = resolveExprWithTarget(
@@ -567,6 +625,7 @@ bool validateSIMD(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
 
     if (name == "simd_store") {
         if (expr->args.size() >= 1 && !validatePtrArg(expr->args[0], "ptr", ctx)) return false;
+        // val is the second argument - any type
         return true;
     }
 
@@ -597,6 +656,11 @@ bool validateMemoryManagement(const IntrinsicCallExprAST* expr, SemaContext& ctx
         if (expr->args.size() >= 3 && !validateIntArg(expr->args[2], "count", ctx)) {
             return false;
         }
+        return true;
+    }
+
+    if (name == "arena_reset" || name == "arena_free") {
+        if (!expr->args.empty() && !validatePtrArg(expr->args[0], "arena", ctx)) return false;
         return true;
     }
 
@@ -672,6 +736,11 @@ static bool isArgumentCountValid(size_t count, const IntrinsicInfo* info) {
         return count >= info->minArgs;
     }
     return count >= info->minArgs && count <= info->maxArgs;
+}
+
+static bool isIntrinsicVoidInternal(InternedString name, SemaContext& ctx) {
+    std::string nameStr = ctx.pool.lookup(name);
+    return VOID_INTRINSICS.find(nameStr) != VOID_INTRINSICS.end();
 }
 
 } // namespace sema
