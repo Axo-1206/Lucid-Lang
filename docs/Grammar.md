@@ -2281,8 +2281,110 @@ statement       = { attribute_list } decl_keyword decl_stmt ';'
                 | break_stmt ';'
                 | continue_stmt ';'
                 | expr_stmt ';'
+                | struct_decl
+                | enum_decl
 
 block           = '{' { statement } '}'
+
+> [!NOTE]
+> `struct_decl` and `enum_decl` take no trailing `;` at statement position,
+> the same as at the top level (see **Top-Level Structure**) and for the
+> same reason — `{ fields }` / `{ variants }` is the declaration's own body,
+> not a value assigned to it.
+
+### Local Type Declarations
+
+A `struct` or `enum` may be declared inside a function body, not just at
+module scope. It follows ordinary block-scoping rules — visible from its
+declaration point to the end of the enclosing block, including to any
+nested closure literal declared after it in that block, and invisible
+outside the block entirely:
+
+```lucid
+const f<T> () -> () -> Direction {
+    enum Direction {
+        North = 0;
+        East  = 1;
+        South = 2;
+        West  = 3;
+    }
+    struct Foo<U> {
+        a U;
+    }
+
+    return () -> Direction {
+        let x Direction = Direction.North;    -- fine: closure is part of f's body
+        let y Foo<T> = Foo<T> { a = 0 };       -- T supplied as an ordinary argument
+        return x;
+    };
+}
+```
+
+**A local type has no runtime representation, so referencing one from a
+nested closure is never a capture.** Everything in **Function Values and
+Closures** about environments, retaining, and the Downward Flow Rule
+concerns *values* held in variables; a `struct`/`enum` declaration is a
+compile-time-only symbol, fully resolved and erased before `IRLowering`
+runs. `Direction.North` above lowers to the bare integer `0`, identically to
+writing `let x int = 0;` directly — there is no environment slot for
+`Direction` itself, and capturing a *value* of a local type (an
+already-constructed `Foo<T>`, for instance) is an ordinary capture of that
+value, entirely unaffected by the type being locally declared.
+
+**One descriptor per declaration, not one per call — unlike captured
+values.** `enum Direction { ... }` is elaborated exactly once at compile
+time, regardless of how many times `f` is called. This is the opposite of a
+captured local like `x` in the earlier `f`/`g`/`h` closures example, where
+each call gets its own independent heap environment — every call to `f`
+above shares the same single `Direction` type. Declaring a type inside a
+loop body or an `if` branch carries no runtime cost either; only the name's
+*visibility* is scoped to the block, the declaration itself is not
+"re-run" per iteration or per branch taken.
+
+**A local type cannot be named in the header of the function that declares
+it.** The header (parameter types, return type) is resolved before the
+body's own declarations come into scope, so:
+
+```lucid
+const f () -> Direction {    -- ❌ error: Direction not yet in scope here
+    enum Direction { North = 0; }
+    ...
+}
+```
+
+is rejected — `Direction` is only visible starting at its own declaration
+line, and the header is checked first. A closure returned from later in the
+body is fine, as in the `f<T>` example above, because the closure literal
+is itself part of the body and is checked after the type declaration it
+follows.
+
+**A local type may declare its own generic parameters, fully independent of
+the enclosing function's.** `Foo<U>` above has exactly one parameter, `U`;
+its field declarations may only reference `U` and other concrete or
+module-visible types, never `T` directly, even though `T` is lexically
+reachable from `f<T>`'s scope. If `Foo` needs both, it must declare both —
+`struct Foo<U, T> { ... }` — and every use site supplies both explicitly.
+This keeps `Foo` reducible to ordinary generic instantiation: exactly one
+`Foo<U>` descriptor exists regardless of how many concrete types `f<T>` is
+ever instantiated with, since nothing about `Foo`'s definition can depend on
+which `T` a given call happens to use.
+
+> [!NOTE]
+> **Reusing the enclosing function's type-parameter letter is legal and
+> shadows it.** `struct Foo<T> { a T; }` inside `f<T>` is well-formed —
+> `Foo`'s `T` is resolved first, per ordinary nearest-scope lookup, and is
+> entirely unrelated to `f`'s `T` even though the letter is identical. This
+> is easy to write by reflex while intending to reuse `f`'s own `T`
+> instead — the two only diverge once `Foo` is instantiated with something
+> other than `f`'s `T` at some call site, which compiles without complaint.
+> The compiler should warn (not error) whenever a local generic
+> declaration's parameter list shadows an enclosing function's generic
+> parameter by name, since unlike ordinary variable shadowing this case is
+> disproportionately likely to be accidental rather than intentional.
+
+**Self-Reference Rules apply unchanged.** A local struct's infinite-size
+check (`next Node<T>` vs. `next Node<T>?` vs. `next *Node<T>`) follows
+exactly the same table as a top-level struct; locality does not relax it.
 
 expr_stmt       = expr
 assign_stmt     = expr assign_op expr
