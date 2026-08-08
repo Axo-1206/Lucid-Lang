@@ -590,15 +590,17 @@ lucid/
     │       └── TypeNarrowHelpers.hpp/cpp
     │
     ├── codegen/
-    │   ├── IRLowering.hpp                 # Single unified header (all declarations)
-    │   ├── IRLowering.cpp                 # Main entry point + orchestration
-    │   ├── IRLoweringDecl.cpp             # Declaration lowering (functions, vars, structs, enums)
-    │   ├── IRLoweringStmt.cpp             # Statement lowering (if, for, while, return, etc.)
-    │   ├── IRLoweringExpr.cpp             # Expression lowering (literals, binary, calls, etc.)
-    │   ├── IRLoweringIntrinsic.cpp        # Intrinsic lowering (#sqrt, #memcpy, #ptrDiff, etc.)
-    │   │                                    consumes sema/support/IntrinsicRegistry.hpp
-    │   ├── IRLoweringBuilder.hpp/cpp      # Helper builders for common IR patterns
-    │   └── TypeMapping.hpp/cpp            # Lucid → LLVM type mapping (stays single file)
+    │   ├── CodeGen.hpp                 # Public API
+    │   ├── CodeGen.cpp                 # Orchestrator
+    │   │
+    │   ├── context/                        # Context components     
+    │   │   └── CodeGenContext.hpp/cpp      # Simple context (stack + type mapping)
+    │   │
+    │   ├── CodeGenDecl.cpp             # Declaration lowering (functions, vars, structs, enums)
+    │   ├── CodeGenStmt.cpp             # Statement lowering (if, for, while, return, block)
+    │   ├── CodeGenExpr.cpp             # Expression lowering (literals, binary, calls, intrinsics)
+    │   ├── CodeGenClosure.cpp          # Closure lowering (capture analysis, environment, calls)
+    │   └── CodeGenType.hpp/cpp         # Type mapping (Lucid → LLVM)
     │
     ├── interpreter/                    # ORC JIT backend (lucid run)
     │   ├── Interpreter.hpp/cpp         # Main interpreter engine
