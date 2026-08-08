@@ -4024,7 +4024,7 @@ struct Counter {
     increment () -> int;
 }
 
-const makeCounter () -> Counter = {
+const makeCounter () -> Counter {
     let n int = 0;
     return Counter {
         increment = () -> int { return n += 1 };    -- captures n
@@ -4233,9 +4233,9 @@ environment and the *same* `x`, because that copy retains the existing
 environment rather than allocating a new one — copying a closure never
 re-runs `f`.
 
-**Closures may only capture Owned values or other Shared-and-refcounted
-values.** A closure literal cannot capture a variable of type `&T`, `[_]T`,
-or `*T`:
+**Closures may only capture Owned values or Shared-and-refcounted values —
+not Borrowed views.** A closure literal cannot capture a variable of type
+`&T` or `[_]T`:
 
 ```lucid
 const f (p &Player) -> () -> int {
@@ -4248,11 +4248,19 @@ const f (p &Player) -> () -> int {
 This is the fourth rule of **The Downward Flow Rule** above, not a separate
 concern: a closure's environment is explicitly designed to outlive the scope
 that created it, which is exactly the one guarantee a borrowed type (`&T`,
-`[_]T`) is forbidden from making, and exactly the kind of unmanaged lifetime
-a sealed conduit (`*T`) was never meant to participate in to begin with. A
-closure that needs the *data* behind a reference or slice must capture an
-owned copy of it instead — `p Player` (by value) rather than `p &Player`, or
-the relevant owned elements out of a slice rather than the slice itself.
+`[_]T`) is forbidden from making. A closure that needs the *data* behind a
+reference or slice must capture an owned copy of it instead — `p Player`
+(by value) rather than `p &Player`, or the relevant owned elements out of a
+slice rather than the slice itself.
+
+`*T` is **not** included in this restriction. A raw pointer is a **sealed
+conduit** (see **The Sealed Conduit Model**, below), not a borrowed view —
+it carries no "must not outlive its source" guarantee to begin with (it is
+already freely storable in struct fields, e.g. `next *Node<T>` in **Self-
+Reference Rules**, above), so a closure capturing one is no more or less
+safe than a struct storing one. The Downward Flow Rule exists to protect a
+guarantee `&T`/`[_]T` make and `*T` deliberately does not; it was never
+meant to reach `*T`, in a closure's environment or anywhere else.
 
 ---
 
@@ -4934,6 +4942,59 @@ const process () = {
 - **The target function must return nothing.** A fallible (`!`) or
   value-returning function is rejected — there is nothing to hand the
   return value or a propagated error to during an unwind.
+
+  > [!NOTE]
+  > **This also rejects curried and partially-applied functions — call this
+  > out explicitly, don't rely on readers deriving it.** `#scope_exit(fn,
+  > args...)` performs exactly **one** function application: it lowers to
+  > the single call `fn(args...)`. If `fn`'s signature has an `->` boundary
+  > anywhere (see **Currying and Partial Application**, earlier in this
+  > document), one application can never reach past it — reaching the next
+  > stage always requires a second, separate call, which `#scope_exit` has
+  > no syntax to express. So the type of `fn(args...)` for any such `fn` is
+  > itself a function value, not `()` — the same "must return nothing" rule
+  > above already rejects it, but the diagnostic should say so directly
+  > rather than reporting a generic type mismatch, since the underlying
+  > mistake (registering a cleanup that only half-runs) is easy to make and
+  > easy to miss otherwise:
+  >
+  > ```lucid
+  > const setup (a int) -> () -> () = {
+  >     sideEffectA(a);
+  >     return () -> () { sideEffectB() };
+  > };
+  >
+  > #scope_exit(setup, 5);    -- ❌ rejected: setup(5) has type () -> (),
+  >                           -- not (). sideEffectB would never run —
+  >                           -- the returned closure is never called.
+  > ```
+  >
+  > The same applies to an *already* partially-applied value passed by name,
+  > and to a same-cluster, no-arrow function (see **Partial Application**,
+  > earlier) given too few of its groups' arguments — either way, the result
+  > of the one call `#scope_exit` is able to make is a function value, not a
+  > completed side effect:
+  >
+  > ```lucid
+  > const clamp (lo int)(hi int)(v int) -> int = { … };
+  >
+  > #scope_exit(clamp, 0, 100);    -- ❌ rejected: clamp(0, 100) has type
+  >                                -- (int) -> int, not () — both because
+  >                                -- it's still a function value and
+  >                                -- because it returns int, not nothing
+  > ```
+  >
+  > If a cleanup genuinely needs more than one call to run — a curried
+  > setup, or a multi-stage chain — wrap it in an ordinary closure so
+  > `#scope_exit` only ever has to make its one call against the wrapper,
+  > and the wrapper performs however many calls it needs internally:
+  >
+  > ```lucid
+  > #scope_exit(() -> () {
+  >     setup(5)();    -- the wrapper makes both calls; #scope_exit makes one
+  > });
+  > ```
+
 - **Statement position only.** `#scope_exit` produces no value and cannot
   appear inside a larger expression (`let x = #scope_exit(...)` is a compile
   error, not `nil`) — this is the same restriction already implied for every
@@ -4953,9 +5014,9 @@ into the generated code. `IRLowering` tracks pending callbacks as a stack of
 frames mirroring block nesting during lowering itself — this stack exists
 only in the compiler, never in the compiled program.
 
-| Intrinsic                  | Args                                   | Returns | Notes                                                                                         |
-| -------------------------- | -------------------------------------- | ------- | --------------------------------------------------------------------------------------------- |
-| `#scope_exit(fn, args...)` | function value, zero or more arguments | —       | Registers `fn(args...)` to run when the enclosing block exits (LIFO); statement position only |
+| Intrinsic                  | Args                                   | Returns | Notes                                                                                                                                                                                      |
+| -------------------------- | -------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `#scope_exit(fn, args...)` | function value, zero or more arguments | —       | Registers `fn(args...)` to run when the enclosing block exits (LIFO); statement position only; `fn` must not be curried/partially-applied — `fn(args...)` must itself directly return `()` |
 
 ---
 
