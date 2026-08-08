@@ -359,13 +359,13 @@ bool supportsAttributes(const DeclAST* decl) {
         case ASTKind::StructDecl:
         case ASTKind::EnumDecl:
         case ASTKind::TraitDecl:
+        case ASTKind::FieldDecl:
+        case ASTKind::TraitFieldDecl:
+        case ASTKind::EnumVariant:
             return true;
 
         case ASTKind::Param:
-        case ASTKind::FieldDecl:
-        case ASTKind::TraitFieldDecl:
         case ASTKind::GenericParamDecl:
-        case ASTKind::EnumVariant:
         case ASTKind::UnknownDecl:
             return false;
 

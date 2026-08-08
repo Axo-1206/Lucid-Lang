@@ -659,7 +659,7 @@ std::vector<ParamPtr> parseParamList(TokenStream& stream, ParserContext& ctx, bo
 }
 
 // =============================================================================
-// parseArgList - CALL SITE - SILENT on commas (semantic phase handles matching)
+// parseArgList - CALL SITE - uses handleCommaGap like parseParamList
 // =============================================================================
 
 ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx) {
@@ -678,11 +678,14 @@ ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx) {
         stream.consume(); // Consume ')'
         return ctx.arena.makeBuilder<ExprPtr>().build();
     }
-    
-    // Leading commas are silently skipped (not reported)
-    stream.consumeTrailing(TokenType::COMMA);
+
+    bool isFirst = true;
     
     while (!stream.isAtEnd() && !stream.check(TokenType::RPAREN)) {
+        // Handle commas before this argument (list-level comma handling)
+        handleCommaGap(stream, ctx, "argument", isFirst);
+        isFirst = false;
+        
         ExprPtr arg = parseExpr(stream, ctx);
         if (arg) {
             args.push_back(arg);
@@ -695,9 +698,6 @@ ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx) {
             }
             continue;
         }
-        
-        // Consecutive commas are silently skipped (not reported)
-        stream.consumeTrailing(TokenType::COMMA);
     }
     
     if (stream.isAtEnd()) {
