@@ -287,6 +287,7 @@ enum class DiagCode : uint32_t {
     Sem_RefToStack            = 6508,  // Reference to stack-allocated data
     Sem_MoveAfterUse          = 6509,  // Move after use
     Sem_UninitVariable        = 6510,  // Uninitialized variable
+    Sem_InvalidCapture        = 6511,  // Can't capture borrowed type in closure
 
     // ──────────────────────────────────────────────────────────────────────────
     // BACKEND & LINKING ERRORS (7000-7999)

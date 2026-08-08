@@ -265,7 +265,40 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetTyp
         return ctx.getUnknownType();
     }
 
-    // ─── Step 4: Determine value state ─────────────────────────────────────
+    // ─── Step 4: CLOSURE CAPTURE VALIDATION ──────────────────────────────────
+    // If we're inside a function body, check if this variable is captured
+    // from an outer scope. Captured variables must not be borrowed types.
+    if (ctx.stack.insideFunction()) {
+        bool isInCurrentScope = ctx.isInCurrentScope(expr->name);
+        bool isModuleMember = ctx.isModuleMember(expr->name);
+        
+        // A variable is captured if:
+        //   1. It's NOT in the current scope (local variable or parameter)
+        //   2. It's NOT a module member (top-level declaration)
+        bool isCaptured = !isInCurrentScope && !isModuleMember;
+        
+        if (isCaptured) {
+            const TypeAST* varType = decl->type;
+            
+            // ─── Rule 4: No borrowed types in closures ──────────────────────
+            // Closures cannot capture &T or [_]T (borrowed types)
+            if (isBorrowedType(varType)) {
+                ctx.diagnostics.error(DiagCode::Sem_InvalidCapture, expr,
+                                      "closure cannot capture borrowed type '",
+                                      ctx.pool.lookup(expr->name),
+                                      "' (", debug::typeToString(varType, ctx.pool),
+                                      ") — closures cannot capture &T or [_]T");
+                ctx.diagnostics.note(expr,
+                                     "Only owned values can be captured by closures. "
+                                     "Use a value copy or pass the value as a parameter.");
+                expr->resolvedType = ctx.getUnknownType();
+                expr->valueState = ValueState::Unknown;
+                return ctx.getUnknownType();
+            }
+        }
+    }
+
+    // ─── Step 5: Determine value state ─────────────────────────────────────
     ValueState state = ValueState::Unknown;
     if (decl->isa<EnumVariantAST>() || decl->isa<FuncDeclAST>()) {
         state = ValueState::Definite;
@@ -280,7 +313,7 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetTyp
         state = ValueState::Unknown;
     }
 
-    // ─── Step 5: Set isLValue based on declaration type ──────────────────
+    // ─── Step 6: Set isLValue based on declaration type ──────────────────
     if (decl->isa<VarDeclAST>()) {
         const VarDeclAST* varDecl = decl->as<VarDeclAST>();
         expr->isLValue = (varDecl->keyword == DeclKeyword::Let);
@@ -301,7 +334,7 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetTyp
         expr->isConst = false;
     }
 
-    // ─── Step 6: Handle generic arguments (function instantiation) ────────
+    // ─── Step 7: Handle generic arguments (function instantiation) ────────
     if (!expr->genericArgs.empty()) {
         if (!decl->isa<FuncDeclAST>()) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
@@ -331,13 +364,23 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetTyp
         }
     }
 
-    // ─── Step 7: Return the declaration's type ─────────────────────────────
+    // ─── Step 8: Return the declaration's type ─────────────────────────────
     if (!decl->type) {
         ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
                               "'", ctx.pool.lookup(expr->name), "' has no type information");
         expr->resolvedType = ctx.getUnknownType();
         expr->valueState = ValueState::Unknown;
         return ctx.getUnknownType();
+    }
+
+    // ─── Step 9: Apply type narrowing from if conditions ────────────────────
+    // lookupValue already applies narrowing, but we need to ensure the
+    // narrowed type is used for the expression's resolved type
+    const TypeAST* narrowedType = ctx.stack.getNarrowedType(expr->name);
+    if (narrowedType) {
+        expr->resolvedType = const_cast<TypeAST*>(narrowedType);
+        expr->valueState = state;
+        return const_cast<TypeAST*>(narrowedType);
     }
 
     expr->resolvedType = decl->type;

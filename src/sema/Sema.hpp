@@ -45,8 +45,6 @@ void registerDeclName(const DeclAST* decl, SemaContext& ctx);
 void registerImportName(const ImportDeclAST* decl, SemaContext& ctx);
 void registerVarName(const VarDeclAST* decl, SemaContext& ctx);
 void registerFuncName(const FuncDeclAST* decl, SemaContext& ctx);
-void registerParamName(const ParamAST* param, SemaContext& ctx);
-void registerGenericParamName(const GenericParamDeclAST* param, SemaContext& ctx);
 void registerStructName(const StructDeclAST* decl, SemaContext& ctx);
 void registerEnumName(const EnumDeclAST* decl, SemaContext& ctx);
 void registerTraitName(const TraitDeclAST* decl, SemaContext& ctx);

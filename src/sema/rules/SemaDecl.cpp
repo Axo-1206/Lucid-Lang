@@ -12,7 +12,8 @@
 /// @architectural_note Registration Rules
 ///   - Top-level declarations: Registered in Phase 1 (register*Name)
 ///   - Nested declarations: Registered in Phase 2 (resolveDecl)
-///   - Parameters: Registered in Phase 1 (registerFuncName) and Phase 2 (resolveParam)
+///   - Parameters: Registered ONLY in Phase 2 (resolveParam) 
+///     (Parameters are not needed for Phase 1 name resolution)
 ///   - Generic params: Registered in Phase 1 (registerFuncName) and Phase 2 (resolveGenericParam)
 
 #include "../Sema.hpp"
@@ -25,8 +26,17 @@
 namespace sema {
 
 // =============================================================================
-// PHASE 1: Name Registration (Simplified)
+// PHASE 1: Name Registration
 // =============================================================================
+//
+// Phase 1 registers all names that need to be visible for forward references.
+// Only top-level declarations and their generic parameters need to be registered
+// here. Parameters and local variables are registered in Phase 2.
+//
+// IMPORTANT: Parameters are NOT registered in Phase 1 because:
+//   1. They are only used inside the function body (resolved in Phase 2)
+//   2. They don't need to be visible for forward references
+//   3. They are scoped to the function and resolved when the body is processed
 
 void registerImportName(const ImportDeclAST* decl, SemaContext& ctx) {
     ModuleAST* target = ctx.findModuleByPath(decl->path);
@@ -39,29 +49,23 @@ void registerVarName(const VarDeclAST* decl, SemaContext& ctx) {
 }
 
 void registerFuncName(const FuncDeclAST* decl, SemaContext& ctx) {
+    // ─── 1. Register the function itself ──────────────────────────────────────
     ctx.insertValue(decl);
 
+    // ─── 2. Register generic parameters ──────────────────────────────────────
+    // Generic parameters need to be registered in Phase 1 so they can be
+    // resolved when types are resolved in Phase 2.
     for (const GenericParamDeclAST* g : decl->genericParams) {
         ctx.insertGenericParam(g);
     }
 
-    ctx.pushScope();
-    if (decl->funcType) {
-        for (FuncTypeAST* group = decl->funcType; group; group = group->getNext()) {
-            for (ParamAST* param : group->params) {
-                ctx.insertValue(param);
-            }
-        }
-    }
-    ctx.popScope();
-}
-
-void registerParamName(const ParamAST* param, SemaContext& ctx) {
-    ctx.insertValue(param);
-}
-
-void registerGenericParamName(const GenericParamDeclAST* param, SemaContext& ctx) {
-    ctx.insertGenericParam(param);
+    // ─── 3. Parameters are NOT registered in Phase 1 ─────────────────────────
+    // Parameters are only needed inside the function body, which is resolved
+    // in Phase 2. They are registered when resolveFuncDecl calls resolveParam.
+    // 
+    // Note: The previous implementation pushed a scope and registered parameters
+    // here, but the scope was immediately popped, making the registration
+    // pointless. We've removed this dead code.
 }
 
 void registerEnumName(const EnumDeclAST* decl, SemaContext& ctx) {
@@ -144,19 +148,15 @@ void resolveVarDecl(const VarDeclAST* decl, SemaContext& ctx) {
         }
     }
 
-    // ─── NOTE: Registration is handled by resolveDecl() ──────────────
+    // ─── NOTE: Registration is handled by registerVarName() ──────────
     // Do NOT call ctx.insertValue() here.
 }
 
 void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
     // ─── 1. Validate all attributes ────────────────────────────────────────
-    // This validates @[foreign] syntax (ABI string, etc.)
     validateAllAttributes(decl, ctx);
 
     // ─── 2. Check if @[foreign] is present ────────────────────────────────
-    // We check this directly from the attributes list.
-    // The attribute validator already validated the syntax,
-    // now we just need to know if it's there.
     InternedString foreignName = ctx.pool.intern("foreign");
     const AttributeAST* foreignAttr = nullptr;
     for (const AttributeAST* attr : decl->attributes) {
@@ -192,7 +192,10 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
         resolveGenericParam(g, ctx);
     }
 
-    // ─── 6. Resolve parameters ────────────────────────────────────────────────
+    // ─── 6. Resolve parameters ──────────────────────────────────────────────
+    // Parameters are registered in the function's scope so they are
+    // available when resolving the body. The scope is pushed here and
+    // popped after the body is resolved.
     ctx.pushScope();
     
     for (FuncTypeAST* group = funcType; group; group = group->getNext()) {
@@ -257,29 +260,31 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
 
 /// @brief Resolve a parameter type and register it in the current scope.
 ///
-/// Parameters are special because they are only discovered during Phase 2
-/// (when walking function signatures) and need to be registered in the
-/// current scope for the function body to reference them.
+/// Parameters are registered in Phase 2 (resolveFuncDecl) because they are
+/// only needed when resolving the function body. Unlike top-level declarations,
+/// parameters don't need to be visible for forward references.
 ///
-/// @note This is called from both Phase 1 (registerFuncName) and Phase 2
-///       (resolveFuncDecl). The duplicate insertValue calls are safe because
-///       insertValue checks for duplicates before inserting.
+/// @note This is called from resolveFuncDecl, NOT from registerFuncName.
 void resolveParam(const ParamAST* param, SemaContext& ctx) {
     // Parameters don't support attributes, so we skip validateAllAttributes
     // If they somehow have attributes, they were already rejected by the parser.
 
+    // ─── 1. Resolve the parameter type ──────────────────────────────────────
     TypeAST* paramType = resolveType(param->type, ctx);
     if (!paramType) {
         return;
     }
     
+    // ─── 2. Validate const parameter ────────────────────────────────────────
+    // const parameters are read-only references - they must have a definite type
     if (param->isConst) {
         if (!validateConstType(paramType, param->name, "parameter", ctx)) {
             return;
         }
     }
     
-    // Parameters are registered in the current scope
+    // ─── 3. Register the parameter in the current scope ────────────────────
+    // The current scope is the function's parameter scope (pushed in resolveFuncDecl)
     ctx.insertValue(param);
 }
 
@@ -292,7 +297,7 @@ void resolveGenericParam(const GenericParamDeclAST* param, SemaContext& ctx) {
 void resolveEnumDecl(const EnumDeclAST* decl, SemaContext& ctx) {
     validateAllAttributes(decl, ctx);
 
-    // ─── NOTE: Registration is handled by resolveDecl() ─────────────────────
+    // ─── NOTE: Registration is handled by registerEnumName() ──────────────
     // Do NOT call ctx.insertType() here.
 
     if (decl->backingType) {
@@ -322,7 +327,7 @@ void resolveEnumDecl(const EnumDeclAST* decl, SemaContext& ctx) {
 void resolveTraitDecl(const TraitDeclAST* decl, SemaContext& ctx) {
     validateAllAttributes(decl, ctx);
 
-    // ─── NOTE: Registration is handled by resolveDecl() ─────────────────────
+    // ─── NOTE: Registration is handled by registerTraitName() ─────────────
     // Do NOT call ctx.insertType() here.
 
     for (const GenericParamDeclAST* g : decl->genericParams) {
@@ -338,6 +343,7 @@ void resolveTraitDecl(const TraitDeclAST* decl, SemaContext& ctx) {
         }
 
         // ─── Validate const trait field ──────────────────────────────────
+        // const trait fields must have a definite type (not nullable or fallible)
         if (field->isConst) {
             if (!validateConstType(fieldType, field->name, "trait field", ctx)) {
                 continue;
@@ -355,7 +361,7 @@ void resolveTraitDecl(const TraitDeclAST* decl, SemaContext& ctx) {
 void resolveStructDecl(const StructDeclAST* decl, SemaContext& ctx) {
     validateAllAttributes(decl, ctx);
 
-    // ─── NOTE: Registration is handled by resolveDecl() ─────────────────────
+    // ─── NOTE: Registration is handled by registerStructName() ────────────
     // Do NOT call ctx.insertType() here.
 
     ScopedTypeDefinition defining(ctx, decl);
@@ -381,13 +387,14 @@ void resolveStructFields(const StructDeclAST* decl, SemaContext& ctx) {
     for (const FieldDeclAST* field : decl->fields) {
         validateAllAttributes(field, ctx);
 
+        // ─── 1. Resolve the field's type ──────────────────────────────────
         TypeAST* fieldType = resolveType(field->type, ctx);
         if (!fieldType) {
             continue;
         }
 
-        // ─── Downward Flow Rule: Check borrowed types ──────────────────────
-        // Struct fields cannot contain &T or [_]T
+        // ─── 2. Downward Flow Rule: Check borrowed types ──────────────────
+        // Struct fields cannot contain &T or [_]T (borrowed types)
         if (isBorrowedType(fieldType)) {
             ctx.diagnostics.error(DiagCode::Sem_RefInStruct, field,
                                   "field '", ctx.pool.lookup(field->name),
@@ -397,20 +404,23 @@ void resolveStructFields(const StructDeclAST* decl, SemaContext& ctx) {
             continue;
         }
 
-        // ─── Validate self-reference ──────────────────────────────────────
+        // ─── 3. Validate self-reference ──────────────────────────────────────
+        // Self-reference is only valid if nullable or a raw pointer
         isValidStructSelfReference(fieldType, decl, ctx);
 
-        // ─── Validate const field type ──────────────────────────────────
+        // ─── 4. Validate const field type ──────────────────────────────────
+        // const fields must have a definite type (not nullable or fallible)
         if (field->isConst) {
             if (!validateConstType(fieldType, field->name, "struct field", ctx)) {
                 continue;
             }
         }
 
-        // ─── Handle default value ───────────────────────────────────────
+        // ─── 5. Handle default value ───────────────────────────────────────
         bool isFunctionType = fieldType->isa<FuncTypeAST>();
 
         if (field->defaultBody) {
+            // ─── Block body default (only for function fields) ─────────────
             if (!isFunctionType) {
                 ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, field,
                                       "block body can only be used with function fields, but '",
@@ -428,6 +438,7 @@ void resolveStructFields(const StructDeclAST* decl, SemaContext& ctx) {
                 continue;
             }
 
+            // ─── Push scope for the function field's parameters ──────────
             ctx.pushScope();
 
             for (ParamAST* param : funcType->params) {
@@ -444,6 +455,7 @@ void resolveStructFields(const StructDeclAST* decl, SemaContext& ctx) {
             ctx.popScope();
 
         } else if (field->defaultVal) {
+            // ─── Expression default ──────────────────────────────────────────
             if (isFunctionType) {
                 FuncTypeAST* funcType = fieldType->as<FuncTypeAST>();
 
@@ -466,6 +478,9 @@ void resolveStructFields(const StructDeclAST* decl, SemaContext& ctx) {
                 }
             }
         }
+        // ─── No default value ─────────────────────────────────────────────
+        // The struct literal must supply a value for this field.
+        // This is valid - no action needed.
     }
 }
 

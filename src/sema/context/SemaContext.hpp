@@ -70,9 +70,6 @@ struct TypeCache {
 // ─── SemaContext ──────────────────────────────────────────────────────────
 
 /// @brief Unified semantic context - all in one struct.
-/// 
-/// This is the main context passed to all semantic analysis functions.
-/// It's intentionally monolithic - all state is directly accessible.
 struct SemaContext {
     // ─── Resources ──────────────────────────────────────────────────────
     
@@ -165,7 +162,40 @@ struct SemaContext {
         return scopes.back();
     }
     
-    // ─── Symbol Insertion (with automatic duplicate checking) ──────────
+    // ─── Scope Queries ──────────────────────────────────────────────────
+    
+    /// @brief Check if a name is defined in the current scope.
+    /// This includes local variables and parameters, but NOT outer scopes.
+    bool isInCurrentScope(InternedString name) const {
+        if (scopes.empty()) return false;
+        return currentScope().values.find(name) != currentScope().values.end();
+    }
+    
+    /// @brief Check if a name is a module member (top-level declaration).
+    bool isModuleMember(InternedString name) const {
+        if (!currentModuleTable) return false;
+        return currentModuleTable->values.find(name) != currentModuleTable->values.end();
+    }
+    
+    /// @brief Check if a type is defined in the current scope.
+    bool isTypeInCurrentScope(InternedString name) const {
+        if (scopes.empty()) return false;
+        return currentScope().types.find(name) != currentScope().types.end();
+    }
+    
+    /// @brief Check if a type is a module type member.
+    bool isModuleTypeMember(InternedString name) const {
+        if (!currentModuleTable) return false;
+        return currentModuleTable->types.find(name) != currentModuleTable->types.end();
+    }
+    
+    /// @brief Check if a generic parameter is in the current scope.
+    bool isGenericParamInCurrentScope(InternedString name) const {
+        if (scopes.empty()) return false;
+        return currentScope().genericParams.find(name) != currentScope().genericParams.end();
+    }
+    
+    // ─── Symbol Insertion ──────────────────────────────────────────────
     
     bool insertValue(const ValueDeclAST* decl) {
         if (isAtModuleLevel()) {
@@ -235,7 +265,7 @@ struct SemaContext {
         return true;
     }
     
-    // ─── Symbol Lookup (with automatic type narrowing) ──────────────────
+    // ─── Symbol Lookup ──────────────────────────────────────────────────
     
     const TypeAST* getEffectiveType(const ValueDeclAST* decl, InternedString name) const {
         if (!decl || !decl->type) return nullptr;
@@ -372,7 +402,7 @@ struct SemaContext {
         return isExported(decl);
     }
     
-    // ─── Convenience: Module Member Keyword Info ──────────────────────
+    // ─── Module Member Keyword Info ────────────────────────────────────
     
     DeclKeyword lookupModuleMemberKeyword(ModuleAST* module, InternedString memberName) const {
         const ValueDeclAST* decl = lookupModuleValueMember(module, memberName);
@@ -591,10 +621,6 @@ struct SemaContext {
 
 // ─── RAII Guards ─────────────────────────────────────────────────────────
 
-/// @brief RAII guard for semantic context frames.
-/// 
-/// Automatically pushes a context frame on construction and pops it on destruction.
-/// Used for functions, loops, switches, blocks, and if statements.
 struct ScopedSemanticContext {
     ScopedSemanticContext(SemaContext& ctx, ContextKind kind,
                           const BaseAST* node, const SourceLocation& loc)
@@ -610,9 +636,6 @@ private:
     SemaContext& ctx_;
 };
 
-/// @brief RAII guard for if condition context.
-/// 
-/// Automatically sets up if condition context for narrowing detection.
 struct ScopedIfCondition {
     ScopedIfCondition(SemaContext& ctx, bool hasElse)
         : ctx_(ctx) {
@@ -631,16 +654,6 @@ private:
     SemaContext& ctx_;
 };
 
-/// @brief RAII guard for symbol table scopes.
-/// 
-/// Automatically pushes a new symbol scope on construction and pops it on destruction.
-/// Used for blocks and any other place that introduces a new lexical scope.
-///
-/// @example
-///   {
-///       SymbolScope scope(ctx);
-///       // Any declarations made here are local to this scope
-///   }  // Scope automatically popped
 struct SymbolScope {
     explicit SymbolScope(SemaContext& ctx)
         : ctx_(ctx) {
@@ -658,22 +671,7 @@ private:
     SemaContext& ctx_;
 };
 
-/// @brief RAII guard for applying type narrowing.
-/// 
-/// This guard automatically:
-///   1. Pushes a new narrowing level on construction
-///   2. Applies all specified narrowings
-///   3. Pops the narrowing level on destruction
-///
-/// @example
-///   // Single variable narrowing
-///   ScopedNarrowing narrowing(ctx, "x", intType, false);
-///   
-///   // Multiple variable narrowing (from if condition)
-///   NarrowingInfo info = { { "x", intType }, { "y", stringType } };
-///   ScopedNarrowing narrowing(ctx, info.narrowings, false);
 struct ScopedNarrowing {
-    // ─── Single variable ──────────────────────────────────────────────────
     ScopedNarrowing(SemaContext& ctx, InternedString varName, 
                     const TypeAST* narrowedType, bool isInverse = false)
         : ctx_(ctx) {
@@ -681,7 +679,6 @@ struct ScopedNarrowing {
         ctx_.stack.narrowVariable(varName, narrowedType);
     }
     
-    // ─── Multiple variables (from if condition) ──────────────────────────
     ScopedNarrowing(SemaContext& ctx, 
                     const std::unordered_map<InternedString, const TypeAST*>& narrowings,
                     bool isInverse = false)
@@ -703,9 +700,6 @@ private:
     SemaContext& ctx_;
 };
 
-/// @brief RAII guard for type definition context.
-/// 
-/// Tracks that we're currently defining a type (for self-reference detection).
 struct ScopedTypeDefinition {
     ScopedTypeDefinition(SemaContext& ctx, const TypeDeclAST* decl)
         : ctx_(ctx) {
