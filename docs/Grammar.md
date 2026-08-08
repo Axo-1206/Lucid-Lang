@@ -1062,6 +1062,12 @@ log.sink = (msg string) -> () { system:writeToFile("app.log", msg) };    -- OK
 
 ### Security Considerations for Function-Typed Fields
 
+> [!NOTE]
+> Function-typed fields have one more consequence worth knowing before you
+> reach for them: copying a struct that holds a closure in one of its fields
+> does not clone that closure's captured state — it shares it. See **Struct
+> Deep Copy**, below, for what this means in practice.
+
 A function-typed field is the closest thing Lucid has to an injectable
 dependency — construction can supply different behavior per instance, similar
 in spirit to an interface. The compiler only guarantees the **shape** of what
@@ -3866,7 +3872,11 @@ const ok  [_]int = nums[1..99] ?? [];    -- panic converted to an empty slice
 ### Slice Rules
 
 A slice `[_]T` is a borrowed view — it does not own the underlying memory. The
-backing array must outlive the slice:
+backing array must outlive the slice. This is enforced the same way it is for
+`&T`: see **The Downward Flow Rule**, below, which applies identically to
+`[_]T` — a slice cannot be stored in a struct field, cannot be an array or
+slice element, cannot be returned from a function, and cannot be captured by
+a closure. It can only exist as a function parameter or a local alias.
 
 ```lucid
 const data  [*]int = [1, 2, 3, 4, 5];
@@ -3901,25 +3911,100 @@ const view [_]float = mat4;
 
 ## Value and Reference Semantics
 
-Every type is either **owned** or **borrowed**. Bare `T` = owned, `&T` = borrowed.
+Every type falls into exactly one of three categories, not two. Getting these
+three confused — treating a shared-ownership type as if it behaved like a
+borrow, or a borrow as if it behaved like a plain value — is the single most
+common source of memory-model bugs in this section, so the categories are
+spelled out before any type-by-type table:
+
+- **Owned value** — the type is fully self-contained. Copying it (assignment,
+  parameter pass, return) produces two independent values with no relationship
+  to each other afterward. Freed automatically at scope exit; nothing about it
+  can dangle, because nothing outside the current binding depends on it.
+- **Borrowed view** — the type does not own the data it points at; it is only
+  ever a temporary alias over something else's storage, and that something
+  else must outlive it. Zero runtime cost, enforced entirely at compile time
+  by restricting *where* the type is allowed to be stored (see **The Downward
+  Flow Rule** below). `&T` and `[_]T` are both in this category.
+- **Shared, refcounted** — the type owns a heap allocation, but that
+  allocation may be referenced by more than one binding at once, and those
+  bindings may have different lifetimes (in particular, one of them may
+  outlive the scope that created the allocation). Copying it copies a handle
+  and increments a reference count; the allocation itself is freed
+  automatically the moment the count reaches zero, which is **not**
+  necessarily at any single scope's exit. Closures are the only member of
+  this category the language itself produces implicitly today; the stdlib's
+  planned `Shared<T>` / `Weak<T>` wrappers (see **Modeling Complex Data
+  Structures** below) use the same mechanism for user-defined data.
+
+The difference between the second and third category is the one worth
+sitting with: both let you avoid a deep copy, but a **borrowed view is
+statically confined so it can never outlive its source**, while a **shared
+value is allowed to outlive its source, and pays a small runtime cost
+(refcounting) so that it can do so safely.** If a value needs to escape
+upward out of the scope that created it — returned, stored in a struct,
+captured by a closure — it cannot be a borrowed view; it must be owned
+outright or shared.
+
+### Ownership Categories at a Glance
+
+| Type                            | Category                       | Copy behavior                                                                                 | Freed                                                                                                           | Can it escape its creating scope?                |
+| ------------------------------- | ------------------------------ | --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| `bool` `int` `float` `char` …   | Owned value                    | full copy                                                                                     | scope arena, automatic                                                                                          | irrelevant — copies are independent              |
+| `Direction.North` (enum)        | Owned value                    | full copy                                                                                     | scope arena, automatic                                                                                          | irrelevant                                       |
+| `[N]T` (fixed array)            | Owned value                    | full element copy                                                                             | scope arena, automatic                                                                                          | irrelevant                                       |
+| `[*]T` (dynamic array)          | Owned value                    | full deep copy                                                                                | scope arena, automatic — heap-backed, but the free call is compiler-inserted at scope exit like everything else | irrelevant                                       |
+| `string`                        | Owned value                    | full deep copy                                                                                | scope arena, automatic (same as `[*]T`)                                                                         | irrelevant                                       |
+| `struct`                        | Owned value                    | full deep copy, recursive per field                                                           | scope arena, automatic                                                                                          | irrelevant                                       |
+| Named function                  | Owned value                    | pointer copy, no state                                                                        | never — static                                                                                                  | yes, trivially (no state to dangle)              |
+| **Closure**                     | Shared, refcounted             | copies fat pointer `{func, env}`; env is retained                                             | heap, automatic — freed when refcount hits 0, not scope-tied                                                    | **yes — this is the point of it**                |
+| **`&T`** (reference)            | Borrowed view                  | not copied in the escaping sense — assignment *through* it mutates the pointee, never rebinds | n/a — never owns anything to free                                                                               | **no — structurally forbidden**                  |
+| **`[_]T`** (slice)              | Borrowed view                  | copies the view header `(ptr, len, cap)` — never the backing buffer                           | n/a — never owns anything to free                                                                               | **no — structurally forbidden, same as `&T`**    |
+| `*T` (raw pointer)              | Sealed conduit                 | pointer copy                                                                                  | never automatic — manual, or none at all                                                                        | yes — this is the explicitly unsafe escape hatch |
+| `Shared<T>` *(stdlib, planned)* | Shared, refcounted             | copies handle, retains                                                                        | heap, automatic — freed when refcount hits 0                                                                    | yes                                              |
+| `Weak<T>` *(stdlib, planned)*   | Shared, refcounted, non-owning | copies handle, does not retain                                                                | rides on the `Shared<T>` it observes; auto-nulls                                                                | yes, but never keeps its target alive            |
 
 ### Owned Types — Copied on Assignment
 
-| Type           | Syntax                           | Storage                         | On assignment                      |
-| -------------- | -------------------------------- | ------------------------------- | ---------------------------------- |
-| Primitives     | `bool` `int` `float` `char` …    | stack / inline                  | full copy                          |
-| Enum           | `Direction.North`                | integer (`byte`/`short`)        | full copy                          |
-| Fixed array    | `[N]T`                           | stack / inline                  | full element copy                  |
-| Slice          | `[_]T`                           | fat pointer (`ptr + len + cap`) | copies view header — shares buffer |
-| Dynamic array  | `[*]T`                           | heap-owned buffer               | full deep copy                     |
-| String         | `string`                         | heap-owned sequence             | full deep copy                     |
-| Struct         | `Vec2` `Player` …                | inline / stack                  | full deep copy                     |
-| Named function | `add` `math:normalize`           | function pointer                | pointer copy                       |
-| Closure        | `add(10)` `(x int) -> int { … }` | heap-allocated env              | copies reference to env            |
+| Type           | Syntax                        | Storage                  | On assignment     |
+| -------------- | ----------------------------- | ------------------------ | ----------------- |
+| Primitives     | `bool` `int` `float` `char` … | stack / inline           | full copy         |
+| Enum           | `Direction.North`             | integer (`byte`/`short`) | full copy         |
+| Fixed array    | `[N]T`                        | stack / inline           | full element copy |
+| Dynamic array  | `[*]T`                        | heap-owned buffer        | full deep copy    |
+| String         | `string`                      | heap-owned sequence      | full deep copy    |
+| Struct         | `Vec2` `Player` …             | inline / stack           | full deep copy    |
+| Named function | `add` `math:normalize`        | function pointer         | pointer copy      |
+
+> [!NOTE]
+> **Slice (`[_]T`) and Closure have both been moved out of this table.**
+> Slices are a **Borrowed Type** — see **Borrowed Types — Scoped References
+> and Views** below, not this section, despite `T` (bare, no sigil) being
+> the general spelling convention for owned types elsewhere in this
+> document. Closures are an owned *handle* over **Shared, refcounted**
+> storage — see **Function Values and Closures** below. Neither behaves
+> like the rest of this table: a slice can dangle if its backing array does
+> not outlive it, and a closure's environment can outlive the function call
+> that created it. Both of those are exactly the properties nothing else in
+> this table has.
 
 ### Struct Deep Copy
 
-Struct assignment always produces a fully independent value. Owned fields are cloned. Since references (`&T`) cannot be stored in structs (see Scoped Reference Rules below), structs consist entirely of owned fields and deep copies are always independent.
+Struct assignment copies every field according to **that field's own type's
+copy rule**, recursively. For a struct whose fields are all **Owned
+values** — the common case — that produces a fully independent value, since
+every owned type clones on copy. But a struct field is not required to be a
+plain owned value: function-typed fields (see **Security Considerations for
+Function-Typed Fields**, above) may hold a closure, and a closure is
+**Shared, refcounted** (see **Function Values and Closures**, below), not a
+plain owned value. Copying a struct with a closure field copies that field
+the way a closure is always copied — the fat pointer is duplicated and the
+environment's reference count is incremented, **not cloned**. Since
+references (`&T`) and slices (`[_]T`) cannot be stored in structs (see **The
+Downward Flow Rule**, below), a closure field is the *only* way a struct
+copy can end up sharing state with its source — but it is a real way, and
+"struct assignment is always fully independent" is only true when no field
+in the struct (at any nesting depth) is function-typed.
 
 ```lucid
 struct Player {
@@ -3932,9 +4017,51 @@ let b Player = a;
 -- b.score and b.items are fully independent of a
 ```
 
-### Borrowed Types — Scoped References (`&T`)
+Contrast with a struct that has a function-typed field capturing state:
 
-References (`&T`) allow sharing data without copying. They represent a safe borrowed view of an owned variable.
+```lucid
+struct Counter {
+    increment () -> int;
+}
+
+const makeCounter () -> Counter {
+    let n int = 0;
+    return Counter {
+        increment = () -> int { return n += 1 };    -- captures n
+    };
+}
+
+let a Counter = makeCounter();
+let b Counter = a;    -- struct copy: b.increment's environment is
+                       -- RETAINED, not cloned — a and b now share it
+
+a.increment();    -- n becomes 1
+b.increment();    -- n becomes 2, NOT reset to a fresh 0
+```
+
+`b` is not a fresh `Counter` with its own independent counter — `a` and `b`
+alias the same environment, because copying `a.increment` into `b.increment`
+follows the closure copy rule (retain), not the owned-value copy rule
+(clone). This is identical to copying a bare closure variable (`let g2 =
+g;`, see **Function Values and Closures**); a struct field is not a
+different context, it is the same copy happening one level deeper. If a
+struct field's environment sharing across copies is not the behavior you
+want, either give the field a fresh non-capturing closure per copy
+explicitly (there is no automatic way to "deep copy" a closure's
+environment — sharing is the point of the mechanism), or restructure so the
+captured state lives in the struct itself as an ordinary owned field instead
+of inside a closure's environment.
+
+### Borrowed Types — Scoped References (`&T`) and Views (`[_]T`)
+
+`&T` and `[_]T` are Lucid's two **borrowed** types. Neither owns the data it
+points at, both are zero-copy, and both are governed by the same rule (**The
+Downward Flow Rule**, below) for the same reason: neither carries a runtime
+lifetime mechanism, so the compiler must instead guarantee — statically, at
+the point the type is *declared* — that it can never outlive the data it
+borrows from.
+
+**`&T` — a reference to a single value:**
 
 ```lucid
 const a Player = Player { … };
@@ -3949,26 +4076,60 @@ const rc &Player = a;    -- read-only shared reference
 | `let ref &Player = a`  | ❌ shared    | ✅ visible through `a` | `a`   |
 | `const rc &Player = a` | ❌ shared    | ❌ read-only           | `a`   |
 
-#### The Downward Flow Rule (Reference Scoping)
+**`[_]T` — a view over a contiguous range of values:**
 
-To guarantee memory safety and eliminate dangling pointers without using a Garbage Collector or a complex compile-time borrow checker, references (`&T`) are strictly scoped. They are allowed to flow *downward* (into nested calls), but never *upward or sideways*.
+```lucid
+const nums [N]int = [10, 20, 30, 40, 50];
 
-1. **No Struct Storage:** A struct field cannot have a reference type (e.g., `field &T` is a compile error).
-2. **No Array/Slice Storage:** An array or slice cannot store reference types (e.g., `[*]&T` or `[_]&T` is a compile error).
-3. **No Reference Returns:** A function cannot return a reference type (e.g., `-> &T` is a compile error).
+let view  [_]int = nums;         -- borrows the whole array
+const sub [_]int = nums[1..3];   -- borrows a sub-range
+```
 
-As a result, a reference (`&T`) can only exist in two places:
-*   As a **function parameter** (e.g., `const process (p &Player)`).
-*   As a **local variable alias** inside a block (e.g., `let ref &Weapon = player.weapon`).
+| Declaration                     | Copies?               | Element mutation?                             | Owner  |
+| ------------------------------- | --------------------- | --------------------------------------------- | ------ |
+| `let b [N]int = nums`           | ✅ deep copy           | ✅ b's own elements                            | `b`    |
+| `let view [_]int = nums`        | ❌ shared              | ✅ visible through `nums`                      | `nums` |
+| `const sub [_]int = nums[1..3]` | ❌ shared, header only | mutability follows `nums`'s own `let`/`const` | `nums` |
 
-This guarantees that a reference never outlives the owned variable it points to.
+A `[_]T`'s copy is always the three-word view header (`ptr`, `len`, `cap`) —
+copying a slice never touches the backing buffer, exactly as copying a `&T`
+never touches the pointee. This is what makes both types "borrowed" rather
+than "owned": the thing being copied is the *alias*, never the *data*.
+
+#### The Downward Flow Rule (Reference and View Scoping)
+
+To guarantee memory safety and eliminate dangling pointers without using a
+Garbage Collector or a complex compile-time borrow checker, borrowed types
+(`&T` and `[_]T` alike) are strictly scoped. They are allowed to flow
+*downward* (into nested calls), but never *upward or sideways*.
+
+1. **No Struct Storage:** A struct field cannot have a borrowed type (e.g.,
+   `field &T` or `field [_]T` is a compile error).
+2. **No Array/Slice Storage:** An array or slice cannot store a borrowed type
+   as its element type (e.g., `[*]&T`, `[_]&T`, `[*][_]T`, and `[_][_]T` are
+   all compile errors).
+3. **No Borrowed Returns:** A function cannot return a borrowed type (e.g.,
+   `-> &T` or `-> [_]T` is a compile error).
+4. **No Closure Capture:** A closure literal cannot capture a variable of a
+   borrowed type — see **Function Values and Closures** below for why this
+   is the same hazard as rules 1–3, not a separate one.
+
+As a result, a borrowed value (`&T` or `[_]T`) can only exist in two places:
+*   As a **function parameter** (e.g., `const process (p &Player)`, `const
+    first<T> (items [_]T)`).
+*   As a **local variable alias** inside a block (e.g., `let ref &Weapon =
+    player.weapon`, `let view [_]int = nums`).
+
+This guarantees that a borrowed value never outlives the owned variable it
+points to — for a slice, that means the backing array or dynamic buffer it
+was taken from; for a reference, the single value it aliases.
 
 > [!NOTE]
-> Rule 2 forbids `&T` as a stored array or slice **element type** — `[*]&T`
-> and `[]&T` are always rejected, with no exception. This does not affect
-> `for` loops: a `for` loop over an array or slice operates on the original
-> array, and mutating its element-binding variable inside the loop body
-> mutates the original array directly:
+> Rule 2 forbids `&T` and `[_]T` as a stored array or slice **element type**
+> — `[*]&T`, `[]&T`, `[*][_]T`, and `[][_]T` are always rejected, with no
+> exception. This does not affect `for` loops: a `for` loop over an array or
+> slice operates on the original array, and mutating its element-binding
+> variable inside the loop body mutates the original array directly:
 >
 > ```lucid
 > let players [*]Player = loadPlayers();
@@ -3980,8 +4141,16 @@ This guarantees that a reference never outlives the owned variable it points to.
 >
 > If `players` was declared `const`, the loop body cannot mutate `plr`, same
 > as any other `const` value — `const` is what governs mutability here, not
-> the reference rules above. There is no `[*]&T` array involved at any point;
-> the loop simply works on the array you already own.
+> the borrowing rules above. There is no `[*]&T` or `[*][_]T` array involved
+> at any point; the loop simply works on the array you already own.
+>
+> This also does not affect a slice **parameter** taking `[_]T` — that's rule
+> 2 applying to *storage* (an array/slice holding a borrowed type as its
+> *element*), which is a different thing from a function borrowing an
+> `items [_]T` *argument*, exactly as `p &Player` is a fine parameter under
+> the same distinction. `map<T,U> (items [_]T)`, `filter<T> (items [_]T)`,
+> and similar signatures elsewhere in this document are unaffected by this
+> rule.
 
 #### Modeling Complex Data Structures (Trees, Graphs, Links)
 
@@ -4001,7 +4170,7 @@ Because references (`&T`) cannot be stored inside structs, building circular or 
        next  *Node?;    -- raw pointer, nullable. Requires manual lifecycle tracking.
    }
 ```
-3. **Smart Pointers (Standard Library):** For safe shared heap state, use standard library reference-counted wrappers like `Shared<T>` and `Weak<T>` (which auto-nulls when the owner is destroyed). These incur a small runtime cost.
+3. **Smart Pointers (Standard Library):** For safe shared heap state, use standard library reference-counted wrappers like `Shared<T>` and `Weak<T>` (which auto-nulls when the owner is destroyed). These are **Shared, refcounted** types — see **Value and Reference Semantics** above — using the same allocate/retain/release mechanism as a Closure's environment, just exposed as an explicit user-facing type instead of an implicit one. They incur a small runtime cost, and like any refcounted scheme, a reference cycle between two `Shared<T>` values (or between a `Shared<T>` and a closure that captures it) will not be collected — break cycles with `Weak<T>`.
 
 > [!CAUTION]
 > **Storing `*T` in a struct field or array element does not carry any extra
@@ -4026,7 +4195,64 @@ Because references (`&T`) cannot be stored inside structs, building circular or 
 
 ### Function Values and Closures
 
-Named functions are plain function pointers — no captured state. Closures (partial applications, anonymous functions capturing variables) hold a heap-allocated environment. Assigning a closure copies the reference to that environment.
+Named functions are plain function pointers — no captured state, nothing to
+free, nothing that can dangle. They are an **Owned value** like any other
+pointer-sized primitive.
+
+Closures (partial applications, anonymous functions capturing variables) are
+different: they hold a heap-allocated environment, and that environment is
+**Shared, refcounted** — the same category as the stdlib's planned
+`Shared<T>`. A closure value itself is a fat pointer, `{ func, env }`,
+copied like any other **owned** value (assigning it, passing it as a
+parameter, storing it in a struct or array field, returning it — all
+ordinary by-value copies of that pair). What makes it different from a plain
+owned value is what happens to `env` on each of those copies: every copy of
+a closure value that has a non-null `env` increments that environment's
+reference count, and every time a closure-typed binding is destroyed
+(overwritten, or its own scope exits) the count is decremented. The
+environment itself is freed automatically the instant the count reaches
+zero — which may be long after the function call that created it has
+returned, exactly as intended: this is what makes returning a closure from a
+function work at all.
+
+```lucid
+const f (n int) -> () -> int {
+    let x int = 0;
+    return () -> int {
+        return x += n;    -- x escapes upward via the closure's environment
+    };
+}
+const g () -> int = f(1);    -- g's environment: independent copy of n=1, x=0
+const h () -> int = f(2);    -- h's environment: independent copy of n=2, x=0
+```
+
+Each *call* to `f` allocates its own environment, so `g` and `h` do not
+share an `x` — calling `g()` repeatedly increments only `g`'s copy. If `g`
+were copied again (`let g2 = g;`), `g` and `g2` would share the *same*
+environment and the *same* `x`, because that copy retains the existing
+environment rather than allocating a new one — copying a closure never
+re-runs `f`.
+
+**Closures may only capture Owned values or other Shared-and-refcounted
+values.** A closure literal cannot capture a variable of type `&T`, `[_]T`,
+or `*T`:
+
+```lucid
+const f (p &Player) -> () -> int {
+    return () -> int {
+        return p.score;    -- ❌ compile error: cannot capture a borrowed type
+    };
+}
+```
+
+This is the fourth rule of **The Downward Flow Rule** above, not a separate
+concern: a closure's environment is explicitly designed to outlive the scope
+that created it, which is exactly the one guarantee a borrowed type (`&T`,
+`[_]T`) is forbidden from making, and exactly the kind of unmanaged lifetime
+a sealed conduit (`*T`) was never meant to participate in to begin with. A
+closure that needs the *data* behind a reference or slice must capture an
+owned copy of it instead — `p Player` (by value) rather than `p &Player`, or
+the relevant owned elements out of a slice rather than the slice itself.
 
 ---
 
