@@ -442,17 +442,29 @@ bool validateScopeExit(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
         return false;
     }
 
-    // ─── 2. Must have at least one argument (the function) ────────────────
+    // ─── 2. Must have at least one argument (the function to call) ────────
     if (expr->args.empty()) {
         ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
                               "#scope_exit expects at least 1 argument (the function to call)");
         return false;
     }
 
-    // ─── 3. Validate the first argument is a function value ───────────────
+    // ─── 3. Resolve and validate the first argument ────────────────────────
     const ExprAST* funcArg = expr->args[0];
     TypeAST* funcType = funcArg->resolvedType;
-    if (!funcType || !funcType->isa<FuncTypeAST>()) {
+    
+    // First, resolve the argument if not already resolved
+    if (!funcType || funcType->isa<UnknownTypeAST>()) {
+        funcType = resolveExpr(const_cast<ExprAST*>(funcArg), ctx);
+        if (!funcType || funcType->isa<UnknownTypeAST>()) {
+            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, funcArg,
+                                  "#scope_exit argument has unknown type");
+            return false;
+        }
+    }
+
+    // ─── 4. Verify it's a function type ────────────────────────────────────
+    if (!funcType->isa<FuncTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, funcArg,
                               "#scope_exit expects a function as the first argument, got ",
                               debug::typeToString(funcType, ctx.pool));
@@ -461,69 +473,115 @@ bool validateScopeExit(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
 
     const FuncTypeAST* func = funcType->as<FuncTypeAST>();
 
-    // ─── 4. The function must have exactly one parameter group ─────────────
+    // ─── 5. Handle generic function references ─────────────────────────────
+    // If the function reference has generic arguments, they must be resolved
+    // and the function must be fully instantiated.
+    bool hasGenericArgs = false;
+    const FuncDeclAST* funcDecl = nullptr;
+    
+    if (funcArg->isa<IdentifierExprAST>()) {
+        const IdentifierExprAST* id = funcArg->as<IdentifierExprAST>();
+        hasGenericArgs = !id->genericArgs.empty();
+        
+        // Look up the function declaration to check generic parameters
+        const ValueDeclAST* decl = ctx.lookupValue(id->name);
+        if (decl && decl->isa<FuncDeclAST>()) {
+            funcDecl = decl->as<FuncDeclAST>();
+        }
+    } else if (funcArg->isa<ModuleAccessExprAST>()) {
+        const ModuleAccessExprAST* mod = funcArg->as<ModuleAccessExprAST>();
+        hasGenericArgs = !mod->genericArgs.empty();
+        
+        const ValueDeclAST* decl = ctx.lookupValueByAlias(mod->moduleName, mod->memberName);
+        if (decl && decl->isa<FuncDeclAST>()) {
+            funcDecl = decl->as<FuncDeclAST>();
+        }
+    }
+    
+    // ─── 6. Validate generic instantiation ─────────────────────────────────
+    if (funcDecl) {
+        // Check if the function has generic parameters
+        bool hasGenericParams = !funcDecl->genericParams.empty();
+        
+        if (hasGenericParams && !hasGenericArgs) {
+            ctx.diagnostics.error(DiagCode::Sem_GenericParamRequired, funcArg,
+                                  "#scope_exit callback '", ctx.pool.lookup(funcDecl->name),
+                                  "' has generic parameters but no generic arguments were provided");
+            ctx.diagnostics.note(funcArg,
+                                 "Instantiate the generic function: '#scope_exit(",
+                                 ctx.pool.lookup(funcDecl->name), "<T>)'");
+            return false;
+        }
+        
+        if (!hasGenericParams && hasGenericArgs) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, funcArg,
+                                  "#scope_exit callback '", ctx.pool.lookup(funcDecl->name),
+                                  "' is not generic but generic arguments were provided");
+            return false;
+        }
+        
+        // If generic arguments were provided, validate them
+        if (hasGenericArgs && hasGenericParams) {
+            // Resolve generic arguments (they should already be resolved by the expression)
+            // The generic arguments are already validated by resolveIdentifierExpr
+            // or resolveModuleAccessExpr
+        }
+    }
+
+    // ─── 7. The function must have exactly one parameter group ─────────────
+    // No curried functions - the callback must be a single, complete function
     if (func->isCurried()) {
         ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, funcArg,
                               "#scope_exit callback must have exactly one parameter group "
                               "(curried functions are not allowed)");
+        ctx.diagnostics.note(funcArg,
+                             "Use a wrapper closure: '#scope_exit(() -> () { setup(5)() })' "
+                             "to call a curried function");
         return false;
     }
 
-    // ─── 5. The function must return void ──────────────────────────────────
+    // ─── 8. The function must return void ──────────────────────────────────
+    // No value-returning or fallible functions allowed
     if (func->returnType) {
         ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, funcArg,
                               "#scope_exit callback must return void "
                               "(cannot return a value during unwinding)");
+        ctx.diagnostics.note(funcArg,
+                             "The callback is called during unwinding - there is no "
+                             "caller to receive a return value or handle an error");
         return false;
     }
 
-    // ─── 6. Validate argument count against function parameters ───────────
+    // ─── 9. No variadic parameters ─────────────────────────────────────────
+    // Variadic parameters are not allowed in #scope_exit callbacks
+    for (const ParamAST* param : func->params) {
+        if (param->isVariadic) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidParamType, param,
+                                  "#scope_exit callback cannot have variadic parameters");
+            ctx.diagnostics.note(param,
+                                 "Variadic parameters are not supported in cleanup callbacks");
+            return false;
+        }
+    }
+
+    // ─── 10. Validate argument count against function parameters ──────────
+    // The callback can have 0 or more parameters, but they must all be supplied
     size_t callbackArgs = expr->args.size() - 1;
     size_t paramCount = func->params.size();
 
-    bool hasVariadic = false;
-    size_t variadicIndex = paramCount;
-    for (size_t i = 0; i < paramCount; ++i) {
-        if (func->params[i]->isVariadic) {
-            hasVariadic = true;
-            variadicIndex = i;
-            break;
-        }
+    if (callbackArgs != paramCount) {
+        ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
+                              "#scope_exit callback expects ", paramCount,
+                              " argument(s), got ", callbackArgs);
+        ctx.diagnostics.note(expr,
+                             "All parameters of the callback must be supplied at the #scope_exit call site");
+        return false;
     }
 
-    if (hasVariadic) {
-        if (callbackArgs < variadicIndex) {
-            ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
-                                  "#scope_exit callback expects at least ", variadicIndex,
-                                  " argument(s) before variadic, got ", callbackArgs);
-            return false;
-        }
-    } else {
-        if (callbackArgs != paramCount) {
-            ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
-                                  "#scope_exit callback expects ", paramCount,
-                                  " argument(s), got ", callbackArgs);
-            return false;
-        }
-    }
-
-    // ─── 7. Validate each argument type against callback parameters ───────
+    // ─── 11. Validate each argument type against callback parameters ──────
     for (size_t i = 0; i < callbackArgs; ++i) {
         const ExprAST* arg = expr->args[i + 1];
-        const TypeAST* expectedType = nullptr;
-
-        if (hasVariadic && i >= variadicIndex) {
-            const ParamAST* variadicParam = func->params[variadicIndex];
-            if (variadicParam->type->isa<ArrayTypeAST>()) {
-                expectedType = variadicParam->type->as<ArrayTypeAST>()->element;
-            } else {
-                ctx.diagnostics.error(DiagCode::Sem_InvalidParamType, arg,
-                                      "variadic parameter has invalid type (expected array)");
-                return false;
-            }
-        } else {
-            expectedType = func->params[i]->type;
-        }
+        const TypeAST* expectedType = func->params[i]->type;
 
         TypeAST* argType = resolveExprWithTarget(
             const_cast<ExprAST*>(arg), expectedType, ctx
@@ -532,17 +590,31 @@ bool validateScopeExit(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
             return false;
         }
 
-        // ─── Use public SemaCompare functions ──────────────────────────────
+        // ─── Check: Cannot pass nil to non-nullable parameter ─────────────
         if (arg->valueState == ValueState::Nil && !isNullableType(expectedType)) {
             ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
                                   "cannot pass nil to non-nullable parameter in #scope_exit callback");
             return false;
         }
+
+        // ─── Check: Cannot pass err to non-fallible parameter ─────────────
         if (arg->valueState == ValueState::Err && !isFallibleType(expectedType)) {
             ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
                                   "cannot pass err to non-fallible parameter in #scope_exit callback");
             return false;
         }
+    }
+
+    // ─── 12. Check for field access capture issues ─────────────────────────
+    // If the function is from a struct field, warn about potential lifetime issues
+    if (funcArg->isa<FieldAccessExprAST>()) {
+        const FieldAccessExprAST* field = funcArg->as<FieldAccessExprAST>();
+        ctx.diagnostics.warning(DiagCode::Warn_UnsafeFFI, funcArg,
+                                "function reference from struct field '",
+                                ctx.pool.lookup(field->fieldName),
+                                "' may capture the struct's lifetime");
+        ctx.diagnostics.note(funcArg,
+                             "Ensure the struct outlives the scope where #scope_exit is registered");
     }
 
     return true;
