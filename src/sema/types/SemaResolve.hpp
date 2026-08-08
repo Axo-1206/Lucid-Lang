@@ -237,4 +237,26 @@ const TypeAST* getFieldTypeOnGenericType(const TypeAST* genericType,
                                          InternedString fieldName,
                                          SemaContext& ctx);
 
+// ─── Downward Flow Rule Validation ──────────────────────────────────────
+
+/// @brief Validate that a borrowed type appears in a valid context.
+/// 
+/// Borrowed types are:
+///   - &T (references)
+///   - [_]T (slices)
+/// 
+/// The Downward Flow Rule forbids borrowed types from:
+///   1. Struct fields
+///   2. Array/Slice elements
+///   3. Function returns
+///   4. Closure captures
+/// 
+/// @param type The borrowed type to validate.
+/// @param ctx The semantic context.
+/// @return true if the borrowed type is in a valid context.
+bool validateBorrowedContext(const TypeAST* type, SemaContext& ctx);
+
+/// @brief Check if a type is a borrowed type (&T or [_]T).
+bool isBorrowedType(const TypeAST* type);
+
 } // namespace sema

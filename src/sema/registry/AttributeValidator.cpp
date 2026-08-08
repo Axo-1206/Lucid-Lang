@@ -12,7 +12,7 @@ namespace sema {
 
 // ─── Public API ────────────────────────────────────────────────────────────
 
-bool validateAll(const DeclAST* decl, SemaContext& ctx) {
+bool validateAllAttributes(const DeclAST* decl, SemaContext& ctx) {
     if (!decl) return true;
 
     // ─── 1. Check: Does this declaration support attributes? ──────────────

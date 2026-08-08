@@ -4024,7 +4024,7 @@ struct Counter {
     increment () -> int;
 }
 
-const makeCounter () -> Counter {
+const makeCounter () -> Counter = {
     let n int = 0;
     return Counter {
         increment = () -> int { return n += 1 };    -- captures n

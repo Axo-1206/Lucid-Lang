@@ -27,7 +27,7 @@ namespace sema {
 /// 
 /// @note Parameters (ParamAST) and fields (FieldDeclAST) do NOT support
 ///       attributes - they have no attributes member.
-bool validateAll(const DeclAST* decl, SemaContext& ctx);
+bool validateAllAttributes(const DeclAST* decl, SemaContext& ctx);
 
 /// @brief Validate a specific attribute on its owner.
 /// @param attr The attribute to validate.
@@ -35,7 +35,7 @@ bool validateAll(const DeclAST* decl, SemaContext& ctx);
 /// @param ctx The semantic context.
 /// @return true if the attribute is valid.
 /// 
-/// @note This is called by validateAll for each attribute.
+/// @note This is called by validateAllAttributes for each attribute.
 ///       It dispatches to the appropriate validator based on attribute name.
 bool validateAttribute(const AttributeAST* attr, const DeclAST* owner, SemaContext& ctx);
 

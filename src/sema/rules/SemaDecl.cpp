@@ -105,7 +105,7 @@ void resolveImportDecl(const ImportDeclAST* decl, SemaContext& ctx) {
 }
 
 void resolveVarDecl(const VarDeclAST* decl, SemaContext& ctx) {
-    validateAll(decl, ctx);
+    validateAllAttributes(decl, ctx);
 
     // ─── 1. Resolve the declared type ───────────────────────────────
     TypeAST* declaredType = resolveType(decl->type, ctx);
@@ -151,7 +151,7 @@ void resolveVarDecl(const VarDeclAST* decl, SemaContext& ctx) {
 void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
     // ─── 1. Validate all attributes ────────────────────────────────────────
     // This validates @[foreign] syntax (ABI string, etc.)
-    validateAll(decl, ctx);
+    validateAllAttributes(decl, ctx);
 
     // ─── 2. Check if @[foreign] is present ────────────────────────────────
     // We check this directly from the attributes list.
@@ -265,7 +265,7 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
 ///       (resolveFuncDecl). The duplicate insertValue calls are safe because
 ///       insertValue checks for duplicates before inserting.
 void resolveParam(const ParamAST* param, SemaContext& ctx) {
-    // Parameters don't support attributes, so we skip validateAll
+    // Parameters don't support attributes, so we skip validateAllAttributes
     // If they somehow have attributes, they were already rejected by the parser.
 
     TypeAST* paramType = resolveType(param->type, ctx);
@@ -290,7 +290,7 @@ void resolveGenericParam(const GenericParamDeclAST* param, SemaContext& ctx) {
 }
 
 void resolveEnumDecl(const EnumDeclAST* decl, SemaContext& ctx) {
-    validateAll(decl, ctx);
+    validateAllAttributes(decl, ctx);
 
     // ─── NOTE: Registration is handled by resolveDecl() ─────────────────────
     // Do NOT call ctx.insertType() here.
@@ -304,7 +304,7 @@ void resolveEnumDecl(const EnumDeclAST* decl, SemaContext& ctx) {
     }
 
     for (const EnumVariantAST* variant : decl->variants) {
-        validateAll(variant, ctx);
+        validateAllAttributes(variant, ctx);
 
         // Check duplicate variant values
         for (const EnumVariantAST* existing : decl->variants) {
@@ -320,7 +320,7 @@ void resolveEnumDecl(const EnumDeclAST* decl, SemaContext& ctx) {
 }
 
 void resolveTraitDecl(const TraitDeclAST* decl, SemaContext& ctx) {
-    validateAll(decl, ctx);
+    validateAllAttributes(decl, ctx);
 
     // ─── NOTE: Registration is handled by resolveDecl() ─────────────────────
     // Do NOT call ctx.insertType() here.
@@ -330,7 +330,7 @@ void resolveTraitDecl(const TraitDeclAST* decl, SemaContext& ctx) {
     }
 
     for (const TraitFieldDeclAST* field : decl->fields) {
-        validateAll(field, ctx);
+        validateAllAttributes(field, ctx);
 
         TypeAST* fieldType = resolveType(field->type, ctx);
         if (!fieldType) {
@@ -353,7 +353,7 @@ void resolveTraitDecl(const TraitDeclAST* decl, SemaContext& ctx) {
 }
 
 void resolveStructDecl(const StructDeclAST* decl, SemaContext& ctx) {
-    validateAll(decl, ctx);
+    validateAllAttributes(decl, ctx);
 
     // ─── NOTE: Registration is handled by resolveDecl() ─────────────────────
     // Do NOT call ctx.insertType() here.
@@ -379,37 +379,38 @@ void resolveStructDecl(const StructDeclAST* decl, SemaContext& ctx) {
 
 void resolveStructFields(const StructDeclAST* decl, SemaContext& ctx) {
     for (const FieldDeclAST* field : decl->fields) {
-        validateAll(field, ctx);
+        validateAllAttributes(field, ctx);
 
-        // ─── 1. Resolve the field's type ──────────────────────────────
         TypeAST* fieldType = resolveType(field->type, ctx);
         if (!fieldType) {
             continue;
         }
 
-        // ─── 2. Validate self-reference ────────────────────────────────
+        // ─── Downward Flow Rule: Check borrowed types ──────────────────────
+        // Struct fields cannot contain &T or [_]T
+        if (isBorrowedType(fieldType)) {
+            ctx.diagnostics.error(DiagCode::Sem_RefInStruct, field,
+                                  "field '", ctx.pool.lookup(field->name),
+                                  "' has borrowed type (",
+                                  debug::typeToString(fieldType, ctx.pool),
+                                  ") — struct fields cannot contain &T or [_]T");
+            continue;
+        }
+
+        // ─── Validate self-reference ──────────────────────────────────────
         isValidStructSelfReference(fieldType, decl, ctx);
 
-        // ─── 3. Validate const field type ──────────────────────────────
+        // ─── Validate const field type ──────────────────────────────────
         if (field->isConst) {
             if (!validateConstType(fieldType, field->name, "struct field", ctx)) {
                 continue;
             }
         }
 
-        // ─── 4. Validate reference type context (Downward Flow Rule) ────
-        if (fieldType->isa<RefTypeAST>()) {
-            ctx.diagnostics.error(DiagCode::Sem_RefInStruct, field,
-                                  "reference type (&T) cannot be stored in struct field '",
-                                  ctx.pool.lookup(field->name), "'");
-            continue;
-        }
-
-        // ─── 5. Handle default value ────────────────────────────────────
+        // ─── Handle default value ───────────────────────────────────────
         bool isFunctionType = fieldType->isa<FuncTypeAST>();
 
         if (field->defaultBody) {
-            // ─── Function field with block body ──────────────────────────
             if (!isFunctionType) {
                 ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, field,
                                       "block body can only be used with function fields, but '",
@@ -443,7 +444,6 @@ void resolveStructFields(const StructDeclAST* decl, SemaContext& ctx) {
             ctx.popScope();
 
         } else if (field->defaultVal) {
-            // ─── Expression default ──────────────────────────────────────
             if (isFunctionType) {
                 FuncTypeAST* funcType = fieldType->as<FuncTypeAST>();
 
@@ -465,11 +465,6 @@ void resolveStructFields(const StructDeclAST* decl, SemaContext& ctx) {
                     continue;
                 }
             }
-
-        } else {
-            // ─── No default value ──────────────────────────────────────────
-            // The struct literal must supply a value for this field
-            // This is valid - no action needed
         }
     }
 }

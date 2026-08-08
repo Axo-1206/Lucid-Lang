@@ -46,7 +46,7 @@ TypeAST* resolveType(const TypeAST* type, SemaContext& ctx) {
 // ─── Primitive Type ──────────────────────────────────────────────────────
 
 TypeAST* resolvePrimitiveType(const PrimitiveTypeAST* type, SemaContext& ctx) {
-    // Primitive types are always valid - they're built-in
+    (void)ctx;
     return const_cast<PrimitiveTypeAST*>(type);
 }
 
@@ -65,7 +65,7 @@ TypeAST* resolveNamedType(const NamedTypeAST* type, SemaContext& ctx) {
     if (!decl) {
         ctx.diagnostics.error(DiagCode::Sem_UndefinedType, type,
                               "undefined type '", ctx.pool.lookup(type->name), "'");
-        return nullptr; // type doesn't exist
+        return nullptr;
     }
 
     // ─── 3. Resolve generic arguments if present ─────────────────────────
@@ -239,10 +239,33 @@ TypeAST* resolveArrayType(const ArrayTypeAST* type, SemaContext& ctx) {
         return nullptr;
     }
 
+    // ─── Check: Array element cannot be a reference type ──────────────────
     if (element->isa<RefTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_RefInArray, type,
                               "reference type (&T) cannot be stored in an array");
         return nullptr;
+    }
+
+    // ─── Check: Array element cannot be a slice type ──────────────────────
+    // Rule 2: No Array/Slice Storage - an array cannot store [_]T as element
+    if (element->isa<ArrayTypeAST>()) {
+        const ArrayTypeAST* innerArray = element->as<ArrayTypeAST>();
+        if (innerArray->isSlice()) {
+            ctx.diagnostics.error(DiagCode::Sem_RefInArray, type,
+                                  "slice type ([_]T) cannot be stored in an array element");
+            return nullptr;
+        }
+    }
+
+    // ─── Apply Downward Flow Rule to slices ──────────────────────────────
+    // A slice ([_]T) is a borrowed type, so it must follow the Downward Flow Rule
+    // This is checked in validateBorrowedContext, but we also need to check
+    // if the array itself is a slice being used in an invalid context
+    if (type->isSlice()) {
+        // Check if the slice is being used as a function return, struct field, etc.
+        if (!validateBorrowedContext(type, ctx)) {
+            return nullptr;
+        }
     }
 
     return const_cast<ArrayTypeAST*>(type);
@@ -341,18 +364,14 @@ TypeAST* resolveRefType(const RefTypeAST* type, SemaContext& ctx) {
         return nullptr;
     }
 
-    // ─── Validate Downward Flow Rule ──────────────────────────────────────
+    // ─── Apply Downward Flow Rule ──────────────────────────────────────────
     // References (&T) are strictly scoped. They are allowed to flow downward
     // (into nested calls), but never upward or sideways.
-
-    // 1. Cannot store &T in struct fields
-    const TypeDeclAST* currentStruct = ctx.currentDefiningType();
-    if (currentStruct && currentStruct->isa<StructDeclAST>()) {
-        ctx.diagnostics.error(DiagCode::Sem_RefInStruct, type,
-                              "reference type (&T) cannot be stored in struct fields");
+    if (!validateBorrowedContext(type, ctx)) {
         return nullptr;
     }
 
+    // ─── Additional validation: Cannot reference a trait ──────────────────
     if (isTraitType(inner, ctx)) {
         ctx.diagnostics.error(DiagCode::Sem_RefToTrait, type,
                               "cannot take reference to trait type (&Trait)");
@@ -374,18 +393,8 @@ TypeAST* resolvePtrType(const PtrTypeAST* type, SemaContext& ctx) {
         return nullptr;
     }
 
-    // ─── Remove FFI-specific checks ─────────────────────────────────────
-    // These belong in isValidFFIType, not here.
-    // Only keep structural validation that applies to ALL pointers:
-    
-    // 1. Check self-reference validity (keep this one)
-    // 2. Any other pointer-specific structural rules
-    
-    // Remove: array check, nullable/fallible check, ref check, trait check
-    // These are FFI concerns, not pointer concerns.
-
-    // Maybe add a note: "FFI compatibility is checked separately"
-    
+    // Raw pointers are sealed conduits - they are always valid structurally
+    // FFI compatibility is checked separately in isValidFFIType
     return const_cast<PtrTypeAST*>(type);
 }
 
@@ -410,9 +419,13 @@ TypeAST* resolveFuncType(const FuncTypeAST* type, SemaContext& ctx) {
             return nullptr;
         }
 
-        if (returnType->isa<RefTypeAST>()) {
+        // ─── Check: Function cannot return a borrowed type ────────────────
+        // Rule 3: No Borrowed Returns - a function cannot return &T or [_]T
+        if (isBorrowedType(returnType)) {
             ctx.diagnostics.error(DiagCode::Sem_ReturnRef, type,
-                                  "function cannot return reference type (&T)");
+                                  "function cannot return borrowed type (",
+                                  debug::typeToString(returnType, ctx.pool),
+                                  ") — &T and [_]T cannot escape upward");
             return nullptr;
         }
 
@@ -652,7 +665,19 @@ bool isValidStructSelfReference(const TypeAST* fieldType,
     }
 
     // ─── Step 5: Validate self-reference rules ─────────────────────────────
-    // Self-reference is only valid if it's nullable or a raw pointer
+    // Self-reference is only valid if it's nullable, a raw pointer, or a slice
+    // Note: Slices ([_]T) are borrowed views and cannot be stored in structs
+    // This is enforced by the Downward Flow Rule in validateBorrowedContext
+    
+    // Check if this is a slice self-reference (invalid - borrowed types can't be stored)
+    if (innerType->isa<ArrayTypeAST>() && innerType->as<ArrayTypeAST>()->isSlice()) {
+        ctx.diagnostics.error(DiagCode::Sem_InvalidParamType, fieldType,
+                              "slice self-reference ([_]", ctx.pool.lookup(currentStruct->name),
+                              ") is not allowed — slices are borrowed views and cannot be stored in structs");
+        return false;
+    }
+
+    // Non-nullable self-reference is invalid
     if (!isNullable && !isPointer) {
         ctx.diagnostics.error(DiagCode::Sem_InvalidParamType, fieldType,
                               "non-nullable self-reference in struct '",
@@ -734,6 +759,59 @@ const TypeAST* getFieldTypeOnGenericType(const TypeAST* genericType,
     }
 
     return nullptr;
+}
+
+// ─── Downward Flow Rule Validation ──────────────────────────────────────
+
+bool isBorrowedType(const TypeAST* type) {
+    if (!type) return false;
+    
+    // &T is a borrowed type
+    if (type->isa<RefTypeAST>()) {
+        return true;
+    }
+    
+    // [_]T is a borrowed type (slice)
+    if (type->isa<ArrayTypeAST>()) {
+        const ArrayTypeAST* array = type->as<ArrayTypeAST>();
+        if (array->isSlice()) {
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+bool validateBorrowedContext(const TypeAST* type, SemaContext& ctx) {
+    if (!type || !isBorrowedType(type)) {
+        return true;
+    }
+
+    // ─── Rule 1: No Struct Storage ─────────────────────────────────────────
+    // A borrowed type cannot be stored in a struct field
+    const TypeDeclAST* currentType = ctx.currentDefiningType();
+    if (currentType && currentType->isa<StructDeclAST>()) {
+        const char* typeName = type->isa<RefTypeAST>() ? "reference (&T)" : "slice ([_]T)";
+        ctx.diagnostics.error(DiagCode::Sem_RefInStruct, type,
+                              "borrowed type ", typeName,
+                              " cannot be stored in struct fields");
+        return false;
+    }
+
+    // ─── Rule 2: No Array/Slice Storage ────────────────────────────────────
+    // A borrowed type cannot be an element of an array or slice
+    // This is checked in resolveArrayType, but we also check the context here
+    // The caller should have already checked this
+    
+    // ─── Rule 3: No Borrowed Returns ──────────────────────────────────────
+    // A borrowed type cannot be returned from a function
+    // This is checked in resolveFuncType for the return type
+    
+    // ─── Rule 4: No Closure Capture ──────────────────────────────────────
+    // A borrowed type cannot be captured by a closure
+    // This is checked in resolveAnonFuncExpr and resolveFuncDecl
+    
+    return true;
 }
 
 } // namespace sema

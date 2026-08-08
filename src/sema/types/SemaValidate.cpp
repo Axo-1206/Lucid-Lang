@@ -128,6 +128,20 @@ static bool validateSingleTraitImplementationInternal(
             continue;
         }
 
+        // ─── Downward Flow Rule: Trait fields cannot be borrowed types ─────
+        // A trait is a contract for struct fields, and struct fields cannot
+        // contain borrowed types (&T or [_]T)
+        if (isBorrowedType(traitField->type)) {
+            ctx.diagnostics.error(DiagCode::Sem_TraitImplementation, traitField,
+                                  "trait '", ctx.pool.lookup(traitDecl->name),
+                                  "' has field '", ctx.pool.lookup(traitField->name),
+                                  "' of borrowed type (", 
+                                  debug::typeToString(traitField->type, ctx.pool),
+                                  ") — traits cannot require borrowed types");
+            isValid = false;
+            continue;
+        }
+
         if (traitField->isConst) {
             // Const fields: types must match exactly
             if (!typesEqual(structField->type, traitField->type)) {
@@ -262,6 +276,17 @@ bool validateConstType(const TypeAST* type,
         return false;
     }
 
+    // ─── Const cannot be a borrowed type ───────────────────────────────────
+    // const values must be definite and owned - &T and [_]T are borrowed
+    if (isBorrowedType(type)) {
+        ctx.diagnostics.error(DiagCode::Sem_ConstNullable, type,
+                              "const ", kind, " '", ctx.pool.lookup(name),
+                              "' cannot be a borrowed type (",
+                              debug::typeToString(type, ctx.pool),
+                              ") — const values must be owned");
+        return false;
+    }
+
     return true;
 }
 
@@ -336,6 +361,19 @@ bool validateGenericArguments(ArenaSpan<TypePtr> args,
         if (!resolvedArg) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, useSite,
                                   "invalid generic argument at position ", i + 1);
+            allValid = false;
+            continue;
+        }
+
+        // ─── Generic arguments cannot be borrowed types ─────────────────────
+        // T in <T> must be an owned type - borrowed types (&T and [_]T)
+        // cannot be used as generic arguments
+        if (isBorrowedType(resolvedArg)) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, useSite,
+                                  "generic argument at position ", i + 1,
+                                  " cannot be a borrowed type (",
+                                  debug::typeToString(resolvedArg, ctx.pool),
+                                  ") — generic parameters must be owned types");
             allValid = false;
             continue;
         }
@@ -415,15 +453,8 @@ bool validateGenericParameterUsage(ArenaSpan<GenericParamDeclPtr> params,
 // ─── Downward Flow Rule ──────────────────────────────────────────────────
 
 bool validateRefContext(const RefTypeAST* type, SemaContext& ctx) {
-    const TypeDeclAST* currentType = ctx.currentDefiningType();
-    
-    if (currentType && ctx.isDefiningType(currentType)) {
-        ctx.diagnostics.error(DiagCode::Sem_RefInStruct, type,
-                              "reference type (&T) cannot be stored in a struct field");
-        return false;
-    }
-
-    return true;
+    // Delegate to the unified borrowed context validation
+    return validateBorrowedContext(type, ctx);
 }
 
 // ─── FFI Validation ──────────────────────────────────────────────────────
