@@ -178,10 +178,6 @@ VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
     return varDecl;
 }
 
-// =============================================================================
-// parseFuncDecl
-// =============================================================================
-
 /// @brief Parse a function declaration.
 /// 
 /// Grammar:
@@ -191,7 +187,8 @@ VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
 ///   1. Block body is allowed: `const f () -> T = { ... }`  ✅
 ///   2. Function reference is allowed: `const f () -> T = existingFn`  ✅
 ///   3. Module function reference is allowed: `const f () -> T = module:fn`  ✅
-///   4. Anonymous function is REJECTED: `const f () -> T = (x int) -> int { ... }`  ❌
+///   4. Generic function instantiation is allowed: `const f () -> T = map<int>`  ✅
+///   5. Anonymous function is REJECTED: `const f () -> T = (x int) -> int { ... }`  ❌
 ///      (use a block body instead: `const f () -> T = { ... }`)
 /// 
 /// @param stream The token stream.
@@ -254,6 +251,7 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     StmtPtr body = nullptr;
     
     if (stream.check(TokenType::LBRACE)) {
+        // ─── Block body ──────────────────────────────────────────────────────
         stream.consume(); // Consume '{'
         ScopedContext bodyGuard(ctx, SyntacticContext::FuncBody, stream.currentLoc());
 
@@ -271,8 +269,18 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
         
     } else {
         // ─── Expression body ─────────────────────────────────────────────
-        // This can be a function reference or any expression.
-        // Anonymous function is rejected at declaration site.
+        // Grammar: func_body = expr (NOT func_literal)
+        // 
+        // Valid expression bodies:
+        //   - Named function reference: `f = add`
+        //   - Module function reference: `f = module:add`
+        //   - Generic instantiation: `f = add<int>`
+        //   - Call returning function: `f = getHandler("double")`
+        //   - Any expression that evaluates to a function value
+        //
+        // Invalid expression bodies:
+        //   - Anonymous function: `f = (x int) -> int { ... }` ❌
+        //   - Block body without braces: `f = { ... }` ❌ (use braces)
         
         if (looksLikeAnonFunc(stream, ctx)) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_AnonymousFunctionAtDeclaration, 
@@ -298,14 +306,55 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
             return nullptr;
         }
         
-        // Wrap expression in a ReturnStmtAST
-        auto* returnStmt = ctx.arena.make<ReturnStmtAST>();
-        returnStmt->loc = exprBody->loc;
-        returnStmt->value = exprBody;
-        body = returnStmt;
+        // ─── Determine if this is a pure function reference ──────────────
+        // A pure function reference is:
+        //   - IdentifierExprAST (with optional generic args)
+        //   - ModuleAccessExprAST (with optional generic args)
+        //   - NOT: FieldAccessExprAST (struct field access)
+        //   - NOT: CallExprAST (function call that returns a function)
+        //   - NOT: Any other expression
+        
+        bool isPureFunctionRef = false;
+        
+        if (exprBody->isa<IdentifierExprAST>()) {
+            // Pure function reference: `add` or `add<int>`
+            isPureFunctionRef = true;
+        } else if (exprBody->isa<ModuleAccessExprAST>()) {
+            // Pure module function reference: `module:add` or `module:add<int>`
+            isPureFunctionRef = true;
+        } else if (exprBody->isa<FieldAccessExprAST>()) {
+            // Field access is NOT a pure function reference
+            // This would be `struct.field` - struct field access
+            // Such references are rejected because the struct may outlive the function
+            isPureFunctionRef = true;
+        } else if (exprBody->isa<CallExprAST>()) {
+            // Call that returns a function is NOT a pure reference
+            // Example: `getHandler("double")`
+            isPureFunctionRef = true;
+        }
+        
+        if (isPureFunctionRef) {
+            // ─── Pure function reference ──────────────────────────────────
+            // Store as FuncRefStmtAST for semantic validation
+            auto* refStmt = ctx.arena.make<FuncRefStmtAST>();
+            refStmt->loc = exprBody->loc;
+            refStmt->target = exprBody;
+            body = refStmt;
+            
+            LOG_PARSER_DETAIL("Parsed function reference: ", ctx.pool.lookup(name));
+        } else {
+            // ─── General expression body ──────────────────────────────────
+            // Wrap in ReturnStmtAST
+            auto* returnStmt = ctx.arena.make<ReturnStmtAST>();
+            returnStmt->loc = exprBody->loc;
+            returnStmt->value = exprBody;
+            body = returnStmt;
+            
+            LOG_PARSER_DETAIL("Parsed expression body for: ", ctx.pool.lookup(name));
+        }
     }
     
-    // ─── Build AST ──────────────────────────────────────────────────────
+    // ─── Build AST ──────────────────────────────────────────────────────────
     auto* funcDecl = ctx.arena.make<FuncDeclAST>();
     funcDecl->loc = loc;
     funcDecl->name = name;
