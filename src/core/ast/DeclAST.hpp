@@ -35,6 +35,49 @@
 ///   - `struct Point` and `let Point = 42` to coexist
 ///   - Faster lookup (search only relevant namespace)
 ///   - Clearer error messages ("undefined variable" vs "undefined type")
+/// 
+/// ============================================================================
+/// IMMUTABILITY DESIGN
+/// ============================================================================
+/// 
+/// Parser fields are **immutable** after initialization (const in C++).
+/// Semantic and CodeGen fields are **mutable** (set during later phases).
+/// 
+/// This design ensures:
+///   1. The parser's output is fixed and cannot be accidentally modified.
+///   2. Semantic analysis can augment nodes without corrupting parse results.
+///   3. CodeGen can annotate nodes for code generation.
+/// 
+/// ## Field Categories
+/// 
+/// | Category        | Mutability          | Set By  | Examples                       |
+/// | --------------- | ------------------- | ------- | ------------------------------ |
+/// | Parser Fields   | `const` (immutable) | Parser  | `name`, `type`, `init`, `body` |
+/// | Semantic Fields | `mutable`           | Sema    | `resolvedType`, `constValue`   |
+/// | CodeGen Fields  | `mutable`           | CodeGen | `llvmValue`, `llvmFunction`    |
+/// 
+/// ## Constructor Pattern
+/// 
+/// All declaration nodes use constructor initialization for parser fields:
+/// 
+/// ```cpp
+/// struct VarDeclAST : ValueDeclAST {
+///     // Parser fields - const (set once in constructor)
+///     const DeclKeyword keyword;
+///     const TypePtr type;
+///     const ExprPtr init;
+///     
+///     // CodeGen fields - mutable
+///     llvm::AllocaInst* llvmAlloca = nullptr;
+///     llvm::GlobalVariable* llvmGlobal = nullptr;
+///     
+///     VarDeclAST(InternedString n, DeclKeyword kw, TypePtr t, ExprPtr i)
+///         : ValueDeclAST(ASTKind::VarDecl, n)
+///         , keyword(kw)
+///         , type(t)
+///         , init(i) {}
+/// };
+/// ```
 
 #pragma once
 
@@ -55,17 +98,7 @@
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
 
-/// @brief Distinguishes between mutable and immutable declarations.
-/// 
-/// - Let:   mutable binding (can be reassigned)
-/// - Const: immutable binding (cannot be reassigned)
-/// 
-/// @note For struct fields, `Const` means the field cannot be reassigned
-///       after construction, even if the containing variable is `let`.
-enum class DeclKeyword {
-    Let,    // mutable
-    Const   // immutable
-};
+// ─── ImportDeclAST ─────────────────────────────────────────────────────────
 
 /// @brief Represents a `import` declaration – imports symbols from another module.
 /// 
@@ -82,13 +115,19 @@ enum class DeclKeyword {
 struct ImportDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::ImportDecl;
 
-    // ─── Parser Fields ──────────────────────────────────────────────────
-    InternedString path;
-    InternedString alias;
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const InternedString path;
+    const InternedString alias;
 
-    ImportDeclAST() : DeclAST(ASTKind::ImportDecl) {}
+    // ─── Constructor ─────────────────────────────────────────────────────
+    ImportDeclAST(InternedString p, InternedString a)
+        : DeclAST(ASTKind::ImportDecl, a)
+        , path(p)
+        , alias(a) {}
 };
 using ImportDeclPtr = ImportDeclAST*;
+
+// ─── VarDeclAST ───────────────────────────────────────────────────────────
 
 /// @brief Represents a variable declaration with an explicit type annotation.
 /// 
@@ -105,18 +144,23 @@ using ImportDeclPtr = ImportDeclAST*;
 struct VarDeclAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::VarDecl;
 
-    // ─── Parser Fields ──────────────────────────────────────────────────
-    DeclKeyword keyword;
-    TypePtr type;
-    ExprPtr init;
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const TypePtr type;
+    const ExprPtr init;
     
-    // ─── CodeGen Annotations ────────────────────────────────────────────
-    llvm::AllocaInst* llvmAlloca = nullptr;      // Local variable: the generated alloca
-    llvm::GlobalVariable* llvmGlobal = nullptr;  // Module-level variable: the global
+    // ─── CodeGen Fields (mutable) ──────────────────────────────────────
+    llvm::AllocaInst* llvmAlloca = nullptr;
+    llvm::GlobalVariable* llvmGlobal = nullptr;
 
-    VarDeclAST() : ValueDeclAST(ASTKind::VarDecl) {}
+    // ─── Constructor ─────────────────────────────────────────────────────
+    VarDeclAST(InternedString n, DeclKeyword kw, TypePtr t, ExprPtr i)
+        : ValueDeclAST(ASTKind::VarDecl, n, kw)
+        , type(t)
+        , init(i) {}
 };
 using VarDeclPtr = VarDeclAST*;
+
+// ─── ParamAST ─────────────────────────────────────────────────────────────
 
 /// @brief Represents a function parameter.
 /// 
@@ -136,19 +180,26 @@ using VarDeclPtr = VarDeclAST*;
 struct ParamAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::Param;
 
-    // ─── Parser Fields ──────────────────────────────────────────────────
-    TypePtr type;
-    bool isVariadic = false;
-    bool isConst = false;    // read-only reference parameter
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const TypePtr type;
+    const bool isVariadic;
+    const bool isConstParam;  // read-only reference parameter (distinct from mutability)
     
-    // ─── CodeGen Annotations ────────────────────────────────────────────
-    llvm::Value* llvmValue = nullptr;          // The LLVM argument value
-    llvm::AllocaInst* llvmAlloca = nullptr;    // The alloca for the param (if stored)
+    // ─── CodeGen Fields (mutable) ──────────────────────────────────────
+    llvm::Value* llvmValue = nullptr;
+    llvm::AllocaInst* llvmAlloca = nullptr;
 
-    ParamAST() : ValueDeclAST(ASTKind::Param) {}
+    // ─── Constructor ─────────────────────────────────────────────────────
+    ParamAST(InternedString n, TypePtr t, bool variadic = false, bool isConstParam = false)
+        : ValueDeclAST(ASTKind::Param, n, DeclKeyword::Let)  // Parameters are always mutable by default
+        , type(t)
+        , isVariadic(variadic)
+        , isConstParam(isConstParam) {}
 };
 using ParamPtr = ParamAST*;
 using ParamGroup = std::vector<ParamPtr>;
+
+// ─── FuncDeclAST ──────────────────────────────────────────────────────────
 
 /// @brief Represents a function declaration.
 /// 
@@ -168,28 +219,29 @@ using ParamGroup = std::vector<ParamPtr>;
 struct FuncDeclAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::FuncDecl;
 
-    // ─── Parser Fields ──────────────────────────────────────────────────
-    DeclKeyword keyword;
-    ArenaSpan<GenericParamDeclPtr> genericParams;
-    FuncTypeAST* funcType = nullptr;   // full function type
-    StmtPtr body = nullptr;            // BlockStmtAST or ReturnStmtAST (expression body)
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const ArenaSpan<GenericParamDeclPtr> genericParams;
+    const FuncTypeAST* funcType;
+    const StmtPtr body;
     
-    // ─── CodeGen Annotations ────────────────────────────────────────────
-    llvm::Function* llvmFunction = nullptr;   // The generated LLVM function
-    bool isForeignFunction = false;           // True if @[foreign] attribute is present
-    InternedString mangledName;               // Mangled name for AOT compilation —
-                                               // InternedString, not std::string; this
-                                               // node is arena-allocated and freed in
-                                               // bulk, and std::string owns a separate
-                                               // heap buffer the arena's teardown does
-                                               // not free. Matches the pattern already
-                                               // used for `name`/`packageName`/`filePath`
-                                               // elsewhere in this AST.
-    size_t closureDepth = 0;                  // Depth of nesting for closure naming
+    // ─── CodeGen Fields (mutable) ──────────────────────────────────────
+    llvm::Function* llvmFunction = nullptr;
+    bool isForeignFunction = false;
+    InternedString mangledName;
+    size_t closureDepth = 0;
 
-    FuncDeclAST() : ValueDeclAST(ASTKind::FuncDecl) {}
+    // ─── Constructor ─────────────────────────────────────────────────────
+    FuncDeclAST(InternedString n, DeclKeyword kw, 
+                ArenaSpan<GenericParamDeclPtr> params,
+                FuncTypeAST* ft, StmtPtr b)
+        : ValueDeclAST(ASTKind::FuncDecl, n, kw)
+        , genericParams(params)
+        , funcType(ft)
+        , body(b) {}
 };
 using FuncDeclPtr = FuncDeclAST*;
+
+// ─── EnumVariantAST ───────────────────────────────────────────────────────
 
 /// @brief Represents one variant of an enum with an explicit value.
 /// 
@@ -208,18 +260,20 @@ using FuncDeclPtr = FuncDeclAST*;
 struct EnumVariantAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::EnumVariant;
 
-    // ─── Parser Fields ──────────────────────────────────────────────────
-    int64_t value;    // explicit value (required by grammar)
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const int64_t value;
     
-    // ─── CodeGen Annotations ────────────────────────────────────────────
-    llvm::ConstantInt* llvmValue = nullptr;   // LLVM constant for this variant
+    // ─── CodeGen Fields (mutable) ──────────────────────────────────────
+    llvm::ConstantInt* llvmValue = nullptr;
 
-    explicit EnumVariantAST(InternedString n, int64_t v)
-        : ValueDeclAST(ASTKind::EnumVariant), value(v) {
-        name = n;
-    }
+    // ─── Constructor ─────────────────────────────────────────────────────
+    EnumVariantAST(InternedString n, int64_t v)
+        : ValueDeclAST(ASTKind::EnumVariant, n, DeclKeyword::Const)  // Enum variants are always const
+        , value(v) {}
 };
 using EnumVariantPtr = EnumVariantAST*;
+
+// ─── FieldDeclAST ─────────────────────────────────────────────────────────
 
 /// @brief Represents a struct field, optionally with a default value and const-ness.
 /// 
@@ -238,18 +292,29 @@ using EnumVariantPtr = EnumVariantAST*;
 struct FieldDeclAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::FieldDecl;
 
-    // ─── Parser Fields ──────────────────────────────────────────────────
-    TypePtr type;          // Original type annotation
-    ExprPtr defaultVal;    // nullptr if no default (EXPRESSION form)
-    StmtPtr defaultBody;   // nullptr if no default (BLOCK form - similar to FuncDeclAST::body)
-    bool isConst = false;  // true if field is marked `const`
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const TypePtr type;
+    const ExprPtr defaultVal;
+    const StmtPtr defaultBody;
+    const bool isConstField;  // True if field is marked `const` in struct
     
-    // ─── CodeGen Annotations ────────────────────────────────────────────
-    size_t fieldIndex = 0;                 // Index in the struct (set by CodeGen)
+    // ─── CodeGen Fields (mutable) ──────────────────────────────────────
+    size_t fieldIndex = 0;
 
-    FieldDeclAST() : ValueDeclAST(ASTKind::FieldDecl) {}
+    // ─── Constructor ─────────────────────────────────────────────────────
+    FieldDeclAST(InternedString n, TypePtr t, ExprPtr dv, StmtPtr db, bool isConstField)
+        : ValueDeclAST(ASTKind::FieldDecl, n, DeclKeyword::Let)  // Fields use Let/Const via isConstField
+        , type(t)
+        , defaultVal(dv)
+        , defaultBody(db)
+        , isConstField(isConstField) {}
+    
+    /// @brief Check if this field is const (immutable after construction).
+    bool isConst() const { return isConstField; }
 };
 using FieldDeclPtr = FieldDeclAST*;
+
+// ─── StructDeclAST ────────────────────────────────────────────────────────
 
 /// @brief Represents a struct definition with fields and optional generic parameters.
 /// 
@@ -283,12 +348,12 @@ using FieldDeclPtr = FieldDeclAST*;
 struct StructDeclAST : TypeDeclAST {
     static constexpr ASTKind staticKind = ASTKind::StructDecl;
 
-    // ─── Parser Fields ──────────────────────────────────────────────────
-    ArenaSpan<GenericParamDeclPtr> genericParams;
-    ArenaSpan<FieldDeclPtr> fields;
-    ArenaSpan<NamedTypeAST*> traitRefs;   // traits this struct implements
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const ArenaSpan<GenericParamDeclPtr> genericParams;
+    const ArenaSpan<FieldDeclPtr> fields;
+    const ArenaSpan<NamedTypeAST*> traitRefs;   // traits this struct implements
     
-    // ─── CodeGen Annotations ────────────────────────────────────────────
+    // ─── CodeGen Fields (mutable) ──────────────────────────────────────
     llvm::StructType* llvmType = nullptr;   // The generated LLVM struct type
 
     /// Field name → index, set by CodeGen. ArenaSpan instead of
@@ -311,9 +376,19 @@ struct StructDeclAST : TypeDeclAST {
         return SIZE_MAX;
     }
 
-    StructDeclAST() : TypeDeclAST(ASTKind::StructDecl) {}
+    // ─── Constructor ─────────────────────────────────────────────────────
+    StructDeclAST(InternedString n,
+                  ArenaSpan<GenericParamDeclPtr> params,
+                  ArenaSpan<FieldDeclPtr> flds,
+                  ArenaSpan<NamedTypeAST*> traits)
+        : TypeDeclAST(ASTKind::StructDecl, n)
+        , genericParams(params)
+        , fields(flds)
+        , traitRefs(traits) {}
 };
 using StructDeclPtr = StructDeclAST*;
+
+// ─── EnumDeclAST ──────────────────────────────────────────────────────────
 
 /// @brief Represents an enum definition.
 /// 
@@ -330,11 +405,11 @@ using StructDeclPtr = StructDeclAST*;
 struct EnumDeclAST : TypeDeclAST {
     static constexpr ASTKind staticKind = ASTKind::EnumDecl;
 
-    // ─── Parser Fields ──────────────────────────────────────────────────
-    ArenaSpan<EnumVariantPtr> variants;
-    PrimitiveTypeAST* backingType = nullptr;   // optional backing type (defaults to int32)
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const ArenaSpan<EnumVariantPtr> variants;
+    const PrimitiveTypeAST* backingType;   // optional backing type (defaults to int32)
     
-    // ─── CodeGen Annotations ────────────────────────────────────────────
+    // ─── CodeGen Fields (mutable) ──────────────────────────────────────
 
     /// Variant name → LLVM constant, set by CodeGen. ArenaSpan instead of
     /// std::unordered_map — same reasoning as StructDeclAST::fieldIndices,
@@ -356,9 +431,17 @@ struct EnumDeclAST : TypeDeclAST {
         return nullptr;
     }
 
-    EnumDeclAST() : TypeDeclAST(ASTKind::EnumDecl) {}
+    // ─── Constructor ─────────────────────────────────────────────────────
+    EnumDeclAST(InternedString n,
+                ArenaSpan<EnumVariantPtr> vars,
+                PrimitiveTypeAST* backing = nullptr)
+        : TypeDeclAST(ASTKind::EnumDecl, n)
+        , variants(vars)
+        , backingType(backing) {}
 };
 using EnumDeclPtr = EnumDeclAST*;
+
+// ─── TraitFieldDeclAST ────────────────────────────────────────────────────
 
 /// @brief Represents a single field requirement in a trait declaration.
 /// 
@@ -400,14 +483,19 @@ using EnumDeclPtr = EnumDeclAST*;
 struct TraitFieldDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::TraitFieldDecl;
 
-    // ─── Parser Fields ──────────────────────────────────────────────────
-    InternedString name;
-    TypePtr type;          // required field type (nullable/fallible allowed unless const)
-    bool isConst = false;  // true if implementing struct must declare as const
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const InternedString name;
+    const TypePtr type; // required field type (nullable/fallible allowed unless const)
 
-    TraitFieldDeclAST() : DeclAST(ASTKind::TraitFieldDecl) {}
+    // ─── Constructor ─────────────────────────────────────────────────────
+    TraitFieldDeclAST(InternedString n, TypePtr t, bool isConstField)
+        : DeclAST(ASTKind::TraitFieldDecl, n)
+        , name(n)
+        , type(t) {}
 };
 using TraitFieldPtr = TraitFieldDeclAST*;
+
+// ─── TraitDeclAST ─────────────────────────────────────────────────────────
 
 /// @brief Represents a trait – a named set of fields that a struct promises to contain.
 /// 
@@ -442,11 +530,17 @@ using TraitFieldPtr = TraitFieldDeclAST*;
 struct TraitDeclAST : TypeDeclAST {
     static constexpr ASTKind staticKind = ASTKind::TraitDecl;
 
-    // ─── Parser Fields ──────────────────────────────────────────────────
-    ArenaSpan<GenericParamDeclPtr> genericParams;
-    ArenaSpan<TraitFieldPtr> fields;
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const ArenaSpan<GenericParamDeclPtr> genericParams;
+    const ArenaSpan<TraitFieldPtr> fields;
 
-    TraitDeclAST() : TypeDeclAST(ASTKind::TraitDecl) {}
+    // ─── Constructor ─────────────────────────────────────────────────────
+    TraitDeclAST(InternedString n,
+                 ArenaSpan<GenericParamDeclPtr> params,
+                 ArenaSpan<TraitFieldPtr> flds)
+        : TypeDeclAST(ASTKind::TraitDecl, n)
+        , genericParams(params)
+        , fields(flds) {}
 };
 using TraitDeclPtr = TraitDeclAST*;
 

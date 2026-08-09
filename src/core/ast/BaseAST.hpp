@@ -294,12 +294,10 @@ struct StmtAST : BaseAST {
 
 struct DeclAST : BaseAST {
     std::optional<DocComment> doc;
-    ArenaSpan<AttributeAST*>   attributes;
-    InternedString            file;
-    bool                      isConst = false;
-    InternedString            name;
+    ArenaSpan<AttributeAST*>  attributes;
+    const InternedString      name;
 
-    explicit DeclAST(ASTKind k) : BaseAST(k) {}
+    explicit DeclAST(ASTKind k, InternedString n) : BaseAST(k), name(n) {}
     bool hasDoc() const { return doc.has_value(); }
 };
 
@@ -601,6 +599,18 @@ using AttributePtr = AttributeAST*;
 // ValueDeclAST – base for declarations that produce values
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// @brief Distinguishes between mutable and immutable declarations.
+/// 
+/// - Let:   mutable binding (can be reassigned)
+/// - Const: immutable binding (cannot be reassigned)
+/// 
+/// @note For struct fields, `Const` means the field cannot be reassigned
+///       after construction, even if the containing variable is `let`.
+enum class DeclKeyword {
+    Let,    // mutable
+    Const   // immutable
+};
+
 /// @brief Base class for declarations that produce values (can appear in expressions).
 /// 
 /// Value declarations live in the VALUE NAMESPACE. When an identifier is resolved
@@ -613,21 +623,31 @@ using AttributePtr = AttributeAST*;
 ///   - Fields (FieldDeclAST)
 ///   - Enum variants (EnumVariantAST)
 /// 
-/// ─── Type Cache ─────────────────────────────────────────────────────────────
-/// The `type` field caches the resolved type of this value. For example:
-///   - For a variable: its declared type
-///   - For a function: its function type (FuncTypeAST)
-///   - For a parameter: its parameter type
+/// ─── Const-ness ─────────────────────────────────────────────────────────────
+/// The `keyword` field determines whether this value can be mutated:
+///   - `DeclKeyword::Let`:  mutable (can be reassigned)
+///   - `DeclKeyword::Const`: immutable (cannot be reassigned)
 /// 
-/// This eliminates the need for a separate symbol table entry.
+/// For enum variants, the keyword is always `Const` (they are immutable constants).
 /// 
 /// @note ValueDeclAST nodes are stored in Scope::values map.
 struct ValueDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::ValueDecl;
 
-    TypeAST* type = nullptr;
+    /// The keyword that determines mutability (Let = mutable, Const = immutable)
+    const DeclKeyword keyword;
+
+    TypeAST* type = nullptr;  // Cached resolved type
     
-    explicit ValueDeclAST(ASTKind k) : DeclAST(k) {}
+    /// @brief Check if this value is immutable (const).
+    bool isConst() const { return keyword == DeclKeyword::Const; }
+    
+    /// @brief Check if this value is mutable (let).
+    bool isLet() const { return keyword == DeclKeyword::Let; }
+    
+    explicit ValueDeclAST(ASTKind k, InternedString n, DeclKeyword kw)
+        : DeclAST(k, n)
+        , keyword(kw) {}
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -654,7 +674,7 @@ struct ValueDeclAST : DeclAST {
 struct TypeDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::TypeDecl;
     
-    explicit TypeDeclAST(ASTKind k) : DeclAST(k) {}
+    explicit TypeDeclAST(ASTKind k, InternedString n) : DeclAST(k, n) {}
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -772,11 +792,10 @@ using ModuleASTPtr = ModuleAST*;
 struct GenericParamDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::GenericParamDecl;
 
-    InternedString name;
     ArenaSpan<NamedTypeAST*> constraints;   // empty = unconstrained
 
     explicit GenericParamDeclAST(InternedString n)
-        : DeclAST(ASTKind::GenericParamDecl), name(n) {}
+        : DeclAST(ASTKind::GenericParamDecl, n) {}
 };
 
 using ParamPtr          = ParamAST*;
@@ -813,7 +832,7 @@ inline bool isUnknown(const BaseAST* node) {
 
 struct UnknownDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::UnknownDecl;
-    UnknownDeclAST() : DeclAST(ASTKind::UnknownDecl) {}
+    UnknownDeclAST() : DeclAST(ASTKind::UnknownDecl, InternedString()) {}
 };
 
 struct UnknownExprAST : ExprAST {
