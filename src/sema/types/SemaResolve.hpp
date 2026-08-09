@@ -237,6 +237,24 @@ const TypeAST* getFieldTypeOnGenericType(const TypeAST* genericType,
                                          InternedString fieldName,
                                          SemaContext& ctx);
 
+// ─── Type Narrowing Helpers ──────────────────────────────────────────────
+
+/// @brief Check if a type is a FutureTypeAST and unwrap it.
+/// 
+/// Used by await statements to narrow Future<T> to T.
+/// 
+/// @param type The type to check.
+/// @return The inner type if type is FutureTypeAST, otherwise nullptr.
+const TypeAST* unwrapFutureType(const TypeAST* type);
+
+/// @brief Check if a type is a ThreadTypeAST and unwrap it.
+/// 
+/// Used by join statements to narrow Thread<T> to T.
+/// 
+/// @param type The type to check.
+/// @return The inner type if type is ThreadTypeAST, otherwise nullptr.
+const TypeAST* unwrapThreadType(const TypeAST* type);
+
 // ─── Downward Flow Rule Validation ──────────────────────────────────────
 
 /// @brief Validate that a borrowed type appears in a valid context.

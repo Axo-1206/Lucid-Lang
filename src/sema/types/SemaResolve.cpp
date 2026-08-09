@@ -761,6 +761,24 @@ const TypeAST* getFieldTypeOnGenericType(const TypeAST* genericType,
     return nullptr;
 }
 
+// ─── Type Narrowing Helpers ──────────────────────────────────────────────
+
+const TypeAST* unwrapFutureType(const TypeAST* type) {
+    if (!type) return nullptr;
+    if (type->isa<FutureTypeAST>()) {
+        return type->as<FutureTypeAST>()->inner;
+    }
+    return nullptr;
+}
+
+const TypeAST* unwrapThreadType(const TypeAST* type) {
+    if (!type) return nullptr;
+    if (type->isa<ThreadTypeAST>()) {
+        return type->as<ThreadTypeAST>()->inner;
+    }
+    return nullptr;
+}
+
 // ─── Downward Flow Rule Validation ──────────────────────────────────────
 
 bool isBorrowedType(const TypeAST* type) {

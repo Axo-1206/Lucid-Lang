@@ -230,9 +230,9 @@ inline void logMessage(const char* component, int level, const std::string& mess
 #define LOG_LEXER_DETAIL(...)          LOG_DETAIL("LEXER", __VA_ARGS__)
 
 // Semantic
-#define LOG_SEMANTIC_MINIMAL(...)      LOG_MINIMAL("SEMANTIC", __VA_ARGS__)
-#define LOG_SEMANTIC(...)              LOG("SEMANTIC", __VA_ARGS__)
-#define LOG_SEMANTIC_DETAIL(...)       LOG_DETAIL("SEMANTIC", __VA_ARGS__)
+#define LOG_SEMA_MINIMAL(...)      LOG_MINIMAL("SEMANTIC", __VA_ARGS__)
+#define LOG_SEMA(...)              LOG("SEMANTIC", __VA_ARGS__)
+#define LOG_SEMA_DETAIL(...)       LOG_DETAIL("SEMANTIC", __VA_ARGS__)
 
 // CodeGen
 #define LOG_CODEGEN_MINIMAL(...)       LOG_MINIMAL("CODEGEN", __VA_ARGS__)

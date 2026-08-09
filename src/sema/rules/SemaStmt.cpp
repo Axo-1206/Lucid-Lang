@@ -943,36 +943,37 @@ bool resolveAsyncStmt(const AsyncStmtAST* stmt, SemaContext& ctx) {
         return false;
     }
 
-    // ─── Check the target variable ─────────────────────────────────────────
-    if (!stmt->target) {
+    // ─── Check: Must have a binding ─────────────────────────────────────────
+    if (!stmt->binding) {
         ctx.diagnostics.error(DiagCode::Sem_AsyncOutsideFunction, stmt,
-                              "async statement requires a target variable");
+                              "async statement requires a binding variable");
         return false;
     }
 
-    if (!stmt->target->isa<IdentifierExprAST>()) {
-        ctx.diagnostics.error(DiagCode::Sem_AsyncOutsideFunction, stmt->target,
-                              "async target must be a variable (not an expression)");
+    // ─── Validate the binding's type is FutureTypeAST ──────────────────────
+    // The parser should have already wrapped the type in FutureTypeAST,
+    // but we verify it here.
+    TypeAST* bindingType = resolveType(stmt->binding->type, ctx);
+    if (!bindingType || bindingType->isa<UnknownTypeAST>()) {
+        ctx.diagnostics.error(DiagCode::Sem_AsyncOutsideFunction, stmt->binding,
+                              "async binding has invalid type");
         return false;
     }
 
-    const IdentifierExprAST* target = stmt->target->as<IdentifierExprAST>();
-    InternedString targetName = target->name;
+    if (!bindingType->isa<FutureTypeAST>()) {
+        ctx.diagnostics.error(DiagCode::Sem_AsyncOutsideFunction, stmt->binding,
+                              "async binding type must be Future<T>, got ",
+                              debug::typeToString(bindingType, ctx.pool));
+        return false;
+    }
 
-    // ─── Check for `_` discard ─────────────────────────────────────────────
-    if (targetName.id != 0) {  // Not `_`
-        const ValueDeclAST* decl = ctx.lookupValue(targetName);
-        if (!decl) {
-            ctx.diagnostics.error(DiagCode::Sem_UndefinedValue, stmt->target,
-                                  "undefined variable '", ctx.pool.lookup(targetName), "'");
-            return false;
-        }
-
-        if (!decl->isa<VarDeclAST>()) {
-            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, stmt->target,
-                                  "'", ctx.pool.lookup(targetName), "' is not a variable");
-            return false;
-        }
+    // ─── Register the binding in the current scope ──────────────────────────
+    // The VarDeclAST was created by the parser, now we register it.
+    // Note: We need to register it BEFORE resolving the call so that
+    // the binding is available in the scope (but not used in the call).
+    if (!ctx.insertValue(stmt->binding)) {
+        // Error already reported by insertValue
+        return false;
     }
 
     // ─── Resolve the call expression ───────────────────────────────────────
@@ -982,16 +983,31 @@ bool resolveAsyncStmt(const AsyncStmtAST* stmt, SemaContext& ctx) {
         return false;
     }
 
-    TypeAST* callType = resolveExpr(stmt->call, ctx);
+    // Resolve the call against the inner type of the Future
+    const FutureTypeAST* futureType = bindingType->as<FutureTypeAST>();
+    TypeAST* expectedType = futureType->inner;
+    
+    // Resolve the call with the expected type
+    TypeAST* callType = resolveExprWithTarget(stmt->call, expectedType, ctx);
     if (!callType || callType->isa<UnknownTypeAST>()) {
         return false;
     }
 
-    // ─── Store in pending list if not `_` ──────────────────────────────────
-    if (targetName.id != 0) {
-        ctx.addPendingAsync(targetName, stmt->call, stmt->loc);
+    // ─── Check: The call's return type must match the Future's inner type ──
+    if (!typesEqual(callType, expectedType)) {
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, stmt->call,
+                              "async call return type '", 
+                              debug::typeToString(callType, ctx.pool),
+                              "' does not match binding type '",
+                              debug::typeToString(expectedType, ctx.pool), "'");
+        return false;
     }
 
+    // ─── Store in pending list for later await ─────────────────────────────
+    ctx.addPendingAsync(stmt->binding->name, stmt->call, stmt->loc);
+
+    LOG_SEMA("resolveAsyncStmt: registered async '", 
+             ctx.pool.lookup(stmt->binding->name), "'");
     return false;
 }
 
@@ -1018,24 +1034,72 @@ bool resolveAwaitStmt(const AwaitStmtAST* stmt, SemaContext& ctx) {
         const IdentifierExprAST* id = target->as<IdentifierExprAST>();
         InternedString targetName = id->name;
 
-        // ─── Check if this is a pending async operation ────────────────────
-        if (ctx.hasPendingAsync(targetName)) {
-            ctx.resolveAsync(targetName);
-        } else if (ctx.hasPendingSpawn(targetName)) {
-            ctx.diagnostics.error(DiagCode::Sem_AwaitNonAsync, target,
-                                  "'", ctx.pool.lookup(targetName), "' was declared with spawn, not async. Use 'join' instead.");
-            return false;
-        } else {
-            ctx.diagnostics.error(DiagCode::Sem_AwaitNonAsync, target,
-                                  "'", ctx.pool.lookup(targetName), "' is not a pending async operation");
-            return false;
-        }
-
-        // ─── Verify the variable exists ────────────────────────────────────
-        const ValueDeclAST* decl = ctx.lookupValue(targetName);
+        // ─── Look up the variable ──────────────────────────────────────────
+        const ValueDeclAST* decl = ctx.lookupValueRaw(targetName);
         if (!decl) {
             ctx.diagnostics.error(DiagCode::Sem_UndefinedValue, target,
                                   "undefined variable '", ctx.pool.lookup(targetName), "'");
+            return false;
+        }
+
+        if (!decl->isa<VarDeclAST>()) {
+            ctx.diagnostics.error(DiagCode::Sem_AwaitNonAsync, target,
+                                  "'", ctx.pool.lookup(targetName), "' is not a variable");
+            return false;
+        }
+
+        // ─── Check if this is a pending async operation ────────────────────
+        if (ctx.hasPendingAsync(targetName)) {
+            // ─── Validate the variable has FutureTypeAST ──────────────────
+            TypeAST* varType = resolveType(decl->type, ctx);
+            if (!varType || !varType->isa<FutureTypeAST>()) {
+                ctx.diagnostics.error(DiagCode::Sem_AwaitNonAsync, target,
+                                      "'", ctx.pool.lookup(targetName), 
+                                      "' is not a Future<T> (type: ", 
+                                      debug::typeToString(varType, ctx.pool), ")");
+                return false;
+            }
+
+            // ─── NARROW THE TYPE: Unwrap FutureTypeAST to its inner type ──
+            // This is the key narrowing step - after await, the variable
+            // becomes plain T instead of Future<T>.
+            const FutureTypeAST* futureType = varType->as<FutureTypeAST>();
+            const TypeAST* innerType = unwrapFutureType(futureType);
+            
+            // Apply narrowing to the variable
+            ctx.stack.narrowVariable(targetName, innerType);
+
+            // Mark the async as resolved
+            ctx.resolveAsync(targetName);
+            
+            LOG_SEMA("resolveAwaitStmt: narrowed '", ctx.pool.lookup(targetName),
+                     "' from Future<", debug::typeToString(innerType, ctx.pool),
+                     "> to ", debug::typeToString(innerType, ctx.pool));
+        } else if (ctx.hasPendingSpawn(targetName)) {
+            ctx.diagnostics.error(DiagCode::Sem_AwaitNonAsync, target,
+                                  "'", ctx.pool.lookup(targetName), 
+                                  "' was declared with spawn, not async. Use 'join' instead.");
+            return false;
+        } else {
+            // ─── Check if already narrowed (double await) ──────────────────
+            // If it's not pending async, it might have been already awaited
+            // or it was never async to begin with.
+            const TypeAST* narrowedType = ctx.stack.getNarrowedType(targetName);
+            if (narrowedType && !narrowedType->isa<FutureTypeAST>()) {
+                // Already narrowed - check if it was a Future originally
+                // by looking at the declaration's original type
+                TypeAST* originalType = resolveType(decl->type, ctx);
+                if (originalType && originalType->isa<FutureTypeAST>()) {
+                    ctx.diagnostics.error(DiagCode::Sem_DoubleAwait, target,
+                                          "'", ctx.pool.lookup(targetName), 
+                                          "' has already been awaited");
+                    return false;
+                }
+            }
+            
+            ctx.diagnostics.error(DiagCode::Sem_AwaitNonAsync, target,
+                                  "'", ctx.pool.lookup(targetName), 
+                                  "' is not a pending async operation");
             return false;
         }
     }
@@ -1055,38 +1119,46 @@ bool resolveSpawnStmt(const SpawnStmtAST* stmt, SemaContext& ctx) {
         return false;
     }
 
-    // ─── Check the target variable ─────────────────────────────────────────
-    InternedString targetName;
-    bool isDiscard = false;
-
-    if (stmt->target) {
-        if (!stmt->target->isa<IdentifierExprAST>()) {
-            ctx.diagnostics.error(DiagCode::Sem_SpawnOutsideFunction, stmt->target,
-                                  "spawn target must be a variable (not an expression)");
+    // ─── Handle discard pattern ────────────────────────────────────────────
+    // If binding is nullptr, this is `spawn _ = fn()` - fire and forget.
+    // No type validation needed for the binding, just resolve the call.
+    if (!stmt->binding) {
+        // ─── Resolve the call expression (discard) ────────────────────────
+        if (!stmt->call) {
+            ctx.diagnostics.error(DiagCode::Sem_SpawnOutsideFunction, stmt,
+                                  "spawn statement requires a call expression");
             return false;
         }
 
-        const IdentifierExprAST* target = stmt->target->as<IdentifierExprAST>();
-        targetName = target->name;
-
-        if (targetName.id == 0) {
-            isDiscard = true;
-        } else {
-            const ValueDeclAST* decl = ctx.lookupValue(targetName);
-            if (!decl) {
-                ctx.diagnostics.error(DiagCode::Sem_UndefinedValue, stmt->target,
-                                      "undefined variable '", ctx.pool.lookup(targetName), "'");
-                return false;
-            }
-
-            if (!decl->isa<VarDeclAST>()) {
-                ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, stmt->target,
-                                      "'", ctx.pool.lookup(targetName), "' is not a variable");
-                return false;
-            }
+        // Resolve the call without a target type (any return type is fine)
+        TypeAST* callType = resolveExpr(stmt->call, ctx);
+        if (!callType || callType->isa<UnknownTypeAST>()) {
+            return false;
         }
-    } else {
-        isDiscard = true;
+
+        LOG_SEMA("resolveSpawnStmt: parsed spawn discard (fire-and-forget)");
+        return false;
+    }
+
+    // ─── Validate the binding's type is ThreadTypeAST ──────────────────────
+    TypeAST* bindingType = resolveType(stmt->binding->type, ctx);
+    if (!bindingType || bindingType->isa<UnknownTypeAST>()) {
+        ctx.diagnostics.error(DiagCode::Sem_SpawnOutsideFunction, stmt->binding,
+                              "spawn binding has invalid type");
+        return false;
+    }
+
+    if (!bindingType->isa<ThreadTypeAST>()) {
+        ctx.diagnostics.error(DiagCode::Sem_SpawnOutsideFunction, stmt->binding,
+                              "spawn binding type must be Thread<T>, got ",
+                              debug::typeToString(bindingType, ctx.pool));
+        return false;
+    }
+
+    // ─── Register the binding in the current scope ──────────────────────────
+    if (!ctx.insertValue(stmt->binding)) {
+        // Error already reported by insertValue
+        return false;
     }
 
     // ─── Resolve the call expression ───────────────────────────────────────
@@ -1096,16 +1168,31 @@ bool resolveSpawnStmt(const SpawnStmtAST* stmt, SemaContext& ctx) {
         return false;
     }
 
-    TypeAST* callType = resolveExpr(stmt->call, ctx);
+    // Resolve the call against the inner type of the Thread
+    const ThreadTypeAST* threadType = bindingType->as<ThreadTypeAST>();
+    TypeAST* expectedType = threadType->inner;
+    
+    // Resolve the call with the expected type
+    TypeAST* callType = resolveExprWithTarget(stmt->call, expectedType, ctx);
     if (!callType || callType->isa<UnknownTypeAST>()) {
         return false;
     }
 
-    // ─── Store in pending list if not `_` ──────────────────────────────────
-    if (!isDiscard && targetName.id != 0) {
-        ctx.addPendingSpawn(targetName, stmt->call, stmt->loc);
+    // ─── Check: The call's return type must match the Thread's inner type ──
+    if (!typesEqual(callType, expectedType)) {
+        ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, stmt->call,
+                              "spawn call return type '", 
+                              debug::typeToString(callType, ctx.pool),
+                              "' does not match binding type '",
+                              debug::typeToString(expectedType, ctx.pool), "'");
+        return false;
     }
 
+    // ─── Store in pending list for later join ──────────────────────────────
+    ctx.addPendingSpawn(stmt->binding->name, stmt->call, stmt->loc);
+
+    LOG_SEMA("resolveSpawnStmt: registered spawn '", 
+             ctx.pool.lookup(stmt->binding->name), "'");
     return false;
 }
 
@@ -1132,24 +1219,66 @@ bool resolveJoinStmt(const JoinStmtAST* stmt, SemaContext& ctx) {
         const IdentifierExprAST* id = target->as<IdentifierExprAST>();
         InternedString targetName = id->name;
 
-        // ─── Check if this is a pending spawn operation ────────────────────
-        if (ctx.hasPendingSpawn(targetName)) {
-            ctx.resolveSpawn(targetName);
-        } else if (ctx.hasPendingAsync(targetName)) {
-            ctx.diagnostics.error(DiagCode::Sem_JoinNonSpawn, target,
-                                  "'", ctx.pool.lookup(targetName), "' was declared with async, not spawn. Use 'await' instead.");
-            return false;
-        } else {
-            ctx.diagnostics.error(DiagCode::Sem_JoinNonSpawn, target,
-                                  "'", ctx.pool.lookup(targetName), "' is not a pending spawn operation");
-            return false;
-        }
-
-        // ─── Verify the variable exists ────────────────────────────────────
-        const ValueDeclAST* decl = ctx.lookupValue(targetName);
+        // ─── Look up the variable ──────────────────────────────────────────
+        const ValueDeclAST* decl = ctx.lookupValueRaw(targetName);
         if (!decl) {
             ctx.diagnostics.error(DiagCode::Sem_UndefinedValue, target,
                                   "undefined variable '", ctx.pool.lookup(targetName), "'");
+            return false;
+        }
+
+        if (!decl->isa<VarDeclAST>()) {
+            ctx.diagnostics.error(DiagCode::Sem_JoinNonSpawn, target,
+                                  "'", ctx.pool.lookup(targetName), "' is not a variable");
+            return false;
+        }
+
+        // ─── Check if this is a pending spawn operation ────────────────────
+        if (ctx.hasPendingSpawn(targetName)) {
+            // ─── Validate the variable has ThreadTypeAST ──────────────────
+            TypeAST* varType = resolveType(decl->type, ctx);
+            if (!varType || !varType->isa<ThreadTypeAST>()) {
+                ctx.diagnostics.error(DiagCode::Sem_JoinNonSpawn, target,
+                                      "'", ctx.pool.lookup(targetName), 
+                                      "' is not a Thread<T> (type: ", 
+                                      debug::typeToString(varType, ctx.pool), ")");
+                return false;
+            }
+
+            // ─── NARROW THE TYPE: Unwrap ThreadTypeAST to its inner type ──
+            const ThreadTypeAST* threadType = varType->as<ThreadTypeAST>();
+            const TypeAST* innerType = unwrapThreadType(threadType);
+            
+            // Apply narrowing to the variable
+            ctx.stack.narrowVariable(targetName, innerType);
+
+            // Mark the spawn as resolved
+            ctx.resolveSpawn(targetName);
+            
+            LOG_SEMA("resolveJoinStmt: narrowed '", ctx.pool.lookup(targetName),
+                     "' from Thread<", debug::typeToString(innerType, ctx.pool),
+                     "> to ", debug::typeToString(innerType, ctx.pool));
+        } else if (ctx.hasPendingAsync(targetName)) {
+            ctx.diagnostics.error(DiagCode::Sem_JoinNonSpawn, target,
+                                  "'", ctx.pool.lookup(targetName), 
+                                  "' was declared with async, not spawn. Use 'await' instead.");
+            return false;
+        } else {
+            // ─── Check if already narrowed (double join) ──────────────────
+            const TypeAST* narrowedType = ctx.stack.getNarrowedType(targetName);
+            if (narrowedType && !narrowedType->isa<ThreadTypeAST>()) {
+                TypeAST* originalType = resolveType(decl->type, ctx);
+                if (originalType && originalType->isa<ThreadTypeAST>()) {
+                    ctx.diagnostics.error(DiagCode::Sem_DoubleJoin, target,
+                                          "'", ctx.pool.lookup(targetName), 
+                                          "' has already been joined");
+                    return false;
+                }
+            }
+            
+            ctx.diagnostics.error(DiagCode::Sem_JoinNonSpawn, target,
+                                  "'", ctx.pool.lookup(targetName), 
+                                  "' is not a pending spawn operation");
             return false;
         }
     }
