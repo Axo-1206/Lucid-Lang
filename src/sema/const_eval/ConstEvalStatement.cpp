@@ -297,7 +297,7 @@ ConstantValue ConstEvaluator::executeFunction(SemaContext& ctx, const FuncDeclAS
 
     // ─── 2. Bind arguments to parameters ────────────────────────────────
     size_t argIndex = 0;
-    for (FuncTypeAST* group = func->funcType; group; group = group->getNext()) {
+    for (const FuncTypeAST* group = func->funcType; group; group = group->getNext()) {
         for (ParamAST* param : group->params) {
             if (argIndex < args.size()) {
                 // Create a synthetic literal for the argument value

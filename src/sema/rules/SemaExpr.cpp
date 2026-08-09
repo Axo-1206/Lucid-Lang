@@ -324,8 +324,8 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetTyp
         expr->isConst = (funcDecl->keyword == DeclKeyword::Const);
     } else if (decl->isa<ParamAST>()) {
         const ParamAST* param = decl->as<ParamAST>();
-        expr->isLValue = !param->isConst;
-        expr->isConst = param->isConst;
+        expr->isLValue = !param->isConst();
+        expr->isConst = param->isConst();
     } else if (decl->isa<EnumVariantAST>()) {
         expr->isLValue = false;
         expr->isConst = true;
@@ -569,7 +569,7 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, const TypeAST* tar
         const FieldDeclAST* field = it->second;
 
         // ─── 4a. Const field validation ─────────────────────────────────
-        if (field->isConst) {
+        if (field->isConst()) {
             if (init->value->isa<LiteralExprAST>()) {
                 const LiteralExprAST* literal = init->value->as<LiteralExprAST>();
                 if (literal->kind == LiteralKind::Nil || literal->kind == LiteralKind::Err) {
@@ -1585,7 +1585,7 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetT
                 //   1. The object is an l-value
                 //   2. The field is not const
                 if (expr->object->isLValue) {
-                    if (f->isConst) {
+                    if (f->isConst()) {
                         expr->isLValue = false;   // const field is not assignable
                         expr->isConst = true;     // but it's still const-evaluable
                     } else {

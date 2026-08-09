@@ -110,7 +110,7 @@ static bool validateSingleTraitImplementationInternal(
         const FieldDeclAST* structField = it->second;
 
         // ─── 2. Check: Const-ness compatibility ────────────────────────
-        if (traitField->isConst && !structField->isConst) {
+        if (traitField->isConst() && !structField->isConst()) {
             ctx.diagnostics.error(DiagCode::Sem_TraitImplementation, structField,
                                   "trait '", ctx.pool.lookup(traitDecl->name),
                                   "' requires field '", ctx.pool.lookup(traitField->name),
@@ -142,7 +142,7 @@ static bool validateSingleTraitImplementationInternal(
             continue;
         }
 
-        if (traitField->isConst) {
+        if (traitField->isConst()) {
             // Const fields: types must match exactly
             if (!typesEqual(structField->type, traitField->type)) {
                 ctx.diagnostics.error(DiagCode::Sem_TraitImplementation, structField,
@@ -169,7 +169,7 @@ static bool validateSingleTraitImplementationInternal(
         }
 
         // ─── 4. Check: Const trait field type restrictions ─────────────
-        if (traitField->isConst) {
+        if (traitField->isConst()) {
             if (isNullableType(traitField->type) || isFallibleType(traitField->type)) {
                 ctx.diagnostics.error(DiagCode::Sem_TraitImplementation, traitField,
                                       "trait '", ctx.pool.lookup(traitDecl->name),
@@ -206,7 +206,7 @@ static bool checkTraitFieldConflictsInternal(
         for (const TraitFieldDeclAST* field : trait->fields) {
             requirements[field->name].push_back({
                 trait,
-                field->isConst,
+                field->isConst(),
                 field->type
             });
         }
@@ -494,7 +494,7 @@ bool validateForeignFunction(const FuncDeclAST* decl,
     }
 
     // ─── 3. Validate parameter types ─────────────────────────────────────────
-    FuncTypeAST* funcType = decl->funcType;
+    const FuncTypeAST* funcType = decl->funcType;
     if (!funcType) {
         ctx.diagnostics.error(DiagCode::Sem_InvalidReturnType, decl,
                               "foreign function '", ctx.pool.lookup(decl->name),
@@ -504,7 +504,7 @@ bool validateForeignFunction(const FuncDeclAST* decl,
 
     bool allValid = true;
 
-    for (FuncTypeAST* group = funcType; group; group = group->getNext()) {
+    for (const FuncTypeAST* group = funcType; group; group = group->getNext()) {
         for (ParamAST* param : group->params) {
             if (!isValidFFIType(param->type, ctx)) {
                 ctx.diagnostics.error(DiagCode::Ffi_TypeNotFFI, param,

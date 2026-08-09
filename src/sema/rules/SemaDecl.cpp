@@ -179,10 +179,6 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
         //   - Parameter types are FFI-compatible
         //   - Return type is FFI-compatible
         //   - No generic parameters
-        
-        // Mark as const (foreign functions are compile-time constants)
-        const_cast<FuncDeclAST*>(decl)->isConst = true;
-        
         // No body to resolve - we're done
         return;
     }
@@ -251,11 +247,6 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
     // ─── 11. Pop function context ────────────────────────────────────────────
     ctx.stack.pop();
     ctx.popScope();
-
-    // ─── 12. Mark as const if applicable ─────────────────────────────────────
-    if (decl->keyword == DeclKeyword::Const) {
-        const_cast<FuncDeclAST*>(decl)->isConst = true;
-    }
 }
 
 /// @brief Resolve a parameter type and register it in the current scope.
@@ -277,7 +268,7 @@ void resolveParam(const ParamAST* param, SemaContext& ctx) {
     
     // ─── 2. Validate const parameter ────────────────────────────────────────
     // const parameters are read-only references - they must have a definite type
-    if (param->isConst) {
+    if (param->isConst()) {
         if (!validateConstType(paramType, param->name, "parameter", ctx)) {
             return;
         }
@@ -344,7 +335,7 @@ void resolveTraitDecl(const TraitDeclAST* decl, SemaContext& ctx) {
 
         // ─── Validate const trait field ──────────────────────────────────
         // const trait fields must have a definite type (not nullable or fallible)
-        if (field->isConst) {
+        if (field->isConst()) {
             if (!validateConstType(fieldType, field->name, "trait field", ctx)) {
                 continue;
             }
@@ -410,7 +401,7 @@ void resolveStructFields(const StructDeclAST* decl, SemaContext& ctx) {
 
         // ─── 4. Validate const field type ──────────────────────────────────
         // const fields must have a definite type (not nullable or fallible)
-        if (field->isConst) {
+        if (field->isConst()) {
             if (!validateConstType(fieldType, field->name, "struct field", ctx)) {
                 continue;
             }

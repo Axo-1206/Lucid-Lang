@@ -486,12 +486,17 @@ struct TraitFieldDeclAST : DeclAST {
     // ─── Parser Fields (immutable) ──────────────────────────────────────
     const InternedString name;
     const TypePtr type; // required field type (nullable/fallible allowed unless const)
+    const bool isConstField;
 
     // ─── Constructor ─────────────────────────────────────────────────────
     TraitFieldDeclAST(InternedString n, TypePtr t, bool isConstField)
         : DeclAST(ASTKind::TraitFieldDecl, n)
         , name(n)
-        , type(t) {}
+        , type(t) 
+        , isConstField(isConstField) {}
+
+    /// @brief Check if this field is const (immutable after construction).
+    bool isConst() const { return isConstField; }
 };
 using TraitFieldPtr = TraitFieldDeclAST*;
 

@@ -55,8 +55,7 @@ public:
         : m_ctx(ctx) {
         m_ctx.stack.pushFunction(
             const_cast<FuncDeclAST*>(func),
-            func->funcType ? func->funcType->returnType : nullptr,
-            func->loc
+            func->funcType ? func->funcType->returnType : nullptr
         );
         m_ctx.pushScope();
     }

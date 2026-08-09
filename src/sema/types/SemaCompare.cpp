@@ -77,7 +77,7 @@ bool typesEqual(const TypeAST* a, const TypeAST* b) {
                 const ParamAST* pa = fa->params[i];
                 const ParamAST* pb = fb->params[i];
                 if (pa->isVariadic != pb->isVariadic) return false;
-                if (pa->isConst != pb->isConst) return false;
+                if (pa->isConst() != pb->isConst()) return false;
                 if (!typesEqual(pa->type, pb->type)) return false;
             }
 

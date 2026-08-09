@@ -384,7 +384,7 @@ ConstantValue ConstEvaluator::evalStructLiteral(SemaContext& ctx, const StructLi
         const FieldDeclAST* field = it->second;
 
         // Check const field cannot be assigned nil/err
-        if (field->isConst) {
+        if (field->isConst()) {
             if (init->value->isa<LiteralExprAST>()) {
                 const LiteralExprAST* lit = init->value->as<LiteralExprAST>();
                 if (lit->kind == LiteralKind::Nil || lit->kind == LiteralKind::Err) {
@@ -604,7 +604,7 @@ ConstantValue ConstEvaluator::executeFunction(SemaContext& ctx, const FuncDeclAS
     ConstFunctionContext context(ctx, func);
 
     size_t argIndex = 0;
-    for (FuncTypeAST* group = func->funcType; group; group = group->getNext()) {
+    for (const FuncTypeAST* group = func->funcType; group; group = group->getNext()) {
         for (ParamAST* param : group->params) {
             if (argIndex < args.size()) {
                 const_cast<ParamAST*>(param)->type = getConstantType(ctx, args[argIndex]);
