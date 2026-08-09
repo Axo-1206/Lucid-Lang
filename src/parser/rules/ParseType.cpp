@@ -1,13 +1,23 @@
-/**
- * @file ParseType.cpp
- * @brief Implementation of type parsers.
- * 
- * This file implements all type parsing functions:
- * - Primitive, Named, Array, Reference, Pointer, Function types
- * - Type with nullable/fallible modifiers (T?, T!, T?!)
- * 
- * The type parser uses a Pratt-style recursive descent approach.
- */
+/// @file ParseType.cpp
+/// @brief Implementation of type parsers.
+/// 
+/// This file implements all type parsing functions:
+/// - Primitive, Named, Array, Reference, Pointer, Function types
+/// - Type with nullable/fallible modifiers (T?, T!, T?!)
+/// 
+/// The type parser uses a Pratt-style recursive descent approach.
+/// 
+/// NOTE: FutureTypeAST and ThreadTypeAST is used directly by parseAsyncStmt
+///  and parseSpawnStmt in ParseStmt.cpp, reason: if we implement 2 functions
+///  to parse them here then it will require us to move backward instead of 
+///  forward, for example a nullable and fallible type T? and T! is easy to tell
+///  the parser only need to look at the next token, but for future and thread
+///  the problem is we need to look backward and find the token async/spawn before
+///  the declaration keyword, this sounds trivial until we realized that parameter
+///  in function and generic paramter do not allow async/spawn (and let/const keywords).
+///  so it's easier and less bugs that we warp the node directly in parseAsyncStmt and
+///  parseSpawnStmt instead of implement their own parser here
+/// 
 
 #include "../Parser.hpp"
 #include "core/Tokens.hpp"

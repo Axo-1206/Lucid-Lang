@@ -729,6 +729,7 @@ AsyncStmtAST* parseAsyncStmt(TokenStream& stream, ParserContext& ctx) {
     
     SourceLocation loc = stream.currentLoc();
     
+    // 1. Parse 'async' keyword
     if (!stream.match(TokenType::ASYNC)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, loc,
                                 "expected 'async', got '", stream.peekValue(), "'");
@@ -738,18 +739,45 @@ AsyncStmtAST* parseAsyncStmt(TokenStream& stream, ParserContext& ctx) {
     AsyncStmtAST* asyncStmt = ctx.arena.make<AsyncStmtAST>();
     asyncStmt->loc = loc;
     
-    // Parse target variable
+    // 2. Parse binding variable (follows VarDecl pattern)
+    //    async result int = fetchData(url)
+    //    ───┬─── ─┬─ ─┬─
+    //    keyword name type
+    
+    // 2a. Parse the variable name
     if (!stream.check(TokenType::IDENTIFIER)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
-                                "expected variable name, got '", stream.peekValue(), "'");
+                                "expected variable name for async binding, got '", stream.peekValue(), "'");
         synchronizeToContext(stream, ctx);
         return asyncStmt;
     }
-    Token targetTok = stream.consume();
-    auto* idExpr = ctx.arena.make<IdentifierExprAST>();
-    idExpr->name = ctx.pool.intern(targetTok.value);
-    asyncStmt->target = idExpr;
+    Token nameTok = stream.consume();
+    InternedString name = ctx.pool.intern(nameTok.value);
     
+    // 2b. Parse the type annotation (required)
+    TypePtr innerType = parseType(stream, ctx);
+    if (!innerType) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
+                                "expected type for async binding, got '", stream.peekValue(), "'");
+        synchronizeToContext(stream, ctx);
+        return asyncStmt;
+    }
+    
+    // 2c. Wrap the type in FutureTypeAST
+    TypePtr wrappedType = ctx.arena.make<FutureTypeAST>(innerType);
+    
+    // 2d. Create the VarDeclAST for the binding
+    VarDeclAST* binding = ctx.arena.make<VarDeclAST>();
+    binding->loc = loc;
+    binding->name = name;
+    binding->keyword = DeclKeyword::Let;  // async bindings are mutable (can be awaited)
+    binding->type = wrappedType;
+    binding->init = nullptr;  // No initializer - the async call provides the value
+    binding->isConst = false;
+    
+    asyncStmt->binding = binding;
+    
+    // 3. Parse '=' (required)
     if (!stream.match(TokenType::ASSIGN)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected '=', got '", stream.peekValue(), "'");
@@ -757,8 +785,9 @@ AsyncStmtAST* parseAsyncStmt(TokenStream& stream, ParserContext& ctx) {
         return asyncStmt;
     }
     
+    // 4. Parse the async call expression
     ExprPtr call = parseExpr(stream, ctx);
-    if (!call) {
+    if (!call || !call->isa<CallExprAST>()) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                 "expected async call expression");
         synchronizeToContext(stream, ctx);
@@ -766,7 +795,8 @@ AsyncStmtAST* parseAsyncStmt(TokenStream& stream, ParserContext& ctx) {
     }
     asyncStmt->call = call;
     
-    LOG_PARSER("parseAsyncStmt: parsed async statement");
+    LOG_PARSER("parseAsyncStmt: parsed async statement with binding '", 
+               ctx.pool.lookup(name), "'");
     return asyncStmt;
 }
 
@@ -807,9 +837,13 @@ AwaitStmtAST* parseAwaitStmt(TokenStream& stream, ParserContext& ctx) {
 
 SpawnStmtAST* parseSpawnStmt(TokenStream& stream, ParserContext& ctx) {
     LOG_PARSER("parseSpawnStmt: parsing spawn statement");
+
+    /// NOTE: we do not reuse parseVarDecl here because parseVarDecl do not support
+    /// '_' discard pattern
     
     SourceLocation loc = stream.currentLoc();
     
+    // 1. Parse 'spawn' keyword
     if (!stream.match(TokenType::SPAWN)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, loc,
                                 "expected 'spawn', got '", stream.peekValue(), "'");
@@ -819,15 +853,45 @@ SpawnStmtAST* parseSpawnStmt(TokenStream& stream, ParserContext& ctx) {
     SpawnStmtAST* spawnStmt = ctx.arena.make<SpawnStmtAST>();
     spawnStmt->loc = loc;
     
-    // Parse target variable (or '_' for discard)
+    // 2. Parse binding variable or discard pattern ('_')
+    //    spawn result int = computeHeavyData()
+    //    spawn _ = logToFile("started")
+    //    ───┬─── ──┬─ ─┬─
+    //    keyword name type (optional for '_')
+    
     if (stream.check(TokenType::UNDERSCORE)) {
+        // Discard pattern - no binding, no type required
         stream.consume(); // Consume '_'
-        spawnStmt->target = nullptr; // nullptr means discard
+        spawnStmt->binding = nullptr;
     } else if (stream.check(TokenType::IDENTIFIER)) {
-        Token targetTok = stream.consume();
-        auto* idExpr = ctx.arena.make<IdentifierExprAST>();
-        idExpr->name = ctx.pool.intern(targetTok.value);
-        spawnStmt->target = idExpr;
+        // 2a. Parse the variable name
+        Token nameTok = stream.consume();
+        InternedString name = ctx.pool.intern(nameTok.value);
+        
+        // 2b. Parse the type annotation (required for named bindings)
+        TypePtr innerType = parseType(stream, ctx);
+        if (!innerType) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
+                                    "expected type for spawn binding, got '", stream.peekValue(), "'");
+            synchronizeToContext(stream, ctx);
+            return spawnStmt;
+        }
+        
+        // 2c. Wrap the type in ThreadTypeAST
+        TypePtr wrappedType = ctx.arena.make<ThreadTypeAST>(innerType);
+        
+        // 2d. Create the VarDeclAST for the binding
+        VarDeclAST* binding = ctx.arena.make<VarDeclAST>();
+        binding->loc = loc;
+        binding->name = name;
+        binding->keyword = DeclKeyword::Let;  // spawn bindings are mutable (can be joined)
+        binding->type = wrappedType;
+        binding->init = nullptr;  // No initializer - the spawn call provides the value
+        binding->isConst = false;
+        
+        spawnStmt->binding = binding;
+        
+        LOG_PARSER_DETAIL("parseSpawnStmt: binding '", ctx.pool.lookup(name), "'");
     } else {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
                                 "expected variable name or '_', got '", stream.peekValue(), "'");
@@ -835,6 +899,7 @@ SpawnStmtAST* parseSpawnStmt(TokenStream& stream, ParserContext& ctx) {
         return spawnStmt;
     }
     
+    // 3. Parse '=' (required)
     if (!stream.match(TokenType::ASSIGN)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected '=', got '", stream.peekValue(), "'");
@@ -842,8 +907,9 @@ SpawnStmtAST* parseSpawnStmt(TokenStream& stream, ParserContext& ctx) {
         return spawnStmt;
     }
     
+    // 4. Parse the spawn call expression
     ExprPtr call = parseExpr(stream, ctx);
-    if (!call) {
+    if (!call || !call->isa<CallExprAST>()) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                 "expected spawn call expression");
         synchronizeToContext(stream, ctx);
