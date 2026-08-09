@@ -1,5 +1,124 @@
 /// @file SemaContext.hpp
 /// @brief Unified semantic context - monolithic design with integrated symbol storage and type cache.
+/// # ContextStack Integration
+///
+/// The ContextStack is embedded in SemaContext and provides:
+///
+/// ## 1. Context Validation
+///
+/// ```cpp
+/// // Check if we're in a valid context for a statement
+/// if (!ctx.stack.insideFunction()) {
+///     ctx.diagnostics.error(...);
+///     return false;
+/// }
+/// ```
+///
+/// ## 2. Type Narrowing
+///
+/// ```cpp
+/// // Narrow a variable from Future<T> to T
+/// ctx.stack.narrowVariable(targetName, innerType);
+///
+/// // Look up a variable (checks narrowing stack first)
+/// const ValueDeclAST* decl = ctx.lookupValue(name);
+/// const TypeAST* narrowed = ctx.stack.getNarrowedType(name);
+/// if (narrowed) {
+///     // Use narrowed type
+/// }
+/// ```
+///
+/// ## 3. Return Type Validation
+///
+/// ```cpp
+/// // Get the expected return type for the current function
+/// const TypeAST* expected = ctx.stack.currentReturnType();
+///
+/// // Validate return value against expected type
+/// TypeAST* valueType = resolveExprWithTarget(returnValue, expected, ctx);
+/// ```
+///
+/// ## 4. Pending Narrowing for Standalone If
+///
+/// ```cpp
+/// // In resolveIfStmt - store inverse narrowing for later
+/// if (!stmt->elseBranch && thenReturns && hasNarrowing && info.isEquality) {
+///     ctx.stack.setPendingInverseNarrowing(info);
+/// }
+///
+/// // In resolveBlock - apply pending inverse narrowing
+/// if (ctx.stack.hasPendingInverseNarrowing()) {
+///     const NarrowingInfo& info = ctx.stack.getPendingInverseNarrowing();
+///     for (const auto& [varName, narrowedType] : info.narrowings) {
+///         ctx.stack.narrowVariable(varName, narrowedType);
+///     }
+///     ctx.stack.clearPendingInverseNarrowing();
+/// }
+/// ```
+///
+/// ## 5. Concurrency Tracking
+///
+/// ```cpp
+/// // Register pending async
+/// ctx.addPendingAsync(binding->name, call, loc);
+///
+/// // Check and resolve async
+/// if (ctx.hasPendingAsync(targetName)) {
+///     ctx.resolveAsync(targetName);
+///     ctx.stack.narrowVariable(targetName, innerType);
+/// }
+///
+/// // Warn about unawaited async at block exit
+/// for (const InternedString& name : ctx.getPendingAsyncNames()) {
+///     ctx.diagnostics.warning(DiagCode::Warn_UnawaitedAsync, ...);
+/// }
+/// ```
+///
+/// # The Narrowing Flow (Full Example)
+///
+/// ```lucid
+/// let x int? = getValue()
+///
+/// if x != nil {           ← 1. Condition analyzed
+///     // x is int         ← 2. Direct narrowing applied
+///     use(x)              ← 3. lookupValue() returns narrowed type
+/// } else {
+///     // x is nil         ← 4. Inverse narrowing in else branch
+///     handleNil()
+/// }
+/// // x is int?            ← 5. Narrowing level popped
+///
+/// if x == nil { return }  ← 6. Standalone if with early exit
+/// // x is int             ← 7. Pending inverse narrowing applied to block
+/// use(x)                  ← 8. lookupValue() returns narrowed type
+/// ```
+///
+/// # The Narrowing Stack Structure
+///
+/// ```
+/// ┌────────────────────────────────────────────────────────────────────┐
+/// │                          Narrowing Stack                           │
+/// │                                                                    │
+/// │  Level 3 (innermost)  ──────────────────────────────┐              │
+/// │  { x: int, y: string }                              │              │
+/// │                                                     │              │
+/// │  Level 2              ──────────────────────────────│──┐           │
+/// │  { x: int? }                                        │  │           │
+/// │                                                     │  │           │
+/// │  Level 1              ──────────────────────────────│──│──┐        │
+/// │  { }                                                │  │  │        │
+/// │                                                     │  │  │        │
+/// │                                                     │  │  │        │
+/// │  Lookup "x" ────────────────────────────────────────┘  │  │        │
+/// │    → Level 3 has x → returns int                       │  │        │
+/// │                                                        │  │        │
+/// │  Lookup "y" ───────────────────────────────────────────┘  │        │
+/// │    → Level 3 has y → returns string                       │        │
+/// │                                                           │        │
+/// │  Lookup "z" ──────────────────────────────────────────────┘        │
+/// │    → No level has z → returns nullptr                              │
+/// └────────────────────────────────────────────────────────────────────┘
+/// ```
 
 #pragma once
 
@@ -15,8 +134,61 @@
 
 namespace sema {
 
-// ─── ModuleTable ──────────────────────────────────────────────────────────
-
+/// # ModuleTable
+///
+/// The ModuleTable stores all symbols for a single module (source file).
+/// It serves as the backing store for module-level symbol lookup.
+///
+/// ## Structure
+///
+/// ```
+/// ┌────────────────────────────────────────────────────────────────────────────┐
+/// │                         ModuleTable                                        │
+/// │                                                                            │
+/// │  ┌─────────────────────────────────────────────────────────────────────┐   │
+/// │  │  values:  std::unordered_map<InternedString, const ValueDeclAST*>   │   │
+/// │  │  ┌────────────────────────────────────────────────────────────────┐ │   │
+/// │  │  │  "add"     → FuncDeclAST (function)                            │ │   │
+/// │  │  │  "PI"      → VarDeclAST (const variable)                       │ │   │
+/// │  │  │  "result"  → VarDeclAST (let variable)                         │ │   │
+/// │  │  │  "North"   → EnumVariantAST (enum variant)                     │ │   │
+/// │  │  └────────────────────────────────────────────────────────────────┘ │   │
+/// │  │                                                                     │   │
+/// │  │  types:   std::unordered_map<InternedString, const TypeDeclAST*>    │   │
+/// │  │  ┌────────────────────────────────────────────────────────────────┐ │   │
+/// │  │  │  "Vec2"    → StructDeclAST                                     │ │   │
+/// │  │  │  "Color"   → EnumDeclAST                                       │ │   │
+/// │  │  │  "Named"   → TraitDeclAST                                      │ │   │
+/// │  │  └────────────────────────────────────────────────────────────────┘ │   │
+/// │  │                                                                     │   │
+/// │  │  importAliases: std::unordered_map<InternedString, ModuleAST*>      │   │
+/// │  │  ┌────────────────────────────────────────────────────────────────┐ │   │
+/// │  │  │  "math"   → ModuleAST for "std/math.luc"                       │ │   │
+/// │  │  │  "io"     → ModuleAST for "std/io.luc"                         │ │   │
+/// │  │  └────────────────────────────────────────────────────────────────┘ │   │
+/// │  └─────────────────────────────────────────────────────────────────────┘   │
+/// └────────────────────────────────────────────────────────────────────────────┘
+/// ```
+///
+/// ## Lifetime
+///
+/// A ModuleTable is created when `enterModule()` is called and persists
+/// for the entire semantic analysis of that module. It is stored in
+/// `SemaContext::moduleTables` keyed by the ModuleAST pointer.
+///
+/// ## Lookup Priority
+///
+/// When looking up a symbol, the search order is:
+/// 1. **Local scopes** (`SemaContext::scopes`) - innermost first
+/// 2. **Module table** (`currentModuleTable`) - current module's symbols
+/// 3. **Import aliases** - symbols from imported modules (via `lookupImport()`)
+///
+/// ## Symbol Namespaces
+///
+/// Values and types are stored in separate maps to allow:
+/// - `struct Point` and `let Point = 42` to coexist
+/// - Faster lookup (search only the relevant namespace)
+/// - Clearer error messages ("undefined variable" vs "undefined type")
 struct ModuleTable {
     ModuleAST* module = nullptr;
     std::unordered_map<InternedString, const ValueDeclAST*> values;
@@ -24,8 +196,74 @@ struct ModuleTable {
     std::unordered_map<InternedString, ModuleAST*> importAliases;
 };
 
-// ─── TypeCache ────────────────────────────────────────────────────────────
-
+/// # TypeCache
+///
+/// The TypeCache is a **canonicalization cache** for type nodes. It ensures
+/// that semantically equivalent types share the same AST node pointer,
+/// enabling fast type comparison via pointer equality (`typesEqual()`).
+///
+/// ## Why Canonicalization?
+///
+/// Without canonicalization, two identical type annotations would produce
+/// two different AST nodes:
+///
+/// ```cpp
+/// // Both parse to different NamedTypeAST nodes
+/// let x Vec2 = ...
+/// let y Vec2 = ...
+/// // typesEqual(x->type, y->type) would need deep structural comparison
+/// ```
+///
+/// With canonicalization:
+/// ```cpp
+/// // Both resolve to the SAME NamedTypeAST pointer
+/// let x Vec2 = ...  // → ctx.getNamedType("Vec2")
+/// let y Vec2 = ...  // → ctx.getNamedType("Vec2") returns cached pointer
+/// // typesEqual(x->type, y->type) → pointer equality ✅
+/// ```
+///
+/// ## Cached Types
+///
+/// | Cache         | Key                       | Value               | Notes               |
+/// | ------------- | ------------------------- | ------------------- | ------------------- |
+/// | `boolType`    | N/A                       | `PrimitiveTypeAST*` | Built-in bool       |
+/// | `intType`     | N/A                       | `PrimitiveTypeAST*` | Built-in int        |
+/// | `floatType`   | N/A                       | `PrimitiveTypeAST*` | Built-in float      |
+/// | `stringType`  | N/A                       | `PrimitiveTypeAST*` | Built-in string     |
+/// | `charType`    | N/A                       | `PrimitiveTypeAST*` | Built-in char       |
+/// | `unknownType` | N/A                       | `UnknownTypeAST*`   | Error recovery type |
+/// | `namedTypes`  | `{ name }`                | `NamedTypeAST*`     | User-defined types  |
+/// | `arrayTypes`  | `{ kind, size, element }` | `ArrayTypeAST*`     | Array types         |
+///
+/// ## Example: Type Cache in Action
+///
+/// ```lucid
+/// struct Box<T> { value T }              // T is a generic param
+/// const add (a int)(b int) -> int = ...  // int is cached
+/// const process (data string) = ...      // string is cached
+/// let items [4]Vec2 = ...                // [4]Vec2 is cached
+/// ```
+///
+/// ## Usage
+///
+/// ```cpp
+/// // Get a cached primitive type
+/// PrimitiveTypeAST* intType = ctx.getIntType();
+///
+/// // Get a cached named type
+/// NamedTypeAST* vec2Type = ctx.getNamedType(pool.intern("Vec2"));
+///
+/// // Get a cached array type
+/// ArrayTypeAST* arrayType = ctx.getArrayType(ArrayKind::Fixed, 4, vec2Type);
+///
+/// // Check if two types are equal (fast pointer comparison)
+/// if (typesEqual(typeA, typeB)) { ... }
+/// ```
+///
+/// ## Lifetime
+///
+/// All types in the cache are arena-allocated and live for the entire
+/// compilation session. The cache is populated lazily as types are resolved.
 struct TypeCache {
     PrimitiveTypeAST* boolType = nullptr;
     PrimitiveTypeAST* intType = nullptr;
@@ -67,9 +305,133 @@ struct TypeCache {
     std::unordered_map<ArrayTypeKey, ArrayTypeAST*, ArrayTypeKeyHash> arrayTypes;
 };
 
-// ─── SemaContext ──────────────────────────────────────────────────────────
-
-/// @brief Unified semantic context - all in one struct.
+/// # SemaContext
+///
+/// The SemaContext is the **central hub** for semantic analysis. It holds
+/// all state needed to resolve types, validate declarations, and perform
+/// flow-sensitive analysis.
+///
+/// ## Architecture Overview
+///
+/// ```
+/// ┌────────────────────────────────────────────────────────────────────────────┐
+/// │                           SemaContext                                      │
+/// │                                                                            │
+/// │  ┌─────────────────────────────────────────────────────────────────────┐   │
+/// │  │                        Shared Resources                             │   │
+/// │  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────────┐  │   │
+/// │  │  │ StringPool  │  │ ASTArena    │  │  DiagnosticEngine           │  │   │
+/// │  │  │ (interned   │  │ (memory     │  │  (error reporting)          │  │   │
+/// │  │  │  strings)   │  │ allocation) │  │                             │  │   │
+/// │  │  └─────────────┘  └─────────────┘  └─────────────────────────────┘  │   │
+/// │  └─────────────────────────────────────────────────────────────────────┘   │
+/// │                                                                            │
+/// │  ┌─────────────────────────────────────────────────────────────────────┐   │
+/// │  │                        State Management                             │   │
+/// │  │  ┌──────────────┐  ┌──────────────┐  ┌───────────────────────────┐  │   │
+/// │  │  │ ContextStack │  │ ModuleTables │  │ TypeCache                 │  │   │
+/// │  │  │ (context,    │  │ (module      │  │ (type canonicalization)   │  │   │
+/// │  │  │  narrowing)  │  │  symbols)    │  │                           │  │   │
+/// │  │  └──────────────┘  └──────────────┘  └───────────────────────────┘  │   │
+/// │  │  ┌──────────────┐  ┌──────────────┐  ┌───────────────────────────┐  │   │
+/// │  │  │ Scopes Stack │  │ DefiningTypes│  │ Pending Concurrency       │  │   │
+/// │  │  │ (local       │  │ (self-ref    │  │ (async/spawn tracking)    │  │   │
+/// │  │  │  symbols)    │  │  detection)  │  │                           │  │   │
+/// │  │  └──────────────┘  └──────────────┘  └───────────────────────────┘  │   │
+/// │  └─────────────────────────────────────────────────────────────────────┘   │
+/// └────────────────────────────────────────────────────────────────────────────┘
+/// ```
+///
+/// ## Key Responsibilities
+///
+/// ### 1. Symbol Management
+///
+/// | Responsibility       | Methods                                                 |
+/// | -------------------- | ------------------------------------------------------- |
+/// | Insert symbols       | `insertValue()`, `insertType()`, `insertGenericParam()` |
+/// | Lookup symbols       | `lookupValue()`, `lookupType()`, `lookupGenericParam()` |
+/// | Scope management     | `pushScope()`, `popScope()`, `isAtModuleLevel()`        |
+/// | Module symbol lookup | `lookupModuleValueMember()`, `lookupTypeByAlias()`      |
+///
+/// ### 2. Type Management
+///
+/// | Responsibility      | Methods                                                  |
+/// | ------------------- | -------------------------------------------------------- |
+/// | Get primitive types | `getBoolType()`, `getIntType()`, `getStringType()`, etc. |
+/// | Get named types     | `getNamedType()` (canonicalization cache)                |
+/// | Get array types     | `getArrayType()` (canonicalization cache)                |
+/// | Error recovery      | `getUnknownType()`                                       |
+///
+/// ### 3. Context Management
+///
+/// | Responsibility       | Methods                                              |
+/// | -------------------- | ---------------------------------------------------- |
+/// | Context queries      | `stack.insideFunction()`, `stack.insideLoop()`, etc. |
+/// | Type narrowing       | `stack.narrowVariable()`, `stack.getNarrowedType()`  |
+/// | Return type tracking | `stack.currentReturnType()`                          |
+///
+/// ### 4. Concurrency Tracking
+///
+/// | Responsibility       | Methods                                            |
+/// | -------------------- | -------------------------------------------------- |
+/// | Register pending ops | `addPendingAsync()`, `addPendingSpawn()`           |
+/// | Check pending ops    | `hasPendingAsync()`, `hasPendingSpawn()`           |
+/// | Resolve pending ops  | `resolveAsync()`, `resolveSpawn()`                 |
+/// | Get pending names    | `getPendingAsyncNames()`, `getPendingSpawnNames()` |
+///
+/// ### 5. Self-Reference Detection
+///
+/// | Responsibility      | Methods                                     |
+/// | ------------------- | ------------------------------------------- |
+/// | Track defining type | `pushDefiningType()`, `popDefiningType()`   |
+/// | Check if defining   | `isDefiningType()`, `currentDefiningType()` |
+///
+/// ## Symbol Lookup Algorithm
+///
+/// ```
+/// lookupValue(name)
+///   │
+///   ├─► Check narrowing stack (getNarrowedType)
+///   │    └─► If found, return narrowed type
+///   │
+///   ├─► Check local scopes (innermost to outermost)
+///   │    └─► If found, return declaration
+///   │
+///   ├─► Check module table (current module)
+///   │    └─► If found, return declaration
+///   │
+///   └─► Check import aliases (via lookupImport)
+///        └─► If found, return declaration from imported module
+///
+/// Note: lookupType() follows the same pattern but searches the
+///       type namespace instead of the value namespace.
+/// ```
+///
+/// ## Usage Example
+///
+/// ```cpp
+/// // Create the context
+/// SemaContext ctx(pool, arena, diagnostics, modules);
+///
+/// // Enter a module
+/// ctx.enterModule(module);
+///
+/// // Push a scope for the function body
+/// SymbolScope scope(ctx);
+///
+/// // Insert a local variable
+/// ctx.insertValue(varDecl);
+///
+/// // Check if we're in a function
+/// if (ctx.stack.insideFunction()) {
+///     // Validate return type
+///     const TypeAST* expected = ctx.stack.currentReturnType();
+///     TypeAST* valueType = resolveExprWithTarget(returnValue, expected, ctx);
+/// }
+///
+/// // Look up a variable (checks narrowing stack first)
+/// const ValueDeclAST* decl = ctx.lookupValue(name);
+/// ```
 struct SemaContext {
     // ─── Resources ──────────────────────────────────────────────────────
     
@@ -619,13 +981,152 @@ struct SemaContext {
     }
 };
 
-// ─── RAII Guards ─────────────────────────────────────────────────────────
+/// # RAII Guards
+///
+/// RAII guards provide automatic cleanup for semantic analysis state.
+/// They ensure that contexts, scopes, and narrowing levels are properly
+/// popped even when errors occur.
+///
+/// ## Guard Hierarchy
+///
+/// ```
+/// ┌────────────────────────────────────────────────────────────────────────────┐
+/// │                           RAII Guards                                      │
+/// │                                                                            │
+/// │  ┌─────────────────────────────────────────────────────────────────────┐   │
+/// │  │                    ScopedSemanticContext                            │   │
+/// │  │  Pushes/pops a context frame on the ContextStack                    │   │
+/// │  │  Usage: Entering a function, loop, switch, or block                 │   │
+/// │  └─────────────────────────────────────────────────────────────────────┘   │
+/// │                                                                            │
+/// │  ┌─────────────────────────────────────────────────────────────────────┐   │
+/// │  │                        ScopedIfCondition                            │   │
+/// │  │  Sets up if condition context for narrowing detection               │   │
+/// │  │  Usage: Analyzing the condition of an if statement                  │   │
+/// │  └─────────────────────────────────────────────────────────────────────┘   │
+/// │                                                                            │
+/// │  ┌─────────────────────────────────────────────────────────────────────┐   │
+/// │  │                         SymbolScope                                 │   │
+/// │  │  Pushes/pops a lexical scope for symbol storage                     │   │
+/// │  │  Usage: Entering a block, function body, or loop body               │   │
+/// │  └─────────────────────────────────────────────────────────────────────┘   │
+/// │                                                                            │
+/// │  ┌─────────────────────────────────────────────────────────────────────┐   │
+/// │  │                       ScopedNarrowing                               │   │
+/// │  │  Pushes/pops a narrowing level for type refinement                  │   │
+/// │  │  Usage: Entering the then/else branch of an if statement            │   │
+/// │  └─────────────────────────────────────────────────────────────────────┘   │
+/// │                                                                            │
+/// │  ┌─────────────────────────────────────────────────────────────────────┐   │
+/// │  │                      ScopedTypeDefinition                           │   │
+/// │  │  Tracks the type currently being defined for self-reference checks  │   │
+/// │  │  Usage: Resolving a struct, enum, or trait declaration              │   │
+/// │  └─────────────────────────────────────────────────────────────────────┘   │
+/// └────────────────────────────────────────────────────────────────────────────┘
+/// ```
+///
+/// ## Guard Reference
+///
+/// ### ScopedSemanticContext
+///
+/// ```cpp
+/// // Usage: Push a context frame
+/// ScopedSemanticContext context(ctx, ContextKind::FuncBody, node);
+/// // ... resolve statements ...
+/// // Automatically popped on destruction
+/// ```
+///
+/// | ContextKind  | Use Case        | Effect                            |
+/// | ------------ | --------------- | --------------------------------- |
+/// | `FuncBody`   | Function body   | `return` allowed                  |
+/// | `LoopBody`   | Loop body       | `break`/`continue` allowed        |
+/// | `SwitchBody` | Switch body     | `case`/`default` allowed          |
+/// | `IfStmt`     | If statement    | Type narrowing tracked            |
+/// | `Block`      | Block statement | Pending inverse narrowing tracked |
+///
+/// ### ScopedIfCondition
+///
+/// ```cpp
+/// // Usage: Analyzing an if condition
+/// ScopedIfCondition ifCtx(ctx, stmt->elseBranch != nullptr);
+/// // ... resolve condition ...
+/// // Narrowing info captured in ctx.stack.getPendingNarrowing()
+/// // Automatically cleared on destruction
+/// ```
+///
+/// ### SymbolScope
+///
+/// ```cpp
+/// // Usage: Enter a new scope for a block
+/// SymbolScope scope(ctx);
+/// // Insert local symbols
+/// ctx.insertValue(localVar);
+/// // Automatically popped on destruction
+/// ```
+///
+/// ### ScopedNarrowing
+///
+/// ```cpp
+/// // Usage: Enter then branch of an if statement
+/// ScopedNarrowing narrowing(ctx, narrowings, false);  // direct narrowing
+/// // ... resolve then branch ...
+/// // Narrowing level popped on destruction
+///
+/// // Usage: Enter else branch
+/// ScopedNarrowing narrowing(ctx, narrowings, true);   // inverse narrowing
+/// // ... resolve else branch ...
+/// // Narrowing level popped on destruction
+/// ```
+///
+/// ### ScopedTypeDefinition
+///
+/// ```cpp
+/// // Usage: Resolving a struct declaration
+/// ScopedTypeDefinition def(ctx, structDecl);
+/// // ... resolve fields ...
+/// // If a field references the struct itself, isValidStructSelfReference()
+/// // detects it via ctx.currentDefiningType()
+/// // Automatically popped on destruction
+/// ```
+///
+/// ## Guard Composition Example
+///
+/// ```cpp
+/// bool resolveIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
+///     // 1. Push if context for narrowing tracking
+///     ScopedSemanticContext context(ctx, ContextKind::IfStmt, stmt);
+///
+///     // 2. Set up if condition context
+///     ScopedIfCondition ifCtx(ctx, stmt->elseBranch != nullptr);
+///
+///     // 3. Resolve condition (captures narrowing info)
+///     resolveExpr(stmt->condition, ctx);
+///
+///     // 4. Get captured narrowing info
+///     NarrowingInfo info = ctx.stack.getPendingNarrowing();
+///
+///     // 5. Push scope for then branch
+///     SymbolScope scope(ctx);
+///
+///     // 6. Apply narrowing to then branch
+///     ScopedNarrowing narrowing(ctx, info.narrowings, false);
+///
+///     // 7. Resolve then branch
+///     resolveStmt(stmt->thenBranch, ctx);
+///
+///     // All guards automatically pop in reverse order:
+///     // 1. narrowing pops
+///     // 2. scope pops
+///     // 3. ifCtx pops (clears pending narrowing)
+///     // 4. context pops
+///     return ...;
+/// }
+/// ```
 
 struct ScopedSemanticContext {
-    ScopedSemanticContext(SemaContext& ctx, ContextKind kind,
-                          const BaseAST* node, const SourceLocation& loc)
+    ScopedSemanticContext(SemaContext& ctx, ContextKind kind, const BaseAST* node)
         : ctx_(ctx) {
-        ctx_.stack.push(kind, const_cast<BaseAST*>(node), loc);
+        ctx_.stack.push(kind, const_cast<BaseAST*>(node));
     }
     ~ScopedSemanticContext() { ctx_.stack.pop(); }
     

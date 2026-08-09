@@ -1,5 +1,33 @@
 /// @file ContextStack.cpp
-/// @brief Implementation of simplified ContextStack.
+/// @brief Implementation of ContextStack - semantic context management.
+///
+/// # Implementation Notes
+///
+/// ## Context Stack
+///
+/// The context stack tracks syntactic context for validation rules.
+/// Each `push()` creates a frame, and `pop()` removes it. RAII guards
+/// (`ScopedSemanticContext`) ensure proper cleanup.
+///
+/// ## Return Stack
+///
+/// The return stack is managed alongside the context stack. When a function
+/// context is pushed, the expected return type is also pushed. When popped,
+/// the return type is popped. This supports curried functions.
+///
+/// ## Narrowing Stack
+///
+/// The narrowing stack is separate from the context stack because narrowing
+/// can persist across multiple contexts. For example, a narrowed type from
+/// an if condition applies to the entire then branch, which may contain
+/// nested blocks and loops.
+///
+/// ## Pending Inverse Narrowing
+///
+/// For standalone if statements with early exit (`if x == nil { return }`),
+/// the inverse narrowing is stored on the innermost block context. When
+/// `resolveBlock()` enters a new block, it checks for pending inverse
+/// narrowing and applies it before resolving the block's statements.
 
 #include "ContextStack.hpp"
 #include "core/ast/TypeAST.hpp"
@@ -8,57 +36,51 @@ namespace sema {
 
 // ─── Push/Pop ────────────────────────────────────────────────────────────
 
-void ContextStack::push(ContextKind kind, BaseAST* node, const SourceLocation& loc) {
+void ContextStack::push(ContextKind kind, BaseAST* node) {
     ContextFrame frame;
     frame.kind = kind;
     frame.node = node;
-    frame.openedAt = loc;
     m_stack.push_back(std::move(frame));
 }
 
-void ContextStack::pushFunction(FuncDeclAST* node, const TypeAST* returnType, const SourceLocation& loc) {
+void ContextStack::pushFunction(FuncDeclAST* node, const TypeAST* returnType) {
     ContextFrame frame;
     frame.kind = ContextKind::FuncBody;
     frame.node = node;
-    frame.openedAt = loc;
     frame.expectedReturnType = returnType;
     m_stack.push_back(std::move(frame));
     m_returnStack.push(returnType);
 }
 
-void ContextStack::pushAnonFunction(AnonFuncExprAST* node, const TypeAST* returnType, const SourceLocation& loc) {
+void ContextStack::pushAnonFunction(AnonFuncExprAST* node, const TypeAST* returnType) {
     ContextFrame frame;
     frame.kind = ContextKind::FuncBody;
     frame.node = node;
-    frame.openedAt = loc;
     frame.expectedReturnType = returnType;
     m_stack.push_back(std::move(frame));
     m_returnStack.push(returnType);
 }
 
-void ContextStack::pushLoop(StmtAST* loopStmt, const SourceLocation& loc) {
+void ContextStack::pushLoop(StmtAST* loopStmt) {
     ContextFrame frame;
     frame.kind = ContextKind::LoopBody;
     frame.node = loopStmt;
-    frame.openedAt = loc;
     frame.loopStmt = loopStmt;
     m_stack.push_back(std::move(frame));
 }
 
-void ContextStack::pushSwitch(SwitchStmtAST* switchStmt, const SourceLocation& loc) {
+void ContextStack::pushSwitch(SwitchStmtAST* switchStmt) {
     ContextFrame frame;
     frame.kind = ContextKind::SwitchBody;
     frame.node = switchStmt;
-    frame.openedAt = loc;
     frame.switchStmt = switchStmt;
     m_stack.push_back(std::move(frame));
 }
 
-void ContextStack::pushBlock(BlockStmtAST* block, const SourceLocation& loc) {
+void ContextStack::pushBlock(BlockStmtAST* block) {
     ContextFrame frame;
     frame.kind = ContextKind::Block;
     frame.node = block;
-    frame.openedAt = loc;
     m_stack.push_back(std::move(frame));
 }
 
@@ -72,7 +94,7 @@ void ContextStack::pop() {
     }
 }
 
-// ─── Queries ──────────────────────────────────────────────────────────────
+// ─── Context Queries ─────────────────────────────────────────────────────
 
 ContextKind ContextStack::current() const {
     return m_stack.empty() ? ContextKind::TopLevel : m_stack.back().kind;
@@ -194,6 +216,7 @@ void ContextStack::narrowVariable(InternedString name, const TypeAST* type) {
 }
 
 const TypeAST* ContextStack::getNarrowedType(InternedString name) const {
+    // Search from innermost to outermost
     for (auto it = m_narrowing.rbegin(); it != m_narrowing.rend(); ++it) {
         auto found = it->narrowedTypes.find(name);
         if (found != it->narrowedTypes.end()) {

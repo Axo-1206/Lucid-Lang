@@ -214,7 +214,7 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
 
     // ─── 8. Push function context with expected return type ──────────────────
     const TypeAST* expectedReturn = funcType ? funcType->returnType : nullptr;
-    ctx.stack.pushFunction(const_cast<FuncDeclAST*>(decl), expectedReturn, decl->loc);
+    ctx.stack.pushFunction(const_cast<FuncDeclAST*>(decl), expectedReturn);
 
     bool bodyReturns = false;
     

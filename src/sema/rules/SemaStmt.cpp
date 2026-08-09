@@ -68,7 +68,7 @@ bool resolveBlock(const BlockStmtAST* block, SemaContext& ctx) {
 
     // ─── RAII: Push block context ──────────────────────────────────────────
     ScopedSemanticContext context(ctx, ContextKind::Block, 
-                                   const_cast<BlockStmtAST*>(block), block->loc);
+                                   const_cast<BlockStmtAST*>(block));
 
     bool transfers = false;
     bool hasAppliedPendingNarrowing = false;
@@ -129,7 +129,7 @@ bool resolveIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
 
     // ─── RAII: Push if context ────────────────────────────────────────────
     ScopedSemanticContext context(ctx, ContextKind::IfStmt,
-                                   const_cast<IfStmtAST*>(stmt), stmt->loc);
+                                   const_cast<IfStmtAST*>(stmt));
     ctx.stack.setHasElse(stmt->elseBranch != nullptr);
 
     // ─── RAII: ScopedIfCondition for narrowing detection ──────────────────
@@ -241,7 +241,7 @@ bool resolveSwitchStmt(const SwitchStmtAST* stmt, SemaContext& ctx) {
     
     // ─── RAII: Push switch context ─────────────────────────────────────────
     ScopedSemanticContext context(ctx, ContextKind::SwitchBody,
-                                   const_cast<SwitchStmtAST*>(stmt), stmt->loc);
+                                   const_cast<SwitchStmtAST*>(stmt));
     
     // ─── CONST EVALUATION: Try to evaluate subject at compile time ────────
     ConstantValue subjectVal = ConstEvaluator::evaluate(ctx, stmt->subject);
@@ -440,7 +440,7 @@ bool resolveForStmt(const ForStmtAST* stmt, SemaContext& ctx) {
 
     // ─── RAII: Push loop context ───────────────────────────────────────────
     ScopedSemanticContext context(ctx, ContextKind::LoopBody,
-                                   const_cast<StmtAST*>(stmt->body), stmt->loc);
+                                   const_cast<StmtAST*>(stmt->body));
 
     // ─── RAII: Push a scope for loop variables ─────────────────────────────
     SymbolScope scope(ctx);
@@ -597,7 +597,7 @@ bool resolveWhileStmt(const WhileStmtAST* stmt, SemaContext& ctx) {
 
     // ─── RAII: Push loop context ───────────────────────────────────────────
     ScopedSemanticContext context(ctx, ContextKind::LoopBody,
-                                   const_cast<StmtAST*>(stmt->body), stmt->loc);
+                                   const_cast<StmtAST*>(stmt->body));
 
     // ─── Resolve the condition against bool type ──────────────────────────
     PrimitiveTypeAST* boolType = ctx.getBoolType();
@@ -643,7 +643,7 @@ bool resolveDoWhileStmt(const DoWhileStmtAST* stmt, SemaContext& ctx) {
 
     // ─── RAII: Push loop context ───────────────────────────────────────────
     ScopedSemanticContext context(ctx, ContextKind::LoopBody,
-                                   const_cast<StmtAST*>(stmt->body), stmt->loc);
+                                   const_cast<StmtAST*>(stmt->body));
 
     // ─── Resolve the loop body ─────────────────────────────────────────────
     if (stmt->body) {

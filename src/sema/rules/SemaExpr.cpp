@@ -2180,7 +2180,7 @@ TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, const TypeAST* targetType, S
     // ─── Step 4: Push anonymous function context with expected return type ──
     // The expected return type is the function's return type
     const TypeAST* expectedReturn = funcType ? funcType->returnType : nullptr;
-    ctx.stack.pushAnonFunction(expr, expectedReturn, expr->loc);
+    ctx.stack.pushAnonFunction(expr, expectedReturn);
 
     bool bodyReturns = false;
     
