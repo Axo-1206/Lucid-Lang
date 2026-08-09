@@ -210,6 +210,14 @@ struct CombinedTypeAST : TypeAST {
 /// Borrowed (it has no source it must not outlive; the hazard is
 /// double-consumption, not dangling).
 /// 
+/// 0. **`inner` is always written explicitly at the `async`/`spawn` site,
+///    never inferred.** `AsyncStmtAST::binding`/`SpawnStmtAST::binding` are
+///    always `VarDeclAST*` with a non-null `type` — the parser wraps the
+///    written inner type into `FutureTypeAST` eagerly, the same way it
+///    wraps `T` into `NullableTypeAST`/`FallibleTypeAST` for `?`/`!`.
+///    There is no inferred-type binding form anywhere in Lucid, and this
+///    construct does not introduce the first one — see `AsyncStmtAST` and
+///    `SpawnStmtAST` for the full reasoning.
 /// 1. **Use-before-await is a compile error.** Resolved via the same
 ///    flow-sensitive narrowing machinery as `T?`/`T!` — `ExprAST::valueState`
 ///    — not a separate runtime check. Before `await`, the identifier's

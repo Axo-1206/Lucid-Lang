@@ -399,7 +399,12 @@ struct ContinueStmtAST : StmtAST {
 /// @brief An async operation – schedules a function call on the event loop.
 /// 
 /// @example
-///   async result = fetchData(url)
+///   async result int = fetchData(url)
+/// 
+/// Note the surface syntax names the *inner* type (`int`), not `Future<T>`
+/// directly — the parser wraps it into `Future<int>` itself, the same way
+/// `int?` wraps `int` into `NullableTypeAST` without the source ever
+/// spelling `Nullable<int>`.
 /// 
 /// ─── Key Characteristics ──────────────────────────────────────────────────
 /// - Cooperative concurrency (single-threaded event loop)
@@ -411,19 +416,34 @@ struct ContinueStmtAST : StmtAST {
 ///   on all of them together with a single `await` (see AwaitStmtAST)
 /// 
 /// ─── `binding` Is Always a Fresh Local, Never an Existing Lvalue ──────────
-/// `async result = ...` *introduces* `result` — it does not assign into a
-/// pre-existing variable, the same way `let`/`const` introduce a name
+/// `async result int = ...` *introduces* `result` — it does not assign into
+/// a pre-existing variable, the same way `let`/`const` introduce a name
 /// rather than reassign one. `binding` is therefore a synthesized
 /// `VarDeclAST*`, not a general `ExprPtr` lvalue. This is not just a
 /// convenience: `Future<T>` (see `FutureTypeAST`) is a linear, non-copyable
 /// type restricted to local variables and parameters, so there is no valid
 /// existing storage location for this statement to assign into even in
-/// principle — every use of a future has to originate from a fresh
+/// principle, and `ModuleAccessExprAST`/`FieldAccessExprAST` targets (valid
+/// under an earlier version of this node) are now flatly illegal regardless
+/// of representation — every use of a future has to originate from a fresh
 /// binding declared right here.
 /// 
+/// ─── `binding->type` Is Always Explicit — No Inference ─────────────────────
+/// The inner type `T` (`int` in the example above) must always be written
+/// at the `async` statement itself, same as every other `let`/`const` in
+/// this language — there is no inferred-type binding form anywhere in
+/// Lucid, and this construct does not introduce the first one. The parser
+/// wraps the written `T` in `FutureTypeAST` immediately and sets
+/// `binding->type` to the result, exactly the same eager-wrap it already
+/// performs for `T?`/`T!`. `binding->type` is therefore **never null** —
+/// unlike an ordinary `let`, there is no case where Sema needs to fill it
+/// in later, since the type is always present at the syntax level.
+/// 
 /// ─── Semantic Analysis Notes ──────────────────────────────────────────────
-/// 1. **Future Type**: `binding`'s resolved type becomes `FutureTypeAST(T)`
-///    after this statement, where `T` is `call`'s return type.
+/// 1. **Type Check, Not Inference**: Sema checks that `call`'s resolved
+///    return type matches the `T` already wrapped into `binding->type` by
+///    the parser — the same ordinary check any `let x T = someFn();`
+///    already performs. There is no bespoke inference step to write.
 /// 2. **Cannot Use**: A `Future<T>` cannot be used as `T` until narrowed by
 ///    `await` — enforced via the same flow-sensitive narrowing as `T?`/`T!`
 ///    (`ExprAST::valueState`), not a separate lookup mechanism.
@@ -433,14 +453,16 @@ struct ContinueStmtAST : StmtAST {
 ///    Linear Value Rules on `FutureTypeAST` for the full rule set (also:
 ///    not copyable, never captured by a closure).
 /// 
-/// @field binding        The freshly introduced local (always `Future<T>`
-///                        immediately after this statement).
+/// @field binding        The freshly introduced local. `binding->type` is
+///                        always `FutureTypeAST(T)`, set by the parser, and
+///                        is never null.
 /// @field call            The async call expression.
 struct AsyncStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::AsyncExpr;
 
     VarDeclAST* binding = nullptr;   // fresh local introduced by this statement — never
-                                      // a reference to a pre-existing variable
+                                      // a reference to a pre-existing variable; ->type is
+                                      // always FutureTypeAST(T), set by the parser, never null
     ExprPtr call;                    // the async call
 
     AsyncStmtAST() : StmtAST(ASTKind::AsyncExpr) {}
@@ -484,8 +506,11 @@ struct AwaitStmtAST : StmtAST {
 /// @brief A spawn operation – launches a function call on a separate OS thread.
 /// 
 /// @example
-///   spawn result = computeHeavyData()
-///   spawn _ = logToFile("started")        – discard the return value
+///   spawn result int = computeHeavyData()
+///   spawn _ = logToFile("started")            – discard the return value
+/// 
+/// Note `_` is the one case with no type to write at all — the discard
+/// pattern never produces a binding, so there is nothing to wrap.
 /// 
 /// ─── Key Characteristics ──────────────────────────────────────────────────
 /// - Parallelism (OS threads)
@@ -498,18 +523,26 @@ struct AwaitStmtAST : StmtAST {
 /// 
 /// ─── The Discard Pattern (`_`) ──────────────────────────────────────────────
 /// - `spawn _ = fn()` = fire and forget (`binding == nullptr`, no join required)
-/// - `spawn x = fn()` = fire and join later (join required)
+/// - `spawn x T = fn()` = fire and join later (join required)
 /// 
 /// ─── `binding` Is Always a Fresh Local, Never an Existing Lvalue ──────────
-/// Same reasoning as `AsyncStmtAST::binding` — `spawn result = ...`
+/// Same reasoning as `AsyncStmtAST::binding` — `spawn result int = ...`
 /// introduces `result`, it does not assign into a pre-existing variable.
 /// `Thread<T>` (see `ThreadTypeAST`) is linear and non-copyable, so there is
 /// no valid pre-existing storage location to assign into in the first
-/// place.
+/// place, and `ModuleAccessExprAST`/`FieldAccessExprAST` targets are flatly
+/// illegal for the same reason given on `AsyncStmtAST`.
+/// 
+/// ─── `binding->type` Is Always Explicit — No Inference ─────────────────────
+/// Same as `AsyncStmtAST` — the inner type `T` must always be written at the
+/// `spawn` statement itself (when `binding` is non-null); the parser wraps
+/// it in `ThreadTypeAST` eagerly, same as `?`/`!`. `binding->type` is never
+/// null when `binding` itself is non-null.
 /// 
 /// ─── Semantic Analysis Notes ──────────────────────────────────────────────
-/// 1. **Future Type**: `binding`'s resolved type becomes `ThreadTypeAST(T)`
-///    after this statement (when `binding` is non-null).
+/// 1. **Type Check, Not Inference**: Sema checks `call`'s resolved return
+///    type against the `T` already wrapped into `binding->type` by the
+///    parser — same as `AsyncStmtAST`, no inference step to write.
 /// 2. **Cannot Use**: A `Thread<T>` cannot be used as `T` until narrowed by
 ///    `join` — same flow-sensitive narrowing as `FutureTypeAST`.
 /// 3. **Discard Pattern**: `binding == nullptr` means the result is
@@ -523,13 +556,17 @@ struct AwaitStmtAST : StmtAST {
 /// 6. **Nesting**: A spawned thread can itself launch further spawn or async calls.
 /// 
 /// @field binding          The freshly introduced local, or `nullptr` for
-///                          the `_` discard pattern.
+///                          the `_` discard pattern. When non-null,
+///                          `binding->type` is always `ThreadTypeAST(T)`,
+///                          set by the parser, and is never null.
 /// @field call             The spawn call expression.
 struct SpawnStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::SpawnExpr;
 
     VarDeclAST* binding = nullptr;   // fresh local introduced by this statement, or
-                                      // nullptr for the `_` discard pattern
+                                      // nullptr for the `_` discard pattern; when non-null,
+                                      // ->type is always ThreadTypeAST(T), set by the
+                                      // parser, never null
     ExprPtr call;                    // the spawn call
 
     SpawnStmtAST() : StmtAST(ASTKind::SpawnExpr) {}
