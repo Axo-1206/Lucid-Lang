@@ -192,6 +192,94 @@ struct CombinedTypeAST : TypeAST {
         : TypeAST(ASTKind::CombinedType), inner(t) {}
 };
 
+/// @brief The pending result of an `async` operation — `Future<T>`.
+/// 
+/// @example
+///   async result = fetchData(url);   -- result : Future<int>
+///   await result;                    -- result : int, from here on
+/// 
+/// ## Linear Value Rules
+/// 
+/// A `Future<T>` represents a scheduled operation that has not yet
+/// completed. It is a **linear value**: it must be consumed by exactly one
+/// `await` before it can be used, and exactly one `await` is all it can
+/// ever accept. This is a distinct category from every other type in the
+/// Ownership Categories table — not Owned (copying it cannot duplicate the
+/// single underlying scheduled operation), not Shared/refcounted (it is not
+/// meant to have more than one simultaneous holder at all), and not
+/// Borrowed (it has no source it must not outlive; the hazard is
+/// double-consumption, not dangling).
+/// 
+/// 1. **Use-before-await is a compile error.** Resolved via the same
+///    flow-sensitive narrowing machinery as `T?`/`T!` — `ExprAST::valueState`
+///    — not a separate runtime check. Before `await`, the identifier's
+///    state is `Future<T>` (unresolved); after, narrowing rewrites it to
+///    plain `T` for the rest of the enclosing scope, exactly as a
+///    successful nil-check narrows `T?` to `T`.
+/// 2. **Not copyable.** `let copy = result;` is a compile error while
+///    `result`'s type is `Future<T>`. There must never be two bindings that
+///    could each independently attempt to consume the same underlying
+///    operation — this is what prevents double-await, rather than relying
+///    on a lookup table to correctly propagate "pending" status through
+///    every possible copy site (assignment, parameter pass, return,
+///    struct/array storage).
+/// 3. **May only exist as a local variable or a function parameter.**
+///    Never a struct field, never an array/slice element. This closes off
+///    every indirect path into rule 4 below — a `Future<T>` cannot be
+///    smuggled into a closure's capture set through a container it's
+///    allowed to sit in.
+/// 4. **A closure literal may never capture a `Future<T>`**, whether the
+///    variable arrived by direct capture from an enclosing scope or as the
+///    enclosing function's own parameter. This is a **separate** rule from
+///    the Downward Flow Rule's closure-capture restriction on `&T`/`[_]T`
+///    — that one exists because a closure might *outlive* a borrowed
+///    view's source; this one exists because a closure might *run more
+///    than once*, and a plain function body (which runs exactly once per
+///    call) does not have that problem. Do not conflate the two
+///    justifications when diagnosing a rejection.
+/// 5. **Must be consumed on every control-flow path out of the scope that
+///    holds it.** A live, un-awaited `Future<T>` reaching scope exit —
+///    including via `return`, `break`, or any branch of an `if`/`switch`
+///    — is a compile error, not a warning. This requires genuine
+///    reachability analysis (every exit path checked for a live unresolved
+///    future), the same family of dataflow pass as return-exhaustiveness
+///    checking, run in the must-consume direction instead of the
+///    must-assign direction.
+/// 
+/// @see ThreadTypeAST for the `spawn`/`join` equivalent — identical rules,
+///      substituting `spawn` for `async` and `join` for `await`.
+struct FutureTypeAST : TypeAST {
+    static constexpr ASTKind staticKind = ASTKind::FutureType;
+
+    TypePtr inner = nullptr;
+
+    explicit FutureTypeAST(TypePtr t)
+        : TypeAST(ASTKind::FutureType), inner(t) {}
+};
+
+/// @brief The pending result of a `spawn` operation — `Thread<T>`.
+/// 
+/// @example
+///   spawn result = computeHeavyData();   -- result : Thread<int>
+///   join result;                         -- result : int, from here on
+///   spawn _ = logToFile("started");      -- discard pattern, no Thread<T> binding at all
+/// 
+/// Identical linear-value rules to `FutureTypeAST` (use-before-join is a
+/// compile error via narrowing, not copyable, local/parameter-only storage,
+/// never captured by a closure, must be joined on every control-flow path)
+/// — see `FutureTypeAST` for the full rationale behind each rule. The
+/// discard pattern (`spawn _ = fn()`) never produces a `Thread<T>` binding
+/// in the first place, so none of these rules apply to it — there is
+/// nothing to double-join, capture, or leave unconsumed.
+struct ThreadTypeAST : TypeAST {
+    static constexpr ASTKind staticKind = ASTKind::ThreadType;
+
+    TypePtr inner = nullptr;
+
+    explicit ThreadTypeAST(TypePtr t)
+        : TypeAST(ASTKind::ThreadType), inner(t) {}
+};
+
 /// @brief Represents a concrete array type: slice, dynamic, or fixed.
 /// 
 /// This node unifies the three array kinds under a single representation.

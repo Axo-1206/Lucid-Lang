@@ -25,7 +25,16 @@
 #include <memory>
 #include <variant>
 #include <vector>
+#include <unordered_map>
 #include <cassert>
+
+// ─── LLVM Headers ──────────────────────────────────────────────────────────
+// These are needed for CodeGen annotation fields. Parser and Sema don't use
+// these fields, but including the headers is fine.
+#include <llvm/IR/Value.h>
+#include <llvm/IR/Function.h>
+#include <llvm/IR/Instructions.h>
+#include <llvm/IR/Constants.h>
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Forward declarations — every AST family forward-declared here so any header
@@ -62,7 +71,6 @@ struct EnumVariantAST;
 struct EnumDeclAST;
 struct TraitFieldDeclAST;
 struct TraitDeclAST;
-// struct TraitRefAST;
 
 // ExprAST.hpp
 struct LiteralExprAST;
@@ -163,6 +171,8 @@ enum class ASTKind : uint16_t {
     RefType,
     PtrType,
     FuncType,
+    FutureType,        // Future<T> — result of `async`, consumed exactly once by `await`
+    ThreadType,        // Thread<T> — result of `spawn`, consumed exactly once by `join`
 
     // Declaration nodes
     ImportDecl,
@@ -313,6 +323,25 @@ enum class ValueState {
 /// It can represent primitive values, structs, arrays, and function pointers.
 ///
 /// @note All values are immutable after construction.
+/// 
+/// @warning **Same arena-lifetime risk as `AnonFuncExprAST::captures` before
+/// its fix** — `Array` and `Struct` below own a `std::vector`/
+/// `std::unordered_map`, each a separate heap allocation. If a
+/// `ConstantValue` is ever embedded in an arena-allocated node (directly, or
+/// via `ExprAST::constValue`) and the arena's bulk teardown does not run
+/// individual destructors, these leak exactly like `captures` did. Not
+/// auto-converted to `ArenaSpan` here because — unlike `captures`, which was
+/// only ever fully assigned at once by Sema — `Array`/`Struct` values are
+/// plausibly built up incrementally during constant folding, and switching
+/// container type without seeing that construction code risks introducing a
+/// real bug rather than fixing one. Worth the same check as the arena's
+/// destructor policy from the `captures` fix: if bulk teardown skips
+/// destructors, this needs the same treatment (likely an arena-backed
+/// growable builder finalized into `ArenaSpan<ConstantValue>` for `Array`
+/// and `ArenaSpan<std::pair<InternedString, ConstantValue>>` for `Struct`,
+/// mirroring the `FieldIndexEntry`/`VariantConstantEntry` pattern used on
+/// `StructDeclAST`/`EnumDeclAST`) — once the code that populates these is
+/// available to check against.
 struct ConstantValue {
     enum class Kind : uint8_t {
         Unknown,    ///< Not yet evaluated
@@ -471,13 +500,63 @@ struct ConstantValue {
     }
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// CapturedVariable — Information about a variable captured by a closure.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Represents a variable captured by a closure.
+/// 
+/// This struct is populated by Sema during capture analysis and used by
+/// CodeGen to generate the closure environment.
+/// 
+/// ─── Why This Is a Distinct Struct, Not `ArenaSpan<ValueDeclAST*>` ─────────
+/// Every field below (`byReference`, `index`, `envSlot`) is a property of the
+/// *(this closure, this declaration)* pair, not of the declaration alone —
+/// the same `ValueDeclAST` may be captured mutably by one closure and
+/// read-only by another, and will generally have a different `index`/
+/// `envSlot` in each closure's own environment struct. None of this can be
+/// hoisted onto `ValueDeclAST` itself without either storing a list keyed by
+/// capturing closure on every declaration (worse: declarations vastly
+/// outnumber closures, and most are never captured by anything) or losing
+/// the information outright.
+/// 
+/// @field decl          The declaration of the captured variable.
+/// @field byReference   True if this closure may write to the captured
+///                      variable, and therefore must share one heap slot
+///                      with every other holder (the enclosing frame, and
+///                      any other closure capturing the same declaration).
+///                      False if this closure only reads it, in which case
+///                      it may instead be snapshot-copied into the
+///                      environment at construction time — see the Capture
+///                      Rules note on `AnonFuncExprAST` for when that
+///                      optimization is safe.
+/// @field index         Index in the closure environment (set by Sema).
+struct CapturedVariable {
+    const ValueDeclAST* decl = nullptr;
+    bool byReference = false;
+    size_t index = 0;
+    
+    // ─── CodeGen Annotations ──────────────────────────────────────────
+    llvm::Value* envSlot = nullptr;   // LLVM slot in the environment
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ExprAST — Base class for all expression nodes.
+// ─────────────────────────────────────────────────────────────────────────────
+
 struct ExprAST : BaseAST {
-    TypeAST* resolvedType = nullptr; // written as semantic phase
-    ConstantValue constValue;  // Evaluated constant value (for const expressions)
-    ValueState valueState = ValueState::Unknown;  // track value state, use to return an `err` value when anything go wrong
-    bool isLValue         = false;  // Can this expression appear on LHS of assignment?
-    bool isModuleMember   = false;
-    bool isConst          = false;
+    // ─── Parser Fields ──────────────────────────────────────────────────
+    
+    // ─── Semantic Annotations (set by Sema) ────────────────────────────
+    TypeAST* resolvedType = nullptr;        // The resolved type of this expression
+    ConstantValue constValue;               // Evaluated constant value (for const expressions)
+    ValueState valueState = ValueState::Unknown;  // Nil/Err/Definite/Unknown
+    bool isLValue = false;                  // Can this appear on LHS of assignment?
+    bool isModuleMember = false;            // Is this a module member access?
+    bool isConst = false;                   // Is this a compile-time constant?
+    
+    // ─── CodeGen Annotations (set by CodeGen) ──────────────────────────
+    llvm::Value* llvmValue = nullptr;       // The generated LLVM value
 
     explicit ExprAST(ASTKind k) : BaseAST(k) {}
     bool hasType() const { return resolvedType != nullptr; }

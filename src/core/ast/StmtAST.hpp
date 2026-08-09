@@ -93,16 +93,48 @@ struct DeclStmtAST : StmtAST {
     bool isUseDecl() const { return decl && decl->isa<ImportDeclAST>(); }
 };
 
-/// @brief A statement that references another function.
-/// Used for function declarations that delegate to another function.
-/// Examples:
+/// @brief A statement that references another *named, non-capturing* function.
+/// Used for function declarations that delegate directly to a plain function
+/// pointer — never a closure.
+/// 
+/// @example
 ///   const add (a int)(b int) -> int = math:add
 ///   const process = module:process
+/// 
+/// ─── Valid Targets (enforced by the parser, not just Sema) ─────────────────
+/// `target` must be an `IdentifierExprAST` or `ModuleAccessExprAST` that
+/// resolves to a named `FuncDeclAST`. Per **Function Values and Closures**
+/// in the grammar, a named function is always a plain function pointer with
+/// no captured state — which is exactly what `resolvedFunction` below is
+/// able to hold.
+/// 
+/// `FieldAccessExprAST` (e.g. `c.getter`) and `CallExprAST` (e.g.
+/// `getHandler("double")`) must **not** be routed through this node, even
+/// though both are valid `func_body` expressions and both may legally
+/// produce a function value. Either can evaluate to a genuine closure — a
+/// `{ func, env }` pair — and `resolvedFunction` is a bare `llvm::Function*`
+/// with no field to hold an environment pointer. The parser must wrap those
+/// two cases in `ReturnStmtAST` instead, whose value flows through ordinary
+/// `ExprAST` codegen (`llvmValue` is a generic `llvm::Value*`, capable of
+/// holding a full closure aggregate or a pointer to one).
+/// 
+/// ─── Semantic Analysis Notes ──────────────────────────────────────────────
+/// 1. This is used when a function declaration has an expression body that
+///    is a pure function reference (IdentifierExprAST or ModuleAccessExprAST
+///    only — see above).
+/// 2. The semantic pass validates that the target resolves to a FuncDeclAST
+///    and that the types match.
 struct FuncRefStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::FuncRefStmt;
     
-    ExprPtr target;  // The function reference (Identifier, FieldAccess, ModuleAccess)
+    // ─── Parser Fields ──────────────────────────────────────────────────
+    ExprPtr target;  // IdentifierExprAST or ModuleAccessExprAST only — see above
     
+    // ─── CodeGen Annotations ────────────────────────────────────────────
+    llvm::Function* resolvedFunction = nullptr;  // The resolved LLVM function —
+                                                  // always a plain function pointer,
+                                                  // never a closure with an environment
+
     FuncRefStmtAST() : StmtAST(ASTKind::FuncRefStmt) {}
 };
 
@@ -378,19 +410,38 @@ struct ContinueStmtAST : StmtAST {
 ///   concurrent operations with additional `async` statements, then wait
 ///   on all of them together with a single `await` (see AwaitStmtAST)
 /// 
-/// ─── Semantic Analysis Notes ──────────────────────────────────────────────
-/// 1. **Future Type**: The variable's type becomes `Future<T>` after async assignment.
-/// 2. **Cannot Use**: A `Future<T>` cannot be used as `T` – it must be awaited first.
-/// 3. **Await Required**: The compiler warns about unawaited async operations
-///    when the scope exits.
+/// ─── `binding` Is Always a Fresh Local, Never an Existing Lvalue ──────────
+/// `async result = ...` *introduces* `result` — it does not assign into a
+/// pre-existing variable, the same way `let`/`const` introduce a name
+/// rather than reassign one. `binding` is therefore a synthesized
+/// `VarDeclAST*`, not a general `ExprPtr` lvalue. This is not just a
+/// convenience: `Future<T>` (see `FutureTypeAST`) is a linear, non-copyable
+/// type restricted to local variables and parameters, so there is no valid
+/// existing storage location for this statement to assign into even in
+/// principle — every use of a future has to originate from a fresh
+/// binding declared right here.
 /// 
-/// @field target         The variable being assigned to.
-/// @field call           The async call expression.
+/// ─── Semantic Analysis Notes ──────────────────────────────────────────────
+/// 1. **Future Type**: `binding`'s resolved type becomes `FutureTypeAST(T)`
+///    after this statement, where `T` is `call`'s return type.
+/// 2. **Cannot Use**: A `Future<T>` cannot be used as `T` until narrowed by
+///    `await` — enforced via the same flow-sensitive narrowing as `T?`/`T!`
+///    (`ExprAST::valueState`), not a separate lookup mechanism.
+/// 3. **Await Required On Every Path**: A live, un-awaited `Future<T>`
+///    reaching scope exit — including via `return`, `break`, or any branch
+///    of an `if`/`switch` — is a **compile error**, not a warning. See the
+///    Linear Value Rules on `FutureTypeAST` for the full rule set (also:
+///    not copyable, never captured by a closure).
+/// 
+/// @field binding        The freshly introduced local (always `Future<T>`
+///                        immediately after this statement).
+/// @field call            The async call expression.
 struct AsyncStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::AsyncExpr;
 
-    ExprPtr target;   // variable to bind (must be an lvalue)
-    ExprPtr call;                // the async call
+    VarDeclAST* binding = nullptr;   // fresh local introduced by this statement — never
+                                      // a reference to a pre-existing variable
+    ExprPtr call;                    // the async call
 
     AsyncStmtAST() : StmtAST(ASTKind::AsyncExpr) {}
 };
@@ -407,18 +458,25 @@ struct AsyncStmtAST : StmtAST {
 /// - Only valid inside a function body (not at top level)
 /// 
 /// ─── Semantic Analysis Notes ──────────────────────────────────────────────
-/// 1. **Future to T**: After `await`, each variable's type changes from
-///    `Future<T>` to `T`.
-/// 2. **Cannot Await Twice**: Awaited variables are plain `T` – awaiting again
-///    is a compile error.
+/// 1. **Narrowing, Not Reassignment**: Each entry in `targets` is an
+///    `IdentifierExprAST` resolving back to the `VarDeclAST` a prior
+///    `AsyncStmtAST::binding` introduced. `await` narrows that binding's
+///    type from `FutureTypeAST(T)` to plain `T` for the rest of the
+///    enclosing scope — the same flow-sensitive mechanism that narrows
+///    `T?` after a nil-check, not a distinct runtime state transition.
+/// 2. **Cannot Await Twice**: Once narrowed to `T`, the type checker
+///    rejects a second `await` on the same binding the same way it rejects
+///    any other use of a plain `T` value as if it were still `Future<T>` —
+///    there is nothing `Future`-specific to enforce here beyond ordinary
+///    type checking once narrowing has already happened.
 /// 3. **Multiple Variables**: Waits for all named variables to be ready.
 /// 4. **Scope**: Only valid inside a function body (not at top level).
 /// 
-/// @field targets        The variables to await (must be `Future<T>`).
+/// @field targets        The variables to await (must currently be `Future<T>`).
 struct AwaitStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::AwaitExpr;
 
-    ArenaSpan<ExprPtr> targets;   // variables to await (must be Future<T>)
+    ArenaSpan<ExprPtr> targets;   // identifiers resolving back to a prior AsyncStmtAST::binding
 
     AwaitStmtAST() : StmtAST(ASTKind::AwaitExpr) {}
 };
@@ -439,25 +497,40 @@ struct AwaitStmtAST : StmtAST {
 ///   single `join` (see JoinStmtAST)
 /// 
 /// ─── The Discard Pattern (`_`) ──────────────────────────────────────────────
-/// - `spawn _ = fn()` = fire and forget (no join required)
+/// - `spawn _ = fn()` = fire and forget (`binding == nullptr`, no join required)
 /// - `spawn x = fn()` = fire and join later (join required)
 /// 
+/// ─── `binding` Is Always a Fresh Local, Never an Existing Lvalue ──────────
+/// Same reasoning as `AsyncStmtAST::binding` — `spawn result = ...`
+/// introduces `result`, it does not assign into a pre-existing variable.
+/// `Thread<T>` (see `ThreadTypeAST`) is linear and non-copyable, so there is
+/// no valid pre-existing storage location to assign into in the first
+/// place.
+/// 
 /// ─── Semantic Analysis Notes ──────────────────────────────────────────────
-/// 1. **Future Type**: The variable's type becomes `Future<T>` after spawn assignment.
-/// 2. **Cannot Use**: A `Future<T>` cannot be used as `T` – it must be joined first.
-/// 3. **Discard Pattern**: `_` means the result is discarded – no join required.
-/// 4. **Join Warning**: The compiler warns about named spawns that are never joined.
+/// 1. **Future Type**: `binding`'s resolved type becomes `ThreadTypeAST(T)`
+///    after this statement (when `binding` is non-null).
+/// 2. **Cannot Use**: A `Thread<T>` cannot be used as `T` until narrowed by
+///    `join` — same flow-sensitive narrowing as `FutureTypeAST`.
+/// 3. **Discard Pattern**: `binding == nullptr` means the result is
+///    discarded (`_`) – no `ThreadTypeAST`, no join required, none of the
+///    linear-value rules apply since there is no binding to apply them to.
+/// 4. **Join Required On Every Path**: A live, un-joined `Thread<T>`
+///    reaching scope exit is a **compile error**, not a warning — same as
+///    `Future<T>`.
 /// 5. **Shared State**: Variables declared before the spawn call are shared
 ///    between threads (requires synchronization).
 /// 6. **Nesting**: A spawned thread can itself launch further spawn or async calls.
 /// 
-/// @field target          The variable being assigned to (`nullptr` means discard, `_`).
-/// @field call            The spawn call expression.
+/// @field binding          The freshly introduced local, or `nullptr` for
+///                          the `_` discard pattern.
+/// @field call             The spawn call expression.
 struct SpawnStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::SpawnExpr;
 
-    ExprPtr target;   // variable to bind (nullptr for '_' discard)
-    ExprPtr call;                // the spawn call
+    VarDeclAST* binding = nullptr;   // fresh local introduced by this statement, or
+                                      // nullptr for the `_` discard pattern
+    ExprPtr call;                    // the spawn call
 
     SpawnStmtAST() : StmtAST(ASTKind::SpawnExpr) {}
 };
@@ -470,23 +543,28 @@ struct SpawnStmtAST : StmtAST {
 /// 
 /// ─── Key Characteristics ──────────────────────────────────────────────────
 /// - Blocks the current thread until all joined operations complete
-/// - After `join`, the variables become plain `T` (no longer `Future<T>`)
+/// - After `join`, the variables become plain `T` (no longer `Thread<T>`)
 /// - Only valid for `spawn` operations (not `async`)
 /// 
 /// ─── Semantic Analysis Notes ──────────────────────────────────────────────
-/// 1. **Future to T**: After `join`, each variable's type changes from
-///    `Future<T>` to `T`.
-/// 2. **Cannot Join Twice**: Joined variables are plain `T` – joining again
-///    is a compile error.
+/// 1. **Narrowing, Not Reassignment**: Each entry in `targets` is an
+///    `IdentifierExprAST` resolving back to the `VarDeclAST` a prior
+///    `SpawnStmtAST::binding` introduced. `join` narrows that binding's
+///    type from `ThreadTypeAST(T)` to plain `T`, same mechanism as
+///    `AwaitStmtAST`.
+/// 2. **Cannot Join Twice**: Once narrowed to `T`, a second `join` on the
+///    same binding is rejected by ordinary type checking, same as
+///    `AwaitStmtAST`.
 /// 3. **Multiple Variables**: Waits for all named variables to be ready.
 /// 4. **Spawn Only**: `join` only works for `spawn` operations (not `async`).
-/// 5. **Discard Pattern**: `_` results are never joined – they are fire-and-forget.
+/// 5. **Discard Pattern**: `_` results are never joined – they are fire-and-forget,
+///    and never produce a `ThreadTypeAST` binding to join in the first place.
 /// 
-/// @field targets        The variables to join (must be `Future<T>` from spawn).
+/// @field targets        The variables to join (must currently be `Thread<T>`).
 struct JoinStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::JoinExpr;
 
-    ArenaSpan<ExprPtr> targets;   // variables to join (must be Future<T> from spawn)
+    ArenaSpan<ExprPtr> targets;   // identifiers resolving back to a prior SpawnStmtAST::binding
 
     JoinStmtAST() : StmtAST(ASTKind::JoinExpr) {}
 };

@@ -593,6 +593,10 @@ struct ComposeExprAST : ExprAST {
 // FUNCTION NODES
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+// AnonFuncExprAST — Anonymous function expression (closure)
+// ─────────────────────────────────────────────────────────────────────────────
+
 /// @brief An anonymous function expression – a function value without a name.
 /// 
 /// @example
@@ -602,18 +606,88 @@ struct ComposeExprAST : ExprAST {
 /// The parser desugars Form 2 `()()` shorthand into nested Form 1 functions
 /// before building the AST. The `funcType` captures the full curried structure.
 /// 
-/// ─── Semantic Analysis Notes ──────────────────────────────────────────────
-/// 1. **Form 1**: Explicit intermediate `->` return – code runs between groups.
-/// 2. **Form 2**: `()()` shorthand – compiler expands to nested Form 1 functions.
-/// 3. **Type**: The anonymous function's type is captured in `funcType`.
+/// ─── Closure Semantics ──────────────────────────────────────────────────────
+/// An anonymous function that captures variables from its enclosing scope
+/// becomes a closure. The capture analysis is performed in Sema and stored
+/// in the `captures` field. CodeGen uses this information to:
+///   1. Create the closure environment (heap-allocated)
+///   2. Store captured variables in the environment
+///   3. Generate the closure function with environment pointer
+/// 
+/// ─── Capture Rules ──────────────────────────────────────────────────────────
+/// 1. Variables captured mutably (`byReference = true`) → share one heap slot;
+///    mutations inside the closure are visible everywhere else that slot is
+///    referenced, including the enclosing function's own remaining code.
+/// 2. Variables captured read-only (`byReference = false`) → may be snapshot-
+///    copied into the environment at construction time instead of sharing a
+///    slot, since nothing can ever observe a difference for a capture no one
+///    writes to. (Optimization — confirm this is implemented before relying
+///    on it; if not yet implemented, `byReference` should currently always
+///    read `true`.)
+/// 3. Borrowed types (&T, [_]T) → NOT allowed to be captured (Downward Flow Rule) —
+///    forbidden because a closure might OUTLIVE what these borrow from.
+/// 3b. Linear types (Future<T>, Thread<T>) → NOT allowed to be captured either,
+///    but for a DIFFERENT reason: forbidden because a closure might RUN MORE
+///    THAN ONCE, and a linear value can only be consumed (`await`/`join`)
+///    once. This applies even when the linear value arrived as the
+///    enclosing function's own parameter, not just a direct outer-scope
+///    capture — see FutureTypeAST's Linear Value Rules for the full
+///    reasoning. Do not conflate this with rule 3 when diagnosing a
+///    rejection; the two rules protect different invariants and happen to
+///    produce the same "cannot capture" outcome.
+/// 4. Module members → NOT captured (they're global, program-lifetime)
+/// 5. This closure's OWN parameter list → NOT a capture (freshly bound on
+///    each call, not pulled from an enclosing scope). This is unrelated to
+///    whether an *enclosing function's* parameter can be captured — it can,
+///    through the exact same `CapturedVariable` mechanism as any other outer
+///    local (e.g. `n` in `f (n int) -> () -> int { return () -> int { return
+///    x += n } }` is a captured parameter of the enclosing `f`, not of the
+///    closure itself).
 /// 
 /// @field funcType       The anonymous function type (may be curried).
 /// @field body           Function body (always BlockStmtAST).
+/// @field captures       Variables captured by this closure (set by Sema).
+/// @field hasClosure     True if this closure needs heap allocation (set by
+///                       Sema). Currently equivalent to `!captures.empty()`
+///                       — reserved as a distinct bit for a future
+///                       non-escaping-closure optimization, where a closure
+///                       could have non-empty `captures` yet still be
+///                       provably non-escaping and kept on the arena. If
+///                       that optimization isn't implemented yet, treat this
+///                       as redundant with `!captures.empty()`, not as an
+///                       independent signal.
+/// @field isReturned     True if this closure is directly returned via a
+///                       `return` statement (set by Sema). This tracks only
+///                       one escape route — a closure can equally escape by
+///                       assignment to an outer `let`/`const`, storage in a
+///                       struct/array field, etc., none of which set this
+///                       flag. Treat as diagnostic/naming metadata (e.g. for
+///                       codegen naming, alongside `closureDepth` on
+///                       `FuncDeclAST`), not as the authoritative signal for
+///                       whether heap allocation is required — `hasClosure`
+///                       is that signal.
+/// @field closureFunction The generated LLVM function (set by CodeGen).
+/// @field environmentType The LLVM struct type for the environment (set by CodeGen).
 struct AnonFuncExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::AnonFuncExpr;
 
+    // ─── Parser Fields ──────────────────────────────────────────────────
     FuncTypeAST* funcType = nullptr;   // the anonymous function type
     StmtPtr body = nullptr;           // always BlockStmtAST
+
+    // ─── Semantic Annotations (set by Sema) ────────────────────────────
+    ArenaSpan<CapturedVariable> captures;     // Variables captured by this closure —
+                                               // arena-backed, matching every other
+                                               // collection field on arena-allocated
+                                               // nodes; not std::vector, which would
+                                               // own a separate heap buffer that the
+                                               // arena's bulk teardown does not free.
+    bool hasClosure = false;                  // True if heap allocation is needed
+    bool isReturned = false;                  // True if returned from a function
+    
+    // ─── CodeGen Annotations (set by CodeGen) ──────────────────────────
+    llvm::Function* closureFunction = nullptr;   // The generated LLVM function
+    llvm::StructType* environmentType = nullptr; // The LLVM environment struct type
 
     bool hasParams() const { return funcType && !funcType->params.empty(); }
 

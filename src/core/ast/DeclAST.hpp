@@ -43,7 +43,17 @@
 
 #include <memory>
 #include <optional>
-#include <unordered_map>
+
+// ─── LLVM Headers ──────────────────────────────────────────────────────────
+// These are needed for CodeGen annotation fields. Parser and Sema don't use
+// these fields, but including the headers is fine because they're already
+// included indirectly via ExprAST.hpp -> llvm/IR/Intrinsics.h.
+#include <llvm/IR/Value.h>
+#include <llvm/IR/Function.h>
+#include <llvm/IR/Instructions.h>
+#include <llvm/IR/GlobalVariable.h>
+#include <llvm/IR/Constants.h>
+#include <llvm/IR/DerivedTypes.h>
 
 /// @brief Distinguishes between mutable and immutable declarations.
 /// 
@@ -72,6 +82,7 @@ enum class DeclKeyword {
 struct ImportDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::ImportDecl;
 
+    // ─── Parser Fields ──────────────────────────────────────────────────
     InternedString path;
     InternedString alias;
 
@@ -94,9 +105,14 @@ using ImportDeclPtr = ImportDeclAST*;
 struct VarDeclAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::VarDecl;
 
+    // ─── Parser Fields ──────────────────────────────────────────────────
     DeclKeyword keyword;
     TypePtr type;
     ExprPtr init;
+    
+    // ─── CodeGen Annotations ────────────────────────────────────────────
+    llvm::AllocaInst* llvmAlloca = nullptr;      // Local variable: the generated alloca
+    llvm::GlobalVariable* llvmGlobal = nullptr;  // Module-level variable: the global
 
     VarDeclAST() : ValueDeclAST(ASTKind::VarDecl) {}
 };
@@ -120,9 +136,14 @@ using VarDeclPtr = VarDeclAST*;
 struct ParamAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::Param;
 
+    // ─── Parser Fields ──────────────────────────────────────────────────
     TypePtr type;
     bool isVariadic = false;
     bool isConst = false;    // read-only reference parameter
+    
+    // ─── CodeGen Annotations ────────────────────────────────────────────
+    llvm::Value* llvmValue = nullptr;          // The LLVM argument value
+    llvm::AllocaInst* llvmAlloca = nullptr;    // The alloca for the param (if stored)
 
     ParamAST() : ValueDeclAST(ASTKind::Param) {}
 };
@@ -140,7 +161,6 @@ using ParamGroup = std::vector<ParamPtr>;
 /// @field genericParams        Generic type parameters (empty if none)
 /// @field funcType             Full function type (includes parameter groups and return types)
 /// @field body                 Function body (always BlockStmtAST, expression bodies desugared)
-/// @field resolvedReturnType   Cached first return type (set during type resolution)
 /// 
 /// @note Visibility is only meaningful at top‑level; inside blocks, declarations
 ///       are always private. Attributes (e.g., @[export], @[inline]) are stored
@@ -148,10 +168,24 @@ using ParamGroup = std::vector<ParamPtr>;
 struct FuncDeclAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::FuncDecl;
 
+    // ─── Parser Fields ──────────────────────────────────────────────────
     DeclKeyword keyword;
     ArenaSpan<GenericParamDeclPtr> genericParams;
     FuncTypeAST* funcType = nullptr;   // full function type
     StmtPtr body = nullptr;            // BlockStmtAST or ReturnStmtAST (expression body)
+    
+    // ─── CodeGen Annotations ────────────────────────────────────────────
+    llvm::Function* llvmFunction = nullptr;   // The generated LLVM function
+    bool isForeignFunction = false;           // True if @[foreign] attribute is present
+    InternedString mangledName;               // Mangled name for AOT compilation —
+                                               // InternedString, not std::string; this
+                                               // node is arena-allocated and freed in
+                                               // bulk, and std::string owns a separate
+                                               // heap buffer the arena's teardown does
+                                               // not free. Matches the pattern already
+                                               // used for `name`/`packageName`/`filePath`
+                                               // elsewhere in this AST.
+    size_t closureDepth = 0;                  // Depth of nesting for closure naming
 
     FuncDeclAST() : ValueDeclAST(ASTKind::FuncDecl) {}
 };
@@ -174,7 +208,11 @@ using FuncDeclPtr = FuncDeclAST*;
 struct EnumVariantAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::EnumVariant;
 
+    // ─── Parser Fields ──────────────────────────────────────────────────
     int64_t value;    // explicit value (required by grammar)
+    
+    // ─── CodeGen Annotations ────────────────────────────────────────────
+    llvm::ConstantInt* llvmValue = nullptr;   // LLVM constant for this variant
 
     explicit EnumVariantAST(InternedString n, int64_t v)
         : ValueDeclAST(ASTKind::EnumVariant), value(v) {
@@ -182,7 +220,6 @@ struct EnumVariantAST : ValueDeclAST {
     }
 };
 using EnumVariantPtr = EnumVariantAST*;
-
 
 /// @brief Represents a struct field, optionally with a default value and const-ness.
 /// 
@@ -201,10 +238,14 @@ using EnumVariantPtr = EnumVariantAST*;
 struct FieldDeclAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::FieldDecl;
 
+    // ─── Parser Fields ──────────────────────────────────────────────────
     TypePtr type;          // Original type annotation
     ExprPtr defaultVal;    // nullptr if no default (EXPRESSION form)
     StmtPtr defaultBody;   // nullptr if no default (BLOCK form - similar to FuncDeclAST::body)
     bool isConst = false;  // true if field is marked `const`
+    
+    // ─── CodeGen Annotations ────────────────────────────────────────────
+    size_t fieldIndex = 0;                 // Index in the struct (set by CodeGen)
 
     FieldDeclAST() : ValueDeclAST(ASTKind::FieldDecl) {}
 };
@@ -235,16 +276,40 @@ using FieldDeclPtr = FieldDeclAST*;
 ///    implementing struct. Type mismatch is a compile error.
 /// 4. **Const Conflict Resolution**: If a struct implements multiple traits,
 ///    if there are fields that have the same name then it is an compile error
-/// 5 **Generic Parameters**: All generic parameters must be used in at least
+/// 5. **Generic Parameters**: All generic parameters must be used in at least
 ///    one field type. Unused parameters are a compile error.
 /// 6. **No Reference Fields**: Fields cannot have reference type (`&T`).
 ///    This is enforced by the type system.
 struct StructDeclAST : TypeDeclAST {
     static constexpr ASTKind staticKind = ASTKind::StructDecl;
 
+    // ─── Parser Fields ──────────────────────────────────────────────────
     ArenaSpan<GenericParamDeclPtr> genericParams;
     ArenaSpan<FieldDeclPtr> fields;
     ArenaSpan<NamedTypeAST*> traitRefs;   // traits this struct implements
+    
+    // ─── CodeGen Annotations ────────────────────────────────────────────
+    llvm::StructType* llvmType = nullptr;   // The generated LLVM struct type
+
+    /// Field name → index, set by CodeGen. ArenaSpan instead of
+    /// std::unordered_map — this node is arena-allocated and freed in bulk;
+    /// unordered_map owns separate heap buckets the arena's teardown does
+    /// not free. Struct field counts are small, so a linear scan via
+    /// `indexOfField` is not a meaningful cost next to the leak it avoids.
+    struct FieldIndexEntry {
+        InternedString name;
+        size_t index = 0;
+    };
+    ArenaSpan<FieldIndexEntry> fieldIndices;
+
+    /// Linear-scan replacement for `fieldIndices[name]`. Returns
+    /// `SIZE_MAX` if `name` is not a field of this struct.
+    size_t indexOfField(InternedString name) const {
+        for (const auto& entry : fieldIndices) {
+            if (entry.name == name) return entry.index;
+        }
+        return SIZE_MAX;
+    }
 
     StructDeclAST() : TypeDeclAST(ASTKind::StructDecl) {}
 };
@@ -265,8 +330,31 @@ using StructDeclPtr = StructDeclAST*;
 struct EnumDeclAST : TypeDeclAST {
     static constexpr ASTKind staticKind = ASTKind::EnumDecl;
 
+    // ─── Parser Fields ──────────────────────────────────────────────────
     ArenaSpan<EnumVariantPtr> variants;
     PrimitiveTypeAST* backingType = nullptr;   // optional backing type (defaults to int32)
+    
+    // ─── CodeGen Annotations ────────────────────────────────────────────
+
+    /// Variant name → LLVM constant, set by CodeGen. ArenaSpan instead of
+    /// std::unordered_map — same reasoning as StructDeclAST::fieldIndices,
+    /// above: this node is arena-allocated and freed in bulk, and enum
+    /// variant counts are small enough that a linear scan costs nothing
+    /// next to the leak an unordered_map's own heap buckets would be.
+    struct VariantConstantEntry {
+        InternedString name;
+        llvm::ConstantInt* value = nullptr;
+    };
+    ArenaSpan<VariantConstantEntry> variantConstants;
+
+    /// Linear-scan replacement for `variantConstants[name]`. Returns
+    /// nullptr if `name` is not a variant of this enum.
+    llvm::ConstantInt* constantForVariant(InternedString name) const {
+        for (const auto& entry : variantConstants) {
+            if (entry.name == name) return entry.value;
+        }
+        return nullptr;
+    }
 
     EnumDeclAST() : TypeDeclAST(ASTKind::EnumDecl) {}
 };
@@ -312,6 +400,7 @@ using EnumDeclPtr = EnumDeclAST*;
 struct TraitFieldDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::TraitFieldDecl;
 
+    // ─── Parser Fields ──────────────────────────────────────────────────
     InternedString name;
     TypePtr type;          // required field type (nullable/fallible allowed unless const)
     bool isConst = false;  // true if implementing struct must declare as const
@@ -353,6 +442,7 @@ using TraitFieldPtr = TraitFieldDeclAST*;
 struct TraitDeclAST : TypeDeclAST {
     static constexpr ASTKind staticKind = ASTKind::TraitDecl;
 
+    // ─── Parser Fields ──────────────────────────────────────────────────
     ArenaSpan<GenericParamDeclPtr> genericParams;
     ArenaSpan<TraitFieldPtr> fields;
 
