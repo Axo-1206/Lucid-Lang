@@ -76,24 +76,22 @@ ImportDeclAST* parseImportDecl(TokenStream& stream, ParserContext& ctx) {
         aliasStr = std::string(ctx.pool.lookup(alias));
     }
     
-    // 4. Create the ImportDeclAST
-    auto* useDecl = ctx.arena.make<ImportDeclAST>();
-    useDecl->loc = loc;
-    useDecl->path = usePath;
-    useDecl->alias = alias;
+    // 4. Create the ImportDeclAST (using constructor)
+    auto* importDecl = ctx.arena.make<ImportDeclAST>(usePath, alias);
+    importDecl->loc = loc;
     
     // 5. Import the module
     if (!ctx.resolver) {
         ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedModule, loc,
                                 "no module resolver available for '", fullPath, "'");
-        return useDecl;
+        return importDecl;
     }
 
     InternedString filePath = ctx.resolver->resolveUsePath(usePath);
     if (!filePath.isValid()) {
         ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedModule, loc,
                                 "module '", fullPath, "' not found");
-        return useDecl;
+        return importDecl;
     }
 
     std::string pathStr = std::string(ctx.pool.lookup(filePath));
@@ -102,7 +100,7 @@ ImportDeclAST* parseImportDecl(TokenStream& stream, ParserContext& ctx) {
         ctx.diagnostics.errorAt(DiagCode::Sem_ModuleCycle, loc,
                                 "circular module dependency detected: '", fullPath, "'");
         parse(pathStr, "", ctx);
-        return useDecl;
+        return importDecl;
     }
 
     if (!ctx.resolver->getParsedModule(filePath)) {
@@ -111,7 +109,7 @@ ImportDeclAST* parseImportDecl(TokenStream& stream, ParserContext& ctx) {
     }
     
     LOG_PARSER_MINIMAL("Parsed import: '", fullPath, "' as '", aliasStr, "'");
-    return useDecl;
+    return importDecl;
 }
 
 // =============================================================================
@@ -129,6 +127,7 @@ VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
         synchronizeToContext(stream, ctx);
         return nullptr;
     }
+    DeclKeyword keyword = isConst ? DeclKeyword::Const : DeclKeyword::Let;
     
     // Parse name
     if (!stream.check(TokenType::IDENTIFIER)) {
@@ -166,13 +165,9 @@ VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
         return nullptr;
     }
     
-    auto* varDecl = ctx.arena.make<VarDeclAST>();
+    // Create VarDeclAST using constructor (all parser fields immutable)
+    auto* varDecl = ctx.arena.make<VarDeclAST>(name, keyword, type, init);
     varDecl->loc = loc;
-    varDecl->name = name;
-    varDecl->keyword = isConst ? DeclKeyword::Const : DeclKeyword::Let;
-    varDecl->type = type;
-    varDecl->init = init;
-    varDecl->isConst = isConst;
     
     LOG_PARSER_DETAIL("Parsed variable: ", ctx.pool.lookup(name));
     return varDecl;
@@ -205,6 +200,7 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
         synchronizeToContext(stream, ctx);
         return nullptr;
     }
+    DeclKeyword keyword = isConst ? DeclKeyword::Const : DeclKeyword::Let;
     
     // ─── 2. Parse function name ─────────────────────────────────────────────
     if (!stream.check(TokenType::IDENTIFIER)) {
@@ -354,16 +350,10 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
         }
     }
     
-    // ─── Build AST ──────────────────────────────────────────────────────────
-    auto* funcDecl = ctx.arena.make<FuncDeclAST>();
+    // ─── Build AST using constructor ──────────────────────────────────────
+    auto* funcDecl = ctx.arena.make<FuncDeclAST>(name, keyword, genericParams, funcType, body);
     funcDecl->loc = loc;
-    funcDecl->name = name;
-    funcDecl->keyword = isConst ? DeclKeyword::Const : DeclKeyword::Let;
-    funcDecl->genericParams = genericParams;
-    funcDecl->funcType = funcType;
-    funcDecl->body = body;
-    funcDecl->isConst = isConst;
-    funcDecl->type = funcType;
+    funcDecl->type = funcType;  // Cached type for ValueDeclAST
     
     LOG_PARSER_DETAIL("Parsed function: ", ctx.pool.lookup(name));
     return funcDecl;
@@ -440,17 +430,20 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
     if (stream.check(TokenType::RBRACE)) {
         stream.consume();
         
-        auto* structDecl = ctx.arena.make<StructDeclAST>();
-        structDecl->loc = loc;
-        structDecl->name = name;
-        structDecl->genericParams = genericParams;
-        structDecl->fields = ctx.arena.makeBuilder<FieldDeclPtr>().build();
-        
+        // Build trait refs span
         auto traitBuilder = ctx.arena.makeBuilder<NamedTypeAST*>();
         for (auto* tr : traitRefs) {
             traitBuilder.push_back(tr);
         }
-        structDecl->traitRefs = traitBuilder.build();
+        
+        // Create StructDeclAST using constructor
+        auto* structDecl = ctx.arena.make<StructDeclAST>(
+            name,
+            genericParams,
+            ctx.arena.makeBuilder<FieldDeclPtr>().build(),
+            traitBuilder.build()
+        );
+        structDecl->loc = loc;
         
         LOG_PARSER_DETAIL("Parsed empty struct: ", ctx.pool.lookup(name));
         return structDecl;
@@ -482,22 +475,26 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
         stream.consume(); // Consume '}'
     }
     
-    auto* structDecl = ctx.arena.make<StructDeclAST>();
-    structDecl->loc = loc;
-    structDecl->name = name;
-    structDecl->genericParams = genericParams;
-    
+    // Build field span
     auto fieldBuilder = ctx.arena.makeBuilder<FieldDeclPtr>();
     for (auto* f : fields) {
         fieldBuilder.push_back(f);
     }
-    structDecl->fields = fieldBuilder.build();
     
+    // Build trait refs span
     auto traitBuilder = ctx.arena.makeBuilder<NamedTypeAST*>();
     for (auto* tr : traitRefs) {
         traitBuilder.push_back(tr);
     }
-    structDecl->traitRefs = traitBuilder.build();
+    
+    // Create StructDeclAST using constructor
+    auto* structDecl = ctx.arena.make<StructDeclAST>(
+        name,
+        genericParams,
+        fieldBuilder.build(),
+        traitBuilder.build()
+    );
+    structDecl->loc = loc;
     
     LOG_PARSER_DETAIL("Parsed struct: ", ctx.pool.lookup(name));
     return structDecl;
@@ -590,14 +587,9 @@ FieldDeclPtr parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
         }
     }
     
-    // ─── 6. Build AST ──────────────────────────────────────────────────────
-    auto* fieldDecl = ctx.arena.make<FieldDeclAST>();
+    // ─── 6. Build AST using constructor ──────────────────────────────────
+    auto* fieldDecl = ctx.arena.make<FieldDeclAST>(name, type, defaultVal, defaultBody, isConst);
     fieldDecl->loc = loc;
-    fieldDecl->name = name;
-    fieldDecl->type = type;
-    fieldDecl->defaultVal = defaultVal;
-    fieldDecl->defaultBody = defaultBody;
-    fieldDecl->isConst = isConst;
     fieldDecl->attributes = attrs;
     
     if (doc.has_value()) {
@@ -659,11 +651,14 @@ EnumDeclAST* parseEnumDecl(TokenStream& stream, ParserContext& ctx) {
     
     if (stream.check(TokenType::RBRACE)) {
         stream.consume();
-        auto* enumDecl = ctx.arena.make<EnumDeclAST>();
+        
+        // Create EnumDeclAST using constructor
+        auto* enumDecl = ctx.arena.make<EnumDeclAST>(
+            name,
+            ctx.arena.makeBuilder<EnumVariantPtr>().build(),
+            backingType
+        );
         enumDecl->loc = loc;
-        enumDecl->name = name;
-        enumDecl->backingType = backingType;
-        enumDecl->variants = ctx.arena.makeBuilder<EnumVariantPtr>().build();
         
         LOG_PARSER_DETAIL("Parsed empty enum: ", ctx.pool.lookup(name));
         return enumDecl;
@@ -695,16 +690,15 @@ EnumDeclAST* parseEnumDecl(TokenStream& stream, ParserContext& ctx) {
         stream.consume(); // Consume '}'
     }
     
-    auto* enumDecl = ctx.arena.make<EnumDeclAST>();
-    enumDecl->loc = loc;
-    enumDecl->name = name;
-    enumDecl->backingType = backingType;
-    
+    // Build variant span
     auto builder = ctx.arena.makeBuilder<EnumVariantPtr>();
     for (auto* v : variants) {
         builder.push_back(v);
     }
-    enumDecl->variants = builder.build();
+    
+    // Create EnumDeclAST using constructor
+    auto* enumDecl = ctx.arena.make<EnumDeclAST>(name, builder.build(), backingType);
+    enumDecl->loc = loc;
     
     LOG_PARSER_DETAIL("Parsed enum: ", ctx.pool.lookup(name));
     return enumDecl;
@@ -748,6 +742,7 @@ EnumVariantPtr parseEnumVariant(TokenStream& stream, ParserContext& ctx) {
     Token valueTok = stream.consume();
     int64_t value = std::stoll(valueTok.value);
     
+    // Create EnumVariantAST using constructor
     auto* variant = ctx.arena.make<EnumVariantAST>(name, value);
     variant->loc = loc;
     variant->attributes = attrs;
@@ -802,11 +797,14 @@ TraitDeclAST* parseTraitDecl(TokenStream& stream, ParserContext& ctx) {
     
     if (stream.check(TokenType::RBRACE)) {
         stream.consume();
-        auto* traitDecl = ctx.arena.make<TraitDeclAST>();
+        
+        // Create TraitDeclAST using constructor
+        auto* traitDecl = ctx.arena.make<TraitDeclAST>(
+            name,
+            genericParams,
+            ctx.arena.makeBuilder<TraitFieldPtr>().build()
+        );
         traitDecl->loc = loc;
-        traitDecl->name = name;
-        traitDecl->genericParams = genericParams;
-        traitDecl->fields = ctx.arena.makeBuilder<TraitFieldPtr>().build();
         
         LOG_PARSER_DETAIL("Parsed empty trait: ", ctx.pool.lookup(name));
         return traitDecl;
@@ -846,16 +844,15 @@ TraitDeclAST* parseTraitDecl(TokenStream& stream, ParserContext& ctx) {
         stream.consume(); // Consume '}'
     }
     
-    auto* traitDecl = ctx.arena.make<TraitDeclAST>();
-    traitDecl->loc = loc;
-    traitDecl->name = name;
-    traitDecl->genericParams = genericParams;
-    
+    // Build field span
     auto builder = ctx.arena.makeBuilder<TraitFieldPtr>();
     for (auto* f : fields) {
         builder.push_back(f);
     }
-    traitDecl->fields = builder.build();
+    
+    // Create TraitDeclAST using constructor
+    auto* traitDecl = ctx.arena.make<TraitDeclAST>(name, genericParams, builder.build());
+    traitDecl->loc = loc;
     
     LOG_PARSER_DETAIL("Parsed trait: ", ctx.pool.lookup(name));
     return traitDecl;
@@ -889,11 +886,9 @@ TraitFieldPtr parseTraitField(TokenStream& stream, ParserContext& ctx) {
         return nullptr;
     }
     
-    auto* traitField = ctx.arena.make<TraitFieldDeclAST>();
+    // Create TraitFieldDeclAST using constructor
+    auto* traitField = ctx.arena.make<TraitFieldDeclAST>(name, type, isConst);
     traitField->loc = loc;
-    traitField->name = name;
-    traitField->type = type;
-    traitField->isConst = isConst;
     traitField->attributes = attrs;
     if (doc.has_value()) {
         traitField->doc = doc;
