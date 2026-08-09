@@ -1,7 +1,11 @@
-// CodeGenContext.hpp
+/// @file CodeGenContext.hpp
+/// @brief Simple context for code generation - monolithic design.
+
 #pragma once
 
 #include "core/ast/BaseAST.hpp"
+#include "core/memory/StringPool.hpp"
+#include "core/diagnostics/Diagnostic.hpp"
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Value.h>
@@ -63,23 +67,46 @@ struct CodeGenStack {
 };
 
 /// @brief Simple context for code generation.
+/// 
+/// This context is passed to all code generation functions. It holds:
+///   - Resources: StringPool, DiagnosticEngine, LLVM context
+///   - Type cache: Maps Lucid types to LLVM types
+///   - Value tracking: Maps declarations to LLVM values
+///   - Function tracking: Maps declarations to LLVM functions
+///   - Loop tracking: For break/continue
+///   - Current function: For return statements
 struct CodeGenContext {
+    // ─── Resources ──────────────────────────────────────────────────────
+    
+    StringPool& pool;
+    DiagnosticEngine& diagnostics;
     llvm::LLVMContext& llvmCtx;
+    
+    // ─── LLVM Module ────────────────────────────────────────────────────
+    
     llvm::Module* module = nullptr;
     llvm::IRBuilder<> builder;
     
-    // Type cache
+    // ─── Type Cache ────────────────────────────────────────────────────
+    
     std::unordered_map<const TypeAST*, llvm::Type*> typeCache;
     std::unordered_map<const StructDeclAST*, llvm::StructType*> structCache;
     
-    // Value tracking
+    // ─── Value Tracking ────────────────────────────────────────────────
+    
     CodeGenStack scope;
     
-    // Function tracking
+    // ─── Function Tracking ─────────────────────────────────────────────
+    
     std::unordered_map<const FuncDeclAST*, llvm::Function*> functions;
     std::unordered_map<InternedString, llvm::Function*> foreignFunctions;
     
-    // Loop tracking (for break/continue)
+    // ─── Runtime Function Tracking ────────────────────────────────────
+    
+    std::unordered_map<std::string, llvm::Function*> runtimeFunctions;
+    
+    // ─── Loop Tracking (for break/continue) ───────────────────────────
+    
     struct LoopInfo {
         llvm::BasicBlock* header = nullptr;
         llvm::BasicBlock* exit = nullptr;
@@ -87,19 +114,38 @@ struct CodeGenContext {
     };
     std::vector<LoopInfo> loops;
     
-    // Current function (for return)
+    // ─── Current Function (for return) ────────────────────────────────
+    
     llvm::Function* currentFunction = nullptr;
     llvm::BasicBlock* currentReturnBlock = nullptr;
     
-    CodeGenContext(llvm::LLVMContext& ctx) 
-        : llvmCtx(ctx), builder(ctx) {}
+    // ─── Constructor ────────────────────────────────────────────────────
     
-    // ─── Type Helpers ──────────────────────────────────────────────────
-    llvm::Type* getType(const TypeAST* type);
-    llvm::StructType* getStructType(const StructDeclAST* decl);
-    llvm::FunctionType* getFunctionType(const FuncTypeAST* funcType);
+    CodeGenContext(StringPool& p, DiagnosticEngine& d, llvm::LLVMContext& ctx)
+        : pool(p)
+        , diagnostics(d)
+        , llvmCtx(ctx)
+        , builder(ctx) {}
+    
+    CodeGenContext(const CodeGenContext&) = delete;
+    CodeGenContext& operator=(const CodeGenContext&) = delete;
+    
+    // ─── Runtime Function Helpers ─────────────────────────────────────
+    
+    llvm::Function* getRuntimeFunction(const std::string& name) {
+        auto it = runtimeFunctions.find(name);
+        if (it != runtimeFunctions.end()) {
+            return it->second;
+        }
+        return nullptr;
+    }
+    
+    void setRuntimeFunction(const std::string& name, llvm::Function* func) {
+        runtimeFunctions[name] = func;
+    }
     
     // ─── Scope Helpers ─────────────────────────────────────────────────
+    
     void pushScope() { scope.push(); }
     void popScope() { scope.pop(); }
     void insertValue(const ValueDeclAST* decl, llvm::Value* value) {
@@ -110,6 +156,7 @@ struct CodeGenContext {
     }
     
     // ─── Loop Helpers ─────────────────────────────────────────────────
+    
     void pushLoop(llvm::BasicBlock* header, llvm::BasicBlock* exit, 
                   llvm::BasicBlock* continueTarget = nullptr) {
         loops.push_back({header, exit, continueTarget});
@@ -118,11 +165,9 @@ struct CodeGenContext {
     LoopInfo* currentLoop() { return loops.empty() ? nullptr : &loops.back(); }
     
     // ─── Function Helpers ─────────────────────────────────────────────
+    
     void setCurrentFunction(llvm::Function* func) { currentFunction = func; }
     llvm::Function* getCurrentFunction() const { return currentFunction; }
-    
-    // ─── Builder Helpers ──────────────────────────────────────────────
-    llvm::IRBuilder<>& builder() { return builder; }
 };
 
 } // namespace codegen
