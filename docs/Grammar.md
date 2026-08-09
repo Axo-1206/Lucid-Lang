@@ -439,6 +439,7 @@ top_level_item  = { attribute_list } top_level_decl
 
 top_level_decl  = struct_decl
                 | enum_decl
+                | trait_decl
                 | func_decl
                 | var_decl
 ```
@@ -2283,21 +2284,23 @@ statement       = { attribute_list } decl_keyword decl_stmt ';'
                 | expr_stmt ';'
                 | struct_decl
                 | enum_decl
+                | trait_decl
 
 block           = '{' { statement } '}'
+```
 
 > [!NOTE]
-> `struct_decl` and `enum_decl` take no trailing `;` at statement position,
-> the same as at the top level (see **Top-Level Structure**) and for the
-> same reason — `{ fields }` / `{ variants }` is the declaration's own body,
-> not a value assigned to it.
+> `struct_decl`, `enum_decl`, and `trait_decl` take no trailing `;` at
+> statement position, the same as at the top level (see **Top-Level
+> Structure**) and for the same reason — `{ fields }` / `{ variants }` is
+> the declaration's own body, not a value assigned to it.
 
 ### Local Type Declarations
 
-A `struct` or `enum` may be declared inside a function body, not just at
-module scope. It follows ordinary block-scoping rules — visible from its
-declaration point to the end of the enclosing block, including to any
-nested closure literal declared after it in that block, and invisible
+A `struct`, `enum`, or `trait` may be declared inside a function body, not
+just at module scope. It follows ordinary block-scoping rules — visible
+from its declaration point to the end of the enclosing block, including to
+any nested closure literal declared after it in that block, and invisible
 outside the block entirely:
 
 ```lucid
@@ -2311,6 +2314,9 @@ const f<T> () -> () -> Direction {
     struct Foo<U> {
         a U;
     }
+    trait Named {
+        name string;
+    }
 
     return () -> Direction {
         let x Direction = Direction.North;    -- fine: closure is part of f's body
@@ -2323,23 +2329,28 @@ const f<T> () -> () -> Direction {
 **A local type has no runtime representation, so referencing one from a
 nested closure is never a capture.** Everything in **Function Values and
 Closures** about environments, retaining, and the Downward Flow Rule
-concerns *values* held in variables; a `struct`/`enum` declaration is a
-compile-time-only symbol, fully resolved and erased before `IRLowering`
-runs. `Direction.North` above lowers to the bare integer `0`, identically to
-writing `let x int = 0;` directly — there is no environment slot for
-`Direction` itself, and capturing a *value* of a local type (an
+concerns *values* held in variables; a `struct`/`enum`/`trait` declaration
+is a compile-time-only symbol, fully resolved and erased before
+`IRLowering` runs. `Direction.North` above lowers to the bare integer `0`,
+identically to writing `let x int = 0;` directly — there is no environment
+slot for `Direction` itself, and capturing a *value* of a local type (an
 already-constructed `Foo<T>`, for instance) is an ordinary capture of that
-value, entirely unaffected by the type being locally declared.
+value, entirely unaffected by the type being locally declared. A `trait`
+goes one step further than `struct`/`enum` here: it never produces a value
+at all, not even a constant — it is purely a field contract checked at
+compile time against whatever struct is used where it's required, so there
+is nothing about a locally-declared trait for a closure to reference except
+in a type position (a parameter type, a field type, a generic constraint).
 
 **One descriptor per declaration, not one per call — unlike captured
 values.** `enum Direction { ... }` is elaborated exactly once at compile
 time, regardless of how many times `f` is called. This is the opposite of a
 captured local like `x` in the earlier `f`/`g`/`h` closures example, where
 each call gets its own independent heap environment — every call to `f`
-above shares the same single `Direction` type. Declaring a type inside a
-loop body or an `if` branch carries no runtime cost either; only the name's
-*visibility* is scoped to the block, the declaration itself is not
-"re-run" per iteration or per branch taken.
+above shares the same single `Direction` type (and the same single `Named`
+trait). Declaring a type inside a loop body or an `if` branch carries no
+runtime cost either; only the name's *visibility* is scoped to the block,
+the declaration itself is not "re-run" per iteration or per branch taken.
 
 **A local type cannot be named in the header of the function that declares
 it.** The header (parameter types, return type) is resolved before the
@@ -2356,9 +2367,10 @@ is rejected — `Direction` is only visible starting at its own declaration
 line, and the header is checked first. A closure returned from later in the
 body is fine, as in the `f<T>` example above, because the closure literal
 is itself part of the body and is checked after the type declaration it
-follows.
+follows. The same restriction applies identically to a local `trait` used
+as a parameter type or field type in the enclosing function's own header.
 
-**A local type may declare its own generic parameters, fully independent of
+**A local generic type declares its own parameters, fully independent of
 the enclosing function's.** `Foo<U>` above has exactly one parameter, `U`;
 its field declarations may only reference `U` and other concrete or
 module-visible types, never `T` directly, even though `T` is lexically
@@ -2367,7 +2379,11 @@ reachable from `f<T>`'s scope. If `Foo` needs both, it must declare both —
 This keeps `Foo` reducible to ordinary generic instantiation: exactly one
 `Foo<U>` descriptor exists regardless of how many concrete types `f<T>` is
 ever instantiated with, since nothing about `Foo`'s definition can depend on
-which `T` a given call happens to use.
+which `T` a given call happens to use. A generic `trait` (`trait
+Container<T> { value T; count int; }`) declared locally follows the
+identical rule — its own `T` is independent of any enclosing function's
+`T` unless explicitly passed through as a type argument at the site the
+trait constraint or field type is written.
 
 > [!NOTE]
 > **Reusing the enclosing function's type-parameter letter is legal and
@@ -2380,7 +2396,9 @@ which `T` a given call happens to use.
 > The compiler should warn (not error) whenever a local generic
 > declaration's parameter list shadows an enclosing function's generic
 > parameter by name, since unlike ordinary variable shadowing this case is
-> disproportionately likely to be accidental rather than intentional.
+> disproportionately likely to be accidental rather than intentional. This
+> applies equally to `struct`, `enum` (for any generic parameter on the
+> enum itself), and `trait`.
 
 **Self-Reference Rules apply unchanged.** A local struct's infinite-size
 check (`next Node<T>` vs. `next Node<T>?` vs. `next *Node<T>`) follows
@@ -4363,6 +4381,68 @@ Reference Rules**, above), so a closure capturing one is no more or less
 safe than a struct storing one. The Downward Flow Rule exists to protect a
 guarantee `&T`/`[_]T` make and `*T` deliberately does not; it was never
 meant to reach `*T`, in a closure's environment or anywhere else.
+
+### Extracting a Function-Typed Field Is Not a Dangling Reference
+
+A function declaration's body may be any expression that evaluates to a
+matching `func_type` — not only a bare name, but a field access, a call
+that returns a function, or any other `expr` that produces one (see
+`func_body`'s second form in **Function Declaration**). This includes
+reading a function-typed field back out of a struct:
+
+```lucid
+struct Container {
+    getter (int) -> int;
+}
+
+const makeF () -> (int) -> int {
+    let c Container = Container { getter = add };
+    return c.getter;    -- ✅ safe — see below
+}
+```
+
+It is tempting to treat `c.getter` as if it were a borrow into `c`'s own
+storage — as if returning it were equivalent to `return &c.getter;` — and
+therefore unsafe, because `c` is a local that is freed when `makeF`
+returns. **This reasoning is incorrect, and does not apply here.** Field
+access is not a borrow unless the field's declared type is itself `&T`
+(which cannot happen — struct fields cannot be `&T` or `[_]T` at all, per
+the Downward Flow Rule). For every other field type, reading a field
+**copies it out, according to that field's own type's copy rule** — the
+exact rule already established in **Struct Deep Copy**, above, applied here
+without any exception. A function-typed field follows the closure copy
+rule: `c.getter` copies the fat pointer `{func, env}`, and if `env` is
+non-null, retains it — this happens at the point of the field read, as an
+ordinary copy, fully independent of `c` from that moment on. `c`'s own
+storage is torn down at `makeF`'s scope exit exactly as normal, releasing
+*`c`'s* claim on `env` — which has no effect on the separate claim the
+returned copy already took out. This is not a new mechanism; it is the same
+two-holders-of-one-refcount pattern as `let g2 = g;` in **Function Values
+and Closures**, above, just reached through a field access instead of an
+identifier copy. It also composes correctly with an intervening reference:
+`let c &Container = someContainer; return c.getter;` copies the field out
+through the reference at the point of access, the same as reading any other
+field through a `&T` — the Downward Flow Rule governs where `c` itself may
+live, not the independence of a value already copied out of what it points
+to.
+
+It is also worth confirming there is no hidden danger inside the closure
+`getter` might hold: whatever environment it captured cannot itself contain
+a `&T` or `[_]T`, because closure literals are already forbidden from
+capturing borrowed types (the fourth Downward Flow Rule, above). So a
+closure sitting in a struct field is, by construction, exactly as
+self-sufficient as any other closure value — there is no way for it to be
+unsafe underneath an extraction that looks safe.
+
+**Implementation note:** whatever visitor inserts the retain call on a
+closure copy (a whole-struct assignment, `let g2 = g;`, a parameter pass)
+must fire identically on a field-read expression that extracts a
+closure-typed or otherwise Shared-refcounted field — `c.getter` needs the
+same retain as any other closure copy, triggered from the field-access AST
+node rather than an identifier-copy node. No dangling-reference check
+belongs here at all; adding one will reject correct programs, specifically
+this exact "build a struct locally, return one of its closure fields"
+pattern, which should be fully idiomatic under this ownership model.
 
 ---
 
