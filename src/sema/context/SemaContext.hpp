@@ -638,7 +638,7 @@ struct SemaContext {
         }
         
         // Use resolvedType (set by Sema) instead of raw type field
-        return decl->resolvedType;
+        return decl->semanticType;
     }
     
     const GenericParamDeclAST* lookupGenericParam(InternedString name) const {
@@ -662,7 +662,7 @@ struct SemaContext {
         const TypeAST* narrowedType = stack.getNarrowedType(name);
         if (narrowedType) {
             // Update the resolved type to the narrowed type
-            const_cast<ValueDeclAST*>(decl)->resolvedType = const_cast<TypeAST*>(narrowedType);
+            const_cast<ValueDeclAST*>(decl)->semanticType = const_cast<TypeAST*>(narrowedType);
             return decl;
         }
         

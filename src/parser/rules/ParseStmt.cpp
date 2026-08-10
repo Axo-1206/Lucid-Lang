@@ -811,7 +811,7 @@ AsyncStmtAST* parseAsyncStmt(TokenStream& stream, ParserContext& ctx) {
     // 6. Create the VarDeclAST for the binding using constructor
     VarDeclAST* binding = ctx.arena.make<VarDeclAST>(name, keyword, wrappedType, nullptr);
     binding->loc = loc;
-    binding->resolvedType = wrappedType;
+    binding->semanticType = wrappedType;
     
     // 7. Parse '=' (required)
     if (!stream.match(TokenType::ASSIGN)) {
@@ -865,8 +865,7 @@ AwaitStmtAST* parseAwaitStmt(TokenStream& stream, ParserContext& ctx) {
             break;
         }
         Token targetTok = stream.consume();
-        auto* idExpr = ctx.arena.make<IdentifierExprAST>();
-        idExpr->name = ctx.pool.intern(targetTok.value);
+        auto* idExpr = ctx.arena.make<IdentifierExprAST>(ctx.pool.intern(targetTok.value));
         targetBuilder.push_back(idExpr);
     } while (stream.match(TokenType::COMMA));
     
@@ -966,7 +965,7 @@ SpawnStmtAST* parseSpawnStmt(TokenStream& stream, ParserContext& ctx) {
     // 7. Create the VarDeclAST for the binding using constructor
     binding = ctx.arena.make<VarDeclAST>(name, keyword, wrappedType, nullptr);
     binding->loc = loc;
-    binding->resolvedType = wrappedType;
+    binding->semanticType = wrappedType;
     
     LOG_PARSER_DETAIL("parseSpawnStmt: binding '", ctx.pool.lookup(name), 
                       "' (", isConst ? "const" : "let", ")");
@@ -1023,8 +1022,7 @@ JoinStmtAST* parseJoinStmt(TokenStream& stream, ParserContext& ctx) {
             break;
         }
         Token targetTok = stream.consume();
-        auto* idExpr = ctx.arena.make<IdentifierExprAST>();
-        idExpr->name = ctx.pool.intern(targetTok.value);
+        auto* idExpr = ctx.arena.make<IdentifierExprAST>(ctx.pool.intern(targetTok.value));
         targetBuilder.push_back(idExpr);
     } while (stream.match(TokenType::COMMA));
     

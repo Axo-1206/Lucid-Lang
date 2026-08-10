@@ -255,7 +255,7 @@ struct ModuleAccessExprAST : ExprAST {
     const InternedString memberName;
     ArenaSpan<TypePtr> genericArgs; // Generic function instantiation
 
-    ModuleAccessExprAST(InternedString mod, InternedString, InternedString mem) 
+    ModuleAccessExprAST(InternedString mod, InternedString mem) 
         : ExprAST(ASTKind::ModuleAccessExpr),
         moduleName(mod),
         memberName(mem) {}

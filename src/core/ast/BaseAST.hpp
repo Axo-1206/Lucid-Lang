@@ -345,7 +345,7 @@ struct TypeAST : BaseAST {
 //         Reflects the result's nullability/fallibility state (Definite, Nil,
 //         Err, Unknown, None). Helps with flow‑sensitive narrowing.
 //
-//   - `resolvedType` : TypeAST*
+//   - `semanticType ` : TypeAST*
 //         The semantic type of the expression, set during type resolution.
 //         For constants, this is the type of the evaluated value.
 //
@@ -616,7 +616,7 @@ struct ExprAST : BaseAST {
     // ─── Parser Fields ──────────────────────────────────────────────────
     
     // ─── Semantic Annotations (set by Sema) ────────────────────────────
-    TypeAST* resolvedType = nullptr;        // The resolved type of this expression
+    TypeAST* semanticType  = nullptr;        // The resolved type of this expression
     ConstantValue constValue;               // Evaluated constant value (for const expressions)
     ValueState valueState = ValueState::Unknown;  // Nil/Err/Definite/Unknown
     bool isLValue = false;                  // Can this appear on LHS of assignment?
@@ -627,7 +627,7 @@ struct ExprAST : BaseAST {
     llvm::Value* llvmValue = nullptr;       // The generated LLVM value
 
     explicit ExprAST(ASTKind k) : BaseAST(k) {}
-    bool hasType() const { return resolvedType != nullptr; }
+    bool hasType() const { return semanticType  != nullptr; }
     
     // Convenience methods
     bool isNone() const { return valueState == ValueState::None; }
@@ -707,10 +707,13 @@ struct ValueDeclAST : DeclAST {
     /// The keyword that determines mutability (Let = mutable, Const = immutable)
     const DeclKeyword keyword;
 
-    /// Cached resolved type (set by Sema during type resolution)
-    /// This is distinct from the parser's original type annotation stored
-    /// in concrete subclasses (e.g., VarDeclAST::type).
-    TypeAST* resolvedType = nullptr;
+    /// The fully resolved semantic type (set by Sema)
+    /// Differs from parsedType when:
+    /// - Generic arguments are resolved
+    /// - Traits are resolved to declarations
+    /// - Narrowing changes the type (e.g., int? → int)
+    /// - Const evaluation determines the type
+    TypeAST* semanticType = nullptr;
     
     /// @brief Check if this value is immutable (const).
     bool isConst() const { return keyword == DeclKeyword::Const; }

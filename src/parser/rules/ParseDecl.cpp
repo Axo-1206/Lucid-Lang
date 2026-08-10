@@ -168,9 +168,6 @@ VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
     // Create VarDeclAST using constructor (all parser fields immutable)
     auto* varDecl = ctx.arena.make<VarDeclAST>(name, keyword, type, init);
     varDecl->loc = loc;
-
-    // Cache the resolved type (initially the same as the parser type)
-    varDecl->resolvedType = type;
     
     LOG_PARSER_DETAIL("Parsed variable: ", ctx.pool.lookup(name));
     return varDecl;
@@ -356,7 +353,6 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     // ─── Build AST using constructor ──────────────────────────────────────
     auto* funcDecl = ctx.arena.make<FuncDeclAST>(name, keyword, genericParams, funcType, body);
     funcDecl->loc = loc;
-    funcDecl->resolvedType  = funcType;  // Cache the resolved type
     
     LOG_PARSER_DETAIL("Parsed function: ", ctx.pool.lookup(name));
     return funcDecl;

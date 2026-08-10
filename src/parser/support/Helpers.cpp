@@ -576,7 +576,7 @@ std::vector<ParamPtr> parseParamList(TokenStream& stream, ParserContext& ctx, bo
         // Parse single parameter (NO comma handling inside)
         SourceLocation loc = stream.currentLoc();
         
-        bool isConst = stream.match(TokenType::CONST);
+        bool isConstParam = stream.match(TokenType::CONST);
         
         InternedString name;
         bool hasName = false;
@@ -614,17 +614,16 @@ std::vector<ParamPtr> parseParamList(TokenStream& stream, ParserContext& ctx, bo
         // ─── If variadic, wrap the type in [*]T ──────────────────────────────
         // The grammar says: `...T` is a parameter that collects arguments into [*]T
         // So the parameter type should be [*]T, not T
+        TypeAST* finalType = type;
         if (isVariadic) {
             // Store as [*]T (dynamic array) - the element type is 'type'
-            type = ctx.arena.make<ArrayTypeAST>(ArrayKind::Dynamic, 0, type);
+            finalType = ctx.arena.make<ArrayTypeAST>(ArrayKind::Dynamic, 0, type);
         }
         
-        auto* param = ctx.arena.make<ParamAST>();
+        // ─── Create ParamAST using constructor ──────────────────────────────
+        // Parameters are always `let` by default (mutable bindings)
+        ParamAST* param = ctx.arena.make<ParamAST>(name, finalType, isVariadic, isConstParam);
         param->loc = loc;
-        param->name = name;
-        param->type = type;
-        param->isConst = isConst;
-        param->isVariadic = isVariadic;
         params.push_back(param);
         
         if (allowNames && !hasName) {

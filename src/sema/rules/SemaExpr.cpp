@@ -278,7 +278,7 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetTyp
         bool isCaptured = !isInCurrentScope && !isModuleMember;
         
         if (isCaptured) {
-            const TypeAST* varType = decl->type;
+            const TypeAST* varType = decl->semanticType;
             
             // ─── Rule 4: No borrowed types in closures ──────────────────────
             // Closures cannot capture &T or [_]T (borrowed types)
@@ -365,7 +365,7 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetTyp
     }
 
     // ─── Step 8: Return the declaration's type ─────────────────────────────
-    if (!decl->type) {
+    if (!decl->semanticType) {
         ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
                               "'", ctx.pool.lookup(expr->name), "' has no type information");
         expr->resolvedType = ctx.getUnknownType();
@@ -383,9 +383,9 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetTyp
         return const_cast<TypeAST*>(narrowedType);
     }
 
-    expr->resolvedType = decl->type;
+    expr->resolvedType = decl->semanticType;
     expr->valueState = state;
-    return decl->type;
+    return decl->semanticType;
 }
 
 // =============================================================================
@@ -1572,12 +1572,12 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetT
         for (const FieldDeclAST* f : structDecl->fields) {
             if (f->name == expr->fieldName) {
                 // ─── Get field type ──────────────────────────────────────────
-                TypeAST* fieldType = f->type;
+                const TypeAST* fieldType = f->type;
                 
                 // ─── Propagate value state ──────────────────────────────────
                 ValueState state = (isNullableType(fieldType) || isFallibleType(fieldType))
                                    ? ValueState::Unknown : ValueState::Definite;
-                expr->resolvedType = fieldType;
+                expr->resolvedType = const_cast<TypeAST*>(fieldType);
                 expr->valueState = state;
                 
                 // ─── Set isLValue and isConst ───────────────────────────────
@@ -1597,7 +1597,7 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetT
                     expr->isConst = expr->object->isConst;
                 }
                 
-                return fieldType;
+                return const_cast<TypeAST*>(fieldType);
             }
         }
 
@@ -1709,7 +1709,7 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, const TypeAST* targe
     }
 
     // ─── Step 5: Return the member's type ───────────────────────────────────
-    if (!decl->type) {
+    if (!decl->semanticType) {
         ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
                               "member '", ctx.pool.lookup(expr->memberName),
                               "' has no type information");
@@ -1718,11 +1718,11 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, const TypeAST* targe
         return ctx.getUnknownType();
     }
 
-    ValueState state = (isNullableType(decl->type) || isFallibleType(decl->type))
+    ValueState state = (isNullableType(decl->semanticType) || isFallibleType(decl->semanticType))
                        ? ValueState::Unknown : ValueState::Definite;
-    expr->resolvedType = decl->type;
+    expr->resolvedType = decl->semanticType;
     expr->valueState = state;
-    return decl->type;
+    return decl->semanticType;
 }
 
 // =============================================================================
