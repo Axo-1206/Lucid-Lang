@@ -22,6 +22,7 @@
 #include "core/ast/TypeAST.hpp"
 #include "debug/DebugUtils.hpp"
 #include "sema/registry/AttributeValidator.hpp"
+#include "sema/support/CaptureAnalysis.hpp"
 
 namespace sema {
 
@@ -38,24 +39,24 @@ namespace sema {
 //   2. They don't need to be visible for forward references
 //   3. They are scoped to the function and resolved when the body is processed
 
-void registerImportName(const ImportDeclAST* decl, SemaContext& ctx) {
+void registerImportName(ImportDeclAST* decl, SemaContext& ctx) {
     ModuleAST* target = ctx.findModuleByPath(decl->path);
     if (!target) return;  // Error will be reported in Phase 2
     ctx.addImportAlias(decl->alias, target, decl);
 }
 
-void registerVarName(const VarDeclAST* decl, SemaContext& ctx) {
+void registerVarName(VarDeclAST* decl, SemaContext& ctx) {
     ctx.insertValue(decl);
 }
 
-void registerFuncName(const FuncDeclAST* decl, SemaContext& ctx) {
+void registerFuncName(FuncDeclAST* decl, SemaContext& ctx) {
     // ─── 1. Register the function itself ──────────────────────────────────────
     ctx.insertValue(decl);
 
     // ─── 2. Register generic parameters ──────────────────────────────────────
     // Generic parameters need to be registered in Phase 1 so they can be
     // resolved when types are resolved in Phase 2.
-    for (const GenericParamDeclAST* g : decl->genericParams) {
+    for (GenericParamDeclAST* g : decl->genericParams) {
         ctx.insertGenericParam(g);
     }
 
@@ -68,30 +69,30 @@ void registerFuncName(const FuncDeclAST* decl, SemaContext& ctx) {
     // pointless. We've removed this dead code.
 }
 
-void registerEnumName(const EnumDeclAST* decl, SemaContext& ctx) {
+void registerEnumName(EnumDeclAST* decl, SemaContext& ctx) {
     ctx.insertType(decl);
-    for (const EnumVariantAST* variant : decl->variants) {
+    for (EnumVariantAST* variant : decl->variants) {
         ctx.insertValue(variant);
     }
 }
 
-void registerTraitName(const TraitDeclAST* decl, SemaContext& ctx) {
+void registerTraitName(TraitDeclAST* decl, SemaContext& ctx) {
     ctx.insertType(decl);
-    for (const GenericParamDeclAST* g : decl->genericParams) {
+    for (GenericParamDeclAST* g : decl->genericParams) {
         ctx.insertGenericParam(g);
     }
 }
 
-void registerStructName(const StructDeclAST* decl, SemaContext& ctx) {
+void registerStructName(StructDeclAST* decl, SemaContext& ctx) {
     ctx.insertType(decl);
-    for (const GenericParamDeclAST* g : decl->genericParams) {
+    for (GenericParamDeclAST* g : decl->genericParams) {
         ctx.insertGenericParam(g);
     }
     registerStructFieldNames(decl, ctx);
 }
 
-void registerStructFieldNames(const StructDeclAST* decl, SemaContext& ctx) {
-    for (const FieldDeclAST* field : decl->fields) {
+void registerStructFieldNames(StructDeclAST* decl, SemaContext& ctx) {
+    for (FieldDeclAST* field : decl->fields) {
         ctx.insertValue(field);
     }
 }
@@ -100,7 +101,7 @@ void registerStructFieldNames(const StructDeclAST* decl, SemaContext& ctx) {
 // PHASE 2: Type Resolution
 // =============================================================================
 
-void resolveImportDecl(const ImportDeclAST* decl, SemaContext& ctx) {
+void resolveImportDecl(ImportDeclAST* decl, SemaContext& ctx) {
     ModuleAST* target = ctx.findModuleByPath(decl->path);
     if (!target) {
         ctx.diagnostics.error(DiagCode::Sem_UndefinedModule, decl,
@@ -108,7 +109,7 @@ void resolveImportDecl(const ImportDeclAST* decl, SemaContext& ctx) {
     }
 }
 
-void resolveVarDecl(const VarDeclAST* decl, SemaContext& ctx) {
+void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
     validateAllAttributes(decl, ctx);
 
     // ─── 1. Resolve the declared type ───────────────────────────────
@@ -155,16 +156,15 @@ void resolveVarDecl(const VarDeclAST* decl, SemaContext& ctx) {
     // Do NOT call ctx.insertValue() here.
 }
 
-void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
+void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
     // ─── 1. Validate all attributes ────────────────────────────────────────
     validateAllAttributes(decl, ctx);
 
     // ─── 2. Check if @[foreign] is present ────────────────────────────────
     InternedString foreignName = ctx.pool.intern("foreign");
-    const AttributeAST* foreignAttr = nullptr;
-    for (const AttributeAST* attr : decl->attributes) {
+    for (AttributeAST* attr : decl->attributes) {
         if (attr->name == foreignName) {
-            foreignAttr = attr;
+            decl->isForeignFunction = true;
         }
     }
 
@@ -176,7 +176,7 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
     const_cast<FuncDeclAST*>(decl)->semanticType = funcType;
 
     // ─── 4. Handle @[foreign] functions ────────────────────────────────────
-    if (foreignAttr) {
+    if (decl->isForeignFunction) {
         // The attribute validator already validated:
         //   - ABI is "C"
         //   - Function has no body (warning)
@@ -188,7 +188,7 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
     }
 
     // ─── 5. Resolve generic parameters ───────────────────────────────────────
-    for (const GenericParamDeclAST* g : decl->genericParams) {
+    for (GenericParamDeclAST* g : decl->genericParams) {
         resolveGenericParam(g, ctx);
     }
 
@@ -250,6 +250,19 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
 
     // ─── 11. Pop function context ────────────────────────────────────────────
     ctx.stack.pop();
+
+    // ─── 12. CAPTURE ANALYSIS for nested functions ──────────────────────────
+    // Only nested functions (closureDepth > 0) can capture variables.
+    // Top-level functions cannot capture anything.
+    // The context stack still has the function frame, so getClosureDepth()
+    // returns the correct depth.
+    if (ctx.getClosureDepth() > 0) {
+        LOG_SEMA("resolveFuncDecl: analyzing captures for nested function '",
+                 ctx.pool.lookup(decl->name), "' at depth ", ctx.getClosureDepth());
+        analyzeCaptures(const_cast<FuncDeclAST*>(decl), ctx);
+    }
+
+    // ─── 13. Pop scope ──────────────────────────────────────────────────────────
     ctx.popScope();
 }
 
@@ -260,7 +273,7 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
 /// parameters don't need to be visible for forward references.
 ///
 /// @note This is called from resolveFuncDecl, NOT from registerFuncName.
-void resolveParam(const ParamAST* param, SemaContext& ctx) {
+void resolveParam(ParamAST* param, SemaContext& ctx) {
     // ─── 1. Resolve the parameter type ──────────────────────────────────────
     TypeAST* paramType = resolveType(param->type, ctx);
     if (!paramType) {
@@ -282,13 +295,13 @@ void resolveParam(const ParamAST* param, SemaContext& ctx) {
     ctx.insertValue(param);
 }
 
-void resolveGenericParam(const GenericParamDeclAST* param, SemaContext& ctx) {
-    for (const NamedTypeAST* constraint : param->constraints) {
+void resolveGenericParam(GenericParamDeclAST* param, SemaContext& ctx) {
+    for (NamedTypeAST* constraint : param->constraints) {
         resolveTraitRef(constraint, ctx);
     }
 }
 
-void resolveEnumDecl(const EnumDeclAST* decl, SemaContext& ctx) {
+void resolveEnumDecl(EnumDeclAST* decl, SemaContext& ctx) {
     validateAllAttributes(decl, ctx);
 
     // ─── NOTE: Registration is handled by registerEnumName() ──────────────
@@ -302,11 +315,11 @@ void resolveEnumDecl(const EnumDeclAST* decl, SemaContext& ctx) {
         }
     }
 
-    for (const EnumVariantAST* variant : decl->variants) {
+    for (EnumVariantAST* variant : decl->variants) {
         validateAllAttributes(variant, ctx);
 
         // Check duplicate variant values
-        for (const EnumVariantAST* existing : decl->variants) {
+        for (EnumVariantAST* existing : decl->variants) {
             if (existing == variant) break;
             if (existing->value == variant->value) {
                 ctx.diagnostics.error(DiagCode::Sem_DuplicateValue, variant,
@@ -318,17 +331,17 @@ void resolveEnumDecl(const EnumDeclAST* decl, SemaContext& ctx) {
     }
 }
 
-void resolveTraitDecl(const TraitDeclAST* decl, SemaContext& ctx) {
+void resolveTraitDecl(TraitDeclAST* decl, SemaContext& ctx) {
     validateAllAttributes(decl, ctx);
 
     // ─── NOTE: Registration is handled by registerTraitName() ─────────────
     // Do NOT call ctx.insertType() here.
 
-    for (const GenericParamDeclAST* g : decl->genericParams) {
+    for (GenericParamDeclAST* g : decl->genericParams) {
         resolveGenericParam(g, ctx);
     }
 
-    for (const TraitFieldDeclAST* field : decl->fields) {
+    for (TraitFieldDeclAST* field : decl->fields) {
         validateAllAttributes(field, ctx);
 
         TypeAST* fieldType = resolveType(field->type, ctx);
@@ -346,13 +359,13 @@ void resolveTraitDecl(const TraitDeclAST* decl, SemaContext& ctx) {
     }
 
     std::vector<const TypeAST*> types;
-    for (const TraitFieldDeclAST* field : decl->fields) {
+    for (TraitFieldDeclAST* field : decl->fields) {
         types.push_back(field->type);
     }
     validateGenericParameterUsage(decl->genericParams, types, decl, ctx);
 }
 
-void resolveStructDecl(const StructDeclAST* decl, SemaContext& ctx) {
+void resolveStructDecl(StructDeclAST* decl, SemaContext& ctx) {
     validateAllAttributes(decl, ctx);
 
     // ─── NOTE: Registration is handled by registerStructName() ────────────
@@ -360,7 +373,7 @@ void resolveStructDecl(const StructDeclAST* decl, SemaContext& ctx) {
 
     ScopedTypeDefinition defining(ctx, decl);
 
-    for (const GenericParamDeclAST* g : decl->genericParams) {
+    for (GenericParamDeclAST* g : decl->genericParams) {
         resolveGenericParam(g, ctx);
     }
 
@@ -371,14 +384,14 @@ void resolveStructDecl(const StructDeclAST* decl, SemaContext& ctx) {
     }
 
     std::vector<const TypeAST*> types;
-    for (const FieldDeclAST* field : decl->fields) {
+    for (FieldDeclAST* field : decl->fields) {
         types.push_back(field->type);
     }
     validateGenericParameterUsage(decl->genericParams, types, decl, ctx);
 }
 
-void resolveStructFields(const StructDeclAST* decl, SemaContext& ctx) {
-    for (const FieldDeclAST* field : decl->fields) {
+void resolveStructFields(StructDeclAST* decl, SemaContext& ctx) {
+    for (FieldDeclAST* field : decl->fields) {
         validateAllAttributes(field, ctx);
 
         // ─── 1. Resolve the field's type ──────────────────────────────────

@@ -203,14 +203,22 @@ using ParamGroup = std::vector<ParamPtr>;
 ///   const makeAdder (base int) -> (int) -> int = { ... }
 ///   const sum (nums ...int) -> int = { ... }
 /// 
-/// @field keyword              Let or Const (const functions cannot be reassigned)
-/// @field genericParams        Generic type parameters (empty if none)
-/// @field funcType             Full function type (includes parameter groups and return types)
-/// @field body                 Function body (always BlockStmtAST, expression bodies desugared)
+/// ─── Closures ──────────────────────────────────────────────────────────────
+/// A FuncDeclAST can also be a closure if it captures variables from its
+/// enclosing scope. When this happens, the function behaves like an
+/// anonymous function with a name.
 /// 
-/// @note Visibility is only meaningful at top‑level; inside blocks, declarations
-///       are always private. Attributes (e.g., @[export], @[inline]) are stored
-///       in DeclAST::attributes.
+/// Example of a nested function that forms a closure:
+/// ```lucid
+/// const makeCounter () -> () -> int = {
+///     let count int = 0;
+///     const counter () -> int = {   ← This is a FuncDeclAST that captures 'count'
+///         count = count + 1;
+///         return count;
+///     };
+///     return counter;
+/// }
+/// ```
 struct FuncDeclAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::FuncDecl;
 
@@ -222,11 +230,18 @@ struct FuncDeclAST : ValueDeclAST {
     // ─── Semantic Fields (set by Sema) ────────────────────────────────
     bool isForeignFunction = false;      // True if @[foreign] attribute is present
     InternedString mangledName;          // Mangled name for AOT compilation
-    size_t closureDepth = 0;             // Depth of nesting for closure naming
-    bool isReturned = false;             // True if this function is returned
     
+    /// Variables captured by this function (if it's a closure).
+    /// Populated by capture analysis during semantic analysis.
+    ArenaSpan<CapturedVariable> captures;
+    bool hasClosure = false;    /// True if this function captures any variables from outer scopes.
+    bool isReturned = false;    /// True if this function is returned from its parent
+
     // ─── CodeGen Fields (mutable) ──────────────────────────────────────
     llvm::Function* llvmFunction = nullptr;
+    
+    /// The LLVM struct type for the closure environment (if this is a closure).
+    llvm::StructType* environmentType = nullptr;
 
     // ─── Constructor ─────────────────────────────────────────────────────
     FuncDeclAST(InternedString n, DeclKeyword kw, 

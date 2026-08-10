@@ -313,4 +313,40 @@ const ContextFrame* ContextStack::findInnermostBlock() const {
     return nullptr;
 }
 
+// ─── Closure Helpers ──────────────────────────────────────────────────
+
+size_t ContextStack::getClosureDepth() const {
+    size_t depth = 0;
+    for (const auto& frame : m_stack) {
+        if (frame.kind == ContextKind::FuncBody) {
+            depth++;
+        }
+    }
+    return depth;
+}
+
+bool ContextStack::insideNestedFunction() const {
+    return getClosureDepth() > 1;
+}
+
+FuncDeclAST* ContextStack::getInnermostFunction() const {
+    for (auto it = m_stack.rbegin(); it != m_stack.rend(); ++it) {
+        if (it->kind == ContextKind::FuncBody) {
+            if (it->node && it->node->isa<FuncDeclAST>()) {
+                return static_cast<FuncDeclAST*>(it->node);
+            }
+        }
+    }
+    return nullptr;
+}
+
+BaseAST* ContextStack::getInnermostFunctionNode() const {
+    for (auto it = m_stack.rbegin(); it != m_stack.rend(); ++it) {
+        if (it->kind == ContextKind::FuncBody) {
+            return it->node;
+        }
+    }
+    return nullptr;
+}
+
 } // namespace sema

@@ -981,6 +981,11 @@ struct SemaContext {
     const TypeDeclAST* currentDefiningType() const {
         return definingTypes.empty() ? nullptr : definingTypes.back();
     }
+    
+    size_t getClosureDepth() const { return stack.getClosureDepth(); }
+    bool insideNestedFunction() const { return stack.insideNestedFunction(); }
+    FuncDeclAST* getInnermostFunction() const { return stack.getInnermostFunction(); }
+    BaseAST* getInnermostFunctionNode() const { return stack.getInnermostFunctionNode(); }
 };
 
 /// # RAII Guards

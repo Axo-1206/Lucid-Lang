@@ -15,9 +15,23 @@ namespace sema {
 namespace {
 
 /// @brief Internal state for capture analysis.
+/// 
+/// This analyzer walks the AST of a function/closure body and detects
+/// which variables from outer scopes are captured.
 struct CaptureAnalyzer {
     SemaContext& ctx;
+    
+    /// The closure being analyzed (if analyzing an anonymous function).
     AnonFuncExprAST* closure = nullptr;
+    
+    /// The function being analyzed (if analyzing a named function).
+    FuncDeclAST* function = nullptr;
+    
+    /// The innermost function node (FuncDeclAST or AnonFuncExprAST).
+    BaseAST* innermostFunction = nullptr;
+    
+    /// Current closure depth (from ContextStack).
+    size_t currentClosureDepth = 0;
     
     /// Variables declared in the closure's own parameter list.
     /// These are NOT captures.
@@ -29,48 +43,66 @@ struct CaptureAnalyzer {
     /// Variables that have been seen to avoid duplicates.
     std::unordered_set<InternedString> seenCaptures;
     
-    /// The depth of the closure (used to determine if a variable is from an outer scope).
-    size_t closureDepth = 0;
+    // ─── Constructors ──────────────────────────────────────────────────────
     
+    /// Constructor for anonymous function analysis.
     CaptureAnalyzer(SemaContext& c, AnonFuncExprAST* e)
-        : ctx(c), closure(e) {}
+        : ctx(c)
+        , closure(e)
+        , function(nullptr)
+        , innermostFunction(e)
+        , currentClosureDepth(ctx.getClosureDepth()) {}
     
-    /// @brief Check if a name is a parameter of this closure.
+    /// Constructor for named function analysis.
+    CaptureAnalyzer(SemaContext& c, FuncDeclAST* f)
+        : ctx(c)
+        , closure(nullptr)
+        , function(f)
+        , innermostFunction(f)
+        , currentClosureDepth(ctx.getClosureDepth()) {}
+    
+    // ─── Capture Detection ──────────────────────────────────────────────────
+    
+    /// @brief Check if a name is a parameter of this function/closure.
     bool isOwnParam(InternedString name) const {
         return ownParams.find(name) != ownParams.end();
     }
     
-    bool isFromOuterScope(InternedString name) const {
-        // If it's a module member, it's global - not a capture.
+    /// @brief Check if a name is from an outer scope (i.e., a capture).
+    /// 
+    /// This is the core capture detection logic:
+    /// 1. If it's a module member → not a capture (global)
+    /// 2. If it's in the current scope → not a capture (local)
+    /// 3. If it's a generic parameter → not a capture
+    /// 4. If it exists in any outer scope → it's a capture
+    bool isCapture(InternedString name) const {
+        // Module members are global - not captures
         if (ctx.isModuleMember(name)) {
             return false;
         }
         
-        // If it's in the current scope (which is the closure's own scope),
-        // it's either a parameter or a local variable declared inside the closure.
-        // Neither is a capture.
+        // If it's in the current scope, it's not a capture
         if (ctx.isInCurrentScope(name)) {
             return false;
         }
         
-        // If it's a generic parameter, it's not a capture.
+        // Generic parameters are not captures
         if (ctx.isGenericParam(name)) {
             return false;
         }
         
-        // Check if the name exists in any outer scope.
-        // If ctx.lookupValue returns a declaration and it's NOT in the current scope,
-        // then it's a capture.
+        // Check if the name exists in any outer scope
         const ValueDeclAST* decl = ctx.lookupValueRaw(name);
         if (!decl) {
             return false;
         }
         
-        // If the declaration is in the current scope, it's not a capture.
+        // If the declaration is in the current scope, it's not a capture
         if (ctx.isInCurrentScope(name)) {
             return false;
         }
         
+        // The variable exists in an outer scope - it's a capture
         return true;
     }
     
@@ -80,8 +112,12 @@ struct CaptureAnalyzer {
     
     bool shouldCaptureByReference(const ValueDeclAST* decl, const IdentifierExprAST* id) const {
         if (!decl) return false;
-        return true;  // Conservative: capture all variables by reference
+        // Conservative: capture all variables by reference
+        // TODO: Optimize to capture by value when possible (read-only, small types)
+        return true;
     }
+    
+    // ─── Process Identifier ──────────────────────────────────────────────────
     
     void processIdentifier(const IdentifierExprAST* id) {
         if (!id) return;
@@ -93,14 +129,17 @@ struct CaptureAnalyzer {
             return;
         }
         
+        // Skip if it's our own parameter
         if (isOwnParam(name)) {
             return;
         }
         
-        if (!isFromOuterScope(name)) {
+        // Check if this is a capture from an outer scope
+        if (!isCapture(name)) {
             return;
         }
         
+        // Skip if already seen
         if (seenCaptures.find(name) != seenCaptures.end()) {
             return;
         }
@@ -143,8 +182,11 @@ struct CaptureAnalyzer {
         seenCaptures.insert(name);
         
         LOG_SEMA("CaptureAnalysis: captured '", ctx.pool.lookup(name),
-                 "' by ", capture.byReference ? "reference" : "value");
+                 "' by ", capture.byReference ? "reference" : "value",
+                 " at depth ", currentClosureDepth);
     }
+    
+    // ─── AST Walking ──────────────────────────────────────────────────────────
     
     void walkExpr(const ExprAST* expr) {
         if (!expr) return;
@@ -255,8 +297,14 @@ struct CaptureAnalyzer {
             case ASTKind::AnonFuncExpr: {
                 // Nested closure: don't walk into it - captures are analyzed
                 // when the nested closure itself is analyzed.
+                // However, the nested closure's capture analysis will be called
+                // separately from resolveAnonFuncExpr.
                 break;
             }
+            
+            case ASTKind::FuncRefStmt:
+                // Function references are not captures - they're just names
+                break;
             
             case ASTKind::IfExpr: {
                 const IfExprAST* ifExpr = expr->as<IfExprAST>();
@@ -346,8 +394,6 @@ struct CaptureAnalyzer {
             
             case ASTKind::ForStmt: {
                 const ForStmtAST* forStmt = stmt->as<ForStmtAST>();
-                // Loop variables are not captures
-                // But the iterable might reference outer variables
                 walkExpr(forStmt->iterable);
                 if (forStmt->step) {
                     walkExpr(forStmt->step);
@@ -386,8 +432,6 @@ struct CaptureAnalyzer {
             
             case ASTKind::AsyncStmt: {
                 const AsyncStmtAST* asyncStmt = stmt->as<AsyncStmtAST>();
-                // The binding is a new variable - not a capture
-                // But the call expression might reference outer variables
                 if (asyncStmt->call) {
                     walkExpr(asyncStmt->call);
                 }
@@ -422,18 +466,49 @@ struct CaptureAnalyzer {
                 break;
         }
     }
+    
+    // ─── Store Captures ──────────────────────────────────────────────────────
+    
+    /// @brief Store the captured variables on the appropriate AST node.
+    void storeCaptures() {
+        if (captures.empty()) {
+            return;
+        }
+        
+        // Build the ArenaSpan
+        auto builder = ctx.arena.makeBuilder<CapturedVariable>();
+        for (const auto& capture : captures) {
+            builder.push_back(capture);
+        }
+        ArenaSpan<CapturedVariable> captureSpan = builder.build();
+        
+        // Store on the appropriate node
+        if (closure) {
+            closure->captures = captureSpan;
+            closure->hasClosure = true;
+            LOG_SEMA("analyzeCaptures: anonymous closure captures ", 
+                     captures.size(), " variables");
+        } else if (function) {
+            function->captures = captureSpan;
+            function->hasClosure = true;
+            LOG_SEMA("analyzeCaptures: function '", 
+                     ctx.pool.lookup(function->name),
+                     "' captures ", captures.size(), " variables");
+        }
+    }
 };
 
 } // anonymous namespace
 
-// ─── analyzeCaptures ─────────────────────────────────────────────────────────
+// ─── analyzeCaptures (AnonFuncExprAST) ──────────────────────────────────────
 
 void analyzeCaptures(AnonFuncExprAST* expr, SemaContext& ctx) {
     if (!expr || !expr->body) {
         return;
     }
     
-    LOG_SEMA("analyzeCaptures: analyzing closure at ", expr->loc.toString());
+    LOG_SEMA("analyzeCaptures: analyzing anonymous closure at depth ", 
+             ctx.getClosureDepth());
     
     CaptureAnalyzer analyzer(ctx, expr);
     
@@ -450,18 +525,64 @@ void analyzeCaptures(AnonFuncExprAST* expr, SemaContext& ctx) {
     analyzer.walkStmt(expr->body);
     
     // ─── Step 3: Store the captures on the AST node ─────────────────────────
+    analyzer.storeCaptures();
+    
+    if (!expr->hasClosure) {
+        LOG_SEMA("analyzeCaptures: no captures detected for anonymous closure");
+    }
+}
+
+// ─── analyzeCaptures (FuncDeclAST) ──────────────────────────────────────────
+
+void analyzeCaptures(FuncDeclAST* func, SemaContext& ctx) {
+    if (!func || !func->body) {
+        return;
+    }
+    
+    // ─── Only nested functions can capture variables ──────────────────────
+    // We use the context stack directly - no stored closureDepth needed.
+    size_t currentDepth = ctx.getClosureDepth();
+    if (currentDepth == 0) {
+        // Top-level function - cannot capture anything
+        LOG_SEMA("analyzeCaptures: top-level function '", 
+                 ctx.pool.lookup(func->name), 
+                 "' cannot capture variables");
+        return;
+    }
+    
+    LOG_SEMA("analyzeCaptures: analyzing nested function '", 
+             ctx.pool.lookup(func->name),
+             "' at depth ", currentDepth);
+    
+    CaptureAnalyzer analyzer(ctx, func);
+    
+    // ─── Step 1: Collect the function's own parameters ──────────────────────
+    if (func->funcType) {
+        for (const FuncTypeAST* group = func->funcType; group; group = group->getNext()) {
+            for (const ParamAST* param : group->params) {
+                analyzer.ownParams.insert(param->name);
+            }
+        }
+    }
+    
+    // ─── Step 2: Walk the body to find captures ─────────────────────────────
+    analyzer.walkStmt(func->body);
+    
+    // ─── Step 3: Store the captures on the AST node ─────────────────────────
     if (!analyzer.captures.empty()) {
         auto builder = ctx.arena.makeBuilder<CapturedVariable>();
         for (const auto& capture : analyzer.captures) {
             builder.push_back(capture);
         }
-        expr->captures = builder.build();
-        expr->hasClosure = true;
+        func->captures = builder.build();
+        func->hasClosure = true;
         
-        LOG_SEMA("analyzeCaptures: closure captures ", analyzer.captures.size(), " variables");
+        LOG_SEMA("analyzeCaptures: function '", ctx.pool.lookup(func->name),
+                 "' captures ", func->captures.size(), " variables");
     } else {
-        expr->hasClosure = false;
-        LOG_SEMA("analyzeCaptures: no captures detected");
+        func->hasClosure = false;
+        LOG_SEMA("analyzeCaptures: no captures detected for function '", 
+                 ctx.pool.lookup(func->name), "'");
     }
 }
 
@@ -473,7 +594,6 @@ void markClosureIfEscaping(const ExprAST* expr, SemaContext& ctx) {
     switch (expr->kind) {
         // ─── Case 1: Direct anonymous function ────────────────────────────
         // `return (n int) -> int { ... };`
-        // This is valid in reassignment contexts or as return values
         case ASTKind::AnonFuncExpr: {
             AnonFuncExprAST* closure = const_cast<AnonFuncExprAST*>(
                 expr->as<AnonFuncExprAST>()
@@ -500,69 +620,25 @@ void markClosureIfEscaping(const ExprAST* expr, SemaContext& ctx) {
             }
             
             // ─── 2b. Function declaration (nested function) ────────────────
-            // This is the common case: returning a nested function.
             if (decl->isa<FuncDeclAST>()) {
-                // Nested functions that are returned are closures if they capture
-                // variables from the enclosing scope. Mark the function as returned
-                // so CodeGen knows it needs heap allocation.
-                const FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
+                FuncDeclAST* funcDecl = const_cast<FuncDeclAST*>(
+                    decl->as<FuncDeclAST>()
+                );
                 
-                // Check if this function captures any variables (has a closure)
-                // We can check this by looking at the function's body for
-                // identifier references to outer scope variables.
-                bool hasCaptures = false;
-                // TODO: Check if funcDecl captures variables from outer scope.
-                // For now, we conservatively assume nested functions are closures.
-                // A more precise check would analyze the function body.
-                
-                // If the function is nested (not top-level), it may have captures
-                // Check if the function is at module level
-                if (!ctx.isModuleMember(id->name)) {
-                    // Nested function - mark as potentially returning a closure
-                    // We need to set isReturned on the FuncDeclAST
-                    FuncDeclAST* mutableFunc = const_cast<FuncDeclAST*>(funcDecl);
-                    mutableFunc->isForeignFunction = true; // TODO: Use proper flag
-                    // Actually, FuncDeclAST doesn't have an isReturned flag.
-                    // We should add one or use closureDepth > 0 to indicate nesting.
-                    
-                    // Since FuncDeclAST doesn't have isReturned, we use closureDepth:
-                    // If closureDepth > 0, the function is nested and may be a closure.
-                    if (mutableFunc->closureDepth > 0) {
-                        LOG_SEMA("markClosureIfEscaping: nested function '",
-                                 ctx.pool.lookup(id->name),
-                                 "' returned - may be a closure");
-                    }
+                // ─── Check if this is a nested function ──────────────────────
+                // We need to know if the function is nested. We can check by
+                // looking at the current context depth when the function was
+                // declared, but we don't store that.
+                // 
+                // Instead, we can check if the function is a module member.
+                // If it's NOT a module member, it's a nested function.
+                if (!ctx.isModuleMember(funcDecl->name)) {
+                    funcDecl->isReturned = true;
+                    LOG_SEMA("markClosureIfEscaping: nested function '",
+                            ctx.pool.lookup(id->name),
+                            "' returned - marking as closure");
                 }
                 return;
-            }
-            
-            // ─── 2c. Variable (let/const) holding a function value ──────────
-            if (decl->isa<VarDeclAST>()) {
-                const VarDeclAST* varDecl = decl->as<VarDeclAST>();
-                
-                // Check if the variable's initializer is a function reference
-                if (varDecl->init && varDecl->init->isa<IdentifierExprAST>()) {
-                    const IdentifierExprAST* initId = varDecl->init->as<IdentifierExprAST>();
-                    const ValueDeclAST* initDecl = ctx.lookupValue(initId->name);
-                    
-                    if (initDecl && initDecl->isa<FuncDeclAST>()) {
-                        // The variable holds a reference to a function.
-                        // If the function is nested, it's a closure.
-                        const FuncDeclAST* funcDecl = initDecl->as<FuncDeclAST>();
-                        if (funcDecl->closureDepth > 0) {
-                            LOG_SEMA("markClosureIfEscaping: variable '",
-                                     ctx.pool.lookup(id->name),
-                                     "' holds nested function - may be a closure");
-                        }
-                    }
-                }
-                
-                // If the variable's type is a function type, it might hold a closure
-                if (varDecl->semanticType && varDecl->semanticType->isa<FuncTypeAST>()) {
-                    // Conservative: treat as potentially a closure
-                    LOG_SEMA("markClosureIfEscaping: function-typed variable '",
-                             ctx.pool.lookup(id->name), "' returned - conservative mark");
-                }
             }
             return;
         }
@@ -583,11 +659,9 @@ void markClosureIfEscaping(const ExprAST* expr, SemaContext& ctx) {
         case ASTKind::FieldAccessExpr: {
             const FieldAccessExprAST* field = expr->as<FieldAccessExprAST>();
             
-            // If the object is an identifier, check if it's a module member
             if (field->object && field->object->isa<IdentifierExprAST>()) {
                 const IdentifierExprAST* id = field->object->as<IdentifierExprAST>();
                 
-                // If the object is a module member (static), the field is static
                 if (ctx.isModuleMember(id->name)) {
                     LOG_SEMA("markClosureIfEscaping: static struct field '",
                              ctx.pool.lookup(id->name), ".", 
@@ -597,7 +671,6 @@ void markClosureIfEscaping(const ExprAST* expr, SemaContext& ctx) {
                 }
             }
             
-            // Otherwise, the field is from a local object - it could be escaping.
             LOG_SEMA("markClosureIfEscaping: field access '",
                      ctx.pool.lookup(field->fieldName),
                      "' may be a closure - conservative mark");
@@ -605,11 +678,8 @@ void markClosureIfEscaping(const ExprAST* expr, SemaContext& ctx) {
         }
 
         // ─── Case 5: Call expression returning a function ───────────────────
-        // `return makeFunc();` - depends on the callee.
         case ASTKind::CallExpr: {
             const CallExprAST* call = expr->as<CallExprAST>();
-            
-            // Try to resolve the callee
             const FuncDeclAST* funcDecl = resolveCalleeOrError(call->callee, ctx);
             if (funcDecl) {
                 LOG_SEMA("markClosureIfEscaping: call to '",
@@ -619,7 +689,7 @@ void markClosureIfEscaping(const ExprAST* expr, SemaContext& ctx) {
             return;
         }
 
-        // ─── Case 6: Binary expression (e.g., condition ? func1 : func2) ──
+        // ─── Case 6: Binary expression ─────────────────────────────────────
         case ASTKind::BinaryExpr: {
             const BinaryExprAST* bin = expr->as<BinaryExprAST>();
             markClosureIfEscaping(bin->left, ctx);

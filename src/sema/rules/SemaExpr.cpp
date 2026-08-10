@@ -2293,7 +2293,10 @@ TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, const TypeAST* targetType, S
     ctx.stack.pop();
 
     // ─── Step 10: Detect captures and store them ────────────────────────────
-    // This is where the capture analysis happens
+    // The context stack still has the function frame (for the anonymous
+    // function), so getClosureDepth() returns the correct depth.
+    // We pass the expression to analyzeCaptures which will detect if the
+    // anonymous function captures any variables from outer scopes.
     analyzeCaptures(expr, ctx);
 
     // ─── Step 11: Pop the parameter scope ──────────────────────────────────
@@ -2337,7 +2340,8 @@ TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, const TypeAST* targetType, S
         }
     }
 
-    LOG_SEMA("resolveAnonFuncExpr: resolved anonymous function with ",
+    LOG_SEMA("resolveAnonFuncExpr: resolved anonymous function at depth ",
+             ctx.getClosureDepth(), " with ",
              expr->captures.size(), " captures",
              expr->hasClosure ? " (closure)" : " (no closure)");
 

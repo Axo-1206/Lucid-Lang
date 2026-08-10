@@ -38,21 +38,21 @@ void analyze(std::vector<ModuleAST*>& modules, SemaContext& ctx);
 void registerTopLevelNames(ModuleAST* module, SemaContext& ctx);
 
 /// @brief Register a declaration's name only (no type resolution).
-void registerDeclName(const DeclAST* decl, SemaContext& ctx);
+void registerDeclName(DeclAST* decl, SemaContext& ctx);
 
 // ─── Specific Name Registration Functions ──────────────────────────────
 
-void registerImportName(const ImportDeclAST* decl, SemaContext& ctx);
-void registerVarName(const VarDeclAST* decl, SemaContext& ctx);
-void registerFuncName(const FuncDeclAST* decl, SemaContext& ctx);
-void registerStructName(const StructDeclAST* decl, SemaContext& ctx);
-void registerEnumName(const EnumDeclAST* decl, SemaContext& ctx);
-void registerTraitName(const TraitDeclAST* decl, SemaContext& ctx);
+void registerImportName(ImportDeclAST* decl, SemaContext& ctx);
+void registerVarName(VarDeclAST* decl, SemaContext& ctx);
+void registerFuncName(FuncDeclAST* decl, SemaContext& ctx);
+void registerStructName(StructDeclAST* decl, SemaContext& ctx);
+void registerEnumName(EnumDeclAST* decl, SemaContext& ctx);
+void registerTraitName(TraitDeclAST* decl, SemaContext& ctx);
 
 // ─── Struct Field Registration (Phase 1 of struct two-pass) ────────────
 
 /// @brief Register all field names in a struct (no type resolution).
-void registerStructFieldNames(const StructDeclAST* decl, SemaContext& ctx);
+void registerStructFieldNames(StructDeclAST* decl, SemaContext& ctx);
 
 // =============================================================================
 // TYPE RESOLUTION (Phase 2)
@@ -62,23 +62,23 @@ void registerStructFieldNames(const StructDeclAST* decl, SemaContext& ctx);
 void resolveModuleDecls(ModuleAST* module, SemaContext& ctx);
 
 /// @brief Resolve a declaration's type and check its body.
-void resolveDecl(const DeclAST* decl, SemaContext& ctx);
+void resolveDecl(DeclAST* decl, SemaContext& ctx);
 
 // ─── Specific Declaration Resolvers ─────────────────────────────────────
 
-void resolveImportDecl(const ImportDeclAST* decl, SemaContext& ctx);
-void resolveVarDecl(const VarDeclAST* decl, SemaContext& ctx);
-void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx);
-void resolveParam(const ParamAST* param, SemaContext& ctx);
-void resolveGenericParam(const GenericParamDeclAST* param, SemaContext& ctx);
-void resolveStructDecl(const StructDeclAST* decl, SemaContext& ctx);
-void resolveEnumDecl(const EnumDeclAST* decl, SemaContext& ctx);
-void resolveTraitDecl(const TraitDeclAST* decl, SemaContext& ctx);
+void resolveImportDecl(ImportDeclAST* decl, SemaContext& ctx);
+void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx);
+void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx);
+void resolveParam(ParamAST* param, SemaContext& ctx);
+void resolveGenericParam(GenericParamDeclAST* param, SemaContext& ctx);
+void resolveStructDecl(StructDeclAST* decl, SemaContext& ctx);
+void resolveEnumDecl(EnumDeclAST* decl, SemaContext& ctx);
+void resolveTraitDecl(TraitDeclAST* decl, SemaContext& ctx);
 
 // ─── Struct Field Resolution (Phase 2 of struct two-pass) ──────────────
 
 /// @brief Resolve all field types in a struct (after all fields are registered).
-void resolveStructFields(const StructDeclAST* decl, SemaContext& ctx);
+void resolveStructFields(StructDeclAST* decl, SemaContext& ctx);
 
 // ─── Statement Resolution ──────────────────────────────────────────────
 

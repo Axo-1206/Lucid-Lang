@@ -374,6 +374,21 @@ public:
     const NarrowingInfo& getPendingInverseNarrowing() const;
     void clearPendingInverseNarrowing();
 
+    // ─── Closure Helpers ──────────────────────────────────────────────────
+
+    /// @brief Get the current closure nesting depth.
+    size_t getClosureDepth() const;
+
+    /// @brief Check if we're inside a nested function.
+    bool insideNestedFunction() const;
+
+    /// @brief Get the innermost function declaration.
+    FuncDeclAST* getInnermostFunction() const;
+
+    /// @brief Get the innermost function node (FuncDeclAST or AnonFuncExprAST).
+    BaseAST* getInnermostFunctionNode() const;
+
+
 private:
     // ─── Members ──────────────────────────────────────────────────────────
 
