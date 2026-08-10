@@ -671,17 +671,12 @@ struct ComposeExprAST : ExprAST {
 struct AnonFuncExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::AnonFuncExpr;
 
-    // ─── Parser Fields ──────────────────────────────────────────────────
-    FuncTypeAST* funcType = nullptr;   // the anonymous function type
-    StmtPtr body = nullptr;           // always BlockStmtAST
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const FuncTypeAST* funcType;   // the anonymous function type
+    const StmtAST* body;           // always BlockStmtAST
 
     // ─── Semantic Annotations (set by Sema) ────────────────────────────
-    ArenaSpan<CapturedVariable> captures;     // Variables captured by this closure —
-                                               // arena-backed, matching every other
-                                               // collection field on arena-allocated
-                                               // nodes; not std::vector, which would
-                                               // own a separate heap buffer that the
-                                               // arena's bulk teardown does not free.
+    ArenaSpan<CapturedVariable> captures;     // Variables captured by this closure
     bool hasClosure = false;                  // True if heap allocation is needed
     bool isReturned = false;                  // True if returned from a function
     
@@ -691,7 +686,11 @@ struct AnonFuncExprAST : ExprAST {
 
     bool hasParams() const { return funcType && !funcType->params.empty(); }
 
-    AnonFuncExprAST() : ExprAST(ASTKind::AnonFuncExpr) {}
+    // ─── Constructor ─────────────────────────────────────────────────────
+    AnonFuncExprAST(const FuncTypeAST* ft, const StmtAST* b)
+        : ExprAST(ASTKind::AnonFuncExpr)
+        , funcType(ft)
+        , body(b) {}
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

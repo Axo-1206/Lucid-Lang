@@ -637,7 +637,10 @@ struct ValueDeclAST : DeclAST {
     /// The keyword that determines mutability (Let = mutable, Const = immutable)
     const DeclKeyword keyword;
 
-    TypeAST* type = nullptr;  // Cached resolved type
+    /// Cached resolved type (set by Sema during type resolution)
+    /// This is distinct from the parser's original type annotation stored
+    /// in concrete subclasses (e.g., VarDeclAST::type).
+    TypeAST* resolvedType = nullptr;
     
     /// @brief Check if this value is immutable (const).
     bool isConst() const { return keyword == DeclKeyword::Const; }
