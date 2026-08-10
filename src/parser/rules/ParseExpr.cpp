@@ -332,12 +332,12 @@ ArrayLiteralExprAST* parseArrayLiteralExpr(TokenStream& stream, ParserContext& c
         return nullptr;
     }
     stream.consume();
-    
+   
     if (stream.check(TokenType::RBRACKET)) {
+        ArenaSpan<ExprPtr> elements = ctx.arena.makeBuilder<ExprPtr>().build();
         stream.consume();
-        auto* array = ctx.arena.make<ArrayLiteralExprAST>();
+        auto* array = ctx.arena.make<ArrayLiteralExprAST>(elements);
         array->loc = loc;
-        array->elements = ctx.arena.makeBuilder<ExprPtr>().build();
         return array;
     }
     
@@ -375,14 +375,13 @@ ArrayLiteralExprAST* parseArrayLiteralExpr(TokenStream& stream, ParserContext& c
         stream.consume(); // Consume ']'
     }
     
-    auto* array = ctx.arena.make<ArrayLiteralExprAST>();
-    array->loc = loc;
-    
     auto builder = ctx.arena.makeBuilder<ExprPtr>();
     for (auto* e : elements) {
         builder.push_back(e);
     }
-    array->elements = builder.build();
+
+    auto* array = ctx.arena.make<ArrayLiteralExprAST>(builder.build());
+    array->loc = loc;
     
     LOG_PARSER_DETAIL("parseArrayLiteralExpr: ", elements.size(), " elements");
     return array;
@@ -442,12 +441,9 @@ IfExprAST* parseIfExpr(TokenStream& stream, ParserContext& ctx) {
         return nullptr;
     }
     
-    auto* ifExpr = ctx.arena.make<IfExprAST>();
+    auto* ifExpr = ctx.arena.make<IfExprAST>(condition, thenBranch, elseBranch);
     ifExpr->loc = loc;
-    ifExpr->condition = condition;
-    ifExpr->thenBranch = thenBranch;
-    ifExpr->elseBranch = elseBranch;
-    
+
     LOG_PARSER_DETAIL("parseIfExpr: parsed if expression");
     return ifExpr;
 }
@@ -471,11 +467,10 @@ StructLiteralExprAST* parseStructLiteralExpr(TokenStream& stream, ParserContext&
     stream.consume();
     
     if (stream.check(TokenType::RBRACE)) {
+        ArenaSpan<FieldInitPtr> inits = ctx.arena.makeBuilder<FieldInitPtr>().build();
         stream.consume();
-        auto* structLit = ctx.arena.make<StructLiteralExprAST>(typeName);
+        auto* structLit = ctx.arena.make<StructLiteralExprAST>(typeName, genericArgs, inits);
         structLit->loc = loc;
-        structLit->genericArgs = genericArgs;
-        structLit->inits = ctx.arena.makeBuilder<FieldInitPtr>().build();
         return structLit;
     }
     
@@ -538,15 +533,13 @@ StructLiteralExprAST* parseStructLiteralExpr(TokenStream& stream, ParserContext&
         stream.consume(); // Consume '}'
     }
     
-    auto* structLit = ctx.arena.make<StructLiteralExprAST>(typeName);
-    structLit->loc = loc;
-    structLit->genericArgs = genericArgs;
-    
     auto builder = ctx.arena.makeBuilder<FieldInitPtr>();
     for (auto* init : inits) {
         builder.push_back(init);
     }
-    structLit->inits = builder.build();
+
+    auto* structLit = ctx.arena.make<StructLiteralExprAST>(typeName, genericArgs, builder.build());
+    structLit->loc = loc;
     
     LOG_PARSER_DETAIL("parseStructLiteralExpr: ", inits.size(), " fields");
     return structLit;
@@ -860,18 +853,14 @@ IndexExprAST* parseIndexExpr(TokenStream& stream, ParserContext& ctx, ExprPtr ta
         if (stream.check(TokenType::RBRACKET)) {
             stream.consume();
         }
-        auto* indexExpr = ctx.arena.make<IndexExprAST>();
+        auto* indexExpr = ctx.arena.make<IndexExprAST>(target, index);
         indexExpr->loc = loc;
-        indexExpr->target = target;
-        indexExpr->index = index;
         return indexExpr;
     }
     stream.consume(); // Consume ']'
     
-    auto* indexExpr = ctx.arena.make<IndexExprAST>();
+    auto* indexExpr = ctx.arena.make<IndexExprAST>(target, index);
     indexExpr->loc = loc;
-    indexExpr->target = target;
-    indexExpr->index = index;
     
     return indexExpr;
 }
@@ -924,11 +913,8 @@ SliceExprAST* parseSliceExpr(TokenStream& stream, ParserContext& ctx, ExprPtr ta
                 if (stream.check(TokenType::RBRACKET)) {
                     stream.consume();
                 }
-                auto* slice = ctx.arena.make<SliceExprAST>(isExclusive);
+                auto* slice = ctx.arena.make<SliceExprAST>(target, start, end, isExclusive);
                 slice->loc = loc;
-                slice->target = target;
-                slice->start = nullptr;
-                slice->end = end;
                 return slice;
             }
         }
@@ -943,11 +929,8 @@ SliceExprAST* parseSliceExpr(TokenStream& stream, ParserContext& ctx, ExprPtr ta
                 hasRangeOp = true;
             } else if (stream.check(TokenType::RBRACKET)) {
                 stream.consume();
-                auto* slice = ctx.arena.make<SliceExprAST>(false); // slice->isExclusive = false;
+                auto* slice = ctx.arena.make<SliceExprAST>(target, start, end, isExclusive);
                 slice->loc = loc;
-                slice->target = target;
-                slice->start = start;
-                slice->end = nullptr;
                 return slice;
             } else {
                 synchronizeTo(stream, ctx, TokenType::RBRACKET);
@@ -975,11 +958,8 @@ SliceExprAST* parseSliceExpr(TokenStream& stream, ParserContext& ctx, ExprPtr ta
                     if (stream.check(TokenType::RBRACKET)) {
                         stream.consume();
                     }
-                    auto* slice = ctx.arena.make<SliceExprAST>(isExclusive);
+                    auto* slice = ctx.arena.make<SliceExprAST>(target, start, end, isExclusive);
                     slice->loc = loc;
-                    slice->target = target;
-                    slice->start = start;
-                    slice->end = nullptr;
                     return slice;
                 }
             }
@@ -987,11 +967,8 @@ SliceExprAST* parseSliceExpr(TokenStream& stream, ParserContext& ctx, ExprPtr ta
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                     "expected '..' or '..<', got '", stream.peekValue(), "'");
             stream.consume(); // Consume ']'
-            auto* slice = ctx.arena.make<SliceExprAST>(false); // slice->isExclusive = false;
+            auto* slice = ctx.arena.make<SliceExprAST>(target, start, end, isExclusive);
             slice->loc = loc;
-            slice->target = target;
-            slice->start = start;
-            slice->end = nullptr;
             return slice;
         } else {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
@@ -1000,11 +977,8 @@ SliceExprAST* parseSliceExpr(TokenStream& stream, ParserContext& ctx, ExprPtr ta
             if (stream.check(TokenType::RBRACKET)) {
                 stream.consume();
             }
-            auto* slice = ctx.arena.make<SliceExprAST>(false); // slice->isExclusive = false;
+            auto* slice = ctx.arena.make<SliceExprAST>(target, start, end, isExclusive);
             slice->loc = loc;
-            slice->target = target;
-            slice->start = start;
-            slice->end = nullptr;
             return slice;
         }
     }
@@ -1016,20 +990,14 @@ SliceExprAST* parseSliceExpr(TokenStream& stream, ParserContext& ctx, ExprPtr ta
         if (stream.check(TokenType::RBRACKET)) {
             stream.consume();
         }
-        auto* slice = ctx.arena.make<SliceExprAST>(isExclusive);
+        auto* slice = ctx.arena.make<SliceExprAST>(target, start, end, isExclusive);
         slice->loc = loc;
-        slice->target = target;
-        slice->start = start;
-        slice->end = end;
         return slice;
     }
     stream.consume(); // Consume ']'
     
-    auto* slice = ctx.arena.make<SliceExprAST>(isExclusive);
+    auto* slice = ctx.arena.make<SliceExprAST>(target, start, end, isExclusive);
     slice->loc = loc;
-    slice->target = target;
-    slice->start = start;
-    slice->end = end;
     
     LOG_PARSER_DETAIL("parseSliceExpr: parsed slice");
     return slice;
@@ -1221,16 +1189,14 @@ ExprAST* parsePipelineExpr(TokenStream& stream, ParserContext& ctx, ExprPtr seed
                                 "pipeline requires at least one step");
         return seed;
     }
-    
-    auto* pipeline = ctx.arena.make<PipelineExprAST>();
-    pipeline->loc = loc;
-    pipeline->seed = seed;
-    
+
     auto builder = ctx.arena.makeBuilder<PipelineStepPtr>();
     for (auto* s : steps) {
         builder.push_back(s);
     }
-    pipeline->steps = builder.build();
+
+    auto* pipeline = ctx.arena.make<PipelineExprAST>(seed, builder.build());
+    pipeline->loc = loc;
     
     LOG_PARSER_DETAIL("parsePipelineExpr: ", steps.size(), " steps");
     return pipeline;
@@ -1253,11 +1219,9 @@ PipelineStepAST* parsePipelineStep(TokenStream& stream, ParserContext& ctx) {
         if (!anonFunc) {
             return nullptr;
         }
-        
-        auto* step = ctx.arena.make<PipelineStepAST>();
+        ArenaSpan<ExprPtr> packArgs = ctx.arena.makeBuilder<ExprPtr>().build();
+        auto* step = ctx.arena.make<PipelineStepAST>(anonFunc, packArgs);
         step->loc = loc;
-        step->callable = anonFunc;
-        step->packArgs = ctx.arena.makeBuilder<ExprPtr>().build();
         return step;
     }
     
@@ -1338,18 +1302,16 @@ PipelineStepAST* parsePipelineStep(TokenStream& stream, ParserContext& ctx) {
             packArgs = builder.build();
         } else {
             stream.setPos(savedPos);
-            auto* step = ctx.arena.make<PipelineStepAST>();
+            ArenaSpan<ExprPtr> packArgs = ctx.arena.makeBuilder<ExprPtr>().build();
+            auto* step = ctx.arena.make<PipelineStepAST>(callable, packArgs);
             step->loc = loc;
-            step->callable = callable;
-            step->packArgs = ctx.arena.makeBuilder<ExprPtr>().build();
             return step;
         }
     }
     
-    auto* step = ctx.arena.make<PipelineStepAST>();
+    packArgs = ctx.arena.makeBuilder<ExprPtr>().build();
+    auto* step = ctx.arena.make<PipelineStepAST>(callable, packArgs);
     step->loc = loc;
-    step->callable = callable;
-    step->packArgs = packArgs;
     
     LOG_PARSER_DETAIL("parsePipelineStep: parsed step");
     return step;
@@ -1397,16 +1359,14 @@ ExprAST* parseComposeExpr(TokenStream& stream, ParserContext& ctx, ExprPtr lhs) 
         }
         operands.push_back(operand);
     }
-    
-    auto* compose = ctx.arena.make<ComposeExprAST>();
-    compose->loc = loc;
-    compose->left = lhs;
-    
+
     auto builder = ctx.arena.makeBuilder<ComposeOperandPtr>();
     for (auto* op : operands) {
         builder.push_back(op);
     }
-    compose->operands = builder.build();
+    
+    auto* compose = ctx.arena.make<ComposeExprAST>(lhs, builder.build());
+    compose->loc = loc;
     
     LOG_PARSER_DETAIL("parseComposeExpr: ", operands.size(), " operands");
     return compose;
@@ -1439,10 +1399,8 @@ ComposeOperandAST* parseComposeOperand(TokenStream& stream, ParserContext& ctx) 
         }
     }
     
-    auto* operand = ctx.arena.make<ComposeOperandAST>();
+    auto* operand = ctx.arena.make<ComposeOperandAST>(callable, genericArgs);
     operand->loc = loc;
-    operand->callable = callable;
-    operand->genericArgs = genericArgs;
     
     LOG_PARSER_DETAIL("parseComposeOperand: parsed operand");
     return operand;
@@ -1574,11 +1532,9 @@ ExprPtr parseInfixNullCoalesce(TokenStream& stream, ParserContext& ctx, ExprPtr 
         return nullptr;
     }
     
-    auto* coalesce = ctx.arena.make<NullCoalesceExprAST>();
+    auto* coalesce = ctx.arena.make<NullCoalesceExprAST>(lhs, rhs);
     coalesce->loc = loc;
-    coalesce->value = lhs;
-    coalesce->fallback = rhs;
-    
+
     LOG_PARSER_DETAIL("parseInfixNullCoalesce: parsed null coalesce");
     return coalesce;
 }
