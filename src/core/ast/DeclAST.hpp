@@ -133,9 +133,6 @@ using ImportDeclPtr = ImportDeclAST*;
 struct VarDeclAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::VarDecl;
 
-    // ─── Parser Fields (immutable) ──────────────────────────────────────
-    const TypeAST* type;          // The type as written in source
-
     ExprAST* init;  // Initializer expression (null if none)
                     // we are not using const for this field because
                     // the semantic phase need to evaluate this
@@ -146,8 +143,7 @@ struct VarDeclAST : ValueDeclAST {
 
     // ─── Constructor ─────────────────────────────────────────────────────
     VarDeclAST(InternedString n, DeclKeyword kw, const TypeAST* t, ExprAST* i)
-        : ValueDeclAST(ASTKind::VarDecl, n, kw)
-        , type(t)
+        : ValueDeclAST(ASTKind::VarDecl, n, kw, t)
         , init(i) {}
 };
 using VarDeclPtr = VarDeclAST*;
@@ -173,7 +169,6 @@ struct ParamAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::Param;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
-    const TypeAST* type;          // The parameter type
     const bool isVariadic;        // True if variadic (`...type`)
     const bool isConstParam;      // True if read-only reference (`const type`)
     
@@ -186,8 +181,7 @@ struct ParamAST : ValueDeclAST {
 
     // ─── Constructor ─────────────────────────────────────────────────────
     ParamAST(InternedString n, const TypeAST* t, bool variadic = false, bool isConstParam = false)
-        : ValueDeclAST(ASTKind::Param, n, DeclKeyword::Let)  // Parameters are always Let by default
-        , type(t)
+        : ValueDeclAST(ASTKind::Param, n, DeclKeyword::Let, t)  // Parameters are always Let by default
         , isVariadic(variadic)
         , isConstParam(isConstParam) {}
 };
@@ -224,7 +218,6 @@ struct FuncDeclAST : ValueDeclAST {
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
     const ArenaSpan<GenericParamDeclPtr> genericParams;
-    const FuncTypeAST* funcType;
     const StmtAST* body;
     
     // ─── Semantic Fields (set by Sema) ────────────────────────────────
@@ -247,9 +240,8 @@ struct FuncDeclAST : ValueDeclAST {
     FuncDeclAST(InternedString n, DeclKeyword kw, 
                 ArenaSpan<GenericParamDeclPtr> params,
                 const FuncTypeAST* ft, const StmtAST* b)
-        : ValueDeclAST(ASTKind::FuncDecl, n, kw)
+        : ValueDeclAST(ASTKind::FuncDecl, n, kw, ft)
         , genericParams(params)
-        , funcType(ft)
         , body(b) {}
 };
 using FuncDeclPtr = FuncDeclAST*;
@@ -281,7 +273,7 @@ struct EnumVariantAST : ValueDeclAST {
 
     // ─── Constructor ─────────────────────────────────────────────────────
     EnumVariantAST(InternedString n, int64_t v)
-        : ValueDeclAST(ASTKind::EnumVariant, n, DeclKeyword::Const)  // Enum variants are always const
+        : ValueDeclAST(ASTKind::EnumVariant, n, DeclKeyword::Const, nullptr)  // Enum variants are always const
         , value(v) {}
 };
 using EnumVariantPtr = EnumVariantAST*;
@@ -307,7 +299,6 @@ struct FieldDeclAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::FieldDecl;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
-    const TypeAST* type;          // The field type
     const StmtAST* defaultBody;   // Block body default (for function fields)
     const bool isConstField;      // True if field is marked `const` in struct
 
@@ -325,8 +316,7 @@ struct FieldDeclAST : ValueDeclAST {
     // ─── Constructor ─────────────────────────────────────────────────────
     FieldDeclAST(InternedString n, const TypeAST* t, ExprAST* dv, 
                  const StmtAST* db, bool isConstField)
-        : ValueDeclAST(ASTKind::FieldDecl, n, DeclKeyword::Let)
-        , type(t)
+        : ValueDeclAST(ASTKind::FieldDecl, n, DeclKeyword::Let, t)
         , defaultVal(dv)
         , defaultBody(db)
         , isConstField(isConstField) {}
@@ -477,14 +467,12 @@ struct TraitFieldDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::TraitFieldDecl;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
-    const InternedString name;
     const TypeAST* type;          // Required field type
     const bool isConstField;      // True if implementing struct must declare as const
 
     // ─── Constructor ─────────────────────────────────────────────────────
     TraitFieldDeclAST(InternedString n, const TypeAST* t, bool isConstField)
         : DeclAST(ASTKind::TraitFieldDecl, n)
-        , name(n)
         , type(t) 
         , isConstField(isConstField) {}
 

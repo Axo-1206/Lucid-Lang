@@ -739,13 +739,7 @@ struct ValueDeclAST : DeclAST {
 
     /// The keyword that determines mutability (Let = mutable, Const = immutable)
     const DeclKeyword keyword;
-
-    /// The fully resolved semantic type (set by Sema during Phase 2)
-    /// Differs from the parser's type when:
-    /// - Generic arguments are resolved
-    /// - Traits are resolved to declarations
-    /// - Module-qualified types are resolved to normal types
-    TypeAST* semanticType = nullptr;
+    const TypeAST* type = nullptr;
     
     /// @brief Check if this value is immutable (const).
     bool isConst() const { return keyword == DeclKeyword::Const; }
@@ -753,8 +747,8 @@ struct ValueDeclAST : DeclAST {
     /// @brief Check if this value is mutable (let).
     bool isLet() const { return keyword == DeclKeyword::Let; }
     
-    explicit ValueDeclAST(ASTKind k, InternedString n, DeclKeyword kw)
-        : DeclAST(k, n), keyword(kw) {}
+    explicit ValueDeclAST(ASTKind k, InternedString n, DeclKeyword kw, const TypeAST* t)
+        : DeclAST(k, n), keyword(kw), type(t) {}
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

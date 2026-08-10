@@ -20,6 +20,7 @@
 #include "../context/SemaContext.hpp"
 #include "../const_eval/ConstEvaluator.hpp"
 #include "../support/CaptureAnalysis.hpp"
+#include "core/ast/DeclAST.hpp"
 #include "core/ast/TypeAST.hpp"
 #include "debug/DebugUtils.hpp"
 #include "sema/registry/AttributeValidator.hpp"
@@ -116,11 +117,8 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
     if (!declaredType) {
         return;
     }
-    
-    // ─── 2. Store the resolved type on the declaration ──────────────
-    const_cast<VarDeclAST*>(decl)->semanticType = declaredType;
 
-    // ─── 3. Validate const type and initializer ──────────────────────
+    // ─── 2. Validate const type and initializer ──────────────────────
     if (decl->keyword == DeclKeyword::Const) {
         if (!validateConstType(declaredType, decl->name, "variable", ctx)) {
             return;
@@ -130,7 +128,7 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
         }
     }
 
-    // ─── 4. Check initializer ────────────────────────────────────────
+    // ─── 3. Check initializer ────────────────────────────────────────
     if (decl->init) {
         TypeAST* initType = resolveExprWithTarget(decl->init, declaredType, ctx);
         if (!initType || initType->isa<UnknownTypeAST>()) {
@@ -170,11 +168,10 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
     }
 
     // ─── 3. Resolve function type ─────────────────────────────────────────────
-    FuncTypeAST* funcType = const_cast<FuncTypeAST*>(decl->funcType);
+    const FuncTypeAST* funcType = decl->type->as<FuncTypeAST>();
     if (!resolveFuncType(funcType, ctx)) {
         return;
     }
-    const_cast<FuncDeclAST*>(decl)->semanticType = funcType;
 
     // ─── 4. Handle @[foreign] functions ────────────────────────────────────
     if (decl->isForeignFunction) {
@@ -198,7 +195,7 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
     // popped after the body is resolved.
     ctx.pushScope();
     
-    for (FuncTypeAST* group = funcType; group; group = group->getNext()) {
+    for (const FuncTypeAST* group = funcType; group; group = group->getNext()) {
         for (ParamAST* param : group->params) {
             resolveParam(param, ctx);
         }
@@ -282,10 +279,7 @@ void resolveParam(ParamAST* param, SemaContext& ctx) {
         return;
     }
     
-    // ─── 2. Store the resolved type on the parameter ──────────────────────
-    const_cast<ParamAST*>(param)->semanticType = paramType;
-    
-    // ─── 3. Validate const parameter ────────────────────────────────────────
+    // ─── 2. Validate const parameter ────────────────────────────────────────
     if (param->isConstParam) {
         if (!validateConstType(paramType, param->name, "parameter", ctx)) {
             return;
@@ -423,9 +417,6 @@ void resolveStructFields(StructDeclAST* decl, SemaContext& ctx) {
         if (!fieldType) {
             continue;
         }
-
-        // ─── Store the resolved type on the field ──────────────────────
-        const_cast<FieldDeclAST*>(field)->semanticType = fieldType;
 
         // ─── 2. Downward Flow Rule: Check borrowed types ──────────────────
         // Struct fields cannot contain &T or [_]T (borrowed types)
