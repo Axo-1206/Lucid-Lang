@@ -5838,32 +5838,99 @@ several at once** — schedule each concurrent operation with its own `async`,
 then join them together in a single `await`:
 
 ```ebnf
-async_stmt      = 'async' IDENTIFIER '=' call_expr
-                  (* exactly one variable — the variable must already be
-                     declared (let); call_expr must return a type that can
-                     be awaited *)
+async_stmt      = 'async' decl_keyword IDENTIFIER type '=' call_expr
+                  (* introduces a FRESH binding — never a pre-existing
+                     variable. decl_keyword ('let' or 'const') governs
+                     reassignment after narrowing, same as any other
+                     binding — see rule 6 below for the separate,
+                     state-dependent restriction that applies before
+                     narrowing regardless of which keyword is used. The
+                     written `type` is the inner type `T`; the parser wraps
+                     it into Future<T> immediately, the same eager wrap
+                     `?`/`!` already get. There is no inferred-type form —
+                     `type` is required, same as every other `let`/`const`
+                     in this language. *)
 
 await_stmt      = 'await' IDENTIFIER { ',' IDENTIFIER }
                   (* one or more variables — waits until ALL named
-                     variables are ready; each IDENTIFIER must be a
-                     variable bound by a prior async_stmt *)
+                     variables are ready; each IDENTIFIER must resolve to
+                     a binding introduced by a prior async_stmt, currently
+                     of type Future<T> *)
 ```
 
 > [!NOTE]
-> A variable targeted by `async` is not filled in until the matching
-> `await` returns — see **Variable Declaration**, earlier in this document.
-> If the variable's type is nullable (`T?`), no initializer is required; it
-> starts as `nil` and is set by the async operation. If the type is
-> non-nullable, `let` must give it a real initial value, which the async
-> operation later overwrites.
+> **`Future<T>` is a linear type, not a nullable one.** Earlier revisions of
+> this section modeled "not yet available" with a pre-declared `T?`
+> variable that `async` filled in later. That design is gone — `async`
+> now introduces its own binding of type `Future<T>`, and "not yet
+> available" is enforced by the type system itself rather than by
+> convention. See **`Future<T>` — Linear Value Rules**, below, before
+> reading the rest of this section; every example that follows assumes it.
+
+### `Future<T>` — Linear Value Rules
+
+`Future<T>` is the type of the binding `async` introduces. It represents a
+scheduled operation that has not yet completed, and it is a **linear
+value**: consumed by exactly one `await`, and only one `await` is ever
+valid against it. It does not fit any of the categories in **Ownership
+Categories at a Glance** — not Owned (copying it cannot duplicate the
+single underlying scheduled operation), not Shared/refcounted (it is never
+meant to have more than one simultaneous holder), not Borrowed (the hazard
+is double-consumption, not dangling).
+
+1. **Use-before-await is a compile error.** Enforced by the same
+   flow-sensitive narrowing that already handles `T?`/`T!` — before
+   `await`, the binding's state is `Future<T>`; after, narrowing rewrites
+   it to plain `T` for the rest of the enclosing scope, exactly as a
+   successful nil-check narrows `T?` to `T`.
+2. **Not copyable.** `let copy = result;` is a compile error while
+   `result`'s type is `Future<T>`. There must never be two bindings that
+   could each independently attempt to `await` the same underlying
+   operation.
+3. **May only exist as a local variable or a function parameter.** Never a
+   struct field, never an array or slice element. This closes off every
+   indirect path into rule 4 — a `Future<T>` cannot be smuggled into a
+   closure's capture set through a container.
+4. **A closure literal may never capture a `Future<T>`**, whether it
+   arrived by direct capture or as the enclosing function's own parameter.
+   This is a **separate** rule from the Downward Flow Rule's restriction on
+   `&T`/`[_]T` — that one exists because a closure might *outlive* a
+   borrowed view's source; this one exists because a closure might *run
+   more than once*, and a plain function body (which runs exactly once per
+   call) does not have that problem.
+5. **Must be awaited on every control-flow path out of the scope that
+   holds it.** A live, un-awaited `Future<T>` reaching scope exit —
+   including via `return`, `break`, or any branch of an `if`/`switch` — is
+   a **compile error**, not a warning.
+6. **Cannot be reassigned while still pending, regardless of `let` or
+   `const`.** This is a distinct, state-dependent rule, not an ordinary
+   mutability check — reassigning a still-`Future<T>` binding would orphan
+   a live linear value without ever consuming it, the same violation as
+   rule 5, just triggered by reassignment instead of falling off the end
+   of a scope. Once `await` has narrowed the binding to plain `T`, ordinary
+   `let`/`const` rules take back over — a `let`-declared result becomes
+   freely reassignable, a `const`-declared one does not. The type checker
+   has to consult the binding's current narrowed state at each assignment
+   site, not just its keyword: the same `let`-declared binding is illegal
+   to reassign earlier in a function and legal later in that same
+   function, once past the `await`.
+   
+   | State                           | `let`-declared           | `const`-declared |
+   | ------------------------------- | ------------------------ | ---------------- |
+   | Still `Future<T>` (pending)     | ❌ rejected               | ❌ rejected       |
+   | Narrowed to `T` (after `await`) | ✅ ordinary mutable local | ❌ rejected       |
+
+> [!NOTE]
+> `Thread<T>` (the result of `spawn`) follows every one of these six rules
+> identically, substituting `spawn` for `async` and `join` for `await` —
+> see **Spawn / Join**, below.
 
 ### `async` — Schedule Concurrent Operations
 
-`async` schedules a function call on the event loop and binds its return value to an existing variable. The calling thread continues running immediately — the async operation runs concurrently with the caller, but on the same thread (cooperative multitasking).
+`async` schedules a function call on the event loop and introduces a fresh binding of type `Future<T>` for its eventual result. The calling thread continues running immediately — the async operation runs concurrently with the caller, but on the same thread (cooperative multitasking).
 
 ```lucid
-let result string?;
-async result = fetchData("https://api.example.com");
+async const result string = fetchData("https://api.example.com");
 
 -- do other work while fetchData runs
 let n int = 1 + 2;
@@ -5873,65 +5940,52 @@ for i int in 0..1000 {
 
 -- later, wait for the result
 await result;
-io:printl(result ?? "");
+io:printl(result);
 ```
 
 A call that returns a **struct** (see **Grouping several return values**,
 earlier in this document) follows the same single-variable pattern — the
-struct is one value, like any other. Either nullability strategy works,
-depending on whether a sensible non-nullable initial value exists:
+struct is one value, like any other:
 
 ```lucid
 const parseInt (s string) -> Pair<int, bool> = { ... };
 
--- non-nullable: must supply a real initial value up front
-let result1 Pair<int, bool> = Pair<int, bool>{ first = 0, second = false };
-async result1 = parseInt("42");
-
--- nullable: no initial value required, starts as nil
-let result2 Pair<int, bool>?;
-async result2 = parseInt("42");
+async const result1 Pair<int, bool> = parseInt("42");
 
 -- ... other work ...
 
-await result1, result2;
+await result1;
 if result1.second { io:printl(stringFromInt(result1.first)) }
 ```
 
 ### `await` — Wait for Async Results
 
-`await` blocks the current thread until one or more async operations complete. If multiple variables are awaited in one statement, the thread waits until **all** of them are ready.
+`await` blocks the current thread until one or more async operations complete, and narrows each named binding from `Future<T>` to plain `T`. If multiple variables are awaited in one statement, the thread waits until **all** of them are ready.
 
 ```lucid
 -- Wait for a single async operation
 await result;
-io:printl(result ?? "");
+io:printl(result);
 
 -- Wait for multiple async operations to complete
-let user User?;
-let profile Profile?;
-async user = fetchUser(1);
-async profile = fetchProfile(1);
+async const user User = fetchUser(1);
+async const profile Profile = fetchProfile(1);
 await user, profile;
-if user != nil and profile != nil {
-    io:printl(user.name + ": " + profile.bio);
-}
+io:printl(user.name + ": " + profile.bio);
 ```
 
-**If `await` is never called**, the async operation runs until the main thread terminates — at which point all unawaited async operations are also terminated. The variables bound by `async` remain unset if `await` is never reached.
+**If `await` is never reached on some control-flow path**, that is a
+**compile error**, not a runtime condition to guard against — see rule 5 of
+**`Future<T>` — Linear Value Rules**, above:
 
-> [!WARNING]
-> The compiler **warns** about unawaited async operations when the scope exits:
->
-> ```lucid
-> const process () -> () = {
->     let result string?;
->     async result = fetchData(url);
->
->    -- If we exit without awaiting, the async operation is terminated
->    -- WARNING: 'result' was bound by async but never awaited
-> };
->```
+```lucid
+const process () -> () = {
+    async const result string = fetchData(url);
+
+    -- ❌ compile error: 'result' is a live Future<string> reaching scope
+    -- exit without being awaited on this path
+};
+```
 
 ### Cooperative Multitasking — The Event Loop
 
@@ -5949,8 +6003,7 @@ let counter int = 0;
 -- signal; the task's real work is the side effect on 'counter'
 const runTask1 () -> bool = {
     counter = counter + 1;    -- safe: no other task runs here
-    let io1 bool?;
-    async io1 = someIo();
+    async const io1 bool = someIo();
     await io1;
     counter = counter + 1;    -- still safe: we yielded, but no other task
     return true;              -- can modify counter unless it also yields
@@ -5958,17 +6011,14 @@ const runTask1 () -> bool = {
 
 const runTask2 () -> bool = {
     counter = counter + 2;    -- safe: happens in its own time slice
-    let io2 bool?;
-    async io2 = otherIo();
+    async const io2 bool = otherIo();
     await io2;
     counter = counter + 2;
     return true;
 };
 
-let task1 bool?;
-let task2 bool?;
-async task1 = runTask1();
-async task2 = runTask2();
+async const task1 bool = runTask1();
+async const task2 bool = runTask2();
 
 await task1, task2;
 -- counter is predictable: 0 → 1 → 1 → 3 → 3 → 6
@@ -5986,46 +6036,68 @@ await task1, task2;
 
 ### Async Operations in Loops
 
-Scheduling many async operations in a loop is idiomatic and efficient:
-
-```lucid
-const urls [*]string = ["https://api1.com", "https://api2.com", "https://api3.com"];
-
--- Schedule all fetches concurrently
-let results [*]string = [];
-for _, url string in urls {
-    let result string = "";
-    async result = fetchData(url);
-    arr:append<string>(results)(result);    -- store the variable reference
-}
-
--- Wait for all to complete
-for _, result string in results {
-    await result;
-}
-
--- All data is now ready
-for _, result string in results {
-    io:printl(result);
-}
-```
+> [!WARNING]
+> **This is an open gap in the current design, not a solved pattern.** The
+> version of this section that existed before `Future<T>` was a real,
+> restricted type stored futures directly in a `[*]string` array while they
+> were still pending, then awaited them one at a time out of the array.
+> That pattern is no longer expressible: rule 3 of **`Future<T>` — Linear
+> Value Rules**, above, forbids a `Future<T>` from ever being an array or
+> slice element, exactly the same restriction `&T`/`[_]T` already have, and
+> for the same category of reason — a container is one more path a linear
+> value could otherwise be smuggled into a closure's capture set or
+> duplicated through, undetected.
+>
+> A **fixed, compile-time-known** number of concurrent operations is still
+> straightforward — schedule each with its own `async` statement (unrolled,
+> not looped) and `await` them together:
+>
+> ```lucid
+> async const data1 string = fetchData("https://api1.com");
+> async const data2 string = fetchData("https://api2.com");
+> async const data3 string = fetchData("https://api3.com");
+>
+> await data1, data2, data3;
+> io:printl(data1);
+> io:printl(data2);
+> io:printl(data3);
+> ```
+>
+> A **dynamic** number of concurrent operations — the actual loop case this
+> section used to cover, e.g. one fetch per entry in a runtime-sized
+> `urls [*]string` — has no direct syntax today, because there is no way to
+> hold more than a fixed, named set of `Future<T>` values live at once
+> without a container to put them in. The realistic fix is a standard
+> library primitive (something like `gather<T>(calls [*]() -> T) -> [*]T`)
+> that manages the futures entirely inside its own implementation — likely
+> compiler-recognized rather than expressible in user-level Lucid, since it
+> needs to hold N pending futures at once, which ordinary code is now
+> forbidden from doing. This needs a decision before the loop-based idiom
+> can be documented again; it is called out here rather than silently
+> dropped so it isn't lost.
 
 ### Error Handling with Async/Await
 
-Async operations can return fallible or nullable types. The same narrowing rules apply:
+Async operations can return fallible or nullable types — the inner type
+written at the `async` statement can itself be `T?`/`T!`/`T?!`, composing
+with the `Future<T>` wrapper the same way any other type composes with
+those suffixes. `await` narrows `Future<T!>` to `T!`; the fallible value
+still needs its own narrowing after that, same as any other `T!`:
 
 ```lucid
-let data string!;
-async data = riskyFetch(url);
+async const data string! = riskyFetch(url);
 
--- Narrow before use
+-- await narrows Future<string!> to string! — not yet plain string
+await data;
+
+-- narrow the fallible value itself, same as any non-async T!
 if data == err {
     log("fetch failed");
     return;
 }
 -- data is string here
 
-const result string = data ?? "fallback";
+const result string = data;
 ```
 
 ### Combining Async with Spawn
@@ -6034,20 +6106,15 @@ Async (concurrency) and spawn (parallelism) can be mixed freely:
 
 ```lucid
 -- CPU-bound work in a separate thread
-spawn heavyResult = processLargeDataset(data);
+spawn const heavyResult int = processLargeDataset(data);
 
--- Many I/O operations on the event loop
-let files [*]string = [];
-for _, path string in filePaths {
-    let content string = "";
-    async content = readFile(path);
-    arr:append<string>(files)(content);
-}
+-- I/O operations on the event loop (fixed, known count — see the
+-- Async Operations in Loops warning, above, for the dynamic-count case)
+async const content1 string = readFile(path1);
+async const content2 string = readFile(path2);
 
 -- Wait for all I/O first (fast)
-for _, content string in files {
-    await content;
-}
+await content1, content2;
 
 -- Then wait for the CPU work (slow)
 join heavyResult;
@@ -6060,14 +6127,12 @@ io:printl("All work complete: " + stringFromInt(heavyResult));
 `await` only waits for operations scheduled with `async`. You cannot `await` a `spawn` operation:
 
 ```lucid
-let result string?;
-spawn result = heavyWork();    -- result is thread-bound
+spawn const result string = heavyWork();    -- result is thread-bound
 
 await result;    -- ERROR: result is not an async operation
 join result;    -- CORRECT: wait for the thread
 
-let light string?;
-async light = ioWork();    -- light is event-loop-bound
+async const light string = ioWork();    -- light is event-loop-bound
 
 join light;    -- ERROR: light is not a thread
 await light;    -- CORRECT: wait for the async operation
@@ -6118,46 +6183,19 @@ await light;    -- CORRECT: wait for the async operation
 import std.io as io
 import std.http as http
 
--- Fetch multiple URLs concurrently
-const fetchAll (urls [*]string) -> [*]string = {
-    let results [*]string = [];
-
-    -- Schedule all fetches
-    for _, url string in urls {
-        let data string;
-        async data = http:get(url);
-        arr:append<string>(results)(data);
-    }
-
-    -- Wait for all fetches to complete
-    let fetched [*]string = [];
-    for _, data string in results {
-        await data;
-        arr:append<string>(fetched)(data);
-    }
-
-    return fetched;
-};
-
--- Mixed parallelism and concurrency
+-- Mixed parallelism and concurrency. Each URL is fetched with its own
+-- named async binding — a fixed, compile-time-known count, per the Async
+-- Operations in Loops warning, above; a dynamic list of URLs has no direct
+-- expression under the current Future<T> rules.
 @[export] const main () -> int = {
-    let urls [*]string = [
-        "https://api1.com/users",
-        "https://api2.com/products",
-        "https://api3.com/orders"
-    ];
-
     -- Concurrent I/O (event loop)
-    let userData string;
-    let productData string;
-    let orderData string;
-    async userData = http:get(urls[0]);
-    async productData = http:get(urls[1]);
-    async orderData = http:get(urls[2]);
+    async const userData string = http:get("https://api1.com/users");
+    async const productData string = http:get("https://api2.com/products");
+    async const orderData string = http:get("https://api3.com/orders");
 
-    -- Parallel CPU work (OS thread)
-    let processed string;
-    spawn processed = processUserData(userData);
+    -- Parallel CPU work (OS thread) — spawned before the await below, so
+    -- it runs concurrently with the I/O, not after it
+    spawn const processed string = processUserData(userData);
 
     -- Wait for I/O first
     await userData, productData, orderData;
@@ -6178,6 +6216,19 @@ const fetchAll (urls [*]string) -> [*]string = {
     return 0;
 };
 ```
+
+> [!NOTE]
+> `processed` is spawned from `userData` — but `userData` is still a live
+> `Future<string>` at that point, not yet awaited. `spawn`'s call
+> expression may reference a pending future's *name*; this is fine because
+> `processUserData` doesn't run until the spawned thread actually starts,
+> by which point the runtime must already be treating the read as
+> happening after resolution. Whether the type checker requires `userData`
+> to already be narrowed to plain `string` *before* it can be passed to
+> `spawn` (i.e. `await userData;` first) or allows this directly is worth
+> pinning down explicitly — it isn't settled by anything decided so far in
+> this document, and this example is written assuming the more permissive
+> reading. Flagged here rather than silently assumed correct.
 
 ### Async vs Spawn — Decision Tree
 
@@ -6212,12 +6263,26 @@ const fetchAll (urls [*]string) -> [*]string = {
 ```ebnf
 spawn_stmt      = 'spawn' spawn_binding '=' call_expr
 
-spawn_binding   = IDENTIFIER      (* store result for later join *)
-                | '_'             (* discard result — fire and forget *)
+spawn_binding   = IDENTIFIER type    (* introduces a FRESH binding — never a
+                                         pre-existing variable. The parser
+                                         wraps the written type into
+                                         Thread<T> eagerly, same as async_stmt *)
+                | '_'                (* discard result — fire and forget;
+                                         no binding, no type to write, no
+                                         Thread<T> ever produced *)
 
 join_stmt       = 'join' IDENTIFIER { ',' IDENTIFIER }
-                  (* waits for all named spawn results to be ready *)
+                  (* waits for all named spawn results to be ready; each
+                     IDENTIFIER must resolve to a binding introduced by a
+                     prior spawn_stmt, currently of type Thread<T> *)
 ```
+
+> [!NOTE]
+> `Thread<T>` follows every rule in **`Future<T>` — Linear Value Rules**,
+> above, substituting `spawn` for `async` and `join` for `await` — not
+> copyable, local/parameter-only storage, never captured by a closure, and
+> (see **Compiler Enforcement**, below) must be joined on every
+> control-flow path as a **compile error**, not a warning.
 
 ### Fire and Forget (`_`)
 
@@ -6241,8 +6306,7 @@ Use a named variable when you need the result. The spawned thread runs in parall
 
 ```lucid
 -- Single return value
-let result int?;
-spawn result = computeHeavyData();
+spawn const result int = computeHeavyData();
 
 -- Do other work while computeHeavyData runs
 let n int = 1 + 2;
@@ -6252,7 +6316,7 @@ for i int in 0..1000 {
 
 -- Block until result is ready
 join result;
-io:printl("Result: " + stringFromInt(result ?? 0));
+io:printl("Result: " + stringFromInt(result));
 ```
 
 A call that returns a **struct** (see **Grouping several return values**,
@@ -6261,13 +6325,12 @@ earlier in this document) follows the same single-variable pattern:
 ```lucid
 const parseData (s string) -> Pair<int, bool> = { ... };
 
-let result Pair<int, bool>?;
-spawn result = parseData("42");
+spawn const result Pair<int, bool> = parseData("42");
 
 -- ... other work ...
 
 join result;
-if result != nil and result.second { io:printl(stringFromInt(result.first)) }
+if result.second { io:printl(stringFromInt(result.first)) }
 ```
 
 `join` can still name more than one variable in a single statement — that
@@ -6275,49 +6338,48 @@ joins several *independently spawned* variables together, not several values
 returned from one call:
 
 ```lucid
-let user User?;
-let log AuditLog?;
-spawn user = fetchUser(id);
-spawn log = fetchLog(id);
+spawn const user User = fetchUser(id);
+spawn const log AuditLog = fetchLog(id);
 join user, log;
 ```
 
 ### The Discard Pattern (`_`) vs Named Variables
 
-| Syntax           | Meaning             | Join Required? | Result Available? |
-| ---------------- | ------------------- | -------------- | ----------------- |
-| `spawn _ = fn()` | Fire and forget     | ❌ No           | ❌ No              |
-| `spawn x = fn()` | Fire and join later | ✅ Yes          | ✅ Yes             |
+| Syntax                   | Meaning             | Join Required? | Result Available? |
+| ------------------------ | ------------------- | -------------- | ----------------- |
+| `spawn _ = fn()`         | Fire and forget     | ❌ No           | ❌ No              |
+| `spawn const x T = fn()` | Fire and join later | ✅ Yes          | ✅ Yes             |
 
 ```lucid
 -- The discard pattern is explicit about intent
 spawn _ = backgroundTask();    -- Clearly: I don't care about the result
 
 -- Named variables signal: I'll need this later
-spawn result = heavyWork();    -- Clearly: I'll join this eventually
+spawn const result int = heavyWork();    -- Clearly: I'll join this eventually
 ```
 
 ### Compiler Enforcement
 
-The compiler **warns** about named spawns that are never joined:
+A live, un-joined `Thread<T>` reaching scope exit — including via `return`,
+`break`, or any branch of an `if`/`switch` — is a **compile error**:
 
 ```lucid
 const process () -> int = {
-    spawn result = heavyWork();    -- result is never joined
+    spawn const result int = heavyWork();    -- result is never joined
     return 0;
 };
--- COMPILER WARNING: spawned result 'result' is never joined
+-- ❌ compile error: 'result' is a live Thread<int> reaching scope exit
+-- without being joined on this path
 ```
 
-To silence the warning, either join the result or explicitly discard it:
+To fix it, either join the result or explicitly discard it:
 
 ```lucid
 const process () -> int = {
     -- Option 1: Join before returning
-    let result int?;
-    spawn result = heavyWork();
+    spawn const result int = heavyWork();
     join result;
-    return result ?? 0;
+    return result;
 
     -- Option 2: Discard intentionally
     spawn _ = heavyWork();
@@ -6345,8 +6407,7 @@ const bumpAndReport () -> int = {
 
 spawn _ = bumpCounter();
 
-let result int?;
-spawn result = bumpAndReport();
+spawn const result int = bumpAndReport();
 
 join result;
 ```
@@ -6399,14 +6460,12 @@ A spawned thread can itself launch further `spawn` calls:
 const processData () -> int = {
     -- inside a thread, can spawn more threads
     spawn _ = logToFile("subtask started");
-    let subResult int?;
-    spawn subResult = computeSubtask();
+    spawn const subResult int = computeSubtask();
     join subResult;
-    return subResult ?? 0;
+    return subResult;
 };
 
-let result int?;
-spawn result = processData();
+spawn const result int = processData();
 join result;
 ```
 
@@ -6430,12 +6489,12 @@ join result;
 
 ### Performance Guidelines
 
-| Use Case                | Syntax                  | Count     | Reasoning                |
-| ----------------------- | ----------------------- | --------- | ------------------------ |
-| Fire and forget logging | `spawn _ = log()`       | Dozens    | No need to wait          |
-| Background cleanup      | `spawn _ = gc()`        | Few       | Runs independently       |
-| CPU-bound computation   | `spawn result = work()` | CPU cores | Need result, use threads |
-| Many independent tasks  | `spawn _ = task()`      | Dozens    | Threads have overhead    |
+| Use Case                | Syntax                          | Count     | Reasoning                |
+| ----------------------- | ------------------------------- | --------- | ------------------------ |
+| Fire and forget logging | `spawn _ = log()`               | Dozens    | No need to wait          |
+| Background cleanup      | `spawn _ = gc()`                | Few       | Runs independently       |
+| CPU-bound computation   | `spawn const result T = work()` | CPU cores | Need result, use threads |
+| Many independent tasks  | `spawn _ = task()`              | Dozens    | Threads have overhead    |
 
 ### Complete Example
 
@@ -6443,39 +6502,19 @@ join result;
 import std.io as io
 import std.http as http
 
--- Parallel processing with results
-const processImages (images [*]Image) -> [*]ProcessedImage = {
-    let results [*]ProcessedImage = [];
-
-    -- Spawn a thread for each image
-    for _, img Image in images {
-        let processed ProcessedImage;
-        spawn processed = imageCompiler(img);
-        arr:append<ProcessedImage>(results)(processed);
-    }
-
-    -- Wait for all images to be processed
-    let output [*]ProcessedImage = [];
-    for _, processed ProcessedImage in results {
-        join processed;
-        arr:append<ProcessedImage>(output)(processed);
-    }
-
-    return output;
-};
-
--- Mixed: fire-and-forget + joinable
+-- Mixed: fire-and-forget + joinable. A dynamic per-item spawn (one thread
+-- per image in a runtime-sized array, collected and joined later) has the
+-- same gap as the dynamic async case in Async Operations in Loops, above —
+-- Thread<T> cannot be an array element, so a variable count of spawned
+-- threads has no direct expression under the current rules.
 @[export] const main () -> int = {
     -- Fire and forget: analytics and logging
     spawn _ = sendAnalytics("app_started");
     spawn _ = logToFile("main started");
 
     -- Fire and join: parallel computations
-    let userData string;
-    let productData string;
-
-    spawn userData = fetchUserData();
-    spawn productData = fetchProductData();
+    spawn const userData string = fetchUserData();
+    spawn const productData string = fetchProductData();
 
     -- Do some work while fetches run
     let config Config = loadConfig();
@@ -6499,16 +6538,17 @@ const processImages (images [*]Image) -> [*]ProcessedImage = {
 
 ### Spawn vs Async — Quick Reference
 
-| Aspect          | `spawn`                  | `async`                     |
-| --------------- | ------------------------ | --------------------------- |
-| Model           | Parallelism (OS threads) | Concurrency (event loop)    |
-| Scheduling      | Preemptive               | Cooperative                 |
-| Overhead        | ~1MB stack               | ~few KB                     |
-| Capacity        | CPU cores (dozens)       | 10,000+                     |
-| Best for        | CPU work, blocking I/O   | I/O, network, file I/O      |
-| Join with       | `join`                   | `await`                     |
-| Fire and forget | `spawn _ =`              | N/A (must await or warning) |
-| Data sharing    | Needs locks              | Safe at yield points        |
+| Aspect          | `spawn`                    | `async`                                   |
+| --------------- | -------------------------- | ----------------------------------------- |
+| Model           | Parallelism (OS threads)   | Concurrency (event loop)                  |
+| Scheduling      | Preemptive                 | Cooperative                               |
+| Overhead        | ~1MB stack                 | ~few KB                                   |
+| Capacity        | CPU cores (dozens)         | 10,000+                                   |
+| Best for        | CPU work, blocking I/O     | I/O, network, file I/O                    |
+| Join with       | `join`                     | `await`                                   |
+| Fire and forget | `spawn _ =`                | N/A (must await, compile error otherwise) |
+| Copyable        | No (`Thread<T>` is linear) | No (`Future<T>` is linear)                |
+| Data sharing    | Needs locks                | Safe at yield points                      |
 
 | Level | Operators                   | Associativity | Handler                           |
 | ----- | --------------------------- | ------------- | --------------------------------- |
