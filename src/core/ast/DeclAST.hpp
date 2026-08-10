@@ -145,12 +145,12 @@ struct VarDeclAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::VarDecl;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
-    const TypeAST* type;      // TypeAST* const → const TypeAST*
-    const ExprAST* init;      // ExprPtr const → const ExprAST*
+    const TypeAST* type;
+    const ExprAST* init;
     
     // ─── CodeGen Fields (mutable) ──────────────────────────────────────
-    llvm::AllocaInst* llvmAlloca = nullptr;
-    llvm::GlobalVariable* llvmGlobal = nullptr;
+    llvm::AllocaInst* llvmAlloca = nullptr;      // Local variable
+    llvm::GlobalVariable* llvmGlobal = nullptr;  // Module-level variable
 
     // ─── Constructor ─────────────────────────────────────────────────────
     VarDeclAST(InternedString n, DeclKeyword kw, const TypeAST* t, const ExprAST* i)
@@ -183,15 +183,18 @@ struct ParamAST : ValueDeclAST {
     // ─── Parser Fields (immutable) ──────────────────────────────────────
     const TypeAST* type;
     const bool isVariadic;
-    const bool isConstParam;  // read-only reference parameter (distinct from mutability)
+    const bool isConstParam;
     
     // ─── CodeGen Fields (mutable) ──────────────────────────────────────
-    llvm::Value* llvmValue = nullptr;
-    llvm::AllocaInst* llvmAlloca = nullptr;
+    llvm::Value* llvmValue = nullptr;           // The LLVM argument value
+    llvm::AllocaInst* llvmAlloca = nullptr;     // The alloca for the param
+    llvm::Type* llvmType = nullptr;             // LLVM type (may differ from AST type)
+    size_t abiRegisterIndex = 0;                // Register index for ABI
+    bool isByVal = false;                       // If passed by value (structs)
 
     // ─── Constructor ─────────────────────────────────────────────────────
     ParamAST(InternedString n, const TypeAST* t, bool variadic = false, bool isConstParam = false)
-        : ValueDeclAST(ASTKind::Param, n, DeclKeyword::Let)  // Parameters are always mutable by default
+        : ValueDeclAST(ASTKind::Param, n, DeclKeyword::Let)
         , type(t)
         , isVariadic(variadic)
         , isConstParam(isConstParam) {}
@@ -298,20 +301,20 @@ struct FieldDeclAST : ValueDeclAST {
     const TypeAST* type;
     const ExprAST* defaultVal;
     const StmtAST* defaultBody;
-    const bool isConstField;  // True if field is marked `const` in struct
+    const bool isConstField;
     
     // ─── CodeGen Fields (mutable) ──────────────────────────────────────
-    size_t fieldIndex = 0;
+    size_t fieldIndex = 0;       // Position in struct layout
+    llvm::Type* llvmType = nullptr;  // LLVM type of this field
+    uint64_t byteOffset = 0;     // Byte offset from struct start
 
-    // ─── Constructor ─────────────────────────────────────────────────────
     FieldDeclAST(InternedString n, const TypeAST* t, const ExprAST* dv, const StmtAST* db, bool isConstField)
-        : ValueDeclAST(ASTKind::FieldDecl, n, DeclKeyword::Let)  // Fields use Let/Const via isConstField
+        : ValueDeclAST(ASTKind::FieldDecl, n, DeclKeyword::Let)
         , type(t)
         , defaultVal(dv)
         , defaultBody(db)
         , isConstField(isConstField) {}
     
-    /// @brief Check if this field is const (immutable after construction).
     bool isConst() const { return isConstField; }
 };
 using FieldDeclPtr = FieldDeclAST*;
@@ -353,27 +356,13 @@ struct StructDeclAST : TypeDeclAST {
     // ─── Parser Fields (immutable) ──────────────────────────────────────
     const ArenaSpan<GenericParamDeclPtr> genericParams;
     const ArenaSpan<FieldDeclPtr> fields;
-    const ArenaSpan<NamedTypeAST*> traitRefs;   // traits this struct implements
+    const ArenaSpan<NamedTypeAST*> traitRefs;
     
-    // ─── Semantic Fields (mutable) ──────────────────────────────────────
-    /// Field name → index, set by Sema. ArenaSpan instead of std::unordered_map.
-    struct FieldIndexEntry {
-        InternedString name;
-        size_t index = 0;
-    };
-    ArenaSpan<FieldIndexEntry> fieldIndices;
-
     // ─── CodeGen Fields (mutable) ──────────────────────────────────────
-    llvm::StructType* llvmType = nullptr;   // The generated LLVM struct type
-
-    /// Linear-scan replacement for `fieldIndices[name]`. Returns
-    /// `SIZE_MAX` if `name` is not a field of this struct.
-    size_t indexOfField(InternedString name) const {
-        for (const auto& entry : fieldIndices) {
-            if (entry.name == name) return entry.index;
-        }
-        return SIZE_MAX;
-    }
+    llvm::StructType* llvmType = nullptr; // The generated LLVM struct type
+    uint64_t totalSize = 0;               // Total size in bytes
+    uint64_t alignment = 0;               // Required alignment
+    bool isPacked = false;                // If @[packed] attribute is present
 
     // ─── Constructor ─────────────────────────────────────────────────────
     StructDeclAST(InternedString n,
@@ -384,7 +373,15 @@ struct StructDeclAST : TypeDeclAST {
         , genericParams(params)
         , fields(flds)
         , traitRefs(traits) {}
+    
+    size_t indexOfField(InternedString name) const {
+        for (size_t i = 0; i < fields.size(); ++i) {
+            if (fields[i]->name == name) return i;
+        }
+        return SIZE_MAX;
+    }
 };
+using StructDeclPtr = StructDeclAST*;
 using StructDeclPtr = StructDeclAST*;
 
 // ─── EnumDeclAST ──────────────────────────────────────────────────────────
@@ -406,23 +403,16 @@ struct EnumDeclAST : TypeDeclAST {
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
     const ArenaSpan<EnumVariantPtr> variants;
-    const PrimitiveTypeAST* backingType;   // optional backing type (defaults to int32)
+    const PrimitiveTypeAST* backingType;
     
     // ─── CodeGen Fields (mutable) ──────────────────────────────────────
+    ArenaSpan<llvm::ConstantInt*> variantConstants;  // Parallel to variants span
+    llvm::IntegerType* backingLLVMType = nullptr;    // LLVM type of backing int
+    uint64_t byteSize = 0;                           // Size of enum in bytes
 
-    /// Variant name → LLVM constant, set by CodeGen. ArenaSpan instead of
-    /// std::unordered_map — same reasoning as StructDeclAST::fieldIndices.
-    struct VariantConstantEntry {
-        InternedString name;
-        llvm::ConstantInt* value = nullptr;
-    };
-    ArenaSpan<VariantConstantEntry> variantConstants;
-
-    /// Linear-scan replacement for `variantConstants[name]`. Returns
-    /// nullptr if `name` is not a variant of this enum.
     llvm::ConstantInt* constantForVariant(InternedString name) const {
-        for (const auto& entry : variantConstants) {
-            if (entry.name == name) return entry.value;
+        for (size_t i = 0; i < variants.size(); ++i) {
+            if (variants[i]->name == name) return variantConstants[i];
         }
         return nullptr;
     }

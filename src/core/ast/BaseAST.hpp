@@ -305,7 +305,77 @@ struct TypeAST : BaseAST {
     explicit TypeAST(ASTKind k) : BaseAST(k) {}
 };
 
-
+// ─────────────────────────────────────────────────────────────────────────────
+// CONSTANT EVALUATION DESIGN
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Lucid evaluates constant expressions (e.g., `2 + 3`, `if true ?? 5 else 10`)
+// during semantic analysis. The result is stored as metadata on the original
+// AST node, not by replacing the expression subtree with a literal.
+//
+// ## Why Metadata, Not Replacement?
+//
+// 1. **Memory efficiency**: Replacing AST nodes during semantic analysis would
+//    require allocating new nodes (via the arena) for every constant expression.
+//    The original AST is already allocated; reusing it avoids extra memory
+//    pressure and fragmentation.
+//
+// 2. **Source fidelity**: Preserving the original AST is essential for
+//    diagnostics. When an error occurs, we can report it in terms of the
+//    original source expression, not a transformed one.
+//
+// 3. **Non‑destructive analysis**: Other semantic passes may need to traverse
+//    the original expression tree (e.g., for type checking, narrowing, or
+//    capture analysis). Replacing the AST would break these passes.
+//
+// 4. **Lazy evaluation**: We can compute and cache the constant value once,
+//    and reuse it wherever needed, without modifying the AST.
+//
+// ## Implementation Fields (on ExprAST)
+//
+//   - `isConst` : bool
+//         True if the expression has been evaluated to a compile‑time constant.
+//         Set by `ConstEvaluator`; never changes after that.
+//
+//   - `constValue` : ConstantValue
+//         The evaluated constant value (if `isConst` is true). May be a
+//         primitive, enum, struct, array, or function pointer.
+//
+//   - `valueState` : ValueState
+//         Reflects the result's nullability/fallibility state (Definite, Nil,
+//         Err, Unknown, None). Helps with flow‑sensitive narrowing.
+//
+//   - `resolvedType` : TypeAST*
+//         The semantic type of the expression, set during type resolution.
+//         For constants, this is the type of the evaluated value.
+//
+// ## Usage Guidelines
+//
+// ### Semantic Analysis (Sema)
+//   - Call `ConstEvaluator::evaluate(ctx, expr, targetType)` to evaluate an
+//     expression. It returns a `ConstantValue` and sets `isConst`/`constValue`
+//     on the node if successful.
+//   - Use `expr->isConst` to check if a constant is available.
+//   - Access the evaluated value via `expr->constValue`.
+//   - Do not modify the AST structure; use the metadata fields.
+//
+// ### Code Generation (CodeGen)
+//   - If `expr->isConst` is true, you may emit the constant directly
+//     (e.g., `emitConstant(expr->constValue)`).
+//   - Otherwise, emit the expression as usual.
+//
+// ### Diagnostics
+//   - When reporting an error, refer to the original expression's source
+//     location (`expr->loc`) and, if helpful, include the evaluated constant
+//     value in the message.
+//
+// ## Important Note
+//
+// The const evaluator never replaces the original AST node with a literal.
+// The original structure remains intact for diagnostics and other passes.
+// Metadata fields are the only addition.
+//
+// ─────────────────────────────────────────────────────────────────────────────
 
 enum class ValueState {
     None,       // For any call expression that return no value

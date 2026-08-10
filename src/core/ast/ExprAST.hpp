@@ -15,6 +15,7 @@
 #include "BaseAST.hpp"
 #include "TypeAST.hpp"
 #include "DeclAST.hpp"
+#include "core/memory/InternedString.hpp"
 #include "llvm/IR/Intrinsics.h"
 
 #include <string>
@@ -115,8 +116,8 @@ enum class UnaryOp {
 struct LiteralExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::LiteralExpr;
 
-    LiteralKind kind;
-    InternedString value;   // raw lexeme from the token
+    const LiteralKind kind;
+    const InternedString value;   // raw lexeme from the token
 
     LiteralExprAST(LiteralKind k, InternedString v)
         : ExprAST(ASTKind::LiteralExpr), kind(k), value(std::move(v)) {}
@@ -159,8 +160,8 @@ struct ArrayLiteralExprAST : ExprAST {
 struct FieldInitAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::FieldInit;
 
-    InternedString name; // field name being initialised
-    ExprPtr value;      // initialiser expression
+    const InternedString name; // field name being initialised
+    ExprPtr value;             // initialiser expression
 
     FieldInitAST() : BaseAST(ASTKind::FieldInit) {}
     FieldInitAST(InternedString n, ExprPtr v)
@@ -182,11 +183,12 @@ using FieldInitPtr = FieldInitAST*;
 struct StructLiteralExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::StructLiteralExpr;
 
-    InternedString typeName;               // "Vec2", "Color", "Pair"
+    const InternedString typeName;         // "Vec2", "Color", "Pair"
     ArenaSpan<TypePtr> genericArgs;        // empty if non‑generic
-    ArenaSpan<FieldInitPtr> inits;          // field = expr entries
+    ArenaSpan<FieldInitPtr> inits;         // field = expr entries
 
-    StructLiteralExprAST() : ExprAST(ASTKind::StructLiteralExpr) {}
+    StructLiteralExprAST(InternedString n) 
+        : ExprAST(ASTKind::StructLiteralExpr), typeName(n) {}
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -210,10 +212,11 @@ struct StructLiteralExprAST : ExprAST {
 struct IdentifierExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::IdentifierExpr;
 
-    InternedString name;
+    const InternedString name;
     ArenaSpan<TypePtr> genericArgs;
 
-    explicit IdentifierExprAST() : ExprAST(ASTKind::IdentifierExpr) {}
+    explicit IdentifierExprAST(InternedString n) 
+        : ExprAST(ASTKind::IdentifierExpr), name(n) {}
 };
 
 /// @brief Accesses a data member (struct field or enum variant) via '.' operator.
@@ -229,9 +232,10 @@ struct FieldAccessExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::FieldAccessExpr;
 
     ExprPtr object;
-    InternedString fieldName;
+    const InternedString fieldName;
 
-    FieldAccessExprAST() : ExprAST(ASTKind::FieldAccessExpr) {}
+    FieldAccessExprAST(InternedString n) 
+        : ExprAST(ASTKind::FieldAccessExpr), fieldName(n) {}
 };
 
 /// @brief Accesses a module member via the ':' operator.
@@ -247,11 +251,14 @@ struct FieldAccessExprAST : ExprAST {
 struct ModuleAccessExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::ModuleAccessExpr;
 
-    InternedString moduleName;
-    InternedString memberName;
+    const InternedString moduleName;
+    const InternedString memberName;
     ArenaSpan<TypePtr> genericArgs; // Generic function instantiation
 
-    ModuleAccessExprAST() : ExprAST(ASTKind::ModuleAccessExpr) {}
+    ModuleAccessExprAST(InternedString mod, InternedString, InternedString mem) 
+        : ExprAST(ASTKind::ModuleAccessExpr),
+        moduleName(mod),
+        memberName(mem) {}
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -291,9 +298,10 @@ struct CallExprAST : ExprAST {
     ExprPtr callee;
     ArenaSpan<TypePtr> genericArgs;
     ArenaSpan<ExprPtr> args;
-    bool hasArgPack = false;    // true for `fn(args)!`
+    const bool hasArgPack = false;    // true for `fn(args)!`
 
-    CallExprAST() : ExprAST(ASTKind::CallExpr) {}
+    CallExprAST(bool a) 
+        : ExprAST(ASTKind::CallExpr), hasArgPack(a) {}
 };
 
 /// @brief Array element access.
@@ -351,9 +359,10 @@ struct SliceExprAST : ExprAST {
     ExprPtr target;
     ExprPtr start;      // inclusive, nullptr means 0
     ExprPtr end;        // inclusive or exclusive depending on isExclusive
-    bool isExclusive = false; // true for ..< syntax
+    const bool isExclusive = false; // true for ..< syntax
 
-    SliceExprAST() : ExprAST(ASTKind::SliceExpr) {}
+    SliceExprAST(bool ex) 
+        : ExprAST(ASTKind::SliceExpr), isExclusive(ex) {}
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -378,11 +387,12 @@ struct SliceExprAST : ExprAST {
 struct BinaryExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::BinaryExpr;
 
-    BinaryOp op;
+    const BinaryOp op;
     ExprPtr left;
     ExprPtr right;
 
-    BinaryExprAST() : ExprAST(ASTKind::BinaryExpr) {}
+    BinaryExprAST(BinaryOp o) 
+        : ExprAST(ASTKind::BinaryExpr), op(o) {}
 };
 
 /// @brief A prefix unary operation.
@@ -401,10 +411,11 @@ struct BinaryExprAST : ExprAST {
 struct UnaryExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::UnaryExpr;
 
-    UnaryOp op;
+    const UnaryOp op;
     ExprPtr operand;
 
-    UnaryExprAST() : ExprAST(ASTKind::UnaryExpr) {}
+    UnaryExprAST(UnaryOp o) 
+        : ExprAST(ASTKind::UnaryExpr), op(o) {}
 };
 
 /// @brief An assignment – plain or compound.
@@ -425,11 +436,12 @@ struct UnaryExprAST : ExprAST {
 struct AssignExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::AssignExpr;
 
-    AssignOp op;
+    const AssignOp op;
     ExprPtr lhs;
     ExprPtr rhs;
 
-    AssignExprAST() : ExprAST(ASTKind::AssignExpr) {}
+    AssignExprAST(AssignOp o) 
+        : ExprAST(ASTKind::AssignExpr), op(o) {}
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -758,9 +770,10 @@ struct RangeExprAST : ExprAST {
 
     ExprPtr lo;   // start (inclusive)
     ExprPtr hi;   // end (inclusive/exclusive depends on flag)
-    bool isExclusive = false;   // true for ..<
+    const bool isExclusive = false;   // true for ..<
 
-    RangeExprAST() : ExprAST(ASTKind::RangeExpr) {}
+    RangeExprAST(bool ex) 
+        : ExprAST(ASTKind::RangeExpr), isExclusive(ex) {}
 };
 
 /// @brief A compiler‑builtin call invoked with the '#' prefix.
@@ -779,7 +792,7 @@ struct RangeExprAST : ExprAST {
 struct IntrinsicCallExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::IntrinsicCallExpr;
 
-    InternedString intrinsicName;                 // "sizeof", "memcpy", "sqrt", etc.
+    const InternedString intrinsicName;                 // "sizeof", "memcpy", "sqrt", etc.
     ArenaSpan<ExprPtr> args;                      // value arguments in order
     
     // LLVM intrinsic ID - set during semantic analysis
@@ -787,7 +800,8 @@ struct IntrinsicCallExprAST : ExprAST {
     // (e.g., #sizeof, #typeof, #tostr are handled by the compiler directly)
     std::optional<llvm::Intrinsic::ID> intrinsicID = std::nullopt;
 
-    IntrinsicCallExprAST() : ExprAST(ASTKind::IntrinsicCallExpr) {}
+    IntrinsicCallExprAST(InternedString n) 
+        : ExprAST(ASTKind::IntrinsicCallExpr), intrinsicName(n) {}
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
