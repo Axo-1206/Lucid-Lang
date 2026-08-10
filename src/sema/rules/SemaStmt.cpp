@@ -26,6 +26,7 @@
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/DeclAST.hpp"
 #include "core/ast/TypeAST.hpp"
+#include "../support/CaptureAnalysis.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
 #include "debug/DebugUtils.hpp"
 
@@ -710,6 +711,11 @@ bool resolveReturnStmt(const ReturnStmtAST* stmt, SemaContext& ctx) {
             return true;
         }
 
+        // ─── DETECT CLOSURE RETURN ───────────────────────────────────────────
+        // Check if the returned expression is a closure that needs to be
+        // marked as escaping (heap-allocated).
+        markClosureIfEscaping(stmt->value, ctx);
+
         // Validate fallible/nullable propagation
         if (stmt->value->valueState == ValueState::Err) {
             if (!isFallibleType(expectedType)) {
@@ -950,29 +956,33 @@ bool resolveAsyncStmt(const AsyncStmtAST* stmt, SemaContext& ctx) {
         return false;
     }
 
-    // ─── Validate the binding's type is FutureTypeAST ──────────────────────
-    // The parser should have already wrapped the type in FutureTypeAST,
-    // but we verify it here.
-    TypeAST* bindingType = resolveType(stmt->binding->type, ctx);
-    if (!bindingType || bindingType->isa<UnknownTypeAST>()) {
+    // ─── Resolve the binding's type and store it ──────────────────────────
+    // The parser wrapped the type in FutureTypeAST. We resolve it and
+    // store the resolved type on the binding's semanticType.
+    TypeAST* resolvedType = resolveType(stmt->binding->type, ctx);
+    if (!resolvedType || resolvedType->isa<UnknownTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_AsyncOutsideFunction, stmt->binding,
                               "async binding has invalid type");
         return false;
     }
 
-    if (!bindingType->isa<FutureTypeAST>()) {
+    // ─── Verify it's a FutureTypeAST after resolution ──────────────────────
+    if (!resolvedType->isa<FutureTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_AsyncOutsideFunction, stmt->binding,
                               "async binding type must be Future<T>, got ",
-                              debug::typeToString(bindingType, ctx.pool));
+                              debug::typeToString(resolvedType, ctx.pool));
         return false;
     }
 
+    // ─── Store the resolved type on the binding ────────────────────────────
+    const_cast<VarDeclAST*>(stmt->binding)->semanticType = resolvedType;
+
+    // ─── Get the inner type for call validation ────────────────────────────
+    const FutureTypeAST* futureType = resolvedType->as<FutureTypeAST>();
+    TypeAST* innerType = futureType->inner;
+
     // ─── Register the binding in the current scope ──────────────────────────
-    // The VarDeclAST was created by the parser, now we register it.
-    // Note: We need to register it BEFORE resolving the call so that
-    // the binding is available in the scope (but not used in the call).
     if (!ctx.insertValue(stmt->binding)) {
-        // Error already reported by insertValue
         return false;
     }
 
@@ -983,23 +993,18 @@ bool resolveAsyncStmt(const AsyncStmtAST* stmt, SemaContext& ctx) {
         return false;
     }
 
-    // Resolve the call against the inner type of the Future
-    const FutureTypeAST* futureType = bindingType->as<FutureTypeAST>();
-    TypeAST* expectedType = futureType->inner;
-    
-    // Resolve the call with the expected type
-    TypeAST* callType = resolveExprWithTarget(stmt->call, expectedType, ctx);
+    TypeAST* callType = resolveExprWithTarget(stmt->call, innerType, ctx);
     if (!callType || callType->isa<UnknownTypeAST>()) {
         return false;
     }
 
     // ─── Check: The call's return type must match the Future's inner type ──
-    if (!typesEqual(callType, expectedType)) {
+    if (!typesEqual(callType, innerType)) {
         ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, stmt->call,
                               "async call return type '", 
                               debug::typeToString(callType, ctx.pool),
                               "' does not match binding type '",
-                              debug::typeToString(expectedType, ctx.pool), "'");
+                              debug::typeToString(innerType, ctx.pool), "'");
         return false;
     }
 
@@ -1050,8 +1055,8 @@ bool resolveAwaitStmt(const AwaitStmtAST* stmt, SemaContext& ctx) {
 
         // ─── Check if this is a pending async operation ────────────────────
         if (ctx.hasPendingAsync(targetName)) {
-            // ─── Validate the variable has FutureTypeAST ──────────────────
-            TypeAST* varType = resolveType(decl->semanticType, ctx);
+            // ─── Validate the variable's semantic type is FutureTypeAST ──
+            const TypeAST* varType = decl->semanticType;
             if (!varType || !varType->isa<FutureTypeAST>()) {
                 ctx.diagnostics.error(DiagCode::Sem_AwaitNonAsync, target,
                                       "'", ctx.pool.lookup(targetName), 
@@ -1066,6 +1071,13 @@ bool resolveAwaitStmt(const AwaitStmtAST* stmt, SemaContext& ctx) {
             const FutureTypeAST* futureType = varType->as<FutureTypeAST>();
             const TypeAST* innerType = unwrapFutureType(futureType);
             
+            if (!innerType) {
+                ctx.diagnostics.error(DiagCode::Sem_AwaitNonAsync, target,
+                                      "'", ctx.pool.lookup(targetName), 
+                                      "' has no inner type");
+                return false;
+            }
+
             // Apply narrowing to the variable
             ctx.stack.narrowVariable(targetName, innerType);
 
@@ -1082,13 +1094,11 @@ bool resolveAwaitStmt(const AwaitStmtAST* stmt, SemaContext& ctx) {
             return false;
         } else {
             // ─── Check if already narrowed (double await) ──────────────────
-            // If it's not pending async, it might have been already awaited
-            // or it was never async to begin with.
+            // If it's not pending async, check if it was already narrowed
             const TypeAST* narrowedType = ctx.stack.getNarrowedType(targetName);
-            if (narrowedType && !narrowedType->isa<FutureTypeAST>()) {
-                // Already narrowed - check if it was a Future originally
-                // by looking at the declaration's original type
-                TypeAST* originalType = resolveType(decl->semanticType, ctx);
+            if (narrowedType) {
+                // Check if the original type was FutureTypeAST
+                const TypeAST* originalType = decl->semanticType;
                 if (originalType && originalType->isa<FutureTypeAST>()) {
                     ctx.diagnostics.error(DiagCode::Sem_DoubleAwait, target,
                                           "'", ctx.pool.lookup(targetName), 
@@ -1120,17 +1130,13 @@ bool resolveSpawnStmt(const SpawnStmtAST* stmt, SemaContext& ctx) {
     }
 
     // ─── Handle discard pattern ────────────────────────────────────────────
-    // If binding is nullptr, this is `spawn _ = fn()` - fire and forget.
-    // No type validation needed for the binding, just resolve the call.
     if (!stmt->binding) {
-        // ─── Resolve the call expression (discard) ────────────────────────
         if (!stmt->call) {
             ctx.diagnostics.error(DiagCode::Sem_SpawnOutsideFunction, stmt,
                                   "spawn statement requires a call expression");
             return false;
         }
 
-        // Resolve the call without a target type (any return type is fine)
         TypeAST* callType = resolveExpr(stmt->call, ctx);
         if (!callType || callType->isa<UnknownTypeAST>()) {
             return false;
@@ -1140,24 +1146,31 @@ bool resolveSpawnStmt(const SpawnStmtAST* stmt, SemaContext& ctx) {
         return false;
     }
 
-    // ─── Validate the binding's type is ThreadTypeAST ──────────────────────
-    TypeAST* bindingType = resolveType(stmt->binding->type, ctx);
-    if (!bindingType || bindingType->isa<UnknownTypeAST>()) {
+    // ─── Resolve the binding's type and store it ──────────────────────────
+    TypeAST* resolvedType = resolveType(stmt->binding->type, ctx);
+    if (!resolvedType || resolvedType->isa<UnknownTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_SpawnOutsideFunction, stmt->binding,
                               "spawn binding has invalid type");
         return false;
     }
 
-    if (!bindingType->isa<ThreadTypeAST>()) {
+    // ─── Verify it's a ThreadTypeAST after resolution ──────────────────────
+    if (!resolvedType->isa<ThreadTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_SpawnOutsideFunction, stmt->binding,
                               "spawn binding type must be Thread<T>, got ",
-                              debug::typeToString(bindingType, ctx.pool));
+                              debug::typeToString(resolvedType, ctx.pool));
         return false;
     }
 
+    // ─── Store the resolved type on the binding ────────────────────────────
+    const_cast<VarDeclAST*>(stmt->binding)->semanticType = resolvedType;
+
+    // ─── Get the inner type for call validation ────────────────────────────
+    const ThreadTypeAST* threadType = resolvedType->as<ThreadTypeAST>();
+    TypeAST* innerType = threadType->inner;
+
     // ─── Register the binding in the current scope ──────────────────────────
     if (!ctx.insertValue(stmt->binding)) {
-        // Error already reported by insertValue
         return false;
     }
 
@@ -1168,23 +1181,18 @@ bool resolveSpawnStmt(const SpawnStmtAST* stmt, SemaContext& ctx) {
         return false;
     }
 
-    // Resolve the call against the inner type of the Thread
-    const ThreadTypeAST* threadType = bindingType->as<ThreadTypeAST>();
-    TypeAST* expectedType = threadType->inner;
-    
-    // Resolve the call with the expected type
-    TypeAST* callType = resolveExprWithTarget(stmt->call, expectedType, ctx);
+    TypeAST* callType = resolveExprWithTarget(stmt->call, innerType, ctx);
     if (!callType || callType->isa<UnknownTypeAST>()) {
         return false;
     }
 
     // ─── Check: The call's return type must match the Thread's inner type ──
-    if (!typesEqual(callType, expectedType)) {
+    if (!typesEqual(callType, innerType)) {
         ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, stmt->call,
                               "spawn call return type '", 
                               debug::typeToString(callType, ctx.pool),
                               "' does not match binding type '",
-                              debug::typeToString(expectedType, ctx.pool), "'");
+                              debug::typeToString(innerType, ctx.pool), "'");
         return false;
     }
 
@@ -1235,8 +1243,8 @@ bool resolveJoinStmt(const JoinStmtAST* stmt, SemaContext& ctx) {
 
         // ─── Check if this is a pending spawn operation ────────────────────
         if (ctx.hasPendingSpawn(targetName)) {
-            // ─── Validate the variable has ThreadTypeAST ──────────────────
-            TypeAST* varType = resolveType(decl->semanticType, ctx);
+            // ─── Validate the variable's semantic type is ThreadTypeAST ──
+            const TypeAST* varType = decl->semanticType;
             if (!varType || !varType->isa<ThreadTypeAST>()) {
                 ctx.diagnostics.error(DiagCode::Sem_JoinNonSpawn, target,
                                       "'", ctx.pool.lookup(targetName), 
@@ -1249,6 +1257,13 @@ bool resolveJoinStmt(const JoinStmtAST* stmt, SemaContext& ctx) {
             const ThreadTypeAST* threadType = varType->as<ThreadTypeAST>();
             const TypeAST* innerType = unwrapThreadType(threadType);
             
+            if (!innerType) {
+                ctx.diagnostics.error(DiagCode::Sem_JoinNonSpawn, target,
+                                      "'", ctx.pool.lookup(targetName), 
+                                      "' has no inner type");
+                return false;
+            }
+
             // Apply narrowing to the variable
             ctx.stack.narrowVariable(targetName, innerType);
 
@@ -1266,8 +1281,8 @@ bool resolveJoinStmt(const JoinStmtAST* stmt, SemaContext& ctx) {
         } else {
             // ─── Check if already narrowed (double join) ──────────────────
             const TypeAST* narrowedType = ctx.stack.getNarrowedType(targetName);
-            if (narrowedType && !narrowedType->isa<ThreadTypeAST>()) {
-                TypeAST* originalType = resolveType(decl->semanticType, ctx);
+            if (narrowedType) {
+                const TypeAST* originalType = decl->semanticType;
                 if (originalType && originalType->isa<ThreadTypeAST>()) {
                     ctx.diagnostics.error(DiagCode::Sem_DoubleJoin, target,
                                           "'", ctx.pool.lookup(targetName), 

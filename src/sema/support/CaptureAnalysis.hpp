@@ -1,30 +1,17 @@
 /// @file CaptureAnalysis.hpp
-/// @brief Analyzes closures to detect captured variables from outer scopes.
+/// @brief Analyzes closures to detect captured variables and escape analysis.
 ///
 /// Capture analysis is performed during semantic analysis of anonymous functions
 /// (closures). It walks the function body's AST and identifies all IdentifierExprAST
 /// nodes that reference variables from outer scopes, marking them as captures.
 ///
+/// Escape analysis detects when a closure is returned from a function or stored
+/// in a way that outlives the function call, which affects allocation strategy.
+///
 /// @related_files
 ///   - src/sema/rules/SemaExpr.cpp - resolveAnonFuncExpr calls analyzeCaptures
+///   - src/sema/rules/SemaStmt.cpp - resolveReturnStmt calls markClosureIfEscaping
 ///   - src/codegen/CodeGenClosure.cpp - consumes CapturedVariable list
-///
-/// # How Capture Analysis Works
-///
-/// 1. Walk the AST of the closure body
-/// 2. Find all IdentifierExprAST nodes
-/// 3. For each identifier, determine if it references a variable from an outer scope
-/// 4. Classify each capture as by-reference (mutable) or by-value (read-only)
-/// 5. Store the list of captures on the AnonFuncExprAST
-///
-/// # Capture Rules (from LUCID_GRAMMAR.md)
-///
-/// 1. Variables captured mutably (`byReference = true`) → share one heap slot
-/// 2. Variables captured read-only (`byReference = false`) → may be snapshot-copied
-/// 3. Borrowed types (&T, [_]T) → NOT allowed to be captured (Downward Flow Rule)
-/// 4. Linear types (Future<T>, Thread<T>) → NOT allowed to be captured
-/// 5. Module members → NOT captured (they're global, program-lifetime)
-/// 6. The closure's OWN parameter list → NOT a capture
 
 #pragma once
 
@@ -48,5 +35,29 @@ namespace sema {
 /// @param expr The anonymous function expression to analyze.
 /// @param ctx The semantic context (contains scope information).
 void analyzeCaptures(AnonFuncExprAST* expr, SemaContext& ctx);
+
+/// @brief Detects if a returned expression contains a closure that escapes.
+///
+/// A closure is considered "escaping" if it's created locally and returned to
+/// the caller. Such closures must be heap-allocated because they outlive the
+/// function call.
+///
+/// Static closures (module members) do NOT need to be marked as escaping
+/// because they live for the entire program lifetime.
+///
+/// @param expr The returned expression.
+/// @param ctx The semantic context.
+///
+/// @example
+///   // Direct closure return - marks as escaping
+///   return (n int) -> int { return n + 1 };
+///
+///   // Module member - not marked as escaping
+///   return module:myClosure;
+///
+///   // Local variable holding a closure - marks as escaping
+///   let c = (n int) -> int { return n + 1 };
+///   return c;
+void markClosureIfEscaping(const ExprAST* expr, SemaContext& ctx);
 
 } // namespace sema
