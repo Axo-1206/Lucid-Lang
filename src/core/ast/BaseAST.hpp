@@ -707,12 +707,11 @@ struct ValueDeclAST : DeclAST {
     /// The keyword that determines mutability (Let = mutable, Const = immutable)
     const DeclKeyword keyword;
 
-    /// The fully resolved semantic type (set by Sema)
-    /// Differs from parsedType when:
-    /// - Generic arguments are resolved
-    /// - Traits are resolved to declarations
-    /// - Narrowing changes the type (e.g., int? → int)
-    /// - Const evaluation determines the type
+    /// The fully resolved semantic type (set by Sema during Phase 2)
+    /// Used by resolveIdentifierExpr when an identifier references this declaration.
+    /// For example:
+    ///   - let x int? = nil → semanticType = NullableTypeAST(Int)
+    ///   - const process<T> (v T) → semanticType = FuncTypeAST with T resolved
     TypeAST* semanticType = nullptr;
     
     /// @brief Check if this value is immutable (const).
@@ -749,6 +748,8 @@ struct ValueDeclAST : DeclAST {
 /// @note TypeDeclAST nodes are stored in Scope::types map.
 struct TypeDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::TypeDecl;
+    // No semanticType needed - the type is identified by its name
+    // Use ctx.getNamedType(decl->name) to get the type node
     
     explicit TypeDeclAST(ASTKind k, InternedString n) : DeclAST(k, n) {}
 };

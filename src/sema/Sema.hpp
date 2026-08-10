@@ -240,11 +240,11 @@ static bool isFunctionValue(const ExprAST* expr, SemaContext& ctx) {
         }
 
         case ASTKind::CallExpr: {
-            return expr->resolvedType && expr->resolvedType->isa<FuncTypeAST>();
+            return expr->semanticType && expr->semanticType->isa<FuncTypeAST>();
         }
 
         case ASTKind::FieldAccessExpr: {
-            return expr->resolvedType && expr->resolvedType->isa<FuncTypeAST>();
+            return expr->semanticType && expr->semanticType->isa<FuncTypeAST>();
         }
 
         case ASTKind::AnonFuncExpr: {

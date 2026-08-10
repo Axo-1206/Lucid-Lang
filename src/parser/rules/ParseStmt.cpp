@@ -811,7 +811,6 @@ AsyncStmtAST* parseAsyncStmt(TokenStream& stream, ParserContext& ctx) {
     // 6. Create the VarDeclAST for the binding using constructor
     VarDeclAST* binding = ctx.arena.make<VarDeclAST>(name, keyword, wrappedType, nullptr);
     binding->loc = loc;
-    binding->semanticType = wrappedType;
     
     // 7. Parse '=' (required)
     if (!stream.match(TokenType::ASSIGN)) {
@@ -965,7 +964,6 @@ SpawnStmtAST* parseSpawnStmt(TokenStream& stream, ParserContext& ctx) {
     // 7. Create the VarDeclAST for the binding using constructor
     binding = ctx.arena.make<VarDeclAST>(name, keyword, wrappedType, nullptr);
     binding->loc = loc;
-    binding->semanticType = wrappedType;
     
     LOG_PARSER_DETAIL("parseSpawnStmt: binding '", ctx.pool.lookup(name), 
                       "' (", isConst ? "const" : "let", ")");

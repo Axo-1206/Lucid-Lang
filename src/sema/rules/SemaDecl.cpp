@@ -116,8 +116,11 @@ void resolveVarDecl(const VarDeclAST* decl, SemaContext& ctx) {
     if (!declaredType) {
         return;
     }
+    
+    // ─── 2. Store the resolved type on the declaration ──────────────
+    const_cast<VarDeclAST*>(decl)->semanticType = declaredType;
 
-    // ─── 2. Validate const type and initializer ──────────────────────
+    // ─── 3. Validate const type and initializer ──────────────────────
     if (decl->keyword == DeclKeyword::Const) {
         if (!validateConstType(declaredType, decl->name, "variable", ctx)) {
             return;
@@ -170,6 +173,7 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
     if (!resolveFuncType(funcType, ctx)) {
         return;
     }
+    const_cast<FuncDeclAST*>(decl)->semanticType = funcType;
 
     // ─── 4. Handle @[foreign] functions ────────────────────────────────────
     if (foreignAttr) {
@@ -257,24 +261,23 @@ void resolveFuncDecl(const FuncDeclAST* decl, SemaContext& ctx) {
 ///
 /// @note This is called from resolveFuncDecl, NOT from registerFuncName.
 void resolveParam(const ParamAST* param, SemaContext& ctx) {
-    // Parameters don't support attributes, so we skip validateAllAttributes
-    // If they somehow have attributes, they were already rejected by the parser.
-
     // ─── 1. Resolve the parameter type ──────────────────────────────────────
     TypeAST* paramType = resolveType(param->type, ctx);
     if (!paramType) {
         return;
     }
     
-    // ─── 2. Validate const parameter ────────────────────────────────────────
-    // const parameters are read-only references - they must have a definite type
+    // ─── 2. Store the resolved type on the parameter ──────────────────────
+    const_cast<ParamAST*>(param)->semanticType = paramType;
+    
+    // ─── 3. Validate const parameter ────────────────────────────────────────
     if (param->isConst()) {
         if (!validateConstType(paramType, param->name, "parameter", ctx)) {
             return;
         }
     }
     
-    // ─── 3. Register the parameter in the current scope ────────────────────
+    // ─── 4. Register the parameter in the current scope ────────────────────
     // The current scope is the function's parameter scope (pushed in resolveFuncDecl)
     ctx.insertValue(param);
 }
@@ -383,6 +386,9 @@ void resolveStructFields(const StructDeclAST* decl, SemaContext& ctx) {
         if (!fieldType) {
             continue;
         }
+
+        // ─── Store the resolved type on the field ──────────────────────
+        const_cast<FieldDeclAST*>(field)->semanticType = fieldType;
 
         // ─── 2. Downward Flow Rule: Check borrowed types ──────────────────
         // Struct fields cannot contain &T or [_]T (borrowed types)
