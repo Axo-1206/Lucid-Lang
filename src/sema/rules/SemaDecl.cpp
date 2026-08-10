@@ -19,6 +19,7 @@
 #include "../Sema.hpp"
 #include "../context/SemaContext.hpp"
 #include "../const_eval/ConstEvaluator.hpp"
+#include "../support/CaptureAnalysis.hpp"
 #include "core/ast/TypeAST.hpp"
 #include "debug/DebugUtils.hpp"
 #include "sema/registry/AttributeValidator.hpp"
@@ -63,10 +64,6 @@ void registerFuncName(FuncDeclAST* decl, SemaContext& ctx) {
     // ─── 3. Parameters are NOT registered in Phase 1 ─────────────────────────
     // Parameters are only needed inside the function body, which is resolved
     // in Phase 2. They are registered when resolveFuncDecl calls resolveParam.
-    // 
-    // Note: The previous implementation pushed a scope and registered parameters
-    // here, but the scope was immediately popped, making the registration
-    // pointless. We've removed this dead code.
 }
 
 void registerEnumName(EnumDeclAST* decl, SemaContext& ctx) {
@@ -109,6 +106,8 @@ void resolveImportDecl(ImportDeclAST* decl, SemaContext& ctx) {
     }
 }
 
+// ─── resolveVarDecl ──────────────────────────────────────────────────────────
+
 void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
     validateAllAttributes(decl, ctx);
 
@@ -131,7 +130,7 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
         }
     }
 
-    // ─── 3. Check initializer ────────────────────────────────────────
+    // ─── 4. Check initializer ────────────────────────────────────────
     if (decl->init) {
         TypeAST* initType = resolveExprWithTarget(decl->init, declaredType, ctx);
         if (!initType || initType->isa<UnknownTypeAST>()) {
@@ -142,7 +141,7 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
             checkLetSelfReference(decl->init, decl->name, ctx);
         }
 
-        // ─── 4. CONST EVALUATION ──────────────────────────────────────
+        // ─── 5. CONST EVALUATION ──────────────────────────────────────
         if (decl->keyword == DeclKeyword::Const) {
             ConstantValue val = ConstEvaluator::evaluateDecl(ctx, decl);
             if (!val.isError()) {
@@ -155,6 +154,8 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
     // ─── NOTE: Registration is handled by registerVarName() ──────────
     // Do NOT call ctx.insertValue() here.
 }
+
+// ─── resolveFuncDecl ──────────────────────────────────────────────────────────
 
 void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
     // ─── 1. Validate all attributes ────────────────────────────────────────
@@ -183,7 +184,6 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
         //   - Parameter types are FFI-compatible
         //   - Return type is FFI-compatible
         //   - No generic parameters
-        // No body to resolve - we're done
         return;
     }
 
@@ -266,6 +266,8 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
     ctx.popScope();
 }
 
+// ─── resolveParam ─────────────────────────────────────────────────────────────
+
 /// @brief Resolve a parameter type and register it in the current scope.
 ///
 /// Parameters are registered in Phase 2 (resolveFuncDecl) because they are
@@ -284,7 +286,7 @@ void resolveParam(ParamAST* param, SemaContext& ctx) {
     const_cast<ParamAST*>(param)->semanticType = paramType;
     
     // ─── 3. Validate const parameter ────────────────────────────────────────
-    if (param->isConst()) {
+    if (param->isConstParam) {
         if (!validateConstType(paramType, param->name, "parameter", ctx)) {
             return;
         }
@@ -295,11 +297,15 @@ void resolveParam(ParamAST* param, SemaContext& ctx) {
     ctx.insertValue(param);
 }
 
+// ─── resolveGenericParam ──────────────────────────────────────────────────────
+
 void resolveGenericParam(GenericParamDeclAST* param, SemaContext& ctx) {
     for (NamedTypeAST* constraint : param->constraints) {
         resolveTraitRef(constraint, ctx);
     }
 }
+
+// ─── resolveEnumDecl ──────────────────────────────────────────────────────────
 
 void resolveEnumDecl(EnumDeclAST* decl, SemaContext& ctx) {
     validateAllAttributes(decl, ctx);
@@ -307,6 +313,7 @@ void resolveEnumDecl(EnumDeclAST* decl, SemaContext& ctx) {
     // ─── NOTE: Registration is handled by registerEnumName() ──────────────
     // Do NOT call ctx.insertType() here.
 
+    // ─── 1. Resolve backing type ────────────────────────────────────────────
     if (decl->backingType) {
         if (!resolvePrimitiveType(decl->backingType, ctx)) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidParamType, decl,
@@ -315,6 +322,9 @@ void resolveEnumDecl(EnumDeclAST* decl, SemaContext& ctx) {
         }
     }
 
+    // ─── 2. Validate enum variants ──────────────────────────────────────────
+    // Note: EnumVariantAST doesn't have a semanticType field because variants
+    // are values of the enum type. The enum type itself is the type.
     for (EnumVariantAST* variant : decl->variants) {
         validateAllAttributes(variant, ctx);
 
@@ -331,16 +341,20 @@ void resolveEnumDecl(EnumDeclAST* decl, SemaContext& ctx) {
     }
 }
 
+// ─── resolveTraitDecl ─────────────────────────────────────────────────────────
+
 void resolveTraitDecl(TraitDeclAST* decl, SemaContext& ctx) {
     validateAllAttributes(decl, ctx);
 
     // ─── NOTE: Registration is handled by registerTraitName() ─────────────
     // Do NOT call ctx.insertType() here.
 
+    // ─── 1. Resolve generic parameters ──────────────────────────────────────
     for (GenericParamDeclAST* g : decl->genericParams) {
         resolveGenericParam(g, ctx);
     }
 
+    // ─── 2. Resolve trait fields ────────────────────────────────────────────
     for (TraitFieldDeclAST* field : decl->fields) {
         validateAllAttributes(field, ctx);
 
@@ -358,12 +372,15 @@ void resolveTraitDecl(TraitDeclAST* decl, SemaContext& ctx) {
         }
     }
 
+    // ─── 3. Validate generic parameter usage ───────────────────────────────
     std::vector<const TypeAST*> types;
     for (TraitFieldDeclAST* field : decl->fields) {
         types.push_back(field->type);
     }
     validateGenericParameterUsage(decl->genericParams, types, decl, ctx);
 }
+
+// ─── resolveStructDecl ────────────────────────────────────────────────────────
 
 void resolveStructDecl(StructDeclAST* decl, SemaContext& ctx) {
     validateAllAttributes(decl, ctx);
@@ -373,16 +390,20 @@ void resolveStructDecl(StructDeclAST* decl, SemaContext& ctx) {
 
     ScopedTypeDefinition defining(ctx, decl);
 
+    // ─── 1. Resolve generic parameters ──────────────────────────────────────
     for (GenericParamDeclAST* g : decl->genericParams) {
         resolveGenericParam(g, ctx);
     }
 
+    // ─── 2. Resolve fields and compute logical layout ──────────────────────
     resolveStructFields(decl, ctx);
 
+    // ─── 3. Validate trait implementations ──────────────────────────────────
     if (!validateAllTraitImplementations(decl, ctx)) {
         // Error already reported
     }
 
+    // ─── 4. Validate generic parameter usage ───────────────────────────────
     std::vector<const TypeAST*> types;
     for (FieldDeclAST* field : decl->fields) {
         types.push_back(field->type);
@@ -390,7 +411,10 @@ void resolveStructDecl(StructDeclAST* decl, SemaContext& ctx) {
     validateGenericParameterUsage(decl->genericParams, types, decl, ctx);
 }
 
+// ─── resolveStructFields ──────────────────────────────────────────────────────
+
 void resolveStructFields(StructDeclAST* decl, SemaContext& ctx) {
+    // ─── Phase 1: Resolve field types and validate ──────────────────────────
     for (FieldDeclAST* field : decl->fields) {
         validateAllAttributes(field, ctx);
 
@@ -467,7 +491,7 @@ void resolveStructFields(StructDeclAST* decl, SemaContext& ctx) {
         } else if (field->defaultVal) {
             // ─── Expression default ──────────────────────────────────────────
             if (isFunctionType) {
-                FuncTypeAST* funcType = fieldType->as<FuncTypeAST>();
+                const FuncTypeAST* funcType = fieldType->as<FuncTypeAST>();
 
                 TypeAST* initType = resolveExprWithTarget(field->defaultVal, funcType, ctx);
                 if (!initType || initType->isa<UnknownTypeAST>()) {
@@ -491,6 +515,14 @@ void resolveStructFields(StructDeclAST* decl, SemaContext& ctx) {
         // ─── No default value ─────────────────────────────────────────────
         // The struct literal must supply a value for this field.
         // This is valid - no action needed.
+    }
+
+    // ─── Phase 2: Compute logical layout ────────────────────────────────────
+    // Field indices are simple - just the position in the fields span.
+    // This is always valid regardless of target ABI.
+    for (size_t i = 0; i < decl->fields.size(); ++i) {
+        FieldDeclAST* field = decl->fields[i];
+        const_cast<FieldDeclAST*>(field)->fieldIndex = i;
     }
 }
 

@@ -317,14 +317,15 @@ struct FieldDeclAST : ValueDeclAST {
 
     // ─── Semantic Fields (set by Sema) ────────────────────────────────
     size_t fieldIndex = 0;        // Position in struct layout
-    uint64_t byteOffset = 0;      // Byte offset from struct start
-
+    
     // ─── CodeGen Fields (mutable) ──────────────────────────────────────
-    llvm::Type* llvmType = nullptr;  // LLVM type of this field
+    llvm::Type* llvmType = nullptr;   // LLVM type of this field
+    uint64_t byteOffset = 0;          // Byte offset (from LLVM DataLayout)
 
     // ─── Constructor ─────────────────────────────────────────────────────
-    FieldDeclAST(InternedString n, const TypeAST* t, ExprAST* dv, const StmtAST* db, bool isConstField)
-        : ValueDeclAST(ASTKind::FieldDecl, n, DeclKeyword::Let)  // Fields use Let/Const via isConstField
+    FieldDeclAST(InternedString n, const TypeAST* t, ExprAST* dv, 
+                 const StmtAST* db, bool isConstField)
+        : ValueDeclAST(ASTKind::FieldDecl, n, DeclKeyword::Let)
         , type(t)
         , defaultVal(dv)
         , defaultBody(db)
@@ -365,39 +366,37 @@ struct StructDeclAST : TypeDeclAST {
     const ArenaSpan<GenericParamDeclPtr> genericParams;
     const ArenaSpan<FieldDeclPtr> fields;
     const ArenaSpan<NamedTypeAST*> traitRefs;
+    const bool isPacked = false;  // From @[packed] attribute
     
     // ─── Semantic Fields (set by Sema) ────────────────────────────────
-    uint64_t totalSize = 0;       // Total struct size in bytes
-    uint64_t alignment = 0;       // Required alignment
-    bool isPacked = false;        // If @[packed] attribute is present
+    // Logical layout - field indices and offsets (target-independent)
+    // These are computed from field order, not from LLVM DataLayout.
     
     // ─── CodeGen Fields (mutable) ──────────────────────────────────────
-    llvm::StructType* llvmType = nullptr;   // The generated LLVM struct type
+    llvm::StructType* llvmType = nullptr;
+    
+    // Physical layout - computed by CodeGen using LLVM DataLayout
+    uint64_t totalSize = 0;
+    uint64_t alignment = 0;
 
-    /// @brief Find the index of a field by name.
-    /// 
-    /// This is a linear scan over the `fields` span. Field counts are
-    /// typically small (< 10), so this is efficient and avoids maintaining
-    /// a separate index map that could become inconsistent.
-    /// 
-    /// @param name The field name to look up.
-    /// @return The index of the field, or SIZE_MAX if not found.
+    // ─── Constructor ─────────────────────────────────────────────────────
+    StructDeclAST(InternedString n,
+                  ArenaSpan<GenericParamDeclPtr> params,
+                  ArenaSpan<FieldDeclPtr> flds,
+                  ArenaSpan<NamedTypeAST*> traits,
+                  bool packed = false)
+        : TypeDeclAST(ASTKind::StructDecl, n)
+        , genericParams(params)
+        , fields(flds)
+        , traitRefs(traits)
+        , isPacked(packed) {}
+    
     size_t indexOfField(InternedString name) const {
         for (size_t i = 0; i < fields.size(); ++i) {
             if (fields[i]->name == name) return i;
         }
         return SIZE_MAX;
     }
-
-    // ─── Constructor ─────────────────────────────────────────────────────
-    StructDeclAST(InternedString n,
-                  ArenaSpan<GenericParamDeclPtr> params,
-                  ArenaSpan<FieldDeclPtr> flds,
-                  ArenaSpan<NamedTypeAST*> traits)
-        : TypeDeclAST(ASTKind::StructDecl, n)
-        , genericParams(params)
-        , fields(flds)
-        , traitRefs(traits) {}
 };
 using StructDeclPtr = StructDeclAST*;
 
@@ -420,28 +419,12 @@ struct EnumDeclAST : TypeDeclAST {
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
     const ArenaSpan<EnumVariantPtr> variants;
-    const PrimitiveTypeAST* backingType;   // Optional backing type (defaults to int32)
-    
-    // ─── Semantic Fields (set by Sema) ────────────────────────────────
-    uint64_t byteSize = 0;                 // Size of enum in bytes
+    const PrimitiveTypeAST* backingType;
     
     // ─── CodeGen Fields (mutable) ──────────────────────────────────────
-    ArenaSpan<llvm::ConstantInt*> variantConstants;  // Parallel to variants span
-    llvm::IntegerType* backingLLVMType = nullptr;    // LLVM type of backing int
-
-    /// @brief Get the LLVM constant for a variant by name.
-    /// 
-    /// Linear scan over the `variants` span to find the matching variant,
-    /// then returns the corresponding LLVM constant from `variantConstants`.
-    /// 
-    /// @param name The variant name to look up.
-    /// @return The LLVM constant, or nullptr if not found.
-    llvm::ConstantInt* constantForVariant(InternedString name) const {
-        for (size_t i = 0; i < variants.size(); ++i) {
-            if (variants[i]->name == name) return variantConstants[i];
-        }
-        return nullptr;
-    }
+    ArenaSpan<llvm::ConstantInt*> variantConstants;
+    llvm::IntegerType* backingLLVMType = nullptr;
+    uint64_t byteSize = 0;  // From LLVM DataLayout
 
     // ─── Constructor ─────────────────────────────────────────────────────
     EnumDeclAST(InternedString n,
@@ -450,6 +433,13 @@ struct EnumDeclAST : TypeDeclAST {
         : TypeDeclAST(ASTKind::EnumDecl, n)
         , variants(vars)
         , backingType(backing) {}
+    
+    llvm::ConstantInt* constantForVariant(InternedString name) const {
+        for (size_t i = 0; i < variants.size(); ++i) {
+            if (variants[i]->name == name) return variantConstants[i];
+        }
+        return nullptr;
+    }
 };
 using EnumDeclPtr = EnumDeclAST*;
 
