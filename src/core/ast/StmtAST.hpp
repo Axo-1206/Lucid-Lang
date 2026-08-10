@@ -431,12 +431,12 @@ struct ContinueStmtAST : StmtAST {
 ///                        is either `Let` or `Const` as specified in source.
 /// @field call           The async call expression.
 struct AsyncStmtAST : StmtAST {
-    static constexpr ASTKind staticKind = ASTKind::AsyncExpr;
+    static constexpr ASTKind staticKind = ASTKind::AsyncStmt;
 
     VarDeclAST* binding = nullptr;   // fresh local introduced by this statement
     ExprPtr call;                    // the async call
 
-    AsyncStmtAST() : StmtAST(ASTKind::AsyncExpr) {}
+    AsyncStmtAST() : StmtAST(ASTKind::AsyncStmt) {}
 };
 
 /// @brief An await operation – waits for async operations to complete.
@@ -467,11 +467,11 @@ struct AsyncStmtAST : StmtAST {
 /// 
 /// @field targets        The variables to await (must currently be `Future<T>`).
 struct AwaitStmtAST : StmtAST {
-    static constexpr ASTKind staticKind = ASTKind::AwaitExpr;
+    static constexpr ASTKind staticKind = ASTKind::AwaitStmt;
 
     ArenaSpan<ExprPtr> targets;   // identifiers resolving back to a prior AsyncStmtAST::binding
 
-    AwaitStmtAST() : StmtAST(ASTKind::AwaitExpr) {}
+    AwaitStmtAST() : StmtAST(ASTKind::AwaitStmt) {}
 };
 
 /// @brief A spawn operation – launches a function call on a separate OS thread.
@@ -505,13 +505,13 @@ struct AwaitStmtAST : StmtAST {
 ///                          the `_` discard pattern.
 /// @field call             The spawn call expression.
 struct SpawnStmtAST : StmtAST {
-    static constexpr ASTKind staticKind = ASTKind::SpawnExpr;
+    static constexpr ASTKind staticKind = ASTKind::SpawnStmt;
 
     VarDeclAST* binding = nullptr;   // fresh local introduced by this statement, or
                                       // nullptr for the `_` discard pattern
     ExprPtr call;                    // the spawn call
 
-    SpawnStmtAST() : StmtAST(ASTKind::SpawnExpr) {}
+    SpawnStmtAST() : StmtAST(ASTKind::SpawnStmt) {}
 };
 
 /// @brief A join operation – waits for spawned threads to complete.
@@ -541,11 +541,11 @@ struct SpawnStmtAST : StmtAST {
 /// 
 /// @field targets        The variables to join (must currently be `Thread<T>`).
 struct JoinStmtAST : StmtAST {
-    static constexpr ASTKind staticKind = ASTKind::JoinExpr;
+    static constexpr ASTKind staticKind = ASTKind::JoinStmt;
 
     ArenaSpan<ExprPtr> targets;   // identifiers resolving back to a prior SpawnStmtAST::binding
 
-    JoinStmtAST() : StmtAST(ASTKind::JoinExpr) {}
+    JoinStmtAST() : StmtAST(ASTKind::JoinStmt) {}
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -564,7 +564,7 @@ using DoWhileStmtPtr = DoWhileStmtAST*;
 using ReturnStmtPtr = ReturnStmtAST*;
 using BreakStmtPtr = BreakStmtAST*;
 using ContinueStmtPtr = ContinueStmtAST*;
-using AsyncExprPtr = AsyncStmtAST*;
-using AwaitExprPtr = AwaitStmtAST*;
-using SpawnExprPtr = SpawnStmtAST*;
-using JoinExprPtr = JoinStmtAST*;
+using AsyncStmtPtr = AsyncStmtAST*;
+using AwaitStmtPtr = AwaitStmtAST*;
+using SpawnStmtPtr = SpawnStmtAST*;
+using JoinStmtPtr = JoinStmtAST*;

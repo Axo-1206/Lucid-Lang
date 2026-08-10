@@ -50,10 +50,10 @@ bool resolveStmt(const StmtAST* stmt, SemaContext& ctx) {
         case ASTKind::ContinueStmt:     return resolveContinueStmt(stmt->as<ContinueStmtAST>(), ctx);
         case ASTKind::ExprStmt:         return resolveExprStmt(stmt->as<ExprStmtAST>(), ctx);
         case ASTKind::DeclStmt:         return resolveDeclStmt(stmt->as<DeclStmtAST>(), ctx);
-        case ASTKind::AsyncExpr:        return resolveAsyncStmt(stmt->as<AsyncStmtAST>(), ctx);
-        case ASTKind::AwaitExpr:        return resolveAwaitStmt(stmt->as<AwaitStmtAST>(), ctx);
-        case ASTKind::SpawnExpr:        return resolveSpawnStmt(stmt->as<SpawnStmtAST>(), ctx);
-        case ASTKind::JoinExpr:         return resolveJoinStmt(stmt->as<JoinStmtAST>(), ctx);
+        case ASTKind::AsyncStmt:        return resolveAsyncStmt(stmt->as<AsyncStmtAST>(), ctx);
+        case ASTKind::AwaitStmt:        return resolveAwaitStmt(stmt->as<AwaitStmtAST>(), ctx);
+        case ASTKind::SpawnStmt:        return resolveSpawnStmt(stmt->as<SpawnStmtAST>(), ctx);
+        case ASTKind::JoinStmt:         return resolveJoinStmt(stmt->as<JoinStmtAST>(), ctx);
         default:
             return false;
     }
@@ -1051,7 +1051,7 @@ bool resolveAwaitStmt(const AwaitStmtAST* stmt, SemaContext& ctx) {
         // ─── Check if this is a pending async operation ────────────────────
         if (ctx.hasPendingAsync(targetName)) {
             // ─── Validate the variable has FutureTypeAST ──────────────────
-            TypeAST* varType = resolveType(decl->type, ctx);
+            TypeAST* varType = resolveType(decl->semanticType, ctx);
             if (!varType || !varType->isa<FutureTypeAST>()) {
                 ctx.diagnostics.error(DiagCode::Sem_AwaitNonAsync, target,
                                       "'", ctx.pool.lookup(targetName), 
@@ -1088,7 +1088,7 @@ bool resolveAwaitStmt(const AwaitStmtAST* stmt, SemaContext& ctx) {
             if (narrowedType && !narrowedType->isa<FutureTypeAST>()) {
                 // Already narrowed - check if it was a Future originally
                 // by looking at the declaration's original type
-                TypeAST* originalType = resolveType(decl->type, ctx);
+                TypeAST* originalType = resolveType(decl->semanticType, ctx);
                 if (originalType && originalType->isa<FutureTypeAST>()) {
                     ctx.diagnostics.error(DiagCode::Sem_DoubleAwait, target,
                                           "'", ctx.pool.lookup(targetName), 
@@ -1236,7 +1236,7 @@ bool resolveJoinStmt(const JoinStmtAST* stmt, SemaContext& ctx) {
         // ─── Check if this is a pending spawn operation ────────────────────
         if (ctx.hasPendingSpawn(targetName)) {
             // ─── Validate the variable has ThreadTypeAST ──────────────────
-            TypeAST* varType = resolveType(decl->type, ctx);
+            TypeAST* varType = resolveType(decl->semanticType, ctx);
             if (!varType || !varType->isa<ThreadTypeAST>()) {
                 ctx.diagnostics.error(DiagCode::Sem_JoinNonSpawn, target,
                                       "'", ctx.pool.lookup(targetName), 
@@ -1267,7 +1267,7 @@ bool resolveJoinStmt(const JoinStmtAST* stmt, SemaContext& ctx) {
             // ─── Check if already narrowed (double join) ──────────────────
             const TypeAST* narrowedType = ctx.stack.getNarrowedType(targetName);
             if (narrowedType && !narrowedType->isa<ThreadTypeAST>()) {
-                TypeAST* originalType = resolveType(decl->type, ctx);
+                TypeAST* originalType = resolveType(decl->semanticType, ctx);
                 if (originalType && originalType->isa<ThreadTypeAST>()) {
                     ctx.diagnostics.error(DiagCode::Sem_DoubleJoin, target,
                                           "'", ctx.pool.lookup(targetName), 

@@ -11,6 +11,7 @@
 
 #include "../Sema.hpp"
 #include "../registry/IntrinsicValidator.hpp"
+#include "../support/CaptureAnalysis.hpp"
 
 #include <unordered_set>
 #include <optional>
@@ -261,7 +262,6 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetTyp
 
     // ─── Step 4: Check: Is this a pending future (async/spawn not resolved)? ──
     if (ctx.isPendingFuture(expr->name)) {
-        // Check what kind of future it is for a better error message
         if (ctx.hasPendingAsync(expr->name)) {
             ctx.diagnostics.error(DiagCode::Sem_AwaitNonAsync, expr,
                                   "cannot use async value '", ctx.pool.lookup(expr->name), 
@@ -295,7 +295,6 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetTyp
         
         if (isCaptured) {
             // ─── Rule 4: No borrowed types in closures ──────────────────────
-            // Closures cannot capture &T or [_]T (borrowed types)
             if (isBorrowedType(declType)) {
                 ctx.diagnostics.error(DiagCode::Sem_InvalidCapture, expr,
                                       "closure cannot capture borrowed type '",
@@ -313,57 +312,7 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetTyp
         }
     }
 
-    // ─── Step 6: Determine value state ─────────────────────────────────────
-    ValueState state = ValueState::Unknown;
-    if (decl->isa<EnumVariantAST>() || decl->isa<FuncDeclAST>()) {
-        state = ValueState::Definite;
-    } else if (decl->isa<VarDeclAST>()) {
-        const VarDeclAST* var = decl->as<VarDeclAST>();
-        // If the variable has a const initializer that was evaluated, it's definite
-        if (var->init && var->init->isConst) {
-            state = ValueState::Definite;
-        } else {
-            // Variables are generally unknown at compile time
-            state = ValueState::Unknown;
-        }
-    } else if (decl->isa<ParamAST>()) {
-        // Parameters are unknown at compile time (they come from callers)
-        state = ValueState::Unknown;
-    } else if (decl->isa<FieldDeclAST>()) {
-        // Fields are unknown at compile time (they're part of structs)
-        state = ValueState::Unknown;
-    } else {
-        state = ValueState::Unknown;
-    }
-
-    // ─── Step 7: Set isLValue and isConst based on declaration type ──────
-    if (decl->isa<VarDeclAST>()) {
-        const VarDeclAST* varDecl = decl->as<VarDeclAST>();
-        expr->isLValue = (varDecl->keyword == DeclKeyword::Let);
-        expr->isConst = (varDecl->keyword == DeclKeyword::Const) && (state == ValueState::Definite);
-    } else if (decl->isa<FuncDeclAST>()) {
-        const FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
-        expr->isLValue = (funcDecl->keyword == DeclKeyword::Let);
-        expr->isConst = (funcDecl->keyword == DeclKeyword::Const);
-    } else if (decl->isa<ParamAST>()) {
-        const ParamAST* param = decl->as<ParamAST>();
-        expr->isLValue = !param->isConst();
-        expr->isConst = param->isConst();
-    } else if (decl->isa<EnumVariantAST>()) {
-        expr->isLValue = false;
-        expr->isConst = true;
-    } else if (decl->isa<FieldDeclAST>()) {
-        const FieldDeclAST* field = decl->as<FieldDeclAST>();
-        // Fields are only assignable if the object is mutable AND the field is not const
-        // This will be refined by the FieldAccessExpr resolver
-        expr->isLValue = false;  // Field access sets this based on object mutability
-        expr->isConst = field->isConst();
-    } else {
-        expr->isLValue = false;
-        expr->isConst = false;
-    }
-
-    // ─── Step 8: Handle generic arguments (function instantiation) ────────
+    // ─── Step 6: Handle generic arguments (function instantiation) ────────
     if (!expr->genericArgs.empty()) {
         if (!decl->isa<FuncDeclAST>()) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
@@ -397,10 +346,9 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetTyp
             return ctx.getUnknownType();
         }
 
-        // ─── For generic function references, return the instantiated function type ──
-        // We need to substitute generic parameters with the provided arguments
-        // For now, we just use the function's resolved type
-        // TODO: Full generic substitution
+        // ─── For generic function references, use the function's semantic type ──
+        // The function's semantic type is the resolved function type.
+        // Full generic substitution would go here for instantiated types.
         declType = funcDecl->semanticType;
         if (!declType) {
             ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
@@ -412,23 +360,60 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetTyp
         }
     }
 
+    // ─── Step 7: Determine value state ─────────────────────────────────────
+    ValueState state = ValueState::Unknown;
+    if (decl->isa<EnumVariantAST>() || decl->isa<FuncDeclAST>()) {
+        state = ValueState::Definite;
+    } else if (decl->isa<VarDeclAST>()) {
+        const VarDeclAST* var = decl->as<VarDeclAST>();
+        if (var->init && var->init->isConst) {
+            state = ValueState::Definite;
+        } else {
+            state = ValueState::Unknown;
+        }
+    } else if (decl->isa<ParamAST>()) {
+        state = ValueState::Unknown;
+    } else if (decl->isa<FieldDeclAST>()) {
+        state = ValueState::Unknown;
+    } else {
+        state = ValueState::Unknown;
+    }
+
+    // ─── Step 8: Set isLValue and isConst based on declaration type ──────
+    if (decl->isa<VarDeclAST>()) {
+        const VarDeclAST* varDecl = decl->as<VarDeclAST>();
+        expr->isLValue = (varDecl->keyword == DeclKeyword::Let);
+        expr->isConst = (varDecl->keyword == DeclKeyword::Const) && (state == ValueState::Definite);
+    } else if (decl->isa<FuncDeclAST>()) {
+        const FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
+        expr->isLValue = (funcDecl->keyword == DeclKeyword::Let);
+        expr->isConst = (funcDecl->keyword == DeclKeyword::Const);
+    } else if (decl->isa<ParamAST>()) {
+        const ParamAST* param = decl->as<ParamAST>();
+        expr->isLValue = !param->isConst();
+        expr->isConst = param->isConst();
+    } else if (decl->isa<EnumVariantAST>()) {
+        expr->isLValue = false;
+        expr->isConst = true;
+    } else if (decl->isa<FieldDeclAST>()) {
+        const FieldDeclAST* field = decl->as<FieldDeclAST>();
+        expr->isLValue = false;  // Field access sets this based on object mutability
+        expr->isConst = field->isConst();
+    } else {
+        expr->isLValue = false;
+        expr->isConst = false;
+    }
+
     // ─── Step 9: Apply type narrowing from if conditions ────────────────────
-    // Check if this variable has been narrowed by an if condition
     const TypeAST* narrowedType = ctx.stack.getNarrowedType(expr->name);
     if (narrowedType) {
-        // Use the narrowed type for this expression
         expr->semanticType = const_cast<TypeAST*>(narrowedType);
         expr->valueState = state;
         expr->isLValue = true;  // Narrowed variables are still l-values
         return const_cast<TypeAST*>(narrowedType);
     }
 
-    // ─── Step 10: Apply awaiting/joining narrowing ─────────────────────────
-    // If this identifier is a Future<T> or Thread<T> that has been awaited/joined,
-    // the type is already narrowed by the stack (handled above)
-    // If it's still pending, we already rejected it in Step 4
-
-    // ─── Step 11: Set the expression's semantic type ──────────────────────
+    // ─── Step 10: Set the expression's semantic type ──────────────────────
     expr->semanticType = const_cast<TypeAST*>(declType);
     expr->valueState = state;
     
@@ -441,17 +426,27 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetTyp
 
 TypeAST* resolveArrayLiteralExpr(ArrayLiteralExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
     if (expr->elements.empty()) {
+        // ─── Empty array: type must be inferred from context ────────────────
+        // If targetType is an array type, use its element type
+        if (targetType && targetType->isa<ArrayTypeAST>()) {
+            const ArrayTypeAST* targetArray = targetType->as<ArrayTypeAST>();
+            ArrayTypeAST* resultType = ctx.getArrayType(ArrayKind::Dynamic, 0, targetArray->element);
+            expr->semanticType = resultType;
+            expr->valueState = ValueState::Definite;
+            expr->isLValue = false;
+            expr->isConst = true;
+            return resultType;
+        }
+        
+        // Otherwise, unknown type
         expr->semanticType = ctx.getUnknownType();
         expr->valueState = ValueState::Definite;
-        
-        // ─── Set isLValue ──────────────────────────────────────────────────
-        expr->isLValue = false;   // Array literals are never l-values
-        expr->isConst = true;     // Empty array literal is compile-time constant
-        
+        expr->isLValue = false;
+        expr->isConst = true;
         return ctx.getUnknownType();
     }
 
-    // Resolve the first element (with target element type if available)
+    // ─── Resolve the first element ──────────────────────────────────────────
     const TypeAST* targetElemType = nullptr;
     if (targetType && targetType->isa<ArrayTypeAST>()) {
         targetElemType = targetType->as<ArrayTypeAST>()->element;
@@ -463,10 +458,11 @@ TypeAST* resolveArrayLiteralExpr(ArrayLiteralExprAST* expr, const TypeAST* targe
                               "array literal element has unknown type");
         expr->semanticType = ctx.getUnknownType();
         expr->valueState = ValueState::Unknown;
+        expr->isLValue = false;
         return ctx.getUnknownType();
     }
 
-    // Check all elements against the first type
+    // ─── Check all elements against the first type ──────────────────────────
     bool allMatch = true;
     bool hasErr = false;
     bool allDefinite = true;
@@ -496,10 +492,11 @@ TypeAST* resolveArrayLiteralExpr(ArrayLiteralExprAST* expr, const TypeAST* targe
                               "array literal contains elements of different types");
         expr->semanticType = ctx.getUnknownType();
         expr->valueState = ValueState::Unknown;
+        expr->isLValue = false;
         return ctx.getUnknownType();
     }
 
-    // Propagate value state
+    // ─── Propagate value state ──────────────────────────────────────────────
     ValueState state;
     if (hasErr) {
         state = ValueState::Err;
@@ -509,14 +506,21 @@ TypeAST* resolveArrayLiteralExpr(ArrayLiteralExprAST* expr, const TypeAST* targe
         state = ValueState::Unknown;
     }
 
-    // Use cached array type
-    ArrayTypeAST* arrayType = ctx.getArrayType(ArrayKind::Dynamic, 0, firstType);
+    // ─── Use cached array type ──────────────────────────────────────────────
+    // If targetType is a fixed array, use its size
+    ArrayKind kind = ArrayKind::Dynamic;
+    uint64_t size = 0;
+    if (targetType && targetType->isa<ArrayTypeAST>()) {
+        const ArrayTypeAST* targetArray = targetType->as<ArrayTypeAST>();
+        kind = targetArray->arrayKind;
+        size = targetArray->size;
+    }
+
+    ArrayTypeAST* arrayType = ctx.getArrayType(kind, size, firstType);
     expr->semanticType = arrayType;
     expr->valueState = state;
-    
-    // ─── Set isLValue ──────────────────────────────────────────────────────
-    expr->isLValue = false;   // Array literals are never l-values
-    expr->isConst = allDefinite;  // All elements must be const for the array to be const
+    expr->isLValue = false;
+    expr->isConst = allDefinite;
     
     return arrayType;
 }
@@ -1528,7 +1532,6 @@ TypeAST* resolveSliceExpr(SliceExprAST* expr, const TypeAST* targetType, SemaCon
 
 TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
     // ─── Step 1: Resolve object ─────────────────────────────────────────────
-    // The object's type is automatically narrowed by lookupValue() during resolution
     TypeAST* objectType = resolveExpr(expr->object, ctx);
     if (!objectType || objectType->isa<UnknownTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr->object,
@@ -1539,8 +1542,6 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetT
     }
 
     // ─── Step 2: Check if object is nullable or fallible ────────────────────
-    // objectType is already narrowed (if applicable) because resolveExpr uses
-    // lookupValue() which automatically checks getNarrowedType()
     if (isNullableType(objectType) || isFallibleType(objectType)) {
         ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr->object,
                               "cannot access field on nullable or fallible type '",
@@ -1583,11 +1584,8 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetT
                                ? ValueState::Unknown : ValueState::Definite;
             expr->semanticType = const_cast<TypeAST*>(fieldType);
             expr->valueState = state;
-            
-            // Generic fields are not l-values (can't assign through generic param)
             expr->isLValue = false;
             expr->isConst = false;
-            
             return const_cast<TypeAST*>(fieldType);
         }
     }
@@ -1618,8 +1616,12 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetT
 
         for (const FieldDeclAST* f : structDecl->fields) {
             if (f->name == expr->fieldName) {
-                // ─── Get field type ──────────────────────────────────────────
-                const TypeAST* fieldType = f->type;
+                // ─── Get field type from semanticType (resolved) ────────────
+                const TypeAST* fieldType = f->semanticType;
+                if (!fieldType) {
+                    // Fallback to parser type if semanticType not set
+                    fieldType = f->type;
+                }
                 
                 // ─── Propagate value state ──────────────────────────────────
                 ValueState state = (isNullableType(fieldType) || isFallibleType(fieldType))
@@ -1628,13 +1630,10 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetT
                 expr->valueState = state;
                 
                 // ─── Set isLValue and isConst ───────────────────────────────
-                // A field access is an l-value iff:
-                //   1. The object is an l-value
-                //   2. The field is not const
                 if (expr->object->isLValue) {
                     if (f->isConst()) {
-                        expr->isLValue = false;   // const field is not assignable
-                        expr->isConst = true;     // but it's still const-evaluable
+                        expr->isLValue = false;
+                        expr->isConst = true;
                     } else {
                         expr->isLValue = true;
                         expr->isConst = expr->object->isConst;
@@ -1664,11 +1663,8 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetT
             if (v->name == expr->fieldName) {
                 expr->semanticType = ctx.getNamedType(enumDecl->name);
                 expr->valueState = ValueState::Definite;
-                
-                // Enum variants are compile-time constants, not assignable
                 expr->isLValue = false;
                 expr->isConst = true;
-                
                 return ctx.getNamedType(enumDecl->name);
             }
         }
@@ -1699,13 +1695,39 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, const TypeAST* targe
         // The helper already reported the error (module not found or member not found)
         expr->semanticType = ctx.getUnknownType();
         expr->valueState = ValueState::Unknown;
+        expr->isLValue = false;
         return ctx.getUnknownType();
     }
 
-    // ─── Step 2: Mark as module member ────────────────────────────────────
+    // ─── Step 2: Check if the member is exported ───────────────────────────
+    if (!ctx.isValueExported(decl)) {
+        ctx.diagnostics.error(DiagCode::Sem_PrivateMember, expr,
+                              "member '", ctx.pool.lookup(expr->memberName),
+                              "' in module '", ctx.pool.lookup(expr->moduleName),
+                              "' is not exported");
+        ctx.diagnostics.note(expr, "Add @[export] to the member declaration to make it accessible");
+        expr->semanticType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
+        expr->isLValue = false;
+        return ctx.getUnknownType();
+    }
+
+    // ─── Step 3: Mark as module member ────────────────────────────────────
     expr->isModuleMember = true;
 
-    // ─── Step 3: Set isLValue based on member's keyword ──────────────────
+    // ─── Step 4: Get the declaration's semantic type ──────────────────────
+    const TypeAST* declType = decl->semanticType;
+    if (!declType) {
+        ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
+                              "member '", ctx.pool.lookup(expr->memberName),
+                              "' has no type information");
+        expr->semanticType = ctx.getUnknownType();
+        expr->valueState = ValueState::Unknown;
+        expr->isLValue = false;
+        return ctx.getUnknownType();
+    }
+
+    // ─── Step 5: Set isLValue based on member's keyword ──────────────────
     if (decl->isa<VarDeclAST>()) {
         const VarDeclAST* varDecl = decl->as<VarDeclAST>();
         expr->isLValue = (varDecl->keyword == DeclKeyword::Let);
@@ -1715,16 +1737,14 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, const TypeAST* targe
         expr->isLValue = (funcDecl->keyword == DeclKeyword::Let);
         expr->isConst = (funcDecl->keyword == DeclKeyword::Const);
     } else if (decl->isa<EnumVariantAST>()) {
-        // Enum variants are compile-time constants, not assignable
         expr->isLValue = false;
         expr->isConst = true;
     } else {
-        // Default: not an l-value
         expr->isLValue = false;
         expr->isConst = false;
     }
 
-    // ─── Step 4: Check generic arguments if present ────────────────────────
+    // ─── Step 6: Handle generic arguments if present ────────────────────────
     if (!expr->genericArgs.empty()) {
         if (!decl->isa<FuncDeclAST>()) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
@@ -1732,18 +1752,20 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, const TypeAST* targe
                                   "' is not a generic function");
             expr->semanticType = ctx.getUnknownType();
             expr->valueState = ValueState::Unknown;
+            expr->isLValue = false;
             return ctx.getUnknownType();
         }
 
         const FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
 
-        for (const TypeAST* arg : expr->genericArgs) {
+        for (const TypePtr arg : expr->genericArgs) {
             if (!resolveType(arg, ctx)) {
                 ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
                                       "invalid generic argument type for '",
                                       ctx.pool.lookup(expr->memberName), "'");
                 expr->semanticType = ctx.getUnknownType();
                 expr->valueState = ValueState::Unknown;
+                expr->isLValue = false;
                 return ctx.getUnknownType();
             }
         }
@@ -1751,25 +1773,34 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, const TypeAST* targe
         if (!validateGenericArguments(expr->genericArgs, funcDecl->genericParams, expr, ctx)) {
             expr->semanticType = ctx.getUnknownType();
             expr->valueState = ValueState::Unknown;
+            expr->isLValue = false;
+            return ctx.getUnknownType();
+        }
+
+        // Use the function's semantic type
+        declType = funcDecl->semanticType;
+        if (!declType) {
+            ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
+                                  "member '", ctx.pool.lookup(expr->memberName),
+                                  "' has no type information");
+            expr->semanticType = ctx.getUnknownType();
+            expr->valueState = ValueState::Unknown;
+            expr->isLValue = false;
             return ctx.getUnknownType();
         }
     }
 
-    // ─── Step 5: Return the member's type ───────────────────────────────────
-    if (!decl->semanticType) {
-        ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
-                              "member '", ctx.pool.lookup(expr->memberName),
-                              "' has no type information");
-        expr->semanticType = ctx.getUnknownType();
-        expr->valueState = ValueState::Unknown;
-        return ctx.getUnknownType();
+    // ─── Step 7: Determine value state ──────────────────────────────────────
+    ValueState state = (isNullableType(declType) || isFallibleType(declType))
+                       ? ValueState::Unknown : ValueState::Definite;
+    if (decl->isa<EnumVariantAST>()) {
+        state = ValueState::Definite;
     }
 
-    ValueState state = (isNullableType(decl->semanticType) || isFallibleType(decl->semanticType))
-                       ? ValueState::Unknown : ValueState::Definite;
-    expr->semanticType = decl->semanticType;
+    // ─── Step 8: Set the expression's semantic type ────────────────────────
+    expr->semanticType = const_cast<TypeAST*>(declType);
     expr->valueState = state;
-    return decl->semanticType;
+    return const_cast<TypeAST*>(declType);
 }
 
 // =============================================================================
@@ -2201,7 +2232,6 @@ TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, const TypeAST* targetType, S
     }
 
     // ─── Step 1: Resolve the function type ──────────────────────────────────
-    // The function type may contain generic parameters that need resolution
     FuncTypeAST* funcType = const_cast<FuncTypeAST*>(expr->funcType);
     if (!resolveFuncType(funcType, ctx)) {
         expr->semanticType = ctx.getUnknownType();
@@ -2210,22 +2240,15 @@ TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, const TypeAST* targetType, S
     }
 
     // ─── Step 2: Store the resolved function type ──────────────────────────
-    // The expression's semantic type is the resolved function type
     expr->semanticType = funcType;
 
     // ─── Step 3: Push scope for parameters and analyze body ────────────────
-    // Anonymous functions create a new scope for their parameters
     ctx.pushScope();
 
-    // ─── Step 4: Register parameters in the new scope ─────────────────────
-    // Parameters need to be resolved AND registered in the scope
-    // so the body can reference them
-    size_t paramCount = 0;
+    // ─── Step 4: Register parameters in the new scope ──────────────────────
     for (FuncTypeAST* group = funcType; group; group = group->getNext()) {
         for (ParamAST* param : group->params) {
-            // resolveParam will register the parameter in the current scope
             resolveParam(param, ctx);
-            paramCount++;
         }
     }
 
@@ -2240,7 +2263,6 @@ TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, const TypeAST* targetType, S
     }
 
     // ─── Step 6: Push function context for return validation ──────────────
-    // The expected return type is the function's return type
     const TypeAST* expectedReturn = funcType->returnType;
     ctx.stack.pushAnonFunction(expr, expectedReturn);
 
@@ -2248,19 +2270,8 @@ TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, const TypeAST* targetType, S
 
     // ─── Step 7: Resolve the body based on its kind ────────────────────────
     if (expr->body->isa<BlockStmtAST>()) {
-        // ─── Block body ──────────────────────────────────────────────────
-        // A block body may contain multiple statements and returns
         bodyReturns = resolveBlock(expr->body->as<BlockStmtAST>(), ctx);
-
-        // ─── Check if void function has a return ─────────────────────────
-        if (!expectedReturn) {
-            // Void function: block body is fine even without return
-            // But warn if the block has a return with a value
-            // (The return statement resolver will handle this)
-        }
     } else if (expr->body->isa<ReturnStmtAST>()) {
-        // ─── Single return statement body ──────────────────────────────
-        // This is the expression body form: `return expr`
         bodyReturns = resolveReturnStmt(expr->body->as<ReturnStmtAST>(), ctx);
     } else {
         ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, expr,
@@ -2273,7 +2284,6 @@ TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, const TypeAST* targetType, S
     }
 
     // ─── Step 8: Verify return paths ───────────────────────────────────────
-    // For non-void functions, all paths must return a value
     if (expectedReturn && !bodyReturns) {
         ctx.diagnostics.error(DiagCode::Sem_MissingReturn, expr,
                               "anonymous function does not return a value on all paths");
@@ -2282,26 +2292,14 @@ TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, const TypeAST* targetType, S
     // ─── Step 9: Pop the function context ──────────────────────────────────
     ctx.stack.pop();
 
-    // ─── Step 10: Detect captures and store them ───────────────────────────
-    // After analyzing the body, we need to detect which variables from
-    // outer scopes are captured by this closure
-    // This is a placeholder - the actual capture analysis would walk the
-    // body's AST and collect IdentifierExprAST nodes that reference variables
-    // from outer scopes
-    // 
-    // For now, we mark that the body may have captures (placeholder)
-    // A real implementation would call: analyzeCaptures(expr, ctx)
-    if (!ctx.isAtModuleLevel()) {
-        // If we're not at module level, the closure may capture variables
-        // from the enclosing scope
-        expr->hasClosure = true;  // Placeholder - actual capture analysis needed
-    }
+    // ─── Step 10: Detect captures and store them ────────────────────────────
+    // This is where the capture analysis happens
+    analyzeCaptures(expr, ctx);
 
     // ─── Step 11: Pop the parameter scope ──────────────────────────────────
     ctx.popScope();
 
     // ─── Step 12: Set value state ──────────────────────────────────────────
-    // The value state depends on the function's return type
     ValueState state = ValueState::Definite;
     if (expectedReturn) {
         if (isNullableType(expectedReturn)) {
@@ -2312,18 +2310,16 @@ TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, const TypeAST* targetType, S
             state = ValueState::Definite;
         }
     } else {
-        // Void function returns no value
         state = ValueState::None;
     }
 
     expr->valueState = state;
     
     // ─── Step 13: Set isLValue and isConst ──────────────────────────────────
-    // Anonymous functions are never l-values
     expr->isLValue = false;
     
-    // A closure is considered const if it captures no mutable state
-    // and all its operations are const. This is a complex analysis.
+    // A closure is const only if it captures no mutable state and all its
+    // operations are const. This requires further analysis.
     // For now, we conservatively mark it as not const.
     expr->isConst = false;
 
@@ -2340,6 +2336,10 @@ TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, const TypeAST* targetType, S
             return ctx.getUnknownType();
         }
     }
+
+    LOG_SEMA("resolveAnonFuncExpr: resolved anonymous function with ",
+             expr->captures.size(), " captures",
+             expr->hasClosure ? " (closure)" : " (no closure)");
 
     return funcType;
 }

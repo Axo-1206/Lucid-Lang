@@ -212,10 +212,10 @@ enum class ASTKind : uint16_t {
     RangeExpr,
 
     // Concurrency
-    AsyncExpr,
-    AwaitExpr,
-    SpawnExpr,
-    JoinExpr,
+    AsyncStmt,
+    AwaitStmt,
+    SpawnStmt,
+    JoinStmt,
 
     // Statement nodes
     BlockStmt,
