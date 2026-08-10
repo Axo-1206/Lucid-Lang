@@ -171,7 +171,7 @@ void detectIdentifierNarrowing(NarrowingInfo& info, const IdentifierExprAST* id,
     if (!decl) return;
 
     // Check if the variable is nullable or fallible using SemaCompare
-    if (!isNullableType(decl->type) && !isFallibleType(decl->type)) {
+    if (!isNullableType(decl->semanticType) && !isFallibleType(decl->semanticType)) {
         return;
     }
 
@@ -188,9 +188,9 @@ void detectIdentifierNarrowing(NarrowingInfo& info, const IdentifierExprAST* id,
 // ─────────────────────────────────────────────────────────────────────────────
 
 const TypeAST* getInnerType(const ValueDeclAST* decl, SemaContext& ctx) {
-    if (!decl || !decl->type) return nullptr;
+    if (!decl || !decl->semanticType) return nullptr;
 
-    const TypeAST* type = decl->type;
+    const TypeAST* type = decl->semanticType;
 
     // Unwrap nullable using SemaCompare
     if (isNullableType(type)) {
@@ -239,7 +239,7 @@ NarrowingInfo detectNarrowingPattern(const BinaryExprAST* binary, SemaContext& c
             }
 
             // Verify the variable is nullable or fallible using SemaCompare
-            if (!isNullableType(decl->type) && !isFallibleType(decl->type)) {
+            if (!isNullableType(decl->semanticType) && !isFallibleType(decl->semanticType)) {
                 ctx.diagnostics.error(DiagCode::Sem_InvalidNilCheck, binary,
                                       "cannot narrow non-nullable/non-fallible variable '",
                                       ctx.pool.lookup(varName), "'");

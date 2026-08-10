@@ -194,15 +194,15 @@ const TypeAST* getIntrinsicReturnType(const IntrinsicCallExprAST* expr,
     }
 
     if (name == "addrof") {
-        if (!expr->args.empty() && expr->args[0]->resolvedType) {
-            return ctx.arena.make<PtrTypeAST>(expr->args[0]->resolvedType);
+        if (!expr->args.empty() && expr->args[0]->semanticType) {
+            return ctx.arena.make<PtrTypeAST>(expr->args[0]->semanticType);
         }
         return targetType;
     }
 
     if (name == "toRef") {
-        if (!expr->args.empty() && expr->args[0]->resolvedType) {
-            const TypeAST* argType = expr->args[0]->resolvedType;
+        if (!expr->args.empty() && expr->args[0]->semanticType) {
+            const TypeAST* argType = expr->args[0]->semanticType;
             if (argType->isa<PtrTypeAST>()) {
                 return ctx.arena.make<RefTypeAST>(
                     argType->as<PtrTypeAST>()->inner
@@ -213,8 +213,8 @@ const TypeAST* getIntrinsicReturnType(const IntrinsicCallExprAST* expr,
     }
 
     if (name == "toPtr") {
-        if (!expr->args.empty() && expr->args[0]->resolvedType) {
-            const TypeAST* argType = expr->args[0]->resolvedType;
+        if (!expr->args.empty() && expr->args[0]->semanticType) {
+            const TypeAST* argType = expr->args[0]->semanticType;
             if (argType->isa<RefTypeAST>()) {
                 return ctx.arena.make<PtrTypeAST>(
                     argType->as<RefTypeAST>()->inner
@@ -451,7 +451,7 @@ bool validateScopeExit(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
 
     // ─── 3. Resolve and validate the first argument ────────────────────────
     const ExprAST* funcArg = expr->args[0];
-    TypeAST* funcType = funcArg->resolvedType;
+    TypeAST* funcType = funcArg->semanticType;
     
     // First, resolve the argument if not already resolved
     if (!funcType || funcType->isa<UnknownTypeAST>()) {
@@ -742,60 +742,60 @@ bool validateMemoryManagement(const IntrinsicCallExprAST* expr, SemaContext& ctx
 // ─── Argument Type Validators ─────────────────────────────────────────────
 
 bool validatePtrArg(const ExprAST* arg, const std::string& argName, SemaContext& ctx) {
-    if (!arg->resolvedType || !arg->resolvedType->isa<PtrTypeAST>()) {
+    if (!arg->semanticType || !arg->semanticType->isa<PtrTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
                               "argument '", argName, "' expects pointer type, got ",
-                              debug::typeToString(arg->resolvedType, ctx.pool));
+                              debug::typeToString(arg->semanticType, ctx.pool));
         return false;
     }
     return true;
 }
 
 bool validateNumericArg(const ExprAST* arg, const std::string& argName, SemaContext& ctx) {
-    if (!arg->resolvedType || !isNumericType(arg->resolvedType)) {
+    if (!arg->semanticType || !isNumericType(arg->semanticType)) {
         ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
                               "argument '", argName, "' expects numeric type, got ",
-                              debug::typeToString(arg->resolvedType, ctx.pool));
+                              debug::typeToString(arg->semanticType, ctx.pool));
         return false;
     }
     return true;
 }
 
 bool validateIntArg(const ExprAST* arg, const std::string& argName, SemaContext& ctx) {
-    if (!arg->resolvedType || !isIntegerType(arg->resolvedType)) {
+    if (!arg->semanticType || !isIntegerType(arg->semanticType)) {
         ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
                               "argument '", argName, "' expects integer type, got ",
-                              debug::typeToString(arg->resolvedType, ctx.pool));
+                              debug::typeToString(arg->semanticType, ctx.pool));
         return false;
     }
     return true;
 }
 
 bool validateStringArg(const ExprAST* arg, const std::string& argName, SemaContext& ctx) {
-    if (!arg->resolvedType || !isStringType(arg->resolvedType)) {
+    if (!arg->semanticType || !isStringType(arg->semanticType)) {
         ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
                               "argument '", argName, "' expects string type, got ",
-                              debug::typeToString(arg->resolvedType, ctx.pool));
+                              debug::typeToString(arg->semanticType, ctx.pool));
         return false;
     }
     return true;
 }
 
 bool validateBoolArg(const ExprAST* arg, const std::string& argName, SemaContext& ctx) {
-    if (!arg->resolvedType || !isBoolType(arg->resolvedType)) {
+    if (!arg->semanticType || !isBoolType(arg->semanticType)) {
         ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
                               "argument '", argName, "' expects boolean type, got ",
-                              debug::typeToString(arg->resolvedType, ctx.pool));
+                              debug::typeToString(arg->semanticType, ctx.pool));
         return false;
     }
     return true;
 }
 
 bool validateRefArg(const ExprAST* arg, const std::string& argName, SemaContext& ctx) {
-    if (!arg->resolvedType || !arg->resolvedType->isa<RefTypeAST>()) {
+    if (!arg->semanticType || !arg->semanticType->isa<RefTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
                               "argument '", argName, "' expects reference type, got ",
-                              debug::typeToString(arg->resolvedType, ctx.pool));
+                              debug::typeToString(arg->semanticType, ctx.pool));
         return false;
     }
     return true;

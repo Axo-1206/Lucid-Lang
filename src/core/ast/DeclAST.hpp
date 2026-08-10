@@ -135,14 +135,17 @@ struct VarDeclAST : ValueDeclAST {
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
     const TypeAST* type;          // The type as written in source
-    const ExprAST* init;          // Initializer expression (null if none)
+
+    ExprAST* init;  // Initializer expression (null if none)
+                    // we are not using const for this field because
+                    // the semantic phase need to evaluate this
     
     // ─── CodeGen Fields (mutable) ──────────────────────────────────────
     llvm::AllocaInst* llvmAlloca = nullptr;      // Local variable alloca
     llvm::GlobalVariable* llvmGlobal = nullptr;  // Module-level global
 
     // ─── Constructor ─────────────────────────────────────────────────────
-    VarDeclAST(InternedString n, DeclKeyword kw, const TypeAST* t, const ExprAST* i)
+    VarDeclAST(InternedString n, DeclKeyword kw, const TypeAST* t, ExprAST* i)
         : ValueDeclAST(ASTKind::VarDecl, n, kw)
         , type(t)
         , init(i) {}
@@ -290,10 +293,13 @@ struct FieldDeclAST : ValueDeclAST {
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
     const TypeAST* type;          // The field type
-    const ExprAST* defaultVal;    // Expression default value (null if none)
     const StmtAST* defaultBody;   // Block body default (for function fields)
     const bool isConstField;      // True if field is marked `const` in struct
-    
+
+    ExprAST* defaultVal;    // Expression default value (null if none)
+                            // we are not using const for this field be
+                            // the semantic phase need to evaluate this
+
     // ─── Semantic Fields (set by Sema) ────────────────────────────────
     size_t fieldIndex = 0;        // Position in struct layout
     uint64_t byteOffset = 0;      // Byte offset from struct start
@@ -302,7 +308,7 @@ struct FieldDeclAST : ValueDeclAST {
     llvm::Type* llvmType = nullptr;  // LLVM type of this field
 
     // ─── Constructor ─────────────────────────────────────────────────────
-    FieldDeclAST(InternedString n, const TypeAST* t, const ExprAST* dv, const StmtAST* db, bool isConstField)
+    FieldDeclAST(InternedString n, const TypeAST* t, ExprAST* dv, const StmtAST* db, bool isConstField)
         : ValueDeclAST(ASTKind::FieldDecl, n, DeclKeyword::Let)  // Fields use Let/Const via isConstField
         , type(t)
         , defaultVal(dv)
