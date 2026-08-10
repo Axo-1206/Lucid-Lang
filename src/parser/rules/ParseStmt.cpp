@@ -771,12 +771,22 @@ AsyncStmtAST* parseAsyncStmt(TokenStream& stream, ParserContext& ctx) {
         return ctx.arena.make<AsyncStmtAST>();
     }
     
-    // 2. Parse binding variable (follows VarDecl pattern)
-    //    async result int = fetchData(url)
-    //    ───┬─── ─┬─ ─┬─
-    //    keyword name type
+    // 2. Parse declaration keyword (let/const)
+    //    async const result int = fetchData(url)
+    //    async let result int = fetchData(url)
+    //    ───┬─── ──┬─── ─┬─ ─┬─
+    //    async keyword name type
     
-    // 2a. Parse the variable name
+    bool isConst = stream.match(TokenType::CONST);
+    if (!isConst && !stream.match(TokenType::LET)) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                "expected 'let' or 'const' after 'async', got '", stream.peekValue(), "'");
+        synchronizeToContext(stream, ctx);
+        return ctx.arena.make<AsyncStmtAST>();
+    }
+    DeclKeyword keyword = isConst ? DeclKeyword::Const : DeclKeyword::Let;
+    
+    // 3. Parse the variable name
     if (!stream.check(TokenType::IDENTIFIER)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
                                 "expected variable name for async binding, got '", stream.peekValue(), "'");
@@ -786,7 +796,7 @@ AsyncStmtAST* parseAsyncStmt(TokenStream& stream, ParserContext& ctx) {
     Token nameTok = stream.consume();
     InternedString name = ctx.pool.intern(nameTok.value);
     
-    // 2b. Parse the type annotation (required)
+    // 4. Parse the type annotation (required)
     TypePtr innerType = parseType(stream, ctx);
     if (!innerType) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
@@ -795,15 +805,15 @@ AsyncStmtAST* parseAsyncStmt(TokenStream& stream, ParserContext& ctx) {
         return ctx.arena.make<AsyncStmtAST>();
     }
     
-    // 2c. Wrap the type in FutureTypeAST
+    // 5. Wrap the type in FutureTypeAST
     TypePtr wrappedType = ctx.arena.make<FutureTypeAST>(innerType);
     
-    // 2d. Create the VarDeclAST for the binding using constructor
-    // async bindings are Let (mutable) - can be awaited
-    VarDeclAST* binding = ctx.arena.make<VarDeclAST>(name, DeclKeyword::Let, wrappedType, nullptr);
+    // 6. Create the VarDeclAST for the binding using constructor
+    VarDeclAST* binding = ctx.arena.make<VarDeclAST>(name, keyword, wrappedType, nullptr);
     binding->loc = loc;
+    binding->resolvedType = wrappedType;
     
-    // 3. Parse '=' (required)
+    // 7. Parse '=' (required)
     if (!stream.match(TokenType::ASSIGN)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected '=', got '", stream.peekValue(), "'");
@@ -811,7 +821,7 @@ AsyncStmtAST* parseAsyncStmt(TokenStream& stream, ParserContext& ctx) {
         return ctx.arena.make<AsyncStmtAST>();
     }
     
-    // 4. Parse the async call expression
+    // 8. Parse the async call expression
     ExprPtr call = parseExpr(stream, ctx);
     if (!call || !call->isa<CallExprAST>()) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
@@ -820,17 +830,16 @@ AsyncStmtAST* parseAsyncStmt(TokenStream& stream, ParserContext& ctx) {
         return ctx.arena.make<AsyncStmtAST>();
     }
     
-    // 5. Create AsyncStmtAST with all fields
+    // 9. Create AsyncStmtAST with all fields
     AsyncStmtAST* asyncStmt = ctx.arena.make<AsyncStmtAST>();
     asyncStmt->loc = loc;
     asyncStmt->binding = binding;
     asyncStmt->call = call;
     
     LOG_PARSER("parseAsyncStmt: parsed async statement with binding '", 
-               ctx.pool.lookup(name), "'");
+               ctx.pool.lookup(name), "' (", isConst ? "const" : "let", ")");
     return asyncStmt;
 }
-
 
 AwaitStmtAST* parseAwaitStmt(TokenStream& stream, ParserContext& ctx) {
     LOG_PARSER("parseAwaitStmt: parsing await statement");
@@ -870,9 +879,6 @@ AwaitStmtAST* parseAwaitStmt(TokenStream& stream, ParserContext& ctx) {
 SpawnStmtAST* parseSpawnStmt(TokenStream& stream, ParserContext& ctx) {
     LOG_PARSER("parseSpawnStmt: parsing spawn statement");
 
-    /// NOTE: we do not reuse parseVarDecl here because parseVarDecl do not support
-    /// '_' discard pattern
-    
     SourceLocation loc = stream.currentLoc();
     
     // 1. Parse 'spawn' keyword
@@ -884,47 +890,88 @@ SpawnStmtAST* parseSpawnStmt(TokenStream& stream, ParserContext& ctx) {
     
     VarDeclAST* binding = nullptr;
     
-    // 2. Parse binding variable or discard pattern ('_')
-    //    spawn result int = computeHeavyData()
+    // 2. Check for discard pattern ('_') first
     //    spawn _ = logToFile("started")
-    //    ───┬─── ──┬─ ─┬─
-    //    keyword name type (optional for '_')
-    
+    //    ───┬─── ─┬─
+    //    spawn  _
     if (stream.check(TokenType::UNDERSCORE)) {
-        // Discard pattern - no binding, no type required
+        // Discard pattern - no binding, no keyword, no type required
         stream.consume(); // Consume '_'
         binding = nullptr;
-    } else if (stream.check(TokenType::IDENTIFIER)) {
-        // 2a. Parse the variable name
-        Token nameTok = stream.consume();
-        InternedString name = ctx.pool.intern(nameTok.value);
         
-        // 2b. Parse the type annotation (required for named bindings)
-        TypePtr innerType = parseType(stream, ctx);
-        if (!innerType) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
-                                    "expected type for spawn binding, got '", stream.peekValue(), "'");
+        // Parse '=' (required for discard pattern too)
+        if (!stream.match(TokenType::ASSIGN)) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                    "expected '=', got '", stream.peekValue(), "'");
             synchronizeToContext(stream, ctx);
             return ctx.arena.make<SpawnStmtAST>();
         }
         
-        // 2c. Wrap the type in ThreadTypeAST
-        TypePtr wrappedType = ctx.arena.make<ThreadTypeAST>(innerType);
+        // Parse the spawn call expression
+        ExprPtr call = parseExpr(stream, ctx);
+        if (!call || !call->isa<CallExprAST>()) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
+                                    "expected spawn call expression");
+            synchronizeToContext(stream, ctx);
+            return ctx.arena.make<SpawnStmtAST>();
+        }
         
-        // 2d. Create the VarDeclAST for the binding using constructor
-        // spawn bindings are Let (mutable) - can be joined
-        binding = ctx.arena.make<VarDeclAST>(name, DeclKeyword::Let, wrappedType, nullptr);
-        binding->loc = loc;
+        // Create SpawnStmtAST with discard pattern
+        SpawnStmtAST* spawnStmt = ctx.arena.make<SpawnStmtAST>();
+        spawnStmt->loc = loc;
+        spawnStmt->binding = nullptr;
+        spawnStmt->call = call;
         
-        LOG_PARSER_DETAIL("parseSpawnStmt: binding '", ctx.pool.lookup(name), "'");
-    } else {
+        LOG_PARSER("parseSpawnStmt: parsed spawn discard pattern");
+        return spawnStmt;
+    }
+    
+    // 3. Parse declaration keyword (let/const) for named bindings
+    //    spawn const result int = computeHeavyData()
+    //    spawn let result int = computeHeavyData()
+    //    ───┬─── ──┬─── ─┬─ ─┬─
+    //    spawn keyword name type
+    
+    bool isConst = stream.match(TokenType::CONST);
+    if (!isConst && !stream.match(TokenType::LET)) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                "expected 'let' or 'const' after 'spawn' (or '_' for discard), got '", stream.peekValue(), "'");
+        synchronizeToContext(stream, ctx);
+        return ctx.arena.make<SpawnStmtAST>();
+    }
+    DeclKeyword keyword = isConst ? DeclKeyword::Const : DeclKeyword::Let;
+    
+    // 4. Parse the variable name
+    if (!stream.check(TokenType::IDENTIFIER)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
-                                "expected variable name or '_', got '", stream.peekValue(), "'");
+                                "expected variable name for spawn binding, got '", stream.peekValue(), "'");
+        synchronizeToContext(stream, ctx);
+        return ctx.arena.make<SpawnStmtAST>();
+    }
+    Token nameTok = stream.consume();
+    InternedString name = ctx.pool.intern(nameTok.value);
+    
+    // 5. Parse the type annotation (required for named bindings)
+    TypePtr innerType = parseType(stream, ctx);
+    if (!innerType) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
+                                "expected type for spawn binding, got '", stream.peekValue(), "'");
         synchronizeToContext(stream, ctx);
         return ctx.arena.make<SpawnStmtAST>();
     }
     
-    // 3. Parse '=' (required)
+    // 6. Wrap the type in ThreadTypeAST
+    TypePtr wrappedType = ctx.arena.make<ThreadTypeAST>(innerType);
+    
+    // 7. Create the VarDeclAST for the binding using constructor
+    binding = ctx.arena.make<VarDeclAST>(name, keyword, wrappedType, nullptr);
+    binding->loc = loc;
+    binding->resolvedType = wrappedType;
+    
+    LOG_PARSER_DETAIL("parseSpawnStmt: binding '", ctx.pool.lookup(name), 
+                      "' (", isConst ? "const" : "let", ")");
+    
+    // 8. Parse '=' (required)
     if (!stream.match(TokenType::ASSIGN)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected '=', got '", stream.peekValue(), "'");
@@ -932,7 +979,7 @@ SpawnStmtAST* parseSpawnStmt(TokenStream& stream, ParserContext& ctx) {
         return ctx.arena.make<SpawnStmtAST>();
     }
     
-    // 4. Parse the spawn call expression
+    // 9. Parse the spawn call expression
     ExprPtr call = parseExpr(stream, ctx);
     if (!call || !call->isa<CallExprAST>()) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
@@ -941,13 +988,14 @@ SpawnStmtAST* parseSpawnStmt(TokenStream& stream, ParserContext& ctx) {
         return ctx.arena.make<SpawnStmtAST>();
     }
     
-    // 5. Create SpawnStmtAST with all fields
+    // 10. Create SpawnStmtAST with all fields
     SpawnStmtAST* spawnStmt = ctx.arena.make<SpawnStmtAST>();
     spawnStmt->loc = loc;
     spawnStmt->binding = binding;
     spawnStmt->call = call;
     
-    LOG_PARSER("parseSpawnStmt: parsed spawn statement");
+    LOG_PARSER("parseSpawnStmt: parsed spawn statement with binding '", 
+               ctx.pool.lookup(name), "'");
     return spawnStmt;
 }
 

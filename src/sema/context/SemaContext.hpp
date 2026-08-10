@@ -630,14 +630,15 @@ struct SemaContext {
     // ─── Symbol Lookup ──────────────────────────────────────────────────
     
     const TypeAST* getEffectiveType(const ValueDeclAST* decl, InternedString name) const {
-        if (!decl || !decl->type) return nullptr;
+        if (!decl) return nullptr;
         
         const TypeAST* narrowedType = stack.getNarrowedType(name);
         if (narrowedType) {
             return narrowedType;
         }
         
-        return decl->type;
+        // Use resolvedType (set by Sema) instead of raw type field
+        return decl->resolvedType;
     }
     
     const GenericParamDeclAST* lookupGenericParam(InternedString name) const {
@@ -660,7 +661,8 @@ struct SemaContext {
         
         const TypeAST* narrowedType = stack.getNarrowedType(name);
         if (narrowedType) {
-            const_cast<ValueDeclAST*>(decl)->type = const_cast<TypeAST*>(narrowedType);
+            // Update the resolved type to the narrowed type
+            const_cast<ValueDeclAST*>(decl)->resolvedType = const_cast<TypeAST*>(narrowedType);
             return decl;
         }
         

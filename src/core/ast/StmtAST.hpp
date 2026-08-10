@@ -399,7 +399,8 @@ struct ContinueStmtAST : StmtAST {
 /// @brief An async operation – schedules a function call on the event loop.
 /// 
 /// @example
-///   async result int = fetchData(url)
+///   async const result int = fetchData(url)
+///   async let result int = fetchData(url)
 /// 
 /// Note the surface syntax names the *inner* type (`int`), not `Future<T>`
 /// directly — the parser wraps it into `Future<int>` itself, the same way
@@ -411,58 +412,28 @@ struct ContinueStmtAST : StmtAST {
 /// - Non-blocking – the calling thread continues immediately
 /// - Must be awaited with `await` to get the result
 /// - Lightweight – can schedule thousands of async operations
-/// - Binds exactly one variable per statement — schedule additional
-///   concurrent operations with additional `async` statements, then wait
-///   on all of them together with a single `await` (see AwaitStmtAST)
+/// - Binds exactly one variable per statement
 /// 
 /// ─── `binding` Is Always a Fresh Local, Never an Existing Lvalue ──────────
-/// `async result int = ...` *introduces* `result` — it does not assign into
+/// `async const result int = ...` *introduces* `result` — it does not assign into
 /// a pre-existing variable, the same way `let`/`const` introduce a name
 /// rather than reassign one. `binding` is therefore a synthesized
-/// `VarDeclAST*`, not a general `ExprPtr` lvalue. This is not just a
-/// convenience: `Future<T>` (see `FutureTypeAST`) is a linear, non-copyable
-/// type restricted to local variables and parameters, so there is no valid
-/// existing storage location for this statement to assign into even in
-/// principle, and `ModuleAccessExprAST`/`FieldAccessExprAST` targets (valid
-/// under an earlier version of this node) are now flatly illegal regardless
-/// of representation — every use of a future has to originate from a fresh
-/// binding declared right here.
+/// `VarDeclAST*`, not a general `ExprPtr` lvalue.
 /// 
-/// ─── `binding->type` Is Always Explicit — No Inference ─────────────────────
-/// The inner type `T` (`int` in the example above) must always be written
-/// at the `async` statement itself, same as every other `let`/`const` in
-/// this language — there is no inferred-type binding form anywhere in
-/// Lucid, and this construct does not introduce the first one. The parser
-/// wraps the written `T` in `FutureTypeAST` immediately and sets
-/// `binding->type` to the result, exactly the same eager-wrap it already
-/// performs for `T?`/`T!`. `binding->type` is therefore **never null** —
-/// unlike an ordinary `let`, there is no case where Sema needs to fill it
-/// in later, since the type is always present at the syntax level.
+/// ─── `keyword` Support ─────────────────────────────────────────────────────
+/// The `async` statement supports both `let` and `const` keywords:
+/// - `async let result int = fn()` → mutable binding (can be awaited, but also reassigned)
+/// - `async const result int = fn()` → immutable binding (cannot be reassigned)
 /// 
-/// ─── Semantic Analysis Notes ──────────────────────────────────────────────
-/// 1. **Type Check, Not Inference**: Sema checks that `call`'s resolved
-///    return type matches the `T` already wrapped into `binding->type` by
-///    the parser — the same ordinary check any `let x T = someFn();`
-///    already performs. There is no bespoke inference step to write.
-/// 2. **Cannot Use**: A `Future<T>` cannot be used as `T` until narrowed by
-///    `await` — enforced via the same flow-sensitive narrowing as `T?`/`T!`
-///    (`ExprAST::valueState`), not a separate lookup mechanism.
-/// 3. **Await Required On Every Path**: A live, un-awaited `Future<T>`
-///    reaching scope exit — including via `return`, `break`, or any branch
-///    of an `if`/`switch` — is a **compile error**, not a warning. See the
-///    Linear Value Rules on `FutureTypeAST` for the full rule set (also:
-///    not copyable, never captured by a closure).
+/// The const-ness applies to the binding itself, not to the Future<T> type.
 /// 
-/// @field binding        The freshly introduced local. `binding->type` is
-///                        always `FutureTypeAST(T)`, set by the parser, and
-///                        is never null.
-/// @field call            The async call expression.
+/// @field binding        The freshly introduced local. `binding->keyword`
+///                        is either `Let` or `Const` as specified in source.
+/// @field call           The async call expression.
 struct AsyncStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::AsyncExpr;
 
-    VarDeclAST* binding = nullptr;   // fresh local introduced by this statement — never
-                                      // a reference to a pre-existing variable; ->type is
-                                      // always FutureTypeAST(T), set by the parser, never null
+    VarDeclAST* binding = nullptr;   // fresh local introduced by this statement
     ExprPtr call;                    // the async call
 
     AsyncStmtAST() : StmtAST(ASTKind::AsyncExpr) {}
@@ -506,10 +477,11 @@ struct AwaitStmtAST : StmtAST {
 /// @brief A spawn operation – launches a function call on a separate OS thread.
 /// 
 /// @example
-///   spawn result int = computeHeavyData()
+///   spawn const result int = computeHeavyData()
+///   spawn let result int = computeHeavyData()
 ///   spawn _ = logToFile("started")            – discard the return value
 /// 
-/// Note `_` is the one case with no type to write at all — the discard
+/// Note `_` is the one case with no keyword and no type to write at all — the discard
 /// pattern never produces a binding, so there is nothing to wrap.
 /// 
 /// ─── Key Characteristics ──────────────────────────────────────────────────
@@ -517,56 +489,26 @@ struct AwaitStmtAST : StmtAST {
 /// - Preemptive multitasking
 /// - Can be joined with `join` to get the result
 /// - Heavy overhead – limited to CPU cores (dozens of threads)
-/// - Binds exactly one value per statement — launch additional threads with
-///   additional `spawn` statements, then wait on several together with a
-///   single `join` (see JoinStmtAST)
 /// 
 /// ─── The Discard Pattern (`_`) ──────────────────────────────────────────────
 /// - `spawn _ = fn()` = fire and forget (`binding == nullptr`, no join required)
-/// - `spawn x T = fn()` = fire and join later (join required)
+/// - `spawn const x T = fn()` = fire and join later (join required)
 /// 
-/// ─── `binding` Is Always a Fresh Local, Never an Existing Lvalue ──────────
-/// Same reasoning as `AsyncStmtAST::binding` — `spawn result int = ...`
-/// introduces `result`, it does not assign into a pre-existing variable.
-/// `Thread<T>` (see `ThreadTypeAST`) is linear and non-copyable, so there is
-/// no valid pre-existing storage location to assign into in the first
-/// place, and `ModuleAccessExprAST`/`FieldAccessExprAST` targets are flatly
-/// illegal for the same reason given on `AsyncStmtAST`.
+/// ─── `keyword` Support ─────────────────────────────────────────────────────
+/// The `spawn` statement supports both `let` and `const` keywords for named bindings:
+/// - `spawn let result int = fn()` → mutable binding (can be joined and reassigned)
+/// - `spawn const result int = fn()` → immutable binding (can be joined but not reassigned)
 /// 
-/// ─── `binding->type` Is Always Explicit — No Inference ─────────────────────
-/// Same as `AsyncStmtAST` — the inner type `T` must always be written at the
-/// `spawn` statement itself (when `binding` is non-null); the parser wraps
-/// it in `ThreadTypeAST` eagerly, same as `?`/`!`. `binding->type` is never
-/// null when `binding` itself is non-null.
-/// 
-/// ─── Semantic Analysis Notes ──────────────────────────────────────────────
-/// 1. **Type Check, Not Inference**: Sema checks `call`'s resolved return
-///    type against the `T` already wrapped into `binding->type` by the
-///    parser — same as `AsyncStmtAST`, no inference step to write.
-/// 2. **Cannot Use**: A `Thread<T>` cannot be used as `T` until narrowed by
-///    `join` — same flow-sensitive narrowing as `FutureTypeAST`.
-/// 3. **Discard Pattern**: `binding == nullptr` means the result is
-///    discarded (`_`) – no `ThreadTypeAST`, no join required, none of the
-///    linear-value rules apply since there is no binding to apply them to.
-/// 4. **Join Required On Every Path**: A live, un-joined `Thread<T>`
-///    reaching scope exit is a **compile error**, not a warning — same as
-///    `Future<T>`.
-/// 5. **Shared State**: Variables declared before the spawn call are shared
-///    between threads (requires synchronization).
-/// 6. **Nesting**: A spawned thread can itself launch further spawn or async calls.
+/// The const-ness applies to the binding itself, not to the Thread<T> type.
 /// 
 /// @field binding          The freshly introduced local, or `nullptr` for
-///                          the `_` discard pattern. When non-null,
-///                          `binding->type` is always `ThreadTypeAST(T)`,
-///                          set by the parser, and is never null.
+///                          the `_` discard pattern.
 /// @field call             The spawn call expression.
 struct SpawnStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::SpawnExpr;
 
     VarDeclAST* binding = nullptr;   // fresh local introduced by this statement, or
-                                      // nullptr for the `_` discard pattern; when non-null,
-                                      // ->type is always ThreadTypeAST(T), set by the
-                                      // parser, never null
+                                      // nullptr for the `_` discard pattern
     ExprPtr call;                    // the spawn call
 
     SpawnStmtAST() : StmtAST(ASTKind::SpawnExpr) {}
