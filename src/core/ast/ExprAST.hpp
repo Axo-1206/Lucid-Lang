@@ -132,63 +132,49 @@ struct LiteralExprAST : ExprAST {
 /// 
 /// The array kind (fixed/slice/dynamic) is inferred from the declared type
 /// of the variable being initialised – the literal itself is kind-neutral.
-/// The semantic pass sets resolvedType after inference.
-/// 
-/// ─── Semantic Analysis Notes ──────────────────────────────────────────────
-/// 1. **Empty Array**: `[]` is an empty array literal. Its type must be
-///    inferred from context (assignment type annotation).
-/// 2. **Element Types**: All elements must have the same type. If types differ,
-///    the semantic pass emits a compile error.
-/// 3. **Type Inference**: The array's element type is inferred from the
-///    declared type of the variable being initialized.
+/// The semantic pass sets semanticType after inference.
 struct ArrayLiteralExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::ArrayLiteralExpr;
 
-    ArenaSpan<ExprPtr> elements; // may be empty
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const ArenaSpan<ExprPtr> elements; // may be empty
 
-    ArrayLiteralExprAST() : ExprAST(ASTKind::ArrayLiteralExpr) {}
+    // ─── Constructor ─────────────────────────────────────────────────────
+    ArrayLiteralExprAST(ArenaSpan<ExprPtr> elems)
+        : ExprAST(ASTKind::ArrayLiteralExpr), elements(elems) {}
 };
 
 /// @brief One field initializer inside a struct literal expression.
-/// @example
-///   x = 1.0
-///   name = "hello"
-///   position = Vec2 { x = 0, y = 0 }
-/// 
-/// Now a proper BaseAST node so the semantic pass and tools can walk the
-/// field‑to‑expression binding uniformly.
 struct FieldInitAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::FieldInit;
 
-    const InternedString name; // field name being initialised
-    ExprPtr value;             // initialiser expression
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const InternedString name;
+    const ExprPtr value;
 
-    FieldInitAST() : BaseAST(ASTKind::FieldInit) {}
+    // ─── Constructor ─────────────────────────────────────────────────────
     FieldInitAST(InternedString n, ExprPtr v)
         : BaseAST(ASTKind::FieldInit), name(n), value(v) {}
 };
 using FieldInitPtr = FieldInitAST*;
 
-/// 
 /// @brief Constructs a value of a named struct type.
 /// 
 /// @example
 ///   Vec2 { x = 1.0, y = 2.0 }
 ///   Point {}  – all fields take their defaults
 ///   Pair<int, string> { first = 1, second = "one" }
-/// 
-/// @field typeName      The name of the struct type.
-/// @field genericArgs   Generic arguments (empty if non-generic).
-/// @field inits         Field initializers (field = expr entries).
 struct StructLiteralExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::StructLiteralExpr;
 
-    const InternedString typeName;         // "Vec2", "Color", "Pair"
-    ArenaSpan<TypePtr> genericArgs;        // empty if non‑generic
-    ArenaSpan<FieldInitPtr> inits;         // field = expr entries
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const InternedString typeName;
+    const ArenaSpan<TypePtr> genericArgs;
+    const ArenaSpan<FieldInitPtr> inits;
 
-    StructLiteralExprAST(InternedString n) 
-        : ExprAST(ASTKind::StructLiteralExpr), typeName(n) {}
+    // ─── Constructor ─────────────────────────────────────────────────────
+    StructLiteralExprAST(InternedString n, ArenaSpan<TypePtr> args, ArenaSpan<FieldInitPtr> in)
+        : ExprAST(ASTKind::StructLiteralExpr), typeName(n), genericArgs(args), inits(in) {}
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -326,10 +312,13 @@ struct CallExprAST : ExprAST {
 struct IndexExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::IndexExpr;
 
-    ExprPtr target;
-    ExprPtr index;      // element index
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const ExprPtr target;
+    const ExprPtr index;
 
-    IndexExprAST() : ExprAST(ASTKind::IndexExpr) {}
+    // ─── Constructor ─────────────────────────────────────────────────────
+    IndexExprAST(ExprPtr t, ExprPtr i)
+        : ExprAST(ASTKind::IndexExpr), target(t), index(i) {}
 };
 
 /// @brief Slice expression – produces a borrowed view over a contiguous range.
@@ -356,13 +345,15 @@ struct IndexExprAST : ExprAST {
 struct SliceExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::SliceExpr;
 
-    ExprPtr target;
-    ExprPtr start;      // inclusive, nullptr means 0
-    ExprPtr end;        // inclusive or exclusive depending on isExclusive
-    const bool isExclusive = false; // true for ..< syntax
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const ExprPtr target;
+    const ExprPtr start;      // inclusive, nullptr means 0
+    const ExprPtr end;        // inclusive or exclusive depending on isExclusive
+    const bool isExclusive;
 
-    SliceExprAST(bool ex) 
-        : ExprAST(ASTKind::SliceExpr), isExclusive(ex) {}
+    // ─── Constructor ─────────────────────────────────────────────────────
+    SliceExprAST(ExprPtr t, ExprPtr s, ExprPtr e, bool ex = false)
+        : ExprAST(ASTKind::SliceExpr), target(t), start(s), end(e), isExclusive(ex) {}
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -468,10 +459,13 @@ struct AssignExprAST : ExprAST {
 struct NullCoalesceExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::NullCoalesceExpr;
 
-    ExprPtr value;
-    ExprPtr fallback;
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const ExprPtr value;
+    const ExprPtr fallback;
 
-    NullCoalesceExprAST() : ExprAST(ASTKind::NullCoalesceExpr) {}
+    // ─── Constructor ─────────────────────────────────────────────────────
+    NullCoalesceExprAST(ExprPtr v, ExprPtr f)
+        : ExprAST(ASTKind::NullCoalesceExpr), value(v), fallback(f) {}
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -502,10 +496,13 @@ struct NullCoalesceExprAST : ExprAST {
 struct PipelineStepAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::PipelineStep;
 
-    ExprPtr callable;                // function reference or anonymous function
-    ArenaSpan<ExprPtr> packArgs;     // non‑empty for argument pack steps
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const ExprPtr callable;
+    const ArenaSpan<ExprPtr> packArgs;
 
-    PipelineStepAST() : BaseAST(ASTKind::PipelineStep) {}
+    // ─── Constructor ─────────────────────────────────────────────────────
+    PipelineStepAST(ExprPtr c, ArenaSpan<ExprPtr> p)
+        : BaseAST(ASTKind::PipelineStep), callable(c), packArgs(p) {}
 };
 using PipelineStepPtr = PipelineStepAST*;
 
@@ -532,10 +529,13 @@ using PipelineStepPtr = PipelineStepAST*;
 struct PipelineExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::PipelineExpr;
 
-    ExprPtr seed;
-    ArenaSpan<PipelineStepPtr> steps;   // at least one
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const ExprPtr seed;
+    const ArenaSpan<PipelineStepPtr> steps;
 
-    PipelineExprAST() : ExprAST(ASTKind::PipelineExpr) {}
+    // ─── Constructor ─────────────────────────────────────────────────────
+    PipelineExprAST(ExprPtr s, ArenaSpan<PipelineStepPtr> st)
+        : ExprAST(ASTKind::PipelineExpr), seed(s), steps(st) {}
 };
 
 /// @brief One operand in a +> composition chain – owned by ComposeExprAST.
@@ -568,10 +568,13 @@ struct PipelineExprAST : ExprAST {
 struct ComposeOperandAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::ComposeOperand;
 
-    ExprPtr callable;                    // the function reference (required)
-    ArenaSpan<TypePtr> genericArgs;      // explicit type arguments for generic instantiation
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const ExprPtr callable;
+    const ArenaSpan<TypePtr> genericArgs;
 
-    ComposeOperandAST() : BaseAST(ASTKind::ComposeOperand) {}
+    // ─── Constructor ─────────────────────────────────────────────────────
+    ComposeOperandAST(ExprPtr c, ArenaSpan<TypePtr> args)
+        : BaseAST(ASTKind::ComposeOperand), callable(c), genericArgs(args) {}
 };
 using ComposeOperandPtr = ComposeOperandAST*;
 
@@ -595,10 +598,13 @@ using ComposeOperandPtr = ComposeOperandAST*;
 struct ComposeExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::ComposeExpr;
 
-    ExprPtr left;                                // leftmost operand (already parsed)
-    ArenaSpan<ComposeOperandPtr> operands;        // right‑hand operands in order
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const ExprPtr left;
+    const ArenaSpan<ComposeOperandPtr> operands;
 
-    ComposeExprAST() : ExprAST(ASTKind::ComposeExpr) {}
+    // ─── Constructor ─────────────────────────────────────────────────────
+    ComposeExprAST(ExprPtr l, ArenaSpan<ComposeOperandPtr> ops)
+        : ExprAST(ASTKind::ComposeExpr), left(l), operands(ops) {}
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -684,25 +690,23 @@ struct AnonFuncExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::AnonFuncExpr;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
-    const FuncTypeAST* funcType;   // the anonymous function type
-    const StmtAST* body;           // always BlockStmtAST
+    const FuncTypeAST* funcType;
+    const StmtAST* body;
 
-    // ─── Semantic Annotations (set by Sema) ────────────────────────────
-    ArenaSpan<CapturedVariable> captures;     // Variables captured by this closure
-    bool hasClosure = false;                  // True if heap allocation is needed
-    bool isReturned = false;                  // True if returned from a function
+    // ─── Semantic Fields (set by Sema) ────────────────────────────────
+    ArenaSpan<CapturedVariable> captures;
+    bool hasClosure = false;
+    bool isReturned = false;
     
-    // ─── CodeGen Annotations (set by CodeGen) ──────────────────────────
-    llvm::Function* closureFunction = nullptr;   // The generated LLVM function
-    llvm::StructType* environmentType = nullptr; // The LLVM environment struct type
+    // ─── CodeGen Fields (mutable) ──────────────────────────────────────
+    llvm::Function* closureFunction = nullptr;
+    llvm::StructType* environmentType = nullptr;
 
     bool hasParams() const { return funcType && !funcType->params.empty(); }
 
     // ─── Constructor ─────────────────────────────────────────────────────
     AnonFuncExprAST(const FuncTypeAST* ft, const StmtAST* b)
-        : ExprAST(ASTKind::AnonFuncExpr)
-        , funcType(ft)
-        , body(b) {}
+        : ExprAST(ASTKind::AnonFuncExpr), funcType(ft), body(b) {}
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -731,11 +735,14 @@ struct AnonFuncExprAST : ExprAST {
 struct IfExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::IfExpr;
 
-    ExprPtr condition;
-    ExprPtr thenBranch; // expression
-    ExprPtr elseBranch; // expression
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const ExprPtr condition;
+    const ExprPtr thenBranch;
+    const ExprPtr elseBranch;
 
-    IfExprAST() : ExprAST(ASTKind::IfExpr) {}
+    // ─── Constructor ─────────────────────────────────────────────────────
+    IfExprAST(ExprPtr cond, ExprPtr then_, ExprPtr else_)
+        : ExprAST(ASTKind::IfExpr), condition(cond), thenBranch(then_), elseBranch(else_) {}
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

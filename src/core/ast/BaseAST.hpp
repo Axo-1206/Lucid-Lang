@@ -11,14 +11,42 @@
 /// @related_files
 ///   - src/ast/ExprAST.hpp, StmtAST.hpp, DeclAST.hpp, TypeAST.hpp
 ///   - Each family header includes BaseAST.hpp, not the other way around.
+/// 
+/// ============================================================================
+/// FIELD CATEGORIES
+/// ============================================================================
+/// 
+/// AST fields are organized into four categories based on who sets them and when:
+/// 
+/// | Category        | Mutability          | Set By  | Examples                                    |
+/// | --------------- | ------------------- | ------- | ------------------------------------------- |
+/// | Parser Fields   | `const` (immutable) | Parser  | `name`, `type`, `init`, `body`              |
+/// | Semantic Fields | `mutable`           | Sema    | `semanticType`, `constValue`, `isLValue`    |
+/// | Layout Fields   | `mutable`           | Sema    | `fieldIndex`, `byteOffset`, `totalSize`     |
+/// | CodeGen Fields  | `mutable`           | CodeGen | `llvmValue`, `llvmFunction`, `llvmAlloca`   |
+/// 
+/// ## Layout Fields vs CodeGen Fields
+/// 
+/// Layout fields (fieldIndex, byteOffset, totalSize, alignment) are computed
+/// by Sema during semantic analysis. They represent decisions about the
+/// memory layout of types, which are independent of the target machine.
+/// 
+/// CodeGen fields (llvmType, llvmFunction, llvmAlloca) are created during
+/// IR lowering. They are actual LLVM IR objects that don't exist until
+/// CodeGen runs.
+/// 
+/// This separation allows:
+///   1. Sema to validate layout decisions (e.g., no self-referential structs)
+///   2. CodeGen to focus on IR generation without recomputation
+///   3. Clear ownership of each field's lifecycle
 
 #pragma once
 
 #include "debug/DebugMacros.hpp"
 #include "../SourceLocation.hpp"
-#include "../memory//ASTArena.hpp"
+#include "../memory/ASTArena.hpp"
 #include "../memory/InternedString.hpp"
-#include "../memory//ArenaSpan.hpp"
+#include "../memory/ArenaSpan.hpp"
 
 #include <string>
 #include <optional>
@@ -345,7 +373,7 @@ struct TypeAST : BaseAST {
 //         Reflects the result's nullability/fallibility state (Definite, Nil,
 //         Err, Unknown, None). Helps with flow‑sensitive narrowing.
 //
-//   - `semanticType ` : TypeAST*
+//   - `semanticType` : TypeAST*
 //         The semantic type of the expression, set during type resolution.
 //         For constants, this is the type of the evaluated value.
 //
@@ -615,19 +643,19 @@ struct CapturedVariable {
 struct ExprAST : BaseAST {
     // ─── Parser Fields ──────────────────────────────────────────────────
     
-    // ─── Semantic Annotations (set by Sema) ────────────────────────────
-    TypeAST* semanticType  = nullptr;        // The resolved type of this expression
+    // ─── Semantic Fields (set by Sema) ────────────────────────────────
+    TypeAST* semanticType = nullptr;        // The resolved type of this expression
     ConstantValue constValue;               // Evaluated constant value (for const expressions)
     ValueState valueState = ValueState::Unknown;  // Nil/Err/Definite/Unknown
     bool isLValue = false;                  // Can this appear on LHS of assignment?
     bool isModuleMember = false;            // Is this a module member access?
     bool isConst = false;                   // Is this a compile-time constant?
     
-    // ─── CodeGen Annotations (set by CodeGen) ──────────────────────────
+    // ─── CodeGen Fields (set by CodeGen) ──────────────────────────────
     llvm::Value* llvmValue = nullptr;       // The generated LLVM value
 
     explicit ExprAST(ASTKind k) : BaseAST(k) {}
-    bool hasType() const { return semanticType  != nullptr; }
+    bool hasType() const { return semanticType != nullptr; }
     
     // Convenience methods
     bool isNone() const { return valueState == ValueState::None; }
@@ -659,7 +687,7 @@ struct AttributeAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::Attribute;
 
     InternedString name;
-    ArenaSpan<LiteralExprAST*> args;  // ← Uses LiteralExprAST directly
+    ArenaSpan<LiteralExprAST*> args;
 
     AttributeAST() : BaseAST(ASTKind::Attribute) {}
 };
@@ -700,6 +728,11 @@ enum class DeclKeyword {
 /// 
 /// For enum variants, the keyword is always `Const` (they are immutable constants).
 /// 
+/// ─── Type Resolution ─────────────────────────────────────────────────────────
+/// The `semanticType` field stores the fully resolved type of this declaration.
+/// This is set during semantic analysis (Phase 2) and is used by expression
+/// resolvers when an identifier references this declaration.
+/// 
 /// @note ValueDeclAST nodes are stored in Scope::values map.
 struct ValueDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::ValueDecl;
@@ -708,10 +741,10 @@ struct ValueDeclAST : DeclAST {
     const DeclKeyword keyword;
 
     /// The fully resolved semantic type (set by Sema during Phase 2)
-    /// Used by resolveIdentifierExpr when an identifier references this declaration.
-    /// For example:
-    ///   - let x int? = nil → semanticType = NullableTypeAST(Int)
-    ///   - const process<T> (v T) → semanticType = FuncTypeAST with T resolved
+    /// Differs from the parser's type when:
+    /// - Generic arguments are resolved
+    /// - Traits are resolved to declarations
+    /// - Module-qualified types are resolved to normal types
     TypeAST* semanticType = nullptr;
     
     /// @brief Check if this value is immutable (const).
@@ -721,8 +754,7 @@ struct ValueDeclAST : DeclAST {
     bool isLet() const { return keyword == DeclKeyword::Let; }
     
     explicit ValueDeclAST(ASTKind k, InternedString n, DeclKeyword kw)
-        : DeclAST(k, n)
-        , keyword(kw) {}
+        : DeclAST(k, n), keyword(kw) {}
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -739,17 +771,9 @@ struct ValueDeclAST : DeclAST {
 ///   - Enums (EnumDeclAST)
 ///   - Traits (TraitDeclAST)
 /// 
-/// ─── Self‑Type Cache ────────────────────────────────────────────────────────
-/// The `selfType` field caches a NamedTypeAST that represents this type itself.
-/// This is used when a type name appears as a value (e.g., `int("42")` where `int`
-/// is used as a conversion function). Without this cache, we would need to
-/// create a new NamedTypeAST every time a type name is referenced.
-/// 
 /// @note TypeDeclAST nodes are stored in Scope::types map.
 struct TypeDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::TypeDecl;
-    // No semanticType needed - the type is identified by its name
-    // Use ctx.getNamedType(decl->name) to get the type node
     
     explicit TypeDeclAST(ASTKind k, InternedString n) : DeclAST(k, n) {}
 };

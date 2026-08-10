@@ -37,24 +37,15 @@
 ///   - Clearer error messages ("undefined variable" vs "undefined type")
 /// 
 /// ============================================================================
-/// IMMUTABILITY DESIGN
+/// FIELD CATEGORIES
 /// ============================================================================
 /// 
-/// Parser fields are **immutable** after initialization (const in C++).
-/// Semantic and CodeGen fields are **mutable** (set during later phases).
-/// 
-/// This design ensures:
-///   1. The parser's output is fixed and cannot be accidentally modified.
-///   2. Semantic analysis can augment nodes without corrupting parse results.
-///   3. CodeGen can annotate nodes for code generation.
-/// 
-/// ## Field Categories
-/// 
-/// | Category        | Mutability          | Set By  | Examples                       |
-/// | --------------- | ------------------- | ------- | ------------------------------ |
-/// | Parser Fields   | `const` (immutable) | Parser  | `name`, `type`, `init`, `body` |
-/// | Semantic Fields | `mutable`           | Sema    | `resolvedType`, `constValue`   |
-/// | CodeGen Fields  | `mutable`           | CodeGen | `llvmValue`, `llvmFunction`    |
+/// | Category        | Mutability          | Set By  | Examples                                    |
+/// | --------------- | ------------------- | ------- | ------------------------------------------- |
+/// | Parser Fields   | `const` (immutable) | Parser  | `name`, `type`, `init`, `body`              |
+/// | Semantic Fields | `mutable`           | Sema    | `semanticType`, `mangledName`, `closureDepth` |
+/// | Layout Fields   | `mutable`           | Sema    | `fieldIndex`, `byteOffset`, `totalSize`     |
+/// | CodeGen Fields  | `mutable`           | CodeGen | `llvmFunction`, `llvmType`, `llvmAlloca`    |
 /// 
 /// ## Constructor Pattern
 /// 
@@ -63,17 +54,15 @@
 /// ```cpp
 /// struct VarDeclAST : ValueDeclAST {
 ///     // Parser fields - const (set once in constructor)
-///     const DeclKeyword keyword;
-///     const TypePtr type;
-///     const ExprPtr init;
+///     const TypeAST* type;
+///     const ExprAST* init;
 ///     
 ///     // CodeGen fields - mutable
 ///     llvm::AllocaInst* llvmAlloca = nullptr;
 ///     llvm::GlobalVariable* llvmGlobal = nullptr;
 ///     
-///     VarDeclAST(InternedString n, DeclKeyword kw, TypePtr t, ExprPtr i)
-///         : ValueDeclAST(ASTKind::VarDecl, n)
-///         , keyword(kw)
+///     VarDeclAST(InternedString n, DeclKeyword kw, const TypeAST* t, const ExprAST* i)
+///         : ValueDeclAST(ASTKind::VarDecl, n, kw)
 ///         , type(t)
 ///         , init(i) {}
 /// };
@@ -145,15 +134,15 @@ struct VarDeclAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::VarDecl;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
-    const TypeAST* type;
-    ExprAST* init;
+    const TypeAST* type;          // The type as written in source
+    const ExprAST* init;          // Initializer expression (null if none)
     
     // ─── CodeGen Fields (mutable) ──────────────────────────────────────
-    llvm::AllocaInst* llvmAlloca = nullptr;      // Local variable
-    llvm::GlobalVariable* llvmGlobal = nullptr;  // Module-level variable
+    llvm::AllocaInst* llvmAlloca = nullptr;      // Local variable alloca
+    llvm::GlobalVariable* llvmGlobal = nullptr;  // Module-level global
 
     // ─── Constructor ─────────────────────────────────────────────────────
-    VarDeclAST(InternedString n, DeclKeyword kw, const TypeAST* t, ExprAST* i)
+    VarDeclAST(InternedString n, DeclKeyword kw, const TypeAST* t, const ExprAST* i)
         : ValueDeclAST(ASTKind::VarDecl, n, kw)
         , type(t)
         , init(i) {}
@@ -173,7 +162,7 @@ using VarDeclPtr = VarDeclAST*;
 /// 
 /// @field type        The parameter type (never null).
 /// @field isVariadic  True if this is a variadic parameter (`...type`).
-/// @field isConst     True if this is a read-only reference parameter (`const type`).
+/// @field isConstParam True if this is a read-only reference parameter (`const type`).
 /// 
 /// @note A variadic parameter must be the last parameter in its own param group.
 ///       Variadic parameters collect trailing arguments into a `[*]type` array.
@@ -181,20 +170,20 @@ struct ParamAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::Param;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
-    const TypeAST* type;
-    const bool isVariadic;
-    const bool isConstParam;
+    const TypeAST* type;          // The parameter type
+    const bool isVariadic;        // True if variadic (`...type`)
+    const bool isConstParam;      // True if read-only reference (`const type`)
     
     // ─── CodeGen Fields (mutable) ──────────────────────────────────────
-    llvm::Value* llvmValue = nullptr;           // The LLVM argument value
-    llvm::AllocaInst* llvmAlloca = nullptr;     // The alloca for the param
-    llvm::Type* llvmType = nullptr;             // LLVM type (may differ from AST type)
-    size_t abiRegisterIndex = 0;                // Register index for ABI
-    bool isByVal = false;                       // If passed by value (structs)
+    llvm::Value* llvmValue = nullptr;          // The LLVM argument value
+    llvm::AllocaInst* llvmAlloca = nullptr;    // The alloca for the param
+    llvm::Type* llvmType = nullptr;            // LLVM type (may differ from AST type)
+    size_t abiRegisterIndex = 0;               // Register index for ABI
+    bool isByVal = false;                      // If passed by value (structs)
 
     // ─── Constructor ─────────────────────────────────────────────────────
     ParamAST(InternedString n, const TypeAST* t, bool variadic = false, bool isConstParam = false)
-        : ValueDeclAST(ASTKind::Param, n, DeclKeyword::Let)
+        : ValueDeclAST(ASTKind::Param, n, DeclKeyword::Let)  // Parameters are always Let by default
         , type(t)
         , isVariadic(variadic)
         , isConstParam(isConstParam) {}
@@ -227,10 +216,11 @@ struct FuncDeclAST : ValueDeclAST {
     const FuncTypeAST* funcType;
     const StmtAST* body;
     
-    // ─── Semantic Annotations (set by Sema) ────────────────────────────
+    // ─── Semantic Fields (set by Sema) ────────────────────────────────
     bool isForeignFunction = false;      // True if @[foreign] attribute is present
     InternedString mangledName;          // Mangled name for AOT compilation
     size_t closureDepth = 0;             // Depth of nesting for closure naming
+    bool isReturned = false;             // True if this function is returned
     
     // ─── CodeGen Fields (mutable) ──────────────────────────────────────
     llvm::Function* llvmFunction = nullptr;
@@ -266,7 +256,7 @@ struct EnumVariantAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::EnumVariant;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
-    const int64_t value;
+    const int64_t value;              // Explicit integer value
     
     // ─── CodeGen Fields (mutable) ──────────────────────────────────────
     llvm::ConstantInt* llvmValue = nullptr;
@@ -290,26 +280,30 @@ using EnumVariantPtr = EnumVariantAST*;
 ///    field access (`struct.field = value`) must be rejected with a compile error.
 /// 3. **Deep Immutability**: `const` on struct declaration is not transitive 
 ///    to inner struct fields.
-/// NOTE: the default value rule is the same for both const/let keywords
-///       the const keyword enforce immutable after declarartion, default
-///       value will override the default value, the declared keyword does not
-///       matter here.
+/// 
+/// NOTE: the default value rule is the same for both const/let keywords.
+///       The const keyword enforces immutability after declaration, but the
+///       default value will override the default value. The declared keyword
+///       does not matter for default values.
 struct FieldDeclAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::FieldDecl;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
-    const TypeAST* type;
-    const StmtAST* defaultBody;
-    const bool isConstField;
-    ExprAST* defaultVal;
+    const TypeAST* type;          // The field type
+    const ExprAST* defaultVal;    // Expression default value (null if none)
+    const StmtAST* defaultBody;   // Block body default (for function fields)
+    const bool isConstField;      // True if field is marked `const` in struct
     
-    // ─── CodeGen Fields (mutable) ──────────────────────────────────────
-    size_t fieldIndex = 0;       // Position in struct layout
-    llvm::Type* llvmType = nullptr;  // LLVM type of this field
-    uint64_t byteOffset = 0;     // Byte offset from struct start
+    // ─── Semantic Fields (set by Sema) ────────────────────────────────
+    size_t fieldIndex = 0;        // Position in struct layout
+    uint64_t byteOffset = 0;      // Byte offset from struct start
 
-    FieldDeclAST(InternedString n, const TypeAST* t, ExprAST* dv, const StmtAST* db, bool isConstField)
-        : ValueDeclAST(ASTKind::FieldDecl, n, DeclKeyword::Let)
+    // ─── CodeGen Fields (mutable) ──────────────────────────────────────
+    llvm::Type* llvmType = nullptr;  // LLVM type of this field
+
+    // ─── Constructor ─────────────────────────────────────────────────────
+    FieldDeclAST(InternedString n, const TypeAST* t, const ExprAST* dv, const StmtAST* db, bool isConstField)
+        : ValueDeclAST(ASTKind::FieldDecl, n, DeclKeyword::Let)  // Fields use Let/Const via isConstField
         , type(t)
         , defaultVal(dv)
         , defaultBody(db)
@@ -331,25 +325,18 @@ using FieldDeclPtr = FieldDeclAST*;
 /// A struct may implement one or more traits by listing them after `:`.
 /// The traits are stored in `traitRefs` and resolved during semantic analysis.
 /// 
-/// @field genericParams  Generic type parameters (empty if none)
-/// @field fields         Struct fields (may include const fields)
-/// @field traitRefs      Traits this struct implements (empty if none)
-/// 
 /// ─── Semantic Analysis Notes ──────────────────────────────────────────────
 /// The semantic pass must enforce the following rules for struct declarations:
 /// 1. **Trait Implementation**: For each trait in `traitRefs`, verify that the
 ///    struct declares all fields from the trait with matching names and types.
 /// 2. **Const Matching**: If a trait field is marked `const`, the struct's
-///    corresponding field must also be marked `const`. If the struct declares
-///    it as mutable, emit a compile error.
-/// 3. **Type Matching**: All trait fields must have matching types in the
-///    implementing struct. Type mismatch is a compile error.
-/// 4. **Const Conflict Resolution**: If a struct implements multiple traits,
-///    if there are fields that have the same name then it is an compile error
+///    corresponding field must also be marked `const`.
+/// 3. **Type Matching**: All trait fields must have matching types.
+/// 4. **Const Conflict Resolution**: If multiple traits require the same field
+///    name with different const-ness, it's a compile error.
 /// 5. **Generic Parameters**: All generic parameters must be used in at least
 ///    one field type. Unused parameters are a compile error.
 /// 6. **No Reference Fields**: Fields cannot have reference type (`&T`).
-///    This is enforced by the type system.
 struct StructDeclAST : TypeDeclAST {
     static constexpr ASTKind staticKind = ASTKind::StructDecl;
 
@@ -358,11 +345,28 @@ struct StructDeclAST : TypeDeclAST {
     const ArenaSpan<FieldDeclPtr> fields;
     const ArenaSpan<NamedTypeAST*> traitRefs;
     
+    // ─── Semantic Fields (set by Sema) ────────────────────────────────
+    uint64_t totalSize = 0;       // Total struct size in bytes
+    uint64_t alignment = 0;       // Required alignment
+    bool isPacked = false;        // If @[packed] attribute is present
+    
     // ─── CodeGen Fields (mutable) ──────────────────────────────────────
-    llvm::StructType* llvmType = nullptr; // The generated LLVM struct type
-    uint64_t totalSize = 0;               // Total size in bytes
-    uint64_t alignment = 0;               // Required alignment
-    bool isPacked = false;                // If @[packed] attribute is present
+    llvm::StructType* llvmType = nullptr;   // The generated LLVM struct type
+
+    /// @brief Find the index of a field by name.
+    /// 
+    /// This is a linear scan over the `fields` span. Field counts are
+    /// typically small (< 10), so this is efficient and avoids maintaining
+    /// a separate index map that could become inconsistent.
+    /// 
+    /// @param name The field name to look up.
+    /// @return The index of the field, or SIZE_MAX if not found.
+    size_t indexOfField(InternedString name) const {
+        for (size_t i = 0; i < fields.size(); ++i) {
+            if (fields[i]->name == name) return i;
+        }
+        return SIZE_MAX;
+    }
 
     // ─── Constructor ─────────────────────────────────────────────────────
     StructDeclAST(InternedString n,
@@ -373,15 +377,7 @@ struct StructDeclAST : TypeDeclAST {
         , genericParams(params)
         , fields(flds)
         , traitRefs(traits) {}
-    
-    size_t indexOfField(InternedString name) const {
-        for (size_t i = 0; i < fields.size(); ++i) {
-            if (fields[i]->name == name) return i;
-        }
-        return SIZE_MAX;
-    }
 };
-using StructDeclPtr = StructDeclAST*;
 using StructDeclPtr = StructDeclAST*;
 
 // ─── EnumDeclAST ──────────────────────────────────────────────────────────
@@ -403,13 +399,22 @@ struct EnumDeclAST : TypeDeclAST {
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
     const ArenaSpan<EnumVariantPtr> variants;
-    const PrimitiveTypeAST* backingType;
+    const PrimitiveTypeAST* backingType;   // Optional backing type (defaults to int32)
+    
+    // ─── Semantic Fields (set by Sema) ────────────────────────────────
+    uint64_t byteSize = 0;                 // Size of enum in bytes
     
     // ─── CodeGen Fields (mutable) ──────────────────────────────────────
     ArenaSpan<llvm::ConstantInt*> variantConstants;  // Parallel to variants span
     llvm::IntegerType* backingLLVMType = nullptr;    // LLVM type of backing int
-    uint64_t byteSize = 0;                           // Size of enum in bytes
 
+    /// @brief Get the LLVM constant for a variant by name.
+    /// 
+    /// Linear scan over the `variants` span to find the matching variant,
+    /// then returns the corresponding LLVM constant from `variantConstants`.
+    /// 
+    /// @param name The variant name to look up.
+    /// @return The LLVM constant, or nullptr if not found.
     llvm::ConstantInt* constantForVariant(InternedString name) const {
         for (size_t i = 0; i < variants.size(); ++i) {
             if (variants[i]->name == name) return variantConstants[i];
@@ -443,36 +448,27 @@ using EnumDeclPtr = EnumDeclAST*;
 ///   trait NullableContainer { value int?, fallback int? }  // nullable allowed
 ///   trait ErrorHandler { result string!, fallback string! } // fallible allowed
 /// 
-/// @field name      The required field name.
-/// @field type      The required field type (may be nullable or fallible unless const).
-/// @field isConst   True if the implementing struct must declare this field as `const`.
-/// 
 /// ─── Trait Field Rules ──────────────────────────────────────────────────────
 /// 1. **Name and Type Only**: Trait fields declare name, type, and optional
-///    const-ness – no default values. Qualifiers and defaults belong to the
-///    implementing struct.
-/// 
+///    const-ness – no default values.
 /// 2. **Const Requirement**: If `isConst` is true, the implementing struct
 ///    MUST declare this field as `const`.
-/// 
 /// 3. **Type Restrictions**: 
 ///    - If `isConst` is true, the field type MUST be definite (not nullable or fallible).
 ///    - If `isConst` is false, the field type MAY be nullable (`T?`), fallible (`T!`), 
-///      or combined (`T?!`). This allows traits to require optional or error-prone fields.
-/// 
+///      or combined (`T?!`).
 /// 4. **Self-Reference**: Trait fields can reference the trait itself via its name.
-///    This enables recursive trait definitions.
 /// 
 /// @note Not a ValueDeclAST because trait fields are requirements, not
 ///       actual values. The semantic pass uses them to verify that implementing
-///       structs declare all required fields with matching names, types, and const-ness.
+///       structs declare all required fields.
 struct TraitFieldDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::TraitFieldDecl;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
     const InternedString name;
-    const TypeAST* type; // required field type (nullable/fallible allowed unless const)
-    const bool isConstField;
+    const TypeAST* type;          // Required field type
+    const bool isConstField;      // True if implementing struct must declare as const
 
     // ─── Constructor ─────────────────────────────────────────────────────
     TraitFieldDeclAST(InternedString n, const TypeAST* t, bool isConstField)
@@ -481,7 +477,6 @@ struct TraitFieldDeclAST : DeclAST {
         , type(t) 
         , isConstField(isConstField) {}
 
-    /// @brief Check if this field is const (immutable after construction).
     bool isConst() const { return isConstField; }
 };
 using TraitFieldPtr = TraitFieldDeclAST*;
@@ -499,15 +494,12 @@ using TraitFieldPtr = TraitFieldDeclAST*;
 /// Used by the semantic pass to:
 ///   - Verify that a struct implementing a trait declares all required fields
 ///   - Serve as constraints in generic parameter declarations (`<T : Trait>`)
-///   - Check field type and const-ness compatibility (mismatch is a compile error)
+///   - Check field type and const-ness compatibility
 /// 
 /// ## Generic Traits
 /// 
 /// Traits can be generic. Generic arguments are resolved at the constraint site:
 ///   `<T : Container<int>>` means T must implement Container with int.
-/// 
-/// @field genericParams  Generic type parameters (empty if none)
-/// @field fields         Required field declarations (name + type + optional const)
 /// 
 /// ─── Semantic Analysis Notes ──────────────────────────────────────────────
 /// The semantic pass must enforce the following rules for trait declarations:
@@ -516,7 +508,7 @@ using TraitFieldPtr = TraitFieldDeclAST*;
 /// 2. **Generic Parameters**: All generic parameters must be used in at least
 ///    one field type. Unused parameters are a compile error.
 /// 3. **No Trait Inheritance**: Traits do not inherit from other traits.
-/// 4. **No default value**
+/// 4. **No Default Values**: Traits define field requirements only.
 struct TraitDeclAST : TypeDeclAST {
     static constexpr ASTKind staticKind = ASTKind::TraitDecl;
 
