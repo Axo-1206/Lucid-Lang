@@ -1,80 +1,35 @@
 /// @file CodeGenContext.hpp
-/// @brief Simple context for code generation - monolithic design.
+/// @brief Code generation context - LLVM state only.
+///
+/// This context holds LLVM IR state and mapping from AST nodes
+/// to LLVM values. It does NOT duplicate semantic analysis results.
+///
+/// ─── Responsibilities ──────────────────────────────────────────────────────
+///   1. LLVM module, builder, and current insertion point
+///   2. AST declaration → LLVM value mapping (allocas, globals, functions)
+///   3. Type cache (Lucid type → LLVM type) for performance
+///   4. Loop info for break/continue lowering
+///   5. Current function for return lowering
 
 #pragma once
 
 #include "core/ast/BaseAST.hpp"
+#include "core/ast/DeclAST.hpp"
 #include "core/memory/StringPool.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Value.h>
+#include <llvm/IR/Function.h>
 #include <unordered_map>
 #include <vector>
 
 namespace codegen {
 
-/// @brief Simple stack frame for variable tracking.
-struct CodeGenFrame {
-    std::unordered_map<const ValueDeclAST*, llvm::Value*> values;
-    CodeGenFrame* parent = nullptr;
-    
-    void insert(const ValueDeclAST* decl, llvm::Value* value) {
-        values[decl] = value;
-    }
-    
-    llvm::Value* lookup(const ValueDeclAST* decl) const {
-        auto it = values.find(decl);
-        if (it != values.end()) return it->second;
-        if (parent) return parent->lookup(decl);
-        return nullptr;
-    }
-};
-
-/// @brief Simple stack with push/pop for scopes.
-struct CodeGenStack {
-    std::vector<CodeGenFrame*> frames;
-    
-    void push() {
-        auto* frame = new CodeGenFrame();
-        if (!frames.empty()) {
-            frame->parent = frames.back();
-        }
-        frames.push_back(frame);
-    }
-    
-    void pop() {
-        if (!frames.empty()) {
-            delete frames.back();
-            frames.pop_back();
-        }
-    }
-    
-    void insert(const ValueDeclAST* decl, llvm::Value* value) {
-        if (!frames.empty()) {
-            frames.back()->insert(decl, value);
-        }
-    }
-    
-    llvm::Value* lookup(const ValueDeclAST* decl) const {
-        if (frames.empty()) return nullptr;
-        return frames.back()->lookup(decl);
-    }
-    
-    CodeGenFrame* current() const {
-        return frames.empty() ? nullptr : frames.back();
-    }
-};
-
-/// @brief Simple context for code generation.
-/// 
-/// This context is passed to all code generation functions. It holds:
-///   - Resources: StringPool, DiagnosticEngine, LLVM context
-///   - Type cache: Maps Lucid types to LLVM types
-///   - Value tracking: Maps declarations to LLVM values
-///   - Function tracking: Maps declarations to LLVM functions
-///   - Loop tracking: For break/continue
-///   - Current function: For return statements
+/// @brief Code generation context - LLVM state only.
+///
+/// This context is passed to all code generation functions. It holds
+/// only what's needed for IR generation, not semantic analysis results.
 struct CodeGenContext {
     // ─── Resources ──────────────────────────────────────────────────────
     
@@ -82,42 +37,65 @@ struct CodeGenContext {
     DiagnosticEngine& diagnostics;
     llvm::LLVMContext& llvmCtx;
     
-    // ─── LLVM Module ────────────────────────────────────────────────────
+    // ─── LLVM Module and Builder ────────────────────────────────────────
     
-    llvm::Module* module = nullptr;
-    llvm::IRBuilder<> builder;
+    llvm::Module* module = nullptr;     // The current LLVM module
+    llvm::IRBuilder<> builder;          // IR builder for emitting instructions
     
-    // ─── Type Cache ────────────────────────────────────────────────────
+    // ─── Type Cache (performance optimization) ─────────────────────────
     
     std::unordered_map<const TypeAST*, llvm::Type*> typeCache;
     std::unordered_map<const StructDeclAST*, llvm::StructType*> structCache;
     
-    // ─── Value Tracking ────────────────────────────────────────────────
+    // ─── Symbol Mapping: AST → LLVM Value ──────────────────────────────
+    //
+    // This is the ONLY mapping needed. Variables are looked up by their
+    // declaration node, not by name. This is simpler and safer.
+    //
+    // For l-values (variables, parameters), this stores the alloca pointer.
+    // For r-values (constants, temporaries), this stores the computed value.
+    std::unordered_map<const ValueDeclAST*, llvm::Value*> values;
     
-    CodeGenStack scope;
-    
-    // ─── Function Tracking ─────────────────────────────────────────────
-    
+    // ─── Function Mapping: AST → LLVM Function ─────────────────────────
+    //
+    // Each function declaration maps to its LLVM function.
+    // This is populated in the declaration phase and used in the body phase.
     std::unordered_map<const FuncDeclAST*, llvm::Function*> functions;
-    std::unordered_map<InternedString, llvm::Function*> foreignFunctions;
     
-    // ─── Runtime Function Tracking ────────────────────────────────────
-    
-    std::unordered_map<std::string, llvm::Function*> runtimeFunctions;
-    
-    // ─── Loop Tracking (for break/continue) ───────────────────────────
-    
+    // ─── Loop Info (for break/continue) ─────────────────────────────────
+    //
+    // Stack of loop contexts. Each context stores the header, exit, and
+    // continue targets for the current loop.
     struct LoopInfo {
-        llvm::BasicBlock* header = nullptr;
-        llvm::BasicBlock* exit = nullptr;
-        llvm::BasicBlock* continueTarget = nullptr;
+        llvm::BasicBlock* header = nullptr;           // Loop header (for continue)
+        llvm::BasicBlock* exit = nullptr;             // Loop exit (for break)
+        llvm::BasicBlock* continueTarget = nullptr;   // Where continue jumps to
     };
     std::vector<LoopInfo> loops;
     
-    // ─── Current Function (for return) ────────────────────────────────
-    
+    // ─── Current Function ───────────────────────────────────────────────
+    //
+    // Used for return statements to know which function to return from.
+    // Also stores the return block for generating phi nodes if needed.
     llvm::Function* currentFunction = nullptr;
-    llvm::BasicBlock* currentReturnBlock = nullptr;
+    llvm::BasicBlock* returnBlock = nullptr;          // Optional: block for phi nodes
+    
+    // ─── Current Insertion Point ────────────────────────────────────────
+    //
+    // These are convenience accessors for the builder's current state.
+    // The builder itself tracks the current block and insertion point.
+    
+    llvm::BasicBlock* currentBlock() const {
+        return builder.GetInsertBlock();
+    }
+    
+    void setInsertPoint(llvm::BasicBlock* block) {
+        builder.SetInsertPoint(block);
+    }
+    
+    void setInsertPoint(llvm::BasicBlock* block, llvm::BasicBlock::iterator it) {
+        builder.SetInsertPoint(block, it);
+    }
     
     // ─── Constructor ────────────────────────────────────────────────────
     
@@ -130,44 +108,83 @@ struct CodeGenContext {
     CodeGenContext(const CodeGenContext&) = delete;
     CodeGenContext& operator=(const CodeGenContext&) = delete;
     
-    // ─── Runtime Function Helpers ─────────────────────────────────────
+    // ─── Value Helpers ──────────────────────────────────────────────────
     
-    llvm::Function* getRuntimeFunction(const std::string& name) {
-        auto it = runtimeFunctions.find(name);
-        if (it != runtimeFunctions.end()) {
-            return it->second;
-        }
-        return nullptr;
+    /// @brief Store a value for a declaration.
+    void storeValue(const ValueDeclAST* decl, llvm::Value* value) {
+        values[decl] = value;
     }
     
-    void setRuntimeFunction(const std::string& name, llvm::Function* func) {
-        runtimeFunctions[name] = func;
-    }
-    
-    // ─── Scope Helpers ─────────────────────────────────────────────────
-    
-    void pushScope() { scope.push(); }
-    void popScope() { scope.pop(); }
-    void insertValue(const ValueDeclAST* decl, llvm::Value* value) {
-        scope.insert(decl, value);
-    }
+    /// @brief Look up a value for a declaration.
     llvm::Value* lookupValue(const ValueDeclAST* decl) const {
-        return scope.lookup(decl);
+        auto it = values.find(decl);
+        return it != values.end() ? it->second : nullptr;
     }
     
-    // ─── Loop Helpers ─────────────────────────────────────────────────
+    /// @brief Check if a declaration has a value.
+    bool hasValue(const ValueDeclAST* decl) const {
+        return values.find(decl) != values.end();
+    }
     
-    void pushLoop(llvm::BasicBlock* header, llvm::BasicBlock* exit, 
+    // ─── Function Helpers ──────────────────────────────────────────────────
+    
+    /// @brief Store a function for a declaration.
+    void storeFunction(const FuncDeclAST* decl, llvm::Function* func) {
+        functions[decl] = func;
+    }
+    
+    /// @brief Look up a function for a declaration.
+    llvm::Function* lookupFunction(const FuncDeclAST* decl) const {
+        auto it = functions.find(decl);
+        return it != functions.end() ? it->second : nullptr;
+    }
+    
+    // ─── Loop Helpers ──────────────────────────────────────────────────
+    
+    /// @brief Push a loop context.
+    void pushLoop(llvm::BasicBlock* header, llvm::BasicBlock* exit,
                   llvm::BasicBlock* continueTarget = nullptr) {
         loops.push_back({header, exit, continueTarget});
     }
-    void popLoop() { if (!loops.empty()) loops.pop_back(); }
-    LoopInfo* currentLoop() { return loops.empty() ? nullptr : &loops.back(); }
     
-    // ─── Function Helpers ─────────────────────────────────────────────
+    /// @brief Pop the current loop context.
+    void popLoop() {
+        if (!loops.empty()) loops.pop_back();
+    }
     
-    void setCurrentFunction(llvm::Function* func) { currentFunction = func; }
-    llvm::Function* getCurrentFunction() const { return currentFunction; }
+    /// @brief Get the current loop context (or nullptr if not in a loop).
+    LoopInfo* currentLoop() {
+        return loops.empty() ? nullptr : &loops.back();
+    }
+    
+    /// @brief Check if we're inside a loop.
+    bool insideLoop() const {
+        return !loops.empty();
+    }
+    
+    // ─── Type Helpers ──────────────────────────────────────────────────
+    
+    /// @brief Cache a type mapping.
+    void cacheType(const TypeAST* lucidType, llvm::Type* llvmType) {
+        typeCache[lucidType] = llvmType;
+    }
+    
+    /// @brief Look up a cached type.
+    llvm::Type* lookupType(const TypeAST* lucidType) const {
+        auto it = typeCache.find(lucidType);
+        return it != typeCache.end() ? it->second : nullptr;
+    }
+    
+    /// @brief Cache a struct type.
+    void cacheStruct(const StructDeclAST* decl, llvm::StructType* structType) {
+        structCache[decl] = structType;
+    }
+    
+    /// @brief Look up a cached struct type.
+    llvm::StructType* lookupStruct(const StructDeclAST* decl) const {
+        auto it = structCache.find(decl);
+        return it != structCache.end() ? it->second : nullptr;
+    }
 };
 
 } // namespace codegen
