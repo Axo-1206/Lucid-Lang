@@ -8,6 +8,7 @@
 #include "core/ast/StmtAST.hpp"
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/TypeAST.hpp"
+#include "support/CodeGenHelpers.hpp"
 
 #include <llvm/IR/Function.h>
 #include <llvm/IR/GlobalVariable.h>
@@ -489,108 +490,6 @@ void lowerEnumDecl(EnumDeclAST* decl, CodeGenContext& ctx) {
 
     LOG_CODEGEN("Lowered enum: ", ctx.pool.lookup(decl->name), " (",
                 variantConstants.size(), " variants)");
-}
-
-// =============================================================================
-// Helpers
-// =============================================================================
-
-llvm::AllocaInst* createAlloca(
-    const std::string& name,
-    llvm::Type* type,
-    CodeGenContext& ctx
-) {
-    llvm::Function* func = ctx.getCurrentFunction();
-    if (!func) {
-        return nullptr;
-    }
-
-    // ─── Get the entry block of the current function ─────────────────────
-    llvm::BasicBlock* entryBlock = &func->getEntryBlock();
-
-    // ─── Insert at the start of the entry block ───────────────────────────
-    llvm::IRBuilder<> builder(ctx.llvmCtx);
-    builder.SetInsertPoint(entryBlock, entryBlock->getFirstInsertionPt());
-
-    return builder.CreateAlloca(type, nullptr, name);
-}
-
-llvm::BasicBlock* createBlock(const std::string& name, CodeGenContext& ctx) {
-    llvm::Function* func = ctx.getCurrentFunction();
-    if (!func) {
-        return nullptr;
-    }
-
-    return llvm::BasicBlock::Create(ctx.llvmCtx, name, func);
-}
-
-llvm::Value* loadIfNeeded(
-    llvm::Value* value,
-    bool isLValue,
-    CodeGenContext& ctx
-) {
-    if (!value) return nullptr;
-
-    // ─── If it's an l-value (pointer), load the value ─────────────────────
-    if (isLValue) {
-        llvm::Type* valueType = value->getType();
-        if (valueType->isPointerTy()) {
-            return ctx.builder.CreateLoad(
-                valueType->getPointerElementType(),
-                value
-            );
-        }
-    }
-
-    return value;
-}
-
-void emitPanic(const std::string& message, CodeGenContext& ctx) {
-    // ─── Get the panic function from the runtime ──────────────────────────
-    llvm::Function* panicFunc = ctx.getRuntimeFunction("__lucid_panic");
-    if (!panicFunc) {
-        // Declare the panic function
-        llvm::FunctionType* panicType = llvm::FunctionType::get(
-            llvm::Type::getVoidTy(ctx.llvmCtx),
-            {llvm::PointerType::get(ctx.llvmCtx, 0)}, // const char*
-            false
-        );
-        panicFunc = llvm::Function::Create(
-            panicType,
-            llvm::Function::ExternalLinkage,
-            "__lucid_panic",
-            ctx.module
-        );
-        ctx.setRuntimeFunction("__lucid_panic", panicFunc);
-    }
-
-    // ─── Create a global string for the message ──────────────────────────
-    llvm::Constant* msgConst = llvm::ConstantDataArray::getString(
-        ctx.llvmCtx,
-        message,
-        true // Null terminate
-    );
-
-    llvm::GlobalVariable* msgGlobal = new llvm::GlobalVariable(
-        *ctx.module,
-        msgConst->getType(),
-        true, // const
-        llvm::GlobalValue::PrivateLinkage,
-        msgConst,
-        "panic_msg"
-    );
-
-    // ─── Get a pointer to the string ──────────────────────────────────────
-    llvm::Value* msgPtr = ctx.builder.CreatePointerCast(
-        msgGlobal,
-        llvm::PointerType::get(ctx.llvmCtx, 0)
-    );
-
-    // ─── Call panic ───────────────────────────────────────────────────────
-    ctx.builder.CreateCall(panicFunc, {msgPtr});
-
-    // ─── Panic should not return - emit unreachable ──────────────────────
-    ctx.builder.CreateUnreachable();
 }
 
 } // namespace codegen
