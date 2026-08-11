@@ -203,7 +203,7 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
 
     // ─── 7. Analyze body ──────────────────────────────────────────────────────
     if (!decl->body) {
-        ctx.diagnostics.error(DiagCode::Sem_MissingReturn, decl,
+        ctx.diagnostics.error(DiagCode::Sem_MissingFuncBody, decl,
                               "function '", ctx.pool.lookup(decl->name), "' has no body");
         ctx.popScope();
         return;

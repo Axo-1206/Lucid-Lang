@@ -587,6 +587,7 @@ lucid/
     │   │
     │   └── support/
     │       ├── SwitchHelpers.hpp/cpp
+    │       ├── CaptureAnalysis.hpp/cpp
     │       └── TypeNarrowHelpers.hpp/cpp
     │
     ├── codegen/

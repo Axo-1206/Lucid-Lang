@@ -235,124 +235,98 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     }
     FuncTypeAST* funcType = type->as<FuncTypeAST>();
     
-    // ─── 5. Parse '=' ───────────────────────────────────────────────────────
-    if (!stream.match(TokenType::ASSIGN)) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
-                                "expected '=', got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
-        return nullptr;
-    }
-    
-    // ─── 6. Parse body ──────────────────────────────────────────────────────
+    // ─── 5. Parse '=' and body, or detect foreign function ──────────────────
     StmtPtr body = nullptr;
+    bool isForeignFunction = false;
     
-    if (stream.check(TokenType::LBRACE)) {
-        // ─── Block body ──────────────────────────────────────────────────────
-        stream.consume(); // Consume '{'
-        ScopedContext bodyGuard(ctx, SyntacticContext::FuncBody, stream.currentLoc());
-
-        body = parseBlock(stream, ctx);
-        if (!stream.check(TokenType::RBRACE)) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedBlock, stream.currentLoc(),
-                                    "expected '}' to close function body");
-            synchronizeTo(stream, ctx, TokenType::RBRACE);
-            if (stream.check(TokenType::RBRACE)) {
-                stream.consume();
+    if (stream.match(TokenType::ASSIGN)) {
+        // ─── Has body ──────────────────────────────────────────────────────
+        if (stream.check(TokenType::LBRACE)) {
+            // ─── Block body ──────────────────────────────────────────────────
+            stream.consume(); // Consume '{'
+            ScopedContext bodyGuard(ctx, SyntacticContext::FuncBody, stream.currentLoc());
+            
+            body = parseBlock(stream, ctx);
+            if (!stream.check(TokenType::RBRACE)) {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedBlock, stream.currentLoc(),
+                                        "expected '}' to close function body");
+                synchronizeTo(stream, ctx, TokenType::RBRACE);
+                if (stream.check(TokenType::RBRACE)) {
+                    stream.consume();
+                }
+            } else {
+                stream.consume(); // Consume '}'
             }
+            
         } else {
-            stream.consume(); // Consume '}'
+            // ─── Expression body ──────────────────────────────────────────
+            if (looksLikeAnonFunc(stream, ctx)) {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_AnonymousFunctionAtDeclaration, 
+                                        stream.currentLoc(),
+                                        "anonymous function not allowed at declaration site");
+                ctx.diagnostics.noteAt(stream.currentLoc(),
+                                       "Use a block body instead: '{ ... }'");
+                ctx.diagnostics.noteAt(stream.currentLoc(),
+                                       "The block body borrows its signature from the function declaration");
+                
+                synchronizeTo(stream, ctx, TokenType::SEMICOLON, TokenType::RBRACE);
+                if (stream.check(TokenType::SEMICOLON)) {
+                    stream.consume();
+                }
+                return nullptr;
+            }
+            
+            ExprPtr exprBody = parseExpr(stream, ctx);
+            if (!exprBody) {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
+                                        "expected function body expression");
+                synchronizeToContext(stream, ctx);
+                return nullptr;
+            }
+            
+            // ─── Determine if this is a pure function reference ──────────
+            bool isPureFunctionRef = false;
+            
+            if (exprBody->isa<IdentifierExprAST>() ||
+                exprBody->isa<ModuleAccessExprAST>() ||
+                exprBody->isa<FieldAccessExprAST>() ||
+                exprBody->isa<CallExprAST>()) {
+                isPureFunctionRef = true;
+            }
+            
+            if (isPureFunctionRef) {
+                // ─── Pure function reference ──────────────────────────────────
+                auto* refStmt = ctx.arena.make<FuncRefStmtAST>();
+                refStmt->loc = exprBody->loc;
+                refStmt->target = exprBody;
+                body = refStmt;
+                
+                LOG_PARSER_DETAIL("Parsed function reference: ", ctx.pool.lookup(name));
+            } else {
+                // ─── General expression body ──────────────────────────────────
+                auto* returnStmt = ctx.arena.make<ReturnStmtAST>();
+                returnStmt->loc = exprBody->loc;
+                returnStmt->value = exprBody;
+                body = returnStmt;
+                
+                LOG_PARSER_DETAIL("Parsed expression body for: ", ctx.pool.lookup(name));
+            }
         }
         
     } else {
-        // ─── Expression body ─────────────────────────────────────────────
-        // Grammar: func_body = expr (NOT func_literal)
-        // 
-        // Valid expression bodies:
-        //   - Named function reference: `f = add`
-        //   - Module function reference: `f = module:add`
-        //   - Generic instantiation: `f = add<int>`
-        //   - Call returning function: `f = getHandler("double")`
-        //   - Any expression that evaluates to a function value
-        //
-        // Invalid expression bodies:
-        //   - Anonymous function: `f = (x int) -> int { ... }` ❌
-        //   - Block body without braces: `f = { ... }` ❌ (use braces)
+        // ─── No '=' - foreign function ─────────────────────────────────────
+        // The semantic phase will validate that @[foreign] is present.
+        // We just parse it as a declaration with no body.
+        isForeignFunction = true;
+        body = nullptr;
         
-        if (looksLikeAnonFunc(stream, ctx)) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_AnonymousFunctionAtDeclaration, 
-                                    stream.currentLoc(),
-                                    "anonymous function not allowed at declaration site");
-            ctx.diagnostics.noteAt(stream.currentLoc(),
-                                   "Use a block body instead: '{ ... }'");
-            ctx.diagnostics.noteAt(stream.currentLoc(),
-                                   "The block body borrows its signature from the function declaration");
-            
-            synchronizeTo(stream, ctx, TokenType::SEMICOLON, TokenType::RBRACE);
-            if (stream.check(TokenType::SEMICOLON)) {
-                stream.consume();
-            }
-            return nullptr;
-        }
-        
-        ExprPtr exprBody = parseExpr(stream, ctx);
-        if (!exprBody) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
-                                    "expected function body expression");
-            synchronizeToContext(stream, ctx);
-            return nullptr;
-        }
-        
-        // ─── Determine if this is a pure function reference ──────────────
-        // A pure function reference is:
-        //   - IdentifierExprAST (with optional generic args)
-        //   - ModuleAccessExprAST (with optional generic args)
-        //   - NOT: FieldAccessExprAST (struct field access)
-        //   - NOT: CallExprAST (function call that returns a function)
-        //   - NOT: Any other expression
-        
-        bool isPureFunctionRef = false;
-        
-        if (exprBody->isa<IdentifierExprAST>()) {
-            // Pure function reference: `add` or `add<int>`
-            isPureFunctionRef = true;
-        } else if (exprBody->isa<ModuleAccessExprAST>()) {
-            // Pure module function reference: `module:add` or `module:add<int>`
-            isPureFunctionRef = true;
-        } else if (exprBody->isa<FieldAccessExprAST>()) {
-            // Field access is NOT a pure function reference
-            // This would be `struct.field` - struct field access
-            // Such references are rejected because the struct may outlive the function
-            isPureFunctionRef = true;
-        } else if (exprBody->isa<CallExprAST>()) {
-            // Call that returns a function is NOT a pure reference
-            // Example: `getHandler("double")`
-            isPureFunctionRef = true;
-        }
-        
-        if (isPureFunctionRef) {
-            // ─── Pure function reference ──────────────────────────────────
-            // Store as FuncRefStmtAST for semantic validation
-            auto* refStmt = ctx.arena.make<FuncRefStmtAST>();
-            refStmt->loc = exprBody->loc;
-            refStmt->target = exprBody;
-            body = refStmt;
-            
-            LOG_PARSER_DETAIL("Parsed function reference: ", ctx.pool.lookup(name));
-        } else {
-            // ─── General expression body ──────────────────────────────────
-            // Wrap in ReturnStmtAST
-            auto* returnStmt = ctx.arena.make<ReturnStmtAST>();
-            returnStmt->loc = exprBody->loc;
-            returnStmt->value = exprBody;
-            body = returnStmt;
-            
-            LOG_PARSER_DETAIL("Parsed expression body for: ", ctx.pool.lookup(name));
-        }
+        LOG_PARSER_DETAIL("Parsed foreign function (no body): ", ctx.pool.lookup(name));
     }
     
     // ─── Build AST using constructor ──────────────────────────────────────
     auto* funcDecl = ctx.arena.make<FuncDeclAST>(name, keyword, genericParams, funcType, body);
     funcDecl->loc = loc;
+    funcDecl->isForeignFunction = isForeignFunction;
     
     LOG_PARSER_DETAIL("Parsed function: ", ctx.pool.lookup(name));
     return funcDecl;

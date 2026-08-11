@@ -3,6 +3,7 @@
 
 #include "CaptureAnalysis.hpp"
 #include "../types/SemaResolve.hpp"
+#include "core/ast/TypeAST.hpp"
 #include "debug/DebugUtils.hpp"
 
 #include <unordered_map>
@@ -150,7 +151,7 @@ struct CaptureAnalyzer {
         }
         
         // ─── Validate capture rules ─────────────────────────────────────────
-        const TypeAST* varType = decl->semanticType;
+        const TypeAST* varType = decl->type;
         
         // Rule 3: Borrowed types (&T, [_]T) cannot be captured
         if (varType && isBorrowedType(varType)) {
@@ -557,8 +558,8 @@ void analyzeCaptures(FuncDeclAST* func, SemaContext& ctx) {
     CaptureAnalyzer analyzer(ctx, func);
     
     // ─── Step 1: Collect the function's own parameters ──────────────────────
-    if (func->funcType) {
-        for (const FuncTypeAST* group = func->funcType; group; group = group->getNext()) {
+    if (func->type) {
+        for (const FuncTypeAST* group = func->type->as<FuncTypeAST>(); group; group = group->getNext()) {
             for (const ParamAST* param : group->params) {
                 analyzer.ownParams.insert(param->name);
             }

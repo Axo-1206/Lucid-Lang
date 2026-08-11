@@ -247,10 +247,10 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetTyp
         return ctx.getUnknownType();
     }
 
-    // ─── Step 3: Get the declaration's semantic type ──────────────────────
-    // The semantic type should have been set during resolution of the declaration
+    // ─── Step 3: Get the declaration's type ──────────────────────
+    // The type should have been set during resolution of the declaration
     // (resolveVarDecl, resolveParam, resolveFuncDecl, resolveStructFields, etc.)
-    const TypeAST* declType = decl->semanticType;
+    const TypeAST* declType = decl->type;
     if (!declType) {
         ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
                               "'", ctx.pool.lookup(expr->name), "' has no type information");
@@ -346,10 +346,10 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetTyp
             return ctx.getUnknownType();
         }
 
-        // ─── For generic function references, use the function's semantic type ──
-        // The function's semantic type is the resolved function type.
+        // ─── For generic function references, use the function's type ──
+        // The function's type is the resolved function type.
         // Full generic substitution would go here for instantiated types.
-        declType = funcDecl->semanticType;
+        declType = funcDecl->type;
         if (!declType) {
             ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
                                   "'", ctx.pool.lookup(expr->name), "' has no type information");
@@ -413,7 +413,7 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetTyp
         return const_cast<TypeAST*>(narrowedType);
     }
 
-    // ─── Step 10: Set the expression's semantic type ──────────────────────
+    // ─── Step 10: Set the expression's type ──────────────────────
     expr->semanticType = const_cast<TypeAST*>(declType);
     expr->valueState = state;
     
@@ -1317,8 +1317,16 @@ TypeAST* resolveCallExpr(CallExprAST* expr, const TypeAST* targetType, SemaConte
 // resolveIntrinsicCallExpr
 // =============================================================================
 
+/// NOTE: this is the entry point where register callbacks for #scope_exit intrinsic
+///
+/// 1.resolveIntrinsicCallExpr calls validateIntrinsicCall
+/// 2.validateIntrinsicCall dispatches to validateScopeExit for #scope_exit
+/// 3.validateScopeExit validates the call AND registers it on the current block
+/// 4.validateIntrinsicCall returns true
+/// 5.resolveIntrinsicCallExpr continues with normal void intrinsic handling
 TypeAST* resolveIntrinsicCallExpr(IntrinsicCallExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
     // ─── Step 1: Validate the intrinsic call ──────────────────────────────────
+    // This will handle all validation AND registration for scope_exit
     if (!validateIntrinsicCall(expr, ctx)) {
         expr->semanticType = ctx.getUnknownType();
         expr->valueState = ValueState::Unknown;
@@ -1326,11 +1334,10 @@ TypeAST* resolveIntrinsicCallExpr(IntrinsicCallExprAST* expr, const TypeAST* tar
     }
 
     // ─── Step 2: Check if this intrinsic returns void ──────────────────────────
-    // Void intrinsics cannot appear in assignment contexts or anywhere a value
-    // is expected.
+    // For scope_exit, validateIntrinsicCall already registered it and marked it as void.
+    // We just need to check if it's void and return accordingly.
     if (isIntrinsicVoid(expr->intrinsicName, ctx)) {
         // Void intrinsics are only valid as statements
-        // The parser should ensure this, but we validate here defensively
         if (targetType != nullptr) {
             ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
                                   "intrinsic '#", ctx.pool.lookup(expr->intrinsicName),
@@ -1340,7 +1347,6 @@ TypeAST* resolveIntrinsicCallExpr(IntrinsicCallExprAST* expr, const TypeAST* tar
             return ctx.getUnknownType();
         }
         
-        // Void intrinsic - valid as a statement
         expr->semanticType = nullptr;
         expr->valueState = ValueState::None;
         expr->isLValue = false;
@@ -1348,10 +1354,9 @@ TypeAST* resolveIntrinsicCallExpr(IntrinsicCallExprAST* expr, const TypeAST* tar
         return nullptr;
     }
 
-    // ─── Step 3: Get the return type ──────────────────────────────────────────
+    // ─── Step 3: Get the return type for non-void intrinsics ───────────────────
     const TypeAST* resultType = getIntrinsicReturnType(expr, targetType, ctx);
     if (!resultType) {
-        // This should not happen if isIntrinsicVoid returned false
         ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
                               "intrinsic '#", ctx.pool.lookup(expr->intrinsicName),
                               "' unexpectedly returns no value");
@@ -1393,8 +1398,8 @@ TypeAST* resolveIntrinsicCallExpr(IntrinsicCallExprAST* expr, const TypeAST* tar
     // ─── Step 7: Store results ──────────────────────────────────────────────────
     expr->semanticType = const_cast<TypeAST*>(resultType);
     expr->valueState = state;
-    expr->isLValue = false;   // Intrinsic calls are never l-values
-    expr->isConst = false;    // Intrinsic calls are not compile-time constants
+    expr->isLValue = false;
+    expr->isConst = false;
 
     return const_cast<TypeAST*>(resultType);
 }
@@ -1617,7 +1622,7 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetT
         for (const FieldDeclAST* f : structDecl->fields) {
             if (f->name == expr->fieldName) {
                 // ─── Get field type from semanticType (resolved) ────────────
-                const TypeAST* fieldType = f->semanticType;
+                const TypeAST* fieldType = f->type;
                 if (!fieldType) {
                     // Fallback to parser type if semanticType not set
                     fieldType = f->type;
@@ -1715,8 +1720,8 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, const TypeAST* targe
     // ─── Step 3: Mark as module member ────────────────────────────────────
     expr->isModuleMember = true;
 
-    // ─── Step 4: Get the declaration's semantic type ──────────────────────
-    const TypeAST* declType = decl->semanticType;
+    // ─── Step 4: Get the declaration's type ──────────────────────
+    const TypeAST* declType = decl->type;
     if (!declType) {
         ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
                               "member '", ctx.pool.lookup(expr->memberName),
@@ -1777,8 +1782,8 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, const TypeAST* targe
             return ctx.getUnknownType();
         }
 
-        // Use the function's semantic type
-        declType = funcDecl->semanticType;
+        // Use the function's type
+        declType = funcDecl->type;
         if (!declType) {
             ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
                                   "member '", ctx.pool.lookup(expr->memberName),
@@ -1797,7 +1802,7 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, const TypeAST* targe
         state = ValueState::Definite;
     }
 
-    // ─── Step 8: Set the expression's semantic type ────────────────────────
+    // ─── Step 8: Set the expression's type ────────────────────────
     expr->semanticType = const_cast<TypeAST*>(declType);
     expr->valueState = state;
     return const_cast<TypeAST*>(declType);

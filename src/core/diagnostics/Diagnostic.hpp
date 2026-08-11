@@ -195,6 +195,7 @@ enum class DiagCode : uint32_t {
     Sem_ModuleReadOnly           = 4202,  // Assigning to module member
     Sem_NonLValueAssignment      = 4203,  // Assignment to non-lvalue
     Sem_ConstParamAssignment     = 4204,  // Assigning to const parameter
+    Sem_MissingFuncBody          = 4205,  // The function was initialized with missing body
     
     // Fallible/Nullable Errors (4300-4399)
     Sem_UnhandledNil             = 4300,  // Nil not handled

@@ -474,8 +474,6 @@ bool validateScopeExit(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
     const FuncTypeAST* func = funcType->as<FuncTypeAST>();
 
     // ─── 5. Handle generic function references ─────────────────────────────
-    // If the function reference has generic arguments, they must be resolved
-    // and the function must be fully instantiated.
     bool hasGenericArgs = false;
     const FuncDeclAST* funcDecl = nullptr;
     
@@ -483,7 +481,6 @@ bool validateScopeExit(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
         const IdentifierExprAST* id = funcArg->as<IdentifierExprAST>();
         hasGenericArgs = !id->genericArgs.empty();
         
-        // Look up the function declaration to check generic parameters
         const ValueDeclAST* decl = ctx.lookupValue(id->name);
         if (decl && decl->isa<FuncDeclAST>()) {
             funcDecl = decl->as<FuncDeclAST>();
@@ -500,7 +497,6 @@ bool validateScopeExit(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
     
     // ─── 6. Validate generic instantiation ─────────────────────────────────
     if (funcDecl) {
-        // Check if the function has generic parameters
         bool hasGenericParams = !funcDecl->genericParams.empty();
         
         if (hasGenericParams && !hasGenericArgs) {
@@ -519,17 +515,9 @@ bool validateScopeExit(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
                                   "' is not generic but generic arguments were provided");
             return false;
         }
-        
-        // If generic arguments were provided, validate them
-        if (hasGenericArgs && hasGenericParams) {
-            // Resolve generic arguments (they should already be resolved by the expression)
-            // The generic arguments are already validated by resolveIdentifierExpr
-            // or resolveModuleAccessExpr
-        }
     }
 
     // ─── 7. The function must have exactly one parameter group ─────────────
-    // No curried functions - the callback must be a single, complete function
     if (func->isCurried()) {
         ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, funcArg,
                               "#scope_exit callback must have exactly one parameter group "
@@ -541,7 +529,6 @@ bool validateScopeExit(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
     }
 
     // ─── 8. The function must return void ──────────────────────────────────
-    // No value-returning or fallible functions allowed
     if (func->returnType) {
         ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, funcArg,
                               "#scope_exit callback must return void "
@@ -553,7 +540,6 @@ bool validateScopeExit(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
     }
 
     // ─── 9. No variadic parameters ─────────────────────────────────────────
-    // Variadic parameters are not allowed in #scope_exit callbacks
     for (const ParamAST* param : func->params) {
         if (param->isVariadic) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidParamType, param,
@@ -565,7 +551,6 @@ bool validateScopeExit(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
     }
 
     // ─── 10. Validate argument count against function parameters ──────────
-    // The callback can have 0 or more parameters, but they must all be supplied
     size_t callbackArgs = expr->args.size() - 1;
     size_t paramCount = func->params.size();
 
@@ -579,6 +564,8 @@ bool validateScopeExit(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
     }
 
     // ─── 11. Validate each argument type against callback parameters ──────
+    auto argsBuilder = ctx.arena.makeBuilder<ExprAST*>();
+    
     for (size_t i = 0; i < callbackArgs; ++i) {
         const ExprAST* arg = expr->args[i + 1];
         const TypeAST* expectedType = func->params[i]->type;
@@ -590,23 +577,23 @@ bool validateScopeExit(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
             return false;
         }
 
-        // ─── Check: Cannot pass nil to non-nullable parameter ─────────────
         if (arg->valueState == ValueState::Nil && !isNullableType(expectedType)) {
             ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
                                   "cannot pass nil to non-nullable parameter in #scope_exit callback");
             return false;
         }
 
-        // ─── Check: Cannot pass err to non-fallible parameter ─────────────
         if (arg->valueState == ValueState::Err && !isFallibleType(expectedType)) {
             ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
                                   "cannot pass err to non-fallible parameter in #scope_exit callback");
             return false;
         }
+
+        // Store the resolved argument
+        argsBuilder.push_back(const_cast<ExprAST*>(arg));
     }
 
     // ─── 12. Check for field access capture issues ─────────────────────────
-    // If the function is from a struct field, warn about potential lifetime issues
     if (funcArg->isa<FieldAccessExprAST>()) {
         const FieldAccessExprAST* field = funcArg->as<FieldAccessExprAST>();
         ctx.diagnostics.warning(DiagCode::Warn_UnsafeFFI, funcArg,
@@ -616,6 +603,35 @@ bool validateScopeExit(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
         ctx.diagnostics.note(funcArg,
                              "Ensure the struct outlives the scope where #scope_exit is registered");
     }
+
+    // ─── 13. Get the current block for registration ──────────────────────
+    BlockStmtAST* currentBlock = ctx.stack.currentBlock();
+    if (!currentBlock) {
+        ctx.diagnostics.error(DiagCode::Sem_AsyncOutsideFunction, expr,
+                              "#scope_exit must appear inside a block");
+        return false;
+    }
+
+    // ─── 14. Create the registration ──────────────────────────────────────
+    ScopeExitRegistration* registration = ctx.arena.make<ScopeExitRegistration>();
+    registration->callExpr = const_cast<IntrinsicCallExprAST*>(expr);
+    registration->callback = const_cast<FuncDeclAST*>(funcDecl);
+    registration->args = argsBuilder.build();
+
+    // ─── 15. Append to the current block's scopeExits ────────────────────
+    auto exitsBuilder = ctx.arena.makeBuilder<ScopeExitRegistrationPtr>();
+    
+    // Copy existing registrations (preserving registration order)
+    for (ScopeExitRegistrationPtr existing : currentBlock->scopeExits) {
+        exitsBuilder.push_back(existing);
+    }
+    // Add the new one at the end
+    exitsBuilder.push_back(registration);
+    
+    currentBlock->scopeExits = exitsBuilder.build();
+
+    LOG_SEMA("validateScopeExit: registered #scope_exit in block with ",
+             currentBlock->scopeExits.size(), " total registrations");
 
     return true;
 }

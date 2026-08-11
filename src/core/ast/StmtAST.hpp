@@ -20,6 +20,22 @@
 #include <memory>
 #include <optional>
 
+/// @brief A scope-exit callback registration (semantic metadata).
+///
+/// This is NOT an AST node - it's created by Sema during semantic analysis
+/// from a #scope_exit intrinsic call. Stored on BlockStmtAST as metadata
+/// for CodeGen to emit LIFO callbacks on scope exit.
+///
+/// @field callExpr   The original #scope_exit intrinsic call expression.
+/// @field callback   The resolved function to call (FuncDeclAST or closure).
+/// @field args       The resolved arguments to pass to the callback.
+struct ScopeExitRegistration {
+    IntrinsicCallExprAST* callExpr = nullptr;   // The original #scope_exit call
+    FuncDeclAST* callback = nullptr;            // Resolved function to call
+    ArenaSpan<ExprAST*> args;                   // Resolved arguments
+};
+using ScopeExitRegistrationPtr = ScopeExitRegistration*;
+
 /// @brief A brace‑delimited sequence of statements – the fundamental scoping unit.
 /// 
 /// @example
@@ -38,6 +54,13 @@ struct BlockStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::BlockStmt;
 
     ArenaSpan<StmtPtr> stmts; // Statements in execution order
+
+    // ─── Scope Exit Registrations (semantic metadata) ─────────────────────
+    // Each #scope_exit call in this block is stored here in registration order.
+    // LIFO execution: iterate this span in reverse.
+    // Set by Sema during semantic analysis.
+    ArenaSpan<ScopeExitRegistrationPtr> scopeExits;
+
 
     BlockStmtAST() : StmtAST(ASTKind::BlockStmt) {}
 };
