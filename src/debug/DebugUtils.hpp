@@ -483,6 +483,42 @@ inline std::string typeToString(const TypeAST* type, const StringPool& pool) {
     return kindToString(type->kind);
 }
 
+// ─── LLVM Type to String ───────────────────────────────────────────────────
+
+/// @brief Convert an LLVM type to a human-readable string.
+/// @param type The LLVM type.
+/// @return A human-readable string representation of the LLVM type.
+inline std::string llvmTypeToString(const llvm::Type* type) {
+    if (!type) return "<null>";
+    
+    std::string result;
+    llvm::raw_string_ostream os(result);
+    type->print(os);
+    os.flush();
+    return result;
+}
+
+/// @brief Convert an LLVM type to a human-readable string (with pool).
+inline std::string llvmTypeToString(const llvm::Type* type, const StringPool& pool) {
+    // The pool is unused but kept for API consistency
+    (void)pool;
+    return llvmTypeToString(type);
+}
+
+// ─── Overload: typeToString with llvm::Type* ─────────────────────────────
+
+/// @brief Convert an LLVM type to a human-readable string.
+/// @param type The LLVM type.
+/// @return A human-readable string representation.
+inline std::string typeToString(const llvm::Type* type) {
+    return llvmTypeToString(type);
+}
+
+/// @brief Convert an LLVM type to a human-readable string (with pool).
+inline std::string typeToString(const llvm::Type* type, const StringPool& pool) {
+    return llvmTypeToString(type, pool);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Type Decl to String - Includes field/param names
 // ─────────────────────────────────────────────────────────────────────────────

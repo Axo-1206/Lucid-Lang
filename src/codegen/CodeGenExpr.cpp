@@ -22,17 +22,6 @@
 
 namespace codegen {
 
-// ─── Helper: Check if an integer type is signed ──────────────────────────
-// Note: In LLVM 18, IntegerType doesn't have isSigned().
-// Signedness is determined by the operation, not the type.
-static bool isIntegerTypeSigned(llvm::Type* type) {
-    // Integer types in LLVM are just bits - signedness is in the operation.
-    // For our purposes, we default to assuming signed for operations
-    // that need signedness (like division, comparison).
-    // The correct approach is to track signedness from the Lucid type.
-    return true; // Default to signed
-}
-
 // ─── Helper: Convert Value* vector to Constant* vector ───────────────────
 
 static std::vector<llvm::Constant*> toConstants(const std::vector<llvm::Value*>& values) {
@@ -656,19 +645,22 @@ llvm::Value* lowerIndexExpr(IndexExprAST* expr, CodeGenContext& ctx) {
     }
 
     // ─── Get the pointer to the array data ──────────────────────────────
-    // With opaque pointers, we can't call getPointerElementType() on Type.
-    // We need to use the element type from the Lucid type.
+    // With opaque pointers (LLVM 17+), we can't call getPointerElementType()
+    // on Type. We use the element type from the Lucid type directly.
     llvm::Value* ptr = target;
 
-    // If the target is a pointer, we need to handle it differently
-    // For arrays, the target is already a pointer to the data
-    // For fixed arrays, we need to get the first element
+    // For fixed arrays, we need to get the first element's address
+    if (arrayType->isFixed()) {
+        // Create GEP to get pointer to first element (index 0, 0)
+        ptr = ctx.builder.CreateConstGEP2_32(
+            elemType,
+            target,
+            0, 0
+        );
+    }
+    // For dynamic arrays and slices, target is already a pointer to the data
 
-    // With opaque pointers, we can't check if it's an array pointer.
-    // We'll just use the target as-is and create GEP with the element type.
-
-    // Create the GEP using the element type
-    // This is the correct way with opaque pointers
+    // ─── Create the GEP with the element type ────────────────────────────
     llvm::Value* gep = ctx.builder.CreateGEP(
         elemType,
         ptr,
