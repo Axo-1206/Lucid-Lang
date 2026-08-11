@@ -47,6 +47,8 @@ inline std::string kindToString(ASTKind kind) {
         case ASTKind::RefType:          return "RefType";
         case ASTKind::PtrType:          return "PtrType";
         case ASTKind::FuncType:         return "FuncType";
+        case ASTKind::FutureType:       return "FutureType";
+        case ASTKind::ThreadType:       return "ThreadType";
 
         // Declarations
         case ASTKind::ImportDecl:       return "ImportDecl";
@@ -86,10 +88,10 @@ inline std::string kindToString(ASTKind kind) {
         case ASTKind::RangeExpr:          return "RangeExpr";
 
         // Concurrency
-        case ASTKind::AsyncExpr:          return "AsyncExpr";
-        case ASTKind::AwaitExpr:          return "AwaitExpr";
-        case ASTKind::SpawnExpr:          return "SpawnExpr";
-        case ASTKind::JoinExpr:           return "JoinExpr";
+        case ASTKind::AsyncStmt:          return "AsyncStmt";
+        case ASTKind::AwaitStmt:          return "AwaitStmt";
+        case ASTKind::SpawnStmt:          return "SpawnStmt";
+        case ASTKind::JoinStmt:           return "JoinStmt";
 
         // Statements
         case ASTKind::BlockStmt:          return "BlockStmt";
@@ -459,7 +461,7 @@ inline std::string typeToString(const TypeAST* type, const StringPool& pool) {
             if (i > 0) result += ", ";
             ParamAST* param = func->params[i];
             if (param->isVariadic) result += "...";
-            if (param->isConst) result += "const ";
+            if (param->isConst()) result += "const ";
             result += typeToString(param->type, pool);
         }
         result += ")";
@@ -521,7 +523,7 @@ inline std::string typeDeclToString(const TypeDeclAST* decl, const StringPool& p
         for (size_t i = 0; i < structDecl->fields.size(); ++i) {
             if (i > 0) result += ", ";
             FieldDeclAST* field = structDecl->fields[i];
-            if (field->isConst) result += "const ";
+            if (field->isConst()) result += "const ";
             result += std::string(pool.lookup(field->name)) + " ";
             result += typeToString(field->type, pool);
         }
@@ -565,7 +567,7 @@ inline std::string typeDeclToString(const TypeDeclAST* decl, const StringPool& p
         for (size_t i = 0; i < traitDecl->fields.size(); ++i) {
             if (i > 0) result += ", ";
             TraitFieldDeclAST* field = traitDecl->fields[i];
-            if (field->isConst) result += "const ";
+            if (field->isConst()) result += "const ";
             result += std::string(pool.lookup(field->name)) + " ";
             result += typeToString(field->type, pool);
         }

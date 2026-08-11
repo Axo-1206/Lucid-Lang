@@ -44,7 +44,7 @@ llvm::Type* getType(CodeGenContext& ctx, const TypeAST* type) {
             result = getArrayType(ctx, type->as<ArrayTypeAST>());
             break;
         case ASTKind::FuncType:
-            result = getFunctionType(ctx, type->as<FuncTypeAST>());
+            result = getFunctionType(ctx, type->as<FuncTypeAST>(), false);
             break;
         case ASTKind::NullableType:
             result = getNullableType(ctx, type->as<NullableTypeAST>());
@@ -55,7 +55,15 @@ llvm::Type* getType(CodeGenContext& ctx, const TypeAST* type) {
         case ASTKind::CombinedType:
             result = getCombinedType(ctx, type->as<CombinedTypeAST>());
             break;
+        case ASTKind::FutureType:
+            result = getFutureType(ctx, type->as<FutureTypeAST>());
+            break;
+        case ASTKind::ThreadType:
+            result = getThreadType(ctx, type->as<ThreadTypeAST>());
+            break;
         default:
+            ctx.diagnostics.errorAt(DiagCode::Sem_UnknownType, type->loc,
+                                    "unknown type kind in code generation");
             return nullptr;
     }
 
@@ -80,9 +88,9 @@ llvm::StructType* getStructType(CodeGenContext& ctx, const StructDeclAST* decl) 
     for (const FieldDeclAST* field : decl->fields) {
         llvm::Type* fieldType = getType(ctx, field->type);
         if (!fieldType) {
-            ctx.diagnostics.warningAt(DiagCode::Warn_UnreachableCode, field->loc,
-                                      "field '", ctx.pool.lookup(field->name),
-                                      "' has unknown type, using placeholder");
+            ctx.diagnostics.errorAt(DiagCode::Sem_UnknownType, field->loc,
+                                    "field '", ctx.pool.lookup(field->name),
+                                    "' has unknown type");
             fieldType = llvm::Type::getInt8Ty(ctx.llvmCtx);
         }
         fieldTypes.push_back(fieldType);
@@ -98,46 +106,72 @@ llvm::StructType* getStructType(CodeGenContext& ctx, const StructDeclAST* decl) 
     return structType;
 }
 
+llvm::IntegerType* getEnumType(CodeGenContext& ctx, const EnumDeclAST* decl) {
+    if (!decl) return nullptr;
+
+    // If a backing type is specified, use it
+    if (decl->backingType) {
+        return getIntegerType(ctx, decl->backingType->primitiveKind);
+    }
+
+    // Default: int32 (matches C enum behavior)
+    return llvm::Type::getInt32Ty(ctx.llvmCtx);
+}
+
 llvm::FunctionType* getFunctionType(
-    CodeGenContext& ctx, 
+    CodeGenContext& ctx,
     const FuncTypeAST* funcType,
-    bool isClosure = false  // Set to true for inner closure functions
+    bool isClosure
 ) {
     if (!funcType) return nullptr;
 
     std::vector<llvm::Type*> paramTypes;
 
-    // ─── For closures, add environment pointer as first parameter ──────
+    // ─── For closures, add environment pointer as first parameter ──────────
     if (isClosure) {
         paramTypes.push_back(llvm::PointerType::get(ctx.llvmCtx, 0));
     }
 
-    // ─── Add regular parameters ─────────────────────────────────────────
+    // ─── Add regular parameters ────────────────────────────────────────────
     for (const ParamAST* param : funcType->params) {
         llvm::Type* paramType = getType(ctx, param->type);
-        if (!paramType) return nullptr;
+        if (!paramType) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_UnknownType, param->loc,
+                                    "parameter '", ctx.pool.lookup(param->name),
+                                    "' has unknown type");
+            return nullptr;
+        }
         paramTypes.push_back(paramType);
     }
 
-    // ─── Get return type (may be another function type) ────────────────
+    // ─── Get return type ────────────────────────────────────────────────────
     llvm::Type* returnType = nullptr;
     if (funcType->returnType) {
         if (funcType->returnType->isa<FuncTypeAST>()) {
             // Curried return: pointer to inner function type
             llvm::FunctionType* innerType = getFunctionType(
-                ctx, 
+                ctx,
                 funcType->returnType->as<FuncTypeAST>(),
-                false  // Inner function type, not a closure yet
+                false
             );
             returnType = llvm::PointerType::get(innerType, 0);
         } else {
             returnType = getType(ctx, funcType->returnType);
         }
-    } else {
+    }
+
+    if (!returnType) {
         returnType = llvm::Type::getVoidTy(ctx.llvmCtx);
     }
 
-    bool isVarArg = /* check variadic */ false;
+    // ─── Check for variadic parameters ──────────────────────────────────────
+    bool isVarArg = false;
+    for (const ParamAST* param : funcType->params) {
+        if (param->isVariadic) {
+            isVarArg = true;
+            break;
+        }
+    }
 
     return llvm::FunctionType::get(returnType, paramTypes, isVarArg);
 }
@@ -148,40 +182,49 @@ llvm::Type* getPrimitiveType(CodeGenContext& ctx, const PrimitiveTypeAST* type) 
     switch (type->primitiveKind) {
         case PrimitiveKind::Bool:
             return llvm::Type::getInt1Ty(ctx.llvmCtx);
+
         case PrimitiveKind::Int8:
         case PrimitiveKind::Byte:
-            return llvm::Type::getInt8Ty(ctx.llvmCtx);
-        case PrimitiveKind::Int16:
-        case PrimitiveKind::Short:
-            return llvm::Type::getInt16Ty(ctx.llvmCtx);
-        case PrimitiveKind::Int32:
-        case PrimitiveKind::Int:
-            return llvm::Type::getInt32Ty(ctx.llvmCtx);
-        case PrimitiveKind::Int64:
-        case PrimitiveKind::Long:
-            return llvm::Type::getInt64Ty(ctx.llvmCtx);
         case PrimitiveKind::Uint8:
         case PrimitiveKind::Ubyte:
             return llvm::Type::getInt8Ty(ctx.llvmCtx);
+
+        case PrimitiveKind::Int16:
+        case PrimitiveKind::Short:
         case PrimitiveKind::Uint16:
         case PrimitiveKind::Ushort:
             return llvm::Type::getInt16Ty(ctx.llvmCtx);
+
+        case PrimitiveKind::Int32:
+        case PrimitiveKind::Int:
         case PrimitiveKind::Uint32:
         case PrimitiveKind::Uint:
             return llvm::Type::getInt32Ty(ctx.llvmCtx);
+
+        case PrimitiveKind::Int64:
+        case PrimitiveKind::Long:
         case PrimitiveKind::Uint64:
         case PrimitiveKind::Ulong:
             return llvm::Type::getInt64Ty(ctx.llvmCtx);
+
         case PrimitiveKind::Float:
             return llvm::Type::getFloatTy(ctx.llvmCtx);
+
         case PrimitiveKind::Double:
             return llvm::Type::getDoubleTy(ctx.llvmCtx);
+
         case PrimitiveKind::Decimal:
             return llvm::Type::getFP128Ty(ctx.llvmCtx);
+
         case PrimitiveKind::String:
+            // Strings are heap-allocated UTF-8 buffers
+            // Represented as a pointer to the buffer with a length
+            // For now, just use a pointer
             return llvm::PointerType::get(ctx.llvmCtx, 0);
+
         case PrimitiveKind::Char:
             return llvm::Type::getInt8Ty(ctx.llvmCtx);
+
         default:
             ctx.diagnostics.errorAt(DiagCode::Sem_UnknownType, type->loc,
                                     "unknown primitive type");
@@ -193,8 +236,10 @@ llvm::Type* getNamedType(CodeGenContext& ctx, const NamedTypeAST* type) {
     if (!type) return nullptr;
 
     std::string typeName = ctx.pool.lookup(type->name);
-    
-    // Check for built-in primitive types
+
+    // ─── Check for built-in primitive types ─────────────────────────────────
+    // Use debug::primitiveKindToString to check if it's a primitive
+    // We could also check the semantic type's kind, but this is simpler
     if (typeName == "int" || typeName == "int32" || typeName == "uint32") {
         return llvm::Type::getInt32Ty(ctx.llvmCtx);
     }
@@ -223,29 +268,25 @@ llvm::Type* getNamedType(CodeGenContext& ctx, const NamedTypeAST* type) {
         return llvm::Type::getInt8Ty(ctx.llvmCtx);
     }
 
-    // Query by name using StructType helper (works across LLVM versions)
+    // ─── Check if it's a struct type ────────────────────────────────────────
     if (llvm::StructType* existing = llvm::StructType::getTypeByName(ctx.llvmCtx, typeName)) {
         return existing;
     }
 
-    llvm::StructType* structType = llvm::StructType::create(
-        ctx.llvmCtx,
-        typeName
-    );
+    // ─── Unknown type - create forward declaration ──────────────────────────
+    ctx.diagnostics.warningAt(DiagCode::Warn_UnreachableCode, type->loc,
+                              "type '", typeName, "' not yet defined, creating forward declaration");
 
-    return llvm::PointerType::get(structType, 0);
+    llvm::StructType* structType = llvm::StructType::create(ctx.llvmCtx, typeName);
+    return structType;
 }
 
 llvm::Type* getPtrType(CodeGenContext& ctx, const PtrTypeAST* type) {
     if (!type) return nullptr;
 
-    llvm::Type* innerType = getType(ctx, type->inner);
-    if (!innerType) {
-        ctx.diagnostics.warningAt(DiagCode::Warn_UnreachableCode, type->loc,
-                                  "pointer target type has unknown type, using i8*");
-        innerType = llvm::Type::getInt8Ty(ctx.llvmCtx);
-    }
-
+    // Raw pointers are always opaque pointers
+    // We don't need the pointee type for LLVM's opaque pointer model
+    (void)type;
     return llvm::PointerType::get(ctx.llvmCtx, 0);
 }
 
@@ -275,18 +316,24 @@ llvm::Type* getArrayType(CodeGenContext& ctx, const ArrayTypeAST* type) {
     switch (type->arrayKind) {
         case ArrayKind::Fixed:
             return llvm::ArrayType::get(elemType, type->size);
+
         case ArrayKind::Dynamic:
+            // Dynamic arrays are heap-allocated, stored as a pointer
             return llvm::PointerType::get(elemType, 0);
+
         case ArrayKind::Slice:
+            // Slices are { ptr, len, cap }
             {
                 llvm::Type* ptrType = llvm::PointerType::get(elemType, 0);
                 llvm::Type* lenType = llvm::Type::getInt64Ty(ctx.llvmCtx);
+                std::string typeName = "slice_" + debug::typeToString(type->element, ctx.pool);
                 return llvm::StructType::create(
                     ctx.llvmCtx,
                     llvm::ArrayRef<llvm::Type*>{ptrType, lenType, lenType},
-                    "slice"
+                    typeName
                 );
             }
+
         default:
             return nullptr;
     }
@@ -302,10 +349,15 @@ llvm::StructType* getNullableType(CodeGenContext& ctx, const NullableTypeAST* ty
         innerType = llvm::Type::getInt8Ty(ctx.llvmCtx);
     }
 
-    llvm::Type* tagType = llvm::Type::getInt8Ty(ctx.llvmCtx);
+    // Use debug::typeToString for consistent type naming
     std::string typeName = "nullable_" + debug::typeToString(type->inner, ctx.pool);
+    llvm::Type* tagType = llvm::Type::getInt8Ty(ctx.llvmCtx);
 
-    return llvm::StructType::create(ctx.llvmCtx, llvm::ArrayRef<llvm::Type*>{tagType, innerType}, typeName);
+    return llvm::StructType::create(
+        ctx.llvmCtx,
+        llvm::ArrayRef<llvm::Type*>{tagType, innerType},
+        typeName
+    );
 }
 
 llvm::StructType* getFallibleType(CodeGenContext& ctx, const FallibleTypeAST* type) {
@@ -318,10 +370,14 @@ llvm::StructType* getFallibleType(CodeGenContext& ctx, const FallibleTypeAST* ty
         innerType = llvm::Type::getInt8Ty(ctx.llvmCtx);
     }
 
-    llvm::Type* tagType = llvm::Type::getInt8Ty(ctx.llvmCtx);
     std::string typeName = "fallible_" + debug::typeToString(type->inner, ctx.pool);
+    llvm::Type* tagType = llvm::Type::getInt8Ty(ctx.llvmCtx);
 
-    return llvm::StructType::create(ctx.llvmCtx, llvm::ArrayRef<llvm::Type*>{tagType, innerType}, typeName);
+    return llvm::StructType::create(
+        ctx.llvmCtx,
+        llvm::ArrayRef<llvm::Type*>{tagType, innerType},
+        typeName
+    );
 }
 
 llvm::StructType* getCombinedType(CodeGenContext& ctx, const CombinedTypeAST* type) {
@@ -334,10 +390,58 @@ llvm::StructType* getCombinedType(CodeGenContext& ctx, const CombinedTypeAST* ty
         innerType = llvm::Type::getInt8Ty(ctx.llvmCtx);
     }
 
-    llvm::Type* tagType = llvm::Type::getInt8Ty(ctx.llvmCtx);
     std::string typeName = "combined_" + debug::typeToString(type->inner, ctx.pool);
+    llvm::Type* tagType = llvm::Type::getInt8Ty(ctx.llvmCtx);
 
-    return llvm::StructType::create(ctx.llvmCtx, llvm::ArrayRef<llvm::Type*>{tagType, innerType}, typeName);
+    return llvm::StructType::create(
+        ctx.llvmCtx,
+        llvm::ArrayRef<llvm::Type*>{tagType, innerType},
+        typeName
+    );
+}
+
+llvm::StructType* getFutureType(CodeGenContext& ctx, const FutureTypeAST* type) {
+    if (!type) return nullptr;
+
+    llvm::Type* innerType = getType(ctx, type->inner);
+    if (!innerType) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, type->loc,
+                                "future inner type has unknown type");
+        innerType = llvm::Type::getInt8Ty(ctx.llvmCtx);
+    }
+
+    // Future<T> = { T value, i8 state }
+    // state: 0 = pending, 1 = ready, 2 = consumed
+    std::string typeName = "future_" + debug::typeToString(type->inner, ctx.pool);
+    llvm::Type* stateType = llvm::Type::getInt8Ty(ctx.llvmCtx);
+
+    return llvm::StructType::create(
+        ctx.llvmCtx,
+        llvm::ArrayRef<llvm::Type*>{innerType, stateType},
+        typeName
+    );
+}
+
+llvm::StructType* getThreadType(CodeGenContext& ctx, const ThreadTypeAST* type) {
+    if (!type) return nullptr;
+
+    llvm::Type* innerType = getType(ctx, type->inner);
+    if (!innerType) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, type->loc,
+                                "thread inner type has unknown type");
+        innerType = llvm::Type::getInt8Ty(ctx.llvmCtx);
+    }
+
+    // Thread<T> = { T value, i8 state }
+    // state: 0 = running, 1 = done, 2 = joined
+    std::string typeName = "thread_" + debug::typeToString(type->inner, ctx.pool);
+    llvm::Type* stateType = llvm::Type::getInt8Ty(ctx.llvmCtx);
+
+    return llvm::StructType::create(
+        ctx.llvmCtx,
+        llvm::ArrayRef<llvm::Type*>{innerType, stateType},
+        typeName
+    );
 }
 
 llvm::Type* getModuleTypeAccess(CodeGenContext& ctx, const ModuleTypeAccessAST* type) {
@@ -345,8 +449,8 @@ llvm::Type* getModuleTypeAccess(CodeGenContext& ctx, const ModuleTypeAccessAST* 
 
     std::string moduleName = ctx.pool.lookup(type->moduleName);
     std::string typeName = ctx.pool.lookup(type->typeName);
-    
-    // Use getTypeByName on the LLVM context since Module no longer exposes it.
+
+    // Try to find the type by name
     llvm::StructType* structType = llvm::StructType::getTypeByName(ctx.llvmCtx, typeName);
     if (!structType) {
         ctx.diagnostics.warningAt(DiagCode::Warn_UnreachableCode, type->loc,
@@ -355,7 +459,7 @@ llvm::Type* getModuleTypeAccess(CodeGenContext& ctx, const ModuleTypeAccessAST* 
         structType = llvm::StructType::create(ctx.llvmCtx, typeName);
     }
 
-    return llvm::PointerType::get(structType, 0);
+    return structType;
 }
 
 // ─── Helper Functions ─────────────────────────────────────────────────────
