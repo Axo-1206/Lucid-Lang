@@ -330,11 +330,21 @@ bool ContextStack::insideNestedFunction() const {
 }
 
 FuncDeclAST* ContextStack::getInnermostFunction() const {
+    // Stops at the innermost FuncBody frame, period — matching what
+    // "innermost" means everywhere else in this file (currentFunction(),
+    // currentLoop(), currentSwitch(), currentBlock() all stop at the first
+    // match). Returns nullptr, rather than skipping outward, when that
+    // innermost frame is an AnonFuncExprAST — callers that want the
+    // innermost function/closure node regardless of which kind it is
+    // should call getInnermostFunctionNode() instead, below, which is
+    // exactly what it's for.
+    if (m_stack.empty()) return nullptr;
     for (auto it = m_stack.rbegin(); it != m_stack.rend(); ++it) {
         if (it->kind == ContextKind::FuncBody) {
             if (it->node && it->node->isa<FuncDeclAST>()) {
                 return static_cast<FuncDeclAST*>(it->node);
             }
+            return nullptr;   // innermost FuncBody is an AnonFuncExprAST
         }
     }
     return nullptr;

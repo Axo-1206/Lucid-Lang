@@ -38,6 +38,21 @@ struct CaptureAnalyzer {
     /// These are NOT captures.
     std::unordered_set<InternedString> ownParams;
     
+    /// Variables declared *inside* the body currently being walked — via
+    /// `let`/`const` or a `for` loop's index/value binders — tracked as a
+    /// stack of block-scoped frames, pushed/popped in step with `BlockStmt`
+    /// entry/exit, mirroring how the first pass's own `SymbolScope` guards
+    /// work. This exists because capture analysis is a *second*, separate
+    /// walk that runs after the body has already been fully resolved and
+    /// every scope the first pass pushed for it has already been popped —
+    /// `ctx.scopes` no longer reflects this body's own internal block
+    /// structure by the time this walk runs. Without this, a name declared
+    /// inside this body that happens to share a name with a genuinely outer
+    /// variable would incorrectly resolve to the outer one via
+    /// `ctx.lookupValue`, since nothing else records that the name was
+    /// ever local. See `isLocallyDeclared`.
+    std::vector<std::unordered_set<InternedString>> localScopes;
+    
     /// Variables that have been marked as captures.
     std::vector<CapturedVariable> captures;
     
@@ -52,7 +67,9 @@ struct CaptureAnalyzer {
         , closure(e)
         , function(nullptr)
         , innermostFunction(e)
-        , currentClosureDepth(ctx.getClosureDepth()) {}
+        , currentClosureDepth(ctx.getClosureDepth()) {
+        localScopes.emplace_back();   // top-level frame for the closure's own body
+    }
     
     /// Constructor for named function analysis.
     CaptureAnalyzer(SemaContext& c, FuncDeclAST* f)
@@ -60,7 +77,9 @@ struct CaptureAnalyzer {
         , closure(nullptr)
         , function(f)
         , innermostFunction(f)
-        , currentClosureDepth(ctx.getClosureDepth()) {}
+        , currentClosureDepth(ctx.getClosureDepth()) {
+        localScopes.emplace_back();   // top-level frame for the function's own body
+    }
     
     // ─── Capture Detection ──────────────────────────────────────────────────
     
@@ -69,11 +88,46 @@ struct CaptureAnalyzer {
         return ownParams.find(name) != ownParams.end();
     }
     
+    /// @brief Push a new local-scope frame — call on entry to any nested
+    /// block belonging to the body currently being walked (BlockStmt, a
+    /// for-loop's own index/value binder scope).
+    void pushLocalScope() {
+        localScopes.emplace_back();
+    }
+    
+    /// @brief Pop the innermost local-scope frame — call on exit from the
+    /// block `pushLocalScope` was entered for.
+    void popLocalScope() {
+        if (!localScopes.empty()) localScopes.pop_back();
+    }
+    
+    /// @brief Register `name` as declared in the innermost currently-open
+    /// local scope. Call this the moment a `let`/`const`/for-loop binder is
+    /// walked, in the same textual order the first pass would have seen it,
+    /// so declare-before-use ordering is preserved: a read of `name` before
+    /// its own declaration is walked will not yet find it here, and falls
+    /// through to `ctx.lookupValue` as a genuine outer reference — same
+    /// as the first pass would have resolved it.
+    void declareLocal(InternedString name) {
+        if (!localScopes.empty()) localScopes.back().insert(name);
+    }
+    
+    /// @brief Check if `name` was declared anywhere within the body
+    /// currently being walked (any still-open local-scope frame, innermost
+    /// to outermost) — as opposed to a genuinely outer function/closure.
+    bool isLocallyDeclared(InternedString name) const {
+        for (auto it = localScopes.rbegin(); it != localScopes.rend(); ++it) {
+            if (it->find(name) != it->end()) return true;
+        }
+        return false;
+    }
+    
     /// @brief Check if a name is from an outer scope (i.e., a capture).
     /// 
     /// This is the core capture detection logic:
     /// 1. If it's a module member → not a capture (global)
-    /// 2. If it's in the current scope → not a capture (local)
+    /// 2. If it's declared inside the body being walked (own params, or any
+    ///    still-tracked local-scope frame) → not a capture (local)
     /// 3. If it's a generic parameter → not a capture
     /// 4. If it exists in any outer scope → it's a capture
     bool isCapture(InternedString name) const {
@@ -82,8 +136,13 @@ struct CaptureAnalyzer {
             return false;
         }
         
-        // If it's in the current scope, it's not a capture
-        if (ctx.isInCurrentScope(name)) {
+        // Declared inside this body (own params, or a let/const/for-binder
+        // tracked via localScopes) — not a capture. Deliberately NOT using
+        // ctx.isInCurrentScope here: that checks only the single innermost
+        // frame of ctx.scopes, which by the time this second pass runs no
+        // longer reflects this body's own internal block structure at all
+        // (the first pass already popped it) — see localScopes, above.
+        if (isOwnParam(name) || isLocallyDeclared(name)) {
             return false;
         }
         
@@ -93,22 +152,19 @@ struct CaptureAnalyzer {
         }
         
         // Check if the name exists in any outer scope
-        const ValueDeclAST* decl = ctx.lookupValueRaw(name);
+        const ValueDeclAST* decl = ctx.lookupValue(name);
         if (!decl) {
             return false;
         }
         
-        // If the declaration is in the current scope, it's not a capture
-        if (ctx.isInCurrentScope(name)) {
-            return false;
-        }
-        
-        // The variable exists in an outer scope - it's a capture
+        // Reaching here means: not a module member, not declared anywhere
+        // in this body (own params or localScopes), not a generic param,
+        // and found in some still-open outer scope — genuinely a capture.
         return true;
     }
     
     const ValueDeclAST* getDeclaration(InternedString name) const {
-        return ctx.lookupValueRaw(name);
+        return ctx.lookupValue(name);
     }
     
     bool shouldCaptureByReference(const ValueDeclAST* decl, const IdentifierExprAST* id) const {
@@ -341,9 +397,11 @@ struct CaptureAnalyzer {
         switch (stmt->kind) {
             case ASTKind::BlockStmt: {
                 const BlockStmtAST* block = stmt->as<BlockStmtAST>();
+                pushLocalScope();
                 for (const StmtAST* s : block->stmts) {
                     walkStmt(s);
                 }
+                popLocalScope();
                 break;
             }
             
@@ -362,6 +420,12 @@ struct CaptureAnalyzer {
                     if (var->init) {
                         walkExpr(var->init);
                     }
+                    // Register AFTER walking the initializer, so a use of
+                    // the same name inside the initializer itself (e.g.
+                    // shadowing an outer `x` with `let x = x + 1;`) still
+                    // correctly resolves the right-hand `x` to the outer
+                    // one, matching declare-before-use ordering.
+                    declareLocal(var->name);
                 }
                 break;
             }
@@ -399,9 +463,17 @@ struct CaptureAnalyzer {
                 if (forStmt->step) {
                     walkExpr(forStmt->step);
                 }
+                // The index/value binders are scoped to the loop body, not
+                // to the loop statement's own enclosing block — push a
+                // frame that encloses body's own BlockStmt frame so they're
+                // visible inside it without leaking past the loop.
+                pushLocalScope();
+                if (forStmt->indexVar) declareLocal(forStmt->indexVar->name);
+                if (forStmt->valueVar) declareLocal(forStmt->valueVar->name);
                 if (forStmt->body) {
                     walkStmt(forStmt->body);
                 }
+                popLocalScope();
                 break;
             }
             
@@ -436,6 +508,13 @@ struct CaptureAnalyzer {
                 if (asyncStmt->call) {
                     walkExpr(asyncStmt->call);
                 }
+                // Same reasoning as DeclStmt, above: 'binding' is a fresh
+                // local this statement introduces, registered after
+                // walking 'call' (declare-before-use — 'result' isn't in
+                // scope while evaluating its own initializing call).
+                if (asyncStmt->binding) {
+                    declareLocal(asyncStmt->binding->name);
+                }
                 break;
             }
             
@@ -443,6 +522,11 @@ struct CaptureAnalyzer {
                 const SpawnStmtAST* spawnStmt = stmt->as<SpawnStmtAST>();
                 if (spawnStmt->call) {
                     walkExpr(spawnStmt->call);
+                }
+                // 'binding' is nullptr for the '_' discard pattern — nothing
+                // to register in that case.
+                if (spawnStmt->binding) {
+                    declareLocal(spawnStmt->binding->name);
                 }
                 break;
             }

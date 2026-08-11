@@ -1039,7 +1039,7 @@ bool resolveAwaitStmt(const AwaitStmtAST* stmt, SemaContext& ctx) {
         InternedString targetName = id->name;
 
         // ─── Look up the variable ──────────────────────────────────────────
-        const ValueDeclAST* decl = ctx.lookupValueRaw(targetName);
+        const ValueDeclAST* decl = ctx.lookupValue(targetName);
         if (!decl) {
             ctx.diagnostics.error(DiagCode::Sem_UndefinedValue, target,
                                   "undefined variable '", ctx.pool.lookup(targetName), "'");
@@ -1223,7 +1223,7 @@ bool resolveJoinStmt(const JoinStmtAST* stmt, SemaContext& ctx) {
         InternedString targetName = id->name;
 
         // ─── Look up the variable ──────────────────────────────────────────
-        const ValueDeclAST* decl = ctx.lookupValueRaw(targetName);
+        const ValueDeclAST* decl = ctx.lookupValue(targetName);
         if (!decl) {
             ctx.diagnostics.error(DiagCode::Sem_UndefinedValue, target,
                                   "undefined variable '", ctx.pool.lookup(targetName), "'");

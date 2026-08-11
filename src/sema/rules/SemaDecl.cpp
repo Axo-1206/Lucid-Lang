@@ -245,19 +245,29 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
                               "' does not return a value on all paths");
     }
 
-    // ─── 11. Pop function context ────────────────────────────────────────────
-    ctx.stack.pop();
-
-    // ─── 12. CAPTURE ANALYSIS for nested functions ──────────────────────────
+    // ─── 11. CAPTURE ANALYSIS for nested functions ──────────────────────────
     // Only nested functions (closureDepth > 0) can capture variables.
     // Top-level functions cannot capture anything.
-    // The context stack still has the function frame, so getClosureDepth()
-    // returns the correct depth.
+    // Runs BEFORE the pop below, so the context stack still has this
+    // function's own frame — getClosureDepth() (used only for the entry
+    // gate and logging) reflects this function's true depth, and
+    // ctx.stack.currentFunction()/getInnermostFunctionNode(), if anything
+    // downstream ever calls them during capture analysis, correctly
+    // identify this function rather than the enclosing one. (Correctness
+    // of the *captured-variable set itself* doesn't depend on this
+    // ordering — CaptureAnalyzer tracks its own params/locals independently
+    // of the context stack, see CaptureAnalysis.cpp — but the depth and
+    // current-function queries do, so the ordering is still worth getting
+    // right rather than leaving the comment describing behavior the code
+    // didn't actually have.)
     if (ctx.getClosureDepth() > 0) {
         LOG_SEMA("resolveFuncDecl: analyzing captures for nested function '",
                  ctx.pool.lookup(decl->name), "' at depth ", ctx.getClosureDepth());
         analyzeCaptures(const_cast<FuncDeclAST*>(decl), ctx);
     }
+
+    // ─── 12. Pop function context ────────────────────────────────────────────
+    ctx.stack.pop();
 
     // ─── 13. Pop scope ──────────────────────────────────────────────────────────
     ctx.popScope();

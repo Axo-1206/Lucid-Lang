@@ -5,6 +5,7 @@
 #include "SemaCompare.hpp"
 #include "SemaResolve.hpp"
 #include "../context/SemaContext.hpp"
+#include "core/ast/TypeAST.hpp"
 #include "debug/DebugUtils.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
 
@@ -494,7 +495,7 @@ bool validateForeignFunction(const FuncDeclAST* decl,
     }
 
     // ─── 3. Validate parameter types ─────────────────────────────────────────
-    const FuncTypeAST* funcType = decl->funcType;
+    const FuncTypeAST* funcType = decl->type->as<FuncTypeAST>();
     if (!funcType) {
         ctx.diagnostics.error(DiagCode::Sem_InvalidReturnType, decl,
                               "foreign function '", ctx.pool.lookup(decl->name),

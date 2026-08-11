@@ -20,12 +20,13 @@
 /// // Narrow a variable from Future<T> to T
 /// ctx.stack.narrowVariable(targetName, innerType);
 ///
-/// // Look up a variable (checks narrowing stack first)
+/// // Look up a variable's declaration (never narrowed — decl->type is
+/// // always the parser-written type, immutable, no inference)
 /// const ValueDeclAST* decl = ctx.lookupValue(name);
-/// const TypeAST* narrowed = ctx.stack.getNarrowedType(name);
-/// if (narrowed) {
-///     // Use narrowed type
-/// }
+///
+/// // Get the type that actually applies at this point in control flow
+/// // (narrowed type if narrowing is active, decl->type otherwise)
+/// const TypeAST* effective = ctx.getEffectiveType(decl, name);
 /// ```
 ///
 /// ## 3. Return Type Validation
@@ -81,7 +82,7 @@
 ///
 /// if x != nil {           ← 1. Condition analyzed
 ///     // x is int         ← 2. Direct narrowing applied
-///     use(x)              ← 3. lookupValue() returns narrowed type
+///     use(x)              ← 3. getEffectiveType() returns the narrowed type
 /// } else {
 ///     // x is nil         ← 4. Inverse narrowing in else branch
 ///     handleNil()
@@ -90,7 +91,7 @@
 ///
 /// if x == nil { return }  ← 6. Standalone if with early exit
 /// // x is int             ← 7. Pending inverse narrowing applied to block
-/// use(x)                  ← 8. lookupValue() returns narrowed type
+/// use(x)                  ← 8. getEffectiveType() returns the narrowed type
 /// ```
 ///
 /// # The Narrowing Stack Structure
@@ -391,11 +392,9 @@ struct TypeCache {
 /// ```
 /// lookupValue(name)
 ///   │
-///   ├─► Check narrowing stack (getNarrowedType)
-///   │    └─► If found, return narrowed type
-///   │
 ///   ├─► Check local scopes (innermost to outermost)
-///   │    └─► If found, return declaration
+///   │    └─► If found, return declaration (decl->type is always the
+///   │        parser-written type — never mutated, never narrowed here)
 ///   │
 ///   ├─► Check module table (current module)
 ///   │    └─► If found, return declaration
@@ -403,8 +402,16 @@ struct TypeCache {
 ///   └─► Check import aliases (via lookupImport)
 ///        └─► If found, return declaration from imported module
 ///
-/// Note: lookupType() follows the same pattern but searches the
-///       type namespace instead of the value namespace.
+/// getEffectiveType(decl, name)   ← call this separately when the
+///   │                              currently-applicable type is needed
+///   ├─► Check narrowing stack (getNarrowedType)
+///   │    └─► If found, return the narrowed type
+///   │
+///   └─► Otherwise, return decl->type
+///
+/// Note: lookupType() follows lookupValue's pattern but searches the
+///       type namespace instead of the value namespace. Narrowing never
+///       applies to lookupType() — only value bindings narrow.
 /// ```
 ///
 /// ## Usage Example
@@ -429,8 +436,9 @@ struct TypeCache {
 ///     TypeAST* valueType = resolveExprWithTarget(returnValue, expected, ctx);
 /// }
 ///
-/// // Look up a variable (checks narrowing stack first)
+/// // Look up a variable's declaration, then its currently-applicable type
 /// const ValueDeclAST* decl = ctx.lookupValue(name);
+/// const TypeAST* effective = ctx.getEffectiveType(decl, name);
 /// ```
 struct SemaContext {
     // ─── Resources ──────────────────────────────────────────────────────
@@ -637,7 +645,10 @@ struct SemaContext {
             return narrowedType;
         }
         
-        // Use resolvedType (set by Sema) instead of raw type field
+        // decl->type is the single source of truth for a declaration's type:
+        // parser-locked, immutable, no inference — see ValueDeclAST in
+        // DeclAST.hpp. Narrowing never mutates it; narrowing lives entirely
+        // in the ContextStack's separate narrowing stack, checked above.
         return decl->type;
     }
     
@@ -655,21 +666,17 @@ struct SemaContext {
         return lookupGenericParam(name) != nullptr;
     }
     
+    /// Looks up a value declaration by name: local scopes (innermost to
+    /// outermost), then the current module's table, then module-level
+    /// values. Returns the raw declaration, unmodified — decl->type is
+    /// always the parser-written type as declared, this function never
+    /// mutates it. Callers that need the *currently applicable* type
+    /// (accounting for narrowing, e.g. T? narrowed to T, or Future<T>
+    /// narrowed to T after await) must call getEffectiveType(decl, name)
+    /// separately, above — narrowing is tracked entirely on the
+    /// ContextStack's narrowing stack, never by writing back into the
+    /// declaration itself.
     const ValueDeclAST* lookupValue(InternedString name) const {
-        const ValueDeclAST* decl = lookupValueRaw(name);
-        if (!decl) return nullptr;
-        
-        const TypeAST* narrowedType = stack.getNarrowedType(name);
-        if (narrowedType) {
-            // Update the resolved type to the narrowed type
-            const_cast<ValueDeclAST*>(decl)->type = const_cast<TypeAST*>(narrowedType);
-            return decl;
-        }
-        
-        return decl;
-    }
-    
-    const ValueDeclAST* lookupValueRaw(InternedString name) const {
         for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
             auto found = it->values.find(name);
             if (found != it->values.end()) {
