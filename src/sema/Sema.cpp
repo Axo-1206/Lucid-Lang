@@ -66,7 +66,7 @@ void analyze(std::vector<ModuleAST*>& modules, SemaContext& ctx) {
 ///
 /// @param module The module to register names from.
 /// @param ctx The semantic context.
-void registerTopLevelNames(ModuleAST* module, SemaContext& ctx) {
+void registerTopLevelNames(const ModuleAST* module, SemaContext& ctx) {
     if (!module) return;
 
     for (const DeclPtr decl : module->decls) {
@@ -97,7 +97,7 @@ void registerTopLevelNames(ModuleAST* module, SemaContext& ctx) {
 ///
 /// @param decl The declaration to register.
 /// @param ctx The semantic context.
-void registerDeclName(const DeclAST* decl, SemaContext& ctx) {
+void registerDeclName(DeclAST* decl, SemaContext& ctx) {
     if (!decl) return;
 
     switch (decl->kind) {
@@ -164,7 +164,7 @@ void resolveModuleDecls(ModuleAST* module, SemaContext& ctx) {
 ///
 /// @note Top-level declarations are already registered in Phase 1.
 ///       Only nested declarations are registered here.
-void resolveDecl(const DeclAST* decl, SemaContext& ctx) {
+void resolveDecl(DeclAST* decl, SemaContext& ctx) {
     if (!decl) return;
 
     // ─── PHASE 2 REGISTRATION: Nested declarations only ──────────────────

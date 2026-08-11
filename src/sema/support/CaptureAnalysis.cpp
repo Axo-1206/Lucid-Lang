@@ -643,7 +643,7 @@ void analyzeCaptures(FuncDeclAST* func, SemaContext& ctx) {
     
     // ─── Step 1: Collect the function's own parameters ──────────────────────
     if (func->type) {
-        for (const FuncTypeAST* group = func->type->as<FuncTypeAST>(); group; group = group->getNext()) {
+        for (const FuncTypeAST* group = func->funcType; group; group = group->getNext()) {
             for (const ParamAST* param : group->params) {
                 analyzer.ownParams.insert(param->name);
             }

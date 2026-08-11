@@ -168,7 +168,7 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
     }
 
     // ─── 3. Resolve function type ─────────────────────────────────────────────
-    const FuncTypeAST* funcType = decl->type->as<FuncTypeAST>();
+    const FuncTypeAST* funcType = decl->funcType;
     if (!resolveFuncType(funcType, ctx)) {
         return;
     }

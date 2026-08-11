@@ -218,6 +218,7 @@ struct FuncDeclAST : ValueDeclAST {
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
     const ArenaSpan<GenericParamDeclPtr> genericParams;
+    const FuncTypeAST* funcType = nullptr;
     const StmtAST* body;
     
     // ─── Semantic Fields (set by Sema) ────────────────────────────────
@@ -241,6 +242,7 @@ struct FuncDeclAST : ValueDeclAST {
                 ArenaSpan<GenericParamDeclPtr> params,
                 const FuncTypeAST* ft, const StmtAST* b)
         : ValueDeclAST(ASTKind::FuncDecl, n, kw, ft)
+        , funcType(ft)
         , genericParams(params)
         , body(b) {}
 };
