@@ -613,9 +613,38 @@ lucid/
     │       └── IntrinsicEmitter.cpp             # All intrinsic implementations
     │
     ├── interpreter/                    # ORC JIT backend (lucid run)
-    │   ├── Interpreter.hpp/cpp         # Main interpreter engine
-    │   ├── JIT.hpp/cpp                 # LLVM ORC JIT session
-    │   └── DynLink.hpp/cpp             # dlopen/LoadLibrary
+    │   ├── Interpreter.hpp              # Public API - single entry point
+    │   ├── Interpreter.cpp              # Orchestration logic
+    │   │
+    │   ├── core/
+    │   │   ├── InterpreterContext.hpp   # Context holding all state
+    │   │   ├── InterpreterContext.cpp
+    │   │   ├── ModuleRegistry.hpp       # Tracks loaded modules
+    │   │   └── ModuleRegistry.cpp
+    │   │
+    │   ├── execution/
+    │   │   ├── ModuleLoader.hpp         # Loads modules into JIT
+    │   │   ├── ModuleLoader.cpp
+    │   │   ├── SymbolResolver.hpp       # Finds and resolves symbols
+    │   │   └── SymbolResolver.cpp
+    │   │
+    │   ├── jit/
+    │   │   ├── JITSession.hpp           # LLVM ORC JIT wrapper
+    │   │   ├── JITSession.cpp
+    │   │   ├── JITCompiler.hpp          # Compiles IR modules
+    │   │   └── JITCompiler.cpp
+    │   │
+    │   ├── dynlink/
+    │   │   ├── DynamicLinker.hpp        # Platform-agnostic library loader
+    │   │   ├── DynamicLinker.cpp
+    │   │   ├── LibraryHandle.hpp        # RAII wrapper for dlopen/LoadLibrary
+    │   │   └── LibraryHandle.cpp
+    │   │
+    │   └── support/
+    │       ├── InterpreterOptions.hpp   # Configuration options
+    │       ├── InterpreterError.hpp     # Error types
+    │       ├── ExecutionResult.hpp      # Result of execution
+    │       └── PanicHandler.hpp         # Runtime panic handling
     │
     ├── compiler/                       # AOT backend (lucid build)
     │   └── aot/                        # AOT-only backend

@@ -844,7 +844,7 @@ static llvm::Value* emitTypeIntrinsic(
             if (targetType) {
                 llvm::Type* llvmType = getType(ctx, targetType);
                 if (llvmType) {
-                    uint64_t alignment = ctx.module->getDataLayout().getABITypeAlignment(llvmType);
+                    uint64_t alignment = ctx.module->getDataLayout().getABITypeAlign(llvmType).value();
                     return llvm::ConstantInt::get(
                         llvm::Type::getInt64Ty(ctx.llvmCtx),
                         alignment
