@@ -123,6 +123,17 @@ void lowerDeclaration(DeclAST* decl, CodeGenContext& ctx);
 /// @param ctx The code generation context.
 void lowerFunctionDecl(FuncDeclAST* decl, CodeGenContext& ctx);
 
+/// @brief Internal function to lower a function body.
+///
+/// This is called for non-generic functions and for type-erased generic
+/// functions. It creates the entry block, lowers parameters, and generates
+/// the function body.
+///
+/// @param decl The function declaration.
+/// @param func The LLVM function to generate the body for.
+/// @param ctx The code generation context.
+void lowerFunctionBodyInternal(FuncDeclAST* decl, llvm::Function* func, CodeGenContext& ctx);
+
 /// @brief Lower a function body (second pass).
 ///
 /// Generates IR for the function's body and verifies it.

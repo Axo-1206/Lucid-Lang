@@ -598,7 +598,8 @@ lucid/
     │   ├── CodeGenDecl.cpp                      # Declaration lowering
     │   ├── CodeGenStmt.cpp                      # Statement lowering
     │   ├── CodeGenExpr.cpp                      # Expression lowering
-    │   ├── CodeGenClosure.cpp                   # Closure lowering (stub)
+    │   ├── CodeGenClosure.cpp                   # Closure lowering
+    │   ├── CodeGenGeneric.cpp                   # Generic lowering (integrated with @[specialize] attribute)
     │   │
     │   ├── context/
     │   │   └── CodeGenContext.hpp               # LLVM state (module, builder, caches, symbols)

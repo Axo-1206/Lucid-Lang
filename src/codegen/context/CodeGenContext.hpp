@@ -16,6 +16,41 @@
 
 namespace codegen {
 
+// ─── Forward declarations ──────────────────────────────────────────────────
+
+/// @brief A key for identifying a generic instantiation.
+struct GenericInstantiationKey {
+    const DeclAST* decl;                    // The generic declaration
+    std::vector<const TypeAST*> typeArgs;   // Concrete type arguments
+    
+    bool operator==(const GenericInstantiationKey& other) const;
+};
+
+/// @brief Hash for GenericInstantiationKey.
+struct GenericInstantiationKeyHash {
+    size_t operator()(const GenericInstantiationKey& key) const;
+};
+
+/// @brief Registry of all generic instantiations in a module.
+/// 
+/// This is a CACHE, not a global registry. It tracks which specialized
+/// versions we've already generated so we don't generate them twice.
+struct GenericRegistry {
+    // ─── Function Instantiations ──────────────────────────────────────────
+    // Generic function → (type args → specialized function)
+    std::unordered_map<
+        const FuncDeclAST*,
+        std::unordered_map<GenericInstantiationKey, llvm::Function*, GenericInstantiationKeyHash>
+    > functionInstantiations;
+    
+    // ─── Struct Instantiations ─────────────────────────────────────────────
+    // Generic struct → (type args → specialized struct type)
+    std::unordered_map<
+        const StructDeclAST*,
+        std::unordered_map<GenericInstantiationKey, llvm::Type*, GenericInstantiationKeyHash>
+    > structInstantiations;
+};
+
 /// @brief Code generation context - LLVM state only.
 struct CodeGenContext {
     // ─── Resources ──────────────────────────────────────────────────────
@@ -45,6 +80,10 @@ struct CodeGenContext {
     // ─── Runtime Function Mapping ──────────────────────────────────────
     
     std::unordered_map<std::string, llvm::Function*> runtimeFunctions;
+    
+    // ─── Generic Registry ──────────────────────────────────────────────
+    
+    GenericRegistry genericRegistry;
     
     // ─── Loop Info (for break/continue) ─────────────────────────────────
     
