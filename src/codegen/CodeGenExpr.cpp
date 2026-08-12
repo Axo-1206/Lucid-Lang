@@ -916,9 +916,37 @@ llvm::Value* lowerPipelineStep(PipelineStepAST* step, CodeGenContext& ctx) {
         args.push_back(argVal);
     }
 
-    // Create the call
+    // ─── Get the function type from the callable ──────────────────────
+    // For a function pointer, we need to know its signature.
+    // For now, we'll use a generic approach.
+    // In practice, the callable should have a known function type.
+    
+    // Build a function type based on the argument types
+    std::vector<llvm::Type*> paramTypes;
+    for (llvm::Value* arg : args) {
+        paramTypes.push_back(arg->getType());
+    }
+    
+    // Determine return type - assume it's the first argument's type or void
+    llvm::Type* returnType = args.empty() ? llvm::Type::getVoidTy(ctx.llvmCtx) : args[0]->getType();
+    
+    llvm::FunctionType* fnType = llvm::FunctionType::get(
+        returnType,
+        paramTypes,
+        false
+    );
+    
+    // ─── Cast callable to the function pointer type ───────────────────
+    llvm::Value* typedFunc = ctx.builder.CreatePointerCast(
+        callable,
+        llvm::PointerType::get(fnType, 0),
+        "pipeline_func_cast"
+    );
+
+    // ─── Create the call ──────────────────────────────────────────────────
     llvm::Value* result = ctx.builder.CreateCall(
-        llvm::dyn_cast<llvm::Function>(callable),
+        fnType,
+        typedFunc,
         args,
         "pipeline_call"
     );

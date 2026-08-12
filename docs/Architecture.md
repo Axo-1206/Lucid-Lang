@@ -552,7 +552,7 @@ lucid/
     │       ├── TokenStream.hpp/cpp         # Track stream of tokens when parsing a file
     │       └── ParserContext.hpp           # sync points for error recovery
     │
-    ├── src/sema/
+    ├── sema/
     │   ├── Sema.hpp                        # Public API (namespace sema)
     │   ├── Sema.cpp                        # Public API implementation
     │   │
@@ -591,17 +591,24 @@ lucid/
     │       └── TypeNarrowHelpers.hpp/cpp
     │
     ├── codegen/
-    │   ├── CodeGen.hpp                 # Public API
-    │   ├── CodeGen.cpp                 # Orchestrator
+    │   ├── CodeGen.hpp                          # Public API
+    │   ├── CodeGen.cpp                          # Orchestrator
+    │   ├── CodeGenType.hpp/cpp                  # Lucid → LLVM type mapping
+    │   ├── CodeGenDecl.cpp                      # Declaration lowering
+    │   ├── CodeGenStmt.cpp                      # Statement lowering
+    │   ├── CodeGenExpr.cpp                      # Expression lowering
+    │   ├── CodeGenClosure.cpp                   # Closure lowering (stub)
     │   │
-    │   ├── context/                        # Context components     
-    │   │   └── CodeGenContext.hpp/cpp      # Simple context (stack + type mapping)
+    │   ├── context/
+    │   │   └── CodeGenContext.hpp               # LLVM state (module, builder, caches, symbols)
     │   │
-    │   ├── CodeGenDecl.cpp             # Declaration lowering (functions, vars, structs, enums)
-    │   ├── CodeGenStmt.cpp             # Statement lowering (if, for, while, return, block)
-    │   ├── CodeGenExpr.cpp             # Expression lowering (literals, binary, calls, intrinsics)
-    │   ├── CodeGenClosure.cpp          # Closure lowering (capture analysis, environment, calls)
-    │   └── CodeGenType.hpp/cpp         # Type mapping (Lucid → LLVM)
+    │   ├── support/
+    │   │   ├── CodeGenHelpers.hpp/cpp           # Allocas, blocks, loads, panic
+    │   │   └── CodeGenHelpers.cpp
+    │   │
+    │   └── intrinsic/
+    │       ├── IntrinsicEmitter.hpp             # Intrinsic emission API
+    │       └── IntrinsicEmitter.cpp             # All intrinsic implementations
     │
     ├── interpreter/                    # ORC JIT backend (lucid run)
     │   ├── Interpreter.hpp/cpp         # Main interpreter engine
