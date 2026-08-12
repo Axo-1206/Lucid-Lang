@@ -12,8 +12,6 @@
 #include <string_view>
 #include <vector>
 
-namespace sema {
-
 /// @brief Information about a registered intrinsic.
 struct IntrinsicInfo {
     llvm::Intrinsic::ID llvmID;
@@ -83,4 +81,27 @@ private:
     bool m_initialized = false;
 };
 
-} // namespace sema
+// ─── Void Intrinsics Registry ─────────────────────────────────────────────
+
+static const std::unordered_set<std::string> VOID_INTRINSICS = {
+    // Memory Operations - no return value
+    "memcpy", "memmove", "memset",
+    
+    // Memory Management - no return value (free operations)
+    "free", "arena_free", "arena_reset",
+    
+    // Synchronization - no return value
+    "fence",
+    
+    // CPU Hints - no return value
+    "pause", "prefetch", "prefetch_r", "prefetch_w",
+    
+    // Scope Exit - no return value
+    "scope_exit",
+    
+    // SIMD Store - no return value
+    "simd_store",
+    
+    // Atomic Store - no return value
+    "atomic_store",
+};

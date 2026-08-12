@@ -5,8 +5,6 @@
 #include "core/memory/StringPool.hpp"
 #include <algorithm>
 
-namespace sema {
-
 // ─── Data Table ─────────────────────────────────────────────────────────────
 
 // AttributeEntry is defined at namespace scope in AttributeRegistry.hpp
@@ -134,5 +132,3 @@ std::vector<std::string> AttributeRegistry::getAllNamesAsStrings() const {
     std::sort(names.begin(), names.end());
     return names;
 }
-
-} // namespace sema

@@ -11,8 +11,6 @@
 #include <string_view>
 #include <vector>
 
-namespace sema {
-
 /// @brief Information about a registered attribute.
 struct AttributeInfo {
     InternedString name;
@@ -74,5 +72,3 @@ private:
     StringPool& m_pool;
     std::unordered_map<InternedString, AttributeInfo> m_attributes;
 };
-
-} // namespace sema

@@ -980,7 +980,7 @@ bool resolveAsyncStmt(const AsyncStmtAST* stmt, SemaContext& ctx) {
 
     // ─── Register the binding in the current scope ──────────────────────────
     // The binding already has its type in `binding->type` (the FutureTypeAST).
-    // We don't need to store `semanticType` anywhere.
+    // We don't need to store `resolvedType` anywhere.
     if (!ctx.insertValue(stmt->binding)) {
         return false;
     }

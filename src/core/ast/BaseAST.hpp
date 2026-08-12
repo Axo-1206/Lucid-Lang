@@ -21,7 +21,7 @@
 /// | Category        | Mutability          | Set By  | Examples                                    |
 /// | --------------- | ------------------- | ------- | ------------------------------------------- |
 /// | Parser Fields   | `const` (immutable) | Parser  | `name`, `type`, `init`, `body`              |
-/// | Semantic Fields | `mutable`           | Sema    | `semanticType`, `constValue`, `isLValue`    |
+/// | Semantic Fields | `mutable`           | Sema    | `resolvedType`, `constValue`, `isLValue`    |
 /// | Layout Fields   | `mutable`           | Sema    | `fieldIndex`, `byteOffset`, `totalSize`     |
 /// | CodeGen Fields  | `mutable`           | CodeGen | `llvmValue`, `llvmFunction`, `llvmAlloca`   |
 /// 
@@ -373,7 +373,7 @@ struct TypeAST : BaseAST {
 //         Reflects the result's nullability/fallibility state (Definite, Nil,
 //         Err, Unknown, None). Helps with flow‑sensitive narrowing.
 //
-//   - `semanticType` : TypeAST*
+//   - `resolvedType` : TypeAST*
 //         The semantic type of the expression, set during type resolution.
 //         For constants, this is the type of the evaluated value.
 //
@@ -644,7 +644,7 @@ struct ExprAST : BaseAST {
     // ─── Parser Fields ──────────────────────────────────────────────────
     
     // ─── Semantic Fields (set by Sema) ────────────────────────────────
-    TypeAST* semanticType = nullptr;        // The resolved type of this expression
+    TypeAST* resolvedType = nullptr;        // The resolved type of this expression
     ConstantValue constValue;               // Evaluated constant value (for const expressions)
     ValueState valueState = ValueState::Unknown;  // Nil/Err/Definite/Unknown
     bool isLValue = false;                  // Can this appear on LHS of assignment?
@@ -655,7 +655,7 @@ struct ExprAST : BaseAST {
     llvm::Value* llvmValue = nullptr;       // The generated LLVM value
 
     explicit ExprAST(ASTKind k) : BaseAST(k) {}
-    bool hasType() const { return semanticType != nullptr; }
+    bool hasType() const { return resolvedType != nullptr; }
     
     // Convenience methods
     bool isNone() const { return valueState == ValueState::None; }
@@ -729,7 +729,7 @@ enum class DeclKeyword {
 /// For enum variants, the keyword is always `Const` (they are immutable constants).
 /// 
 /// ─── Type Resolution ─────────────────────────────────────────────────────────
-/// The `semanticType` field stores the fully resolved type of this declaration.
+/// The `resolvedType` field stores the fully resolved type of this declaration.
 /// This is set during semantic analysis (Phase 2) and is used by expression
 /// resolvers when an identifier references this declaration.
 /// 

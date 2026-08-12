@@ -132,7 +132,7 @@ struct LiteralExprAST : ExprAST {
 /// 
 /// The array kind (fixed/slice/dynamic) is inferred from the declared type
 /// of the variable being initialised – the literal itself is kind-neutral.
-/// The semantic pass sets semanticType after inference.
+/// The semantic pass sets resolvedType after inference.
 struct ArrayLiteralExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::ArrayLiteralExpr;
 

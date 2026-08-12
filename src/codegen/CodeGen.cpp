@@ -157,31 +157,4 @@ llvm::Value* emitClosureCall(
     return nullptr;
 }
 
-// =============================================================================
-// Helpers (Stubs - Implemented in CodeGenHelpers.cpp)
-// =============================================================================
-
-llvm::Value* loadIfNeeded(llvm::Value* value, bool isLValue, CodeGenContext& ctx) {
-    // Implemented in CodeGenHelpers.cpp
-    return value;
-}
-
-llvm::AllocaInst* createAlloca(
-    const std::string& name,
-    llvm::Type* type,
-    CodeGenContext& ctx
-) {
-    // Implemented in CodeGenHelpers.cpp
-    return nullptr;
-}
-
-llvm::BasicBlock* createBlock(const std::string& name, CodeGenContext& ctx) {
-    // Implemented in CodeGenHelpers.cpp
-    return nullptr;
-}
-
-void emitPanic(const std::string& message, CodeGenContext& ctx) {
-    // Implemented in CodeGenHelpers.cpp
-}
-
 } // namespace codegen

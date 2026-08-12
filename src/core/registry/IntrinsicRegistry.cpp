@@ -5,8 +5,6 @@
 #include "core/memory/StringPool.hpp"
 #include <algorithm>
 
-namespace sema {
-
 // ─── Data Table ─────────────────────────────────────────────────────────────
 
 // IntrinsicEntry is defined at namespace scope in IntrinsicRegistry.hpp
@@ -230,5 +228,3 @@ std::vector<std::string> IntrinsicRegistry::getCompilerIntrinsicNames() const {
     std::sort(names.begin(), names.end());
     return names;
 }
-
-} // namespace sema

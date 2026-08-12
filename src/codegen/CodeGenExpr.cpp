@@ -109,7 +109,7 @@ llvm::Value* lowerExpression(ExprAST* expr, CodeGenContext& ctx) {
 llvm::Value* lowerLiteralExpr(LiteralExprAST* expr, CodeGenContext& ctx) {
     if (!expr) return nullptr;
 
-    llvm::Type* type = getType(ctx, expr->semanticType);
+    llvm::Type* type = getType(ctx, expr->resolvedType);
     if (!type) {
         ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, expr->loc,
                                 "literal has no type");
@@ -236,7 +236,7 @@ llvm::Value* lowerIdentifierExpr(IdentifierExprAST* expr, CodeGenContext& ctx) {
     }
 
     // Get the LLVM type from the semantic type
-    llvm::Type* llvmType = getType(ctx, expr->semanticType);
+    llvm::Type* llvmType = getType(ctx, expr->resolvedType);
     if (!llvmType) {
         ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedValue, expr->loc,
                                 "identifier '", ctx.pool.lookup(expr->name), "' has no type");
@@ -258,7 +258,7 @@ llvm::Value* lowerIdentifierExpr(IdentifierExprAST* expr, CodeGenContext& ctx) {
 llvm::Value* lowerArrayLiteralExpr(ArrayLiteralExprAST* expr, CodeGenContext& ctx) {
     if (!expr) return nullptr;
 
-    llvm::Type* arrayType = getType(ctx, expr->semanticType);
+    llvm::Type* arrayType = getType(ctx, expr->resolvedType);
     if (!arrayType) {
         ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, expr->loc,
                                 "array literal has no type");
@@ -278,7 +278,7 @@ llvm::Value* lowerArrayLiteralExpr(ArrayLiteralExprAST* expr, CodeGenContext& ct
         elements.push_back(elemValue);
     }
 
-    const ArrayTypeAST* arrayTypeAST = expr->semanticType->as<ArrayTypeAST>();
+    const ArrayTypeAST* arrayTypeAST = expr->resolvedType->as<ArrayTypeAST>();
 
     if (arrayTypeAST->isFixed()) {
         // Fixed array: create a constant array
@@ -632,7 +632,7 @@ llvm::Value* lowerIndexExpr(IndexExprAST* expr, CodeGenContext& ctx) {
         if (!index) return nullptr;
     }
 
-    const ArrayTypeAST* arrayType = expr->target->semanticType->as<ArrayTypeAST>();
+    const ArrayTypeAST* arrayType = expr->target->resolvedType->as<ArrayTypeAST>();
     if (!arrayType) {
         ctx.diagnostics.errorAt(DiagCode::Sem_InvalidArrayElement, expr->target->loc,
                                 "target is not an array type");
@@ -731,7 +731,7 @@ llvm::Value* lowerNullCoalesceExpr(NullCoalesceExprAST* expr, CodeGenContext& ct
         return nullptr;
     }
 
-    const TypeAST* lhsType = expr->value->semanticType;
+    const TypeAST* lhsType = expr->value->resolvedType;
     if (!lhsType) {
         ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, expr->value->loc,
                                 "LHS has no type");

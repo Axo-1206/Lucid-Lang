@@ -43,7 +43,7 @@
 /// | Category        | Mutability          | Set By  | Examples                                    |
 /// | --------------- | ------------------- | ------- | ------------------------------------------- |
 /// | Parser Fields   | `const` (immutable) | Parser  | `name`, `type`, `init`, `body`              |
-/// | Semantic Fields | `mutable`           | Sema    | `semanticType`, `mangledName`, `closureDepth` |
+/// | Semantic Fields | `mutable`           | Sema    | `resolvedType`, `mangledName`, `closureDepth` |
 /// | Layout Fields   | `mutable`           | Sema    | `fieldIndex`, `byteOffset`, `totalSize`     |
 /// | CodeGen Fields  | `mutable`           | CodeGen | `llvmFunction`, `llvmType`, `llvmAlloca`    |
 /// 

@@ -228,7 +228,7 @@ void lowerSwitchStmt(SwitchStmtAST* stmt, CodeGenContext& ctx) {
     }
 
     // ─── Get the subject type ────────────────────────────────────────────
-    const TypeAST* subjectType = stmt->subject->semanticType;
+    const TypeAST* subjectType = stmt->subject->resolvedType;
     if (!subjectType) {
         ctx.diagnostics.errorAt(DiagCode::Sem_InvalidSwitchType, stmt->subject->loc,
                                 "switch subject has no type");
@@ -674,7 +674,7 @@ void lowerReturnStmt(ReturnStmtAST* stmt, CodeGenContext& ctx) {
                                         "return type mismatch: expected ",
                                         debug::typeToString(func->getReturnType(), ctx.pool),
                                         " got ",
-                                        debug::typeToString(stmt->value->semanticType, ctx.pool));
+                                        debug::typeToString(stmt->value->resolvedType, ctx.pool));
                 return;
             }
         }

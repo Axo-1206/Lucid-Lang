@@ -342,7 +342,7 @@ void resolveEnumDecl(EnumDeclAST* decl, SemaContext& ctx) {
     }
 
     // ─── 2. Validate enum variants ──────────────────────────────────────────
-    // Note: EnumVariantAST doesn't have a semanticType field because variants
+    // Note: EnumVariantAST doesn't have a resolvedType field because variants
     // are values of the enum type. The enum type itself is the type.
     for (EnumVariantAST* variant : decl->variants) {
         validateAllAttributes(variant, ctx);

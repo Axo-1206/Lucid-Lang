@@ -1,5 +1,5 @@
 /// @file CodeGenHelpers.hpp
-/// @brief Helper functions for code generation - allocas, blocks, loads, panic.
+/// @brief Helper functions for code generation - allocas, blocks, loads, panic, and generics.
 
 #pragma once
 
@@ -8,35 +8,21 @@
 #include <llvm/IR/Value.h>
 #include <llvm/IR/Function.h>
 #include <string>
+#include <vector>
 
 namespace codegen {
 
 // ─── Forward Declaration ──────────────────────────────────────────────────
-// getType is declared in CodeGenType.hpp
-
-/// @brief Get the LLVM type for a Lucid type annotation.
-/// @param ctx The code generation context.
-/// @param type The Lucid type annotation.
-/// @return The LLVM type, or nullptr if the type cannot be mapped.
 llvm::Type* getType(CodeGenContext& ctx, const TypeAST* type);
 
 // ─── Alloca Creation ──────────────────────────────────────────────────────
 
-/// @brief Create an alloca in the current function's entry block.
-/// @param name The variable name.
-/// @param type The LLVM type to allocate.
-/// @param ctx The code generation context.
-/// @return The alloca instruction, or nullptr if no current function.
 llvm::AllocaInst* createAlloca(
     const std::string& name,
     llvm::Type* type,
     CodeGenContext& ctx
 );
 
-/// @brief Create a named basic block in the current function.
-/// @param name The block name.
-/// @param ctx The code generation context.
-/// @return The new basic block, or nullptr if no current function.
 llvm::BasicBlock* createBlock(
     const std::string& name,
     CodeGenContext& ctx
@@ -45,23 +31,14 @@ llvm::BasicBlock* createBlock(
 // ─── Load Helpers ─────────────────────────────────────────────────────────
 
 /// @brief Load a value from a pointer with explicit element type.
-/// @param value The pointer value to load from.
-/// @param elemType The LLVM type of the element to load.
-/// @param ctx The code generation context.
-/// @return The loaded value, or the original if not a pointer.
 llvm::Value* loadIfNeeded(
     llvm::Value* value,
     llvm::Type* elemType,
     CodeGenContext& ctx
 );
 
-/// @brief Convenience overload - attempts to load if isLValue is true.
-/// @note With opaque pointers, the element type cannot be inferred from the pointer.
-///       Prefer the version with explicit elemType.
-/// @param value The value (might be a pointer).
-/// @param isLValue Whether this is an l-value that should be loaded.
-/// @param ctx The code generation context.
-/// @return The loaded value, or the original value.
+/// @brief DEPRECATED: Use the overload with explicit elemType.
+/// With opaque pointers (LLVM 17+), the element type cannot be inferred.
 llvm::Value* loadIfNeeded(
     llvm::Value* value,
     bool isLValue,
@@ -70,21 +47,19 @@ llvm::Value* loadIfNeeded(
 
 // ─── Panic ─────────────────────────────────────────────────────────────────
 
-/// @brief Emit a runtime panic call.
-/// @param message The panic message.
-/// @param ctx The code generation context.
-/// @note This creates an unreachable instruction after the panic call.
 void emitPanic(
+    const std::string& message,
+    CodeGenContext& ctx
+);
+
+llvm::Value* emitNullCheck(
+    llvm::Value* ptr,
     const std::string& message,
     CodeGenContext& ctx
 );
 
 // ─── Type Helpers ─────────────────────────────────────────────────────────
 
-/// @brief Get the LLVM type for a declaration's type.
-/// @param decl The declaration.
-/// @param ctx The code generation context.
-/// @return The LLVM type, or nullptr on error.
 llvm::Type* getDeclType(
     const ValueDeclAST* decl,
     CodeGenContext& ctx
@@ -92,12 +67,48 @@ llvm::Type* getDeclType(
 
 // ─── Name Helpers ─────────────────────────────────────────────────────────
 
-/// @brief Get a mangled name for a declaration.
-/// @param decl The declaration.
-/// @param ctx The code generation context.
-/// @return The mangled name string.
+/// @brief Get a mangled name for a function declaration.
 std::string getMangledName(
     const FuncDeclAST* decl,
+    CodeGenContext& ctx
+);
+
+/// @brief Get a mangled name for a generic function instantiation.
+std::string getMangledName(
+    const FuncDeclAST* decl,
+    const std::vector<const TypeAST*>& typeArgs,
+    CodeGenContext& ctx
+);
+
+/// @brief Get a mangled name for a generic struct instantiation.
+std::string getMangledName(
+    const StructDeclAST* decl,
+    const std::vector<const TypeAST*>& typeArgs,
+    CodeGenContext& ctx
+);
+
+// ─── Generic Helper Functions ────────────────────────────────────────────
+
+/// @brief Check if a function has generic parameters.
+bool isGenericFunction(const FuncDeclAST* decl);
+
+/// @brief Check if a struct has generic parameters.
+bool isGenericStruct(const StructDeclAST* decl);
+
+/// @brief Check if a declaration should be specialized (user requested via @[specialize]).
+bool shouldSpecialize(const DeclAST* decl);
+
+/// @brief Check if a name matches any generic parameter.
+bool isGenericParameterName(InternedString name, const ArenaSpan<GenericParamDeclPtr>& genericParams);
+
+/// @brief Find the index of a generic parameter by name.
+size_t findGenericParamIndex(InternedString name, const ArenaSpan<GenericParamDeclPtr>& genericParams);
+
+/// @brief Substitute generic parameters in a type.
+const TypeAST* substituteGenericType(
+    const TypeAST* type,
+    const ArenaSpan<GenericParamDeclPtr>& genericParams,
+    const std::vector<const TypeAST*>& typeArgs,
     CodeGenContext& ctx
 );
 
