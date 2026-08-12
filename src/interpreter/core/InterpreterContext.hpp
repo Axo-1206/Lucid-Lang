@@ -1,49 +1,49 @@
 /// @file core/InterpreterContext.hpp
-/// @brief Interpreter context holding all shared state.
+/// @brief Interpreter context holding shared state.
 
 #pragma once
 
-#include "ModuleRegistry.hpp"
-#include "../support/InterpreterOptions.hpp"
-#include "../support/PanicHandler.hpp"
-#include "../dynlink/DynamicLinker.hpp"
-#include "../jit/JITSession.hpp"
-#include "../jit/JITCompiler.hpp"
-
 #include "core/memory/StringPool.hpp"
 #include "core/diagnostics/Diagnostic.hpp"
+#include "core/ast/BaseAST.hpp"
+#include "core/ast/ExprAST.hpp"
+#include "../support/InterpreterOptions.hpp"
+#include "../support/PanicHandler.hpp"
+#include "../jit/JITSession.hpp"
+#include "../dynlink/DynamicLinker.hpp"
 
 namespace interpreter {
 
 /// @brief Central context for the interpreter.
 ///
-/// Holds all shared state and dependencies.
+/// Holds shared state and dependencies, following the same pattern
+/// as SemaContext and CodeGenContext. Contains no behavior - just state.
 struct InterpreterContext {
     // ─── Resources ──────────────────────────────────────────────────────
     StringPool& pool;
     DiagnosticEngine& diagnostics;
 
-    // ─── Components ────────────────────────────────────────────────────
+    // ─── State ─────────────────────────────────────────────────────────
     InterpreterOptions options;
     PanicHandler panicHandler;
     DynamicLinker linker;
     JITSession jit;
-    JITCompiler compiler;
-    ModuleRegistry modules;
 
-    // ─── Constructor ────────────────────────────────────────────────────
-    InterpreterContext(StringPool& p, DiagnosticEngine& d, const InterpreterOptions& opts = {})
-        : pool(p)
-        , diagnostics(d)
-        , options(opts)
-        , jit(p)
-        , compiler(jit)
-        , modules(p) {}
-
-    // ─── State ─────────────────────────────────────────────────────────
-    bool initialized = false;
+    // ─── Module Tracking ──────────────────────────────────────────────
+    // Simple map of module name → AST (just for tracking what's loaded)
+    std::unordered_map<uint32_t, ModuleAST*> loadedModules;
     bool hasActiveModule = false;
     InternedString activeModuleName;
+
+    // ─── Constructor ────────────────────────────────────────────────────
+    InterpreterContext(StringPool& p, DiagnosticEngine& d)
+        : pool(p)
+        , diagnostics(d)
+        , jit(p) {}
+
+    // Non-copyable
+    InterpreterContext(const InterpreterContext&) = delete;
+    InterpreterContext& operator=(const InterpreterContext&) = delete;
 };
 
 } // namespace interpreter

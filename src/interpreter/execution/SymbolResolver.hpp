@@ -1,5 +1,5 @@
 /// @file execution/SymbolResolver.hpp
-/// @brief Resolves symbols and entry points in loaded modules.
+/// @brief Symbol resolution functions - procedural style.
 
 #pragma once
 
@@ -12,42 +12,43 @@
 
 namespace interpreter {
 
-/// @brief Resolves symbols and entry points.
-class SymbolResolver {
-public:
-    explicit SymbolResolver(InterpreterContext& ctx);
-    ~SymbolResolver() = default;
+// ─── Entry Point Resolution ─────────────────────────────────────────────
 
-    /// @brief Find the entry point in loaded modules.
-    /// @param entryPoint The suggested entry point name (e.g., "main").
-    /// @return The found entry point name, or empty if not found.
-    InternedString findEntryPoint(InternedString entryPoint);
+/// @brief Find the entry point in loaded modules.
+/// @param ctx The interpreter context.
+/// @param entryPoint The suggested entry point name (e.g., "main").
+/// @return The found entry point name, or empty if not found.
+InternedString findEntryPoint(InterpreterContext& ctx, InternedString entryPoint);
 
-    /// @brief Find the entry point using a string.
-    InternedString findEntryPoint(const std::string& entryPoint);
+/// @brief Find the entry point using a string.
+/// @param ctx The interpreter context.
+/// @param entryPoint The suggested entry point name.
+/// @return The found entry point name, or empty if not found.
+InternedString findEntryPoint(InterpreterContext& ctx, const std::string& entryPoint);
 
-    /// @brief Check if a function is exported.
-    bool isExported(const FuncDeclAST* func) const;
+/// @brief Check if a function is exported (@[export] attribute).
+/// @param func The function declaration.
+/// @param ctx The interpreter context.
+/// @return true if the function has @[export].
+bool isExported(const FuncDeclAST* func, InterpreterContext& ctx);
 
-    /// @brief Check if a function is an entry point candidate.
-    bool isEntryPointCandidate(const FuncDeclAST* func) const;
+/// @brief Check if a function is an entry point candidate.
+/// @param func The function declaration.
+/// @param ctx The interpreter context.
+/// @return true if the function is a valid entry point.
+bool isEntryPointCandidate(const FuncDeclAST* func, InterpreterContext& ctx);
 
-    /// @brief Get all entry point candidates.
-    std::vector<const FuncDeclAST*> getEntryPointCandidates() const;
+/// @brief Get all entry point candidates from loaded modules.
+/// @param ctx The interpreter context.
+/// @return Vector of candidate function declarations.
+std::vector<const FuncDeclAST*> getEntryPointCandidates(InterpreterContext& ctx);
 
-    /// @brief Look up a symbol by name.
-    /// @param name The symbol name (mangled or unmangled).
-    /// @return Pointer to the symbol, or nullptr if not found.
-    void* lookupSymbol(const std::string& name);
+// ─── Name Mangling ──────────────────────────────────────────────────────
 
-    /// @brief Look up a symbol by InternedString.
-    void* lookupSymbol(InternedString name);
-
-private:
-    InterpreterContext& m_ctx;
-
-    /// @brief Get the mangled name for a function.
-    InternedString getMangledName(const FuncDeclAST* func) const;
-};
+/// @brief Get the mangled name for a function.
+/// @param func The function declaration.
+/// @param ctx The interpreter context.
+/// @return The mangled name (or the original name if not mangled).
+InternedString getMangledName(const FuncDeclAST* func, InterpreterContext& ctx);
 
 } // namespace interpreter
