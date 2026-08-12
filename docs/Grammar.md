@@ -4772,12 +4772,44 @@ attr_arg        = STRING_LIT | INT_LIT | FLOAT_LIT | BOOL_LIT | IDENTIFIER
 | `@[deprecated("msg")]` | any declaration           | Compiler warning at use sites                            |
 | `@[inline]`            | function declaration      | Hint to inline at call sites                             |
 | `@[noinline]`          | function declaration      | Prevent inlining                                         |
+| `@[specialize]`        | generic function/struct   | Force monomorphization instead of type erasure           |
+
 
 **Rules:**
 - `@[foreign]` requires the function body to be empty `{}` — the implementation
   is resolved at link time (compiler) or via dynamic loading (interpreter).
 - Attributes are a **fixed, closed set** — there is no user-defined or
   namespaced attribute form.
+
+`@[specialize]` — Generic Implementation Strategy
+is valid on generic functions and generic structs only.
+
+Meaning: Forces the compiler to use monomorphization (template instantiation)
+for the annotated generic declaration instead of the default type erasure strategy.
+
+By default, Lucid implements generics using type erasure with tagged slots:
+
+```lucid
+-- Default: type erasure
+const identity<T> (v T) -> T = { return v }
+
+-- One function in LLVM IR, works for all types
+-- All values passed as tagged slots { tag, value }
+-- Runtime tag checking for type safety
+```
+
+When `@[specialize]` is applied, the compiler generates a separate copy of the
+function/struct for each concrete type instantiation:
+
+```lucid
+@[specialize]
+const identity<T> (v T) -> T = { return v }
+
+-- User code:
+let a int = identity<int>(5)      -- Generates identity_i32
+let b string = identity<string>("hello")  -- Generates identity_string
+let c float = identity<float>(3.14)  -- Generates identity_float
+```
 
 ### 2. Intrinsics `#`
 

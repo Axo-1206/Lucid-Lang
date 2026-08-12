@@ -560,7 +560,7 @@ lucid/
     │   │   ├── ContextStack.hpp/cpp        
     │   │   └── SemaContext.hpp             # Unified context (composition)
     │   │
-    │   ├── rules/                          # Analysis rules (unchanged)
+    │   ├── rules/                          # Analysis rules
     │   │   ├── SemaDecl.cpp                # const, let, struct, enum, trait, fn, fields, params
     │   │   ├── SemaStmt.cpp                # if, for, while, switch, return, block
     │   │   └── SemaExpr.cpp                # literals, binary/unary, calls, pipeline, compose
@@ -573,7 +573,7 @@ lucid/
     │   │   └── SemaType.hpp                # Main header for 4 .cpp files
     │   │
     │   ├── const_eval/
-    │   │   ├── ConstEvaluator.hpp          # Public interface (unchanged)
+    │   │   ├── ConstEvaluator.hpp          # Public interface
     │   │   ├── ConstEvaluator.cpp          # Main logic: evaluateDecl, evaluate, buildDependencyGraph
     │   │   ├── ConstEvalHelpers.hpp        # Internal helper declarations
     │   │   ├── ConstEvalHelpers.cpp        # Type helpers, error helpers, dependency helpers
@@ -588,6 +588,7 @@ lucid/
     │   └── support/
     │       ├── SwitchHelpers.hpp/cpp
     │       ├── CaptureAnalysis.hpp/cpp
+    │       ├── MangledName.hpp/cpp
     │       └── TypeNarrowHelpers.hpp/cpp
     │
     ├── codegen/
