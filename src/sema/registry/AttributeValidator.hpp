@@ -16,17 +16,6 @@ namespace sema {
 /// @param decl The declaration with attributes to validate.
 /// @param ctx The semantic context.
 /// @return true if all attributes are valid.
-/// 
-/// @note Only declarations that support attributes are:
-///       - FuncDeclAST
-///       - StructDeclAST
-///       - EnumDeclAST
-///       - TraitDeclAST
-///       - VarDeclAST (let/const at module level)
-///       - ImportDeclAST
-/// 
-/// @note Parameters (ParamAST) and fields (FieldDeclAST) do NOT support
-///       attributes - they have no attributes member.
 bool validateAllAttributes(const DeclAST* decl, SemaContext& ctx);
 
 /// @brief Validate a specific attribute on its owner.
@@ -34,9 +23,6 @@ bool validateAllAttributes(const DeclAST* decl, SemaContext& ctx);
 /// @param owner The declaration the attribute is attached to.
 /// @param ctx The semantic context.
 /// @return true if the attribute is valid.
-/// 
-/// @note This is called by validateAllAttributes for each attribute.
-///       It dispatches to the appropriate validator based on attribute name.
 bool validateAttribute(const AttributeAST* attr, const DeclAST* owner, SemaContext& ctx);
 
 // ─── Individual Attribute Validators ──────────────────────────────────────
@@ -67,11 +53,8 @@ bool validateStringArg(const ExprAST* arg, const std::string& argName, SemaConte
 /// @brief Validate attribute argument count.
 bool validateArgCount(const AttributeAST* attr, size_t min, size_t max, SemaContext& ctx);
 
-/// @brief Check if a declaration supports attributes.
-/// @return true if the declaration has an attributes member.
-bool supportsAttributes(const DeclAST* decl);
-
-/// @brief Check if a declaration is at module level.
-bool isAtModuleLevel(const DeclAST* decl, SemaContext& ctx);
+/// @brief Check if a declaration is at module level (top-level).
+/// @note This is different from ctx.isAtModuleLevel() which checks the current scope.
+bool isModuleLevelDeclaration(const DeclAST* decl, SemaContext& ctx);
 
 } // namespace sema

@@ -136,6 +136,9 @@ struct VarDeclAST : ValueDeclAST {
     ExprAST* init;  // Initializer expression (null if none)
                     // we are not using const for this field because
                     // the semantic phase need to evaluate this
+
+    // ─── Semantic Fields (set by Sema) ────────────────────────────────
+    InternedString mangledName;        // Mangled name for AOT compilation
     
     // ─── CodeGen Fields (mutable) ──────────────────────────────────────
     llvm::AllocaInst* llvmAlloca = nullptr;      // Local variable alloca

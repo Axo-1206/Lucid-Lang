@@ -16,15 +16,17 @@
 ///     (Parameters are not needed for Phase 1 name resolution)
 ///   - Generic params: Registered in Phase 1 (registerFuncName) and Phase 2 (resolveGenericParam)
 
+#include "core/ast/DeclAST.hpp"
+#include "core/ast/TypeAST.hpp"
+#include "debug/DebugUtils.hpp"
 #include "../Sema.hpp"
 #include "../context/SemaContext.hpp"
 #include "../const_eval/ConstEvaluator.hpp"
 #include "../support/CaptureAnalysis.hpp"
-#include "core/ast/DeclAST.hpp"
-#include "core/ast/TypeAST.hpp"
-#include "debug/DebugUtils.hpp"
-#include "sema/registry/AttributeValidator.hpp"
-#include "sema/support/CaptureAnalysis.hpp"
+#include "../support/MangledName.hpp"
+#include "../support/CaptureAnalysis.hpp"
+#include "../registry/AttributeValidator.hpp"
+
 
 namespace sema {
 
@@ -139,13 +141,34 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
             checkLetSelfReference(decl->init, decl->name, ctx);
         }
 
-        // ─── 5. CONST EVALUATION ──────────────────────────────────────
+        // ─── 4. CONST EVALUATION ──────────────────────────────────────
         if (decl->keyword == DeclKeyword::Const) {
             ConstantValue val = ConstEvaluator::evaluateDecl(ctx, decl);
             if (!val.isError()) {
                 const_cast<ExprAST*>(decl->init)->isConst = true;
                 const_cast<ExprAST*>(decl->init)->constValue = val;
             }
+        }
+    }
+
+    // ─── 5. Generate mangled name for exported globals ───────────────────
+    bool isModuleLevel = isModuleLevelDeclaration(decl, ctx);
+    bool isExported = false;
+    InternedString exportName = ctx.pool.intern("export");
+    for (const AttributeAST* attr : decl->attributes) {
+        if (attr->name == exportName) {
+            isExported = true;
+            break;
+        }
+    }
+    
+    if (isModuleLevel && isExported) {
+        InternedString mangled = generateMangledName(decl, ctx);
+        if (mangled.isValid()) {
+            const_cast<VarDeclAST*>(decl)->mangledName = mangled;
+            LOG_SEMA("Generated mangled name for exported variable '",
+                     ctx.pool.lookup(decl->name), "' → '",
+                     ctx.pool.lookup(mangled), "'");
         }
     }
 
@@ -175,12 +198,10 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
 
     // ─── 4. Handle @[foreign] functions ────────────────────────────────────
     if (decl->isForeignFunction) {
-        // The attribute validator already validated:
-        //   - ABI is "C"
-        //   - Function has no body (warning)
-        //   - Parameter types are FFI-compatible
-        //   - Return type is FFI-compatible
-        //   - No generic parameters
+        // Foreign functions use their original name as the symbol
+        const_cast<FuncDeclAST*>(decl)->mangledName = decl->name;
+        LOG_SEMA("Foreign function '", ctx.pool.lookup(decl->name),
+                 "' uses symbol name: ", ctx.pool.lookup(decl->mangledName));
         return;
     }
 
@@ -190,9 +211,6 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
     }
 
     // ─── 6. Resolve parameters ──────────────────────────────────────────────
-    // Parameters are registered in the function's scope so they are
-    // available when resolving the body. The scope is pushed here and
-    // popped after the body is resolved.
     ctx.pushScope();
     
     for (const FuncTypeAST* group = funcType; group; group = group->getNext()) {
@@ -201,7 +219,16 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
         }
     }
 
-    // ─── 7. Analyze body ──────────────────────────────────────────────────────
+    // ─── 7. Generate mangled name BEFORE body resolution ──────────────────
+    InternedString mangled = generateMangledName(decl, ctx);
+    if (mangled.isValid()) {
+        const_cast<FuncDeclAST*>(decl)->mangledName = mangled;
+        LOG_SEMA("Generated mangled name for function '",
+                 ctx.pool.lookup(decl->name), "' → '",
+                 ctx.pool.lookup(mangled), "'");
+    }
+
+    // ─── 8. Analyze body ──────────────────────────────────────────────────────
     if (!decl->body) {
         ctx.diagnostics.error(DiagCode::Sem_MissingFuncBody, decl,
                               "function '", ctx.pool.lookup(decl->name), "' has no body");
@@ -209,13 +236,13 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
         return;
     }
 
-    // ─── 8. Push function context with expected return type ──────────────────
+    // ─── 9. Push function context with expected return type ──────────────────
     const TypeAST* expectedReturn = funcType ? funcType->returnType : nullptr;
     ctx.stack.pushFunction(const_cast<FuncDeclAST*>(decl), expectedReturn);
 
     bool bodyReturns = false;
     
-    // ─── 9. Resolve the body ──────────────────────────────────────────────────
+    // ─── 10. Resolve the body ──────────────────────────────────────────────────
     if (decl->body->isa<BlockStmtAST>()) {
         bodyReturns = resolveBlock(decl->body->as<BlockStmtAST>(), ctx);
     } else if (decl->body->isa<ReturnStmtAST>()) {
@@ -238,38 +265,24 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
         return;
     }
 
-    // ─── 10. Verify return paths ──────────────────────────────────────────────
+    // ─── 11. Verify return paths ──────────────────────────────────────────────
     if (!bodyReturns && expectedReturn) {
         ctx.diagnostics.error(DiagCode::Sem_MissingReturn, decl,
                               "function '", ctx.pool.lookup(decl->name),
                               "' does not return a value on all paths");
     }
 
-    // ─── 11. CAPTURE ANALYSIS for nested functions ──────────────────────────
-    // Only nested functions (closureDepth > 0) can capture variables.
-    // Top-level functions cannot capture anything.
-    // Runs BEFORE the pop below, so the context stack still has this
-    // function's own frame — getClosureDepth() (used only for the entry
-    // gate and logging) reflects this function's true depth, and
-    // ctx.stack.currentFunction()/getInnermostFunctionNode(), if anything
-    // downstream ever calls them during capture analysis, correctly
-    // identify this function rather than the enclosing one. (Correctness
-    // of the *captured-variable set itself* doesn't depend on this
-    // ordering — CaptureAnalyzer tracks its own params/locals independently
-    // of the context stack, see CaptureAnalysis.cpp — but the depth and
-    // current-function queries do, so the ordering is still worth getting
-    // right rather than leaving the comment describing behavior the code
-    // didn't actually have.)
+    // ─── 12. CAPTURE ANALYSIS for nested functions ──────────────────────────
     if (ctx.getClosureDepth() > 0) {
         LOG_SEMA("resolveFuncDecl: analyzing captures for nested function '",
                  ctx.pool.lookup(decl->name), "' at depth ", ctx.getClosureDepth());
         analyzeCaptures(const_cast<FuncDeclAST*>(decl), ctx);
     }
 
-    // ─── 12. Pop function context ────────────────────────────────────────────
+    // ─── 13. Pop function context ────────────────────────────────────────────
     ctx.stack.pop();
 
-    // ─── 13. Pop scope ──────────────────────────────────────────────────────────
+    // ─── 14. Pop scope ──────────────────────────────────────────────────────────
     ctx.popScope();
 }
 

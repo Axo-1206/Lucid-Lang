@@ -10,23 +10,13 @@
 
 namespace sema {
 
-// ─── Public API ────────────────────────────────────────────────────────────
-
 bool validateAllAttributes(const DeclAST* decl, SemaContext& ctx) {
     if (!decl) return true;
 
-    // ─── 1. Check: Does this declaration support attributes? ──────────────
-    if (!supportsAttributes(decl)) {
-        if (!decl->attributes.empty()) {
-            ctx.diagnostics.error(DiagCode::Sem_AttributeInvalid, decl,
-                                  "declaration '", ctx.pool.lookup(decl->name),
-                                  "' does not support attributes");
-            return false;
-        }
-        return true;
-    }
-
-    // ─── 2. Validate each attribute ────────────────────────────────────────
+    // ─── Validate each attribute ──────────────────────────────────────────
+    // The registry's ATTRIBUTE_TABLE defines which declaration kinds each
+    // attribute can attach to. validateAttribute() checks this via
+    // isAllowedOnDecl().
     bool allValid = true;
     for (const AttributeAST* attr : decl->attributes) {
         if (!attr) continue;
@@ -35,7 +25,7 @@ bool validateAllAttributes(const DeclAST* decl, SemaContext& ctx) {
         }
     }
 
-    // ─── 3. Check for duplicate attributes ─────────────────────────────────
+    // ─── Check for duplicate attributes ─────────────────────────────────
     std::unordered_set<InternedString> seen;
     for (const AttributeAST* attr : decl->attributes) {
         if (seen.find(attr->name) != seen.end()) {
@@ -61,6 +51,7 @@ bool validateAttribute(const AttributeAST* attr, const DeclAST* owner, SemaConte
     }
 
     // ─── 1. Check: Is this attribute allowed on this declaration kind? ────
+    // This uses the ATTRIBUTE_TABLE's allowedKinds list.
     if (!AttributeRegistry::getInstance(ctx.pool).isAllowedOnDecl(attr->name, owner->kind)) {
         ctx.diagnostics.error(DiagCode::Sem_AttributeNotApplicable, attr,
                               "attribute '@", ctx.pool.lookup(attr->name),
@@ -139,22 +130,9 @@ bool validateExport(const AttributeAST* attr, const DeclAST* owner, SemaContext&
     }
 
     // ─── 2. Validate placement: only at module level ──────────────────────
-    if (!isAtModuleLevel(owner, ctx)) {
+    if (!isModuleLevelDeclaration(owner, ctx)) {
         ctx.diagnostics.error(DiagCode::Sem_AttributeInvalid, attr,
                               "attribute '@[export]' is only legal at module level");
-        return false;
-    }
-
-    // ─── 3. Validate on which declarations it can be applied ──────────────
-    if (!owner->isa<FuncDeclAST>() &&
-        !owner->isa<StructDeclAST>() &&
-        !owner->isa<EnumDeclAST>() &&
-        !owner->isa<TraitDeclAST>() &&
-        !owner->isa<VarDeclAST>() &&
-        !owner->isa<ImportDeclAST>()) {
-        ctx.diagnostics.error(DiagCode::Sem_AttributeInvalid, attr,
-                              "attribute '@[export]' cannot be applied to '",
-                              ctx.pool.lookup(owner->name), "' (only functions, structs, enums, traits, vars, and imports)");
         return false;
     }
 
@@ -206,7 +184,7 @@ bool validateForeign(const AttributeAST* attr, const DeclAST* owner, SemaContext
 
 bool validateLink(const AttributeAST* attr, const DeclAST* owner, SemaContext& ctx) {
     // ─── 1. Validate placement ──────────────────────────────────────────────
-    bool atModuleLevel = isAtModuleLevel(owner, ctx);
+    bool atModuleLevel = isModuleLevelDeclaration(owner, ctx);
     bool onFunction = owner && owner->isa<FuncDeclAST>();
 
     if (!atModuleLevel && !onFunction) {
@@ -453,24 +431,24 @@ bool supportsAttributes(const DeclAST* decl) {
     }
 }
 
-bool isAtModuleLevel(const DeclAST* decl, SemaContext& ctx) {
+/// @brief Check if a declaration is at module level (top-level).
+/// This checks the declaration's actual position in the AST, not the current scope.
+/// @note Different from ctx.isAtModuleLevel() which checks if the current scope is module-level.
+static bool isModuleLevelDeclaration(const DeclAST* decl, SemaContext& ctx) {
     if (!decl) return false;
 
     // Check if the declaration is in the current module's decl list
     if (ctx.currentModule) {
         for (const DeclPtr d : ctx.currentModule->decls) {
-            // Compare by pointer - ModuleAST::decls holds DeclAST*, not ModuleAST*
             if (d == decl) return true;
         }
     }
 
     // Also check if it's in the module table
     if (ctx.currentModuleTable) {
-        // Check values
         for (const auto& [name, value] : ctx.currentModuleTable->values) {
             if (static_cast<const DeclAST*>(value) == decl) return true;
         }
-        // Check types
         for (const auto& [name, type] : ctx.currentModuleTable->types) {
             if (static_cast<const DeclAST*>(type) == decl) return true;
         }
