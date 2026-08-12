@@ -143,11 +143,13 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
 
         // ─── 4. CONST EVALUATION ──────────────────────────────────────
         if (decl->keyword == DeclKeyword::Const) {
-            ConstantValue val = ConstEvaluator::evaluateDecl(ctx, decl);
-            if (!val.isError()) {
-                const_cast<ExprAST*>(decl->init)->isConst = true;
-                const_cast<ExprAST*>(decl->init)->constValue = val;
-            }
+            // evaluateDecl() calls evaluate(ctx, decl->init, decl->type)
+            // internally, which already sets isConst/constValue (and also
+            // resolvedType/valueState, which a redundant write here didn't
+            // even cover) on decl->init when the result is evaluated and
+            // non-error, and emits its own diagnostics on failure. Nothing
+            // here needs the return value.
+            ConstEvaluator::evaluateDecl(ctx, decl);
         }
     }
 

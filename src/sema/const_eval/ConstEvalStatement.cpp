@@ -292,6 +292,30 @@ ConstantValue ConstEvaluator::executeFunction(SemaContext& ctx, const FuncDeclAS
         return ConstantValue::error();
     }
 
+    // ─── 0. Recursion depth guard ────────────────────────────────────────
+    // evaluate()'s own MAX_RECURSION check only fires if m_recursionDepth
+    // is actually incremented somewhere on the path it guards. Previously
+    // nothing incremented it anywhere in the evalCall → executeFunction →
+    // executeStmt → evaluate → evalCall cycle — only evaluateDecl did, a
+    // completely different call path (VarDeclAST circular-dependency
+    // detection, not function-call recursion). A recursive const function
+    // had no depth limit at all: it would recurse via genuine C++ call
+    // stack frames until the *compiler process itself* stack-overflowed.
+    // EvaluationGuard/m_evaluating isn't a substitute either — that only
+    // guards VarDeclAST cycles, never touched here.
+    if (m_recursionDepth >= MAX_RECURSION) {
+        ctx.diagnostics.error(DiagCode::Sem_CircularDependency, func,
+                              "const function '", ctx.pool.lookup(func->name),
+                              "' exceeded maximum recursion depth (",
+                              MAX_RECURSION, ")");
+        return ConstantValue::error();
+    }
+    m_recursionDepth++;
+    struct DepthGuard {
+        size_t& depth;
+        ~DepthGuard() { depth--; }
+    } depthGuard{m_recursionDepth};
+
     // ─── 1. Setup function context ──────────────────────────────────────
     ConstFunctionContext context(ctx, func);
 

@@ -41,8 +41,13 @@ int ConstEvaluator::compareOrder(SemaContext& ctx, const ConstantValue& a, const
 
     switch (a.kind) {
         case ConstantValue::Kind::Int: {
-            int64_t diff = a.asInt() - b.asInt();
-            return (diff > 0) ? 1 : (diff < 0) ? -1 : 0;
+            // Compare directly rather than subtracting — a.asInt() -
+            // b.asInt() itself overflows int64_t for sufficiently
+            // far-apart values (e.g. INT64_MAX vs INT64_MIN), the same
+            // class of bug evalDiv/evalMod's INT64_MIN/-1 case is.
+            int64_t l = a.asInt();
+            int64_t r = b.asInt();
+            return (l > r) ? 1 : (l < r) ? -1 : 0;
         }
         case ConstantValue::Kind::Float: {
             double diff = a.asFloat() - b.asFloat();
@@ -171,6 +176,14 @@ ConstantValue ConstEvaluator::evalDiv(SemaContext& ctx, const ConstantValue& lef
         if (right.asInt() == 0) {
             return handleArithmeticError(ctx, "/", "division by zero", node, targetType);
         }
+        // INT64_MIN / -1 is undefined behavior in C++ — the mathematical
+        // result (INT64_MAX + 1) doesn't fit in int64_t. Same overflow
+        // class as evalAdd/evalSub/evalMul/evalNeg already guard against.
+        if (left.asInt() == INT64_MIN && right.asInt() == -1) {
+            ctx.diagnostics.error(DiagCode::Sem_IntegerOverflow, node,
+                                  "integer overflow in const division (INT64_MIN / -1)");
+            return ConstantValue::error();
+        }
         return ConstantValue(left.asInt() / right.asInt());
     }
     
@@ -206,6 +219,13 @@ ConstantValue ConstEvaluator::evalMod(SemaContext& ctx, const ConstantValue& lef
     if (left.isInt() && right.isInt()) {
         if (right.asInt() == 0) {
             return handleArithmeticError(ctx, "%", "modulo by zero", node, targetType);
+        }
+        // Same UB case as evalDiv, above: INT64_MIN % -1 is undefined
+        // behavior in C++ even though the mathematical result is 0.
+        if (left.asInt() == INT64_MIN && right.asInt() == -1) {
+            ctx.diagnostics.error(DiagCode::Sem_IntegerOverflow, node,
+                                  "integer overflow in const modulo (INT64_MIN % -1)");
+            return ConstantValue::error();
         }
         return ConstantValue(left.asInt() % right.asInt());
     }

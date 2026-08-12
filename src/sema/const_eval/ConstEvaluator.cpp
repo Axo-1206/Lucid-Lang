@@ -103,7 +103,7 @@ ConstantValue ConstEvaluator::evaluate(SemaContext& ctx, const ExprAST* expr,
     if (result.isEvaluated() && !result.isError()) {
         const_cast<ExprAST*>(expr)->isConst = true;
         const_cast<ExprAST*>(expr)->constValue = result;
-        const_cast<ExprAST*>(expr)->resolvedType = getConstantType(ctx, result);
+        const_cast<ExprAST*>(expr)->semanticType = getConstantType(ctx, result);
         const_cast<ExprAST*>(expr)->valueState = result.isErr() ? ValueState::Err : ValueState::Definite;
         m_evaluatedExprs.insert(expr);
     }
@@ -454,6 +454,17 @@ ConstantValue ConstEvaluator::evalArrayLiteral(SemaContext& ctx, const ArrayLite
     ConstantValue result;
     result.kind = ConstantValue::Kind::Array;
     result.value = elements;
+    // Previously never set — getConstantType()'s fallback switch has no
+    // case for Kind::Array, so every const array literal was silently
+    // typed Unknown despite the element type already being validated
+    // above. ArrayKind::Fixed is the most information-preserving choice
+    // for a bare literal with no target type in scope here (the literal's
+    // own size is exactly known); ordinary type-checking elsewhere still
+    // handles conversion against a [*]T-declared target, same as any
+    // other Fixed-to-Dynamic assignment.
+    if (!elements.empty()) {
+        result.type = ctx.getArrayType(ArrayKind::Fixed, elements.size(), elements[0].type);
+    }
     return result;
 }
 
@@ -559,9 +570,17 @@ ConstantValue ConstEvaluator::evalRangeExpr(SemaContext& ctx, const RangeExprAST
         return ConstantValue::error();
     }
 
-    // ─── Return the lower bound ──────────────────────────────────────────
-    // The caller can access loVal and hiVal separately if needed
-    return loVal;
+    // ─── No Kind::Range exists to hold both bounds ───────────────────────
+    // Returning loVal alone (as this used to do) silently discards hiVal —
+    // anything reading the cached result later (expr->constValue) would
+    // see only the lower bound with no indication the upper bound ever
+    // existed. Returning unknown() here is honest about what this function
+    // actually can't represent, rather than caching a plausible-looking
+    // but incomplete value. The one real caller that needs both bounds
+    // (executeFor, in ConstEvalStatement.cpp) already evaluates range->lo
+    // and range->hi separately via evaluateAsInt rather than going through
+    // this function, and is unaffected by this change.
+    return ConstantValue::unknown();
 }
 
 // ─── evalCall ────────────────────────────────────────────────────────────
@@ -592,52 +611,11 @@ ConstantValue ConstEvaluator::evalCall(SemaContext& ctx, const CallExprAST* expr
 }
 
 // ─── executeFunction ─────────────────────────────────────────────────────
-
-ConstantValue ConstEvaluator::executeFunction(SemaContext& ctx, const FuncDeclAST* func,
-                                               const std::vector<ConstantValue>& args) {
-    if (!func) {
-        ctx.diagnostics.error(DiagCode::Sem_UndefinedValue, nullptr,
-                              "null function");
-        return ConstantValue::error();
-    }
-
-    ConstFunctionContext context(ctx, func);
-
-    size_t argIndex = 0;
-    for (const FuncTypeAST* group = func->funcType; group; group = group->getNext()) {
-        for (ParamAST* param : group->params) {
-            if (argIndex < args.size()) {
-                const_cast<ParamAST*>(param)->type = getConstantType(ctx, args[argIndex]);
-                argIndex++;
-            }
-        }
-    }
-
-    ConstantValue result = ConstantValue::voidValue();
-    if (func->body) {
-        result = executeStmt(ctx, func->body);
-    } else {
-        ctx.diagnostics.error(DiagCode::Sem_MissingReturn, func,
-                              "const function has no body");
-        return ConstantValue::error();
-    }
-
-    if (func->funcType && func->funcType->returnType) {
-        if (result.isVoid()) {
-            ctx.diagnostics.error(DiagCode::Sem_MissingReturn, func->body,
-                                  "non-void const function does not return a value");
-            return ConstantValue::error();
-        }
-    } else {
-        if (!result.isVoid() && !result.isUnknown()) {
-            ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, func->body,
-                                  "void const function returns a value");
-            return ConstantValue::error();
-        }
-    }
-
-    return result;
-}
+// Implemented in ConstEvalStatement.cpp, alongside every other execute*
+// function. A second, near-identical definition used to live here too —
+// removed: two definitions of the same non-template member function in
+// two translation units is a duplicate-symbol error at link time, not a
+// style issue. See ConstEvalStatement.cpp for the real implementation.
 
 // ─── Report Cycle ────────────────────────────────────────────────────────
 
