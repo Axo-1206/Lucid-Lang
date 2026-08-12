@@ -11,12 +11,52 @@ namespace sema {
 
 // AttributeEntry is defined at namespace scope in AttributeRegistry.hpp
 static const AttributeEntry ATTRIBUTE_TABLE[] = {
-    {"export",     false, true, 0, 0},
-    {"foreign",    true,  true, 1, 1},
-    {"link",       true,  true, 1, 0},  // 1+ args, unbounded (maxArgs=0 means no limit)
-    {"deprecated", true,  true, 0, 1},
-    {"inline",     false, true, 0, 0},
-    {"noinline",   false, true, 0, 0},
+    // Export works on any top-level declaration
+    {"export",     false, true, 0, 0, {
+        ASTKind::FuncDecl,
+        ASTKind::StructDecl,
+        ASTKind::EnumDecl,
+        ASTKind::TraitDecl,
+        ASTKind::VarDecl,
+        ASTKind::ImportDecl
+    }},
+    
+    // Foreign only on functions
+    {"foreign",    true,  true, 1, 1, {
+        ASTKind::FuncDecl
+    }},
+    
+    // Link on functions or module-level
+    {"link",       true,  true, 1, 0, {
+        ASTKind::FuncDecl,
+        ASTKind::ImportDecl
+    }},
+    
+    // Deprecated on most declarations
+    {"deprecated", true,  true, 0, 1, {
+        ASTKind::FuncDecl,
+        ASTKind::StructDecl,
+        ASTKind::EnumDecl,
+        ASTKind::TraitDecl,
+        ASTKind::VarDecl,
+        ASTKind::ImportDecl,
+        ASTKind::FieldDecl,
+        ASTKind::EnumVariant
+    }},
+    
+    // Inline/Noinline only on functions
+    {"inline",     false, true, 0, 0, {
+        ASTKind::FuncDecl
+    }},
+    {"noinline",   false, true, 0, 0, {
+        ASTKind::FuncDecl
+    }},
+    
+    // Specialize on generic functions and generic structs
+    {"specialize", false, true, 0, 0, {
+        ASTKind::FuncDecl,
+        ASTKind::StructDecl
+    }},
 };
 
 static constexpr size_t ATTRIBUTE_COUNT = sizeof(ATTRIBUTE_TABLE) / sizeof(ATTRIBUTE_TABLE[0]);
@@ -34,7 +74,13 @@ AttributeRegistry::AttributeRegistry(StringPool& pool) : m_pool(pool) {
     for (const auto& entry : ATTRIBUTE_TABLE) {
         InternedString name = m_pool.intern(entry.name);
         m_attributes[name] = AttributeInfo(
-            name, entry.canHaveArgs, entry.minArgs, entry.maxArgs
+            name,
+            entry.canHaveArgs,
+            entry.requiresStringArgs,
+            entry.minArgs,
+            entry.maxArgs,
+            false,  // appliesToGenericOnly - handled separately in validator
+            entry.allowedKinds
         );
     }
 }
@@ -87,28 +133,6 @@ std::vector<std::string> AttributeRegistry::getAllNamesAsStrings() const {
     }
     std::sort(names.begin(), names.end());
     return names;
-}
-
-bool AttributeRegistry::isValidForDecl(InternedString attrName, const DeclAST* decl) const {
-    if (!decl) return false;
-    
-    // @[export] only valid at module level
-    if (m_pool.lookupView(attrName) == "export") {
-        // This requires SemaContext to check isAtModuleLevel()
-        // So this is a partial check - semantic validation handles the rest
-        return true;
-    }
-    
-    // @[foreign], @[link] and @[inline] only valid on functions
-    if (m_pool.lookupView(attrName) == "foreign" || 
-        m_pool.lookupView(attrName) == "inline" ||
-         m_pool.lookupView(attrName) == "link" ||
-        m_pool.lookupView(attrName) == "noinline") {
-        return decl->isa<FuncDeclAST>();
-    }
-    
-    // @[deprecated] valid on most declarations
-    return true;
 }
 
 } // namespace sema

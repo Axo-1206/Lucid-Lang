@@ -53,8 +53,11 @@ bool validateLink(const AttributeAST* attr, const DeclAST* owner, SemaContext& c
 /// @brief Validate @[deprecated] attribute.
 bool validateDeprecated(const AttributeAST* attr, const DeclAST* owner, SemaContext& ctx);
 
-/// @brief Validate @[inline] attribute (only on functions).
-bool validateInline(const AttributeAST* attr, const DeclAST* owner, SemaContext& ctx);
+/// @brief Validate @[inline] and @[noinline] attributes.
+bool validateInlineHint(const AttributeAST* attr, const DeclAST* owner, SemaContext& ctx);
+
+/// @brief Validate @[specialize] attribute (only on generic functions).
+bool validateSpecialize(const AttributeAST* attr, const DeclAST* owner, SemaContext& ctx);
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 

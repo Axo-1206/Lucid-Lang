@@ -254,25 +254,26 @@ enum class DiagCode : uint32_t {
     // GENERICS & TRAITS ERRORS (6000-6499)
     // ──────────────────────────────────────────────────────────────────────────
 
-    Sem_GenericArityMismatch  = 6001,
-    Sem_GenericConstraint     = 6002,
-    Sem_TraitImplementation   = 6003,
-    Sem_TraitConflict         = 6004,
-    Sem_ForeignInvalid        = 6005,
-    Sem_ForeignABI            = 6006,
-    Sem_AttributeInvalid      = 6007,
-    Sem_AttributeArgCount     = 6008,
-    Sem_UnknownAttribute      = 6009,
-    Sem_GenericParamRequired  = 6010,
-    Sem_GenericParamInference = 6011,
-    Sem_GenericInstantiate    = 6012,
-    Sem_TraitFieldMissing     = 6013,
+    Sem_GenericArityMismatch   = 6001,
+    Sem_GenericConstraint      = 6002,
+    Sem_TraitImplementation    = 6003,
+    Sem_TraitConflict          = 6004,
+    Sem_ForeignInvalid         = 6005,
+    Sem_ForeignABI             = 6006,
+    Sem_AttributeInvalid       = 6007,
+    Sem_AttributeArgCount      = 6008,
+    Sem_UnknownAttribute       = 6009,
+    Sem_GenericParamRequired   = 6010,
+    Sem_GenericParamInference  = 6011,
+    Sem_GenericInstantiate     = 6012,
+    Sem_TraitFieldMissing      = 6013,
     Sem_TraitFieldTypeMismatch = 6014,
-    Sem_TraitConstMismatch    = 6015,
-    Sem_TraitDuplicate        = 6016,
-    Sem_GenericCycle          = 6017,
-    Sem_AttributeArgValue     = 6018,
-    Sem_AttributeDuplicate    = 6019, // Duplicate attribute on same declaration
+    Sem_TraitConstMismatch     = 6015,
+    Sem_TraitDuplicate         = 6016,
+    Sem_GenericCycle           = 6017,
+    Sem_AttributeArgValue      = 6018,
+    Sem_AttributeDuplicate     = 6019, // Duplicate attribute on same declaration
+    Sem_AttributeNotApplicable = 6020, // attribute doesn't apply to this declaration
 
     // ──────────────────────────────────────────────────────────────────────────
     // MEMORY & OWNERSHIP ERRORS (6500-6999)

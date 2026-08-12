@@ -17,9 +17,6 @@ bool validateAllAttributes(const DeclAST* decl, SemaContext& ctx) {
 
     // ─── 1. Check: Does this declaration support attributes? ──────────────
     if (!supportsAttributes(decl)) {
-        // Declarations that don't support attributes should have an empty list.
-        // If they somehow have attributes, that's a parse error, but we validate
-        // here defensively.
         if (!decl->attributes.empty()) {
             ctx.diagnostics.error(DiagCode::Sem_AttributeInvalid, decl,
                                   "declaration '", ctx.pool.lookup(decl->name),
@@ -63,6 +60,36 @@ bool validateAttribute(const AttributeAST* attr, const DeclAST* owner, SemaConte
         return false;
     }
 
+    // ─── 1. Check: Is this attribute allowed on this declaration kind? ────
+    if (!AttributeRegistry::getInstance(ctx.pool).isAllowedOnDecl(attr->name, owner->kind)) {
+        ctx.diagnostics.error(DiagCode::Sem_AttributeNotApplicable, attr,
+                              "attribute '@", ctx.pool.lookup(attr->name),
+                              "' cannot be applied to '", 
+                              debug::kindToString(owner->kind), "'");
+        return false;
+    }
+
+    // ─── 2. Check: Is this attribute only for generic declarations? ──────
+    if (info->appliesToGenericOnly) {
+        bool isGeneric = false;
+        if (owner->isa<FuncDeclAST>()) {
+            isGeneric = !owner->as<FuncDeclAST>()->genericParams.empty();
+        } else if (owner->isa<StructDeclAST>()) {
+            isGeneric = !owner->as<StructDeclAST>()->genericParams.empty();
+        }
+        
+        if (!isGeneric) {
+            ctx.diagnostics.error(DiagCode::Sem_AttributeNotApplicable, attr,
+                                  "attribute '@", ctx.pool.lookup(attr->name),
+                                  "' can only be applied to generic declarations");
+            ctx.diagnostics.note(attr,
+                                 "'", ctx.pool.lookup(owner->name),
+                                 "' has no generic parameters. Remove '@", 
+                                 ctx.pool.lookup(attr->name), "'.");
+            return false;
+        }
+    }
+
     std::string name = ctx.pool.lookup(attr->name);
 
     // ─── Dispatch to specific validator ────────────────────────────────────
@@ -78,8 +105,11 @@ bool validateAttribute(const AttributeAST* attr, const DeclAST* owner, SemaConte
     if (name == "deprecated") {
         return validateDeprecated(attr, owner, ctx);
     }
-    if (name == "inline") {
-        return validateInline(attr, owner, ctx);
+    if (name == "inline" || name == "noinline") {
+        return validateInlineHint(attr, owner, ctx);
+    }
+    if (name == "specialize") {
+        return validateSpecialize(attr, owner, ctx);
     }
 
     // ─── Generic validation for unknown attributes ─────────────────────────
@@ -268,29 +298,78 @@ bool validateDeprecated(const AttributeAST* attr, const DeclAST* owner, SemaCont
     return true;
 }
 
-bool validateInline(const AttributeAST* attr, const DeclAST* owner, SemaContext& ctx) {
+/// @brief Validate @[inline] and @[noinline] attributes.
+bool validateInlineHint(const AttributeAST* attr, const DeclAST* owner, SemaContext& ctx) {
     // ─── 1. Validate owner: only on functions ─────────────────────────────
     if (!owner || !owner->isa<FuncDeclAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_AttributeInvalid, attr,
-                              "attribute '@[inline]' is only legal on function declarations");
+                              "attribute '@", ctx.pool.lookup(attr->name), 
+                              "' is only legal on function declarations");
         return false;
     }
 
     // ─── 2. Validate argument count ──────────────────────────────────────────
     if (!attr->args.empty()) {
         ctx.diagnostics.error(DiagCode::Sem_AttributeArgCount, attr,
-                              "attribute '@[inline]' takes no arguments");
+                              "attribute '@", ctx.pool.lookup(attr->name), 
+                              "' takes no arguments");
         return false;
     }
 
     // ─── 3. Warn if used on foreign functions ───────────────────────────────
     for (const AttributeAST* existing : owner->attributes) {
         if (ctx.pool.lookup(existing->name) == "foreign") {
+            const char* hint = "will be ignored";
+            if (ctx.pool.lookup(attr->name) == "noinline") {
+                hint = "foreign functions are not inlined by default, '@[noinline]' is redundant";
+            }
             ctx.diagnostics.warning(DiagCode::Warn_ForeignInline, attr,
                                     "foreign function '", ctx.pool.lookup(owner->name),
-                                    "' cannot be inlined (it will be ignored)");
+                                    "' cannot be inlined (", hint, ")");
             break;
         }
+    }
+
+    // ─── 4. Store the appropriate flag on the function ─────────────────────
+    FuncDeclAST* func = const_cast<FuncDeclAST*>(owner->as<FuncDeclAST>());
+    if (ctx.pool.lookup(attr->name) == "inline") {
+        func->isInline = true;
+    } else {
+        func->isNoInline = true;
+    }
+
+    return true;
+}
+
+bool validateSpecialize(const AttributeAST* attr, const DeclAST* owner, SemaContext& ctx) {
+    // ─── 1. The registry already verified this is on FuncDecl or StructDecl ──
+    // So we just need to verify it's generic
+    
+    bool isGeneric = false;
+    if (owner->isa<FuncDeclAST>()) {
+        isGeneric = !owner->as<FuncDeclAST>()->genericParams.empty();
+    } else if (owner->isa<StructDeclAST>()) {
+        isGeneric = !owner->as<StructDeclAST>()->genericParams.empty();
+    }
+    
+    if (!isGeneric) {
+        ctx.diagnostics.error(DiagCode::Sem_AttributeNotApplicable, attr,
+                              "attribute '@[specialize]' can only be applied to generic declarations");
+        return false;
+    }
+
+    // ─── 2. Validate argument count ──────────────────────────────────────────
+    if (!attr->args.empty()) {
+        ctx.diagnostics.error(DiagCode::Sem_AttributeArgCount, attr,
+                              "attribute '@[specialize]' takes no arguments");
+        return false;
+    }
+
+    // ─── 3. Mark as needing specialization ──────────────────────────────────
+    if (owner->isa<FuncDeclAST>()) {
+        const_cast<FuncDeclAST*>(owner->as<FuncDeclAST>())->shouldSpecialize = true;
+    } else if (owner->isa<StructDeclAST>()) {
+        const_cast<StructDeclAST*>(owner->as<StructDeclAST>())->shouldSpecialize = true;
     }
 
     return true;

@@ -222,8 +222,11 @@ struct FuncDeclAST : ValueDeclAST {
     const StmtAST* body;
     
     // ─── Semantic Fields (set by Sema) ────────────────────────────────
-    bool isForeignFunction = false;      // True if @[foreign] attribute is present
-    InternedString mangledName;          // Mangled name for AOT compilation
+    bool isForeignFunction = false;    // True if @[foreign] attribute is present
+    bool shouldSpecialize = false;     // from @[specialize]
+    bool isInline = false;             // from @[inline]
+    bool isNoInline = false;           // from @[noinline]
+    InternedString mangledName;        // Mangled name for AOT compilation
     
     /// Variables captured by this function (if it's a closure).
     /// Populated by capture analysis during semantic analysis.
@@ -361,8 +364,7 @@ struct StructDeclAST : TypeDeclAST {
     const bool isPacked = false;  // From @[packed] attribute
     
     // ─── Semantic Fields (set by Sema) ────────────────────────────────
-    // Logical layout - field indices and offsets (target-independent)
-    // These are computed from field order, not from LLVM DataLayout.
+    bool shouldSpecialize = false;
     
     // ─── CodeGen Fields (mutable) ──────────────────────────────────────
     llvm::StructType* llvmType = nullptr;
