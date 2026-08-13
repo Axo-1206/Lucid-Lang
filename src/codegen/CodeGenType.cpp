@@ -2,8 +2,10 @@
 /// @brief Implementation of type mapping from Lucid AST types to LLVM types.
 
 #include "CodeGenType.hpp"
+#include "CodeGenGeneric.hpp"  // For GenericSubstitution
 #include "debug/DebugUtils.hpp"
 #include "core/ast/DeclAST.hpp"
+#include "support/MangledName.hpp"
 #include <llvm/IR/DataLayout.h>
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Type.h>
@@ -14,12 +16,24 @@ namespace codegen {
 // ─── Public API ────────────────────────────────────────────────────────────
 
 llvm::Type* getType(CodeGenContext& ctx, const TypeAST* type) {
+    return getType(ctx, type, nullptr);
+}
+
+llvm::Type* getType(
+    CodeGenContext& ctx,
+    const TypeAST* type,
+    const GenericSubstitution* subst
+) {
     if (!type) return nullptr;
 
-    // Check cache first
-    auto it = ctx.typeCache.find(type);
-    if (it != ctx.typeCache.end()) {
-        return it->second;
+    // ─── Check cache only when no substitution ──────────────────────────────
+    // When substitution is present, we cannot cache by type alone because
+    // the same type with different substitutions yields different LLVM types.
+    if (!subst) {
+        auto it = ctx.typeCache.find(type);
+        if (it != ctx.typeCache.end()) {
+            return it->second;
+        }
     }
 
     llvm::Type* result = nullptr;
@@ -28,46 +42,71 @@ llvm::Type* getType(CodeGenContext& ctx, const TypeAST* type) {
         case ASTKind::PrimitiveType:
             result = getPrimitiveType(ctx, type->as<PrimitiveTypeAST>());
             break;
-        case ASTKind::NamedType:
-            result = getNamedType(ctx, type->as<NamedTypeAST>());
+
+        case ASTKind::NamedType: {
+            const NamedTypeAST* named = type->as<NamedTypeAST>();
+            // ─── Check if this is a generic parameter ──────────────────────
+            if (subst) {
+                const TypeAST* substituted = subst->lookup(named->name);
+                if (substituted) {
+                    // Recursively get type of the substituted type
+                    result = getType(ctx, substituted, subst);
+                    break;
+                }
+            }
+            // ─── Otherwise, resolve as a normal named type ──────────────────
+            result = getNamedType(ctx, named);
             break;
+        }
+
         case ASTKind::ModuleTypeAccess:
             result = getModuleTypeAccess(ctx, type->as<ModuleTypeAccessAST>());
             break;
+
         case ASTKind::PtrType:
             result = getPtrType(ctx, type->as<PtrTypeAST>());
             break;
+
         case ASTKind::RefType:
             result = getRefType(ctx, type->as<RefTypeAST>());
             break;
+
         case ASTKind::ArrayType:
-            result = getArrayType(ctx, type->as<ArrayTypeAST>());
+            result = getArrayType(ctx, type->as<ArrayTypeAST>(), subst);
             break;
+
         case ASTKind::FuncType:
             result = getFunctionType(ctx, type->as<FuncTypeAST>(), false);
             break;
+
         case ASTKind::NullableType:
-            result = getNullableType(ctx, type->as<NullableTypeAST>());
+            result = getNullableType(ctx, type->as<NullableTypeAST>(), subst);
             break;
+
         case ASTKind::FallibleType:
-            result = getFallibleType(ctx, type->as<FallibleTypeAST>());
+            result = getFallibleType(ctx, type->as<FallibleTypeAST>(), subst);
             break;
+
         case ASTKind::CombinedType:
-            result = getCombinedType(ctx, type->as<CombinedTypeAST>());
+            result = getCombinedType(ctx, type->as<CombinedTypeAST>(), subst);
             break;
+
         case ASTKind::FutureType:
-            result = getFutureType(ctx, type->as<FutureTypeAST>());
+            result = getFutureType(ctx, type->as<FutureTypeAST>(), subst);
             break;
+
         case ASTKind::ThreadType:
-            result = getThreadType(ctx, type->as<ThreadTypeAST>());
+            result = getThreadType(ctx, type->as<ThreadTypeAST>(), subst);
             break;
+
         default:
             ctx.diagnostics.errorAt(DiagCode::Sem_UnknownType, type->loc,
                                     "unknown type kind in code generation");
             return nullptr;
     }
 
-    if (result) {
+    // ─── Cache only when no substitution ──────────────────────────────────
+    if (result && !subst) {
         ctx.typeCache[type] = result;
     }
 
@@ -325,13 +364,18 @@ llvm::Type* getRefType(CodeGenContext& ctx, const RefTypeAST* type) {
         return llvm::PointerType::get(ctx.llvmCtx, 0);
     }
 
-    return llvm::PointerType::get(innerType, 0);
+    // With opaque pointers, we don't need the element type
+    return llvm::PointerType::get(ctx.llvmCtx, 0);
 }
 
-llvm::Type* getArrayType(CodeGenContext& ctx, const ArrayTypeAST* type) {
+llvm::Type* getArrayType(
+    CodeGenContext& ctx,
+    const ArrayTypeAST* type,
+    const GenericSubstitution* subst
+) {
     if (!type) return nullptr;
 
-    llvm::Type* elemType = getType(ctx, type->element);
+    llvm::Type* elemType = getType(ctx, type->element, subst);
     if (!elemType) {
         ctx.diagnostics.errorAt(DiagCode::Sem_InvalidArrayElement, type->loc,
                                 "array element type has unknown type");
@@ -344,12 +388,14 @@ llvm::Type* getArrayType(CodeGenContext& ctx, const ArrayTypeAST* type) {
 
         case ArrayKind::Dynamic:
             // Dynamic arrays are heap-allocated, stored as a pointer
-            return llvm::PointerType::get(elemType, 0);
+            // With opaque pointers, we don't need the element type
+            return llvm::PointerType::get(ctx.llvmCtx, 0);
 
         case ArrayKind::Slice:
             // Slices are { ptr, len, cap }
             {
-                llvm::Type* ptrType = llvm::PointerType::get(elemType, 0);
+                // With opaque pointers, ptr is just a pointer
+                llvm::Type* ptrType = llvm::PointerType::get(ctx.llvmCtx, 0);
                 llvm::Type* lenType = llvm::Type::getInt64Ty(ctx.llvmCtx);
                 std::string typeName = "slice_" + debug::typeToString(type->element, ctx.pool);
                 return llvm::StructType::create(
@@ -364,17 +410,20 @@ llvm::Type* getArrayType(CodeGenContext& ctx, const ArrayTypeAST* type) {
     }
 }
 
-llvm::StructType* getNullableType(CodeGenContext& ctx, const NullableTypeAST* type) {
+llvm::StructType* getNullableType(
+    CodeGenContext& ctx,
+    const NullableTypeAST* type,
+    const GenericSubstitution* subst
+) {
     if (!type) return nullptr;
 
-    llvm::Type* innerType = getType(ctx, type->inner);
+    llvm::Type* innerType = getType(ctx, type->inner, subst);
     if (!innerType) {
         ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, type->loc,
                                 "nullable inner type has unknown type");
         innerType = llvm::Type::getInt8Ty(ctx.llvmCtx);
     }
 
-    // Use debug::typeToString for consistent type naming
     std::string typeName = "nullable_" + debug::typeToString(type->inner, ctx.pool);
     llvm::Type* tagType = llvm::Type::getInt8Ty(ctx.llvmCtx);
 
@@ -385,10 +434,14 @@ llvm::StructType* getNullableType(CodeGenContext& ctx, const NullableTypeAST* ty
     );
 }
 
-llvm::StructType* getFallibleType(CodeGenContext& ctx, const FallibleTypeAST* type) {
+llvm::StructType* getFallibleType(
+    CodeGenContext& ctx,
+    const FallibleTypeAST* type,
+    const GenericSubstitution* subst
+) {
     if (!type) return nullptr;
 
-    llvm::Type* innerType = getType(ctx, type->inner);
+    llvm::Type* innerType = getType(ctx, type->inner, subst);
     if (!innerType) {
         ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, type->loc,
                                 "fallible inner type has unknown type");
@@ -405,10 +458,14 @@ llvm::StructType* getFallibleType(CodeGenContext& ctx, const FallibleTypeAST* ty
     );
 }
 
-llvm::StructType* getCombinedType(CodeGenContext& ctx, const CombinedTypeAST* type) {
+llvm::StructType* getCombinedType(
+    CodeGenContext& ctx,
+    const CombinedTypeAST* type,
+    const GenericSubstitution* subst
+) {
     if (!type) return nullptr;
 
-    llvm::Type* innerType = getType(ctx, type->inner);
+    llvm::Type* innerType = getType(ctx, type->inner, subst);
     if (!innerType) {
         ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, type->loc,
                                 "combined inner type has unknown type");
@@ -425,10 +482,14 @@ llvm::StructType* getCombinedType(CodeGenContext& ctx, const CombinedTypeAST* ty
     );
 }
 
-llvm::StructType* getFutureType(CodeGenContext& ctx, const FutureTypeAST* type) {
+llvm::StructType* getFutureType(
+    CodeGenContext& ctx,
+    const FutureTypeAST* type,
+    const GenericSubstitution* subst
+) {
     if (!type) return nullptr;
 
-    llvm::Type* innerType = getType(ctx, type->inner);
+    llvm::Type* innerType = getType(ctx, type->inner, subst);
     if (!innerType) {
         ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, type->loc,
                                 "future inner type has unknown type");
@@ -447,10 +508,14 @@ llvm::StructType* getFutureType(CodeGenContext& ctx, const FutureTypeAST* type) 
     );
 }
 
-llvm::StructType* getThreadType(CodeGenContext& ctx, const ThreadTypeAST* type) {
+llvm::StructType* getThreadType(
+    CodeGenContext& ctx,
+    const ThreadTypeAST* type,
+    const GenericSubstitution* subst
+) {
     if (!type) return nullptr;
 
-    llvm::Type* innerType = getType(ctx, type->inner);
+    llvm::Type* innerType = getType(ctx, type->inner, subst);
     if (!innerType) {
         ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, type->loc,
                                 "thread inner type has unknown type");
@@ -529,6 +594,24 @@ llvm::Type* getFloatType(CodeGenContext& ctx, PrimitiveKind kind) {
         default:
             return llvm::Type::getFloatTy(ctx.llvmCtx);
     }
+}
+
+std::string getTypeName(CodeGenContext& ctx, const TypeAST* type) {
+    if (!type) return "void";
+    
+    // For primitive types, use debug::typeToString or a simplified mapping
+    if (type->isa<PrimitiveTypeAST>()) {
+        const PrimitiveTypeAST* prim = type->as<PrimitiveTypeAST>();
+        return std::string(1, encodePrimitiveKind(prim->primitiveKind));
+    }
+    
+    if (type->isa<NamedTypeAST>()) {
+        const NamedTypeAST* named = type->as<NamedTypeAST>();
+        return ctx.pool.lookup(named->name);
+    }
+    
+    // Fallback: use debug::typeToString
+    return debug::typeToString(type, ctx.pool);
 }
 
 uint64_t getTypeSize(CodeGenContext& ctx, const TypeAST* type) {

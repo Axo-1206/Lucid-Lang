@@ -3,7 +3,7 @@
 
 #include "CodeGen.hpp"
 #include "CodeGenType.hpp"
-#include "support/CodeGenHelpers.hpp"
+#include "support/CodeGenAlloca.hpp"
 #include "debug/DebugUtils.hpp"
 #include "core/ast/StmtAST.hpp"
 #include "core/ast/ExprAST.hpp"

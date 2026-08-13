@@ -38,7 +38,7 @@
 #include "core/ast/StmtAST.hpp"
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/TypeAST.hpp"
-#include "support/CodeGenHelpers.hpp"
+#include "support/CodeGenAlloca.hpp"
 #include "support/MangledName.hpp"
 
 #include <llvm/IR/Function.h>

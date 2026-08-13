@@ -3,7 +3,9 @@
 
 #include "CodeGenGeneric.hpp"
 #include "CodeGenType.hpp"
-#include "support/CodeGenHelpers.hpp"
+#include "CodeGenType.hpp"
+#include "support/CodeGenAlloca.hpp"
+#include "support/CodeGenPanic.hpp"
 #include "support/MangledName.hpp"
 #include "debug/DebugUtils.hpp"
 #include "core/ast/DeclAST.hpp"
@@ -15,7 +17,171 @@
 
 namespace codegen {
 
-// ─── Specialized Function Creation ────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// 1. Detection Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+bool isGenericFunction(const FuncDeclAST* decl) {
+    return decl && !decl->genericParams.empty();
+}
+
+bool isGenericStruct(const StructDeclAST* decl) {
+    return decl && !decl->genericParams.empty();
+}
+
+bool shouldSpecialize(const DeclAST* decl) {
+    if (!decl) return false;
+
+    if (decl->isa<FuncDeclAST>()) {
+        return decl->as<FuncDeclAST>()->shouldSpecialize;
+    }
+    if (decl->isa<StructDeclAST>()) {
+        return decl->as<StructDeclAST>()->shouldSpecialize;
+    }
+    return false;
+}
+
+bool isGenericParameterName(InternedString name, const ArenaSpan<GenericParamDeclPtr>& genericParams) {
+    for (const GenericParamDeclPtr param : genericParams) {
+        if (param->name == name) {
+            return true;
+        }
+    }
+    return false;
+}
+
+size_t findGenericParamIndex(InternedString name, const ArenaSpan<GenericParamDeclPtr>& genericParams) {
+    for (size_t i = 0; i < genericParams.size(); ++i) {
+        if (genericParams[i]->name == name) {
+            return i;
+        }
+    }
+    return SIZE_MAX;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2. Type Substitution
+// ─────────────────────────────────────────────────────────────────────────────
+
+const TypeAST* substituteGenericType(
+    const TypeAST* type,
+    const ArenaSpan<GenericParamDeclPtr>& genericParams,
+    const std::vector<const TypeAST*>& typeArgs,
+    CodeGenContext& ctx
+) {
+    if (!type) return nullptr;
+    (void)ctx;
+
+    if (type->isa<NamedTypeAST>()) {
+        const NamedTypeAST* named = type->as<NamedTypeAST>();
+        size_t index = findGenericParamIndex(named->name, genericParams);
+        if (index != SIZE_MAX && index < typeArgs.size()) {
+            return typeArgs[index];
+        }
+        return type;
+    }
+
+    if (type->isa<ArrayTypeAST>()) {
+        const ArrayTypeAST* arr = type->as<ArrayTypeAST>();
+        const TypeAST* substitutedElement = substituteGenericType(
+            arr->element,
+            genericParams,
+            typeArgs,
+            ctx
+        );
+        if (substitutedElement != arr->element) {
+            // Note: We return the original type. For full substitution,
+            // use GenericSubstitution with getType() instead.
+        }
+        return type;
+    }
+
+    if (type->isa<NullableTypeAST>()) {
+        const NullableTypeAST* nullable = type->as<NullableTypeAST>();
+        const TypeAST* substitutedInner = substituteGenericType(
+            nullable->inner,
+            genericParams,
+            typeArgs,
+            ctx
+        );
+        if (substitutedInner != nullable->inner) {
+            // Note: We return the original type. For full substitution,
+            // use GenericSubstitution with getType() instead.
+        }
+        return type;
+    }
+
+    if (type->isa<FallibleTypeAST>()) {
+        const FallibleTypeAST* fallible = type->as<FallibleTypeAST>();
+        const TypeAST* substitutedInner = substituteGenericType(
+            fallible->inner,
+            genericParams,
+            typeArgs,
+            ctx
+        );
+        if (substitutedInner != fallible->inner) {
+            // Note: We return the original type. For full substitution,
+            // use GenericSubstitution with getType() instead.
+        }
+        return type;
+    }
+
+    if (type->isa<CombinedTypeAST>()) {
+        const CombinedTypeAST* combined = type->as<CombinedTypeAST>();
+        const TypeAST* substitutedInner = substituteGenericType(
+            combined->inner,
+            genericParams,
+            typeArgs,
+            ctx
+        );
+        if (substitutedInner != combined->inner) {
+            // Note: We return the original type. For full substitution,
+            // use GenericSubstitution with getType() instead.
+        }
+        return type;
+    }
+
+    if (type->isa<PtrTypeAST>()) {
+        const PtrTypeAST* ptr = type->as<PtrTypeAST>();
+        const TypeAST* substitutedInner = substituteGenericType(
+            ptr->inner,
+            genericParams,
+            typeArgs,
+            ctx
+        );
+        if (substitutedInner != ptr->inner) {
+            // Note: We return the original type. For full substitution,
+            // use GenericSubstitution with getType() instead.
+        }
+        return type;
+    }
+
+    if (type->isa<RefTypeAST>()) {
+        const RefTypeAST* ref = type->as<RefTypeAST>();
+        const TypeAST* substitutedInner = substituteGenericType(
+            ref->inner,
+            genericParams,
+            typeArgs,
+            ctx
+        );
+        if (substitutedInner != ref->inner) {
+            // Note: We return the original type. For full substitution,
+            // use GenericSubstitution with getType() instead.
+        }
+        return type;
+    }
+
+    if (type->isa<FuncTypeAST>()) {
+        // Function types are handled by getType() with GenericSubstitution
+        return type;
+    }
+
+    return type;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 3. Specialized Instantiation Creation
+// ─────────────────────────────────────────────────────────────────────────────
 
 llvm::Function* createSpecializedFunction(
     const FuncDeclAST* funcDecl,
@@ -41,6 +207,7 @@ llvm::Function* createSpecializedFunction(
     std::string funcName = ctx.pool.lookup(mangledName);
 
     // ─── Build parameter types ──────────────────────────────────────────────
+    GenericSubstitution subst{funcDecl->genericParams, typeArgs};
     std::vector<llvm::Type*> paramTypes;
 
     if (funcDecl->hasClosure) {
@@ -50,14 +217,7 @@ llvm::Function* createSpecializedFunction(
     const FuncTypeAST* funcType = funcDecl->funcType;
     while (funcType) {
         for (const ParamAST* param : funcType->params) {
-            const TypeAST* substitutedType = substituteGenericType(
-                param->type,
-                funcDecl->genericParams,
-                typeArgs,
-                ctx
-            );
-
-            llvm::Type* paramType = getType(ctx, substitutedType);
+            llvm::Type* paramType = getType(ctx, param->type, &subst);
             if (!paramType) {
                 ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, param->loc,
                                         "parameter '", ctx.pool.lookup(param->name),
@@ -72,13 +232,7 @@ llvm::Function* createSpecializedFunction(
     // ─── Build return type ──────────────────────────────────────────────────
     llvm::Type* returnType = llvm::Type::getVoidTy(ctx.llvmCtx);
     if (funcDecl->funcType->returnType) {
-        const TypeAST* substitutedReturn = substituteGenericType(
-            funcDecl->funcType->returnType,
-            funcDecl->genericParams,
-            typeArgs,
-            ctx
-        );
-        returnType = getType(ctx, substitutedReturn);
+        returnType = getType(ctx, funcDecl->funcType->returnType, &subst);
         if (!returnType) {
             ctx.diagnostics.errorAt(DiagCode::Sem_InvalidReturnType, funcDecl->loc,
                                     "invalid return type in specialization");
@@ -153,17 +307,11 @@ llvm::Type* createSpecializedStruct(
     std::string structName = ctx.pool.lookup(mangledName);
 
     // ─── Build field types with substituted types ──────────────────────────
+    GenericSubstitution subst{structDecl->genericParams, typeArgs};
     std::vector<llvm::Type*> fieldTypes;
 
     for (const FieldDeclAST* field : structDecl->fields) {
-        const TypeAST* substitutedType = substituteGenericType(
-            field->type,
-            structDecl->genericParams,
-            typeArgs,
-            ctx
-        );
-
-        llvm::Type* fieldType = getType(ctx, substitutedType);
+        llvm::Type* fieldType = getType(ctx, field->type, &subst);
         if (!fieldType) {
             ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, field->loc,
                                     "field '", ctx.pool.lookup(field->name),
@@ -195,7 +343,9 @@ llvm::Type* createSpecializedStruct(
     return structType;
 }
 
-// ─── Type-Erased Generic Generation ──────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// 4. Type-Erased Generic Generation
+// ─────────────────────────────────────────────────────────────────────────────
 
 llvm::Function* generateErasedGenericFunction(
     const FuncDeclAST* funcDecl,
@@ -314,7 +464,9 @@ llvm::Type* generateErasedGenericStruct(
     return structType;
 }
 
-// ─── Public API ────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// 5. Public Registry API
+// ─────────────────────────────────────────────────────────────────────────────
 
 llvm::Function* getOrCreateSpecializedFunction(
     const FuncDeclAST* funcDecl,

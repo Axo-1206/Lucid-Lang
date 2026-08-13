@@ -598,14 +598,15 @@ lucid/
     │   ├── CodeGenStmt.cpp                      # Statement lowering
     │   ├── CodeGenExpr.cpp                      # Expression lowering
     │   ├── CodeGenClosure.cpp                   # Closure lowering
-    │   ├── CodeGenGeneric.cpp                   # Generic lowering (integrated with @[specialize] attribute)
+    │   ├── CodeGenGeneric.cpp                   # Detection + Substitution + Instantiation
     │   │
     │   ├── context/
     │   │   └── CodeGenContext.hpp               # LLVM state (module, builder, caches, symbols)
     │   │
     │   ├── support/
-    │   │   ├── MangledName.hpp/cpp
-    │   │   └── CodeGenHelpers.hpp/cpp           # Allocas, blocks, loads, panic
+    │   │   ├── CodeGenAlloca.hpp/cpp          # Alloca, blocks, loads
+    │   │   ├── CodeGenPanic.hpp/cpp           # Panic, null checks
+    │   │   └── MangledName.hpp/cpp            # Mangled name generation
     │   │
     │   └── intrinsic/
     │       ├── IntrinsicEmitter.hpp             # Intrinsic emission API

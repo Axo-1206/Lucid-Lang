@@ -22,6 +22,10 @@
 
 namespace codegen {
 
+// ─── Forward Declaration ──────────────────────────────────────────────────
+
+struct GenericSubstitution;
+
 // ─── Main Type Mapping ─────────────────────────────────────────────────────
 
 /// @brief Get the LLVM type for a Lucid type annotation.
@@ -29,6 +33,17 @@ namespace codegen {
 /// @param type The Lucid type annotation.
 /// @return The LLVM type, or nullptr if the type cannot be mapped.
 llvm::Type* getType(CodeGenContext& ctx, const TypeAST* type);
+
+/// @brief Get the LLVM type for a Lucid type annotation with generic substitution.
+/// @param ctx The code generation context.
+/// @param type The Lucid type annotation.
+/// @param subst The generic substitution context (optional).
+/// @return The LLVM type, or nullptr if the type cannot be mapped.
+llvm::Type* getType(
+    CodeGenContext& ctx,
+    const TypeAST* type,
+    const GenericSubstitution* subst
+);
 
 /// @brief Get the LLVM struct type for a Lucid struct declaration.
 /// @param ctx The code generation context.
@@ -68,27 +83,70 @@ llvm::Type* getPtrType(CodeGenContext& ctx, const PtrTypeAST* type);
 llvm::Type* getRefType(CodeGenContext& ctx, const RefTypeAST* type);
 
 /// @brief Get the LLVM type for a Lucid array type.
-llvm::Type* getArrayType(CodeGenContext& ctx, const ArrayTypeAST* type);
+/// @param ctx The code generation context.
+/// @param type The array type.
+/// @param subst Optional generic substitution context.
+/// @return The LLVM array type.
+llvm::Type* getArrayType(
+    CodeGenContext& ctx,
+    const ArrayTypeAST* type,
+    const GenericSubstitution* subst = nullptr
+);
 
 /// @brief Get the LLVM type for a Lucid nullable type (T?).
+/// @param ctx The code generation context.
+/// @param type The nullable type.
+/// @param subst Optional generic substitution context.
 /// @return A struct type { i8 tag, T value }.
-llvm::StructType* getNullableType(CodeGenContext& ctx, const NullableTypeAST* type);
+llvm::StructType* getNullableType(
+    CodeGenContext& ctx,
+    const NullableTypeAST* type,
+    const GenericSubstitution* subst = nullptr
+);
 
 /// @brief Get the LLVM type for a Lucid fallible type (T!).
+/// @param ctx The code generation context.
+/// @param type The fallible type.
+/// @param subst Optional generic substitution context.
 /// @return A struct type { i8 tag, T value }.
-llvm::StructType* getFallibleType(CodeGenContext& ctx, const FallibleTypeAST* type);
+llvm::StructType* getFallibleType(
+    CodeGenContext& ctx,
+    const FallibleTypeAST* type,
+    const GenericSubstitution* subst = nullptr
+);
 
 /// @brief Get the LLVM type for a Lucid combined type (T?!).
+/// @param ctx The code generation context.
+/// @param type The combined type.
+/// @param subst Optional generic substitution context.
 /// @return A struct type { i8 tag, T value } (tag encodes nil/err/value).
-llvm::StructType* getCombinedType(CodeGenContext& ctx, const CombinedTypeAST* type);
+llvm::StructType* getCombinedType(
+    CodeGenContext& ctx,
+    const CombinedTypeAST* type,
+    const GenericSubstitution* subst = nullptr
+);
 
 /// @brief Get the LLVM type for a Lucid future type (Future<T>).
+/// @param ctx The code generation context.
+/// @param type The future type.
+/// @param subst Optional generic substitution context.
 /// @return A struct type { T value, i8 state }.
-llvm::StructType* getFutureType(CodeGenContext& ctx, const FutureTypeAST* type);
+llvm::StructType* getFutureType(
+    CodeGenContext& ctx,
+    const FutureTypeAST* type,
+    const GenericSubstitution* subst = nullptr
+);
 
 /// @brief Get the LLVM type for a Lucid thread type (Thread<T>).
+/// @param ctx The code generation context.
+/// @param type The thread type.
+/// @param subst Optional generic substitution context.
 /// @return A struct type { T value, i8 state }.
-llvm::StructType* getThreadType(CodeGenContext& ctx, const ThreadTypeAST* type);
+llvm::StructType* getThreadType(
+    CodeGenContext& ctx,
+    const ThreadTypeAST* type,
+    const GenericSubstitution* subst = nullptr
+);
 
 /// @brief Get the LLVM type for a Lucid module type access.
 llvm::Type* getModuleTypeAccess(CodeGenContext& ctx, const ModuleTypeAccessAST* type);

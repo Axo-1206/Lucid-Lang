@@ -3,7 +3,7 @@
 
 #include "CodeGen.hpp"
 #include "CodeGenType.hpp"
-#include "support/CodeGenHelpers.hpp"
+#include "support/CodeGenAlloca.hpp"
 #include "intrinsic/IntrinsicEmitter.hpp"
 #include "../sema/types/SemaCompare.hpp"
 #include "debug/DebugUtils.hpp"
