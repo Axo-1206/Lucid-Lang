@@ -814,11 +814,19 @@ TypeAST* resolveBinaryExpr(BinaryExprAST* expr, const TypeAST* targetType, SemaC
         case BinaryOp::Div:
         case BinaryOp::Pow:
         case BinaryOp::Mod: {
-            if (leftState == ValueState::Nil || rightState == ValueState::Nil) {
-                ctx.diagnostics.error(DiagCode::Sem_InvalidBinary, expr,
-                                      "arithmetic operator cannot be used with nil. Use `??` to handle nil first.");
+            // ─── Reject nullable/fallible operands outright ────────────────
+            // Checked against the declared type (not just flow state) so an
+            // un-narrowed nullable/fallible variable is caught even when it
+            // hasn't been observed as literal nil/err yet.
+            if (isNullableType(leftType) || isFallibleType(leftType) ||
+                isNullableType(rightType) || isFallibleType(rightType) ||
+                leftState == ValueState::Nil || rightState == ValueState::Nil ||
+                leftState == ValueState::Err || rightState == ValueState::Err) {
+                ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr,
+                                      "arithmetic operator cannot be used with a nullable or "
+                                      "fallible operand. Narrow first using 'if' or '?\?'.");
                 expr->resolvedType = ctx.getUnknownType();
-                expr->valueState = ValueState::Unknown;
+                expr->valueState = ValueState::Err;
                 return ctx.getUnknownType();
             }
 
@@ -845,8 +853,7 @@ TypeAST* resolveBinaryExpr(BinaryExprAST* expr, const TypeAST* targetType, SemaC
                 }
             }
 
-            resultState = (leftState == ValueState::Err || rightState == ValueState::Err)
-                          ? ValueState::Err : ValueState::Definite;
+            resultState = ValueState::Definite;
             break;
         }
 
@@ -887,19 +894,15 @@ TypeAST* resolveBinaryExpr(BinaryExprAST* expr, const TypeAST* targetType, SemaC
         // ─── Logical Operators ─────────────────────────────────────────────
         case BinaryOp::And:
         case BinaryOp::Or: {
-            if (leftState == ValueState::Nil || rightState == ValueState::Nil) {
-                ctx.diagnostics.error(DiagCode::Sem_InvalidLogicalOp, expr,
-                                      "logical operator cannot be used with nil");
+            if (isNullableType(leftType) || isFallibleType(leftType) ||
+                isNullableType(rightType) || isFallibleType(rightType) ||
+                leftState == ValueState::Nil || rightState == ValueState::Nil ||
+                leftState == ValueState::Err || rightState == ValueState::Err) {
+                ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr,
+                                      "logical operator cannot be used with a nullable or "
+                                      "fallible operand. Narrow first using 'if' or '?\?'.");
                 expr->resolvedType = ctx.getUnknownType();
-                expr->valueState = ValueState::Unknown;
-                return ctx.getUnknownType();
-            }
-
-            if (leftState == ValueState::Err || rightState == ValueState::Err) {
-                ctx.diagnostics.error(DiagCode::Sem_InvalidLogicalOp, expr,
-                                      "logical operator cannot be used with err");
-                expr->resolvedType = ctx.getUnknownType();
-                expr->valueState = ValueState::Unknown;
+                expr->valueState = ValueState::Err;
                 return ctx.getUnknownType();
             }
 
@@ -922,19 +925,15 @@ TypeAST* resolveBinaryExpr(BinaryExprAST* expr, const TypeAST* targetType, SemaC
         case BinaryOp::BitXor:
         case BinaryOp::Shl:
         case BinaryOp::Shr: {
-            if (leftState == ValueState::Nil || rightState == ValueState::Nil) {
-                ctx.diagnostics.error(DiagCode::Sem_InvalidBitwiseOp, expr,
-                                      "bitwise operator cannot be used with nil");
+            if (isNullableType(leftType) || isFallibleType(leftType) ||
+                isNullableType(rightType) || isFallibleType(rightType) ||
+                leftState == ValueState::Nil || rightState == ValueState::Nil ||
+                leftState == ValueState::Err || rightState == ValueState::Err) {
+                ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr,
+                                      "bitwise operator cannot be used with a nullable or "
+                                      "fallible operand. Narrow first using 'if' or '?\?'.");
                 expr->resolvedType = ctx.getUnknownType();
-                expr->valueState = ValueState::Unknown;
-                return ctx.getUnknownType();
-            }
-
-            if (leftState == ValueState::Err || rightState == ValueState::Err) {
-                ctx.diagnostics.error(DiagCode::Sem_InvalidBitwiseOp, expr,
-                                      "bitwise operator cannot be used with err");
-                expr->resolvedType = ctx.getUnknownType();
-                expr->valueState = ValueState::Unknown;
+                expr->valueState = ValueState::Err;
                 return ctx.getUnknownType();
             }
 
@@ -1002,26 +1001,21 @@ TypeAST* resolveUnaryExpr(UnaryExprAST* expr, const TypeAST* targetType, SemaCon
     }
 
     ValueState operandState = expr->operand->valueState;
-    bool isNil = operandState == ValueState::Nil;
-    bool isErr = operandState == ValueState::Err;
+    bool isNullableOrFallible = isNullableType(operandType) || isFallibleType(operandType) ||
+                                 operandState == ValueState::Nil || operandState == ValueState::Err;
 
     TypeAST* resultType = nullptr;
     ValueState resultState = ValueState::Definite;
 
     switch (expr->op) {
         case UnaryOp::Neg: {
-            if (isNil) {
-                ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, expr,
-                                      "negation cannot be used with nil. Use `??` to handle nil first.");
+            if (isNullableOrFallible) {
+                ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr,
+                                      "negation cannot be used with a nullable or fallible "
+                                      "operand. Narrow first using 'if' or '?\?'.");
                 expr->resolvedType = ctx.getUnknownType();
-                expr->valueState = ValueState::Unknown;
+                expr->valueState = ValueState::Err;
                 return ctx.getUnknownType();
-            }
-
-            if (isErr) {
-                resultType = operandType;
-                resultState = ValueState::Err;
-                break;
             }
 
             if (!isNumericType(operandType)) {
@@ -1038,19 +1032,12 @@ TypeAST* resolveUnaryExpr(UnaryExprAST* expr, const TypeAST* targetType, SemaCon
         }
 
         case UnaryOp::Not: {
-            if (isNil) {
-                ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, expr,
-                                      "logical not cannot be used with nil. Use `??` to handle nil first.");
+            if (isNullableOrFallible) {
+                ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr,
+                                      "logical not cannot be used with a nullable or fallible "
+                                      "operand. Narrow first using 'if' or '?\?'.");
                 expr->resolvedType = ctx.getUnknownType();
-                expr->valueState = ValueState::Unknown;
-                return ctx.getUnknownType();
-            }
-
-            if (isErr) {
-                ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, expr,
-                                      "logical not cannot be used with err. Use `??` to handle err first.");
-                expr->resolvedType = ctx.getUnknownType();
-                expr->valueState = ValueState::Unknown;
+                expr->valueState = ValueState::Err;
                 return ctx.getUnknownType();
             }
 
@@ -1068,19 +1055,12 @@ TypeAST* resolveUnaryExpr(UnaryExprAST* expr, const TypeAST* targetType, SemaCon
         }
 
         case UnaryOp::BitNot: {
-            if (isNil) {
-                ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, expr,
-                                      "bitwise not cannot be used with nil. Use `??` to handle nil first.");
+            if (isNullableOrFallible) {
+                ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr,
+                                      "bitwise not cannot be used with a nullable or fallible "
+                                      "operand. Narrow first using 'if' or '?\?'.");
                 expr->resolvedType = ctx.getUnknownType();
-                expr->valueState = ValueState::Unknown;
-                return ctx.getUnknownType();
-            }
-
-            if (isErr) {
-                ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, expr,
-                                      "bitwise not cannot be used with err. Use `??` to handle err first.");
-                expr->resolvedType = ctx.getUnknownType();
-                expr->valueState = ValueState::Unknown;
+                expr->valueState = ValueState::Err;
                 return ctx.getUnknownType();
             }
 
@@ -1135,7 +1115,7 @@ TypeAST* resolveCallExpr(CallExprAST* expr, const TypeAST* targetType, SemaConte
         ctx.diagnostics.error(DiagCode::Sem_NotCallable, expr->callee,
                               "cannot call nullable or fallible value. Narrow first using 'if' or '?\?'");
         expr->resolvedType = ctx.getUnknownType();
-        expr->valueState = ValueState::Unknown;
+        expr->valueState = ValueState::Err;
         return ctx.getUnknownType();
     }
 
@@ -1419,6 +1399,19 @@ TypeAST* resolveIndexExpr(IndexExprAST* expr, const TypeAST* targetType, SemaCon
         return ctx.getUnknownType();
     }
 
+    // ─── Step 2: Check if target is nullable or fallible ────────────────────
+    if (isNullableType(targetTypeAst) || isFallibleType(targetTypeAst)) {
+        ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr->target,
+                              "cannot index nullable or fallible value '",
+                              debug::typeToString(targetTypeAst, ctx.pool),
+                              "'. Narrow the value first using 'if' or '?\?'");
+        ctx.diagnostics.note(expr->target,
+                             "Use 'if x != nil' or 'if x != err' to narrow, or 'x ?? default'");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Err;
+        return ctx.getUnknownType();
+    }
+
     if (!targetTypeAst->isa<ArrayTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_InvalidArrayElement, expr->target,
                               "indexing requires an array target type, got ",
@@ -1430,7 +1423,7 @@ TypeAST* resolveIndexExpr(IndexExprAST* expr, const TypeAST* targetType, SemaCon
 
     const ArrayTypeAST* arrayType = targetTypeAst->as<ArrayTypeAST>();
 
-    // ─── Step 2: Resolve index against int type ─────────────────────────────
+    // ─── Step 3: Resolve index against int type ─────────────────────────────
     PrimitiveTypeAST* intType = ctx.getIntType();
     TypeAST* indexType = resolveExprWithTarget(expr->index, intType, ctx);
     if (!indexType || indexType->isa<UnknownTypeAST>()) {
@@ -1440,7 +1433,7 @@ TypeAST* resolveIndexExpr(IndexExprAST* expr, const TypeAST* targetType, SemaCon
         return ctx.getUnknownType();
     }
 
-    // ─── Step 3: Propagate value state ──────────────────────────────────────
+    // ─── Step 4: Propagate value state ──────────────────────────────────────
     ValueState state;
     if (isNullableType(arrayType->element) || isFallibleType(arrayType->element)) {
         state = ValueState::Unknown;
@@ -1475,6 +1468,19 @@ TypeAST* resolveSliceExpr(SliceExprAST* expr, const TypeAST* targetType, SemaCon
         return ctx.getUnknownType();
     }
 
+    // ─── Step 2: Check if target is nullable or fallible ────────────────────
+    if (isNullableType(targetTypeAst) || isFallibleType(targetTypeAst)) {
+        ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr->target,
+                              "cannot slice nullable or fallible value '",
+                              debug::typeToString(targetTypeAst, ctx.pool),
+                              "'. Narrow the value first using 'if' or '?\?'");
+        ctx.diagnostics.note(expr->target,
+                             "Use 'if x != nil' or 'if x != err' to narrow, or 'x ?? default'");
+        expr->resolvedType = ctx.getUnknownType();
+        expr->valueState = ValueState::Err;
+        return ctx.getUnknownType();
+    }
+
     if (!targetTypeAst->isa<ArrayTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_InvalidArrayElement, expr->target,
                               "slicing requires an array target type, got ",
@@ -1486,7 +1492,7 @@ TypeAST* resolveSliceExpr(SliceExprAST* expr, const TypeAST* targetType, SemaCon
 
     const ArrayTypeAST* arrayType = targetTypeAst->as<ArrayTypeAST>();
 
-    // ─── Step 2: Resolve start bound against int type ──────────────────────
+    // ─── Step 3: Resolve start bound against int type ──────────────────────
     if (expr->start) {
         PrimitiveTypeAST* intType = ctx.getIntType();
         TypeAST* startType = resolveExprWithTarget(expr->start, intType, ctx);
@@ -1498,7 +1504,7 @@ TypeAST* resolveSliceExpr(SliceExprAST* expr, const TypeAST* targetType, SemaCon
         }
     }
 
-    // ─── Step 3: Resolve end bound against int type ────────────────────────
+    // ─── Step 4: Resolve end bound against int type ────────────────────────
     if (expr->end) {
         PrimitiveTypeAST* intType = ctx.getIntType();
         TypeAST* endType = resolveExprWithTarget(expr->end, intType, ctx);
@@ -1510,7 +1516,7 @@ TypeAST* resolveSliceExpr(SliceExprAST* expr, const TypeAST* targetType, SemaCon
         }
     }
 
-    // ─── Step 4: Propagate value state ──────────────────────────────────────
+    // ─── Step 5: Propagate value state ──────────────────────────────────────
     ValueState state;
     if (isNullableType(arrayType->element) || isFallibleType(arrayType->element)) {
         state = ValueState::Unknown;
@@ -1555,7 +1561,7 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetT
         ctx.diagnostics.note(expr->object,
                              "Use 'if x != nil' or 'if x != err' to narrow, or 'x ?? default'");
         expr->resolvedType = ctx.getUnknownType();
-        expr->valueState = ValueState::Unknown;
+        expr->valueState = ValueState::Err;
         return ctx.getUnknownType();
     }
 
@@ -1925,6 +1931,19 @@ TypeAST* resolveAssignExpr(AssignExprAST* expr, const TypeAST* targetType, SemaC
 
     // ─── Step 5: Compound assignment operator validation ───────────────────
     if (expr->op != AssignOp::Assign) {
+        // Compound assignment (+=, -=, &=, etc.) performs an operation on the
+        // current value, so — unlike plain '=' — the LHS must not be
+        // nullable or fallible; there's nothing to narrow it against a
+        // second time inline.
+        if (isNullableType(lhsType) || isFallibleType(lhsType)) {
+            ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, expr->lhs,
+                                  "compound assignment cannot be used on a nullable or "
+                                  "fallible value. Narrow first using 'if' or '?\?'.");
+            expr->resolvedType = ctx.getUnknownType();
+            expr->valueState = ValueState::Err;
+            return ctx.getUnknownType();
+        }
+
         bool isArithmetic = false;
         switch (expr->op) {
             case AssignOp::AddAssign:
@@ -1993,6 +2012,14 @@ TypeAST* resolvePipelineStep(PipelineStepAST* step, const TypeAST* inputType, Se
     if (!callableType || callableType->isa<UnknownTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_NotCallable, step->callable,
                               "pipeline step callable has unknown type");
+        return ctx.getUnknownType();
+    }
+
+    // ─── Step 2: Check if callable is nullable or fallible ──────────────────
+    if (isNullableType(callableType) || isFallibleType(callableType)) {
+        ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, step->callable,
+                              "cannot use nullable or fallible value as a pipeline step. "
+                              "Narrow first using 'if' or '?\?'.");
         return ctx.getUnknownType();
     }
 
@@ -2087,6 +2114,14 @@ TypeAST* resolveComposeOperand(ComposeOperandAST* operand, const TypeAST* target
     if (!callableType || callableType->isa<UnknownTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_NotCallable, operand->callable,
                               "composition operand has unknown type");
+        return ctx.getUnknownType();
+    }
+
+    // ─── Step 1b: Check if callable is nullable or fallible ─────────────────
+    if (isNullableType(callableType) || isFallibleType(callableType)) {
+        ctx.diagnostics.error(DiagCode::Sem_IllegalNilErr, operand->callable,
+                              "cannot use nullable or fallible value in a composition. "
+                              "Narrow first using 'if' or '?\?'.");
         return ctx.getUnknownType();
     }
 
