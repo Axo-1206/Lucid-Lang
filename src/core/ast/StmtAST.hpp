@@ -456,7 +456,7 @@ struct AsyncStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::AsyncStmt;
 
     const VarDeclAST* binding = nullptr;   // fresh local introduced by this statement
-    const ExprAST* call;                    // the async call
+    ExprAST* call;                    // the async call
 
     AsyncStmtAST() : StmtAST(ASTKind::AsyncStmt) {}
 };

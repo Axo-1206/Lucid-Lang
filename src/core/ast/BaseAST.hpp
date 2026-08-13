@@ -643,7 +643,7 @@ struct ExprAST : BaseAST {
     // ─── Parser Fields ──────────────────────────────────────────────────
     
     // ─── Semantic Fields (set by Sema) ────────────────────────────────
-    const TypeAST* resolvedType = nullptr;  // The resolved type of this expression
+    TypeAST* resolvedType = nullptr;  // The resolved type of this expression
     ConstantValue constValue;               // Evaluated constant value (for const expressions)
     ValueState valueState = ValueState::Unknown;  // Nil/Err/Definite/Unknown
     bool isLValue = false;                  // Can this appear on LHS of assignment?
