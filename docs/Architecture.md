@@ -4,7 +4,8 @@
 > Compiler: how the source code flows from text to execution, how the major
 > subsystems are structured, and how each folder in the codebase fits into
 > that flow.
-
+>
+> llvm version: 18.1.6
 ---
 
 ## Table of Contents
@@ -591,22 +592,26 @@ lucid/
     │       └── TypeNarrowHelpers.hpp/cpp
     │
     ├── codegen/
-    │   ├── CodeGen.hpp                          # Public API
-    │   ├── CodeGen.cpp                          # Orchestrator
-    │   ├── CodeGenType.hpp/cpp                  # Lucid → LLVM type mapping
-    │   ├── CodeGenDecl.cpp                      # Declaration lowering
-    │   ├── CodeGenStmt.cpp                      # Statement lowering
-    │   ├── CodeGenExpr.cpp                      # Expression lowering
-    │   ├── CodeGenClosure.cpp                   # Closure lowering
-    │   ├── CodeGenGeneric.cpp                   # Detection + Substitution + Instantiation
+    │   ├── CodeGen.hpp          # Public API
+    │   ├── CodeGen.cpp          # Orchestrator
+    │   ├── CodeGenType.hpp/cpp  # Lucid → LLVM type mapping
+    │   ├── CodeGenDecl.cpp      # Declaration lowering
+    │   ├── CodeGenStmt.cpp      # Statement lowering
+    │   ├── CodeGenExpr.cpp      # Expression lowering
+    │   ├── CodeGenClosure.cpp   # Closure lowering
+    │   ├── CodeGenGeneric.cpp   # Detection + Substitution + Instantiation
     │   │
     │   ├── context/
-    │   │   └── CodeGenContext.hpp               # LLVM state (module, builder, caches, symbols)
+    │   │   └── CodeGenContext.hpp # LLVM state (module, builder, caches, symbols)
     │   │
     │   ├── support/
     │   │   ├── CodeGenAlloca.hpp/cpp          # Alloca, blocks, loads
     │   │   ├── CodeGenPanic.hpp/cpp           # Panic, null checks
     │   │   └── MangledName.hpp/cpp            # Mangled name generation
+    │   │
+    │   ├── closure/
+    │   │   ├── CodeGenClosure.hpp/cpp # Closure declarations
+    │   │   └── CodeGenClosure.hpp/cpp # Closure implementation
     │   │
     │   └── intrinsic/
     │       ├── IntrinsicEmitter.hpp             # Intrinsic emission API

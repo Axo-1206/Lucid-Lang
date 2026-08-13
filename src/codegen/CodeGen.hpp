@@ -5,13 +5,14 @@
 /// validated AST and emits LLVM IR for each module.
 ///
 /// ─── Architecture ──────────────────────────────────────────────────────────
-/// The CodeGen is split into four specialized files:
+/// The CodeGen is split into specialized files:
 ///   - CodeGen.cpp       : Orchestrator, module-level emission
 ///   - CodeGenDecl.cpp   : Function, variable, struct, enum declarations
 ///   - CodeGenStmt.cpp   : Statements (if, for, while, return, block)
 ///   - CodeGenExpr.cpp   : Expressions (literals, binary, calls, intrinsics)
-///   - CodeGenClosure.cpp: Closure environment and capture handling
+///   - CodeGenGeneric.cpp: Generic instantiation and type-erased generation
 ///   - CodeGenType.cpp   : Lucid → LLVM type mapping
+///   - closure/          : Closure environment and capture handling
 ///
 /// ─── Two-Phase Function Lowering ──────────────────────────────────────────
 /// Functions are lowered in two passes:
@@ -443,47 +444,5 @@ llvm::Value* lowerIfExpr(IfExprAST* expr, CodeGenContext& ctx);
 /// @param ctx The code generation context.
 /// @return The LLVM value.
 llvm::Value* lowerRangeExpr(RangeExprAST* expr, CodeGenContext& ctx);
-
-// =============================================================================
-// Closure Lowering
-// =============================================================================
-
-/// @brief Lower a closure (anonymous function with captures).
-///
-/// Creates the closure environment struct, the closure function, and
-/// the closure value (function pointer + environment pointer).
-///
-/// @param expr The anonymous function expression.
-/// @param ctx The code generation context.
-/// @return The closure value (fat pointer).
-llvm::Value* lowerClosure(AnonFuncExprAST* expr, CodeGenContext& ctx);
-
-/// @brief Build the closure environment struct.
-///
-/// @param expr The anonymous function expression.
-/// @param ctx The code generation context.
-/// @return The LLVM struct type for the environment.
-llvm::StructType* buildClosureEnvironment(AnonFuncExprAST* expr, CodeGenContext& ctx);
-
-/// @brief Create the closure function.
-///
-/// @param expr The anonymous function expression.
-/// @param ctx The code generation context.
-/// @return The LLVM function.
-llvm::Function* createClosureFunction(AnonFuncExprAST* expr, CodeGenContext& ctx);
-
-/// @brief Emit a call to a closure.
-///
-/// @param funcPtr The closure function pointer.
-/// @param envPtr The environment pointer.
-/// @param args The arguments.
-/// @param ctx The code generation context.
-/// @return The LLVM value.
-llvm::Value* emitClosureCall(
-    llvm::Value* funcPtr,
-    llvm::Value* envPtr,
-    llvm::ArrayRef<llvm::Value*> args,
-    CodeGenContext& ctx
-);
 
 } // namespace codegen

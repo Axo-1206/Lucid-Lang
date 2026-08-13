@@ -2,9 +2,10 @@
 /// @brief Implementation of intrinsic emission to LLVM IR.
 
 #include "IntrinsicEmitter.hpp"
-#include "../support/CodeGenHelpers.hpp"
 #include "../CodeGenType.hpp"
 #include "../CodeGen.hpp"
+#include "../support/CodeGenAlloca.hpp"
+#include "../support/CodeGenPanic.hpp"
 
 #include <llvm/IR/Intrinsics.h>
 #include <llvm/IR/IRBuilder.h>
