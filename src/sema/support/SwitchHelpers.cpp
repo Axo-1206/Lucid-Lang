@@ -55,7 +55,7 @@ std::unordered_set<InternedString> collectCoveredVariants(
     std::unordered_set<InternedString> covered;
     if (!stmt) return covered;
     
-    for (const SwitchCasePtr caseStmt : stmt->cases) {
+    for (const SwitchCaseAST* caseStmt : stmt->cases) {
         for (const ExprAST* value : caseStmt->values) {
             if (isEnumVariantAccess(value, ctx)) {
                 InternedString variantName = getEnumVariantName(value, ctx);

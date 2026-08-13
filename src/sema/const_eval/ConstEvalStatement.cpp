@@ -33,7 +33,7 @@ ConstantValue ConstEvaluator::executeBlock(SemaContext& ctx, const BlockStmtAST*
     ctx.pushScope();
     ConstantValue result = ConstantValue::voidValue();
 
-    for (const StmtPtr stmt : block->stmts) {
+    for (const StmtAST* stmt : block->stmts) {
         result = executeStmt(ctx, stmt);
         if (result.isError()) break;
         if (result.isUnknown()) break;
@@ -196,7 +196,7 @@ ConstantValue ConstEvaluator::executeSwitch(SemaContext& ctx, const SwitchStmtAS
     if (subjectVal.isError()) return subjectVal;
     if (subjectVal.isUnknown()) {
         // Can't evaluate - fall back to executing all cases for side effects
-        for (const SwitchCasePtr caseStmt : stmt->cases) {
+        for (const SwitchCaseAST* caseStmt : stmt->cases) {
             if (caseStmt->body) executeStmt(ctx, caseStmt->body);
         }
         if (stmt->defaultBody) executeStmt(ctx, stmt->defaultBody);
@@ -204,7 +204,7 @@ ConstantValue ConstEvaluator::executeSwitch(SemaContext& ctx, const SwitchStmtAS
     }
 
     // ─── Try to match a case ──────────────────────────────────────────────
-    for (const SwitchCasePtr caseStmt : stmt->cases) {
+    for (const SwitchCaseAST* caseStmt : stmt->cases) {
         for (const ExprAST* value : caseStmt->values) {
             bool matches = false;
             
@@ -225,7 +225,7 @@ ConstantValue ConstEvaluator::executeSwitch(SemaContext& ctx, const SwitchStmtAS
                 if (caseVal.isError()) return caseVal;
                 if (caseVal.isUnknown()) {
                     // Can't evaluate - fall back
-                    for (const SwitchCasePtr c : stmt->cases) {
+                    for (const SwitchCaseAST* c : stmt->cases) {
                         if (c->body) executeStmt(ctx, c->body);
                     }
                     if (stmt->defaultBody) executeStmt(ctx, stmt->defaultBody);

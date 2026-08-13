@@ -645,7 +645,7 @@ void ConstEvaluator::buildDependencyGraph(SemaContext& ctx) {
     m_deps.clear();
 
     for (ModuleAST* module : ctx.modules) {
-        for (const DeclPtr decl : module->decls) {
+        for (const DeclAST* decl : module->decls) {
             if (decl && decl->isa<VarDeclAST>()) {
                 const VarDeclAST* var = decl->as<VarDeclAST>();
                 if (var->keyword == DeclKeyword::Const) {

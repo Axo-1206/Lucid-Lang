@@ -41,8 +41,8 @@ bool shouldSpecialize(const DeclAST* decl) {
     return false;
 }
 
-bool isGenericParameterName(InternedString name, const ArenaSpan<GenericParamDeclPtr>& genericParams) {
-    for (const GenericParamDeclPtr param : genericParams) {
+bool isGenericParameterName(InternedString name, const ArenaSpan<GenericParamDeclAST*>& genericParams) {
+    for (const GenericParamDeclAST* param : genericParams) {
         if (param->name == name) {
             return true;
         }
@@ -50,7 +50,7 @@ bool isGenericParameterName(InternedString name, const ArenaSpan<GenericParamDec
     return false;
 }
 
-size_t findGenericParamIndex(InternedString name, const ArenaSpan<GenericParamDeclPtr>& genericParams) {
+size_t findGenericParamIndex(InternedString name, const ArenaSpan<GenericParamDeclAST*>& genericParams) {
     for (size_t i = 0; i < genericParams.size(); ++i) {
         if (genericParams[i]->name == name) {
             return i;
@@ -65,7 +65,7 @@ size_t findGenericParamIndex(InternedString name, const ArenaSpan<GenericParamDe
 
 const TypeAST* substituteGenericType(
     const TypeAST* type,
-    const ArenaSpan<GenericParamDeclPtr>& genericParams,
+    const ArenaSpan<GenericParamDeclAST*>& genericParams,
     const std::vector<const TypeAST*>& typeArgs,
     CodeGenContext& ctx
 ) {

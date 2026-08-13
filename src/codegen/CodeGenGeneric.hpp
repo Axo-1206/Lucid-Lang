@@ -35,10 +35,10 @@ bool isGenericStruct(const StructDeclAST* decl);
 bool shouldSpecialize(const DeclAST* decl);
 
 /// @brief Check if a name matches any generic parameter.
-bool isGenericParameterName(InternedString name, const ArenaSpan<GenericParamDeclPtr>& genericParams);
+bool isGenericParameterName(InternedString name, const ArenaSpan<GenericParamDeclAST*>& genericParams);
 
 /// @brief Find the index of a generic parameter by name.
-size_t findGenericParamIndex(InternedString name, const ArenaSpan<GenericParamDeclPtr>& genericParams);
+size_t findGenericParamIndex(InternedString name, const ArenaSpan<GenericParamDeclAST*>& genericParams);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 2. Type Substitution
@@ -46,7 +46,7 @@ size_t findGenericParamIndex(InternedString name, const ArenaSpan<GenericParamDe
 
 /// @brief Context for substituting generic parameters with concrete types.
 struct GenericSubstitution {
-    const ArenaSpan<GenericParamDeclPtr>& genericParams;  // The generic parameter declarations
+    const ArenaSpan<GenericParamDeclAST*>& genericParams;  // The generic parameter declarations
     const std::vector<const TypeAST*>& typeArgs;          // The concrete type arguments
 
     /// @brief Find the type argument for a given generic parameter name.
@@ -71,7 +71,7 @@ struct GenericSubstitution {
 /// @return The substituted type, or the original type if no substitution needed.
 const TypeAST* substituteGenericType(
     const TypeAST* type,
-    const ArenaSpan<GenericParamDeclPtr>& genericParams,
+    const ArenaSpan<GenericParamDeclAST*>& genericParams,
     const std::vector<const TypeAST*>& typeArgs,
     CodeGenContext& ctx
 );

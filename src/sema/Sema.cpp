@@ -69,7 +69,7 @@ void analyze(std::vector<ModuleAST*>& modules, SemaContext& ctx) {
 void registerTopLevelNames(const ModuleAST* module, SemaContext& ctx) {
     if (!module) return;
 
-    for (const DeclPtr decl : module->decls) {
+    for (const DeclAST* decl : module->decls) {
         if (!decl) continue;
         
         // Register ONLY top-level declaration names
@@ -142,7 +142,7 @@ void registerDeclName(DeclAST* decl, SemaContext& ctx) {
 void resolveModuleDecls(ModuleAST* module, SemaContext& ctx) {
     if (!module) return;
 
-    for (const DeclPtr decl : module->decls) {
+    for (const DeclAST* decl : module->decls) {
         if (!decl) continue;
         
         resolveDecl(decl, ctx);

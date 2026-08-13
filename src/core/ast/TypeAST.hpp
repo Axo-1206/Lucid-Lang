@@ -115,7 +115,7 @@ struct NamedTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::NamedType;
 
     InternedString name;
-    ArenaSpan<TypePtr> genericArgs;
+    ArenaSpan<TypeAST*> genericArgs;
 
     explicit NamedTypeAST(InternedString n)
         : TypeAST(ASTKind::NamedType), name(n) {}
@@ -138,9 +138,9 @@ struct NamedTypeAST : TypeAST {
 struct NullableTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::NullableType;
 
-    TypePtr inner;
+    TypeAST* inner;
 
-    explicit NullableTypeAST(TypePtr t)
+    explicit NullableTypeAST(TypeAST* t)
         : TypeAST(ASTKind::NullableType), inner(t) {}
 };
 
@@ -161,9 +161,9 @@ struct NullableTypeAST : TypeAST {
 struct FallibleTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::FallibleType;
 
-    TypePtr inner = nullptr;
+    TypeAST* inner = nullptr;
 
-    explicit FallibleTypeAST(TypePtr t)
+    explicit FallibleTypeAST(TypeAST* t)
         : TypeAST(ASTKind::FallibleType), inner(t) {}
 };
 
@@ -186,9 +186,9 @@ struct FallibleTypeAST : TypeAST {
 struct CombinedTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::CombinedType;
 
-    TypePtr inner = nullptr;
+    TypeAST* inner = nullptr;
 
-    explicit CombinedTypeAST(TypePtr t)
+    explicit CombinedTypeAST(TypeAST* t)
         : TypeAST(ASTKind::CombinedType), inner(t) {}
 };
 
@@ -259,9 +259,9 @@ struct CombinedTypeAST : TypeAST {
 struct FutureTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::FutureType;
 
-    TypePtr inner = nullptr;
+    TypeAST* inner = nullptr;
 
-    explicit FutureTypeAST(TypePtr t)
+    explicit FutureTypeAST(TypeAST* t)
         : TypeAST(ASTKind::FutureType), inner(t) {}
 };
 
@@ -282,9 +282,9 @@ struct FutureTypeAST : TypeAST {
 struct ThreadTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::ThreadType;
 
-    TypePtr inner = nullptr;
+    TypeAST* inner = nullptr;
 
-    explicit ThreadTypeAST(TypePtr t)
+    explicit ThreadTypeAST(TypeAST* t)
         : TypeAST(ASTKind::ThreadType), inner(t) {}
 };
 
@@ -315,9 +315,9 @@ struct ArrayTypeAST : TypeAST {
 
     ArrayKind arrayKind;
     uint64_t size;
-    TypePtr element = nullptr;
+    TypeAST* element = nullptr;
 
-    ArrayTypeAST(ArrayKind k, uint64_t sz, TypePtr elem)
+    ArrayTypeAST(ArrayKind k, uint64_t sz, TypeAST* elem)
         : TypeAST(ASTKind::ArrayType), arrayKind(k), size(sz), element(elem) {}
 
     bool isFixed()   const { return arrayKind == ArrayKind::Fixed; }
@@ -349,9 +349,9 @@ struct ArrayTypeAST : TypeAST {
 struct RefTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::RefType;
 
-    TypePtr inner = nullptr;
+    TypeAST* inner = nullptr;
 
-    explicit RefTypeAST(TypePtr t)
+    explicit RefTypeAST(TypeAST* t)
         : TypeAST(ASTKind::RefType), inner(t) {}
 };
 
@@ -390,9 +390,9 @@ struct RefTypeAST : TypeAST {
 struct PtrTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::PtrType;
 
-    TypePtr inner = nullptr;
+    TypeAST* inner = nullptr;
 
-    explicit PtrTypeAST(TypePtr t)
+    explicit PtrTypeAST(TypeAST* t)
         : TypeAST(ASTKind::PtrType), inner(t) {}
 };
 
@@ -424,7 +424,7 @@ struct FuncTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::FuncType;
 
     ArenaSpan<ParamAST*> params;      // parameters for this group
-    TypePtr returnType = nullptr;     // return types (may contain FuncTypeAST)
+    TypeAST* returnType = nullptr;     // return types (may contain FuncTypeAST)
     bool hasArrow = false;            // semantic enforce return statement inside the body
                                       // and codegen will automatically wrap function
 
@@ -468,7 +468,7 @@ struct ModuleTypeAccessAST : TypeAST {
 
     InternedString moduleName;
     InternedString typeName;
-    ArenaSpan<TypePtr> genericArgs;
+    ArenaSpan<TypeAST*> genericArgs;
 
     ModuleTypeAccessAST() : TypeAST(ASTKind::ModuleTypeAccess) {}
 };

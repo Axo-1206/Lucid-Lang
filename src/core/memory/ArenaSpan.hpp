@@ -21,18 +21,18 @@
  *
  * @code
  *   ASTArena arena;
- *   auto builder = arena.makeBuilder<ExprPtr>();
+ *   auto builder = arena.makeBuilder<ExprAST*>();
  *   builder.push_back(parseExpr());
  *   builder.push_back(parseExpr());
- *   ArenaSpan<ExprPtr> elements = builder.build();
+ *   ArenaSpan<ExprAST*> elements = builder.build();
  *
- *   for (const ExprPtr& expr : elements) {
+ *   for (const ExprAST*& expr : elements) {
  *       // read‑only access
  *   }
  * @endcode
  *
  * @tparam T The type of elements stored in the span. Typically a pointer
- *           type (e.g., `ExprPtr`, `ParamPtr`) or a trivial value type.
+ *           type (e.g., `ExprAST*`, `ParamAST*`) or a trivial value type.
  *
  * @note This class is intentionally minimal – it provides no modifying
  *       operations. Use `ASTArena::SpanBuilder` to build spans incrementally

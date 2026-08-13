@@ -439,7 +439,7 @@ static bool isModuleLevelDeclaration(const DeclAST* decl, SemaContext& ctx) {
 
     // Check if the declaration is in the current module's decl list
     if (ctx.currentModule) {
-        for (const DeclPtr d : ctx.currentModule->decls) {
+        for (const DeclAST* d : ctx.currentModule->decls) {
             if (d == decl) return true;
         }
     }

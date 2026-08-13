@@ -137,10 +137,10 @@ struct ArrayLiteralExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::ArrayLiteralExpr;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
-    const ArenaSpan<ExprPtr> elements; // may be empty
+    const ArenaSpan<ExprAST*> elements; // may be empty
 
     // ─── Constructor ─────────────────────────────────────────────────────
-    ArrayLiteralExprAST(ArenaSpan<ExprPtr> elems)
+    ArrayLiteralExprAST(ArenaSpan<ExprAST*> elems)
         : ExprAST(ASTKind::ArrayLiteralExpr), elements(elems) {}
 };
 
@@ -150,13 +150,12 @@ struct FieldInitAST : BaseAST {
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
     const InternedString name;
-    const ExprPtr value;
+    const ExprAST* value;
 
     // ─── Constructor ─────────────────────────────────────────────────────
-    FieldInitAST(InternedString n, ExprPtr v)
+    FieldInitAST(InternedString n, ExprAST* v)
         : BaseAST(ASTKind::FieldInit), name(n), value(v) {}
 };
-using FieldInitPtr = FieldInitAST*;
 
 /// @brief Constructs a value of a named struct type.
 /// 
@@ -169,11 +168,11 @@ struct StructLiteralExprAST : ExprAST {
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
     const InternedString typeName;
-    const ArenaSpan<TypePtr> genericArgs;
-    const ArenaSpan<FieldInitPtr> inits;
+    const ArenaSpan<TypeAST*> genericArgs;
+    const ArenaSpan<FieldInitAST*> inits;
 
     // ─── Constructor ─────────────────────────────────────────────────────
-    StructLiteralExprAST(InternedString n, ArenaSpan<TypePtr> args, ArenaSpan<FieldInitPtr> in)
+    StructLiteralExprAST(InternedString n, ArenaSpan<TypeAST*> args, ArenaSpan<FieldInitAST*> in)
         : ExprAST(ASTKind::StructLiteralExpr), typeName(n), genericArgs(args), inits(in) {}
 };
 
@@ -199,7 +198,7 @@ struct IdentifierExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::IdentifierExpr;
 
     const InternedString name;
-    ArenaSpan<TypePtr> genericArgs;
+    ArenaSpan<TypeAST*> genericArgs;
 
     // ─── Semantic Fields (set by Sema) ──────────────────────────────────
     const ValueDeclAST* resolvedDecl = nullptr;
@@ -220,7 +219,7 @@ struct IdentifierExprAST : ExprAST {
 struct FieldAccessExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::FieldAccessExpr;
 
-    ExprPtr object;
+    ExprAST* object;
     const InternedString fieldName;
 
     FieldAccessExprAST(InternedString n) 
@@ -242,7 +241,7 @@ struct ModuleAccessExprAST : ExprAST {
 
     const InternedString moduleName;
     const InternedString memberName;
-    ArenaSpan<TypePtr> genericArgs; // Generic function instantiation
+    ArenaSpan<TypeAST*> genericArgs; // Generic function instantiation
 
     ModuleAccessExprAST(InternedString mod, InternedString mem) 
         : ExprAST(ASTKind::ModuleAccessExpr),
@@ -284,9 +283,9 @@ struct ModuleAccessExprAST : ExprAST {
 struct CallExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::CallExpr;
 
-    ExprPtr callee;
-    ArenaSpan<TypePtr> genericArgs;
-    ArenaSpan<ExprPtr> args;
+    ExprAST* callee;
+    ArenaSpan<TypeAST*> genericArgs;
+    ArenaSpan<ExprAST*> args;
     const bool hasArgPack = false;    // true for `fn(args)!`
 
     CallExprAST(bool a) 
@@ -316,11 +315,11 @@ struct IndexExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::IndexExpr;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
-    const ExprPtr target;
-    const ExprPtr index;
+    const ExprAST* target;
+    const ExprAST* index;
 
     // ─── Constructor ─────────────────────────────────────────────────────
-    IndexExprAST(ExprPtr t, ExprPtr i)
+    IndexExprAST(ExprAST* t, ExprAST* i)
         : ExprAST(ASTKind::IndexExpr), target(t), index(i) {}
 };
 
@@ -349,13 +348,13 @@ struct SliceExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::SliceExpr;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
-    const ExprPtr target;
-    const ExprPtr start;      // inclusive, nullptr means 0
-    const ExprPtr end;        // inclusive or exclusive depending on isExclusive
+    const ExprAST* target;
+    const ExprAST* start;      // inclusive, nullptr means 0
+    const ExprAST* end;        // inclusive or exclusive depending on isExclusive
     const bool isExclusive;
 
     // ─── Constructor ─────────────────────────────────────────────────────
-    SliceExprAST(ExprPtr t, ExprPtr s, ExprPtr e, bool ex = false)
+    SliceExprAST(ExprAST* t, ExprAST* s, ExprAST* e, bool ex = false)
         : ExprAST(ASTKind::SliceExpr), target(t), start(s), end(e), isExclusive(ex) {}
 };
 
@@ -382,8 +381,8 @@ struct BinaryExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::BinaryExpr;
 
     const BinaryOp op;
-    ExprPtr left;
-    ExprPtr right;
+    ExprAST* left;
+    ExprAST* right;
 
     BinaryExprAST(BinaryOp o) 
         : ExprAST(ASTKind::BinaryExpr), op(o) {}
@@ -406,7 +405,7 @@ struct UnaryExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::UnaryExpr;
 
     const UnaryOp op;
-    ExprPtr operand;
+    ExprAST* operand;
 
     UnaryExprAST(UnaryOp o) 
         : ExprAST(ASTKind::UnaryExpr), op(o) {}
@@ -431,8 +430,8 @@ struct AssignExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::AssignExpr;
 
     const AssignOp op;
-    ExprPtr lhs;
-    ExprPtr rhs;
+    ExprAST* lhs;
+    ExprAST* rhs;
 
     AssignExprAST(AssignOp o) 
         : ExprAST(ASTKind::AssignExpr), op(o) {}
@@ -461,11 +460,11 @@ struct NullCoalesceExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::NullCoalesceExpr;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
-    const ExprPtr value;
-    const ExprPtr fallback;
+    const ExprAST* value;
+    const ExprAST* fallback;
 
     // ─── Constructor ─────────────────────────────────────────────────────
-    NullCoalesceExprAST(ExprPtr v, ExprPtr f)
+    NullCoalesceExprAST(ExprAST* v, ExprAST* f)
         : ExprAST(ASTKind::NullCoalesceExpr), value(v), fallback(f) {}
 };
 
@@ -498,14 +497,13 @@ struct PipelineStepAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::PipelineStep;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
-    const ExprPtr callable;
-    const ArenaSpan<ExprPtr> packArgs;
+    const ExprAST* callable;
+    const ArenaSpan<ExprAST*> packArgs;
 
     // ─── Constructor ─────────────────────────────────────────────────────
-    PipelineStepAST(ExprPtr c, ArenaSpan<ExprPtr> p)
+    PipelineStepAST(ExprAST* c, ArenaSpan<ExprAST*> p)
         : BaseAST(ASTKind::PipelineStep), callable(c), packArgs(p) {}
 };
-using PipelineStepPtr = PipelineStepAST*;
 
 /// @brief A runtime pipeline chain – seed |> step |> step |> ...
 /// 
@@ -531,11 +529,11 @@ struct PipelineExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::PipelineExpr;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
-    const ExprPtr seed;
-    const ArenaSpan<PipelineStepPtr> steps;
+    const ExprAST* seed;
+    const ArenaSpan<PipelineStepAST*> steps;
 
     // ─── Constructor ─────────────────────────────────────────────────────
-    PipelineExprAST(ExprPtr s, ArenaSpan<PipelineStepPtr> st)
+    PipelineExprAST(ExprAST* s, ArenaSpan<PipelineStepAST*> st)
         : ExprAST(ASTKind::PipelineExpr), seed(s), steps(st) {}
 };
 
@@ -570,14 +568,13 @@ struct ComposeOperandAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::ComposeOperand;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
-    const ExprPtr callable;
-    const ArenaSpan<TypePtr> genericArgs;
+    const ExprAST* callable;
+    const ArenaSpan<TypeAST*> genericArgs;
 
     // ─── Constructor ─────────────────────────────────────────────────────
-    ComposeOperandAST(ExprPtr c, ArenaSpan<TypePtr> args)
+    ComposeOperandAST(ExprAST* c, ArenaSpan<TypeAST*> args)
         : BaseAST(ASTKind::ComposeOperand), callable(c), genericArgs(args) {}
 };
-using ComposeOperandPtr = ComposeOperandAST*;
 
 /// @brief A compile‑time function composition chain – f +> g +> h
 /// 
@@ -600,11 +597,11 @@ struct ComposeExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::ComposeExpr;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
-    const ExprPtr left;
-    const ArenaSpan<ComposeOperandPtr> operands;
+    const ExprAST* left;
+    const ArenaSpan<ComposeOperandAST*> operands;
 
     // ─── Constructor ─────────────────────────────────────────────────────
-    ComposeExprAST(ExprPtr l, ArenaSpan<ComposeOperandPtr> ops)
+    ComposeExprAST(ExprAST* l, ArenaSpan<ComposeOperandAST*> ops)
         : ExprAST(ASTKind::ComposeExpr), left(l), operands(ops) {}
 };
 
@@ -737,12 +734,12 @@ struct IfExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::IfExpr;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
-    const ExprPtr condition;
-    const ExprPtr thenBranch;
-    const ExprPtr elseBranch;
+    const ExprAST* condition;
+    const ExprAST* thenBranch;
+    const ExprAST* elseBranch;
 
     // ─── Constructor ─────────────────────────────────────────────────────
-    IfExprAST(ExprPtr cond, ExprPtr then_, ExprPtr else_)
+    IfExprAST(ExprAST* cond, ExprAST* then_, ExprAST* else_)
         : ExprAST(ASTKind::IfExpr), condition(cond), thenBranch(then_), elseBranch(else_) {}
 };
 
@@ -776,8 +773,8 @@ struct IfExprAST : ExprAST {
 struct RangeExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::RangeExpr;
 
-    ExprPtr lo;   // start (inclusive)
-    ExprPtr hi;   // end (inclusive/exclusive depends on flag)
+    ExprAST* lo;   // start (inclusive)
+    ExprAST* hi;   // end (inclusive/exclusive depends on flag)
     const bool isExclusive = false;   // true for ..<
 
     RangeExprAST(bool ex) 
@@ -801,7 +798,7 @@ struct IntrinsicCallExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::IntrinsicCallExpr;
 
     const InternedString intrinsicName;                 // "sizeof", "memcpy", "sqrt", etc.
-    ArenaSpan<ExprPtr> args;                      // value arguments in order
+    ArenaSpan<ExprAST*> args;                      // value arguments in order
     
     // LLVM intrinsic ID - set during semantic analysis
     // Use std::optional because not all intrinsics map to LLVM intrinsics
@@ -811,30 +808,3 @@ struct IntrinsicCallExprAST : ExprAST {
     IntrinsicCallExprAST(InternedString n) 
         : ExprAST(ASTKind::IntrinsicCallExpr), intrinsicName(n) {}
 };
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Aliases for common pointer types.
-// ─────────────────────────────────────────────────────────────────────────────
-
-using LiteralExprPtr = LiteralExprAST*;
-using ArrayLiteralExprPtr = ArrayLiteralExprAST*;
-using StructLiteralExprPtr = StructLiteralExprAST*;
-using FieldInitPtr = FieldInitAST*;
-using IdentifierExprPtr = IdentifierExprAST*;
-using FieldAccessExprPtr = FieldAccessExprAST*;
-using ModuleAccessExprPtr = ModuleAccessExprAST*;
-using CallExprPtr = CallExprAST*;
-using IndexExprPtr = IndexExprAST*;
-using SliceExprPtr = SliceExprAST*;
-using BinaryExprPtr = BinaryExprAST*;
-using UnaryExprPtr = UnaryExprAST*;
-using AssignExprPtr = AssignExprAST*;
-using NullCoalesceExprPtr = NullCoalesceExprAST*;
-using PipelineStepPtr = PipelineStepAST*;
-using PipelineExprPtr = PipelineExprAST*;
-using ComposeOperandPtr = ComposeOperandAST*;
-using ComposeExprPtr = ComposeExprAST*;
-using AnonFuncExprPtr = AnonFuncExprAST*;
-using IfExprPtr = IfExprAST*;
-using RangeExprPtr = RangeExprAST*;
-using IntrinsicCallExprPtr = IntrinsicCallExprAST*;

@@ -150,7 +150,7 @@ SyncOutcome synchronizeToContext(TokenStream& stream, ParserContext& ctx);
  *        threshold was hit partway through — check ctx.hasErrors, not a
  *        return value, to tell a clean parse from one that stopped early.
  */
-void parseInternal(TokenStream& stream, ParserContext& ctx, std::vector<DeclPtr>& outDecls);
+void parseInternal(TokenStream& stream, ParserContext& ctx, std::vector<DeclAST*>& outDecls);
 
 // ─── Declarations ──────────────────────────────────────────────────────────
 
@@ -162,9 +162,9 @@ EnumDeclAST* parseEnumDecl(TokenStream& stream, ParserContext& ctx);
 TraitDeclAST* parseTraitDecl(TokenStream& stream, ParserContext& ctx);
 StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx);
 
-FieldDeclPtr parseFieldDecl(TokenStream& stream, ParserContext& ctx);
-EnumVariantPtr parseEnumVariant(TokenStream& stream, ParserContext& ctx);
-TraitFieldPtr parseTraitField(TokenStream& stream, ParserContext& ctx);
+FieldDeclAST* parseFieldDecl(TokenStream& stream, ParserContext& ctx);
+EnumVariantAST* parseEnumVariant(TokenStream& stream, ParserContext& ctx);
+TraitFieldDeclAST* parseTraitField(TokenStream& stream, ParserContext& ctx);
 
 // ─── Statements ────────────────────────────────────────────────────────────
 
@@ -188,7 +188,7 @@ ExprAST* parseExpr(TokenStream& stream, ParserContext& ctx);
 ExprAST* parsePrattExpr(TokenStream& stream, ParserContext& ctx, int minPrec);
 ExprAST* parsePrefixExpr(TokenStream& stream, ParserContext& ctx);
 ExprAST* parsePrimaryExpr(TokenStream& stream, ParserContext& ctx);
-ExprAST* parsePostfixExpr(TokenStream& stream, ParserContext& ctx, ExprPtr lhs);
+ExprAST* parsePostfixExpr(TokenStream& stream, ParserContext& ctx, ExprAST* lhs);
 
 // ─── Primary Expression Helpers ───────────────────────────────────────────
 
@@ -211,18 +211,18 @@ JoinStmtAST* parseJoinStmt(TokenStream& stream, ParserContext& ctx);
 
 // ─── Call & Index ──────────────────────────────────────────────────────────
 
-CallExprAST* parseCallExpr(TokenStream& stream, ParserContext& ctx, ExprPtr callee, ArenaSpan<TypeAST*> genericArgs);
+CallExprAST* parseCallExpr(TokenStream& stream, ParserContext& ctx, ExprAST* callee, ArenaSpan<TypeAST*> genericArgs);
 IntrinsicCallExprAST* parseIntrinsicCallExpr(TokenStream& stream, ParserContext& ctx);
-IndexExprAST* parseIndexExpr(TokenStream& stream, ParserContext& ctx, ExprPtr target);
-SliceExprAST* parseSliceExpr(TokenStream& stream, ParserContext& ctx, ExprPtr target);
+IndexExprAST* parseIndexExpr(TokenStream& stream, ParserContext& ctx, ExprAST* target);
+SliceExprAST* parseSliceExpr(TokenStream& stream, ParserContext& ctx, ExprAST* target);
 
-FieldAccessExprAST* parseFieldAccessExpr(TokenStream& stream, ParserContext& ctx, ExprPtr lhs);
+FieldAccessExprAST* parseFieldAccessExpr(TokenStream& stream, ParserContext& ctx, ExprAST* lhs);
 ModuleAccessExprAST* parseModuleAccessExpr(TokenStream& stream, ParserContext& ctx);
 
 // ─── Pipeline & Composition ───────────────────────────────────────────────
 
-ExprAST* parsePipelineExpr(TokenStream& stream, ParserContext& ctx, ExprPtr seed);
-ExprAST* parseComposeExpr(TokenStream& stream, ParserContext& ctx, ExprPtr lhs);
+ExprAST* parsePipelineExpr(TokenStream& stream, ParserContext& ctx, ExprAST* seed);
+ExprAST* parseComposeExpr(TokenStream& stream, ParserContext& ctx, ExprAST* lhs);
 PipelineStepAST* parsePipelineStep(TokenStream& stream, ParserContext& ctx);
 ComposeOperandAST* parseComposeOperand(TokenStream& stream, ParserContext& ctx);
 
@@ -243,14 +243,14 @@ TypeAST* parseTypeWithQualifier(TokenStream& stream, ParserContext& ctx, TypeAST
 std::optional<DocComment> harvestDocComment(TokenStream& stream, ParserContext& ctx);
 ArenaSpan<AttributePtr> parseAttributes(TokenStream& stream, ParserContext& ctx);
 AttributePtr parseAttribute(TokenStream& stream, ParserContext& ctx);
-LiteralExprPtr parseAttributeArgLiteral(TokenStream& stream, ParserContext& ctx);
+LiteralExprAST* parseAttributeArgLiteral(TokenStream& stream, ParserContext& ctx);
 
-GenericParamDeclPtr parseGenericParamDecl(TokenStream& stream, ParserContext& ctx);
-ArenaSpan<GenericParamDeclPtr> parseGenericParamDecls(TokenStream& stream, ParserContext& ctx);
-ArenaSpan<TypePtr> parseGenericArgs(TokenStream& stream, ParserContext& ctx);
+GenericParamDeclAST* parseGenericParamDecl(TokenStream& stream, ParserContext& ctx);
+ArenaSpan<GenericParamDeclAST*> parseGenericParamDecls(TokenStream& stream, ParserContext& ctx);
+ArenaSpan<TypeAST*> parseGenericArgs(TokenStream& stream, ParserContext& ctx);
 
 ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx);
-std::vector<ParamPtr> parseParamList(TokenStream& stream, ParserContext& ctx, bool allowNamme);
+std::vector<ParamAST*> parseParamList(TokenStream& stream, ParserContext& ctx, bool allowNamme);
 std::vector<InternedString> parseImportPath(TokenStream& stream, ParserContext& ctx);
 
 // ─── Lookahead Helpers ────────────────────────────────────────────────────
@@ -267,8 +267,8 @@ AssignOp tokenToAssignOp(TokenType type);
 
 // ─── Infix Dispatch ───────────────────────────────────────────────────────
 
-ExprPtr parseInfixAssign(TokenStream& stream, ParserContext& ctx, ExprPtr lhs,  TokenType opTok);
-ExprPtr parseInfixNullCoalesce(TokenStream& stream, ParserContext& ctx, ExprPtr lhs);
-ExprPtr parseInfixBinary(TokenStream& stream, ParserContext& ctx, ExprPtr lhs, TokenType opTok, int prec);
+ExprAST* parseInfixAssign(TokenStream& stream, ParserContext& ctx, ExprAST* lhs,  TokenType opTok);
+ExprAST* parseInfixNullCoalesce(TokenStream& stream, ParserContext& ctx, ExprAST* lhs);
+ExprAST* parseInfixBinary(TokenStream& stream, ParserContext& ctx, ExprAST* lhs, TokenType opTok, int prec);
 
 } // namespace parser

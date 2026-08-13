@@ -239,7 +239,7 @@ void lowerSwitchStmt(SwitchStmtAST* stmt, CodeGenContext& ctx) {
     std::vector<llvm::ConstantInt*> caseValues;
     std::vector<llvm::BasicBlock*> caseBodyBlocks;
 
-    for (const SwitchCasePtr caseStmt : stmt->cases) {
+    for (const SwitchCaseAST* caseStmt : stmt->cases) {
         llvm::BasicBlock* caseBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "case", func);
         caseBlocks.push_back(caseBlock);
 
@@ -287,7 +287,7 @@ void lowerSwitchStmt(SwitchStmtAST* stmt, CodeGenContext& ctx) {
 
     // ─── Lower case bodies ──────────────────────────────────────────────
     for (size_t i = 0; i < stmt->cases.size(); ++i) {
-        const SwitchCasePtr caseStmt = stmt->cases[i];
+        const SwitchCaseAST* caseStmt = stmt->cases[i];
         llvm::BasicBlock* caseBlock = caseBlocks[i];
 
         ctx.builder.SetInsertPoint(caseBlock);

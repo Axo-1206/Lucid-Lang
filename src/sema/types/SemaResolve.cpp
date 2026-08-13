@@ -98,7 +98,7 @@ TypeAST* resolveNamedType(const NamedTypeAST* type, SemaContext& ctx) {
         }
 
         // Resolve each generic argument type
-        for (const TypePtr arg : type->genericArgs) {
+        for (const TypeAST* arg : type->genericArgs) {
             if (!resolveType(arg, ctx)) {
                 return nullptr;
             }
@@ -175,7 +175,7 @@ TypeAST* resolveModuleTypeAccess(const ModuleTypeAccessAST* type, SemaContext& c
         }
 
         // Resolve each generic argument type
-        for (const TypePtr arg : type->genericArgs) {
+        for (const TypeAST* arg : type->genericArgs) {
             if (!resolveType(arg, ctx)) {
                 return nullptr;
             }
@@ -475,7 +475,7 @@ const TraitDeclAST* resolveTraitRef(const NamedTypeAST* ref, SemaContext& ctx) {
             return nullptr;
         }
 
-        for (const TypePtr arg : ref->genericArgs) {
+        for (const TypeAST* arg : ref->genericArgs) {
             if (!resolveType(arg, ctx)) {
                 return nullptr;
             }

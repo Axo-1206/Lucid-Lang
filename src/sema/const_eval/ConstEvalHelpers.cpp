@@ -126,7 +126,7 @@ void collectDepsFromStmt(SemaContext& ctx, const StmtAST* stmt,
     switch (stmt->kind) {
         case ASTKind::BlockStmt: {
             const BlockStmtAST* block = stmt->as<BlockStmtAST>();
-            for (const StmtPtr s : block->stmts) {
+            for (const StmtAST* s : block->stmts) {
                 collectDepsFromStmt(ctx, s, deps);
             }
             break;

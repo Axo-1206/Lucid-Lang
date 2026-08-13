@@ -772,15 +772,6 @@ struct TypeDeclAST : DeclAST {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Ownership aliases — all pointers are raw because the arena owns all memory.
-// ─────────────────────────────────────────────────────────────────────────────
-
-using TypePtr    = TypeAST*;
-using DeclPtr    = DeclAST*;
-using ExprPtr    = ExprAST*;
-using StmtPtr    = StmtAST*;
-
-// ─────────────────────────────────────────────────────────────────────────────
 // ModuleAST — root node for a single translation unit.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -835,7 +826,7 @@ struct ModuleAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::Program;
 
     InternedString       filePath;
-    ArenaSpan<DeclPtr>   decls;
+    ArenaSpan<DeclAST*>   decls;
     bool hasErrors = false;
 
     ModuleAST() : BaseAST(ASTKind::Program) {}
@@ -891,10 +882,7 @@ struct GenericParamDeclAST : DeclAST {
     explicit GenericParamDeclAST(InternedString n)
         : DeclAST(ASTKind::GenericParamDecl, n) {}
 };
-
-using ParamPtr          = ParamAST*;
-using ParamGroup        = std::vector<ParamPtr>;
-using GenericParamDeclPtr   = GenericParamDeclAST*;
+using ParamGroup        = std::vector<ParamAST*>;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // UnknownAST family — error recovery nodes.

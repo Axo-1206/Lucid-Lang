@@ -140,7 +140,7 @@ VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
     InternedString name = ctx.pool.intern(nameTok.value);
     
     // Parse type (required)
-    TypePtr type = parseType(stream, ctx);
+    TypeAST* type = parseType(stream, ctx);
     if (!type) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
                                 "expected type, got '", stream.peekValue(), "'");
@@ -149,7 +149,7 @@ VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
     }
     
     // Parse initializer
-    ExprPtr init = nullptr;
+    ExprAST* init = nullptr;
     if (stream.match(TokenType::ASSIGN)) {
         init = parseExpr(stream, ctx);
         if (!init) {
@@ -213,7 +213,7 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     InternedString name = ctx.pool.intern(nameTok.value);
     
     // ─── 3. Parse generic parameters ────────────────────────────────────────
-    ArenaSpan<GenericParamDeclPtr> genericParams;
+    ArenaSpan<GenericParamDeclAST*> genericParams;
     if (stream.check(TokenType::LESS)) {
         genericParams = parseGenericParamDecls(stream, ctx);
     }
@@ -236,7 +236,7 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     FuncTypeAST* funcType = type->as<FuncTypeAST>();
     
     // ─── 5. Parse '=' and body, or detect foreign function ──────────────────
-    StmtPtr body = nullptr;
+    StmtAST* body = nullptr;
     bool isForeignFunction = false;
     
     if (stream.match(TokenType::ASSIGN)) {
@@ -276,7 +276,7 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
                 return nullptr;
             }
             
-            ExprPtr exprBody = parseExpr(stream, ctx);
+            ExprAST* exprBody = parseExpr(stream, ctx);
             if (!exprBody) {
                 ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                         "expected function body expression");
@@ -359,7 +359,7 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
     InternedString name = ctx.pool.intern(nameTok.value);
     
     // 3. Parse generic parameters
-    ArenaSpan<GenericParamDeclPtr> genericParams;
+    ArenaSpan<GenericParamDeclAST*> genericParams;
     if (stream.check(TokenType::LESS)) {
         genericParams = parseGenericParamDecls(stream, ctx);
     }
@@ -398,7 +398,7 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
 
     ScopedContext bodyGuard(ctx, SyntacticContext::StructBody, stream.currentLoc());
 
-    std::vector<FieldDeclPtr> fields;
+    std::vector<FieldDeclAST*> fields;
     
     if (stream.check(TokenType::RBRACE)) {
         stream.consume();
@@ -413,7 +413,7 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
         auto* structDecl = ctx.arena.make<StructDeclAST>(
             name,
             genericParams,
-            ctx.arena.makeBuilder<FieldDeclPtr>().build(),
+            ctx.arena.makeBuilder<FieldDeclAST*>().build(),
             traitBuilder.build()
         );
         structDecl->loc = loc;
@@ -428,7 +428,7 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
     }
     
     while (!stream.isAtEnd() && !stream.check(TokenType::RBRACE)) {
-        FieldDeclPtr field = parseFieldDecl(stream, ctx);
+        FieldDeclAST* field = parseFieldDecl(stream, ctx);
         if (field) {
             fields.push_back(field);
         } else {
@@ -449,7 +449,7 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
     }
     
     // Build field span
-    auto fieldBuilder = ctx.arena.makeBuilder<FieldDeclPtr>();
+    auto fieldBuilder = ctx.arena.makeBuilder<FieldDeclAST*>();
     for (auto* f : fields) {
         fieldBuilder.push_back(f);
     }
@@ -477,7 +477,7 @@ StructDeclAST* parseStructDecl(TokenStream& stream, ParserContext& ctx) {
 // parseFieldDecl
 // =============================================================================
 
-FieldDeclPtr parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
+FieldDeclAST* parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
     auto doc = harvestDocComment(stream, ctx);
     
@@ -498,7 +498,7 @@ FieldDeclPtr parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
     InternedString name = ctx.pool.intern(nameTok.value);
     
     // ─── 4. Parse field type ────────────────────────────────────────────────
-    TypePtr type = parseType(stream, ctx);
+    TypeAST* type = parseType(stream, ctx);
     if (!type) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
                                 "expected field type, got '", stream.peekValue(), "'");
@@ -507,8 +507,8 @@ FieldDeclPtr parseFieldDecl(TokenStream& stream, ParserContext& ctx) {
     }
     
     // ─── 5. Parse default value ─────────────────────────────────────────────
-    ExprPtr defaultVal = nullptr;
-    StmtPtr defaultBody = nullptr;
+    ExprAST* defaultVal = nullptr;
+    StmtAST* defaultBody = nullptr;
     
     if (stream.match(TokenType::ASSIGN)) {
         // ─── 5a. Check for block body ──────────────────────────────────────
@@ -599,7 +599,7 @@ EnumDeclAST* parseEnumDecl(TokenStream& stream, ParserContext& ctx) {
     
     PrimitiveTypeAST* backingType = nullptr;
     if (stream.match(TokenType::COLON)) {
-        TypePtr type = parseType(stream, ctx);
+        TypeAST* type = parseType(stream, ctx);
         if (type && type->isa<PrimitiveTypeAST>()) {
             backingType = type->as<PrimitiveTypeAST>();
         } else {
@@ -620,7 +620,7 @@ EnumDeclAST* parseEnumDecl(TokenStream& stream, ParserContext& ctx) {
 
     ScopedContext bodyGuard(ctx, SyntacticContext::EnumBody, stream.currentLoc());
 
-    std::vector<EnumVariantPtr> variants;
+    std::vector<EnumVariantAST*> variants;
     
     if (stream.check(TokenType::RBRACE)) {
         stream.consume();
@@ -628,7 +628,7 @@ EnumDeclAST* parseEnumDecl(TokenStream& stream, ParserContext& ctx) {
         // Create EnumDeclAST using constructor
         auto* enumDecl = ctx.arena.make<EnumDeclAST>(
             name,
-            ctx.arena.makeBuilder<EnumVariantPtr>().build(),
+            ctx.arena.makeBuilder<EnumVariantAST*>().build(),
             backingType
         );
         enumDecl->loc = loc;
@@ -643,7 +643,7 @@ EnumDeclAST* parseEnumDecl(TokenStream& stream, ParserContext& ctx) {
     }
     
     while (!stream.isAtEnd() && !stream.check(TokenType::RBRACE)) {
-        EnumVariantPtr variant = parseEnumVariant(stream, ctx);
+        EnumVariantAST* variant = parseEnumVariant(stream, ctx);
         if (variant) {
             variants.push_back(variant);
         } else {
@@ -664,7 +664,7 @@ EnumDeclAST* parseEnumDecl(TokenStream& stream, ParserContext& ctx) {
     }
     
     // Build variant span
-    auto builder = ctx.arena.makeBuilder<EnumVariantPtr>();
+    auto builder = ctx.arena.makeBuilder<EnumVariantAST*>();
     for (auto* v : variants) {
         builder.push_back(v);
     }
@@ -681,7 +681,7 @@ EnumDeclAST* parseEnumDecl(TokenStream& stream, ParserContext& ctx) {
 // parseEnumVariant
 // =============================================================================
 
-EnumVariantPtr parseEnumVariant(TokenStream& stream, ParserContext& ctx) {
+EnumVariantAST* parseEnumVariant(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
     auto doc = harvestDocComment(stream, ctx);
     
@@ -751,7 +751,7 @@ TraitDeclAST* parseTraitDecl(TokenStream& stream, ParserContext& ctx) {
     Token nameTok = stream.consume();
     InternedString name = ctx.pool.intern(nameTok.value);
     
-    ArenaSpan<GenericParamDeclPtr> genericParams;
+    ArenaSpan<GenericParamDeclAST*> genericParams;
     if (stream.check(TokenType::LESS)) {
         genericParams = parseGenericParamDecls(stream, ctx);
     }
@@ -766,7 +766,7 @@ TraitDeclAST* parseTraitDecl(TokenStream& stream, ParserContext& ctx) {
 
     ScopedContext bodyGuard(ctx, SyntacticContext::TraitBody, stream.currentLoc());
 
-    std::vector<TraitFieldPtr> fields;
+    std::vector<TraitFieldDeclAST*> fields;
     
     if (stream.check(TokenType::RBRACE)) {
         stream.consume();
@@ -775,7 +775,7 @@ TraitDeclAST* parseTraitDecl(TokenStream& stream, ParserContext& ctx) {
         auto* traitDecl = ctx.arena.make<TraitDeclAST>(
             name,
             genericParams,
-            ctx.arena.makeBuilder<TraitFieldPtr>().build()
+            ctx.arena.makeBuilder<TraitFieldDeclAST*>().build()
         );
         traitDecl->loc = loc;
         
@@ -789,7 +789,7 @@ TraitDeclAST* parseTraitDecl(TokenStream& stream, ParserContext& ctx) {
     }
     
     while (!stream.isAtEnd() && !stream.check(TokenType::RBRACE)) {
-        TraitFieldPtr field = parseTraitField(stream, ctx);
+        TraitFieldDeclAST* field = parseTraitField(stream, ctx);
         if (field) {
             fields.push_back(field);
         } else {
@@ -818,7 +818,7 @@ TraitDeclAST* parseTraitDecl(TokenStream& stream, ParserContext& ctx) {
     }
     
     // Build field span
-    auto builder = ctx.arena.makeBuilder<TraitFieldPtr>();
+    auto builder = ctx.arena.makeBuilder<TraitFieldDeclAST*>();
     for (auto* f : fields) {
         builder.push_back(f);
     }
@@ -835,7 +835,7 @@ TraitDeclAST* parseTraitDecl(TokenStream& stream, ParserContext& ctx) {
 // parseTraitField
 // =============================================================================
 
-TraitFieldPtr parseTraitField(TokenStream& stream, ParserContext& ctx) {
+TraitFieldDeclAST* parseTraitField(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
     auto doc = harvestDocComment(stream, ctx);
     
@@ -851,7 +851,7 @@ TraitFieldPtr parseTraitField(TokenStream& stream, ParserContext& ctx) {
     Token nameTok = stream.consume();
     InternedString name = ctx.pool.intern(nameTok.value);
     
-    TypePtr type = parseType(stream, ctx);
+    TypeAST* type = parseType(stream, ctx);
     if (!type) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
                                 "expected trait field type, got '", stream.peekValue(), "'");

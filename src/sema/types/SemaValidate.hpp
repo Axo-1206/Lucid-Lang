@@ -67,13 +67,13 @@ bool checkTraitFieldConflicts(const StructDeclAST* structDecl,
 // ─── Generic Validation ──────────────────────────────────────────────────
 
 /// @brief Validate generic arguments against parameters.
-bool validateGenericArguments(ArenaSpan<TypePtr> args,
-                               ArenaSpan<GenericParamDeclPtr> params,
+bool validateGenericArguments(ArenaSpan<TypeAST*> args,
+                               ArenaSpan<GenericParamDeclAST*> params,
                                const BaseAST* useSite,
                                SemaContext& ctx);
 
 /// @brief Validate that all generic parameters are used in the declaration.
-bool validateGenericParameterUsage(ArenaSpan<GenericParamDeclPtr> params,
+bool validateGenericParameterUsage(ArenaSpan<GenericParamDeclAST*> params,
                                     const std::vector<const TypeAST*>& types,
                                     const BaseAST* useSite,
                                     SemaContext& ctx);

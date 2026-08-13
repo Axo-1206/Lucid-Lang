@@ -286,7 +286,7 @@ AttributePtr parseAttribute(TokenStream& stream, ParserContext& ctx) {
 // parseAttributeArgLiteral - ITEM LEVEL - NO comma handling
 // =============================================================================
 
-LiteralExprPtr parseAttributeArgLiteral(TokenStream& stream, ParserContext& ctx) {
+LiteralExprAST* parseAttributeArgLiteral(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
     Token tok = stream.peek();
     
@@ -345,15 +345,15 @@ LiteralExprPtr parseAttributeArgLiteral(TokenStream& stream, ParserContext& ctx)
 // parseGenericParamDecls - LIST LEVEL - handles commas
 // =============================================================================
 
-ArenaSpan<GenericParamDeclPtr> parseGenericParamDecls(TokenStream& stream, ParserContext& ctx) {
+ArenaSpan<GenericParamDeclAST*> parseGenericParamDecls(TokenStream& stream, ParserContext& ctx) {
     LOG_PARSER_DETAIL("parseGenericParamDecls: parsing generic parameters");
     
-    std::vector<GenericParamDeclPtr> params;
+    std::vector<GenericParamDeclAST*> params;
     
     if (!stream.check(TokenType::LESS)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected '<', got '", stream.peekValue(), "'");
-        return ctx.arena.makeBuilder<GenericParamDeclPtr>().build();
+        return ctx.arena.makeBuilder<GenericParamDeclAST*>().build();
     }
     stream.consume(); // Consume '<'
     
@@ -361,7 +361,7 @@ ArenaSpan<GenericParamDeclPtr> parseGenericParamDecls(TokenStream& stream, Parse
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
                                 "expected generic parameter name, got '>'");
         stream.consume(); // Consume '>'
-        return ctx.arena.makeBuilder<GenericParamDeclPtr>().build();
+        return ctx.arena.makeBuilder<GenericParamDeclAST*>().build();
     }
     
     ScopedContext guard(ctx, SyntacticContext::GenericParams, stream.currentLoc());
@@ -374,7 +374,7 @@ ArenaSpan<GenericParamDeclPtr> parseGenericParamDecls(TokenStream& stream, Parse
         isFirst = false;
         
         // Parse single generic parameter (NO comma handling inside)
-        GenericParamDeclPtr param = parseGenericParamDecl(stream, ctx);
+        GenericParamDeclAST* param = parseGenericParamDecl(stream, ctx);
         if (param) {
             params.push_back(param);
         } else {
@@ -391,7 +391,7 @@ ArenaSpan<GenericParamDeclPtr> parseGenericParamDecls(TokenStream& stream, Parse
         stream.consume(); // Consume '>'
     }
     
-    auto builder = ctx.arena.makeBuilder<GenericParamDeclPtr>();
+    auto builder = ctx.arena.makeBuilder<GenericParamDeclAST*>();
     for (auto* p : params) {
         builder.push_back(p);
     }
@@ -403,7 +403,7 @@ ArenaSpan<GenericParamDeclPtr> parseGenericParamDecls(TokenStream& stream, Parse
 // parseGenericParamDecl - ITEM LEVEL - NO comma handling
 // =============================================================================
 
-GenericParamDeclPtr parseGenericParamDecl(TokenStream& stream, ParserContext& ctx) {
+GenericParamDeclAST* parseGenericParamDecl(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
     
     if (!stream.check(TokenType::IDENTIFIER)) {
@@ -490,15 +490,15 @@ GenericParamDeclPtr parseGenericParamDecl(TokenStream& stream, ParserContext& ct
 // parseGenericArgs - LIST LEVEL - handles commas
 // =============================================================================
 
-ArenaSpan<TypePtr> parseGenericArgs(TokenStream& stream, ParserContext& ctx) {
+ArenaSpan<TypeAST*> parseGenericArgs(TokenStream& stream, ParserContext& ctx) {
     LOG_PARSER_DETAIL("parseGenericArgs: parsing generic arguments");
 
-    std::vector<TypePtr> args;
+    std::vector<TypeAST*> args;
 
     if (!stream.check(TokenType::LESS)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected '<', got '", stream.peekValue(), "'");
-        return ctx.arena.makeBuilder<TypePtr>().build();
+        return ctx.arena.makeBuilder<TypeAST*>().build();
     }
     stream.consume(); // Consume '<'
 
@@ -506,7 +506,7 @@ ArenaSpan<TypePtr> parseGenericArgs(TokenStream& stream, ParserContext& ctx) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
                                 "expected generic argument type, got '>'");
         stream.consume(); // Consume '>'
-        return ctx.arena.makeBuilder<TypePtr>().build();
+        return ctx.arena.makeBuilder<TypeAST*>().build();
     }
 
     ScopedContext guard(ctx, SyntacticContext::GenericArgs, stream.currentLoc());
@@ -519,7 +519,7 @@ ArenaSpan<TypePtr> parseGenericArgs(TokenStream& stream, ParserContext& ctx) {
         isFirst = false;
         
         // Parse single type (NO comma handling inside)
-        TypePtr type = parseType(stream, ctx);
+        TypeAST* type = parseType(stream, ctx);
         if (type) {
             args.push_back(type);
         } else {
@@ -536,7 +536,7 @@ ArenaSpan<TypePtr> parseGenericArgs(TokenStream& stream, ParserContext& ctx) {
         stream.consume(); // Consume '>'
     }
 
-    auto builder = ctx.arena.makeBuilder<TypePtr>();
+    auto builder = ctx.arena.makeBuilder<TypeAST*>();
     for (auto* arg : args) {
         builder.push_back(arg);
     }
@@ -548,10 +548,10 @@ ArenaSpan<TypePtr> parseGenericArgs(TokenStream& stream, ParserContext& ctx) {
 // parseParamList - LIST LEVEL - handles commas
 // =============================================================================
 
-std::vector<ParamPtr> parseParamList(TokenStream& stream, ParserContext& ctx, bool allowNames) {
+std::vector<ParamAST*> parseParamList(TokenStream& stream, ParserContext& ctx, bool allowNames) {
     LOG_PARSER_DETAIL("parseParamList: parsing parameter list (allowNames=", allowNames, ")");
     
-    std::vector<ParamPtr> params;
+    std::vector<ParamAST*> params;
     
     if (!stream.check(TokenType::LPAREN)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
@@ -600,7 +600,7 @@ std::vector<ParamPtr> parseParamList(TokenStream& stream, ParserContext& ctx, bo
         bool isVariadic = stream.match(TokenType::VARIADIC);
         
         // ─── Parse the type ──────────────────────────────────────────────────
-        TypePtr type = parseType(stream, ctx);
+        TypeAST* type = parseType(stream, ctx);
         if (!type) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
                                     "expected parameter type, got '", stream.peekValue(), "'");
@@ -664,18 +664,18 @@ std::vector<ParamPtr> parseParamList(TokenStream& stream, ParserContext& ctx, bo
 ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx) {
     LOG_PARSER_DETAIL("parseArgList: parsing argument list");
     
-    std::vector<ExprPtr> args;
+    std::vector<ExprAST*> args;
     
     if (!stream.check(TokenType::LPAREN)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected '(', got '", stream.peekValue(), "'");
-        return ctx.arena.makeBuilder<ExprPtr>().build();
+        return ctx.arena.makeBuilder<ExprAST*>().build();
     }
     stream.consume(); // Consume '('
     
     if (stream.check(TokenType::RPAREN)) {
         stream.consume(); // Consume ')'
-        return ctx.arena.makeBuilder<ExprPtr>().build();
+        return ctx.arena.makeBuilder<ExprAST*>().build();
     }
 
     bool isFirst = true;
@@ -685,7 +685,7 @@ ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx) {
         handleCommaGap(stream, ctx, "argument", isFirst);
         isFirst = false;
         
-        ExprPtr arg = parseExpr(stream, ctx);
+        ExprAST* arg = parseExpr(stream, ctx);
         if (arg) {
             args.push_back(arg);
         } else {
@@ -706,7 +706,7 @@ ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx) {
         stream.consume(); // Consume ')'
     }
     
-    auto builder = ctx.arena.makeBuilder<ExprPtr>();
+    auto builder = ctx.arena.makeBuilder<ExprAST*>();
     for (auto* arg : args) {
         builder.push_back(arg);
     }

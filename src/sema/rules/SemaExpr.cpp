@@ -329,7 +329,7 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetTyp
         const FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
 
         // Resolve each generic argument
-        for (const TypePtr arg : expr->genericArgs) {
+        for (const TypeAST* arg : expr->genericArgs) {
             if (!resolveType(arg, ctx)) {
                 ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
                                       "invalid generic argument type for '",
@@ -578,7 +578,7 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, const TypeAST* tar
                 expr->valueState = ValueState::Unknown;
                 return ctx.getUnknownType();
             }
-            const_cast<TypePtr&>(expr->genericArgs[i]) = resolvedArg;
+            const_cast<TypeAST*&>(expr->genericArgs[i]) = resolvedArg;
         }
 
         // ─── 2c. Validate constraints ─────────────────────────────────────
@@ -1772,7 +1772,7 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, const TypeAST* targe
 
         const FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
 
-        for (const TypePtr arg : expr->genericArgs) {
+        for (const TypeAST* arg : expr->genericArgs) {
             if (!resolveType(arg, ctx)) {
                 ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
                                       "invalid generic argument type for '",

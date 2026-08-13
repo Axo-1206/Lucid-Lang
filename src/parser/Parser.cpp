@@ -83,14 +83,14 @@ ModuleAST* parse(const std::string& path,
     
     // Parse declarations
     TokenStream stream(std::move(tokens));
-    std::vector<DeclPtr> allDecls;
+    std::vector<DeclAST*> allDecls;
     parseInternal(stream, ctx, allDecls);
     
     // Build module AST
     auto* thisModule = ctx.arena.make<ModuleAST>();
     thisModule->filePath = filePath;
     
-    auto builder = ctx.arena.makeBuilder<DeclPtr>();
+    auto builder = ctx.arena.makeBuilder<DeclAST*>();
     for (auto* d : allDecls) {
         builder.push_back(d);
     }
@@ -138,7 +138,7 @@ std::vector<ModuleAST*> parseProgram(const std::string& rootPath,
 // parseInternal() - Parse a file's internal declarations
 // =============================================================================
 
-void parseInternal(TokenStream& stream, ParserContext& ctx, std::vector<DeclPtr>& outDecls) {
+void parseInternal(TokenStream& stream, ParserContext& ctx, std::vector<DeclAST*>& outDecls) {
     LOG_PARSER_MINIMAL("Parsing internal declarations");
     
     int declCount = 0;

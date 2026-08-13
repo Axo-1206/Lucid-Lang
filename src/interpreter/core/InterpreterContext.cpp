@@ -236,7 +236,7 @@ void registerLibrariesFromModule(InterpreterContext& ctx, ModuleAST* module) {
     if (!module) return;
 
     InternedString linkName = ctx.pool.intern("link");
-    for (DeclPtr decl : module->decls) {
+    for (DeclAST* decl : module->decls) {
         for (AttributePtr attr : decl->attributes) {
             if (attr->name == linkName) {
                 for (LiteralExprAST* arg : attr->args) {

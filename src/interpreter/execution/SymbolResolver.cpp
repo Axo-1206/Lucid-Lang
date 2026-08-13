@@ -19,7 +19,7 @@ InternedString findEntryPoint(InterpreterContext& ctx, InternedString entryPoint
         
         // Scan all loaded modules for the function
         for (const auto& [id, module] : ctx.loadedModules) {
-            for (DeclPtr decl : module->decls) {
+            for (DeclAST* decl : module->decls) {
                 if (FuncDeclAST* func = decl->as<FuncDeclAST>()) {
                     // Check if this function matches the entry point name
                     if (func->name == entryPoint) {
@@ -108,7 +108,7 @@ std::vector<const FuncDeclAST*> getEntryPointCandidates(InterpreterContext& ctx)
     std::vector<const FuncDeclAST*> candidates;
     
     for (const auto& [id, module] : ctx.loadedModules) {
-        for (DeclPtr decl : module->decls) {
+        for (DeclAST* decl : module->decls) {
             if (FuncDeclAST* func = decl->as<FuncDeclAST>()) {
                 if (isEntryPointCandidate(func, ctx)) {
                     candidates.push_back(func);

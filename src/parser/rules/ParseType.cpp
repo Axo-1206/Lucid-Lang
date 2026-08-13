@@ -36,7 +36,7 @@ namespace parser {
 TypeAST* parseType(TokenStream& stream, ParserContext& ctx) {
     LOG_PARSER_DETAIL("parseType: parsing type");
     
-    TypePtr type = parseBaseType(stream, ctx);
+    TypeAST* type = parseBaseType(stream, ctx);
     if (!type) {
         return nullptr;
     }
@@ -174,7 +174,7 @@ TypeAST* parseNamedType(TokenStream& stream, ParserContext& ctx) {
         Token secondTok = stream.consume();
         InternedString typeName = ctx.pool.intern(secondTok.value);
         
-        ArenaSpan<TypePtr> genericArgs;
+        ArenaSpan<TypeAST*> genericArgs;
         if (stream.check(TokenType::LESS)) {
             genericArgs = parseGenericArgs(stream, ctx);
         }
@@ -191,7 +191,7 @@ TypeAST* parseNamedType(TokenStream& stream, ParserContext& ctx) {
     }
     
     // ─── Unqualified type: IDENTIFIER [ '<' type_args '>' ] ──────────
-    ArenaSpan<TypePtr> genericArgs;
+    ArenaSpan<TypeAST*> genericArgs;
     if (stream.check(TokenType::LESS)) {
         genericArgs = parseGenericArgs(stream, ctx);
     }
@@ -251,7 +251,7 @@ TypeAST* parseArrayType(TokenStream& stream, ParserContext& ctx) {
     }
     stream.consume(); // Consume ']'
     
-    TypePtr element = parseType(stream, ctx);
+    TypeAST* element = parseType(stream, ctx);
     if (!element) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
                                 "expected array element type, got '", stream.peekValue(), "'");
@@ -281,7 +281,7 @@ TypeAST* parseRefType(TokenStream& stream, ParserContext& ctx) {
     }
     stream.consume(); // Consume '&'
     
-    TypePtr inner = parseType(stream, ctx);
+    TypeAST* inner = parseType(stream, ctx);
     if (!inner) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
                                 "expected reference target type, got '", stream.peekValue(), "'");
@@ -311,7 +311,7 @@ TypeAST* parsePtrType(TokenStream& stream, ParserContext& ctx) {
     }
     stream.consume(); // Consume '*'
     
-    TypePtr inner = parseType(stream, ctx);
+    TypeAST* inner = parseType(stream, ctx);
     if (!inner) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
                                 "expected pointer target type, got '", stream.peekValue(), "'");
@@ -337,13 +337,13 @@ TypeAST* parseFuncType(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
     
     // 1. Parse first parameter group (before any ->)
-    std::vector<ParamPtr> params = parseParamList(stream, ctx, true);
+    std::vector<ParamAST*> params = parseParamList(stream, ctx, true);
     
     // 2. Create function type node
     auto* funcType = ctx.arena.make<FuncTypeAST>();
     funcType->loc = loc;
     
-    auto paramBuilder = ctx.arena.makeBuilder<ParamPtr>();
+    auto paramBuilder = ctx.arena.makeBuilder<ParamAST*>();
     for (auto* p : params) {
         paramBuilder.push_back(p);
     }
@@ -360,13 +360,13 @@ TypeAST* parseFuncType(TokenStream& stream, ParserContext& ctx) {
 
     // 4. Parse return type
     if (stream.check(TokenType::LPAREN)) {
-        TypePtr returnType = parseFuncType(stream, ctx);
+        TypeAST* returnType = parseFuncType(stream, ctx);
         funcType->returnType = returnType;
         LOG_PARSER_DETAIL("parseFuncType: curried function");
         return funcType;
     }
     
-    TypePtr returnType = parseType(stream, ctx);
+    TypeAST* returnType = parseType(stream, ctx);
     if (!returnType) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
                                 "expected return type, got '", stream.peekValue(), "'");
@@ -383,7 +383,7 @@ TypeAST* parseFuncType(TokenStream& stream, ParserContext& ctx) {
 // parseTypeWithQualifier
 // =============================================================================
 
-TypeAST* parseTypeWithQualifier(TokenStream& stream, ParserContext& ctx, TypePtr inner) {
+TypeAST* parseTypeWithQualifier(TokenStream& stream, ParserContext& ctx, TypeAST* inner) {
     if (!inner) {
         return nullptr;
     }

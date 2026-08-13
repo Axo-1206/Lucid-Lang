@@ -344,8 +344,8 @@ bool checkTraitFieldConflicts(const StructDeclAST* structDecl,
 
 // ─── Generic Validation ──────────────────────────────────────────────────
 
-bool validateGenericArguments(ArenaSpan<TypePtr> args,
-                               ArenaSpan<GenericParamDeclPtr> params,
+bool validateGenericArguments(ArenaSpan<TypeAST*> args,
+                               ArenaSpan<GenericParamDeclAST*> params,
                                const BaseAST* useSite,
                                SemaContext& ctx) {
     if (args.size() != params.size()) {
@@ -387,7 +387,7 @@ bool validateGenericArguments(ArenaSpan<TypePtr> args,
     return allValid;
 }
 
-bool validateGenericParameterUsage(ArenaSpan<GenericParamDeclPtr> params,
+bool validateGenericParameterUsage(ArenaSpan<GenericParamDeclAST*> params,
                                     const std::vector<const TypeAST*>& types,
                                     const BaseAST* useSite,
                                     SemaContext& ctx) {
@@ -401,7 +401,7 @@ bool validateGenericParameterUsage(ArenaSpan<GenericParamDeclPtr> params,
             if (ctx.isGenericParam(named->name)) {
                 usedParams.insert(named->name);
             }
-            for (const TypePtr arg : named->genericArgs) {
+            for (const TypeAST* arg : named->genericArgs) {
                 findParams(arg);
             }
             return;

@@ -47,7 +47,7 @@ ExprAST* parseExpr(TokenStream& stream, ParserContext& ctx) {
 ExprAST* parsePrattExpr(TokenStream& stream, ParserContext& ctx, int minPrec) {
     LOG_PARSER_DETAIL("parsePrattExpr: min precedence: ", minPrec);
     
-    ExprPtr lhs = parsePrefixExpr(stream, ctx);
+    ExprAST* lhs = parsePrefixExpr(stream, ctx);
     if (!lhs) {
         return nullptr;
     }
@@ -141,7 +141,7 @@ ExprAST* parsePrefixExpr(TokenStream& stream, ParserContext& ctx) {
                 return nullptr;
         }
         
-        ExprPtr operand = parsePrattExpr(stream, ctx, infixPrec(current) + 1);
+        ExprAST* operand = parsePrattExpr(stream, ctx, infixPrec(current) + 1);
         if (!operand) {
             return nullptr;
         }
@@ -175,7 +175,7 @@ ExprAST* parsePrimaryExpr(TokenStream& stream, ParserContext& ctx) {
         stream.consume(); // Consume '_'
         auto* idExpr = ctx.arena.make<IdentifierExprAST>(ctx.pool.intern("_"));
         idExpr->loc = loc;
-        idExpr->genericArgs = ctx.arena.makeBuilder<TypePtr>().build();
+        idExpr->genericArgs = ctx.arena.makeBuilder<TypeAST*>().build();
         return idExpr;
     }
     
@@ -205,7 +205,7 @@ ExprAST* parsePrimaryExpr(TokenStream& stream, ParserContext& ctx) {
             return nullptr;
         }
         
-        ExprPtr expr = parseExpr(stream, ctx);
+        ExprAST* expr = parseExpr(stream, ctx);
         if (!expr) {
             return nullptr;
         }
@@ -257,7 +257,7 @@ ExprAST* parsePrimaryExpr(TokenStream& stream, ParserContext& ctx) {
         Token nameTok = stream.consume();
         InternedString typeName = ctx.pool.intern(nameTok.value);
         
-        ArenaSpan<TypePtr> genericArgs;
+        ArenaSpan<TypeAST*> genericArgs;
         if (stream.check(TokenType::LESS)) {
             genericArgs = parseGenericArgs(stream, ctx);
         }
@@ -334,7 +334,7 @@ ArrayLiteralExprAST* parseArrayLiteralExpr(TokenStream& stream, ParserContext& c
     stream.consume();
    
     if (stream.check(TokenType::RBRACKET)) {
-        ArenaSpan<ExprPtr> elements = ctx.arena.makeBuilder<ExprPtr>().build();
+        ArenaSpan<ExprAST*> elements = ctx.arena.makeBuilder<ExprAST*>().build();
         stream.consume();
         auto* array = ctx.arena.make<ArrayLiteralExprAST>(elements);
         array->loc = loc;
@@ -346,10 +346,10 @@ ArrayLiteralExprAST* parseArrayLiteralExpr(TokenStream& stream, ParserContext& c
                                 "unexpected leading comma in array literal");
     }
     
-    std::vector<ExprPtr> elements;
+    std::vector<ExprAST*> elements;
     
     while (!stream.isAtEnd() && !stream.check(TokenType::RBRACKET)) {
-        ExprPtr elem = parseExpr(stream, ctx);
+        ExprAST* elem = parseExpr(stream, ctx);
         if (elem) {
             elements.push_back(elem);
         } else {
@@ -375,7 +375,7 @@ ArrayLiteralExprAST* parseArrayLiteralExpr(TokenStream& stream, ParserContext& c
         stream.consume(); // Consume ']'
     }
     
-    auto builder = ctx.arena.makeBuilder<ExprPtr>();
+    auto builder = ctx.arena.makeBuilder<ExprAST*>();
     for (auto* e : elements) {
         builder.push_back(e);
     }
@@ -403,7 +403,7 @@ IfExprAST* parseIfExpr(TokenStream& stream, ParserContext& ctx) {
         return nullptr;
     }
     
-    ExprPtr condition = parseExpr(stream, ctx);
+    ExprAST* condition = parseExpr(stream, ctx);
     if (!condition) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                 "expected if condition");
@@ -418,7 +418,7 @@ IfExprAST* parseIfExpr(TokenStream& stream, ParserContext& ctx) {
         return nullptr;
     }
     
-    ExprPtr thenBranch = parseExpr(stream, ctx);
+    ExprAST* thenBranch = parseExpr(stream, ctx);
     if (!thenBranch) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                 "expected then branch");
@@ -433,7 +433,7 @@ IfExprAST* parseIfExpr(TokenStream& stream, ParserContext& ctx) {
         return nullptr;
     }
     
-    ExprPtr elseBranch = parseExpr(stream, ctx);
+    ExprAST* elseBranch = parseExpr(stream, ctx);
     if (!elseBranch) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                 "expected else branch");
@@ -453,7 +453,7 @@ IfExprAST* parseIfExpr(TokenStream& stream, ParserContext& ctx) {
 // =============================================================================
 
 StructLiteralExprAST* parseStructLiteralExpr(TokenStream& stream, ParserContext& ctx,
-                                              InternedString typeName, ArenaSpan<TypePtr> genericArgs) {
+                                              InternedString typeName, ArenaSpan<TypeAST*> genericArgs) {
     SourceLocation loc = stream.currentLoc();
     
     LOG_PARSER_DETAIL("parseStructLiteralExpr: ", ctx.pool.lookup(typeName));
@@ -467,7 +467,7 @@ StructLiteralExprAST* parseStructLiteralExpr(TokenStream& stream, ParserContext&
     stream.consume();
     
     if (stream.check(TokenType::RBRACE)) {
-        ArenaSpan<FieldInitPtr> inits = ctx.arena.makeBuilder<FieldInitPtr>().build();
+        ArenaSpan<FieldInitAST*> inits = ctx.arena.makeBuilder<FieldInitAST*>().build();
         stream.consume();
         auto* structLit = ctx.arena.make<StructLiteralExprAST>(typeName, genericArgs, inits);
         structLit->loc = loc;
@@ -479,7 +479,7 @@ StructLiteralExprAST* parseStructLiteralExpr(TokenStream& stream, ParserContext&
                                 "unexpected leading comma in struct literal");
     }
     
-    std::vector<FieldInitPtr> inits;
+    std::vector<FieldInitAST*> inits;
     
     while (!stream.isAtEnd() && !stream.check(TokenType::RBRACE)) {
         if (!stream.check(TokenType::IDENTIFIER)) {
@@ -505,7 +505,7 @@ StructLiteralExprAST* parseStructLiteralExpr(TokenStream& stream, ParserContext&
             continue;
         }
         
-        ExprPtr value = parseExpr(stream, ctx);
+        ExprAST* value = parseExpr(stream, ctx);
         if (!value) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                     "expected field value");
@@ -533,7 +533,7 @@ StructLiteralExprAST* parseStructLiteralExpr(TokenStream& stream, ParserContext&
         stream.consume(); // Consume '}'
     }
     
-    auto builder = ctx.arena.makeBuilder<FieldInitPtr>();
+    auto builder = ctx.arena.makeBuilder<FieldInitAST*>();
     for (auto* init : inits) {
         builder.push_back(init);
     }
@@ -581,7 +581,7 @@ AnonFuncExprAST* parseAnonFuncExpr(TokenStream& stream, ParserContext& ctx) {
     ScopedContext bodyGuard(ctx, SyntacticContext::FuncBody, stream.currentLoc());
     
     stream.consume(); // Consume '{'
-    StmtPtr body = parseBlock(stream, ctx);
+    StmtAST* body = parseBlock(stream, ctx);
     
     if (!stream.check(TokenType::RBRACE)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
@@ -605,7 +605,7 @@ AnonFuncExprAST* parseAnonFuncExpr(TokenStream& stream, ParserContext& ctx) {
 // Postfix Expressions
 // =============================================================================
 
-ExprAST* parsePostfixExpr(TokenStream& stream, ParserContext& ctx, ExprPtr lhs) {
+ExprAST* parsePostfixExpr(TokenStream& stream, ParserContext& ctx, ExprAST* lhs) {
     LOG_PARSER_DETAIL("parsePostfixExpr");
     
     if (!lhs) {
@@ -616,7 +616,7 @@ ExprAST* parsePostfixExpr(TokenStream& stream, ParserContext& ctx, ExprPtr lhs) 
     
     // ─── Function call: f() or module:func() ────────────────────────────
     if (current == TokenType::LPAREN) {
-        ArenaSpan<TypePtr> genericArgs;
+        ArenaSpan<TypeAST*> genericArgs;
         
         // Check if the callee already has generic arguments
         if (lhs->isa<IdentifierExprAST>()) {
@@ -717,7 +717,7 @@ IdentifierExprAST* parseIdentifierExpr(TokenStream& stream, ParserContext& ctx) 
     Token nameTok = stream.consume();
     InternedString name = ctx.pool.intern(nameTok.value);
     
-    ArenaSpan<TypePtr> genericArgs;
+    ArenaSpan<TypeAST*> genericArgs;
     if (stream.check(TokenType::LESS)) {
         genericArgs = parseGenericArgs(stream, ctx);
     }
@@ -733,7 +733,7 @@ IdentifierExprAST* parseIdentifierExpr(TokenStream& stream, ParserContext& ctx) 
 // =============================================================================
 
 CallExprAST* parseCallExpr(TokenStream& stream, ParserContext& ctx, 
-                            ExprPtr callee, ArenaSpan<TypeAST*> genericArgs) {
+                            ExprAST* callee, ArenaSpan<TypeAST*> genericArgs) {
     SourceLocation loc = stream.currentLoc();
     
     LOG_PARSER_DETAIL("parseCallExpr");
@@ -754,7 +754,7 @@ CallExprAST* parseCallExpr(TokenStream& stream, ParserContext& ctx,
                                 ctx.pool.lookup(fieldAccess->fieldName),
                                 "<...>' - struct generic arguments are resolved at declaration time");
         // Clear generic args to continue parsing
-        genericArgs = ArenaSpan<TypePtr>();
+        genericArgs = ArenaSpan<TypeAST*>();
     }
     
     if (!stream.check(TokenType::LPAREN)) {
@@ -764,7 +764,7 @@ CallExprAST* parseCallExpr(TokenStream& stream, ParserContext& ctx,
         return nullptr;
     }
     
-    ArenaSpan<ExprPtr> args = parseArgList(stream, ctx);
+    ArenaSpan<ExprAST*> args = parseArgList(stream, ctx);
     bool hasArgPack = stream.match(TokenType::BANG);
     
     auto* call = ctx.arena.make<CallExprAST>(hasArgPack);
@@ -799,7 +799,7 @@ IntrinsicCallExprAST* parseIntrinsicCallExpr(TokenStream& stream, ParserContext&
     Token nameTok = stream.consume();
     InternedString intrinsicName = ctx.pool.intern(nameTok.value);
     
-    ArenaSpan<ExprPtr> args = parseArgList(stream, ctx);
+    ArenaSpan<ExprAST*> args = parseArgList(stream, ctx);
     
     auto* intrinsic = ctx.arena.make<IntrinsicCallExprAST>(intrinsicName);
     intrinsic->loc = loc;
@@ -809,7 +809,7 @@ IntrinsicCallExprAST* parseIntrinsicCallExpr(TokenStream& stream, ParserContext&
     return intrinsic;
 }
 
-IndexExprAST* parseIndexExpr(TokenStream& stream, ParserContext& ctx, ExprPtr target) {
+IndexExprAST* parseIndexExpr(TokenStream& stream, ParserContext& ctx, ExprAST* target) {
     SourceLocation loc = stream.currentLoc();
     
     LOG_PARSER_DETAIL("parseIndexExpr");
@@ -835,7 +835,7 @@ IndexExprAST* parseIndexExpr(TokenStream& stream, ParserContext& ctx, ExprPtr ta
         return nullptr;
     }
     
-    ExprPtr index = parseExpr(stream, ctx);
+    ExprAST* index = parseExpr(stream, ctx);
     if (!index) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                 "expected index expression");
@@ -865,7 +865,7 @@ IndexExprAST* parseIndexExpr(TokenStream& stream, ParserContext& ctx, ExprPtr ta
     return indexExpr;
 }
 
-SliceExprAST* parseSliceExpr(TokenStream& stream, ParserContext& ctx, ExprPtr target) {
+SliceExprAST* parseSliceExpr(TokenStream& stream, ParserContext& ctx, ExprAST* target) {
     SourceLocation loc = stream.currentLoc();
     
     LOG_PARSER_DETAIL("parseSliceExpr");
@@ -884,8 +884,8 @@ SliceExprAST* parseSliceExpr(TokenStream& stream, ParserContext& ctx, ExprPtr ta
     }
     stream.consume();
     
-    ExprPtr start = nullptr;
-    ExprPtr end = nullptr;
+    ExprAST* start = nullptr;
+    ExprAST* end = nullptr;
     bool isExclusive = false;
     bool hasRangeOp = false;
     
@@ -1016,7 +1016,7 @@ SliceExprAST* parseSliceExpr(TokenStream& stream, ParserContext& ctx, ExprPtr ta
 /// @param ctx The parsing context
 /// @param lhs The left-hand side expression (the object)
 /// @return FieldAccessExprAST* The parsed field access expression
-FieldAccessExprAST* parseFieldAccessExpr(TokenStream& stream, ParserContext& ctx, ExprPtr lhs) {
+FieldAccessExprAST* parseFieldAccessExpr(TokenStream& stream, ParserContext& ctx, ExprAST* lhs) {
     SourceLocation loc = stream.currentLoc();
     
     LOG_PARSER_DETAIL("parseFieldAccessExpr");
@@ -1129,7 +1129,7 @@ ModuleAccessExprAST* parseModuleAccessExpr(TokenStream& stream, ParserContext& c
     InternedString memberName = ctx.pool.intern(memberTok.value);
     
     // ─── 4. Check for generic arguments ──────────────────────────────────
-    ArenaSpan<TypePtr> genericArgs;
+    ArenaSpan<TypeAST*> genericArgs;
     if (stream.check(TokenType::LESS)) {
         genericArgs = parseGenericArgs(stream, ctx);
     }
@@ -1148,7 +1148,7 @@ ModuleAccessExprAST* parseModuleAccessExpr(TokenStream& stream, ParserContext& c
 // Pipeline & Composition
 // =============================================================================
 
-ExprAST* parsePipelineExpr(TokenStream& stream, ParserContext& ctx, ExprPtr seed) {
+ExprAST* parsePipelineExpr(TokenStream& stream, ParserContext& ctx, ExprAST* seed) {
     SourceLocation loc = stream.currentLoc();
     
     LOG_PARSER_DETAIL("parsePipelineExpr");
@@ -1159,7 +1159,7 @@ ExprAST* parsePipelineExpr(TokenStream& stream, ParserContext& ctx, ExprPtr seed
         return nullptr;
     }
     
-    std::vector<PipelineStepPtr> steps;
+    std::vector<PipelineStepAST*> steps;
     
     while (stream.check(TokenType::PIPELINE)) {
         stream.consume(); // Consume '|>'
@@ -1177,7 +1177,7 @@ ExprAST* parsePipelineExpr(TokenStream& stream, ParserContext& ctx, ExprPtr seed
             continue;
         }
         
-        PipelineStepPtr step = parsePipelineStep(stream, ctx);
+        PipelineStepAST* step = parsePipelineStep(stream, ctx);
         if (!step) {
             break;
         }
@@ -1190,7 +1190,7 @@ ExprAST* parsePipelineExpr(TokenStream& stream, ParserContext& ctx, ExprPtr seed
         return seed;
     }
 
-    auto builder = ctx.arena.makeBuilder<PipelineStepPtr>();
+    auto builder = ctx.arena.makeBuilder<PipelineStepAST*>();
     for (auto* s : steps) {
         builder.push_back(s);
     }
@@ -1215,18 +1215,18 @@ PipelineStepAST* parsePipelineStep(TokenStream& stream, ParserContext& ctx) {
     
     // Anonymous function step
     if (looksLikeAnonFunc(stream, ctx)) {
-        ExprPtr anonFunc = parseAnonFuncExpr(stream, ctx);
+        ExprAST* anonFunc = parseAnonFuncExpr(stream, ctx);
         if (!anonFunc) {
             return nullptr;
         }
-        ArenaSpan<ExprPtr> packArgs = ctx.arena.makeBuilder<ExprPtr>().build();
+        ArenaSpan<ExprAST*> packArgs = ctx.arena.makeBuilder<ExprAST*>().build();
         auto* step = ctx.arena.make<PipelineStepAST>(anonFunc, packArgs);
         step->loc = loc;
         return step;
     }
     
     // Expression step
-    ExprPtr callable = parseExpr(stream, ctx);
+    ExprAST* callable = parseExpr(stream, ctx);
     if (!callable) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                 "expected pipeline step expression");
@@ -1235,13 +1235,13 @@ PipelineStepAST* parsePipelineStep(TokenStream& stream, ParserContext& ctx) {
     }
     
     // Check for argument pack step: fn(args)!
-    ArenaSpan<ExprPtr> packArgs;
+    ArenaSpan<ExprAST*> packArgs;
     bool hasPackArgs = false;
     
     if (stream.check(TokenType::LPAREN)) {
         size_t savedPos = stream.getPos();
         
-        std::vector<ExprPtr> args;
+        std::vector<ExprAST*> args;
         stream.consume(); // Consume '('
         
         if (!stream.check(TokenType::RPAREN)) {
@@ -1261,7 +1261,7 @@ PipelineStepAST* parsePipelineStep(TokenStream& stream, ParserContext& ctx) {
                     break;
                 }
                 
-                ExprPtr arg = parseExpr(stream, ctx);
+                ExprAST* arg = parseExpr(stream, ctx);
                 if (arg) {
                     args.push_back(arg);
                 } else {
@@ -1295,21 +1295,21 @@ PipelineStepAST* parsePipelineStep(TokenStream& stream, ParserContext& ctx) {
             stream.consume(); // Consume '!'
             hasPackArgs = true;
             
-            auto builder = ctx.arena.makeBuilder<ExprPtr>();
+            auto builder = ctx.arena.makeBuilder<ExprAST*>();
             for (auto* arg : args) {
                 builder.push_back(arg);
             }
             packArgs = builder.build();
         } else {
             stream.setPos(savedPos);
-            ArenaSpan<ExprPtr> packArgs = ctx.arena.makeBuilder<ExprPtr>().build();
+            ArenaSpan<ExprAST*> packArgs = ctx.arena.makeBuilder<ExprAST*>().build();
             auto* step = ctx.arena.make<PipelineStepAST>(callable, packArgs);
             step->loc = loc;
             return step;
         }
     }
     
-    packArgs = ctx.arena.makeBuilder<ExprPtr>().build();
+    packArgs = ctx.arena.makeBuilder<ExprAST*>().build();
     auto* step = ctx.arena.make<PipelineStepAST>(callable, packArgs);
     step->loc = loc;
     
@@ -1317,7 +1317,7 @@ PipelineStepAST* parsePipelineStep(TokenStream& stream, ParserContext& ctx) {
     return step;
 }
 
-ExprAST* parseComposeExpr(TokenStream& stream, ParserContext& ctx, ExprPtr lhs) {
+ExprAST* parseComposeExpr(TokenStream& stream, ParserContext& ctx, ExprAST* lhs) {
     SourceLocation loc = stream.currentLoc();
     
     LOG_PARSER_DETAIL("parseComposeExpr");
@@ -1336,9 +1336,9 @@ ExprAST* parseComposeExpr(TokenStream& stream, ParserContext& ctx, ExprPtr lhs) 
     }
     stream.consume(); // Consume '+>'
     
-    std::vector<ComposeOperandPtr> operands;
+    std::vector<ComposeOperandAST*> operands;
     
-    ComposeOperandPtr operand = parseComposeOperand(stream, ctx);
+    ComposeOperandAST* operand = parseComposeOperand(stream, ctx);
     if (!operand) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                 "expected composition operand");
@@ -1360,7 +1360,7 @@ ExprAST* parseComposeExpr(TokenStream& stream, ParserContext& ctx, ExprPtr lhs) 
         operands.push_back(operand);
     }
 
-    auto builder = ctx.arena.makeBuilder<ComposeOperandPtr>();
+    auto builder = ctx.arena.makeBuilder<ComposeOperandAST*>();
     for (auto* op : operands) {
         builder.push_back(op);
     }
@@ -1377,7 +1377,7 @@ ComposeOperandAST* parseComposeOperand(TokenStream& stream, ParserContext& ctx) 
     
     LOG_PARSER_DETAIL("parseComposeOperand");
     
-    ExprPtr callable = parseExpr(stream, ctx);
+    ExprAST* callable = parseExpr(stream, ctx);
     if (!callable) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                 "expected composition operand");
@@ -1385,7 +1385,7 @@ ComposeOperandAST* parseComposeOperand(TokenStream& stream, ParserContext& ctx) 
         return nullptr;
     }
     
-    ArenaSpan<TypePtr> genericArgs;
+    ArenaSpan<TypeAST*> genericArgs;
     
     if (callable->isa<IdentifierExprAST>()) {
         auto* idExpr = callable->as<IdentifierExprAST>();
@@ -1483,7 +1483,7 @@ AssignOp tokenToAssignOp(TokenType type) {
 // Infix Dispatch
 // =============================================================================
 
-ExprPtr parseInfixAssign(TokenStream& stream, ParserContext& ctx, ExprPtr lhs, TokenType opTok) {
+ExprAST* parseInfixAssign(TokenStream& stream, ParserContext& ctx, ExprAST* lhs, TokenType opTok) {
     SourceLocation loc = stream.currentLoc();
     
     LOG_PARSER_DETAIL("parseInfixAssign");
@@ -1494,7 +1494,7 @@ ExprPtr parseInfixAssign(TokenStream& stream, ParserContext& ctx, ExprPtr lhs, T
         return nullptr;
     }
     
-    ExprPtr rhs = parsePrattExpr(stream, ctx, infixPrec(opTok));
+    ExprAST* rhs = parsePrattExpr(stream, ctx, infixPrec(opTok));
     if (!rhs) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                 "expected right-hand side");
@@ -1513,7 +1513,7 @@ ExprPtr parseInfixAssign(TokenStream& stream, ParserContext& ctx, ExprPtr lhs, T
     return assign;
 }
 
-ExprPtr parseInfixNullCoalesce(TokenStream& stream, ParserContext& ctx, ExprPtr lhs) {
+ExprAST* parseInfixNullCoalesce(TokenStream& stream, ParserContext& ctx, ExprAST* lhs) {
     SourceLocation loc = stream.currentLoc();
     
     LOG_PARSER_DETAIL("parseInfixNullCoalesce");
@@ -1524,7 +1524,7 @@ ExprPtr parseInfixNullCoalesce(TokenStream& stream, ParserContext& ctx, ExprPtr 
         return nullptr;
     }
     
-    ExprPtr rhs = parsePrattExpr(stream, ctx, infixPrec(TokenType::QUESTION_QUESTION));
+    ExprAST* rhs = parsePrattExpr(stream, ctx, infixPrec(TokenType::QUESTION_QUESTION));
     if (!rhs) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                 "expected right-hand side");
@@ -1539,7 +1539,7 @@ ExprPtr parseInfixNullCoalesce(TokenStream& stream, ParserContext& ctx, ExprPtr 
     return coalesce;
 }
 
-ExprPtr parseInfixBinary(TokenStream& stream, ParserContext& ctx, ExprPtr lhs, TokenType opTok, int prec) {
+ExprAST* parseInfixBinary(TokenStream& stream, ParserContext& ctx, ExprAST* lhs, TokenType opTok, int prec) {
     SourceLocation loc = stream.currentLoc();
     
     LOG_PARSER_DETAIL("parseInfixBinary: ", token_type_name(opTok));
@@ -1555,7 +1555,7 @@ ExprPtr parseInfixBinary(TokenStream& stream, ParserContext& ctx, ExprPtr lhs, T
     bool isRangeOp = (opTok == TokenType::RANGE || opTok == TokenType::RANGE_EXCLUSIVE);
     int rhsPrec = isRangeOp ? prec : prec + 1;
     
-    ExprPtr rhs = parsePrattExpr(stream, ctx, rhsPrec);
+    ExprAST* rhs = parsePrattExpr(stream, ctx, rhsPrec);
     if (!rhs) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedExpression, stream.currentLoc(),
                                 "expected right-hand side");

@@ -275,7 +275,7 @@ bool resolveSwitchStmt(const SwitchStmtAST* stmt, SemaContext& ctx) {
     };
     std::unordered_map<RangeKey, SourceLocation, RangeKeyHash> seenRanges;
     
-    for (const SwitchCasePtr caseStmt : stmt->cases) {
+    for (const SwitchCaseAST* caseStmt : stmt->cases) {
         // Validate each case value against the subject type
         for (ExprAST* value : caseStmt->values) {
             TypeAST* valueType = resolveExprWithTarget(value, subjectType, ctx);

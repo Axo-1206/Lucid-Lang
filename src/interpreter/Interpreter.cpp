@@ -256,7 +256,7 @@ void Interpreter::registerLibraries(const std::vector<ModuleAST*>& modules) {
 void Interpreter::registerLibrariesFromModule(ModuleAST* module) {
     if (!module) return;
 
-    for (DeclPtr decl : module->decls) {
+    for (DeclAST* decl : module->decls) {
         for (AttributePtr attr : decl->attributes) {
             if (attr->name == m_context->pool.intern("link")) {
                 for (LiteralExprAST* arg : attr->args) {

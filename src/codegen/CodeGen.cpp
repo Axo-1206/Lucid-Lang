@@ -78,7 +78,7 @@ std::unique_ptr<llvm::Module> generateModule(ModuleAST* module, CodeGenContext& 
 void lowerModuleDeclarations(ModuleAST* module, CodeGenContext& ctx) {
     if (!module) return;
 
-    for (const DeclPtr decl : module->decls) {
+    for (const DeclAST* decl : module->decls) {
         if (!decl) continue;
 
         // ─── Lower all declarations except function bodies ──────────────
@@ -115,7 +115,7 @@ void lowerModuleDeclarations(ModuleAST* module, CodeGenContext& ctx) {
 void lowerModuleBodies(ModuleAST* module, CodeGenContext& ctx) {
     if (!module) return;
 
-    for (const DeclPtr decl : module->decls) {
+    for (const DeclAST* decl : module->decls) {
         if (!decl) continue;
 
         // ─── Lower function bodies ───────────────────────────────────────

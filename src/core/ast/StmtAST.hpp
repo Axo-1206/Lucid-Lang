@@ -53,7 +53,7 @@ using ScopeExitRegistrationPtr = ScopeExitRegistration*;
 struct BlockStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::BlockStmt;
 
-    ArenaSpan<StmtPtr> stmts; // Statements in execution order
+    ArenaSpan<StmtAST*> stmts; // Statements in execution order
 
     // ─── Scope Exit Registrations (semantic metadata) ─────────────────────
     // Each #scope_exit call in this block is stored here in registration order.
@@ -78,9 +78,9 @@ struct BlockStmtAST : StmtAST {
 struct ExprStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::ExprStmt;
 
-    ExprPtr expr; // The expression being evaluated for its side effects
+    ExprAST* expr; // The expression being evaluated for its side effects
 
-    explicit ExprStmtAST(ExprPtr e)
+    explicit ExprStmtAST(ExprAST* e)
         : StmtAST(ASTKind::ExprStmt), expr(e) {}
 };
 
@@ -103,9 +103,9 @@ struct ExprStmtAST : StmtAST {
 struct DeclStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::DeclStmt;
 
-    DeclPtr decl; // The actual declaration node
+    DeclAST* decl; // The actual declaration node
 
-    explicit DeclStmtAST(DeclPtr d) : StmtAST(ASTKind::DeclStmt), decl(d) {}
+    explicit DeclStmtAST(DeclAST* d) : StmtAST(ASTKind::DeclStmt), decl(d) {}
 
     // Convenience helpers – use decl->isa<T>() directly in most cases
     bool isVar()     const { return decl && decl->isa<VarDeclAST>(); }
@@ -151,7 +151,7 @@ struct FuncRefStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::FuncRefStmt;
     
     // ─── Parser Fields ──────────────────────────────────────────────────
-    ExprPtr target;  // IdentifierExprAST or ModuleAccessExprAST only — see above
+    ExprAST* target;  // IdentifierExprAST or ModuleAccessExprAST only — see above
     
     // ─── CodeGen Annotations ────────────────────────────────────────────
     llvm::Function* resolvedFunction = nullptr;  // The resolved LLVM function —
@@ -190,9 +190,9 @@ struct FuncRefStmtAST : StmtAST {
 struct IfStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::IfStmt;
 
-    ExprPtr condition;  // The test expression (must resolve to `bool`)
-    StmtPtr thenBranch; // Always a `BlockStmtAST`
-    StmtPtr elseBranch; // `nullptr` | `BlockStmtAST` | `IfStmtAST`
+    ExprAST* condition;  // The test expression (must resolve to `bool`)
+    StmtAST* thenBranch; // Always a `BlockStmtAST`
+    StmtAST* elseBranch; // `nullptr` | `BlockStmtAST` | `IfStmtAST`
 
     IfStmtAST() : StmtAST(ASTKind::IfStmt) {}
 };
@@ -225,12 +225,11 @@ struct IfStmtAST : StmtAST {
 struct SwitchCaseAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::SwitchCase;
 
-    ArenaSpan<ExprPtr> values;          ///< Match values (literals, enum variants, or ranges)
+    ArenaSpan<ExprAST*> values;          ///< Match values (literals, enum variants, or ranges)
     BlockStmtAST* body;                 ///< Statements executed on match
 
     SwitchCaseAST() : BaseAST(ASTKind::SwitchCase) {}
 };
-using SwitchCasePtr = SwitchCaseAST*;
 
 /// @brief Statement‑oriented value dispatch – runs statement blocks, produces no value.
 /// 
@@ -265,8 +264,8 @@ using SwitchCasePtr = SwitchCaseAST*;
 struct SwitchStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::SwitchStmt;
 
-    ExprPtr subject;                           ///< The value being dispatched
-    ArenaSpan<SwitchCasePtr> cases;             ///< Non‑default case clauses
+    ExprAST* subject;                           ///< The value being dispatched
+    ArenaSpan<SwitchCaseAST*> cases;             ///< Non‑default case clauses
     BlockStmtAST* defaultBody;                  ///< `nullptr` if no `default`
     std::optional<SourceLocation> defaultLoc;   ///< Location of `default` keyword (for diagnostics)
 
@@ -319,9 +318,9 @@ struct ForStmtAST : StmtAST {
 
     ParamAST* indexVar = nullptr;   // Index variable (name + explicit type), nullptr if ignored (`_`)
     ParamAST* valueVar = nullptr;   // Value variable (name + explicit type), nullptr if ignored (`_`)
-    ExprPtr  iterable;              // Collection or `RangeExprAST`
-    ExprPtr  step;                  // Optional step (only for range loops, `nullptr` if omitted)
-    StmtPtr  body;                  // Always a `BlockStmtAST`
+    ExprAST*  iterable;              // Collection or `RangeExprAST`
+    ExprAST*  step;                  // Optional step (only for range loops, `nullptr` if omitted)
+    StmtAST*  body;                  // Always a `BlockStmtAST`
 
     ForStmtAST() : StmtAST(ASTKind::ForStmt) {}
 };
@@ -336,8 +335,8 @@ struct ForStmtAST : StmtAST {
 struct WhileStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::WhileStmt;
 
-    ExprPtr condition; // Must resolve to `bool`
-    StmtPtr body;      // Always a `BlockStmtAST`
+    ExprAST* condition; // Must resolve to `bool`
+    StmtAST* body;      // Always a `BlockStmtAST`
 
     WhileStmtAST() : StmtAST(ASTKind::WhileStmt) {}
 };
@@ -352,8 +351,8 @@ struct WhileStmtAST : StmtAST {
 struct DoWhileStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::DoWhileStmt;
 
-    StmtPtr body;       ///< Executed at least once (always `BlockStmtAST`)
-    ExprPtr condition;  ///< Evaluated after each iteration; must resolve to `bool`
+    StmtAST* body;       ///< Executed at least once (always `BlockStmtAST`)
+    ExprAST* condition;  ///< Evaluated after each iteration; must resolve to `bool`
 
     DoWhileStmtAST() : StmtAST(ASTKind::DoWhileStmt) {}
 };
@@ -378,7 +377,7 @@ struct DoWhileStmtAST : StmtAST {
 struct ReturnStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::ReturnStmt;
 
-    ExprPtr value; // Empty for bare `return`
+    ExprAST* value; // Empty for bare `return`
 
     ReturnStmtAST() : StmtAST(ASTKind::ReturnStmt) {}
 };
@@ -441,7 +440,7 @@ struct ContinueStmtAST : StmtAST {
 /// `async const result int = ...` *introduces* `result` — it does not assign into
 /// a pre-existing variable, the same way `let`/`const` introduce a name
 /// rather than reassign one. `binding` is therefore a synthesized
-/// `VarDeclAST*`, not a general `ExprPtr` lvalue.
+/// `VarDeclAST*`, not a general `ExprAST*` lvalue.
 /// 
 /// ─── `keyword` Support ─────────────────────────────────────────────────────
 /// The `async` statement supports both `let` and `const` keywords:
@@ -492,7 +491,7 @@ struct AsyncStmtAST : StmtAST {
 struct AwaitStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::AwaitStmt;
 
-    ArenaSpan<ExprPtr> targets;   // identifiers resolving back to a prior AsyncStmtAST::binding
+    ArenaSpan<ExprAST*> targets;   // identifiers resolving back to a prior AsyncStmtAST::binding
 
     AwaitStmtAST() : StmtAST(ASTKind::AwaitStmt) {}
 };
@@ -532,7 +531,7 @@ struct SpawnStmtAST : StmtAST {
 
     const VarDeclAST* binding = nullptr;   // fresh local introduced by this statement, or
                                       // nullptr for the `_` discard pattern
-    ExprPtr call;                    // the spawn call
+    ExprAST* call;                    // the spawn call
 
     SpawnStmtAST() : StmtAST(ASTKind::SpawnStmt) {}
 };
@@ -566,28 +565,7 @@ struct SpawnStmtAST : StmtAST {
 struct JoinStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::JoinStmt;
 
-    ArenaSpan<ExprPtr> targets;   // identifiers resolving back to a prior SpawnStmtAST::binding
+    ArenaSpan<ExprAST*> targets;   // identifiers resolving back to a prior SpawnStmtAST::binding
 
     JoinStmtAST() : StmtAST(ASTKind::JoinStmt) {}
 };
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Aliases for common pointer types.
-// ─────────────────────────────────────────────────────────────────────────────
-
-using BlockStmtPtr = BlockStmtAST*;
-using ExprStmtPtr = ExprStmtAST*;
-using DeclStmtPtr = DeclStmtAST*;
-using IfStmtPtr = IfStmtAST*;
-using SwitchCasePtr = SwitchCaseAST*;
-using SwitchStmtPtr = SwitchStmtAST*;
-using ForStmtPtr = ForStmtAST*;
-using WhileStmtPtr = WhileStmtAST*;
-using DoWhileStmtPtr = DoWhileStmtAST*;
-using ReturnStmtPtr = ReturnStmtAST*;
-using BreakStmtPtr = BreakStmtAST*;
-using ContinueStmtPtr = ContinueStmtAST*;
-using AsyncStmtPtr = AsyncStmtAST*;
-using AwaitStmtPtr = AwaitStmtAST*;
-using SpawnStmtPtr = SpawnStmtAST*;
-using JoinStmtPtr = JoinStmtAST*;
