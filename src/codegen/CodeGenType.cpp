@@ -237,45 +237,70 @@ llvm::Type* getNamedType(CodeGenContext& ctx, const NamedTypeAST* type) {
 
     std::string typeName = ctx.pool.lookup(type->name);
 
-    // ─── Check for built-in primitive types ─────────────────────────────────
-    // Use debug::primitiveKindToString to check if it's a primitive
-    // We could also check the semantic type's kind, but this is simpler
-    if (typeName == "int" || typeName == "int32" || typeName == "uint32") {
-        return llvm::Type::getInt32Ty(ctx.llvmCtx);
-    }
-    if (typeName == "int64" || typeName == "uint64") {
-        return llvm::Type::getInt64Ty(ctx.llvmCtx);
-    }
-    if (typeName == "int16" || typeName == "uint16") {
-        return llvm::Type::getInt16Ty(ctx.llvmCtx);
-    }
-    if (typeName == "int8" || typeName == "uint8" || typeName == "byte") {
-        return llvm::Type::getInt8Ty(ctx.llvmCtx);
-    }
-    if (typeName == "float") {
-        return llvm::Type::getFloatTy(ctx.llvmCtx);
-    }
-    if (typeName == "double") {
-        return llvm::Type::getDoubleTy(ctx.llvmCtx);
-    }
-    if (typeName == "bool") {
-        return llvm::Type::getInt1Ty(ctx.llvmCtx);
-    }
-    if (typeName == "string") {
-        return llvm::PointerType::get(ctx.llvmCtx, 0);
-    }
-    if (typeName == "char") {
-        return llvm::Type::getInt8Ty(ctx.llvmCtx);
+    // ─── 1. Try to resolve as a primitive type ──────────────────────────────
+    // Delegate to getPrimitiveType via the canonical mapping.
+    // This is the SOURCE OF TRUTH for primitive type mapping.
+    static const std::unordered_map<std::string, PrimitiveKind> primMap = {
+        // Boolean
+        {"bool", PrimitiveKind::Bool},
+        
+        // Signed integers (fixed-width)
+        {"int8", PrimitiveKind::Int8},
+        {"int16", PrimitiveKind::Int16},
+        {"int32", PrimitiveKind::Int32},
+        {"int64", PrimitiveKind::Int64},
+        
+        // Unsigned integers (fixed-width)
+        {"uint8", PrimitiveKind::Uint8},
+        {"uint16", PrimitiveKind::Uint16},
+        {"uint32", PrimitiveKind::Uint32},
+        {"uint64", PrimitiveKind::Uint64},
+        
+        // Signed integers (machine-dependent)
+        {"byte", PrimitiveKind::Byte},
+        {"short", PrimitiveKind::Short},
+        {"int", PrimitiveKind::Int},
+        {"long", PrimitiveKind::Long},
+        
+        // Unsigned integers (machine-dependent)
+        {"ubyte", PrimitiveKind::Ubyte},
+        {"ushort", PrimitiveKind::Ushort},
+        {"uint", PrimitiveKind::Uint},
+        {"ulong", PrimitiveKind::Ulong},
+        
+        // Floating point
+        {"float", PrimitiveKind::Float},
+        {"double", PrimitiveKind::Double},
+        {"decimal", PrimitiveKind::Decimal},
+        
+        // Text
+        {"string", PrimitiveKind::String},
+        {"char", PrimitiveKind::Char}
+    };
+    
+    auto it = primMap.find(typeName);
+    if (it != primMap.end()) {
+        // Create a temporary PrimitiveTypeAST and delegate
+        PrimitiveTypeAST tmp(it->second);
+        return getPrimitiveType(ctx, &tmp);
     }
 
-    // ─── Check if it's a struct type ────────────────────────────────────────
+    // ─── 2. Check if it's a generic type parameter ──────────────────────────
+    // If the named type is actually a generic parameter (T in Box<T>),
+    // it should have been resolved by Sema. If we're here, it's a
+    // user-defined type.
+
+    // ─── 3. Try to find an existing struct type ─────────────────────────────
     if (llvm::StructType* existing = llvm::StructType::getTypeByName(ctx.llvmCtx, typeName)) {
         return existing;
     }
 
-    // ─── Unknown type - create forward declaration ──────────────────────────
+    // ─── 4. Unknown type - create forward declaration ──────────────────────
+    // This typically means the type is defined in another module or
+    // we're still in the declaration phase.
     ctx.diagnostics.warningAt(DiagCode::Warn_UnreachableCode, type->loc,
-                              "type '", typeName, "' not yet defined, creating forward declaration");
+                              "type '", typeName, "' not yet defined, "
+                              "creating forward declaration");
 
     llvm::StructType* structType = llvm::StructType::create(ctx.llvmCtx, typeName);
     return structType;

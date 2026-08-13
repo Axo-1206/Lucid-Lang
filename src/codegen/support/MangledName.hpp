@@ -1,8 +1,8 @@
-/// @file sema/support/MangledName.hpp
+/// @file codegen/support/MangledName.hpp
 /// @brief Mangled name generation for declarations.
 ///
 /// Name mangling is the process of encoding a declaration's identity
-/// (name, type, module, etc.) into a unique InternedString that can be used
+/// (name, type, module, etc.) into a unique string that can be used
 /// as a symbol name in the object file.
 ///
 /// ─── Why Name Mangling? ──────────────────────────────────────────────────────
@@ -61,7 +61,7 @@
 ///   → _Lcore_identity_G_T_P_T_RT
 ///
 /// identity<int> (v int) -> int (specialized)
-///   → _Lcore_identity_G_T_P_i_Ri
+///   → _Lcore_identity_G_i_P_i_Ri
 ///
 /// process (data string) -> bool
 ///   → _Lapp_process_P_S_Rb
@@ -73,50 +73,59 @@
 #include "core/ast/TypeAST.hpp"
 #include "core/memory/InternedString.hpp"
 #include "core/memory/StringPool.hpp"
-#include "../context/SemaContext.hpp"
+#include "../context/CodeGenContext.hpp"
 
 #include <string>
+#include <vector>
 
-namespace sema {
+namespace codegen {
 
 // ─── Public API ─────────────────────────────────────────────────────────────
 
 /// @brief Generate a mangled name for a function declaration.
 /// @param decl The function declaration.
-/// @param ctx The semantic context.
+/// @param ctx The code generation context.
 /// @return The mangled name as an InternedString.
-InternedString generateMangledName(const FuncDeclAST* decl, SemaContext& ctx);
+InternedString generateMangledName(const FuncDeclAST* decl, CodeGenContext& ctx);
 
 /// @brief Generate a mangled name for a variable declaration.
 /// @param decl The variable declaration.
-/// @param ctx The semantic context.
+/// @param ctx The code generation context.
 /// @return The mangled name as an InternedString.
-InternedString generateMangledName(const VarDeclAST* decl, SemaContext& ctx);
+InternedString generateMangledName(const VarDeclAST* decl, CodeGenContext& ctx);
 
 /// @brief Generate a mangled name for a generic instantiation.
-/// @param baseName The base mangled name of the generic declaration.
+/// @param baseDecl The generic declaration (function or struct).
 /// @param typeArgs The concrete type arguments.
-/// @param ctx The semantic context.
+/// @param ctx The code generation context.
 /// @return The mangled name as an InternedString.
 InternedString generateMangledNameForGeneric(
-    InternedString baseName,
+    const DeclAST* baseDecl,
     const std::vector<const TypeAST*>& typeArgs,
-    SemaContext& ctx
+    CodeGenContext& ctx
 );
 
-/// @brief Generate a mangled name for a struct (C-compatible).
+/// @brief Generate a mangled name for a struct.
 /// @param decl The struct declaration.
-/// @param ctx The semantic context.
+/// @param ctx The code generation context.
 /// @return The mangled name as an InternedString.
-InternedString generateMangledName(const StructDeclAST* decl, SemaContext& ctx);
+InternedString generateMangledName(const StructDeclAST* decl, CodeGenContext& ctx);
 
 // ─── Core Encoding Functions ──────────────────────────────────────────────
 
 /// @brief Encode a type to a mangled string.
 /// @param type The type to encode.
-/// @param ctx The semantic context.
+/// @param pool The string pool for looking up names.
 /// @return The encoded type string (as std::string for building).
-std::string typeToMangleString(const TypeAST* type, SemaContext& ctx);
+std::string typeToMangleString(const TypeAST* type, StringPool& pool);
+
+/// @brief Encode a type to a mangled string (context overload).
+/// @param type The type to encode.
+/// @param ctx The code generation context.
+/// @return The encoded type string.
+inline std::string typeToMangleString(const TypeAST* type, CodeGenContext& ctx) {
+    return typeToMangleString(type, ctx.pool);
+}
 
 /// @brief Sanitize a string for use in a mangled name.
 /// @param str The string to sanitize.
@@ -124,9 +133,9 @@ std::string typeToMangleString(const TypeAST* type, SemaContext& ctx);
 std::string sanitizeForMangledName(const std::string& str);
 
 /// @brief Get the module path for mangling.
-/// @param ctx The semantic context.
+/// @param ctx The code generation context.
 /// @return The sanitized module path.
-std::string getMangledModulePath(SemaContext& ctx);
+std::string getMangledModulePath(CodeGenContext& ctx);
 
 // ─── Primitive Type Encoding ─────────────────────────────────────────────
 
@@ -138,4 +147,4 @@ char encodePrimitiveKind(PrimitiveKind kind);
 /// @brief Check if a type is a primitive type.
 bool isPrimitiveType(const TypeAST* type);
 
-} // namespace sema
+} // namespace codegen

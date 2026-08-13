@@ -588,7 +588,6 @@ lucid/
     │   └── support/
     │       ├── SwitchHelpers.hpp/cpp
     │       ├── CaptureAnalysis.hpp/cpp
-    │       ├── MangledName.hpp/cpp
     │       └── TypeNarrowHelpers.hpp/cpp
     │
     ├── codegen/
@@ -605,8 +604,8 @@ lucid/
     │   │   └── CodeGenContext.hpp               # LLVM state (module, builder, caches, symbols)
     │   │
     │   ├── support/
-    │   │   ├── CodeGenHelpers.hpp/cpp           # Allocas, blocks, loads, panic
-    │   │   └── CodeGenHelpers.cpp
+    │   │   ├── MangledName.hpp/cpp
+    │   │   └── CodeGenHelpers.hpp/cpp           # Allocas, blocks, loads, panic
     │   │
     │   └── intrinsic/
     │       ├── IntrinsicEmitter.hpp             # Intrinsic emission API

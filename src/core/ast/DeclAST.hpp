@@ -138,9 +138,9 @@ struct VarDeclAST : ValueDeclAST {
                     // the semantic phase need to evaluate this
 
     // ─── Semantic Fields (set by Sema) ────────────────────────────────
-    InternedString mangledName;        // Mangled name for AOT compilation
     
     // ─── CodeGen Fields (mutable) ──────────────────────────────────────
+    InternedString mangledName;        // Mangled name for AOT compilation
     llvm::AllocaInst* llvmAlloca = nullptr;      // Local variable alloca
     llvm::GlobalVariable* llvmGlobal = nullptr;  // Module-level global
 
@@ -229,15 +229,15 @@ struct FuncDeclAST : ValueDeclAST {
     bool shouldSpecialize = false;     // from @[specialize]
     bool isInline = false;             // from @[inline]
     bool isNoInline = false;           // from @[noinline]
-    InternedString mangledName;        // Mangled name for AOT compilation
     
     /// Variables captured by this function (if it's a closure).
     /// Populated by capture analysis during semantic analysis.
     ArenaSpan<CapturedVariable> captures;
     bool hasClosure = false;    /// True if this function captures any variables from outer scopes.
     bool isReturned = false;    /// True if this function is returned from its parent
-
+    
     // ─── CodeGen Fields (mutable) ──────────────────────────────────────
+    InternedString mangledName;        // Mangled name for AOT compilation
     llvm::Function* llvmFunction = nullptr;
     
     /// The LLVM struct type for the closure environment (if this is a closure).
@@ -371,6 +371,7 @@ struct StructDeclAST : TypeDeclAST {
     
     // ─── CodeGen Fields (mutable) ──────────────────────────────────────
     llvm::StructType* llvmType = nullptr;
+    InternedString mangledName;        // Mangled name for AOT compilation
     
     // Physical layout - computed by CodeGen using LLVM DataLayout
     uint64_t totalSize = 0;

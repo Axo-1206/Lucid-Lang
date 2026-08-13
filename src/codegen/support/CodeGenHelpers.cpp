@@ -182,62 +182,6 @@ llvm::Type* getDeclType(
     return getType(ctx, decl->type);
 }
 
-// ─── Name Helpers ─────────────────────────────────────────────────────────
-
-std::string getMangledName(
-    const FuncDeclAST* decl,
-    CodeGenContext& ctx
-) {
-    if (!decl) return "";
-    return ctx.pool.lookup(decl->name);
-}
-
-std::string getMangledName(
-    const FuncDeclAST* decl,
-    const std::vector<const TypeAST*>& typeArgs,
-    CodeGenContext& ctx
-) {
-    if (!decl) return "";
-
-    std::string name = ctx.pool.lookup(decl->name);
-
-    if (typeArgs.empty()) {
-        return name;
-    }
-
-    name += "__";
-
-    for (size_t i = 0; i < typeArgs.size(); ++i) {
-        if (i > 0) name += "_";
-        name += "T" + std::to_string(i);
-    }
-
-    return name;
-}
-
-std::string getMangledName(
-    const StructDeclAST* decl,
-    const std::vector<const TypeAST*>& typeArgs,
-    CodeGenContext& ctx
-) {
-    if (!decl) return "";
-
-    std::string name = ctx.pool.lookup(decl->name);
-
-    if (typeArgs.empty()) {
-        return name;
-    }
-
-    name += "__";
-
-    for (size_t i = 0; i < typeArgs.size(); ++i) {
-        if (i > 0) name += "_";
-        name += "T" + std::to_string(i);
-    }
-
-    return name;
-}
-
 // ─── Generic Helper Functions ────────────────────────────────────────────
 
 bool isGenericFunction(const FuncDeclAST* decl) {

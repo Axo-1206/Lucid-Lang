@@ -4,6 +4,7 @@
 #include "CodeGenGeneric.hpp"
 #include "CodeGenType.hpp"
 #include "support/CodeGenHelpers.hpp"
+#include "support/MangledName.hpp"
 #include "debug/DebugUtils.hpp"
 #include "core/ast/DeclAST.hpp"
 
@@ -23,8 +24,23 @@ llvm::Function* createSpecializedFunction(
 ) {
     if (!funcDecl) return nullptr;
 
-    std::string mangledName = getMangledName(funcDecl, typeArgs, ctx);
+    // ─── Generate mangled name for this instantiation ──────────────────────
+    InternedString mangledName = generateMangledNameForGeneric(
+        funcDecl,
+        typeArgs,
+        ctx
+    );
+    
+    if (!mangledName.isValid()) {
+        ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, funcDecl->loc,
+                                "failed to generate mangled name for generic function '",
+                                ctx.pool.lookup(funcDecl->name), "'");
+        return nullptr;
+    }
+    
+    std::string funcName = ctx.pool.lookup(mangledName);
 
+    // ─── Build parameter types ──────────────────────────────────────────────
     std::vector<llvm::Type*> paramTypes;
 
     if (funcDecl->hasClosure) {
@@ -53,6 +69,7 @@ llvm::Function* createSpecializedFunction(
         funcType = funcType->getNext();
     }
 
+    // ─── Build return type ──────────────────────────────────────────────────
     llvm::Type* returnType = llvm::Type::getVoidTy(ctx.llvmCtx);
     if (funcDecl->funcType->returnType) {
         const TypeAST* substitutedReturn = substituteGenericType(
@@ -75,18 +92,21 @@ llvm::Function* createSpecializedFunction(
         false
     );
 
-    llvm::Function* existingFunc = ctx.module->getFunction(mangledName);
+    // ─── Check if already exists ──────────────────────────────────────────
+    llvm::Function* existingFunc = ctx.module->getFunction(funcName);
     if (existingFunc) {
         return existingFunc;
     }
 
+    // ─── Create the function with the mangled name ─────────────────────────
     llvm::Function* func = llvm::Function::Create(
         llvmFuncType,
         llvm::Function::InternalLinkage,
-        mangledName,
+        funcName,
         ctx.module
     );
 
+    // ─── Set parameter names ──────────────────────────────────────────────
     size_t paramIndex = 0;
     if (funcDecl->hasClosure) {
         func->getArg(paramIndex++)->setName("env");
@@ -103,7 +123,7 @@ llvm::Function* createSpecializedFunction(
         paramTypeIter = paramTypeIter->getNext();
     }
 
-    LOG_CODEGEN("Created specialized function: ", mangledName,
+    LOG_CODEGEN("Created specialized function: ", funcName,
                 " (", paramTypes.size(), " params)");
 
     return func;
@@ -116,8 +136,23 @@ llvm::Type* createSpecializedStruct(
 ) {
     if (!structDecl) return nullptr;
 
-    std::string mangledName = getMangledName(structDecl, typeArgs, ctx);
+    // ─── Generate mangled name for this instantiation ──────────────────────
+    InternedString mangledName = generateMangledNameForGeneric(
+        structDecl,
+        typeArgs,
+        ctx
+    );
+    
+    if (!mangledName.isValid()) {
+        ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, structDecl->loc,
+                                "failed to generate mangled name for generic struct '",
+                                ctx.pool.lookup(structDecl->name), "'");
+        return nullptr;
+    }
+    
+    std::string structName = ctx.pool.lookup(mangledName);
 
+    // ─── Build field types with substituted types ──────────────────────────
     std::vector<llvm::Type*> fieldTypes;
 
     for (const FieldDeclAST* field : structDecl->fields) {
@@ -138,21 +173,23 @@ llvm::Type* createSpecializedStruct(
         fieldTypes.push_back(fieldType);
     }
 
+    // ─── Check if already exists ────────────────────────────────────────────
     llvm::StructType* existingType = llvm::StructType::getTypeByName(
         ctx.llvmCtx,
-        mangledName
+        structName
     );
     if (existingType && !existingType->isOpaque()) {
         return existingType;
     }
 
+    // ─── Create the struct type with the mangled name ──────────────────────
     llvm::StructType* structType = llvm::StructType::create(
         ctx.llvmCtx,
         fieldTypes,
-        mangledName
+        structName
     );
 
-    LOG_CODEGEN("Created specialized struct: ", mangledName,
+    LOG_CODEGEN("Created specialized struct: ", structName,
                 " (", fieldTypes.size(), " fields)");
 
     return structType;
@@ -235,22 +272,21 @@ llvm::Type* generateErasedGenericStruct(
     std::string structName = ctx.pool.lookup(structDecl->name);
     std::string mangledName = structName + "__erased";
 
-    std::vector<llvm::Type*> fieldTypes;
-
-    std::vector<llvm::Type*> slotFields = {
-        llvm::Type::getInt8Ty(ctx.llvmCtx),
-        llvm::PointerType::get(ctx.llvmCtx, 0)
-    };
-    llvm::StructType* slotType = llvm::StructType::create(
-        ctx.llvmCtx,
-        slotFields,
-        "TaggedSlot"
-    );
-
-    for (size_t i = 0; i < structDecl->fields.size(); ++i) {
-        fieldTypes.push_back(slotType);
+    // ─── Get or create the canonical TaggedSlot type ──────────────────────
+    // This is a SHARED type across all erased generic structs.
+    // DO NOT recreate it per struct - that creates distinct types
+    // that are structurally identical but nominally different.
+    static const char* slotName = "TaggedSlot";
+    llvm::StructType* slotType = llvm::StructType::getTypeByName(ctx.llvmCtx, slotName);
+    if (!slotType) {
+        std::vector<llvm::Type*> slotFields = {
+            llvm::Type::getInt8Ty(ctx.llvmCtx),              // tag (0 = valid, 1 = nil, 2 = err)
+            llvm::PointerType::get(ctx.llvmCtx, 0)          // value (opaque pointer)
+        };
+        slotType = llvm::StructType::create(ctx.llvmCtx, slotFields, slotName);
     }
 
+    // ─── Check if this erased struct already exists ──────────────────────
     llvm::StructType* existingType = llvm::StructType::getTypeByName(
         ctx.llvmCtx,
         mangledName
@@ -259,6 +295,13 @@ llvm::Type* generateErasedGenericStruct(
         return existingType;
     }
 
+    // ─── Build field types using the shared TaggedSlot ───────────────────
+    std::vector<llvm::Type*> fieldTypes;
+    for (size_t i = 0; i < structDecl->fields.size(); ++i) {
+        fieldTypes.push_back(slotType);
+    }
+
+    // ─── Create the erased struct type ───────────────────────────────────
     llvm::StructType* structType = llvm::StructType::create(
         ctx.llvmCtx,
         fieldTypes,

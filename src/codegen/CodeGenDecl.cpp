@@ -39,6 +39,7 @@
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/TypeAST.hpp"
 #include "support/CodeGenHelpers.hpp"
+#include "support/MangledName.hpp"
 
 #include <llvm/IR/Function.h>
 #include <llvm/IR/GlobalVariable.h>
@@ -140,6 +141,7 @@ void lowerFunctionDecl(FuncDeclAST* decl, CodeGenContext& ctx) {
             return;
         }
 
+        // Foreign functions use their original name as the symbol
         std::string funcName = ctx.pool.lookup(decl->name);
         llvm::Function* func = llvm::Function::Create(
             funcType,
@@ -188,7 +190,23 @@ void lowerFunctionDecl(FuncDeclAST* decl, CodeGenContext& ctx) {
         return;
     }
 
-    std::string funcName = ctx.pool.lookup(decl->name);
+    // ─── Use the mangled name from Sema if available ──────────────────────
+    std::string funcName;
+    if (decl->mangledName.isValid()) {
+        funcName = ctx.pool.lookup(decl->mangledName);
+    } else {
+        // Fallback: generate a mangled name now (shouldn't happen if Sema ran)
+        InternedString mangled = generateMangledName(decl, ctx);
+        if (mangled.isValid()) {
+            funcName = ctx.pool.lookup(mangled);
+        } else {
+            funcName = ctx.pool.lookup(decl->name);
+        }
+        ctx.diagnostics.warningAt(DiagCode::Warn_UnreachableCode, decl->loc,
+                                  "function '", ctx.pool.lookup(decl->name),
+                                  "' has no mangled name from Sema; using fallback");
+    }
+
     llvm::Function* func = llvm::Function::Create(
         funcType,
         llvm::Function::ExternalLinkage,
@@ -369,6 +387,15 @@ void lowerSpecializedFunctionBody(
 ) {
     if (!funcDecl || !specializedFunc) return;
 
+    // ─── Save and clear the value map for this instantiation ──────────────
+    // This prevents collisions between different instantiations of the same
+    // generic function. Each instantiation gets its own isolated value map.
+    //
+    // IMPORTANT: This also handles the closure environment pointer issue,
+    // since closures are lowered as part of the function body.
+    auto savedValues = std::move(ctx.values);
+    ctx.values.clear();
+
     // ─── Push function context ────────────────────────────────────────────
     ctx.setCurrentFunction(specializedFunc);
 
@@ -381,13 +408,14 @@ void lowerSpecializedFunctionBody(
     ctx.builder.SetInsertPoint(entryBlock);
 
     // ─── Lower parameters with substituted types ─────────────────────────
-    // Parameters are the same as the generic function but with types substituted
     size_t argIndex = 0;
 
     // For closures, the first parameter is the environment pointer
     if (funcDecl->hasClosure) {
         llvm::Value* envPtr = specializedFunc->getArg(argIndex++);
-        ctx.storeValue(nullptr, envPtr);
+        // Store environment pointer in a separate field, not in ctx.values
+        // to avoid collisions. Use a dedicated field on CodeGenContext.
+        ctx.currentEnvPtr = envPtr;
     }
 
     // Lower each parameter with the substituted type
@@ -418,7 +446,7 @@ void lowerSpecializedFunctionBody(
             llvm::Value* argValue = specializedFunc->getArg(argIndex);
             ctx.builder.CreateStore(argValue, alloca);
             
-            // Store in symbol table
+            // Store in symbol table (now isolated per instantiation)
             ctx.storeValue(param, alloca);
             param->llvmAlloca = alloca;
             param->llvmValue = argValue;
@@ -429,8 +457,6 @@ void lowerSpecializedFunctionBody(
     }
 
     // ─── Lower the body ───────────────────────────────────────────────────
-    // The body AST is the same, but type references to generic parameters
-    // are now resolved via the substituted types in the context.
     if (funcDecl->body) {
         lowerStatement(const_cast<StmtAST*>(funcDecl->body), ctx);
     } else {
@@ -442,6 +468,10 @@ void lowerSpecializedFunctionBody(
 
     // ─── Pop scope and function context ──────────────────────────────────
     ctx.setCurrentFunction(nullptr);
+    ctx.currentEnvPtr = nullptr;
+
+    // ─── Restore the saved value map ──────────────────────────────────────
+    ctx.values = std::move(savedValues);
 
     // ─── Verify the function ─────────────────────────────────────────────
     std::string error;
@@ -549,7 +579,14 @@ void lowerVarDecl(VarDeclAST* decl, CodeGenContext& ctx) {
 
     if (isModuleLevel) {
         // ─── Module-level global variable ──────────────────────────────────
-        std::string varName = ctx.pool.lookup(decl->name);
+        // ─── Use the mangled name from Sema if available ──────────────────
+        std::string varName;
+        if (decl->mangledName.isValid()) {
+            varName = ctx.pool.lookup(decl->mangledName);
+        } else {
+            // Fallback: use the original name
+            varName = ctx.pool.lookup(decl->name);
+        }
 
         bool isConst = decl->isConst();
 
@@ -585,11 +622,10 @@ void lowerVarDecl(VarDeclAST* decl, CodeGenContext& ctx) {
         return;
     }
 
-    // ─── Local variable ───────────────────────────────────────────────────
+    // ─── Local variable (unchanged) ───────────────────────────────────────
     std::string varName = ctx.pool.lookup(decl->name);
     llvm::AllocaInst* alloca = createAlloca(varName, varType, ctx);
 
-    // ─── Lower initializer if present ────────────────────────────────────
     if (decl->init) {
         llvm::Value* initValue = lowerExpression(decl->init, ctx);
         if (initValue) {
@@ -675,7 +711,19 @@ void lowerStructDecl(StructDeclAST* decl, CodeGenContext& ctx) {
     }
 
     // ─── Non-generic struct - normal lowering ────────────────────────────
-    std::string structName = ctx.pool.lookup(decl->name);
+    // ─── Use the mangled name from Sema if available ──────────────────────
+    std::string structName;
+    if (decl->mangledName.isValid()) {
+        structName = ctx.pool.lookup(decl->mangledName);
+    } else {
+        // Fallback: generate a mangled name now (shouldn't happen if Sema ran)
+        InternedString mangled = generateMangledName(decl, ctx);
+        if (mangled.isValid()) {
+            structName = ctx.pool.lookup(mangled);
+        } else {
+            structName = ctx.pool.lookup(decl->name);
+        }
+    }
 
     // ─── Check if struct type already exists ──────────────────────────────
     llvm::StructType* structType = llvm::StructType::getTypeByName(

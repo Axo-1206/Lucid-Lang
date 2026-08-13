@@ -23,7 +23,6 @@
 #include "../context/SemaContext.hpp"
 #include "../const_eval/ConstEvaluator.hpp"
 #include "../support/CaptureAnalysis.hpp"
-#include "../support/MangledName.hpp"
 #include "../support/CaptureAnalysis.hpp"
 #include "../registry/AttributeValidator.hpp"
 
@@ -153,27 +152,6 @@ void resolveVarDecl(VarDeclAST* decl, SemaContext& ctx) {
         }
     }
 
-    // ─── 5. Generate mangled name for exported globals ───────────────────
-    bool isModuleLevel = isModuleLevelDeclaration(decl, ctx);
-    bool isExported = false;
-    InternedString exportName = ctx.pool.intern("export");
-    for (const AttributeAST* attr : decl->attributes) {
-        if (attr->name == exportName) {
-            isExported = true;
-            break;
-        }
-    }
-    
-    if (isModuleLevel && isExported) {
-        InternedString mangled = generateMangledName(decl, ctx);
-        if (mangled.isValid()) {
-            const_cast<VarDeclAST*>(decl)->mangledName = mangled;
-            LOG_SEMA("Generated mangled name for exported variable '",
-                     ctx.pool.lookup(decl->name), "' → '",
-                     ctx.pool.lookup(mangled), "'");
-        }
-    }
-
     // ─── NOTE: Registration is handled by registerVarName() ──────────
     // Do NOT call ctx.insertValue() here.
 }
@@ -200,10 +178,6 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
 
     // ─── 4. Handle @[foreign] functions ────────────────────────────────────
     if (decl->isForeignFunction) {
-        // Foreign functions use their original name as the symbol
-        const_cast<FuncDeclAST*>(decl)->mangledName = decl->name;
-        LOG_SEMA("Foreign function '", ctx.pool.lookup(decl->name),
-                 "' uses symbol name: ", ctx.pool.lookup(decl->mangledName));
         return;
     }
 
@@ -221,16 +195,7 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
         }
     }
 
-    // ─── 7. Generate mangled name BEFORE body resolution ──────────────────
-    InternedString mangled = generateMangledName(decl, ctx);
-    if (mangled.isValid()) {
-        const_cast<FuncDeclAST*>(decl)->mangledName = mangled;
-        LOG_SEMA("Generated mangled name for function '",
-                 ctx.pool.lookup(decl->name), "' → '",
-                 ctx.pool.lookup(mangled), "'");
-    }
-
-    // ─── 8. Analyze body ──────────────────────────────────────────────────────
+    // ─── 7. Analyze body ──────────────────────────────────────────────────────
     if (!decl->body) {
         ctx.diagnostics.error(DiagCode::Sem_MissingFuncBody, decl,
                               "function '", ctx.pool.lookup(decl->name), "' has no body");
@@ -238,13 +203,13 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
         return;
     }
 
-    // ─── 9. Push function context with expected return type ──────────────────
+    // ─── 8. Push function context with expected return type ──────────────────
     const TypeAST* expectedReturn = funcType ? funcType->returnType : nullptr;
     ctx.stack.pushFunction(const_cast<FuncDeclAST*>(decl), expectedReturn);
 
     bool bodyReturns = false;
     
-    // ─── 10. Resolve the body ──────────────────────────────────────────────────
+    // ─── 9. Resolve the body ──────────────────────────────────────────────────
     if (decl->body->isa<BlockStmtAST>()) {
         bodyReturns = resolveBlock(decl->body->as<BlockStmtAST>(), ctx);
     } else if (decl->body->isa<ReturnStmtAST>()) {
@@ -267,24 +232,24 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
         return;
     }
 
-    // ─── 11. Verify return paths ──────────────────────────────────────────────
+    // ─── 10. Verify return paths ──────────────────────────────────────────────
     if (!bodyReturns && expectedReturn) {
         ctx.diagnostics.error(DiagCode::Sem_MissingReturn, decl,
                               "function '", ctx.pool.lookup(decl->name),
                               "' does not return a value on all paths");
     }
 
-    // ─── 12. CAPTURE ANALYSIS for nested functions ──────────────────────────
+    // ─── 11. CAPTURE ANALYSIS for nested functions ──────────────────────────
     if (ctx.getClosureDepth() > 0) {
         LOG_SEMA("resolveFuncDecl: analyzing captures for nested function '",
                  ctx.pool.lookup(decl->name), "' at depth ", ctx.getClosureDepth());
         analyzeCaptures(const_cast<FuncDeclAST*>(decl), ctx);
     }
 
-    // ─── 13. Pop function context ────────────────────────────────────────────
+    // ─── 12. Pop function context ────────────────────────────────────────────
     ctx.stack.pop();
 
-    // ─── 14. Pop scope ──────────────────────────────────────────────────────────
+    // ─── 13. Pop scope ──────────────────────────────────────────────────────────
     ctx.popScope();
 }
 

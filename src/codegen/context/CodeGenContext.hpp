@@ -69,20 +69,19 @@ struct CodeGenContext {
     std::unordered_map<const TypeAST*, llvm::Type*> typeCache;
     std::unordered_map<const StructDeclAST*, llvm::StructType*> structCache;
     
-    // ─── Symbol Mapping: AST → LLVM Value ──────────────────────────────
+    // ─── Current Environment Pointer (for closures) ──────────────────────
+    llvm::Value* currentEnvPtr = nullptr;
     
+    // ─── Symbol Mapping: AST → LLVM Value ──────────────────────────────
     std::unordered_map<const ValueDeclAST*, llvm::Value*> values;
     
     // ─── Function Mapping: AST → LLVM Function ─────────────────────────
-    
     std::unordered_map<const FuncDeclAST*, llvm::Function*> functions;
     
     // ─── Runtime Function Mapping ──────────────────────────────────────
-    
     std::unordered_map<std::string, llvm::Function*> runtimeFunctions;
     
     // ─── Generic Registry ──────────────────────────────────────────────
-    
     GenericRegistry genericRegistry;
     
     // ─── Loop Info (for break/continue) ─────────────────────────────────

@@ -1,4 +1,4 @@
-/// @file sema/support/MangledName.cpp
+/// @file codegen/support/MangledName.cpp
 /// @brief Implementation of mangled name generation.
 
 #include "MangledName.hpp"
@@ -8,15 +8,15 @@
 #include <algorithm>
 #include <cctype>
 
-namespace sema {
+namespace codegen {
 
 // ─── Private Helper: Build Mangled String ──────────────────────────────────
 
 /// @brief Build a mangled name string from components.
 /// @param components The components to join.
-/// @param ctx The semantic context.
+/// @param ctx The code generation context.
 /// @return The full mangled name as an InternedString.
-static InternedString buildMangledName(const std::string& components, SemaContext& ctx) {
+static InternedString buildMangledName(const std::string& components, CodeGenContext& ctx) {
     std::string result = "_L";
     result += components;
     return ctx.pool.intern(result);
@@ -24,7 +24,7 @@ static InternedString buildMangledName(const std::string& components, SemaContex
 
 // ─── Public API ─────────────────────────────────────────────────────────────
 
-InternedString generateMangledName(const FuncDeclAST* decl, SemaContext& ctx) {
+InternedString generateMangledName(const FuncDeclAST* decl, CodeGenContext& ctx) {
     if (!decl) return InternedString(0);
     
     std::string result;
@@ -36,6 +36,9 @@ InternedString generateMangledName(const FuncDeclAST* decl, SemaContext& ctx) {
     result += sanitizeForMangledName(ctx.pool.lookup(decl->name));
     
     // ─── 3. Generic parameters (if any) ──────────────────────────────────
+    // Note: For the generic declaration itself, we encode the parameter NAMES
+    // (e.g., "T"), not concrete types. Concrete types are encoded in the
+    // generateMangledNameForGeneric function.
     if (!decl->genericParams.empty()) {
         result += "_G";
         for (size_t i = 0; i < decl->genericParams.size(); ++i) {
@@ -66,7 +69,7 @@ InternedString generateMangledName(const FuncDeclAST* decl, SemaContext& ctx) {
     return buildMangledName(result, ctx);
 }
 
-InternedString generateMangledName(const VarDeclAST* decl, SemaContext& ctx) {
+InternedString generateMangledName(const VarDeclAST* decl, CodeGenContext& ctx) {
     if (!decl) return InternedString(0);
     
     std::string result;
@@ -91,26 +94,102 @@ InternedString generateMangledName(const VarDeclAST* decl, SemaContext& ctx) {
 }
 
 InternedString generateMangledNameForGeneric(
-    InternedString baseName,
+    const DeclAST* baseDecl,
     const std::vector<const TypeAST*>& typeArgs,
-    SemaContext& ctx
+    CodeGenContext& ctx
 ) {
-    if (typeArgs.empty() || !baseName.isValid()) {
-        return baseName;
+    if (!baseDecl || typeArgs.empty()) {
+        return InternedString(0);
     }
     
-    std::string result = ctx.pool.lookup(baseName);
-    result += "_G";
+    std::string result;
     
+    // ─── 1. Module path ──────────────────────────────────────────────────
+    result += getMangledModulePath(ctx) + "_";
+    
+    // ─── 2. Declaration name ──────────────────────────────────────────────
+    result += sanitizeForMangledName(ctx.pool.lookup(baseDecl->name));
+    
+    // ─── 3. Generic arguments (concrete types) ──────────────────────────
+    result += "_G";
     for (size_t i = 0; i < typeArgs.size(); ++i) {
         if (i > 0) result += "_";
         result += typeToMangleString(typeArgs[i], ctx);
     }
     
-    return ctx.pool.intern(result);
+    // ─── 4. For functions, also encode parameter and return types ──────
+    if (const FuncDeclAST* funcDecl = baseDecl->as<FuncDeclAST>()) {
+        // Parameter types (using substituted types)
+        result += "_P";
+        const FuncTypeAST* funcType = funcDecl->funcType;
+        while (funcType) {
+            for (const ParamAST* param : funcType->params) {
+                // If this is a generic parameter, substitute it
+                const TypeAST* paramType = param->type;
+                // Check if param type is a generic parameter
+                if (paramType->isa<NamedTypeAST>()) {
+                    const NamedTypeAST* named = paramType->as<NamedTypeAST>();
+                    // Find if this matches a generic param name
+                    for (size_t j = 0; j < funcDecl->genericParams.size(); ++j) {
+                        if (funcDecl->genericParams[j]->name == named->name) {
+                            if (j < typeArgs.size()) {
+                                paramType = typeArgs[j];
+                            }
+                            break;
+                        }
+                    }
+                }
+                result += typeToMangleString(paramType, ctx);
+            }
+            funcType = funcType->getNext();
+        }
+        
+        // Return type (using substituted type)
+        if (funcDecl->funcType->returnType) {
+            const TypeAST* returnType = funcDecl->funcType->returnType;
+            // Check if return type is a generic parameter
+            if (returnType->isa<NamedTypeAST>()) {
+                const NamedTypeAST* named = returnType->as<NamedTypeAST>();
+                for (size_t j = 0; j < funcDecl->genericParams.size(); ++j) {
+                    if (funcDecl->genericParams[j]->name == named->name) {
+                        if (j < typeArgs.size()) {
+                            returnType = typeArgs[j];
+                        }
+                        break;
+                    }
+                }
+            }
+            result += "_R" + typeToMangleString(returnType, ctx);
+        } else {
+            result += "_RV";
+        }
+    }
+    
+    // ─── 5. For structs, encode field types ──────────────────────────────
+    if (const StructDeclAST* structDecl = baseDecl->as<StructDeclAST>()) {
+        result += "_F";
+        for (const FieldDeclAST* field : structDecl->fields) {
+            const TypeAST* fieldType = field->type;
+            // Check if field type is a generic parameter
+            if (fieldType->isa<NamedTypeAST>()) {
+                const NamedTypeAST* named = fieldType->as<NamedTypeAST>();
+                for (size_t j = 0; j < structDecl->genericParams.size(); ++j) {
+                    if (structDecl->genericParams[j]->name == named->name) {
+                        if (j < typeArgs.size()) {
+                            fieldType = typeArgs[j];
+                        }
+                        break;
+                    }
+                }
+            }
+            result += typeToMangleString(fieldType, ctx);
+        }
+    }
+    
+    return buildMangledName(result, ctx);
 }
 
-InternedString generateMangledName(const StructDeclAST* decl, SemaContext& ctx) {
+InternedString generateMangledName(const StructDeclAST* decl, CodeGenContext& ctx) {
     if (!decl) return InternedString(0);
     
     std::string result;
@@ -132,12 +211,20 @@ InternedString generateMangledName(const StructDeclAST* decl, SemaContext& ctx) 
         }
     }
     
+    // ─── 4. Field types ──────────────────────────────────────────────────
+    if (!decl->fields.empty()) {
+        result += "_F";
+        for (const FieldDeclAST* field : decl->fields) {
+            result += typeToMangleString(field->type, ctx);
+        }
+    }
+    
     return buildMangledName(result, ctx);
 }
 
 // ─── Core Encoding Functions ──────────────────────────────────────────────
 
-std::string typeToMangleString(const TypeAST* type, SemaContext& ctx) {
+std::string typeToMangleString(const TypeAST* type, StringPool& pool) {
     if (!type) return "V";  // void
     
     switch (type->kind) {
@@ -150,7 +237,7 @@ std::string typeToMangleString(const TypeAST* type, SemaContext& ctx) {
         case ASTKind::NamedType: {
             const NamedTypeAST* named = type->as<NamedTypeAST>();
             std::string name = sanitizeForMangledName(
-                ctx.pool.lookup(named->name)
+                pool.lookup(named->name)
             );
             
             // Add generic arguments if present
@@ -158,7 +245,7 @@ std::string typeToMangleString(const TypeAST* type, SemaContext& ctx) {
                 name += "_G";
                 for (size_t i = 0; i < named->genericArgs.size(); ++i) {
                     if (i > 0) name += "_";
-                    name += typeToMangleString(named->genericArgs[i], ctx);
+                    name += typeToMangleString(named->genericArgs[i], pool);
                 }
             }
             return name;
@@ -174,33 +261,33 @@ std::string typeToMangleString(const TypeAST* type, SemaContext& ctx) {
             } else {
                 result += "*";
             }
-            result += typeToMangleString(arr->element, ctx);
+            result += typeToMangleString(arr->element, pool);
             return result;
         }
         
         case ASTKind::PtrType: {
             const PtrTypeAST* ptr = type->as<PtrTypeAST>();
-            return "P" + typeToMangleString(ptr->inner, ctx);
+            return "P" + typeToMangleString(ptr->inner, pool);
         }
         
         case ASTKind::RefType: {
             const RefTypeAST* ref = type->as<RefTypeAST>();
-            return "R" + typeToMangleString(ref->inner, ctx);
+            return "R" + typeToMangleString(ref->inner, pool);
         }
         
         case ASTKind::NullableType: {
             const NullableTypeAST* nullable = type->as<NullableTypeAST>();
-            return "N" + typeToMangleString(nullable->inner, ctx);
+            return "N" + typeToMangleString(nullable->inner, pool);
         }
         
         case ASTKind::FallibleType: {
             const FallibleTypeAST* fallible = type->as<FallibleTypeAST>();
-            return "F" + typeToMangleString(fallible->inner, ctx);
+            return "F" + typeToMangleString(fallible->inner, pool);
         }
         
         case ASTKind::CombinedType: {
             const CombinedTypeAST* combined = type->as<CombinedTypeAST>();
-            return "X" + typeToMangleString(combined->inner, ctx);
+            return "X" + typeToMangleString(combined->inner, pool);
         }
         
         case ASTKind::FuncType: {
@@ -209,13 +296,13 @@ std::string typeToMangleString(const TypeAST* type, SemaContext& ctx) {
             
             // Parameter types
             for (const ParamAST* param : func->params) {
-                result += typeToMangleString(param->type, ctx);
+                result += typeToMangleString(param->type, pool);
             }
             result += "_";
             
             // Return type
             if (func->returnType) {
-                result += typeToMangleString(func->returnType, ctx);
+                result += typeToMangleString(func->returnType, pool);
             } else {
                 result += "V";
             }
@@ -224,12 +311,12 @@ std::string typeToMangleString(const TypeAST* type, SemaContext& ctx) {
         
         case ASTKind::FutureType: {
             const FutureTypeAST* future = type->as<FutureTypeAST>();
-            return "U" + typeToMangleString(future->inner, ctx);
+            return "U" + typeToMangleString(future->inner, pool);
         }
         
         case ASTKind::ThreadType: {
             const ThreadTypeAST* thread = type->as<ThreadTypeAST>();
-            return "H" + typeToMangleString(thread->inner, ctx);
+            return "H" + typeToMangleString(thread->inner, pool);
         }
         
         default:
@@ -250,18 +337,24 @@ std::string sanitizeForMangledName(const std::string& str) {
     return result;
 }
 
-std::string getMangledModulePath(SemaContext& ctx) {
-    if (!ctx.currentModule) {
+std::string getMangledModulePath(CodeGenContext& ctx) {
+    if (!ctx.module) {
         return "global";
     }
     
-    std::string path = ctx.pool.lookup(ctx.currentModule->filePath);
+    // Get the module name (which is the file path)
+    std::string path = ctx.module->getName().str();
     
     // Replace path separators and dots with underscores
     for (char& c : path) {
         if (c == '/' || c == '\\' || c == '.') {
             c = '_';
         }
+    }
+    
+    // If the path is empty, use "global"
+    if (path.empty()) {
+        return "global";
     }
     
     return path;
@@ -301,4 +394,4 @@ bool isPrimitiveType(const TypeAST* type) {
     return type && type->isa<PrimitiveTypeAST>();
 }
 
-} // namespace sema
+} // namespace codegen

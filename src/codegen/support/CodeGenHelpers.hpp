@@ -65,28 +65,6 @@ llvm::Type* getDeclType(
     CodeGenContext& ctx
 );
 
-// ─── Name Helpers ─────────────────────────────────────────────────────────
-
-/// @brief Get a mangled name for a function declaration.
-std::string getMangledName(
-    const FuncDeclAST* decl,
-    CodeGenContext& ctx
-);
-
-/// @brief Get a mangled name for a generic function instantiation.
-std::string getMangledName(
-    const FuncDeclAST* decl,
-    const std::vector<const TypeAST*>& typeArgs,
-    CodeGenContext& ctx
-);
-
-/// @brief Get a mangled name for a generic struct instantiation.
-std::string getMangledName(
-    const StructDeclAST* decl,
-    const std::vector<const TypeAST*>& typeArgs,
-    CodeGenContext& ctx
-);
-
 // ─── Generic Helper Functions ────────────────────────────────────────────
 
 /// @brief Check if a function has generic parameters.
