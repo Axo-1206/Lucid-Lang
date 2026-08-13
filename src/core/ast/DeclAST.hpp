@@ -132,8 +132,7 @@ struct ImportDeclAST : DeclAST {
 struct VarDeclAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::VarDecl;
 
-    // ─── Parser Fields (immutable) ──────────────────────────────────────
-    const ExprAST* init;  // Initializer expression (null if none)
+    ExprAST* init;
 
     // ─── Semantic Fields (set by Sema) ────────────────────────────────
     
@@ -143,7 +142,7 @@ struct VarDeclAST : ValueDeclAST {
     llvm::GlobalVariable* llvmGlobal = nullptr;  // Module-level global
 
     // ─── Constructor ─────────────────────────────────────────────────────
-    VarDeclAST(InternedString n, DeclKeyword kw, const TypeAST* t, const ExprAST* i)
+    VarDeclAST(InternedString n, DeclKeyword kw, const TypeAST* t, ExprAST* i)
         : ValueDeclAST(ASTKind::VarDecl, n, kw, t)
         , init(i) {}
 };
@@ -216,7 +215,7 @@ struct FuncDeclAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::FuncDecl;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
-    const ArenaSpan<const GenericParamDeclAST*> genericParams;
+    const ArenaSpan<GenericParamDeclAST*> genericParams;
     const FuncTypeAST* funcType = nullptr;
     const StmtAST* body;
     
@@ -241,7 +240,7 @@ struct FuncDeclAST : ValueDeclAST {
 
     // ─── Constructor ─────────────────────────────────────────────────────
     FuncDeclAST(InternedString n, DeclKeyword kw, 
-                ArenaSpan<const GenericParamDeclAST*> params,
+                ArenaSpan<GenericParamDeclAST*> params,
                 const FuncTypeAST* ft, const StmtAST* b)
         : ValueDeclAST(ASTKind::FuncDecl, n, kw, ft)
         , funcType(ft)
@@ -303,7 +302,8 @@ struct FieldDeclAST : ValueDeclAST {
     // ─── Parser Fields (immutable) ──────────────────────────────────────
     const StmtAST* defaultBody;   // Block body default (for function fields)
     const bool isConstField;      // True if field is marked `const` in struct
-    const ExprAST* defaultVal;    // Expression default value (null if none)
+
+    ExprAST* defaultVal;
 
     // ─── Semantic Fields (set by Sema) ────────────────────────────────
     size_t fieldIndex = 0;        // Position in struct layout
@@ -313,7 +313,7 @@ struct FieldDeclAST : ValueDeclAST {
     uint64_t byteOffset = 0;          // Byte offset (from LLVM DataLayout)
 
     // ─── Constructor ─────────────────────────────────────────────────────
-    FieldDeclAST(InternedString n, const TypeAST* t, const ExprAST* dv, 
+    FieldDeclAST(InternedString n, const TypeAST* t, ExprAST* dv, 
                  const StmtAST* db, bool isConstField)
         : ValueDeclAST(ASTKind::FieldDecl, n, DeclKeyword::Let, t)
         , defaultVal(dv)
@@ -351,9 +351,9 @@ struct StructDeclAST : TypeDeclAST {
     static constexpr ASTKind staticKind = ASTKind::StructDecl;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
-    const ArenaSpan<const GenericParamDeclAST*> genericParams;
-    const ArenaSpan<const FieldDeclAST*> fields;
-    const ArenaSpan<const NamedTypeAST*> traitRefs;
+    const ArenaSpan<GenericParamDeclAST*> genericParams;
+    const ArenaSpan<FieldDeclAST*> fields;
+    const ArenaSpan<NamedTypeAST*> traitRefs;
     const bool isPacked = false;  // From @[packed] attribute
     
     // ─── Semantic Fields (set by Sema) ────────────────────────────────
@@ -369,9 +369,9 @@ struct StructDeclAST : TypeDeclAST {
 
     // ─── Constructor ─────────────────────────────────────────────────────
     StructDeclAST(InternedString n,
-                  ArenaSpan<const GenericParamDeclAST*> params,
-                  ArenaSpan<const FieldDeclAST*> flds,
-                  ArenaSpan<const NamedTypeAST*> traits,
+                  ArenaSpan<GenericParamDeclAST*> params,
+                  ArenaSpan<FieldDeclAST*> flds,
+                  ArenaSpan<NamedTypeAST*> traits,
                   bool packed = false)
         : TypeDeclAST(ASTKind::StructDecl, n)
         , genericParams(params)
@@ -405,7 +405,7 @@ struct EnumDeclAST : TypeDeclAST {
     static constexpr ASTKind staticKind = ASTKind::EnumDecl;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
-    const ArenaSpan<const EnumVariantAST*> variants;
+    const ArenaSpan<EnumVariantAST*> variants;
     const PrimitiveTypeAST* backingType;
     
     // ─── CodeGen Fields (mutable) ──────────────────────────────────────
@@ -415,7 +415,7 @@ struct EnumDeclAST : TypeDeclAST {
 
     // ─── Constructor ─────────────────────────────────────────────────────
     EnumDeclAST(InternedString n,
-                ArenaSpan<const EnumVariantAST*> vars,
+                ArenaSpan<EnumVariantAST*> vars,
                 const PrimitiveTypeAST* backing = nullptr)
         : TypeDeclAST(ASTKind::EnumDecl, n)
         , variants(vars)
@@ -507,13 +507,13 @@ struct TraitDeclAST : TypeDeclAST {
     static constexpr ASTKind staticKind = ASTKind::TraitDecl;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
-    const ArenaSpan<const GenericParamDeclAST*> genericParams;
-    const ArenaSpan<const TraitFieldDeclAST*> fields;
+    const ArenaSpan<GenericParamDeclAST*> genericParams;
+    const ArenaSpan<TraitFieldDeclAST*> fields;
 
     // ─── Constructor ─────────────────────────────────────────────────────
     TraitDeclAST(InternedString n,
-                 ArenaSpan<const GenericParamDeclAST*> params,
-                 ArenaSpan<const TraitFieldDeclAST*> flds)
+                 ArenaSpan<GenericParamDeclAST*> params,
+                 ArenaSpan<TraitFieldDeclAST*> flds)
         : TypeDeclAST(ASTKind::TraitDecl, n)
         , genericParams(params)
         , fields(flds) {}

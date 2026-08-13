@@ -137,10 +137,10 @@ struct ArrayLiteralExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::ArrayLiteralExpr;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
-    const ArenaSpan<const ExprAST*> elements; // may be empty
+    const ArenaSpan<ExprAST*> elements; // may be empty
 
     // ─── Constructor ─────────────────────────────────────────────────────
-    ArrayLiteralExprAST(ArenaSpan<const ExprAST*> elems)
+    ArrayLiteralExprAST(ArenaSpan<ExprAST*> elems)
         : ExprAST(ASTKind::ArrayLiteralExpr), elements(elems) {}
 };
 
@@ -168,11 +168,11 @@ struct StructLiteralExprAST : ExprAST {
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
     const InternedString typeName;
-    const ArenaSpan<const TypeAST*> genericArgs;
-    const ArenaSpan<const FieldInitAST*> inits;
+    const ArenaSpan<TypeAST*> genericArgs;
+    const ArenaSpan<FieldInitAST*> inits;
 
     // ─── Constructor ─────────────────────────────────────────────────────
-    StructLiteralExprAST(InternedString n, ArenaSpan<const TypeAST*> args, ArenaSpan<const FieldInitAST*> in)
+    StructLiteralExprAST(InternedString n, ArenaSpan<TypeAST*> args, ArenaSpan<FieldInitAST*> in)
         : ExprAST(ASTKind::StructLiteralExpr), typeName(n), genericArgs(args), inits(in) {}
 };
 
@@ -197,9 +197,8 @@ struct StructLiteralExprAST : ExprAST {
 struct IdentifierExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::IdentifierExpr;
 
-    // ─── Parser Fields (immutable) ──────────────────────────────────────
     const InternedString name;
-    const ArenaSpan<const TypeAST*> genericArgs;
+    ArenaSpan<TypeAST*> genericArgs;
 
     // ─── Semantic Fields (set by Sema) ──────────────────────────────────
     const ValueDeclAST* resolvedDecl = nullptr;
@@ -220,8 +219,7 @@ struct IdentifierExprAST : ExprAST {
 struct FieldAccessExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::FieldAccessExpr;
 
-    // ─── Parser Fields (immutable) ──────────────────────────────────────
-    const ExprAST* object;
+    ExprAST* object;
     const InternedString fieldName;
 
     FieldAccessExprAST(InternedString n) 
@@ -241,10 +239,9 @@ struct FieldAccessExprAST : ExprAST {
 struct ModuleAccessExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::ModuleAccessExpr;
 
-    // ─── Parser Fields (immutable) ──────────────────────────────────────
     const InternedString moduleName;
     const InternedString memberName;
-    const ArenaSpan<const TypeAST*> genericArgs; // Generic function instantiation
+    ArenaSpan<TypeAST*> genericArgs; // Generic function instantiation
 
     ModuleAccessExprAST(InternedString mod, InternedString mem) 
         : ExprAST(ASTKind::ModuleAccessExpr),
@@ -286,10 +283,9 @@ struct ModuleAccessExprAST : ExprAST {
 struct CallExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::CallExpr;
 
-    // ─── Parser Fields (immutable) ──────────────────────────────────────
-    const ExprAST* callee;
-    const ArenaSpan<const TypeAST*> genericArgs;
-    const ArenaSpan<const ExprAST*> args;
+    ExprAST* callee;
+    ArenaSpan<TypeAST*> genericArgs;
+    ArenaSpan<ExprAST*> args;
     const bool hasArgPack = false;    // true for `fn(args)!`
 
     CallExprAST(bool a) 
@@ -384,10 +380,9 @@ struct SliceExprAST : ExprAST {
 struct BinaryExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::BinaryExpr;
 
-    // ─── Parser Fields (immutable) ──────────────────────────────────────
     const BinaryOp op;
-    const ExprAST* left;
-    const ExprAST* right;
+    ExprAST* left;
+    ExprAST* right;
 
     BinaryExprAST(BinaryOp o) 
         : ExprAST(ASTKind::BinaryExpr), op(o) {}
@@ -409,9 +404,8 @@ struct BinaryExprAST : ExprAST {
 struct UnaryExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::UnaryExpr;
 
-    // ─── Parser Fields (immutable) ──────────────────────────────────────
     const UnaryOp op;
-    const ExprAST* operand;
+    ExprAST* operand;
 
     UnaryExprAST(UnaryOp o) 
         : ExprAST(ASTKind::UnaryExpr), op(o) {}
@@ -435,10 +429,9 @@ struct UnaryExprAST : ExprAST {
 struct AssignExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::AssignExpr;
 
-    // ─── Parser Fields (immutable) ──────────────────────────────────────
     const AssignOp op;
-    const ExprAST* lhs;
-    const ExprAST* rhs;
+    ExprAST* lhs;
+    ExprAST* rhs;
 
     AssignExprAST(AssignOp o) 
         : ExprAST(ASTKind::AssignExpr), op(o) {}
@@ -505,10 +498,10 @@ struct PipelineStepAST : BaseAST {
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
     const ExprAST* callable;
-    const ArenaSpan<const ExprAST*> packArgs;
+    const ArenaSpan<ExprAST*> packArgs;
 
     // ─── Constructor ─────────────────────────────────────────────────────
-    PipelineStepAST(ExprAST* c, ArenaSpan<const ExprAST*> p)
+    PipelineStepAST(ExprAST* c, ArenaSpan<ExprAST*> p)
         : BaseAST(ASTKind::PipelineStep), callable(c), packArgs(p) {}
 };
 
@@ -537,10 +530,10 @@ struct PipelineExprAST : ExprAST {
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
     const ExprAST* seed;
-    const ArenaSpan<const PipelineStepAST*> steps;
+    const ArenaSpan<PipelineStepAST*> steps;
 
     // ─── Constructor ─────────────────────────────────────────────────────
-    PipelineExprAST(ExprAST* s, ArenaSpan<const PipelineStepAST*> st)
+    PipelineExprAST(ExprAST* s, ArenaSpan<PipelineStepAST*> st)
         : ExprAST(ASTKind::PipelineExpr), seed(s), steps(st) {}
 };
 
@@ -576,10 +569,10 @@ struct ComposeOperandAST : BaseAST {
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
     const ExprAST* callable;
-    const ArenaSpan<const TypeAST*> genericArgs;
+    const ArenaSpan<TypeAST*> genericArgs;
 
     // ─── Constructor ─────────────────────────────────────────────────────
-    ComposeOperandAST(ExprAST* c, ArenaSpan<const TypeAST*> args)
+    ComposeOperandAST(ExprAST* c, ArenaSpan<TypeAST*> args)
         : BaseAST(ASTKind::ComposeOperand), callable(c), genericArgs(args) {}
 };
 
@@ -605,10 +598,10 @@ struct ComposeExprAST : ExprAST {
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
     const ExprAST* left;
-    const ArenaSpan<const ComposeOperandAST*> operands;
+    const ArenaSpan<ComposeOperandAST*> operands;
 
     // ─── Constructor ─────────────────────────────────────────────────────
-    ComposeExprAST(ExprAST* l, ArenaSpan<const ComposeOperandAST*> ops)
+    ComposeExprAST(ExprAST* l, ArenaSpan<ComposeOperandAST*> ops)
         : ExprAST(ASTKind::ComposeExpr), left(l), operands(ops) {}
 };
 
@@ -780,9 +773,8 @@ struct IfExprAST : ExprAST {
 struct RangeExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::RangeExpr;
 
-    // ─── Parser Fields (immutable) ──────────────────────────────────────
-    const ExprAST* lo;   // start (inclusive)
-    const ExprAST* hi;   // end (inclusive/exclusive depends on flag)
+    ExprAST* lo;   // start (inclusive)
+    ExprAST* hi;   // end (inclusive/exclusive depends on flag)
     const bool isExclusive = false;   // true for ..<
 
     RangeExprAST(bool ex) 
@@ -805,9 +797,8 @@ struct RangeExprAST : ExprAST {
 struct IntrinsicCallExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::IntrinsicCallExpr;
 
-    // ─── Parser Fields (immutable) ──────────────────────────────────────
     const InternedString intrinsicName;                 // "sizeof", "memcpy", "sqrt", etc.
-    ArenaSpan<const ExprAST*> args;                      // value arguments in order
+    ArenaSpan<ExprAST*> args;                      // value arguments in order
     
     // LLVM intrinsic ID - set during semantic analysis
     // Use std::optional because not all intrinsics map to LLVM intrinsics
