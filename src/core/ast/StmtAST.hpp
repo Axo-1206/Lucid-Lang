@@ -53,14 +53,13 @@ using ScopeExitRegistrationPtr = ScopeExitRegistration*;
 struct BlockStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::BlockStmt;
 
-    ArenaSpan<StmtAST*> stmts; // Statements in execution order
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const ArenaSpan<const StmtAST*> stmts; // Statements in execution order
 
-    // ─── Scope Exit Registrations (semantic metadata) ─────────────────────
+    // ─── Semantic Fields (set by Sema) ─────────────────────────────────
     // Each #scope_exit call in this block is stored here in registration order.
     // LIFO execution: iterate this span in reverse.
-    // Set by Sema during semantic analysis.
-    ArenaSpan<ScopeExitRegistrationPtr> scopeExits;
-
+    ArenaSpan<const ScopeExitRegistration*> scopeExits;
 
     BlockStmtAST() : StmtAST(ASTKind::BlockStmt) {}
 };
@@ -78,9 +77,10 @@ struct BlockStmtAST : StmtAST {
 struct ExprStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::ExprStmt;
 
-    ExprAST* expr; // The expression being evaluated for its side effects
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const ExprAST* expr; // The expression being evaluated for its side effects
 
-    explicit ExprStmtAST(ExprAST* e)
+    explicit ExprStmtAST(const ExprAST* e)
         : StmtAST(ASTKind::ExprStmt), expr(e) {}
 };
 
@@ -103,9 +103,10 @@ struct ExprStmtAST : StmtAST {
 struct DeclStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::DeclStmt;
 
-    DeclAST* decl; // The actual declaration node
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const DeclAST* decl; // The actual declaration node
 
-    explicit DeclStmtAST(DeclAST* d) : StmtAST(ASTKind::DeclStmt), decl(d) {}
+    explicit DeclStmtAST(const DeclAST* d) : StmtAST(ASTKind::DeclStmt), decl(d) {}
 
     // Convenience helpers – use decl->isa<T>() directly in most cases
     bool isVar()     const { return decl && decl->isa<VarDeclAST>(); }
@@ -150,8 +151,8 @@ struct DeclStmtAST : StmtAST {
 struct FuncRefStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::FuncRefStmt;
     
-    // ─── Parser Fields ──────────────────────────────────────────────────
-    ExprAST* target;  // IdentifierExprAST or ModuleAccessExprAST only — see above
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const ExprAST* target;  // IdentifierExprAST or ModuleAccessExprAST only — see above
     
     // ─── CodeGen Annotations ────────────────────────────────────────────
     llvm::Function* resolvedFunction = nullptr;  // The resolved LLVM function —
@@ -190,9 +191,10 @@ struct FuncRefStmtAST : StmtAST {
 struct IfStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::IfStmt;
 
-    ExprAST* condition;  // The test expression (must resolve to `bool`)
-    StmtAST* thenBranch; // Always a `BlockStmtAST`
-    StmtAST* elseBranch; // `nullptr` | `BlockStmtAST` | `IfStmtAST`
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const ExprAST* condition;  // The test expression (must resolve to `bool`)
+    const StmtAST* thenBranch; // Always a `BlockStmtAST`
+    const StmtAST* elseBranch; // `nullptr` | `BlockStmtAST` | `IfStmtAST`
 
     IfStmtAST() : StmtAST(ASTKind::IfStmt) {}
 };
@@ -225,8 +227,9 @@ struct IfStmtAST : StmtAST {
 struct SwitchCaseAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::SwitchCase;
 
-    ArenaSpan<ExprAST*> values;          ///< Match values (literals, enum variants, or ranges)
-    BlockStmtAST* body;                 ///< Statements executed on match
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const ArenaSpan<const ExprAST*> values;          ///< Match values (literals, enum variants, or ranges)
+    const BlockStmtAST* body;                        ///< Statements executed on match
 
     SwitchCaseAST() : BaseAST(ASTKind::SwitchCase) {}
 };
@@ -264,10 +267,11 @@ struct SwitchCaseAST : BaseAST {
 struct SwitchStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::SwitchStmt;
 
-    ExprAST* subject;                           ///< The value being dispatched
-    ArenaSpan<SwitchCaseAST*> cases;             ///< Non‑default case clauses
-    BlockStmtAST* defaultBody;                  ///< `nullptr` if no `default`
-    std::optional<SourceLocation> defaultLoc;   ///< Location of `default` keyword (for diagnostics)
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const ExprAST* subject;                               ///< The value being dispatched
+    const ArenaSpan<const SwitchCaseAST*> cases;          ///< Non‑default case clauses
+    const BlockStmtAST* defaultBody;                      ///< `nullptr` if no `default`
+    std::optional<SourceLocation> defaultLoc;             ///< Location of `default` keyword (for diagnostics)
 
     SwitchStmtAST() : StmtAST(ASTKind::SwitchStmt) {}
 };
@@ -316,11 +320,14 @@ struct SwitchStmtAST : StmtAST {
 struct ForStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::ForStmt;
 
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const ExprAST* iterable;              // Collection or `RangeExprAST`
+    const ExprAST* step;                  // Optional step (only for range loops, `nullptr` if omitted)
+    const StmtAST* body;                  // Always a `BlockStmtAST`
+
+    // ─── Semantic Fields (set by Sema) ─────────────────────────────────
     ParamAST* indexVar = nullptr;   // Index variable (name + explicit type), nullptr if ignored (`_`)
     ParamAST* valueVar = nullptr;   // Value variable (name + explicit type), nullptr if ignored (`_`)
-    ExprAST*  iterable;              // Collection or `RangeExprAST`
-    ExprAST*  step;                  // Optional step (only for range loops, `nullptr` if omitted)
-    StmtAST*  body;                  // Always a `BlockStmtAST`
 
     ForStmtAST() : StmtAST(ASTKind::ForStmt) {}
 };
@@ -335,8 +342,9 @@ struct ForStmtAST : StmtAST {
 struct WhileStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::WhileStmt;
 
-    ExprAST* condition; // Must resolve to `bool`
-    StmtAST* body;      // Always a `BlockStmtAST`
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const ExprAST* condition; // Must resolve to `bool`
+    const StmtAST* body;      // Always a `BlockStmtAST`
 
     WhileStmtAST() : StmtAST(ASTKind::WhileStmt) {}
 };
@@ -351,8 +359,9 @@ struct WhileStmtAST : StmtAST {
 struct DoWhileStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::DoWhileStmt;
 
-    StmtAST* body;       ///< Executed at least once (always `BlockStmtAST`)
-    ExprAST* condition;  ///< Evaluated after each iteration; must resolve to `bool`
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const StmtAST* body;       ///< Executed at least once (always `BlockStmtAST`)
+    const ExprAST* condition;  ///< Evaluated after each iteration; must resolve to `bool`
 
     DoWhileStmtAST() : StmtAST(ASTKind::DoWhileStmt) {}
 };
@@ -377,7 +386,8 @@ struct DoWhileStmtAST : StmtAST {
 struct ReturnStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::ReturnStmt;
 
-    ExprAST* value; // Empty for bare `return`
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const ExprAST* value; // Empty for bare `return`
 
     ReturnStmtAST() : StmtAST(ASTKind::ReturnStmt) {}
 };
@@ -455,6 +465,7 @@ struct ContinueStmtAST : StmtAST {
 struct AsyncStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::AsyncStmt;
 
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
     const VarDeclAST* binding = nullptr;   // fresh local introduced by this statement
     const ExprAST* call;                    // the async call
 
@@ -491,7 +502,8 @@ struct AsyncStmtAST : StmtAST {
 struct AwaitStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::AwaitStmt;
 
-    ArenaSpan<ExprAST*> targets;   // identifiers resolving back to a prior AsyncStmtAST::binding
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const ArenaSpan<const ExprAST*> targets;   // identifiers resolving back to a prior AsyncStmtAST::binding
 
     AwaitStmtAST() : StmtAST(ASTKind::AwaitStmt) {}
 };
@@ -529,9 +541,10 @@ struct AwaitStmtAST : StmtAST {
 struct SpawnStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::SpawnStmt;
 
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
     const VarDeclAST* binding = nullptr;   // fresh local introduced by this statement, or
-                                      // nullptr for the `_` discard pattern
-    ExprAST* call;                    // the spawn call
+                                            // nullptr for the `_` discard pattern
+    const ExprAST* call;                    // the spawn call
 
     SpawnStmtAST() : StmtAST(ASTKind::SpawnStmt) {}
 };
@@ -565,7 +578,8 @@ struct SpawnStmtAST : StmtAST {
 struct JoinStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::JoinStmt;
 
-    ArenaSpan<ExprAST*> targets;   // identifiers resolving back to a prior SpawnStmtAST::binding
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const ArenaSpan<const ExprAST*> targets;   // identifiers resolving back to a prior SpawnStmtAST::binding
 
     JoinStmtAST() : StmtAST(ASTKind::JoinStmt) {}
 };

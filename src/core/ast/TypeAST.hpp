@@ -83,7 +83,8 @@ enum class PrimitiveKind {
 struct PrimitiveTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::PrimitiveType;
 
-    PrimitiveKind primitiveKind;
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const PrimitiveKind primitiveKind;
 
     explicit PrimitiveTypeAST(PrimitiveKind k)
         : TypeAST(ASTKind::PrimitiveType), primitiveKind(k) {}
@@ -114,8 +115,9 @@ struct PrimitiveTypeAST : TypeAST {
 struct NamedTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::NamedType;
 
-    InternedString name;
-    ArenaSpan<TypeAST*> genericArgs;
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const InternedString name;
+    const ArenaSpan<const TypeAST*> genericArgs;
 
     explicit NamedTypeAST(InternedString n)
         : TypeAST(ASTKind::NamedType), name(n) {}
@@ -138,9 +140,10 @@ struct NamedTypeAST : TypeAST {
 struct NullableTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::NullableType;
 
-    TypeAST* inner;
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const TypeAST* inner;
 
-    explicit NullableTypeAST(TypeAST* t)
+    explicit NullableTypeAST(const TypeAST* t)
         : TypeAST(ASTKind::NullableType), inner(t) {}
 };
 
@@ -161,9 +164,10 @@ struct NullableTypeAST : TypeAST {
 struct FallibleTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::FallibleType;
 
-    TypeAST* inner = nullptr;
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const TypeAST* inner = nullptr;
 
-    explicit FallibleTypeAST(TypeAST* t)
+    explicit FallibleTypeAST(const TypeAST* t)
         : TypeAST(ASTKind::FallibleType), inner(t) {}
 };
 
@@ -186,9 +190,10 @@ struct FallibleTypeAST : TypeAST {
 struct CombinedTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::CombinedType;
 
-    TypeAST* inner = nullptr;
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const TypeAST* inner = nullptr;
 
-    explicit CombinedTypeAST(TypeAST* t)
+    explicit CombinedTypeAST(const TypeAST* t)
         : TypeAST(ASTKind::CombinedType), inner(t) {}
 };
 
@@ -259,9 +264,10 @@ struct CombinedTypeAST : TypeAST {
 struct FutureTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::FutureType;
 
-    TypeAST* inner = nullptr;
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const TypeAST* inner = nullptr;
 
-    explicit FutureTypeAST(TypeAST* t)
+    explicit FutureTypeAST(const TypeAST* t)
         : TypeAST(ASTKind::FutureType), inner(t) {}
 };
 
@@ -282,9 +288,10 @@ struct FutureTypeAST : TypeAST {
 struct ThreadTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::ThreadType;
 
-    TypeAST* inner = nullptr;
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const TypeAST* inner = nullptr;
 
-    explicit ThreadTypeAST(TypeAST* t)
+    explicit ThreadTypeAST(const TypeAST* t)
         : TypeAST(ASTKind::ThreadType), inner(t) {}
 };
 
@@ -313,11 +320,12 @@ struct ThreadTypeAST : TypeAST {
 struct ArrayTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::ArrayType;
 
-    ArrayKind arrayKind;
-    uint64_t size;
-    TypeAST* element = nullptr;
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const ArrayKind arrayKind;
+    const uint64_t size;
+    const TypeAST* element = nullptr;
 
-    ArrayTypeAST(ArrayKind k, uint64_t sz, TypeAST* elem)
+    ArrayTypeAST(ArrayKind k, uint64_t sz, const TypeAST* elem)
         : TypeAST(ASTKind::ArrayType), arrayKind(k), size(sz), element(elem) {}
 
     bool isFixed()   const { return arrayKind == ArrayKind::Fixed; }
@@ -349,9 +357,10 @@ struct ArrayTypeAST : TypeAST {
 struct RefTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::RefType;
 
-    TypeAST* inner = nullptr;
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const TypeAST* inner = nullptr;
 
-    explicit RefTypeAST(TypeAST* t)
+    explicit RefTypeAST(const TypeAST* t)
         : TypeAST(ASTKind::RefType), inner(t) {}
 };
 
@@ -390,9 +399,10 @@ struct RefTypeAST : TypeAST {
 struct PtrTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::PtrType;
 
-    TypeAST* inner = nullptr;
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const TypeAST* inner = nullptr;
 
-    explicit PtrTypeAST(TypeAST* t)
+    explicit PtrTypeAST(const TypeAST* t)
         : TypeAST(ASTKind::PtrType), inner(t) {}
 };
 
@@ -423,20 +433,21 @@ struct PtrTypeAST : TypeAST {
 struct FuncTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::FuncType;
 
-    ArenaSpan<ParamAST*> params;      // parameters for this group
-    TypeAST* returnType = nullptr;     // return types (may contain FuncTypeAST)
-    bool hasArrow = false;            // semantic enforce return statement inside the body
-                                      // and codegen will automatically wrap function
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const ArenaSpan<const ParamAST*> params;      // parameters for this group
+    const TypeAST* returnType = nullptr;           // return types (may contain FuncTypeAST)
+    bool hasArrow = false;                         // semantic enforce return statement inside the body
+                                                   // and codegen will automatically wrap function
 
     explicit FuncTypeAST() : TypeAST(ASTKind::FuncType) {}
     
     // Returns true if the return type is a function type (currying)
     bool isCurried() const { 
-        return returnType->isa<FuncTypeAST>();
+        return returnType && returnType->isa<FuncTypeAST>();
     }
 
     // Returns the inner function type if curried, otherwise nullptr
-    FuncTypeAST* getNext() const {
+    const FuncTypeAST* getNext() const {
         if (isCurried()) {
             return returnType->as<FuncTypeAST>();
         }
@@ -466,9 +477,10 @@ struct FuncTypeAST : TypeAST {
 struct ModuleTypeAccessAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::ModuleTypeAccess;
 
-    InternedString moduleName;
-    InternedString typeName;
-    ArenaSpan<TypeAST*> genericArgs;
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const InternedString moduleName;
+    const InternedString typeName;
+    const ArenaSpan<const TypeAST*> genericArgs;
 
     ModuleTypeAccessAST() : TypeAST(ASTKind::ModuleTypeAccess) {}
 };

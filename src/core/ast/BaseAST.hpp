@@ -320,9 +320,10 @@ struct StmtAST : BaseAST {
 };
 
 struct DeclAST : BaseAST {
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
     std::optional<DocComment> doc;
-    ArenaSpan<AttributeAST*>  attributes;
-    const InternedString      name;
+    const ArenaSpan<const AttributeAST*> attributes;
+    const InternedString name;
 
     explicit DeclAST(ASTKind k, InternedString n) : BaseAST(k), name(n) {}
     bool hasDoc() const { return doc.has_value(); }
@@ -456,7 +457,7 @@ struct ConstantValue {
     };
 
     Kind kind = Kind::Unknown;
-    TypeAST* type = nullptr;
+    const TypeAST* type = nullptr;
 
     // ─── Value Storage ────────────────────────────────────────────────
     // Using variant to store different value types efficiently
@@ -685,8 +686,9 @@ struct ExprAST : BaseAST {
 struct AttributeAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::Attribute;
 
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
     InternedString name;
-    ArenaSpan<LiteralExprAST*> args;
+    const ArenaSpan<const LiteralExprAST*> args;
 
     AttributeAST() : BaseAST(ASTKind::Attribute) {}
 };
@@ -825,8 +827,9 @@ struct TypeDeclAST : DeclAST {
 struct ModuleAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::Program;
 
-    InternedString       filePath;
-    ArenaSpan<DeclAST*>   decls;
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    InternedString filePath;
+    const ArenaSpan<const DeclAST*> decls;
     bool hasErrors = false;
 
     ModuleAST() : BaseAST(ASTKind::Program) {}
@@ -877,7 +880,8 @@ using ModuleASTPtr = ModuleAST*;
 struct GenericParamDeclAST : DeclAST {
     static constexpr ASTKind staticKind = ASTKind::GenericParamDecl;
 
-    ArenaSpan<NamedTypeAST*> constraints;   // empty = unconstrained
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    const ArenaSpan<const NamedTypeAST*> constraints;   // empty = unconstrained
 
     explicit GenericParamDeclAST(InternedString n)
         : DeclAST(ASTKind::GenericParamDecl, n) {}
