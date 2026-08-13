@@ -19,4 +19,36 @@ llvm::Value* getArrayLength(
     CodeGenContext& ctx
 );
 
+/// @brief Lower a range-based for loop.
+/// @param stmt The for statement AST.
+/// @param headerBlock The header block for condition checking.
+/// @param bodyBlock The body block.
+/// @param continueBlock The continue block for increment.
+/// @param exitBlock The exit block.
+/// @param ctx The code generation context.
+void lowerRangeForLoop(
+    ForStmtAST* stmt,
+    llvm::BasicBlock* headerBlock,
+    llvm::BasicBlock* bodyBlock,
+    llvm::BasicBlock* continueBlock,
+    llvm::BasicBlock* exitBlock,
+    CodeGenContext& ctx
+);
+
+/// @brief Lower a collection-based for loop.
+/// @param stmt The for statement AST.
+/// @param headerBlock The header block for condition checking.
+/// @param bodyBlock The body block.
+/// @param continueBlock The continue block for increment.
+/// @param exitBlock The exit block.
+/// @param ctx The code generation context.
+void lowerCollectionForLoop(
+    ForStmtAST* stmt,
+    llvm::BasicBlock* headerBlock,
+    llvm::BasicBlock* bodyBlock,
+    llvm::BasicBlock* continueBlock,
+    llvm::BasicBlock* exitBlock,
+    CodeGenContext& ctx
+);
+
 }

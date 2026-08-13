@@ -4,6 +4,9 @@
 #include "CodeGen.hpp"
 #include "CodeGenType.hpp"
 #include "support/CodeGenAlloca.hpp"
+#include "support/CodeGenHelpers.hpp"
+#include "support/CodeGenPanic.hpp"
+#include "support/LLVMHelpers.hpp"
 #include "debug/DebugUtils.hpp"
 #include "core/ast/StmtAST.hpp"
 #include "core/ast/ExprAST.hpp"
@@ -117,9 +120,14 @@ void emitScopeExitCallback(const ScopeExitRegistration* reg, CodeGenContext& ctx
         if (!argVal) {
             return;
         }
-        // If argument is an l-value, load it
+        // If argument is an l-value, load it with explicit element type
         if (arg->isLValue) {
-            argVal = loadIfNeeded(argVal, true, ctx);
+            llvm::Type* elemType = getType(ctx, arg->resolvedType);
+            if (elemType) {
+                argVal = loadIfNeeded(argVal, elemType, ctx);
+            } else {
+                argVal = loadIfNeeded(argVal, true, ctx);
+            }
         }
         args.push_back(argVal);
     }
@@ -161,7 +169,7 @@ void lowerIfStmt(IfStmtAST* stmt, CodeGenContext& ctx) {
     }
 
     // ─── Get the condition as a bool ──────────────────────────────────────
-    if (!cond->getType()->isIntegerTy(1)) {
+    if (!isBoolValue(cond)) {
         cond = ctx.builder.CreateICmpNE(cond,
             llvm::Constant::getNullValue(cond->getType()));
     }
@@ -223,7 +231,12 @@ void lowerSwitchStmt(SwitchStmtAST* stmt, CodeGenContext& ctx) {
 
     // ─── If subject is an l-value, load it ──────────────────────────────
     if (stmt->subject->isLValue) {
-        subject = loadIfNeeded(subject, true, ctx);
+        llvm::Type* elemType = getType(ctx, stmt->subject->resolvedType);
+        if (elemType) {
+            subject = loadIfNeeded(subject, elemType, ctx);
+        } else {
+            subject = loadIfNeeded(subject, true, ctx);
+        }
         if (!subject) return;
     }
 
@@ -337,7 +350,7 @@ void lowerSwitchStmt(SwitchStmtAST* stmt, CodeGenContext& ctx) {
 void lowerForStmt(ForStmtAST* stmt, CodeGenContext& ctx) {
     if (!stmt) return;
 
-    // ─── Determine if this is a range loop or collection loop ────────────
+    // ─── Determine loop type ──────────────────────────────────────────────
     bool isRangeLoop = (stmt->valueVar == nullptr);
 
     // ─── Create loop blocks ──────────────────────────────────────────────
@@ -347,163 +360,18 @@ void lowerForStmt(ForStmtAST* stmt, CodeGenContext& ctx) {
     llvm::BasicBlock* continueBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "for_continue", func);
     llvm::BasicBlock* exitBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "for_exit", func);
 
-    // ─── Push loop context ─────────────────────────────────────────────────
+    // ─── Push loop context ────────────────────────────────────────────────
     ctx.pushLoop(headerBlock, exitBlock, continueBlock);
 
-    // ─── Lower initialization ─────────────────────────────────────────────
     if (isRangeLoop) {
-        // Range loop: for i int in 0..10
-        if (stmt->iterable && stmt->iterable->isa<RangeExprAST>()) {
-            const RangeExprAST* range = stmt->iterable->as<RangeExprAST>();
-
-            // Lower range bounds
-            llvm::Value* startVal = lowerExpression(range->lo, ctx);
-            llvm::Value* endVal = lowerExpression(range->hi, ctx);
-
-            if (!startVal || !endVal) {
-                ctx.popLoop();
-                return;
-            }
-
-            // If bounds are l-values, load them
-            if (range->lo->isLValue) {
-                startVal = loadIfNeeded(startVal, true, ctx);
-            }
-            if (range->hi->isLValue) {
-                endVal = loadIfNeeded(endVal, true, ctx);
-            }
-
-            // Store the loop variable
-            if (stmt->indexVar) {
-                // Create alloca for the loop variable
-                llvm::Type* varType = getType(ctx, stmt->indexVar->type);
-                llvm::AllocaInst* alloca = createAlloca(
-                    ctx.pool.lookup(stmt->indexVar->name),
-                    varType,
-                    ctx
-                );
-
-                // Store the initial value
-                ctx.builder.CreateStore(startVal, alloca);
-                ctx.storeValue(stmt->indexVar, alloca);
-            }
-
-            // Branch to header
-            ctx.builder.CreateBr(headerBlock);
-        } else {
-            ctx.diagnostics.errorAt(DiagCode::Sem_InvalidIterator, stmt->iterable->loc,
-                                    "invalid range loop");
-            ctx.popLoop();
-            return;
-        }
+        // ─── RANGE LOOP: for i int in start..end ───────────────────────────
+        lowerRangeForLoop(stmt, headerBlock, bodyBlock, continueBlock, exitBlock, ctx);
     } else {
-        // Collection loop: for i int, v int in nums
-        // TODO: Implement collection iteration
-        ctx.builder.CreateBr(headerBlock);
+        // ─── COLLECTION LOOP: for i int, v int in collection ───────────────
+        lowerCollectionForLoop(stmt, headerBlock, bodyBlock, continueBlock, exitBlock, ctx);
     }
 
-    // ─── Header block (condition check) ──────────────────────────────────
-    ctx.builder.SetInsertPoint(headerBlock);
-
-    if (isRangeLoop) {
-        if (stmt->indexVar) {
-            llvm::Value* varValue = ctx.lookupValue(stmt->indexVar);
-            if (!varValue) {
-                ctx.popLoop();
-                return;
-            }
-
-            // Load the current value - with opaque pointers, use the type from the AST
-            llvm::Type* varType = getType(ctx, stmt->indexVar->type);
-            llvm::Value* current = ctx.builder.CreateLoad(varType, varValue);
-
-            // Get the end value
-            const RangeExprAST* range = stmt->iterable->as<RangeExprAST>();
-            llvm::Value* endVal = lowerExpression(range->hi, ctx);
-            if (!endVal) {
-                ctx.popLoop();
-                return;
-            }
-            if (range->hi->isLValue) {
-                endVal = loadIfNeeded(endVal, true, ctx);
-            }
-
-            // Compare current < end
-            bool isInclusive = !range->isExclusive;
-            llvm::Value* cond;
-            if (isInclusive) {
-                cond = ctx.builder.CreateICmpSLE(current, endVal);
-            } else {
-                cond = ctx.builder.CreateICmpSLT(current, endVal);
-            }
-
-            ctx.builder.CreateCondBr(cond, bodyBlock, exitBlock);
-        } else {
-            ctx.popLoop();
-            return;
-        }
-    } else {
-        // Collection loop condition
-        // TODO: Implement collection iteration
-        ctx.builder.CreateBr(bodyBlock);
-    }
-
-    // ─── Body block ──────────────────────────────────────────────────────
-    ctx.builder.SetInsertPoint(bodyBlock);
-
-    if (stmt->body) {
-        lowerStatement(stmt->body, ctx);
-    }
-
-    if (!ctx.builder.GetInsertBlock()->getTerminator()) {
-        ctx.builder.CreateBr(continueBlock);
-    }
-
-    // ─── Continue block (increment) ──────────────────────────────────────
-    ctx.builder.SetInsertPoint(continueBlock);
-
-    if (isRangeLoop) {
-        if (stmt->indexVar) {
-            llvm::Value* varValue = ctx.lookupValue(stmt->indexVar);
-            if (!varValue) {
-                ctx.popLoop();
-                return;
-            }
-
-            // Load current value
-            llvm::Type* varType = getType(ctx, stmt->indexVar->type);
-            llvm::Value* current = ctx.builder.CreateLoad(varType, varValue);
-
-            // Add step (default 1)
-            llvm::Value* step = llvm::ConstantInt::get(
-                current->getType(),
-                1
-            );
-
-            // If step is specified, use it
-            if (stmt->step) {
-                llvm::Value* stepVal = lowerExpression(stmt->step, ctx);
-                if (stepVal) {
-                    if (stmt->step->isLValue) {
-                        stepVal = loadIfNeeded(stepVal, true, ctx);
-                    }
-                    step = stepVal;
-                }
-            }
-
-            // Store the incremented value
-            llvm::Value* incremented = ctx.builder.CreateAdd(current, step);
-            ctx.builder.CreateStore(incremented, varValue);
-        }
-    }
-
-    // Branch back to header
-    ctx.builder.CreateBr(headerBlock);
-
-    // ─── Exit block ──────────────────────────────────────────────────────
-    ctx.builder.SetInsertPoint(exitBlock);
-
-    // Pop the loop context
+    // ─── Pop loop context ─────────────────────────────────────────────────
     ctx.popLoop();
 }
 
@@ -537,7 +405,7 @@ void lowerWhileStmt(WhileStmtAST* stmt, CodeGenContext& ctx) {
     }
 
     // Get condition as bool
-    if (!cond->getType()->isIntegerTy(1)) {
+    if (!isBoolValue(cond)) {
         cond = ctx.builder.CreateICmpNE(cond,
             llvm::Constant::getNullValue(cond->getType()));
     }
@@ -603,7 +471,7 @@ void lowerDoWhileStmt(DoWhileStmtAST* stmt, CodeGenContext& ctx) {
     }
 
     // Get condition as bool
-    if (!cond->getType()->isIntegerTy(1)) {
+    if (!isBoolValue(cond)) {
         cond = ctx.builder.CreateICmpNE(cond,
             llvm::Constant::getNullValue(cond->getType()));
     }
@@ -643,9 +511,14 @@ void lowerReturnStmt(ReturnStmtAST* stmt, CodeGenContext& ctx) {
             return;
         }
 
-        // If return value is an l-value, load it
+        // If return value is an l-value, load it with explicit element type
         if (stmt->value->isLValue) {
-            returnVal = loadIfNeeded(returnVal, true, ctx);
+            llvm::Type* elemType = getType(ctx, stmt->value->resolvedType);
+            if (elemType) {
+                returnVal = loadIfNeeded(returnVal, elemType, ctx);
+            } else {
+                returnVal = loadIfNeeded(returnVal, true, ctx);
+            }
             if (!returnVal) return;
         }
 
@@ -654,7 +527,7 @@ void lowerReturnStmt(ReturnStmtAST* stmt, CodeGenContext& ctx) {
         if (returnVal->getType() != returnType) {
             if (returnVal->getType()->isIntegerTy() && returnType->isIntegerTy()) {
                 // Integer conversion
-                if (returnVal->getType()->getIntegerBitWidth() < returnType->getIntegerBitWidth()) {
+                if (getIntegerBitWidth(returnVal->getType()) < getIntegerBitWidth(returnType)) {
                     returnVal = ctx.builder.CreateSExt(returnVal, returnType);
                 } else {
                     returnVal = ctx.builder.CreateTrunc(returnVal, returnType);
