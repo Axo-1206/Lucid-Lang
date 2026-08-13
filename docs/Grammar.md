@@ -3414,54 +3414,13 @@ the underlying `T`.
 
 `??` triggers its right-hand side when the left-hand side is `nil`, `err`, or
 both — covering nullable and fallible values with one operator. The
-right-hand side may be a single expression, or a block.
-
-The result type of `x ?? rhs` is **not always plain `T`** — it is whatever
-type `rhs` actually produces, checked against `x`'s own type:
-
-- If `rhs` is a plain `T` expression, the result is `T` — this is the common
-  case, fully resolving the failure.
-- If `rhs` is a block, the block's final expression determines the result
-  type. A block is free to return `err` again (re-raising, after doing
-  something in between — a retry, a log, a side effect) rather than fully
-  resolving the value. In that case the result of the whole `?? ` expression
-  is still `T!`, not `T` — the failure is preserved, not silently erased.
-- The compiler checks the block's result type against `x`'s declared type the
-  same way it checks any other assignment: a `T!` left-hand side accepts a
-  block that produces `T` **or** `err`; a plain non-fallible `T` left-hand
-  side (where `??` is closer to dead code, but still legal) only accepts a
-  block that produces exactly `T`.
+right-hand side is a single expression, and it must produce exactly the
+plain, fully-resolved type `T` that `x` would narrow to. `x ?? rhs` always
+fully resolves the failure: the result type of the whole expression is
+always plain `T`, never `T!`, `T?`, or `T?!`.
 
 ```ebnf
 fallback_expr   = expr '??' expr
-                | expr '??' block
-                  (* result type = type of rhs, checked against lhs's type:
-                     lhs T  (non-fallible): rhs must produce exactly T
-                     lhs T! : rhs may produce T or err
-                     lhs T? : rhs may produce T or nil
-                     lhs T?!: rhs may produce T, nil, or err
-                     a block's result is its final expression, or 'return' *)
-```
-
-```lucid
--- common case: block fully resolves to plain T
-const x int = (10 / d) ?? {
-    system:logError("division failed");
-    return -1;
-};
--- x is int — the block's last expression/return is plain int
-
--- block re-raises: result stays int!, not int
-const y int! = (10 / d) ?? {
-    const retryDivisor int = recoverDivisor(d);
-    if retryDivisor == 0 { return err }    -- still no valid divisor — re-raise
-
-    const retried int! = 10 / retryDivisor;    -- still runtime-checked
-    if retried == err { return err }
-    return retried;
-};
--- y is int! here — caller of y still must narrow it; the failure was not
--- silently discarded, only retried
 ```
 
 ```lucid
@@ -3479,13 +3438,7 @@ const f User   = e ?? User { id = 0  name = "guest"  email = "" };
 
 -- never triggers: lhs is plain int
 const g int = getValue();
-const h int = g ?? 0;    -- always g
-
--- block form: multiple statements, then a value
-const i int = riskyOp() ?? {
-    system:logError("riskyOp failed, using default");
-    return -1;
-};
+const h int = g ?? 0;    -- always g (legal, but dead code)
 ```
 
 `??` is also the separator in inline `if` expressions (see **If Expression —
@@ -3508,92 +3461,15 @@ production.
 A single `??` always runs the same right-hand side regardless of whether the
 failure was `nil` or `err` — there is no way to ask, inside one `??`, "which
 sentinel was this" the way a compiler with several `catch` clauses per
-exception type can dispatch on the exception's type. There is no dedicated
-multi-branch syntax for `??` — only `expr '??' expr` and `expr '??' block`
-exist (see **`??` Fallback**).
+exception type can dispatch on the exception's type. `??` has exactly one
+production, `expr '??' expr` (see **`??` Fallback**), and its right-hand side
+is evaluated the same way no matter which sentinel triggered it.
 
-A tempting but mistaken way to reach for per-sentinel handling is writing two
-blocks back-to-back, expecting the first to handle `nil` and the second to
-handle `err`:
-
-```lucid
--- MISLEADING — does not mean "first block for nil, second for err":
-const x int = riskyOp();
-    ?? { return -1 }
-    ?? { return -2 }
-```
-
-This parses and typechecks, but not with that meaning. The first `?? { return
--1 }` already fully resolves `x` to plain `int` regardless of which sentinel
-fired — `nil` and `err` both take this same branch. The second `?? { return
--2 }` is then dead code: its left-hand side is already plain `int`, never
-`nil` or `err`, so it can never trigger.
-
-**Chaining separate `??` expressions is fine**, and is the idiomatic way to
-layer fallbacks — each one only has to decide "is this still unresolved,"
-not "which sentinel was it." Give the intermediate result its own declaration with
-an explicit type, so it's visible at a glance whether the next `??` is live
-or dead — this is exactly the check the MISLEADING example above skipped:
-
-```lucid
-const x int! = riskyOp();
-
-const step1 int! = x ?? {
-    const retried int! = retryOp();
-    if retried == err { return err }
-    return retried;
-};
--- step1 is explicitly int! — the block re-raised, so it did NOT fully
--- resolve x. This makes the next ?? visibly live, not dead:
-const step2 int = step1 ?? -1;    -- fully resolves whatever remains
-```
-
-Avoid writing this as one inline chain (`x ?? { ... } ?? -1`) even though it
-is grammatically legal — without the intermediate `const step1 int!`
-spelled out, a reader has to mentally execute the first block to know whether
-the second `??` is live or dead, which is precisely the trap the MISLEADING
-example above demonstrates. Prefer giving a chained intermediate its own
-typed declaration.
-
-> [!NOTE]
-> Inline chaining is a style choice, not a forbidden construct. The grammar
-> does not special-case `expr '??' block` to reject a further `??` after it —
-> doing so would not close the underlying problem anyway, since the identical
-> readability trap exists when chaining through an ordinary function call
-> instead of a block (`riskyOp() ?? fallbackOp() ?? -1` has the same
-> live-or-dead ambiguity, and there is no clean syntactic line between "a
-> call that happens to return a fallible type" and "a block"). The
-> intermediate-declaration convention above is a recommendation, not a rule the
-> compiler enforces.
-
-The block after `??` is an ordinary `block` — it can contain any statement,
-including `if` or `switch`, exactly like a function body. This is not the
-same as branching on which sentinel triggered the `??`: the `??` itself still
-only ever knew "unresolved, run this block once" — the `switch` inside is
-dispatching on some other value the block computes, not on `nil` vs `err`:
-
-```lucid
--- (assume the following lives inside a function body, as with all
--- 'return'-containing snippets in this section)
- recoveryCode (d int) -> int = { ... };
-
- d int = getDivisor();
-
- result int = (10 / d) ?? {
-    switch recoveryCode(d) {
-        case 1: { return -1 }
-        case 2: { return -2 }
-        default: { return 0 }
-    }
-};
-```
-
-Each `??` in the chain still only ever sees "resolved or not" — not which
-sentinel. If the handling genuinely needs to differ by sentinel, narrow
-explicitly with `if` and dispatch to ordinary functions instead — `switch`
-does not apply here for struct-typed values like `User` (see **Primitive
-types** under **`switch`**), so this is `if`/`else if` over the narrowing
-checks already established for `nil` and `err`:
+If the handling genuinely needs to differ by sentinel, narrow explicitly with
+`if` and dispatch to ordinary functions instead — `switch` does not apply
+here for struct-typed values like `User` (see **Primitive types** under
+**`switch`**), so this is `if`/`else if` over the narrowing checks already
+established for `nil` and `err`:
 
 ```lucid
  handleAbsent (lookup User?!) -> int = {

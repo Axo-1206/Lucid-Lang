@@ -451,8 +451,6 @@ struct AssignExprAST : ExprAST {
 ///    `err`, or both (for `T?!` types).
 /// 2. **Result Type**: The result type is whatever type `rhs` produces,
 ///    checked against `lhs`'s own type.
-/// 3. **Block Form**: The right-hand side may be a block, which can re-raise
-///    `err` instead of fully resolving the value.
 /// 
 /// @field value          The nullable/fallible value.
 /// @field fallback       The fallback expression.
@@ -828,7 +826,6 @@ using SliceExprPtr = SliceExprAST*;
 using BinaryExprPtr = BinaryExprAST*;
 using UnaryExprPtr = UnaryExprAST*;
 using AssignExprPtr = AssignExprAST*;
-using NullableChainExprPtr = NullableChainExprAST*;
 using NullCoalesceExprPtr = NullCoalesceExprAST*;
 using PipelineStepPtr = PipelineStepAST*;
 using PipelineExprPtr = PipelineExprAST*;
