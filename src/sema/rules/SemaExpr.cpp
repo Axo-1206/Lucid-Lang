@@ -247,6 +247,9 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetTyp
         return ctx.getUnknownType();
     }
 
+    // ─── Store the resolved declaration on the AST node ────────────────
+    const_cast<IdentifierExprAST*>(expr)->resolvedDecl = decl;
+
     // ─── Step 3: Get the declaration's type ──────────────────────
     // The type should have been set during resolution of the declaration
     // (resolveVarDecl, resolveParam, resolveFuncDecl, resolveStructFields, etc.)

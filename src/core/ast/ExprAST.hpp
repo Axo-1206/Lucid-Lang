@@ -201,6 +201,9 @@ struct IdentifierExprAST : ExprAST {
     const InternedString name;
     ArenaSpan<TypePtr> genericArgs;
 
+    // ─── Semantic Fields (set by Sema) ──────────────────────────────────
+    const ValueDeclAST* resolvedDecl = nullptr;
+
     explicit IdentifierExprAST(InternedString n) 
         : ExprAST(ASTKind::IdentifierExpr), name(n) {}
 };

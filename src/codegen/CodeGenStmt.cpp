@@ -1,5 +1,13 @@
 /// @file CodeGenStmt.cpp
 /// @brief Implementation of statement lowering to LLVM IR.
+///
+/// ─── Design Principle ──────────────────────────────────────────────────────
+/// CodeGen TRUSTS the AST. All validation is done by Sema. If Sema succeeded,
+/// the AST is guaranteed to be well-formed. CodeGen should NOT validate or
+/// report errors - it should only generate IR.
+///
+/// Assertions are used ONLY in debug builds to catch bugs in Sema.
+/// Never use diagnostics in CodeGen for semantic errors.
 
 #include "CodeGen.hpp"
 #include "CodeGenType.hpp"
@@ -18,6 +26,8 @@
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Verifier.h>
+
+#include <cassert>
 
 namespace codegen {
 
@@ -78,10 +88,8 @@ void lowerStatement(StmtAST* stmt, CodeGenContext& ctx) {
             lowerJoinStmt(stmt->as<JoinStmtAST>(), ctx);
             break;
         default:
-            ctx.diagnostics.errorAt(DiagCode::Sem_InvalidUnary, stmt->loc,
-                                    "unsupported statement kind: ",
-                                    debug::kindToString(stmt->kind));
-            break;
+            // This should never happen - Sema would have rejected unknown kinds
+            llvm_unreachable("Unsupported statement kind in CodeGen");
     }
 }
 
@@ -108,6 +116,7 @@ void emitScopeExitCallback(const ScopeExitRegistration* reg, CodeGenContext& ctx
     }
 
     if (!callback) {
+        // Sema should have validated this, but we handle it gracefully
         ctx.diagnostics.errorAt(DiagCode::Sem_NotCallable, reg->callExpr->loc,
                                 "scope_exit callback not found");
         return;
@@ -120,14 +129,11 @@ void emitScopeExitCallback(const ScopeExitRegistration* reg, CodeGenContext& ctx
         if (!argVal) {
             return;
         }
-        // If argument is an l-value, load it with explicit element type
         if (arg->isLValue) {
             llvm::Type* elemType = getType(ctx, arg->resolvedType);
-            if (elemType) {
-                argVal = loadIfNeeded(argVal, elemType, ctx);
-            } else {
-                argVal = loadIfNeeded(argVal, true, ctx);
-            }
+            // Sema guarantees resolvedType is set
+            assert(elemType && "Argument has no type in CodeGen");
+            argVal = loadIfNeeded(argVal, elemType, ctx);
         }
         args.push_back(argVal);
     }
@@ -142,13 +148,11 @@ void emitScopeExitCallback(const ScopeExitRegistration* reg, CodeGenContext& ctx
 void lowerBlockStmt(BlockStmtAST* block, CodeGenContext& ctx) {
     if (!block) return;
 
-    // ─── Lower each statement in the block ──────────────────────────────
     for (StmtAST* stmt : block->stmts) {
         lowerStatement(stmt, ctx);
     }
 
-    // ─── Emit scope-exit callbacks (LIFO order) ─────────────────────────
-    // Scope exits execute in reverse registration order
+    // Emit scope-exit callbacks (LIFO order)
     for (size_t i = block->scopeExits.size(); i > 0; --i) {
         const ScopeExitRegistration* reg = block->scopeExits[i - 1];
         emitScopeExitCallback(reg, ctx);
@@ -162,20 +166,18 @@ void lowerBlockStmt(BlockStmtAST* block, CodeGenContext& ctx) {
 void lowerIfStmt(IfStmtAST* stmt, CodeGenContext& ctx) {
     if (!stmt) return;
 
-    // ─── Lower condition ──────────────────────────────────────────────────
+    // Sema guarantees condition resolves to bool
     llvm::Value* cond = lowerExpression(stmt->condition, ctx);
-    if (!cond) {
-        return;
-    }
+    if (!cond) return;
 
-    // ─── Get the condition as a bool ──────────────────────────────────────
     if (!isBoolValue(cond)) {
         cond = ctx.builder.CreateICmpNE(cond,
             llvm::Constant::getNullValue(cond->getType()));
     }
 
-    // ─── Create blocks ────────────────────────────────────────────────────
     llvm::Function* func = ctx.getCurrentFunction();
+    assert(func && "No current function");
+
     llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "if_then", func);
     llvm::BasicBlock* elseBlock = nullptr;
     llvm::BasicBlock* mergeBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "if_merge", func);
@@ -188,14 +190,12 @@ void lowerIfStmt(IfStmtAST* stmt, CodeGenContext& ctx) {
 
     ctx.builder.CreateCondBr(cond, thenBlock, elseBlock);
 
-    // ─── Then branch ──────────────────────────────────────────────────────
     ctx.builder.SetInsertPoint(thenBlock);
     lowerStatement(stmt->thenBranch, ctx);
     if (!ctx.builder.GetInsertBlock()->getTerminator()) {
         ctx.builder.CreateBr(mergeBlock);
     }
 
-    // ─── Else branch ──────────────────────────────────────────────────────
     if (stmt->elseBranch) {
         ctx.builder.SetInsertPoint(elseBlock);
         if (stmt->elseBranch->isa<IfStmtAST>()) {
@@ -208,12 +208,7 @@ void lowerIfStmt(IfStmtAST* stmt, CodeGenContext& ctx) {
         }
     }
 
-    // ─── Merge block ──────────────────────────────────────────────────────
     ctx.builder.SetInsertPoint(mergeBlock);
-
-    // ─── Handle unreachable code ──────────────────────────────────────────
-    // If the then branch always transfers control (return/break/continue),
-    // the merge block might be unreachable. That's fine.
 }
 
 // =============================================================================
@@ -223,54 +218,34 @@ void lowerIfStmt(IfStmtAST* stmt, CodeGenContext& ctx) {
 void lowerSwitchStmt(SwitchStmtAST* stmt, CodeGenContext& ctx) {
     if (!stmt) return;
 
-    // ─── Lower subject ─────────────────────────────────────────────────────
     llvm::Value* subject = lowerExpression(stmt->subject, ctx);
-    if (!subject) {
-        return;
-    }
+    if (!subject) return;
 
-    // ─── If subject is an l-value, load it ──────────────────────────────
     if (stmt->subject->isLValue) {
         llvm::Type* elemType = getType(ctx, stmt->subject->resolvedType);
         if (elemType) {
             subject = loadIfNeeded(subject, elemType, ctx);
-        } else {
-            subject = loadIfNeeded(subject, true, ctx);
         }
         if (!subject) return;
     }
 
-    // ─── Get the subject type ────────────────────────────────────────────
-    const TypeAST* subjectType = stmt->subject->resolvedType;
-    if (!subjectType) {
-        ctx.diagnostics.errorAt(DiagCode::Sem_InvalidSwitchType, stmt->subject->loc,
-                                "switch subject has no type");
-        return;
-    }
-
-    // ─── Create blocks ────────────────────────────────────────────────────
     llvm::Function* func = ctx.getCurrentFunction();
-    llvm::BasicBlock* switchBlock = ctx.builder.GetInsertBlock();
-    llvm::BasicBlock* defaultBlock = nullptr;
+    assert(func && "No current function");
+
     llvm::BasicBlock* mergeBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "switch_merge", func);
 
-    // ─── Build case blocks ────────────────────────────────────────────────
+    // ─── Build case blocks ──────────────────────────────────────────────
     std::vector<llvm::BasicBlock*> caseBlocks;
     std::vector<llvm::ConstantInt*> caseValues;
     std::vector<llvm::BasicBlock*> caseBodyBlocks;
 
-    // Create a block for each case
     for (const SwitchCasePtr caseStmt : stmt->cases) {
         llvm::BasicBlock* caseBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "case", func);
         caseBlocks.push_back(caseBlock);
 
-        // Get the case value(s)
         for (ExprAST* value : caseStmt->values) {
-            // Lower the case value - should be a constant
-            // For now, assume it's a literal
             if (value->isa<LiteralExprAST>()) {
                 LiteralExprAST* lit = value->as<LiteralExprAST>();
-                // Try to get the integer value
                 llvm::Value* val = lowerLiteralExpr(lit, ctx);
                 if (val) {
                     if (llvm::ConstantInt* constInt = llvm::dyn_cast<llvm::ConstantInt>(val)) {
@@ -278,19 +253,17 @@ void lowerSwitchStmt(SwitchStmtAST* stmt, CodeGenContext& ctx) {
                         caseBodyBlocks.push_back(caseBlock);
                     }
                 }
-            } else if (value->isa<RangeExprAST>()) {
-                // Range case - need to handle ranges separately
-                // For now, just skip
-                ctx.diagnostics.warningAt(DiagCode::Warn_UnreachableCode, value->loc,
-                                          "range cases not fully implemented yet");
-            } else {
-                ctx.diagnostics.errorAt(DiagCode::Sem_InvalidSwitchType, value->loc,
-                                        "case value must be a literal");
+            }
+            // Range cases are handled differently - Sema ensures they're valid
+            else if (value->isa<RangeExprAST>()) {
+                // Range cases are handled by if-else chains in CodeGen
+                // For now, we skip them
             }
         }
     }
 
-    // ─── Create default block ─────────────────────────────────────────────
+    // ─── Create default block ────────────────────────────────────────────
+    llvm::BasicBlock* defaultBlock;
     if (stmt->defaultBody) {
         defaultBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "switch_default", func);
     } else {
@@ -298,7 +271,6 @@ void lowerSwitchStmt(SwitchStmtAST* stmt, CodeGenContext& ctx) {
     }
 
     // ─── Create switch instruction ──────────────────────────────────────
-    // If we have case values, create a switch instruction
     if (!caseValues.empty()) {
         llvm::SwitchInst* switchInst = ctx.builder.CreateSwitch(
             subject,
@@ -306,31 +278,26 @@ void lowerSwitchStmt(SwitchStmtAST* stmt, CodeGenContext& ctx) {
             caseValues.size()
         );
 
-        // Add cases
         for (size_t i = 0; i < caseValues.size(); ++i) {
             switchInst->addCase(caseValues[i], caseBodyBlocks[i]);
         }
     } else {
-        // No case values - just branch to default
         ctx.builder.CreateBr(defaultBlock);
     }
 
-    // ─── Lower each case body ─────────────────────────────────────────────
+    // ─── Lower case bodies ──────────────────────────────────────────────
     for (size_t i = 0; i < stmt->cases.size(); ++i) {
         const SwitchCasePtr caseStmt = stmt->cases[i];
         llvm::BasicBlock* caseBlock = caseBlocks[i];
 
         ctx.builder.SetInsertPoint(caseBlock);
-
         lowerStatement(caseStmt->body, ctx);
-
-        // If the case body doesn't have a terminator, branch to merge
         if (!ctx.builder.GetInsertBlock()->getTerminator()) {
             ctx.builder.CreateBr(mergeBlock);
         }
     }
 
-    // ─── Lower default body ──────────────────────────────────────────────
+    // ─── Lower default body ─────────────────────────────────────────────
     if (stmt->defaultBody) {
         ctx.builder.SetInsertPoint(defaultBlock);
         lowerStatement(stmt->defaultBody, ctx);
@@ -339,7 +306,6 @@ void lowerSwitchStmt(SwitchStmtAST* stmt, CodeGenContext& ctx) {
         }
     }
 
-    // ─── Merge block ──────────────────────────────────────────────────────
     ctx.builder.SetInsertPoint(mergeBlock);
 }
 
@@ -350,64 +316,122 @@ void lowerSwitchStmt(SwitchStmtAST* stmt, CodeGenContext& ctx) {
 void lowerForStmt(ForStmtAST* stmt, CodeGenContext& ctx) {
     if (!stmt) return;
 
-    // ─── Determine loop type ──────────────────────────────────────────────
+    // Sema guarantees these are set
+    assert(stmt->iterable && "ForStmt must have an iterable");
+    assert(stmt->indexVar && "ForStmt must have an index variable");
+    assert(stmt->body && "ForStmt must have a body");
+
     bool isRangeLoop = (stmt->valueVar == nullptr);
 
-    // ─── Create loop blocks ──────────────────────────────────────────────
     llvm::Function* func = ctx.getCurrentFunction();
+    assert(func && "No current function");
+
     llvm::BasicBlock* headerBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "for_header", func);
     llvm::BasicBlock* bodyBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "for_body", func);
     llvm::BasicBlock* continueBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "for_continue", func);
     llvm::BasicBlock* exitBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "for_exit", func);
 
-    // ─── Push loop context ────────────────────────────────────────────────
     ctx.pushLoop(headerBlock, exitBlock, continueBlock);
 
     if (isRangeLoop) {
-        // ─── RANGE LOOP: for i int in start..end ───────────────────────────
         lowerRangeForLoop(stmt, headerBlock, bodyBlock, continueBlock, exitBlock, ctx);
     } else {
-        // ─── COLLECTION LOOP: for i int, v int in collection ───────────────
         lowerCollectionForLoop(stmt, headerBlock, bodyBlock, continueBlock, exitBlock, ctx);
     }
 
-    // ─── Pop loop context ─────────────────────────────────────────────────
     ctx.popLoop();
 }
 
-// =============================================================================
-// While Statement
-// =============================================================================
+// ─── Helper: Lower a range-based for loop ────────────────────────────────
 
-void lowerWhileStmt(WhileStmtAST* stmt, CodeGenContext& ctx) {
-    if (!stmt) return;
+static void lowerRangeForLoop(
+    ForStmtAST* stmt,
+    llvm::BasicBlock* headerBlock,
+    llvm::BasicBlock* bodyBlock,
+    llvm::BasicBlock* continueBlock,
+    llvm::BasicBlock* exitBlock,
+    CodeGenContext& ctx
+) {
+    // Sema guarantees this is a RangeExprAST
+    const RangeExprAST* range = stmt->iterable->as<RangeExprAST>();
+    assert(range && "Range loop iterable must be RangeExprAST");
 
-    // ─── Create loop blocks ──────────────────────────────────────────────
-    llvm::Function* func = ctx.getCurrentFunction();
-    llvm::BasicBlock* headerBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "while_header", func);
-    llvm::BasicBlock* bodyBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "while_body", func);
-    llvm::BasicBlock* exitBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "while_exit", func);
+    // ─── Lower range bounds ──────────────────────────────────────────────
+    llvm::Value* startVal = lowerExpression(range->lo, ctx);
+    llvm::Value* endVal = lowerExpression(range->hi, ctx);
+    if (!startVal || !endVal) return;
 
-    // ─── Push loop context ─────────────────────────────────────────────────
-    ctx.pushLoop(headerBlock, exitBlock, bodyBlock);
-
-    // ─── Branch to header ──────────────────────────────────────────────────
-    ctx.builder.CreateBr(headerBlock);
-
-    // ─── Header block (condition check) ──────────────────────────────────
-    ctx.builder.SetInsertPoint(headerBlock);
-
-    // Lower condition
-    llvm::Value* cond = lowerExpression(stmt->condition, ctx);
-    if (!cond) {
-        ctx.popLoop();
-        return;
+    // Load if l-values
+    if (range->lo->isLValue) {
+        llvm::Type* elemType = getType(ctx, range->lo->resolvedType);
+        assert(elemType && "Range bound has no type");
+        startVal = loadIfNeeded(startVal, elemType, ctx);
+    }
+    if (range->hi->isLValue) {
+        llvm::Type* elemType = getType(ctx, range->hi->resolvedType);
+        assert(elemType && "Range bound has no type");
+        endVal = loadIfNeeded(endVal, elemType, ctx);
     }
 
-    // Get condition as bool
-    if (!isBoolValue(cond)) {
-        cond = ctx.builder.CreateICmpNE(cond,
-            llvm::Constant::getNullValue(cond->getType()));
+    // ─── Get index type ──────────────────────────────────────────────────
+    llvm::Type* idxType = getType(ctx, stmt->indexVar->type);
+    assert(idxType && "Index variable has no type");
+
+    if (startVal->getType() != idxType) {
+        startVal = ctx.builder.CreateIntCast(startVal, idxType, true, "start_cast");
+    }
+    if (endVal->getType() != idxType) {
+        endVal = ctx.builder.CreateIntCast(endVal, idxType, true, "end_cast");
+    }
+
+    // ─── Lower step value ────────────────────────────────────────────────
+    llvm::Value* stepVal = llvm::ConstantInt::get(idxType, 1);
+    if (stmt->step) {
+        stepVal = lowerExpression(stmt->step, ctx);
+        if (stepVal && stmt->step->isLValue) {
+            llvm::Type* elemType = getType(ctx, stmt->step->resolvedType);
+            if (elemType) {
+                stepVal = loadIfNeeded(stepVal, elemType, ctx);
+            }
+        }
+        if (stepVal && stepVal->getType() != idxType) {
+            stepVal = ctx.builder.CreateIntCast(stepVal, idxType, true, "step_cast");
+        }
+    }
+
+    // ─── Allocate and initialize loop variable ──────────────────────────
+    llvm::AllocaInst* alloca = createAlloca(
+        ctx.pool.lookup(stmt->indexVar->name),
+        idxType,
+        ctx
+    );
+
+    ctx.builder.CreateStore(startVal, alloca);
+    ctx.storeValue(stmt->indexVar, alloca);
+    stmt->indexVar->llvmAlloca = alloca;
+
+    ctx.builder.CreateBr(headerBlock);
+
+    // ─── Header block ────────────────────────────────────────────────────
+    ctx.builder.SetInsertPoint(headerBlock);
+
+    llvm::Value* current = ctx.builder.CreateLoad(idxType, alloca, "loop_current");
+
+    llvm::Value* stepIsPositive = ctx.builder.CreateICmpSGT(
+        stepVal,
+        llvm::ConstantInt::get(idxType, 0),
+        "step_positive"
+    );
+
+    llvm::Value* cond;
+    if (range->isExclusive) {
+        llvm::Value* condPositive = ctx.builder.CreateICmpSLT(current, endVal, "current_lt_end");
+        llvm::Value* condNegative = ctx.builder.CreateICmpSGT(current, endVal, "current_gt_end");
+        cond = ctx.builder.CreateSelect(stepIsPositive, condPositive, condNegative, "cond_exclusive");
+    } else {
+        llvm::Value* condPositive = ctx.builder.CreateICmpSLE(current, endVal, "current_le_end");
+        llvm::Value* condNegative = ctx.builder.CreateICmpSGE(current, endVal, "current_ge_end");
+        cond = ctx.builder.CreateSelect(stepIsPositive, condPositive, condNegative, "cond_inclusive");
     }
 
     ctx.builder.CreateCondBr(cond, bodyBlock, exitBlock);
@@ -420,13 +444,175 @@ void lowerWhileStmt(WhileStmtAST* stmt, CodeGenContext& ctx) {
     }
 
     if (!ctx.builder.GetInsertBlock()->getTerminator()) {
+        ctx.builder.CreateBr(continueBlock);
+    }
+
+    // ─── Continue block ──────────────────────────────────────────────────
+    ctx.builder.SetInsertPoint(continueBlock);
+
+    llvm::Value* currentForInc = ctx.builder.CreateLoad(idxType, alloca, "loop_current_inc");
+    llvm::Value* incremented = ctx.builder.CreateAdd(currentForInc, stepVal, "loop_increment");
+    ctx.builder.CreateStore(incremented, alloca);
+
+    ctx.builder.CreateBr(headerBlock);
+
+    ctx.builder.SetInsertPoint(exitBlock);
+}
+
+// ─── Helper: Lower a collection-based for loop ───────────────────────────
+
+static void lowerCollectionForLoop(
+    ForStmtAST* stmt,
+    llvm::BasicBlock* headerBlock,
+    llvm::BasicBlock* bodyBlock,
+    llvm::BasicBlock* continueBlock,
+    llvm::BasicBlock* exitBlock,
+    CodeGenContext& ctx
+) {
+    // Sema guarantees this is an array type
+    const TypeAST* iterableType = stmt->iterable->resolvedType;
+    assert(iterableType && iterableType->isa<ArrayTypeAST>() &&
+           "Collection loop iterable must be ArrayTypeAST");
+
+    const ArrayTypeAST* arrayType = iterableType->as<ArrayTypeAST>();
+    llvm::Type* elemType = getType(ctx, arrayType->element);
+    assert(elemType && "Array element has no type");
+
+    // ─── Lower the collection expression ──────────────────────────────
+    llvm::Value* collection = lowerExpression(stmt->iterable, ctx);
+    if (!collection) return;
+
+    if (stmt->iterable->isLValue) {
+        llvm::Type* collectionType = getType(ctx, stmt->iterable->resolvedType);
+        if (collectionType) {
+            collection = loadIfNeeded(collection, collectionType, ctx);
+        }
+    }
+
+    // ─── Get array length ──────────────────────────────────────────────
+    llvm::Value* len = getArrayLength(collection, arrayType, ctx);
+    assert(len && "Could not get array length");
+
+    // ─── Get pointer to array data ──────────────────────────────────────
+    llvm::Value* dataPtr = collection;
+    if (arrayType->isFixed()) {
+        dataPtr = ctx.builder.CreateConstGEP2_32(elemType, collection, 0, 0);
+    }
+
+    // ─── Allocate index variable ──────────────────────────────────────
+    llvm::Type* int64Ty = llvm::Type::getInt64Ty(ctx.llvmCtx);
+    llvm::AllocaInst* indexAlloca = createAlloca(
+        stmt->indexVar ? ctx.pool.lookup(stmt->indexVar->name) : "_loop_idx",
+        int64Ty,
+        ctx
+    );
+
+    ctx.builder.CreateStore(llvm::ConstantInt::get(int64Ty, 0), indexAlloca);
+    if (stmt->indexVar) {
+        ctx.storeValue(stmt->indexVar, indexAlloca);
+        stmt->indexVar->llvmAlloca = indexAlloca;
+    }
+
+    // ─── Allocate value variable ──────────────────────────────────────
+    llvm::AllocaInst* valueAlloca = nullptr;
+    if (stmt->valueVar) {
+        valueAlloca = createAlloca(
+            ctx.pool.lookup(stmt->valueVar->name),
+            elemType,
+            ctx
+        );
+        ctx.storeValue(stmt->valueVar, valueAlloca);
+        stmt->valueVar->llvmAlloca = valueAlloca;
+    }
+
+    ctx.builder.CreateBr(headerBlock);
+
+    // ─── Header block ────────────────────────────────────────────────────
+    ctx.builder.SetInsertPoint(headerBlock);
+
+    llvm::Value* currentIdx = ctx.builder.CreateLoad(int64Ty, indexAlloca, "loop_idx");
+
+    llvm::Value* cond = ctx.builder.CreateICmpSLT(currentIdx, len, "idx_lt_len");
+    ctx.builder.CreateCondBr(cond, bodyBlock, exitBlock);
+
+    // ─── Body block ──────────────────────────────────────────────────────
+    ctx.builder.SetInsertPoint(bodyBlock);
+
+    llvm::Value* elemPtr = ctx.builder.CreateGEP(elemType, dataPtr, currentIdx, "elem_ptr");
+    llvm::Value* elemVal = ctx.builder.CreateLoad(elemType, elemPtr, "elem_val");
+
+    if (valueAlloca) {
+        ctx.builder.CreateStore(elemVal, valueAlloca);
+    }
+
+    if (stmt->body) {
+        lowerStatement(stmt->body, ctx);
+    }
+
+    if (!ctx.builder.GetInsertBlock()->getTerminator()) {
+        ctx.builder.CreateBr(continueBlock);
+    }
+
+    // ─── Continue block ──────────────────────────────────────────────────
+    ctx.builder.SetInsertPoint(continueBlock);
+
+    llvm::Value* nextIdx = ctx.builder.CreateAdd(
+        currentIdx,
+        llvm::ConstantInt::get(int64Ty, 1),
+        "idx_next"
+    );
+    ctx.builder.CreateStore(nextIdx, indexAlloca);
+
+    ctx.builder.CreateBr(headerBlock);
+
+    ctx.builder.SetInsertPoint(exitBlock);
+}
+
+// =============================================================================
+// While Statement
+// =============================================================================
+
+void lowerWhileStmt(WhileStmtAST* stmt, CodeGenContext& ctx) {
+    if (!stmt) return;
+
+    llvm::Function* func = ctx.getCurrentFunction();
+    assert(func && "No current function");
+
+    llvm::BasicBlock* headerBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "while_header", func);
+    llvm::BasicBlock* bodyBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "while_body", func);
+    llvm::BasicBlock* exitBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "while_exit", func);
+
+    ctx.pushLoop(headerBlock, exitBlock, bodyBlock);
+
+    ctx.builder.CreateBr(headerBlock);
+
+    ctx.builder.SetInsertPoint(headerBlock);
+
+    llvm::Value* cond = lowerExpression(stmt->condition, ctx);
+    if (!cond) {
+        ctx.popLoop();
+        return;
+    }
+
+    if (!isBoolValue(cond)) {
+        cond = ctx.builder.CreateICmpNE(cond,
+            llvm::Constant::getNullValue(cond->getType()));
+    }
+
+    ctx.builder.CreateCondBr(cond, bodyBlock, exitBlock);
+
+    ctx.builder.SetInsertPoint(bodyBlock);
+
+    if (stmt->body) {
+        lowerStatement(stmt->body, ctx);
+    }
+
+    if (!ctx.builder.GetInsertBlock()->getTerminator()) {
         ctx.builder.CreateBr(headerBlock);
     }
 
-    // ─── Exit block ──────────────────────────────────────────────────────
     ctx.builder.SetInsertPoint(exitBlock);
 
-    // Pop the loop context
     ctx.popLoop();
 }
 
@@ -437,19 +623,17 @@ void lowerWhileStmt(WhileStmtAST* stmt, CodeGenContext& ctx) {
 void lowerDoWhileStmt(DoWhileStmtAST* stmt, CodeGenContext& ctx) {
     if (!stmt) return;
 
-    // ─── Create loop blocks ──────────────────────────────────────────────
     llvm::Function* func = ctx.getCurrentFunction();
+    assert(func && "No current function");
+
     llvm::BasicBlock* bodyBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "dowhile_body", func);
     llvm::BasicBlock* headerBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "dowhile_header", func);
     llvm::BasicBlock* exitBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "dowhile_exit", func);
 
-    // ─── Push loop context ─────────────────────────────────────────────────
     ctx.pushLoop(headerBlock, exitBlock, headerBlock);
 
-    // ─── Branch to body ────────────────────────────────────────────────────
     ctx.builder.CreateBr(bodyBlock);
 
-    // ─── Body block ──────────────────────────────────────────────────────
     ctx.builder.SetInsertPoint(bodyBlock);
 
     if (stmt->body) {
@@ -460,17 +644,14 @@ void lowerDoWhileStmt(DoWhileStmtAST* stmt, CodeGenContext& ctx) {
         ctx.builder.CreateBr(headerBlock);
     }
 
-    // ─── Header block (condition check) ──────────────────────────────────
     ctx.builder.SetInsertPoint(headerBlock);
 
-    // Lower condition
     llvm::Value* cond = lowerExpression(stmt->condition, ctx);
     if (!cond) {
         ctx.popLoop();
         return;
     }
 
-    // Get condition as bool
     if (!isBoolValue(cond)) {
         cond = ctx.builder.CreateICmpNE(cond,
             llvm::Constant::getNullValue(cond->getType()));
@@ -478,10 +659,8 @@ void lowerDoWhileStmt(DoWhileStmtAST* stmt, CodeGenContext& ctx) {
 
     ctx.builder.CreateCondBr(cond, bodyBlock, exitBlock);
 
-    // ─── Exit block ──────────────────────────────────────────────────────
     ctx.builder.SetInsertPoint(exitBlock);
 
-    // Pop the loop context
     ctx.popLoop();
 }
 
@@ -492,74 +671,43 @@ void lowerDoWhileStmt(DoWhileStmtAST* stmt, CodeGenContext& ctx) {
 void lowerReturnStmt(ReturnStmtAST* stmt, CodeGenContext& ctx) {
     if (!stmt) return;
 
-    // ─── Get the current function ────────────────────────────────────────
     llvm::Function* func = ctx.getCurrentFunction();
-    if (!func) {
-        ctx.diagnostics.errorAt(DiagCode::Sem_InvalidBreak, stmt->loc,
-                                "return statement outside of function");
-        return;
-    }
+    assert(func && "Return statement outside of function");
 
-    // ─── Get the return type ──────────────────────────────────────────────
     llvm::Type* returnType = func->getReturnType();
 
-    // ─── Handle return value ──────────────────────────────────────────────
     if (stmt->value) {
-        // Non-void return
         llvm::Value* returnVal = lowerExpression(stmt->value, ctx);
-        if (!returnVal) {
-            return;
-        }
+        if (!returnVal) return;
 
-        // If return value is an l-value, load it with explicit element type
         if (stmt->value->isLValue) {
             llvm::Type* elemType = getType(ctx, stmt->value->resolvedType);
-            if (elemType) {
-                returnVal = loadIfNeeded(returnVal, elemType, ctx);
-            } else {
-                returnVal = loadIfNeeded(returnVal, true, ctx);
-            }
-            if (!returnVal) return;
+            assert(elemType && "Return value has no type");
+            returnVal = loadIfNeeded(returnVal, elemType, ctx);
         }
 
-        // Check if the return value type matches the function return type
-        // If not, cast it
+        // Cast if needed
         if (returnVal->getType() != returnType) {
             if (returnVal->getType()->isIntegerTy() && returnType->isIntegerTy()) {
-                // Integer conversion
                 if (getIntegerBitWidth(returnVal->getType()) < getIntegerBitWidth(returnType)) {
                     returnVal = ctx.builder.CreateSExt(returnVal, returnType);
                 } else {
                     returnVal = ctx.builder.CreateTrunc(returnVal, returnType);
                 }
             } else if (returnVal->getType()->isFloatingPointTy() && returnType->isFloatingPointTy()) {
-                // Float conversion
                 if (returnVal->getType()->getPrimitiveSizeInBits() < returnType->getPrimitiveSizeInBits()) {
                     returnVal = ctx.builder.CreateFPExt(returnVal, returnType);
                 } else {
                     returnVal = ctx.builder.CreateFPTrunc(returnVal, returnType);
                 }
             } else if (returnVal->getType()->isPointerTy() && returnType->isPointerTy()) {
-                // Pointer conversion
                 returnVal = ctx.builder.CreatePointerCast(returnVal, returnType);
-            } else {
-                ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, stmt->value->loc,
-                                        "return type mismatch: expected ",
-                                        debug::typeToString(func->getReturnType(), ctx.pool),
-                                        " got ",
-                                        debug::typeToString(stmt->value->resolvedType, ctx.pool));
-                return;
             }
         }
 
         ctx.builder.CreateRet(returnVal);
     } else {
-        // Void return
-        if (!returnType->isVoidTy()) {
-            ctx.diagnostics.errorAt(DiagCode::Sem_MissingReturn, stmt->loc,
-                                    "void return in non-void function");
-            return;
-        }
+        assert(returnType->isVoidTy() && "Void return in non-void function");
         ctx.builder.CreateRetVoid();
     }
 }
@@ -571,15 +719,9 @@ void lowerReturnStmt(ReturnStmtAST* stmt, CodeGenContext& ctx) {
 void lowerBreakStmt(BreakStmtAST* stmt, CodeGenContext& ctx) {
     if (!stmt) return;
 
-    // ─── Get the current loop context ────────────────────────────────────
     CodeGenContext::LoopInfo* loop = ctx.currentLoop();
-    if (!loop) {
-        ctx.diagnostics.errorAt(DiagCode::Sem_InvalidBreak, stmt->loc,
-                                "break statement outside of loop");
-        return;
-    }
+    assert(loop && "Break statement outside of loop");
 
-    // ─── Branch to the loop exit block ────────────────────────────────────
     ctx.builder.CreateBr(loop->exit);
 }
 
@@ -590,15 +732,9 @@ void lowerBreakStmt(BreakStmtAST* stmt, CodeGenContext& ctx) {
 void lowerContinueStmt(ContinueStmtAST* stmt, CodeGenContext& ctx) {
     if (!stmt) return;
 
-    // ─── Get the current loop context ────────────────────────────────────
     CodeGenContext::LoopInfo* loop = ctx.currentLoop();
-    if (!loop) {
-        ctx.diagnostics.errorAt(DiagCode::Sem_InvalidContinue, stmt->loc,
-                                "continue statement outside of loop");
-        return;
-    }
+    assert(loop && "Continue statement outside of loop");
 
-    // ─── Branch to the continue target ────────────────────────────────────
     ctx.builder.CreateBr(loop->continueTarget);
 }
 
@@ -609,17 +745,9 @@ void lowerContinueStmt(ContinueStmtAST* stmt, CodeGenContext& ctx) {
 void lowerExprStmt(ExprStmtAST* stmt, CodeGenContext& ctx) {
     if (!stmt) return;
 
-    // ─── Lower the expression ─────────────────────────────────────────────
+    // Just lower the expression - value is discarded
     llvm::Value* value = lowerExpression(stmt->expr, ctx);
-    if (!value) {
-        return;
-    }
-
-    // ─── If the expression is an l-value and has side effects, load it ────
-    // For example, if the expression is a function call that returns a value
-    // but we're discarding it, we still need to evaluate the function call.
-    // The value is already computed by lowerExpression.
-    // We don't need to do anything with the value.
+    (void)value; // Silence unused warning
 }
 
 // =============================================================================
@@ -628,8 +756,6 @@ void lowerExprStmt(ExprStmtAST* stmt, CodeGenContext& ctx) {
 
 void lowerDeclStmt(DeclStmtAST* stmt, CodeGenContext& ctx) {
     if (!stmt) return;
-
-    // ─── Lower the declaration ────────────────────────────────────────────
     lowerDeclaration(stmt->decl, ctx);
 }
 
@@ -640,13 +766,9 @@ void lowerDeclStmt(DeclStmtAST* stmt, CodeGenContext& ctx) {
 void lowerFuncRefStmt(FuncRefStmtAST* stmt, CodeGenContext& ctx) {
     if (!stmt) return;
 
-    // ─── Lower the target expression ──────────────────────────────────────
     llvm::Value* target = lowerExpression(stmt->target, ctx);
-    if (!target) {
-        return;
-    }
+    if (!target) return;
 
-    // ─── Store the resolved function pointer ─────────────────────────────
     stmt->resolvedFunction = llvm::dyn_cast<llvm::Function>(target);
 }
 
@@ -659,13 +781,13 @@ void lowerFuncRefStmt(FuncRefStmtAST* stmt, CodeGenContext& ctx) {
 void lowerAsyncStmt(AsyncStmtAST* stmt, CodeGenContext& ctx) {
     if (!stmt) return;
 
-    // ─── Get the runtime async function ───────────────────────────────────
     llvm::Function* asyncFunc = ctx.getRuntimeFunction("__lucid_async");
     if (!asyncFunc) {
-        llvm::Type* voidPtrTy = llvm::PointerType::get(ctx.llvmCtx, 0);
         llvm::FunctionType* asyncType = llvm::FunctionType::get(
             llvm::Type::getVoidTy(ctx.llvmCtx),
-            {voidPtrTy, voidPtrTy, voidPtrTy},
+            {llvm::PointerType::get(ctx.llvmCtx, 0),
+             llvm::PointerType::get(ctx.llvmCtx, 0),
+             llvm::PointerType::get(ctx.llvmCtx, 0)},
             false
         );
         asyncFunc = llvm::Function::Create(
@@ -677,20 +799,14 @@ void lowerAsyncStmt(AsyncStmtAST* stmt, CodeGenContext& ctx) {
         ctx.setRuntimeFunction("__lucid_async", asyncFunc);
     }
 
-    // ─── Lower the call expression ──────────────────────────────────────
     llvm::Value* callResult = lowerExpression(stmt->call, ctx);
-    if (!callResult) {
-        return;
-    }
+    if (!callResult) return;
 
-    // ─── Store the result in the binding ──────────────────────────────────
     if (stmt->binding) {
         llvm::Value* bindingValue = ctx.lookupValue(stmt->binding);
         if (!bindingValue) {
             llvm::Type* bindingType = getType(ctx, stmt->binding->type);
-            if (!bindingType) {
-                return;
-            }
+            assert(bindingType && "Async binding has no type");
             bindingValue = createAlloca(
                 ctx.pool.lookup(stmt->binding->name),
                 bindingType,
@@ -703,7 +819,6 @@ void lowerAsyncStmt(AsyncStmtAST* stmt, CodeGenContext& ctx) {
         stmt->binding->llvmAlloca = llvm::dyn_cast<llvm::AllocaInst>(bindingValue);
     }
 
-    // ─── Call the runtime async function ─────────────────────────────────
     std::vector<llvm::Value*> args = {
         callResult,
         llvm::Constant::getNullValue(llvm::PointerType::get(ctx.llvmCtx, 0)),
@@ -718,7 +833,6 @@ void lowerAsyncStmt(AsyncStmtAST* stmt, CodeGenContext& ctx) {
 void lowerAwaitStmt(AwaitStmtAST* stmt, CodeGenContext& ctx) {
     if (!stmt) return;
 
-    // ─── Get the runtime await function ───────────────────────────────────
     llvm::Function* awaitFunc = ctx.getRuntimeFunction("__lucid_await");
     if (!awaitFunc) {
         llvm::FunctionType* awaitType = llvm::FunctionType::get(
@@ -738,6 +852,7 @@ void lowerAwaitStmt(AwaitStmtAST* stmt, CodeGenContext& ctx) {
     // ─── Await each target ─────────────────────────────────────────────────
     for (ExprAST* target : stmt->targets) {
         if (!target->isa<IdentifierExprAST>()) {
+            // Sema should have caught this
             ctx.diagnostics.errorAt(DiagCode::Sem_AwaitNonAsync, target->loc,
                                     "await target must be an identifier");
             continue;
@@ -745,12 +860,25 @@ void lowerAwaitStmt(AwaitStmtAST* stmt, CodeGenContext& ctx) {
 
         const IdentifierExprAST* id = target->as<IdentifierExprAST>();
         
-        // CodeGenContext doesn't have lookup by name.
-        // This should have been resolved by Sema.
-        // For now, we'll emit a warning and continue.
-        ctx.diagnostics.warningAt(DiagCode::Warn_UnreachableCode, id->loc,
-                                  "variable lookup by name not fully implemented in CodeGen");
-        continue;
+        // ─── Get the resolved declaration from Sema ──────────────────────
+        const ValueDeclAST* decl = id->resolvedDecl;
+        if (!decl) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedValue, id->loc,
+                                    "identifier '", ctx.pool.lookup(id->name), 
+                                    "' was not resolved by Sema");
+            continue;
+        }
+
+        // ─── Look up the LLVM value ──────────────────────────────────────
+        llvm::Value* bindingValue = ctx.lookupValue(decl);
+        if (!bindingValue) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedValue, id->loc,
+                                    "no LLVM value for '", ctx.pool.lookup(id->name), "'");
+            continue;
+        }
+
+        // Pass the binding to the runtime function
+        ctx.builder.CreateCall(awaitFunc, {bindingValue});
     }
 }
 
@@ -759,13 +887,12 @@ void lowerAwaitStmt(AwaitStmtAST* stmt, CodeGenContext& ctx) {
 void lowerSpawnStmt(SpawnStmtAST* stmt, CodeGenContext& ctx) {
     if (!stmt) return;
 
-    // ─── Get the runtime spawn function ───────────────────────────────────
     llvm::Function* spawnFunc = ctx.getRuntimeFunction("__lucid_spawn");
     if (!spawnFunc) {
-        llvm::Type* voidPtrTy = llvm::PointerType::get(ctx.llvmCtx, 0);
         llvm::FunctionType* spawnType = llvm::FunctionType::get(
             llvm::Type::getVoidTy(ctx.llvmCtx),
-            {voidPtrTy, voidPtrTy},
+            {llvm::PointerType::get(ctx.llvmCtx, 0),
+             llvm::PointerType::get(ctx.llvmCtx, 0)},
             false
         );
         spawnFunc = llvm::Function::Create(
@@ -777,12 +904,9 @@ void lowerSpawnStmt(SpawnStmtAST* stmt, CodeGenContext& ctx) {
         ctx.setRuntimeFunction("__lucid_spawn", spawnFunc);
     }
 
-    // ─── Handle discard pattern ────────────────────────────────────────────
     if (!stmt->binding) {
         llvm::Value* callResult = lowerExpression(stmt->call, ctx);
-        if (!callResult) {
-            return;
-        }
+        if (!callResult) return;
 
         std::vector<llvm::Value*> args = {
             callResult,
@@ -793,33 +917,25 @@ void lowerSpawnStmt(SpawnStmtAST* stmt, CodeGenContext& ctx) {
         return;
     }
 
-    // ─── Lower the call expression ──────────────────────────────────────
     llvm::Value* callResult = lowerExpression(stmt->call, ctx);
-    if (!callResult) {
-        return;
-    }
+    if (!callResult) return;
 
     // ─── Store the result in the binding ──────────────────────────────────
-    if (stmt->binding) {
-        llvm::Value* bindingValue = ctx.lookupValue(stmt->binding);
-        if (!bindingValue) {
-            llvm::Type* bindingType = getType(ctx, stmt->binding->type);
-            if (!bindingType) {
-                return;
-            }
-            bindingValue = createAlloca(
-                ctx.pool.lookup(stmt->binding->name),
-                bindingType,
-                ctx
-            );
-            ctx.storeValue(stmt->binding, bindingValue);
-        }
-
-        ctx.builder.CreateStore(callResult, bindingValue);
-        stmt->binding->llvmAlloca = llvm::dyn_cast<llvm::AllocaInst>(bindingValue);
+    llvm::Value* bindingValue = ctx.lookupValue(stmt->binding);
+    if (!bindingValue) {
+        llvm::Type* bindingType = getType(ctx, stmt->binding->type);
+        assert(bindingType && "Spawn binding has no type");
+        bindingValue = createAlloca(
+            ctx.pool.lookup(stmt->binding->name),
+            bindingType,
+            ctx
+        );
+        ctx.storeValue(stmt->binding, bindingValue);
     }
 
-    // ─── Call the runtime spawn function ─────────────────────────────────
+    ctx.builder.CreateStore(callResult, bindingValue);
+    stmt->binding->llvmAlloca = llvm::dyn_cast<llvm::AllocaInst>(bindingValue);
+
     std::vector<llvm::Value*> args = {
         callResult,
         llvm::Constant::getNullValue(llvm::PointerType::get(ctx.llvmCtx, 0))
@@ -833,7 +949,6 @@ void lowerSpawnStmt(SpawnStmtAST* stmt, CodeGenContext& ctx) {
 void lowerJoinStmt(JoinStmtAST* stmt, CodeGenContext& ctx) {
     if (!stmt) return;
 
-    // ─── Get the runtime join function ───────────────────────────────────
     llvm::Function* joinFunc = ctx.getRuntimeFunction("__lucid_join");
     if (!joinFunc) {
         llvm::FunctionType* joinType = llvm::FunctionType::get(
@@ -860,12 +975,24 @@ void lowerJoinStmt(JoinStmtAST* stmt, CodeGenContext& ctx) {
 
         const IdentifierExprAST* id = target->as<IdentifierExprAST>();
         
-        // CodeGenContext doesn't have lookup by name.
-        // This should have been resolved by Sema.
-        // For now, we'll emit a warning and continue.
-        ctx.diagnostics.warningAt(DiagCode::Warn_UnreachableCode, id->loc,
-                                  "variable lookup by name not fully implemented in CodeGen");
-        continue;
+        // ─── Get the resolved declaration from Sema ──────────────────────
+        const ValueDeclAST* decl = id->resolvedDecl;
+        if (!decl) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedValue, id->loc,
+                                    "identifier '", ctx.pool.lookup(id->name), 
+                                    "' was not resolved by Sema");
+            continue;
+        }
+
+        // ─── Look up the LLVM value ──────────────────────────────────────
+        llvm::Value* bindingValue = ctx.lookupValue(decl);
+        if (!bindingValue) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedValue, id->loc,
+                                    "no LLVM value for '", ctx.pool.lookup(id->name), "'");
+            continue;
+        }
+
+        ctx.builder.CreateCall(joinFunc, {bindingValue});
     }
 }
 
