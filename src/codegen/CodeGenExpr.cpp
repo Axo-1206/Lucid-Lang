@@ -3,13 +3,19 @@
 
 #include "CodeGen.hpp"
 #include "CodeGenType.hpp"
+#include "CodeGenGeneric.hpp"
 #include "support/CodeGenAlloca.hpp"
+#include "support/CodeGenHelpers.hpp"
+#include "support/CodeGenPanic.hpp"
+#include "support/LLVMHelpers.hpp"
+#include "support/RuntimeError.hpp"
 #include "intrinsic/IntrinsicEmitter.hpp"
 #include "../sema/types/SemaCompare.hpp"
 #include "debug/DebugUtils.hpp"
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/DeclAST.hpp"
 #include "core/ast/TypeAST.hpp"
+#include "closure/CodeGenClosure.hpp"
 
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
@@ -41,10 +47,8 @@ static std::vector<llvm::Constant*> toConstants(const std::vector<llvm::Value*>&
 
 static llvm::Type* getArrayElementType(CodeGenContext& ctx, const TypeAST* arrayType) {
     if (!arrayType) return nullptr;
-    
     const ArrayTypeAST* arr = arrayType->as<ArrayTypeAST>();
     if (!arr) return nullptr;
-    
     return getType(ctx, arr->element);
 }
 
@@ -235,7 +239,9 @@ llvm::Value* lowerIdentifierExpr(IdentifierExprAST* expr, CodeGenContext& ctx) {
         return nullptr;
     }
 
-    // Get the LLVM type from the semantic type
+    // ─── TODO: Implement proper identifier lookup ──────────────────────────
+    // This should look up the variable/function from the context's symbol table.
+    // For now, return a placeholder.
     llvm::Type* llvmType = getType(ctx, expr->resolvedType);
     if (!llvmType) {
         ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedValue, expr->loc,
@@ -243,10 +249,6 @@ llvm::Value* lowerIdentifierExpr(IdentifierExprAST* expr, CodeGenContext& ctx) {
         return nullptr;
     }
 
-    // Create a placeholder value
-    // In a real compiler, this would look up the variable from the context
-    ctx.diagnostics.warningAt(DiagCode::Warn_UnreachableCode, expr->loc,
-                              "identifier lookup not fully implemented in CodeGen");
     expr->llvmValue = llvm::Constant::getNullValue(llvmType);
     return expr->llvmValue;
 }
@@ -281,13 +283,11 @@ llvm::Value* lowerArrayLiteralExpr(ArrayLiteralExprAST* expr, CodeGenContext& ct
     const ArrayTypeAST* arrayTypeAST = expr->resolvedType->as<ArrayTypeAST>();
 
     if (arrayTypeAST->isFixed()) {
-        // Fixed array: create a constant array
         std::vector<llvm::Constant*> constantElements;
         for (llvm::Value* elem : elements) {
             if (llvm::Constant* c = llvm::dyn_cast<llvm::Constant>(elem)) {
                 constantElements.push_back(c);
             } else {
-                // Non-constant element - use null
                 constantElements.push_back(llvm::Constant::getNullValue(
                     llvm::cast<llvm::ArrayType>(arrayType)->getElementType()
                 ));
@@ -312,7 +312,6 @@ llvm::Value* lowerArrayLiteralExpr(ArrayLiteralExprAST* expr, CodeGenContext& ct
 
 llvm::Value* lowerStructLiteralExpr(StructLiteralExprAST* expr, CodeGenContext& ctx) {
     if (!expr) return nullptr;
-
     ctx.diagnostics.warningAt(DiagCode::Warn_UnreachableCode, expr->loc,
                               "struct literal not fully implemented in CodeGen");
     return nullptr;
@@ -332,10 +331,20 @@ llvm::Value* lowerBinaryExpr(BinaryExprAST* expr, CodeGenContext& ctx) {
     }
 
     if (expr->left->isLValue) {
-        left = loadIfNeeded(left, true, ctx);
+        llvm::Type* elemType = getType(ctx, expr->left->resolvedType);
+        if (elemType) {
+            left = loadIfNeeded(left, elemType, ctx);
+        } else {
+            left = loadIfNeeded(left, true, ctx);
+        }
     }
     if (expr->right->isLValue) {
-        right = loadIfNeeded(right, true, ctx);
+        llvm::Type* elemType = getType(ctx, expr->right->resolvedType);
+        if (elemType) {
+            right = loadIfNeeded(right, elemType, ctx);
+        } else {
+            right = loadIfNeeded(right, true, ctx);
+        }
     }
     if (!left || !right) {
         return nullptr;
@@ -346,7 +355,7 @@ llvm::Value* lowerBinaryExpr(BinaryExprAST* expr, CodeGenContext& ctx) {
     switch (expr->op) {
         // ─── Arithmetic Operators ────────────────────────────────────────
         case BinaryOp::Add:
-            if (left->getType()->isIntegerTy()) {
+            if (isIntegerType(left->getType())) {
                 result = ctx.builder.CreateAdd(left, right, "add");
             } else {
                 result = ctx.builder.CreateFAdd(left, right, "fadd");
@@ -354,7 +363,7 @@ llvm::Value* lowerBinaryExpr(BinaryExprAST* expr, CodeGenContext& ctx) {
             break;
 
         case BinaryOp::Sub:
-            if (left->getType()->isIntegerTy()) {
+            if (isIntegerType(left->getType())) {
                 result = ctx.builder.CreateSub(left, right, "sub");
             } else {
                 result = ctx.builder.CreateFSub(left, right, "fsub");
@@ -362,37 +371,43 @@ llvm::Value* lowerBinaryExpr(BinaryExprAST* expr, CodeGenContext& ctx) {
             break;
 
         case BinaryOp::Mul:
-            if (left->getType()->isIntegerTy()) {
+            if (isIntegerType(left->getType())) {
                 result = ctx.builder.CreateMul(left, right, "mul");
             } else {
                 result = ctx.builder.CreateFMul(left, right, "fmul");
             }
             break;
 
-        case BinaryOp::Div:
-            if (left->getType()->isIntegerTy()) {
-                // In LLVM, division of integers uses signed/unsigned variants.
-                // We default to signed division for now.
-                result = ctx.builder.CreateSDiv(left, right, "sdiv");
+        case BinaryOp::Div: {
+            if (isIntegerType(left->getType()) && isIntegerType(right->getType())) {
+                // Check for division by zero
+                RuntimeErrorKind kind = RuntimeErrorKind::DivisionByZero;
+                llvm::Value* checkedRight = emitZeroCheck(right, kind, ctx);
+                if (!checkedRight) return nullptr;
+                result = ctx.builder.CreateSDiv(left, checkedRight, "sdiv");
             } else {
                 result = ctx.builder.CreateFDiv(left, right, "fdiv");
             }
             break;
+        }
 
-        case BinaryOp::Mod:
-            if (left->getType()->isIntegerTy()) {
-                result = ctx.builder.CreateSRem(left, right, "srem");
+        case BinaryOp::Mod: {
+            if (isIntegerType(left->getType()) && isIntegerType(right->getType())) {
+                RuntimeErrorKind kind = RuntimeErrorKind::ModuloByZero;
+                llvm::Value* checkedRight = emitZeroCheck(right, kind, ctx);
+                if (!checkedRight) return nullptr;
+                result = ctx.builder.CreateSRem(left, checkedRight, "srem");
             } else {
                 result = ctx.builder.CreateFRem(left, right, "frem");
             }
             break;
+        }
 
         case BinaryOp::Pow: {
-            // Power operator: use libm's pow function
             llvm::Type* leftType = left->getType();
             llvm::Type* rightType = right->getType();
 
-            if (leftType->isIntegerTy() && rightType->isIntegerTy()) {
+            if (isIntegerType(leftType) && isIntegerType(rightType)) {
                 left = ctx.builder.CreateSIToFP(left, llvm::Type::getDoubleTy(ctx.llvmCtx));
                 right = ctx.builder.CreateSIToFP(right, llvm::Type::getDoubleTy(ctx.llvmCtx));
             }
@@ -403,7 +418,7 @@ llvm::Value* lowerBinaryExpr(BinaryExprAST* expr, CodeGenContext& ctx) {
 
         // ─── Comparison Operators ────────────────────────────────────────
         case BinaryOp::Eq:
-            if (left->getType()->isIntegerTy()) {
+            if (isIntegerType(left->getType())) {
                 result = ctx.builder.CreateICmpEQ(left, right, "eq");
             } else {
                 result = ctx.builder.CreateFCmpUEQ(left, right, "feq");
@@ -411,7 +426,7 @@ llvm::Value* lowerBinaryExpr(BinaryExprAST* expr, CodeGenContext& ctx) {
             break;
 
         case BinaryOp::Ne:
-            if (left->getType()->isIntegerTy()) {
+            if (isIntegerType(left->getType())) {
                 result = ctx.builder.CreateICmpNE(left, right, "ne");
             } else {
                 result = ctx.builder.CreateFCmpUNE(left, right, "fne");
@@ -419,7 +434,7 @@ llvm::Value* lowerBinaryExpr(BinaryExprAST* expr, CodeGenContext& ctx) {
             break;
 
         case BinaryOp::Lt:
-            if (left->getType()->isIntegerTy()) {
+            if (isIntegerType(left->getType())) {
                 result = ctx.builder.CreateICmpSLT(left, right, "slt");
             } else {
                 result = ctx.builder.CreateFCmpULT(left, right, "flt");
@@ -427,7 +442,7 @@ llvm::Value* lowerBinaryExpr(BinaryExprAST* expr, CodeGenContext& ctx) {
             break;
 
         case BinaryOp::Gt:
-            if (left->getType()->isIntegerTy()) {
+            if (isIntegerType(left->getType())) {
                 result = ctx.builder.CreateICmpSGT(left, right, "sgt");
             } else {
                 result = ctx.builder.CreateFCmpUGT(left, right, "fgt");
@@ -435,7 +450,7 @@ llvm::Value* lowerBinaryExpr(BinaryExprAST* expr, CodeGenContext& ctx) {
             break;
 
         case BinaryOp::Le:
-            if (left->getType()->isIntegerTy()) {
+            if (isIntegerType(left->getType())) {
                 result = ctx.builder.CreateICmpSLE(left, right, "sle");
             } else {
                 result = ctx.builder.CreateFCmpULE(left, right, "fle");
@@ -443,7 +458,7 @@ llvm::Value* lowerBinaryExpr(BinaryExprAST* expr, CodeGenContext& ctx) {
             break;
 
         case BinaryOp::Ge:
-            if (left->getType()->isIntegerTy()) {
+            if (isIntegerType(left->getType())) {
                 result = ctx.builder.CreateICmpSGE(left, right, "sge");
             } else {
                 result = ctx.builder.CreateFCmpUGE(left, right, "fge");
@@ -452,25 +467,21 @@ llvm::Value* lowerBinaryExpr(BinaryExprAST* expr, CodeGenContext& ctx) {
 
         // ─── Logical Operators ──────────────────────────────────────────
         case BinaryOp::And:
-            if (!left->getType()->isIntegerTy(1)) {
-                left = ctx.builder.CreateICmpNE(left, 
-                    llvm::Constant::getNullValue(left->getType()));
+            if (!isBoolValue(left)) {
+                left = ctx.builder.CreateICmpNE(left, llvm::Constant::getNullValue(left->getType()));
             }
-            if (!right->getType()->isIntegerTy(1)) {
-                right = ctx.builder.CreateICmpNE(right,
-                    llvm::Constant::getNullValue(right->getType()));
+            if (!isBoolValue(right)) {
+                right = ctx.builder.CreateICmpNE(right, llvm::Constant::getNullValue(right->getType()));
             }
             result = ctx.builder.CreateAnd(left, right, "and");
             break;
 
         case BinaryOp::Or:
-            if (!left->getType()->isIntegerTy(1)) {
-                left = ctx.builder.CreateICmpNE(left,
-                    llvm::Constant::getNullValue(left->getType()));
+            if (!isBoolValue(left)) {
+                left = ctx.builder.CreateICmpNE(left, llvm::Constant::getNullValue(left->getType()));
             }
-            if (!right->getType()->isIntegerTy(1)) {
-                right = ctx.builder.CreateICmpNE(right,
-                    llvm::Constant::getNullValue(right->getType()));
+            if (!isBoolValue(right)) {
+                right = ctx.builder.CreateICmpNE(right, llvm::Constant::getNullValue(right->getType()));
             }
             result = ctx.builder.CreateOr(left, right, "or");
             break;
@@ -493,8 +504,6 @@ llvm::Value* lowerBinaryExpr(BinaryExprAST* expr, CodeGenContext& ctx) {
             break;
 
         case BinaryOp::Shr:
-            // In LLVM, ASHR is signed right shift, LSHR is unsigned.
-            // We default to signed for now.
             result = ctx.builder.CreateAShr(left, right, "ashr");
             break;
 
@@ -521,7 +530,12 @@ llvm::Value* lowerUnaryExpr(UnaryExprAST* expr, CodeGenContext& ctx) {
     }
 
     if (expr->operand->isLValue) {
-        operand = loadIfNeeded(operand, true, ctx);
+        llvm::Type* elemType = getType(ctx, expr->operand->resolvedType);
+        if (elemType) {
+            operand = loadIfNeeded(operand, elemType, ctx);
+        } else {
+            operand = loadIfNeeded(operand, true, ctx);
+        }
         if (!operand) return nullptr;
     }
 
@@ -529,7 +543,7 @@ llvm::Value* lowerUnaryExpr(UnaryExprAST* expr, CodeGenContext& ctx) {
 
     switch (expr->op) {
         case UnaryOp::Neg:
-            if (operand->getType()->isIntegerTy()) {
+            if (isIntegerType(operand->getType())) {
                 result = ctx.builder.CreateNeg(operand, "neg");
             } else {
                 result = ctx.builder.CreateFNeg(operand, "fneg");
@@ -537,7 +551,7 @@ llvm::Value* lowerUnaryExpr(UnaryExprAST* expr, CodeGenContext& ctx) {
             break;
 
         case UnaryOp::Not:
-            if (!operand->getType()->isIntegerTy(1)) {
+            if (!isBoolValue(operand)) {
                 operand = ctx.builder.CreateICmpNE(operand,
                     llvm::Constant::getNullValue(operand->getType()));
             }
@@ -565,10 +579,7 @@ llvm::Value* lowerUnaryExpr(UnaryExprAST* expr, CodeGenContext& ctx) {
 llvm::Value* lowerCallExpr(CallExprAST* expr, CodeGenContext& ctx) {
     if (!expr) return nullptr;
 
-    // ─── Get the callee function ──────────────────────────────────────────
     llvm::Function* callee = nullptr;
-
-    // For now, we'll just lower the callee expression and try to cast it
     llvm::Value* calleeVal = lowerExpression(expr->callee, ctx);
     if (calleeVal) {
         callee = llvm::dyn_cast<llvm::Function>(calleeVal);
@@ -580,7 +591,6 @@ llvm::Value* lowerCallExpr(CallExprAST* expr, CodeGenContext& ctx) {
         return nullptr;
     }
 
-    // ─── Lower arguments ──────────────────────────────────────────────────
     std::vector<llvm::Value*> args;
     for (ExprAST* arg : expr->args) {
         llvm::Value* argVal = lowerExpression(arg, ctx);
@@ -588,15 +598,18 @@ llvm::Value* lowerCallExpr(CallExprAST* expr, CodeGenContext& ctx) {
             return nullptr;
         }
         if (arg->isLValue) {
-            argVal = loadIfNeeded(argVal, true, ctx);
+            llvm::Type* elemType = getType(ctx, arg->resolvedType);
+            if (elemType) {
+                argVal = loadIfNeeded(argVal, elemType, ctx);
+            } else {
+                argVal = loadIfNeeded(argVal, true, ctx);
+            }
             if (!argVal) return nullptr;
         }
         args.push_back(argVal);
     }
 
-    // ─── Create the call ──────────────────────────────────────────────────
     llvm::Value* result = ctx.builder.CreateCall(callee, args, "call");
-
     expr->llvmValue = result;
     return result;
 }
@@ -628,7 +641,12 @@ llvm::Value* lowerIndexExpr(IndexExprAST* expr, CodeGenContext& ctx) {
     }
 
     if (expr->index->isLValue) {
-        index = loadIfNeeded(index, true, ctx);
+        llvm::Type* elemType = getType(ctx, expr->index->resolvedType);
+        if (elemType) {
+            index = loadIfNeeded(index, elemType, ctx);
+        } else {
+            index = loadIfNeeded(index, true, ctx);
+        }
         if (!index) return nullptr;
     }
 
@@ -644,29 +662,26 @@ llvm::Value* lowerIndexExpr(IndexExprAST* expr, CodeGenContext& ctx) {
         return nullptr;
     }
 
-    // ─── Get the pointer to the array data ──────────────────────────────
-    // With opaque pointers (LLVM 17+), we can't call getPointerElementType()
-    // on Type. We use the element type from the Lucid type directly.
+    // ─── Get pointer to array data ──────────────────────────────────────
     llvm::Value* ptr = target;
-
-    // For fixed arrays, we need to get the first element's address
     if (arrayType->isFixed()) {
-        // Create GEP to get pointer to first element (index 0, 0)
-        ptr = ctx.builder.CreateConstGEP2_32(
-            elemType,
-            target,
-            0, 0
-        );
+        ptr = ctx.builder.CreateConstGEP2_32(elemType, target, 0, 0);
     }
-    // For dynamic arrays and slices, target is already a pointer to the data
 
-    // ─── Create the GEP with the element type ────────────────────────────
-    llvm::Value* gep = ctx.builder.CreateGEP(
-        elemType,
-        ptr,
-        index,
-        "array_idx"
-    );
+    // ─── Get array length ──────────────────────────────────────────────
+    llvm::Value* len = getArrayLength(target, arrayType, ctx);
+    if (!len) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_InvalidArrayElement, expr->target->loc,
+                                "could not determine array length");
+        return nullptr;
+    }
+
+    // ─── Bounds check ──────────────────────────────────────────────────
+    llvm::Value* checkedIndex = emitBoundsCheck(index, len, ctx);
+    if (!checkedIndex) return nullptr;
+
+    // ─── GEP and load ──────────────────────────────────────────────────
+    llvm::Value* gep = ctx.builder.CreateGEP(elemType, ptr, checkedIndex, "array_idx");
 
     if (expr->isLValue) {
         expr->llvmValue = gep;
@@ -685,9 +700,103 @@ llvm::Value* lowerIndexExpr(IndexExprAST* expr, CodeGenContext& ctx) {
 llvm::Value* lowerSliceExpr(SliceExprAST* expr, CodeGenContext& ctx) {
     if (!expr) return nullptr;
 
-    ctx.diagnostics.warningAt(DiagCode::Warn_UnreachableCode, expr->loc,
-                              "slice expression not fully implemented in CodeGen");
-    return nullptr;
+    llvm::Value* target = lowerExpression(expr->target, ctx);
+    if (!target) {
+        return nullptr;
+    }
+
+    const ArrayTypeAST* arrayType = expr->target->resolvedType->as<ArrayTypeAST>();
+    if (!arrayType) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_InvalidArrayElement, expr->target->loc,
+                                "target is not an array type");
+        return nullptr;
+    }
+
+    // ─── Get array length ──────────────────────────────────────────────
+    llvm::Value* len = getArrayLength(target, arrayType, ctx);
+    if (!len) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_InvalidArrayElement, expr->target->loc,
+                                "could not determine array length");
+        return nullptr;
+    }
+
+    // ─── Resolve start and end bounds ──────────────────────────────────
+    llvm::Value* start = nullptr;
+    llvm::Value* end = nullptr;
+
+    if (expr->start) {
+        start = lowerExpression(expr->start, ctx);
+        if (!start) return nullptr;
+        if (expr->start->isLValue) {
+            llvm::Type* elemType = getType(ctx, expr->start->resolvedType);
+            if (elemType) {
+                start = loadIfNeeded(start, elemType, ctx);
+            } else {
+                start = loadIfNeeded(start, true, ctx);
+            }
+            if (!start) return nullptr;
+        }
+        if (start->getType() != len->getType()) {
+            start = ctx.builder.CreateIntCast(start, len->getType(), true, "start_cast");
+        }
+    } else {
+        start = llvm::ConstantInt::get(len->getType(), 0);
+    }
+
+    if (expr->end) {
+        end = lowerExpression(expr->end, ctx);
+        if (!end) return nullptr;
+        if (expr->end->isLValue) {
+            llvm::Type* elemType = getType(ctx, expr->end->resolvedType);
+            if (elemType) {
+                end = loadIfNeeded(end, elemType, ctx);
+            } else {
+                end = loadIfNeeded(end, true, ctx);
+            }
+            if (!end) return nullptr;
+        }
+        if (end->getType() != len->getType()) {
+            end = ctx.builder.CreateIntCast(end, len->getType(), true, "end_cast");
+        }
+    } else {
+        end = len;
+    }
+
+    // ─── Slice bounds check ──────────────────────────────────────────────
+    auto [checkedStart, checkedEnd] = emitSliceBoundsCheck(start, end, len, ctx);
+    if (!checkedStart || !checkedEnd) return nullptr;
+
+    // ─── Get data pointer ──────────────────────────────────────────────────
+    llvm::Value* dataPtr = target;
+    llvm::Type* elemType = getType(ctx, arrayType->element);
+    if (arrayType->isFixed()) {
+        dataPtr = ctx.builder.CreateConstGEP2_32(elemType, target, 0, 0);
+    }
+
+    // ─── Offset data pointer by start ──────────────────────────────────────
+    llvm::Value* slicePtr = ctx.builder.CreateGEP(elemType, dataPtr, checkedStart, "slice_ptr");
+
+    // ─── Calculate length: end - start ──────────────────────────────────────
+    llvm::Value* sliceLen = ctx.builder.CreateSub(checkedEnd, checkedStart, "slice_len");
+
+    // ─── Calculate capacity: len - start ────────────────────────────────────
+    llvm::Value* sliceCap = ctx.builder.CreateSub(len, checkedStart, "slice_cap");
+
+    // ─── Build the slice struct ─────────────────────────────────────────────
+    llvm::StructType* sliceType = llvm::cast<llvm::StructType>(getType(ctx, expr->resolvedType));
+    if (!sliceType) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_InvalidArrayElement, expr->loc,
+                                "could not create slice type");
+        return nullptr;
+    }
+
+    llvm::Value* slice = llvm::UndefValue::get(sliceType);
+    slice = ctx.builder.CreateInsertValue(slice, slicePtr, 0);
+    slice = ctx.builder.CreateInsertValue(slice, sliceLen, 1);
+    slice = ctx.builder.CreateInsertValue(slice, sliceCap, 2);
+
+    expr->llvmValue = slice;
+    return slice;
 }
 
 // =============================================================================
@@ -696,7 +805,6 @@ llvm::Value* lowerSliceExpr(SliceExprAST* expr, CodeGenContext& ctx) {
 
 llvm::Value* lowerFieldAccessExpr(FieldAccessExprAST* expr, CodeGenContext& ctx) {
     if (!expr) return nullptr;
-
     ctx.diagnostics.warningAt(DiagCode::Warn_UnreachableCode, expr->loc,
                               "field access not fully implemented in CodeGen");
     return nullptr;
@@ -708,7 +816,6 @@ llvm::Value* lowerFieldAccessExpr(FieldAccessExprAST* expr, CodeGenContext& ctx)
 
 llvm::Value* lowerModuleAccessExpr(ModuleAccessExprAST* expr, CodeGenContext& ctx) {
     if (!expr) return nullptr;
-
     ctx.diagnostics.warningAt(DiagCode::Warn_UnreachableCode, expr->loc,
                               "module access not fully implemented in CodeGen");
     return nullptr;
@@ -743,7 +850,6 @@ llvm::Value* lowerNullCoalesceExpr(NullCoalesceExprAST* expr, CodeGenContext& ct
         return lhs;
     }
 
-    // ─── Create blocks ────────────────────────────────────────────────────
     llvm::Function* func = ctx.getCurrentFunction();
     llvm::BasicBlock* lhsBlock = ctx.builder.GetInsertBlock();
     llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "then", func);
@@ -751,7 +857,6 @@ llvm::Value* lowerNullCoalesceExpr(NullCoalesceExprAST* expr, CodeGenContext& ct
     llvm::BasicBlock* mergeBlock = llvm::BasicBlock::Create(ctx.llvmCtx, "merge", func);
 
     // ─── Check the tag ────────────────────────────────────────────────────
-    // For nullable/fallible types, the tag is at offset 0
     llvm::Value* tag = ctx.builder.CreateExtractValue(lhs, 0);
     llvm::Value* isNil = ctx.builder.CreateICmpEQ(
         tag,
@@ -770,7 +875,12 @@ llvm::Value* lowerNullCoalesceExpr(NullCoalesceExprAST* expr, CodeGenContext& ct
     ctx.builder.SetInsertPoint(elseBlock);
     llvm::Value* rhsValue = rhs;
     if (expr->fallback->isLValue) {
-        rhsValue = loadIfNeeded(rhsValue, true, ctx);
+        llvm::Type* elemType = getType(ctx, expr->fallback->resolvedType);
+        if (elemType) {
+            rhsValue = loadIfNeeded(rhsValue, elemType, ctx);
+        } else {
+            rhsValue = loadIfNeeded(rhsValue, true, ctx);
+        }
     }
     ctx.builder.CreateBr(mergeBlock);
 
@@ -812,44 +922,54 @@ llvm::Value* lowerAssignExpr(AssignExprAST* expr, CodeGenContext& ctx) {
     }
 
     if (expr->rhs->isLValue) {
-        rhs = loadIfNeeded(rhs, true, ctx);
+        llvm::Type* elemType = getType(ctx, expr->rhs->resolvedType);
+        if (elemType) {
+            rhs = loadIfNeeded(rhs, elemType, ctx);
+        } else {
+            rhs = loadIfNeeded(rhs, true, ctx);
+        }
         if (!rhs) return nullptr;
     }
 
     // ─── Handle compound assignment ──────────────────────────────────────
     if (expr->op != AssignOp::Assign) {
-        llvm::Value* lhsValue = loadIfNeeded(lhs, true, ctx);
+        llvm::Type* elemType = getType(ctx, expr->lhs->resolvedType);
+        llvm::Value* lhsValue = loadIfNeeded(lhs, elemType, ctx);
         if (!lhsValue) {
             return nullptr;
         }
 
         switch (expr->op) {
             case AssignOp::AddAssign:
-                if (lhsValue->getType()->isIntegerTy()) {
+                if (isIntegerType(lhsValue->getType())) {
                     rhs = ctx.builder.CreateAdd(lhsValue, rhs, "add");
                 } else {
                     rhs = ctx.builder.CreateFAdd(lhsValue, rhs, "fadd");
                 }
                 break;
             case AssignOp::SubAssign:
-                if (lhsValue->getType()->isIntegerTy()) {
+                if (isIntegerType(lhsValue->getType())) {
                     rhs = ctx.builder.CreateSub(lhsValue, rhs, "sub");
                 } else {
                     rhs = ctx.builder.CreateFSub(lhsValue, rhs, "fsub");
                 }
                 break;
             case AssignOp::MulAssign:
-                if (lhsValue->getType()->isIntegerTy()) {
+                if (isIntegerType(lhsValue->getType())) {
                     rhs = ctx.builder.CreateMul(lhsValue, rhs, "mul");
                 } else {
                     rhs = ctx.builder.CreateFMul(lhsValue, rhs, "fmul");
                 }
                 break;
             case AssignOp::DivAssign:
-                if (lhsValue->getType()->isIntegerTy()) {
-                    rhs = ctx.builder.CreateSDiv(lhsValue, rhs, "sdiv");
+                if (isIntegerType(lhsValue->getType())) {
+                    // Check for division by zero
+                    RuntimeErrorKind kind = RuntimeErrorKind::DivisionByZero;
+                    llvm::Value* checkedDivisor = emitZeroCheck(rhs, kind, ctx);
+                    if (!checkedDivisor) return nullptr;
+                    rhs = ctx.builder.CreateSDiv(lhsValue, checkedDivisor, "sdiv");
                 } else {
-                    rhs = ctx.builder.CreateUDiv(lhsValue, rhs, "udiv");
+                    rhs = ctx.builder.CreateFDiv(lhsValue, rhs, "fdiv");
                 }
                 break;
             default:
@@ -877,7 +997,12 @@ llvm::Value* lowerPipelineExpr(PipelineExprAST* expr, CodeGenContext& ctx) {
     }
 
     if (expr->seed->isLValue) {
-        currentValue = loadIfNeeded(currentValue, true, ctx);
+        llvm::Type* elemType = getType(ctx, expr->seed->resolvedType);
+        if (elemType) {
+            currentValue = loadIfNeeded(currentValue, elemType, ctx);
+        } else {
+            currentValue = loadIfNeeded(currentValue, true, ctx);
+        }
     }
 
     for (PipelineStepAST* step : expr->steps) {
@@ -900,10 +1025,14 @@ llvm::Value* lowerPipelineStep(PipelineStepAST* step, CodeGenContext& ctx) {
     }
 
     if (step->callable->isLValue) {
-        callable = loadIfNeeded(callable, true, ctx);
+        llvm::Type* elemType = getType(ctx, step->callable->resolvedType);
+        if (elemType) {
+            callable = loadIfNeeded(callable, elemType, ctx);
+        } else {
+            callable = loadIfNeeded(callable, true, ctx);
+        }
     }
 
-    // ─── Build arguments ──────────────────────────────────────────────────
     std::vector<llvm::Value*> args;
     for (ExprAST* arg : step->packArgs) {
         llvm::Value* argVal = lowerExpression(arg, ctx);
@@ -911,46 +1040,32 @@ llvm::Value* lowerPipelineStep(PipelineStepAST* step, CodeGenContext& ctx) {
             return nullptr;
         }
         if (arg->isLValue) {
-            argVal = loadIfNeeded(argVal, true, ctx);
+            llvm::Type* elemType = getType(ctx, arg->resolvedType);
+            if (elemType) {
+                argVal = loadIfNeeded(argVal, elemType, ctx);
+            } else {
+                argVal = loadIfNeeded(argVal, true, ctx);
+            }
         }
         args.push_back(argVal);
     }
 
-    // ─── Get the function type from the callable ──────────────────────
-    // For a function pointer, we need to know its signature.
-    // For now, we'll use a generic approach.
-    // In practice, the callable should have a known function type.
-    
-    // Build a function type based on the argument types
+    // ─── Build function type ──────────────────────────────────────────────
     std::vector<llvm::Type*> paramTypes;
     for (llvm::Value* arg : args) {
         paramTypes.push_back(arg->getType());
     }
-    
-    // Determine return type - assume it's the first argument's type or void
+
     llvm::Type* returnType = args.empty() ? llvm::Type::getVoidTy(ctx.llvmCtx) : args[0]->getType();
-    
-    llvm::FunctionType* fnType = llvm::FunctionType::get(
-        returnType,
-        paramTypes,
-        false
-    );
-    
-    // ─── Cast callable to the function pointer type ───────────────────
+    llvm::FunctionType* fnType = llvm::FunctionType::get(returnType, paramTypes, false);
+
     llvm::Value* typedFunc = ctx.builder.CreatePointerCast(
         callable,
         llvm::PointerType::get(fnType, 0),
         "pipeline_func_cast"
     );
 
-    // ─── Create the call ──────────────────────────────────────────────────
-    llvm::Value* result = ctx.builder.CreateCall(
-        fnType,
-        typedFunc,
-        args,
-        "pipeline_call"
-    );
-
+    llvm::Value* result = ctx.builder.CreateCall(fnType, typedFunc, args, "pipeline_call");
     return result;
 }
 
@@ -960,7 +1075,6 @@ llvm::Value* lowerPipelineStep(PipelineStepAST* step, CodeGenContext& ctx) {
 
 llvm::Value* lowerComposeExpr(ComposeExprAST* expr, CodeGenContext& ctx) {
     if (!expr) return nullptr;
-
     ctx.diagnostics.warningAt(DiagCode::Warn_UnreachableCode, expr->loc,
                               "composition is not fully implemented yet");
     return nullptr;
@@ -978,13 +1092,11 @@ llvm::Value* lowerComposeOperand(ComposeOperandAST* operand, CodeGenContext& ctx
 llvm::Value* lowerAnonFuncExpr(AnonFuncExprAST* expr, CodeGenContext& ctx) {
     if (!expr) return nullptr;
 
-    if (expr->hasClosure) {
+    if (expr->hasClosure || !expr->captures.empty()) {
         return lowerClosure(expr, ctx);
     }
 
-    return llvm::Constant::getNullValue(
-        llvm::PointerType::get(ctx.llvmCtx, 0)
-    );
+    return llvm::Constant::getNullValue(llvm::PointerType::get(ctx.llvmCtx, 0));
 }
 
 // =============================================================================
@@ -999,7 +1111,7 @@ llvm::Value* lowerIfExpr(IfExprAST* expr, CodeGenContext& ctx) {
         return nullptr;
     }
 
-    if (!cond->getType()->isIntegerTy(1)) {
+    if (!isBoolValue(cond)) {
         cond = ctx.builder.CreateICmpNE(cond,
             llvm::Constant::getNullValue(cond->getType()));
     }
@@ -1018,7 +1130,12 @@ llvm::Value* lowerIfExpr(IfExprAST* expr, CodeGenContext& ctx) {
         return nullptr;
     }
     if (expr->thenBranch->isLValue) {
-        thenVal = loadIfNeeded(thenVal, true, ctx);
+        llvm::Type* elemType = getType(ctx, expr->thenBranch->resolvedType);
+        if (elemType) {
+            thenVal = loadIfNeeded(thenVal, elemType, ctx);
+        } else {
+            thenVal = loadIfNeeded(thenVal, true, ctx);
+        }
     }
     ctx.builder.CreateBr(mergeBlock);
 
@@ -1029,17 +1146,18 @@ llvm::Value* lowerIfExpr(IfExprAST* expr, CodeGenContext& ctx) {
         return nullptr;
     }
     if (expr->elseBranch->isLValue) {
-        elseVal = loadIfNeeded(elseVal, true, ctx);
+        llvm::Type* elemType = getType(ctx, expr->elseBranch->resolvedType);
+        if (elemType) {
+            elseVal = loadIfNeeded(elseVal, elemType, ctx);
+        } else {
+            elseVal = loadIfNeeded(elseVal, true, ctx);
+        }
     }
     ctx.builder.CreateBr(mergeBlock);
 
     // ─── Merge block ──────────────────────────────────────────────────────
     ctx.builder.SetInsertPoint(mergeBlock);
-    llvm::PHINode* phi = ctx.builder.CreatePHI(
-        thenVal->getType(),
-        2,
-        "if"
-    );
+    llvm::PHINode* phi = ctx.builder.CreatePHI(thenVal->getType(), 2, "if");
     phi->addIncoming(thenVal, thenBlock);
     phi->addIncoming(elseVal, elseBlock);
 
@@ -1053,7 +1171,6 @@ llvm::Value* lowerIfExpr(IfExprAST* expr, CodeGenContext& ctx) {
 
 llvm::Value* lowerRangeExpr(RangeExprAST* expr, CodeGenContext& ctx) {
     if (!expr) return nullptr;
-
     ctx.diagnostics.warningAt(DiagCode::Warn_UnreachableCode, expr->loc,
                               "range expression should not be used as a value");
     return nullptr;

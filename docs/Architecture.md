@@ -605,9 +605,12 @@ lucid/
     │   │   └── CodeGenContext.hpp # LLVM state (module, builder, caches, symbols)
     │   │
     │   ├── support/
-    │   │   ├── CodeGenAlloca.hpp/cpp          # Alloca, blocks, loads
-    │   │   ├── CodeGenPanic.hpp/cpp           # Panic, null checks
-    │   │   └── MangledName.hpp/cpp            # Mangled name generation
+    │   │   ├── RuntimeError.hpp        # Define all runtime errors
+    │   │   ├── LLVMHelpers.hpp         # Work with llvm types, values
+    │   │   ├── CodeGenHelpers.hpp/cpp  # General helpers
+    │   │   ├── CodeGenAlloca.hpp/cpp   # Alloca, blocks, loads
+    │   │   ├── CodeGenPanic.hpp/cpp    # Panic, null checks
+    │   │   └── MangledName.hpp/cpp     # Mangled name generation
     │   │
     │   ├── closure/
     │   │   ├── CodeGenClosure.hpp/cpp # Closure declarations
