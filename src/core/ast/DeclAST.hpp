@@ -55,13 +55,13 @@
 /// struct VarDeclAST : ValueDeclAST {
 ///     // Parser fields - const (set once in constructor)
 ///     TypeAST* type;
-///     const ExprAST* init;
+///     ExprAST* init;
 ///     
 ///     // CodeGen fields - mutable
 ///     llvm::AllocaInst* llvmAlloca = nullptr;
 ///     llvm::GlobalVariable* llvmGlobal = nullptr;
 ///     
-///     VarDeclAST(InternedString n, DeclKeyword kw, TypeAST* t, const ExprAST* i)
+///     VarDeclAST(InternedString n, DeclKeyword kw, TypeAST* t, ExprAST* i)
 ///         : ValueDeclAST(ASTKind::VarDecl, n, kw)
 ///         , type(t)
 ///         , init(i) {}
@@ -406,7 +406,7 @@ struct EnumDeclAST : TypeDeclAST {
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
     ArenaSpan<EnumVariantAST*> variants;
-    const PrimitiveTypeAST* backingType;
+    PrimitiveTypeAST* backingType;
     
     // ─── CodeGen Fields (mutable) ──────────────────────────────────────
     ArenaSpan<llvm::ConstantInt*> variantConstants;
@@ -416,7 +416,7 @@ struct EnumDeclAST : TypeDeclAST {
     // ─── Constructor ─────────────────────────────────────────────────────
     EnumDeclAST(InternedString n,
                 ArenaSpan<EnumVariantAST*> vars,
-                const PrimitiveTypeAST* backing = nullptr)
+                PrimitiveTypeAST* backing = nullptr)
         : TypeDeclAST(ASTKind::EnumDecl, n)
         , variants(vars)
         , backingType(backing) {}

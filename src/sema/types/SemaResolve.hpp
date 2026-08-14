@@ -45,14 +45,14 @@ namespace sema {
 /// @example
 ///   TypeAST* resolved = resolveType(decl->type, ctx);
 ///   if (!resolved) return; // Error already reported
-TypeAST* resolveType(const TypeAST* type, SemaContext& ctx);
+TypeAST* resolveType(TypeAST* type, SemaContext& ctx);
 
 // ─── Specific Type Resolvers ─────────────────────────────────────────────
 
 /// @brief Resolve a primitive type (always succeeds).
 /// 
 /// Primitive types are built-in and always valid.
-TypeAST* resolvePrimitiveType(const PrimitiveTypeAST* type, SemaContext& ctx);
+TypeAST* resolvePrimitiveType(PrimitiveTypeAST* type, SemaContext& ctx);
 
 /// @brief Resolve a named type with priority.
 /// 
@@ -69,7 +69,7 @@ TypeAST* resolvePrimitiveType(const PrimitiveTypeAST* type, SemaContext& ctx);
 /// @note Uses ctx.lookupType() for symbol resolution.
 /// @see SemaContext::lookupType()
 /// @see validateGenericArguments()
-TypeAST* resolveNamedType(const NamedTypeAST* type, SemaContext& ctx);
+TypeAST* resolveNamedType(NamedTypeAST* type, SemaContext& ctx);
 
 /// @brief Resolve a qualified type access: module:Type
 /// 
@@ -89,7 +89,7 @@ TypeAST* resolveNamedType(const NamedTypeAST* type, SemaContext& ctx);
 /// 
 /// @example
 ///   const u user:User = user:User { id = 1 }
-TypeAST* resolveModuleTypeAccess(const ModuleTypeAccessAST* type, SemaContext& ctx);
+TypeAST* resolveModuleTypeAccess(ModuleTypeAccessAST* type, SemaContext& ctx);
 
 /// @brief Resolve an array type.
 /// 
@@ -99,7 +99,7 @@ TypeAST* resolveModuleTypeAccess(const ModuleTypeAccessAST* type, SemaContext& c
 /// @param type The array type to resolve.
 /// @param ctx The semantic context.
 /// @return The resolved ArrayTypeAST, or nullptr on failure.
-TypeAST* resolveArrayType(const ArrayTypeAST* type, SemaContext& ctx);
+TypeAST* resolveArrayType(ArrayTypeAST* type, SemaContext& ctx);
 
 /// @brief Resolve a nullable type (T?).
 /// 
@@ -109,7 +109,7 @@ TypeAST* resolveArrayType(const ArrayTypeAST* type, SemaContext& ctx);
 /// @param type The nullable type to resolve.
 /// @param ctx The semantic context.
 /// @return The resolved NullableTypeAST, or nullptr on failure.
-TypeAST* resolveNullableType(const NullableTypeAST* type, SemaContext& ctx);
+TypeAST* resolveNullableType(NullableTypeAST* type, SemaContext& ctx);
 
 /// @brief Resolve a fallible type (T!).
 /// 
@@ -119,7 +119,7 @@ TypeAST* resolveNullableType(const NullableTypeAST* type, SemaContext& ctx);
 /// @param type The fallible type to resolve.
 /// @param ctx The semantic context.
 /// @return The resolved FallibleTypeAST, or nullptr on failure.
-TypeAST* resolveFallibleType(const FallibleTypeAST* type, SemaContext& ctx);
+TypeAST* resolveFallibleType(FallibleTypeAST* type, SemaContext& ctx);
 
 /// @brief Resolve a combined type (T?!).
 /// 
@@ -129,7 +129,7 @@ TypeAST* resolveFallibleType(const FallibleTypeAST* type, SemaContext& ctx);
 /// @param type The combined type to resolve.
 /// @param ctx The semantic context.
 /// @return The resolved CombinedTypeAST, or nullptr on failure.
-TypeAST* resolveCombinedType(const CombinedTypeAST* type, SemaContext& ctx);
+TypeAST* resolveCombinedType(CombinedTypeAST* type, SemaContext& ctx);
 
 /// @brief Resolve a reference type (&T).
 /// 
@@ -143,7 +143,7 @@ TypeAST* resolveCombinedType(const CombinedTypeAST* type, SemaContext& ctx);
 /// @return The resolved RefTypeAST, or nullptr on failure.
 /// 
 /// @see validateRefContext()
-TypeAST* resolveRefType(const RefTypeAST* type, SemaContext& ctx);
+TypeAST* resolveRefType(RefTypeAST* type, SemaContext& ctx);
 
 /// @brief Resolve a pointer type (*T).
 /// 
@@ -153,7 +153,7 @@ TypeAST* resolveRefType(const RefTypeAST* type, SemaContext& ctx);
 /// @param type The pointer type to resolve.
 /// @param ctx The semantic context.
 /// @return The resolved PtrTypeAST, or nullptr on failure.
-TypeAST* resolvePtrType(const PtrTypeAST* type, SemaContext& ctx);
+TypeAST* resolvePtrType(PtrTypeAST* type, SemaContext& ctx);
 
 /// @brief Resolve a function type.
 /// 
@@ -163,7 +163,7 @@ TypeAST* resolvePtrType(const PtrTypeAST* type, SemaContext& ctx);
 /// @param type The function type to resolve.
 /// @param ctx The semantic context.
 /// @return The resolved FuncTypeAST, or nullptr on failure.
-TypeAST* resolveFuncType(const FuncTypeAST* type, SemaContext& ctx);
+TypeAST* resolveFuncType(FuncTypeAST* type, SemaContext& ctx);
 
 // ─── Trait Resolution ────────────────────────────────────────────────────
 
@@ -177,7 +177,7 @@ TypeAST* resolveFuncType(const FuncTypeAST* type, SemaContext& ctx);
 /// @param ref The trait reference (NamedTypeAST).
 /// @param ctx The semantic context.
 /// @return The resolved TraitDeclAST, or nullptr on failure.
-const TraitDeclAST* resolveTraitRef(const NamedTypeAST* ref, SemaContext& ctx);
+TraitDeclAST* resolveTraitRef(NamedTypeAST* ref, SemaContext& ctx);
 
 // ─── Callee Resolution (for function calls) ─────────────────────────────
 
@@ -193,7 +193,7 @@ const TraitDeclAST* resolveTraitRef(const NamedTypeAST* ref, SemaContext& ctx);
 /// @return The FuncDeclAST if found, nullptr on error.
 /// 
 /// @note Any other callee shape returns nullptr silently.
-const FuncDeclAST* resolveCalleeOrError(const ExprAST* callee, SemaContext& ctx);
+FuncDeclAST* resolveCalleeOrError(ExprAST* callee, SemaContext& ctx);
 
 // ─── Self-Reference Detection ───────────────────────────────────────────
 
@@ -212,7 +212,7 @@ const FuncDeclAST* resolveCalleeOrError(const ExprAST* callee, SemaContext& ctx)
 ///   if (decl->keyword == DeclKeyword::Let) {
 ///       checkLetSelfReference(decl->init, decl->name, ctx);
 ///   }
-void checkLetSelfReference(const ExprAST* expr, InternedString varName, SemaContext& ctx);
+void checkLetSelfReference(ExprAST* expr, InternedString varName, SemaContext& ctx);
 
 /// @brief Check if a field type is a self-reference to the current struct.
 /// 
@@ -223,17 +223,17 @@ void checkLetSelfReference(const ExprAST* expr, InternedString varName, SemaCont
 /// @param currentStruct The struct being defined.
 /// @param ctx The semantic context.
 /// @return true if this is a valid self-reference, false if invalid.
-bool isValidStructSelfReference(const TypeAST* fieldType,
-                                 const StructDeclAST* currentStruct,
+bool isValidStructSelfReference(TypeAST* fieldType,
+                                 StructDeclAST* currentStruct,
                                  SemaContext& ctx);
 
 /// @brief Check if a field is accessible on a generic type.
-bool isFieldAccessibleOnGenericType(const TypeAST* genericType,
+bool isFieldAccessibleOnGenericType(TypeAST* genericType,
                                     InternedString fieldName,
                                     SemaContext& ctx);
 
 /// @brief Get the type of a field on a generic type.
-const TypeAST* getFieldTypeOnGenericType(const TypeAST* genericType,
+TypeAST* getFieldTypeOnGenericType(TypeAST* genericType,
                                          InternedString fieldName,
                                          SemaContext& ctx);
 
@@ -245,7 +245,7 @@ const TypeAST* getFieldTypeOnGenericType(const TypeAST* genericType,
 /// 
 /// @param type The type to check.
 /// @return The inner type if type is FutureTypeAST, otherwise nullptr.
-const TypeAST* unwrapFutureType(const TypeAST* type);
+TypeAST* unwrapFutureType(TypeAST* type);
 
 /// @brief Check if a type is a ThreadTypeAST and unwrap it.
 /// 
@@ -253,7 +253,7 @@ const TypeAST* unwrapFutureType(const TypeAST* type);
 /// 
 /// @param type The type to check.
 /// @return The inner type if type is ThreadTypeAST, otherwise nullptr.
-const TypeAST* unwrapThreadType(const TypeAST* type);
+TypeAST* unwrapThreadType(TypeAST* type);
 
 // ─── Downward Flow Rule Validation ──────────────────────────────────────
 
@@ -272,9 +272,9 @@ const TypeAST* unwrapThreadType(const TypeAST* type);
 /// @param type The borrowed type to validate.
 /// @param ctx The semantic context.
 /// @return true if the borrowed type is in a valid context.
-bool validateBorrowedContext(const TypeAST* type, SemaContext& ctx);
+bool validateBorrowedContext(TypeAST* type, SemaContext& ctx);
 
 /// @brief Check if a type is a borrowed type (&T or [_]T).
-bool isBorrowedType(const TypeAST* type);
+bool isBorrowedType(TypeAST* type);
 
 } // namespace sema

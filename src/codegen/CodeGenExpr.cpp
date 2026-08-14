@@ -45,9 +45,9 @@ static std::vector<llvm::Constant*> toConstants(const std::vector<llvm::Value*>&
 
 // ─── Helper: Get the element type from an array type ─────────────────────
 
-static llvm::Type* getArrayElementType(CodeGenContext& ctx, const TypeAST* arrayType) {
+static llvm::Type* getArrayElementType(CodeGenContext& ctx, TypeAST* arrayType) {
     if (!arrayType) return nullptr;
-    const ArrayTypeAST* arr = arrayType->as<ArrayTypeAST>();
+    ArrayTypeAST* arr = arrayType->as<ArrayTypeAST>();
     if (!arr) return nullptr;
     return getType(ctx, arr->element);
 }
@@ -280,7 +280,7 @@ llvm::Value* lowerArrayLiteralExpr(ArrayLiteralExprAST* expr, CodeGenContext& ct
         elements.push_back(elemValue);
     }
 
-    const ArrayTypeAST* arrayTypeAST = expr->resolvedType->as<ArrayTypeAST>();
+    ArrayTypeAST* arrayTypeAST = expr->resolvedType->as<ArrayTypeAST>();
 
     if (arrayTypeAST->isFixed()) {
         std::vector<llvm::Constant*> constantElements;
@@ -650,7 +650,7 @@ llvm::Value* lowerIndexExpr(IndexExprAST* expr, CodeGenContext& ctx) {
         if (!index) return nullptr;
     }
 
-    const ArrayTypeAST* arrayType = expr->target->resolvedType->as<ArrayTypeAST>();
+    ArrayTypeAST* arrayType = expr->target->resolvedType->as<ArrayTypeAST>();
     if (!arrayType) {
         ctx.diagnostics.errorAt(DiagCode::Sem_InvalidArrayElement, expr->target->loc,
                                 "target is not an array type");
@@ -705,7 +705,7 @@ llvm::Value* lowerSliceExpr(SliceExprAST* expr, CodeGenContext& ctx) {
         return nullptr;
     }
 
-    const ArrayTypeAST* arrayType = expr->target->resolvedType->as<ArrayTypeAST>();
+    ArrayTypeAST* arrayType = expr->target->resolvedType->as<ArrayTypeAST>();
     if (!arrayType) {
         ctx.diagnostics.errorAt(DiagCode::Sem_InvalidArrayElement, expr->target->loc,
                                 "target is not an array type");
@@ -838,7 +838,7 @@ llvm::Value* lowerNullCoalesceExpr(NullCoalesceExprAST* expr, CodeGenContext& ct
         return nullptr;
     }
 
-    const TypeAST* lhsType = expr->value->resolvedType;
+    TypeAST* lhsType = expr->value->resolvedType;
     if (!lhsType) {
         ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, expr->value->loc,
                                 "LHS has no type");

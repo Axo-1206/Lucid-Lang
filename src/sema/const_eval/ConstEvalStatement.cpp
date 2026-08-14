@@ -11,7 +11,7 @@ namespace sema {
 
 // ─── Statement Execution ──────────────────────────────────────────────────
 
-ConstantValue ConstEvaluator::executeStmt(SemaContext& ctx, const StmtAST* stmt) {
+ConstantValue ConstEvaluator::executeStmt(SemaContext& ctx, StmtAST* stmt) {
     if (!stmt) return ConstantValue::voidValue();
 
     switch (stmt->kind) {
@@ -27,13 +27,13 @@ ConstantValue ConstEvaluator::executeStmt(SemaContext& ctx, const StmtAST* stmt)
     }
 }
 
-ConstantValue ConstEvaluator::executeBlock(SemaContext& ctx, const BlockStmtAST* block) {
+ConstantValue ConstEvaluator::executeBlock(SemaContext& ctx, BlockStmtAST* block) {
     if (!block) return ConstantValue::voidValue();
 
     ctx.pushScope();
     ConstantValue result = ConstantValue::voidValue();
 
-    for (const StmtAST* stmt : block->stmts) {
+    for (StmtAST* stmt : block->stmts) {
         result = executeStmt(ctx, stmt);
         if (result.isError()) break;
         if (result.isUnknown()) break;
@@ -43,7 +43,7 @@ ConstantValue ConstEvaluator::executeBlock(SemaContext& ctx, const BlockStmtAST*
     return result;
 }
 
-ConstantValue ConstEvaluator::executeReturn(SemaContext& ctx, const ReturnStmtAST* stmt) {
+ConstantValue ConstEvaluator::executeReturn(SemaContext& ctx, ReturnStmtAST* stmt) {
     if (stmt->value) {
         ConstantValue result = evaluate(ctx, stmt->value);
         if (result.isError()) return result;
@@ -53,7 +53,7 @@ ConstantValue ConstEvaluator::executeReturn(SemaContext& ctx, const ReturnStmtAS
     return ConstantValue::voidValue();
 }
 
-ConstantValue ConstEvaluator::executeIf(SemaContext& ctx, const IfStmtAST* stmt) {
+ConstantValue ConstEvaluator::executeIf(SemaContext& ctx, IfStmtAST* stmt) {
     if (!stmt) return ConstantValue::voidValue();
 
     // ─── 1. Push if context for type narrowing ──────────────────────────
@@ -102,7 +102,7 @@ ConstantValue ConstEvaluator::executeIf(SemaContext& ctx, const IfStmtAST* stmt)
     return ConstantValue::voidValue();
 }
 
-ConstantValue ConstEvaluator::executeWhile(SemaContext& ctx, const WhileStmtAST* stmt) {
+ConstantValue ConstEvaluator::executeWhile(SemaContext& ctx, WhileStmtAST* stmt) {
     if (!stmt) return ConstantValue::voidValue();
 
     const size_t MAX_ITERATIONS = 10000;
@@ -134,11 +134,11 @@ ConstantValue ConstEvaluator::executeWhile(SemaContext& ctx, const WhileStmtAST*
     return ConstantValue::voidValue();
 }
 
-ConstantValue ConstEvaluator::executeFor(SemaContext& ctx, const ForStmtAST* stmt) {
+ConstantValue ConstEvaluator::executeFor(SemaContext& ctx, ForStmtAST* stmt) {
     if (!stmt) return ConstantValue::voidValue();
 
     if (stmt->iterable && stmt->iterable->isa<RangeExprAST>()) {
-        const RangeExprAST* range = stmt->iterable->as<RangeExprAST>();
+        RangeExprAST* range = stmt->iterable->as<RangeExprAST>();
         
         auto loOpt = evaluateAsInt(ctx, range->lo);
         auto hiOpt = evaluateAsInt(ctx, range->hi);
@@ -188,7 +188,7 @@ ConstantValue ConstEvaluator::executeFor(SemaContext& ctx, const ForStmtAST* stm
     return ConstantValue::unknown();
 }
 
-ConstantValue ConstEvaluator::executeSwitch(SemaContext& ctx, const SwitchStmtAST* stmt) {
+ConstantValue ConstEvaluator::executeSwitch(SemaContext& ctx, SwitchStmtAST* stmt) {
     if (!stmt) return ConstantValue::voidValue();
 
     // ─── Evaluate subject ──────────────────────────────────────────────────
@@ -205,12 +205,12 @@ ConstantValue ConstEvaluator::executeSwitch(SemaContext& ctx, const SwitchStmtAS
 
     // ─── Try to match a case ──────────────────────────────────────────────
     for (const SwitchCaseAST* caseStmt : stmt->cases) {
-        for (const ExprAST* value : caseStmt->values) {
+        for (ExprAST* value : caseStmt->values) {
             bool matches = false;
             
             if (value->isa<RangeExprAST>()) {
                 // Range case
-                const RangeExprAST* range = value->as<RangeExprAST>();
+                RangeExprAST* range = value->as<RangeExprAST>();
                 auto loOpt = evaluateAsInt(ctx, range->lo);
                 auto hiOpt = evaluateAsInt(ctx, range->hi);
                 if (loOpt.has_value() && hiOpt.has_value() && subjectVal.isInt()) {
@@ -250,7 +250,7 @@ ConstantValue ConstEvaluator::executeSwitch(SemaContext& ctx, const SwitchStmtAS
     return ConstantValue::voidValue();
 }
 
-ConstantValue ConstEvaluator::executeExprStmt(SemaContext& ctx, const ExprStmtAST* stmt) {
+ConstantValue ConstEvaluator::executeExprStmt(SemaContext& ctx, ExprStmtAST* stmt) {
     if (!stmt || !stmt->expr) return ConstantValue::voidValue();
 
     ConstantValue result = evaluate(ctx, stmt->expr);
@@ -260,18 +260,18 @@ ConstantValue ConstEvaluator::executeExprStmt(SemaContext& ctx, const ExprStmtAS
     return ConstantValue::voidValue();
 }
 
-ConstantValue ConstEvaluator::executeDeclStmt(SemaContext& ctx, const DeclStmtAST* stmt) {
+ConstantValue ConstEvaluator::executeDeclStmt(SemaContext& ctx, DeclStmtAST* stmt) {
     if (!stmt || !stmt->decl) return ConstantValue::voidValue();
 
     if (stmt->decl->isa<VarDeclAST>()) {
-        const VarDeclAST* var = stmt->decl->as<VarDeclAST>();
+        VarDeclAST* var = stmt->decl->as<VarDeclAST>();
         if (var->keyword == DeclKeyword::Const && var->init) {
             ConstantValue val = evaluate(ctx, var->init);
             if (val.isError()) return val;
             if (val.isUnknown()) return ConstantValue::unknown();
             
-            const_cast<ExprAST*>(var->init)->isConst = true;
-            const_cast<ExprAST*>(var->init)->constValue = val;
+            var->init->isConst = true;
+            var->init->constValue = val;
             ctx.insertValue(var);
             return ConstantValue::voidValue();
         }
@@ -284,7 +284,7 @@ ConstantValue ConstEvaluator::executeDeclStmt(SemaContext& ctx, const DeclStmtAS
     return ConstantValue::unknown();
 }
 
-ConstantValue ConstEvaluator::executeFunction(SemaContext& ctx, const FuncDeclAST* func,
+ConstantValue ConstEvaluator::executeFunction(SemaContext& ctx, FuncDeclAST* func,
                                                const std::vector<ConstantValue>& args) {
     if (!func) {
         ctx.diagnostics.error(DiagCode::Sem_UndefinedValue, nullptr,
@@ -321,7 +321,7 @@ ConstantValue ConstEvaluator::executeFunction(SemaContext& ctx, const FuncDeclAS
 
     // ─── 2. Bind arguments to parameters ────────────────────────────────
     size_t argIndex = 0;
-    for (const FuncTypeAST* group = func->funcType; group; group = group->getNext()) {
+    for (FuncTypeAST* group = func->funcType; group; group = group->getNext()) {
         for (ParamAST* param : group->params) {
             if (argIndex < args.size()) {
                 // Create a synthetic literal for the argument value

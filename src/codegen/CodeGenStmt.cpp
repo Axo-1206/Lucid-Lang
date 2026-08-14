@@ -353,7 +353,7 @@ static void lowerRangeForLoop(
     CodeGenContext& ctx
 ) {
     // Sema guarantees this is a RangeExprAST
-    const RangeExprAST* range = stmt->iterable->as<RangeExprAST>();
+    RangeExprAST* range = stmt->iterable->as<RangeExprAST>();
     assert(range && "Range loop iterable must be RangeExprAST");
 
     // ─── Lower range bounds ──────────────────────────────────────────────
@@ -470,11 +470,11 @@ static void lowerCollectionForLoop(
     CodeGenContext& ctx
 ) {
     // Sema guarantees this is an array type
-    const TypeAST* iterableType = stmt->iterable->resolvedType;
+    TypeAST* iterableType = stmt->iterable->resolvedType;
     assert(iterableType && iterableType->isa<ArrayTypeAST>() &&
            "Collection loop iterable must be ArrayTypeAST");
 
-    const ArrayTypeAST* arrayType = iterableType->as<ArrayTypeAST>();
+    ArrayTypeAST* arrayType = iterableType->as<ArrayTypeAST>();
     llvm::Type* elemType = getType(ctx, arrayType->element);
     assert(elemType && "Array element has no type");
 
@@ -858,10 +858,10 @@ void lowerAwaitStmt(AwaitStmtAST* stmt, CodeGenContext& ctx) {
             continue;
         }
 
-        const IdentifierExprAST* id = target->as<IdentifierExprAST>();
+        IdentifierExprAST* id = target->as<IdentifierExprAST>();
         
         // ─── Get the resolved declaration from Sema ──────────────────────
-        const ValueDeclAST* decl = id->resolvedDecl;
+        ValueDeclAST* decl = id->resolvedDecl;
         if (!decl) {
             ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedValue, id->loc,
                                     "identifier '", ctx.pool.lookup(id->name), 
@@ -973,10 +973,10 @@ void lowerJoinStmt(JoinStmtAST* stmt, CodeGenContext& ctx) {
             continue;
         }
 
-        const IdentifierExprAST* id = target->as<IdentifierExprAST>();
+        IdentifierExprAST* id = target->as<IdentifierExprAST>();
         
         // ─── Get the resolved declaration from Sema ──────────────────────
-        const ValueDeclAST* decl = id->resolvedDecl;
+        ValueDeclAST* decl = id->resolvedDecl;
         if (!decl) {
             ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedValue, id->loc,
                                     "identifier '", ctx.pool.lookup(id->name), 

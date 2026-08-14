@@ -395,7 +395,7 @@ public:
 
     /// Report an error with a diagnostic code.
     template<typename... Args>
-    void error(DiagCode code, const BaseAST* node, Args&&... args) {
+    void error(DiagCode code, BaseAST* node, Args&&... args) {
         add(severityFromCode(code), code,
             node ? node->loc : SourceLocation{},
             buildMessage(std::forward<Args>(args)...));
@@ -403,7 +403,7 @@ public:
 
     /// Report a warning with a diagnostic code.
     template<typename... Args>
-    void warning(DiagCode code, const BaseAST* node, Args&&... args) {
+    void warning(DiagCode code, BaseAST* node, Args&&... args) {
         add(Severity::Warning, code,
             node ? node->loc : SourceLocation{},
             buildMessage(std::forward<Args>(args)...));
@@ -411,7 +411,7 @@ public:
 
     /// Report a free-text note.
     template<typename... Args>
-    void note(const BaseAST* node, Args&&... args) {
+    void note(BaseAST* node, Args&&... args) {
         add(Severity::Note, DiagCode(0),
             node ? node->loc : SourceLocation{},
             buildMessage(std::forward<Args>(args)...));
@@ -419,7 +419,7 @@ public:
 
     /// Report a free-text hint.
     template<typename... Args>
-    void hint(const BaseAST* node, Args&&... args) {
+    void hint(BaseAST* node, Args&&... args) {
         add(Severity::Hint, DiagCode(0),
             node ? node->loc : SourceLocation{},
             buildMessage(std::forward<Args>(args)...));

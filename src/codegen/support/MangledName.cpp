@@ -24,7 +24,7 @@ static InternedString buildMangledName(const std::string& components, CodeGenCon
 
 // ─── Public API ─────────────────────────────────────────────────────────────
 
-InternedString generateMangledName(const FuncDeclAST* decl, CodeGenContext& ctx) {
+InternedString generateMangledName(FuncDeclAST* decl, CodeGenContext& ctx) {
     if (!decl) return InternedString(0);
     
     std::string result;
@@ -51,9 +51,9 @@ InternedString generateMangledName(const FuncDeclAST* decl, CodeGenContext& ctx)
     
     // ─── 4. Parameter types ──────────────────────────────────────────────
     result += "_P";
-    const FuncTypeAST* funcType = decl->funcType;
+    FuncTypeAST* funcType = decl->funcType;
     while (funcType) {
-        for (const ParamAST* param : funcType->params) {
+        for (ParamAST* param : funcType->params) {
             result += typeToMangleString(param->type, ctx);
         }
         funcType = funcType->getNext();
@@ -69,7 +69,7 @@ InternedString generateMangledName(const FuncDeclAST* decl, CodeGenContext& ctx)
     return buildMangledName(result, ctx);
 }
 
-InternedString generateMangledName(const VarDeclAST* decl, CodeGenContext& ctx) {
+InternedString generateMangledName(VarDeclAST* decl, CodeGenContext& ctx) {
     if (!decl) return InternedString(0);
     
     std::string result;
@@ -94,8 +94,8 @@ InternedString generateMangledName(const VarDeclAST* decl, CodeGenContext& ctx) 
 }
 
 InternedString generateMangledNameForGeneric(
-    const DeclAST* baseDecl,
-    const std::vector<const TypeAST*>& typeArgs,
+    DeclAST* baseDecl,
+    const std::vector<TypeAST*>& typeArgs,
     CodeGenContext& ctx
 ) {
     if (!baseDecl || typeArgs.empty()) {
@@ -118,17 +118,17 @@ InternedString generateMangledNameForGeneric(
     }
     
     // ─── 4. For functions, also encode parameter and return types ──────
-    if (const FuncDeclAST* funcDecl = baseDecl->as<FuncDeclAST>()) {
+    if (FuncDeclAST* funcDecl = baseDecl->as<FuncDeclAST>()) {
         // Parameter types (using substituted types)
         result += "_P";
-        const FuncTypeAST* funcType = funcDecl->funcType;
+        FuncTypeAST* funcType = funcDecl->funcType;
         while (funcType) {
-            for (const ParamAST* param : funcType->params) {
+            for (ParamAST* param : funcType->params) {
                 // If this is a generic parameter, substitute it
-                const TypeAST* paramType = param->type;
+                TypeAST* paramType = param->type;
                 // Check if param type is a generic parameter
                 if (paramType->isa<NamedTypeAST>()) {
-                    const NamedTypeAST* named = paramType->as<NamedTypeAST>();
+                    NamedTypeAST* named = paramType->as<NamedTypeAST>();
                     // Find if this matches a generic param name
                     for (size_t j = 0; j < funcDecl->genericParams.size(); ++j) {
                         if (funcDecl->genericParams[j]->name == named->name) {
@@ -146,10 +146,10 @@ InternedString generateMangledNameForGeneric(
         
         // Return type (using substituted type)
         if (funcDecl->funcType->returnType) {
-            const TypeAST* returnType = funcDecl->funcType->returnType;
+            TypeAST* returnType = funcDecl->funcType->returnType;
             // Check if return type is a generic parameter
             if (returnType->isa<NamedTypeAST>()) {
-                const NamedTypeAST* named = returnType->as<NamedTypeAST>();
+                NamedTypeAST* named = returnType->as<NamedTypeAST>();
                 for (size_t j = 0; j < funcDecl->genericParams.size(); ++j) {
                     if (funcDecl->genericParams[j]->name == named->name) {
                         if (j < typeArgs.size()) {
@@ -166,13 +166,13 @@ InternedString generateMangledNameForGeneric(
     }
     
     // ─── 5. For structs, encode field types ──────────────────────────────
-    if (const StructDeclAST* structDecl = baseDecl->as<StructDeclAST>()) {
+    if (StructDeclAST* structDecl = baseDecl->as<StructDeclAST>()) {
         result += "_F";
-        for (const FieldDeclAST* field : structDecl->fields) {
-            const TypeAST* fieldType = field->type;
+        for (FieldDeclAST* field : structDecl->fields) {
+            TypeAST* fieldType = field->type;
             // Check if field type is a generic parameter
             if (fieldType->isa<NamedTypeAST>()) {
-                const NamedTypeAST* named = fieldType->as<NamedTypeAST>();
+                NamedTypeAST* named = fieldType->as<NamedTypeAST>();
                 for (size_t j = 0; j < structDecl->genericParams.size(); ++j) {
                     if (structDecl->genericParams[j]->name == named->name) {
                         if (j < typeArgs.size()) {
@@ -189,7 +189,7 @@ InternedString generateMangledNameForGeneric(
     return buildMangledName(result, ctx);
 }
 
-InternedString generateMangledName(const StructDeclAST* decl, CodeGenContext& ctx) {
+InternedString generateMangledName(StructDeclAST* decl, CodeGenContext& ctx) {
     if (!decl) return InternedString(0);
     
     std::string result;
@@ -214,7 +214,7 @@ InternedString generateMangledName(const StructDeclAST* decl, CodeGenContext& ct
     // ─── 4. Field types ──────────────────────────────────────────────────
     if (!decl->fields.empty()) {
         result += "_F";
-        for (const FieldDeclAST* field : decl->fields) {
+        for (FieldDeclAST* field : decl->fields) {
             result += typeToMangleString(field->type, ctx);
         }
     }
@@ -224,18 +224,18 @@ InternedString generateMangledName(const StructDeclAST* decl, CodeGenContext& ct
 
 // ─── Core Encoding Functions ──────────────────────────────────────────────
 
-std::string typeToMangleString(const TypeAST* type, StringPool& pool) {
+std::string typeToMangleString(TypeAST* type, StringPool& pool) {
     if (!type) return "V";  // void
     
     switch (type->kind) {
         case ASTKind::PrimitiveType: {
-            const PrimitiveTypeAST* prim = type->as<PrimitiveTypeAST>();
+            PrimitiveTypeAST* prim = type->as<PrimitiveTypeAST>();
             char code = encodePrimitiveKind(prim->primitiveKind);
             return std::string(1, code);
         }
         
         case ASTKind::NamedType: {
-            const NamedTypeAST* named = type->as<NamedTypeAST>();
+            NamedTypeAST* named = type->as<NamedTypeAST>();
             std::string name = sanitizeForMangledName(
                 pool.lookup(named->name)
             );
@@ -252,7 +252,7 @@ std::string typeToMangleString(const TypeAST* type, StringPool& pool) {
         }
         
         case ASTKind::ArrayType: {
-            const ArrayTypeAST* arr = type->as<ArrayTypeAST>();
+            ArrayTypeAST* arr = type->as<ArrayTypeAST>();
             std::string result = "A";
             if (arr->isFixed()) {
                 result += std::to_string(arr->size);
@@ -266,36 +266,36 @@ std::string typeToMangleString(const TypeAST* type, StringPool& pool) {
         }
         
         case ASTKind::PtrType: {
-            const PtrTypeAST* ptr = type->as<PtrTypeAST>();
+            PtrTypeAST* ptr = type->as<PtrTypeAST>();
             return "P" + typeToMangleString(ptr->inner, pool);
         }
         
         case ASTKind::RefType: {
-            const RefTypeAST* ref = type->as<RefTypeAST>();
+            RefTypeAST* ref = type->as<RefTypeAST>();
             return "R" + typeToMangleString(ref->inner, pool);
         }
         
         case ASTKind::NullableType: {
-            const NullableTypeAST* nullable = type->as<NullableTypeAST>();
+            NullableTypeAST* nullable = type->as<NullableTypeAST>();
             return "N" + typeToMangleString(nullable->inner, pool);
         }
         
         case ASTKind::FallibleType: {
-            const FallibleTypeAST* fallible = type->as<FallibleTypeAST>();
+            FallibleTypeAST* fallible = type->as<FallibleTypeAST>();
             return "F" + typeToMangleString(fallible->inner, pool);
         }
         
         case ASTKind::CombinedType: {
-            const CombinedTypeAST* combined = type->as<CombinedTypeAST>();
+            CombinedTypeAST* combined = type->as<CombinedTypeAST>();
             return "X" + typeToMangleString(combined->inner, pool);
         }
         
         case ASTKind::FuncType: {
-            const FuncTypeAST* func = type->as<FuncTypeAST>();
+            FuncTypeAST* func = type->as<FuncTypeAST>();
             std::string result = "F";
             
             // Parameter types
-            for (const ParamAST* param : func->params) {
+            for (ParamAST* param : func->params) {
                 result += typeToMangleString(param->type, pool);
             }
             result += "_";
@@ -310,7 +310,7 @@ std::string typeToMangleString(const TypeAST* type, StringPool& pool) {
         }
         
         case ASTKind::FutureType: {
-            const FutureTypeAST* future = type->as<FutureTypeAST>();
+            FutureTypeAST* future = type->as<FutureTypeAST>();
             return "U" + typeToMangleString(future->inner, pool);
         }
         
@@ -390,7 +390,7 @@ char encodePrimitiveKind(PrimitiveKind kind) {
     }
 }
 
-bool isPrimitiveType(const TypeAST* type) {
+bool isPrimitiveType(TypeAST* type) {
     return type && type->isa<PrimitiveTypeAST>();
 }
 

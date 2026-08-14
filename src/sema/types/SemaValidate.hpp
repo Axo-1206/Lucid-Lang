@@ -29,7 +29,7 @@ namespace sema {
 /// @example
 ///   validateConstType(type, "x", "variable", ctx);
 ///   validateConstType(type, "field", "struct field", ctx);
-bool validateConstType(const TypeAST* type,
+bool validateConstType(TypeAST* type,
                         InternedString name,
                         const char* kind,
                         SemaContext& ctx);
@@ -52,16 +52,16 @@ bool validateConstInitializer(bool hasInit,
 // ─── Trait Validation ────────────────────────────────────────────────────
 
 /// @brief Validate that a struct implements all fields of a single trait.
-bool validateTraitImplementation(const StructDeclAST* structDecl,
-                                  const TraitDeclAST* traitDecl,
+bool validateTraitImplementation(StructDeclAST* structDecl,
+                                  TraitDeclAST* traitDecl,
                                   SemaContext& ctx);
 
 /// @brief Validate all trait implementations for a struct.
-bool validateAllTraitImplementations(const StructDeclAST* structDecl,
+bool validateAllTraitImplementations(StructDeclAST* structDecl,
                                       SemaContext& ctx);
 
 /// @brief Check for conflicting field names across multiple traits.
-bool checkTraitFieldConflicts(const StructDeclAST* structDecl,
+bool checkTraitFieldConflicts(StructDeclAST* structDecl,
                                SemaContext& ctx);
 
 // ─── Generic Validation ──────────────────────────────────────────────────
@@ -69,13 +69,13 @@ bool checkTraitFieldConflicts(const StructDeclAST* structDecl,
 /// @brief Validate generic arguments against parameters.
 bool validateGenericArguments(ArenaSpan<TypeAST*> args,
                                ArenaSpan<GenericParamDeclAST*> params,
-                               const BaseAST* useSite,
+                               BaseAST* useSite,
                                SemaContext& ctx);
 
 /// @brief Validate that all generic parameters are used in the declaration.
 bool validateGenericParameterUsage(ArenaSpan<GenericParamDeclAST*> params,
-                                    const std::vector<const TypeAST*>& types,
-                                    const BaseAST* useSite,
+                                    const std::vector<TypeAST*>& types,
+                                    BaseAST* useSite,
                                     SemaContext& ctx);
 
 // ─── Downward Flow Rule ──────────────────────────────────────────────────
@@ -97,7 +97,7 @@ bool validateGenericParameterUsage(ArenaSpan<GenericParamDeclAST*> params,
 /// @return true if the borrowed type is in a valid context.
 /// 
 /// @deprecated Use validateBorrowedContext from SemaResolve.hpp instead.
-bool validateRefContext(const RefTypeAST* type, SemaContext& ctx);
+bool validateRefContext(RefTypeAST* type, SemaContext& ctx);
 
 // ─── FFI Validation ──────────────────────────────────────────────────────
 
@@ -113,8 +113,8 @@ bool validateRefContext(const RefTypeAST* type, SemaContext& ctx);
 /// @param foreignAttr The @[foreign] attribute.
 /// @param ctx The semantic context.
 /// @return true if valid, false otherwise.
-bool validateForeignFunction(const FuncDeclAST* decl,
-                              const AttributeAST* foreignAttr,
+bool validateForeignFunction(FuncDeclAST* decl,
+                              AttributeAST* foreignAttr,
                               SemaContext& ctx);
 
 } // namespace sema

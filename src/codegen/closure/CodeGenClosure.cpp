@@ -296,7 +296,7 @@ llvm::Function* createClosureFunction(AnonFuncExprAST* expr, CodeGenContext& ctx
     if (!expr) return nullptr;
 
     // ─── 1. Get the function type ──────────────────────────────────────────
-    const FuncTypeAST* funcType = expr->funcType;
+    FuncTypeAST* funcType = expr->funcType;
     if (!funcType) {
         ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, expr->loc,
                                 "anonymous function has no type");
@@ -323,7 +323,7 @@ llvm::Function* createClosureFunction(AnonFuncExprAST* expr, CodeGenContext& ctx
     // If the closure is inside a generic context, we need substitution
     // For now, we assume no substitution for anonymous functions
     
-    for (const ParamAST* param : funcType->params) {
+    for (ParamAST* param : funcType->params) {
         llvm::Type* paramType = getType(ctx, param->type, subst);
         if (!paramType) {
             ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, param->loc,
@@ -386,7 +386,7 @@ static bool emitClosureBody(AnonFuncExprAST* expr, llvm::Function* closureFunc,
                            llvm::Value* envPtr, CodeGenContext& ctx) {
     if (!expr || !closureFunc || !envPtr) return false;
 
-    const FuncTypeAST* funcType = expr->funcType;
+    FuncTypeAST* funcType = expr->funcType;
     if (!funcType) return false;
 
     llvm::StructType* envType = expr->environmentType;

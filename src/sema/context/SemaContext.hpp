@@ -22,18 +22,18 @@
 ///
 /// // Look up a variable's declaration (never narrowed — decl->type is
 /// // always the parser-written type, immutable, no inference)
-/// const ValueDeclAST* decl = ctx.lookupValue(name);
+/// ValueDeclAST* decl = ctx.lookupValue(name);
 ///
 /// // Get the type that actually applies at this point in control flow
 /// // (narrowed type if narrowing is active, decl->type otherwise)
-/// const TypeAST* effective = ctx.getEffectiveType(decl, name);
+/// TypeAST* effective = ctx.getEffectiveType(decl, name);
 /// ```
 ///
 /// ## 3. Return Type Validation
 ///
 /// ```cpp
 /// // Get the expected return type for the current function
-/// const TypeAST* expected = ctx.stack.currentReturnType();
+/// TypeAST* expected = ctx.stack.currentReturnType();
 ///
 /// // Validate return value against expected type
 /// TypeAST* valueType = resolveExprWithTarget(returnValue, expected, ctx);
@@ -70,7 +70,7 @@
 /// }
 ///
 /// // Warn about unawaited async at block exit
-/// for (const InternedString& name : ctx.getPendingAsyncNames()) {
+/// for (InternedString name : ctx.getPendingAsyncNames()) {
 ///     ctx.diagnostics.warning(DiagCode::Warn_UnawaitedAsync, ...);
 /// }
 /// ```
@@ -147,7 +147,7 @@ namespace sema {
 /// │                         ModuleTable                                        │
 /// │                                                                            │
 /// │  ┌─────────────────────────────────────────────────────────────────────┐   │
-/// │  │  values:  std::unordered_map<InternedString, const ValueDeclAST*>   │   │
+/// │  │  values:  std::unordered_map<InternedString, ValueDeclAST*>         │   │
 /// │  │  ┌────────────────────────────────────────────────────────────────┐ │   │
 /// │  │  │  "add"     → FuncDeclAST (function)                            │ │   │
 /// │  │  │  "PI"      → VarDeclAST (const variable)                       │ │   │
@@ -155,7 +155,7 @@ namespace sema {
 /// │  │  │  "North"   → EnumVariantAST (enum variant)                     │ │   │
 /// │  │  └────────────────────────────────────────────────────────────────┘ │   │
 /// │  │                                                                     │   │
-/// │  │  types:   std::unordered_map<InternedString, const TypeDeclAST*>    │   │
+/// │  │  types:   std::unordered_map<InternedString, TypeDeclAST*>          │   │
 /// │  │  ┌────────────────────────────────────────────────────────────────┐ │   │
 /// │  │  │  "Vec2"    → StructDeclAST                                     │ │   │
 /// │  │  │  "Color"   → EnumDeclAST                                       │ │   │
@@ -192,8 +192,8 @@ namespace sema {
 /// - Clearer error messages ("undefined variable" vs "undefined type")
 struct ModuleTable {
     ModuleAST* module = nullptr;
-    std::unordered_map<InternedString, const ValueDeclAST*> values;
-    std::unordered_map<InternedString, const TypeDeclAST*> types;
+    std::unordered_map<InternedString, ValueDeclAST*> values;
+    std::unordered_map<InternedString, TypeDeclAST*> types;
     std::unordered_map<InternedString, ModuleAST*> importAliases;
 };
 
@@ -289,7 +289,7 @@ struct TypeCache {
     struct ArrayTypeKey {
         ArrayKind kind;
         uint64_t size;
-        const TypeAST* element;
+        TypeAST* element;
         bool operator==(const ArrayTypeKey& other) const {
             return kind == other.kind && 
                    size == other.size && 
@@ -300,7 +300,7 @@ struct TypeCache {
         size_t operator()(const ArrayTypeKey& key) const {
             return std::hash<int>{}(static_cast<int>(key.kind)) ^
                    std::hash<uint64_t>{}(key.size) ^
-                   std::hash<const TypeAST*>{}(key.element);
+                   std::hash<TypeAST*>{}(key.element);
         }
     };
     std::unordered_map<ArrayTypeKey, ArrayTypeAST*, ArrayTypeKeyHash> arrayTypes;
@@ -432,13 +432,13 @@ struct TypeCache {
 /// // Check if we're in a function
 /// if (ctx.stack.insideFunction()) {
 ///     // Validate return type
-///     const TypeAST* expected = ctx.stack.currentReturnType();
+///     TypeAST* expected = ctx.stack.currentReturnType();
 ///     TypeAST* valueType = resolveExprWithTarget(returnValue, expected, ctx);
 /// }
 ///
 /// // Look up a variable's declaration, then its currently-applicable type
-/// const ValueDeclAST* decl = ctx.lookupValue(name);
-/// const TypeAST* effective = ctx.getEffectiveType(decl, name);
+/// ValueDeclAST* decl = ctx.lookupValue(name);
+/// TypeAST* effective = ctx.getEffectiveType(decl, name);
 /// ```
 struct SemaContext {
     // ─── Resources ──────────────────────────────────────────────────────
@@ -466,7 +466,7 @@ struct SemaContext {
     
     // ─── Self-Reference Tracking ──────────────────────────────────────
     
-    std::vector<const TypeDeclAST*> definingTypes;
+    std::vector<TypeDeclAST*> definingTypes;
     
     // ─── Constructor ────────────────────────────────────────────────────
     
@@ -567,7 +567,7 @@ struct SemaContext {
     
     // ─── Symbol Insertion ──────────────────────────────────────────────
     
-    bool insertValue(const ValueDeclAST* decl) {
+    bool insertValue(ValueDeclAST* decl) {
         if (isAtModuleLevel()) {
             if (currentModuleTable->values.find(decl->name) != currentModuleTable->values.end()) {
                 diagnostics.error(DiagCode::Sem_Redeclaration, decl,
@@ -589,7 +589,7 @@ struct SemaContext {
         }
     }
     
-    bool insertType(const TypeDeclAST* decl) {
+    bool insertType(TypeDeclAST* decl) {
         if (isAtModuleLevel()) {
             if (currentModuleTable->types.find(decl->name) != currentModuleTable->types.end()) {
                 diagnostics.error(DiagCode::Sem_Redeclaration, decl,
@@ -611,7 +611,7 @@ struct SemaContext {
         }
     }
     
-    bool insertGenericParam(const GenericParamDeclAST* param) {
+    bool insertGenericParam(GenericParamDeclAST* param) {
         assert(!isAtModuleLevel() && "insertGenericParam() requires an open Scope");
         if (currentScope().genericParams.find(param->name) != currentScope().genericParams.end()) {
             diagnostics.error(DiagCode::Sem_GenericParamRedeclaration, param,
@@ -623,7 +623,7 @@ struct SemaContext {
         return true;
     }
     
-    bool addImportAlias(InternedString alias, ModuleAST* module, const BaseAST* node = nullptr) {
+    bool addImportAlias(InternedString alias, ModuleAST* module, BaseAST* node = nullptr) {
         if (!currentModuleTable) return false;
         if (currentModuleTable->importAliases.find(alias) != currentModuleTable->importAliases.end()) {
             diagnostics.error(DiagCode::Sem_ImportAliasRedeclaration, node ? node : module,
@@ -637,22 +637,33 @@ struct SemaContext {
     
     // ─── Symbol Lookup ──────────────────────────────────────────────────
     
-    const TypeAST* getEffectiveType(const ValueDeclAST* decl, InternedString name) const {
+    /// @brief Get the currently-applicable type for a declaration, accounting for narrowing.
+    /// 
+    /// This is the key function for flow-sensitive type narrowing. It checks
+    /// the narrowing stack first, and only falls back to decl->type if no
+    /// narrowing is active.
+    /// 
+    /// @param decl The declaration (may be null).
+    /// @param name The name of the variable (used to look up narrowing state).
+    /// @return The currently-applicable type, or nullptr if decl is null.
+    TypeAST* getEffectiveType(ValueDeclAST* decl, InternedString name) const {
         if (!decl) return nullptr;
         
-        const TypeAST* narrowedType = stack.getNarrowedType(name);
+        // Check if there's a narrowed type for this variable
+        TypeAST* narrowedType = stack.getNarrowedType(name);
         if (narrowedType) {
-            return narrowedType;
+            // We need to cast away const because the AST uses mutable fields
+            // This is safe because the narrowing type is stored in the stack,
+            // not in the AST node itself.
+            return const_cast<TypeAST*>(narrowedType);
         }
         
         // decl->type is the single source of truth for a declaration's type:
-        // parser-locked, immutable, no inference — see ValueDeclAST in
-        // DeclAST.hpp. Narrowing never mutates it; narrowing lives entirely
-        // in the ContextStack's separate narrowing stack, checked above.
+        // parser-locked, no inference, not mutated by narrowing.
         return decl->type;
     }
     
-    const GenericParamDeclAST* lookupGenericParam(InternedString name) const {
+    GenericParamDeclAST* lookupGenericParam(InternedString name) const {
         for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
             auto found = it->genericParams.find(name);
             if (found != it->genericParams.end()) {
@@ -676,7 +687,7 @@ struct SemaContext {
     /// separately, above — narrowing is tracked entirely on the
     /// ContextStack's narrowing stack, never by writing back into the
     /// declaration itself.
-    const ValueDeclAST* lookupValue(InternedString name) const {
+    ValueDeclAST* lookupValue(InternedString name) const {
         for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
             auto found = it->values.find(name);
             if (found != it->values.end()) {
@@ -692,12 +703,12 @@ struct SemaContext {
         return nullptr;
     }
     
-    const FuncDeclAST* lookupFunction(InternedString name) const {
-        const ValueDeclAST* v = lookupValue(name);
+    FuncDeclAST* lookupFunction(InternedString name) const {
+        ValueDeclAST* v = lookupValue(name);
         return (v && v->isa<FuncDeclAST>()) ? v->as<FuncDeclAST>() : nullptr;
     }
     
-    const TypeDeclAST* lookupType(InternedString name) const {
+    TypeDeclAST* lookupType(InternedString name) const {
         for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
             auto gen = it->genericParams.find(name);
             if (gen != it->genericParams.end()) {
@@ -725,7 +736,7 @@ struct SemaContext {
     
     // ─── Module Member Lookup ──────────────────────────────────────────
     
-    const ValueDeclAST* lookupModuleValueMember(ModuleAST* module, InternedString memberName) const {
+    ValueDeclAST* lookupModuleValueMember(ModuleAST* module, InternedString memberName) const {
         if (!module) return nullptr;
         auto it = moduleTables.find(module);
         if (it == moduleTables.end()) return nullptr;
@@ -733,7 +744,7 @@ struct SemaContext {
         return found != it->second.values.end() ? found->second : nullptr;
     }
     
-    const TypeDeclAST* lookupModuleTypeMember(ModuleAST* module, InternedString memberName) const {
+    TypeDeclAST* lookupModuleTypeMember(ModuleAST* module, InternedString memberName) const {
         if (!module) return nullptr;
         auto it = moduleTables.find(module);
         if (it == moduleTables.end()) return nullptr;
@@ -741,13 +752,13 @@ struct SemaContext {
         return found != it->second.types.end() ? found->second : nullptr;
     }
     
-    const ValueDeclAST* lookupValueByAlias(InternedString alias, InternedString memberName) const {
+    ValueDeclAST* lookupValueByAlias(InternedString alias, InternedString memberName) const {
         ModuleAST* module = lookupImport(alias);
         if (!module) return nullptr;
         return lookupModuleValueMember(module, memberName);
     }
     
-    const TypeDeclAST* lookupTypeByAlias(InternedString alias, InternedString memberName) const {
+    TypeDeclAST* lookupTypeByAlias(InternedString alias, InternedString memberName) const {
         ModuleAST* module = lookupImport(alias);
         if (!module) return nullptr;
         return lookupModuleTypeMember(module, memberName);
@@ -755,7 +766,7 @@ struct SemaContext {
     
     // ─── Export Checking ──────────────────────────────────────────────
     
-    bool isExported(const DeclAST* decl) const {
+    bool isExported(DeclAST* decl) const {
         if (!decl) return false;
         for (AttributeAST* attr : decl->attributes) {
             if (attr->name == pool.intern("export")) {
@@ -765,18 +776,18 @@ struct SemaContext {
         return false;
     }
     
-    bool isTypeExported(const TypeDeclAST* decl) const {
+    bool isTypeExported(TypeDeclAST* decl) const {
         return isExported(decl);
     }
     
-    bool isValueExported(const ValueDeclAST* decl) const {
+    bool isValueExported(ValueDeclAST* decl) const {
         return isExported(decl);
     }
     
     // ─── Module Member Keyword Info ────────────────────────────────────
     
     DeclKeyword lookupModuleMemberKeyword(ModuleAST* module, InternedString memberName) const {
-        const ValueDeclAST* decl = lookupModuleValueMember(module, memberName);
+        ValueDeclAST* decl = lookupModuleValueMember(module, memberName);
         if (!decl) return DeclKeyword::Let;
         if (decl->isa<VarDeclAST>()) {
             return decl->as<VarDeclAST>()->keyword;
@@ -788,7 +799,7 @@ struct SemaContext {
     }
     
     bool isModuleMemberMutable(ModuleAST* module, InternedString memberName) const {
-        const ValueDeclAST* decl = lookupModuleValueMember(module, memberName);
+        ValueDeclAST* decl = lookupModuleValueMember(module, memberName);
         if (!decl) return false;
         if (decl->isa<VarDeclAST>()) {
             return decl->as<VarDeclAST>()->keyword == DeclKeyword::Let;
@@ -800,7 +811,7 @@ struct SemaContext {
     }
     
     bool isModuleMemberConst(ModuleAST* module, InternedString memberName) const {
-        const ValueDeclAST* decl = lookupModuleValueMember(module, memberName);
+        ValueDeclAST* decl = lookupModuleValueMember(module, memberName);
         if (!decl) return false;
         if (decl->isa<VarDeclAST>()) {
             return decl->as<VarDeclAST>()->keyword == DeclKeyword::Const;
@@ -834,13 +845,13 @@ struct SemaContext {
     
     // ─── Concurrency Helpers ─────────────────────────────────────────────
     
-    void addPendingAsync(InternedString name, const ExprAST* call, const SourceLocation& loc) {
+    void addPendingAsync(InternedString name, ExprAST* call, const SourceLocation& loc) {
         if (isAtModuleLevel()) return;
         PendingAsync pending{name, call, loc};
         currentScope().pendingAsync[name] = pending;
     }
     
-    void addPendingSpawn(InternedString name, const ExprAST* call, const SourceLocation& loc) {
+    void addPendingSpawn(InternedString name, ExprAST* call, const SourceLocation& loc) {
         if (isAtModuleLevel()) return;
         PendingSpawn pending{name, call, loc};
         currentScope().pendingSpawn[name] = pending;
@@ -968,7 +979,7 @@ struct SemaContext {
     
     // ─── Self-Reference Helpers ──────────────────────────────────────
     
-    void pushDefiningType(const TypeDeclAST* decl) {
+    void pushDefiningType(TypeDeclAST* decl) {
         definingTypes.push_back(decl);
     }
     
@@ -978,14 +989,14 @@ struct SemaContext {
         }
     }
     
-    bool isDefiningType(const TypeDeclAST* decl) const {
-        for (const TypeDeclAST* d : definingTypes) {
+    bool isDefiningType(TypeDeclAST* decl) const {
+        for (TypeDeclAST* d : definingTypes) {
             if (d == decl) return true;
         }
         return false;
     }
     
-    const TypeDeclAST* currentDefiningType() const {
+    TypeDeclAST* currentDefiningType() const {
         return definingTypes.empty() ? nullptr : definingTypes.back();
     }
     
@@ -1106,7 +1117,7 @@ struct SemaContext {
 /// ## Guard Composition Example
 ///
 /// ```cpp
-/// bool resolveIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
+/// bool resolveIfStmt(IfStmtAST* stmt, SemaContext& ctx) {
 ///     // 1. Push if context for narrowing tracking
 ///     ScopedSemanticContext context(ctx, ContextKind::IfStmt, stmt);
 ///
@@ -1138,7 +1149,7 @@ struct SemaContext {
 /// ```
 
 struct ScopedSemanticContext {
-    ScopedSemanticContext(SemaContext& ctx, ContextKind kind, const BaseAST* node)
+    ScopedSemanticContext(SemaContext& ctx, ContextKind kind, BaseAST* node)
         : ctx_(ctx) {
         ctx_.stack.push(kind, const_cast<BaseAST*>(node));
     }
@@ -1188,14 +1199,14 @@ private:
 
 struct ScopedNarrowing {
     ScopedNarrowing(SemaContext& ctx, InternedString varName, 
-                    const TypeAST* narrowedType, bool isInverse = false)
+                    TypeAST* narrowedType, bool isInverse = false)
         : ctx_(ctx) {
         ctx_.stack.pushNarrowingLevel(isInverse);
         ctx_.stack.narrowVariable(varName, narrowedType);
     }
     
     ScopedNarrowing(SemaContext& ctx, 
-                    const std::unordered_map<InternedString, const TypeAST*>& narrowings,
+                    const std::unordered_map<InternedString, TypeAST*>& narrowings,
                     bool isInverse = false)
         : ctx_(ctx) {
         ctx_.stack.pushNarrowingLevel(isInverse);
@@ -1216,7 +1227,7 @@ private:
 };
 
 struct ScopedTypeDefinition {
-    ScopedTypeDefinition(SemaContext& ctx, const TypeDeclAST* decl)
+    ScopedTypeDefinition(SemaContext& ctx, TypeDeclAST* decl)
         : ctx_(ctx) {
         ctx_.pushDefiningType(decl);
     }

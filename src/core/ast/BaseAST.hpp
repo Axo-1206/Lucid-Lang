@@ -305,7 +305,7 @@ struct BaseAST {
     }
 
     template<typename T>
-    const T* as() const {
+    T* as() const {
         assert(kind == T::staticKind && "ASTKind mismatch in as<T>()");
         return static_cast<const T*>(this);
     }
@@ -468,7 +468,7 @@ struct ConstantValue {
         InternedString,                                              // String, Char, Enum
         std::vector<ConstantValue>,                                  // Array
         std::unordered_map<InternedString, ConstantValue>,           // Struct
-        const FuncDeclAST*                                          // Function
+        FuncDeclAST*                                          // Function
     > value;
 
     // ─── Constructors ──────────────────────────────────────────────────
@@ -483,7 +483,7 @@ struct ConstantValue {
 
     explicit ConstantValue(InternedString v) : kind(Kind::String), value(v) {}
 
-    explicit ConstantValue(const FuncDeclAST* f) : kind(Kind::Function), value(f) {}
+    explicit ConstantValue(FuncDeclAST* f) : kind(Kind::Function), value(f) {}
 
     // ─── Factory Methods ──────────────────────────────────────────────
 
@@ -560,8 +560,8 @@ struct ConstantValue {
         return std::get<InternedString>(value);
     }
 
-    const FuncDeclAST* asFunction() const {
-        return std::get<const FuncDeclAST*>(value);
+    FuncDeclAST* asFunction() const {
+        return std::get<FuncDeclAST*>(value);
     }
 
     const std::vector<ConstantValue>& asArray() const {
@@ -898,7 +898,7 @@ struct UnknownAST : BaseAST {
     UnknownAST() : BaseAST(ASTKind::Unknown) {}
 };
 
-inline bool isUnknown(const BaseAST* node) {
+inline bool isUnknown(BaseAST* node) {
     if (!node) return true;
     switch (node->kind) {
         case ASTKind::Unknown:

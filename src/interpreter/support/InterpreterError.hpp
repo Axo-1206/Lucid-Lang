@@ -40,12 +40,12 @@ public:
     InterpreterError(Kind kind, DiagCode code, const std::string& msg)
         : std::runtime_error(msg), m_kind(kind), m_code(code) {}
 
-    InterpreterError(Kind kind, DiagCode code, const BaseAST* node, const std::string& msg)
+    InterpreterError(Kind kind, DiagCode code, BaseAST* node, const std::string& msg)
         : std::runtime_error(msg), m_kind(kind), m_code(code), m_node(node) {}
 
     Kind getKind() const { return m_kind; }
     DiagCode getCode() const { return m_code; }
-    const BaseAST* getNode() const { return m_node; }
+    BaseAST* getNode() const { return m_node; }
 
     /// @brief Report this error to a diagnostic engine.
     void report(DiagnosticEngine& diagnostics) const {
@@ -64,7 +64,7 @@ public:
 private:
     Kind m_kind;
     DiagCode m_code = DiagCode(0);
-    const BaseAST* m_node = nullptr;
+    BaseAST* m_node = nullptr;
 };
 
 /// @brief Convert error kind to string.

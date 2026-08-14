@@ -86,13 +86,13 @@ namespace codegen {
 /// @param decl The function declaration.
 /// @param ctx The code generation context.
 /// @return The mangled name as an InternedString.
-InternedString generateMangledName(const FuncDeclAST* decl, CodeGenContext& ctx);
+InternedString generateMangledName(FuncDeclAST* decl, CodeGenContext& ctx);
 
 /// @brief Generate a mangled name for a variable declaration.
 /// @param decl The variable declaration.
 /// @param ctx The code generation context.
 /// @return The mangled name as an InternedString.
-InternedString generateMangledName(const VarDeclAST* decl, CodeGenContext& ctx);
+InternedString generateMangledName(VarDeclAST* decl, CodeGenContext& ctx);
 
 /// @brief Generate a mangled name for a generic instantiation.
 /// @param baseDecl The generic declaration (function or struct).
@@ -100,8 +100,8 @@ InternedString generateMangledName(const VarDeclAST* decl, CodeGenContext& ctx);
 /// @param ctx The code generation context.
 /// @return The mangled name as an InternedString.
 InternedString generateMangledNameForGeneric(
-    const DeclAST* baseDecl,
-    const std::vector<const TypeAST*>& typeArgs,
+    DeclAST* baseDecl,
+    const std::vector<TypeAST*>& typeArgs,
     CodeGenContext& ctx
 );
 
@@ -109,7 +109,7 @@ InternedString generateMangledNameForGeneric(
 /// @param decl The struct declaration.
 /// @param ctx The code generation context.
 /// @return The mangled name as an InternedString.
-InternedString generateMangledName(const StructDeclAST* decl, CodeGenContext& ctx);
+InternedString generateMangledName(StructDeclAST* decl, CodeGenContext& ctx);
 
 // ─── Core Encoding Functions ──────────────────────────────────────────────
 
@@ -117,13 +117,13 @@ InternedString generateMangledName(const StructDeclAST* decl, CodeGenContext& ct
 /// @param type The type to encode.
 /// @param pool The string pool for looking up names.
 /// @return The encoded type string (as std::string for building).
-std::string typeToMangleString(const TypeAST* type, StringPool& pool);
+std::string typeToMangleString(TypeAST* type, StringPool& pool);
 
 /// @brief Encode a type to a mangled string (context overload).
 /// @param type The type to encode.
 /// @param ctx The code generation context.
 /// @return The encoded type string.
-inline std::string typeToMangleString(const TypeAST* type, CodeGenContext& ctx) {
+inline std::string typeToMangleString(TypeAST* type, CodeGenContext& ctx) {
     return typeToMangleString(type, ctx.pool);
 }
 
@@ -145,6 +145,6 @@ std::string getMangledModulePath(CodeGenContext& ctx);
 char encodePrimitiveKind(PrimitiveKind kind);
 
 /// @brief Check if a type is a primitive type.
-bool isPrimitiveType(const TypeAST* type);
+bool isPrimitiveType(TypeAST* type);
 
 } // namespace codegen

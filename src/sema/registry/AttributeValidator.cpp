@@ -10,7 +10,7 @@
 
 namespace sema {
 
-bool validateAllAttributes(const DeclAST* decl, SemaContext& ctx) {
+bool validateAllAttributes(DeclAST* decl, SemaContext& ctx) {
     if (!decl) return true;
 
     // ─── Validate each attribute ──────────────────────────────────────────
@@ -18,7 +18,7 @@ bool validateAllAttributes(const DeclAST* decl, SemaContext& ctx) {
     // attribute can attach to. validateAttribute() checks this via
     // isAllowedOnDecl().
     bool allValid = true;
-    for (const AttributeAST* attr : decl->attributes) {
+    for (AttributeAST* attr : decl->attributes) {
         if (!attr) continue;
         if (!validateAttribute(attr, decl, ctx)) {
             allValid = false;
@@ -27,7 +27,7 @@ bool validateAllAttributes(const DeclAST* decl, SemaContext& ctx) {
 
     // ─── Check for duplicate attributes ─────────────────────────────────
     std::unordered_set<InternedString> seen;
-    for (const AttributeAST* attr : decl->attributes) {
+    for (AttributeAST* attr : decl->attributes) {
         if (seen.find(attr->name) != seen.end()) {
             ctx.diagnostics.error(DiagCode::Sem_AttributeDuplicate, attr,
                                   "duplicate attribute '@", ctx.pool.lookup(attr->name),
@@ -40,7 +40,7 @@ bool validateAllAttributes(const DeclAST* decl, SemaContext& ctx) {
     return allValid;
 }
 
-bool validateAttribute(const AttributeAST* attr, const DeclAST* owner, SemaContext& ctx) {
+bool validateAttribute(AttributeAST* attr, DeclAST* owner, SemaContext& ctx) {
     if (!attr) return false;
 
     const AttributeInfo* info = AttributeRegistry::getInstance(ctx.pool).getInfo(attr->name);
@@ -121,7 +121,7 @@ bool validateAttribute(const AttributeAST* attr, const DeclAST* owner, SemaConte
 
 // ─── Individual Attribute Validators ──────────────────────────────────────
 
-bool validateExport(const AttributeAST* attr, const DeclAST* owner, SemaContext& ctx) {
+bool validateExport(AttributeAST* attr, DeclAST* owner, SemaContext& ctx) {
     // ─── 1. Validate argument count ──────────────────────────────────────
     if (!attr->args.empty()) {
         ctx.diagnostics.error(DiagCode::Sem_AttributeArgCount, attr,
@@ -139,7 +139,7 @@ bool validateExport(const AttributeAST* attr, const DeclAST* owner, SemaContext&
     return true;
 }
 
-bool validateForeign(const AttributeAST* attr, const DeclAST* owner, SemaContext& ctx) {
+bool validateForeign(AttributeAST* attr, DeclAST* owner, SemaContext& ctx) {
     // ─── 1. Validate owner: only on functions ─────────────────────────────
     if (!owner || !owner->isa<FuncDeclAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_AttributeInvalid, attr,
@@ -172,7 +172,7 @@ bool validateForeign(const AttributeAST* attr, const DeclAST* owner, SemaContext
     }
 
     // ─── 4. Warn if function has a body ──────────────────────────────────
-    const FuncDeclAST* func = owner->as<FuncDeclAST>();
+    FuncDeclAST* func = owner->as<FuncDeclAST>();
     if (func->body) {
         ctx.diagnostics.warning(DiagCode::Warn_ForeignBody, attr,
                                 "foreign function '", ctx.pool.lookup(owner->name),
@@ -182,7 +182,7 @@ bool validateForeign(const AttributeAST* attr, const DeclAST* owner, SemaContext
     return true;
 }
 
-bool validateLink(const AttributeAST* attr, const DeclAST* owner, SemaContext& ctx) {
+bool validateLink(AttributeAST* attr, DeclAST* owner, SemaContext& ctx) {
     // ─── 1. Validate placement ──────────────────────────────────────────────
     bool atModuleLevel = isModuleLevelDeclaration(owner, ctx);
     bool onFunction = owner && owner->isa<FuncDeclAST>();
@@ -203,7 +203,7 @@ bool validateLink(const AttributeAST* attr, const DeclAST* owner, SemaContext& c
     // ─── 3. Validate each argument ──────────────────────────────────────────
     bool allValid = true;
     for (size_t i = 0; i < attr->args.size(); ++i) {
-        const ExprAST* arg = attr->args[i];
+        ExprAST* arg = attr->args[i];
 
         if (!arg || arg->kind != ASTKind::LiteralExpr) {
             ctx.diagnostics.error(DiagCode::Sem_AttributeArgValue, arg,
@@ -255,7 +255,7 @@ bool validateLink(const AttributeAST* attr, const DeclAST* owner, SemaContext& c
     return allValid;
 }
 
-bool validateDeprecated(const AttributeAST* attr, const DeclAST* owner, SemaContext& ctx) {
+bool validateDeprecated(AttributeAST* attr, DeclAST* owner, SemaContext& ctx) {
     (void)owner;
 
     // ─── 1. Validate argument count ──────────────────────────────────────────
@@ -277,7 +277,7 @@ bool validateDeprecated(const AttributeAST* attr, const DeclAST* owner, SemaCont
 }
 
 /// @brief Validate @[inline] and @[noinline] attributes.
-bool validateInlineHint(const AttributeAST* attr, const DeclAST* owner, SemaContext& ctx) {
+bool validateInlineHint(AttributeAST* attr, DeclAST* owner, SemaContext& ctx) {
     // ─── 1. Validate owner: only on functions ─────────────────────────────
     if (!owner || !owner->isa<FuncDeclAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_AttributeInvalid, attr,
@@ -295,7 +295,7 @@ bool validateInlineHint(const AttributeAST* attr, const DeclAST* owner, SemaCont
     }
 
     // ─── 3. Warn if used on foreign functions ───────────────────────────────
-    for (const AttributeAST* existing : owner->attributes) {
+    for (AttributeAST* existing : owner->attributes) {
         if (ctx.pool.lookup(existing->name) == "foreign") {
             const char* hint = "will be ignored";
             if (ctx.pool.lookup(attr->name) == "noinline") {
@@ -319,7 +319,7 @@ bool validateInlineHint(const AttributeAST* attr, const DeclAST* owner, SemaCont
     return true;
 }
 
-bool validateSpecialize(const AttributeAST* attr, const DeclAST* owner, SemaContext& ctx) {
+bool validateSpecialize(AttributeAST* attr, DeclAST* owner, SemaContext& ctx) {
     // ─── 1. The registry already verified this is on FuncDecl or StructDecl ──
     // So we just need to verify it's generic
     
@@ -355,7 +355,7 @@ bool validateSpecialize(const AttributeAST* attr, const DeclAST* owner, SemaCont
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
-bool validateStringArg(const ExprAST* arg, const std::string& argName, SemaContext& ctx) {
+bool validateStringArg(ExprAST* arg, const std::string& argName, SemaContext& ctx) {
     if (!arg) {
         ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, nullptr,
                               "argument '", argName, "' is null");
@@ -387,7 +387,7 @@ bool validateStringArg(const ExprAST* arg, const std::string& argName, SemaConte
     return true;
 }
 
-bool validateArgCount(const AttributeAST* attr, size_t min, size_t max, SemaContext& ctx) {
+bool validateArgCount(AttributeAST* attr, size_t min, size_t max, SemaContext& ctx) {
     size_t actual = attr->args.size();
     if (actual < min || (max > 0 && actual > max)) {
         std::string msg = "attribute '@" + ctx.pool.lookup(attr->name) +
@@ -406,7 +406,7 @@ bool validateArgCount(const AttributeAST* attr, size_t min, size_t max, SemaCont
     return true;
 }
 
-bool supportsAttributes(const DeclAST* decl) {
+bool supportsAttributes(DeclAST* decl) {
     if (!decl) return false;
 
     switch (decl->kind) {
@@ -434,12 +434,12 @@ bool supportsAttributes(const DeclAST* decl) {
 /// @brief Check if a declaration is at module level (top-level).
 /// This checks the declaration's actual position in the AST, not the current scope.
 /// @note Different from ctx.isAtModuleLevel() which checks if the current scope is module-level.
-static bool isModuleLevelDeclaration(const DeclAST* decl, SemaContext& ctx) {
+static bool isModuleLevelDeclaration(DeclAST* decl, SemaContext& ctx) {
     if (!decl) return false;
 
     // Check if the declaration is in the current module's decl list
     if (ctx.currentModule) {
-        for (const DeclAST* d : ctx.currentModule->decls) {
+        for (DeclAST* d : ctx.currentModule->decls) {
             if (d == decl) return true;
         }
     }
@@ -447,10 +447,10 @@ static bool isModuleLevelDeclaration(const DeclAST* decl, SemaContext& ctx) {
     // Also check if it's in the module table
     if (ctx.currentModuleTable) {
         for (const auto& [name, value] : ctx.currentModuleTable->values) {
-            if (static_cast<const DeclAST*>(value) == decl) return true;
+            if (static_cast<DeclAST*>(value) == decl) return true;
         }
         for (const auto& [name, type] : ctx.currentModuleTable->types) {
-            if (static_cast<const DeclAST*>(type) == decl) return true;
+            if (static_cast<DeclAST*>(type) == decl) return true;
         }
     }
 

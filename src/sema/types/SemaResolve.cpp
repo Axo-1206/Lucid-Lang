@@ -12,7 +12,7 @@ namespace sema {
 
 // ─── Main Resolution Entry Point ─────────────────────────────────────────
 
-TypeAST* resolveType(const TypeAST* type, SemaContext& ctx) {
+TypeAST* resolveType(TypeAST* type, SemaContext& ctx) {
     if (!type) return nullptr;
 
     switch (type->kind) {
@@ -45,14 +45,14 @@ TypeAST* resolveType(const TypeAST* type, SemaContext& ctx) {
 
 // ─── Primitive Type ──────────────────────────────────────────────────────
 
-TypeAST* resolvePrimitiveType(const PrimitiveTypeAST* type, SemaContext& ctx) {
+TypeAST* resolvePrimitiveType(PrimitiveTypeAST* type, SemaContext& ctx) {
     (void)ctx;
     return const_cast<PrimitiveTypeAST*>(type);
 }
 
 // ─── Named Type ──────────────────────────────────────────────────────────
 
-TypeAST* resolveNamedType(const NamedTypeAST* type, SemaContext& ctx) {
+TypeAST* resolveNamedType(NamedTypeAST* type, SemaContext& ctx) {
     if (!type) return nullptr;
 
     // ─── 1. Check: Is this a generic parameter? ──────────────────────────
@@ -61,7 +61,7 @@ TypeAST* resolveNamedType(const NamedTypeAST* type, SemaContext& ctx) {
     }
 
     // ─── 2. Look up as concrete type ──────────────────────────────────────
-    const TypeDeclAST* decl = ctx.lookupType(type->name);
+    TypeDeclAST* decl = ctx.lookupType(type->name);
     if (!decl) {
         ctx.diagnostics.error(DiagCode::Sem_UndefinedType, type,
                               "undefined type '", ctx.pool.lookup(type->name), "'");
@@ -71,7 +71,7 @@ TypeAST* resolveNamedType(const NamedTypeAST* type, SemaContext& ctx) {
     // ─── 3. Resolve generic arguments if present ─────────────────────────
     if (!type->genericArgs.empty()) {
         if (decl->isa<TraitDeclAST>()) {
-            const TraitDeclAST* traitDecl = decl->as<TraitDeclAST>();
+            TraitDeclAST* traitDecl = decl->as<TraitDeclAST>();
             if (type->genericArgs.size() != traitDecl->genericParams.size()) {
                 ctx.diagnostics.error(DiagCode::Sem_GenericArityMismatch, type,
                                       "trait '", ctx.pool.lookup(type->name),
@@ -81,7 +81,7 @@ TypeAST* resolveNamedType(const NamedTypeAST* type, SemaContext& ctx) {
                 return nullptr;
             }
         } else if (decl->isa<StructDeclAST>()) {
-            const StructDeclAST* structDecl = decl->as<StructDeclAST>();
+            StructDeclAST* structDecl = decl->as<StructDeclAST>();
             if (type->genericArgs.size() != structDecl->genericParams.size()) {
                 ctx.diagnostics.error(DiagCode::Sem_GenericArityMismatch, type,
                                       "struct '", ctx.pool.lookup(type->name),
@@ -98,7 +98,7 @@ TypeAST* resolveNamedType(const NamedTypeAST* type, SemaContext& ctx) {
         }
 
         // Resolve each generic argument type
-        for (const TypeAST* arg : type->genericArgs) {
+        for (TypeAST* arg : type->genericArgs) {
             if (!resolveType(arg, ctx)) {
                 return nullptr;
             }
@@ -106,12 +106,12 @@ TypeAST* resolveNamedType(const NamedTypeAST* type, SemaContext& ctx) {
 
         // Validate constraints
         if (decl->isa<StructDeclAST>()) {
-            const StructDeclAST* structDecl = decl->as<StructDeclAST>();
+            StructDeclAST* structDecl = decl->as<StructDeclAST>();
             if (!validateGenericArguments(type->genericArgs, structDecl->genericParams, type, ctx)) {
                 return nullptr;
             }
         } else if (decl->isa<TraitDeclAST>()) {
-            const TraitDeclAST* traitDecl = decl->as<TraitDeclAST>();
+            TraitDeclAST* traitDecl = decl->as<TraitDeclAST>();
             if (!validateGenericArguments(type->genericArgs, traitDecl->genericParams, type, ctx)) {
                 return nullptr;
             }
@@ -120,15 +120,14 @@ TypeAST* resolveNamedType(const NamedTypeAST* type, SemaContext& ctx) {
 
     return const_cast<NamedTypeAST*>(type);
 }
-
 // ─── Module Type Access ──────────────────────────────────────────────────
 
-TypeAST* resolveModuleTypeAccess(const ModuleTypeAccessAST* type, SemaContext& ctx) {
+TypeAST* resolveModuleTypeAccess(ModuleTypeAccessAST* type, SemaContext& ctx) {
     if (!type) return nullptr;
 
     // ─── Step 1: Look up the type in the module by alias ──────────────────
     // Using the new simplified helper
-    const TypeDeclAST* decl = ctx.lookupTypeByAlias(type->moduleName, type->typeName);
+    TypeDeclAST* decl = ctx.lookupTypeByAlias(type->moduleName, type->typeName);
     if (!decl) {
         // The helper already reported the error (module not found or type not found)
         return nullptr;
@@ -150,11 +149,11 @@ TypeAST* resolveModuleTypeAccess(const ModuleTypeAccessAST* type, SemaContext& c
         bool isGeneric = false;
 
         if (decl->isa<StructDeclAST>()) {
-            const StructDeclAST* structDecl = decl->as<StructDeclAST>();
+            StructDeclAST* structDecl = decl->as<StructDeclAST>();
             expectedParams = structDecl->genericParams.size();
             isGeneric = true;
         } else if (decl->isa<TraitDeclAST>()) {
-            const TraitDeclAST* traitDecl = decl->as<TraitDeclAST>();
+            TraitDeclAST* traitDecl = decl->as<TraitDeclAST>();
             expectedParams = traitDecl->genericParams.size();
             isGeneric = true;
         }
@@ -175,7 +174,7 @@ TypeAST* resolveModuleTypeAccess(const ModuleTypeAccessAST* type, SemaContext& c
         }
 
         // Resolve each generic argument type
-        for (const TypeAST* arg : type->genericArgs) {
+        for (TypeAST* arg : type->genericArgs) {
             if (!resolveType(arg, ctx)) {
                 return nullptr;
             }
@@ -183,12 +182,12 @@ TypeAST* resolveModuleTypeAccess(const ModuleTypeAccessAST* type, SemaContext& c
 
         // Validate constraints
         if (decl->isa<StructDeclAST>()) {
-            const StructDeclAST* structDecl = decl->as<StructDeclAST>();
+            StructDeclAST* structDecl = decl->as<StructDeclAST>();
             if (!validateGenericArguments(type->genericArgs, structDecl->genericParams, type, ctx)) {
                 return nullptr;
             }
         } else if (decl->isa<TraitDeclAST>()) {
-            const TraitDeclAST* traitDecl = decl->as<TraitDeclAST>();
+            TraitDeclAST* traitDecl = decl->as<TraitDeclAST>();
             if (!validateGenericArguments(type->genericArgs, traitDecl->genericParams, type, ctx)) {
                 return nullptr;
             }
@@ -197,12 +196,12 @@ TypeAST* resolveModuleTypeAccess(const ModuleTypeAccessAST* type, SemaContext& c
         // Check if the type requires generic arguments
         bool requiresGeneric = false;
         if (decl->isa<StructDeclAST>()) {
-            const StructDeclAST* structDecl = decl->as<StructDeclAST>();
+            StructDeclAST* structDecl = decl->as<StructDeclAST>();
             if (!structDecl->genericParams.empty()) {
                 requiresGeneric = true;
             }
         } else if (decl->isa<TraitDeclAST>()) {
-            const TraitDeclAST* traitDecl = decl->as<TraitDeclAST>();
+            TraitDeclAST* traitDecl = decl->as<TraitDeclAST>();
             if (!traitDecl->genericParams.empty()) {
                 requiresGeneric = true;
             }
@@ -229,7 +228,7 @@ TypeAST* resolveModuleTypeAccess(const ModuleTypeAccessAST* type, SemaContext& c
 
 // ─── Array Type ──────────────────────────────────────────────────────────
 
-TypeAST* resolveArrayType(const ArrayTypeAST* type, SemaContext& ctx) {
+TypeAST* resolveArrayType(ArrayTypeAST* type, SemaContext& ctx) {
     if (!type) return nullptr;
 
     TypeAST* element = resolveType(type->element, ctx);
@@ -249,7 +248,7 @@ TypeAST* resolveArrayType(const ArrayTypeAST* type, SemaContext& ctx) {
     // ─── Check: Array element cannot be a slice type ──────────────────────
     // Rule 2: No Array/Slice Storage - an array cannot store [_]T as element
     if (element->isa<ArrayTypeAST>()) {
-        const ArrayTypeAST* innerArray = element->as<ArrayTypeAST>();
+        ArrayTypeAST* innerArray = element->as<ArrayTypeAST>();
         if (innerArray->isSlice()) {
             ctx.diagnostics.error(DiagCode::Sem_RefInArray, type,
                                   "slice type ([_]T) cannot be stored in an array element");
@@ -273,7 +272,7 @@ TypeAST* resolveArrayType(const ArrayTypeAST* type, SemaContext& ctx) {
 
 // ─── Nullable Type ──────────────────────────────────────────────────────
 
-TypeAST* resolveNullableType(const NullableTypeAST* type, SemaContext& ctx) {
+TypeAST* resolveNullableType(NullableTypeAST* type, SemaContext& ctx) {
     if (!type) return nullptr;
 
     TypeAST* inner = resolveType(type->inner, ctx);
@@ -300,7 +299,7 @@ TypeAST* resolveNullableType(const NullableTypeAST* type, SemaContext& ctx) {
 
 // ─── Fallible Type ──────────────────────────────────────────────────────
 
-TypeAST* resolveFallibleType(const FallibleTypeAST* type, SemaContext& ctx) {
+TypeAST* resolveFallibleType(FallibleTypeAST* type, SemaContext& ctx) {
     if (!type) return nullptr;
 
     TypeAST* inner = resolveType(type->inner, ctx);
@@ -327,7 +326,7 @@ TypeAST* resolveFallibleType(const FallibleTypeAST* type, SemaContext& ctx) {
 
 // ─── Combined Type ──────────────────────────────────────────────────────
 
-TypeAST* resolveCombinedType(const CombinedTypeAST* type, SemaContext& ctx) {
+TypeAST* resolveCombinedType(CombinedTypeAST* type, SemaContext& ctx) {
     if (!type) return nullptr;
 
     TypeAST* inner = resolveType(type->inner, ctx);
@@ -354,7 +353,7 @@ TypeAST* resolveCombinedType(const CombinedTypeAST* type, SemaContext& ctx) {
 
 // ─── Reference Type ─────────────────────────────────────────────────────
 
-TypeAST* resolveRefType(const RefTypeAST* type, SemaContext& ctx) {
+TypeAST* resolveRefType(RefTypeAST* type, SemaContext& ctx) {
     if (!type) return nullptr;
 
     TypeAST* inner = resolveType(type->inner, ctx);
@@ -383,7 +382,7 @@ TypeAST* resolveRefType(const RefTypeAST* type, SemaContext& ctx) {
 
 // ─── Pointer Type ───────────────────────────────────────────────────────
 
-TypeAST* resolvePtrType(const PtrTypeAST* type, SemaContext& ctx) {
+TypeAST* resolvePtrType(PtrTypeAST* type, SemaContext& ctx) {
     if (!type) return nullptr;
 
     TypeAST* inner = resolveType(type->inner, ctx);
@@ -400,7 +399,7 @@ TypeAST* resolvePtrType(const PtrTypeAST* type, SemaContext& ctx) {
 
 // ─── Function Type ──────────────────────────────────────────────────────
 
-TypeAST* resolveFuncType(const FuncTypeAST* type, SemaContext& ctx) {
+TypeAST* resolveFuncType(FuncTypeAST* type, SemaContext& ctx) {
     if (!type) return nullptr;
 
     for (ParamAST* param : type->params) {
@@ -447,10 +446,10 @@ TypeAST* resolveFuncType(const FuncTypeAST* type, SemaContext& ctx) {
 
 // ─── Trait Resolution ────────────────────────────────────────────────────
 
-const TraitDeclAST* resolveTraitRef(const NamedTypeAST* ref, SemaContext& ctx) {
+TraitDeclAST* resolveTraitRef(NamedTypeAST* ref, SemaContext& ctx) {
     if (!ref) return nullptr;
 
-    const TypeDeclAST* typeDecl = ctx.lookupType(ref->name);
+    TypeDeclAST* typeDecl = ctx.lookupType(ref->name);
     if (!typeDecl) {
         ctx.diagnostics.error(DiagCode::Sem_UndefinedType, ref,
                               "undefined trait '", ctx.pool.lookup(ref->name), "'");
@@ -463,7 +462,7 @@ const TraitDeclAST* resolveTraitRef(const NamedTypeAST* ref, SemaContext& ctx) {
         return nullptr;
     }
 
-    const TraitDeclAST* traitDecl = typeDecl->as<TraitDeclAST>();
+    TraitDeclAST* traitDecl = typeDecl->as<TraitDeclAST>();
 
     if (!ref->genericArgs.empty()) {
         if (ref->genericArgs.size() != traitDecl->genericParams.size()) {
@@ -475,7 +474,7 @@ const TraitDeclAST* resolveTraitRef(const NamedTypeAST* ref, SemaContext& ctx) {
             return nullptr;
         }
 
-        for (const TypeAST* arg : ref->genericArgs) {
+        for (TypeAST* arg : ref->genericArgs) {
             if (!resolveType(arg, ctx)) {
                 return nullptr;
             }
@@ -487,12 +486,12 @@ const TraitDeclAST* resolveTraitRef(const NamedTypeAST* ref, SemaContext& ctx) {
 
 // ─── Callee Resolution ──────────────────────────────────────────────────
 
-const FuncDeclAST* resolveCalleeOrError(const ExprAST* callee, SemaContext& ctx) {
+FuncDeclAST* resolveCalleeOrError(ExprAST* callee, SemaContext& ctx) {
     if (!callee) return nullptr;
 
     // ─── Case 1: Plain identifier call: `foo(...)` ──────────────────────
     if (callee->isa<IdentifierExprAST>()) {
-        const IdentifierExprAST* id = callee->as<IdentifierExprAST>();
+        IdentifierExprAST* id = callee->as<IdentifierExprAST>();
         
         if (ctx.isGenericParam(id->name)) {
             ctx.diagnostics.error(DiagCode::Sem_GenericParamNotCallable, callee,
@@ -500,7 +499,7 @@ const FuncDeclAST* resolveCalleeOrError(const ExprAST* callee, SemaContext& ctx)
             return nullptr;
         }
 
-        const ValueDeclAST* value = ctx.lookupValue(id->name);
+        ValueDeclAST* value = ctx.lookupValue(id->name);
         if (!value) {
             ctx.diagnostics.error(DiagCode::Sem_UndefinedValue, callee,
                                   "undefined value '", ctx.pool.lookup(id->name), "'");
@@ -520,7 +519,7 @@ const FuncDeclAST* resolveCalleeOrError(const ExprAST* callee, SemaContext& ctx)
     if (callee->isa<ModuleAccessExprAST>()) {
         const ModuleAccessExprAST* access = callee->as<ModuleAccessExprAST>();
         
-        const ValueDeclAST* decl = ctx.lookupValueByAlias(access->moduleName, access->memberName);
+        ValueDeclAST* decl = ctx.lookupValueByAlias(access->moduleName, access->memberName);
         if (!decl) {
             // The helper already reported the error (module not found or member not found)
             return nullptr;
@@ -549,12 +548,12 @@ const FuncDeclAST* resolveCalleeOrError(const ExprAST* callee, SemaContext& ctx)
 
 // ─── Self-Reference Detection ───────────────────────────────────────────
 
-void checkLetSelfReference(const ExprAST* expr, InternedString varName, SemaContext& ctx) {
+void checkLetSelfReference(ExprAST* expr, InternedString varName, SemaContext& ctx) {
     if (!expr) return;
 
     switch (expr->kind) {
         case ASTKind::IdentifierExpr: {
-            const IdentifierExprAST* id = expr->as<IdentifierExprAST>();
+            IdentifierExprAST* id = expr->as<IdentifierExprAST>();
             if (id->name == varName) {
                 ctx.diagnostics.error(DiagCode::Sem_SelfReferentialInit, expr,
                                       "let variable '", ctx.pool.lookup(varName),
@@ -563,7 +562,7 @@ void checkLetSelfReference(const ExprAST* expr, InternedString varName, SemaCont
             return;
         }
         case ASTKind::BinaryExpr: {
-            const BinaryExprAST* bin = expr->as<BinaryExprAST>();
+            BinaryExprAST* bin = expr->as<BinaryExprAST>();
             checkLetSelfReference(bin->left, varName, ctx);
             checkLetSelfReference(bin->right, varName, ctx);
             return;
@@ -576,7 +575,7 @@ void checkLetSelfReference(const ExprAST* expr, InternedString varName, SemaCont
         case ASTKind::CallExpr: {
             const CallExprAST* call = expr->as<CallExprAST>();
             checkLetSelfReference(call->callee, varName, ctx);
-            for (const ExprAST* arg : call->args) {
+            for (ExprAST* arg : call->args) {
                 checkLetSelfReference(arg, varName, ctx);
             }
             return;
@@ -594,14 +593,14 @@ void checkLetSelfReference(const ExprAST* expr, InternedString varName, SemaCont
         }
         case ASTKind::ArrayLiteralExpr: {
             const ArrayLiteralExprAST* arr = expr->as<ArrayLiteralExprAST>();
-            for (const ExprAST* elem : arr->elements) {
+            for (ExprAST* elem : arr->elements) {
                 checkLetSelfReference(elem, varName, ctx);
             }
             return;
         }
         case ASTKind::StructLiteralExpr: {
             const StructLiteralExprAST* st = expr->as<StructLiteralExprAST>();
-            for (const FieldInitAST* init : st->inits) {
+            for (FieldInitAST* init : st->inits) {
                 checkLetSelfReference(init->value, varName, ctx);
             }
             return;
@@ -613,15 +612,15 @@ void checkLetSelfReference(const ExprAST* expr, InternedString varName, SemaCont
 
 // ─── Struct Self-Reference Validation ─────────────────────────────────────
 
-bool isValidStructSelfReference(const TypeAST* fieldType,
-                                 const StructDeclAST* currentStruct,
+bool isValidStructSelfReference(TypeAST* fieldType,
+                                 StructDeclAST* currentStruct,
                                  SemaContext& ctx) {
     if (!fieldType || !currentStruct) return false;
 
     // ─── Step 1: Unwrap nullable and pointer layers ────────────────────────
     bool isNullable = false;
     bool isPointer = false;
-    const TypeAST* innerType = fieldType;
+    TypeAST* innerType = fieldType;
 
     if (fieldType->isa<NullableTypeAST>()) {
         isNullable = true;
@@ -638,7 +637,7 @@ bool isValidStructSelfReference(const TypeAST* fieldType,
         return false;  // Not a self-reference
     }
 
-    const NamedTypeAST* named = innerType->as<NamedTypeAST>();
+    NamedTypeAST* named = innerType->as<NamedTypeAST>();
 
     // ─── Step 3: Check if it references the current struct ─────────────────
     if (named->name != currentStruct->name) {
@@ -652,7 +651,7 @@ bool isValidStructSelfReference(const TypeAST* fieldType,
 
     for (size_t i = 0; i < named->genericArgs.size(); ++i) {
         TypeAST* arg = named->genericArgs[i];
-        const GenericParamDeclAST* param = currentStruct->genericParams[i];
+        GenericParamDeclAST* param = currentStruct->genericParams[i];
         
         if (arg->isa<NamedTypeAST>()) {
             NamedTypeAST* argNamed = arg->as<NamedTypeAST>();
@@ -691,22 +690,22 @@ bool isValidStructSelfReference(const TypeAST* fieldType,
     return true;
 }
 
-bool isFieldAccessibleOnGenericType(const TypeAST* genericType,
+bool isFieldAccessibleOnGenericType(TypeAST* genericType,
                                     InternedString fieldName,
                                     SemaContext& ctx) {
     if (!genericType || !genericType->isa<NamedTypeAST>()) return false;
-    const NamedTypeAST* named = genericType->as<NamedTypeAST>();
+    NamedTypeAST* named = genericType->as<NamedTypeAST>();
 
     // If it's a generic parameter, check constraints
     if (ctx.isGenericParam(named->name)) {
-        const GenericParamDeclAST* param = ctx.lookupGenericParam(named->name);
+        GenericParamDeclAST* param = ctx.lookupGenericParam(named->name);
         if (!param) return false;
 
-        for (const NamedTypeAST* constraint : param->constraints) {
-            const TraitDeclAST* trait = resolveTraitRef(constraint, ctx);
+        for (NamedTypeAST* constraint : param->constraints) {
+            TraitDeclAST* trait = resolveTraitRef(constraint, ctx);
             if (!trait) continue;
 
-            for (const TraitFieldDeclAST* field : trait->fields) {
+            for (TraitFieldDeclAST* field : trait->fields) {
                 if (field->name == fieldName) return true;
             }
         }
@@ -714,32 +713,32 @@ bool isFieldAccessibleOnGenericType(const TypeAST* genericType,
     }
 
     // Concrete type - check fields
-    const TypeDeclAST* decl = ctx.lookupType(named->name);
+    TypeDeclAST* decl = ctx.lookupType(named->name);
     if (!decl || !decl->isa<StructDeclAST>()) return false;
 
-    const StructDeclAST* structDecl = decl->as<StructDeclAST>();
-    for (const FieldDeclAST* field : structDecl->fields) {
+    StructDeclAST* structDecl = decl->as<StructDeclAST>();
+    for (FieldDeclAST* field : structDecl->fields) {
         if (field->name == fieldName) return true;
     }
 
     return false;
 }
 
-const TypeAST* getFieldTypeOnGenericType(const TypeAST* genericType,
+TypeAST* getFieldTypeOnGenericType(TypeAST* genericType,
                                          InternedString fieldName,
                                          SemaContext& ctx) {
     if (!genericType || !genericType->isa<NamedTypeAST>()) return nullptr;
-    const NamedTypeAST* named = genericType->as<NamedTypeAST>();
+    NamedTypeAST* named = genericType->as<NamedTypeAST>();
 
     if (ctx.isGenericParam(named->name)) {
-        const GenericParamDeclAST* param = ctx.lookupGenericParam(named->name);
+        GenericParamDeclAST* param = ctx.lookupGenericParam(named->name);
         if (!param) return nullptr;
 
-        for (const NamedTypeAST* constraint : param->constraints) {
-            const TraitDeclAST* trait = resolveTraitRef(constraint, ctx);
+        for (NamedTypeAST* constraint : param->constraints) {
+            TraitDeclAST* trait = resolveTraitRef(constraint, ctx);
             if (!trait) continue;
 
-            for (const TraitFieldDeclAST* field : trait->fields) {
+            for (TraitFieldDeclAST* field : trait->fields) {
                 if (field->name == fieldName) {
                     return field->type;
                 }
@@ -748,11 +747,11 @@ const TypeAST* getFieldTypeOnGenericType(const TypeAST* genericType,
         return nullptr;
     }
 
-    const TypeDeclAST* decl = ctx.lookupType(named->name);
+    TypeDeclAST* decl = ctx.lookupType(named->name);
     if (!decl || !decl->isa<StructDeclAST>()) return nullptr;
 
-    const StructDeclAST* structDecl = decl->as<StructDeclAST>();
-    for (const FieldDeclAST* field : structDecl->fields) {
+    StructDeclAST* structDecl = decl->as<StructDeclAST>();
+    for (FieldDeclAST* field : structDecl->fields) {
         if (field->name == fieldName) {
             return field->type;
         }
@@ -763,7 +762,7 @@ const TypeAST* getFieldTypeOnGenericType(const TypeAST* genericType,
 
 // ─── Type Narrowing Helpers ──────────────────────────────────────────────
 
-const TypeAST* unwrapFutureType(const TypeAST* type) {
+TypeAST* unwrapFutureType(TypeAST* type) {
     if (!type) return nullptr;
     if (type->isa<FutureTypeAST>()) {
         return type->as<FutureTypeAST>()->inner;
@@ -771,7 +770,7 @@ const TypeAST* unwrapFutureType(const TypeAST* type) {
     return nullptr;
 }
 
-const TypeAST* unwrapThreadType(const TypeAST* type) {
+TypeAST* unwrapThreadType(TypeAST* type) {
     if (!type) return nullptr;
     if (type->isa<ThreadTypeAST>()) {
         return type->as<ThreadTypeAST>()->inner;
@@ -781,7 +780,7 @@ const TypeAST* unwrapThreadType(const TypeAST* type) {
 
 // ─── Downward Flow Rule Validation ──────────────────────────────────────
 
-bool isBorrowedType(const TypeAST* type) {
+bool isBorrowedType(TypeAST* type) {
     if (!type) return false;
     
     // &T is a borrowed type
@@ -791,7 +790,7 @@ bool isBorrowedType(const TypeAST* type) {
     
     // [_]T is a borrowed type (slice)
     if (type->isa<ArrayTypeAST>()) {
-        const ArrayTypeAST* array = type->as<ArrayTypeAST>();
+        ArrayTypeAST* array = type->as<ArrayTypeAST>();
         if (array->isSlice()) {
             return true;
         }
@@ -800,14 +799,14 @@ bool isBorrowedType(const TypeAST* type) {
     return false;
 }
 
-bool validateBorrowedContext(const TypeAST* type, SemaContext& ctx) {
+bool validateBorrowedContext(TypeAST* type, SemaContext& ctx) {
     if (!type || !isBorrowedType(type)) {
         return true;
     }
 
     // ─── Rule 1: No Struct Storage ─────────────────────────────────────────
     // A borrowed type cannot be stored in a struct field
-    const TypeDeclAST* currentType = ctx.currentDefiningType();
+    TypeDeclAST* currentType = ctx.currentDefiningType();
     if (currentType && currentType->isa<StructDeclAST>()) {
         const char* typeName = type->isa<RefTypeAST>() ? "reference (&T)" : "slice ([_]T)";
         ctx.diagnostics.error(DiagCode::Sem_RefInStruct, type,

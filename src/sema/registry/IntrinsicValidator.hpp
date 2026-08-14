@@ -18,7 +18,7 @@ namespace sema {
 /// @param expr The intrinsic call expression.
 /// @param ctx The semantic context.
 /// @return true if the intrinsic is valid.
-bool validateIntrinsicCall(const IntrinsicCallExprAST* expr, SemaContext& ctx);
+bool validateIntrinsicCall(IntrinsicCallExprAST* expr, SemaContext& ctx);
 
 /// @brief Validate argument count for an intrinsic.
 /// @param name The intrinsic name.
@@ -32,15 +32,15 @@ bool validateIntrinsicArgCount(InternedString name, size_t count, SemaContext& c
 /// @param targetType The target type (for context-dependent intrinsics).
 /// @param ctx The semantic context.
 /// @return The return type, or nullptr for void.
-const TypeAST* getIntrinsicReturnType(const IntrinsicCallExprAST* expr,
-                                       const TypeAST* targetType,
+TypeAST* getIntrinsicReturnType(IntrinsicCallExprAST* expr,
+                                       TypeAST* targetType,
                                        SemaContext& ctx);
 
 /// @brief Get the value state of an intrinsic call.
 /// @param expr The intrinsic call expression.
 /// @param ctx The semantic context.
 /// @return The value state.
-ValueState getIntrinsicValueState(const IntrinsicCallExprAST* expr, SemaContext& ctx);
+ValueState getIntrinsicValueState(IntrinsicCallExprAST* expr, SemaContext& ctx);
 
 /// @brief Check if an intrinsic returns void (no value).
 /// @param name The intrinsic name.
@@ -50,23 +50,23 @@ bool isIntrinsicVoid(InternedString name, SemaContext& ctx);
 
 // ─── Individual Intrinsic Validators ──────────────────────────────────────
 
-bool validateFloatingPoint(const IntrinsicCallExprAST* expr, SemaContext& ctx);
-bool validateMemoryOp(const IntrinsicCallExprAST* expr, SemaContext& ctx);
-bool validateFence(const IntrinsicCallExprAST* expr, SemaContext& ctx);
-bool validateStringOp(const IntrinsicCallExprAST* expr, SemaContext& ctx);
-bool validatePointerOp(const IntrinsicCallExprAST* expr, SemaContext& ctx);
-bool validateScopeExit(const IntrinsicCallExprAST* expr, SemaContext& ctx);
-bool validateAtomicOp(const IntrinsicCallExprAST* expr, SemaContext& ctx);
-bool validateSIMD(const IntrinsicCallExprAST* expr, SemaContext& ctx);
-bool validateMemoryManagement(const IntrinsicCallExprAST* expr, SemaContext& ctx);
+bool validateFloatingPoint(IntrinsicCallExprAST* expr, SemaContext& ctx);
+bool validateMemoryOp(IntrinsicCallExprAST* expr, SemaContext& ctx);
+bool validateFence(IntrinsicCallExprAST* expr, SemaContext& ctx);
+bool validateStringOp(IntrinsicCallExprAST* expr, SemaContext& ctx);
+bool validatePointerOp(IntrinsicCallExprAST* expr, SemaContext& ctx);
+bool validateScopeExit(IntrinsicCallExprAST* expr, SemaContext& ctx);
+bool validateAtomicOp(IntrinsicCallExprAST* expr, SemaContext& ctx);
+bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx);
+bool validateMemoryManagement(IntrinsicCallExprAST* expr, SemaContext& ctx);
 
 // ─── Argument Type Validators ─────────────────────────────────────────────
 
-bool validatePtrArg(const ExprAST* arg, const std::string& argName, SemaContext& ctx);
-bool validateNumericArg(const ExprAST* arg, const std::string& argName, SemaContext& ctx);
-bool validateIntArg(const ExprAST* arg, const std::string& argName, SemaContext& ctx);
-bool validateStringArg(const ExprAST* arg, const std::string& argName, SemaContext& ctx);
-bool validateBoolArg(const ExprAST* arg, const std::string& argName, SemaContext& ctx);
-bool validateRefArg(const ExprAST* arg, const std::string& argName, SemaContext& ctx);
+bool validatePtrArg(ExprAST* arg, const std::string& argName, SemaContext& ctx);
+bool validateNumericArg(ExprAST* arg, const std::string& argName, SemaContext& ctx);
+bool validateIntArg(ExprAST* arg, const std::string& argName, SemaContext& ctx);
+bool validateStringArg(ExprAST* arg, const std::string& argName, SemaContext& ctx);
+bool validateBoolArg(ExprAST* arg, const std::string& argName, SemaContext& ctx);
+bool validateRefArg(ExprAST* arg, const std::string& argName, SemaContext& ctx);
 
 } // namespace sema

@@ -53,7 +53,7 @@ InternedString findEntryPoint(InterpreterContext& ctx, const std::string& entryP
     return findEntryPoint(ctx, ep);
 }
 
-bool isExported(const FuncDeclAST* func, InterpreterContext& ctx) {
+bool isExported(FuncDeclAST* func, InterpreterContext& ctx) {
     if (!func) return false;
     
     InternedString exportName = ctx.pool.intern("export");
@@ -65,7 +65,7 @@ bool isExported(const FuncDeclAST* func, InterpreterContext& ctx) {
     return false;
 }
 
-bool isEntryPointCandidate(const FuncDeclAST* func, InterpreterContext& ctx) {
+bool isEntryPointCandidate(FuncDeclAST* func, InterpreterContext& ctx) {
     if (!func) return false;
     
     // Entry point must be exported
@@ -74,7 +74,7 @@ bool isEntryPointCandidate(const FuncDeclAST* func, InterpreterContext& ctx) {
     }
     
     // Entry point must have a compatible signature
-    const FuncTypeAST* funcType = func->funcType;
+    FuncTypeAST* funcType = func->funcType;
     if (!funcType) return false;
     
     // Must have no generic parameters
@@ -104,8 +104,8 @@ bool isEntryPointCandidate(const FuncDeclAST* func, InterpreterContext& ctx) {
     return true;
 }
 
-std::vector<const FuncDeclAST*> getEntryPointCandidates(InterpreterContext& ctx) {
-    std::vector<const FuncDeclAST*> candidates;
+std::vector<FuncDeclAST*> getEntryPointCandidates(InterpreterContext& ctx) {
+    std::vector<FuncDeclAST*> candidates;
     
     for (const auto& [id, module] : ctx.loadedModules) {
         for (DeclAST* decl : module->decls) {
@@ -122,7 +122,7 @@ std::vector<const FuncDeclAST*> getEntryPointCandidates(InterpreterContext& ctx)
 
 // ─── Name Mangling ──────────────────────────────────────────────────────
 
-InternedString getMangledName(const FuncDeclAST* func, InterpreterContext& ctx) {
+InternedString getMangledName(FuncDeclAST* func, InterpreterContext& ctx) {
     if (!func) return InternedString();
     
     // If the function already has a mangled name, use it

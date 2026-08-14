@@ -223,7 +223,7 @@ void lowerFunctionDecl(FuncDeclAST* decl, CodeGenContext& ctx) {
     }
 
     // For each parameter group in the function type
-    const FuncTypeAST* currentType = decl->funcType;
+    FuncTypeAST* currentType = decl->funcType;
     while (currentType) {
         for (ParamAST* param : currentType->params) {
             if (paramIndex < func->arg_size()) {
@@ -337,7 +337,7 @@ void lowerFunctionBodyInternal(FuncDeclAST* decl, llvm::Function* func, CodeGenC
     }
 
     // ─── Lower parameters (create allocas and store arguments) ──────────
-    const FuncTypeAST* currentType = decl->funcType;
+    FuncTypeAST* currentType = decl->funcType;
     while (currentType) {
         for (ParamAST* param : currentType->params) {
             lowerParam(param, ctx);
@@ -348,7 +348,7 @@ void lowerFunctionBodyInternal(FuncDeclAST* decl, llvm::Function* func, CodeGenC
 
     // ─── Lower the body ───────────────────────────────────────────────────
     if (decl->body) {
-        lowerStatement(const_cast<StmtAST*>(decl->body), ctx);
+        lowerStatement(decl->body, ctx);
     } else {
         ctx.diagnostics.errorAt(DiagCode::Sem_MissingReturn, decl->loc,
                                 "function '", ctx.pool.lookup(decl->name),
@@ -380,8 +380,8 @@ void lowerFunctionBodyInternal(FuncDeclAST* decl, llvm::Function* func, CodeGenC
 /// @param specializedFunc The specialized LLVM function to generate the body for.
 /// @param ctx The code generation context.
 void lowerSpecializedFunctionBody(
-    const FuncDeclAST* funcDecl,
-    const std::vector<const TypeAST*>& typeArgs,
+    FuncDeclAST* funcDecl,
+    const std::vector<TypeAST*>& typeArgs,
     llvm::Function* specializedFunc,
     CodeGenContext& ctx
 ) {
@@ -419,11 +419,11 @@ void lowerSpecializedFunctionBody(
     }
 
     // Lower each parameter with the substituted type
-    const FuncTypeAST* currentType = funcDecl->funcType;
+    FuncTypeAST* currentType = funcDecl->funcType;
     while (currentType) {
         for (ParamAST* param : currentType->params) {
             // Get the substituted type for this parameter
-            const TypeAST* substitutedType = substituteGenericType(
+            TypeAST* substitutedType = substituteGenericType(
                 param->type,
                 funcDecl->genericParams,
                 typeArgs,
@@ -743,7 +743,7 @@ void lowerStructDecl(StructDeclAST* decl, CodeGenContext& ctx) {
     // ─── Build field types ─────────────────────────────────────────────────
     std::vector<llvm::Type*> fieldTypes;
 
-    for (const FieldDeclAST* field : decl->fields) {
+    for (FieldDeclAST* field : decl->fields) {
         llvm::Type* fieldType = getType(ctx, field->type);
         if (!fieldType) {
             ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, field->loc,
@@ -838,8 +838,8 @@ void lowerEnumDecl(EnumDeclAST* decl, CodeGenContext& ctx) {
 /// @param specializedFunc The specialized LLVM function to generate the body for.
 /// @param ctx The code generation context.
 void instantiateSpecializedFunctionBody(
-    const FuncDeclAST* funcDecl,
-    const std::vector<const TypeAST*>& typeArgs,
+    FuncDeclAST* funcDecl,
+    const std::vector<TypeAST*>& typeArgs,
     llvm::Function* specializedFunc,
     CodeGenContext& ctx
 ) {

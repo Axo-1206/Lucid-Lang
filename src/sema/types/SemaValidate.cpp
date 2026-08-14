@@ -21,8 +21,8 @@ namespace sema {
 /// 
 /// This is the core trait conformance check. It verifies that the source type
 /// (which must be a struct) implements the target trait by checking its traitRefs.
-static bool satisfiesTraitConstraint(const TypeAST* actualType,
-                                      const NamedTypeAST* requiredTrait,
+static bool satisfiesTraitConstraint(TypeAST* actualType,
+                                      NamedTypeAST* requiredTrait,
                                       SemaContext& ctx) {
     if (!actualType || !requiredTrait) return false;
 
@@ -33,21 +33,21 @@ static bool satisfiesTraitConstraint(const TypeAST* actualType,
 
     // Actual type must be a named type
     if (!actualType->isa<NamedTypeAST>()) return false;
-    const NamedTypeAST* namedActual = actualType->as<NamedTypeAST>();
-    const TypeDeclAST* typeDecl = ctx.lookupType(namedActual->name);
+    NamedTypeAST* namedActual = actualType->as<NamedTypeAST>();
+    TypeDeclAST* typeDecl = ctx.lookupType(namedActual->name);
     if (!typeDecl) return false;
 
     // Only structs can implement traits
     if (!typeDecl->isa<StructDeclAST>()) return false;
-    const StructDeclAST* structDecl = typeDecl->as<StructDeclAST>();
+    StructDeclAST* structDecl = typeDecl->as<StructDeclAST>();
 
     // Resolve the required trait
-    const TraitDeclAST* traitDecl = resolveTraitRef(requiredTrait, ctx);
+    TraitDeclAST* traitDecl = resolveTraitRef(requiredTrait, ctx);
     if (!traitDecl) return false;
 
     // Check if the struct implements the trait by looking at its traitRefs
-    for (const NamedTypeAST* traitRef : structDecl->traitRefs) {
-        const TraitDeclAST* resolved = resolveTraitRef(traitRef, ctx);
+    for (NamedTypeAST* traitRef : structDecl->traitRefs) {
+        TraitDeclAST* resolved = resolveTraitRef(traitRef, ctx);
         if (resolved == traitDecl) {
             return true;
         }
@@ -57,13 +57,13 @@ static bool satisfiesTraitConstraint(const TypeAST* actualType,
 }
 
 /// @brief Validate a single generic parameter's constraints.
-static bool validateParamConstraints(const TypeAST* actualType,
-                                      const GenericParamDeclAST* param,
+static bool validateParamConstraints(TypeAST* actualType,
+                                      GenericParamDeclAST* param,
                                       SemaContext& ctx) {
     if (!param || !actualType) return true;
     if (param->constraints.empty()) return true;
 
-    for (const NamedTypeAST* constraint : param->constraints) {
+    for (NamedTypeAST* constraint : param->constraints) {
         if (!satisfiesTraitConstraint(actualType, constraint, ctx)) {
             ctx.diagnostics.error(DiagCode::Sem_GenericConstraint, actualType,
                                   "type does not implement trait '", 
@@ -81,22 +81,22 @@ static bool validateParamConstraints(const TypeAST* actualType,
 
 /// @brief Validate that a struct implements a single trait.
 static bool validateSingleTraitImplementationInternal(
-    const StructDeclAST* structDecl,
-    const TraitDeclAST* traitDecl,
+    StructDeclAST* structDecl,
+    TraitDeclAST* traitDecl,
     SemaContext& ctx) {
     
     if (!structDecl || !traitDecl) return false;
 
     // Build a map of struct fields for quick lookup
-    std::unordered_map<InternedString, const FieldDeclAST*> structFields;
-    for (const FieldDeclAST* field : structDecl->fields) {
+    std::unordered_map<InternedString, FieldDeclAST*> structFields;
+    for (FieldDeclAST* field : structDecl->fields) {
         structFields[field->name] = field;
     }
 
     bool isValid = true;
 
     // Check each trait field
-    for (const TraitFieldDeclAST* traitField : traitDecl->fields) {
+    for (TraitFieldDeclAST* traitField : traitDecl->fields) {
         // ─── 1. Check: Field exists in struct ──────────────────────────
         auto it = structFields.find(traitField->name);
         if (it == structFields.end()) {
@@ -108,7 +108,7 @@ static bool validateSingleTraitImplementationInternal(
             continue;
         }
 
-        const FieldDeclAST* structField = it->second;
+        FieldDeclAST* structField = it->second;
 
         // ─── 2. Check: Const-ness compatibility ────────────────────────
         if (traitField->isConst() && !structField->isConst()) {
@@ -187,24 +187,24 @@ static bool validateSingleTraitImplementationInternal(
 
 /// @brief Check for conflicting field names across multiple traits.
 static bool checkTraitFieldConflictsInternal(
-    const StructDeclAST* structDecl,
+    StructDeclAST* structDecl,
     SemaContext& ctx) {
     
     if (!structDecl) return true;
 
     struct FieldRequirement {
-        const TraitDeclAST* trait;
+        TraitDeclAST* trait;
         bool isConst;
-        const TypeAST* type;
+        TypeAST* type;
     };
     
     std::unordered_map<InternedString, std::vector<FieldRequirement>> requirements;
 
-    for (const NamedTypeAST* traitRef : structDecl->traitRefs) {
-        const TraitDeclAST* trait = resolveTraitRef(traitRef, ctx);
+    for (NamedTypeAST* traitRef : structDecl->traitRefs) {
+        TraitDeclAST* trait = resolveTraitRef(traitRef, ctx);
         if (!trait) continue;
 
-        for (const TraitFieldDeclAST* field : trait->fields) {
+        for (TraitFieldDeclAST* field : trait->fields) {
             requirements[field->name].push_back({
                 trait,
                 field->isConst(),
@@ -256,7 +256,7 @@ static bool checkTraitFieldConflictsInternal(
 
 // ─── Const Validation ────────────────────────────────────────────────────
 
-bool validateConstType(const TypeAST* type,
+bool validateConstType(TypeAST* type,
                         InternedString name,
                         const char* kind,
                         SemaContext& ctx) {
@@ -306,13 +306,13 @@ bool validateConstInitializer(bool hasInit,
 
 // ─── Public Trait Validation ────────────────────────────────────────────
 
-bool validateTraitImplementation(const StructDeclAST* structDecl,
-                                  const TraitDeclAST* traitDecl,
+bool validateTraitImplementation(StructDeclAST* structDecl,
+                                  TraitDeclAST* traitDecl,
                                   SemaContext& ctx) {
     return validateSingleTraitImplementationInternal(structDecl, traitDecl, ctx);
 }
 
-bool validateAllTraitImplementations(const StructDeclAST* structDecl,
+bool validateAllTraitImplementations(StructDeclAST* structDecl,
                                       SemaContext& ctx) {
     if (!structDecl) return true;
     if (structDecl->traitRefs.empty()) return true;
@@ -320,8 +320,8 @@ bool validateAllTraitImplementations(const StructDeclAST* structDecl,
     bool conflicts = checkTraitFieldConflictsInternal(structDecl, ctx);
     bool allValid = true;
 
-    for (const NamedTypeAST* traitRef : structDecl->traitRefs) {
-        const TraitDeclAST* trait = resolveTraitRef(traitRef, ctx);
+    for (NamedTypeAST* traitRef : structDecl->traitRefs) {
+        TraitDeclAST* trait = resolveTraitRef(traitRef, ctx);
         if (!trait) {
             allValid = false;
             continue;
@@ -337,7 +337,7 @@ bool validateAllTraitImplementations(const StructDeclAST* structDecl,
     return allValid && !conflicts;
 }
 
-bool checkTraitFieldConflicts(const StructDeclAST* structDecl,
+bool checkTraitFieldConflicts(StructDeclAST* structDecl,
                                SemaContext& ctx) {
     return checkTraitFieldConflictsInternal(structDecl, ctx);
 }
@@ -346,7 +346,7 @@ bool checkTraitFieldConflicts(const StructDeclAST* structDecl,
 
 bool validateGenericArguments(ArenaSpan<TypeAST*> args,
                                ArenaSpan<GenericParamDeclAST*> params,
-                               const BaseAST* useSite,
+                               BaseAST* useSite,
                                SemaContext& ctx) {
     if (args.size() != params.size()) {
         ctx.diagnostics.error(DiagCode::Sem_GenericArityMismatch, useSite,
@@ -388,44 +388,44 @@ bool validateGenericArguments(ArenaSpan<TypeAST*> args,
 }
 
 bool validateGenericParameterUsage(ArenaSpan<GenericParamDeclAST*> params,
-                                    const std::vector<const TypeAST*>& types,
-                                    const BaseAST* useSite,
+                                    const std::vector<TypeAST*>& types,
+                                    BaseAST* useSite,
                                     SemaContext& ctx) {
     std::unordered_set<InternedString> usedParams;
 
     // Recursively find generic parameter references in a type
-    std::function<void(const TypeAST*)> findParams = [&](const TypeAST* type) {
+    std::function<void(TypeAST*)> findParams = [&](TypeAST* type) {
         if (!type) return;
         
-        if (const NamedTypeAST* named = type->as<NamedTypeAST>()) {
+        if (NamedTypeAST* named = type->as<NamedTypeAST>()) {
             if (ctx.isGenericParam(named->name)) {
                 usedParams.insert(named->name);
             }
-            for (const TypeAST* arg : named->genericArgs) {
+            for (TypeAST* arg : named->genericArgs) {
                 findParams(arg);
             }
             return;
         }
 
-        if (const NullableTypeAST* nullable = type->as<NullableTypeAST>()) {
+        if (NullableTypeAST* nullable = type->as<NullableTypeAST>()) {
             findParams(nullable->inner); return;
         }
-        if (const FallibleTypeAST* fallible = type->as<FallibleTypeAST>()) {
+        if (FallibleTypeAST* fallible = type->as<FallibleTypeAST>()) {
             findParams(fallible->inner); return;
         }
-        if (const CombinedTypeAST* combined = type->as<CombinedTypeAST>()) {
+        if (CombinedTypeAST* combined = type->as<CombinedTypeAST>()) {
             findParams(combined->inner); return;
         }
-        if (const RefTypeAST* ref = type->as<RefTypeAST>()) {
+        if (RefTypeAST* ref = type->as<RefTypeAST>()) {
             findParams(ref->inner); return;
         }
-        if (const PtrTypeAST* ptr = type->as<PtrTypeAST>()) {
+        if (PtrTypeAST* ptr = type->as<PtrTypeAST>()) {
             findParams(ptr->inner); return;
         }
-        if (const ArrayTypeAST* array = type->as<ArrayTypeAST>()) {
+        if (ArrayTypeAST* array = type->as<ArrayTypeAST>()) {
             findParams(array->element); return;
         }
-        if (const FuncTypeAST* func = type->as<FuncTypeAST>()) {
+        if (FuncTypeAST* func = type->as<FuncTypeAST>()) {
             for (ParamAST* param : func->params) {
                 findParams(param->type);
             }
@@ -434,12 +434,12 @@ bool validateGenericParameterUsage(ArenaSpan<GenericParamDeclAST*> params,
         }
     };
 
-    for (const TypeAST* type : types) {
+    for (TypeAST* type : types) {
         findParams(type);
     }
 
     bool allUsed = true;
-    for (const GenericParamDeclAST* param : params) {
+    for (GenericParamDeclAST* param : params) {
         if (usedParams.find(param->name) == usedParams.end()) {
             ctx.diagnostics.error(DiagCode::Sem_GenericParamUnused, useSite,
                                   "generic parameter '", ctx.pool.lookup(param->name),
@@ -453,15 +453,15 @@ bool validateGenericParameterUsage(ArenaSpan<GenericParamDeclAST*> params,
 
 // ─── Downward Flow Rule ──────────────────────────────────────────────────
 
-bool validateRefContext(const RefTypeAST* type, SemaContext& ctx) {
+bool validateRefContext(RefTypeAST* type, SemaContext& ctx) {
     // Delegate to the unified borrowed context validation
     return validateBorrowedContext(type, ctx);
 }
 
 // ─── FFI Validation ──────────────────────────────────────────────────────
 
-bool validateForeignFunction(const FuncDeclAST* decl,
-                              const AttributeAST* foreignAttr,
+bool validateForeignFunction(FuncDeclAST* decl,
+                              AttributeAST* foreignAttr,
                               SemaContext& ctx) {
     if (!decl || !foreignAttr) return false;
 
@@ -495,7 +495,7 @@ bool validateForeignFunction(const FuncDeclAST* decl,
     }
 
     // ─── 3. Validate parameter types ─────────────────────────────────────────
-    const FuncTypeAST* funcType = decl->type->as<FuncTypeAST>();
+    FuncTypeAST* funcType = decl->type->as<FuncTypeAST>();
     if (!funcType) {
         ctx.diagnostics.error(DiagCode::Sem_InvalidReturnType, decl,
                               "foreign function '", ctx.pool.lookup(decl->name),
@@ -505,7 +505,7 @@ bool validateForeignFunction(const FuncDeclAST* decl,
 
     bool allValid = true;
 
-    for (const FuncTypeAST* group = funcType; group; group = group->getNext()) {
+    for (FuncTypeAST* group = funcType; group; group = group->getNext()) {
         for (ParamAST* param : group->params) {
             if (!isValidFFIType(param->type, ctx)) {
                 ctx.diagnostics.error(DiagCode::Ffi_TypeNotFFI, param,
@@ -517,7 +517,7 @@ bool validateForeignFunction(const FuncDeclAST* decl,
     }
 
     // ─── 4. Validate return type ─────────────────────────────────────────────
-    const TypeAST* returnType = funcType->returnType;
+    TypeAST* returnType = funcType->returnType;
     if (returnType && !isValidFFIType(returnType, ctx)) {
         ctx.diagnostics.error(DiagCode::Ffi_TypeNotFFI, decl,
                               "return type of foreign function '",

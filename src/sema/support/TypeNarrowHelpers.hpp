@@ -37,7 +37,7 @@ namespace sema {
 /// @param ctx The semantic context.
 /// @param outIsValidMixed Optional output parameter to detect mixed operators.
 /// @return NarrowingInfo with all narrowings found, or empty if mixed/unsound.
-NarrowingInfo extractNarrowingsFromCondition(const ExprAST* expr, SemaContext& ctx, 
+NarrowingInfo extractNarrowingsFromCondition(ExprAST* expr, SemaContext& ctx, 
                                                bool* outIsValidMixed = nullptr);
 
 /// @brief Detect narrowing pattern from a binary expression.
@@ -48,7 +48,7 @@ NarrowingInfo extractNarrowingsFromCondition(const ExprAST* expr, SemaContext& c
 /// @param binary The binary expression to check.
 /// @param ctx The semantic context.
 /// @return NarrowingInfo with the detected narrowing, or empty if no pattern.
-NarrowingInfo detectNarrowingPattern(const BinaryExprAST* binary, SemaContext& ctx);
+NarrowingInfo detectNarrowingPattern(BinaryExprAST* binary, SemaContext& ctx);
 
 // ─── Internal Helpers (exposed for testing) ─────────────────────────────
 
@@ -59,14 +59,14 @@ NarrowingInfo detectNarrowingPattern(const BinaryExprAST* binary, SemaContext& c
 ///   - x == err, x != err
 ///   - nil == x, nil != x (reverse order)
 ///   - err == x, err != x (reverse order)
-NarrowingInfo detectSingleNarrowing(const BinaryExprAST* binary, SemaContext& ctx);
+NarrowingInfo detectSingleNarrowing(BinaryExprAST* binary, SemaContext& ctx);
 
 /// @brief Detect if an identifier expression can be narrowed and add to info.
-void detectIdentifierNarrowing(NarrowingInfo& info, const IdentifierExprAST* id, 
+void detectIdentifierNarrowing(NarrowingInfo& info, IdentifierExprAST* id, 
                                 const LiteralExprAST* lit, bool isEquality, 
                                 SemaContext& ctx);
 
 /// @brief Get the inner type of a value declaration (unwrap nullable/fallible).
-const TypeAST* getInnerType(const ValueDeclAST* decl, SemaContext& ctx);
+TypeAST* getInnerType(ValueDeclAST* decl, SemaContext& ctx);
 
 } // namespace sema

@@ -110,7 +110,7 @@ struct NarrowingInfo {
     bool hasNarrowing = false;
     
     /// Map from variable name to its narrowed type.
-    std::unordered_map<InternedString, const TypeAST*> narrowings;
+    std::unordered_map<InternedString, TypeAST*> narrowings;
     
     /// True for `==`, `await`, `join` (narrowing applies to the rest of block)
     /// False for `!=`, `is` checks (narrowing applies to then branch only)
@@ -177,14 +177,14 @@ struct NarrowingInfo {
 /// @brief Represents a pending async operation that must be awaited.
 struct PendingAsync {
     InternedString name;
-    const ExprAST* call;
+    ExprAST* call;
     SourceLocation loc;
 };
 
 /// @brief Represents a pending spawn operation that must be joined.
 struct PendingSpawn {
     InternedString name;
-    const ExprAST* call;
+    ExprAST* call;
     SourceLocation loc;
 };
 
@@ -200,9 +200,9 @@ struct PendingSpawn {
 /// - **Types**: Structs, enums, traits
 /// - **Generic Parameters**: `<T>` parameters (shadow type lookups)
 struct Scope {
-    std::unordered_map<InternedString, const ValueDeclAST*> values;
-    std::unordered_map<InternedString, const TypeDeclAST*> types;
-    std::unordered_map<InternedString, const GenericParamDeclAST*> genericParams;
+    std::unordered_map<InternedString, ValueDeclAST*> values;
+    std::unordered_map<InternedString, TypeDeclAST*> types;
+    std::unordered_map<InternedString, GenericParamDeclAST*> genericParams;
     std::unordered_map<InternedString, PendingAsync> pendingAsync;
     std::unordered_map<InternedString, PendingSpawn> pendingSpawn;
 };
@@ -226,14 +226,14 @@ struct Scope {
 /// ```
 class ReturnStack {
 public:
-    void push(const TypeAST* returnType) { m_stack.push_back(returnType); }
+    void push(TypeAST* returnType) { m_stack.push_back(returnType); }
     void pop() { if (!m_stack.empty()) m_stack.pop_back(); }
-    const TypeAST* current() const { return m_stack.empty() ? nullptr : m_stack.back(); }
+    TypeAST* current() const { return m_stack.empty() ? nullptr : m_stack.back(); }
     bool empty() const { return m_stack.empty(); }
     size_t size() const { return m_stack.size(); }
 
 private:
-    std::vector<const TypeAST*> m_stack;
+    std::vector<TypeAST*> m_stack;
 };
 
 // ─── ContextFrame ──────────────────────────────────────────────────────
@@ -246,7 +246,7 @@ struct ContextFrame {
     BaseAST* node = nullptr;
 
     // ─── Return Type (FuncBody) ──────────────────────────────────────────
-    const TypeAST* expectedReturnType = nullptr;
+    TypeAST* expectedReturnType = nullptr;
 
     // ─── Loop/Switch Tracking ──────────────────────────────────────────
     StmtAST* loopStmt = nullptr;
@@ -319,8 +319,8 @@ public:
     // ─── Push/Pop ────────────────────────────────────────────────────────
 
     void push(ContextKind kind, BaseAST* node);
-    void pushFunction(FuncDeclAST* node, const TypeAST* returnType);
-    void pushAnonFunction(AnonFuncExprAST* node, const TypeAST* returnType);
+    void pushFunction(FuncDeclAST* node, TypeAST* returnType);
+    void pushAnonFunction(AnonFuncExprAST* node, TypeAST* returnType);
     void pushLoop(StmtAST* loopStmt);
     void pushSwitch(SwitchStmtAST* switchStmt);
     void pushBlock(BlockStmtAST* block);
@@ -343,9 +343,9 @@ public:
 
     // ─── Return Type Tracking ──────────────────────────────────────────
 
-    void pushReturnType(const TypeAST* returnType) { m_returnStack.push(returnType); }
+    void pushReturnType(TypeAST* returnType) { m_returnStack.push(returnType); }
     void popReturnType() { m_returnStack.pop(); }
-    const TypeAST* currentReturnType() const { return m_returnStack.current(); }
+    TypeAST* currentReturnType() const { return m_returnStack.current(); }
     bool hasReturnRequirements() const { return !m_returnStack.empty(); }
 
     // ─── Type Narrowing ──────────────────────────────────────────────────
@@ -364,8 +364,8 @@ public:
     // ─── Narrowing Stack ────────────────────────────────────────────────
     void pushNarrowingLevel(bool isInverse = false);
     void popNarrowingLevel();
-    void narrowVariable(InternedString name, const TypeAST* type);
-    const TypeAST* getNarrowedType(InternedString name) const;
+    void narrowVariable(InternedString name, TypeAST* type);
+    TypeAST* getNarrowedType(InternedString name) const;
     bool isNarrowingInverse() const;
 
     // ─── Pending Inverse Narrowing (for standalone if) ─────────────────
@@ -400,7 +400,7 @@ private:
 
     /// Narrowing stack - tracks flow-sensitive type refinements.
     struct NarrowingLevel {
-        std::unordered_map<InternedString, const TypeAST*> narrowedTypes;
+        std::unordered_map<InternedString, TypeAST*> narrowedTypes;
         bool isInverse = false;
     };
     std::vector<NarrowingLevel> m_narrowing;

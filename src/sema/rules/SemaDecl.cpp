@@ -171,7 +171,7 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
     }
 
     // ─── 3. Resolve function type ─────────────────────────────────────────────
-    const FuncTypeAST* funcType = decl->funcType;
+    FuncTypeAST* funcType = decl->funcType;
     if (!resolveFuncType(funcType, ctx)) {
         return;
     }
@@ -189,7 +189,7 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
     // ─── 6. Resolve parameters ──────────────────────────────────────────────
     ctx.pushScope();
     
-    for (const FuncTypeAST* group = funcType; group; group = group->getNext()) {
+    for (FuncTypeAST* group = funcType; group; group = group->getNext()) {
         for (ParamAST* param : group->params) {
             resolveParam(param, ctx);
         }
@@ -204,7 +204,7 @@ void resolveFuncDecl(FuncDeclAST* decl, SemaContext& ctx) {
     }
 
     // ─── 8. Push function context with expected return type ──────────────────
-    const TypeAST* expectedReturn = funcType ? funcType->returnType : nullptr;
+    TypeAST* expectedReturn = funcType ? funcType->returnType : nullptr;
     ctx.stack.pushFunction(const_cast<FuncDeclAST*>(decl), expectedReturn);
 
     bool bodyReturns = false;
@@ -357,7 +357,7 @@ void resolveTraitDecl(TraitDeclAST* decl, SemaContext& ctx) {
     }
 
     // ─── 3. Validate generic parameter usage ───────────────────────────────
-    std::vector<const TypeAST*> types;
+    std::vector<TypeAST*> types;
     for (TraitFieldDeclAST* field : decl->fields) {
         types.push_back(field->type);
     }
@@ -388,7 +388,7 @@ void resolveStructDecl(StructDeclAST* decl, SemaContext& ctx) {
     }
 
     // ─── 4. Validate generic parameter usage ───────────────────────────────
-    std::vector<const TypeAST*> types;
+    std::vector<TypeAST*> types;
     for (FieldDeclAST* field : decl->fields) {
         types.push_back(field->type);
     }
@@ -472,7 +472,7 @@ void resolveStructFields(StructDeclAST* decl, SemaContext& ctx) {
         } else if (field->defaultVal) {
             // ─── Expression default ──────────────────────────────────────────
             if (isFunctionType) {
-                const FuncTypeAST* funcType = fieldType->as<FuncTypeAST>();
+                FuncTypeAST* funcType = fieldType->as<FuncTypeAST>();
 
                 TypeAST* initType = resolveExprWithTarget(field->defaultVal, funcType, ctx);
                 if (!initType || initType->isa<UnknownTypeAST>()) {

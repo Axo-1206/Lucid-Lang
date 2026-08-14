@@ -62,7 +62,7 @@ bool isLucidIntrinsic(const std::string& name) {
 // ─── Public API ────────────────────────────────────────────────────────────
 
 llvm::Value* emitIntrinsicFromAST(
-    const IntrinsicCallExprAST* expr,
+    IntrinsicCallExprAST* expr,
     CodeGenContext& ctx
 ) {
     if (!expr) return nullptr;
@@ -127,7 +127,7 @@ llvm::Value* emitIntrinsicFromAST(
 llvm::Value* emitIntrinsic(
     const std::string& name,
     const std::vector<llvm::Value*>& args,
-    const IntrinsicCallExprAST* expr,
+    IntrinsicCallExprAST* expr,
     CodeGenContext& ctx
 ) {
     SourceLocation loc = expr ? expr->loc : SourceLocation();

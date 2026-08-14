@@ -16,7 +16,7 @@ namespace sema {
 // extractNarrowingsFromCondition
 // ─────────────────────────────────────────────────────────────────────────────
 
-NarrowingInfo extractNarrowingsFromCondition(const ExprAST* expr, SemaContext& ctx,
+NarrowingInfo extractNarrowingsFromCondition(ExprAST* expr, SemaContext& ctx,
                                                bool* outIsValidMixed) {
     NarrowingInfo result;
     result.hasNarrowing = false;
@@ -28,7 +28,7 @@ NarrowingInfo extractNarrowingsFromCondition(const ExprAST* expr, SemaContext& c
     // ─── 1. Handle `or` at top level ─────────────────────────────────────
     // Pattern: a == nil or b == nil
     if (expr->isa<BinaryExprAST>() && expr->as<BinaryExprAST>()->op == BinaryOp::Or) {
-        const BinaryExprAST* binary = expr->as<BinaryExprAST>();
+        BinaryExprAST* binary = expr->as<BinaryExprAST>();
         
         bool leftMixed = false;
         bool rightMixed = false;
@@ -93,11 +93,11 @@ NarrowingInfo extractNarrowingsFromCondition(const ExprAST* expr, SemaContext& c
     if (expr->isa<UnaryExprAST>() && expr->as<UnaryExprAST>()->op == UnaryOp::Not) {
         const UnaryExprAST* unary = expr->as<UnaryExprAST>();
         if (unary->operand->isa<IdentifierExprAST>()) {
-            const IdentifierExprAST* id = unary->operand->as<IdentifierExprAST>();
+            IdentifierExprAST* id = unary->operand->as<IdentifierExprAST>();
             
-            const ValueDeclAST* decl = ctx.lookupValue(id->name);
+            ValueDeclAST* decl = ctx.lookupValue(id->name);
             if (decl) {
-                const TypeAST* innerType = getInnerType(decl, ctx);
+                TypeAST* innerType = getInnerType(decl, ctx);
                 if (innerType) {
                     result.hasNarrowing = true;
                     // `not x` is treated as equality for inverse narrowing
@@ -117,7 +117,7 @@ NarrowingInfo extractNarrowingsFromCondition(const ExprAST* expr, SemaContext& c
 // detectSingleNarrowing
 // ─────────────────────────────────────────────────────────────────────────────
 
-NarrowingInfo detectSingleNarrowing(const BinaryExprAST* binary, SemaContext& ctx) {
+NarrowingInfo detectSingleNarrowing(BinaryExprAST* binary, SemaContext& ctx) {
     NarrowingInfo result;
     result.hasNarrowing = false;
 
@@ -133,7 +133,7 @@ NarrowingInfo detectSingleNarrowing(const BinaryExprAST* binary, SemaContext& ct
     // Pattern: (identifier == nil) or (identifier != nil)
     // Pattern: (identifier == err) or (identifier != err)
     if (binary->left->isa<IdentifierExprAST>() && binary->right->isa<LiteralExprAST>()) {
-        const IdentifierExprAST* id = binary->left->as<IdentifierExprAST>();
+        IdentifierExprAST* id = binary->left->as<IdentifierExprAST>();
         const LiteralExprAST* lit = binary->right->as<LiteralExprAST>();
 
         detectIdentifierNarrowing(result, id, lit, isEquality, ctx);
@@ -143,7 +143,7 @@ NarrowingInfo detectSingleNarrowing(const BinaryExprAST* binary, SemaContext& ct
     // Also check reverse: (nil == identifier) or (err == identifier)
     if (binary->left->isa<LiteralExprAST>() && binary->right->isa<IdentifierExprAST>()) {
         const LiteralExprAST* lit = binary->left->as<LiteralExprAST>();
-        const IdentifierExprAST* id = binary->right->as<IdentifierExprAST>();
+        IdentifierExprAST* id = binary->right->as<IdentifierExprAST>();
 
         detectIdentifierNarrowing(result, id, lit, isEquality, ctx);
         return result;
@@ -156,7 +156,7 @@ NarrowingInfo detectSingleNarrowing(const BinaryExprAST* binary, SemaContext& ct
 // detectIdentifierNarrowing
 // ─────────────────────────────────────────────────────────────────────────────
 
-void detectIdentifierNarrowing(NarrowingInfo& info, const IdentifierExprAST* id, 
+void detectIdentifierNarrowing(NarrowingInfo& info, IdentifierExprAST* id, 
                                  const LiteralExprAST* lit, bool isEquality, 
                                  SemaContext& ctx) {
     if (!id || !lit) return;
@@ -167,7 +167,7 @@ void detectIdentifierNarrowing(NarrowingInfo& info, const IdentifierExprAST* id,
     }
 
     // Look up the variable using existing infrastructure
-    const ValueDeclAST* decl = ctx.lookupValue(id->name);
+    ValueDeclAST* decl = ctx.lookupValue(id->name);
     if (!decl) return;
 
     // Check if the variable is nullable or fallible using SemaCompare
@@ -175,7 +175,7 @@ void detectIdentifierNarrowing(NarrowingInfo& info, const IdentifierExprAST* id,
         return;
     }
 
-    const TypeAST* innerType = getInnerType(decl, ctx);
+    TypeAST* innerType = getInnerType(decl, ctx);
     if (!innerType) return;
 
     info.hasNarrowing = true;
@@ -187,19 +187,19 @@ void detectIdentifierNarrowing(NarrowingInfo& info, const IdentifierExprAST* id,
 // getInnerType
 // ─────────────────────────────────────────────────────────────────────────────
 
-const TypeAST* getInnerType(const ValueDeclAST* decl, SemaContext& ctx) {
+TypeAST* getInnerType(ValueDeclAST* decl, SemaContext& ctx) {
     if (!decl || !decl->type) return nullptr;
 
-    const TypeAST* type = decl->type;
+    TypeAST* type = decl->type;
 
     // Unwrap nullable using SemaCompare
     if (isNullableType(type)) {
-        type = unwrapNullable(const_cast<TypeAST*>(type));
+        type = unwrapNullable(type);
     }
 
     // Unwrap fallible using SemaCompare
     if (isFallibleType(type)) {
-        type = unwrapFallible(const_cast<TypeAST*>(type));
+        type = unwrapFallible(type);
     }
 
     return type;
@@ -209,7 +209,7 @@ const TypeAST* getInnerType(const ValueDeclAST* decl, SemaContext& ctx) {
 // detectNarrowingPattern
 // ─────────────────────────────────────────────────────────────────────────────
 
-NarrowingInfo detectNarrowingPattern(const BinaryExprAST* binary, SemaContext& ctx) {
+NarrowingInfo detectNarrowingPattern(BinaryExprAST* binary, SemaContext& ctx) {
     NarrowingInfo result;
     result.hasNarrowing = false;
 
@@ -231,7 +231,7 @@ NarrowingInfo detectNarrowingPattern(const BinaryExprAST* binary, SemaContext& c
     if (result.hasNarrowing) {
         for (const auto& [varName, narrowedType] : result.narrowings) {
             // Look up the variable using existing infrastructure
-            const ValueDeclAST* decl = ctx.lookupValue(varName);
+            ValueDeclAST* decl = ctx.lookupValue(varName);
             if (!decl) {
                 ctx.diagnostics.error(DiagCode::Sem_UndefinedValue, binary,
                                       "undefined variable '", ctx.pool.lookup(varName), "'");

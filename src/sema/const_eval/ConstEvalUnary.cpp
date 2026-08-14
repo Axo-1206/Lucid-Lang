@@ -13,7 +13,7 @@ namespace sema {
 // ─── Individual Unary Operations ──────────────────────────────────────
 
 ConstantValue ConstEvaluator::evalNeg(SemaContext& ctx, const ConstantValue& operand,
-                                       const BaseAST* node, const TypeAST* targetType) {
+                                       BaseAST* node, TypeAST* targetType) {
     if (operand.isInt()) {
         if (operand.asInt() == INT64_MIN) {
             ctx.diagnostics.error(DiagCode::Sem_IntegerOverflow, node,
@@ -32,7 +32,7 @@ ConstantValue ConstEvaluator::evalNeg(SemaContext& ctx, const ConstantValue& ope
 }
 
 ConstantValue ConstEvaluator::evalNot(SemaContext& ctx, const ConstantValue& operand,
-                                       const BaseAST* node) {
+                                       BaseAST* node) {
     if (operand.isBool()) {
         return ConstantValue(!operand.asBool());
     }
@@ -43,7 +43,7 @@ ConstantValue ConstEvaluator::evalNot(SemaContext& ctx, const ConstantValue& ope
 }
 
 ConstantValue ConstEvaluator::evalBitNot(SemaContext& ctx, const ConstantValue& operand,
-                                          const BaseAST* node) {
+                                          BaseAST* node) {
     if (operand.isInt()) {
         return ConstantValue(~operand.asInt());
     }
@@ -55,8 +55,8 @@ ConstantValue ConstEvaluator::evalBitNot(SemaContext& ctx, const ConstantValue& 
 
 // ─── Unary Operation Evaluation ──────────────────────────────────────
 
-ConstantValue ConstEvaluator::evalUnary(SemaContext& ctx, const UnaryExprAST* expr,
-                                         const TypeAST* targetType) {
+ConstantValue ConstEvaluator::evalUnary(SemaContext& ctx, UnaryExprAST* expr,
+                                         TypeAST* targetType) {
     ConstantValue operand = evaluate(ctx, expr->operand, targetType);
     if (operand.isError()) return operand;
     if (operand.isUnknown()) return ConstantValue::unknown();

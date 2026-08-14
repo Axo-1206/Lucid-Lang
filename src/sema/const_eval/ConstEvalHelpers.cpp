@@ -42,8 +42,8 @@ bool bothNumeric(const ConstantValue& a, const ConstantValue& b) {
 ConstantValue handleArithmeticError(SemaContext& ctx, 
                                      const char* op, 
                                      const std::string& reason,
-                                     const BaseAST* node,
-                                     const TypeAST* targetType) {
+                                     BaseAST* node,
+                                     TypeAST* targetType) {
     if (targetType && isFallibleType(targetType)) {
         return ConstantValue::err();
     }
@@ -54,22 +54,22 @@ ConstantValue handleArithmeticError(SemaContext& ctx,
 
 // ─── Dependency Helpers ─────────────────────────────────────────────────
 
-void collectDeps(SemaContext& ctx, const ExprAST* expr,
-                  std::vector<const DeclAST*>& deps) {
+void collectDeps(SemaContext& ctx, ExprAST* expr,
+                  std::vector<DeclAST*>& deps) {
     if (!expr) return;
 
     switch (expr->kind) {
         case ASTKind::IdentifierExpr: {
-            const IdentifierExprAST* id = expr->as<IdentifierExprAST>();
-            const ValueDeclAST* decl = ctx.lookupValue(id->name);
+            IdentifierExprAST* id = expr->as<IdentifierExprAST>();
+            ValueDeclAST* decl = ctx.lookupValue(id->name);
             if (decl && decl->isa<VarDeclAST>()) {
-                const VarDeclAST* var = decl->as<VarDeclAST>();
+                VarDeclAST* var = decl->as<VarDeclAST>();
                 if (var->keyword == DeclKeyword::Const) {
                     deps.push_back(var);
                 }
             }
             if (decl && decl->isa<FuncDeclAST>()) {
-                const FuncDeclAST* func = decl->as<FuncDeclAST>();
+                FuncDeclAST* func = decl->as<FuncDeclAST>();
                 if (func->keyword == DeclKeyword::Const) {
                     deps.push_back(func);
                 }
@@ -77,7 +77,7 @@ void collectDeps(SemaContext& ctx, const ExprAST* expr,
             break;
         }
         case ASTKind::BinaryExpr: {
-            const BinaryExprAST* bin = expr->as<BinaryExprAST>();
+            BinaryExprAST* bin = expr->as<BinaryExprAST>();
             collectDeps(ctx, bin->left, deps);
             collectDeps(ctx, bin->right, deps);
             break;
@@ -90,7 +90,7 @@ void collectDeps(SemaContext& ctx, const ExprAST* expr,
         case ASTKind::CallExpr: {
             const CallExprAST* call = expr->as<CallExprAST>();
             collectDeps(ctx, call->callee, deps);
-            for (const ExprAST* arg : call->args) {
+            for (ExprAST* arg : call->args) {
                 collectDeps(ctx, arg, deps);
             }
             break;
@@ -102,14 +102,14 @@ void collectDeps(SemaContext& ctx, const ExprAST* expr,
         }
         case ASTKind::StructLiteralExpr: {
             const StructLiteralExprAST* sl = expr->as<StructLiteralExprAST>();
-            for (const FieldInitAST* init : sl->inits) {
+            for (FieldInitAST* init : sl->inits) {
                 collectDeps(ctx, init->value, deps);
             }
             break;
         }
         case ASTKind::ArrayLiteralExpr: {
             const ArrayLiteralExprAST* al = expr->as<ArrayLiteralExprAST>();
-            for (const ExprAST* elem : al->elements) {
+            for (ExprAST* elem : al->elements) {
                 collectDeps(ctx, elem, deps);
             }
             break;
@@ -119,32 +119,32 @@ void collectDeps(SemaContext& ctx, const ExprAST* expr,
     }
 }
 
-void collectDepsFromStmt(SemaContext& ctx, const StmtAST* stmt,
-                          std::vector<const DeclAST*>& deps) {
+void collectDepsFromStmt(SemaContext& ctx, StmtAST* stmt,
+                          std::vector<DeclAST*>& deps) {
     if (!stmt) return;
 
     switch (stmt->kind) {
         case ASTKind::BlockStmt: {
-            const BlockStmtAST* block = stmt->as<BlockStmtAST>();
-            for (const StmtAST* s : block->stmts) {
+            BlockStmtAST* block = stmt->as<BlockStmtAST>();
+            for (StmtAST* s : block->stmts) {
                 collectDepsFromStmt(ctx, s, deps);
             }
             break;
         }
         case ASTKind::ExprStmt: {
-            const ExprStmtAST* exprStmt = stmt->as<ExprStmtAST>();
+            ExprStmtAST* exprStmt = stmt->as<ExprStmtAST>();
             collectDeps(ctx, exprStmt->expr, deps);
             break;
         }
         case ASTKind::ReturnStmt: {
-            const ReturnStmtAST* ret = stmt->as<ReturnStmtAST>();
+            ReturnStmtAST* ret = stmt->as<ReturnStmtAST>();
             if (ret->value) {
                 collectDeps(ctx, ret->value, deps);
             }
             break;
         }
         case ASTKind::IfStmt: {
-            const IfStmtAST* ifStmt = stmt->as<IfStmtAST>();
+            IfStmtAST* ifStmt = stmt->as<IfStmtAST>();
             collectDeps(ctx, ifStmt->condition, deps);
             collectDepsFromStmt(ctx, ifStmt->thenBranch, deps);
             if (ifStmt->elseBranch) {
@@ -153,15 +153,15 @@ void collectDepsFromStmt(SemaContext& ctx, const StmtAST* stmt,
             break;
         }
         case ASTKind::WhileStmt: {
-            const WhileStmtAST* whileStmt = stmt->as<WhileStmtAST>();
+            WhileStmtAST* whileStmt = stmt->as<WhileStmtAST>();
             collectDeps(ctx, whileStmt->condition, deps);
             collectDepsFromStmt(ctx, whileStmt->body, deps);
             break;
         }
         case ASTKind::DeclStmt: {
-            const DeclStmtAST* declStmt = stmt->as<DeclStmtAST>();
+            DeclStmtAST* declStmt = stmt->as<DeclStmtAST>();
             if (declStmt->decl->isa<VarDeclAST>()) {
-                const VarDeclAST* var = declStmt->decl->as<VarDeclAST>();
+                VarDeclAST* var = declStmt->decl->as<VarDeclAST>();
                 if (var->keyword == DeclKeyword::Const && var->init) {
                     collectDeps(ctx, var->init, deps);
                 }
@@ -173,11 +173,11 @@ void collectDepsFromStmt(SemaContext& ctx, const StmtAST* stmt,
     }
 }
 
-std::vector<const DeclAST*> topologicalSort(SemaContext& ctx,
-                                             const std::unordered_map<const DeclAST*, std::vector<const DeclAST*>>& deps) {
-    std::vector<const DeclAST*> result;
-    std::unordered_map<const DeclAST*, size_t> inDegree;
-    std::unordered_map<const DeclAST*, std::vector<const DeclAST*>> graph;
+std::vector<DeclAST*> topologicalSort(SemaContext& ctx,
+                                             const std::unordered_map<DeclAST*, std::vector<DeclAST*>>& deps) {
+    std::vector<DeclAST*> result;
+    std::unordered_map<DeclAST*, size_t> inDegree;
+    std::unordered_map<DeclAST*, std::vector<DeclAST*>> graph;
 
     for (const auto& [decl, depsList] : deps) {
         inDegree[decl] = 0;
@@ -185,26 +185,26 @@ std::vector<const DeclAST*> topologicalSort(SemaContext& ctx,
     }
 
     for (const auto& [decl, depsList] : deps) {
-        for (const DeclAST* dep : depsList) {
+        for (DeclAST* dep : depsList) {
             if (graph.find(dep) == graph.end()) continue;
             graph[decl].push_back(dep);
             inDegree[dep]++;
         }
     }
 
-    std::queue<const DeclAST*> queue;
-    for (const auto& [decl, degree] : inDegree) {
+    std::queue<DeclAST*> queue;
+    for (auto& [decl, degree] : inDegree) {
         if (degree == 0) {
             queue.push(decl);
         }
     }
 
     while (!queue.empty()) {
-        const DeclAST* decl = queue.front();
+        DeclAST* decl = queue.front();
         queue.pop();
         result.push_back(decl);
 
-        for (const DeclAST* dep : graph[decl]) {
+        for (DeclAST* dep : graph[decl]) {
             inDegree[dep]--;
             if (inDegree[dep] == 0) {
                 queue.push(dep);
@@ -213,8 +213,8 @@ std::vector<const DeclAST*> topologicalSort(SemaContext& ctx,
     }
 
     if (result.size() != deps.size()) {
-        std::vector<const DeclAST*> cycle;
-        for (const auto& [decl, degree] : inDegree) {
+        std::vector<DeclAST*> cycle;
+        for (auto& [decl, degree] : inDegree) {
             if (degree > 0) {
                 cycle.push_back(decl);
             }

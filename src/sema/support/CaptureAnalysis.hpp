@@ -85,6 +85,6 @@ void analyzeCaptures(FuncDeclAST* func, SemaContext& ctx);
 ///   // Nested function returned - marks as escaping
 ///   const counter () -> int = { return count += 1 };
 ///   return counter;
-void markClosureIfEscaping(const ExprAST* expr, SemaContext& ctx);
+void markClosureIfEscaping(ExprAST* expr, SemaContext& ctx);
 
 } // namespace sema

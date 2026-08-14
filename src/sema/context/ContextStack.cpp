@@ -43,7 +43,7 @@ void ContextStack::push(ContextKind kind, BaseAST* node) {
     m_stack.push_back(std::move(frame));
 }
 
-void ContextStack::pushFunction(FuncDeclAST* node, const TypeAST* returnType) {
+void ContextStack::pushFunction(FuncDeclAST* node, TypeAST* returnType) {
     ContextFrame frame;
     frame.kind = ContextKind::FuncBody;
     frame.node = node;
@@ -52,7 +52,7 @@ void ContextStack::pushFunction(FuncDeclAST* node, const TypeAST* returnType) {
     m_returnStack.push(returnType);
 }
 
-void ContextStack::pushAnonFunction(AnonFuncExprAST* node, const TypeAST* returnType) {
+void ContextStack::pushAnonFunction(AnonFuncExprAST* node, TypeAST* returnType) {
     ContextFrame frame;
     frame.kind = ContextKind::FuncBody;
     frame.node = node;
@@ -209,13 +209,13 @@ void ContextStack::popNarrowingLevel() {
     }
 }
 
-void ContextStack::narrowVariable(InternedString name, const TypeAST* type) {
+void ContextStack::narrowVariable(InternedString name, TypeAST* type) {
     if (!m_narrowing.empty()) {
         m_narrowing.back().narrowedTypes[name] = type;
     }
 }
 
-const TypeAST* ContextStack::getNarrowedType(InternedString name) const {
+TypeAST* ContextStack::getNarrowedType(InternedString name) const {
     // Search from innermost to outermost
     for (auto it = m_narrowing.rbegin(); it != m_narrowing.rend(); ++it) {
         auto found = it->narrowedTypes.find(name);

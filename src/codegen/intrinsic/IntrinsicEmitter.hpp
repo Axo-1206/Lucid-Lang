@@ -21,7 +21,7 @@ namespace codegen {
 /// @param ctx The code generation context.
 /// @return The LLVM value, or nullptr if void or invalid.
 llvm::Value* emitIntrinsicFromAST(
-    const IntrinsicCallExprAST* expr,
+    IntrinsicCallExprAST* expr,
     CodeGenContext& ctx
 );
 
@@ -34,7 +34,7 @@ llvm::Value* emitIntrinsicFromAST(
 llvm::Value* emitIntrinsic(
     const std::string& name,
     const std::vector<llvm::Value*>& args,
-    const IntrinsicCallExprAST* expr,
+    IntrinsicCallExprAST* expr,
     CodeGenContext& ctx
 );
 

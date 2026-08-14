@@ -20,7 +20,7 @@ namespace codegen {
 
 // ─── Helper: Get type name as string ────────────────────────────────────
 
-static std::string getLucidTypeName(CodeGenContext& ctx, const TypeAST* type) {
+static std::string getLucidTypeName(CodeGenContext& ctx, TypeAST* type) {
     if (!type) return "unknown";
     return getTypeName(ctx, type);
 }
@@ -30,7 +30,7 @@ static std::string getLucidTypeName(CodeGenContext& ctx, const TypeAST* type) {
 llvm::Value* emitLucidTypeIntrinsic(
     const std::string& name,
     const std::vector<llvm::Value*>& args,
-    const IntrinsicCallExprAST* expr,
+    IntrinsicCallExprAST* expr,
     CodeGenContext& ctx
 ) {
     SourceLocation loc = expr ? expr->loc : SourceLocation();
@@ -87,7 +87,7 @@ llvm::Value* emitLucidTypeIntrinsic(
             return nullptr;
         }
 
-        const TypeAST* type = expr->args[0]->resolvedType;
+        TypeAST* type = expr->args[0]->resolvedType;
         if (!type) {
             ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, loc,
                                    "could not determine type for '#typeof'");
@@ -153,7 +153,7 @@ llvm::Value* emitLucidTypeIntrinsic(
 llvm::Value* emitLucidPointerIntrinsic(
     const std::string& name,
     const std::vector<llvm::Value*>& args,
-    const IntrinsicCallExprAST* expr,
+    IntrinsicCallExprAST* expr,
     CodeGenContext& ctx
 ) {
     SourceLocation loc = expr ? expr->loc : SourceLocation();
@@ -233,7 +233,7 @@ llvm::Value* emitLucidPointerIntrinsic(
 llvm::Value* emitLucidMemoryMgmtIntrinsic(
     const std::string& name,
     const std::vector<llvm::Value*>& args,
-    const IntrinsicCallExprAST* expr,
+    IntrinsicCallExprAST* expr,
     CodeGenContext& ctx
 ) {
     SourceLocation loc = expr ? expr->loc : SourceLocation();
@@ -399,7 +399,7 @@ llvm::Value* emitLucidMemoryMgmtIntrinsic(
 llvm::Value* emitLucidStringIntrinsic(
     const std::string& name,
     const std::vector<llvm::Value*>& args,
-    const IntrinsicCallExprAST* expr,
+    IntrinsicCallExprAST* expr,
     CodeGenContext& ctx
 ) {
     SourceLocation loc = expr ? expr->loc : SourceLocation();
@@ -541,7 +541,7 @@ llvm::Value* emitLucidStringIntrinsic(
 llvm::Value* emitLucidControlIntrinsic(
     const std::string& name,
     const std::vector<llvm::Value*>& args,
-    const IntrinsicCallExprAST* expr,
+    IntrinsicCallExprAST* expr,
     CodeGenContext& ctx
 ) {
     SourceLocation loc = expr ? expr->loc : SourceLocation();

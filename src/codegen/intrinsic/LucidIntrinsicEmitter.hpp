@@ -30,7 +30,7 @@ namespace codegen {
 llvm::Value* emitLucidTypeIntrinsic(
     const std::string& name,
     const std::vector<llvm::Value*>& args,
-    const IntrinsicCallExprAST* expr,
+    IntrinsicCallExprAST* expr,
     CodeGenContext& ctx
 );
 
@@ -43,7 +43,7 @@ llvm::Value* emitLucidTypeIntrinsic(
 llvm::Value* emitLucidPointerIntrinsic(
     const std::string& name,
     const std::vector<llvm::Value*>& args,
-    const IntrinsicCallExprAST* expr,
+    IntrinsicCallExprAST* expr,
     CodeGenContext& ctx
 );
 
@@ -56,7 +56,7 @@ llvm::Value* emitLucidPointerIntrinsic(
 llvm::Value* emitLucidMemoryMgmtIntrinsic(
     const std::string& name,
     const std::vector<llvm::Value*>& args,
-    const IntrinsicCallExprAST* expr,
+    IntrinsicCallExprAST* expr,
     CodeGenContext& ctx
 );
 
@@ -69,7 +69,7 @@ llvm::Value* emitLucidMemoryMgmtIntrinsic(
 llvm::Value* emitLucidStringIntrinsic(
     const std::string& name,
     const std::vector<llvm::Value*>& args,
-    const IntrinsicCallExprAST* expr,
+    IntrinsicCallExprAST* expr,
     CodeGenContext& ctx
 );
 
@@ -82,7 +82,7 @@ llvm::Value* emitLucidStringIntrinsic(
 llvm::Value* emitLucidControlIntrinsic(
     const std::string& name,
     const std::vector<llvm::Value*>& args,
-    const IntrinsicCallExprAST* expr,
+    IntrinsicCallExprAST* expr,
     CodeGenContext& ctx
 );
 

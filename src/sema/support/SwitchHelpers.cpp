@@ -14,8 +14,8 @@ namespace switch_helpers {
 
 // ─── Exhaustiveness Checking ──────────────────────────────────────────────
 
-bool checkExhaustiveness(const SwitchStmtAST* stmt, 
-                          const TypeAST* subjectType, 
+bool checkExhaustiveness(SwitchStmtAST* stmt, 
+                          TypeAST* subjectType, 
                           SemaContext& ctx) {
     if (!stmt || !subjectType) return false;
     
@@ -49,14 +49,14 @@ bool checkExhaustiveness(const SwitchStmtAST* stmt,
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
 std::unordered_set<InternedString> collectCoveredVariants(
-    const SwitchStmtAST* stmt, 
+    SwitchStmtAST* stmt, 
     SemaContext& ctx) {
     
     std::unordered_set<InternedString> covered;
     if (!stmt) return covered;
     
     for (const SwitchCaseAST* caseStmt : stmt->cases) {
-        for (const ExprAST* value : caseStmt->values) {
+        for (ExprAST* value : caseStmt->values) {
             if (isEnumVariantAccess(value, ctx)) {
                 InternedString variantName = getEnumVariantName(value, ctx);
                 if (variantName.isValid()) {
@@ -69,20 +69,20 @@ std::unordered_set<InternedString> collectCoveredVariants(
     return covered;
 }
 
-bool isEnumVariantAccess(const ExprAST* value, SemaContext& ctx) {
+bool isEnumVariantAccess(ExprAST* value, SemaContext& ctx) {
     if (!value || !value->isa<FieldAccessExprAST>()) return false;
     
     const FieldAccessExprAST* field = value->as<FieldAccessExprAST>();
     
     if (!field->object->isa<IdentifierExprAST>()) return false;
     
-    const IdentifierExprAST* id = field->object->as<IdentifierExprAST>();
+    IdentifierExprAST* id = field->object->as<IdentifierExprAST>();
     
-    const TypeDeclAST* decl = ctx.lookupType(id->name);
+    TypeDeclAST* decl = ctx.lookupType(id->name);
     return decl && decl->isa<EnumDeclAST>();
 }
 
-InternedString getEnumVariantName(const ExprAST* value, SemaContext& ctx) {
+InternedString getEnumVariantName(ExprAST* value, SemaContext& ctx) {
     if (!value || !value->isa<FieldAccessExprAST>()) return InternedString();
     
     const FieldAccessExprAST* field = value->as<FieldAccessExprAST>();

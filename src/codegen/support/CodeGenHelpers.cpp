@@ -8,7 +8,7 @@ namespace codegen {
 
 llvm::Value* getArrayLength(
     llvm::Value* target,
-    const ArrayTypeAST* arrayType,
+    ArrayTypeAST* arrayType,
     CodeGenContext& ctx
 ) {
     if (!target || !arrayType) return nullptr;
@@ -121,7 +121,7 @@ static void lowerRangeForLoop(
         return;
     }
 
-    const RangeExprAST* range = stmt->iterable->as<RangeExprAST>();
+    RangeExprAST* range = stmt->iterable->as<RangeExprAST>();
 
     // Lower start and end values
     llvm::Value* startVal = lowerExpression(range->lo, ctx);
@@ -295,14 +295,14 @@ static void lowerCollectionForLoop(
     }
 
     // ─── 2. Get array type and length ─────────────────────────────────────
-    const TypeAST* iterableType = stmt->iterable->resolvedType;
+    TypeAST* iterableType = stmt->iterable->resolvedType;
     if (!iterableType || !iterableType->isa<ArrayTypeAST>()) {
         ctx.diagnostics.errorAt(DiagCode::Sem_InvalidIterator, stmt->iterable->loc,
                                 "collection loop requires an array type");
         return;
     }
 
-    const ArrayTypeAST* arrayType = iterableType->as<ArrayTypeAST>();
+    ArrayTypeAST* arrayType = iterableType->as<ArrayTypeAST>();
     llvm::Type* elemType = getType(ctx, arrayType->element);
     if (!elemType) {
         return;

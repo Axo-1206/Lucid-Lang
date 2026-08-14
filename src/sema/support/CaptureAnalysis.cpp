@@ -152,7 +152,7 @@ struct CaptureAnalyzer {
         }
         
         // Check if the name exists in any outer scope
-        const ValueDeclAST* decl = ctx.lookupValue(name);
+        ValueDeclAST* decl = ctx.lookupValue(name);
         if (!decl) {
             return false;
         }
@@ -163,11 +163,11 @@ struct CaptureAnalyzer {
         return true;
     }
     
-    const ValueDeclAST* getDeclaration(InternedString name) const {
+    ValueDeclAST* getDeclaration(InternedString name) const {
         return ctx.lookupValue(name);
     }
     
-    bool shouldCaptureByReference(const ValueDeclAST* decl, const IdentifierExprAST* id) const {
+    bool shouldCaptureByReference(ValueDeclAST* decl, IdentifierExprAST* id) const {
         if (!decl) return false;
         // Conservative: capture all variables by reference
         // TODO: Optimize to capture by value when possible (read-only, small types)
@@ -176,7 +176,7 @@ struct CaptureAnalyzer {
     
     // ─── Process Identifier ──────────────────────────────────────────────────
     
-    void processIdentifier(const IdentifierExprAST* id) {
+    void processIdentifier(IdentifierExprAST* id) {
         if (!id) return;
         
         InternedString name = id->name;
@@ -201,13 +201,13 @@ struct CaptureAnalyzer {
             return;
         }
         
-        const ValueDeclAST* decl = getDeclaration(name);
+        ValueDeclAST* decl = getDeclaration(name);
         if (!decl) {
             return;
         }
         
         // ─── Validate capture rules ─────────────────────────────────────────
-        const TypeAST* varType = decl->type;
+        TypeAST* varType = decl->type;
         
         // Rule 3: Borrowed types (&T, [_]T) cannot be captured
         if (varType && isBorrowedType(varType)) {
@@ -245,7 +245,7 @@ struct CaptureAnalyzer {
     
     // ─── AST Walking ──────────────────────────────────────────────────────────
     
-    void walkExpr(const ExprAST* expr) {
+    void walkExpr(ExprAST* expr) {
         if (!expr) return;
         
         switch (expr->kind) {
@@ -254,7 +254,7 @@ struct CaptureAnalyzer {
                 break;
                 
             case ASTKind::BinaryExpr: {
-                const BinaryExprAST* bin = expr->as<BinaryExprAST>();
+                BinaryExprAST* bin = expr->as<BinaryExprAST>();
                 walkExpr(bin->left);
                 walkExpr(bin->right);
                 break;
@@ -269,7 +269,7 @@ struct CaptureAnalyzer {
             case ASTKind::CallExpr: {
                 const CallExprAST* call = expr->as<CallExprAST>();
                 walkExpr(call->callee);
-                for (const ExprAST* arg : call->args) {
+                for (ExprAST* arg : call->args) {
                     walkExpr(arg);
                 }
                 break;
@@ -298,7 +298,7 @@ struct CaptureAnalyzer {
             
             case ASTKind::ArrayLiteralExpr: {
                 const ArrayLiteralExprAST* arr = expr->as<ArrayLiteralExprAST>();
-                for (const ExprAST* elem : arr->elements) {
+                for (ExprAST* elem : arr->elements) {
                     walkExpr(elem);
                 }
                 break;
@@ -306,7 +306,7 @@ struct CaptureAnalyzer {
             
             case ASTKind::StructLiteralExpr: {
                 const StructLiteralExprAST* st = expr->as<StructLiteralExprAST>();
-                for (const FieldInitAST* init : st->inits) {
+                for (FieldInitAST* init : st->inits) {
                     walkExpr(init->value);
                 }
                 break;
@@ -331,7 +331,7 @@ struct CaptureAnalyzer {
                 walkExpr(pipeline->seed);
                 for (const PipelineStepAST* step : pipeline->steps) {
                     walkExpr(step->callable);
-                    for (const ExprAST* arg : step->packArgs) {
+                    for (ExprAST* arg : step->packArgs) {
                         walkExpr(arg);
                     }
                 }
@@ -372,7 +372,7 @@ struct CaptureAnalyzer {
             }
             
             case ASTKind::RangeExpr: {
-                const RangeExprAST* range = expr->as<RangeExprAST>();
+                RangeExprAST* range = expr->as<RangeExprAST>();
                 walkExpr(range->lo);
                 walkExpr(range->hi);
                 break;
@@ -391,14 +391,14 @@ struct CaptureAnalyzer {
         }
     }
     
-    void walkStmt(const StmtAST* stmt) {
+    void walkStmt(StmtAST* stmt) {
         if (!stmt) return;
         
         switch (stmt->kind) {
             case ASTKind::BlockStmt: {
-                const BlockStmtAST* block = stmt->as<BlockStmtAST>();
+                BlockStmtAST* block = stmt->as<BlockStmtAST>();
                 pushLocalScope();
-                for (const StmtAST* s : block->stmts) {
+                for (StmtAST* s : block->stmts) {
                     walkStmt(s);
                 }
                 popLocalScope();
@@ -406,17 +406,17 @@ struct CaptureAnalyzer {
             }
             
             case ASTKind::ExprStmt: {
-                const ExprStmtAST* exprStmt = stmt->as<ExprStmtAST>();
+                ExprStmtAST* exprStmt = stmt->as<ExprStmtAST>();
                 walkExpr(exprStmt->expr);
                 break;
             }
             
             case ASTKind::DeclStmt: {
-                const DeclStmtAST* declStmt = stmt->as<DeclStmtAST>();
+                DeclStmtAST* declStmt = stmt->as<DeclStmtAST>();
                 // Declarations inside the closure body don't create captures
                 // But their initializers might reference outer variables
                 if (declStmt->decl && declStmt->decl->isa<VarDeclAST>()) {
-                    const VarDeclAST* var = declStmt->decl->as<VarDeclAST>();
+                    VarDeclAST* var = declStmt->decl->as<VarDeclAST>();
                     if (var->init) {
                         walkExpr(var->init);
                     }
@@ -431,7 +431,7 @@ struct CaptureAnalyzer {
             }
             
             case ASTKind::IfStmt: {
-                const IfStmtAST* ifStmt = stmt->as<IfStmtAST>();
+                IfStmtAST* ifStmt = stmt->as<IfStmtAST>();
                 walkExpr(ifStmt->condition);
                 walkStmt(ifStmt->thenBranch);
                 if (ifStmt->elseBranch) {
@@ -441,10 +441,10 @@ struct CaptureAnalyzer {
             }
             
             case ASTKind::SwitchStmt: {
-                const SwitchStmtAST* switchStmt = stmt->as<SwitchStmtAST>();
+                SwitchStmtAST* switchStmt = stmt->as<SwitchStmtAST>();
                 walkExpr(switchStmt->subject);
                 for (const SwitchCaseAST* caseStmt : switchStmt->cases) {
-                    for (const ExprAST* value : caseStmt->values) {
+                    for (ExprAST* value : caseStmt->values) {
                         walkExpr(value);
                     }
                     if (caseStmt->body) {
@@ -458,7 +458,7 @@ struct CaptureAnalyzer {
             }
             
             case ASTKind::ForStmt: {
-                const ForStmtAST* forStmt = stmt->as<ForStmtAST>();
+                ForStmtAST* forStmt = stmt->as<ForStmtAST>();
                 walkExpr(forStmt->iterable);
                 if (forStmt->step) {
                     walkExpr(forStmt->step);
@@ -478,7 +478,7 @@ struct CaptureAnalyzer {
             }
             
             case ASTKind::WhileStmt: {
-                const WhileStmtAST* whileStmt = stmt->as<WhileStmtAST>();
+                WhileStmtAST* whileStmt = stmt->as<WhileStmtAST>();
                 walkExpr(whileStmt->condition);
                 if (whileStmt->body) {
                     walkStmt(whileStmt->body);
@@ -487,7 +487,7 @@ struct CaptureAnalyzer {
             }
             
             case ASTKind::DoWhileStmt: {
-                const DoWhileStmtAST* doWhileStmt = stmt->as<DoWhileStmtAST>();
+                DoWhileStmtAST* doWhileStmt = stmt->as<DoWhileStmtAST>();
                 if (doWhileStmt->body) {
                     walkStmt(doWhileStmt->body);
                 }
@@ -496,7 +496,7 @@ struct CaptureAnalyzer {
             }
             
             case ASTKind::ReturnStmt: {
-                const ReturnStmtAST* returnStmt = stmt->as<ReturnStmtAST>();
+                ReturnStmtAST* returnStmt = stmt->as<ReturnStmtAST>();
                 if (returnStmt->value) {
                     walkExpr(returnStmt->value);
                 }
@@ -504,7 +504,7 @@ struct CaptureAnalyzer {
             }
             
             case ASTKind::AsyncStmt: {
-                const AsyncStmtAST* asyncStmt = stmt->as<AsyncStmtAST>();
+                AsyncStmtAST* asyncStmt = stmt->as<AsyncStmtAST>();
                 if (asyncStmt->call) {
                     walkExpr(asyncStmt->call);
                 }
@@ -519,7 +519,7 @@ struct CaptureAnalyzer {
             }
             
             case ASTKind::SpawnStmt: {
-                const SpawnStmtAST* spawnStmt = stmt->as<SpawnStmtAST>();
+                SpawnStmtAST* spawnStmt = stmt->as<SpawnStmtAST>();
                 if (spawnStmt->call) {
                     walkExpr(spawnStmt->call);
                 }
@@ -532,16 +532,16 @@ struct CaptureAnalyzer {
             }
             
             case ASTKind::AwaitStmt: {
-                const AwaitStmtAST* awaitStmt = stmt->as<AwaitStmtAST>();
-                for (const ExprAST* target : awaitStmt->targets) {
+                AwaitStmtAST* awaitStmt = stmt->as<AwaitStmtAST>();
+                for (ExprAST* target : awaitStmt->targets) {
                     walkExpr(target);
                 }
                 break;
             }
             
             case ASTKind::JoinStmt: {
-                const JoinStmtAST* joinStmt = stmt->as<JoinStmtAST>();
-                for (const ExprAST* target : joinStmt->targets) {
+                JoinStmtAST* joinStmt = stmt->as<JoinStmtAST>();
+                for (ExprAST* target : joinStmt->targets) {
                     walkExpr(target);
                 }
                 break;
@@ -599,8 +599,8 @@ void analyzeCaptures(AnonFuncExprAST* expr, SemaContext& ctx) {
     
     // ─── Step 1: Collect the closure's own parameters ──────────────────────
     if (expr->funcType) {
-        for (const FuncTypeAST* group = expr->funcType; group; group = group->getNext()) {
-            for (const ParamAST* param : group->params) {
+        for (FuncTypeAST* group = expr->funcType; group; group = group->getNext()) {
+            for (ParamAST* param : group->params) {
                 analyzer.ownParams.insert(param->name);
             }
         }
@@ -643,8 +643,8 @@ void analyzeCaptures(FuncDeclAST* func, SemaContext& ctx) {
     
     // ─── Step 1: Collect the function's own parameters ──────────────────────
     if (func->type) {
-        for (const FuncTypeAST* group = func->funcType; group; group = group->getNext()) {
-            for (const ParamAST* param : group->params) {
+        for (FuncTypeAST* group = func->funcType; group; group = group->getNext()) {
+            for (ParamAST* param : group->params) {
                 analyzer.ownParams.insert(param->name);
             }
         }
@@ -673,7 +673,7 @@ void analyzeCaptures(FuncDeclAST* func, SemaContext& ctx) {
 
 // ─── markClosureIfEscaping ──────────────────────────────────────────────────
 
-void markClosureIfEscaping(const ExprAST* expr, SemaContext& ctx) {
+void markClosureIfEscaping(ExprAST* expr, SemaContext& ctx) {
     if (!expr) return;
 
     switch (expr->kind) {
@@ -691,8 +691,8 @@ void markClosureIfEscaping(const ExprAST* expr, SemaContext& ctx) {
         // ─── Case 2: Identifier expression ─────────────────────────────────
         // `return myFunc;` where myFunc is a function declaration
         case ASTKind::IdentifierExpr: {
-            const IdentifierExprAST* id = expr->as<IdentifierExprAST>();
-            const ValueDeclAST* decl = ctx.lookupValue(id->name);
+            IdentifierExprAST* id = expr->as<IdentifierExprAST>();
+            ValueDeclAST* decl = ctx.lookupValue(id->name);
             
             if (!decl) return;
             
@@ -745,7 +745,7 @@ void markClosureIfEscaping(const ExprAST* expr, SemaContext& ctx) {
             const FieldAccessExprAST* field = expr->as<FieldAccessExprAST>();
             
             if (field->object && field->object->isa<IdentifierExprAST>()) {
-                const IdentifierExprAST* id = field->object->as<IdentifierExprAST>();
+                IdentifierExprAST* id = field->object->as<IdentifierExprAST>();
                 
                 if (ctx.isModuleMember(id->name)) {
                     LOG_SEMA("markClosureIfEscaping: static struct field '",
@@ -765,7 +765,7 @@ void markClosureIfEscaping(const ExprAST* expr, SemaContext& ctx) {
         // ─── Case 5: Call expression returning a function ───────────────────
         case ASTKind::CallExpr: {
             const CallExprAST* call = expr->as<CallExprAST>();
-            const FuncDeclAST* funcDecl = resolveCalleeOrError(call->callee, ctx);
+            FuncDeclAST* funcDecl = resolveCalleeOrError(call->callee, ctx);
             if (funcDecl) {
                 LOG_SEMA("markClosureIfEscaping: call to '",
                          ctx.pool.lookup(funcDecl->name),
@@ -776,7 +776,7 @@ void markClosureIfEscaping(const ExprAST* expr, SemaContext& ctx) {
 
         // ─── Case 6: Binary expression ─────────────────────────────────────
         case ASTKind::BinaryExpr: {
-            const BinaryExprAST* bin = expr->as<BinaryExprAST>();
+            BinaryExprAST* bin = expr->as<BinaryExprAST>();
             markClosureIfEscaping(bin->left, ctx);
             markClosureIfEscaping(bin->right, ctx);
             return;
@@ -793,7 +793,7 @@ void markClosureIfEscaping(const ExprAST* expr, SemaContext& ctx) {
         // ─── Case 8: Array literal containing functions ─────────────────────
         case ASTKind::ArrayLiteralExpr: {
             const ArrayLiteralExprAST* arr = expr->as<ArrayLiteralExprAST>();
-            for (const ExprAST* elem : arr->elements) {
+            for (ExprAST* elem : arr->elements) {
                 markClosureIfEscaping(elem, ctx);
             }
             return;
@@ -802,7 +802,7 @@ void markClosureIfEscaping(const ExprAST* expr, SemaContext& ctx) {
         // ─── Case 9: Struct literal containing functions ────────────────────
         case ASTKind::StructLiteralExpr: {
             const StructLiteralExprAST* st = expr->as<StructLiteralExprAST>();
-            for (const FieldInitAST* init : st->inits) {
+            for (FieldInitAST* init : st->inits) {
                 markClosureIfEscaping(init->value, ctx);
             }
             return;

@@ -21,15 +21,15 @@ namespace codegen {
 // 1. Detection Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-bool isGenericFunction(const FuncDeclAST* decl) {
+bool isGenericFunction(FuncDeclAST* decl) {
     return decl && !decl->genericParams.empty();
 }
 
-bool isGenericStruct(const StructDeclAST* decl) {
+bool isGenericStruct(StructDeclAST* decl) {
     return decl && !decl->genericParams.empty();
 }
 
-bool shouldSpecialize(const DeclAST* decl) {
+bool shouldSpecialize(DeclAST* decl) {
     if (!decl) return false;
 
     if (decl->isa<FuncDeclAST>()) {
@@ -42,7 +42,7 @@ bool shouldSpecialize(const DeclAST* decl) {
 }
 
 bool isGenericParameterName(InternedString name, const ArenaSpan<GenericParamDeclAST*>& genericParams) {
-    for (const GenericParamDeclAST* param : genericParams) {
+    for (GenericParamDeclAST* param : genericParams) {
         if (param->name == name) {
             return true;
         }
@@ -63,17 +63,17 @@ size_t findGenericParamIndex(InternedString name, const ArenaSpan<GenericParamDe
 // 2. Type Substitution
 // ─────────────────────────────────────────────────────────────────────────────
 
-const TypeAST* substituteGenericType(
-    const TypeAST* type,
+TypeAST* substituteGenericType(
+    TypeAST* type,
     const ArenaSpan<GenericParamDeclAST*>& genericParams,
-    const std::vector<const TypeAST*>& typeArgs,
+    const std::vector<TypeAST*>& typeArgs,
     CodeGenContext& ctx
 ) {
     if (!type) return nullptr;
     (void)ctx;
 
     if (type->isa<NamedTypeAST>()) {
-        const NamedTypeAST* named = type->as<NamedTypeAST>();
+        NamedTypeAST* named = type->as<NamedTypeAST>();
         size_t index = findGenericParamIndex(named->name, genericParams);
         if (index != SIZE_MAX && index < typeArgs.size()) {
             return typeArgs[index];
@@ -82,8 +82,8 @@ const TypeAST* substituteGenericType(
     }
 
     if (type->isa<ArrayTypeAST>()) {
-        const ArrayTypeAST* arr = type->as<ArrayTypeAST>();
-        const TypeAST* substitutedElement = substituteGenericType(
+        ArrayTypeAST* arr = type->as<ArrayTypeAST>();
+        TypeAST* substitutedElement = substituteGenericType(
             arr->element,
             genericParams,
             typeArgs,
@@ -97,8 +97,8 @@ const TypeAST* substituteGenericType(
     }
 
     if (type->isa<NullableTypeAST>()) {
-        const NullableTypeAST* nullable = type->as<NullableTypeAST>();
-        const TypeAST* substitutedInner = substituteGenericType(
+        NullableTypeAST* nullable = type->as<NullableTypeAST>();
+        TypeAST* substitutedInner = substituteGenericType(
             nullable->inner,
             genericParams,
             typeArgs,
@@ -112,8 +112,8 @@ const TypeAST* substituteGenericType(
     }
 
     if (type->isa<FallibleTypeAST>()) {
-        const FallibleTypeAST* fallible = type->as<FallibleTypeAST>();
-        const TypeAST* substitutedInner = substituteGenericType(
+        FallibleTypeAST* fallible = type->as<FallibleTypeAST>();
+        TypeAST* substitutedInner = substituteGenericType(
             fallible->inner,
             genericParams,
             typeArgs,
@@ -127,8 +127,8 @@ const TypeAST* substituteGenericType(
     }
 
     if (type->isa<CombinedTypeAST>()) {
-        const CombinedTypeAST* combined = type->as<CombinedTypeAST>();
-        const TypeAST* substitutedInner = substituteGenericType(
+        CombinedTypeAST* combined = type->as<CombinedTypeAST>();
+        TypeAST* substitutedInner = substituteGenericType(
             combined->inner,
             genericParams,
             typeArgs,
@@ -142,8 +142,8 @@ const TypeAST* substituteGenericType(
     }
 
     if (type->isa<PtrTypeAST>()) {
-        const PtrTypeAST* ptr = type->as<PtrTypeAST>();
-        const TypeAST* substitutedInner = substituteGenericType(
+        PtrTypeAST* ptr = type->as<PtrTypeAST>();
+        TypeAST* substitutedInner = substituteGenericType(
             ptr->inner,
             genericParams,
             typeArgs,
@@ -157,8 +157,8 @@ const TypeAST* substituteGenericType(
     }
 
     if (type->isa<RefTypeAST>()) {
-        const RefTypeAST* ref = type->as<RefTypeAST>();
-        const TypeAST* substitutedInner = substituteGenericType(
+        RefTypeAST* ref = type->as<RefTypeAST>();
+        TypeAST* substitutedInner = substituteGenericType(
             ref->inner,
             genericParams,
             typeArgs,
@@ -184,8 +184,8 @@ const TypeAST* substituteGenericType(
 // ─────────────────────────────────────────────────────────────────────────────
 
 llvm::Function* createSpecializedFunction(
-    const FuncDeclAST* funcDecl,
-    const std::vector<const TypeAST*>& typeArgs,
+    FuncDeclAST* funcDecl,
+    const std::vector<TypeAST*>& typeArgs,
     CodeGenContext& ctx
 ) {
     if (!funcDecl) return nullptr;
@@ -214,9 +214,9 @@ llvm::Function* createSpecializedFunction(
         paramTypes.push_back(llvm::PointerType::get(ctx.llvmCtx, 0));
     }
 
-    const FuncTypeAST* funcType = funcDecl->funcType;
+    FuncTypeAST* funcType = funcDecl->funcType;
     while (funcType) {
-        for (const ParamAST* param : funcType->params) {
+        for (ParamAST* param : funcType->params) {
             llvm::Type* paramType = getType(ctx, param->type, &subst);
             if (!paramType) {
                 ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, param->loc,
@@ -266,9 +266,9 @@ llvm::Function* createSpecializedFunction(
         func->getArg(paramIndex++)->setName("env");
     }
 
-    const FuncTypeAST* paramTypeIter = funcDecl->funcType;
+    FuncTypeAST* paramTypeIter = funcDecl->funcType;
     while (paramTypeIter) {
-        for (const ParamAST* param : paramTypeIter->params) {
+        for (ParamAST* param : paramTypeIter->params) {
             if (paramIndex < func->arg_size()) {
                 func->getArg(paramIndex)->setName(ctx.pool.lookup(param->name));
                 paramIndex++;
@@ -284,8 +284,8 @@ llvm::Function* createSpecializedFunction(
 }
 
 llvm::Type* createSpecializedStruct(
-    const StructDeclAST* structDecl,
-    const std::vector<const TypeAST*>& typeArgs,
+    StructDeclAST* structDecl,
+    const std::vector<TypeAST*>& typeArgs,
     CodeGenContext& ctx
 ) {
     if (!structDecl) return nullptr;
@@ -310,7 +310,7 @@ llvm::Type* createSpecializedStruct(
     GenericSubstitution subst{structDecl->genericParams, typeArgs};
     std::vector<llvm::Type*> fieldTypes;
 
-    for (const FieldDeclAST* field : structDecl->fields) {
+    for (FieldDeclAST* field : structDecl->fields) {
         llvm::Type* fieldType = getType(ctx, field->type, &subst);
         if (!fieldType) {
             ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, field->loc,
@@ -348,7 +348,7 @@ llvm::Type* createSpecializedStruct(
 // ─────────────────────────────────────────────────────────────────────────────
 
 llvm::Function* generateErasedGenericFunction(
-    const FuncDeclAST* funcDecl,
+    FuncDeclAST* funcDecl,
     CodeGenContext& ctx
 ) {
     if (!funcDecl) return nullptr;
@@ -362,7 +362,7 @@ llvm::Function* generateErasedGenericFunction(
         paramTypes.push_back(llvm::PointerType::get(ctx.llvmCtx, 0));
     }
 
-    const FuncTypeAST* funcType = funcDecl->funcType;
+    FuncTypeAST* funcType = funcDecl->funcType;
     while (funcType) {
         for (size_t i = 0; i < funcType->params.size(); ++i) {
             paramTypes.push_back(llvm::PointerType::get(ctx.llvmCtx, 0));
@@ -395,9 +395,9 @@ llvm::Function* generateErasedGenericFunction(
         func->getArg(paramIndex++)->setName("env");
     }
 
-    const FuncTypeAST* paramTypeIter = funcDecl->funcType;
+    FuncTypeAST* paramTypeIter = funcDecl->funcType;
     while (paramTypeIter) {
-        for (const ParamAST* param : paramTypeIter->params) {
+        for (ParamAST* param : paramTypeIter->params) {
             if (paramIndex < func->arg_size()) {
                 std::string paramName = ctx.pool.lookup(param->name);
                 func->getArg(paramIndex)->setName(paramName + "_tagged");
@@ -414,7 +414,7 @@ llvm::Function* generateErasedGenericFunction(
 }
 
 llvm::Type* generateErasedGenericStruct(
-    const StructDeclAST* structDecl,
+    StructDeclAST* structDecl,
     CodeGenContext& ctx
 ) {
     if (!structDecl) return nullptr;
@@ -469,8 +469,8 @@ llvm::Type* generateErasedGenericStruct(
 // ─────────────────────────────────────────────────────────────────────────────
 
 llvm::Function* getOrCreateSpecializedFunction(
-    const FuncDeclAST* funcDecl,
-    const std::vector<const TypeAST*>& typeArgs,
+    FuncDeclAST* funcDecl,
+    const std::vector<TypeAST*>& typeArgs,
     CodeGenContext& ctx
 ) {
     if (!funcDecl || !isGenericFunction(funcDecl)) return nullptr;
@@ -498,8 +498,8 @@ llvm::Function* getOrCreateSpecializedFunction(
 }
 
 llvm::Type* getOrCreateSpecializedStruct(
-    const StructDeclAST* structDecl,
-    const std::vector<const TypeAST*>& typeArgs,
+    StructDeclAST* structDecl,
+    const std::vector<TypeAST*>& typeArgs,
     CodeGenContext& ctx
 ) {
     if (!structDecl || !isGenericStruct(structDecl)) return nullptr;

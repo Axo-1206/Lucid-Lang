@@ -22,7 +22,7 @@ namespace sema {
 // resolveExprWithTarget - Main Entry Point
 // =============================================================================
 
-TypeAST* resolveExprWithTarget(ExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+TypeAST* resolveExprWithTarget(ExprAST* expr, TypeAST* targetType, SemaContext& ctx) {
     if (!expr) {
         return ctx.getUnknownType();
     }
@@ -130,7 +130,7 @@ TypeAST* resolveExpr(ExprAST* expr, SemaContext& ctx) {
 // resolveLiteralExpr
 // =============================================================================
 
-TypeAST* resolveLiteralExpr(LiteralExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+TypeAST* resolveLiteralExpr(LiteralExprAST* expr, TypeAST* targetType, SemaContext& ctx) {
     TypeAST* result = nullptr;
     ValueState state = ValueState::Definite;
 
@@ -214,7 +214,7 @@ TypeAST* resolveLiteralExpr(LiteralExprAST* expr, const TypeAST* targetType, Sem
 // resolveIdentifierExpr
 // =============================================================================
 
-TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, TypeAST* targetType, SemaContext& ctx) {
     // ─── Special case: `_` is the discard placeholder ──────────────────────
     if (ctx.pool.lookupView(expr->name) == "_") {
         // `_` has no type - it's a placeholder, not a real value
@@ -237,7 +237,7 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetTyp
     }
 
     // ─── Step 2: Look up the value declaration ────────────────────────────
-    const ValueDeclAST* decl = ctx.lookupValue(expr->name);
+    ValueDeclAST* decl = ctx.lookupValue(expr->name);
     if (!decl) {
         ctx.diagnostics.error(DiagCode::Sem_UndefinedValue, expr,
                               "undefined value '", ctx.pool.lookup(expr->name), "'");
@@ -248,12 +248,12 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetTyp
     }
 
     // ─── Store the resolved declaration on the AST node ────────────────
-    const_cast<IdentifierExprAST*>(expr)->resolvedDecl = decl;
+    expr->as<IdentifierExprAST>()->resolvedDecl = decl;
 
     // ─── Step 3: Get the declaration's type ──────────────────────
     // The type should have been set during resolution of the declaration
     // (resolveVarDecl, resolveParam, resolveFuncDecl, resolveStructFields, etc.)
-    const TypeAST* declType = decl->type;
+    TypeAST* declType = decl->type;
     if (!declType) {
         ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
                               "'", ctx.pool.lookup(expr->name), "' has no type information");
@@ -326,10 +326,10 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetTyp
             return ctx.getUnknownType();
         }
 
-        const FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
+        FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
 
         // Resolve each generic argument
-        for (const TypeAST* arg : expr->genericArgs) {
+        for (TypeAST* arg : expr->genericArgs) {
             if (!resolveType(arg, ctx)) {
                 ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
                                       "invalid generic argument type for '",
@@ -368,7 +368,7 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetTyp
     if (decl->isa<EnumVariantAST>() || decl->isa<FuncDeclAST>()) {
         state = ValueState::Definite;
     } else if (decl->isa<VarDeclAST>()) {
-        const VarDeclAST* var = decl->as<VarDeclAST>();
+        VarDeclAST* var = decl->as<VarDeclAST>();
         if (var->init && var->init->isConst) {
             state = ValueState::Definite;
         } else {
@@ -384,22 +384,22 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetTyp
 
     // ─── Step 8: Set isLValue and isConst based on declaration type ──────
     if (decl->isa<VarDeclAST>()) {
-        const VarDeclAST* varDecl = decl->as<VarDeclAST>();
+        VarDeclAST* varDecl = decl->as<VarDeclAST>();
         expr->isLValue = (varDecl->keyword == DeclKeyword::Let);
         expr->isConst = (varDecl->keyword == DeclKeyword::Const) && (state == ValueState::Definite);
     } else if (decl->isa<FuncDeclAST>()) {
-        const FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
+        FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
         expr->isLValue = (funcDecl->keyword == DeclKeyword::Let);
         expr->isConst = (funcDecl->keyword == DeclKeyword::Const);
     } else if (decl->isa<ParamAST>()) {
-        const ParamAST* param = decl->as<ParamAST>();
+        ParamAST* param = decl->as<ParamAST>();
         expr->isLValue = !param->isConst();
         expr->isConst = param->isConst();
     } else if (decl->isa<EnumVariantAST>()) {
         expr->isLValue = false;
         expr->isConst = true;
     } else if (decl->isa<FieldDeclAST>()) {
-        const FieldDeclAST* field = decl->as<FieldDeclAST>();
+        FieldDeclAST* field = decl->as<FieldDeclAST>();
         expr->isLValue = false;  // Field access sets this based on object mutability
         expr->isConst = field->isConst();
     } else {
@@ -408,7 +408,7 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetTyp
     }
 
     // ─── Step 9: Apply type narrowing from if conditions ────────────────────
-    const TypeAST* narrowedType = ctx.stack.getNarrowedType(expr->name);
+    TypeAST* narrowedType = ctx.stack.getNarrowedType(expr->name);
     if (narrowedType) {
         expr->resolvedType = const_cast<TypeAST*>(narrowedType);
         expr->valueState = state;
@@ -427,12 +427,12 @@ TypeAST* resolveIdentifierExpr(IdentifierExprAST* expr, const TypeAST* targetTyp
 // resolveArrayLiteralExpr
 // =============================================================================
 
-TypeAST* resolveArrayLiteralExpr(ArrayLiteralExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+TypeAST* resolveArrayLiteralExpr(ArrayLiteralExprAST* expr, TypeAST* targetType, SemaContext& ctx) {
     if (expr->elements.empty()) {
         // ─── Empty array: type must be inferred from context ────────────────
         // If targetType is an array type, use its element type
         if (targetType && targetType->isa<ArrayTypeAST>()) {
-            const ArrayTypeAST* targetArray = targetType->as<ArrayTypeAST>();
+            ArrayTypeAST* targetArray = targetType->as<ArrayTypeAST>();
             ArrayTypeAST* resultType = ctx.getArrayType(ArrayKind::Dynamic, 0, targetArray->element);
             expr->resolvedType = resultType;
             expr->valueState = ValueState::Definite;
@@ -450,7 +450,7 @@ TypeAST* resolveArrayLiteralExpr(ArrayLiteralExprAST* expr, const TypeAST* targe
     }
 
     // ─── Resolve the first element ──────────────────────────────────────────
-    const TypeAST* targetElemType = nullptr;
+    TypeAST* targetElemType = nullptr;
     if (targetType && targetType->isa<ArrayTypeAST>()) {
         targetElemType = targetType->as<ArrayTypeAST>()->element;
     }
@@ -514,7 +514,7 @@ TypeAST* resolveArrayLiteralExpr(ArrayLiteralExprAST* expr, const TypeAST* targe
     ArrayKind kind = ArrayKind::Dynamic;
     uint64_t size = 0;
     if (targetType && targetType->isa<ArrayTypeAST>()) {
-        const ArrayTypeAST* targetArray = targetType->as<ArrayTypeAST>();
+        ArrayTypeAST* targetArray = targetType->as<ArrayTypeAST>();
         kind = targetArray->arrayKind;
         size = targetArray->size;
     }
@@ -532,9 +532,9 @@ TypeAST* resolveArrayLiteralExpr(ArrayLiteralExprAST* expr, const TypeAST* targe
 // resolveStructLiteralExpr
 // =============================================================================
 
-TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, TypeAST* targetType, SemaContext& ctx) {
     // ─── Step 1: Look up the struct type ─────────────────────────────────
-    const TypeDeclAST* typeDecl = ctx.lookupType(expr->typeName);
+    TypeDeclAST* typeDecl = ctx.lookupType(expr->typeName);
     if (!typeDecl) {
         ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
                               "undefined type '", ctx.pool.lookup(expr->typeName), "'");
@@ -551,7 +551,7 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, const TypeAST* tar
         return ctx.getUnknownType();
     }
 
-    const StructDeclAST* structDecl = typeDecl->as<StructDeclAST>();
+    StructDeclAST* structDecl = typeDecl->as<StructDeclAST>();
 
     // ─── Step 2: Check and validate generic arguments ────────────────────
     if (!expr->genericArgs.empty()) {
@@ -599,8 +599,8 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, const TypeAST* tar
     }
 
     // ─── Step 3: Build field map ─────────────────────────────────────────
-    std::unordered_map<InternedString, const FieldDeclAST*> fieldMap;
-    for (const FieldDeclAST* field : structDecl->fields) {
+    std::unordered_map<InternedString, FieldDeclAST*> fieldMap;
+    for (FieldDeclAST* field : structDecl->fields) {
         fieldMap[field->name] = field;
     }
 
@@ -609,7 +609,7 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, const TypeAST* tar
     bool allDefinite = true;
 
     // ─── Step 4: Validate each field initializer ─────────────────────────
-    for (const FieldInitAST* init : expr->inits) {
+    for (FieldInitAST* init : expr->inits) {
         auto it = fieldMap.find(init->name);
         if (it == fieldMap.end()) {
             ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, init,
@@ -620,7 +620,7 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, const TypeAST* tar
             return ctx.getUnknownType();
         }
 
-        const FieldDeclAST* field = it->second;
+        FieldDeclAST* field = it->second;
 
         // ─── 4a. Const field validation ─────────────────────────────────
         if (field->isConst()) {
@@ -691,7 +691,7 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, const TypeAST* tar
     }
 
     // ─── Step 5: Check for missing required fields ──────────────────────
-    for (const FieldDeclAST* field : structDecl->fields) {
+    for (FieldDeclAST* field : structDecl->fields) {
         if (initializedFields.find(field->name) != initializedFields.end()) {
             continue;
         }
@@ -769,7 +769,7 @@ TypeAST* resolveStructLiteralExpr(StructLiteralExprAST* expr, const TypeAST* tar
 // resolveBinaryExpr
 // =============================================================================
 
-TypeAST* resolveBinaryExpr(BinaryExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+TypeAST* resolveBinaryExpr(BinaryExprAST* expr, TypeAST* targetType, SemaContext& ctx) {
     // ─── Step 1: Resolve operands ──────────────────────────────────────────
     TypeAST* leftType = resolveExpr(expr->left, ctx);
     if (!leftType || leftType->isa<UnknownTypeAST>()) {
@@ -993,7 +993,7 @@ TypeAST* resolveBinaryExpr(BinaryExprAST* expr, const TypeAST* targetType, SemaC
 // resolveUnaryExpr
 // =============================================================================
 
-TypeAST* resolveUnaryExpr(UnaryExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+TypeAST* resolveUnaryExpr(UnaryExprAST* expr, TypeAST* targetType, SemaContext& ctx) {
     TypeAST* operandType = resolveExpr(expr->operand, ctx);
     if (!operandType || operandType->isa<UnknownTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_InvalidUnary, expr->operand,
@@ -1102,7 +1102,7 @@ TypeAST* resolveUnaryExpr(UnaryExprAST* expr, const TypeAST* targetType, SemaCon
 // resolveCallExpr
 // =============================================================================
 
-TypeAST* resolveCallExpr(CallExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+TypeAST* resolveCallExpr(CallExprAST* expr, TypeAST* targetType, SemaContext& ctx) {
     // ─── Step 1: Resolve callee ─────────────────────────────────────────────
     TypeAST* calleeType = resolveExpr(expr->callee, ctx);
     if (!calleeType || calleeType->isa<UnknownTypeAST>()) {
@@ -1133,10 +1133,10 @@ TypeAST* resolveCallExpr(CallExprAST* expr, const TypeAST* targetType, SemaConte
     FuncTypeAST* funcType = calleeType->as<FuncTypeAST>();
 
     // ─── Step 3: Check generic arguments ────────────────────────────────────
-    const FuncDeclAST* funcDecl = resolveCalleeOrError(expr->callee, ctx);
+    FuncDeclAST* funcDecl = resolveCalleeOrError(expr->callee, ctx);
     if (funcDecl) {
         if (!expr->genericArgs.empty()) {
-            for (const TypeAST* arg : expr->genericArgs) {
+            for (TypeAST* arg : expr->genericArgs) {
                 if (!resolveType(arg, ctx)) {
                     ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
                                           "invalid generic argument type for '",
@@ -1221,13 +1221,13 @@ TypeAST* resolveCallExpr(CallExprAST* expr, const TypeAST* targetType, SemaConte
         ExprAST* arg = expr->args[i];
         
         // Determine the expected parameter type
-        const TypeAST* expectedType = nullptr;
+        TypeAST* expectedType = nullptr;
         
         if (hasVariadic && i >= variadicIndex) {
             // ─── This argument goes to the variadic parameter ──────────────────
             // The variadic parameter's type is [*]T (dynamic array)
             // The argument type should be T (element type)
-            const ParamAST* variadicParam = funcType->params[variadicIndex];
+            ParamAST* variadicParam = funcType->params[variadicIndex];
             
             // The type should be [*]T
             if (variadicParam->type->isa<ArrayTypeAST>()) {
@@ -1307,7 +1307,7 @@ TypeAST* resolveCallExpr(CallExprAST* expr, const TypeAST* targetType, SemaConte
 /// 3.validateScopeExit validates the call AND registers it on the current block
 /// 4.validateIntrinsicCall returns true
 /// 5.resolveIntrinsicCallExpr continues with normal void intrinsic handling
-TypeAST* resolveIntrinsicCallExpr(IntrinsicCallExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+TypeAST* resolveIntrinsicCallExpr(IntrinsicCallExprAST* expr, TypeAST* targetType, SemaContext& ctx) {
     // ─── Step 1: Validate the intrinsic call ──────────────────────────────────
     // This will handle all validation AND registration for scope_exit
     if (!validateIntrinsicCall(expr, ctx)) {
@@ -1338,7 +1338,7 @@ TypeAST* resolveIntrinsicCallExpr(IntrinsicCallExprAST* expr, const TypeAST* tar
     }
 
     // ─── Step 3: Get the return type for non-void intrinsics ───────────────────
-    const TypeAST* resultType = getIntrinsicReturnType(expr, targetType, ctx);
+    TypeAST* resultType = getIntrinsicReturnType(expr, targetType, ctx);
     if (!resultType) {
         ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, expr,
                               "intrinsic '#", ctx.pool.lookup(expr->intrinsicName),
@@ -1391,7 +1391,7 @@ TypeAST* resolveIntrinsicCallExpr(IntrinsicCallExprAST* expr, const TypeAST* tar
 // resolveIndexExpr
 // =============================================================================
 
-TypeAST* resolveIndexExpr(IndexExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+TypeAST* resolveIndexExpr(IndexExprAST* expr, TypeAST* targetType, SemaContext& ctx) {
     // ─── Step 1: Resolve target ─────────────────────────────────────────────
     TypeAST* targetTypeAst = resolveExpr(expr->target, ctx);
     if (!targetTypeAst || targetTypeAst->isa<UnknownTypeAST>()) {
@@ -1424,7 +1424,7 @@ TypeAST* resolveIndexExpr(IndexExprAST* expr, const TypeAST* targetType, SemaCon
         return ctx.getUnknownType();
     }
 
-    const ArrayTypeAST* arrayType = targetTypeAst->as<ArrayTypeAST>();
+    ArrayTypeAST* arrayType = targetTypeAst->as<ArrayTypeAST>();
 
     // ─── Step 3: Resolve index against int type ─────────────────────────────
     PrimitiveTypeAST* intType = ctx.getIntType();
@@ -1460,7 +1460,7 @@ TypeAST* resolveIndexExpr(IndexExprAST* expr, const TypeAST* targetType, SemaCon
 // resolveSliceExpr
 // =============================================================================
 
-TypeAST* resolveSliceExpr(SliceExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+TypeAST* resolveSliceExpr(SliceExprAST* expr, TypeAST* targetType, SemaContext& ctx) {
     // ─── Step 1: Resolve target ─────────────────────────────────────────────
     TypeAST* targetTypeAst = resolveExpr(expr->target, ctx);
     if (!targetTypeAst || targetTypeAst->isa<UnknownTypeAST>()) {
@@ -1493,7 +1493,7 @@ TypeAST* resolveSliceExpr(SliceExprAST* expr, const TypeAST* targetType, SemaCon
         return ctx.getUnknownType();
     }
 
-    const ArrayTypeAST* arrayType = targetTypeAst->as<ArrayTypeAST>();
+    ArrayTypeAST* arrayType = targetTypeAst->as<ArrayTypeAST>();
 
     // ─── Step 3: Resolve start bound against int type ──────────────────────
     if (expr->start) {
@@ -1544,7 +1544,7 @@ TypeAST* resolveSliceExpr(SliceExprAST* expr, const TypeAST* targetType, SemaCon
 // resolveFieldAccessExpr
 // =============================================================================
 
-TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, TypeAST* targetType, SemaContext& ctx) {
     // ─── Step 1: Resolve object ─────────────────────────────────────────────
     TypeAST* objectType = resolveExpr(expr->object, ctx);
     if (!objectType || objectType->isa<UnknownTypeAST>()) {
@@ -1570,7 +1570,7 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetT
 
     // ─── Step 3: Handle generic type parameter ─────────────────────────────
     if (objectType->isa<NamedTypeAST>()) {
-        const NamedTypeAST* namedType = objectType->as<NamedTypeAST>();
+        NamedTypeAST* namedType = objectType->as<NamedTypeAST>();
 
         if (ctx.isGenericParam(namedType->name)) {
             if (!isFieldAccessibleOnGenericType(objectType, expr->fieldName, ctx)) {
@@ -1584,7 +1584,7 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetT
                 return ctx.getUnknownType();
             }
 
-            const TypeAST* fieldType = getFieldTypeOnGenericType(objectType, expr->fieldName, ctx);
+            TypeAST* fieldType = getFieldTypeOnGenericType(objectType, expr->fieldName, ctx);
             if (!fieldType) {
                 ctx.diagnostics.error(DiagCode::Sem_FieldNotFound, expr,
                                       "field '", ctx.pool.lookup(expr->fieldName),
@@ -1614,8 +1614,8 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetT
         return ctx.getUnknownType();
     }
 
-    const NamedTypeAST* namedType = objectType->as<NamedTypeAST>();
-    const TypeDeclAST* typeDecl = ctx.lookupType(namedType->name);
+    NamedTypeAST* namedType = objectType->as<NamedTypeAST>();
+    TypeDeclAST* typeDecl = ctx.lookupType(namedType->name);
     if (!typeDecl) {
         ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
                               "undefined type '", ctx.pool.lookup(namedType->name), "'");
@@ -1626,12 +1626,12 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetT
 
     // ─── Step 5: Handle struct type ─────────────────────────────────────────
     if (typeDecl->isa<StructDeclAST>()) {
-        const StructDeclAST* structDecl = typeDecl->as<StructDeclAST>();
+        StructDeclAST* structDecl = typeDecl->as<StructDeclAST>();
 
-        for (const FieldDeclAST* f : structDecl->fields) {
+        for (FieldDeclAST* f : structDecl->fields) {
             if (f->name == expr->fieldName) {
                 // ─── Get field type from resolvedType (resolved) ────────────
-                const TypeAST* fieldType = f->type;
+                TypeAST* fieldType = f->type;
                 if (!fieldType) {
                     // Fallback to parser type if resolvedType not set
                     fieldType = f->type;
@@ -1702,9 +1702,9 @@ TypeAST* resolveFieldAccessExpr(FieldAccessExprAST* expr, const TypeAST* targetT
 // resolveModuleAccessExpr
 // =============================================================================
 
-TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, TypeAST* targetType, SemaContext& ctx) {
     // ─── Step 1: Look up the member by module alias ─────────────────────────
-    const ValueDeclAST* decl = ctx.lookupValueByAlias(expr->moduleName, expr->memberName);
+    ValueDeclAST* decl = ctx.lookupValueByAlias(expr->moduleName, expr->memberName);
     if (!decl) {
         // The helper already reported the error (module not found or member not found)
         expr->resolvedType = ctx.getUnknownType();
@@ -1730,7 +1730,7 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, const TypeAST* targe
     expr->isModuleMember = true;
 
     // ─── Step 4: Get the declaration's type ──────────────────────
-    const TypeAST* declType = decl->type;
+    TypeAST* declType = decl->type;
     if (!declType) {
         ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
                               "member '", ctx.pool.lookup(expr->memberName),
@@ -1743,11 +1743,11 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, const TypeAST* targe
 
     // ─── Step 5: Set isLValue based on member's keyword ──────────────────
     if (decl->isa<VarDeclAST>()) {
-        const VarDeclAST* varDecl = decl->as<VarDeclAST>();
+        VarDeclAST* varDecl = decl->as<VarDeclAST>();
         expr->isLValue = (varDecl->keyword == DeclKeyword::Let);
         expr->isConst = (varDecl->keyword == DeclKeyword::Const);
     } else if (decl->isa<FuncDeclAST>()) {
-        const FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
+        FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
         expr->isLValue = (funcDecl->keyword == DeclKeyword::Let);
         expr->isConst = (funcDecl->keyword == DeclKeyword::Const);
     } else if (decl->isa<EnumVariantAST>()) {
@@ -1770,9 +1770,9 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, const TypeAST* targe
             return ctx.getUnknownType();
         }
 
-        const FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
+        FuncDeclAST* funcDecl = decl->as<FuncDeclAST>();
 
-        for (const TypeAST* arg : expr->genericArgs) {
+        for (TypeAST* arg : expr->genericArgs) {
             if (!resolveType(arg, ctx)) {
                 ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, expr,
                                       "invalid generic argument type for '",
@@ -1821,7 +1821,7 @@ TypeAST* resolveModuleAccessExpr(ModuleAccessExprAST* expr, const TypeAST* targe
 // resolveNullCoalesceExpr
 // =============================================================================
 
-TypeAST* resolveNullCoalesceExpr(NullCoalesceExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+TypeAST* resolveNullCoalesceExpr(NullCoalesceExprAST* expr, TypeAST* targetType, SemaContext& ctx) {
     // ─── Step 1: Resolve LHS ────────────────────────────────────────────────
     TypeAST* lhsType = resolveExpr(expr->value, ctx);
     if (!lhsType || lhsType->isa<UnknownTypeAST>()) {
@@ -1841,7 +1841,7 @@ TypeAST* resolveNullCoalesceExpr(NullCoalesceExprAST* expr, const TypeAST* targe
     }
 
     // ─── Step 2: Unwrap LHS type ────────────────────────────────────────────
-    const TypeAST* lhsInner = lhsType;
+    TypeAST* lhsInner = lhsType;
     if (isNullableType(lhsInner)) {
         lhsInner = unwrapNullable(const_cast<TypeAST*>(lhsInner));
     }
@@ -1894,7 +1894,7 @@ TypeAST* resolveNullCoalesceExpr(NullCoalesceExprAST* expr, const TypeAST* targe
 // resolveAssignExpr
 // =============================================================================
 
-TypeAST* resolveAssignExpr(AssignExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+TypeAST* resolveAssignExpr(AssignExprAST* expr, TypeAST* targetType, SemaContext& ctx) {
     // ─── Step 1: Resolve LHS ─────────────────────────────────────────────────
     TypeAST* lhsType = resolveExpr(expr->lhs, ctx);
     if (!lhsType || lhsType->isa<UnknownTypeAST>()) {
@@ -2005,7 +2005,7 @@ TypeAST* resolveAssignExpr(AssignExprAST* expr, const TypeAST* targetType, SemaC
 // resolvePipelineStep
 // =============================================================================
 
-TypeAST* resolvePipelineStep(PipelineStepAST* step, const TypeAST* inputType, SemaContext& ctx) {
+TypeAST* resolvePipelineStep(PipelineStepAST* step, TypeAST* inputType, SemaContext& ctx) {
     if (!step || !inputType) {
         return ctx.getUnknownType();
     }
@@ -2042,7 +2042,7 @@ TypeAST* resolvePipelineStep(PipelineStepAST* step, const TypeAST* inputType, Se
     }
 
     // ─── Step 2: Verify first parameter matches input type ────────────────
-    const TypeAST* firstParamType = funcType->params[0]->type;
+    TypeAST* firstParamType = funcType->params[0]->type;
     if (!isAssignable(firstParamType, inputType, ctx)) {
         ctx.diagnostics.error(DiagCode::Sem_PipelineMismatch, step->callable,
                               "pipeline step input mismatch: expected ",
@@ -2065,7 +2065,7 @@ TypeAST* resolvePipelineStep(PipelineStepAST* step, const TypeAST* inputType, Se
 // resolvePipelineExpr
 // =============================================================================
 
-TypeAST* resolvePipelineExpr(PipelineExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+TypeAST* resolvePipelineExpr(PipelineExprAST* expr, TypeAST* targetType, SemaContext& ctx) {
     if (expr->steps.empty()) {
         ctx.diagnostics.error(DiagCode::Sem_PipelineMismatch, expr,
                               "pipeline has no steps");
@@ -2107,7 +2107,7 @@ TypeAST* resolvePipelineExpr(PipelineExprAST* expr, const TypeAST* targetType, S
 // resolveComposeOperand
 // =============================================================================
 
-TypeAST* resolveComposeOperand(ComposeOperandAST* operand, const TypeAST* targetType, SemaContext& ctx) {
+TypeAST* resolveComposeOperand(ComposeOperandAST* operand, TypeAST* targetType, SemaContext& ctx) {
     if (!operand) {
         return ctx.getUnknownType();
     }
@@ -2147,14 +2147,14 @@ TypeAST* resolveComposeOperand(ComposeOperandAST* operand, const TypeAST* target
 
     // ─── Step 3: Check generic arguments if present ────────────────────────
     if (!operand->genericArgs.empty()) {
-        const FuncDeclAST* funcDecl = resolveCalleeOrError(operand->callable, ctx);
+        FuncDeclAST* funcDecl = resolveCalleeOrError(operand->callable, ctx);
         if (!funcDecl) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, operand->callable,
                                   "generic arguments applied to non-generic function");
             return ctx.getUnknownType();
         }
 
-        for (const TypeAST* arg : operand->genericArgs) {
+        for (TypeAST* arg : operand->genericArgs) {
             if (!resolveType(arg, ctx)) {
                 ctx.diagnostics.error(DiagCode::Sem_InvalidGenericArg, operand->callable,
                                       "invalid generic argument type");
@@ -2175,7 +2175,7 @@ TypeAST* resolveComposeOperand(ComposeOperandAST* operand, const TypeAST* target
 // resolveComposeExpr
 // =============================================================================
 
-TypeAST* resolveComposeExpr(ComposeExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+TypeAST* resolveComposeExpr(ComposeExprAST* expr, TypeAST* targetType, SemaContext& ctx) {
     if (expr->operands.empty()) {
         ctx.diagnostics.error(DiagCode::Sem_CompositionMismatch, expr,
                               "composition has no operands");
@@ -2225,8 +2225,8 @@ TypeAST* resolveComposeExpr(ComposeExprAST* expr, const TypeAST* targetType, Sem
 
         FuncTypeAST* nextFunc = operandType->as<FuncTypeAST>();
 
-        const TypeAST* prevOutput = currentFunc->returnType;
-        const TypeAST* nextInput = nextFunc->params.empty() ? nullptr : nextFunc->params[0]->type;
+        TypeAST* prevOutput = currentFunc->returnType;
+        TypeAST* nextInput = nextFunc->params.empty() ? nullptr : nextFunc->params[0]->type;
 
         if (!prevOutput || !nextInput) {
             ctx.diagnostics.error(DiagCode::Sem_CompositionMismatch, operand->callable,
@@ -2265,7 +2265,7 @@ TypeAST* resolveComposeExpr(ComposeExprAST* expr, const TypeAST* targetType, Sem
 // resolveAnonFuncExpr - Anonymous function expression (closure)
 // =============================================================================
 
-TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, TypeAST* targetType, SemaContext& ctx) {
     if (!expr->funcType) {
         ctx.diagnostics.error(DiagCode::Sem_UndefinedType, expr,
                               "anonymous function has no function type");
@@ -2306,7 +2306,7 @@ TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, const TypeAST* targetType, S
     }
 
     // ─── Step 6: Push function context for return validation ──────────────
-    const TypeAST* expectedReturn = funcType->returnType;
+    TypeAST* expectedReturn = funcType->returnType;
     ctx.stack.pushAnonFunction(expr, expectedReturn);
 
     bool bodyReturns = false;
@@ -2395,7 +2395,7 @@ TypeAST* resolveAnonFuncExpr(AnonFuncExprAST* expr, const TypeAST* targetType, S
 // resolveIfExpr
 // =============================================================================
 
-TypeAST* resolveIfExpr(IfExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+TypeAST* resolveIfExpr(IfExprAST* expr, TypeAST* targetType, SemaContext& ctx) {
     // ─── Step 1: Resolve condition against bool type ──────────────────────
     PrimitiveTypeAST* boolType = ctx.getBoolType();
     TypeAST* condType = resolveExprWithTarget(expr->condition, boolType, ctx);
@@ -2460,7 +2460,7 @@ TypeAST* resolveIfExpr(IfExprAST* expr, const TypeAST* targetType, SemaContext& 
 // resolveRangeExpr
 // =============================================================================
 
-TypeAST* resolveRangeExpr(RangeExprAST* expr, const TypeAST* targetType, SemaContext& ctx) {
+TypeAST* resolveRangeExpr(RangeExprAST* expr, TypeAST* targetType, SemaContext& ctx) {
     // ─── Step 1: Resolve lower bound ────────────────────────────────────────
     PrimitiveTypeAST* numericType = ctx.getIntType();
     TypeAST* loType = resolveExprWithTarget(expr->lo, numericType, ctx);

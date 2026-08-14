@@ -10,7 +10,7 @@ namespace sema {
 
 // ─── Type Equality ───────────────────────────────────────────────────────
 
-bool typesEqual(const TypeAST* a, const TypeAST* b) {
+bool typesEqual(TypeAST* a, TypeAST* b) {
     if (a == b) return true;
     if (!a || !b) return false;
     if (a->kind != b->kind) return false;
@@ -21,8 +21,8 @@ bool typesEqual(const TypeAST* a, const TypeAST* b) {
                 == b->as<PrimitiveTypeAST>()->primitiveKind;
 
         case ASTKind::NamedType: {
-            const NamedTypeAST* na = a->as<NamedTypeAST>();
-            const NamedTypeAST* nb = b->as<NamedTypeAST>();
+            NamedTypeAST* na = a->as<NamedTypeAST>();
+            NamedTypeAST* nb = b->as<NamedTypeAST>();
             if (na->name != nb->name) return false;
             if (na->genericArgs.size() != nb->genericArgs.size()) return false;
             for (size_t i = 0; i < na->genericArgs.size(); ++i) {
@@ -36,8 +36,8 @@ bool typesEqual(const TypeAST* a, const TypeAST* b) {
         case ASTKind::CombinedType:
         case ASTKind::RefType:
         case ASTKind::PtrType: {
-            const TypeAST* innerA = nullptr;
-            const TypeAST* innerB = nullptr;
+            TypeAST* innerA = nullptr;
+            TypeAST* innerB = nullptr;
             
             if (a->isa<NullableTypeAST>()) {
                 innerA = a->as<NullableTypeAST>()->inner;
@@ -59,23 +59,23 @@ bool typesEqual(const TypeAST* a, const TypeAST* b) {
         }
 
         case ASTKind::ArrayType: {
-            const ArrayTypeAST* aa = a->as<ArrayTypeAST>();
-            const ArrayTypeAST* ab = b->as<ArrayTypeAST>();
+            ArrayTypeAST* aa = a->as<ArrayTypeAST>();
+            ArrayTypeAST* ab = b->as<ArrayTypeAST>();
             if (aa->arrayKind != ab->arrayKind) return false;
             if (aa->size != ab->size) return false;
             return typesEqual(aa->element, ab->element);
         }
 
         case ASTKind::FuncType: {
-            const FuncTypeAST* fa = a->as<FuncTypeAST>();
-            const FuncTypeAST* fb = b->as<FuncTypeAST>();
+            FuncTypeAST* fa = a->as<FuncTypeAST>();
+            FuncTypeAST* fb = b->as<FuncTypeAST>();
 
             if (fa->hasArrow != fb->hasArrow) return false;
 
             if (fa->params.size() != fb->params.size()) return false;
             for (size_t i = 0; i < fa->params.size(); ++i) {
-                const ParamAST* pa = fa->params[i];
-                const ParamAST* pb = fb->params[i];
+                ParamAST* pa = fa->params[i];
+                ParamAST* pb = fb->params[i];
                 if (pa->isVariadic != pb->isVariadic) return false;
                 if (pa->isConst() != pb->isConst()) return false;
                 if (!typesEqual(pa->type, pb->type)) return false;
@@ -107,7 +107,7 @@ TypeAST* unwrapFallible(TypeAST* type) {
 
 // ─── Numeric Type Helpers ───────────────────────────────────────────────
 
-size_t getIntegerBitWidth(const TypeAST* type) {
+size_t getIntegerBitWidth(TypeAST* type) {
     if (!type || !type->isa<PrimitiveTypeAST>()) return 0;
     auto kind = type->as<PrimitiveTypeAST>()->primitiveKind;
     
@@ -137,7 +137,7 @@ size_t getIntegerBitWidth(const TypeAST* type) {
     }
 }
 
-TypeAST* getLargerIntegerType(const TypeAST* a, const TypeAST* b, SemaContext& ctx) {
+TypeAST* getLargerIntegerType(TypeAST* a, TypeAST* b, SemaContext& ctx) {
     if (!a || !b || !isIntegerType(a) || !isIntegerType(b)) return nullptr;
     
     size_t bitsA = getIntegerBitWidth(a);
@@ -148,7 +148,7 @@ TypeAST* getLargerIntegerType(const TypeAST* a, const TypeAST* b, SemaContext& c
     return const_cast<TypeAST*>(b);
 }
 
-bool isIntegerPromotionSafe(const TypeAST* target, const TypeAST* source, SemaContext& ctx) {
+bool isIntegerPromotionSafe(TypeAST* target, TypeAST* source, SemaContext& ctx) {
     if (!target || !source) return false;
     if (!isIntegerType(target) || !isIntegerType(source)) return false;
     
@@ -161,23 +161,23 @@ bool isIntegerPromotionSafe(const TypeAST* target, const TypeAST* source, SemaCo
 
 // ─── Trait Conformance Helper ──────────────────────────────────────────
 
-static bool isTraitConformant(const TypeAST* source, 
-                               const TraitDeclAST* traitDecl, 
+static bool isTraitConformant(TypeAST* source, 
+                               TraitDeclAST* traitDecl, 
                                SemaContext& ctx) {
     if (!source || !traitDecl) return false;
 
     if (!source->isa<NamedTypeAST>()) return false;
     
-    const NamedTypeAST* namedSource = source->as<NamedTypeAST>();
-    const TypeDeclAST* sourceDecl = ctx.lookupType(namedSource->name);
+    NamedTypeAST* namedSource = source->as<NamedTypeAST>();
+    TypeDeclAST* sourceDecl = ctx.lookupType(namedSource->name);
     if (!sourceDecl) return false;
 
     if (!sourceDecl->isa<StructDeclAST>()) return false;
 
-    const StructDeclAST* structDecl = sourceDecl->as<StructDeclAST>();
+    StructDeclAST* structDecl = sourceDecl->as<StructDeclAST>();
 
-    for (const NamedTypeAST* traitRef : structDecl->traitRefs) {
-        const TraitDeclAST* resolvedTrait = resolveTraitRef(traitRef, ctx);
+    for (NamedTypeAST* traitRef : structDecl->traitRefs) {
+        TraitDeclAST* resolvedTrait = resolveTraitRef(traitRef, ctx);
         if (resolvedTrait == traitDecl) {
             return true;
         }
@@ -188,7 +188,7 @@ static bool isTraitConformant(const TypeAST* source,
 
 // ─── Assignability ───────────────────────────────────────────────────────
 
-bool isAssignable(const TypeAST* target, const TypeAST* source, SemaContext& ctx) {
+bool isAssignable(TypeAST* target, TypeAST* source, SemaContext& ctx) {
     if (!target || !source) return false;
 
     // ─── 1. Identical types ──────────────────────────────────────────────
@@ -212,19 +212,19 @@ bool isAssignable(const TypeAST* target, const TypeAST* source, SemaContext& ctx
 
     // ─── 3. T → T? (widening to nullable) ──────────────────────────────
     if (target->isa<NullableTypeAST>()) {
-        const TypeAST* inner = target->as<NullableTypeAST>()->inner;
+        TypeAST* inner = target->as<NullableTypeAST>()->inner;
         return isAssignable(inner, source, ctx);
     }
 
     // ─── 4. T → T! (widening to fallible) ──────────────────────────────
     if (target->isa<FallibleTypeAST>()) {
-        const TypeAST* inner = target->as<FallibleTypeAST>()->inner;
+        TypeAST* inner = target->as<FallibleTypeAST>()->inner;
         return isAssignable(inner, source, ctx);
     }
 
     // ─── 5. T → T?! (widening to combined) ─────────────────────────────
     if (target->isa<CombinedTypeAST>()) {
-        const TypeAST* inner = target->as<CombinedTypeAST>()->inner;
+        TypeAST* inner = target->as<CombinedTypeAST>()->inner;
         if (isAssignable(inner, source, ctx)) return true;
         if (source->isa<NullableTypeAST>() &&
             isAssignable(inner, source->as<NullableTypeAST>()->inner, ctx)) return true;
@@ -235,11 +235,11 @@ bool isAssignable(const TypeAST* target, const TypeAST* source, SemaContext& ctx
 
     // ─── 6. Trait conformance ──────────────────────────────────────────────
     if (isTraitType(target, ctx)) {
-        const NamedTypeAST* namedTarget = target->as<NamedTypeAST>();
-        const TypeDeclAST* targetDecl = ctx.lookupType(namedTarget->name);
+        NamedTypeAST* namedTarget = target->as<NamedTypeAST>();
+        TypeDeclAST* targetDecl = ctx.lookupType(namedTarget->name);
         
         if (targetDecl && targetDecl->isa<TraitDeclAST>()) {
-            const TraitDeclAST* traitDecl = targetDecl->as<TraitDeclAST>();
+            TraitDeclAST* traitDecl = targetDecl->as<TraitDeclAST>();
             if (isTraitType(source, ctx)) {
                 return false;
             }
@@ -252,32 +252,32 @@ bool isAssignable(const TypeAST* target, const TypeAST* source, SemaContext& ctx
 
 // ─── Type Predicates ─────────────────────────────────────────────────────
 
-bool isNullableType(const TypeAST* type) {
+bool isNullableType(TypeAST* type) {
     return type && (type->isa<NullableTypeAST>() || type->isa<CombinedTypeAST>());
 }
 
-bool isFallibleType(const TypeAST* type) {
+bool isFallibleType(TypeAST* type) {
     return type && (type->isa<FallibleTypeAST>() || type->isa<CombinedTypeAST>());
 }
 
-bool isReferenceType(const TypeAST* type) {
+bool isReferenceType(TypeAST* type) {
     return type && type->isa<RefTypeAST>();
 }
 
-bool isPointerType(const TypeAST* type) {
+bool isPointerType(TypeAST* type) {
     return type && type->isa<PtrTypeAST>();
 }
 
-bool isPrimitiveType(const TypeAST* type) {
+bool isPrimitiveType(TypeAST* type) {
     return type && type->isa<PrimitiveTypeAST>();
 }
 
-bool isBoolType(const TypeAST* type) {
+bool isBoolType(TypeAST* type) {
     if (!type || !type->isa<PrimitiveTypeAST>()) return false;
     return type->as<PrimitiveTypeAST>()->primitiveKind == PrimitiveKind::Bool;
 }
 
-bool isIntegerType(const TypeAST* type) {
+bool isIntegerType(TypeAST* type) {
     if (!type || !type->isa<PrimitiveTypeAST>()) return false;
     switch (type->as<PrimitiveTypeAST>()->primitiveKind) {
         case PrimitiveKind::Byte:
@@ -302,7 +302,7 @@ bool isIntegerType(const TypeAST* type) {
     }
 }
 
-bool isFloatType(const TypeAST* type) {
+bool isFloatType(TypeAST* type) {
     if (!type || !type->isa<PrimitiveTypeAST>()) return false;
     switch (type->as<PrimitiveTypeAST>()->primitiveKind) {
         case PrimitiveKind::Float:
@@ -314,52 +314,52 @@ bool isFloatType(const TypeAST* type) {
     }
 }
 
-bool isNumericType(const TypeAST* type) {
+bool isNumericType(TypeAST* type) {
     return isIntegerType(type) || isFloatType(type);
 }
 
-bool isStringType(const TypeAST* type) {
+bool isStringType(TypeAST* type) {
     if (!type || !type->isa<PrimitiveTypeAST>()) return false;
     return type->as<PrimitiveTypeAST>()->primitiveKind == PrimitiveKind::String;
 }
 
-bool isCharType(const TypeAST* type) {
+bool isCharType(TypeAST* type) {
     if (!type || !type->isa<PrimitiveTypeAST>()) return false;
     return type->as<PrimitiveTypeAST>()->primitiveKind == PrimitiveKind::Char;
 }
 
 // ─── Named Type Checks ──────────────────────────────────────────────────
 
-bool isStructType(const TypeAST* type, SemaContext& ctx) {
+bool isStructType(TypeAST* type, SemaContext& ctx) {
     if (!type || !type->isa<NamedTypeAST>()) return false;
-    const NamedTypeAST* named = type->as<NamedTypeAST>();
-    const TypeDeclAST* decl = ctx.lookupType(named->name);
+    NamedTypeAST* named = type->as<NamedTypeAST>();
+    TypeDeclAST* decl = ctx.lookupType(named->name);
     return decl && decl->isa<StructDeclAST>();
 }
 
-bool isEnumType(const TypeAST* type, SemaContext& ctx) {
+bool isEnumType(TypeAST* type, SemaContext& ctx) {
     if (!type || !type->isa<NamedTypeAST>()) return false;
-    const NamedTypeAST* named = type->as<NamedTypeAST>();
-    const TypeDeclAST* decl = ctx.lookupType(named->name);
+    NamedTypeAST* named = type->as<NamedTypeAST>();
+    TypeDeclAST* decl = ctx.lookupType(named->name);
     return decl && decl->isa<EnumDeclAST>();
 }
 
-bool isTraitType(const TypeAST* type, SemaContext& ctx) {
+bool isTraitType(TypeAST* type, SemaContext& ctx) {
     if (!type || !type->isa<NamedTypeAST>()) return false;
-    const NamedTypeAST* named = type->as<NamedTypeAST>();
-    const TypeDeclAST* decl = ctx.lookupType(named->name);
+    NamedTypeAST* named = type->as<NamedTypeAST>();
+    TypeDeclAST* decl = ctx.lookupType(named->name);
     return decl && decl->isa<TraitDeclAST>();
 }
 
-bool isGenericParamType(const TypeAST* type, SemaContext& ctx) {
+bool isGenericParamType(TypeAST* type, SemaContext& ctx) {
     if (!type || !type->isa<NamedTypeAST>()) return false;
-    const NamedTypeAST* named = type->as<NamedTypeAST>();
+    NamedTypeAST* named = type->as<NamedTypeAST>();
     return ctx.isGenericParam(named->name);
 }
 
 // ─── Switch Type Checks ─────────────────────────────────────────────────
 
-bool isValidSwitchType(const TypeAST* type, SemaContext& ctx) {
+bool isValidSwitchType(TypeAST* type, SemaContext& ctx) {
     if (!type) return false;
 
     if (isIntegerType(type)) return true;
@@ -371,18 +371,18 @@ bool isValidSwitchType(const TypeAST* type, SemaContext& ctx) {
     return false;
 }
 
-const EnumDeclAST* getEnumDeclFromType(const TypeAST* type, SemaContext& ctx) {
+const EnumDeclAST* getEnumDeclFromType(TypeAST* type, SemaContext& ctx) {
     if (!type || !type->isa<NamedTypeAST>()) return nullptr;
     
-    const NamedTypeAST* named = type->as<NamedTypeAST>();
-    const TypeDeclAST* decl = ctx.lookupType(named->name);
+    NamedTypeAST* named = type->as<NamedTypeAST>();
+    TypeDeclAST* decl = ctx.lookupType(named->name);
     if (!decl || !decl->isa<EnumDeclAST>()) return nullptr;
     
     return decl->as<EnumDeclAST>();
 }
 
-bool isSwitchCaseCompatible(const ExprAST* value, 
-                             const TypeAST* subjectType, 
+bool isSwitchCaseCompatible(ExprAST* value, 
+                             TypeAST* subjectType, 
                              SemaContext& ctx) {
     if (!value || !subjectType) return false;
 
@@ -390,8 +390,8 @@ bool isSwitchCaseCompatible(const ExprAST* value,
         if (!value->isa<FieldAccessExprAST>()) return false;
         const FieldAccessExprAST* field = value->as<FieldAccessExprAST>();
         if (!field->object->isa<IdentifierExprAST>()) return false;
-        const IdentifierExprAST* id = field->object->as<IdentifierExprAST>();
-        const TypeDeclAST* decl = ctx.lookupType(id->name);
+        IdentifierExprAST* id = field->object->as<IdentifierExprAST>();
+        TypeDeclAST* decl = ctx.lookupType(id->name);
         if (!decl || !decl->isa<EnumDeclAST>()) return false;
         const EnumDeclAST* enumDecl = decl->as<EnumDeclAST>();
         for (const EnumVariantAST* variant : enumDecl->variants) {
@@ -433,17 +433,17 @@ bool isSwitchCaseCompatible(const ExprAST* value,
 
 // ─── FFI Compatibility ───────────────────────────────────────────────────
 
-bool isValidFFIType(const TypeAST* type, SemaContext& ctx) {
+bool isValidFFIType(TypeAST* type, SemaContext& ctx) {
     if (!type) return true;
 
     if (type->isa<PrimitiveTypeAST>()) return true;
 
     if (type->isa<PtrTypeAST>()) {
-        const TypeAST* inner = type->as<PtrTypeAST>()->inner;
+        TypeAST* inner = type->as<PtrTypeAST>()->inner;
         
         if (inner->isa<FuncTypeAST>()) {
-            const FuncTypeAST* funcType = inner->as<FuncTypeAST>();
-            for (const ParamAST* param : funcType->params) {
+            FuncTypeAST* funcType = inner->as<FuncTypeAST>();
+            for (ParamAST* param : funcType->params) {
                 if (!isValidFFIType(param->type, ctx)) return false;
             }
             if (funcType->returnType && !isValidFFIType(funcType->returnType, ctx)) {
@@ -460,13 +460,13 @@ bool isValidFFIType(const TypeAST* type, SemaContext& ctx) {
     }
 
     if (type->isa<NamedTypeAST>()) {
-        const NamedTypeAST* named = type->as<NamedTypeAST>();
-        const TypeDeclAST* decl = ctx.lookupType(named->name);
+        NamedTypeAST* named = type->as<NamedTypeAST>();
+        TypeDeclAST* decl = ctx.lookupType(named->name);
         if (!decl) return false;
         if (decl->isa<TraitDeclAST>()) return false;
         if (decl->isa<StructDeclAST>()) {
-            const StructDeclAST* structDecl = decl->as<StructDeclAST>();
-            for (const FieldDeclAST* field : structDecl->fields) {
+            StructDeclAST* structDecl = decl->as<StructDeclAST>();
+            for (FieldDeclAST* field : structDecl->fields) {
                 if (!isValidFFIType(field->type, ctx)) return false;
             }
             return true;

@@ -18,7 +18,7 @@ static bool isIntrinsicVoidInternal(InternedString name, SemaContext& ctx);
 
 // ─── Public API ────────────────────────────────────────────────────────────
 
-bool validateIntrinsicCall(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
+bool validateIntrinsicCall(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     if (!expr) return false;
 
     IntrinsicRegistry& registry = IntrinsicRegistry::getInstance(ctx.pool);
@@ -154,8 +154,8 @@ bool isIntrinsicVoid(InternedString name, SemaContext& ctx) {
     return isIntrinsicVoidInternal(name, ctx);
 }
 
-const TypeAST* getIntrinsicReturnType(const IntrinsicCallExprAST* expr,
-                                       const TypeAST* targetType,
+TypeAST* getIntrinsicReturnType(IntrinsicCallExprAST* expr,
+                                       TypeAST* targetType,
                                        SemaContext& ctx) {
     if (!expr) return targetType;
 
@@ -189,7 +189,7 @@ const TypeAST* getIntrinsicReturnType(const IntrinsicCallExprAST* expr,
 
     if (name == "toRef") {
         if (!expr->args.empty() && expr->args[0]->resolvedType) {
-            const TypeAST* argType = expr->args[0]->resolvedType;
+            TypeAST* argType = expr->args[0]->resolvedType;
             if (argType->isa<PtrTypeAST>()) {
                 return ctx.arena.make<RefTypeAST>(
                     argType->as<PtrTypeAST>()->inner
@@ -201,7 +201,7 @@ const TypeAST* getIntrinsicReturnType(const IntrinsicCallExprAST* expr,
 
     if (name == "toPtr") {
         if (!expr->args.empty() && expr->args[0]->resolvedType) {
-            const TypeAST* argType = expr->args[0]->resolvedType;
+            TypeAST* argType = expr->args[0]->resolvedType;
             if (argType->isa<RefTypeAST>()) {
                 return ctx.arena.make<PtrTypeAST>(
                     argType->as<RefTypeAST>()->inner
@@ -255,7 +255,7 @@ const TypeAST* getIntrinsicReturnType(const IntrinsicCallExprAST* expr,
     return targetType;
 }
 
-ValueState getIntrinsicValueState(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
+ValueState getIntrinsicValueState(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     if (!expr) return ValueState::Unknown;
 
     const std::string name = ctx.pool.lookup(expr->intrinsicName);
@@ -287,7 +287,7 @@ ValueState getIntrinsicValueState(const IntrinsicCallExprAST* expr, SemaContext&
 
 // ─── Individual Validators ─────────────────────────────────────────────────
 
-bool validateFloatingPoint(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
+bool validateFloatingPoint(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     for (size_t i = 0; i < expr->args.size(); ++i) {
         if (!validateNumericArg(expr->args[i], "arg" + std::to_string(i + 1), ctx)) {
             return false;
@@ -296,7 +296,7 @@ bool validateFloatingPoint(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
     return true;
 }
 
-bool validateMemoryOp(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
+bool validateMemoryOp(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     const std::string name = ctx.pool.lookup(expr->intrinsicName);
 
     if (name == "memcpy" || name == "memmove") {
@@ -316,7 +316,7 @@ bool validateMemoryOp(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
     return true;
 }
 
-bool validateFence(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
+bool validateFence(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     if (expr->args.empty()) {
         ctx.diagnostics.error(DiagCode::Sem_ArgCountMismatch, expr,
                               "fence requires an ordering argument");
@@ -350,7 +350,7 @@ bool validateFence(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
     return true;
 }
 
-bool validateStringOp(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
+bool validateStringOp(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     const std::string name = ctx.pool.lookup(expr->intrinsicName);
 
     if (name == "str_len" || name == "str_ptr") {
@@ -386,7 +386,7 @@ bool validateStringOp(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
     return true;
 }
 
-bool validatePointerOp(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
+bool validatePointerOp(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     const std::string name = ctx.pool.lookup(expr->intrinsicName);
 
     if (name == "addrof") {
@@ -420,7 +420,7 @@ bool validatePointerOp(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
     return true;
 }
 
-bool validateScopeExit(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
+bool validateScopeExit(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     // ─── 1. Must be inside a function body ────────────────────────────────
     if (!ctx.stack.insideFunction()) {
         ctx.diagnostics.error(DiagCode::Sem_AsyncOutsideFunction, expr,
@@ -437,7 +437,7 @@ bool validateScopeExit(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
     }
 
     // ─── 3. Resolve and validate the first argument ────────────────────────
-    const ExprAST* funcArg = expr->args[0];
+    ExprAST* funcArg = expr->args[0];
     TypeAST* funcType = funcArg->resolvedType;
     
     // First, resolve the argument if not already resolved
@@ -458,17 +458,17 @@ bool validateScopeExit(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
         return false;
     }
 
-    const FuncTypeAST* func = funcType->as<FuncTypeAST>();
+    FuncTypeAST* func = funcType->as<FuncTypeAST>();
 
     // ─── 5. Handle generic function references ─────────────────────────────
     bool hasGenericArgs = false;
-    const FuncDeclAST* funcDecl = nullptr;
+    FuncDeclAST* funcDecl = nullptr;
     
     if (funcArg->isa<IdentifierExprAST>()) {
-        const IdentifierExprAST* id = funcArg->as<IdentifierExprAST>();
+        IdentifierExprAST* id = funcArg->as<IdentifierExprAST>();
         hasGenericArgs = !id->genericArgs.empty();
         
-        const ValueDeclAST* decl = ctx.lookupValue(id->name);
+        ValueDeclAST* decl = ctx.lookupValue(id->name);
         if (decl && decl->isa<FuncDeclAST>()) {
             funcDecl = decl->as<FuncDeclAST>();
         }
@@ -476,7 +476,7 @@ bool validateScopeExit(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
         const ModuleAccessExprAST* mod = funcArg->as<ModuleAccessExprAST>();
         hasGenericArgs = !mod->genericArgs.empty();
         
-        const ValueDeclAST* decl = ctx.lookupValueByAlias(mod->moduleName, mod->memberName);
+        ValueDeclAST* decl = ctx.lookupValueByAlias(mod->moduleName, mod->memberName);
         if (decl && decl->isa<FuncDeclAST>()) {
             funcDecl = decl->as<FuncDeclAST>();
         }
@@ -527,7 +527,7 @@ bool validateScopeExit(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
     }
 
     // ─── 9. No variadic parameters ─────────────────────────────────────────
-    for (const ParamAST* param : func->params) {
+    for (ParamAST* param : func->params) {
         if (param->isVariadic) {
             ctx.diagnostics.error(DiagCode::Sem_InvalidParamType, param,
                                   "#scope_exit callback cannot have variadic parameters");
@@ -554,8 +554,8 @@ bool validateScopeExit(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
     auto argsBuilder = ctx.arena.makeBuilder<ExprAST*>();
     
     for (size_t i = 0; i < callbackArgs; ++i) {
-        const ExprAST* arg = expr->args[i + 1];
-        const TypeAST* expectedType = func->params[i]->type;
+        ExprAST* arg = expr->args[i + 1];
+        TypeAST* expectedType = func->params[i]->type;
 
         TypeAST* argType = resolveExprWithTarget(
             const_cast<ExprAST*>(arg), expectedType, ctx
@@ -623,7 +623,7 @@ bool validateScopeExit(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
     return true;
 }
 
-bool validateAtomicOp(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
+bool validateAtomicOp(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     const std::string name = ctx.pool.lookup(expr->intrinsicName);
 
     // ─── atomic_store takes ptr, val, ordering ────────────────────────────
@@ -638,7 +638,7 @@ bool validateAtomicOp(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
 
     // ─── Validate ordering (last argument, if present) ────────────────────
     if (expr->args.size() >= 2) {
-        const ExprAST* lastArg = expr->args[expr->args.size() - 1];
+        ExprAST* lastArg = expr->args[expr->args.size() - 1];
         TypeAST* result = resolveExprWithTarget(
             const_cast<ExprAST*>(lastArg), ctx.getStringType(), ctx
         );
@@ -667,7 +667,7 @@ bool validateAtomicOp(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
     return true;
 }
 
-bool validateSIMD(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
+bool validateSIMD(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     const std::string name = ctx.pool.lookup(expr->intrinsicName);
 
     if (name == "simd_splat") {
@@ -707,7 +707,7 @@ bool validateSIMD(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
     return true;
 }
 
-bool validateMemoryManagement(const IntrinsicCallExprAST* expr, SemaContext& ctx) {
+bool validateMemoryManagement(IntrinsicCallExprAST* expr, SemaContext& ctx) {
     const std::string name = ctx.pool.lookup(expr->intrinsicName);
 
     if (name == "alloc") {
@@ -744,7 +744,7 @@ bool validateMemoryManagement(const IntrinsicCallExprAST* expr, SemaContext& ctx
 
 // ─── Argument Type Validators ─────────────────────────────────────────────
 
-bool validatePtrArg(const ExprAST* arg, const std::string& argName, SemaContext& ctx) {
+bool validatePtrArg(ExprAST* arg, const std::string& argName, SemaContext& ctx) {
     if (!arg->resolvedType || !arg->resolvedType->isa<PtrTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
                               "argument '", argName, "' expects pointer type, got ",
@@ -754,7 +754,7 @@ bool validatePtrArg(const ExprAST* arg, const std::string& argName, SemaContext&
     return true;
 }
 
-bool validateNumericArg(const ExprAST* arg, const std::string& argName, SemaContext& ctx) {
+bool validateNumericArg(ExprAST* arg, const std::string& argName, SemaContext& ctx) {
     if (!arg->resolvedType || !isNumericType(arg->resolvedType)) {
         ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
                               "argument '", argName, "' expects numeric type, got ",
@@ -764,7 +764,7 @@ bool validateNumericArg(const ExprAST* arg, const std::string& argName, SemaCont
     return true;
 }
 
-bool validateIntArg(const ExprAST* arg, const std::string& argName, SemaContext& ctx) {
+bool validateIntArg(ExprAST* arg, const std::string& argName, SemaContext& ctx) {
     if (!arg->resolvedType || !isIntegerType(arg->resolvedType)) {
         ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
                               "argument '", argName, "' expects integer type, got ",
@@ -774,7 +774,7 @@ bool validateIntArg(const ExprAST* arg, const std::string& argName, SemaContext&
     return true;
 }
 
-bool validateStringArg(const ExprAST* arg, const std::string& argName, SemaContext& ctx) {
+bool validateStringArg(ExprAST* arg, const std::string& argName, SemaContext& ctx) {
     if (!arg->resolvedType || !isStringType(arg->resolvedType)) {
         ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
                               "argument '", argName, "' expects string type, got ",
@@ -784,7 +784,7 @@ bool validateStringArg(const ExprAST* arg, const std::string& argName, SemaConte
     return true;
 }
 
-bool validateBoolArg(const ExprAST* arg, const std::string& argName, SemaContext& ctx) {
+bool validateBoolArg(ExprAST* arg, const std::string& argName, SemaContext& ctx) {
     if (!arg->resolvedType || !isBoolType(arg->resolvedType)) {
         ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
                               "argument '", argName, "' expects boolean type, got ",
@@ -794,7 +794,7 @@ bool validateBoolArg(const ExprAST* arg, const std::string& argName, SemaContext
     return true;
 }
 
-bool validateRefArg(const ExprAST* arg, const std::string& argName, SemaContext& ctx) {
+bool validateRefArg(ExprAST* arg, const std::string& argName, SemaContext& ctx) {
     if (!arg->resolvedType || !arg->resolvedType->isa<RefTypeAST>()) {
         ctx.diagnostics.error(DiagCode::Sem_TypeMismatch, arg,
                               "argument '", argName, "' expects reference type, got ",

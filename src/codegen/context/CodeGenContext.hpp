@@ -26,8 +26,8 @@ namespace codegen {
 
 /// @brief A key for identifying a generic instantiation.
 struct GenericInstantiationKey {
-    const DeclAST* decl;                    // The generic declaration
-    std::vector<const TypeAST*> typeArgs;   // Concrete type arguments
+    DeclAST* decl;                    // The generic declaration
+    std::vector<TypeAST*> typeArgs;   // Concrete type arguments
     
     bool operator==(const GenericInstantiationKey& other) const;
 };
@@ -45,14 +45,14 @@ struct GenericRegistry {
     // ─── Function Instantiations ──────────────────────────────────────────
     // Generic function → (type args → specialized function)
     std::unordered_map<
-        const FuncDeclAST*,
+        FuncDeclAST*,
         std::unordered_map<GenericInstantiationKey, llvm::Function*, GenericInstantiationKeyHash>
     > functionInstantiations;
     
     // ─── Struct Instantiations ─────────────────────────────────────────────
     // Generic struct → (type args → specialized struct type)
     std::unordered_map<
-        const StructDeclAST*,
+        StructDeclAST*,
         std::unordered_map<GenericInstantiationKey, llvm::Type*, GenericInstantiationKeyHash>
     > structInstantiations;
 };
@@ -72,17 +72,17 @@ struct CodeGenContext {
     
     // ─── Type Cache ─────────────────────────────────────────────────────
     
-    std::unordered_map<const TypeAST*, llvm::Type*> typeCache;
-    std::unordered_map<const StructDeclAST*, llvm::StructType*> structCache;
+    std::unordered_map<TypeAST*, llvm::Type*> typeCache;
+    std::unordered_map<StructDeclAST*, llvm::StructType*> structCache;
     
     // ─── Current Environment Pointer (for closures) ──────────────────────
     llvm::Value* currentEnvPtr = nullptr;
     
     // ─── Symbol Mapping: AST → LLVM Value ──────────────────────────────
-    std::unordered_map<const ValueDeclAST*, llvm::Value*> values;
+    std::unordered_map<ValueDeclAST*, llvm::Value*> values;
     
     // ─── Function Mapping: AST → LLVM Function ─────────────────────────
-    std::unordered_map<const FuncDeclAST*, llvm::Function*> functions;
+    std::unordered_map<FuncDeclAST*, llvm::Function*> functions;
     
     // ─── Runtime Function Mapping ──────────────────────────────────────
     std::unordered_map<std::string, llvm::Function*> runtimeFunctions;
@@ -117,26 +117,26 @@ struct CodeGenContext {
     
     // ─── Value Helpers ──────────────────────────────────────────────────
     
-    void storeValue(const ValueDeclAST* decl, llvm::Value* value) {
+    void storeValue(ValueDeclAST* decl, llvm::Value* value) {
         values[decl] = value;
     }
     
-    llvm::Value* lookupValue(const ValueDeclAST* decl) const {
+    llvm::Value* lookupValue(ValueDeclAST* decl) const {
         auto it = values.find(decl);
         return it != values.end() ? it->second : nullptr;
     }
     
-    bool hasValue(const ValueDeclAST* decl) const {
+    bool hasValue(ValueDeclAST* decl) const {
         return values.find(decl) != values.end();
     }
     
     // ─── Function Helpers ──────────────────────────────────────────────────
     
-    void storeFunction(const FuncDeclAST* decl, llvm::Function* func) {
+    void storeFunction(FuncDeclAST* decl, llvm::Function* func) {
         functions[decl] = func;
     }
     
-    llvm::Function* lookupFunction(const FuncDeclAST* decl) const {
+    llvm::Function* lookupFunction(FuncDeclAST* decl) const {
         auto it = functions.find(decl);
         return it != functions.end() ? it->second : nullptr;
     }
@@ -216,20 +216,20 @@ struct CodeGenContext {
     
     // ─── Type Cache Helpers ──────────────────────────────────────────────
     
-    void cacheType(const TypeAST* lucidType, llvm::Type* llvmType) {
+    void cacheType(TypeAST* lucidType, llvm::Type* llvmType) {
         typeCache[lucidType] = llvmType;
     }
     
-    llvm::Type* lookupType(const TypeAST* lucidType) const {
+    llvm::Type* lookupType(TypeAST* lucidType) const {
         auto it = typeCache.find(lucidType);
         return it != typeCache.end() ? it->second : nullptr;
     }
     
-    void cacheStruct(const StructDeclAST* decl, llvm::StructType* structType) {
+    void cacheStruct(StructDeclAST* decl, llvm::StructType* structType) {
         structCache[decl] = structType;
     }
     
-    llvm::StructType* lookupStruct(const StructDeclAST* decl) const {
+    llvm::StructType* lookupStruct(StructDeclAST* decl) const {
         auto it = structCache.find(decl);
         return it != structCache.end() ? it->second : nullptr;
     }

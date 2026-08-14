@@ -26,7 +26,7 @@
  *   builder.push_back(parseExpr());
  *   ArenaSpan<ExprAST*> elements = builder.build();
  *
- *   for (const ExprAST*& expr : elements) {
+ *   for (ExprAST*& expr : elements) {
  *       // read‑only access
  *   }
  * @endcode

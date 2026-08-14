@@ -23,7 +23,7 @@ namespace codegen {
 llvm::Value* emitLLVMMathIntrinsic(
     const std::string& name,
     std::vector<llvm::Value*>& args,
-    const IntrinsicCallExprAST* expr,
+    IntrinsicCallExprAST* expr,
     CodeGenContext& ctx
 ) {
     SourceLocation loc = expr ? expr->loc : SourceLocation();
@@ -138,7 +138,7 @@ llvm::Value* emitLLVMMathIntrinsic(
 llvm::Value* emitLLVMMemoryIntrinsic(
     const std::string& name,
     const std::vector<llvm::Value*>& args,
-    const IntrinsicCallExprAST* expr,
+    IntrinsicCallExprAST* expr,
     CodeGenContext& ctx
 ) {
     SourceLocation loc = expr ? expr->loc : SourceLocation();
@@ -179,7 +179,7 @@ llvm::Value* emitLLVMMemoryIntrinsic(
 llvm::Value* emitLLVMBitIntrinsic(
     const std::string& name,
     const std::vector<llvm::Value*>& args,
-    const IntrinsicCallExprAST* expr,
+    IntrinsicCallExprAST* expr,
     CodeGenContext& ctx
 ) {
     SourceLocation loc = expr ? expr->loc : SourceLocation();
@@ -226,7 +226,7 @@ llvm::Value* emitLLVMBitIntrinsic(
 llvm::Value* emitLLVMAtomicIntrinsic(
     const std::string& name,
     const std::vector<llvm::Value*>& args,
-    const IntrinsicCallExprAST* expr,
+    IntrinsicCallExprAST* expr,
     CodeGenContext& ctx
 ) {
     SourceLocation loc = expr ? expr->loc : SourceLocation();
@@ -326,7 +326,7 @@ llvm::Value* emitLLVMAtomicIntrinsic(
 llvm::Value* emitLLVMSIMDIntrinsic(
     const std::string& name,
     const std::vector<llvm::Value*>& args,
-    const IntrinsicCallExprAST* expr,
+    IntrinsicCallExprAST* expr,
     CodeGenContext& ctx
 ) {
     SourceLocation loc = expr ? expr->loc : SourceLocation();
@@ -555,7 +555,7 @@ llvm::Value* emitLLVMSIMDIntrinsic(
 llvm::Value* emitLLVMCPUHintIntrinsic(
     const std::string& name,
     const std::vector<llvm::Value*>& args,
-    const IntrinsicCallExprAST* expr,
+    IntrinsicCallExprAST* expr,
     CodeGenContext& ctx
 ) {
     SourceLocation loc = expr ? expr->loc : SourceLocation();

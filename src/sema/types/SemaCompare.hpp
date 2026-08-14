@@ -13,7 +13,7 @@ namespace sema {
 
 // ─── Type Equality ───────────────────────────────────────────────────────
 
-bool typesEqual(const TypeAST* a, const TypeAST* b);
+bool typesEqual(TypeAST* a, TypeAST* b);
 
 // ─── Type Unwrapping ─────────────────────────────────────────────────────
 
@@ -22,59 +22,59 @@ TypeAST* unwrapFallible(TypeAST* type);
 
 // ─── Assignability ───────────────────────────────────────────────────────
 
-bool isAssignable(const TypeAST* target, const TypeAST* source, SemaContext& ctx);
+bool isAssignable(TypeAST* target, TypeAST* source, SemaContext& ctx);
 
 // ─── Numeric Type Helpers ───────────────────────────────────────────────
 
 /// @brief Get the bit width of an integer type.
 /// @param type The integer type.
 /// @return The bit width (8, 16, 32, 64) or 0 if not an integer type.
-size_t getIntegerBitWidth(const TypeAST* type);
+size_t getIntegerBitWidth(TypeAST* type);
 
 /// @brief Get the larger of two integer types (for promotion).
 /// @param a First integer type.
 /// @param b Second integer type.
 /// @return The larger type, or nullptr if either is not an integer type.
-TypeAST* getLargerIntegerType(const TypeAST* a, const TypeAST* b, SemaContext& ctx);
+TypeAST* getLargerIntegerType(TypeAST* a, TypeAST* b, SemaContext& ctx);
 
 /// @brief Check if integer promotion from source to target is safe.
 /// @param target The target type.
 /// @param source The source type.
 /// @param ctx The semantic context.
 /// @return true if promotion is safe (target is larger or equal).
-bool isIntegerPromotionSafe(const TypeAST* target, const TypeAST* source, SemaContext& ctx);
+bool isIntegerPromotionSafe(TypeAST* target, TypeAST* source, SemaContext& ctx);
 
 // ─── Type Predicates ─────────────────────────────────────────────────────
 
-bool isNullableType(const TypeAST* type);
-bool isFallibleType(const TypeAST* type);
-bool isReferenceType(const TypeAST* type);
-bool isPointerType(const TypeAST* type);
-bool isPrimitiveType(const TypeAST* type);
-bool isBoolType(const TypeAST* type);
-bool isIntegerType(const TypeAST* type);
-bool isFloatType(const TypeAST* type);
-bool isNumericType(const TypeAST* type);
-bool isStringType(const TypeAST* type);
-bool isCharType(const TypeAST* type);
+bool isNullableType(TypeAST* type);
+bool isFallibleType(TypeAST* type);
+bool isReferenceType(TypeAST* type);
+bool isPointerType(TypeAST* type);
+bool isPrimitiveType(TypeAST* type);
+bool isBoolType(TypeAST* type);
+bool isIntegerType(TypeAST* type);
+bool isFloatType(TypeAST* type);
+bool isNumericType(TypeAST* type);
+bool isStringType(TypeAST* type);
+bool isCharType(TypeAST* type);
 
 // ─── Named Type Checks ──────────────────────────────────────────────────
 
-bool isStructType(const TypeAST* type, SemaContext& ctx);
-bool isEnumType(const TypeAST* type, SemaContext& ctx);
-bool isTraitType(const TypeAST* type, SemaContext& ctx);
-bool isGenericParamType(const TypeAST* type, SemaContext& ctx);
+bool isStructType(TypeAST* type, SemaContext& ctx);
+bool isEnumType(TypeAST* type, SemaContext& ctx);
+bool isTraitType(TypeAST* type, SemaContext& ctx);
+bool isGenericParamType(TypeAST* type, SemaContext& ctx);
 
 // ─── Switch Type Checks ─────────────────────────────────────────────────
 
-bool isValidSwitchType(const TypeAST* type, SemaContext& ctx);
-const EnumDeclAST* getEnumDeclFromType(const TypeAST* type, SemaContext& ctx);
-bool isSwitchCaseCompatible(const ExprAST* value, 
-                             const TypeAST* subjectType, 
+bool isValidSwitchType(TypeAST* type, SemaContext& ctx);
+const EnumDeclAST* getEnumDeclFromType(TypeAST* type, SemaContext& ctx);
+bool isSwitchCaseCompatible(ExprAST* value, 
+                             TypeAST* subjectType, 
                              SemaContext& ctx);
 
 // ─── FFI Compatibility ─────────────────────────────────────────────────
 
-bool isValidFFIType(const TypeAST* type, SemaContext& ctx);
+bool isValidFFIType(TypeAST* type, SemaContext& ctx);
 
 } // namespace sema

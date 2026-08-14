@@ -64,7 +64,7 @@ int ConstEvaluator::compareOrder(SemaContext& ctx, const ConstantValue& a, const
 // ─── Individual Arithmetic Operations ─────────────────────────────────
 
 ConstantValue ConstEvaluator::evalAdd(SemaContext& ctx, const ConstantValue& left, const ConstantValue& right,
-                                       const BaseAST* node, const TypeAST* targetType) {
+                                       BaseAST* node, TypeAST* targetType) {
     // Integer + Integer
     if (left.isInt() && right.isInt()) {
         int64_t l = left.asInt();
@@ -103,7 +103,7 @@ ConstantValue ConstEvaluator::evalAdd(SemaContext& ctx, const ConstantValue& lef
 }
 
 ConstantValue ConstEvaluator::evalSub(SemaContext& ctx, const ConstantValue& left, const ConstantValue& right,
-                                       const BaseAST* node, const TypeAST* targetType) {
+                                       BaseAST* node, TypeAST* targetType) {
     // Integer - Integer
     if (left.isInt() && right.isInt()) {
         int64_t l = left.asInt();
@@ -135,7 +135,7 @@ ConstantValue ConstEvaluator::evalSub(SemaContext& ctx, const ConstantValue& lef
 }
 
 ConstantValue ConstEvaluator::evalMul(SemaContext& ctx, const ConstantValue& left, const ConstantValue& right,
-                                       const BaseAST* node, const TypeAST* targetType) {
+                                       BaseAST* node, TypeAST* targetType) {
     // Integer * Integer
     if (left.isInt() && right.isInt()) {
         int64_t l = left.asInt();
@@ -170,7 +170,7 @@ ConstantValue ConstEvaluator::evalMul(SemaContext& ctx, const ConstantValue& lef
 }
 
 ConstantValue ConstEvaluator::evalDiv(SemaContext& ctx, const ConstantValue& left, const ConstantValue& right,
-                                       const BaseAST* node, const TypeAST* targetType) {
+                                       BaseAST* node, TypeAST* targetType) {
     // Integer / Integer
     if (left.isInt() && right.isInt()) {
         if (right.asInt() == 0) {
@@ -215,7 +215,7 @@ ConstantValue ConstEvaluator::evalDiv(SemaContext& ctx, const ConstantValue& lef
 }
 
 ConstantValue ConstEvaluator::evalMod(SemaContext& ctx, const ConstantValue& left, const ConstantValue& right,
-                                       const BaseAST* node, const TypeAST* targetType) {
+                                       BaseAST* node, TypeAST* targetType) {
     if (left.isInt() && right.isInt()) {
         if (right.asInt() == 0) {
             return handleArithmeticError(ctx, "%", "modulo by zero", node, targetType);
@@ -236,7 +236,7 @@ ConstantValue ConstEvaluator::evalMod(SemaContext& ctx, const ConstantValue& lef
 }
 
 ConstantValue ConstEvaluator::evalPow(SemaContext& ctx, const ConstantValue& left, const ConstantValue& right,
-                                       const BaseAST* node, const TypeAST* targetType) {
+                                       BaseAST* node, TypeAST* targetType) {
     if (bothNumeric(left, right)) {
         double base = toDouble(left);
         double exp = toDouble(right);
@@ -255,8 +255,8 @@ ConstantValue ConstEvaluator::evalPow(SemaContext& ctx, const ConstantValue& lef
 ConstantValue ConstEvaluator::evalBinaryOp(SemaContext& ctx, BinaryOp op,
                                             const ConstantValue& left,
                                             const ConstantValue& right,
-                                            const BaseAST* node,
-                                            const TypeAST* targetType) {
+                                            BaseAST* node,
+                                            TypeAST* targetType) {
     switch (op) {
         // ─── Arithmetic ──────────────────────────────────────────────────
         case BinaryOp::Add:

@@ -26,13 +26,13 @@ namespace codegen {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// @brief Check if a function has generic parameters.
-bool isGenericFunction(const FuncDeclAST* decl);
+bool isGenericFunction(FuncDeclAST* decl);
 
 /// @brief Check if a struct has generic parameters.
-bool isGenericStruct(const StructDeclAST* decl);
+bool isGenericStruct(StructDeclAST* decl);
 
 /// @brief Check if a declaration should be specialized (user requested via @[specialize]).
-bool shouldSpecialize(const DeclAST* decl);
+bool shouldSpecialize(DeclAST* decl);
 
 /// @brief Check if a name matches any generic parameter.
 bool isGenericParameterName(InternedString name, const ArenaSpan<GenericParamDeclAST*>& genericParams);
@@ -47,12 +47,12 @@ size_t findGenericParamIndex(InternedString name, const ArenaSpan<GenericParamDe
 /// @brief Context for substituting generic parameters with concrete types.
 struct GenericSubstitution {
     const ArenaSpan<GenericParamDeclAST*>& genericParams;  // The generic parameter declarations
-    const std::vector<const TypeAST*>& typeArgs;          // The concrete type arguments
+    const std::vector<TypeAST*>& typeArgs;          // The concrete type arguments
 
     /// @brief Find the type argument for a given generic parameter name.
     /// @param name The generic parameter name.
     /// @return The substituted type, or nullptr if not found.
-    const TypeAST* lookup(InternedString name) const {
+    TypeAST* lookup(InternedString name) const {
         for (size_t i = 0; i < genericParams.size(); ++i) {
             if (genericParams[i]->name == name && i < typeArgs.size()) {
                 return typeArgs[i];
@@ -69,10 +69,10 @@ struct GenericSubstitution {
 /// @param typeArgs The concrete type arguments.
 /// @param ctx The code generation context.
 /// @return The substituted type, or the original type if no substitution needed.
-const TypeAST* substituteGenericType(
-    const TypeAST* type,
+TypeAST* substituteGenericType(
+    TypeAST* type,
     const ArenaSpan<GenericParamDeclAST*>& genericParams,
-    const std::vector<const TypeAST*>& typeArgs,
+    const std::vector<TypeAST*>& typeArgs,
     CodeGenContext& ctx
 );
 
@@ -86,8 +86,8 @@ const TypeAST* substituteGenericType(
 /// @param ctx The code generation context.
 /// @return The LLVM function, or nullptr on error.
 llvm::Function* createSpecializedFunction(
-    const FuncDeclAST* funcDecl,
-    const std::vector<const TypeAST*>& typeArgs,
+    FuncDeclAST* funcDecl,
+    const std::vector<TypeAST*>& typeArgs,
     CodeGenContext& ctx
 );
 
@@ -97,8 +97,8 @@ llvm::Function* createSpecializedFunction(
 /// @param ctx The code generation context.
 /// @return The LLVM struct type, or nullptr on error.
 llvm::Type* createSpecializedStruct(
-    const StructDeclAST* structDecl,
-    const std::vector<const TypeAST*>& typeArgs,
+    StructDeclAST* structDecl,
+    const std::vector<TypeAST*>& typeArgs,
     CodeGenContext& ctx
 );
 
@@ -111,7 +111,7 @@ llvm::Type* createSpecializedStruct(
 /// @param ctx The code generation context.
 /// @return The LLVM function, or nullptr on error.
 llvm::Function* generateErasedGenericFunction(
-    const FuncDeclAST* funcDecl,
+    FuncDeclAST* funcDecl,
     CodeGenContext& ctx
 );
 
@@ -120,7 +120,7 @@ llvm::Function* generateErasedGenericFunction(
 /// @param ctx The code generation context.
 /// @return The LLVM struct type, or nullptr on error.
 llvm::Type* generateErasedGenericStruct(
-    const StructDeclAST* structDecl,
+    StructDeclAST* structDecl,
     CodeGenContext& ctx
 );
 
@@ -134,8 +134,8 @@ llvm::Type* generateErasedGenericStruct(
 /// @param ctx The code generation context.
 /// @return The LLVM function, or nullptr on error.
 llvm::Function* getOrCreateSpecializedFunction(
-    const FuncDeclAST* funcDecl,
-    const std::vector<const TypeAST*>& typeArgs,
+    FuncDeclAST* funcDecl,
+    const std::vector<TypeAST*>& typeArgs,
     CodeGenContext& ctx
 );
 
@@ -145,8 +145,8 @@ llvm::Function* getOrCreateSpecializedFunction(
 /// @param ctx The code generation context.
 /// @return The LLVM struct type, or nullptr on error.
 llvm::Type* getOrCreateSpecializedStruct(
-    const StructDeclAST* structDecl,
-    const std::vector<const TypeAST*>& typeArgs,
+    StructDeclAST* structDecl,
+    const std::vector<TypeAST*>& typeArgs,
     CodeGenContext& ctx
 );
 

@@ -15,13 +15,13 @@ namespace codegen {
 
 // ─── Public API ────────────────────────────────────────────────────────────
 
-llvm::Type* getType(CodeGenContext& ctx, const TypeAST* type) {
+llvm::Type* getType(CodeGenContext& ctx, TypeAST* type) {
     return getType(ctx, type, nullptr);
 }
 
 llvm::Type* getType(
     CodeGenContext& ctx,
-    const TypeAST* type,
+    TypeAST* type,
     const GenericSubstitution* subst
 ) {
     if (!type) return nullptr;
@@ -44,10 +44,10 @@ llvm::Type* getType(
             break;
 
         case ASTKind::NamedType: {
-            const NamedTypeAST* named = type->as<NamedTypeAST>();
+            NamedTypeAST* named = type->as<NamedTypeAST>();
             // ─── Check if this is a generic parameter ──────────────────────
             if (subst) {
-                const TypeAST* substituted = subst->lookup(named->name);
+                TypeAST* substituted = subst->lookup(named->name);
                 if (substituted) {
                     // Recursively get type of the substituted type
                     result = getType(ctx, substituted, subst);
@@ -113,7 +113,7 @@ llvm::Type* getType(
     return result;
 }
 
-llvm::StructType* getStructType(CodeGenContext& ctx, const StructDeclAST* decl) {
+llvm::StructType* getStructType(CodeGenContext& ctx, StructDeclAST* decl) {
     if (!decl) return nullptr;
 
     auto it = ctx.structCache.find(decl);
@@ -124,7 +124,7 @@ llvm::StructType* getStructType(CodeGenContext& ctx, const StructDeclAST* decl) 
     std::vector<llvm::Type*> fieldTypes;
     std::string structName = ctx.pool.lookup(decl->name);
 
-    for (const FieldDeclAST* field : decl->fields) {
+    for (FieldDeclAST* field : decl->fields) {
         llvm::Type* fieldType = getType(ctx, field->type);
         if (!fieldType) {
             ctx.diagnostics.errorAt(DiagCode::Sem_UnknownType, field->loc,
@@ -159,7 +159,7 @@ llvm::IntegerType* getEnumType(CodeGenContext& ctx, const EnumDeclAST* decl) {
 
 llvm::FunctionType* getFunctionType(
     CodeGenContext& ctx,
-    const FuncTypeAST* funcType,
+    FuncTypeAST* funcType,
     bool isClosure
 ) {
     if (!funcType) return nullptr;
@@ -172,7 +172,7 @@ llvm::FunctionType* getFunctionType(
     }
 
     // ─── Add regular parameters ────────────────────────────────────────────
-    for (const ParamAST* param : funcType->params) {
+    for (ParamAST* param : funcType->params) {
         llvm::Type* paramType = getType(ctx, param->type);
         if (!paramType) {
             ctx.diagnostics.errorAt(DiagCode::Sem_UnknownType, param->loc,
@@ -205,7 +205,7 @@ llvm::FunctionType* getFunctionType(
 
     // ─── Check for variadic parameters ──────────────────────────────────────
     bool isVarArg = false;
-    for (const ParamAST* param : funcType->params) {
+    for (ParamAST* param : funcType->params) {
         if (param->isVariadic) {
             isVarArg = true;
             break;
@@ -215,7 +215,7 @@ llvm::FunctionType* getFunctionType(
     return llvm::FunctionType::get(returnType, paramTypes, isVarArg);
 }
 
-llvm::Type* getPrimitiveType(CodeGenContext& ctx, const PrimitiveTypeAST* type) {
+llvm::Type* getPrimitiveType(CodeGenContext& ctx, PrimitiveTypeAST* type) {
     if (!type) return nullptr;
 
     switch (type->primitiveKind) {
@@ -271,7 +271,7 @@ llvm::Type* getPrimitiveType(CodeGenContext& ctx, const PrimitiveTypeAST* type) 
     }
 }
 
-llvm::Type* getNamedType(CodeGenContext& ctx, const NamedTypeAST* type) {
+llvm::Type* getNamedType(CodeGenContext& ctx, NamedTypeAST* type) {
     if (!type) return nullptr;
 
     std::string typeName = ctx.pool.lookup(type->name);
@@ -345,7 +345,7 @@ llvm::Type* getNamedType(CodeGenContext& ctx, const NamedTypeAST* type) {
     return structType;
 }
 
-llvm::Type* getPtrType(CodeGenContext& ctx, const PtrTypeAST* type) {
+llvm::Type* getPtrType(CodeGenContext& ctx, PtrTypeAST* type) {
     if (!type) return nullptr;
 
     // Raw pointers are always opaque pointers
@@ -354,7 +354,7 @@ llvm::Type* getPtrType(CodeGenContext& ctx, const PtrTypeAST* type) {
     return llvm::PointerType::get(ctx.llvmCtx, 0);
 }
 
-llvm::Type* getRefType(CodeGenContext& ctx, const RefTypeAST* type) {
+llvm::Type* getRefType(CodeGenContext& ctx, RefTypeAST* type) {
     if (!type) return nullptr;
 
     llvm::Type* innerType = getType(ctx, type->inner);
@@ -370,7 +370,7 @@ llvm::Type* getRefType(CodeGenContext& ctx, const RefTypeAST* type) {
 
 llvm::Type* getArrayType(
     CodeGenContext& ctx,
-    const ArrayTypeAST* type,
+    ArrayTypeAST* type,
     const GenericSubstitution* subst
 ) {
     if (!type) return nullptr;
@@ -412,7 +412,7 @@ llvm::Type* getArrayType(
 
 llvm::StructType* getNullableType(
     CodeGenContext& ctx,
-    const NullableTypeAST* type,
+    NullableTypeAST* type,
     const GenericSubstitution* subst
 ) {
     if (!type) return nullptr;
@@ -436,7 +436,7 @@ llvm::StructType* getNullableType(
 
 llvm::StructType* getFallibleType(
     CodeGenContext& ctx,
-    const FallibleTypeAST* type,
+    FallibleTypeAST* type,
     const GenericSubstitution* subst
 ) {
     if (!type) return nullptr;
@@ -460,7 +460,7 @@ llvm::StructType* getFallibleType(
 
 llvm::StructType* getCombinedType(
     CodeGenContext& ctx,
-    const CombinedTypeAST* type,
+    CombinedTypeAST* type,
     const GenericSubstitution* subst
 ) {
     if (!type) return nullptr;
@@ -484,7 +484,7 @@ llvm::StructType* getCombinedType(
 
 llvm::StructType* getFutureType(
     CodeGenContext& ctx,
-    const FutureTypeAST* type,
+    FutureTypeAST* type,
     const GenericSubstitution* subst
 ) {
     if (!type) return nullptr;
@@ -534,7 +534,7 @@ llvm::StructType* getThreadType(
     );
 }
 
-llvm::Type* getModuleTypeAccess(CodeGenContext& ctx, const ModuleTypeAccessAST* type) {
+llvm::Type* getModuleTypeAccess(CodeGenContext& ctx, ModuleTypeAccessAST* type) {
     if (!type) return nullptr;
 
     std::string moduleName = ctx.pool.lookup(type->moduleName);
@@ -596,17 +596,17 @@ llvm::Type* getFloatType(CodeGenContext& ctx, PrimitiveKind kind) {
     }
 }
 
-std::string getTypeName(CodeGenContext& ctx, const TypeAST* type) {
+std::string getTypeName(CodeGenContext& ctx, TypeAST* type) {
     if (!type) return "void";
     
     // For primitive types, use debug::typeToString or a simplified mapping
     if (type->isa<PrimitiveTypeAST>()) {
-        const PrimitiveTypeAST* prim = type->as<PrimitiveTypeAST>();
+        PrimitiveTypeAST* prim = type->as<PrimitiveTypeAST>();
         return std::string(1, encodePrimitiveKind(prim->primitiveKind));
     }
     
     if (type->isa<NamedTypeAST>()) {
-        const NamedTypeAST* named = type->as<NamedTypeAST>();
+        NamedTypeAST* named = type->as<NamedTypeAST>();
         return ctx.pool.lookup(named->name);
     }
     
@@ -614,7 +614,7 @@ std::string getTypeName(CodeGenContext& ctx, const TypeAST* type) {
     return debug::typeToString(type, ctx.pool);
 }
 
-uint64_t getTypeSize(CodeGenContext& ctx, const TypeAST* type) {
+uint64_t getTypeSize(CodeGenContext& ctx, TypeAST* type) {
     llvm::Type* llvmType = getType(ctx, type);
     if (!llvmType) return 0;
 
@@ -625,7 +625,7 @@ uint64_t getTypeSize(CodeGenContext& ctx, const TypeAST* type) {
     return 0;
 }
 
-uint64_t getTypeAlign(CodeGenContext& ctx, const TypeAST* type) {
+uint64_t getTypeAlign(CodeGenContext& ctx, TypeAST* type) {
     llvm::Type* llvmType = getType(ctx, type);
     if (!llvmType) return 0;
 

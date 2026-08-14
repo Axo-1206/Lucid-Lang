@@ -36,7 +36,7 @@ namespace sema {
 // resolveStmt - Dispatch
 // =============================================================================
 
-bool resolveStmt(const StmtAST* stmt, SemaContext& ctx) {
+bool resolveStmt(StmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
     switch (stmt->kind) {
@@ -64,7 +64,7 @@ bool resolveStmt(const StmtAST* stmt, SemaContext& ctx) {
 // resolveBlock
 // =============================================================================
 
-bool resolveBlock(const BlockStmtAST* block, SemaContext& ctx) {
+bool resolveBlock(BlockStmtAST* block, SemaContext& ctx) {
     if (!block) return false;
 
     // ─── RAII: Push block context ──────────────────────────────────────────
@@ -91,7 +91,7 @@ bool resolveBlock(const BlockStmtAST* block, SemaContext& ctx) {
     SymbolScope scope(ctx);
 
     // ─── Resolve each statement ─────────────────────────────────────────
-    for (const StmtAST* stmt : block->stmts) {
+    for (StmtAST* stmt : block->stmts) {
         if (transfers) {
             ctx.diagnostics.warning(DiagCode::Warn_UnreachableCode, stmt, "unreachable code");
             continue;
@@ -125,7 +125,7 @@ bool resolveBlock(const BlockStmtAST* block, SemaContext& ctx) {
 // resolveIfStmt
 // =============================================================================
 
-bool resolveIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
+bool resolveIfStmt(IfStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
     // ─── RAII: Push if context ────────────────────────────────────────────
@@ -222,7 +222,7 @@ bool resolveIfStmt(const IfStmtAST* stmt, SemaContext& ctx) {
 // resolveSwitchStmt
 // =============================================================================
 
-bool resolveSwitchStmt(const SwitchStmtAST* stmt, SemaContext& ctx) {
+bool resolveSwitchStmt(SwitchStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
     // ─── Resolve subject expression ────────────────────────────────────────
@@ -325,7 +325,7 @@ bool resolveSwitchStmt(const SwitchStmtAST* stmt, SemaContext& ctx) {
             
             // ─── Check ranges ──────────────────────────────────────────────
             if (value->isa<RangeExprAST>()) {
-                const RangeExprAST* range = value->as<RangeExprAST>();
+                RangeExprAST* range = value->as<RangeExprAST>();
                 auto loOpt = ConstEvaluator::evaluateAsInt(ctx, range->lo);
                 auto hiOpt = ConstEvaluator::evaluateAsInt(ctx, range->hi);
                 
@@ -371,7 +371,7 @@ bool resolveSwitchStmt(const SwitchStmtAST* stmt, SemaContext& ctx) {
                 bool matches = false;
                 
                 if (value->isa<RangeExprAST>()) {
-                    const RangeExprAST* range = value->as<RangeExprAST>();
+                    RangeExprAST* range = value->as<RangeExprAST>();
                     auto loOpt = ConstEvaluator::evaluateAsInt(ctx, range->lo);
                     auto hiOpt = ConstEvaluator::evaluateAsInt(ctx, range->hi);
                     if (loOpt.has_value() && hiOpt.has_value() && subjectVal.isInt()) {
@@ -436,7 +436,7 @@ bool resolveSwitchStmt(const SwitchStmtAST* stmt, SemaContext& ctx) {
 // resolveForStmt
 // =============================================================================
 
-bool resolveForStmt(const ForStmtAST* stmt, SemaContext& ctx) {
+bool resolveForStmt(ForStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
     // ─── RAII: Push loop context ───────────────────────────────────────────
@@ -459,7 +459,7 @@ bool resolveForStmt(const ForStmtAST* stmt, SemaContext& ctx) {
             return false;
         }
         
-        const RangeExprAST* range = stmt->iterable->as<RangeExprAST>();
+        RangeExprAST* range = stmt->iterable->as<RangeExprAST>();
         
         // ─── Resolve AND REGISTER the index binding ──────────────────────
         if (stmt->indexVar) {
@@ -561,8 +561,8 @@ bool resolveForStmt(const ForStmtAST* stmt, SemaContext& ctx) {
         
         // ─── Validate value type against iterable element type ──────────
         if (stmt->valueVar && iterableType->isa<ArrayTypeAST>()) {
-            const ArrayTypeAST* arrayType = iterableType->as<ArrayTypeAST>();
-            const TypeAST* elementType = arrayType->element;
+            ArrayTypeAST* arrayType = iterableType->as<ArrayTypeAST>();
+            TypeAST* elementType = arrayType->element;
             
             if (stmt->valueVar->type) {
                 TypeAST* valueType = resolveType(stmt->valueVar->type, ctx);
@@ -593,7 +593,7 @@ bool resolveForStmt(const ForStmtAST* stmt, SemaContext& ctx) {
 // resolveWhileStmt
 // =============================================================================
 
-bool resolveWhileStmt(const WhileStmtAST* stmt, SemaContext& ctx) {
+bool resolveWhileStmt(WhileStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
     // ─── RAII: Push loop context ───────────────────────────────────────────
@@ -639,7 +639,7 @@ bool resolveWhileStmt(const WhileStmtAST* stmt, SemaContext& ctx) {
 // resolveDoWhileStmt
 // =============================================================================
 
-bool resolveDoWhileStmt(const DoWhileStmtAST* stmt, SemaContext& ctx) {
+bool resolveDoWhileStmt(DoWhileStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
     // ─── RAII: Push loop context ───────────────────────────────────────────
@@ -683,7 +683,7 @@ bool resolveDoWhileStmt(const DoWhileStmtAST* stmt, SemaContext& ctx) {
 // resolveReturnStmt
 // =============================================================================
 
-bool resolveReturnStmt(const ReturnStmtAST* stmt, SemaContext& ctx) {
+bool resolveReturnStmt(ReturnStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return true;
 
     // ─── Check: Must be inside a function body ─────────────────────────────
@@ -694,7 +694,7 @@ bool resolveReturnStmt(const ReturnStmtAST* stmt, SemaContext& ctx) {
     }
 
     // ─── Get the current expected return type from the stack ──────────────
-    const TypeAST* expectedType = ctx.stack.currentReturnType();
+    TypeAST* expectedType = ctx.stack.currentReturnType();
 
     // ─── Validate return value against expected type ───────────────────────
     if (stmt->value) {
@@ -750,7 +750,7 @@ bool resolveReturnStmt(const ReturnStmtAST* stmt, SemaContext& ctx) {
 // resolveBreakStmt
 // =============================================================================
 
-bool resolveBreakStmt(const BreakStmtAST* stmt, SemaContext& ctx) {
+bool resolveBreakStmt(BreakStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return true;
 
     if (!ctx.stack.insideLoop() && !ctx.stack.insideSwitch()) {
@@ -766,7 +766,7 @@ bool resolveBreakStmt(const BreakStmtAST* stmt, SemaContext& ctx) {
 // resolveContinueStmt
 // =============================================================================
 
-bool resolveContinueStmt(const ContinueStmtAST* stmt, SemaContext& ctx) {
+bool resolveContinueStmt(ContinueStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return true;
 
     if (!ctx.stack.insideLoop()) {
@@ -783,7 +783,7 @@ bool resolveContinueStmt(const ContinueStmtAST* stmt, SemaContext& ctx) {
 // =============================================================================
 
 /// @brief Check if an expression has side effects.
-static bool hasSideEffects(const ExprAST* expr, SemaContext& ctx) {
+static bool hasSideEffects(ExprAST* expr, SemaContext& ctx) {
     if (!expr) return false;
 
     switch (expr->kind) {
@@ -791,7 +791,7 @@ static bool hasSideEffects(const ExprAST* expr, SemaContext& ctx) {
             return true;
 
         case ASTKind::IntrinsicCallExpr: {
-            const IntrinsicCallExprAST* intrinsic = expr->as<IntrinsicCallExprAST>();
+            IntrinsicCallExprAST* intrinsic = expr->as<IntrinsicCallExprAST>();
             std::string nameStr = ctx.pool.lookup(intrinsic->intrinsicName);
             if (nameStr == "memcpy" || nameStr == "memmove" || nameStr == "memset" ||
                 nameStr == "alloc" || nameStr == "free" ||
@@ -814,7 +814,7 @@ static bool hasSideEffects(const ExprAST* expr, SemaContext& ctx) {
             if (hasSideEffects(pipeline->seed, ctx)) return true;
             for (const PipelineStepAST* step : pipeline->steps) {
                 if (hasSideEffects(step->callable, ctx)) return true;
-                for (const ExprAST* arg : step->packArgs) {
+                for (ExprAST* arg : step->packArgs) {
                     if (hasSideEffects(arg, ctx)) return true;
                 }
             }
@@ -824,14 +824,14 @@ static bool hasSideEffects(const ExprAST* expr, SemaContext& ctx) {
         case ASTKind::PipelineStep: {
             const PipelineStepAST* step = expr->as<PipelineStepAST>();
             if (hasSideEffects(step->callable, ctx)) return true;
-            for (const ExprAST* arg : step->packArgs) {
+            for (ExprAST* arg : step->packArgs) {
                 if (hasSideEffects(arg, ctx)) return true;
             }
             return false;
         }
 
         case ASTKind::BinaryExpr: {
-            const BinaryExprAST* bin = expr->as<BinaryExprAST>();
+            BinaryExprAST* bin = expr->as<BinaryExprAST>();
             return hasSideEffects(bin->left, ctx) || hasSideEffects(bin->right, ctx);
         }
 
@@ -861,7 +861,7 @@ static bool hasSideEffects(const ExprAST* expr, SemaContext& ctx) {
 
         case ASTKind::StructLiteralExpr: {
             const StructLiteralExprAST* sl = expr->as<StructLiteralExprAST>();
-            for (const FieldInitAST* init : sl->inits) {
+            for (FieldInitAST* init : sl->inits) {
                 if (hasSideEffects(init->value, ctx)) return true;
             }
             return false;
@@ -869,7 +869,7 @@ static bool hasSideEffects(const ExprAST* expr, SemaContext& ctx) {
 
         case ASTKind::ArrayLiteralExpr: {
             const ArrayLiteralExprAST* al = expr->as<ArrayLiteralExprAST>();
-            for (const ExprAST* elem : al->elements) {
+            for (ExprAST* elem : al->elements) {
                 if (hasSideEffects(elem, ctx)) return true;
             }
             return false;
@@ -900,7 +900,7 @@ static bool hasSideEffects(const ExprAST* expr, SemaContext& ctx) {
     }
 }
 
-bool resolveExprStmt(const ExprStmtAST* stmt, SemaContext& ctx) {
+bool resolveExprStmt(ExprStmtAST* stmt, SemaContext& ctx) {
     if (!stmt || !stmt->expr) return false;
 
     // ─── Resolve the expression ────────────────────────────────────────────
@@ -926,7 +926,7 @@ bool resolveExprStmt(const ExprStmtAST* stmt, SemaContext& ctx) {
 // resolveDeclStmt
 // =============================================================================
 
-bool resolveDeclStmt(const DeclStmtAST* stmt, SemaContext& ctx) {
+bool resolveDeclStmt(DeclStmtAST* stmt, SemaContext& ctx) {
     if (!stmt || !stmt->decl) return false;
 
     resolveDecl(stmt->decl, ctx);
@@ -939,7 +939,7 @@ bool resolveDeclStmt(const DeclStmtAST* stmt, SemaContext& ctx) {
 
 // ─── resolveAsyncStmt ──────────────────────────────────────────────────────
 
-bool resolveAsyncStmt(const AsyncStmtAST* stmt, SemaContext& ctx) {
+bool resolveAsyncStmt(AsyncStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
     // ─── Check: Must be inside a function body ─────────────────────────────
@@ -975,7 +975,7 @@ bool resolveAsyncStmt(const AsyncStmtAST* stmt, SemaContext& ctx) {
     }
 
     // ─── Get the inner type for call validation ────────────────────────────
-    const FutureTypeAST* futureType = resolvedType->as<FutureTypeAST>();
+    FutureTypeAST* futureType = resolvedType->as<FutureTypeAST>();
     TypeAST* innerType = futureType->inner;
 
     // ─── Register the binding in the current scope ──────────────────────────
@@ -1017,7 +1017,7 @@ bool resolveAsyncStmt(const AsyncStmtAST* stmt, SemaContext& ctx) {
 
 // ─── resolveAwaitStmt ──────────────────────────────────────────────────────
 
-bool resolveAwaitStmt(const AwaitStmtAST* stmt, SemaContext& ctx) {
+bool resolveAwaitStmt(AwaitStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
     // ─── Check: Must be inside a function body ─────────────────────────────
@@ -1028,18 +1028,18 @@ bool resolveAwaitStmt(const AwaitStmtAST* stmt, SemaContext& ctx) {
     }
 
     // ─── Check each target variable ────────────────────────────────────────
-    for (const ExprAST* target : stmt->targets) {
+    for (ExprAST* target : stmt->targets) {
         if (!target->isa<IdentifierExprAST>()) {
             ctx.diagnostics.error(DiagCode::Sem_AwaitNonAsync, target,
                                   "await target must be a variable (not an expression)");
             continue;
         }
 
-        const IdentifierExprAST* id = target->as<IdentifierExprAST>();
+        IdentifierExprAST* id = target->as<IdentifierExprAST>();
         InternedString targetName = id->name;
 
         // ─── Look up the variable ──────────────────────────────────────────
-        const ValueDeclAST* decl = ctx.lookupValue(targetName);
+        ValueDeclAST* decl = ctx.lookupValue(targetName);
         if (!decl) {
             ctx.diagnostics.error(DiagCode::Sem_UndefinedValue, target,
                                   "undefined variable '", ctx.pool.lookup(targetName), "'");
@@ -1056,7 +1056,7 @@ bool resolveAwaitStmt(const AwaitStmtAST* stmt, SemaContext& ctx) {
         if (ctx.hasPendingAsync(targetName)) {
             // ─── Validate the variable's type is FutureTypeAST ────────────
             // Use decl->type directly (the parser-stored type)
-            const TypeAST* varType = decl->type;
+            TypeAST* varType = decl->type;
             if (!varType || !varType->isa<FutureTypeAST>()) {
                 ctx.diagnostics.error(DiagCode::Sem_AwaitNonAsync, target,
                                       "'", ctx.pool.lookup(targetName), 
@@ -1066,8 +1066,8 @@ bool resolveAwaitStmt(const AwaitStmtAST* stmt, SemaContext& ctx) {
             }
 
             // ─── NARROW THE TYPE: Unwrap FutureTypeAST to its inner type ──
-            const FutureTypeAST* futureType = varType->as<FutureTypeAST>();
-            const TypeAST* innerType = futureType->inner;
+            FutureTypeAST* futureType = varType->as<FutureTypeAST>();
+            TypeAST* innerType = futureType->inner;
             
             if (!innerType) {
                 ctx.diagnostics.error(DiagCode::Sem_AwaitNonAsync, target,
@@ -1092,10 +1092,10 @@ bool resolveAwaitStmt(const AwaitStmtAST* stmt, SemaContext& ctx) {
             return false;
         } else {
             // ─── Check if already narrowed (double await) ──────────────────
-            const TypeAST* narrowedType = ctx.stack.getNarrowedType(targetName);
+            TypeAST* narrowedType = ctx.stack.getNarrowedType(targetName);
             if (narrowedType) {
                 // Check if the original type was FutureTypeAST
-                const TypeAST* originalType = decl->type;
+                TypeAST* originalType = decl->type;
                 if (originalType && originalType->isa<FutureTypeAST>()) {
                     ctx.diagnostics.error(DiagCode::Sem_DoubleAwait, target,
                                           "'", ctx.pool.lookup(targetName), 
@@ -1116,7 +1116,7 @@ bool resolveAwaitStmt(const AwaitStmtAST* stmt, SemaContext& ctx) {
 
 // ─── resolveSpawnStmt ──────────────────────────────────────────────────────
 
-bool resolveSpawnStmt(const SpawnStmtAST* stmt, SemaContext& ctx) {
+bool resolveSpawnStmt(SpawnStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
     // ─── Check: Must be inside a function body ─────────────────────────────
@@ -1201,7 +1201,7 @@ bool resolveSpawnStmt(const SpawnStmtAST* stmt, SemaContext& ctx) {
 
 // ─── resolveJoinStmt ───────────────────────────────────────────────────────
 
-bool resolveJoinStmt(const JoinStmtAST* stmt, SemaContext& ctx) {
+bool resolveJoinStmt(JoinStmtAST* stmt, SemaContext& ctx) {
     if (!stmt) return false;
 
     // ─── Check: Must be inside a function body ─────────────────────────────
@@ -1212,18 +1212,18 @@ bool resolveJoinStmt(const JoinStmtAST* stmt, SemaContext& ctx) {
     }
 
     // ─── Check each target variable ────────────────────────────────────────
-    for (const ExprAST* target : stmt->targets) {
+    for (ExprAST* target : stmt->targets) {
         if (!target->isa<IdentifierExprAST>()) {
             ctx.diagnostics.error(DiagCode::Sem_JoinNonSpawn, target,
                                   "join target must be a variable (not an expression)");
             continue;
         }
 
-        const IdentifierExprAST* id = target->as<IdentifierExprAST>();
+        IdentifierExprAST* id = target->as<IdentifierExprAST>();
         InternedString targetName = id->name;
 
         // ─── Look up the variable ──────────────────────────────────────────
-        const ValueDeclAST* decl = ctx.lookupValue(targetName);
+        ValueDeclAST* decl = ctx.lookupValue(targetName);
         if (!decl) {
             ctx.diagnostics.error(DiagCode::Sem_UndefinedValue, target,
                                   "undefined variable '", ctx.pool.lookup(targetName), "'");
@@ -1240,7 +1240,7 @@ bool resolveJoinStmt(const JoinStmtAST* stmt, SemaContext& ctx) {
         if (ctx.hasPendingSpawn(targetName)) {
             // ─── Validate the variable's type is ThreadTypeAST ────────────
             // Use decl->type directly (the parser-stored type)
-            const TypeAST* varType = decl->type;
+            TypeAST* varType = decl->type;
             if (!varType || !varType->isa<ThreadTypeAST>()) {
                 ctx.diagnostics.error(DiagCode::Sem_JoinNonSpawn, target,
                                       "'", ctx.pool.lookup(targetName), 
@@ -1251,7 +1251,7 @@ bool resolveJoinStmt(const JoinStmtAST* stmt, SemaContext& ctx) {
 
             // ─── NARROW THE TYPE: Unwrap ThreadTypeAST to its inner type ──
             const ThreadTypeAST* threadType = varType->as<ThreadTypeAST>();
-            const TypeAST* innerType = threadType->inner;
+            TypeAST* innerType = threadType->inner;
             
             if (!innerType) {
                 ctx.diagnostics.error(DiagCode::Sem_JoinNonSpawn, target,
@@ -1276,9 +1276,9 @@ bool resolveJoinStmt(const JoinStmtAST* stmt, SemaContext& ctx) {
             return false;
         } else {
             // ─── Check if already narrowed (double join) ──────────────────
-            const TypeAST* narrowedType = ctx.stack.getNarrowedType(targetName);
+            TypeAST* narrowedType = ctx.stack.getNarrowedType(targetName);
             if (narrowedType) {
-                const TypeAST* originalType = decl->type;
+                TypeAST* originalType = decl->type;
                 if (originalType && originalType->isa<ThreadTypeAST>()) {
                     ctx.diagnostics.error(DiagCode::Sem_DoubleJoin, target,
                                           "'", ctx.pool.lookup(targetName), 

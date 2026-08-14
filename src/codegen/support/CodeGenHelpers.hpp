@@ -15,7 +15,7 @@ namespace codegen {
 /// @return The length as an LLVM i64 value.
 llvm::Value* getArrayLength(
     llvm::Value* target,
-    const ArrayTypeAST* arrayType,
+    ArrayTypeAST* arrayType,
     CodeGenContext& ctx
 );
 

@@ -12,6 +12,11 @@
 /// @design_decision Unknown is not an error
 ///   If an expression can't be evaluated, we return ConstantValue::unknown()
 ///   without a diagnostic. The caller decides what to do.
+///
+/// @design_decision Mutable AST nodes
+///   AST nodes use mutable fields now (removed const from parser fields).
+///   The const evaluator modifies AST nodes directly by setting isConst,
+///   constValue, and resolvedType on expressions it evaluates.
 
 #pragma once
 
@@ -29,10 +34,12 @@ namespace sema {
 // RAII Guards
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// @brief RAII guard for tracking declarations being evaluated.
+/// Prevents infinite recursion in circular dependencies.
 class EvaluationGuard {
 public:
-    EvaluationGuard(std::unordered_set<const DeclAST*>& evaluating,
-                    const DeclAST* decl)
+    EvaluationGuard(std::unordered_set<DeclAST*>& evaluating,
+                    DeclAST* decl)
         : m_evaluating(evaluating), m_decl(decl) {
         m_evaluating.insert(decl);
     }
@@ -45,16 +52,18 @@ public:
     EvaluationGuard& operator=(const EvaluationGuard&) = delete;
 
 private:
-    std::unordered_set<const DeclAST*>& m_evaluating;
-    const DeclAST* m_decl;
+    std::unordered_set<DeclAST*>& m_evaluating;
+    DeclAST* m_decl;
 };
 
+/// @brief RAII guard for const function evaluation context.
+/// Pushes a function context and scope for evaluating const functions.
 class ConstFunctionContext {
 public:
-    ConstFunctionContext(SemaContext& ctx, const FuncDeclAST* func)
+    ConstFunctionContext(SemaContext& ctx, FuncDeclAST* func)
         : m_ctx(ctx) {
         m_ctx.stack.pushFunction(
-            const_cast<FuncDeclAST*>(func),
+            func,
             func->funcType ? func->funcType->returnType : nullptr
         );
         m_ctx.pushScope();
@@ -75,6 +84,14 @@ private:
 
 /// @brief Evaluates const expressions at compile-time.
 /// All methods are static - no instance state needed.
+/// 
+/// ─── Phase Responsibilities ──────────────────────────────────────────────
+/// | Field            | Set By      | Read By               | Notes                     |
+/// | -----------------| ----------- | --------------------- | ------------------------- |
+/// | `isConst`        | Evaluator   | CodeGen               | True if const evaluated   |
+/// | `constValue`     | Evaluator   | CodeGen               | The evaluated constant    |
+/// | `resolvedType`   | Evaluator   | Sema, CodeGen         | Set during evaluation     |
+/// | `valueState`     | Evaluator   | Sema, CodeGen         | Nil/Err/Definite/Unknown  |
 class ConstEvaluator {
 public:
     static constexpr size_t MAX_RECURSION = 1000;
@@ -83,115 +100,118 @@ public:
     // ─── Main Entry Points ───────────────────────────────────────────────
 
     /// @brief Evaluate a const variable declaration.
-    static ConstantValue evaluateDecl(SemaContext& ctx, const VarDeclAST* decl);
+    /// Sets decl->constValue and decl->isConst.
+    static ConstantValue evaluateDecl(SemaContext& ctx, VarDeclAST* decl);
 
     /// @brief Evaluate an expression with optional target type.
     /// 
     /// This is the main entry point for evaluating any expression.
     /// It uses caching to avoid re-evaluating the same expression.
+    /// Sets expr->isConst, expr->constValue, expr->resolvedType.
     /// 
     /// @param ctx The semantic context.
     /// @param expr The expression to evaluate.
     /// @param targetType Optional expected type (for type checking).
     /// @return The evaluated constant value, or error/unknown on failure.
-    static ConstantValue evaluate(SemaContext& ctx, const ExprAST* expr,
-                                  const TypeAST* targetType = nullptr);
+    static ConstantValue evaluate(SemaContext& ctx, ExprAST* expr,
+                                  TypeAST* targetType = nullptr);
 
     /// @brief Check if an expression is compile-time constant.
-    static bool isConstExpr(SemaContext& ctx, const ExprAST* expr,
-                            const TypeAST* targetType = nullptr);
+    static bool isConstExpr(SemaContext& ctx, ExprAST* expr,
+                            TypeAST* targetType = nullptr);
 
     /// @brief Get the constant value of an expression if it's const.
-    static ConstantValue getConstValue(SemaContext& ctx, const ExprAST* expr,
-                                       const TypeAST* targetType = nullptr);
+    static ConstantValue getConstValue(SemaContext& ctx, ExprAST* expr,
+                                       TypeAST* targetType = nullptr);
 
     /// @brief Evaluate an expression as an integer.
-    static std::optional<int64_t> evaluateAsInt(SemaContext& ctx, const ExprAST* expr);
+    static std::optional<int64_t> evaluateAsInt(SemaContext& ctx, ExprAST* expr);
 
     /// @brief Evaluate an expression as a boolean.
-    static std::optional<bool> evaluateAsBool(SemaContext& ctx, const ExprAST* expr);
+    static std::optional<bool> evaluateAsBool(SemaContext& ctx, ExprAST* expr);
 
     /// @brief Report a circular dependency.
-    static void reportCycle(SemaContext& ctx, const std::vector<const DeclAST*>& cycle);
+    static void reportCycle(SemaContext& ctx, const std::vector<DeclAST*>& cycle);
 
     /// @brief Build the dependency graph for const declarations.
     static void buildDependencyGraph(SemaContext& ctx);
 
     /// @brief Get the const value of a declaration.
-    static ConstantValue getConstValue(const VarDeclAST* decl);
+    static ConstantValue getConstValue(VarDeclAST* decl);
 
     // ─── Binary Operation Evaluators ────────────────────────────────────
 
     static ConstantValue evalAdd(SemaContext& ctx, const ConstantValue& left,
                                   const ConstantValue& right,
-                                  const BaseAST* node,
-                                  const TypeAST* targetType);
+                                  BaseAST* node,
+                                  TypeAST* targetType);
 
     static ConstantValue evalSub(SemaContext& ctx, const ConstantValue& left,
                                   const ConstantValue& right,
-                                  const BaseAST* node,
-                                  const TypeAST* targetType);
+                                  BaseAST* node,
+                                  TypeAST* targetType);
 
     static ConstantValue evalMul(SemaContext& ctx, const ConstantValue& left,
                                   const ConstantValue& right,
-                                  const BaseAST* node,
-                                  const TypeAST* targetType);
+                                  BaseAST* node,
+                                  TypeAST* targetType);
 
     static ConstantValue evalDiv(SemaContext& ctx, const ConstantValue& left,
                                   const ConstantValue& right,
-                                  const BaseAST* node,
-                                  const TypeAST* targetType);
+                                  BaseAST* node,
+                                  TypeAST* targetType);
 
     static ConstantValue evalMod(SemaContext& ctx, const ConstantValue& left,
                                   const ConstantValue& right,
-                                  const BaseAST* node,
-                                  const TypeAST* targetType);
+                                  BaseAST* node,
+                                  TypeAST* targetType);
 
     static ConstantValue evalPow(SemaContext& ctx, const ConstantValue& left,
                                   const ConstantValue& right,
-                                  const BaseAST* node,
-                                  const TypeAST* targetType);
+                                  BaseAST* node,
+                                  TypeAST* targetType);
 
     static ConstantValue evalNeg(SemaContext& ctx, const ConstantValue& operand,
-                                  const BaseAST* node,
-                                  const TypeAST* targetType);
+                                  BaseAST* node,
+                                  TypeAST* targetType);
 
     static ConstantValue evalNot(SemaContext& ctx, const ConstantValue& operand,
-                                  const BaseAST* node);
+                                  BaseAST* node);
 
     static ConstantValue evalBitNot(SemaContext& ctx, const ConstantValue& operand,
-                                     const BaseAST* node);
+                                     BaseAST* node);
 
 private:
     // ─── Expression Evaluators ──────────────────────────────────────────
 
-    static ConstantValue evalLiteral(SemaContext& ctx, const LiteralExprAST* expr);
-    static ConstantValue evalIdentifier(SemaContext& ctx, const IdentifierExprAST* expr);
-    static ConstantValue evalBinary(SemaContext& ctx, const BinaryExprAST* expr,
-                                     const TypeAST* targetType);
-    static ConstantValue evalUnary(SemaContext& ctx, const UnaryExprAST* expr,
-                                    const TypeAST* targetType);
-    static ConstantValue evalCall(SemaContext& ctx, const CallExprAST* expr);
-    static ConstantValue evalStructLiteral(SemaContext& ctx, const StructLiteralExprAST* expr);
-    static ConstantValue evalArrayLiteral(SemaContext& ctx, const ArrayLiteralExprAST* expr);
-    static ConstantValue evalFieldAccess(SemaContext& ctx, const FieldAccessExprAST* expr);
-    static ConstantValue evalNullCoalesce(SemaContext& ctx, const NullCoalesceExprAST* expr);
-    static ConstantValue evalIfExpr(SemaContext& ctx, const IfExprAST* expr);
-    static ConstantValue evalRangeExpr(SemaContext& ctx, const RangeExprAST* expr);
+    static ConstantValue evalLiteral(SemaContext& ctx, LiteralExprAST* expr);
+    static ConstantValue evalIdentifier(SemaContext& ctx, IdentifierExprAST* expr);
+    static ConstantValue evalBinary(SemaContext& ctx, BinaryExprAST* expr,
+                                     TypeAST* targetType);
+    static ConstantValue evalUnary(SemaContext& ctx, UnaryExprAST* expr,
+                                    TypeAST* targetType);
+    static ConstantValue evalCall(SemaContext& ctx, CallExprAST* expr);
+    static ConstantValue evalStructLiteral(SemaContext& ctx, StructLiteralExprAST* expr);
+    static ConstantValue evalArrayLiteral(SemaContext& ctx, ArrayLiteralExprAST* expr);
+    static ConstantValue evalFieldAccess(SemaContext& ctx, FieldAccessExprAST* expr);
+    static ConstantValue evalNullCoalesce(SemaContext& ctx, NullCoalesceExprAST* expr);
+    static ConstantValue evalIfExpr(SemaContext& ctx, IfExprAST* expr);
+    static ConstantValue evalRangeExpr(SemaContext& ctx, RangeExprAST* expr);
+    static ConstantValue evalIntrinsicCall(SemaContext& ctx, IntrinsicCallExprAST* expr);
 
     // ─── Statement Execution (for const functions) ──────────────────────
 
-    static ConstantValue executeStmt(SemaContext& ctx, const StmtAST* stmt);
-    static ConstantValue executeBlock(SemaContext& ctx, const BlockStmtAST* block);
-    static ConstantValue executeReturn(SemaContext& ctx, const ReturnStmtAST* stmt);
-    static ConstantValue executeIf(SemaContext& ctx, const IfStmtAST* stmt);
-    static ConstantValue executeWhile(SemaContext& ctx, const WhileStmtAST* stmt);
-    static ConstantValue executeFor(SemaContext& ctx, const ForStmtAST* stmt);
-    static ConstantValue executeSwitch(SemaContext& ctx, const SwitchStmtAST* stmt);
-    static ConstantValue executeExprStmt(SemaContext& ctx, const ExprStmtAST* stmt);
-    static ConstantValue executeDeclStmt(SemaContext& ctx, const DeclStmtAST* stmt);
+    static ConstantValue executeStmt(SemaContext& ctx, StmtAST* stmt);
+    static ConstantValue executeBlock(SemaContext& ctx, BlockStmtAST* block);
+    static ConstantValue executeReturn(SemaContext& ctx, ReturnStmtAST* stmt);
+    static ConstantValue executeIf(SemaContext& ctx, IfStmtAST* stmt);
+    static ConstantValue executeWhile(SemaContext& ctx, WhileStmtAST* stmt);
+    static ConstantValue executeFor(SemaContext& ctx, ForStmtAST* stmt);
+    static ConstantValue executeSwitch(SemaContext& ctx, SwitchStmtAST* stmt);
+    static ConstantValue executeExprStmt(SemaContext& ctx, ExprStmtAST* stmt);
+    static ConstantValue executeDeclStmt(SemaContext& ctx, DeclStmtAST* stmt);
 
-    static ConstantValue executeFunction(SemaContext& ctx, const FuncDeclAST* func,
+    static ConstantValue executeFunction(SemaContext& ctx, FuncDeclAST* func,
                                           const std::vector<ConstantValue>& args);
 
     // ─── Binary Operation Dispatcher ────────────────────────────────────
@@ -199,8 +219,8 @@ private:
     static ConstantValue evalBinaryOp(SemaContext& ctx, BinaryOp op,
                                        const ConstantValue& left,
                                        const ConstantValue& right,
-                                       const BaseAST* node,
-                                       const TypeAST* targetType);
+                                       BaseAST* node,
+                                       TypeAST* targetType);
 
     // ─── Comparison Helpers ──────────────────────────────────────────────
 
@@ -213,10 +233,10 @@ private:
 
     // ─── Internal State ──────────────────────────────────────────────────
 
-    static std::vector<const DeclAST*> m_constDecls;
-    static std::unordered_map<const DeclAST*, std::vector<const DeclAST*>> m_deps;
-    static std::unordered_set<const ExprAST*> m_evaluatedExprs;
-    static std::unordered_set<const DeclAST*> m_evaluating;
+    static std::vector<DeclAST*> m_constDecls;
+    static std::unordered_map<DeclAST*, std::vector<DeclAST*>> m_deps;
+    static std::unordered_set<ExprAST*> m_evaluatedExprs;
+    static std::unordered_set<DeclAST*> m_evaluating;
     static size_t m_recursionDepth;
 };
 

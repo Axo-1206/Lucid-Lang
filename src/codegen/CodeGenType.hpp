@@ -32,7 +32,7 @@ struct GenericSubstitution;
 /// @param ctx The code generation context.
 /// @param type The Lucid type annotation.
 /// @return The LLVM type, or nullptr if the type cannot be mapped.
-llvm::Type* getType(CodeGenContext& ctx, const TypeAST* type);
+llvm::Type* getType(CodeGenContext& ctx, TypeAST* type);
 
 /// @brief Get the LLVM type for a Lucid type annotation with generic substitution.
 /// @param ctx The code generation context.
@@ -41,7 +41,7 @@ llvm::Type* getType(CodeGenContext& ctx, const TypeAST* type);
 /// @return The LLVM type, or nullptr if the type cannot be mapped.
 llvm::Type* getType(
     CodeGenContext& ctx,
-    const TypeAST* type,
+    TypeAST* type,
     const GenericSubstitution* subst
 );
 
@@ -49,7 +49,7 @@ llvm::Type* getType(
 /// @param ctx The code generation context.
 /// @param decl The struct declaration.
 /// @return The LLVM struct type, or nullptr if the struct cannot be mapped.
-llvm::StructType* getStructType(CodeGenContext& ctx, const StructDeclAST* decl);
+llvm::StructType* getStructType(CodeGenContext& ctx, StructDeclAST* decl);
 
 /// @brief Get the LLVM type for a Lucid enum declaration (backing integer type).
 /// @param ctx The code generation context.
@@ -64,23 +64,23 @@ llvm::IntegerType* getEnumType(CodeGenContext& ctx, const EnumDeclAST* decl);
 /// @return The LLVM function type, or nullptr if the function type cannot be mapped.
 llvm::FunctionType* getFunctionType(
     CodeGenContext& ctx,
-    const FuncTypeAST* funcType,
+    FuncTypeAST* funcType,
     bool isClosure = false
 );
 
 // ─── Specific Type Mappers ──────────────────────────────────────────────────
 
 /// @brief Get the LLVM type for a Lucid primitive type.
-llvm::Type* getPrimitiveType(CodeGenContext& ctx, const PrimitiveTypeAST* type);
+llvm::Type* getPrimitiveType(CodeGenContext& ctx, PrimitiveTypeAST* type);
 
 /// @brief Get the LLVM type for a Lucid named type (struct or primitive alias).
-llvm::Type* getNamedType(CodeGenContext& ctx, const NamedTypeAST* type);
+llvm::Type* getNamedType(CodeGenContext& ctx, NamedTypeAST* type);
 
 /// @brief Get the LLVM type for a Lucid pointer type (*T).
-llvm::Type* getPtrType(CodeGenContext& ctx, const PtrTypeAST* type);
+llvm::Type* getPtrType(CodeGenContext& ctx, PtrTypeAST* type);
 
 /// @brief Get the LLVM type for a Lucid reference type (&T).
-llvm::Type* getRefType(CodeGenContext& ctx, const RefTypeAST* type);
+llvm::Type* getRefType(CodeGenContext& ctx, RefTypeAST* type);
 
 /// @brief Get the LLVM type for a Lucid array type.
 /// @param ctx The code generation context.
@@ -89,7 +89,7 @@ llvm::Type* getRefType(CodeGenContext& ctx, const RefTypeAST* type);
 /// @return The LLVM array type.
 llvm::Type* getArrayType(
     CodeGenContext& ctx,
-    const ArrayTypeAST* type,
+    ArrayTypeAST* type,
     const GenericSubstitution* subst = nullptr
 );
 
@@ -100,7 +100,7 @@ llvm::Type* getArrayType(
 /// @return A struct type { i8 tag, T value }.
 llvm::StructType* getNullableType(
     CodeGenContext& ctx,
-    const NullableTypeAST* type,
+    NullableTypeAST* type,
     const GenericSubstitution* subst = nullptr
 );
 
@@ -111,7 +111,7 @@ llvm::StructType* getNullableType(
 /// @return A struct type { i8 tag, T value }.
 llvm::StructType* getFallibleType(
     CodeGenContext& ctx,
-    const FallibleTypeAST* type,
+    FallibleTypeAST* type,
     const GenericSubstitution* subst = nullptr
 );
 
@@ -122,7 +122,7 @@ llvm::StructType* getFallibleType(
 /// @return A struct type { i8 tag, T value } (tag encodes nil/err/value).
 llvm::StructType* getCombinedType(
     CodeGenContext& ctx,
-    const CombinedTypeAST* type,
+    CombinedTypeAST* type,
     const GenericSubstitution* subst = nullptr
 );
 
@@ -133,7 +133,7 @@ llvm::StructType* getCombinedType(
 /// @return A struct type { T value, i8 state }.
 llvm::StructType* getFutureType(
     CodeGenContext& ctx,
-    const FutureTypeAST* type,
+    FutureTypeAST* type,
     const GenericSubstitution* subst = nullptr
 );
 
@@ -149,7 +149,7 @@ llvm::StructType* getThreadType(
 );
 
 /// @brief Get the LLVM type for a Lucid module type access.
-llvm::Type* getModuleTypeAccess(CodeGenContext& ctx, const ModuleTypeAccessAST* type);
+llvm::Type* getModuleTypeAccess(CodeGenContext& ctx, ModuleTypeAccessAST* type);
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -160,12 +160,12 @@ llvm::IntegerType* getIntegerType(CodeGenContext& ctx, PrimitiveKind kind);
 llvm::Type* getFloatType(CodeGenContext& ctx, PrimitiveKind kind);
 
 /// @brief Get the name of a Lucid type as a string.
-std::string getTypeName(CodeGenContext& ctx, const TypeAST* type);
+std::string getTypeName(CodeGenContext& ctx, TypeAST* type);
 
 /// @brief Get the size of a Lucid type in bytes (compile-time).
-uint64_t getTypeSize(CodeGenContext& ctx, const TypeAST* type);
+uint64_t getTypeSize(CodeGenContext& ctx, TypeAST* type);
 
 /// @brief Get the alignment of a Lucid type in bytes (compile-time).
-uint64_t getTypeAlign(CodeGenContext& ctx, const TypeAST* type);
+uint64_t getTypeAlign(CodeGenContext& ctx, TypeAST* type);
 
 } // namespace codegen

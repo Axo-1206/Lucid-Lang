@@ -381,7 +381,7 @@ inline std::string primitiveKindToString(PrimitiveKind kind) {
  *   - Function types: (int, string) -> bool
  *   - Struct and enum types with their fields
  */
-inline std::string typeToString(const TypeAST* type, const StringPool& pool) {
+inline std::string typeToString(TypeAST* type, const StringPool& pool) {
     if (!type) return "<null>";
 
     // ─── PrimitiveType ──────────────────────────────────────────────────────
@@ -528,7 +528,7 @@ inline std::string typeToString(const llvm::Type* type, const StringPool& pool) 
  * 
  * Shows struct/enum/trait definitions with their fields/variants.
  */
-inline std::string typeDeclToString(const TypeDeclAST* decl, const StringPool& pool) {
+inline std::string typeDeclToString(TypeDeclAST* decl, const StringPool& pool) {
     if (!decl) return "<null>";
 
     if (decl->isa<StructDeclAST>()) {

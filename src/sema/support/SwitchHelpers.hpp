@@ -18,20 +18,20 @@ namespace switch_helpers {
 // ─── Exhaustiveness Checking ──────────────────────────────────────────────
 
 /// @brief Check exhaustiveness of enum switch cases.
-bool checkExhaustiveness(const SwitchStmtAST* stmt, 
-                          const TypeAST* subjectType, 
+bool checkExhaustiveness(SwitchStmtAST* stmt, 
+                          TypeAST* subjectType, 
                           SemaContext& ctx);
 
 /// @brief Collect all enum variants covered by switch cases.
 std::unordered_set<InternedString> collectCoveredVariants(
-    const SwitchStmtAST* stmt, 
+    SwitchStmtAST* stmt, 
     SemaContext& ctx);
 
 /// @brief Check if a case value is an enum variant.
-bool isEnumVariantAccess(const ExprAST* value, SemaContext& ctx);
+bool isEnumVariantAccess(ExprAST* value, SemaContext& ctx);
 
 /// @brief Get the enum variant name from a case value.
-InternedString getEnumVariantName(const ExprAST* value, SemaContext& ctx);
+InternedString getEnumVariantName(ExprAST* value, SemaContext& ctx);
 
 } // namespace switch_helpers
 } // namespace sema

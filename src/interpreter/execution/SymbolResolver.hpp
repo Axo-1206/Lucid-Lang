@@ -30,18 +30,18 @@ InternedString findEntryPoint(InterpreterContext& ctx, const std::string& entryP
 /// @param func The function declaration.
 /// @param ctx The interpreter context.
 /// @return true if the function has @[export].
-bool isExported(const FuncDeclAST* func, InterpreterContext& ctx);
+bool isExported(FuncDeclAST* func, InterpreterContext& ctx);
 
 /// @brief Check if a function is an entry point candidate.
 /// @param func The function declaration.
 /// @param ctx The interpreter context.
 /// @return true if the function is a valid entry point.
-bool isEntryPointCandidate(const FuncDeclAST* func, InterpreterContext& ctx);
+bool isEntryPointCandidate(FuncDeclAST* func, InterpreterContext& ctx);
 
 /// @brief Get all entry point candidates from loaded modules.
 /// @param ctx The interpreter context.
 /// @return Vector of candidate function declarations.
-std::vector<const FuncDeclAST*> getEntryPointCandidates(InterpreterContext& ctx);
+std::vector<FuncDeclAST*> getEntryPointCandidates(InterpreterContext& ctx);
 
 // ─── Name Mangling ──────────────────────────────────────────────────────
 
@@ -49,6 +49,6 @@ std::vector<const FuncDeclAST*> getEntryPointCandidates(InterpreterContext& ctx)
 /// @param func The function declaration.
 /// @param ctx The interpreter context.
 /// @return The mangled name (or the original name if not mangled).
-InternedString getMangledName(const FuncDeclAST* func, InterpreterContext& ctx);
+InternedString getMangledName(FuncDeclAST* func, InterpreterContext& ctx);
 
 } // namespace interpreter
