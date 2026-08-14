@@ -75,7 +75,6 @@ llvm::Value* emitLLVMMathIntrinsic(
         llvm::Value* a = args[0];
         llvm::Value* b = args[1];
 
-        // Promote integers to double
         if (a->getType()->isIntegerTy() && b->getType()->isIntegerTy()) {
             a = ctx.builder.CreateSIToFP(a, llvm::Type::getDoubleTy(ctx.llvmCtx));
             b = ctx.builder.CreateSIToFP(b, llvm::Type::getDoubleTy(ctx.llvmCtx));
@@ -239,7 +238,7 @@ llvm::Value* emitLLVMAtomicIntrinsic(
         if (llvm::ConstantDataArray* str = llvm::dyn_cast<llvm::ConstantDataArray>(args.back())) {
             if (str->isString()) {
                 std::string orderStr = str->getAsString().str();
-                ordering = parseOrdering(orderStr);
+                ordering = CodeGenContext::parseOrdering(orderStr);
                 numValueArgs--;
             }
         }
@@ -253,9 +252,7 @@ llvm::Value* emitLLVMAtomicIntrinsic(
             return nullptr;
         }
         llvm::Value* ptr = args[0];
-        // With opaque pointers, we need to get the element type from elsewhere
-        // Use i8 as default
-        llvm::Type* elemType = llvm::Type::getInt8Ty(ctx.llvmCtx);
+        llvm::Type* elemType = ctx.getPointeeType(ptr);
         llvm::LoadInst* load = ctx.builder.CreateLoad(elemType, ptr, "atomic_load");
         load->setAtomic(ordering);
         load->setAlignment(llvm::Align(1));
@@ -606,7 +603,7 @@ llvm::Value* emitLLVMCPUHintIntrinsic(
             if (llvm::ConstantDataArray* str = llvm::dyn_cast<llvm::ConstantDataArray>(args[0])) {
                 if (str->isString()) {
                     std::string orderStr = str->getAsString().str();
-                    ordering = parseOrdering(orderStr);
+                    ordering = CodeGenContext::parseOrdering(orderStr);
                 }
             }
         }
@@ -617,10 +614,6 @@ llvm::Value* emitLLVMCPUHintIntrinsic(
 
     // ─── pause ──────────────────────────────────────────────────────────
     if (name == "pause") {
-        // On x86, _mm_pause is the correct intrinsic.
-        // On other architectures, this may be a no-op.
-        // Use a fence with a hint or simply emit nothing.
-        // For now, emit a fence with seq_cst which acts as a barrier.
         ctx.builder.CreateFence(llvm::AtomicOrdering::SequentiallyConsistent);
         return nullptr;
     }
