@@ -62,7 +62,99 @@ llvm::Function* createSpecializedFunction(
     const std::vector<TypeAST*>& typeArgs,
     CodeGenContext& ctx
 ) {
-    // ... (implementation unchanged, uses GenericMangledName)
+    if (!funcDecl) return nullptr;
+
+    // ─── Generate mangled name for this instantiation ──────────────────────
+    InternedString mangledName = generateMangledNameForGeneric(
+        funcDecl,
+        typeArgs,
+        ctx
+    );
+    
+    if (!mangledName.isValid()) {
+        ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, funcDecl->loc,
+                                "failed to generate mangled name for generic function '",
+                                ctx.pool.lookup(funcDecl->name), "'");
+        return nullptr;
+    }
+    
+    std::string funcName = ctx.pool.lookup(mangledName);
+
+    // ─── Build parameter types ──────────────────────────────────────────────
+    GenericSubstitution subst{funcDecl->genericParams, typeArgs};
+    std::vector<llvm::Type*> paramTypes;
+
+    if (funcDecl->hasClosure) {
+        paramTypes.push_back(llvm::PointerType::get(ctx.llvmCtx, 0));
+    }
+
+    FuncTypeAST* funcType = funcDecl->funcType;
+    while (funcType) {
+        for (ParamAST* param : funcType->params) {
+            llvm::Type* paramType = getType(ctx, param->type, &subst);
+            if (!paramType) {
+                ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, param->loc,
+                                        "parameter '", ctx.pool.lookup(param->name),
+                                        "' has invalid type in specialization");
+                return nullptr;
+            }
+            paramTypes.push_back(paramType);
+        }
+        funcType = funcType->getNext();
+    }
+
+    // ─── Build return type ──────────────────────────────────────────────────
+    llvm::Type* returnType = llvm::Type::getVoidTy(ctx.llvmCtx);
+    if (funcDecl->funcType->returnType) {
+        returnType = getType(ctx, funcDecl->funcType->returnType, &subst);
+        if (!returnType) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_InvalidReturnType, funcDecl->loc,
+                                    "invalid return type in specialization");
+            return nullptr;
+        }
+    }
+
+    llvm::FunctionType* llvmFuncType = llvm::FunctionType::get(
+        returnType,
+        paramTypes,
+        false
+    );
+
+    // ─── Check if already exists ──────────────────────────────────────────
+    llvm::Function* existingFunc = ctx.module->getFunction(funcName);
+    if (existingFunc) {
+        return existingFunc;
+    }
+
+    // ─── Create the function with the mangled name ─────────────────────────
+    llvm::Function* func = llvm::Function::Create(
+        llvmFuncType,
+        llvm::Function::InternalLinkage,
+        funcName,
+        ctx.module
+    );
+
+    // ─── Set parameter names ──────────────────────────────────────────────
+    size_t paramIndex = 0;
+    if (funcDecl->hasClosure) {
+        func->getArg(paramIndex++)->setName("env");
+    }
+
+    FuncTypeAST* paramTypeIter = funcDecl->funcType;
+    while (paramTypeIter) {
+        for (ParamAST* param : paramTypeIter->params) {
+            if (paramIndex < func->arg_size()) {
+                func->getArg(paramIndex)->setName(ctx.pool.lookup(param->name));
+                paramIndex++;
+            }
+        }
+        paramTypeIter = paramTypeIter->getNext();
+    }
+
+    LOG_CODEGEN("Created specialized function: ", funcName,
+                " (", paramTypes.size(), " params)");
+
+    return func;
 }
 
 llvm::Type* createSpecializedStruct(
@@ -70,7 +162,59 @@ llvm::Type* createSpecializedStruct(
     const std::vector<TypeAST*>& typeArgs,
     CodeGenContext& ctx
 ) {
-    // ... (implementation unchanged)
+    if (!structDecl) return nullptr;
+
+    // ─── Generate mangled name for this instantiation ──────────────────────
+    InternedString mangledName = generateMangledNameForGeneric(
+        structDecl,
+        typeArgs,
+        ctx
+    );
+    
+    if (!mangledName.isValid()) {
+        ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, structDecl->loc,
+                                "failed to generate mangled name for generic struct '",
+                                ctx.pool.lookup(structDecl->name), "'");
+        return nullptr;
+    }
+    
+    std::string structName = ctx.pool.lookup(mangledName);
+
+    // ─── Build field types with substituted types ──────────────────────────
+    GenericSubstitution subst{structDecl->genericParams, typeArgs};
+    std::vector<llvm::Type*> fieldTypes;
+
+    for (FieldDeclAST* field : structDecl->fields) {
+        llvm::Type* fieldType = getType(ctx, field->type, &subst);
+        if (!fieldType) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, field->loc,
+                                    "field '", ctx.pool.lookup(field->name),
+                                    "' has invalid type in specialization");
+            return nullptr;
+        }
+        fieldTypes.push_back(fieldType);
+    }
+
+    // ─── Check if already exists ────────────────────────────────────────────
+    llvm::StructType* existingType = llvm::StructType::getTypeByName(
+        ctx.llvmCtx,
+        structName
+    );
+    if (existingType && !existingType->isOpaque()) {
+        return existingType;
+    }
+
+    // ─── Create the struct type with the mangled name ──────────────────────
+    llvm::StructType* structType = llvm::StructType::create(
+        ctx.llvmCtx,
+        fieldTypes,
+        structName
+    );
+
+    LOG_CODEGEN("Created specialized struct: ", structName,
+                " (", fieldTypes.size(), " fields)");
+
+    return structType;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
