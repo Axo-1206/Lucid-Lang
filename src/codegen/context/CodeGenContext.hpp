@@ -214,7 +214,7 @@ struct CodeGenContext {
         return !loops.empty();
     }
     
-    // ─── Type Helpers ──────────────────────────────────────────────────
+    // ─── Type Cache Helpers ──────────────────────────────────────────────
     
     void cacheType(const TypeAST* lucidType, llvm::Type* llvmType) {
         typeCache[lucidType] = llvmType;
@@ -233,8 +233,8 @@ struct CodeGenContext {
         auto it = structCache.find(decl);
         return it != structCache.end() ? it->second : nullptr;
     }
-    
-    // ─── String Type Helpers ──────────────────────────────────────────
+
+    // ─── String Type Helpers ──────────────────────────────────────────────
     
     /// @brief Get the string type (struct { ptr, len, cap }).
     /// @return The string struct type.
@@ -248,7 +248,6 @@ struct CodeGenContext {
     /// @param str The string content.
     /// @return An LLVM value representing the string literal.
     llvm::Value* createStringLiteral(const std::string& str) {
-        // Create a global string constant
         llvm::Constant* strConst = llvm::ConstantDataArray::getString(llvmCtx, str);
         llvm::GlobalVariable* global = new llvm::GlobalVariable(
             *module,
@@ -258,12 +257,10 @@ struct CodeGenContext {
             strConst
         );
 
-        // Create string struct { ptr, len, cap }
         llvm::Type* strType = getStringType();
         llvm::Type* i64 = llvm::Type::getInt64Ty(llvmCtx);
         llvm::Type* i8Ptr = llvm::PointerType::get(llvmCtx, 0);
 
-        // Get pointer to the string data
         llvm::Value* ptr = builder.CreateBitCast(global, i8Ptr);
         llvm::Value* len = llvm::ConstantInt::get(i64, str.length());
 
@@ -296,7 +293,7 @@ struct CodeGenContext {
         if (order == "release") return llvm::AtomicOrdering::Release;
         if (order == "acq_rel") return llvm::AtomicOrdering::AcquireRelease;
         if (order == "seq_cst") return llvm::AtomicOrdering::SequentiallyConsistent;
-        return llvm::AtomicOrdering::SequentiallyConsistent; // default
+        return llvm::AtomicOrdering::SequentiallyConsistent;
     }
     
     // ─── DataLayout Helpers ─────────────────────────────────────────────
@@ -313,6 +310,28 @@ struct CodeGenContext {
     /// @return The alignment in bytes.
     uint64_t getTypeAlign(llvm::Type* type) const {
         return module->getDataLayout().getABITypeAlign(type).value();
+    }
+    
+    // ─── Pointee Type Helpers (opaque pointer safe) ─────────────────────
+    
+    /// @brief Get the pointee type for a pointer value.
+    /// @param ptr The pointer value.
+    /// @return The LLVM type of the pointee, or i8* if unknown.
+    llvm::Type* getPointeeType(llvm::Value* ptr) const {
+        // With opaque pointers (LLVM 17+), we can't get the element type from the pointer.
+        // Default to i8
+        (void)ptr;
+        return llvm::Type::getInt8Ty(llvmCtx);
+    }
+    
+    /// @brief Get the pointee type from a pointer type.
+    /// @param type The pointer type.
+    /// @return The LLVM type of the pointee, or i8* if unknown.
+    llvm::Type* getPointeeType(llvm::Type* type) const {
+        // With opaque pointers (LLVM 17+), we can't get the element type from the pointer.
+        // Default to i8
+        (void)type;
+        return llvm::Type::getInt8Ty(llvmCtx);
     }
 };
 

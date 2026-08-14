@@ -1,8 +1,8 @@
 /// @file support/LLVMHelpers.hpp
-/// @brief Helpers for working with LLVM types and values.
+/// @brief Pure utility helpers for working with LLVM types and values.
 ///
 /// This file provides utility functions for querying LLVM types and values
-/// without needing to know the internal details of LLVM's type system.
+/// WITHOUT depending on CodeGenContext. These are pure type/value utilities.
 ///
 /// ─── Why Centralize? ────────────────────────────────────────────────────────
 /// 1. Consistent type checking across all CodeGen files
@@ -12,7 +12,6 @@
 
 #pragma once
 
-#include "codegen/context/CodeGenContext.hpp"
 #include <llvm/IR/Type.h>
 #include <llvm/IR/Value.h>
 #include <llvm/IR/Constants.h>
@@ -75,7 +74,6 @@ inline bool isNumericType(llvm::Type* type) {
 inline bool isTaggedType(llvm::Type* type) {
     if (!isStructType(type)) return false;
     llvm::StructType* structType = llvm::cast<llvm::StructType>(type);
-    // A tagged slot is { i8 tag, T value } - exactly 2 fields, first is i8
     if (structType->getNumElements() != 2) return false;
     return structType->getElementType(0)->isIntegerTy(8);
 }
@@ -87,7 +85,6 @@ inline bool isSliceType(llvm::Type* type) {
     if (!isStructType(type)) return false;
     llvm::StructType* structType = llvm::cast<llvm::StructType>(type);
     if (structType->getNumElements() != 3) return false;
-    // Slice: { ptr, len, cap } - first is pointer, next two are integers
     return isPointerType(structType->getElementType(0)) &&
            isIntegerType(structType->getElementType(1)) &&
            isIntegerType(structType->getElementType(2));
@@ -100,23 +97,25 @@ inline bool isClosureType(llvm::Type* type) {
     if (!isStructType(type)) return false;
     llvm::StructType* structType = llvm::cast<llvm::StructType>(type);
     if (structType->getNumElements() != 2) return false;
-    // Closure: { func, env } - both are pointers
     return isPointerType(structType->getElementType(0)) &&
            isPointerType(structType->getElementType(1));
 }
 
 /// @brief Check if an LLVM type is a string type.
 /// @param type The LLVM type to check.
-/// @return True if the type is a struct with exactly three fields: { ptr, len, cap }
-///         where all fields are pointers or integers.
+/// @return True if the type is a struct with exactly three fields: { ptr, len, cap }.
 inline bool isStringType(llvm::Type* type) {
     if (!isStructType(type)) return false;
     llvm::StructType* structType = llvm::cast<llvm::StructType>(type);
     if (structType->getNumElements() != 3) return false;
-    // String: { ptr, len, cap } - same as slice
     return isPointerType(structType->getElementType(0)) &&
            isIntegerType(structType->getElementType(1)) &&
            isIntegerType(structType->getElementType(2));
+}
+
+/// @brief Check if an LLVM type is a function type.
+inline bool isFunctionType(llvm::Type* type) {
+    return type && type->isFunctionTy();
 }
 
 // ─── Value Predicates ──────────────────────────────────────────────────────
@@ -196,7 +195,6 @@ inline llvm::Type* getElementType(llvm::Type* type) {
         return llvm::cast<llvm::VectorType>(type)->getElementType();
     }
     if (type->isStructTy()) {
-        // For structs, return the first element type (if any)
         llvm::StructType* structType = llvm::cast<llvm::StructType>(type);
         if (structType->getNumElements() > 0) {
             return structType->getElementType(0);
@@ -243,6 +241,18 @@ inline unsigned getIntegerBitWidth(llvm::Value* value) {
     return getIntegerBitWidth(value->getType());
 }
 
+/// @brief Get the number of function parameters.
+inline unsigned getFunctionNumParams(llvm::Type* type) {
+    if (!isFunctionType(type)) return 0;
+    return llvm::cast<llvm::FunctionType>(type)->getNumParams();
+}
+
+/// @brief Check if a function type is vararg.
+inline bool isFunctionVarArg(llvm::Type* type) {
+    if (!isFunctionType(type)) return false;
+    return llvm::cast<llvm::FunctionType>(type)->isVarArg();
+}
+
 // ─── Type Constants ───────────────────────────────────────────────────────
 
 /// @brief Get the i8 type (for tags).
@@ -285,16 +295,6 @@ inline llvm::Type* getPtrType(llvm::LLVMContext& ctx) {
     return llvm::PointerType::get(ctx, 0);
 }
 
-/// @brief Get the pointer type for a specific element type.
-/// @param ctx The LLVM context.
-/// @param elemType The element type (may be ignored with opaque pointers).
-inline llvm::Type* getPtrType(llvm::LLVMContext& ctx, llvm::Type* elemType) {
-    // With opaque pointers (LLVM 17+), the element type is ignored.
-    // We keep the parameter for compatibility but use the context version.
-    (void)elemType;
-    return llvm::PointerType::get(ctx, 0);
-}
-
 /// @brief Get the string type (struct { ptr, len, cap }).
 /// @param ctx The LLVM context.
 /// @return The string struct type.
@@ -332,66 +332,7 @@ inline llvm::ConstantInt* getI8Constant(llvm::LLVMContext& ctx, uint8_t value) {
     return getIntConstant(ctx, value, 8);
 }
 
-// ─── String Literal Creation ─────────────────────────────────────────────
-
-/// @brief Create a string literal as an LLVM value.
-/// @param ctx The code generation context (needs module and builder).
-/// @param str The string content.
-/// @return An LLVM value representing the string literal (struct { ptr, len, cap }).
-inline llvm::Value* createStringLiteral(CodeGenContext& ctx, const std::string& str) {
-    // Create a global string constant
-    llvm::Constant* strConst = llvm::ConstantDataArray::getString(ctx.llvmCtx, str);
-    llvm::GlobalVariable* global = new llvm::GlobalVariable(
-        *ctx.module,
-        strConst->getType(),
-        true,
-        llvm::GlobalValue::PrivateLinkage,
-        strConst
-    );
-
-    // Create string struct { ptr, len, cap }
-    llvm::Type* strType = getStringType(ctx.llvmCtx);
-    llvm::Type* i64 = llvm::Type::getInt64Ty(ctx.llvmCtx);
-    llvm::Type* i8Ptr = llvm::PointerType::get(ctx.llvmCtx, 0);
-
-    // Get pointer to the string data
-    llvm::Value* ptr = ctx.builder.CreateBitCast(global, i8Ptr);
-    llvm::Value* len = llvm::ConstantInt::get(i64, str.length());
-
-    llvm::Value* result = llvm::UndefValue::get(strType);
-    result = ctx.builder.CreateInsertValue(result, ptr, 0);
-    result = ctx.builder.CreateInsertValue(result, len, 1);
-    result = ctx.builder.CreateInsertValue(result, len, 2);
-    return result;
-}
-
-// ─── Memory Ordering Helpers ─────────────────────────────────────────────
-
-/// @brief Parse a memory ordering string to LLVM AtomicOrdering.
-/// @param order The ordering string ("relaxed", "acquire", "release", "acq_rel", "seq_cst").
-/// @return The corresponding LLVM AtomicOrdering (defaults to SequentialConsistent).
-inline llvm::AtomicOrdering parseOrdering(const std::string& order) {
-    if (order == "relaxed") return llvm::AtomicOrdering::Monotonic;
-    if (order == "acquire") return llvm::AtomicOrdering::Acquire;
-    if (order == "release") return llvm::AtomicOrdering::Release;
-    if (order == "acq_rel") return llvm::AtomicOrdering::AcquireRelease;
-    if (order == "seq_cst") return llvm::AtomicOrdering::SequentiallyConsistent;
-    return llvm::AtomicOrdering::SequentiallyConsistent; // default
-}
-
-/// @brief Parse a memory ordering string to LLVM AtomicOrdering with fallback.
-/// @param order The ordering string.
-/// @param defaultOrder The default ordering if parsing fails.
-/// @return The corresponding LLVM AtomicOrdering.
-inline llvm::AtomicOrdering parseOrdering(const std::string& order, llvm::AtomicOrdering defaultOrder) {
-    llvm::AtomicOrdering result = parseOrdering(order);
-    if (result == llvm::AtomicOrdering::SequentiallyConsistent && order != "seq_cst") {
-        return defaultOrder;
-    }
-    return result;
-}
-
-// ─── Generic Helpers ──────────────────────────────────────────────────────
+// ─── Debug Helpers ─────────────────────────────────────────────────────────
 
 /// @brief Get the string type name for debugging.
 inline std::string getTypeName(llvm::Type* type) {
@@ -400,15 +341,6 @@ inline std::string getTypeName(llvm::Type* type) {
     llvm::raw_string_ostream os(name);
     type->print(os);
     return name;
-}
-
-/// @brief Check if a type is a pointer to a specific element type.
-/// @param type The type to check.
-/// @param elemType The expected element type (ignored for opaque pointers).
-/// @return True if the type is a pointer.
-inline bool isPointerTo(llvm::Type* type, llvm::Type* elemType) {
-    (void)elemType; // With opaque pointers, we can't check the element type
-    return isPointerType(type);
 }
 
 } // namespace codegen

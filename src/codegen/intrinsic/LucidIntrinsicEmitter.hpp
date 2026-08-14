@@ -86,15 +86,4 @@ llvm::Value* emitLucidControlIntrinsic(
     CodeGenContext& ctx
 );
 
-// ─── Helper Functions for Lucid Intrinsics ──────────────────────────────
-
-/// @brief Get the pointee type from an intrinsic call expression.
-/// @param expr The intrinsic call expression.
-/// @param ctx The code generation context.
-/// @return The LLVM type of the pointee, or i8* if unknown.
-llvm::Type* getPointeeTypeFromIntrinsic(
-    const IntrinsicCallExprAST* expr,
-    CodeGenContext& ctx
-);
-
 } // namespace codegen

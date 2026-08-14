@@ -18,16 +18,6 @@
 
 namespace codegen {
 
-// ─── Helper: Get the pointee type for a pointer ──────────────────────────
-
-static llvm::Type* getPointeeType(llvm::Value* ptr, CodeGenContext& ctx) {
-    // With opaque pointers (LLVM 17+), we can't get the element type from the pointer.
-    // We need to get it from the expression or use a default.
-    // Try to get the type from the intrinsic's resolved type
-    // For now, default to i8
-    return llvm::Type::getInt8Ty(ctx.llvmCtx);
-}
-
 // ─── Math Intrinsics ──────────────────────────────────────────────────────
 
 llvm::Value* emitLLVMMathIntrinsic(
@@ -249,7 +239,7 @@ llvm::Value* emitLLVMAtomicIntrinsic(
         if (llvm::ConstantDataArray* str = llvm::dyn_cast<llvm::ConstantDataArray>(args.back())) {
             if (str->isString()) {
                 std::string orderStr = str->getAsString().str();
-                ordering = ctx.parseOrdering(orderStr);
+                ordering = parseOrdering(orderStr);
                 numValueArgs--;
             }
         }
@@ -616,7 +606,7 @@ llvm::Value* emitLLVMCPUHintIntrinsic(
             if (llvm::ConstantDataArray* str = llvm::dyn_cast<llvm::ConstantDataArray>(args[0])) {
                 if (str->isString()) {
                     std::string orderStr = str->getAsString().str();
-                    ordering = ctx.parseOrdering(orderStr);
+                    ordering = parseOrdering(orderStr);
                 }
             }
         }
