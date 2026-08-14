@@ -167,11 +167,24 @@ parseImportDecl(stream, ctx)
 ├── parseImportPath(stream, ctx)                        [Helpers.cpp]
 ├── parse alias (optional 'as' IDENTIFIER)
 ├── ctx.resolver->resolveUsePath(usePath)
-├── check circular: ctx.resolver->isParsing(filePath)
-│   └── if true → report error, return (breaks cycle)
-├── ctx.resolver->readModuleSource(filePath)
-├── parse(filePath, source, ctx)  ◄── recursive call (imports)
+├── if not ctx.resolver->getParsedModule(filePath)     (check cache)
+│   ├── std::string source = ctx.resolver->readModuleSource(filePath)
+│   └── parse(filePath, source, ctx)  ◄── recursive call (imports)
+│       │
+│       └── parse() handles:
+│           ├── cache checking (getParsedModule)
+│           ├── circular import detection (isParsing)
+│           │   └── if cycle → dummy ModuleAST with hasErrors = true
+│           ├── ScopedParsingGuard (push/pop parsing stack)
+│           ├── lexer::tokenize()
+│           ├── parseInternal()
+│           └── cacheModule()
+│
 └── create ImportDeclAST
+
+Note: Circular import detection is handled EXCLUSIVELY by parse().
+      parseImportDecl() delegates to parse() and trusts it to handle
+      all file parsing concerns including cycle detection.
 
 parseVarDecl(stream, ctx)
 │

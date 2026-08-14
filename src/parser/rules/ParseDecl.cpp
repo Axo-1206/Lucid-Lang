@@ -76,11 +76,11 @@ ImportDeclAST* parseImportDecl(TokenStream& stream, ParserContext& ctx) {
         aliasStr = std::string(ctx.pool.lookup(alias));
     }
     
-    // 4. Create the ImportDeclAST (using constructor)
+    // 4. Create the ImportDeclAST
     auto* importDecl = ctx.arena.make<ImportDeclAST>(usePath, alias);
     importDecl->loc = loc;
     
-    // 5. Import the module
+    // 5. Import the module - let parse() handle all checks
     if (!ctx.resolver) {
         ctx.diagnostics.errorAt(DiagCode::Sem_UndefinedModule, loc,
                                 "no module resolver available for '", fullPath, "'");
@@ -94,19 +94,19 @@ ImportDeclAST* parseImportDecl(TokenStream& stream, ParserContext& ctx) {
         return importDecl;
     }
 
-    std::string pathStr = std::string(ctx.pool.lookup(filePath));
-
-    if (ctx.resolver->isParsing(filePath)) {
-        ctx.diagnostics.errorAt(DiagCode::Sem_ModuleCycle, loc,
-                                "circular module dependency detected: '", fullPath, "'");
-        parse(pathStr, "", ctx);
-        return importDecl;
-    }
-
+    // Check if already parsed (cache check - this is fine here)
     if (!ctx.resolver->getParsedModule(filePath)) {
+        std::string pathStr = std::string(ctx.pool.lookup(filePath));
         std::string source = ctx.resolver->readModuleSource(filePath);
+        
+        // parse() will handle:
+        //   - Cache checking
+        //   - Circular import detection (via ScopedParsingGuard + isParsing())
+        //   - Lexing
+        //   - Actual parsing
         parse(pathStr, source, ctx);
     }
+    // If already parsed, we just use the cached version (already loaded)
     
     LOG_PARSER_MINIMAL("Parsed import: '", fullPath, "' as '", aliasStr, "'");
     return importDecl;
