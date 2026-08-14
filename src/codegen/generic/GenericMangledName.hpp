@@ -1,70 +1,25 @@
-/// @file codegen/support/MangledName.hpp
-/// @brief Mangled name generation for declarations.
+/// @file codegen/support/GenericMangledName.hpp
+/// @brief Mangled name generation for generic instantiations ONLY.
 ///
-/// Name mangling is the process of encoding a declaration's identity
-/// (name, type, module, etc.) into a unique string that can be used
-/// as a symbol name in the object file.
+/// ─── Purpose ──────────────────────────────────────────────────────────────────
+/// This file generates mangled names for generic INSTANTIATIONS (specialized
+/// versions of generic functions/structs with concrete type arguments).
 ///
-/// ─── Why Name Mangling? ──────────────────────────────────────────────────────
-/// 1. **Overloading**: Same name, different parameter types → different symbols
-/// 2. **Module Scoping**: Same name in different modules → different symbols
-/// 3. **Generics**: Different instantiations → different symbols
-/// 4. **Linking**: The linker needs unique, deterministic names
-/// 5. **ABI Stability**: Names must be stable across compilations
+/// ─── Why Separate from Sema's Mangling? ─────────────────────────────────────
+/// Sema generates mangled names for ALL declarations during semantic analysis.
+/// However, generic instantiations are discovered lazily during CodeGen when
+/// the generic is actually used. Sema cannot know all instantiations ahead of
+/// time (especially with cross-module usage), so CodeGen generates mangled
+/// names for each concrete instantiation when it's first encountered.
 ///
-/// ─── Mangling Scheme ──────────────────────────────────────────────────────
-/// Format: _L{module}_{name}_{params}_{return}_{generic}
+/// ─── Usage ──────────────────────────────────────────────────────────────────
+/// CodeGenGeneric.cpp calls generateMangledNameForGeneric() when creating
+/// specialized functions/structs via monomorphization (@[specialize]).
 ///
-/// Components:
-///   - _L: Lucid prefix (distinguishes from C symbols)
-///   - module: Module path (sanitized)
-///   - name: Declaration name
-///   - params: Parameter types (encoded)
-///   - return: Return type (encoded)
-///   - generic: Generic arguments (if any)
-///
-/// ─── Type Encoding ──────────────────────────────────────────────────────
-/// | Type           | Code | Notes                        |
-/// |----------------|------|------------------------------|
-/// | void           | V    |                              |
-/// | bool           | b    |                              |
-/// | int8/byte      | c    | char                         |
-/// | int16/short    | s    |                              |
-/// | int32/int      | i    |                              |
-/// | int64/long     | l    |                              |
-/// | uint8/ubyte    | h    | unsigned char                |
-/// | uint16/ushort  | t    | unsigned short               |
-/// | uint32/uint    | u    |                              |
-/// | uint64/ulong   | m    | unsigned long                |
-/// | float          | f    |                              |
-/// | double         | d    |                              |
-/// | decimal        | D    | 128-bit decimal              |
-/// | string         | S    |                              |
-/// | char           | C    |                              |
-/// | pointer        | P{T} | T is the pointee type        |
-/// | reference      | R{T} | T is the referenced type     |
-/// | nullable       | N{T} | T is the inner type          |
-/// | fallible       | F{T} | T is the inner type          |
-/// | combined       | X{T} | T is the inner type          |
-/// | fixed array    | A{N}{T} | N is size, T is element      |
-/// | slice          | A_{T} | T is element                 |
-/// | dynamic array  | A*{T} | T is element                 |
-/// | function       | F{params}_{return} |                          |
-/// | named type     | {name} | User-defined type            |
-/// | generic named  | {name}_G{args} | Generic arguments appended   |
-///
-/// ─── Examples ──────────────────────────────────────────────────────────────
-/// add (a int)(b int) -> int
-///   → _Lmath_add_P_i_i_Ri
-///
-/// identity<T> (v T) -> T
-///   → _Lcore_identity_G_T_P_T_RT
-///
-/// identity<int> (v int) -> int (specialized)
-///   → _Lcore_identity_G_i_P_i_Ri
-///
-/// process (data string) -> bool
-///   → _Lapp_process_P_S_Rb
+/// ─── What This File Does NOT Do ───────────────────────────────────────────
+/// - Does NOT generate mangled names for non-generic declarations (Sema does that)
+/// - Does NOT generate mangled names for generic templates (Sema does that)
+/// - Only generates names for CONCRETE instantiations: identity<int>, Box<float>, etc.
 
 #pragma once
 
@@ -80,20 +35,6 @@
 
 namespace codegen {
 
-// ─── Public API ─────────────────────────────────────────────────────────────
-
-/// @brief Generate a mangled name for a function declaration.
-/// @param decl The function declaration.
-/// @param ctx The code generation context.
-/// @return The mangled name as an InternedString.
-InternedString generateMangledName(FuncDeclAST* decl, CodeGenContext& ctx);
-
-/// @brief Generate a mangled name for a variable declaration.
-/// @param decl The variable declaration.
-/// @param ctx The code generation context.
-/// @return The mangled name as an InternedString.
-InternedString generateMangledName(VarDeclAST* decl, CodeGenContext& ctx);
-
 /// @brief Generate a mangled name for a generic instantiation.
 /// @param baseDecl The generic declaration (function or struct).
 /// @param typeArgs The concrete type arguments.
@@ -105,12 +46,6 @@ InternedString generateMangledNameForGeneric(
     CodeGenContext& ctx
 );
 
-/// @brief Generate a mangled name for a struct.
-/// @param decl The struct declaration.
-/// @param ctx The code generation context.
-/// @return The mangled name as an InternedString.
-InternedString generateMangledName(StructDeclAST* decl, CodeGenContext& ctx);
-
 // ─── Core Encoding Functions ──────────────────────────────────────────────
 
 /// @brief Encode a type to a mangled string.
@@ -118,14 +53,6 @@ InternedString generateMangledName(StructDeclAST* decl, CodeGenContext& ctx);
 /// @param pool The string pool for looking up names.
 /// @return The encoded type string (as std::string for building).
 std::string typeToMangleString(TypeAST* type, StringPool& pool);
-
-/// @brief Encode a type to a mangled string (context overload).
-/// @param type The type to encode.
-/// @param ctx The code generation context.
-/// @return The encoded type string.
-inline std::string typeToMangleString(TypeAST* type, CodeGenContext& ctx) {
-    return typeToMangleString(type, ctx.pool);
-}
 
 /// @brief Sanitize a string for use in a mangled name.
 /// @param str The string to sanitize.

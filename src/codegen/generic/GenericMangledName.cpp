@@ -1,7 +1,7 @@
-/// @file codegen/support/MangledName.cpp
-/// @brief Implementation of mangled name generation.
+/// @file codegen/support/GenericMangledName.cpp
+/// @brief Implementation of generic instantiation mangling.
 
-#include "MangledName.hpp"
+#include "GenericMangledName.hpp"
 #include "debug/DebugUtils.hpp"
 
 #include <sstream>
@@ -12,10 +12,6 @@ namespace codegen {
 
 // ─── Private Helper: Build Mangled String ──────────────────────────────────
 
-/// @brief Build a mangled name string from components.
-/// @param components The components to join.
-/// @param ctx The code generation context.
-/// @return The full mangled name as an InternedString.
 static InternedString buildMangledName(const std::string& components, CodeGenContext& ctx) {
     std::string result = "_L";
     result += components;
@@ -23,75 +19,6 @@ static InternedString buildMangledName(const std::string& components, CodeGenCon
 }
 
 // ─── Public API ─────────────────────────────────────────────────────────────
-
-InternedString generateMangledName(FuncDeclAST* decl, CodeGenContext& ctx) {
-    if (!decl) return InternedString(0);
-    
-    std::string result;
-    
-    // ─── 1. Module path ──────────────────────────────────────────────────
-    result += getMangledModulePath(ctx) + "_";
-    
-    // ─── 2. Function name ──────────────────────────────────────────────────
-    result += sanitizeForMangledName(ctx.pool.lookup(decl->name));
-    
-    // ─── 3. Generic parameters (if any) ──────────────────────────────────
-    // Note: For the generic declaration itself, we encode the parameter NAMES
-    // (e.g., "T"), not concrete types. Concrete types are encoded in the
-    // generateMangledNameForGeneric function.
-    if (!decl->genericParams.empty()) {
-        result += "_G";
-        for (size_t i = 0; i < decl->genericParams.size(); ++i) {
-            if (i > 0) result += "_";
-            result += sanitizeForMangledName(
-                ctx.pool.lookup(decl->genericParams[i]->name)
-            );
-        }
-    }
-    
-    // ─── 4. Parameter types ──────────────────────────────────────────────
-    result += "_P";
-    FuncTypeAST* funcType = decl->funcType;
-    while (funcType) {
-        for (ParamAST* param : funcType->params) {
-            result += typeToMangleString(param->type, ctx);
-        }
-        funcType = funcType->getNext();
-    }
-    
-    // ─── 5. Return type ──────────────────────────────────────────────────
-    if (decl->funcType->returnType) {
-        result += "_R" + typeToMangleString(decl->funcType->returnType, ctx);
-    } else {
-        result += "_RV";  // void
-    }
-    
-    return buildMangledName(result, ctx);
-}
-
-InternedString generateMangledName(VarDeclAST* decl, CodeGenContext& ctx) {
-    if (!decl) return InternedString(0);
-    
-    std::string result;
-    
-    // ─── 1. Module path ──────────────────────────────────────────────────
-    result += getMangledModulePath(ctx) + "_";
-    
-    // ─── 2. Variable name ──────────────────────────────────────────────────
-    result += sanitizeForMangledName(ctx.pool.lookup(decl->name));
-    
-    // ─── 3. Type ──────────────────────────────────────────────────────────
-    if (decl->type) {
-        result += "_T" + typeToMangleString(decl->type, ctx);
-    } else {
-        result += "_TV";  // void (should not happen for variables)
-    }
-    
-    // ─── 4. Mutability ──────────────────────────────────────────────────
-    result += decl->isConst() ? "_C" : "_M";  // Const or Mutable
-    
-    return buildMangledName(result, ctx);
-}
 
 InternedString generateMangledNameForGeneric(
     DeclAST* baseDecl,
@@ -114,7 +41,7 @@ InternedString generateMangledNameForGeneric(
     result += "_G";
     for (size_t i = 0; i < typeArgs.size(); ++i) {
         if (i > 0) result += "_";
-        result += typeToMangleString(typeArgs[i], ctx);
+        result += typeToMangleString(typeArgs[i], ctx.pool);
     }
     
     // ─── 4. For functions, also encode parameter and return types ──────
@@ -126,10 +53,8 @@ InternedString generateMangledNameForGeneric(
             for (ParamAST* param : funcType->params) {
                 // If this is a generic parameter, substitute it
                 TypeAST* paramType = param->type;
-                // Check if param type is a generic parameter
                 if (paramType->isa<NamedTypeAST>()) {
                     NamedTypeAST* named = paramType->as<NamedTypeAST>();
-                    // Find if this matches a generic param name
                     for (size_t j = 0; j < funcDecl->genericParams.size(); ++j) {
                         if (funcDecl->genericParams[j]->name == named->name) {
                             if (j < typeArgs.size()) {
@@ -139,7 +64,7 @@ InternedString generateMangledNameForGeneric(
                         }
                     }
                 }
-                result += typeToMangleString(paramType, ctx);
+                result += typeToMangleString(paramType, ctx.pool);
             }
             funcType = funcType->getNext();
         }
@@ -147,7 +72,6 @@ InternedString generateMangledNameForGeneric(
         // Return type (using substituted type)
         if (funcDecl->funcType->returnType) {
             TypeAST* returnType = funcDecl->funcType->returnType;
-            // Check if return type is a generic parameter
             if (returnType->isa<NamedTypeAST>()) {
                 NamedTypeAST* named = returnType->as<NamedTypeAST>();
                 for (size_t j = 0; j < funcDecl->genericParams.size(); ++j) {
@@ -159,7 +83,7 @@ InternedString generateMangledNameForGeneric(
                     }
                 }
             }
-            result += "_R" + typeToMangleString(returnType, ctx);
+            result += "_R" + typeToMangleString(returnType, ctx.pool);
         } else {
             result += "_RV";
         }
@@ -170,7 +94,6 @@ InternedString generateMangledNameForGeneric(
         result += "_F";
         for (FieldDeclAST* field : structDecl->fields) {
             TypeAST* fieldType = field->type;
-            // Check if field type is a generic parameter
             if (fieldType->isa<NamedTypeAST>()) {
                 NamedTypeAST* named = fieldType->as<NamedTypeAST>();
                 for (size_t j = 0; j < structDecl->genericParams.size(); ++j) {
@@ -182,40 +105,7 @@ InternedString generateMangledNameForGeneric(
                     }
                 }
             }
-            result += typeToMangleString(fieldType, ctx);
-        }
-    }
-    
-    return buildMangledName(result, ctx);
-}
-
-InternedString generateMangledName(StructDeclAST* decl, CodeGenContext& ctx) {
-    if (!decl) return InternedString(0);
-    
-    std::string result;
-    
-    // ─── 1. Module path ──────────────────────────────────────────────────
-    result += getMangledModulePath(ctx) + "_";
-    
-    // ─── 2. Struct name ──────────────────────────────────────────────────
-    result += sanitizeForMangledName(ctx.pool.lookup(decl->name));
-    
-    // ─── 3. Generic parameters (if any) ──────────────────────────────────
-    if (!decl->genericParams.empty()) {
-        result += "_G";
-        for (size_t i = 0; i < decl->genericParams.size(); ++i) {
-            if (i > 0) result += "_";
-            result += sanitizeForMangledName(
-                ctx.pool.lookup(decl->genericParams[i]->name)
-            );
-        }
-    }
-    
-    // ─── 4. Field types ──────────────────────────────────────────────────
-    if (!decl->fields.empty()) {
-        result += "_F";
-        for (FieldDeclAST* field : decl->fields) {
-            result += typeToMangleString(field->type, ctx);
+            result += typeToMangleString(fieldType, ctx.pool);
         }
     }
     
@@ -225,7 +115,7 @@ InternedString generateMangledName(StructDeclAST* decl, CodeGenContext& ctx) {
 // ─── Core Encoding Functions ──────────────────────────────────────────────
 
 std::string typeToMangleString(TypeAST* type, StringPool& pool) {
-    if (!type) return "V";  // void
+    if (!type) return "V";
     
     switch (type->kind) {
         case ASTKind::PrimitiveType: {
@@ -236,11 +126,8 @@ std::string typeToMangleString(TypeAST* type, StringPool& pool) {
         
         case ASTKind::NamedType: {
             NamedTypeAST* named = type->as<NamedTypeAST>();
-            std::string name = sanitizeForMangledName(
-                pool.lookup(named->name)
-            );
+            std::string name = sanitizeForMangledName(pool.lookup(named->name));
             
-            // Add generic arguments if present
             if (!named->genericArgs.empty()) {
                 name += "_G";
                 for (size_t i = 0; i < named->genericArgs.size(); ++i) {
@@ -324,55 +211,38 @@ std::string typeToMangleString(TypeAST* type, StringPool& pool) {
     }
 }
 
+// ─── Helper Functions ─────────────────────────────────────────────────────
+
 std::string sanitizeForMangledName(const std::string& str) {
     std::string result = str;
-    
-    // Replace special characters with underscores
     for (char& c : result) {
         if (!std::isalnum(static_cast<unsigned char>(c))) {
             c = '_';
         }
     }
-    
     return result;
 }
 
 std::string getMangledModulePath(CodeGenContext& ctx) {
-    if (!ctx.module) {
-        return "global";
-    }
-    
-    // Get the module name (which is the file path)
+    if (!ctx.module) return "global";
     std::string path = ctx.module->getName().str();
-    
-    // Replace path separators and dots with underscores
     for (char& c : path) {
-        if (c == '/' || c == '\\' || c == '.') {
-            c = '_';
-        }
+        if (c == '/' || c == '\\' || c == '.') c = '_';
     }
-    
-    // If the path is empty, use "global"
-    if (path.empty()) {
-        return "global";
-    }
-    
-    return path;
+    return path.empty() ? "global" : path;
 }
-
-// ─── Primitive Type Encoding ─────────────────────────────────────────────
 
 char encodePrimitiveKind(PrimitiveKind kind) {
     switch (kind) {
         case PrimitiveKind::Bool:   return 'b';
-        case PrimitiveKind::Int8:   return 'c';  // char
+        case PrimitiveKind::Int8:   return 'c';
         case PrimitiveKind::Int16:  return 's';
         case PrimitiveKind::Int32:  return 'i';
         case PrimitiveKind::Int64:  return 'l';
-        case PrimitiveKind::Uint8:  return 'h';  // unsigned char
-        case PrimitiveKind::Uint16: return 't';  // unsigned short
+        case PrimitiveKind::Uint8:  return 'h';
+        case PrimitiveKind::Uint16: return 't';
         case PrimitiveKind::Uint32: return 'u';
-        case PrimitiveKind::Uint64: return 'm';  // unsigned long
+        case PrimitiveKind::Uint64: return 'm';
         case PrimitiveKind::Byte:   return 'c';
         case PrimitiveKind::Short:  return 's';
         case PrimitiveKind::Int:    return 'i';

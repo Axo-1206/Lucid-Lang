@@ -32,7 +32,7 @@
 
 #include "CodeGen.hpp"
 #include "CodeGenType.hpp"
-#include "CodeGenGeneric.hpp"
+#include "generic/CodeGenGeneric.hpp"
 #include "debug/DebugUtils.hpp"
 #include "core/ast/DeclAST.hpp"
 #include "core/ast/StmtAST.hpp"
@@ -413,16 +413,8 @@ void lowerSpecializedFunctionBody(
     FuncTypeAST* currentType = funcDecl->funcType;
     while (currentType) {
         for (ParamAST* param : currentType->params) {
-            // Get the substituted type for this parameter
-            TypeAST* substitutedType = substituteGenericType(
-                param->type,
-                funcDecl->genericParams,
-                typeArgs,
-                ctx
-            );
-            
-            // Create alloca with the substituted type
-            llvm::Type* llvmType = getType(ctx, substitutedType);
+            GenericSubstitution subst{funcDecl->genericParams, typeArgs};
+            llvm::Type* llvmType = getType(ctx, param->type, &subst);
             if (!llvmType) {
                 ctx.diagnostics.errorAt(DiagCode::Sem_InvalidParamType, param->loc,
                                         "parameter '", ctx.pool.lookup(param->name),
