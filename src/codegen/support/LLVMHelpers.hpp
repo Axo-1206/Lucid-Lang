@@ -12,10 +12,18 @@
 
 #pragma once
 
+#include "codegen/context/CodeGenContext.hpp"
 #include <llvm/IR/Type.h>
 #include <llvm/IR/Value.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Instruction.h>
+#include <llvm/IR/LLVMContext.h>
+#include <llvm/IR/DerivedTypes.h>
+#include <llvm/IR/GlobalVariable.h>
+#include <llvm/IR/IRBuilder.h>
+#include <llvm/IR/Module.h>
+
+#include <string>
 
 namespace codegen {
 
@@ -95,6 +103,20 @@ inline bool isClosureType(llvm::Type* type) {
     // Closure: { func, env } - both are pointers
     return isPointerType(structType->getElementType(0)) &&
            isPointerType(structType->getElementType(1));
+}
+
+/// @brief Check if an LLVM type is a string type.
+/// @param type The LLVM type to check.
+/// @return True if the type is a struct with exactly three fields: { ptr, len, cap }
+///         where all fields are pointers or integers.
+inline bool isStringType(llvm::Type* type) {
+    if (!isStructType(type)) return false;
+    llvm::StructType* structType = llvm::cast<llvm::StructType>(type);
+    if (structType->getNumElements() != 3) return false;
+    // String: { ptr, len, cap } - same as slice
+    return isPointerType(structType->getElementType(0)) &&
+           isIntegerType(structType->getElementType(1)) &&
+           isIntegerType(structType->getElementType(2));
 }
 
 // ─── Value Predicates ──────────────────────────────────────────────────────
@@ -273,6 +295,15 @@ inline llvm::Type* getPtrType(llvm::LLVMContext& ctx, llvm::Type* elemType) {
     return llvm::PointerType::get(ctx, 0);
 }
 
+/// @brief Get the string type (struct { ptr, len, cap }).
+/// @param ctx The LLVM context.
+/// @return The string struct type.
+inline llvm::StructType* getStringType(llvm::LLVMContext& ctx) {
+    llvm::Type* i8Ptr = llvm::PointerType::get(ctx, 0);
+    llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
+    return llvm::StructType::get(ctx, {i8Ptr, i64, i64});
+}
+
 // ─── Value Creation Helpers ──────────────────────────────────────────────
 
 /// @brief Create a zero constant for a type.
@@ -299,6 +330,85 @@ inline llvm::ConstantInt* getI32Constant(llvm::LLVMContext& ctx, uint32_t value)
 /// @brief Create an i8 constant.
 inline llvm::ConstantInt* getI8Constant(llvm::LLVMContext& ctx, uint8_t value) {
     return getIntConstant(ctx, value, 8);
+}
+
+// ─── String Literal Creation ─────────────────────────────────────────────
+
+/// @brief Create a string literal as an LLVM value.
+/// @param ctx The code generation context (needs module and builder).
+/// @param str The string content.
+/// @return An LLVM value representing the string literal (struct { ptr, len, cap }).
+inline llvm::Value* createStringLiteral(CodeGenContext& ctx, const std::string& str) {
+    // Create a global string constant
+    llvm::Constant* strConst = llvm::ConstantDataArray::getString(ctx.llvmCtx, str);
+    llvm::GlobalVariable* global = new llvm::GlobalVariable(
+        *ctx.module,
+        strConst->getType(),
+        true,
+        llvm::GlobalValue::PrivateLinkage,
+        strConst
+    );
+
+    // Create string struct { ptr, len, cap }
+    llvm::Type* strType = getStringType(ctx.llvmCtx);
+    llvm::Type* i64 = llvm::Type::getInt64Ty(ctx.llvmCtx);
+    llvm::Type* i8Ptr = llvm::PointerType::get(ctx.llvmCtx, 0);
+
+    // Get pointer to the string data
+    llvm::Value* ptr = ctx.builder.CreateBitCast(global, i8Ptr);
+    llvm::Value* len = llvm::ConstantInt::get(i64, str.length());
+
+    llvm::Value* result = llvm::UndefValue::get(strType);
+    result = ctx.builder.CreateInsertValue(result, ptr, 0);
+    result = ctx.builder.CreateInsertValue(result, len, 1);
+    result = ctx.builder.CreateInsertValue(result, len, 2);
+    return result;
+}
+
+// ─── Memory Ordering Helpers ─────────────────────────────────────────────
+
+/// @brief Parse a memory ordering string to LLVM AtomicOrdering.
+/// @param order The ordering string ("relaxed", "acquire", "release", "acq_rel", "seq_cst").
+/// @return The corresponding LLVM AtomicOrdering (defaults to SequentialConsistent).
+inline llvm::AtomicOrdering parseOrdering(const std::string& order) {
+    if (order == "relaxed") return llvm::AtomicOrdering::Monotonic;
+    if (order == "acquire") return llvm::AtomicOrdering::Acquire;
+    if (order == "release") return llvm::AtomicOrdering::Release;
+    if (order == "acq_rel") return llvm::AtomicOrdering::AcquireRelease;
+    if (order == "seq_cst") return llvm::AtomicOrdering::SequentiallyConsistent;
+    return llvm::AtomicOrdering::SequentiallyConsistent; // default
+}
+
+/// @brief Parse a memory ordering string to LLVM AtomicOrdering with fallback.
+/// @param order The ordering string.
+/// @param defaultOrder The default ordering if parsing fails.
+/// @return The corresponding LLVM AtomicOrdering.
+inline llvm::AtomicOrdering parseOrdering(const std::string& order, llvm::AtomicOrdering defaultOrder) {
+    llvm::AtomicOrdering result = parseOrdering(order);
+    if (result == llvm::AtomicOrdering::SequentiallyConsistent && order != "seq_cst") {
+        return defaultOrder;
+    }
+    return result;
+}
+
+// ─── Generic Helpers ──────────────────────────────────────────────────────
+
+/// @brief Get the string type name for debugging.
+inline std::string getTypeName(llvm::Type* type) {
+    if (!type) return "null";
+    std::string name;
+    llvm::raw_string_ostream os(name);
+    type->print(os);
+    return name;
+}
+
+/// @brief Check if a type is a pointer to a specific element type.
+/// @param type The type to check.
+/// @param elemType The expected element type (ignored for opaque pointers).
+/// @return True if the type is a pointer.
+inline bool isPointerTo(llvm::Type* type, llvm::Type* elemType) {
+    (void)elemType; // With opaque pointers, we can't check the element type
+    return isPointerType(type);
 }
 
 } // namespace codegen

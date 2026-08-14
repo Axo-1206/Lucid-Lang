@@ -11,8 +11,14 @@
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Value.h>
 #include <llvm/IR/Function.h>
+#include <llvm/IR/Type.h>
+#include <llvm/IR/DerivedTypes.h>
+#include <llvm/IR/GlobalVariable.h>
+#include <llvm/IR/Constants.h>
+#include <llvm/IR/Intrinsics.h>
 #include <unordered_map>
 #include <vector>
+#include <string>
 
 namespace codegen {
 
@@ -156,6 +162,39 @@ struct CodeGenContext {
         runtimeFunctions[name] = func;
     }
     
+    /// @brief Get or create a runtime function in the module.
+    /// @param name The function name.
+    /// @param type The function type.
+    /// @return The LLVM function.
+    llvm::Function* getOrCreateRuntimeFunction(
+        const std::string& name,
+        llvm::FunctionType* type
+    ) {
+        llvm::Function* func = getRuntimeFunction(name);
+        if (func) return func;
+
+        func = llvm::Function::Create(
+            type,
+            llvm::Function::ExternalLinkage,
+            name,
+            module
+        );
+        setRuntimeFunction(name, func);
+        return func;
+    }
+    
+    /// @brief Get or insert a function in the module.
+    /// @param name The function name.
+    /// @param type The function type.
+    /// @return The LLVM function.
+    llvm::Function* getOrInsertFunction(
+        const std::string& name,
+        llvm::FunctionType* type
+    ) {
+        llvm::FunctionCallee callee = module->getOrInsertFunction(name, type);
+        return llvm::dyn_cast<llvm::Function>(callee.getCallee());
+    }
+    
     // ─── Loop Helpers ──────────────────────────────────────────────────
     
     void pushLoop(llvm::BasicBlock* header, llvm::BasicBlock* exit,
@@ -193,6 +232,87 @@ struct CodeGenContext {
     llvm::StructType* lookupStruct(const StructDeclAST* decl) const {
         auto it = structCache.find(decl);
         return it != structCache.end() ? it->second : nullptr;
+    }
+    
+    // ─── String Type Helpers ──────────────────────────────────────────
+    
+    /// @brief Get the string type (struct { ptr, len, cap }).
+    /// @return The string struct type.
+    llvm::StructType* getStringType() const {
+        llvm::Type* i8Ptr = llvm::PointerType::get(llvmCtx, 0);
+        llvm::Type* i64 = llvm::Type::getInt64Ty(llvmCtx);
+        return llvm::StructType::get(llvmCtx, {i8Ptr, i64, i64});
+    }
+    
+    /// @brief Create a string literal as an LLVM value.
+    /// @param str The string content.
+    /// @return An LLVM value representing the string literal.
+    llvm::Value* createStringLiteral(const std::string& str) {
+        // Create a global string constant
+        llvm::Constant* strConst = llvm::ConstantDataArray::getString(llvmCtx, str);
+        llvm::GlobalVariable* global = new llvm::GlobalVariable(
+            *module,
+            strConst->getType(),
+            true,
+            llvm::GlobalValue::PrivateLinkage,
+            strConst
+        );
+
+        // Create string struct { ptr, len, cap }
+        llvm::Type* strType = getStringType();
+        llvm::Type* i64 = llvm::Type::getInt64Ty(llvmCtx);
+        llvm::Type* i8Ptr = llvm::PointerType::get(llvmCtx, 0);
+
+        // Get pointer to the string data
+        llvm::Value* ptr = builder.CreateBitCast(global, i8Ptr);
+        llvm::Value* len = llvm::ConstantInt::get(i64, str.length());
+
+        llvm::Value* result = llvm::UndefValue::get(strType);
+        result = builder.CreateInsertValue(result, ptr, 0);
+        result = builder.CreateInsertValue(result, len, 1);
+        result = builder.CreateInsertValue(result, len, 2);
+        return result;
+    }
+    
+    // ─── Intrinsic Helpers ─────────────────────────────────────────────
+    
+    /// @brief Get an LLVM intrinsic function declaration.
+    /// @param id The LLVM intrinsic ID.
+    /// @param argTypes The argument types.
+    /// @return The LLVM function.
+    llvm::Function* getLLVMIntrinsicDecl(
+        llvm::Intrinsic::ID id,
+        llvm::ArrayRef<llvm::Type*> argTypes
+    ) {
+        return llvm::Intrinsic::getDeclaration(module, id, argTypes);
+    }
+    
+    /// @brief Parse a memory ordering string to LLVM AtomicOrdering.
+    /// @param order The ordering string ("relaxed", "acquire", etc.).
+    /// @return The corresponding LLVM AtomicOrdering.
+    static llvm::AtomicOrdering parseOrdering(const std::string& order) {
+        if (order == "relaxed") return llvm::AtomicOrdering::Monotonic;
+        if (order == "acquire") return llvm::AtomicOrdering::Acquire;
+        if (order == "release") return llvm::AtomicOrdering::Release;
+        if (order == "acq_rel") return llvm::AtomicOrdering::AcquireRelease;
+        if (order == "seq_cst") return llvm::AtomicOrdering::SequentiallyConsistent;
+        return llvm::AtomicOrdering::SequentiallyConsistent; // default
+    }
+    
+    // ─── DataLayout Helpers ─────────────────────────────────────────────
+    
+    /// @brief Get the size of a type in bytes.
+    /// @param type The LLVM type.
+    /// @return The size in bytes.
+    uint64_t getTypeSize(llvm::Type* type) const {
+        return module->getDataLayout().getTypeAllocSize(type);
+    }
+    
+    /// @brief Get the alignment of a type in bytes.
+    /// @param type The LLVM type.
+    /// @return The alignment in bytes.
+    uint64_t getTypeAlign(llvm::Type* type) const {
+        return module->getDataLayout().getABITypeAlign(type).value();
     }
 };
 
