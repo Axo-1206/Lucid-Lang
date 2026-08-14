@@ -179,7 +179,19 @@ llvm::Value* emitLucidPointerIntrinsic(
         llvm::Value* ptr = args[0];
         llvm::Value* offset = args[1];
 
-        llvm::Type* elemType = ctx.getPointeeType(ptr);
+        // ctx.getPointeeType() is only a stub returning i8 (LLVM's opaque
+        // pointers carry no element type once lowered). The real pointee
+        // type still exists on the Lucid side as PtrTypeAST::inner - use
+        // that so offsets are in units of T, not raw bytes.
+        llvm::Type* elemType = llvm::Type::getInt8Ty(ctx.llvmCtx);
+        if (expr && !expr->args.empty() && expr->args[0]->resolvedType &&
+            expr->args[0]->resolvedType->isa<PtrTypeAST>()) {
+            TypeAST* pointee = expr->args[0]->resolvedType->as<PtrTypeAST>()->inner;
+            if (llvm::Type* resolvedElem = getType(ctx, pointee)) {
+                elemType = resolvedElem;
+            }
+        }
+
         llvm::Value* gep = ctx.builder.CreateInBoundsGEP(
             elemType,
             ptr,
@@ -209,8 +221,16 @@ llvm::Value* emitLucidPointerIntrinsic(
 
         llvm::Value* diffBytes = ctx.builder.CreateSub(p1, p2, "ptr_diff_bytes");
 
-        llvm::Type* elemType = ctx.getPointeeType(args[0]);
-        uint64_t elemSize = ctx.getTypeSize(elemType);
+        // Same underlying issue as ptrOffset: ctx.getPointeeType() is a
+        // stub that always reports i8/size-1, so recover the real element
+        // size from the Lucid-level pointee type (PtrTypeAST::inner).
+        uint64_t elemSize = 1;
+        if (expr && !expr->args.empty() && expr->args[0]->resolvedType &&
+            expr->args[0]->resolvedType->isa<PtrTypeAST>()) {
+            TypeAST* pointee = expr->args[0]->resolvedType->as<PtrTypeAST>()->inner;
+            uint64_t resolvedSize = getTypeSize(ctx, pointee);
+            if (resolvedSize > 0) elemSize = resolvedSize;
+        }
 
         if (elemSize > 1) {
             llvm::Value* elemSizeVal = llvm::ConstantInt::get(
@@ -241,12 +261,37 @@ llvm::Value* emitLucidMemoryMgmtIntrinsic(
     llvm::Type* i8Ptr = llvm::PointerType::get(ctx.llvmCtx, 0);
 
     // ─── #alloc(T, count) -> *T ──────────────────────────────────────
+    // NOTE: T is a type argument, not a value argument - like #sizeof(T),
+    // #bitcast(T,x), and #simd_splat(x), the element type comes from the
+    // call's resolved type (*T), and `args` holds only the value arg(s)
+    // (count). The previous version indexed args[1] as if T occupied a
+    // value-arg slot, and never multiplied by sizeof(T) - it passed the
+    // raw count straight through as a byte size.
     if (name == "alloc") {
-        if (args.size() < 2) {
+        if (args.empty()) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                   "intrinsic '#alloc' requires 2 arguments (type, count)");
+                                   "intrinsic '#alloc' requires an argument (count)");
             return nullptr;
         }
+
+        llvm::Type* targetType = getType(ctx, expr->resolvedType);
+
+        uint64_t elemSize = 1;
+        if (expr->resolvedType && expr->resolvedType->isa<PtrTypeAST>()) {
+            TypeAST* pointee = expr->resolvedType->as<PtrTypeAST>()->inner;
+            uint64_t resolvedSize = getTypeSize(ctx, pointee);
+            if (resolvedSize > 0) elemSize = resolvedSize;
+        }
+
+        llvm::Value* count = args[0];
+        if (count->getType() != i64) {
+            count = ctx.builder.CreateIntCast(count, i64, false, "alloc_count");
+        }
+        llvm::Value* size = ctx.builder.CreateMul(
+            count,
+            llvm::ConstantInt::get(i64, elemSize),
+            "alloc_size"
+        );
 
         llvm::FunctionType* allocType = llvm::FunctionType::get(
             i8Ptr,
@@ -255,10 +300,8 @@ llvm::Value* emitLucidMemoryMgmtIntrinsic(
         );
         llvm::Function* allocFunc = ctx.getOrCreateRuntimeFunction("__lucid_alloc", allocType);
 
-        llvm::Value* size = args[1];
         llvm::Value* result = ctx.builder.CreateCall(allocFunc, {size});
 
-        llvm::Type* targetType = getType(ctx, expr->resolvedType);
         if (targetType && targetType->isPointerTy()) {
             return ctx.builder.CreateBitCast(result, targetType);
         }
@@ -311,12 +354,37 @@ llvm::Value* emitLucidMemoryMgmtIntrinsic(
     }
 
     // ─── #arena_alloc(arena, T, n) -> *T ──────────────────────────────
+    // NOTE: like #alloc above, T is a type argument (comes from
+    // expr->resolvedType), so `args` holds only the two value args:
+    // [arena, n]. The previous version required 3 args and read `n` from
+    // args[2] (skipping args[1] entirely), and never multiplied by
+    // sizeof(T).
     if (name == "arena_alloc") {
-        if (args.size() < 3) {
+        if (args.size() < 2) {
             ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
-                                   "intrinsic '#arena_alloc' requires 3 arguments");
+                                   "intrinsic '#arena_alloc' requires 2 arguments (arena, count)");
             return nullptr;
         }
+
+        llvm::Type* targetType = getType(ctx, expr->resolvedType);
+
+        uint64_t elemSize = 1;
+        if (expr->resolvedType && expr->resolvedType->isa<PtrTypeAST>()) {
+            TypeAST* pointee = expr->resolvedType->as<PtrTypeAST>()->inner;
+            uint64_t resolvedSize = getTypeSize(ctx, pointee);
+            if (resolvedSize > 0) elemSize = resolvedSize;
+        }
+
+        llvm::Value* arena = args[0];
+        llvm::Value* count = args[1];
+        if (count->getType() != i64) {
+            count = ctx.builder.CreateIntCast(count, i64, false, "arena_alloc_count");
+        }
+        llvm::Value* size = ctx.builder.CreateMul(
+            count,
+            llvm::ConstantInt::get(i64, elemSize),
+            "arena_alloc_size"
+        );
 
         llvm::FunctionType* arenaAllocType = llvm::FunctionType::get(
             i8Ptr,
@@ -327,12 +395,8 @@ llvm::Value* emitLucidMemoryMgmtIntrinsic(
             "__lucid_arena_alloc", arenaAllocType
         );
 
-        llvm::Value* arena = args[0];
-        llvm::Value* count = args[2];
+        llvm::Value* result = ctx.builder.CreateCall(arenaAllocFunc, {arena, size});
 
-        llvm::Value* result = ctx.builder.CreateCall(arenaAllocFunc, {arena, count});
-
-        llvm::Type* targetType = getType(ctx, expr->resolvedType);
         if (targetType && targetType->isPointerTy()) {
             return ctx.builder.CreateBitCast(result, targetType);
         }

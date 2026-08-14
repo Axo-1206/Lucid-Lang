@@ -53,6 +53,18 @@ llvm::Type* getType(
                     result = getType(ctx, substituted, subst);
                     break;
                 }
+                if (subst->isGenericParam(named->name)) {
+                    // `named` IS one of this instantiation's generic params,
+                    // but typeArgs has no entry for it - an arity mismatch,
+                    // not an unresolved user type. Report it directly rather
+                    // than falling through to getNamedType(), which would
+                    // otherwise just warn and forward-declare a bogus empty
+                    // struct for what's actually a generics bug.
+                    ctx.diagnostics.errorAt(DiagCode::Sem_UnknownType, type->loc,
+                                            "missing type argument for generic parameter '",
+                                            ctx.pool.lookup(named->name), "'");
+                    return nullptr;
+                }
             }
             // ─── Otherwise, resolve as a normal named type ──────────────────
             result = getNamedType(ctx, named);
@@ -540,13 +552,33 @@ llvm::Type* getModuleTypeAccess(CodeGenContext& ctx, ModuleTypeAccessAST* type) 
     std::string moduleName = ctx.pool.lookup(type->moduleName);
     std::string typeName = ctx.pool.lookup(type->typeName);
 
-    // Try to find the type by name
-    llvm::StructType* structType = llvm::StructType::getTypeByName(ctx.llvmCtx, typeName);
+    // Previously this looked up `typeName` alone, ignoring `moduleName`
+    // entirely - two modules defining the same type name (e.g. both
+    // declaring `Foo`) would silently collide on whichever struct happened
+    // to be registered first under that bare name in the shared
+    // LLVMContext. Try a module-qualified name first so same-named types
+    // from different modules don't alias each other.
+    //
+    // NOTE: this qualified name is only used as a local lookup/forward-decl
+    // key within this function and does not attempt to replicate whatever
+    // canonical mangling scheme generateMangledName() (MangledName.hpp)
+    // uses elsewhere - if struct types for cross-module access are meant to
+    // be registered under that scheme instead, this should call into it
+    // rather than building its own "module.type" key.
+    std::string qualifiedName = moduleName + "." + typeName;
+
+    llvm::StructType* structType = llvm::StructType::getTypeByName(ctx.llvmCtx, qualifiedName);
+    if (!structType) {
+        // Fall back to the bare name for compatibility with types that were
+        // registered without module qualification.
+        structType = llvm::StructType::getTypeByName(ctx.llvmCtx, typeName);
+    }
+
     if (!structType) {
         ctx.diagnostics.warningAt(DiagCode::Warn_UnreachableCode, type->loc,
                                   "module type '", moduleName, ":", typeName,
                                   "' not found, creating forward declaration");
-        structType = llvm::StructType::create(ctx.llvmCtx, typeName);
+        structType = llvm::StructType::create(ctx.llvmCtx, qualifiedName);
     }
 
     return structType;

@@ -18,6 +18,31 @@
 
 namespace codegen {
 
+// ─── Helper: Recover a compile-time string literal from an AST argument ──
+//
+// By the time an argument reaches `args` it has already been lowered to
+// LLVM IR - a Lucid string literal becomes a runtime {ptr,len,cap} aggregate
+// built via InsertValue instructions (see CodeGenContext::createStringLiteral),
+// never a raw llvm::ConstantDataArray. So the *compile-time* text (e.g. a
+// memory ordering name like "acquire") can only be recovered from the AST
+// node itself, not from the lowered llvm::Value.
+static bool tryGetStringLiteralArg(
+    IntrinsicCallExprAST* expr,
+    size_t index,
+    CodeGenContext& ctx,
+    std::string& outStr
+) {
+    if (!expr || index >= expr->args.size()) return false;
+    ExprAST* argExpr = expr->args[index];
+    if (auto* lit = llvm::dyn_cast<LiteralExprAST>(argExpr)) {
+        if (lit->kind == LiteralKind::String || lit->kind == LiteralKind::RawString) {
+            outStr = ctx.pool.lookup(lit->value);
+            return true;
+        }
+    }
+    return false;
+}
+
 // ─── Math Intrinsics ──────────────────────────────────────────────────────
 
 llvm::Value* emitLLVMMathIntrinsic(
@@ -103,10 +128,54 @@ llvm::Value* emitLLVMMathIntrinsic(
         return ctx.builder.CreateCall(powFunc, {a, b});
     }
 
-    // ─── Single-argument math intrinsics ──────────────────────────────────
+    // ─── abs ──────────────────────────────────────────────────────────────
+    // Integer and floating-point abs are different LLVM intrinsics with
+    // different signatures - dispatch on the operand type rather than
+    // always emitting fabs (which asserts on integer operands).
+    if (name == "abs") {
+        if (args.empty()) {
+            ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
+                                   "intrinsic '#abs' requires an argument");
+            return nullptr;
+        }
+
+        llvm::Value* val = args[0];
+
+        if (val->getType()->isIntegerTy()) {
+            llvm::Function* absFn = ctx.getLLVMIntrinsicDecl(
+                llvm::Intrinsic::abs, {val->getType()}
+            );
+            if (!absFn) {
+                ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, loc,
+                                       "could not get LLVM abs intrinsic");
+                return nullptr;
+            }
+            // is_int_min_poison = false: saturate rather than poison at INT_MIN.
+            llvm::Value* isIntMinPoison =
+                llvm::ConstantInt::get(llvm::Type::getInt1Ty(ctx.llvmCtx), 0);
+            return ctx.builder.CreateCall(absFn, {val, isIntMinPoison});
+        }
+
+        if (val->getType()->isFloatingPointTy()) {
+            llvm::Function* fabsFn = ctx.getLLVMIntrinsicDecl(
+                llvm::Intrinsic::fabs, {val->getType()}
+            );
+            if (!fabsFn) {
+                ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, loc,
+                                       "could not get LLVM fabs intrinsic");
+                return nullptr;
+            }
+            return ctx.builder.CreateCall(fabsFn, {val});
+        }
+
+        ctx.diagnostics.errorAt(DiagCode::Sem_TypeMismatch, loc,
+                               "intrinsic '#abs' requires a numeric argument");
+        return nullptr;
+    }
+
+    // ─── sqrt / fma / ceil / floor / round ────────────────────────────────
     llvm::Intrinsic::ID id = llvm::Intrinsic::not_intrinsic;
     if (name == "sqrt") id = llvm::Intrinsic::sqrt;
-    else if (name == "abs") id = llvm::Intrinsic::fabs;
     else if (name == "fma") id = llvm::Intrinsic::fma;
     else if (name == "ceil") id = llvm::Intrinsic::ceil;
     else if (name == "floor") id = llvm::Intrinsic::floor;
@@ -118,12 +187,19 @@ llvm::Value* emitLLVMMathIntrinsic(
         return nullptr;
     }
 
-    llvm::SmallVector<llvm::Type*, 4> argTypes;
-    for (llvm::Value* arg : args) {
-        argTypes.push_back(arg->getType());
+    size_t requiredArgs = (name == "fma") ? 3 : 1;
+    if (args.size() < requiredArgs) {
+        ctx.diagnostics.errorAt(DiagCode::Sem_ArgCountMismatch, loc,
+                               "intrinsic '#", name, "' requires ",
+                               (name == "fma" ? "3 arguments" : "an argument"));
+        return nullptr;
     }
 
-    llvm::Function* intrinsic = ctx.getLLVMIntrinsicDecl(id, argTypes);
+    // These are all overloaded on a SINGLE type slot (every operand shares
+    // the same type via LLVMMatchType<0>), so only the first operand's type
+    // is passed - passing one type per argument (e.g. 3 for fma) does not
+    // match the intrinsic's overload signature.
+    llvm::Function* intrinsic = ctx.getLLVMIntrinsicDecl(id, {args[0]->getType()});
     if (!intrinsic) {
         ctx.diagnostics.errorAt(DiagCode::Backend_InvalidIR, loc,
                                "could not get LLVM intrinsic for '#", name, "'");
@@ -233,14 +309,12 @@ llvm::Value* emitLLVMAtomicIntrinsic(
 
     llvm::AtomicOrdering ordering = llvm::AtomicOrdering::SequentiallyConsistent;
     size_t numValueArgs = args.size();
-    
+
     if (numValueArgs > 0) {
-        if (llvm::ConstantDataArray* str = llvm::dyn_cast<llvm::ConstantDataArray>(args.back())) {
-            if (str->isString()) {
-                std::string orderStr = str->getAsString().str();
-                ordering = CodeGenContext::parseOrdering(orderStr);
-                numValueArgs--;
-            }
+        std::string orderStr;
+        if (tryGetStringLiteralArg(expr, numValueArgs - 1, ctx, orderStr)) {
+            ordering = CodeGenContext::parseOrdering(orderStr);
+            numValueArgs--;
         }
     }
 
@@ -252,10 +326,18 @@ llvm::Value* emitLLVMAtomicIntrinsic(
             return nullptr;
         }
         llvm::Value* ptr = args[0];
-        llvm::Type* elemType = ctx.getPointeeType(ptr);
+
+        // ctx.getPointeeType() is only a stub that always returns i8 (opaque
+        // pointers carry no element type). The real loaded type is the
+        // intrinsic call's own resolved type (atomic_load(ptr) -> T).
+        llvm::Type* elemType = expr ? getType(ctx, expr->resolvedType) : nullptr;
+        if (!elemType) {
+            elemType = ctx.getPointeeType(ptr);
+        }
+
         llvm::LoadInst* load = ctx.builder.CreateLoad(elemType, ptr, "atomic_load");
         load->setAtomic(ordering);
-        load->setAlignment(llvm::Align(1));
+        load->setAlignment(llvm::Align(ctx.getTypeAlign(elemType)));
         return load;
     }
 
@@ -270,7 +352,7 @@ llvm::Value* emitLLVMAtomicIntrinsic(
         llvm::Value* val = args[1];
         llvm::StoreInst* store = ctx.builder.CreateStore(val, ptr);
         store->setAtomic(ordering);
-        store->setAlignment(llvm::Align(1));
+        store->setAlignment(llvm::Align(ctx.getTypeAlign(val->getType())));
         return nullptr;
     }
 
@@ -354,10 +436,20 @@ llvm::Value* emitLLVMSIMDIntrinsic(
             return nullptr;
         }
 
-        if (name == "simd_add") return ctx.builder.CreateAdd(a, b);
-        if (name == "simd_sub") return ctx.builder.CreateSub(a, b);
-        if (name == "simd_mul") return ctx.builder.CreateMul(a, b);
-        if (name == "simd_div") return ctx.builder.CreateSDiv(a, b);
+        bool isFloat = a->getType()->getScalarType()->isFloatingPointTy();
+
+        if (name == "simd_add") {
+            return isFloat ? ctx.builder.CreateFAdd(a, b) : ctx.builder.CreateAdd(a, b);
+        }
+        if (name == "simd_sub") {
+            return isFloat ? ctx.builder.CreateFSub(a, b) : ctx.builder.CreateSub(a, b);
+        }
+        if (name == "simd_mul") {
+            return isFloat ? ctx.builder.CreateFMul(a, b) : ctx.builder.CreateMul(a, b);
+        }
+        if (name == "simd_div") {
+            return isFloat ? ctx.builder.CreateFDiv(a, b) : ctx.builder.CreateSDiv(a, b);
+        }
     }
 
     // ─── SIMD FMA ──────────────────────────────────────────────────────────
@@ -600,11 +692,9 @@ llvm::Value* emitLLVMCPUHintIntrinsic(
         llvm::AtomicOrdering ordering = llvm::AtomicOrdering::SequentiallyConsistent;
 
         if (!args.empty()) {
-            if (llvm::ConstantDataArray* str = llvm::dyn_cast<llvm::ConstantDataArray>(args[0])) {
-                if (str->isString()) {
-                    std::string orderStr = str->getAsString().str();
-                    ordering = CodeGenContext::parseOrdering(orderStr);
-                }
+            std::string orderStr;
+            if (tryGetStringLiteralArg(expr, 0, ctx, orderStr)) {
+                ordering = CodeGenContext::parseOrdering(orderStr);
             }
         }
 

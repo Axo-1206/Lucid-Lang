@@ -71,6 +71,7 @@ namespace codegen {
 ///   auto modules = CodeGen::generate(astModules, llvmCtx);
 std::vector<std::unique_ptr<llvm::Module>> generate(
     const std::vector<ModuleAST*>& modules,
+    StringPool& p, DiagnosticEngine& d,
     llvm::LLVMContext& context
 );
 

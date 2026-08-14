@@ -51,7 +51,10 @@ struct GenericSubstitution {
 
     /// @brief Find the type argument for a given generic parameter name.
     /// @param name The generic parameter name.
-    /// @return The substituted type, or nullptr if not found.
+    /// @return The substituted type, or nullptr if not found (either `name`
+    ///         isn't a generic parameter at all, OR it is one but there's no
+    ///         corresponding type argument - use isGenericParam() to tell
+    ///         these two cases apart when that distinction matters).
     TypeAST* lookup(InternedString name) const {
         for (size_t i = 0; i < genericParams.size(); ++i) {
             if (genericParams[i]->name == name && i < typeArgs.size()) {
@@ -60,15 +63,37 @@ struct GenericSubstitution {
         }
         return nullptr;
     }
+
+    /// @brief Check whether `name` names one of this substitution's generic
+    ///        parameters, regardless of whether a type argument was
+    ///        actually supplied for it.
+    ///
+    /// Distinguishes "this name isn't generic at all" (fall through to
+    /// normal named-type resolution) from "this name IS a generic
+    /// parameter, but typeArgs is missing an entry for it" (an arity bug
+    /// that should be reported clearly, not silently forwarded to
+    /// getNamedType()'s forward-declaration fallback).
+    bool isGenericParam(InternedString name) const {
+        for (const auto* param : genericParams) {
+            if (param->name == name) return true;
+        }
+        return false;
+    }
 };
 
 /// @brief Substitute generic parameters in a type.
-/// @deprecated Use GenericSubstitution with getType() instead.
+/// @deprecated Use GenericSubstitution with getType() instead. This function
+///             only substitutes a bare generic name (`T`); for every
+///             composite shape (`Array<T>`, `T?`, `T!`, `*T`, `&T`, etc.) it
+///             computes the substituted inner type and then discards it,
+///             always returning the ORIGINAL, unsubstituted type. Do not
+///             use this for anything beyond a bare generic parameter.
 /// @param type The type to substitute.
 /// @param genericParams The generic parameter declarations.
 /// @param typeArgs The concrete type arguments.
 /// @param ctx The code generation context.
 /// @return The substituted type, or the original type if no substitution needed.
+[[deprecated("Only substitutes bare generic names; use GenericSubstitution with getType() instead")]]
 TypeAST* substituteGenericType(
     TypeAST* type,
     const ArenaSpan<GenericParamDeclAST*>& genericParams,

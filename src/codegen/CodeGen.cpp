@@ -16,6 +16,7 @@ namespace codegen {
 
 std::vector<std::unique_ptr<llvm::Module>> generate(
     const std::vector<ModuleAST*>& modules,
+    StringPool& p, DiagnosticEngine& d,
     llvm::LLVMContext& context
 ) {
     std::vector<std::unique_ptr<llvm::Module>> result;
@@ -24,7 +25,7 @@ std::vector<std::unique_ptr<llvm::Module>> generate(
     for (ModuleAST* module : modules) {
         if (!module) continue;
 
-        CodeGenContext ctx(context);
+        CodeGenContext ctx(p, d, context);
         
         // ─── Create LLVM module ──────────────────────────────────────────
         std::string name = StringPool::instance().lookup(module->filePath);

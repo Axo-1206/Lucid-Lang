@@ -172,14 +172,18 @@ llvm::Value* loadIfNeeded(
 
 /// @brief DEPRECATED: Use the overload with explicit elemType.
 /// @param value The value to potentially load.
-/// @param isLValue If true, load the value.
+/// @param isLValue Unused for loading purposes (see note) - kept only to
+///        preserve the old call signature for source compatibility.
 /// @param ctx The code generation context.
-/// @return The loaded value if isLValue is true, otherwise the original value.
-/// @deprecated With opaque pointers (LLVM 17+), the element type cannot be inferred.
-///
-/// @note This overload exists for backward compatibility but should not be
-///       used in new code. It emits a warning and returns the value unchanged
-///       (it cannot correctly load with opaque pointers).
+/// @return `value`, unchanged, regardless of `isLValue`.
+/// @deprecated With opaque pointers (LLVM 17+), the element type cannot be
+///             inferred from `value` alone, so this overload CANNOT load
+///             correctly - unlike what its old signature implies, it does
+///             NOT conditionally load when `isLValue` is true. It always
+///             returns `value` unchanged and emits a warning diagnostic.
+///             Any remaining call site relying on this to perform a load
+///             is silently broken and must switch to the
+///             `loadIfNeeded(value, elemType, ctx)` overload.
 llvm::Value* loadIfNeeded(
     llvm::Value* value,
     bool isLValue,
