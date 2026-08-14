@@ -627,7 +627,7 @@ struct ConstantValue {
 ///                      optimization is safe.
 /// @field index         Index in the closure environment (set by Sema).
 struct CapturedVariable {
-    const ValueDeclAST* decl = nullptr;
+    ValueDeclAST* decl = nullptr;
     bool byReference = false;
     size_t index = 0;
     
@@ -738,7 +738,7 @@ struct ValueDeclAST : DeclAST {
 
     /// The keyword that determines mutability (Let = mutable, Const = immutable)
     const DeclKeyword keyword;
-    const TypeAST* type = nullptr;
+    TypeAST* type = nullptr;
     
     /// @brief Check if this value is immutable (const).
     bool isConst() const { return keyword == DeclKeyword::Const; }
@@ -746,7 +746,7 @@ struct ValueDeclAST : DeclAST {
     /// @brief Check if this value is mutable (let).
     bool isLet() const { return keyword == DeclKeyword::Let; }
     
-    explicit ValueDeclAST(ASTKind k, InternedString n, DeclKeyword kw, const TypeAST* t)
+    explicit ValueDeclAST(ASTKind k, InternedString n, DeclKeyword kw, TypeAST* t)
         : DeclAST(k, n), keyword(kw), type(t) {}
 };
 

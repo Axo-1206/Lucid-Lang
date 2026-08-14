@@ -455,7 +455,7 @@ struct ContinueStmtAST : StmtAST {
 struct AsyncStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::AsyncStmt;
 
-    const VarDeclAST* binding = nullptr;   // fresh local introduced by this statement
+    VarDeclAST* binding = nullptr;   // fresh local introduced by this statement
     ExprAST* call;                    // the async call
 
     AsyncStmtAST() : StmtAST(ASTKind::AsyncStmt) {}
@@ -529,7 +529,7 @@ struct AwaitStmtAST : StmtAST {
 struct SpawnStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::SpawnStmt;
 
-    const VarDeclAST* binding = nullptr;   // fresh local introduced by this statement, or
+    VarDeclAST* binding = nullptr;   // fresh local introduced by this statement, or
                                       // nullptr for the `_` discard pattern
     ExprAST* call;                    // the spawn call
 
