@@ -589,6 +589,7 @@ lucid/
     │   └── support/
     │       ├── SwitchHelpers.hpp/cpp
     │       ├── CaptureAnalysis.hpp/cpp
+    │       ├── MangledName.hpp/cpp     # Mangled name generation
     │       └── TypeNarrowHelpers.hpp/cpp
     │
     ├── codegen/
@@ -608,9 +609,9 @@ lucid/
     │   │   ├── RuntimeError.hpp        # Define all runtime errors
     │   │   ├── LLVMHelpers.hpp         # Work with llvm types, values
     │   │   ├── CodeGenHelpers.hpp/cpp  # General helpers
+    │   │   ├── MangledName.hpp/cpp     # Mangled name generation
     │   │   ├── CodeGenAlloca.hpp/cpp   # Alloca, blocks, loads
-    │   │   ├── CodeGenPanic.hpp/cpp    # Panic, null checks
-    │   │   └── MangledName.hpp/cpp     # Mangled name generation
+    │   │   └── CodeGenPanic.hpp/cpp    # Panic, null checks
     │   │
     │   ├── closure/
     │   │   ├── CodeGenClosure.hpp/cpp # Closure declarations

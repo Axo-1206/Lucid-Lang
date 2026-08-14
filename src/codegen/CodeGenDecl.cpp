@@ -39,7 +39,6 @@
 #include "core/ast/ExprAST.hpp"
 #include "core/ast/TypeAST.hpp"
 #include "support/CodeGenAlloca.hpp"
-#include "support/MangledName.hpp"
 
 #include <llvm/IR/Function.h>
 #include <llvm/IR/GlobalVariable.h>
@@ -190,22 +189,14 @@ void lowerFunctionDecl(FuncDeclAST* decl, CodeGenContext& ctx) {
         return;
     }
 
-    // ─── Use the mangled name from Sema if available ──────────────────────
-    std::string funcName;
-    if (decl->mangledName.isValid()) {
-        funcName = ctx.pool.lookup(decl->mangledName);
-    } else {
-        // Fallback: generate a mangled name now (shouldn't happen if Sema ran)
-        InternedString mangled = generateMangledName(decl, ctx);
-        if (mangled.isValid()) {
-            funcName = ctx.pool.lookup(mangled);
-        } else {
-            funcName = ctx.pool.lookup(decl->name);
-        }
-        ctx.diagnostics.warningAt(DiagCode::Warn_UnreachableCode, decl->loc,
-                                  "function '", ctx.pool.lookup(decl->name),
-                                  "' has no mangled name from Sema; using fallback");
+    // ─── Use the mangled name from Sema ──────────────────────────────────────
+    // Sema guarantees this is valid for all non-foreign, non-generic functions.
+    // If it's not valid, Sema has a bug and we should fail loudly.
+    if (!decl->mangledName.isValid()) {
+        // This should never happen - Sema should have generated it
+        llvm_unreachable("Function has no mangled name - Sema bug");
     }
+    std::string funcName = ctx.pool.lookup(decl->mangledName);
 
     llvm::Function* func = llvm::Function::Create(
         funcType,
@@ -579,12 +570,14 @@ void lowerVarDecl(VarDeclAST* decl, CodeGenContext& ctx) {
 
     if (isModuleLevel) {
         // ─── Module-level global variable ──────────────────────────────────
-        // ─── Use the mangled name from Sema if available ──────────────────
+        // ─── Use the mangled name from Sema for exported globals ────────────────
+        // Sema generates mangled names for all exported module-level variables.
+        // Un-exported globals use their original name.
         std::string varName;
         if (decl->mangledName.isValid()) {
             varName = ctx.pool.lookup(decl->mangledName);
         } else {
-            // Fallback: use the original name
+            // Only non-exported globals fall back to original name
             varName = ctx.pool.lookup(decl->name);
         }
 
@@ -711,19 +704,12 @@ void lowerStructDecl(StructDeclAST* decl, CodeGenContext& ctx) {
     }
 
     // ─── Non-generic struct - normal lowering ────────────────────────────
-    // ─── Use the mangled name from Sema if available ──────────────────────
-    std::string structName;
-    if (decl->mangledName.isValid()) {
-        structName = ctx.pool.lookup(decl->mangledName);
-    } else {
-        // Fallback: generate a mangled name now (shouldn't happen if Sema ran)
-        InternedString mangled = generateMangledName(decl, ctx);
-        if (mangled.isValid()) {
-            structName = ctx.pool.lookup(mangled);
-        } else {
-            structName = ctx.pool.lookup(decl->name);
-        }
+    // ─── Use the mangled name from Sema ──────────────────────────────────────
+    // Sema generates mangled names for all structs to avoid name collisions.
+    if (!decl->mangledName.isValid()) {
+        llvm_unreachable("Struct has no mangled name - Sema bug");
     }
+    std::string structName = ctx.pool.lookup(decl->mangledName);
 
     // ─── Check if struct type already exists ──────────────────────────────
     llvm::StructType* structType = llvm::StructType::getTypeByName(

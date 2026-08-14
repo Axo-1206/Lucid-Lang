@@ -434,7 +434,7 @@ bool supportsAttributes(DeclAST* decl) {
 /// @brief Check if a declaration is at module level (top-level).
 /// This checks the declaration's actual position in the AST, not the current scope.
 /// @note Different from ctx.isAtModuleLevel() which checks if the current scope is module-level.
-static bool isModuleLevelDeclaration(DeclAST* decl, SemaContext& ctx) {
+bool isModuleLevelDeclaration(DeclAST* decl, SemaContext& ctx) {
     if (!decl) return false;
 
     // Check if the declaration is in the current module's decl list
