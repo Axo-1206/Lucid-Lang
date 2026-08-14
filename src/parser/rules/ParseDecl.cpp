@@ -237,7 +237,6 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     
     // ─── 5. Parse '=' and body, or detect foreign function ──────────────────
     StmtAST* body = nullptr;
-    bool isForeignFunction = false;
     
     if (stream.match(TokenType::ASSIGN)) {
         // ─── Has body ──────────────────────────────────────────────────────
@@ -317,7 +316,6 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
         // ─── No '=' - foreign function ─────────────────────────────────────
         // The semantic phase will validate that @[foreign] is present.
         // We just parse it as a declaration with no body.
-        isForeignFunction = true;
         body = nullptr;
         
         LOG_PARSER_DETAIL("Parsed foreign function (no body): ", ctx.pool.lookup(name));
@@ -326,7 +324,6 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     // ─── Build AST using constructor ──────────────────────────────────────
     auto* funcDecl = ctx.arena.make<FuncDeclAST>(name, keyword, genericParams, funcType, body);
     funcDecl->loc = loc;
-    funcDecl->isForeignFunction = isForeignFunction;
     
     LOG_PARSER_DETAIL("Parsed function: ", ctx.pool.lookup(name));
     return funcDecl;

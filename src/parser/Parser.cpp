@@ -25,7 +25,34 @@
 namespace parser {
 
 // =============================================================================
-// parse() - ENTRY POINT
+// parseProgram() - ENTRY POINT (ALL FILE)
+// =============================================================================
+
+std::vector<ModuleAST*> parseProgram(const std::string& rootPath,
+                                      const std::string& rootSource,
+                                      ParserContext& ctx) {
+    ModuleAST* root = parse(rootPath, rootSource, ctx);
+
+    if (!ctx.resolver) {
+        LOG_PARSER_MINIMAL("parseProgram: no resolver, returning root module only");
+        return { root };
+    }
+
+    const auto& order = ctx.resolver->getModuleOrder();
+    std::vector<ModuleAST*> modules;
+    modules.reserve(order.size());
+    for (InternedString path : order) {
+        if (ModuleAST* mod = ctx.resolver->getParsedModule(path)) {
+            modules.push_back(mod);
+        }
+    }
+
+    LOG_PARSER_MINIMAL("parseProgram: ", modules.size(), " module(s)");
+    return modules;
+}
+
+// =============================================================================
+// parse() - SINGLE FILE
 // =============================================================================
 
 ModuleAST* parse(const std::string& path, 
@@ -105,33 +132,6 @@ ModuleAST* parse(const std::string& path,
     
     LOG_PARSER_MINIMAL("Parse completed: ", allDecls.size(), " declarations");
     return thisModule;
-}
-
-// =============================================================================
-// parseProgram() - Whole-program convenience wrapper
-// =============================================================================
-
-std::vector<ModuleAST*> parseProgram(const std::string& rootPath,
-                                      const std::string& rootSource,
-                                      ParserContext& ctx) {
-    ModuleAST* root = parse(rootPath, rootSource, ctx);
-
-    if (!ctx.resolver) {
-        LOG_PARSER_MINIMAL("parseProgram: no resolver, returning root module only");
-        return { root };
-    }
-
-    const auto& order = ctx.resolver->getModuleOrder();
-    std::vector<ModuleAST*> modules;
-    modules.reserve(order.size());
-    for (InternedString path : order) {
-        if (ModuleAST* mod = ctx.resolver->getParsedModule(path)) {
-            modules.push_back(mod);
-        }
-    }
-
-    LOG_PARSER_MINIMAL("parseProgram: ", modules.size(), " module(s)");
-    return modules;
 }
 
 // =============================================================================

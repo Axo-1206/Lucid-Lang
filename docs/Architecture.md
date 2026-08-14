@@ -507,6 +507,7 @@ lucid/
 ├── .gitignore
 │
 ├── docs/
+│   ├── internal/                           # compiler note and architecture
 │   ├── LUCID_GRAMMAR.md                    # grammar reference
 │   ├── ARCHITECTURE.md                     # this document
 │   ├── API.md                              # standard library API
@@ -589,7 +590,7 @@ lucid/
     │   └── support/
     │       ├── SwitchHelpers.hpp/cpp
     │       ├── CaptureAnalysis.hpp/cpp
-    │       ├── MangledName.hpp/cpp     # Mangled name generation
+    │       ├── MangledName.hpp/cpp         # Mangled name generation
     │       └── TypeNarrowHelpers.hpp/cpp
     │
     ├── codegen/
@@ -600,18 +601,20 @@ lucid/
     │   ├── CodeGenStmt.cpp      # Statement lowering
     │   ├── CodeGenExpr.cpp      # Expression lowering
     │   ├── CodeGenClosure.cpp   # Closure lowering
-    │   ├── CodeGenGeneric.cpp   # Detection + Substitution + Instantiation
     │   │
     │   ├── context/
     │   │   └── CodeGenContext.hpp # LLVM state (module, builder, caches, symbols)
     │   │
+    │   ├── generic/
+    │   │   ├── CodeGenGeneric.hpp/cpp   # Detection + Substitution + Instantiation
+    │   │   └── GenericMangledName.hpp/cpp  # Generic mangled name generation
+    │   │
     │   ├── support/
-    │   │   ├── RuntimeError.hpp        # Define all runtime errors
-    │   │   ├── LLVMHelpers.hpp         # Work with llvm types, values
-    │   │   ├── CodeGenHelpers.hpp/cpp  # General helpers
-    │   │   ├── MangledName.hpp/cpp     # Mangled name generation
-    │   │   ├── CodeGenAlloca.hpp/cpp   # Alloca, blocks, loads
-    │   │   └── CodeGenPanic.hpp/cpp    # Panic, null checks
+    │   │   ├── RuntimeError.hpp            # Define all runtime errors
+    │   │   ├── LLVMHelpers.hpp             # Work with llvm types, values
+    │   │   ├── CodeGenHelpers.hpp/cpp      # General helpers
+    │   │   ├── CodeGenAlloca.hpp/cpp       # Alloca, blocks, loads
+    │   │   └── CodeGenPanic.hpp/cpp        # Panic, null checks
     │   │
     │   ├── closure/
     │   │   ├── CodeGenClosure.hpp/cpp # Closure declarations
