@@ -1491,6 +1491,24 @@ func_type       = unnamed_cluster { '->' unnamed_cluster } '->' type
                      func_literal may name parameters in its leading cluster. *)
 ```
 
+An array element type is one more position where `func_type` applies, and the
+same "unnamed throughout" rule holds with no special case — the leading
+cluster gets no exception just because it's now sitting inside `[*]`:
+
+```lucid
+-- func_type in the array-element position:
+let arr [*](int) -> int = [];      -- OK: 'int' is a valid type_param, so
+                                     -- '(int)' parses as an unnamed_group —
+                                     -- this matches func_type cleanly
+
+let bad [*](a int) -> int = [];    -- ERROR: 'a int' is not a valid type_param —
+                                     -- bound_param (name + type) only exists
+                                     -- inside bound_cluster, which belongs to
+                                     -- chain/func_literal, never to func_type.
+                                     -- There is no rule being violated here so
+                                     -- much as no matching production at all.
+```
+
 **`func_body`'s second form is `expr`, with one semantic carve-out: it may
 not itself be a `func_literal`** — see the NOTE below for why. Earlier drafts
 of this grammar introduced a separate `func_ref` production to describe "an

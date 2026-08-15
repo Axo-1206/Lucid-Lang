@@ -218,24 +218,54 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
         genericParams = parseGenericParamDecls(stream, ctx);
     }
     
-    // ─── 4. Parse function type ─────────────────────────────────────────────
-    TypeAST* type = parseFuncType(stream, ctx);
-    if (!type) {
+    // ─── 4. Parse the leading cluster (bound_cluster) - names required ──
+    std::vector<ParamAST*> allParamNames;
+    std::vector<TypeAST*> funcParamTypes;
+    
+    // Parse the leading cluster (bound_cluster) - this one has names
+    while (stream.check(TokenType::LPAREN)) {
+        std::vector<ParamAST*> groupParams = parseParamList(stream, ctx);
+        
+        for (auto* p : groupParams) {
+            allParamNames.push_back(p);
+            funcParamTypes.push_back(p->type);
+        }
+    }
+    
+    // ─── 5. Parse remaining clusters after '->' (no names) ──────────────
+    while (stream.check(TokenType::ARROW)) {
+        stream.consume(); // Consume '->'
+        
+        if (stream.check(TokenType::LPAREN)) {
+            // Parse unnamed cluster (no names)
+            std::vector<TypeAST*> groupTypes = parseParamTypeList(stream, ctx);
+            for (auto* t : groupTypes) {
+                funcParamTypes.push_back(t);
+            }
+        } else {
+            // This is the final return type
+            break;
+        }
+    }
+    
+    // ─── 6. Parse the final return type ────────────────────────────────────
+    TypeAST* returnType = parseType(stream, ctx);
+    if (!returnType) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
-                                "expected function type");
+                                "expected return type");
         synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
-    if (!type->isa<FuncTypeAST>()) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
-                                "expected function type, got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
-        return nullptr;
+    // ─── 7. Build the FuncTypeAST ──────────────────────────────────────────
+    auto paramBuilder = ctx.arena.makeBuilder<TypeAST*>();
+    for (auto* t : funcParamTypes) {
+        paramBuilder.push_back(t);
     }
-    FuncTypeAST* funcType = type->as<FuncTypeAST>();
+    auto* funcType = ctx.arena.make<FuncTypeAST>(paramBuilder.build(), returnType, true);
+    funcType->loc = loc;
     
-    // ─── 5. Parse '=' and body, or detect foreign function ──────────────────
+    // ─── 8. Parse '=' and body ──────────────────────────────────────────────
     StmtAST* body = nullptr;
     
     if (stream.match(TokenType::ASSIGN)) {
@@ -314,15 +344,26 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
         
     } else {
         // ─── No '=' - foreign function ─────────────────────────────────────
-        // The semantic phase will validate that @[foreign] is present.
-        // We just parse it as a declaration with no body.
         body = nullptr;
         
         LOG_PARSER_DETAIL("Parsed foreign function (no body): ", ctx.pool.lookup(name));
     }
     
-    // ─── Build AST using constructor ──────────────────────────────────────
-    auto* funcDecl = ctx.arena.make<FuncDeclAST>(name, keyword, genericParams, funcType, body);
+    // ─── 9. Build param groups span ──────────────────────────────────────────
+    auto paramGroupBuilder = ctx.arena.makeBuilder<ParamAST*>();
+    for (auto* p : allParamNames) {
+        paramGroupBuilder.push_back(p);
+    }
+    
+    // ─── 10. Build AST using constructor ──────────────────────────────────────
+    auto* funcDecl = ctx.arena.make<FuncDeclAST>(
+        name, 
+        keyword, 
+        genericParams, 
+        funcType, 
+        paramGroupBuilder.build(), 
+        body
+    );
     funcDecl->loc = loc;
     
     LOG_PARSER_DETAIL("Parsed function: ", ctx.pool.lookup(name));

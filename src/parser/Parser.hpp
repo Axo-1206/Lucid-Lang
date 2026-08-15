@@ -250,7 +250,10 @@ ArenaSpan<GenericParamDeclAST*> parseGenericParamDecls(TokenStream& stream, Pars
 ArenaSpan<TypeAST*> parseGenericArgs(TokenStream& stream, ParserContext& ctx);
 
 ArenaSpan<ExprAST*> parseArgList(TokenStream& stream, ParserContext& ctx);
-std::vector<ParamAST*> parseParamList(TokenStream& stream, ParserContext& ctx, bool allowNamme);
+std::vector<ParamAST*> parseParamList(TokenStream& stream, ParserContext& ctx);
+std::vector<TypeAST*> parseParamTypeList(TokenStream& stream, ParserContext& ctx);
+void parseBoundCluster(TokenStream& stream, ParserContext& ctx, std::vector<ParamAST*>& outParams, std::vector<TypeAST*>& outTypes);
+void parseUnnamedCluster(TokenStream& stream, ParserContext& ctx, std::vector<TypeAST*>& outTypes);
 std::vector<InternedString> parseImportPath(TokenStream& stream, ParserContext& ctx);
 
 // ─── Lookahead Helpers ────────────────────────────────────────────────────

@@ -2,6 +2,9 @@
 
 The Lucid parser is a recursive-descent parser with a Pratt (precedence-climbing) expression parser. All parser functions are declared in `Parser.hpp`; implementations are split across the files below.
 
+> [!NOTE]
+> All code block here are `pseudo code` (or `cpp`), we use the `\```cpp` or `\```swift` for color effects
+
 ## File Layout
 
 ```
@@ -31,7 +34,7 @@ src/parser/
 
 ### Program Entry Points (`Parser.cpp`)
 
-```
+```cpp
 ┌─────────────────────────────────────────────────────────────────────────────────┐
 │                                                                                 │
 │  parseProgram(rootPath, rootSource, ctx)  ◄── WHOLE-PROGRAM ENTRY POINT         │
@@ -69,7 +72,7 @@ src/parser/
 │  │                                                                     │   │    │
 │  │   parseInternal(stream, ctx, outDecls)                              │   │    │
 │  │   │                                                                 │   │    │
-│  │   └── loop until EOF                                                │   │    │
+│  │   └── loop until 'EOF'                                                │   │    │
 │  │       │                                                             │   │    │
 │  │       ├── harvestDocComment(stream, ctx)  (collects doc comments)   │   │    │
 │  │       │                                                             │   │    │
@@ -111,8 +114,8 @@ src/parser/
 > - parseInternal() drives the declaration loop within a single file
 > - parseDecl() dispatches to specific declaration parsers
 
-```
-Circular Import Detection:
+```cpp
+'Circular Import Detection':
 ───────────────────────────
 ctx.resolver->isParsing(filePath)  ───► checks if filePath is in parsingStack_
                                         │
@@ -120,10 +123,10 @@ ctx.resolver->isParsing(filePath)  ───► checks if filePath is in parsing
 
 ScopedParsingGuard:
 ───────────────────
-├── on construction: ctx.resolver->pushParsing(filePath)
-└── on destruction:  ctx.resolver->popParsing()  (ensures stack cleanup)
+├── on 'construction': ctx.resolver->pushParsing(filePath)
+└── on 'destruction':  ctx.resolver->popParsing()  (ensures stack cleanup)
 
-Module Order (Dependency Resolution):
+Module. Order (Dependency Resolution):
 ─────────────────────────────────────
 parse() → cacheModule() → moduleOrder_.push_back(filePath)
                            │
@@ -132,7 +135,7 @@ parse() → cacheModule() → moduleOrder_.push_back(filePath)
 
 ### Declaration Dispatch (`parseDecl`)
 
-```
+```cpp
 parseDecl(stream, ctx)                                      [Parser.cpp]
 │
 ├── stream.consumeTrailing(TokenType::SEMICOLON)
@@ -141,15 +144,15 @@ parseDecl(stream, ctx)                                      [Parser.cpp]
 │
 └── dispatch by keyword ─────────────────────────────────────────────────┐
                                                                          │
-    ├── IMPORT        → parseImportDecl(stream, ctx)        [ParseDecl.cpp]
+    ├── 'IMPORT'        → parseImportDecl(stream, ctx)        [ParseDecl.cpp]
     │
-    ├── STRUCT        → parseStructDecl(stream, ctx)        [ParseDecl.cpp]
+    ├── 'STRUCT'        → parseStructDecl(stream, ctx)        [ParseDecl.cpp]
     │
-    ├── ENUM          → parseEnumDecl(stream, ctx)          [ParseDecl.cpp]
+    ├── 'ENUM'          → parseEnumDecl(stream, ctx)          [ParseDecl.cpp]
     │
-    ├── TRAIT         → parseTraitDecl(stream, ctx)         [ParseDecl.cpp]
+    ├── 'TRAIT'         → parseTraitDecl(stream, ctx)         [ParseDecl.cpp]
     │
-    └── LET / CONST   → if looksLikeFuncDecl
+    └── 'LET' / 'CONST'   → if looksLikeFuncDecl
                         │
                         ├── true  → parseFuncDecl(stream, ctx)
                         │
@@ -160,12 +163,12 @@ parseDecl(stream, ctx)                                      [Parser.cpp]
 
 ### Declaration Parsers (`ParseDecl.cpp`)
 
-```
+```cpp
 parseImportDecl(stream, ctx)
 │
 ├── consume 'import'
 ├── parseImportPath(stream, ctx)                        [Helpers.cpp]
-├── parse alias (optional 'as' IDENTIFIER)
+├── 'parse' alias (optional 'as' 'IDENTIFIER')
 ├── ctx.resolver->resolveUsePath(usePath)
 ├── if not ctx.resolver->getParsedModule(filePath)     (check cache)
 │   ├── std::string source = ctx.resolver->readModuleSource(filePath)
@@ -181,25 +184,50 @@ parseImportDecl(stream, ctx)
 │           └── cacheModule()
 │
 └── create ImportDeclAST
+```
 
-Note: Circular import detection is handled EXCLUSIVELY by parse().
-      parseImportDecl() delegates to parse() and trusts it to handle
-      all file parsing concerns including cycle detection.
+> [!NOTE]
+> Circular import detection is handled **EXCLUSIVELY** by parse().
+> parseImportDecl() delegates to parse() and trusts it to handle
+> all file parsing concerns including cycle detection.
 
+
+```cpp
 parseVarDecl(stream, ctx)
 │
-├── parse keyword: LET or CONST
-├── parse name: IDENTIFIER
-├── parseType(stream, ctx)                              [ParseType.cpp]
+├── parse keyword: 'LET' or 'CONST'
+├── parse name: 'IDENTIFIER'
+├── parseType(stream, ctx)                               [ParseType.cpp]
 ├── parse initializer: '=' parseExpr(stream, ctx)       [ParseExpr.cpp]
-└── create VarDeclAST
+└── create VarDeclAST.
 
 parseFuncDecl(stream, ctx)
 │
-├── parse keyword: LET or CONST
-├── parse name: IDENTIFIER
+├── parse keyword: 'LET' or 'CONST'
+├── parse name: 'IDENTIFIER'
 ├── parse optional generic params: parseGenericParamDecls  [Helpers.cpp]
-├── parseFuncType(stream, ctx)                           [ParseType.cpp]
+├── parse leading cluster. (bound_cluster)
+│   │
+│   └── while '(' found
+│       │
+│       └── parseParamList(stream, ctx)  ◄── WITH names
+│           │
+│           ├── collect ParamAST* (with names) → paramGroups
+│           └── collect TypeAST* (for FuncTypeAST) → paramTypes
+│
+├── while '->' 
+│   │
+│   ├── consume '->'
+│   └── parseUnnamedCluster(stream, ctx)
+│       │
+│       └── while '(' found
+│           │
+│           └── parseParamTypeList(stream, ctx)  ◄── NO names
+│               │
+│               └── collect TypeAST* → paramTypes
+│                                                                  
+├── parse final return type: parseType(stream, ctx)
+├── create FuncTypeAST (params: paramTypes, returnType)
 ├── parse '=' and body
 │   ├── block body: '{' parseBlock(stream, ctx) '}'
 │   ├── expression body: parseExpr(stream, ctx)
@@ -208,10 +236,11 @@ parseFuncDecl(stream, ctx)
 │   └── no '=' → foreign function (body = nullptr)
 └── create FuncDeclAST
 
+
 parseStructDecl(stream, ctx)
 │
 ├── consume 'struct'
-├── parse name: IDENTIFIER
+├── parse name: 'IDENTIFIER'
 ├── parse optional generic params: parseGenericParamDecls
 ├── parse trait implementations: ':' NamedTypeAST* ...
 ├── consume '{'
@@ -223,7 +252,7 @@ parseStructDecl(stream, ctx)
 parseEnumDecl(stream, ctx)
 │
 ├── consume 'enum'
-├── parse name: IDENTIFIER
+├── parse name: 'IDENTIFIER'
 ├── parse optional backing type: ':' PrimitiveTypeAST
 ├── consume '{'
 ├── ScopedContext(EnumBody)
@@ -234,7 +263,7 @@ parseEnumDecl(stream, ctx)
 parseTraitDecl(stream, ctx)
 │
 ├── consume 'trait'
-├── parse name: IDENTIFIER
+├── parse name: 'IDENTIFIER'
 ├── parse optional generic params: parseGenericParamDecls
 ├── consume '{'
 ├── ScopedContext(TraitBody)
@@ -246,7 +275,7 @@ parseFieldDecl(stream, ctx)
 │
 ├── parseAttributes(stream, ctx)
 ├── parse optional 'const' modifier
-├── parse name: IDENTIFIER
+├── parse name: 'IDENTIFIER'
 ├── parseType(stream, ctx)
 ├── parse optional default: '=' (block body or expression)
 └── create FieldDeclAST
@@ -254,7 +283,7 @@ parseFieldDecl(stream, ctx)
 parseEnumVariant(stream, ctx)
 │
 ├── parseAttributes(stream, ctx)
-├── parse name: IDENTIFIER
+├── parse name: 'IDENTIFIER'
 ├── consume '='
 ├── parse integer literal (INT_LITERAL, HEX_LITERAL, BINARY_LITERAL)
 └── create EnumVariantAST
@@ -263,14 +292,14 @@ parseTraitField(stream, ctx)
 │
 ├── parseAttributes(stream, ctx)
 ├── parse optional 'const' modifier
-├── parse name: IDENTIFIER
+├── parse name: 'IDENTIFIER'
 ├── parseType(stream, ctx)
 └── create TraitFieldDeclAST
 ```
 
 ### Type Dispatch (`ParseType.cpp`)
 
-```
+```cpp
 parseType(stream, ctx)
 │
 └── parseBaseType(stream, ctx)
@@ -279,7 +308,7 @@ parseType(stream, ctx)
         │
         ├── '?' → NullableTypeAST
         ├── '!' → FallibleTypeAST  
-        └── '?' '!' → CombinedTypeAST
+        └── '?' '!' → CombinedTypeAST.
 
 parseBaseType(stream, ctx)
 │
@@ -310,17 +339,26 @@ parseBaseType(stream, ctx)
 │
 ├── '(' → parseFuncType(stream, ctx)
 │   │
-│   ├── parse first param group: parseParamList(stream, ctx, true)
-│   ├── create FuncTypeAST
+│   ├── parseParamTypeList(stream, ctx)  (unnamed types only)
+│   │   │
+│   │   ├── consume '('
+│   │   ├── while not ')'
+│   │   │   ├── handleCommaGap(stream, ctx, "parameter type", isFirst)
+│   │   │   ├── parseType(stream, ctx)  ◄── recursive call
+│   │   │   └── collect type
+│   │   ├── consume ')'
+│   │   └── return std::vector<TypeAST*>
+│   │
 │   ├── if '->' found
 │   │   ├── consume '->'
 │   │   ├── if '(' → parseFuncType(stream, ctx)  ◄── recursive call (curried)
 │   │   └── else parseType(stream, ctx)  (return type)  ◄── recursive call
+│   ├── create FuncTypeAST (params: TypeAST*, returnType: TypeAST*)
 │   └── return FuncTypeAST
 │
-├── IDENTIFIER → parseNamedType(stream, ctx)
+├── 'IDENTIFIER' → parseNamedType(stream, ctx)
 │   │
-│   ├── if IDENTIFIER ':' IDENTIFIER → ModuleTypeAccessAST
+│   ├── if 'IDENTIFIER' ':' 'IDENTIFIER' → ModuleTypeAccessAST
 │   └── else → NamedTypeAST + optional generic args
 │
 └── else → synchronizeToContext (caller handles diagnostic)
@@ -328,7 +366,7 @@ parseBaseType(stream, ctx)
 
 ### Statement Dispatch (`ParseStmt.cpp`)
 
-```
+```cpp
 parseStmt(stream, ctx)                                      [ParseStmt.cpp]
 │
 ├── skip stray semicolons
@@ -359,9 +397,9 @@ parseStmt(stream, ctx)                                      [ParseStmt.cpp]
     ├── FOR       → parseForStmt(stream, ctx)                          │
     │   │                                                              │
     │   ├── consume 'for'                                              │
-    │   ├── parse index binding: IDENTIFIER TypeAST (or '_')           │
+    │   ├── parse index binding: 'IDENTIFIER' TypeAST (or '_')         │
     │   ├── if ',' found                                               │
-    │   │   ├── parse value binding: IDENTIFIER TypeAST (or '_')       │
+    │   │   ├── parse value binding: 'IDENTIFIER' TypeAST (or '_')     │
     │   │   ├── consume 'in'                                           │
     │   │   ├── parse iterable expression                              │
     │   │   └── parseBlock(stream, ctx)  → collection loop             │
@@ -406,8 +444,8 @@ parseStmt(stream, ctx)                                      [ParseStmt.cpp]
     ├── ASYNC     → parseAsyncStmt(stream, ctx)                        │
     │   │                                                              │
     │   ├── consume 'async'                                            │
-    │   ├── parse keyword: LET or CONST                                │
-    │   ├── parse name: IDENTIFIER                                     │
+    │   ├── parse keyword: 'LET' or 'CONST'                            │
+    │   ├── parse name: 'IDENTIFIER'                                   │
     │   ├── parseType(stream, ctx)  (inner type)                       │
     │   ├── wrap type in FutureTypeAST                                 │
     │   ├── consume '='                                                │
@@ -417,7 +455,7 @@ parseStmt(stream, ctx)                                      [ParseStmt.cpp]
     ├── AWAIT     → parseAwaitStmt(stream, ctx)                        │
     │   │                                                              │
     │   ├── consume 'await'                                            │
-    │   ├── parse target list: IDENTIFIER [ , IDENTIFIER ... ]         │
+    │   ├── parse target list: 'IDENTIFIER' [ , 'IDENTIFIER' ... ]     │
     │   └── create AwaitStmtAST                                        │
     │
     ├── SPAWN     → parseSpawnStmt(stream, ctx)                        │
@@ -429,8 +467,8 @@ parseStmt(stream, ctx)                                      [ParseStmt.cpp]
     │   │   ├── parseExpr(stream, ctx)  (call expression)              │
     │   │   └── create SpawnStmtAST (no binding)                       │
     │   ├── else                                                       │
-    │   │   ├── parse keyword: LET or CONST                            │
-    │   │   ├── parse name: IDENTIFIER                                 │
+    │   │   ├── parse keyword: 'LET' or 'CONST'                        │
+    │   │   ├── parse name: 'IDENTIFIER'                               │
     │   │   ├── parseType(stream, ctx)  (inner type)                   │
     │   │   ├── wrap type in ThreadTypeAST                             │
     │   │   ├── consume '='                                            │
@@ -441,15 +479,15 @@ parseStmt(stream, ctx)                                      [ParseStmt.cpp]
     ├── JOIN      → parseJoinStmt(stream, ctx)                         │
     │   │                                                              │
     │   ├── consume 'join'                                             │
-    │   ├── parse target list: IDENTIFIER [ , IDENTIFIER ... ]         │
+    │   ├── parse target list: 'IDENTIFIER' [ , 'IDENTIFIER' ... ]     │
     │   └── create JoinStmtAST                                         │
     │
-    ├── LET/CONST/STRUCT/ENUM/TRAIT → parseDeclStmt(stream, ctx)       │
+    ├── 'LET'/'CONST'/'STRUCT'/'ENUM'/'TRAIT' → parseDeclStmt(stream, ctx) │
     │   │                                                              │
     │   ├── parseDecl(stream, ctx)                                     │
     │   └── create DeclStmtAST                                         │
     │
-    ├── IMPORT    → error: import only valid at top level              │
+    ├── 'IMPORT'    → error: import only valid at top level            │
     │
     └── default   → parseExprStmt(stream, ctx)                         │
         │                                                              │
@@ -462,7 +500,7 @@ parseBlock(stream, ctx)
 │
 ├── consume '{'
 ├── create BlockStmtAST
-├── while not '}' and not EOF
+├── while not '}' and not 'EOF'
 │   ├── parseStmt(stream, ctx)  ◄── recursive call
 │   └── collect statements
 ├── consume '}'
@@ -471,7 +509,7 @@ parseBlock(stream, ctx)
 
 ### Expression Dispatch (Pratt Parser) (`ParseExpr.cpp`)
 
-```
+```cpp
 parseExpr(stream, ctx)                                          [ParseExpr.cpp]
 │
 └── parsePrattExpr(stream, ctx, -1)
@@ -482,7 +520,7 @@ parsePrattExpr(stream, ctx, minPrec)
 │                                                                         │
 │   parsePrefixExpr(stream, ctx)                                          │
 │   │                                                                     │
-│   ├── unary operator (-, not, ~)                                        │
+│   ├── unary operator. (-, not, ~)                                       │
 │   │   ├── consume operator                                              │
 │   │   ├── parsePrattExpr(stream, ctx, prec+1)  (operand)  ◄── recurse   │
 │   │   └── create UnaryExprAST                                           │
@@ -502,7 +540,7 @@ parsePrattExpr(stream, ctx, minPrec)
 │   ├── '#' → parseIntrinsicCallExpr(stream, ctx)                         │
 │   │   │                                                                 │
 │   │   ├── consume '#'                                                   │
-│   │   ├── parse intrinsic name: IDENTIFIER                              │
+│   │   ├── parse intrinsic name: 'IDENTIFIER'                            │
 │   │   ├── parseArgList(stream, ctx)  (arguments)                        │
 │   │   └── create IntrinsicCallExprAST                                   │
 │   │                                                                     │
@@ -532,33 +570,54 @@ parsePrattExpr(stream, ctx, minPrec)
 │   │                                                                     │
 │   ├── looksLikeAnonFunc → parseAnonFuncExpr(stream, ctx)                │
 │   │   │                                                                 │
-│   │   ├── parseFuncType(stream, ctx)                                    │
+│   │   ├── parse leading cluster (bound_cluster)                         │
+│   │   │   │                                                             │
+│   │   │   └── while '(' found                                           │
+│   │   │       │                                                         │
+│   │   │       └── parseParamList(stream, ctx)  ◄── WITH names           │
+│   │   │           │                                                     │
+│   │   │           ├── collect ParamAST* (with names) → paramGroups      │
+│   │   │           └── collect TypeAST* (for FuncTypeAST) → paramTypes   │
+│   │   │                                                                 │
+│   │   ├── while '->' found                                              │
+│   │   │   │                                                             │
+│   │   │   ├── consume '->'                                              │
+│   │   │   └── parseUnnamedCluster(stream, ctx)                          │
+│   │   │       │                                                         │
+│   │   │       └── while '(' found                                       │
+│   │   │           │                                                     │
+│   │   │           └── parseParamTypeList(stream, ctx)  ◄── NO names     │
+│   │   │               │                                                 │
+│   │   │               └── collect TypeAST* → paramTypes                 │
+│   │   │                                                                 │
+│   │   ├── parse final return type: parseType(stream, ctx)               │
+│   │   ├── create FuncTypeAST (params: paramTypes, returnType)           │
 │   │   ├── consume '{'                                                   │
 │   │   ├── ScopedContext(FuncBody)                                       │
 │   │   ├── parseBlock(stream, ctx)  (body)  ◄── recursive                │
 │   │   ├── consume '}'                                                   │
-│   │   └── create AnonFuncExprAST                                        │
+│   │   └── create AnonFuncExprAST (funcType, paramGroups, body)          │
 │   │                                                                     │
-│   ├── IDENTIFIER ':' → parseModuleAccessExpr(stream, ctx)               │
+│   ├── 'IDENTIFIER' ':' → parseModuleAccessExpr(stream, ctx)             │
 │   │   │                                                                 │
-│   │   ├── parse module name: IDENTIFIER                                 │
+│   │   ├── parse module name: 'IDENTIFIER'                               │
 │   │   ├── consume ':'                                                   │
-│   │   ├── parse member name: IDENTIFIER                                 │
+│   │   ├── parse member name: 'IDENTIFIER'                               │
 │   │   ├── parse optional generic args: parseGenericArgs(stream, ctx)    │
 │   │   └── create ModuleAccessExprAST                                    │
 │   │                                                                     │
 │   ├── looksLikeStructLiteral → parseStructLiteralExpr(stream, ctx)      │
 │   │   │                                                                 │
-│   │   ├── parse type name: IDENTIFIER                                   │
+│   │   ├── parse type name: 'IDENTIFIER'                                 │
 │   │   ├── parse optional generic args: parseGenericArgs(stream, ctx)    │
 │   │   ├── consume '{'                                                   │
-│   │   ├── parse field inits: IDENTIFIER '=' parseExpr(stream, ctx)*     │
+│   │   ├── parse field inits: 'IDENTIFIER' '=' parseExpr(stream, ctx)*   │
 │   │   ├── consume '}'                                                   │
 │   │   └── create StructLiteralExprAST                                   │
 │   │                                                                     │
-│   └── IDENTIFIER → parseIdentifierExpr(stream, ctx)                     │
+│   └── 'IDENTIFIER' → parseIdentifierExpr(stream, ctx)                   │
 │       │                                                                 │
-│       ├── parse name: IDENTIFIER                                        │
+│       ├── parse name: 'IDENTIFIER'                                      │
 │       ├── parse optional generic args: parseGenericArgs(stream, ctx)    │
 │       └── create IdentifierExprAST                                      │
 │                                                                         │
@@ -619,7 +678,7 @@ parsePrattExpr(stream, ctx, minPrec)
 │       └── '.' → parseFieldAccessExpr(stream, ctx, lhs)                │
 │           │                                                           │
 │           ├── consume '.'                                             │
-│           ├── parse field name: IDENTIFIER                            │
+│           ├── parse field name: 'IDENTIFIER'                          │
 │           ├── validate: check for invalid ':' after field             │
 │           └── create FieldAccessExprAST                               │
 │                                                                       │
@@ -628,7 +687,7 @@ parsePrattExpr(stream, ctx, minPrec)
 
 ### Helper Functions (`Helpers.cpp`)
 
-```
+```cpp
 parseAttributes(stream, ctx)
 │
 ├── if '@' found
@@ -641,7 +700,7 @@ parseAttributes(stream, ctx)
 │   │   │
 │   │   └── parseAttribute(stream, ctx)
 │   │       │
-│   │       ├── parse name: IDENTIFIER
+│   │       ├── parse name: 'IDENTIFIER'
 │   │       ├── parse optional args: '(' parseAttributeArgLiteral* ')'
 │   │       └── create AttributeAST
 │   │
@@ -660,7 +719,7 @@ parseGenericParamDecls(stream, ctx)
 │   │
 │   └── parseGenericParamDecl(stream, ctx)
 │       │
-│       ├── parse name: IDENTIFIER
+│       ├── parse name: 'IDENTIFIER'
 │       ├── parse optional constraints: ':' NamedTypeAST* (T : Trait)
 │       └── create GenericParamDeclAST
 │
@@ -679,21 +738,50 @@ parseGenericArgs(stream, ctx)
 ├── consume '>'
 └── return ArenaSpan<TypeAST*>
 
-parseParamList(stream, ctx, allowNames)
+parseParamList(stream, ctx)
 │
 ├── consume '('
 ├── while not ')'
 │   │
 │   ├── handleCommaGap(stream, ctx, "parameter", isFirst)
-│   ├── parse optional 'const' modifier
-│   ├── if allowNames: parse name IDENTIFIER
-│   ├── parse optional '...' (variadic)
+│   ├── parse 'const' modifier (optional)
+│   ├── parse name: 'IDENTIFIER'  ◄── REQUIRED
+│   ├── parse '...' (variadic, optional)
 │   ├── parseType(stream, ctx)  [ParseType.cpp]
 │   ├── if variadic: wrap type in ArrayTypeAST(Dynamic)
-│   ├── create ParamAST
+│   ├── create ParamAST (with name, type, variadic, const flags)
 │   └── collect parameter
 ├── consume ')'
 └── return std::vector<ParamAST*>
+
+parseParamTypeList(stream, ctx)
+│
+├── consume '('
+├── while not ')'
+│   │
+│   ├── handleCommaGap(stream, ctx, "parameter type", isFirst)
+│   ├── parseType(stream, ctx)  [ParseType.cpp]  ◄── NO NAME ALLOWED
+│   └── collect TypeAST*
+├── consume ')'
+└── return std::vector<TypeAST*>
+
+parseBoundCluster(stream, ctx)  ◄── NEW: For function declarations
+│
+├── while '(' found
+│   │
+│   ├── parseParamList(stream, ctx, allowNames=true)
+│   ├── collect ParamAST* → outParams
+│   └── collect TypeAST* → outTypes
+└── return
+
+parseUnnamedCluster(stream, ctx)  ◄── NEW: For function declarations (after ->)
+│
+├── while '(' found
+│   │
+│   ├── parseParamTypeList(stream, ctx)  (no names)
+│   ├── collect TypeAST* → outTypes
+│   └── (no ParamAST* collected)
+└── return
 
 parseArgList(stream, ctx)
 │
@@ -708,7 +796,7 @@ parseArgList(stream, ctx)
 
 parseImportPath(stream, ctx)
 │
-├── while IDENTIFIER
+├── while 'IDENTIFIER'
 │   │
 │   ├── consume identifier
 │   ├── if '.' found: consume '.' and continue
@@ -735,11 +823,11 @@ handleCommaGap(stream, ctx, what, isFirst)
 
 ### Lookahead Helpers (`LookAhead.cpp`)
 
-```
+```cpp
 looksLikeFuncDecl(stream, ctx)
 │
-├── check LET or CONST
-├── check IDENTIFIER
+├── check 'LET' or 'CONST'
+├── check 'IDENTIFIER'
 ├── check optional generic params: '<' ... '>'
 ├── check '(' (parameter group start)
 └── return bool (non-consuming, saves position)
@@ -754,7 +842,7 @@ looksLikeAnonFunc(stream, ctx)
 
 looksLikeStructLiteral(stream, ctx)
 │
-├── check IDENTIFIER
+├── check 'IDENTIFIER'
 ├── check optional generic args: '<' ... '>'
 ├── check '{' after identifier
 └── return bool
@@ -762,22 +850,22 @@ looksLikeStructLiteral(stream, ctx)
 
 ### Error Recovery (`ErrorRecovery.cpp`)
 
-```
+```cpp
 synchronizeToContext(stream, ctx)
 │
 ├── switch on ctx.currentContext()
 │   │
-│   ├── Attribute: skip until COMMA, RBRACKET, SEMICOLON, declaration keyword
+│   ├── 'Attribute': skip until COMMA, RBRACKET, SEMICOLON, declaration keyword
 │   │
-│   ├── GenericParams: skip until COMMA, GREATER, LBRACE, LPAREN, SEMICOLON, declaration
+│   ├── 'GenericParams': skip until COMMA, GREATER, LBRACE, LPAREN, SEMICOLON, declaration
 │   │
-│   ├── GenericArgs: skip until COMMA, GREATER, LPAREN, SEMICOLON, declaration
+│   ├── 'GenericArgs': skip until COMMA, GREATER, LPAREN, SEMICOLON, declaration
 │   │
-│   ├── FuncParams: skip until COMMA, RPAREN, LBRACE, SEMICOLON, declaration
+│   ├── 'FuncParams': skip until COMMA, RPAREN, LBRACE, SEMICOLON, declaration
 │   │
-│   ├── FuncBody/StructBody/EnumBody/TraitBody: skip until SEMICOLON, RBRACE, declaration
+│   ├── 'FuncBody/StructBody/EnumBody/TraitBody': skip until SEMICOLON, RBRACE, declaration
 │   │
-│   └── TopLevel: skip until SEMICOLON, declaration keyword
+│   └── 'TopLevel': skip until SEMICOLON, declaration keyword
 │
 └── return SyncOutcome (Continuable if stopped at list separator)
 
@@ -791,22 +879,22 @@ synchronizeUntil(stream, ctx, stopAt)
 ├── skip tokens until:
 │   ├── stopAt() returns true AND no brackets open
 │   ├── matching closer is found (belongs to enclosing construct)
-│   └── EOF reached
+│   └── 'EOF' reached
 └── return
 ```
 
 ### Module Resolution (`ModuleResolver.hpp/cpp`)
 
-```
+```cpp
 ModuleResolver
 │
-├── packageRoot_ : filesystem::path
-├── pool_ : StringPool&
-├── usePathToFile_ : unordered_map<InternedString, InternedString>
-├── parsedModules_ : unordered_map<InternedString, ModuleAST*>
-├── moduleOrder_ : vector<InternedString>
-├── parsingStack_ : vector<InternedString>
-└── resolvedPathCache_ : unordered_map<InternedString, filesystem::path>
+├── 'packageRoot_' : filesystem::path
+├── 'pool_' : StringPool&
+├── 'usePathToFile_' : unordered_map<InternedString, InternedString>
+├── 'parsedModules_' : unordered_map<InternedString, ModuleAST*>
+├── 'moduleOrder_' : vector<InternedString>
+├── 'parsingStack_' : vector<InternedString>
+└── 'resolvedPathCache_' : unordered_map<InternedString, filesystem::path>.
 
 resolveUsePath(usePath)
 │
@@ -846,7 +934,7 @@ readModuleSource(filePath)
 
 ### TokenStream (`TokenStream.hpp/cpp`)
 
-```
+```cpp
 TokenStream
 │
 ├── tokens_ : vector<Token>
@@ -872,7 +960,7 @@ Public Methods:
 
 ### ParserContext (`ParserContext.hpp`)
 
-```
+```cpp
 ParserContext
 │
 ├── pool : StringPool&
@@ -899,12 +987,12 @@ SyntacticContext enum
 ├── StructBody
 ├── EnumBody
 └── TraitBody
-
+.
 ScopedContext (RAII guard)
 │
 ├── pushes context on construction
 └── pops context on destruction
-
+.
 ScopedFileContext (RAII guard)
 │
 ├── saves context stack on construction
@@ -913,11 +1001,11 @@ ScopedFileContext (RAII guard)
 
 ### Lexer (`Lexer.hpp/cpp`)
 
-```
+```cpp
 lexer::tokenize(source, diagnostics)
 │
 ├── create LexerState
-├── while not EOF
+├── while not 'EOF'
 │   │
 │   ├── skipWhitespace()
 │   │
@@ -929,7 +1017,7 @@ lexer::tokenize(source, diagnostics)
 │       │   │
 │       │   ├── collect identifier characters
 │       │   ├── is_keyword(value) → keyword_to_type(value)
-│       │   └── return Token (IDENTIFIER or keyword type)
+│       │   └── return Token ('IDENTIFIER' or keyword type)
 │       │
 │       ├── digit or '.' digit → lexNumber()
 │       │   │

@@ -554,23 +554,52 @@ AnonFuncExprAST* parseAnonFuncExpr(TokenStream& stream, ParserContext& ctx) {
     
     LOG_PARSER_DETAIL("parseAnonFuncExpr");
     
-    TypeAST* type = parseFuncType(stream, ctx);
-    if (!type) {
+    // ─── Parse the leading cluster (bound_cluster) - names required ────
+    std::vector<ParamAST*> allParamNames;
+    std::vector<TypeAST*> funcParamTypes;
+    
+    while (stream.check(TokenType::LPAREN)) {
+        std::vector<ParamAST*> groupParams = parseParamList(stream, ctx);
+        
+        for (auto* p : groupParams) {
+            allParamNames.push_back(p);
+            funcParamTypes.push_back(p->type);
+        }
+    }
+    
+    // ─── Parse remaining clusters after '->' ─────────────────────────────
+    while (stream.check(TokenType::ARROW)) {
+        stream.consume(); // Consume '->'
+        
+        if (stream.check(TokenType::LPAREN)) {
+            // Parse unnamed cluster (no names)
+            std::vector<TypeAST*> groupTypes = parseParamTypeList(stream, ctx);
+            for (auto* t : groupTypes) {
+                funcParamTypes.push_back(t);
+            }
+        } else {
+            break;
+        }
+    }
+    
+    // ─── Parse the final return type ──────────────────────────────────────
+    TypeAST* returnType = parseType(stream, ctx);
+    if (!returnType) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
-                                "expected function type");
+                                "expected return type");
         synchronizeToContext(stream, ctx);
         return nullptr;
     }
     
-    if (!type->isa<FuncTypeAST>()) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
-                                "expected function type, got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
-        return nullptr;
+    // ─── Build the FuncTypeAST ─────────────────────────────────────────────
+    auto paramBuilder = ctx.arena.makeBuilder<TypeAST*>();
+    for (auto* t : funcParamTypes) {
+        paramBuilder.push_back(t);
     }
+    auto* funcType = ctx.arena.make<FuncTypeAST>(paramBuilder.build(), returnType, true);
+    funcType->loc = loc;
     
-    FuncTypeAST* funcType = type->as<FuncTypeAST>();
-    
+    // ─── Parse the body ────────────────────────────────────────────────────
     if (!stream.check(TokenType::LBRACE)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected '{', got '", stream.peekValue(), "'");
@@ -594,7 +623,17 @@ AnonFuncExprAST* parseAnonFuncExpr(TokenStream& stream, ParserContext& ctx) {
         stream.consume(); // Consume '}'
     }
     
-    auto* anonFunc = ctx.arena.make<AnonFuncExprAST>(funcType, body);
+    // ─── Build param groups span ──────────────────────────────────────────
+    auto paramGroupBuilder = ctx.arena.makeBuilder<ParamAST*>();
+    for (auto* p : allParamNames) {
+        paramGroupBuilder.push_back(p);
+    }
+    
+    auto* anonFunc = ctx.arena.make<AnonFuncExprAST>(
+        funcType, 
+        paramGroupBuilder.build(), 
+        body
+    );
     anonFunc->loc = loc;
     
     LOG_PARSER_DETAIL("parseAnonFuncExpr: parsed anonymous function");

@@ -548,8 +548,18 @@ ArenaSpan<TypeAST*> parseGenericArgs(TokenStream& stream, ParserContext& ctx) {
 // parseParamList - LIST LEVEL - handles commas
 // =============================================================================
 
-std::vector<ParamAST*> parseParamList(TokenStream& stream, ParserContext& ctx, bool allowNames) {
-    LOG_PARSER_DETAIL("parseParamList: parsing parameter list (allowNames=", allowNames, ")");
+/// @brief Parse a parameter list WITH names.
+/// 
+/// Grammar: '(' [ IDENTIFIER type { ',' IDENTIFIER type } ] ')'
+/// 
+/// This is used for the leading cluster of function declarations and anonymous functions.
+/// Parameter names are REQUIRED - use parseParamTypeList for unnamed function types.
+/// 
+/// @param stream The token stream
+/// @param ctx The parsing context
+/// @return std::vector<ParamAST*> The parsed parameters with names
+std::vector<ParamAST*> parseParamList(TokenStream& stream, ParserContext& ctx) {
+    LOG_PARSER_DETAIL("parseParamList: parsing parameter list with names");
     
     std::vector<ParamAST*> params;
     
@@ -564,7 +574,7 @@ std::vector<ParamAST*> parseParamList(TokenStream& stream, ParserContext& ctx, b
         stream.consume(); // Consume ')'
         return params;
     }
-
+    
     bool isFirst = true;
     bool hasVariadic = false;
     
@@ -573,33 +583,30 @@ std::vector<ParamAST*> parseParamList(TokenStream& stream, ParserContext& ctx, b
         handleCommaGap(stream, ctx, "parameter", isFirst);
         isFirst = false;
         
-        // Parse single parameter (NO comma handling inside)
+        // ─── Parse single parameter ──────────────────────────────────────
         SourceLocation loc = stream.currentLoc();
         
+        // Parse 'const' modifier (always allowed)
         bool isConstParam = stream.match(TokenType::CONST);
         
-        InternedString name;
-        bool hasName = false;
-        
-        if (allowNames) {
-            if (!stream.check(TokenType::IDENTIFIER)) {
-                ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
-                                        "expected parameter name, got '", stream.peekValue(), "'");
-                synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN);
-                if (!stream.check(TokenType::COMMA) && !stream.check(TokenType::RPAREN)) {
-                    break;
-                }
-                continue;
+        // ─── Parameter name is REQUIRED ────────────────────────────────
+        if (!stream.check(TokenType::IDENTIFIER)) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, stream.currentLoc(),
+                                    "expected parameter name, got '", stream.peekValue(), "'");
+            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN);
+            if (!stream.check(TokenType::COMMA) && !stream.check(TokenType::RPAREN)) {
+                break;
             }
-            
-            Token nameTok = stream.consume();
-            name = ctx.pool.intern(nameTok.value);
-            hasName = true;
+            continue;
         }
         
+        Token nameTok = stream.consume();
+        InternedString name = ctx.pool.intern(nameTok.value);
+        
+        // ─── Parse variadic marker ──────────────────────────────────────
         bool isVariadic = stream.match(TokenType::VARIADIC);
         
-        // ─── Parse the type ──────────────────────────────────────────────────
+        // ─── Parse the type ──────────────────────────────────────────────
         TypeAST* type = parseType(stream, ctx);
         if (!type) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
@@ -611,7 +618,7 @@ std::vector<ParamAST*> parseParamList(TokenStream& stream, ParserContext& ctx, b
             continue;
         }
         
-        // ─── If variadic, wrap the type in [*]T ──────────────────────────────
+        // ─── If variadic, wrap the type in [*]T ──────────────────────────
         // The grammar says: `...T` is a parameter that collects arguments into [*]T
         // So the parameter type should be [*]T, not T
         TypeAST* finalType = type;
@@ -620,26 +627,11 @@ std::vector<ParamAST*> parseParamList(TokenStream& stream, ParserContext& ctx, b
             finalType = ctx.arena.make<ArrayTypeAST>(ArrayKind::Dynamic, 0, type);
         }
         
-        // ─── Create ParamAST using constructor ──────────────────────────────
+        // ─── Create ParamAST ──────────────────────────────────────────────
         // Parameters are always `let` by default (mutable bindings)
         ParamAST* param = ctx.arena.make<ParamAST>(name, finalType, isVariadic, isConstParam);
         param->loc = loc;
         params.push_back(param);
-        
-        if (allowNames && !hasName) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedIdentifier, loc,
-                                    "expected parameter name before type");
-        }
-        
-        if (!allowNames && hasName) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, loc,
-                                    "parameter name '", ctx.pool.lookup(name), 
-                                    "' is not allowed after first '->'");
-        }
-        
-        if (isVariadic) {
-            hasVariadic = true;
-        }
         
         if (isVariadic && stream.check(TokenType::COMMA)) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
@@ -655,6 +647,120 @@ std::vector<ParamAST*> parseParamList(TokenStream& stream, ParserContext& ctx, b
     }
     
     return params;
+}
+
+/// @brief Parse a parameter type list for a function type.
+///        These are unnamed: just types, no parameter names.
+/// 
+/// Grammar: '(' [ type { ',' type } ] ')'
+/// 
+/// @param stream The token stream
+/// @param ctx The parsing context
+/// @return std::vector<TypeAST*> The parameter types
+std::vector<TypeAST*> parseParamTypeList(TokenStream& stream, ParserContext& ctx) {
+    LOG_PARSER_DETAIL("parseParamTypeList: parsing parameter type list");
+    
+    std::vector<TypeAST*> paramTypes;
+    
+    if (!stream.check(TokenType::LPAREN)) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                "expected '(', got '", stream.peekValue(), "'");
+        return paramTypes;
+    }
+    stream.consume(); // Consume '('
+    
+    if (stream.check(TokenType::RPAREN)) {
+        stream.consume(); // Consume ')'
+        return paramTypes;
+    }
+    
+    bool isFirst = true;
+    
+    while (!stream.isAtEnd() && !stream.check(TokenType::RPAREN)) {
+        // Handle commas before this parameter (list-level comma handling)
+        handleCommaGap(stream, ctx, "parameter type", isFirst);
+        isFirst = false;
+        
+        // ─── Parse the type (no name allowed here) ──────────────────────
+        TypeAST* type = parseType(stream, ctx);
+        if (!type) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
+                                    "expected parameter type, got '", stream.peekValue(), "'");
+            synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN);
+            if (!stream.check(TokenType::COMMA) && !stream.check(TokenType::RPAREN)) {
+                break;
+            }
+            continue;
+        }
+        
+        // ─── Check: No identifier allowed here ──────────────────────────
+        // If we see an identifier after the type, that's an error - 
+        // parameter names are not allowed in function types.
+        // This catches cases like: (a int) in a function type context.
+        // The parser might have already consumed it as part of parseType
+        // if it was parsed as a NamedTypeAST. We need to check if the
+        // next token is a type token that looks like a name.
+        // Actually, this check is better done in the caller (parseFuncType)
+        // by looking at the original tokens, but we can add a defensive check.
+        
+        paramTypes.push_back(type);
+    }
+    
+    if (stream.isAtEnd()) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
+                                "expected ')' to close parameter type list");
+    } else {
+        stream.consume(); // Consume ')'
+    }
+    
+    LOG_PARSER_DETAIL("parseParamTypeList: ", paramTypes.size(), " parameter types");
+    return paramTypes;
+}
+
+/// @brief Parse a bound cluster: one or more groups with parameter names.
+/// 
+/// Grammar: bound_cluster = bound_group { bound_group }
+///          bound_group = '(' [ bound_param_list ] ')'
+///          bound_param = IDENTIFIER type
+/// 
+/// @param stream The token stream
+/// @param ctx The parsing context
+/// @param outParams Output: parameter AST nodes (with names)
+/// @param outTypes Output: parameter types (for the FuncTypeAST)
+void parseBoundCluster(TokenStream& stream, ParserContext& ctx,
+                       std::vector<ParamAST*>& outParams,
+                       std::vector<TypeAST*>& outTypes) {
+    LOG_PARSER_DETAIL("parseBoundCluster");
+    
+    while (stream.check(TokenType::LPAREN) && !stream.isAtEnd()) {
+        std::vector<ParamAST*> groupParams = parseParamList(stream, ctx);
+        
+        for (auto* p : groupParams) {
+            outParams.push_back(p);
+            outTypes.push_back(p->type);
+        }
+    }
+}
+
+/// @brief Parse an unnamed cluster: one or more groups with only types.
+/// 
+/// Grammar: unnamed_cluster = unnamed_group { unnamed_group }
+///          unnamed_group = '(' [ type { ',' type } ] ')'
+/// 
+/// @param stream The token stream
+/// @param ctx The parsing context
+/// @param outTypes Output: parameter types (for the FuncTypeAST)
+void parseUnnamedCluster(TokenStream& stream, ParserContext& ctx,
+                         std::vector<TypeAST*>& outTypes) {
+    LOG_PARSER_DETAIL("parseUnnamedCluster");
+    
+    while (stream.check(TokenType::LPAREN) && !stream.isAtEnd()) {
+        std::vector<TypeAST*> groupTypes = parseParamTypeList(stream, ctx);
+        
+        for (auto* t : groupTypes) {
+            outTypes.push_back(t);
+        }
+    }
 }
 
 // =============================================================================

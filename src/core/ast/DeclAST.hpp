@@ -195,28 +195,15 @@ using ParamGroup = std::vector<ParamAST*>;
 ///   const makeAdder (base int) -> (int) -> int = { ... }
 ///   const sum (nums ...int) -> int = { ... }
 /// 
-/// ─── Closures ──────────────────────────────────────────────────────────────
-/// A FuncDeclAST can also be a closure if it captures variables from its
-/// enclosing scope. When this happens, the function behaves like an
-/// anonymous function with a name.
-/// 
-/// Example of a nested function that forms a closure:
-/// ```lucid
-/// const makeCounter () -> () -> int = {
-///     let count int = 0;
-///     const counter () -> int = {   ← This is a FuncDeclAST that captures 'count'
-///         count = count + 1;
-///         return count;
-///     };
-///     return counter;
-/// }
-/// ```
+/// The function type is stored in `funcType`, and the parameter names
+/// are stored separately in `paramGroups` (one group per cluster).
 struct FuncDeclAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::FuncDecl;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
     ArenaSpan<GenericParamDeclAST*> genericParams;
-    FuncTypeAST* funcType = nullptr;
+    FuncTypeAST* funcType = nullptr;          // The function type (unnamed parameters)
+    ArenaSpan<ParamAST*> paramGroups;         // Parameter names, flattened across all groups
     StmtAST* body;
     
     // ─── Semantic Fields (set by Sema) ────────────────────────────────
@@ -241,10 +228,13 @@ struct FuncDeclAST : ValueDeclAST {
     // ─── Constructor ─────────────────────────────────────────────────────
     FuncDeclAST(InternedString n, DeclKeyword kw, 
                 ArenaSpan<GenericParamDeclAST*> params,
-                FuncTypeAST* ft, StmtAST* b)
+                FuncTypeAST* ft, 
+                ArenaSpan<ParamAST*> pGroups,
+                StmtAST* b)
         : ValueDeclAST(ASTKind::FuncDecl, n, kw, ft)
         , genericParams(params)
         , funcType(ft)
+        , paramGroups(pGroups)
         , body(b) {}
 };
 

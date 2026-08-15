@@ -400,54 +400,46 @@ struct PtrTypeAST : TypeAST {
 // FuncTypeAST — function type.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief Represents a function type with a single parameter group.
-/// 
-/// This is a recursive design: a function type consists of one parameter group
-/// and one return type. If the function is curried, the return type
-/// is another FuncTypeAST.
-/// 
-/// Grammar (desugared):
-///   func_type := param_group [ '->' returnType ]
-/// 
-/// The parser desugars multiple parameter groups (e.g., `(a int)(b int) -> int`)
-/// into nested FuncTypeAST: `(a int) -> (b int) -> int`
-/// 
-/// Examples of nested structure:
-///   - `(a int) -> int`                    → params=[a], returnType = int
-///   - `(a int) -> (int) -> int`           → params=[a], returnType = FuncTypeAST(...)
-///   - `(a int) -> Pair<int, string>`      → params=[a], returnType = Pair<int, string>
-///   - `(a int)(b int) -> int`             → desugars to `(a int) -> (b int) -> int`
-/// 
-/// @field params        The parameters for this group (raw pointers to ParamAST)
-/// @field returnType   Return type – a plain TypeAST or another FuncTypeAST
+/// @brief Represents a function type.
+///
+/// A function type is a chain of parameter groups and a return type.
+/// Parameters are unnamed - they only specify types, not names.
+///
+/// @example
+///   (int) -> bool                    → params = [int], returnType = bool
+///   (int)(string) -> bool            → params = [int, string], returnType = bool (Form 2 adjacency)
+///   (int) -> (string) -> bool        → params = [int], returnType = FuncTypeAST (curried)
+///   [*](string, int) -> int          → params = [string, int], returnType = int
 struct FuncTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::FuncType;
 
-    ArenaSpan<ParamAST*> params;      // parameters for this group
-    TypeAST* returnType = nullptr;     // return types (may contain FuncTypeAST)
-    bool hasArrow = false;            // semantic enforce return statement inside the body
-                                      // and codegen will automatically wrap function
+    // ─── Parser Fields (immutable) ──────────────────────────────────────
+    ArenaSpan<TypeAST*> params;      // Parameter types (unnamed)
+    TypeAST* returnType = nullptr;   // Return type (may be FuncTypeAST for curried)
+    const bool hasArrow = false;     // True if this has a '->' (not a void function)
 
-    explicit FuncTypeAST() : TypeAST(ASTKind::FuncType) {}
-    
-    // Returns true if the return type is a function type (currying).
-    // `returnType` is legitimately nullptr for a void-returning function
-    // (no `->` written) - see CodeGen's handling of this same field for
-    // confirmation. Must check for null before dereferencing.
-    bool isCurried() const { 
-        return returnType && returnType->isa<FuncTypeAST>();
-    }
+    // ─── Constructor ─────────────────────────────────────────────────────
+    FuncTypeAST(ArenaSpan<TypeAST*> p = {}, TypeAST* ret = nullptr, bool arrow = false)
+        : TypeAST(ASTKind::FuncType)
+        , params(p)
+        , returnType(ret)
+        , hasArrow(arrow) {}
 
-    // Returns the inner function type if curried, otherwise nullptr
-    FuncTypeAST* getNext() const {
-        if (isCurried()) {
-            return returnType->as<FuncTypeAST>();
+    bool isVoid() const { return !hasArrow; }
+
+    /// Check if this is a curried function type (returnType is also a FuncTypeAST)
+    bool isCurried() const { return hasArrow && returnType && returnType->isa<FuncTypeAST>(); }
+
+    /// Get the final return type (unwrapping curried types)
+    TypeAST* getReturnType() const {
+        if (!hasArrow) return nullptr;
+        const FuncTypeAST* cur = this;
+        while (cur && cur->returnType && cur->returnType->isa<FuncTypeAST>()) {
+            cur = cur->returnType->as<FuncTypeAST>();
         }
-        return nullptr;
+        return cur ? cur->returnType : nullptr;
     }
 };
-
-/// @file TypeAST.hpp
 
 /// @brief Accesses a type from a module via the ':' operator.
 /// 

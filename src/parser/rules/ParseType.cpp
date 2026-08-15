@@ -337,45 +337,61 @@ TypeAST* parseFuncType(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
     
     // 1. Parse first parameter group (before any ->)
-    std::vector<ParamAST*> params = parseParamList(stream, ctx, true);
+    //    - In a function TYPE, parameters are unnamed: only types
+    //    - The grammar for func_type: unnamed_cluster { '->' unnamed_cluster } '->' type
+    //    - unnamed_cluster = '(' type { ',' type } ')'  (no parameter names)
+    std::vector<TypeAST*> paramTypes = parseParamTypeList(stream, ctx);
     
-    // 2. Create function type node
-    auto* funcType = ctx.arena.make<FuncTypeAST>();
-    funcType->loc = loc;
-    
-    auto paramBuilder = ctx.arena.makeBuilder<ParamAST*>();
-    for (auto* p : params) {
-        paramBuilder.push_back(p);
-    }
-    funcType->params = paramBuilder.build();
-
-    // 3. Check for arrow
+    // 2. Check for arrow
     if (!stream.check(TokenType::ARROW)) {
+        // Void function: just a parameter list with no return type
+        // e.g., (int, string) -> void is written as (int, string) with no arrow
+        auto builder = ctx.arena.makeBuilder<TypeAST*>();
+        for (auto* p : paramTypes) {
+            builder.push_back(p);
+        }
+        auto* funcType = ctx.arena.make<FuncTypeAST>(builder.build(), nullptr, false);
+        funcType->loc = loc;
         LOG_PARSER_DETAIL("parseFuncType: void function");
         return funcType;
     }
     
     stream.consume(); // Consume '->'
-    funcType->hasArrow = true;
-
-    // 4. Parse return type
+    
+    // 3. Parse return type
+    //    - If the next token is '(', this is a curried function type
+    //    - Otherwise, parse a normal type
+    TypeAST* returnType = nullptr;
+    
     if (stream.check(TokenType::LPAREN)) {
-        TypeAST* returnType = parseFuncType(stream, ctx);
-        funcType->returnType = returnType;
-        LOG_PARSER_DETAIL("parseFuncType: curried function");
-        return funcType;
+        // Curried: (int) -> (string) -> bool
+        returnType = parseFuncType(stream, ctx);
+    } else {
+        returnType = parseType(stream, ctx);
+        if (!returnType) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
+                                    "expected return type, got '", stream.peekValue(), "'");
+            synchronizeToContext(stream, ctx);
+            
+            auto builder = ctx.arena.makeBuilder<TypeAST*>();
+            for (auto* p : paramTypes) {
+                builder.push_back(p);
+            }
+            auto* funcType = ctx.arena.make<FuncTypeAST>(builder.build(), nullptr, false);
+            funcType->loc = loc;
+            return funcType;
+        }
     }
     
-    TypeAST* returnType = parseType(stream, ctx);
-    if (!returnType) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
-                                "expected return type, got '", stream.peekValue(), "'");
-        synchronizeToContext(stream, ctx);
-        return funcType;
+    auto builder = ctx.arena.makeBuilder<TypeAST*>();
+    for (auto* p : paramTypes) {
+        builder.push_back(p);
     }
-    funcType->returnType = returnType;
     
-    LOG_PARSER_DETAIL("parseFuncType: function with ", params.size(), " params");
+    auto* funcType = ctx.arena.make<FuncTypeAST>(builder.build(), returnType, true);
+    funcType->loc = loc;
+    
+    LOG_PARSER_DETAIL("parseFuncType: function with ", paramTypes.size(), " params");
     return funcType;
 }
 
