@@ -200,7 +200,23 @@ llvm::Type* createSpecializedStruct(
         ctx.llvmCtx,
         structName
     );
-    if (existingType && !existingType->isOpaque()) {
+    if (existingType) {
+        if (!existingType->isOpaque()) {
+            return existingType;
+        }
+        // A struct with this exact mangled name was already forward-declared
+        // somewhere (e.g. a recursive generic struct, or another module's
+        // reference via getModuleTypeAccess()) but never given a body.
+        // llvm::StructType::create(ctx.llvmCtx, fieldTypes, structName)
+        // would NOT reuse this name - LLVM auto-uniquifies duplicate named
+        // struct types by appending ".0"/".1"/etc, so callers still holding
+        // a pointer to `existingType` (looked up by the mangled name) would
+        // be left with a permanently-opaque type while the real definition
+        // lives under a different, divergent name. Completing the existing
+        // type in place keeps a single canonical type for this name.
+        existingType->setBody(fieldTypes);
+        LOG_CODEGEN("Completed forward-declared specialized struct: ", structName,
+                    " (", fieldTypes.size(), " fields)");
         return existingType;
     }
 
@@ -228,7 +244,13 @@ llvm::Function* generateErasedGenericFunction(
     if (!funcDecl) return nullptr;
 
     std::string funcName = ctx.pool.lookup(funcDecl->name);
-    std::string mangledName = funcName + "__erased";
+    // Module-qualify, like createSpecializedFunction's mangled names do -
+    // otherwise two modules each declaring a same-named non-specialized
+    // generic (e.g. both defining `identity<T>`) collide on the exact same
+    // "identity__erased" symbol. This is an ExternalLinkage function, so an
+    // unqualified collision is a hard multi-TU linker error/ODR violation,
+    // not just an in-process lookup ambiguity.
+    std::string mangledName = getMangledModulePath(ctx) + "_" + funcName + "__erased";
 
     std::vector<llvm::Type*> paramTypes;
 
@@ -294,7 +316,8 @@ llvm::Type* generateErasedGenericStruct(
     if (!structDecl) return nullptr;
 
     std::string structName = ctx.pool.lookup(structDecl->name);
-    std::string mangledName = structName + "__erased";
+    // Same module-qualification fix as generateErasedGenericFunction above.
+    std::string mangledName = getMangledModulePath(ctx) + "_" + structName + "__erased";
 
     // ─── Get or create the canonical TaggedSlot type ──────────────────────
     // This is a SHARED type across all erased generic structs.

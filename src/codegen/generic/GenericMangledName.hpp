@@ -29,6 +29,7 @@
 #include "core/memory/InternedString.hpp"
 #include "core/memory/StringPool.hpp"
 #include "../context/CodeGenContext.hpp"
+#include "GenericSubstitution.hpp"
 
 #include <string>
 #include <vector>
@@ -51,8 +52,21 @@ InternedString generateMangledNameForGeneric(
 /// @brief Encode a type to a mangled string.
 /// @param type The type to encode.
 /// @param pool The string pool for looking up names.
+/// @param subst Optional substitution context. When non-null, any
+///        `NamedTypeAST` matching one of the substitution's generic
+///        parameters is replaced with its concrete type argument BEFORE
+///        encoding - at any depth (top-level, or nested inside `*T`, `T?`,
+///        `Array<T>`, `Box<T>`, etc). Without this, two different concrete
+///        instantiations of the same generic can mangle to the identical
+///        string whenever the generic parameter only appears nested inside
+///        a composite type, since the plain (non-substituted) type would
+///        just be encoded as the literal parameter name "T" either way.
 /// @return The encoded type string (as std::string for building).
-std::string typeToMangleString(TypeAST* type, StringPool& pool);
+std::string typeToMangleString(
+    TypeAST* type,
+    StringPool& pool,
+    const GenericSubstitution* subst = nullptr
+);
 
 /// @brief Sanitize a string for use in a mangled name.
 /// @param str The string to sanitize.

@@ -13,6 +13,7 @@
 #include "../context/CodeGenContext.hpp"
 #include "core/ast/DeclAST.hpp"
 #include "core/ast/TypeAST.hpp"
+#include "GenericSubstitution.hpp"
 #include <llvm/IR/Function.h>
 #include <llvm/IR/Type.h>
 #include <unordered_map>
@@ -34,28 +35,11 @@ size_t findGenericParamIndex(InternedString name, const ArenaSpan<GenericParamDe
 // ─────────────────────────────────────────────────────────────────────────────
 // 2. Type Substitution Context
 // ─────────────────────────────────────────────────────────────────────────────
-
-/// @brief Context for substituting generic parameters with concrete types.
-struct GenericSubstitution {
-    const ArenaSpan<GenericParamDeclAST*>& genericParams;
-    const std::vector<TypeAST*>& typeArgs;
-
-    TypeAST* lookup(InternedString name) const {
-        for (size_t i = 0; i < genericParams.size(); ++i) {
-            if (genericParams[i]->name == name && i < typeArgs.size()) {
-                return typeArgs[i];
-            }
-        }
-        return nullptr;
-    }
-
-    bool isGenericParam(InternedString name) const {
-        for (const auto* param : genericParams) {
-            if (param->name == name) return true;
-        }
-        return false;
-    }
-};
+//
+// GenericSubstitution now lives in GenericSubstitution.hpp (included above) -
+// it moved out of this file because GenericMangledName.hpp/cpp also need the
+// full definition, and having either of these two files include the other
+// would form a cycle. See GenericSubstitution.hpp for the full rationale.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 3. Specialized Instantiation Creation
