@@ -553,26 +553,33 @@ ArenaSpan<TypeAST*> parseGenericArgs(TokenStream& stream, ParserContext& ctx) {
 /// Grammar: '(' [ IDENTIFIER type { ',' IDENTIFIER type } ] ')'
 /// 
 /// This is used for the leading cluster of function declarations and anonymous functions.
-/// Parameter names are REQUIRED - use parseParamTypeList for unnamed function types.
+/// Parameter names are REQUIRED.
+/// 
+/// Variadic parameters are denoted by `...` after the name: `args ...int`
 /// 
 /// @param stream The token stream
 /// @param ctx The parsing context
-/// @return std::vector<ParamAST*> The parsed parameters with names
-std::vector<ParamAST*> parseParamList(TokenStream& stream, ParserContext& ctx) {
+/// @param outParams Output: the parsed parameters with names
+/// @param outIsVariadic Output: true if the last parameter is variadic
+/// @return bool True if parsing succeeded
+bool parseParamList(TokenStream& stream, ParserContext& ctx,
+                    std::vector<ParamAST*>& outParams,
+                    bool& outIsVariadic) {
     LOG_PARSER_DETAIL("parseParamList: parsing parameter list with names");
     
-    std::vector<ParamAST*> params;
+    outParams.clear();
+    outIsVariadic = false;
     
     if (!stream.check(TokenType::LPAREN)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected '(', got '", stream.peekValue(), "'");
-        return params;
+        return false;
     }
     stream.consume(); // Consume '('
     
     if (stream.check(TokenType::RPAREN)) {
         stream.consume(); // Consume ')'
-        return params;
+        return true;
     }
     
     bool isFirst = true;
@@ -595,7 +602,7 @@ std::vector<ParamAST*> parseParamList(TokenStream& stream, ParserContext& ctx) {
                                     "expected parameter name, got '", stream.peekValue(), "'");
             synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN);
             if (!stream.check(TokenType::COMMA) && !stream.check(TokenType::RPAREN)) {
-                break;
+                return false;
             }
             continue;
         }
@@ -604,7 +611,16 @@ std::vector<ParamAST*> parseParamList(TokenStream& stream, ParserContext& ctx) {
         InternedString name = ctx.pool.intern(nameTok.value);
         
         // ─── Parse variadic marker ──────────────────────────────────────
-        bool isVariadic = stream.match(TokenType::VARIADIC);
+        // In parameter lists, variadic is written as `...` after the name: `args ...int`
+        bool isVariadicParam = stream.match(TokenType::VARIADIC);
+        
+        if (isVariadicParam) {
+            if (hasVariadic) {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, loc,
+                                        "multiple variadic parameters are not allowed");
+            }
+            hasVariadic = true;
+        }
         
         // ─── Parse the type ──────────────────────────────────────────────
         TypeAST* type = parseType(stream, ctx);
@@ -613,7 +629,7 @@ std::vector<ParamAST*> parseParamList(TokenStream& stream, ParserContext& ctx) {
                                     "expected parameter type, got '", stream.peekValue(), "'");
             synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN);
             if (!stream.check(TokenType::COMMA) && !stream.check(TokenType::RPAREN)) {
-                break;
+                return false;
             }
             continue;
         }
@@ -622,31 +638,37 @@ std::vector<ParamAST*> parseParamList(TokenStream& stream, ParserContext& ctx) {
         // The grammar says: `...T` is a parameter that collects arguments into [*]T
         // So the parameter type should be [*]T, not T
         TypeAST* finalType = type;
-        if (isVariadic) {
+        if (isVariadicParam) {
             // Store as [*]T (dynamic array) - the element type is 'type'
             finalType = ctx.arena.make<ArrayTypeAST>(ArrayKind::Dynamic, 0, type);
         }
         
         // ─── Create ParamAST ──────────────────────────────────────────────
         // Parameters are always `let` by default (mutable bindings)
-        ParamAST* param = ctx.arena.make<ParamAST>(name, finalType, isVariadic, isConstParam);
+        ParamAST* param = ctx.arena.make<ParamAST>(name, finalType, isVariadicParam, isConstParam);
         param->loc = loc;
-        params.push_back(param);
+        outParams.push_back(param);
         
-        if (isVariadic && stream.check(TokenType::COMMA)) {
+        if (isVariadicParam && stream.check(TokenType::COMMA)) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
                                     "variadic parameter must be the last parameter");
         }
     }
     
+    if (hasVariadic) {
+        outIsVariadic = true;
+    }
+    
     if (stream.isAtEnd()) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected ')' to close parameter list");
+        return false;
     } else {
         stream.consume(); // Consume ')'
     }
     
-    return params;
+    LOG_PARSER_DETAIL("parseParamList: ", outParams.size(), " parameters, variadic=", outIsVariadic);
+    return true;
 }
 
 /// @brief Parse a parameter type list for a function type.
@@ -654,67 +676,101 @@ std::vector<ParamAST*> parseParamList(TokenStream& stream, ParserContext& ctx) {
 /// 
 /// Grammar: '(' [ type { ',' type } ] ')'
 /// 
+/// Variadic parameters are denoted by `...` before the type: `...T`
+/// 
 /// @param stream The token stream
 /// @param ctx The parsing context
-/// @return std::vector<TypeAST*> The parameter types
-std::vector<TypeAST*> parseParamTypeList(TokenStream& stream, ParserContext& ctx) {
+/// @param outParamTypes Output: the parameter types
+/// @param outIsVariadic Output: true if the last parameter is variadic
+/// @return bool True if parsing succeeded
+bool parseParamTypeList(TokenStream& stream, ParserContext& ctx,
+                        std::vector<TypeAST*>& outParamTypes,
+                        bool& outIsVariadic) {
     LOG_PARSER_DETAIL("parseParamTypeList: parsing parameter type list");
     
-    std::vector<TypeAST*> paramTypes;
+    outIsVariadic = false;
+    outParamTypes.clear();
     
     if (!stream.check(TokenType::LPAREN)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected '(', got '", stream.peekValue(), "'");
-        return paramTypes;
+        return false;
     }
     stream.consume(); // Consume '('
     
     if (stream.check(TokenType::RPAREN)) {
         stream.consume(); // Consume ')'
-        return paramTypes;
+        return true;
     }
     
     bool isFirst = true;
+    bool hasVariadic = false;
+    size_t paramCount = 0;
     
     while (!stream.isAtEnd() && !stream.check(TokenType::RPAREN)) {
-        // Handle commas before this parameter (list-level comma handling)
+        // Handle commas before this parameter
         handleCommaGap(stream, ctx, "parameter type", isFirst);
         isFirst = false;
         
-        // ─── Parse the type (no name allowed here) ──────────────────────
+        SourceLocation loc = stream.currentLoc();
+        
+        // ─── Check for variadic marker ──────────────────────────────────
+        // In function types, variadic is written as `...T` (the type comes after)
+        bool isVariadicParam = stream.match(TokenType::VARIADIC);
+        
+        if (isVariadicParam) {
+            if (hasVariadic) {
+                ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, loc,
+                                        "multiple variadic parameters are not allowed");
+            }
+            hasVariadic = true;
+        }
+        
+        // ─── Parse the type ──────────────────────────────────────────────
         TypeAST* type = parseType(stream, ctx);
         if (!type) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
                                     "expected parameter type, got '", stream.peekValue(), "'");
             synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::RPAREN);
             if (!stream.check(TokenType::COMMA) && !stream.check(TokenType::RPAREN)) {
-                break;
+                return false;
             }
             continue;
         }
         
-        // ─── Check: No identifier allowed here ──────────────────────────
-        // If we see an identifier after the type, that's an error - 
-        // parameter names are not allowed in function types.
-        // This catches cases like: (a int) in a function type context.
-        // The parser might have already consumed it as part of parseType
-        // if it was parsed as a NamedTypeAST. We need to check if the
-        // next token is a type token that looks like a name.
-        // Actually, this check is better done in the caller (parseFuncType)
-        // by looking at the original tokens, but we can add a defensive check.
+        // If variadic, the type is the element type - the variadic parameter
+        // collects arguments into [*]T in the semantic phase.
+        // For the AST, we store the type as-is and mark the function as variadic.
+        outParamTypes.push_back(type);
+        paramCount++;
         
-        paramTypes.push_back(type);
+        if (isVariadicParam && stream.check(TokenType::COMMA)) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
+                                    "variadic parameter must be the last parameter");
+        }
+    }
+    
+    // ─── Validate variadic position ────────────────────────────────────
+    if (hasVariadic) {
+        // Variadic must be the LAST parameter
+        if (paramCount > 0) {
+            // The variadic is at position paramCount-1 (it was the last parameter parsed)
+            // But we also need to ensure no parameters came after it, which is
+            // already enforced by the loop.
+            outIsVariadic = true;
+        }
     }
     
     if (stream.isAtEnd()) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
                                 "expected ')' to close parameter type list");
+        return false;
     } else {
         stream.consume(); // Consume ')'
     }
     
-    LOG_PARSER_DETAIL("parseParamTypeList: ", paramTypes.size(), " parameter types");
-    return paramTypes;
+    LOG_PARSER_DETAIL("parseParamTypeList: ", paramCount, " parameter types, variadic=", outIsVariadic);
+    return true;
 }
 
 /// @brief Parse a bound cluster: one or more groups with parameter names.
@@ -727,17 +783,31 @@ std::vector<TypeAST*> parseParamTypeList(TokenStream& stream, ParserContext& ctx
 /// @param ctx The parsing context
 /// @param outParams Output: parameter AST nodes (with names)
 /// @param outTypes Output: parameter types (for the FuncTypeAST)
+/// @param outIsVariadic Output: true if the last parameter is variadic
 void parseBoundCluster(TokenStream& stream, ParserContext& ctx,
                        std::vector<ParamAST*>& outParams,
-                       std::vector<TypeAST*>& outTypes) {
+                       std::vector<TypeAST*>& outTypes,
+                       bool& outIsVariadic) {
     LOG_PARSER_DETAIL("parseBoundCluster");
     
+    outIsVariadic = false;
+    bool clusterHasVariadic = false;
+    
     while (stream.check(TokenType::LPAREN) && !stream.isAtEnd()) {
-        std::vector<ParamAST*> groupParams = parseParamList(stream, ctx);
+        std::vector<ParamAST*> groupParams;
+        bool groupIsVariadic = false;
+        parseParamList(stream, ctx, groupParams, groupIsVariadic);
         
         for (auto* p : groupParams) {
             outParams.push_back(p);
             outTypes.push_back(p->type);
+        }
+        
+        if (groupIsVariadic) {
+            // Variadic in the leading cluster - check that it's in the last group
+            // of the entire function type (handled by the caller)
+            clusterHasVariadic = true;
+            outIsVariadic = true;
         }
     }
 }
@@ -750,15 +820,34 @@ void parseBoundCluster(TokenStream& stream, ParserContext& ctx,
 /// @param stream The token stream
 /// @param ctx The parsing context
 /// @param outTypes Output: parameter types (for the FuncTypeAST)
+/// @param outIsVariadic Output: true if the last parameter is variadic
 void parseUnnamedCluster(TokenStream& stream, ParserContext& ctx,
-                         std::vector<TypeAST*>& outTypes) {
+                         std::vector<TypeAST*>& outTypes,
+                         bool& outIsVariadic) {
     LOG_PARSER_DETAIL("parseUnnamedCluster");
     
+    outIsVariadic = false;
+    bool clusterHasVariadic = false;
+    
     while (stream.check(TokenType::LPAREN) && !stream.isAtEnd()) {
-        std::vector<TypeAST*> groupTypes = parseParamTypeList(stream, ctx);
+        std::vector<TypeAST*> groupTypes;
+        bool groupIsVariadic = false;
+        parseParamTypeList(stream, ctx, groupTypes, groupIsVariadic);
         
         for (auto* t : groupTypes) {
             outTypes.push_back(t);
+        }
+        
+        if (groupIsVariadic) {
+            // Variadic in an unnamed cluster must be the last parameter
+            // of the ENTIRE function type
+            if (stream.check(TokenType::ARROW)) {
+                // If there's a '->' after this group, variadic is not last
+                ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
+                                        "variadic parameter must be in the last cluster of a function type");
+            }
+            clusterHasVariadic = true;
+            outIsVariadic = true;
         }
     }
 }

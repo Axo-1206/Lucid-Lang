@@ -406,24 +406,45 @@ struct PtrTypeAST : TypeAST {
 /// Parameters are unnamed - they only specify types, not names.
 ///
 /// @example
-///   (int) -> bool                    → params = [int], returnType = bool
+///   (int) -> bool                    → params = [int], returnType = bool, isVariadic = false
 ///   (int)(string) -> bool            → params = [int, string], returnType = bool (Form 2 adjacency)
 ///   (int) -> (string) -> bool        → params = [int], returnType = FuncTypeAST (curried)
 ///   [*](string, int) -> int          → params = [string, int], returnType = int
+///   (int, ...string) -> string       → params = [int, string], returnType = string, isVariadic = true
+///
+/// ## Variadic Parameters
+///
+/// A function type may have at most one variadic parameter, and it must be
+/// the LAST parameter in the parameter list. The `isVariadic` flag indicates
+/// whether the last parameter is variadic (`...T`).
+///
+/// For curried functions, each parameter group is flattened into the `params`
+/// list. The variadic flag applies to the final parameter of the ENTIRE
+/// function type (after flattening all groups), not per-group - because
+/// a function type is just a flat list of parameter types with a return type.
+///
+/// Example:
+///   (int)(...string) -> bool      → params = [int, string], isVariadic = true
+///   (int)(string, ...float) -> bool → params = [int, string, float], isVariadic = true
+///
+/// @note The parser validates that there is at most one variadic and it is last.
 struct FuncTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::FuncType;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
-    ArenaSpan<TypeAST*> params;      // Parameter types (unnamed)
+    ArenaSpan<TypeAST*> params;      // Parameter types (unnamed), flattened across all groups
     TypeAST* returnType = nullptr;   // Return type (may be FuncTypeAST for curried)
     const bool hasArrow = false;     // True if this has a '->' (not a void function)
+    const bool isVariadic = false;   // True if the last parameter is variadic (...T)
 
     // ─── Constructor ─────────────────────────────────────────────────────
-    FuncTypeAST(ArenaSpan<TypeAST*> p = {}, TypeAST* ret = nullptr, bool arrow = false)
+    FuncTypeAST(ArenaSpan<TypeAST*> p = {}, TypeAST* ret = nullptr, 
+                bool arrow = false, bool variadic = false)
         : TypeAST(ASTKind::FuncType)
         , params(p)
         , returnType(ret)
-        , hasArrow(arrow) {}
+        , hasArrow(arrow)
+        , isVariadic(variadic) {}
 
     bool isVoid() const { return !hasArrow; }
 
@@ -439,6 +460,24 @@ struct FuncTypeAST : TypeAST {
         }
         return cur ? cur->returnType : nullptr;
     }
+
+    /// Get the number of parameter groups (counts consecutive groups before each '->')
+    /// This is computed from the structure of the function type.
+    size_t getGroupCount() const {
+        size_t count = 1; // At least one group
+        const FuncTypeAST* cur = this;
+        while (cur && cur->returnType && cur->returnType->isa<FuncTypeAST>()) {
+            count++;
+            cur = cur->returnType->as<FuncTypeAST>();
+        }
+        return count;
+    }
+
+    /// Get the parameters for a specific group (by index)
+    /// Groups are flattened, so we need to know how many params belong to each group.
+    /// This requires the parser to store group boundaries - currently we don't track
+    /// group boundaries separately since they're flattened. For most use cases,
+    /// the flat list is sufficient.
 };
 
 /// @brief Accesses a type from a module via the ':' operator.

@@ -557,13 +557,20 @@ AnonFuncExprAST* parseAnonFuncExpr(TokenStream& stream, ParserContext& ctx) {
     // ─── Parse the leading cluster (bound_cluster) - names required ────
     std::vector<ParamAST*> allParamNames;
     std::vector<TypeAST*> funcParamTypes;
+    bool isVariadic = false;
     
     while (stream.check(TokenType::LPAREN)) {
-        std::vector<ParamAST*> groupParams = parseParamList(stream, ctx);
+        std::vector<ParamAST*> groupParams;
+        bool groupIsVariadic = false;
+        parseParamList(stream, ctx, groupParams, groupIsVariadic);
         
         for (auto* p : groupParams) {
             allParamNames.push_back(p);
             funcParamTypes.push_back(p->type);
+        }
+        
+        if (groupIsVariadic) {
+            isVariadic = true;
         }
     }
     
@@ -572,10 +579,14 @@ AnonFuncExprAST* parseAnonFuncExpr(TokenStream& stream, ParserContext& ctx) {
         stream.consume(); // Consume '->'
         
         if (stream.check(TokenType::LPAREN)) {
-            // Parse unnamed cluster (no names)
-            std::vector<TypeAST*> groupTypes = parseParamTypeList(stream, ctx);
-            for (auto* t : groupTypes) {
-                funcParamTypes.push_back(t);
+            bool clusterHasVariadic = false;
+            parseUnnamedCluster(stream, ctx, funcParamTypes, clusterHasVariadic);
+            if (clusterHasVariadic) {
+                if (stream.check(TokenType::ARROW)) {
+                    ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
+                                            "variadic parameter must be in the last cluster of a function type");
+                }
+                isVariadic = true;
             }
         } else {
             break;
@@ -596,7 +607,7 @@ AnonFuncExprAST* parseAnonFuncExpr(TokenStream& stream, ParserContext& ctx) {
     for (auto* t : funcParamTypes) {
         paramBuilder.push_back(t);
     }
-    auto* funcType = ctx.arena.make<FuncTypeAST>(paramBuilder.build(), returnType, true);
+    auto* funcType = ctx.arena.make<FuncTypeAST>(paramBuilder.build(), returnType, true, isVariadic);
     funcType->loc = loc;
     
     // ─── Parse the body ────────────────────────────────────────────────────

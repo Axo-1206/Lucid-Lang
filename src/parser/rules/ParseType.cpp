@@ -337,20 +337,19 @@ TypeAST* parseFuncType(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
     
     // 1. Parse first parameter group (before any ->)
-    //    - In a function TYPE, parameters are unnamed: only types
-    //    - The grammar for func_type: unnamed_cluster { '->' unnamed_cluster } '->' type
-    //    - unnamed_cluster = '(' type { ',' type } ')'  (no parameter names)
-    std::vector<TypeAST*> paramTypes = parseParamTypeList(stream, ctx);
+    std::vector<TypeAST*> paramTypes;
+    bool isVariadic = false;
+    
+    parseParamTypeList(stream, ctx, paramTypes, isVariadic);
     
     // 2. Check for arrow
     if (!stream.check(TokenType::ARROW)) {
         // Void function: just a parameter list with no return type
-        // e.g., (int, string) -> void is written as (int, string) with no arrow
         auto builder = ctx.arena.makeBuilder<TypeAST*>();
         for (auto* p : paramTypes) {
             builder.push_back(p);
         }
-        auto* funcType = ctx.arena.make<FuncTypeAST>(builder.build(), nullptr, false);
+        auto* funcType = ctx.arena.make<FuncTypeAST>(builder.build(), nullptr, false, isVariadic);
         funcType->loc = loc;
         LOG_PARSER_DETAIL("parseFuncType: void function");
         return funcType;
@@ -359,8 +358,6 @@ TypeAST* parseFuncType(TokenStream& stream, ParserContext& ctx) {
     stream.consume(); // Consume '->'
     
     // 3. Parse return type
-    //    - If the next token is '(', this is a curried function type
-    //    - Otherwise, parse a normal type
     TypeAST* returnType = nullptr;
     
     if (stream.check(TokenType::LPAREN)) {
@@ -377,7 +374,7 @@ TypeAST* parseFuncType(TokenStream& stream, ParserContext& ctx) {
             for (auto* p : paramTypes) {
                 builder.push_back(p);
             }
-            auto* funcType = ctx.arena.make<FuncTypeAST>(builder.build(), nullptr, false);
+            auto* funcType = ctx.arena.make<FuncTypeAST>(builder.build(), nullptr, false, isVariadic);
             funcType->loc = loc;
             return funcType;
         }
@@ -388,7 +385,7 @@ TypeAST* parseFuncType(TokenStream& stream, ParserContext& ctx) {
         builder.push_back(p);
     }
     
-    auto* funcType = ctx.arena.make<FuncTypeAST>(builder.build(), returnType, true);
+    auto* funcType = ctx.arena.make<FuncTypeAST>(builder.build(), returnType, true, isVariadic);
     funcType->loc = loc;
     
     LOG_PARSER_DETAIL("parseFuncType: function with ", paramTypes.size(), " params");
