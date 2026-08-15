@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include "core/diagnostics/DiagCode.hpp"
+
 #include <string>
 
 namespace codegen {
@@ -86,6 +88,75 @@ inline const char* getRuntimeErrorMessage(RuntimeErrorKind kind) {
         case RuntimeErrorKind::RuntimePanic:            return "runtime panic";
         case RuntimeErrorKind::AssertionFailed:         return "assertion failed";
         default:                                        return "unknown runtime error";
+    }
+}
+
+} // namespace codegen
+
+// ─── DiagCode Mapping ──────────────────────────────────────────────────────
+
+namespace codegen {
+
+/// @brief Map a runtime error kind to its compile-time-diagnostic DiagCode.
+///
+/// This is what lets a *runtime* panic (emitted by CodeGenPanic.cpp into the
+/// compiled program) carry the same code a *compile-time* diagnostic for the
+/// identical error would use - e.g. a literal `x / 0` caught during const
+/// evaluation reports `DiagCode::Sem_DivisionByZero`, and a runtime `x / y`
+/// check that fires at runtime embeds that exact same code into the panic
+/// message via this mapping. Several codes below (see DiagCode.hpp's
+/// "Added for RuntimeErrorKind" comments) exist purely to give a runtime-only
+/// error - one with no compile-time equivalent, like a failed heap
+/// allocation - a stable code of its own, per the "represents WHAT the error
+/// is, not WHEN it occurs" design decision in DiagCode.hpp.
+///
+/// Several kinds intentionally share one DiagCode (e.g. DivisionByZero and
+/// ModuloByZero both map to Sem_DivisionByZero) where the existing
+/// compile-time code was already documented as covering both.
+inline DiagCode toDiagCode(RuntimeErrorKind kind) {
+    switch (kind) {
+        // ─── Arithmetic Errors ────────────────────────────────────────────
+        case RuntimeErrorKind::DivisionByZero:          return DiagCode::Sem_DivisionByZero;
+        case RuntimeErrorKind::ModuloByZero:            return DiagCode::Sem_DivisionByZero;
+        case RuntimeErrorKind::IntegerOverflow:         return DiagCode::Sem_IntegerOverflow;
+        case RuntimeErrorKind::NegationOverflow:        return DiagCode::Sem_IntegerOverflow;
+
+        // ─── Array/Slice Errors ───────────────────────────────────────────
+        case RuntimeErrorKind::ArrayIndexOutOfBounds:   return DiagCode::Sem_ArrayIndexOutOfBounds;
+        case RuntimeErrorKind::SliceBoundsOutOfRange:   return DiagCode::Sem_SliceBoundsOutOfRange;
+        case RuntimeErrorKind::NegativeArraySize:       return DiagCode::Sem_NegativeArraySize;
+
+        // ─── Pointer Errors ───────────────────────────────────────────────
+        case RuntimeErrorKind::NullPointerDereference:  return DiagCode::Sem_PtrDeref;
+        case RuntimeErrorKind::DanglingPointer:         return DiagCode::Sem_DanglingPointer;
+
+        // ─── Memory Errors ────────────────────────────────────────────────
+        case RuntimeErrorKind::DoubleFree:              return DiagCode::Sem_DoubleFree;
+        case RuntimeErrorKind::FreeNullPointer:         return DiagCode::Sem_FreeNullPointer;
+        case RuntimeErrorKind::AllocationFailed:        return DiagCode::Sem_AllocationFailed;
+        case RuntimeErrorKind::ArenaAllocationFailed:   return DiagCode::Sem_ArenaAllocationFailed;
+        case RuntimeErrorKind::ArenaInvalidDescriptor:  return DiagCode::Sem_ArenaInvalidDescriptor;
+
+        // ─── Type System Errors ───────────────────────────────────────────
+        case RuntimeErrorKind::UnwrappedNil:            return DiagCode::Sem_UnhandledNil;
+        case RuntimeErrorKind::UnwrappedErr:             return DiagCode::Sem_UnhandledErr;
+        case RuntimeErrorKind::TagMismatch:             return DiagCode::Sem_TagMismatch;
+
+        // ─── Foreign Function Errors ──────────────────────────────────────
+        case RuntimeErrorKind::ForeignCallFailed:       return DiagCode::Ffi_CallFailed;
+        case RuntimeErrorKind::ForeignSymbolNotFound:   return DiagCode::Ffi_SymbolNotFound;
+
+        // ─── Concurrency Errors ───────────────────────────────────────────
+        case RuntimeErrorKind::AwaitOnNonFuture:        return DiagCode::Sem_AwaitNonAsync;
+        case RuntimeErrorKind::JoinOnNonThread:         return DiagCode::Sem_JoinNonSpawn;
+        case RuntimeErrorKind::FutureAlreadyConsumed:   return DiagCode::Sem_DoubleAwait;
+        case RuntimeErrorKind::ThreadAlreadyJoined:     return DiagCode::Sem_DoubleJoin;
+
+        // ─── Runtime Library Errors ───────────────────────────────────────
+        case RuntimeErrorKind::RuntimePanic:            return DiagCode::Sem_RuntimePanic;
+        case RuntimeErrorKind::AssertionFailed:         return DiagCode::Sem_AssertionFailed;
+
+        default:                                        return DiagCode::Sem_RuntimePanic;
     }
 }
 

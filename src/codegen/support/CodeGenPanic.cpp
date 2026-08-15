@@ -13,9 +13,23 @@
 #include <llvm/IR/GlobalVariable.h>
 #include <llvm/IR/IRBuilder.h>
 
+#include <iomanip>
+#include <sstream>
+
 namespace codegen {
 
 // ─── Internal Helper ──────────────────────────────────────────────────────
+
+/// @brief Format a DiagCode the same way Diagnostic.hpp's formatOneLine()
+///        does for a compile-time diagnostic ("E" + 4-digit zero-padded
+///        code), so a runtime panic and a compile-time error for the same
+///        underlying problem show a matching code to the person reading it.
+static std::string formatDiagCodePrefix(DiagCode code) {
+    std::ostringstream oss;
+    oss << (isWarningCode(code) ? 'W' : 'E')
+        << std::setfill('0') << std::setw(4) << static_cast<uint32_t>(code);
+    return oss.str();
+}
 
 static void emitPanicInternal(const std::string& message, CodeGenContext& ctx) {
     llvm::Function* panicFunc = ctx.getRuntimeFunction("__lucid_panic");
@@ -61,10 +75,24 @@ static void emitPanicInternal(const std::string& message, CodeGenContext& ctx) {
 // ─── Public API ────────────────────────────────────────────────────────────
 
 void emitPanic(RuntimeErrorKind kind, CodeGenContext& ctx) {
-    emitPanicInternal(getRuntimeErrorMessage(kind), ctx);
+    // Embed the matching DiagCode so a person reading a runtime panic sees
+    // the same code a compile-time diagnostic for the identical error would
+    // show (e.g. "[E4101] division by zero" whether caught during const
+    // evaluation or at runtime). This has to be baked into the message
+    // string at compile time - CodeGenContext's DiagnosticEngine never gets
+    // linked into the compiled program, so nothing downstream (the
+    // interpreter's PanicHandler, or an AOT binary's crash output) can look
+    // this up later; it must already be plain text by the time we emit it.
+    std::string message = "[" + formatDiagCodePrefix(toDiagCode(kind)) + "] " +
+                           getRuntimeErrorMessage(kind);
+    emitPanicInternal(message, ctx);
 }
 
 void emitPanic(const std::string& message, CodeGenContext& ctx) {
+    // No RuntimeErrorKind here, so no DiagCode to embed - this overload is
+    // for ad-hoc/uncategorized panics that don't fit the RuntimeErrorKind
+    // registry. Prefer the RuntimeErrorKind overload when the panic does
+    // correspond to a known kind, so it gets a code.
     emitPanicInternal(message, ctx);
 }
 
