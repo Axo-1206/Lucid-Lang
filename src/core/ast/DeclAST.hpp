@@ -243,8 +243,8 @@ struct FuncDeclAST : ValueDeclAST {
                 ArenaSpan<GenericParamDeclAST*> params,
                 FuncTypeAST* ft, StmtAST* b)
         : ValueDeclAST(ASTKind::FuncDecl, n, kw, ft)
-        , funcType(ft)
         , genericParams(params)
+        , funcType(ft)
         , body(b) {}
 };
 
@@ -316,9 +316,9 @@ struct FieldDeclAST : ValueDeclAST {
     FieldDeclAST(InternedString n, TypeAST* t, ExprAST* dv, 
                  StmtAST* db, bool isConstField)
         : ValueDeclAST(ASTKind::FieldDecl, n, DeclKeyword::Let, t)
-        , defaultVal(dv)
         , defaultBody(db)
-        , isConstField(isConstField) {}
+        , isConstField(isConstField)
+        , defaultVal(dv) {}
     
     bool isConst() const { return isConstField; }
 };
@@ -423,7 +423,14 @@ struct EnumDeclAST : TypeDeclAST {
     
     llvm::ConstantInt* constantForVariant(InternedString name) const {
         for (size_t i = 0; i < variants.size(); ++i) {
-            if (variants[i]->name == name) return variantConstants[i];
+            if (variants[i]->name == name) {
+                // variantConstants is populated later, by CodeGen - variants
+                // (a Parser field) is populated first. If this is called
+                // before CodeGen has run, variantConstants may still be its
+                // default-empty span, making variantConstants[i] an
+                // out-of-bounds read.
+                return i < variantConstants.size() ? variantConstants[i] : nullptr;
+            }
         }
         return nullptr;
     }

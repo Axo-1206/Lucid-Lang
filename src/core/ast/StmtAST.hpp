@@ -151,7 +151,7 @@ struct FuncRefStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::FuncRefStmt;
     
     // ─── Parser Fields ──────────────────────────────────────────────────
-    ExprAST* target;  // IdentifierExprAST or ModuleAccessExprAST only — see above
+    ExprAST* target = nullptr;  // IdentifierExprAST or ModuleAccessExprAST only — see above
     
     // ─── CodeGen Annotations ────────────────────────────────────────────
     llvm::Function* resolvedFunction = nullptr;  // The resolved LLVM function —
@@ -190,9 +190,9 @@ struct FuncRefStmtAST : StmtAST {
 struct IfStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::IfStmt;
 
-    ExprAST* condition;  // The test expression (must resolve to `bool`)
-    StmtAST* thenBranch; // Always a `BlockStmtAST`
-    StmtAST* elseBranch; // `nullptr` | `BlockStmtAST` | `IfStmtAST`
+    ExprAST* condition = nullptr;  // The test expression (must resolve to `bool`)
+    StmtAST* thenBranch = nullptr; // Always a `BlockStmtAST`
+    StmtAST* elseBranch = nullptr; // `nullptr` | `BlockStmtAST` | `IfStmtAST`
 
     IfStmtAST() : StmtAST(ASTKind::IfStmt) {}
 };
@@ -226,7 +226,7 @@ struct SwitchCaseAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::SwitchCase;
 
     ArenaSpan<ExprAST*> values;          ///< Match values (literals, enum variants, or ranges)
-    BlockStmtAST* body;                 ///< Statements executed on match
+    BlockStmtAST* body = nullptr;                 ///< Statements executed on match
 
     SwitchCaseAST() : BaseAST(ASTKind::SwitchCase) {}
 };
@@ -264,9 +264,9 @@ struct SwitchCaseAST : BaseAST {
 struct SwitchStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::SwitchStmt;
 
-    ExprAST* subject;                           ///< The value being dispatched
+    ExprAST* subject = nullptr;                  ///< The value being dispatched
     ArenaSpan<SwitchCaseAST*> cases;             ///< Non‑default case clauses
-    BlockStmtAST* defaultBody;                  ///< `nullptr` if no `default`
+    BlockStmtAST* defaultBody = nullptr;         ///< `nullptr` if no `default`
     std::optional<SourceLocation> defaultLoc;   ///< Location of `default` keyword (for diagnostics)
 
     SwitchStmtAST() : StmtAST(ASTKind::SwitchStmt) {}
@@ -318,9 +318,9 @@ struct ForStmtAST : StmtAST {
 
     ParamAST* indexVar = nullptr;   // Index variable (name + explicit type), nullptr if ignored (`_`)
     ParamAST* valueVar = nullptr;   // Value variable (name + explicit type), nullptr if ignored (`_`)
-    ExprAST*  iterable;              // Collection or `RangeExprAST`
-    ExprAST*  step;                  // Optional step (only for range loops, `nullptr` if omitted)
-    StmtAST*  body;                  // Always a `BlockStmtAST`
+    ExprAST*  iterable = nullptr;     // Collection or `RangeExprAST`
+    ExprAST*  step = nullptr;         // Optional step (only for range loops, `nullptr` if omitted)
+    StmtAST*  body = nullptr;         // Always a `BlockStmtAST`
 
     ForStmtAST() : StmtAST(ASTKind::ForStmt) {}
 };
@@ -335,8 +335,8 @@ struct ForStmtAST : StmtAST {
 struct WhileStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::WhileStmt;
 
-    ExprAST* condition; // Must resolve to `bool`
-    StmtAST* body;      // Always a `BlockStmtAST`
+    ExprAST* condition = nullptr; // Must resolve to `bool`
+    StmtAST* body = nullptr;      // Always a `BlockStmtAST`
 
     WhileStmtAST() : StmtAST(ASTKind::WhileStmt) {}
 };
@@ -351,8 +351,8 @@ struct WhileStmtAST : StmtAST {
 struct DoWhileStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::DoWhileStmt;
 
-    StmtAST* body;       ///< Executed at least once (always `BlockStmtAST`)
-    ExprAST* condition;  ///< Evaluated after each iteration; must resolve to `bool`
+    StmtAST* body = nullptr;       ///< Executed at least once (always `BlockStmtAST`)
+    ExprAST* condition = nullptr;  ///< Evaluated after each iteration; must resolve to `bool`
 
     DoWhileStmtAST() : StmtAST(ASTKind::DoWhileStmt) {}
 };
@@ -377,7 +377,7 @@ struct DoWhileStmtAST : StmtAST {
 struct ReturnStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::ReturnStmt;
 
-    ExprAST* value; // Empty for bare `return`
+    ExprAST* value = nullptr; // Empty for bare `return`
 
     ReturnStmtAST() : StmtAST(ASTKind::ReturnStmt) {}
 };
@@ -456,7 +456,7 @@ struct AsyncStmtAST : StmtAST {
     static constexpr ASTKind staticKind = ASTKind::AsyncStmt;
 
     VarDeclAST* binding = nullptr;   // fresh local introduced by this statement
-    ExprAST* call;                    // the async call
+    ExprAST* call = nullptr;          // the async call
 
     AsyncStmtAST() : StmtAST(ASTKind::AsyncStmt) {}
 };
@@ -531,7 +531,7 @@ struct SpawnStmtAST : StmtAST {
 
     VarDeclAST* binding = nullptr;   // fresh local introduced by this statement, or
                                       // nullptr for the `_` discard pattern
-    ExprAST* call;                    // the spawn call
+    ExprAST* call = nullptr;          // the spawn call
 
     SpawnStmtAST() : StmtAST(ASTKind::SpawnStmt) {}
 };

@@ -826,7 +826,7 @@ struct ModuleAST : BaseAST {
     static constexpr ASTKind staticKind = ASTKind::Program;
 
     InternedString       filePath;
-    ArenaSpan<DeclAST*>  decls;
+    ArenaSpan<DeclAST*>   decls;
     bool hasErrors = false;
 
     ModuleAST() : BaseAST(ASTKind::Program) {}

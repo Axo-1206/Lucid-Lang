@@ -219,7 +219,7 @@ struct IdentifierExprAST : ExprAST {
 struct FieldAccessExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::FieldAccessExpr;
 
-    ExprAST* object;
+    ExprAST* object = nullptr;
     const InternedString fieldName;
 
     FieldAccessExprAST(InternedString n) 
@@ -283,7 +283,7 @@ struct ModuleAccessExprAST : ExprAST {
 struct CallExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::CallExpr;
 
-    ExprAST* callee;
+    ExprAST* callee = nullptr;
     ArenaSpan<TypeAST*> genericArgs;
     ArenaSpan<ExprAST*> args;
     const bool hasArgPack = false;    // true for `fn(args)!`
@@ -381,8 +381,8 @@ struct BinaryExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::BinaryExpr;
 
     const BinaryOp op;
-    ExprAST* left;
-    ExprAST* right;
+    ExprAST* left = nullptr;
+    ExprAST* right = nullptr;
 
     BinaryExprAST(BinaryOp o) 
         : ExprAST(ASTKind::BinaryExpr), op(o) {}
@@ -405,7 +405,7 @@ struct UnaryExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::UnaryExpr;
 
     const UnaryOp op;
-    ExprAST* operand;
+    ExprAST* operand = nullptr;
 
     UnaryExprAST(UnaryOp o) 
         : ExprAST(ASTKind::UnaryExpr), op(o) {}
@@ -430,8 +430,8 @@ struct AssignExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::AssignExpr;
 
     const AssignOp op;
-    ExprAST* lhs;
-    ExprAST* rhs;
+    ExprAST* lhs = nullptr;
+    ExprAST* rhs = nullptr;
 
     AssignExprAST(AssignOp o) 
         : ExprAST(ASTKind::AssignExpr), op(o) {}
@@ -773,8 +773,8 @@ struct IfExprAST : ExprAST {
 struct RangeExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::RangeExpr;
 
-    ExprAST* lo;   // start (inclusive)
-    ExprAST* hi;   // end (inclusive/exclusive depends on flag)
+    ExprAST* lo = nullptr;   // start (inclusive)
+    ExprAST* hi = nullptr;   // end (inclusive/exclusive depends on flag)
     const bool isExclusive = false;   // true for ..<
 
     RangeExprAST(bool ex) 

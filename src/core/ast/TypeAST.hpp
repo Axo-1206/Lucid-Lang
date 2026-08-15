@@ -138,7 +138,7 @@ struct NamedTypeAST : TypeAST {
 struct NullableTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::NullableType;
 
-    TypeAST* inner;
+    TypeAST* inner = nullptr;
 
     explicit NullableTypeAST(TypeAST* t)
         : TypeAST(ASTKind::NullableType), inner(t) {}
@@ -430,9 +430,12 @@ struct FuncTypeAST : TypeAST {
 
     explicit FuncTypeAST() : TypeAST(ASTKind::FuncType) {}
     
-    // Returns true if the return type is a function type (currying)
+    // Returns true if the return type is a function type (currying).
+    // `returnType` is legitimately nullptr for a void-returning function
+    // (no `->` written) - see CodeGen's handling of this same field for
+    // confirmation. Must check for null before dereferencing.
     bool isCurried() const { 
-        return returnType->isa<FuncTypeAST>();
+        return returnType && returnType->isa<FuncTypeAST>();
     }
 
     // Returns the inner function type if curried, otherwise nullptr
