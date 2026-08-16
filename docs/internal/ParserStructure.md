@@ -206,20 +206,19 @@ parseFuncDecl(stream, ctx)
 ├── parse keyword: 'LET' or 'CONST'
 ├── parse name: 'IDENTIFIER'
 ├── parse optional generic params: parseGenericParamDecls       [Helpers.cpp]
-├── parse leading cluster (bound_cluster)  
+├── parse leading cluster (with names)
 │   │
 │   └── while '(' found
 │       │
-│       └── parseParamList(stream, ctx, groupParams, groupSize, groupIsVariadic)
-│           │
-│           ├── append groupParams -> allParamNames & funcParamTypes
-│           ├── record groupSize -> allGroupSizes
-│           └── track variadic flag → isVariadic
+│       ├── parseParamList(stream, ctx, allowNames = true)      [Helpers.cpp]
+│       ├── collect ParamAST* → leadingParams
+│       └── if '->' found: break
 │
-├── parse return type if '->' present
+├── parse rest of function type (after '->')
 │   ├── consume '->'
-│   └── parseType(stream, ctx) → returnType
+│   └── parseType(stream, ctx) → restType
 │
+├── build FuncTypeAST (params: leadingParams, returnType: restType, hasArrow)
 ├── parse '=' and body
 │   ├── block body: '{' parseBlock(stream, ctx) '}'
 │   ├── expression body: parseExpr(stream, ctx)
@@ -227,7 +226,7 @@ parseFuncDecl(stream, ctx)
 │   │   ├── if pure function ref → FuncRefStmtAST
 │   │   └── else → ReturnStmtAST
 │   └── no '=' → foreign function (body = nullptr)
-└── create FuncDeclAST (name, keyword, genericParams, returnType, allParamNames, allGroupSizes, body)
+└── create FuncDeclAST (name, keyword, genericParams, funcType, body)
 
 
 parseStructDecl(stream, ctx)
@@ -332,23 +331,21 @@ parseBaseType(stream, ctx)
 │
 ├── '(' → parseFuncType(stream, ctx)
 │   │
-│   ├── std::vector<TypeAST*> allParamTypes, bool isVariadic = false
+│   ├── std::vector<ParamAST*> allParams
 │   ├── while '(' found
-│   │   ├── parseParamTypeList(stream, ctx, groupTypes, groupIsVariadic)
-│   │   ├── append groupTypes → allParamTypes
-│   │   ├── if groupIsVariadic: isVariadic = true
+│   │   ├── parseParamList(stream, ctx, allowNames = false)     [Helpers.cpp]
+│   │   ├── append groupParams → allParams
 │   │   └── if '->' found: break
 │   │
-│   ├── if no '->':
-│   │   └── return FuncTypeAST (params: allParamTypes, returnType: nullptr, hasArrow: false, isVariadic)
+│   ├── create FuncTypeAST (params: allParams)
+│   ├── if no '->': return funcType (hasArrow = false)
 │   │
 │   ├── consume '->'
+│   ├── funcType->hasArrow = true
 │   ├── parse return type
-│   │   ├── if '(' → parseFuncType(stream, ctx)        ◄── recursive call (curried)
-│   │   └── else → parseType(stream, ctx)               ◄── recursive call
-│   │
-│   ├── validate variadic position
-│   └── return FuncTypeAST (params: allParamTypes, returnType, hasArrow: true, isVariadic)
+│   │   ├── if '(' → parseFuncType(stream, ctx)        ◄── curried function
+│   │   └── else → parseType(stream, ctx)              ◄── normal return type
+│   └── return funcType
 │
 ├── 'IDENTIFIER' → parseNamedType(stream, ctx)
 │   │
@@ -564,24 +561,19 @@ parsePrattExpr(stream, ctx, minPrec)
 │   │                                                                     │
 │   ├── looksLikeAnonFunc → parseAnonFuncExpr(stream, ctx)                │
 │   │   │                                                                 │
-│   │   ├── parse leading cluster (bound_cluster) - names required        │
+│   │   ├── parse leading cluster (with names)                            │
 │   │   │   └── while '(' found                                           │
-│   │   │       ├── parseParamList(stream, ctx, groupParams, ...)         │
-│   │   │       ├── append groupParams -> allParamNames & funcParamTypes  │
-│   │   │       └── record groupSize -> allGroupSizes                     │
+│   │   │       ├── parseParamList(stream, ctx, allowNames = true)        │
+│   │   │       ├── collect ParamAST* → leadingParams                     │
+│   │   │       └── if '->' found: break                                  │
 │   │   │                                                                 │
-│   │   ├── parse return type if '->' present                             │
+│   │   ├── parse rest of function type (after '->')                      │
 │   │   │   ├── consume '->'                                              │
-│   │   │   └── parseType(stream, ctx) → returnType                       │
+│   │   │   └── parseType(stream, ctx) → restType                         │
 │   │   │                                                                 │
-│   │   ├── parse function body                                           │
-│   │   │   ├── consume '{'                                               │
-│   │   │   ├── ScopedContext(FuncBody)                                   │
-│   │   │   ├── parseBlock(stream, ctx) (body)                            │
-│   │   │   └── consume '}'                                               │
-│   │   │                                                                 │
-│   │   └── build and return AnonFuncExprAST                              │
-│   │       (returnType, allParamNames, allGroupSizes, body)              │
+│   │   ├── build FuncTypeAST (params: leadingParams, returnType: restType)│
+│   │   ├── parse function body ({ parseBlock })                          │
+│   │   └── create AnonFuncExprAST (funcType, body)                       │
 │   │                                                                     │
 │   ├── 'IDENTIFIER' ':' → parseModuleAccessExpr(stream, ctx)             │
 │   │   │                                                                 │
@@ -723,62 +715,26 @@ parseGenericArgs(stream, ctx)
 ├── consume '>'
 └── return ArenaSpan<TypeAST*>
 
-parseParamList(stream, ctx, outParams, outGroupSize, outIsVariadic)
+parseParamList(stream, ctx, allowNames)
 │
-├── outParams.clear(), outGroupSize = 0, outIsVariadic = false
+├── params = std::vector<ParamAST*>
 ├── consume '('
-├── if next is ')': consume ')' and return true
+├── if next is ')': consume ')' and return params
 ├── while not at end and not ')'
 │   │
 │   ├── handleCommaGap(stream, ctx, "parameter", isFirst)
 │   ├── parse 'const' modifier (optional)
-│   ├── parse name: 'IDENTIFIER'  ◄── REQUIRED
-│   ├── parse '...' (variadic, optional)  ◄── detected and tracked
+│   ├── if allowNames:
+│   │   └── parse name: 'IDENTIFIER' (REQUIRED when allowNames is true)
+│   ├── parse '...' (variadic, optional)
 │   ├── parseType(stream, ctx)                                  [ParseType.cpp]
 │   ├── if variadic: wrap type in ArrayTypeAST(Dynamic, 0, type)
 │   ├── create ParamAST (with name, finalType, isVariadic, isConst)
-│   ├── collect parameter -> outParams, increment outGroupSize
+│   ├── collect parameter → params
+│   ├── validate name rules against allowNames flag
 │   └── check variadic comma constraint
-├── if hasVariadic: outIsVariadic = true
 ├── consume ')'
-└── return success flag
-
-parseParamTypeList(stream, ctx, outParamTypes, outIsVariadic)
-│
-├── outParamTypes.clear(), outIsVariadic = false
-├── consume '('
-├── if next is ')': consume ')' and return true
-├── while not at end and not ')'
-│   │
-│   ├── handleCommaGap(stream, ctx, "parameter type", isFirst)
-│   ├── parse '...' (variadic, optional)  ◄── detected and tracked
-│   ├── parseType(stream, ctx)                                  [ParseType.cpp]
-│   ├── collect type -> outParamTypes
-│   └── check variadic comma constraint
-├── if hasVariadic: outIsVariadic = true
-├── consume ')'
-└── return success flag
-
-parseBoundCluster(stream, ctx, outParams, outGroupSizes, outIsVariadic)
-│
-├── outIsVariadic = false, outGroupSizes.clear()
-├── while '(' found
-│   │
-│   ├── parseParamList(stream, ctx, groupParams, groupSize, groupIsVariadic)
-│   ├── append groupParams → outParams
-│   ├── record groupSize → outGroupSizes
-│   └── if groupIsVariadic: outIsVariadic = true
-└── return
-
-parseUnnamedCluster(stream, ctx, outTypes, outIsVariadic)
-│
-├── outIsVariadic = false
-├── while '(' found
-│   │
-│   ├── parseParamTypeList(stream, ctx, groupTypes, groupIsVariadic)
-│   ├── append groupTypes → outTypes
-│   └── if groupIsVariadic: outIsVariadic = true
-└── return
+└── return params
 
 parseArgList(stream, ctx)
 │

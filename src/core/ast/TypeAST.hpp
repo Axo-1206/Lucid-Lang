@@ -400,84 +400,48 @@ struct PtrTypeAST : TypeAST {
 // FuncTypeAST — function type.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief Represents a function type.
-///
-/// A function type is a chain of parameter groups and a return type.
-/// Parameters are unnamed - they only specify types, not names.
-///
-/// @example
-///   (int) -> bool                    → params = [int], returnType = bool, isVariadic = false
-///   (int)(string) -> bool            → params = [int, string], returnType = bool (Form 2 adjacency)
-///   (int) -> (string) -> bool        → params = [int], returnType = FuncTypeAST (curried)
-///   [*](string, int) -> int          → params = [string, int], returnType = int
-///   (int, ...string) -> string       → params = [int, string], returnType = string, isVariadic = true
-///
-/// ## Variadic Parameters
-///
-/// A function type may have at most one variadic parameter, and it must be
-/// the LAST parameter in the parameter list. The `isVariadic` flag indicates
-/// whether the last parameter is variadic (`...T`).
-///
-/// For curried functions, each parameter group is flattened into the `params`
-/// list. The variadic flag applies to the final parameter of the ENTIRE
-/// function type (after flattening all groups), not per-group - because
-/// a function type is just a flat list of parameter types with a return type.
-///
-/// Example:
-///   (int)(...string) -> bool      → params = [int, string], isVariadic = true
-///   (int)(string, ...float) -> bool → params = [int, string, float], isVariadic = true
-///
-/// @note The parser validates that there is at most one variadic and it is last.
+/// @brief Represents a function type with a single parameter group.
+/// 
+/// This is a recursive design: a function type consists of one parameter group
+/// and one return type. If the function is curried, the return type
+/// is another FuncTypeAST.
+/// 
+/// Grammar (desugared):
+///   func_type := param_group [ '->' returnType ]
+/// 
+/// The parser desugars multiple parameter groups (e.g., `(a int)(b int) -> int`)
+/// into nested FuncTypeAST: `(a int) -> (b int) -> int`
+/// 
+/// Examples of nested structure:
+///   - `(a int) -> int`                    → params=[a], returnType = int
+///   - `(a int) -> (int) -> int`           → params=[a], returnType = FuncTypeAST(...)
+///   - `(a int) -> Pair<int, string>`      → params=[a], returnType = Pair<int, string>
+///   - `(a int)(b int) -> int`             → desugars to `(a int) -> (b int) -> int`
+/// 
+/// @field params        The parameters for this group (raw pointers to ParamAST)
+/// @field returnType   Return type – a plain TypeAST or another FuncTypeAST
 struct FuncTypeAST : TypeAST {
     static constexpr ASTKind staticKind = ASTKind::FuncType;
 
-    // ─── Parser Fields (immutable) ──────────────────────────────────────
-    ArenaSpan<TypeAST*> params;      // Parameter types (unnamed), flattened across all groups
-    TypeAST* returnType = nullptr;   // Return type (may be FuncTypeAST for curried)
-    const bool hasArrow = false;     // True if this has a '->' (not a void function)
-    const bool isVariadic = false;   // True if the last parameter is variadic (...T)
+    ArenaSpan<ParamAST*> params;      // parameters for this group
+    TypeAST* returnType = nullptr;     // return types (may contain FuncTypeAST)
+    bool hasArrow = false;            // semantic enforce return statement inside the body
+                                      // and codegen will automatically wrap function
 
-    // ─── Constructor ─────────────────────────────────────────────────────
-    FuncTypeAST(ArenaSpan<TypeAST*> p = {}, TypeAST* ret = nullptr, 
-                bool arrow = false, bool variadic = false)
-        : TypeAST(ASTKind::FuncType)
-        , params(p)
-        , returnType(ret)
-        , hasArrow(arrow)
-        , isVariadic(variadic) {}
-
-    bool isVoid() const { return !hasArrow; }
-
-    /// Check if this is a curried function type (returnType is also a FuncTypeAST)
-    bool isCurried() const { return hasArrow && returnType && returnType->isa<FuncTypeAST>(); }
-
-    /// Get the final return type (unwrapping curried types)
-    TypeAST* getReturnType() const {
-        if (!hasArrow) return nullptr;
-        const FuncTypeAST* cur = this;
-        while (cur && cur->returnType && cur->returnType->isa<FuncTypeAST>()) {
-            cur = cur->returnType->as<FuncTypeAST>();
-        }
-        return cur ? cur->returnType : nullptr;
+    explicit FuncTypeAST() : TypeAST(ASTKind::FuncType) {}
+    
+    // Returns true if the return type is a function type (currying)
+    bool isCurried() const { 
+        return returnType->isa<FuncTypeAST>();
     }
 
-    /// Get the number of parameter groups (counts consecutive groups before each '->')
-    /// This is computed from the structure of the function type.
-    size_t getGroupCount() const {
-        size_t count = 1; // At least one group
-        const FuncTypeAST* cur = this;
-        while (cur && cur->returnType && cur->returnType->isa<FuncTypeAST>()) {
-            count++;
-            cur = cur->returnType->as<FuncTypeAST>();
+    // Returns the inner function type if curried, otherwise nullptr
+    FuncTypeAST* getNext() const {
+        if (isCurried()) {
+            return returnType->as<FuncTypeAST>();
         }
-        return count;
+        return nullptr;
     }
-
-    /// Get the parameters for a specific group (by index)
-    /// Groups are flattened, so we need to know how many params belong to each group.
-    /// This requires the parser to store group boundaries - currently we don't track
-    /// group boundaries separately since they're flattened. For most use cases,
-    /// the flat list is sufficient.
 };
 
 /// @brief Accesses a type from a module via the ':' operator.

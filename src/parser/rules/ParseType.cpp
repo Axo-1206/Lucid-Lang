@@ -337,15 +337,7 @@ TypeAST* parsePtrType(TokenStream& stream, ParserContext& ctx) {
 /// Grammar:
 ///   func_type = unnamed_cluster { [ '->' ] unnamed_cluster } [ '->' type ]
 ///
-/// A function type can have adjacent groups (no `->` between them) which are
-/// flattened into the first parameter group of the FuncTypeAST.
-///
-/// Examples:
-///   (int) -> bool                    → one group, hasArrow = true
-///   (int)(string) -> bool            → two adjacent groups, flattened into one group, hasArrow = true
-///   (int)()(string) -> bool          → three adjacent groups, flattened, hasArrow = true
-///   (int, string) -> bool            → one group with two params, hasArrow = true
-///   (int)(string)                    → two groups, no return, hasArrow = false (void)
+/// Parameter names are NEVER allowed in a function type.
 ///
 /// @param stream The token stream
 /// @param ctx The parsing context
@@ -355,109 +347,61 @@ TypeAST* parseFuncType(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
     
     // ─── 1. Parse all parameter groups before the first `->` ──────────────
-    // These groups are flattened into the first group of FuncTypeAST.
-    std::vector<TypeAST*> allParamTypes;
-    bool isVariadic = false;
+    // Parameter names are NEVER allowed in a function type.
+    std::vector<ParamAST*> allParams;
     
-    // Parse all adjacent groups (no `->` between them)
     while (stream.check(TokenType::LPAREN)) {
-        std::vector<TypeAST*> groupTypes;
-        bool groupIsVariadic = false;
-        
-        // Parse a single parameter group (with no names)
-        parseParamTypeList(stream, ctx, groupTypes, groupIsVariadic);
-        
-        // Append to flat list (all groups become one group in FuncTypeAST)
-        for (auto* t : groupTypes) {
-            allParamTypes.push_back(t);
+        // Parse a single parameter group with allowNames = false
+        std::vector<ParamAST*> groupParams = parseParamList(stream, ctx, false);
+        for (auto* p : groupParams) {
+            allParams.push_back(p);
         }
         
-        if (groupIsVariadic) {
-            // Variadic must be in the last parameter of the last group
-            // Since we're flattening, this means the last parameter overall
-            isVariadic = true;
-        }
-        
-        // Check if there's a `->` after this group
         if (stream.check(TokenType::ARROW)) {
-            // This group is followed by '->' - stop parsing groups
             break;
         }
-        // If no '->', continue parsing adjacent groups
     }
     
-    // ─── 2. Check for return type ──────────────────────────────────────────
+    // ─── 2. Create function type node ──────────────────────────────────────
+    auto* funcType = ctx.arena.make<FuncTypeAST>();
+    funcType->loc = loc;
+    
+    auto paramBuilder = ctx.arena.makeBuilder<ParamAST*>();
+    for (auto* p : allParams) {
+        paramBuilder.push_back(p);
+    }
+    funcType->params = paramBuilder.build();
+
+    // ─── 3. Check for arrow ─────────────────────────────────────────────────
     if (!stream.check(TokenType::ARROW)) {
-        // Void function: just parameter groups with no return type
-        auto builder = ctx.arena.makeBuilder<TypeAST*>();
-        for (auto* p : allParamTypes) {
-            builder.push_back(p);
-        }
-        auto* funcType = ctx.arena.make<FuncTypeAST>(
-            builder.build(),    // params (flattened from all adjacent groups)
-            nullptr,            // returnType (void)
-            false,              // hasArrow = false (void)
-            isVariadic
-        );
-        funcType->loc = loc;
-        LOG_PARSER_DETAIL("parseFuncType: void function with ", allParamTypes.size(), " params");
+        LOG_PARSER_DETAIL("parseFuncType: void function with ", allParams.size(), " params");
         return funcType;
     }
     
-    // ─── 3. Consume `->` and parse return type ─────────────────────────────
     stream.consume(); // Consume '->'
+    funcType->hasArrow = true;
+
+    /// NOTE: after '->' we expect a returned type, if no '->' then the function
+    ///       is returned before this run
     
-    TypeAST* returnType = nullptr;
+    // ─── 4. Parse return type ──────────────────────────────────────────────
     if (stream.check(TokenType::LPAREN)) {
-        // Curried: (int)(string) -> (float) -> bool
-        // The return type is another function type
-        returnType = parseFuncType(stream, ctx);
-    } else {
-        returnType = parseType(stream, ctx);
-        if (!returnType) {
-            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
-                                    "expected return type, got '", stream.peekValue(), "'");
-            synchronizeToContext(stream, ctx);
-            
-            // Recovery: return a void function type
-            auto builder = ctx.arena.makeBuilder<TypeAST*>();
-            for (auto* p : allParamTypes) {
-                builder.push_back(p);
-            }
-            auto* funcType = ctx.arena.make<FuncTypeAST>(
-                builder.build(),
-                nullptr,
-                false,
-                isVariadic
-            );
-            funcType->loc = loc;
-            return funcType;
-        }
+        TypeAST* returnType = parseFuncType(stream, ctx);
+        funcType->returnType = returnType;
+        LOG_PARSER_DETAIL("parseFuncType: curried function");
+        return funcType;
     }
     
-    // ─── 4. Validate variadic position ─────────────────────────────────────
-    if (isVariadic && !allParamTypes.empty()) {
-        // Variadic is the last parameter overall
-        // (The parseParamTypeList function already validates this per-group,
-        //  but we need to ensure it's the last parameter overall)
-        // The variadic parameter is already marked in the FuncTypeAST
+    TypeAST* returnType = parseType(stream, ctx);
+    if (!returnType) {
+        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
+                                "expected return type, got '", stream.peekValue(), "'");
+        synchronizeToContext(stream, ctx);
+        return funcType;
     }
+    funcType->returnType = returnType;
     
-    // ─── 5. Build FuncTypeAST ──────────────────────────────────────────────
-    auto builder = ctx.arena.makeBuilder<TypeAST*>();
-    for (auto* p : allParamTypes) {
-        builder.push_back(p);
-    }
-    
-    auto* funcType = ctx.arena.make<FuncTypeAST>(
-        builder.build(),    // params (flattened from all adjacent groups)
-        returnType,         // return type
-        true,               // hasArrow = true (non-void)
-        isVariadic
-    );
-    funcType->loc = loc;
-    
-    LOG_PARSER_DETAIL("parseFuncType: function with ", allParamTypes.size(), " params");
+    LOG_PARSER_DETAIL("parseFuncType: function with ", allParams.size(), " params");
     return funcType;
 }
 

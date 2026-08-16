@@ -623,9 +623,7 @@ struct AnonFuncExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::AnonFuncExpr;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
-    TypeAST* returnType;                // The function type (with `->` boundaries)
-    ArenaSpan<ParamAST*> paramGroups;   // Parameter names, flattened across bound_cluster
-    ArenaSpan<size_t>    groupSizes;    // Number of params per group in bound_cluster
+    FuncTypeAST* funcType;
     StmtAST* body;
 
     // ─── Semantic Fields (set by Sema) ────────────────────────────────
@@ -637,14 +635,11 @@ struct AnonFuncExprAST : ExprAST {
     llvm::Function* closureFunction = nullptr;
     llvm::StructType* environmentType = nullptr;
 
+    bool hasParams() const { return funcType && !funcType->params.empty(); }
+
     // ─── Constructor ─────────────────────────────────────────────────────
-    AnonFuncExprAST(TypeAST* ft, ArenaSpan<ParamAST*> pGroups,
-                    ArenaSpan<size_t> gSizes, StmtAST* b)
-        : ExprAST(ASTKind::AnonFuncExpr)
-        , returnType(ft)
-        , paramGroups(pGroups)
-        , groupSizes(gSizes)
-        , body(b) {}
+    AnonFuncExprAST(FuncTypeAST* ft, StmtAST* b)
+        : ExprAST(ASTKind::AnonFuncExpr), funcType(ft), body(b) {}
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -549,74 +549,51 @@ StructLiteralExprAST* parseStructLiteralExpr(TokenStream& stream, ParserContext&
 // Anonymous Function
 // =============================================================================
 
-/// @brief Parse an anonymous function expression.
-/// 
-/// Grammar:
-///   func_literal = bound_cluster { '->' unnamed_cluster } '->' type block
-///   bound_cluster = bound_group { bound_group }
-///   bound_group = '(' [ bound_param_list ] ')'
-///   bound_param = IDENTIFIER type
-/// 
-/// The bound_cluster groups are tracked separately from the function type.
-/// This allows the compiler to generate wrappers for partial application.
-/// 
-/// @param stream The token stream
-/// @param ctx The parsing context
-/// @return AnonFuncExprAST* The parsed anonymous function expression
 AnonFuncExprAST* parseAnonFuncExpr(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
     
     LOG_PARSER_DETAIL("parseAnonFuncExpr");
     
-    // ─── Parse the leading cluster (bound_cluster) - names required ────
-    std::vector<ParamAST*> allParamNames;
-    std::vector<size_t> allGroupSizes;
-    std::vector<TypeAST*> funcParamTypes;
-    bool isVariadic = false;
+    // ─── Parse the leading cluster - this one has names ──────────────────
+    std::vector<ParamAST*> leadingParams;
     
-    // Parse the bound_cluster: one or more adjacent groups
     while (stream.check(TokenType::LPAREN)) {
-        std::vector<ParamAST*> groupParams;
-        size_t groupSize = 0;
-        bool groupIsVariadic = false;
-        
-        parseParamList(stream, ctx, groupParams, groupSize, groupIsVariadic);
-        
-        // Append parameters to flat list
+        std::vector<ParamAST*> groupParams = parseParamList(stream, ctx, true);  // allowNames = true
         for (auto* p : groupParams) {
-            allParamNames.push_back(p);
-            funcParamTypes.push_back(p->type);
+            leadingParams.push_back(p);
         }
-        
-        // Record group size
-        allGroupSizes.push_back(groupSize);
-        
-        if (groupIsVariadic) {
-            isVariadic = true;
+        if (stream.check(TokenType::ARROW)) {
+            break;
         }
+        // No '->' means more adjacent groups
     }
     
-    // ─── Parse the function type (remaining clusters with `->`) ──────────
-    auto paramBuilder = ctx.arena.makeBuilder<TypeAST*>();
-    for (auto* t : funcParamTypes) {
-        paramBuilder.push_back(t);
-    }
-    
-    TypeAST* returnType = nullptr;
-    bool hasArrow = false;
+    // ─── Parse the rest of the function type ──────────────────────────────
+    TypeAST* restType = nullptr;
     
     if (stream.check(TokenType::ARROW)) {
-        hasArrow = true;
         stream.consume(); // Consume '->'
-        returnType = parseType(stream, ctx);
-        if (!returnType) {
+        restType = parseType(stream, ctx);  // This could be another FuncTypeAST
+        if (!restType) {
             ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
                                     "expected return type");
             synchronizeToContext(stream, ctx);
             return nullptr;
         }
     }
-
+    
+    // ─── Build the FuncTypeAST ─────────────────────────────────────────────
+    auto* funcType = ctx.arena.make<FuncTypeAST>();
+    funcType->loc = loc;
+    
+    auto paramBuilder = ctx.arena.makeBuilder<ParamAST*>();
+    for (auto* p : leadingParams) {
+        paramBuilder.push_back(p);
+    }
+    funcType->params = paramBuilder.build();
+    funcType->returnType = restType;
+    funcType->hasArrow = (restType != nullptr);
+    
     // ─── Parse the body ────────────────────────────────────────────────────
     if (!stream.check(TokenType::LBRACE)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
@@ -641,28 +618,10 @@ AnonFuncExprAST* parseAnonFuncExpr(TokenStream& stream, ParserContext& ctx) {
         stream.consume(); // Consume '}'
     }
     
-    // ─── Build param groups and group sizes spans ──────────────────────────
-    auto paramGroupBuilder = ctx.arena.makeBuilder<ParamAST*>();
-    for (auto* p : allParamNames) {
-        paramGroupBuilder.push_back(p);
-    }
-    
-    auto groupSizeBuilder = ctx.arena.makeBuilder<size_t>();
-    for (auto sz : allGroupSizes) {
-        groupSizeBuilder.push_back(sz);
-    }
-    
-    // ─── Build AnonFuncExprAST ─────────────────────────────────────────────
-    auto* anonFunc = ctx.arena.make<AnonFuncExprAST>(
-        returnType, 
-        paramGroupBuilder.build(), 
-        groupSizeBuilder.build(), 
-        body
-    );
+    auto* anonFunc = ctx.arena.make<AnonFuncExprAST>(funcType, body);
     anonFunc->loc = loc;
     
-    LOG_PARSER_DETAIL("parseAnonFuncExpr: parsed anonymous function with ", 
-                      allGroupSizes.size(), " groups, ", allParamNames.size(), " params");
+    LOG_PARSER_DETAIL("parseAnonFuncExpr: parsed anonymous function");
     return anonFunc;
 }
 

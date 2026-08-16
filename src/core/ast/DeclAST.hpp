@@ -195,57 +195,56 @@ using ParamGroup = std::vector<ParamAST*>;
 ///   const makeAdder (base int) -> (int) -> int = { ... }
 ///   const sum (nums ...int) -> int = { ... }
 /// 
-/// The function type is stored in `funcType`, which uses `->` between groups.
-/// The `paramGroups` stores all parameter names flattened, and `groupSizes`
-/// tracks how many parameters belong to each group in the bound_cluster
-/// (the groups before the first `->`).
+/// ─── Closures ──────────────────────────────────────────────────────────────
+/// A FuncDeclAST can also be a closure if it captures variables from its
+/// enclosing scope. When this happens, the function behaves like an
+/// anonymous function with a name.
 /// 
-/// For `(a int)(b int) -> int`:
-///   - funcType: (int) -> int (a single `->` boundary)
-///   - paramGroups: [a, b] (flattened)
-///   - groupSizes: [1, 1] (two groups in the bound_cluster)
-/// 
-/// For `(a int)()(s string) -> int`:
-///   - funcType: (int) -> int (still just one `->` boundary)
-///   - paramGroups: [a, s] (flattened)
-///   - groupSizes: [1, 0, 1] (three groups: one param, zero params, one param)
+/// Example of a nested function that forms a closure:
+/// ```lucid
+/// const makeCounter () -> () -> int = {
+///     let count int = 0;
+///     const counter () -> int = {   ← This is a FuncDeclAST that captures 'count'
+///         count = count + 1;
+///         return count;
+///     };
+///     return counter;
+/// }
+/// ```
 struct FuncDeclAST : ValueDeclAST {
     static constexpr ASTKind staticKind = ASTKind::FuncDecl;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
     ArenaSpan<GenericParamDeclAST*> genericParams;
-    TypeAST* returnType = nullptr;      // The function type (with `->` boundaries)
-    ArenaSpan<ParamAST*> paramGroups;   // Parameter names, flattened across bound_cluster
-    ArenaSpan<size_t>    groupSizes;    // Number of params per group in bound_cluster
+    FuncTypeAST* funcType = nullptr;
     StmtAST* body;
     
     // ─── Semantic Fields (set by Sema) ────────────────────────────────
-    bool isForeignFunction = false;
-    bool shouldSpecialize = false;
-    bool isInline = false;
-    bool isNoInline = false;
+    bool isForeignFunction = false;    // True if @[foreign] attribute is present
+    bool shouldSpecialize = false;     // from @[specialize]
+    bool isInline = false;             // from @[inline]
+    bool isNoInline = false;           // from @[noinline]
     
+    /// Variables captured by this function (if it's a closure).
+    /// Populated by capture analysis during semantic analysis.
     ArenaSpan<CapturedVariable> captures;
-    bool hasClosure = false;
-    bool isReturned = false;
+    bool hasClosure = false;    /// True if this function captures any variables from outer scopes.
+    bool isReturned = false;    /// True if this function is returned from its parent
     
     // ─── CodeGen Fields (mutable) ──────────────────────────────────────
-    InternedString mangledName;
+    InternedString mangledName;        // Mangled name for AOT compilation
     llvm::Function* llvmFunction = nullptr;
+    
+    /// The LLVM struct type for the closure environment (if this is a closure).
     llvm::StructType* environmentType = nullptr;
 
     // ─── Constructor ─────────────────────────────────────────────────────
     FuncDeclAST(InternedString n, DeclKeyword kw, 
                 ArenaSpan<GenericParamDeclAST*> params,
-                TypeAST* ft, 
-                ArenaSpan<ParamAST*> pGroups,
-                ArenaSpan<size_t> gSizes,
-                StmtAST* b)
+                FuncTypeAST* ft, StmtAST* b)
         : ValueDeclAST(ASTKind::FuncDecl, n, kw, ft)
+        , funcType(ft)
         , genericParams(params)
-        , returnType(ft)
-        , paramGroups(pGroups)
-        , groupSizes(gSizes)
         , body(b) {}
 };
 
