@@ -343,7 +343,11 @@ void resolveEnumDecl(EnumDeclAST* decl, SemaContext& ctx) {
 
         // Check duplicate variant values
         for (EnumVariantAST* existing : decl->variants) {
-            if (existing == variant) break;
+            if (existing == variant) {
+                ctx.diagnostics.error(DiagCode::Sem_DuplicateValue, variant,
+                                      "duplicate enum variant ", ctx.pool.lookup(variant->name));
+                break;
+            }
             if (existing->value == variant->value) {
                 ctx.diagnostics.error(DiagCode::Sem_DuplicateValue, variant,
                                       "duplicate enum value ", std::to_string(variant->value),

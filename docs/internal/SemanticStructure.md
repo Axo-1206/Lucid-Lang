@@ -188,7 +188,8 @@ resolveDecl(decl, ctx)                                       [Sema.cpp]
     ├── VarDecl
     │   └── resolveVarDecl(decl, ctx)                        [SemaDecl.cpp]
     │       ├── resolveType(decl->type) → validate type exists
-    │       ├── if const: validateConstType() & validateConstInitializer()
+    │       │   // const can't be 'nil' or 'err'
+    │       ├── if const: validateConstType() & validateConstInitializer() 
     │       ├── if init: resolveExprWithTarget(init, type) → type check
     │       ├── if const: ConstEvaluator::evaluateDecl()   → evaluate at compile time
     │       └── if let: checkLetSelfReference(init, name)  → prevent self-reference
@@ -208,7 +209,7 @@ resolveDecl(decl, ctx)                                       [Sema.cpp]
     │       ├── analyzeCaptures(func, ctx)                   [CaptureAnalysis.cpp]
     │       │   └── Detect captured variables and validate capture rules
     │       │
-    │       └── if @[foreign]: validateForeignFunction() → ABI & FFI checks
+    │       └── if '@[foreign]': validateForeignFunction() → ABI & FFI checks
     │
     ├── StructDecl
     │   └── resolveStructDecl(decl, ctx)                     [SemaDecl.cpp]

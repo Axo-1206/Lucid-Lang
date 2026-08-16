@@ -174,6 +174,112 @@ struct CaptureAnalyzer {
         return true;
     }
     
+    // ─── Validate + Add Capture ──────────────────────────────────────────────
+    
+    /// @brief Validate capture rules for `decl` and, if they pass, add it to
+    /// this closure's/function's capture list (skipping if already present).
+    ///
+    /// Shared by processIdentifier() (a direct identifier reference in this
+    /// body) and propagateCapture() (a capture pulled up from a nested
+    /// closure that needs it but doesn't get it from its own immediate
+    /// scope - see propagateCapture() below).
+    ///
+    /// @param decl The declaration being captured.
+    /// @param diagLoc AST node to anchor a diagnostic on if capture rules
+    ///        are violated - the identifier itself for a direct reference,
+    ///        or the nested closure this capture is being propagated
+    ///        through for a transitive one.
+    void validateAndAddCapture(ValueDeclAST* decl, BaseAST* diagLoc) {
+        if (!decl) return;
+        InternedString name = decl->name;
+
+        // Skip if already seen (direct reference already captured it, or
+        // this exact variable was already propagated from another nested
+        // closure).
+        if (seenCaptures.find(name) != seenCaptures.end()) {
+            return;
+        }
+
+        // ─── Validate capture rules ─────────────────────────────────────────
+        TypeAST* varType = decl->type;
+
+        // Rule 3: Borrowed types (&T, [_]T) cannot be captured
+        if (varType && isBorrowedType(varType)) {
+            ctx.diagnostics.error(DiagCode::Sem_InvalidCapture, diagLoc,
+                                  "closure cannot capture borrowed type '",
+                                  ctx.pool.lookup(name),
+                                  "' (", debug::typeToString(varType, ctx.pool),
+                                  ") — closures cannot capture &T or [_]T");
+            return;
+        }
+
+        // Rule 4: Linear types (Future<T>, Thread<T>) cannot be captured
+        if (varType && (varType->isa<FutureTypeAST>() || varType->isa<ThreadTypeAST>())) {
+            const char* typeName = varType->isa<FutureTypeAST>() ? "Future<T>" : "Thread<T>";
+            ctx.diagnostics.error(DiagCode::Sem_InvalidCapture, diagLoc,
+                                  "closure cannot capture linear type '",
+                                  ctx.pool.lookup(name),
+                                  "' (", typeName, ") — linear values can only be consumed once");
+            return;
+        }
+
+        // ─── Create the capture entry ──────────────────────────────────────
+        CapturedVariable capture;
+        capture.decl = decl;
+        capture.byReference = shouldCaptureByReference(decl, nullptr);
+        capture.index = captures.size();
+
+        captures.push_back(capture);
+        seenCaptures.insert(name);
+
+        LOG_SEMA("CaptureAnalysis: captured '", ctx.pool.lookup(name),
+                 "' by ", capture.byReference ? "reference" : "value",
+                 " at depth ", currentClosureDepth);
+    }
+
+    /// @brief Pull a capture that a nested (grand)closure needs up into our
+    /// own capture list, if we don't already provide it locally ourselves.
+    ///
+    /// Why this is needed: ctx.values (CodeGen's decl -> llvm::Value* map,
+    /// see CodeGenContext) is flat and unscoped, not a stack. A closure's
+    /// own capture-reload loop (CodeGenClosure.cpp's emitClosureBody) only
+    /// re-stores the entries IT captured. If a variable is referenced only
+    /// inside a nested closure's own nested closure, and the
+    /// immediately-enclosing closure never captures it itself, CodeGen ends
+    /// up reusing whatever stale value - typically an alloca belonging to a
+    /// completely different llvm::Function - is still sitting in ctx.values
+    /// when it later builds the innermost closure's environment while
+    /// emitting ours. That's invalid IR (a value from one function used in
+    /// another).
+    ///
+    /// Propagating the capture upward one level at a time - this runs once
+    /// per enclosing closure, each time its own walkExpr encounters a
+    /// nested AnonFuncExpr - closes that gap for any nesting depth.
+    ///
+    /// NOTE: assumes `childCapture` comes from an already-fully-analyzed
+    /// nested closure. This holds under the current resolution order:
+    /// nested closures are resolved (and thus capture-analyzed, via
+    /// resolveAnonFuncExpr) inside-out, strictly before the enclosing
+    /// body's own analyzeCaptures() call runs - see the AnonFuncExpr case
+    /// in walkExpr(). If that ordering ever changes, this would need to
+    /// explicitly trigger analysis of `nested` first instead of assuming
+    /// its captures are already populated.
+    void propagateCapture(const CapturedVariable& childCapture, BaseAST* diagLoc) {
+        if (!childCapture.decl) return;
+        InternedString name = childCapture.decl->name;
+
+        // Already ours - own param, something declared in our own body
+        // (own params / localScopes) - nothing to propagate.
+        if (isOwnParam(name) || isLocallyDeclared(name)) return;
+
+        // Module members and generic params are never captured/propagated -
+        // they're resolved the same way regardless of nesting depth.
+        if (ctx.isModuleMember(name)) return;
+        if (ctx.isGenericParam(name)) return;
+
+        validateAndAddCapture(childCapture.decl, diagLoc);
+    }
+
     // ─── Process Identifier ──────────────────────────────────────────────────
     
     void processIdentifier(IdentifierExprAST* id) {
@@ -206,41 +312,7 @@ struct CaptureAnalyzer {
             return;
         }
         
-        // ─── Validate capture rules ─────────────────────────────────────────
-        TypeAST* varType = decl->type;
-        
-        // Rule 3: Borrowed types (&T, [_]T) cannot be captured
-        if (varType && isBorrowedType(varType)) {
-            ctx.diagnostics.error(DiagCode::Sem_InvalidCapture, id,
-                                  "closure cannot capture borrowed type '",
-                                  ctx.pool.lookup(name),
-                                  "' (", debug::typeToString(varType, ctx.pool),
-                                  ") — closures cannot capture &T or [_]T");
-            return;
-        }
-        
-        // Rule 4: Linear types (Future<T>, Thread<T>) cannot be captured
-        if (varType && (varType->isa<FutureTypeAST>() || varType->isa<ThreadTypeAST>())) {
-            const char* typeName = varType->isa<FutureTypeAST>() ? "Future<T>" : "Thread<T>";
-            ctx.diagnostics.error(DiagCode::Sem_InvalidCapture, id,
-                                  "closure cannot capture linear type '",
-                                  ctx.pool.lookup(name),
-                                  "' (", typeName, ") — linear values can only be consumed once");
-            return;
-        }
-        
-        // ─── Create the capture entry ──────────────────────────────────────
-        CapturedVariable capture;
-        capture.decl = decl;
-        capture.byReference = shouldCaptureByReference(decl, id);
-        capture.index = captures.size();
-        
-        captures.push_back(capture);
-        seenCaptures.insert(name);
-        
-        LOG_SEMA("CaptureAnalysis: captured '", ctx.pool.lookup(name),
-                 "' by ", capture.byReference ? "reference" : "value",
-                 " at depth ", currentClosureDepth);
+        validateAndAddCapture(decl, id);
     }
     
     // ─── AST Walking ──────────────────────────────────────────────────────────
@@ -352,10 +424,27 @@ struct CaptureAnalyzer {
             }
             
             case ASTKind::AnonFuncExpr: {
-                // Nested closure: don't walk into it - captures are analyzed
-                // when the nested closure itself is analyzed.
-                // However, the nested closure's capture analysis will be called
-                // separately from resolveAnonFuncExpr.
+                // Nested closure: we don't re-walk its body here - its own
+                // captures were already computed independently, by its own
+                // analyzeCaptures() call triggered when IT was resolved.
+                // Resolution is inside-out, so by the time OUR walk reaches
+                // this node, the nested closure has already been fully
+                // resolved AND capture-analyzed (see propagateCapture()'s
+                // doc comment for the ordering this relies on).
+                //
+                // What we DO need to do: propagate up anything the nested
+                // closure captured that we don't already provide it
+                // locally ourselves. Without this, a variable used only by
+                // a nested closure's OWN nested closure would never make
+                // it into this (intermediate) closure's capture list -
+                // see "transitive capture propagation" in
+                // CaptureAnalysis.hpp / propagateCapture() below.
+                AnonFuncExprAST* nested = expr->as<AnonFuncExprAST>();
+                if (nested) {
+                    for (const CapturedVariable& childCapture : nested->captures) {
+                        propagateCapture(childCapture, nested);
+                    }
+                }
                 break;
             }
             
@@ -383,8 +472,21 @@ struct CaptureAnalyzer {
                 break;
                 
             case ASTKind::LiteralExpr:
-            case ASTKind::IntrinsicCallExpr:
                 break;
+
+            case ASTKind::IntrinsicCallExpr: {
+                // Intrinsics take real value arguments (e.g. #atomic_store(ptr, val),
+                // #memcpy(dst, src, len)) that can reference outer variables just
+                // like a normal call's arguments do - unlike a literal, this is
+                // NOT a leaf node. Previously grouped with LiteralExpr as a no-op,
+                // which meant a variable referenced only inside an intrinsic call
+                // was never detected as a capture.
+                const IntrinsicCallExprAST* intrinsic = expr->as<IntrinsicCallExprAST>();
+                for (ExprAST* arg : intrinsic->args) {
+                    walkExpr(arg);
+                }
+                break;
+            }
                 
             default:
                 break;

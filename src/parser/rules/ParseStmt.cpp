@@ -412,7 +412,11 @@ ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
         synchronizeTo(stream, ctx, TokenType::COMMA, TokenType::IN);
     }
     
+    // =======================================================================
+    /// COLLECTION: PATH:
     // ─── 2. Check for collection iteration (has comma) ─────────────────────
+    // =======================================================================
+
     bool hasValueBinding = stream.match(TokenType::COMMA);
     
     if (hasValueBinding) {
@@ -482,7 +486,9 @@ ForStmtAST* parseForStmt(TokenStream& stream, ParserContext& ctx) {
         return forStmt;
     }
     
-    // ─── Range Loop Path ─────────────────────────────────────────────────────
+    // =======================================================================
+    /// RANGE: LOOP: PATH:
+    // =======================================================================
     
     // ─── 3. Parse 'in' ─────────────────────────────────────────────────────
     if (!stream.match(TokenType::IN)) {
