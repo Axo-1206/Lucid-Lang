@@ -609,21 +609,23 @@ struct ComposeExprAST : ExprAST {
 // FUNCTION NODES
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ─────────────────────────────────────────────────────────────────────────────
-// AnonFuncExprAST — Anonymous function expression (closure)
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── AnonFuncExprAST ─────────────────────────────────────────────────────
 
 /// @brief An anonymous function expression – a function value without a name.
 /// 
 /// @example
 ///   (x int) -> int { return x * 2 }
-///   (a int)(b int) -> int { return a + b }   – curried (Form 2)
+///   (a int)(b int) -> int { return a + b }   – adjacent groups in bound_cluster
+/// 
+/// Like FuncDeclAST, the bound_cluster groups are tracked separately from the
+/// function type.
 struct AnonFuncExprAST : ExprAST {
     static constexpr ASTKind staticKind = ASTKind::AnonFuncExpr;
 
     // ─── Parser Fields (immutable) ──────────────────────────────────────
-    FuncTypeAST* funcType;                // The function type (unnamed parameters)
-    ArenaSpan<ParamAST*> paramGroups;     // Parameter names, flattened across all groups
+    TypeAST* returnType;                // The function type (with `->` boundaries)
+    ArenaSpan<ParamAST*> paramGroups;   // Parameter names, flattened across bound_cluster
+    ArenaSpan<size_t>    groupSizes;    // Number of params per group in bound_cluster
     StmtAST* body;
 
     // ─── Semantic Fields (set by Sema) ────────────────────────────────
@@ -635,13 +637,13 @@ struct AnonFuncExprAST : ExprAST {
     llvm::Function* closureFunction = nullptr;
     llvm::StructType* environmentType = nullptr;
 
-    bool hasParams() const { return funcType && !funcType->params.empty(); }
-
     // ─── Constructor ─────────────────────────────────────────────────────
-    AnonFuncExprAST(FuncTypeAST* ft, ArenaSpan<ParamAST*> pGroups, StmtAST* b)
+    AnonFuncExprAST(TypeAST* ft, ArenaSpan<ParamAST*> pGroups,
+                    ArenaSpan<size_t> gSizes, StmtAST* b)
         : ExprAST(ASTKind::AnonFuncExpr)
-        , funcType(ft)
+        , returnType(ft)
         , paramGroups(pGroups)
+        , groupSizes(gSizes)
         , body(b) {}
 };
 

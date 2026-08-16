@@ -208,39 +208,26 @@ parseFuncDecl(stream, ctx)
 ├── parse optional generic params: parseGenericParamDecls       [Helpers.cpp]
 ├── parse leading cluster (bound_cluster)  
 │   │
-│   └── bool isVariadic = false
+│   └── while '(' found
 │       │
-│       └── while '(' found
+│       └── parseParamList(stream, ctx, groupParams, groupSize, groupIsVariadic)
 │           │
-│           └── parseParamList(stream, ctx)
-│               │
-│               ├── collect ParamAST* (with names) → paramGroups
-│               ├── collect TypeAST* (for FuncTypeAST) → paramTypes
-│               └── track variadic flag → isVariadic
+│           ├── append groupParams -> allParamNames & funcParamTypes
+│           ├── record groupSize -> allGroupSizes
+│           └── track variadic flag → isVariadic
 │
-├── while '->' found 
-│   │
+├── parse return type if '->' present
 │   ├── consume '->'
-│   └── parseUnnamedCluster(stream, ctx)  
-│       │
-│       └── while '(' found
-│           │
-│           └── parseParamTypeList(stream, ctx)
-│               │
-│               ├── collect TypeAST* → paramTypes
-│               └── track variadic flag → isVariadic
-│                   │
-│                   └── validate: variadic must be in last cluster
+│   └── parseType(stream, ctx) → returnType
 │
-├── parse final return type: parseType(stream, ctx)
-├── create FuncTypeAST (params: paramTypes, returnType, isVariadic)
 ├── parse '=' and body
 │   ├── block body: '{' parseBlock(stream, ctx) '}'
 │   ├── expression body: parseExpr(stream, ctx)
+│   │   ├── if looksLikeAnonFunc → report error & return nullptr
 │   │   ├── if pure function ref → FuncRefStmtAST
 │   │   └── else → ReturnStmtAST
 │   └── no '=' → foreign function (body = nullptr)
-└── create FuncDeclAST
+└── create FuncDeclAST (name, keyword, genericParams, returnType, allParamNames, allGroupSizes, body)
 
 
 parseStructDecl(stream, ctx)
@@ -345,24 +332,23 @@ parseBaseType(stream, ctx)
 │
 ├── '(' → parseFuncType(stream, ctx)
 │   │
-│   ├── bool isVariadic = false
-│   ├── parseParamTypeList(stream, ctx)
-│   │   │
-│   │   ├── consume '('
-│   │   ├── while not ')'
-│   │   │   ├── handleCommaGap(stream, ctx, "parameter type", isFirst)
-│   │   │   ├── parse '...' (variadic, optional)
-│   │   │   ├── parseType(stream, ctx)            ◄── recursive call
-│   │   │   └── collect type
-│   │   ├── consume ')'
-│   │   └── return std::vector<TypeAST*> + isVariadic flag
+│   ├── std::vector<TypeAST*> allParamTypes, bool isVariadic = false
+│   ├── while '(' found
+│   │   ├── parseParamTypeList(stream, ctx, groupTypes, groupIsVariadic)
+│   │   ├── append groupTypes → allParamTypes
+│   │   ├── if groupIsVariadic: isVariadic = true
+│   │   └── if '->' found: break
 │   │
-│   ├── if '->' found
-│   │   ├── consume '->'
-│   │   ├── if '(' → parseFuncType(stream, ctx)         ◄── recursive call (curried)
-│   │   └── else parseType(stream, ctx)  (return type)  ◄── recursive call
-│   ├── create FuncTypeAST (params: TypeAST*, returnType: TypeAST*, isVariadic)
-│   └── return FuncTypeAST
+│   ├── if no '->':
+│   │   └── return FuncTypeAST (params: allParamTypes, returnType: nullptr, hasArrow: false, isVariadic)
+│   │
+│   ├── consume '->'
+│   ├── parse return type
+│   │   ├── if '(' → parseFuncType(stream, ctx)        ◄── recursive call (curried)
+│   │   └── else → parseType(stream, ctx)               ◄── recursive call
+│   │
+│   ├── validate variadic position
+│   └── return FuncTypeAST (params: allParamTypes, returnType, hasArrow: true, isVariadic)
 │
 ├── 'IDENTIFIER' → parseNamedType(stream, ctx)
 │   │
@@ -578,33 +564,24 @@ parsePrattExpr(stream, ctx, minPrec)
 │   │                                                                     │
 │   ├── looksLikeAnonFunc → parseAnonFuncExpr(stream, ctx)                │
 │   │   │                                                                 │
-│   │   ├── parse leading cluster (bound_cluster)                         │
-│   │   │   │                                                             │
+│   │   ├── parse leading cluster (bound_cluster) - names required        │
 │   │   │   └── while '(' found                                           │
-│   │   │       │                                                         │
-│   │   │       └── parseParamList(stream, ctx)  ◄── WITH names           │
-│   │   │           │                                                     │
-│   │   │           ├── collect ParamAST* (with names) → paramGroups      │
-│   │   │           └── collect TypeAST* (for FuncTypeAST) → paramTypes   │
+│   │   │       ├── parseParamList(stream, ctx, groupParams, ...)         │
+│   │   │       ├── append groupParams -> allParamNames & funcParamTypes  │
+│   │   │       └── record groupSize -> allGroupSizes                     │
 │   │   │                                                                 │
-│   │   ├── while '->' found                                              │
-│   │   │   │                                                             │
+│   │   ├── parse return type if '->' present                             │
 │   │   │   ├── consume '->'                                              │
-│   │   │   └── parseUnnamedCluster(stream, ctx)                          │
-│   │   │       │                                                         │
-│   │   │       └── while '(' found                                       │
-│   │   │           │                                                     │
-│   │   │           └── parseParamTypeList(stream, ctx)  ◄── NO names     │
-│   │   │               │                                                 │
-│   │   │               └── collect TypeAST* → paramTypes                 │
+│   │   │   └── parseType(stream, ctx) → returnType                       │
 │   │   │                                                                 │
-│   │   ├── parse final return type: parseType(stream, ctx)               │
-│   │   ├── create FuncTypeAST (params: paramTypes, returnType)           │
-│   │   ├── consume '{'                                                   │
-│   │   ├── ScopedContext(FuncBody)                                       │
-│   │   ├── parseBlock(stream, ctx)  (body)  ◄── recursive                │
-│   │   ├── consume '}'                                                   │
-│   │   └── create AnonFuncExprAST (funcType, paramGroups, body)          │
+│   │   ├── parse function body                                           │
+│   │   │   ├── consume '{'                                               │
+│   │   │   ├── ScopedContext(FuncBody)                                   │
+│   │   │   ├── parseBlock(stream, ctx) (body)                            │
+│   │   │   └── consume '}'                                               │
+│   │   │                                                                 │
+│   │   └── build and return AnonFuncExprAST                              │
+│   │       (returnType, allParamNames, allGroupSizes, body)              │
 │   │                                                                     │
 │   ├── 'IDENTIFIER' ':' → parseModuleAccessExpr(stream, ctx)             │
 │   │   │                                                                 │
@@ -746,60 +723,61 @@ parseGenericArgs(stream, ctx)
 ├── consume '>'
 └── return ArenaSpan<TypeAST*>
 
-parseParamList(stream, ctx)
+parseParamList(stream, ctx, outParams, outGroupSize, outIsVariadic)
 │
-├── bool outIsVariadic
+├── outParams.clear(), outGroupSize = 0, outIsVariadic = false
 ├── consume '('
-├── while not ')'
+├── if next is ')': consume ')' and return true
+├── while not at end and not ')'
 │   │
 │   ├── handleCommaGap(stream, ctx, "parameter", isFirst)
 │   ├── parse 'const' modifier (optional)
 │   ├── parse name: 'IDENTIFIER'  ◄── REQUIRED
 │   ├── parse '...' (variadic, optional)  ◄── detected and tracked
 │   ├── parseType(stream, ctx)                                  [ParseType.cpp]
-│   ├── if variadic: wrap type in ArrayTypeAST(Dynamic)
-│   ├── create ParamAST (with name, type, variadic, const flags)
-│   └── collect parameter
+│   ├── if variadic: wrap type in ArrayTypeAST(Dynamic, 0, type)
+│   ├── create ParamAST (with name, finalType, isVariadic, isConst)
+│   ├── collect parameter -> outParams, increment outGroupSize
+│   └── check variadic comma constraint
+├── if hasVariadic: outIsVariadic = true
 ├── consume ')'
-├── if variadic detected: outIsVariadic = true
-└── return std::vector<ParamAST*>
+└── return success flag
 
-parseParamTypeList(stream, ctx)
+parseParamTypeList(stream, ctx, outParamTypes, outIsVariadic)
 │
-├── bool outIsVariadic
+├── outParamTypes.clear(), outIsVariadic = false
 ├── consume '('
-├── while not ')'
+├── if next is ')': consume ')' and return true
+├── while not at end and not ')'
 │   │
 │   ├── handleCommaGap(stream, ctx, "parameter type", isFirst)
 │   ├── parse '...' (variadic, optional)  ◄── detected and tracked
 │   ├── parseType(stream, ctx)                                  [ParseType.cpp]
-│   └── collect TypeAST*
+│   ├── collect type -> outParamTypes
+│   └── check variadic comma constraint
+├── if hasVariadic: outIsVariadic = true
 ├── consume ')'
-├── if variadic detected: outIsVariadic = true
-└── return std::vector<TypeAST*>
+└── return success flag
 
-parseBoundCluster(stream, ctx)
+parseBoundCluster(stream, ctx, outParams, outGroupSizes, outIsVariadic)
 │
+├── outIsVariadic = false, outGroupSizes.clear()
 ├── while '(' found
 │   │
-│   ├── bool groupIsVariadic = false
-│   ├── parseParamList(stream, ctx)
-│   ├── collect ParamAST* → outParams
-│   ├── collect TypeAST* → outTypes
+│   ├── parseParamList(stream, ctx, groupParams, groupSize, groupIsVariadic)
+│   ├── append groupParams → outParams
+│   ├── record groupSize → outGroupSizes
 │   └── if groupIsVariadic: outIsVariadic = true
 └── return
 
-parseUnnamedCluster(stream, ctx)
+parseUnnamedCluster(stream, ctx, outTypes, outIsVariadic)
 │
+├── outIsVariadic = false
 ├── while '(' found
 │   │
-│   ├── bool groupIsVariadic = false
-│   ├── parseParamTypeList(stream, ctx)
-│   ├── collect TypeAST* → outTypes
-│   ├── if groupIsVariadic:
-│   │   ├── outIsVariadic = true
-│   │   └── validate: variadic must be in last cluster
-│   └── (no ParamAST* collected)
+│   ├── parseParamTypeList(stream, ctx, groupTypes, groupIsVariadic)
+│   ├── append groupTypes → outTypes
+│   └── if groupIsVariadic: outIsVariadic = true
 └── return
 
 parseArgList(stream, ctx)

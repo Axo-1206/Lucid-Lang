@@ -176,15 +176,14 @@ VarDeclAST* parseVarDecl(TokenStream& stream, ParserContext& ctx) {
 /// @brief Parse a function declaration.
 /// 
 /// Grammar:
-///   func_decl = ('let' | 'const') IDENTIFIER [ generic_params ] func_type '=' func_body
+///   func_decl = ('let' | 'const') IDENTIFIER [ generic_params ] chain '=' func_body
+///   chain = bound_cluster { '->' unnamed_cluster } '->' type
+///   bound_cluster = bound_group { bound_group }
+///   bound_group = '(' [ bound_param_list ] ')'
+///   bound_param = IDENTIFIER type
 /// 
-/// Rules:
-///   1. Block body is allowed: `const f () -> T = { ... }`  ✅
-///   2. Function reference is allowed: `const f () -> T = existingFn`  ✅
-///   3. Module function reference is allowed: `const f () -> T = module:fn`  ✅
-///   4. Generic function instantiation is allowed: `const f () -> T = map<int>`  ✅
-///   5. Anonymous function is REJECTED: `const f () -> T = (x int) -> int { ... }`  ❌
-///      (use a block body instead: `const f () -> T = { ... }`)
+/// The bound_cluster groups are tracked separately from the function type.
+/// This allows the compiler to generate wrappers for partial application.
 /// 
 /// @param stream The token stream.
 /// @param ctx The parsing context.
@@ -220,65 +219,61 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     
     // ─── 4. Parse the leading cluster (bound_cluster) - names required ──
     std::vector<ParamAST*> allParamNames;
-    std::vector<TypeAST*> funcParamTypes;
+    std::vector<size_t> allGroupSizes;
+    std::vector<TypeAST*> funcParamTypes;  // Types from bound_cluster (flattened)
     bool isVariadic = false;
     
-    // Parse the leading cluster (bound_cluster) - this one has names
+    // Parse the bound_cluster: one or more adjacent groups
     while (stream.check(TokenType::LPAREN)) {
         std::vector<ParamAST*> groupParams;
+        size_t groupSize = 0;
         bool groupIsVariadic = false;
-        parseParamList(stream, ctx, groupParams, groupIsVariadic);
         
+        parseParamList(stream, ctx, groupParams, groupSize, groupIsVariadic);
+        
+        // Append parameters to flat list
         for (auto* p : groupParams) {
             allParamNames.push_back(p);
             funcParamTypes.push_back(p->type);
         }
+        
+        // Record group size
+        allGroupSizes.push_back(groupSize);
         
         if (groupIsVariadic) {
             isVariadic = true;
         }
     }
     
-    // ─── 5. Parse remaining clusters after '->' (no names) ──────────────
-    while (stream.check(TokenType::ARROW)) {
-        stream.consume(); // Consume '->'
-        
-        if (stream.check(TokenType::LPAREN)) {
-            // Parse unnamed cluster (no names)
-            bool clusterHasVariadic = false;
-            parseUnnamedCluster(stream, ctx, funcParamTypes, clusterHasVariadic);
-            if (clusterHasVariadic) {
-                // Variadic in a later cluster - only allowed if it's the last cluster
-                if (stream.check(TokenType::ARROW)) {
-                    ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
-                                            "variadic parameter must be in the last cluster of a function type");
-                }
-                isVariadic = true;
-            }
-        } else {
-            // This is the final return type
-            break;
-        }
-    }
-    
-    // ─── 6. Parse the final return type ────────────────────────────────────
-    TypeAST* returnType = parseType(stream, ctx);
-    if (!returnType) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
-                                "expected return type");
-        synchronizeToContext(stream, ctx);
-        return nullptr;
-    }
-    
-    // ─── 7. Build the FuncTypeAST ──────────────────────────────────────────
+    // ─── 5. Parse the function type (remaining clusters with `->`) ──────────
+    // The first parameter type of funcType comes from the bound_cluster
+    // Note: FuncTypeAST stores ONLY the first group's parameters as `params`.
+    // If there are multiple groups in the bound_cluster, they are all flattened
+    // into the first group of funcType.
     auto paramBuilder = ctx.arena.makeBuilder<TypeAST*>();
     for (auto* t : funcParamTypes) {
         paramBuilder.push_back(t);
     }
-    auto* funcType = ctx.arena.make<FuncTypeAST>(paramBuilder.build(), returnType, true, isVariadic);
-    funcType->loc = loc;
     
-    // ─── 8. Parse '=' and body ──────────────────────────────────────────────
+    TypeAST* returnType = nullptr;
+    bool hasArrow = false;
+    bool funcIsVariadic = isVariadic;
+    
+    // Parse the return type after `->`
+    if (stream.check(TokenType::ARROW)) {
+        hasArrow = true;
+        stream.consume(); // Consume '->'
+        returnType = parseType(stream, ctx);
+        if (!returnType) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
+                                    "expected return type");
+            synchronizeToContext(stream, ctx);
+            return nullptr;
+        }
+    }
+    // If no `->`, this is a void function
+    
+    // ─── 6. Parse '=' and body ──────────────────────────────────────────────
     StmtAST* body = nullptr;
     
     if (stream.match(TokenType::ASSIGN)) {
@@ -337,7 +332,6 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
             }
             
             if (isPureFunctionRef) {
-                // ─── Pure function reference ──────────────────────────────────
                 auto* refStmt = ctx.arena.make<FuncRefStmtAST>();
                 refStmt->loc = exprBody->loc;
                 refStmt->target = exprBody;
@@ -345,7 +339,6 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
                 
                 LOG_PARSER_DETAIL("Parsed function reference: ", ctx.pool.lookup(name));
             } else {
-                // ─── General expression body ──────────────────────────────────
                 auto* returnStmt = ctx.arena.make<ReturnStmtAST>();
                 returnStmt->loc = exprBody->loc;
                 returnStmt->value = exprBody;
@@ -358,28 +351,34 @@ FuncDeclAST* parseFuncDecl(TokenStream& stream, ParserContext& ctx) {
     } else {
         // ─── No '=' - foreign function ─────────────────────────────────────
         body = nullptr;
-        
         LOG_PARSER_DETAIL("Parsed foreign function (no body): ", ctx.pool.lookup(name));
     }
     
-    // ─── 9. Build param groups span ──────────────────────────────────────────
+    // ─── 7. Build param groups and group sizes spans ──────────────────────
     auto paramGroupBuilder = ctx.arena.makeBuilder<ParamAST*>();
     for (auto* p : allParamNames) {
         paramGroupBuilder.push_back(p);
     }
     
-    // ─── 10. Build AST using constructor ──────────────────────────────────────
+    auto groupSizeBuilder = ctx.arena.makeBuilder<size_t>();
+    for (auto sz : allGroupSizes) {
+        groupSizeBuilder.push_back(sz);
+    }
+    
+    // ─── 8. Build FuncDeclAST ──────────────────────────────────────────────
     auto* funcDecl = ctx.arena.make<FuncDeclAST>(
         name, 
         keyword, 
         genericParams, 
-        funcType, 
+        returnType, 
         paramGroupBuilder.build(), 
+        groupSizeBuilder.build(), 
         body
     );
     funcDecl->loc = loc;
     
-    LOG_PARSER_DETAIL("Parsed function: ", ctx.pool.lookup(name));
+    LOG_PARSER_DETAIL("Parsed function: ", ctx.pool.lookup(name), " with ", 
+                      allGroupSizes.size(), " groups, ", allParamNames.size(), " params");
     return funcDecl;
 }
 

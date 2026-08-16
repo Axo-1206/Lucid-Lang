@@ -549,6 +549,20 @@ StructLiteralExprAST* parseStructLiteralExpr(TokenStream& stream, ParserContext&
 // Anonymous Function
 // =============================================================================
 
+/// @brief Parse an anonymous function expression.
+/// 
+/// Grammar:
+///   func_literal = bound_cluster { '->' unnamed_cluster } '->' type block
+///   bound_cluster = bound_group { bound_group }
+///   bound_group = '(' [ bound_param_list ] ')'
+///   bound_param = IDENTIFIER type
+/// 
+/// The bound_cluster groups are tracked separately from the function type.
+/// This allows the compiler to generate wrappers for partial application.
+/// 
+/// @param stream The token stream
+/// @param ctx The parsing context
+/// @return AnonFuncExprAST* The parsed anonymous function expression
 AnonFuncExprAST* parseAnonFuncExpr(TokenStream& stream, ParserContext& ctx) {
     SourceLocation loc = stream.currentLoc();
     
@@ -556,60 +570,53 @@ AnonFuncExprAST* parseAnonFuncExpr(TokenStream& stream, ParserContext& ctx) {
     
     // ─── Parse the leading cluster (bound_cluster) - names required ────
     std::vector<ParamAST*> allParamNames;
+    std::vector<size_t> allGroupSizes;
     std::vector<TypeAST*> funcParamTypes;
     bool isVariadic = false;
     
+    // Parse the bound_cluster: one or more adjacent groups
     while (stream.check(TokenType::LPAREN)) {
         std::vector<ParamAST*> groupParams;
+        size_t groupSize = 0;
         bool groupIsVariadic = false;
-        parseParamList(stream, ctx, groupParams, groupIsVariadic);
         
+        parseParamList(stream, ctx, groupParams, groupSize, groupIsVariadic);
+        
+        // Append parameters to flat list
         for (auto* p : groupParams) {
             allParamNames.push_back(p);
             funcParamTypes.push_back(p->type);
         }
+        
+        // Record group size
+        allGroupSizes.push_back(groupSize);
         
         if (groupIsVariadic) {
             isVariadic = true;
         }
     }
     
-    // ─── Parse remaining clusters after '->' ─────────────────────────────
-    while (stream.check(TokenType::ARROW)) {
-        stream.consume(); // Consume '->'
-        
-        if (stream.check(TokenType::LPAREN)) {
-            bool clusterHasVariadic = false;
-            parseUnnamedCluster(stream, ctx, funcParamTypes, clusterHasVariadic);
-            if (clusterHasVariadic) {
-                if (stream.check(TokenType::ARROW)) {
-                    ctx.diagnostics.errorAt(DiagCode::Syntax_UnexpectedToken, stream.currentLoc(),
-                                            "variadic parameter must be in the last cluster of a function type");
-                }
-                isVariadic = true;
-            }
-        } else {
-            break;
-        }
-    }
-    
-    // ─── Parse the final return type ──────────────────────────────────────
-    TypeAST* returnType = parseType(stream, ctx);
-    if (!returnType) {
-        ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
-                                "expected return type");
-        synchronizeToContext(stream, ctx);
-        return nullptr;
-    }
-    
-    // ─── Build the FuncTypeAST ─────────────────────────────────────────────
+    // ─── Parse the function type (remaining clusters with `->`) ──────────
     auto paramBuilder = ctx.arena.makeBuilder<TypeAST*>();
     for (auto* t : funcParamTypes) {
         paramBuilder.push_back(t);
     }
-    auto* funcType = ctx.arena.make<FuncTypeAST>(paramBuilder.build(), returnType, true, isVariadic);
-    funcType->loc = loc;
     
+    TypeAST* returnType = nullptr;
+    bool hasArrow = false;
+    
+    if (stream.check(TokenType::ARROW)) {
+        hasArrow = true;
+        stream.consume(); // Consume '->'
+        returnType = parseType(stream, ctx);
+        if (!returnType) {
+            ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedType, stream.currentLoc(),
+                                    "expected return type");
+            synchronizeToContext(stream, ctx);
+            return nullptr;
+        }
+    }
+
     // ─── Parse the body ────────────────────────────────────────────────────
     if (!stream.check(TokenType::LBRACE)) {
         ctx.diagnostics.errorAt(DiagCode::Syntax_ExpectedToken, stream.currentLoc(),
@@ -634,20 +641,28 @@ AnonFuncExprAST* parseAnonFuncExpr(TokenStream& stream, ParserContext& ctx) {
         stream.consume(); // Consume '}'
     }
     
-    // ─── Build param groups span ──────────────────────────────────────────
+    // ─── Build param groups and group sizes spans ──────────────────────────
     auto paramGroupBuilder = ctx.arena.makeBuilder<ParamAST*>();
     for (auto* p : allParamNames) {
         paramGroupBuilder.push_back(p);
     }
     
+    auto groupSizeBuilder = ctx.arena.makeBuilder<size_t>();
+    for (auto sz : allGroupSizes) {
+        groupSizeBuilder.push_back(sz);
+    }
+    
+    // ─── Build AnonFuncExprAST ─────────────────────────────────────────────
     auto* anonFunc = ctx.arena.make<AnonFuncExprAST>(
-        funcType, 
+        returnType, 
         paramGroupBuilder.build(), 
+        groupSizeBuilder.build(), 
         body
     );
     anonFunc->loc = loc;
     
-    LOG_PARSER_DETAIL("parseAnonFuncExpr: parsed anonymous function");
+    LOG_PARSER_DETAIL("parseAnonFuncExpr: parsed anonymous function with ", 
+                      allGroupSizes.size(), " groups, ", allParamNames.size(), " params");
     return anonFunc;
 }
 
